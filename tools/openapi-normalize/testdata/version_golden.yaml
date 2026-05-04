@@ -1,0 +1,12 @@
+openapi: 3.0.3
+info:
+    title: Sample
+    version: 0.0.1
+components:
+    schemas:
+        User:
+            type: object
+            properties:
+                bio:
+                    type: string
+                    nullable: true

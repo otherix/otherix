@@ -1,0 +1,112 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.1
+          args: --timeout 5m
+
+  vuln:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - name: govulncheck
+        run: make vuln
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - name: Unit tests
+        run: go test ./... -race -coverprofile=coverage.out
+      - name: Integration tests
+        run: |
+          go test -tags=integration,test_fast_argon -count=1 -race \
+            ./internal/agent/... \
+            ./internal/api/... \
+            ./internal/auth/... \
+            ./internal/migrationtest/... \
+            ./internal/store/... \
+            ./internal/store/migrate/... \
+            ./tests/migrations/...
+      - name: Integration tests (CP↔agent)
+        run: make test-integration
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        binary: [api, agent]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - name: Build ${{ matrix.binary }} for linux/${{ matrix.arch }}
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p out
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/otherix/otherix/internal/version.Version=${GITHUB_SHA::7}" \
+            -o out/otherix-${{ matrix.binary }}-linux-${{ matrix.arch }} \
+            ./cmd/${{ matrix.binary }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otherix-${{ matrix.binary }}-linux-${{ matrix.arch }}
+          path: out/otherix-${{ matrix.binary }}-linux-${{ matrix.arch }}
+
+  api-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - name: Lint OpenAPI specs
+        run: |
+          for f in api/openapi/*.yaml; do
+            case "$f" in *.bundled.yaml|*/oapi-codegen.yaml) continue ;; esac
+            echo "::group::Linting $f"
+            npx --yes @redocly/cli@2.31.2 lint "$f"
+            echo "::endgroup::"
+          done
+      - name: Verify generated agent API
+        run: make agent-api-verify

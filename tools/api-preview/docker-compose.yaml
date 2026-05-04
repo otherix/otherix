@@ -1,0 +1,35 @@
+# Local OpenAPI preview environment.
+# Started/stopped via `make api-preview` / `make api-preview-stop` from repo root.
+# Image versions are pinned via SWAGGER_UI_VERSION / REDOC_VERSION env vars
+# passed in by the Makefile.
+
+services:
+  swagger-ui:
+    image: swaggerapi/swagger-ui:${SWAGGER_UI_VERSION:-v5.17.14}
+    ports:
+      - "8081:8080"
+    # The swaggerapi/swagger-ui image runs nginx with document root at
+    # /usr/share/nginx/html, so specs must live underneath it to be HTTP-reachable.
+    volumes:
+      - ../../api/openapi:/usr/share/nginx/html/specs:ro
+    environment:
+      BASE_URL: /
+      URLS: |
+        [
+          {"url":"/specs/control-plane.yaml","name":"Control Plane API"},
+          {"url":"/specs/agent.yaml","name":"Agent API"}
+        ]
+      URLS_PRIMARY_NAME: "Control Plane API"
+      DEEP_LINKING: "true"
+      DISPLAY_REQUEST_DURATION: "true"
+      DEFAULT_MODELS_EXPAND_DEPTH: "1"
+      DOC_EXPANSION: "list"
+
+  redoc:
+    image: redocly/redoc:${REDOC_VERSION:-v2.2.0}
+    ports:
+      - "8082:80"
+    volumes:
+      - ../../api/openapi:/usr/share/nginx/html/specs:ro
+    environment:
+      SPEC_URL: /specs/control-plane.yaml

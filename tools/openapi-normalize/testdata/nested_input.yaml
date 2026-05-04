@@ -1,0 +1,37 @@
+components:
+  schemas:
+    Foo:
+      type: object
+      properties:
+        bar:
+          type: [string, "null"]
+        list:
+          type: array
+          items:
+            type: [integer, "null"]
+        choice:
+          oneOf:
+            - type: [string, "null"]
+            - type: [number, "null"]
+        merged:
+          allOf:
+            - type: object
+              properties:
+                inner:
+                  type: [boolean, "null"]
+        anyone:
+          anyOf:
+            - type: [string, "null"]
+        meta:
+          type: object
+          additionalProperties:
+            type: [string, "null"]
+        deep:
+          type: object
+          properties:
+            level1:
+              type: object
+              properties:
+                level2:
+                  type: [object, "null"]
+                  additionalProperties: true

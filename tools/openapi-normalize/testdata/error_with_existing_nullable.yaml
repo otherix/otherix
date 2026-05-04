@@ -1,0 +1,5 @@
+type: object
+properties:
+  bad:
+    type: [string, "null"]
+    nullable: true

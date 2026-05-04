@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.vscode
+.claude
+.docker-data
+bin/
+dist/
+coverage.out
+coverage.html
+*.local.yaml
+tools/api-preview/
+docs/
+docker-compose*.yml
+deploy/compose/
+deploy/config/

@@ -1,0 +1,4 @@
+type: object
+properties:
+  too_many:
+    type: [string, integer, "null"]
