@@ -1,0 +1,2777 @@
+openapi: 3.1.0
+info:
+  title: Otherix Node Agent API
+  version: "0.1.0"
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    Otherix Node Agent REST API. Contract between the Control Plane (CP)
+    and a per-node `agent` process, plus the peer-to-peer surface used
+    by agents during live migration.
+
+    ## State ownership
+
+    The agent has **no access** to the Control Plane database. The CP is
+    the sole Postgres client. The agent maintains its own local state on
+    the node (embedded storage) for runtime concerns: running VMs,
+    executional tasks, idempotency cache, image cache, active migrations,
+    and short-lived locks.
+
+    Source-of-truth is split by responsibility:
+
+    - **Desired state** of every VM-domain resource (cpu, memory, disks,
+      networks, snapshots, migrations, …) lives in the CP database.
+    - **Observed runtime state** (qemu pid, qmp socket path, configured
+      vnc endpoint, condition transitions, runtime metrics) lives on the
+      agent and is reported back to the CP through heartbeat and event
+      channels (CP-side endpoints, not part of this spec).
+    - **Executional tasks** for operations the CP delegates to this
+      agent live on the agent and are exposed through `GET /v1/tasks/{id}`
+      so the CP can poll for completion.
+
+    This split keeps the agent free of CP database dependencies and
+    makes the CP the sole authority on cluster-wide desired state.
+
+    ## Authentication
+
+    Every caller authenticates with **mutual TLS**. There are two
+    expected client SAN families:
+
+    - `cn=control-plane.otherix.local` — the CP server(s).
+    - `cn=node-<name>.agents.otherix.local` — peer agents (used only by
+      the migration data path; that traffic does not hit the REST
+      endpoints in this document, but the same mTLS material is used).
+
+    The agent rejects any TLS connection that does not present a
+    certificate chained to the cluster CA, regardless of network reach.
+    There are no bearer tokens, API keys, or user identities in this
+    surface — authorisation is based purely on the verified peer SAN.
+
+    ## Identifiers
+
+    VMs are addressed by the **same UUID** the CP issues at creation
+    time (`vms.id` in the CP database). The agent does not allocate its
+    own VM ids. Per-VM device handles (`device_order` for disks and
+    NICs, `name` for snapshots) match the CP-side schema so that one
+    identifier means the same thing on both sides of the contract.
+
+    ## Conventions
+
+    Conventions are intentionally aligned with `control-plane.yaml` so
+    operators only have to learn one set of rules — same error envelope,
+    same async-task pattern, same idempotency semantics, same
+    pagination, same nullable-via-`type: [..., "null"]`. Common schemas
+    (`Error`, `ErrorCode`, `PaginationMeta`, `AsyncTaskAccepted`,
+    `Task`, `Condition`) are duplicated rather than $ref'd across files
+    so this document remains self-contained for codegen and independent
+    deployment.
+
+servers:
+  - url: https://example.invalid
+    description: |
+      Placeholder; the per-node agent endpoint is substituted by the
+      caller (Control Plane or peer agent) at runtime. There is no
+      cluster-wide agent endpoint — each node exposes its own.
+
+tags:
+  - name: health
+    description: Liveness / readiness probe.
+  - name: info
+    description: Node identification, capabilities, and runtime resources.
+  - name: vms
+    description: |
+      Per-VM lifecycle on this node. UUIDs match the CP `vms.id`
+      column; the agent never allocates its own VM ids.
+  - name: vm-disks
+    description: Per-VM disk hot-attach / hot-detach / online resize.
+  - name: vm-nics
+    description: Per-VM NIC hot-attach / hot-detach / reconfiguration.
+  - name: vm-snapshots
+    description: |
+      Per-VM internal snapshots (qcow2 / qemu native), addressed by
+      `(vm_uuid, name)`.
+  - name: vm-migrations
+    description: |
+      Live and offline migrations. The Control Plane drives the saga
+      (incoming first, then outgoing); the data-plane transfer is
+      peer-to-peer between the source and target agents and is not
+      itself described by REST.
+  - name: vm-console
+    description: |
+      VNC console access. The token-issuance call is REST; the
+      `console-stream` endpoint is a WebSocket upgrade carrying the
+      RFB protocol after `101 Switching Protocols`.
+  - name: storage-pools
+    description: |
+      Per-node storage pools. CRUD lives in the Control Plane API;
+      this surface is read + operational (`scan`, image cache).
+  - name: storage-images
+    description: |
+      Per-pool image cache. Backing store for template-derived disks
+      so an image is fetched and verified once per node.
+  - name: networks
+    description: |
+      Per-node networking primitives (Linux bridges, taps, VLANs).
+      The Control Plane owns the model; this surface configures /
+      reports actual state on the node.
+  - name: tasks
+    description: |
+      **Executional** tasks tracked in the agent's local state.
+      Distinct from Control-Plane saga tasks — see schema description.
+
+paths:
+  /v1/health:
+    get:
+      operationId: health.check
+      tags: [health]
+      summary: Liveness / readiness probe.
+      description: |
+        Cheap probe used by the Control Plane and by container / k8s
+        liveness checks. Returns 200 with a minimal body whenever the
+        agent process is up and the local state store is reachable.
+      responses:
+        "200":
+          description: Agent is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/info:
+    get:
+      operationId: info.get
+      tags: [info]
+      summary: Node identification, capabilities, and live resources.
+      description: |
+        Full node snapshot. Used by the Control Plane during agent
+        registration and on every reconciliation cycle to update its
+        view of the node — but this endpoint is **pull-only**;
+        heartbeat / events are pushed by the agent through CP-side
+        endpoints (not part of this spec).
+      responses:
+        "200":
+          description: Node info.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeInfo"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms:
+    get:
+      operationId: vms.list
+      tags: [vms]
+      summary: List VMs known to this agent.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: phase
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, running, paused, stopped, error, gone]
+          description: Filter by observed phase.
+      responses:
+        "200":
+          description: List of VMs (compact representation).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMList"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: vms.create
+      tags: [vms]
+      summary: Create a VM on this node (asynchronous).
+      description: |
+        The Control Plane has already chosen this node for the VM and
+        resolved every CP-only identifier (`template_id`, `firmware_id`,
+        `storage_pool_id`, `network_id`) into agent-consumable values
+        (`image_url`+`checksum_sha256`, `code_path`, `storage_pool_path`,
+        `bridge_name`+`vlan_tag`+`mtu`). The agent has no way to
+        re-resolve those itself.
+
+        On success the response is `202 Accepted` with a `task_id`. Poll
+        `GET /v1/tasks/{id}` for status. The created VM is then visible
+        through `GET /v1/vms/{vm_name}`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMSpec"
+      responses:
+        "202":
+          description: Creation accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409":
+          description: |
+            VM with this UUID already exists on this node, the requested
+            architecture is not supported here, or idempotency-key
+            mismatch. `details.reason` distinguishes the cases
+            (`vm_exists`, `architecture_mismatch`,
+            `idempotency_key_mismatch`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    get:
+      operationId: vms.get
+      tags: [vms]
+      summary: Get VM detail with runtime state.
+      responses:
+        "200":
+          description: VM detail including agent-internal runtime fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMDetail"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: vms.delete
+      tags: [vms]
+      summary: Remove a VM from this node (asynchronous).
+      description: |
+        Stops the VM if running, releases QEMU resources, and removes
+        local state. Disk images on storage pools are deleted as part
+        of the same task. Returns 202 + task_id.
+
+        Idempotent at the resource level: deleting an already-deleted
+        VM returns 202 with a task that immediately resolves to
+        `success`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Deletion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/start:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.start
+      tags: [vms]
+      summary: Start a VM (asynchronous).
+      description: |
+        Boots the VM. No-op when already running (task resolves
+        immediately to `success`). Returns 409
+        `vm_state_invalid` for transitions that are not legal from the
+        current observed phase (e.g. starting a VM stuck in `error`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Start accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/stop:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.stop
+      tags: [vms]
+      summary: Graceful shutdown via ACPI (asynchronous).
+      description: |
+        Sends ACPI power-button press through QMP. The guest may or
+        may not honour it. Use `poweroff` to force termination.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Stop accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/poweroff:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.poweroff
+      tags: [vms]
+      summary: Hard power off (asynchronous).
+      description: Terminates the QEMU process. The guest is not notified.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Poweroff accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/reboot:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.reboot
+      tags: [vms]
+      summary: Graceful reboot via ACPI (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Reboot accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/reset:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.reset
+      tags: [vms]
+      summary: Hard reset a running VM (synchronous).
+      description: |
+        QMP `system_reset`. Equivalent to the reset button. The QMP
+        command returns immediately after dispatching the reset to
+        the guest CPU, so the agent responds synchronously with the
+        updated `VMDetail`; the guest OS is not notified and may
+        experience filesystem inconsistencies.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Reset issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMDetail"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/pause:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.pause
+      tags: [vms]
+      summary: Pause a running VM (synchronous).
+      description: |
+        QMP `stop`. Bounded fast operation; returns 200 with the
+        updated `VMDetail`. Does not change desired_phase on the CP
+        side — pause/resume affect runtime only.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Paused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMDetail"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/resume:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.resume
+      tags: [vms]
+      summary: Resume a paused VM (synchronous).
+      description: QMP `cont`. Bounded fast operation.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Resumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMDetail"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/resize:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.resize
+      tags: [vms]
+      summary: Resize CPU/memory (asynchronous).
+      description: |
+        Attempts hot-resize via CPU / memory hotplug when the guest and
+        machine type support it. If the operation requires a restart
+        (e.g. plain `pc`/`q35` without explicit hotplug topology), the
+        agent returns 409 `hot_resize_not_supported` — restart-and-resize
+        is a Control-Plane decision, not the agent's.
+
+        Either `cpu_cores`, `memory_mib`, or both must be provided.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMResizeRequest"
+      responses:
+        "202":
+          description: Resize accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Hot-resize not supported on this VM, requested size below
+            current usage, or idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/revert:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vms.revert
+      tags: [vms]
+      summary: Revert VM to a snapshot (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMRevertRequest"
+      responses:
+        "202":
+          description: Revert accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/disks:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    get:
+      operationId: vmDisks.list
+      tags: [vm-disks]
+      summary: List disks attached to a VM.
+      responses:
+        "200":
+          description: Disks (in `device_order` order).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VMSpecDisk"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: vmDisks.attach
+      tags: [vm-disks]
+      summary: Attach a disk to a VM (asynchronous).
+      description: |
+        Hotplug when the VM is running, cold-attach when stopped. The
+        request body specifies the new disk including `device_order` —
+        the Control Plane is responsible for picking a free slot.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskAttachRequest"
+      responses:
+        "202":
+          description: Attach accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            `device_order` already in use, hotplug not supported on the
+            requested bus, or idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/disks/{device_order}:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+      - $ref: "#/components/parameters/DeviceOrder"
+    delete:
+      operationId: vmDisks.detach
+      tags: [vm-disks]
+      summary: Detach a disk from a VM (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Detach accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: vmDisks.update
+      tags: [vm-disks]
+      summary: Update a disk (asynchronous).
+      description: |
+        Currently only online resize (grow) is supported. Shrinking
+        returns 409 `shrink_not_supported` — matches the CP-side rule.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskUpdateRequest"
+      responses:
+        "202":
+          description: Update accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Shrink not supported, target size below current usage, or
+            idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/nics:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    get:
+      operationId: vmNics.list
+      tags: [vm-nics]
+      summary: List NICs attached to a VM.
+      responses:
+        "200":
+          description: NICs (in `device_order` order).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VMSpecNic"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: vmNics.attach
+      tags: [vm-nics]
+      summary: Attach a NIC to a VM (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NicAttachRequest"
+      responses:
+        "202":
+          description: Attach accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            `device_order` already in use, MAC collision, or
+            idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/nics/{device_order}:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+      - $ref: "#/components/parameters/DeviceOrder"
+    delete:
+      operationId: vmNics.detach
+      tags: [vm-nics]
+      summary: Detach a NIC from a VM (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Detach accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: vmNics.update
+      tags: [vm-nics]
+      summary: Update a NIC (asynchronous).
+      description: |
+        Re-attach to a different network, change bridge / VLAN / MTU,
+        or update the model. `mac_address` is immutable.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NicUpdateRequest"
+      responses:
+        "202":
+          description: Update accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/snapshots:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    get:
+      operationId: vmSnapshots.list
+      tags: [vm-snapshots]
+      summary: List snapshots of a VM.
+      responses:
+        "200":
+          description: Snapshots known to QEMU for this VM.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Snapshot"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: vmSnapshots.create
+      tags: [vm-snapshots]
+      summary: Create a snapshot (asynchronous).
+      description: |
+        Internal qcow2 snapshot. `with_memory = true` briefly pauses
+        the VM while RAM is captured. Snapshot `name` must be unique
+        within the VM (the Control Plane enforces uniqueness; the
+        agent rejects duplicates with 409).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SnapshotCreateRequest"
+      responses:
+        "202":
+          description: Snapshot creation accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Snapshot name already exists for this VM, or idempotency
+            mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/snapshots/{snapshot_name}:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+      - $ref: "#/components/parameters/SnapshotName"
+    get:
+      operationId: vmSnapshots.get
+      tags: [vm-snapshots]
+      summary: Get a snapshot.
+      responses:
+        "200":
+          description: Snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: vmSnapshots.delete
+      tags: [vm-snapshots]
+      summary: Delete a snapshot (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Deletion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/migrations/incoming:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vmMigrations.startIncoming
+      tags: [vm-migrations]
+      summary: Prepare to receive a migrating VM (synchronous).
+      description: |
+        Called by the Control Plane on the **target** node first.
+        The agent reserves CPU / memory / disk capacity, materialises
+        empty backing files (or fetches images for offline mode),
+        starts QEMU in `-incoming` mode listening on a TCP port, and
+        returns the listen endpoint plus a single-use `auth_token`
+        the source agent must present.
+
+        The endpoint is synchronous — preparing to receive is bounded
+        and quick; the long-running transfer is reported through the
+        migration resource (`GET .../migrations/{migration_id}`).
+
+        The `migration_id` in the request body is allocated by the
+        Control Plane so both sides converge on the same identifier.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MigrationIncomingRequest"
+      responses:
+        "200":
+          description: Target is ready to receive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationIncomingResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Migration with this id already exists, insufficient
+            resources, architecture mismatch, or idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/migrations/outgoing:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vmMigrations.startOutgoing
+      tags: [vm-migrations]
+      summary: Begin transferring a VM to a peer (asynchronous).
+      description: |
+        Called by the Control Plane on the **source** node after the
+        target has prepared. The agent issues QMP `migrate` to the
+        target's `target_endpoint`, presenting `auth_token` for peer
+        authentication.
+
+        The resulting `Migration` is addressable as
+        `/v1/vms/{vm_name}/migrations/{migration_id}` for status
+        polling and cancellation.
+
+        The migration data path itself (TLS-wrapped QEMU migration
+        stream between source and target) is not described by REST;
+        only the REST orchestration is in scope here.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MigrationOutgoingRequest"
+      responses:
+        "202":
+          description: Outgoing migration accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            VM not in a phase that allows migration, another migration
+            already in progress, peer auth_token rejected, or
+            idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/migrations/{migration_id}:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+      - $ref: "#/components/parameters/MigrationId"
+    get:
+      operationId: vmMigrations.get
+      tags: [vm-migrations]
+      summary: Get migration status as observed by this agent.
+      description: |
+        Returns the role of this agent in the migration (`source` /
+        `target`) along with the local view of progress. The Control
+        Plane aggregates both sides for the cluster-wide status.
+      responses:
+        "200":
+          description: Migration record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Migration"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/migrations/{migration_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+      - $ref: "#/components/parameters/MigrationId"
+    post:
+      operationId: vmMigrations.cancel
+      tags: [vm-migrations]
+      summary: Cancel a migration on this agent (best-effort).
+      description: |
+        On the source: aborts the outgoing transfer and keeps the VM
+        running locally (the source remains the live copy). On the
+        target: aborts the incoming reservation and frees resources.
+
+        Cancellation is best-effort; if the migration has already
+        committed (target took over), the call returns 200 with the
+        terminal `Migration` record (`phase = "completed"`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Current migration record after the cancel attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Migration"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/console-token:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    post:
+      operationId: vmConsole.issueToken
+      tags: [vm-console]
+      summary: Issue a single-use console token (synchronous).
+      description: |
+        Called by the Control Plane in response to a user's console
+        request. Returns a token (opaque, short-lived), the local
+        WebSocket path, and the protocol — enough for the CP to
+        construct the final URL handed to the client either directly
+        (`mode = "direct"`) or through the CP proxy (`mode = "proxy"`,
+        the production default).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsoleTokenRequest"
+      responses:
+        "200":
+          description: Console token issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsoleTokenResponse"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            VM not running, requested protocol not available on this
+            VM, or idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/vms/{vm_name}/console-stream:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    get:
+      operationId: vmConsole.stream
+      tags: [vm-console]
+      summary: WebSocket upgrade for the console stream.
+      description: |
+        Performs the WebSocket upgrade for a console session. The
+        client (the user's browser, the operator's CLI, or the
+        Control Plane proxying on behalf of either) must present the
+        single-use `token` previously issued by `POST .../console-token`
+        as a query parameter.
+
+        After `101 Switching Protocols` the wire format is determined
+        by the `protocol` captured at token-issue time:
+        - `vnc` → raw RFB 3.x as exposed by QEMU's VNC server;
+        - `serial` → raw bytes from QEMU `-serial unix:` chardev,
+          bidirectional, binary WebSocket frames (no framing wrapper,
+          no resize protocol).
+
+        The token is consumed on upgrade and cannot be reused; the
+        WebSocket stays open until either side closes it. A second
+        upgrade for the same VM while one is already open returns
+        409 `console_in_use` (per-VM single-session lock).
+
+        The wire protocol after upgrade is intentionally outside the
+        OpenAPI document.
+      security:
+        - mutualTLS: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: Single-use token from `POST .../console-token`.
+      responses:
+        "101":
+          description: |
+            Switching Protocols. The connection is upgraded to a
+            WebSocket carrying the RFB protocol.
+        "401":
+          description: Token missing, invalid, expired, or already consumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: VM not running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/storage-pools:
+    get:
+      operationId: storagePools.list
+      tags: [storage-pools]
+      summary: List storage pools known to this agent.
+      description: |
+        Pools are configured in the Control Plane (CRUD lives there).
+        This endpoint returns the agent's view: pools that have been
+        announced to it, plus their last-observed usage.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Storage pools.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePoolList"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/storage-pools/{pool_name}:
+    parameters:
+      - $ref: "#/components/parameters/PoolName"
+    get:
+      operationId: storagePools.get
+      tags: [storage-pools]
+      summary: Get a storage pool.
+      responses:
+        "200":
+          description: Pool report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePoolReport"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/storage-pools/{pool_name}/scan:
+    parameters:
+      - $ref: "#/components/parameters/PoolName"
+    post:
+      operationId: storagePools.scan
+      tags: [storage-pools]
+      summary: Rescan a pool's usage and contents (asynchronous).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Scan accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/storage-pools/{pool_name}/images:
+    parameters:
+      - $ref: "#/components/parameters/PoolName"
+    get:
+      operationId: storageImages.list
+      tags: [storage-images]
+      summary: List images cached in a pool.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Cached images.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CachedImageList"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: storageImages.import
+      tags: [storage-images]
+      summary: Fetch and cache an image into a pool (asynchronous).
+      description: |
+        Either `source_url` or `source_path` must be set. The agent
+        fetches the image (or copies a local file), verifies the
+        checksum, and stores it in the pool. Returns 409
+        `image_checksum_mismatch` on hash failure (does not retain
+        the corrupted file).
+
+        Subsequent requests with the same `expected_checksum_sha256`
+        are no-ops once the image is present.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImageImportRequest"
+      responses:
+        "202":
+          description: Import accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Image checksum mismatch, pool out of space, or idempotency
+            mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/storage-pools/{pool_name}/images/{checksum}:
+    parameters:
+      - $ref: "#/components/parameters/PoolName"
+      - name: checksum
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        description: Lowercase hex sha256 of the cached image.
+    delete:
+      operationId: storageImages.delete
+      tags: [storage-images]
+      summary: Drop a cached image from a pool (synchronous).
+      description: |
+        Returns 409 `image_in_use` if any active disk references this
+        image as backing store. The Control Plane is responsible for
+        garbage-collection scheduling; this is the eviction primitive.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Image deleted.
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Image is referenced by an active disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/networks:
+    get:
+      operationId: networks.list
+      tags: [networks]
+      summary: List networks configured on this agent.
+      description: |
+        Networks are owned by the Control Plane (CRUD lives there).
+        The agent reports its local materialisation: which bridges,
+        VLANs and tap parents are wired up, with their observed status.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Networks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkList"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: networks.configure
+      tags: [networks]
+      summary: Configure a network on this node (asynchronous).
+      description: |
+        Asks the agent to materialise a network primitive (bridge,
+        VLAN sub-interface, …) on the node. The `id` in the request
+        body is allocated by the Control Plane and matches its
+        `networks.id` column.
+
+        Idempotent at the resource level: re-applying the same id +
+        configuration is a no-op. Different configuration for the
+        same id returns 409 `network_config_conflict`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NetworkConfigureRequest"
+      responses:
+        "202":
+          description: Network configuration accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: |
+            Network config conflict, bridge name in use by an external
+            owner, or idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/networks/{network_id}:
+    parameters:
+      - $ref: "#/components/parameters/NetworkId"
+    get:
+      operationId: networks.get
+      tags: [networks]
+      summary: Get a network as configured on this node.
+      responses:
+        "200":
+          description: Network.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkConfig"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: networks.delete
+      tags: [networks]
+      summary: Tear down a network on this node (asynchronous).
+      description: |
+        Returns 409 `network_in_use` if any VM on this node still has
+        a NIC attached to this network.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Teardown accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Network still in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: Local task id (allocated by this agent).
+    get:
+      operationId: tasks.get
+      tags: [tasks]
+      summary: Get an executional task tracked by this agent.
+      responses:
+        "200":
+          description: Task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+components:
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+      description: |
+        The agent terminates TLS itself and verifies that the client
+        certificate chains to the cluster CA bundle provisioned at
+        agent start (file path is a deployment concern, not part of
+        this contract).
+
+        Authorisation is performed against the Subject Alternative
+        Name in the verified client certificate:
+
+        - `cn=control-plane.otherix.local` may call every endpoint.
+        - `cn=node-<name>.agents.otherix.local` is accepted only for the
+          peer-to-peer migration data path (not the REST endpoints in
+          this document); it is included here so the same TLS material
+          can be used uniformly.
+
+        Any other SAN — or a request without a verified client
+        certificate — is rejected with TLS handshake failure (no HTTP
+        response is produced).
+
+  schemas:
+    # Mirrors `ErrorCode` in control-plane.yaml — keep in sync. Drops
+    # `invalid_credentials` and `token_revoked` (no user-auth on this
+    # surface) and adds agent-specific cross-cutting codes that already
+    # appear as `details.reason` strings on the CP side.
+    ErrorCode:
+      type: string
+      enum:
+        - unauthenticated
+        - permission_denied
+        - not_found
+        - conflict
+        - idempotency_key_mismatch
+        - validation_failed
+        - rate_limited
+        - internal
+        - vm_state_invalid
+        - vm_exists
+        - architecture_mismatch
+        - hot_resize_not_supported
+        - shrink_not_supported
+        - image_checksum_mismatch
+        - image_in_use
+        - migration_token_invalid
+        - network_config_conflict
+        - network_in_use
+        - protocol_not_available
+      description: |
+        Stable machine-readable error code. Endpoint-specific codes
+        beyond this enum may be returned for narrow cases; clients
+        must accept unknown values gracefully.
+
+    # Mirrors `Error` in control-plane.yaml — keep in sync.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: "#/components/schemas/ErrorCode"
+            message:
+              type: string
+              description: Human-readable message in en-US.
+            details:
+              type: object
+              additionalProperties: true
+              description: Code-specific structured payload. Optional.
+
+    # Mirrors `PaginationMeta` in control-plane.yaml — keep in sync.
+    PaginationMeta:
+      type: object
+      required: [next_cursor]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+          description: |
+            Opaque cursor to the next page, or `null` when this is the
+            last page. Treat as opaque.
+
+    # Mirrors `AsyncTaskAccepted` in control-plane.yaml — keep in sync.
+    AsyncTaskAccepted:
+      type: object
+      description: |
+        Body returned by mutating endpoints whose effect is processed
+        asynchronously (status code 202). Clients poll `links.self`
+        for the full task state.
+      required: [task_id, status, links]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, running]
+        links:
+          type: object
+          required: [self]
+          properties:
+            self:
+              type: string
+              description: Path to fetch the task (`/v1/tasks/{task_id}`).
+
+    Task:
+      type: object
+      description: |
+        **Executional task** tracked in this agent's local state. The
+        Control Plane delegates one operation (e.g. start a VM, scan a
+        pool, perform an outgoing migration) and polls this endpoint
+        until the task reaches a terminal status.
+
+        Distinct from Control-Plane saga tasks (which live in the CP
+        database and may orchestrate several agent-side tasks under
+        the hood). The `task_id`s are unrelated across the two
+        surfaces; clients receive the agent task id from the
+        `AsyncTaskAccepted` body of the triggering call.
+
+        Persisted in the agent's embedded local store so polling
+        survives an agent restart for the duration of the task TTL.
+      required:
+        - id
+        - type
+        - status
+        - resource_type
+        - attempts
+        - max_attempts
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          description: |
+            Task type identifier in `<resource>.<action>` form, e.g.
+            `vm.start`, `vm.create`, `storage_pool.scan`,
+            `vm_migration.outgoing`.
+        status:
+          type: string
+          enum: [pending, running, success, failed, cancelled]
+        progress:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+          description: |
+            Progress percentage. `null` if the task type does not
+            report progress.
+        resource_type:
+          type: string
+          description: |
+            The resource the task acts on, e.g. `vm`, `vm_disk`,
+            `storage_pool`, `vm_migration`.
+        resource_id:
+          type: [string, "null"]
+          description: |
+            Resource identifier — UUID for VMs / pools / migrations,
+            `(vm_uuid, name)`-style composite for snapshots, or
+            `(vm_uuid, device_order)` for disks / NICs. The exact
+            format depends on `resource_type`.
+        result:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Task-type-specific payload, populated on success.
+        error:
+          type: [object, "null"]
+          description: |
+            Populated on failure. Same shape as the inner `error` of
+            the standard error envelope.
+          properties:
+            code:
+              $ref: "#/components/schemas/ErrorCode"
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        attempts:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+
+    # Mirrors `Condition` in control-plane.yaml — keep in sync.
+    Condition:
+      type: object
+      description: |
+        Kubernetes-style condition record. Surfaced inside `VMDetail`
+        and inside the agent's heartbeat payload to the CP (the
+        heartbeat endpoint itself lives on the CP, not here).
+      required: [type, status, last_transition_time]
+      properties:
+        type:
+          type: string
+          description: |
+            Condition kind, e.g. `Ready`, `QemuGuestAgentAvailable`,
+            `Migrating`. Stable strings; clients must not treat
+            unknown types as errors.
+        status:
+          type: string
+          enum: ["True", "False", "Unknown"]
+        reason:
+          type: [string, "null"]
+        message:
+          type: [string, "null"]
+        last_transition_time:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    NodeInfoFirmware:
+      type: object
+      description: |
+        A firmware blob present on this node. Field names align with
+        the Control Plane's `Firmware` + `NodeFirmware` schemas so the
+        CP can reconcile reported firmwares against its own catalogue.
+      required: [name, architecture, type, code_path]
+      properties:
+        name:
+          type: string
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+        type:
+          type: string
+          enum: [bios, uefi]
+        code_path:
+          type: string
+          description: Absolute path to the firmware code blob on the node.
+        vars_template_path:
+          type: [string, "null"]
+          description: |
+            Absolute path to the per-VM NVRAM template for this
+            firmware, when applicable (UEFI). The agent copies this
+            template per VM at start time.
+        secure_boot:
+          type: boolean
+          default: false
+
+    MigrationCapability:
+      type: object
+      description: |
+        Inter-agent migration ingress capability advertised by a node.
+        The agent listens on a range of ports rather than a single port
+        so multiple incoming migrations can run in parallel — required
+        for typical production workflows like node drain. The actual
+        port for any specific migration is chosen by the target agent
+        from this range when it accepts the migration and is returned
+        in `MigrationIncomingResponse.listen_endpoint`. Implementations
+        must enforce `port_range_end >= port_range_start`; OpenAPI
+        cannot express that cross-field constraint directly.
+      required: [host, port_range_start, port_range_end]
+      properties:
+        host:
+          type: string
+          description: |
+            Hostname or IP address other agents connect to for
+            migration. May differ from the agent's main API endpoint
+            — for example, a dedicated migration network or VLAN for
+            high-bandwidth transfer.
+          example: "10.0.10.5"
+        port_range_start:
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          description: First port in the range available for incoming migrations.
+          example: 49152
+        port_range_end:
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          description: |
+            Last port in the range available for incoming migrations
+            (inclusive). Must be `>= port_range_start`.
+          example: 49251
+        ports_in_use:
+          type: integer
+          minimum: 0
+          description: |
+            Number of ports currently allocated to active incoming
+            migrations. Reported for observability and capacity
+            planning. Optional — agents may omit this field if
+            tracking is unavailable.
+          example: 3
+        ports_available:
+          type: integer
+          minimum: 0
+          description: |
+            Number of ports currently available for new incoming
+            migrations. Equals
+            `(port_range_end - port_range_start + 1) - ports_in_use`.
+            Optional — derivable but convenient for clients.
+          example: 97
+
+    NodeInfo:
+      type: object
+      description: |
+        Full node snapshot returned by `GET /v1/info`. Memory uses MiB
+        (`memory_total_mib` / `memory_available_mib`) to match the
+        Control Plane's `vms.memory_mib` and `nodes.memory_total_mib`
+        SQL columns. CPU counts are physical / virtual cores depending
+        on the field's name.
+      required:
+        - node_id
+        - hostname
+        - agent_version
+        - architecture
+        - kvm_available
+        - cpu_model
+        - cpu_features
+        - cpu_cores_total
+        - cpu_cores_available
+        - memory_total_mib
+        - memory_available_mib
+        - qemu_version
+        - kernel_version
+        - qemu_binaries
+        - firmwares
+        - migration
+        - started_at
+        - uptime_seconds
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          description: |
+            UUID assigned by the Control Plane at registration time.
+            Stored on disk by the agent and reused across restarts.
+        hostname:
+          type: string
+        agent_version:
+          type: string
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+        kvm_available:
+          type: boolean
+        nested_virt:
+          type: boolean
+          default: false
+        cpu_model:
+          type: string
+          description: Human-readable CPU model string, as reported by `/proc/cpuinfo`.
+        cpu_features:
+          type: array
+          items: { type: string }
+          description: |
+            CPU feature flags (e.g. `vmx`, `aes`, `sve2`). The
+            scheduler uses these to evaluate VM `cpu_model`
+            compatibility.
+        cpu_cores_total:
+          type: integer
+          minimum: 1
+          description: Logical cores visible to the host kernel.
+        cpu_cores_available:
+          type: integer
+          minimum: 0
+          description: |
+            `cpu_cores_total` minus cores already accounted to running
+            VMs. Snapshot value; the CP must not treat this as
+            transactional.
+        memory_total_mib:
+          type: integer
+          format: int64
+          minimum: 0
+        memory_available_mib:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Free memory in MiB after accounting for running VMs and
+            the agent's own footprint.
+        hugepages_2mib_total:
+          type: [integer, "null"]
+        hugepages_1gib_total:
+          type: [integer, "null"]
+        qemu_version:
+          type: string
+        kernel_version:
+          type: string
+        qemu_binaries:
+          type: object
+          description: |
+            Map of architecture → absolute path to the QEMU
+            system-mode binary on this node. Populated for every
+            architecture this node can run (typically just the
+            host's, but cross-arch via emulation is allowed).
+          additionalProperties:
+            type: string
+        firmwares:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeInfoFirmware"
+        migration:
+          $ref: "#/components/schemas/MigrationCapability"
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Node labels surfaced for operator display.
+        started_at:
+          type: string
+          format: date-time
+        uptime_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+
+    VMSpecDiskSource:
+      type: object
+      description: |
+        Disk image origin. The `kind` discriminates: when `template`,
+        `image_url`, `checksum_sha256` and `image_format` are
+        required (the Control Plane resolved them from the CP-side
+        `Template` row). When `blank`, all three must be absent —
+        the agent allocates an empty image of `size_gib` instead.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [template, blank]
+        image_url:
+          type: [string, "null"]
+          format: uri
+          description: |
+            Required when `kind = "template"`. Where to fetch the
+            image if it is not already cached in the destination
+            pool.
+        checksum_sha256:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Required when `kind = "template"`. Lowercase hex sha256
+            of the source image; verified after fetch.
+        image_format:
+          type: [string, "null"]
+          enum: [qcow2, raw, null]
+          description: Required when `kind = "template"`.
+
+    VMSpecDisk:
+      type: object
+      description: |
+        Disk attached to a VM. Field semantics match the Control
+        Plane's `VmDisk` / `VMCreateDiskSpec` exactly so a disk row
+        round-trips through the contract without translation. The
+        agent never sees the CP-side `storage_pool_id` UUID — the CP
+        resolves it to `storage_pool_path` (an absolute filesystem
+        path on this node) before sending the spec.
+      required:
+        - device_order
+        - bus
+        - size_gib
+        - format
+        - source
+        - storage_pool_path
+      properties:
+        device_order:
+          type: integer
+          minimum: 0
+          description: Position on the VM's disk bus; also boot-order tie-breaker.
+        bus:
+          type: string
+          enum: [virtio, sata, scsi, ide]
+        size_gib:
+          type: integer
+          minimum: 1
+          maximum: 65536
+        format:
+          type: string
+          enum: [qcow2, raw]
+        source:
+          $ref: "#/components/schemas/VMSpecDiskSource"
+        storage_pool_path:
+          type: string
+          description: |
+            Absolute filesystem path of the storage pool that backs
+            this disk on this node. The CP picks the pool (or
+            honours the user's pin) and resolves it before send.
+        storage_pool_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            CP-side pool id, included as a label so the agent can
+            tag logs / metrics. Not used for any path lookup.
+        read_only:
+          type: boolean
+          default: false
+        cache_mode:
+          type: string
+          enum: [none, writeback, writethrough, directsync, unsafe]
+          default: writeback
+        discard:
+          type: string
+          enum: [ignore, unmap]
+          default: unmap
+        boot_order:
+          type: [integer, "null"]
+          minimum: 0
+
+    VMSpecNic:
+      type: object
+      description: |
+        NIC attached to a VM. As with disks, the agent never sees the
+        CP-side `network_id` as a key for resolution — the CP
+        resolves the network row into `bridge_name` / `vlan_tag` /
+        `mtu` before sending. `network_id` is included as an opaque
+        label for logs / metrics.
+      required:
+        - device_order
+        - mac_address
+        - model
+        - bridge_name
+      properties:
+        device_order:
+          type: integer
+          minimum: 0
+        network_id:
+          type: [string, "null"]
+          format: uuid
+          description: CP-side network id, used as a log/metric label only.
+        mac_address:
+          type: string
+          pattern: "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
+        model:
+          type: string
+          enum: [virtio, e1000, e1000e, rtl8139]
+        bridge_name:
+          type: string
+          description: Linux bridge interface this NIC's tap is plugged into.
+        vlan_tag:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 4094
+        mtu:
+          type: [integer, "null"]
+          minimum: 68
+        ipv4_address:
+          type: [string, "null"]
+          format: ipv4
+          description: Configured IPv4 address (informational; for cloud-init).
+        ipv6_address:
+          type: [string, "null"]
+          format: ipv6
+          description: Configured IPv6 address (informational; for cloud-init).
+        tap_name:
+          type: [string, "null"]
+          description: |
+            Optional explicit tap name. The agent picks a name when
+            null; explicit names are useful for operator tooling.
+
+    VMSpec:
+      type: object
+      description: |
+        Full VM specification handed to the agent at create time. The
+        Control Plane has already resolved every CP-only key
+        (template, firmware, storage pool, network) into
+        agent-consumable values; the agent treats this as the
+        complete description of what to bring up.
+      required:
+        - vm_uuid
+        - name
+        - architecture
+        - cpu_cores
+        - memory_mib
+        - machine_type
+        - cpu_model
+        - firmware
+        - disks
+        - nics
+        - generation
+      properties:
+        vm_uuid:
+          type: string
+          format: uuid
+          description: Same UUID as the Control Plane's `vms.id`.
+        name:
+          type: string
+          maxLength: 255
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+        cpu_cores:
+          type: integer
+          minimum: 1
+          maximum: 256
+        max_cpu_cores:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 256
+          description: |
+            Upper bound for CPU hotplug. When omitted, CPU hotplug is
+            disabled and `vms.resize` will return
+            `hot_resize_not_supported` for CPU changes.
+        memory_mib:
+          type: integer
+          format: int64
+          minimum: 128
+          maximum: 4194304
+        max_memory_mib:
+          type: [integer, "null"]
+          format: int64
+          minimum: 128
+          maximum: 4194304
+          description: Upper bound for memory hotplug. Same semantics as `max_cpu_cores`.
+        cpu_model:
+          type: string
+          description: QEMU `-cpu` model. Defaults to `host` when not specified by the CP.
+        machine_type:
+          type: string
+          description: QEMU `-machine` type, e.g. `q35`, `pc-q35-8.2`, `virt`.
+        firmware:
+          type: object
+          description: |
+            Firmware to boot with. Resolved by the CP from
+            `(architecture, firmware_type)` or from a pinned
+            `firmware_id`.
+          required: [type, code_path]
+          properties:
+            type:
+              type: string
+              enum: [bios, uefi]
+            code_path:
+              type: string
+              description: Absolute path to the firmware code blob on this node.
+            vars_template_path:
+              type: [string, "null"]
+              description: |
+                Absolute path to the firmware NVRAM template; the
+                agent copies it per VM and persists the result.
+            secure_boot:
+              type: boolean
+              default: false
+        serial_console:
+          type: [string, "null"]
+          enum: [ttyS0, ttyAMA0, null]
+          description: |
+            Serial console device exposed to the guest. The CP picks
+            `ttyS0` for amd64 and `ttyAMA0` for arm64 by default.
+        disks:
+          type: array
+          items:
+            $ref: "#/components/schemas/VMSpecDisk"
+          minItems: 1
+          description: Position 0 is the boot disk by convention.
+        nics:
+          type: array
+          items:
+            $ref: "#/components/schemas/VMSpecNic"
+        cloud_init:
+          type: [object, "null"]
+          description: |
+            Cloud-init payload. The agent renders this into a
+            NoCloud datasource ISO and presents it as an extra
+            disk; the rendering happens at create time.
+          properties:
+            user_data:
+              type: [string, "null"]
+            meta_data:
+              type: [string, "null"]
+            network_config:
+              type: [string, "null"]
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Forwarded from the CP for log / metric tagging.
+        extra_args:
+          type: array
+          items: { type: string }
+          description: |
+            Additional QEMU command-line arguments. Escape hatch for
+            features the contract does not yet model directly.
+            Operators must understand the implications — there is
+            no validation beyond non-empty strings.
+        generation:
+          type: integer
+          format: int64
+          description: |
+            Mirrors `vms.generation` on the CP side. Carried so the
+            agent can include it in `VMDetail.observed_generation`
+            once converged, letting the CP tell whether the runtime
+            has caught up to the latest spec.
+
+    VMSummary:
+      type: object
+      description: Compact representation returned by `vms.list`.
+      required: [vm_uuid, name, phase, generation]
+      properties:
+        vm_uuid: { type: string, format: uuid }
+        name: { type: string }
+        phase:
+          type: string
+          enum: [pending, running, paused, stopped, error, gone]
+        generation:
+          type: integer
+          format: int64
+        observed_generation:
+          type: [integer, "null"]
+          format: int64
+
+    VMList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/VMSummary"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    VMRuntime:
+      type: object
+      description: |
+        Observed runtime state of a running VM. Internal fields
+        (`qemu_pid`, `qmp_socket_path`, `vnc_endpoint`,
+        `serial_console_path`) are exposed on this surface — they
+        are the agent's own bookkeeping and are deliberately hidden
+        from the public Control Plane API.
+      properties:
+        qemu_pid:
+          type: [integer, "null"]
+          description: PID of the QEMU process, when running.
+        qmp_socket_path:
+          type: [string, "null"]
+          description: Path to the QMP control socket.
+        vnc_endpoint:
+          type: [string, "null"]
+          description: |
+            `host:port` of the QEMU VNC listener, when one is
+            configured. The console-token / console-stream
+            endpoints terminate in front of this — clients never
+            see this address directly.
+        serial_console_path:
+          type: [string, "null"]
+        cpu_usage_percent:
+          type: [number, "null"]
+        memory_used_mib:
+          type: [integer, "null"]
+          format: int64
+        guest_os:
+          type: [string, "null"]
+        guest_hostname:
+          type: [string, "null"]
+        guest_ip_addresses:
+          type: [array, "null"]
+          items: { type: string }
+
+    VMDetail:
+      type: object
+      description: |
+        Full agent-side view of a VM: the spec the agent is
+        materialising, plus the observed runtime state. The
+        Control Plane projects a public-API view from this and from
+        heartbeat data; clients of the public API never see this
+        shape directly.
+      required:
+        - vm_uuid
+        - name
+        - phase
+        - generation
+        - spec
+      properties:
+        vm_uuid: { type: string, format: uuid }
+        name: { type: string }
+        phase:
+          type: string
+          enum: [pending, running, paused, stopped, error, gone]
+        generation:
+          type: integer
+          format: int64
+        observed_generation:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            `generation` value the agent has converged to. Equal to
+            `generation` once the runtime matches the spec.
+        last_started_at:
+          type: [string, "null"]
+          format: date-time
+        last_stopped_at:
+          type: [string, "null"]
+          format: date-time
+        last_error_at:
+          type: [string, "null"]
+          format: date-time
+        last_error_message:
+          type: [string, "null"]
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Condition"
+        spec:
+          $ref: "#/components/schemas/VMSpec"
+        runtime:
+          $ref: "#/components/schemas/VMRuntime"
+
+    VMResizeRequest:
+      type: object
+      description: At least one of `cpu_cores` or `memory_mib` must be set.
+      properties:
+        cpu_cores:
+          type: integer
+          minimum: 1
+          maximum: 256
+        memory_mib:
+          type: integer
+          format: int64
+          minimum: 128
+          maximum: 4194304
+
+    VMRevertRequest:
+      type: object
+      required: [snapshot_name]
+      properties:
+        snapshot_name:
+          type: string
+          maxLength: 255
+
+    DiskAttachRequest:
+      $ref: "#/components/schemas/VMSpecDisk"
+
+    DiskUpdateRequest:
+      type: object
+      description: |
+        Currently only `size_gib` (grow) is mutable through this
+        endpoint. Other field changes require detach + reattach.
+      properties:
+        size_gib:
+          type: integer
+          minimum: 1
+          maximum: 65536
+
+    NicAttachRequest:
+      $ref: "#/components/schemas/VMSpecNic"
+
+    NicUpdateRequest:
+      type: object
+      description: |
+        `mac_address` and `device_order` are immutable. All other
+        fields are optional; omitted fields are left unchanged.
+      properties:
+        network_id:
+          type: [string, "null"]
+          format: uuid
+        bridge_name:
+          type: string
+        vlan_tag:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 4094
+        mtu:
+          type: [integer, "null"]
+          minimum: 68
+        model:
+          type: string
+          enum: [virtio, e1000, e1000e, rtl8139]
+        ipv4_address:
+          type: [string, "null"]
+          format: ipv4
+        ipv6_address:
+          type: [string, "null"]
+          format: ipv6
+
+    Snapshot:
+      type: object
+      description: |
+        QEMU internal snapshot, addressed by `(vm_uuid, name)`. Field
+        names align with the Control Plane's `VmSnapshot` for direct
+        round-tripping; `id` is omitted because snapshots on the
+        agent are keyed by name within a VM, not by a separate UUID.
+      required:
+        - vm_uuid
+        - name
+        - status
+        - with_memory
+        - vm_state_at_snapshot
+        - created_at
+      properties:
+        vm_uuid: { type: string, format: uuid }
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          default: ""
+        status:
+          type: string
+          enum: [creating, ready, restoring, deleting, error]
+        with_memory:
+          type: boolean
+        vm_state_at_snapshot:
+          type: string
+          enum: [running, paused, stopped]
+        disk_size_bytes:
+          type: [integer, "null"]
+          format: int64
+        memory_size_bytes:
+          type: [integer, "null"]
+          format: int64
+        error_message:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    SnapshotCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          default: ""
+        with_memory:
+          type: boolean
+          default: false
+
+    MigrationIncomingRequest:
+      type: object
+      description: |
+        Sent by the CP to the **target** agent first. The CP allocates
+        `migration_id` so both sides converge on the same identifier
+        before the source agent is contacted.
+      required: [migration_id, vm_spec, mode]
+      properties:
+        migration_id: { type: string, format: uuid }
+        vm_spec:
+          $ref: "#/components/schemas/VMSpec"
+        mode:
+          type: string
+          enum: [live, offline]
+        expected_size_bytes:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            Estimated transfer size, used only for progress UX
+            until the actual figure is observed.
+
+    MigrationIncomingResponse:
+      type: object
+      required: [migration_id, listen_endpoint, auth_token]
+      properties:
+        migration_id: { type: string, format: uuid }
+        listen_endpoint:
+          type: string
+          description: |
+            `host:port` the source must connect to. The target chose
+            this port from the range advertised in
+            `NodeInfo.migration` (see `MigrationCapability`).
+        auth_token:
+          type: string
+          description: |
+            Single-use token the source agent must present when
+            opening the migration channel. Bound to this
+            `migration_id`. Returned exactly once; the target
+            stores only its hash.
+
+    MigrationOutgoingRequest:
+      type: object
+      description: |
+        Sent by the CP to the **source** agent after the target has
+        prepared. Field names mirror the CP's `VMMigrateRequest`
+        (`max_downtime_ms`, `max_bandwidth_bytes`) for consistency.
+      required: [migration_id, target_endpoint, auth_token, mode]
+      properties:
+        migration_id: { type: string, format: uuid }
+        target_endpoint:
+          type: string
+          description: |
+            `host:port` returned by the target's
+            `MigrationIncomingResponse.listen_endpoint`.
+        auth_token:
+          type: string
+          description: Token returned by the target.
+        mode:
+          type: string
+          enum: [live, offline]
+        max_downtime_ms:
+          type: [integer, "null"]
+          minimum: 0
+          description: |
+            Maximum acceptable downtime during precopy convergence
+            (live mode). When omitted, the agent's default applies.
+        max_bandwidth_bytes:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+          description: Bandwidth cap in bytes per second.
+
+    Migration:
+      type: object
+      description: |
+        Migration record as observed by **this** agent. The Control
+        Plane aggregates the source and target views into a single
+        cluster-wide `Migration` row. `phase` values match the CP's
+        `Migration.phase` enum.
+      required:
+        - migration_id
+        - vm_uuid
+        - role
+        - mode
+        - phase
+        - progress_percent
+        - bytes_transferred
+        - created_at
+      properties:
+        migration_id: { type: string, format: uuid }
+        vm_uuid: { type: string, format: uuid }
+        role:
+          type: string
+          enum: [source, target]
+        mode:
+          type: string
+          enum: [live, offline]
+        phase:
+          type: string
+          enum: [setup, active, postcopy_active, completed, failed, cancelled]
+        progress_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        bytes_total:
+          type: [integer, "null"]
+          format: int64
+        bytes_transferred:
+          type: integer
+          format: int64
+        bytes_remaining:
+          type: [integer, "null"]
+          format: int64
+        downtime_ms:
+          type: [integer, "null"]
+        max_downtime_ms:
+          type: [integer, "null"]
+        max_bandwidth_bytes:
+          type: [integer, "null"]
+          format: int64
+        peer_endpoint:
+          type: [string, "null"]
+          description: |
+            Counterpart endpoint for this side: `target_endpoint` on
+            source, `listen_endpoint` on target.
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        error_message:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    ConsoleTokenRequest:
+      type: object
+      description: |
+        Optional body for `vmConsole.issueToken`. May be empty —
+        protocol defaults to `vnc`.
+      properties:
+        protocol:
+          type: string
+          enum: [vnc, serial]
+          default: vnc
+          description: |
+            Console protocol selector. After WebSocket upgrade:
+            - `vnc` → raw RFB protocol (browser-flavored);
+            - `serial` → raw bytes pumped from QEMU `-serial unix:`
+              chardev (CLI-flavored).
+
+    ConsoleTokenResponse:
+      type: object
+      required: [token, expires_at, websocket_path, protocol]
+      properties:
+        token:
+          type: string
+          description: |
+            Opaque, single-use token. Bound to `vm_uuid` and to
+            this agent's `console-stream` endpoint. Returned
+            exactly once; the agent stores only its hash.
+        expires_at:
+          type: string
+          format: date-time
+          description: After this time the token is rejected at upgrade.
+        websocket_path:
+          type: string
+          description: |
+            Path on this agent that performs the WebSocket upgrade
+            (`/v1/vms/{vm_name}/console-stream`). The token is
+            presented as the `?token=` query parameter on that
+            request. The CP combines this with the agent's
+            `host:port` (direct mode) or proxies it (proxy mode).
+        protocol:
+          type: string
+          enum: [vnc, serial]
+
+    StoragePoolReport:
+      type: object
+      description: |
+        The agent's view of a storage pool. Field names align with
+        the Control Plane's `StoragePool` so the CP can
+        reconcile reported usage against its own pool row.
+      required: [id, name, type, path, reported_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            Pool UUID assigned by the Control Plane. The agent
+            stores this as part of its local pool config.
+        name:
+          type: string
+        type:
+          type: string
+          enum: [local_dir]
+        path:
+          type: string
+          description: Absolute filesystem path of the pool root.
+        capacity_bytes:
+          type: [integer, "null"]
+          format: int64
+        available_bytes:
+          type: [integer, "null"]
+          format: int64
+        reported_at:
+          type: string
+          format: date-time
+          description: When this snapshot was measured.
+
+    StoragePoolList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/StoragePoolReport"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    CachedImage:
+      type: object
+      required: [checksum_sha256, format, size_bytes, path]
+      properties:
+        checksum_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        format:
+          type: string
+          enum: [qcow2, raw]
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        path:
+          type: string
+          description: Absolute path of the cached file in the pool.
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+        source_url:
+          type: [string, "null"]
+          format: uri
+          description: |
+            Origin URL the image was fetched from, for diagnostics.
+            Not used for cache lookup — checksum is the key.
+
+    CachedImageList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CachedImage"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    ImageImportRequest:
+      type: object
+      description: |
+        Either `source_url` or `source_path` must be set, but not
+        both. `expected_checksum_sha256` is optional:
+
+          - When provided, the agent verifies the streamed bytes against
+            it and refuses к retain the file on mismatch
+            (`checksum_mismatch` failure code).
+          - When null/absent/empty, the agent computes the sha256 during
+            streaming download and returns it in the task result. No
+            verification gate fires; the operator trusts source URL
+            integrity (TLS + reputable mirror).
+
+        The agent always returns the computed checksum в the
+        terminal-success `result` regardless of which mode was used;
+        verify mode just adds а gate before placement. Storage layout
+        invariant: the on-disk filename always equals the (computed or
+        verified) checksum.
+      required: [format]
+      properties:
+        source_url:
+          type: [string, "null"]
+          format: uri
+        source_path:
+          type: [string, "null"]
+          description: Absolute path on the node, when fetching from local disk.
+        expected_checksum_sha256:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+        format:
+          type: string
+          enum: [qcow2, raw]
+
+    NetworkConfig:
+      type: object
+      description: |
+        Network primitive materialised on this node. Field names
+        align with the Control Plane's `Network` schema. `status`
+        reflects the agent's local materialisation state.
+      required: [id, name, type, bridge_name, status, configured_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            Network UUID assigned by the Control Plane. The agent
+            does not allocate its own.
+        name:
+          type: string
+        type:
+          type: string
+          enum: [bridge]
+        bridge_name:
+          type: string
+        vlan_tag:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 4094
+        mtu:
+          type: [integer, "null"]
+          minimum: 68
+        status:
+          type: string
+          enum: [configuring, ready, error]
+        error_message:
+          type: [string, "null"]
+        configured_at:
+          type: string
+          format: date-time
+
+    NetworkList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkConfig"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    NetworkConfigureRequest:
+      type: object
+      required: [id, name, type, bridge_name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Network UUID allocated by the Control Plane.
+        name:
+          type: string
+        type:
+          type: string
+          enum: [bridge]
+        bridge_name:
+          type: string
+        vlan_tag:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 4094
+        mtu:
+          type: [integer, "null"]
+          minimum: 68
+
+  parameters:
+    # Mirrors `IdempotencyKey` in control-plane.yaml — keep in sync.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 255
+      description: |
+        Optional idempotency key. The agent caches the response (in
+        its local store) for 24 h. Same key + same body → cached
+        response replayed verbatim. Same key + different body →
+        409 `idempotency_key_mismatch`.
+
+    # Mirrors `Limit` in control-plane.yaml — keep in sync.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Page size. Clamped to 200.
+
+    # Mirrors `Cursor` in control-plane.yaml — keep in sync.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: |
+        Opaque cursor returned in the previous response's
+        `meta.next_cursor`. Omit on the first page.
+
+    VmName:
+      name: vm_name
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 253
+      description: |
+        VM name — the operator-visible identifier the agent indexes
+        its in-memory inventory by. Per the Path D convention applied
+        to storage pools, agent endpoints address user-owned
+        resources by name rather than UUID; the VM's UUID still
+        surfaces in response bodies (`VMDetail.vm_uuid`, etc.) for
+        traceability against the CP's `vms.id`.
+
+    DeviceOrder:
+      name: device_order
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+      description: |
+        Position of the device on its bus (disk or NIC). Stable for
+        the lifetime of the device.
+
+    SnapshotName:
+      name: snapshot_name
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 255
+      description: Snapshot name, unique within the VM.
+
+    MigrationId:
+      name: migration_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Migration UUID allocated by the Control Plane.
+
+    PoolName:
+      name: pool_name
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 253
+      description: |
+        Storage pool name as declared by the Control Plane.
+        Agent-facing pool endpoints address pools by name (the
+        agent's local registry is name-keyed). The cluster-wide
+        UUID-vs-name polymorphism is а CP-edge-only concern; agents
+        see only their per-instance row.
+
+    NetworkId:
+      name: network_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Network UUID assigned by the Control Plane.
+
+  responses:
+    BadRequest:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Unauthenticated:
+      description: |
+        TLS client certificate missing or not chained to the
+        cluster CA. Returned only when the TLS layer accepted the
+        connection but later authorisation rejected the SAN; raw
+        TLS handshake failures never produce an HTTP response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    PermissionDenied:
+      description: |
+        Authenticated peer SAN is not allowed to call this
+        endpoint (e.g. a peer-agent SAN attempting a
+        Control-Plane-only call).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotFound:
+      description: Resource missing on this node (no leak).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Conflict:
+      description: |
+        State conflict (uniqueness, dependent resources, idempotency
+        mismatch, invalid status transition).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Internal:
+      description: Unhandled server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+security:
+  - mutualTLS: []

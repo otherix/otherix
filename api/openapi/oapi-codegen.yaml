@@ -1,0 +1,17 @@
+# oapi-codegen configuration for the agent-side ServerInterface.
+# Regenerate via `make agent-api-generate`; CI verifies the committed
+# output is in sync via `make agent-api-verify`. Do not hand-edit
+# the generated file.
+#
+# The pipeline runs agent.yaml through tools/openapi-normalize before
+# this config is applied — oapi-codegen v2 cannot resolve OpenAPI 3.1
+# `type: [X, "null"]` schemas (issue #373), so the normaliser rewrites
+# them into 3.0-equivalent `nullable: true` form. Source-of-truth
+# stays 3.1; the intermediate is ephemeral.
+package: agentapi
+# output is set on the CLI by the Makefile recipe so agent-api-verify
+# can redirect into a scratch dir without rewriting the file.
+generate:
+  chi-server: true
+  models: true
+  embedded-spec: true
