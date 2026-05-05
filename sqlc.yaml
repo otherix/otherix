@@ -1,0 +1,63 @@
+# sqlc configuration. Regenerate with `make sqlc-generate`.
+# Schema source: internal/store/migrate/migrations/*.sql
+# Query sources: internal/store/queries/*.sql
+# Output package: internal/store (alongside hand-written store.go)
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "internal/store/queries"
+    schema: "internal/store/migrate/migrations"
+    gen:
+      go:
+        package: "store"
+        out: "internal/store"
+        sql_package: "pgx/v5"
+        emit_json_tags: false
+        emit_pointers_for_null_types: true
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_exact_table_names: false
+        emit_empty_slices: true
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+              pointer: true
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+          # node_effective_availability view: CASE expressions return NULL
+          # when raw heartbeat columns are NULL (see view definition в
+          # 00001_init.sql). PostgreSQL's information_schema
+          # surfaces these as nullable, но sqlc 1.31's inference does not
+          # propagate it through CASE arms — force pointer types here so
+          # the Go side matches the on-the-wire NULL semantic.
+          - column: "node_effective_availability.cpu_cores_effective"
+            go_type:
+              type: "int32"
+              pointer: true
+          - column: "node_effective_availability.memory_effective_mib"
+            go_type:
+              type: "int64"
+              pointer: true
+          # pool_effective_capacity view: parallel rationale к node view —
+          # the CASE arms wrap а nullable column, sqlc 1.31 does not
+          # propagate nullability through them. Force pointer types
+          # here so Go-side semantics match the on-the-wire NULL.
+          - column: "pool_effective_capacity.available_bytes_effective"
+            go_type:
+              type: "int64"
+              pointer: true
