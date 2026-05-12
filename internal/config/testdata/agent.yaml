@@ -1,0 +1,8 @@
+server:
+  listen: "127.0.0.1:19443"
+control_plane:
+  url: "https://cp.example.local:8080"
+migration:
+  host: "10.0.10.5"
+  port_range_start: 50000
+  port_range_end: 50099

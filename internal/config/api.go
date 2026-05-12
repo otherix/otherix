@@ -1,0 +1,560 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package config
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/otherix/otherix/internal/logger"
+)
+
+// APIConfig is the configuration for the otherix-api binary.
+type APIConfig struct {
+	Server       ServerConfig       `koanf:"server"`
+	AgentServer  AgentServerConfig  `koanf:"agent_server"`
+	AgentClient  AgentClientConfig  `koanf:"agent_client"`
+	CPCert       CPCertConfig       `koanf:"cp_cert"`
+	Database     DatabaseConfig     `koanf:"database"`
+	Logger       logger.Config      `koanf:"logger"`
+	Auth         AuthConfig         `koanf:"auth"`
+	Console      ConsoleConfig      `koanf:"console"`
+	Workers      WorkersConfig      `koanf:"workers"`
+	Placement    PlacementConfig    `koanf:"placement"`
+	StoragePools StoragePoolsConfig `koanf:"storage_pools"`
+}
+
+// StoragePoolsConfig pins operator-facing knobs for `POST
+// /v1/storage-pools`. The path allowlist constrains what filesystem
+// prefixes а pool's `path` field can target — defence в depth against
+// operator typo / hostile create that points at /etc/. Default
+// `/opt/otherix/pools/` matches the filesystem convention в CLAUDE.md;
+// operators widening the allowlist (NFS mountpoints, custom locations)
+// override at deploy time.
+type StoragePoolsConfig struct {
+	AllowedPathPrefixes []string `koanf:"allowed_path_prefixes"`
+}
+
+// CPCertConfig configures the per-replica CP server cert lifecycle.
+// Three operational modes — operator override, local cache,
+// auto-generate (default). Each replica selects а mode at boot via
+// LoadOrGenerateCPCert orchestrator.
+//
+// Mode A (operator override) — CertFile + KeyFile both set + files
+// exist on disk → loaded as the replica's external cert (Let's
+// Encrypt, corporate CA, FIPS scenarios). Missing files when paths
+// configured = fatal.
+//
+// Mode B (local cache) — LocalCache.Enabled = true → cached cert
+// reused across restarts когда still valid (chain к current CA,
+// NotAfter > now + 30d buffer, SAN superset of expected). Cache
+// path defaults к /opt/otherix/certs/cp-cert.{crt,key}.
+//
+// Mode C (auto-generate) — fresh ECDSA P-384 leaf signed by cluster
+// CA на every boot, in-memory only. Default mode. SAN composition =
+// auto-detected baseline (localhost, 127.0.0.1, hostname, non-
+// wildcard listen address) ∪ AdditionalSANs.
+//
+// Cluster CA always loaded от DB (no `ca_file` knob here OR в the
+// agent_server / agent_client blocks — those legacy fields removed
+// per pre-prod squash window).
+type CPCertConfig struct {
+	CertFile       string            `koanf:"cert_file"`
+	KeyFile        string            `koanf:"key_file"`
+	LocalCache     CPCertCacheConfig `koanf:"local_cache"`
+	AdditionalSANs []string          `koanf:"additional_sans"`
+	Validity       time.Duration     `koanf:"validity"`
+}
+
+// CPCertCacheConfig pins the local-disk cache feature (Mode B).
+// Enabled = true → generated cert persisted к (CertPath, KeyPath)
+// after generation; valid cache reused on subsequent boots. Default
+// paths apply when Enabled = true but explicit paths are absent.
+type CPCertCacheConfig struct {
+	Enabled  bool   `koanf:"enabled"`
+	CertPath string `koanf:"cert_path"`
+	KeyPath  string `koanf:"key_path"`
+}
+
+// Validate enforces the cp_cert invariants. Mode A: cert_file и
+// key_file must both be set OR both unset (paired). Mode B: cache
+// paths similarly paired. Validity > 0 (defaults applied for zero
+// values at orchestrator entry); minimum 24h enforced к prevent
+// operationally-useless lifetimes.
+//
+// AdditionalSANs entries are not validated here — net.ParseIP /
+// DNS classification happens at SAN composition time, и malformed
+// entries surface at cert generation (x509.CreateCertificate
+// rejects unparseable names).
+func (c CPCertConfig) Validate() error {
+	if (c.CertFile == "") != (c.KeyFile == "") {
+		return errors.New("cp_cert.cert_file и cp_cert.key_file must both be set or both unset")
+	}
+	if (c.LocalCache.CertPath == "") != (c.LocalCache.KeyPath == "") {
+		return errors.New("cp_cert.local_cache.cert_path и .key_path must both be set or both unset")
+	}
+	if c.Validity != 0 && c.Validity < 24*time.Hour {
+		return fmt.Errorf("cp_cert.validity must be >= 24h когда set, got %v", c.Validity)
+	}
+	return nil
+}
+
+// PlacementConfig selects the VM placement algorithm and per-resource
+// gating. The choice is passed down к internal/scheduler.SchedulePlacement
+// at vm.create time. Placement runs in-process inside the api-server и
+// serializes across replicas via store.LockKeyPlacement — no separate
+// scheduler binary.
+//
+// Accepted Algorithm values mirror the scheduler.Algorithm* constants:
+//
+//   - "resource_aware" (default) — kubernetes-style LeastAllocated
+//     scoring across enabled resources с graceful fallback for nodes
+//     whose heartbeat / scan metrics have not landed.
+//   - "least_vm_count" — legacy algorithm, minimum pinned-VM count
+//     wins. Operator opt-out path; both algorithms use the same
+//     name-lexicographic tie-break.
+//
+// Resources gates which dimensions (CPU, memory, disk) participate в
+// the fit check + scoring и assigns each а post-effective overcommit
+// multiplier. Defaults к strict every-dimension placement.
+//
+// Pressure configures node-pressure detection. Pressure is computed
+// CP-side at heartbeat receipt: nodes exceeding а condition's
+// threshold для ConsecutiveRequired observations get flagged и
+// excluded от placement until recovery. Memory pressure is computed
+// from heartbeat metrics; SystemDisk и Disk from periodic scan
+// metrics.
+type PlacementConfig struct {
+	Algorithm string          `koanf:"algorithm"`
+	Resources ResourcesConfig `koanf:"resources"`
+	Pressure  PressureConfig  `koanf:"pressure"`
+}
+
+// ResourcesConfig groups the per-resource placement-time knobs. Each
+// resource is configured independently; disabling one drops it от
+// both the fit check и the score, и if every resource is disabled the
+// scoring degrades к count-based (Least-VM-count parity).
+type ResourcesConfig struct {
+	CPU    ResourceConfig `koanf:"cpu"`
+	Memory ResourceConfig `koanf:"memory"`
+	Disk   ResourceConfig `koanf:"disk"`
+}
+
+// ResourceConfig configures placement consideration of а single
+// resource dimension.
+//
+// Enabled toggles whether the resource participates в fit check +
+// scoring. When false, the resource is skipped entirely (no
+// constraint, no contribution к the LeastAllocated score). Defaults
+// к true.
+//
+// OvercommitRatio multiplies the effective availability for the
+// resource during placement decisions. Values > 1.0 enable overcommit
+// (capacity inflated); values < 1.0 reserve headroom (capacity
+// deflated). Defaults к 1.0 (strict — no overcommit). Validation
+// requires the value к be strictly positive even when Enabled=false
+// so the configuration stays hygienic against а future toggle.
+type ResourceConfig struct {
+	Enabled         bool    `koanf:"enabled"`
+	OvercommitRatio float64 `koanf:"overcommit_ratio"`
+}
+
+// PressureConfig groups per-condition node-pressure detection knobs.
+// Each pressure type is configured independently and computed CP-side
+// from heartbeat / scan metrics; the scheduler excludes flagged nodes
+// (or pools, для disk pressure) от placement until recovery.
+//
+// Sub-iteration A shipped Memory pressure (heartbeat-driven, per-node).
+// Sub-iteration B adds SystemDisk pressure (heartbeat-driven, per-node,
+// requires agent root-filesystem metrics в the heartbeat payload) and
+// Disk pressure (scan-driven, per-pool — а pressured pool is excluded
+// independently of other pools on the same node).
+type PressureConfig struct {
+	Memory     PressureConditionConfig `koanf:"memory"`
+	SystemDisk PressureConditionConfig `koanf:"system_disk"`
+	Disk       PressureConditionConfig `koanf:"disk"`
+}
+
+// PressureConditionConfig pins detection for а single pressure type.
+//
+// Enabled toggles detection. When false, the condition never triggers
+// regardless of metrics — useful for clusters where the operator wants
+// scheduling decisions decoupled от resource pressure altogether.
+//
+// ThresholdPercent triggers pressure when the resource's percentage
+// available falls below this value. Lower = more pressure-sensitive.
+// Range [1, 99] enforced by Validate.
+//
+// ConsecutiveRequired specifies how many consecutive heartbeat
+// observations below threshold must occur before the pressure flag is
+// set. Recovery is asymmetric — а single observation at-or-above the
+// threshold immediately clears the flag. >= 1 enforced by Validate.
+type PressureConditionConfig struct {
+	Enabled             bool `koanf:"enabled"`
+	ThresholdPercent    int  `koanf:"threshold_percent"`
+	ConsecutiveRequired int  `koanf:"consecutive_required"`
+}
+
+// defaultPressureConfig produces the production-default pressure
+// configuration:
+//
+//   - Memory: enabled, 10% threshold, 3 consecutive heartbeats к set
+//     (≈ 90 s at the default 30 s cadence). Asymmetric — single
+//     at-or-above-threshold observation clears.
+//   - SystemDisk: same parameters as memory — root filesystem health
+//     is similarly critical и heartbeat-driven.
+//   - Disk (per-pool): 15% threshold (slightly more conservative —
+//     sparse qcow2 growth absorbs space inside the window), and
+//     consecutive_required=1 since scan cadence is minutes apart
+//     and а single observation is sufficient к set.
+func defaultPressureConfig() PressureConfig {
+	return PressureConfig{
+		Memory: PressureConditionConfig{
+			Enabled:             true,
+			ThresholdPercent:    10,
+			ConsecutiveRequired: 3,
+		},
+		SystemDisk: PressureConditionConfig{
+			Enabled:             true,
+			ThresholdPercent:    10,
+			ConsecutiveRequired: 3,
+		},
+		Disk: PressureConditionConfig{
+			Enabled:             true,
+			ThresholdPercent:    15,
+			ConsecutiveRequired: 1,
+		},
+	}
+}
+
+// Validate enforces the per-condition invariants. Called from
+// PlacementConfig.Validate so the api binary fails fast at startup на
+// out-of-range thresholds или non-positive debounce windows.
+func (p PressureConfig) Validate() error {
+	if err := p.Memory.validate("memory"); err != nil {
+		return err
+	}
+	if err := p.SystemDisk.validate("system_disk"); err != nil {
+		return err
+	}
+	return p.Disk.validate("disk")
+}
+
+func (p PressureConditionConfig) validate(name string) error {
+	if p.ThresholdPercent < 1 || p.ThresholdPercent > 99 {
+		return fmt.Errorf("placement.pressure.%s.threshold_percent must be in [1, 99] (got %d)", name, p.ThresholdPercent)
+	}
+	if p.ConsecutiveRequired < 1 {
+		return fmt.Errorf("placement.pressure.%s.consecutive_required must be >= 1 (got %d)", name, p.ConsecutiveRequired)
+	}
+	return nil
+}
+
+// defaultResourcesConfig produces the production-default per-resource
+// configuration: every resource enabled, ratio 1.0 (strict). Operators
+// who explicitly want overcommit set the ratio in config; operators
+// who want к skip а resource flip Enabled=false.
+func defaultResourcesConfig() ResourcesConfig {
+	return ResourcesConfig{
+		CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+		Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+		Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+	}
+}
+
+// Validate gates the algorithm string + per-resource ratios at
+// startup. Empty algorithm falls к "resource_aware" silently — operators
+// dropping а partial config block see the default behaviour. Per-resource
+// OvercommitRatio must be strictly positive even when Enabled=false
+// (config hygiene against а future toggle).
+func (p PlacementConfig) Validate() error {
+	switch p.Algorithm {
+	case "", "resource_aware", "least_vm_count":
+	default:
+		return fmt.Errorf("placement.algorithm must be \"resource_aware\" or \"least_vm_count\" (got %q)", p.Algorithm)
+	}
+	if err := p.Resources.Validate(); err != nil {
+		return err
+	}
+	return p.Pressure.Validate()
+}
+
+// Validate enforces the per-resource invariants. Called from
+// PlacementConfig.Validate so the api binary fails fast at startup на
+// any negative-or-zero ratio.
+func (r ResourcesConfig) Validate() error {
+	if err := r.CPU.validate("cpu"); err != nil {
+		return err
+	}
+	if err := r.Memory.validate("memory"); err != nil {
+		return err
+	}
+	return r.Disk.validate("disk")
+}
+
+func (r ResourceConfig) validate(name string) error {
+	if r.OvercommitRatio <= 0 {
+		return fmt.Errorf("placement.resources.%s.overcommit_ratio must be > 0 (got %v)", name, r.OvercommitRatio)
+	}
+	return nil
+}
+
+// Warnings returns operator-facing diagnostics about placement
+// configurations that pass Validate but warrant attention at startup:
+// per-resource overcommit ratios > 1.0, extreme ratios > 2.0, и the
+// all-resources-disabled scenario that degrades scoring к count-based
+// fallback. Memory и disk carry resource-specific risk language (OOM
+// kill / sparse-qcow2 disk-full). CPU overcommit is benign at typical
+// homelab ratios so its warning stays neutral. Empty result for the
+// production-default (every dimension enabled at ratio 1.0).
+//
+// Surfaced by cmd/api/main.go at slog Warn level on each startup;
+// operators see the same line on every restart, which doubles as а
+// reminder of the trade-off они opted into.
+func (p PlacementConfig) Warnings() []string {
+	const link = "see docs/scheduler-configuration.md"
+	var out []string
+	appendOvercommit := func(name string, r ResourceConfig, risk string) {
+		if !r.Enabled || r.OvercommitRatio <= 1.0 {
+			return
+		}
+		prefix := fmt.Sprintf("placement.resources.%s.overcommit_ratio=%.2f", name, r.OvercommitRatio)
+		severity := "overcommit enabled"
+		if r.OvercommitRatio > 2.0 {
+			severity = "extreme overcommit (>2.0)"
+		}
+		if risk == "" {
+			out = append(out, fmt.Sprintf("%s — %s; %s", prefix, severity, link))
+			return
+		}
+		out = append(out, fmt.Sprintf("%s — %s (%s); %s", prefix, severity, risk, link))
+	}
+	appendOvercommit("cpu", p.Resources.CPU, "")
+	appendOvercommit("memory", p.Resources.Memory, "OOM kill risk under memory pressure")
+	appendOvercommit("disk", p.Resources.Disk, "disk-full risk under sparse qcow2 growth")
+	if !p.Resources.CPU.Enabled && !p.Resources.Memory.Enabled && !p.Resources.Disk.Enabled {
+		out = append(out, fmt.Sprintf("placement.resources: all dimensions disabled — scheduler degrades to count-based scoring; %s", link))
+	}
+	return out
+}
+
+// AuthConfig holds JWT signing material and token lifetimes.
+type AuthConfig struct {
+	JWTSecret     string        `koanf:"jwt_secret"`
+	JWTAccessTTL  time.Duration `koanf:"jwt_access_ttl"`
+	JWTRefreshTTL time.Duration `koanf:"jwt_refresh_ttl"`
+}
+
+// Validate enforces the minimum-viable auth config: a 32-byte JWT secret
+// (HS256 minimum), and positive TTLs. The api binary calls this at start.
+func (a AuthConfig) Validate() error {
+	if len(a.JWTSecret) < 32 {
+		return fmt.Errorf("auth.jwt_secret must be at least 32 bytes (got %d)", len(a.JWTSecret))
+	}
+	if a.JWTAccessTTL <= 0 {
+		return errors.New("auth.jwt_access_ttl must be > 0")
+	}
+	if a.JWTRefreshTTL <= 0 {
+		return errors.New("auth.jwt_refresh_ttl must be > 0")
+	}
+	return nil
+}
+
+// ConsoleConfig selects how the API server bridges VM console access.
+type ConsoleConfig struct {
+	AccessMode string `koanf:"access_mode"`
+}
+
+// WorkersConfig controls the in-process River worker pool embedded in the
+// API server.
+type WorkersConfig struct {
+	Enabled         bool                   `koanf:"enabled"`
+	MaxWorkers      int                    `koanf:"max_workers"`
+	Tasks           TasksWorkersConfig     `koanf:"tasks"`
+	Heartbeat       HeartbeatWorkersConfig `koanf:"heartbeat"`
+	StoragePoolScan StoragePoolScanConfig  `koanf:"storage_pool_scan"`
+}
+
+// StoragePoolScanConfig pins the periodic `storage_pool.scan_trigger`
+// worker (disk-aware scheduling Sub-iteration A). The trigger fires at
+// Interval, enumerates active pools whose owning node is scannable, и
+// enqueues а fresh `storage_pool.scan` task для each — staggered by а
+// random delay in [0, Jitter) к spread agent-side load.
+//
+// When Enabled is false the periodic schedule is not registered at
+// startup; on-demand `POST /v1/storage-pools/{id}/scan` continues to
+// work either way.
+type StoragePoolScanConfig struct {
+	Enabled  bool          `koanf:"enabled"`
+	Interval time.Duration `koanf:"interval"`
+	Jitter   time.Duration `koanf:"jitter"`
+}
+
+// Validate gates the interval / jitter pair at startup. Zero values
+// fall through к package defaults at registration time; here we only
+// reject configurations that would be operationally surprising
+// (negative durations, jitter wider than interval).
+func (s StoragePoolScanConfig) Validate() error {
+	if s.Interval < 0 {
+		return errors.New("workers.storage_pool_scan.interval must be >= 0")
+	}
+	if s.Jitter < 0 {
+		return errors.New("workers.storage_pool_scan.jitter must be >= 0")
+	}
+	if s.Interval > 0 && s.Jitter >= s.Interval {
+		return fmt.Errorf(
+			"workers.storage_pool_scan.jitter (%s) must be less than interval (%s)",
+			s.Jitter, s.Interval,
+		)
+	}
+	return nil
+}
+
+// HeartbeatWorkersConfig groups the CP-side node-health reconciler
+// knobs. The reconciler fires on a fixed cadence (Interval) and flips
+// nodes between 'ready' and 'unreachable' based on whether their
+// last_heartbeat_at falls inside or outside the StaleThreshold window.
+// Both fields fall back to package defaults when zero.
+type HeartbeatWorkersConfig struct {
+	StaleThreshold time.Duration `koanf:"stale_threshold"`
+	Interval       time.Duration `koanf:"interval"`
+}
+
+// TasksWorkersConfig groups configuration for the in-process workers
+// that act on the `tasks` resource. Currently ships only the cleanup
+// worker; future tasks-domain workers (per-type retention overrides,
+// stuck-task detection, etc.) extend this struct.
+type TasksWorkersConfig struct {
+	Retention TaskRetentionConfig `koanf:"retention"`
+}
+
+// TaskRetentionConfig is the per-state retention window the
+// tasks.cleanup worker uses. Zero values fall back to the package
+// defaults at registration time, so an unset block behaves identically
+// to the documented defaults — the schema is here for operators who
+// need longer audit windows.
+type TaskRetentionConfig struct {
+	Completed time.Duration `koanf:"completed"`
+	Failed    time.Duration `koanf:"failed"`
+}
+
+func defaultAPIConfig() APIConfig {
+	return APIConfig{
+		Server: ServerConfig{
+			Listen:        "0.0.0.0:8080",
+			ReadTimeout:   30 * time.Second,
+			WriteTimeout:  30 * time.Second,
+			ShutdownGrace: 30 * time.Second,
+		},
+		Database: DatabaseConfig{
+			MaxConns:        10,
+			MinConns:        2,
+			MaxConnLifetime: time.Hour,
+		},
+		Logger:  logger.Config{Level: "info", Format: "json"},
+		Auth:    AuthConfig{JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 30 * 24 * time.Hour},
+		Console: ConsoleConfig{AccessMode: "proxy"},
+		Workers: WorkersConfig{
+			Enabled:    true,
+			MaxWorkers: 10,
+			Tasks: TasksWorkersConfig{
+				Retention: TaskRetentionConfig{
+					Completed: 7 * 24 * time.Hour,
+					Failed:    30 * 24 * time.Hour,
+				},
+			},
+			Heartbeat: HeartbeatWorkersConfig{
+				StaleThreshold: 90 * time.Second,
+				Interval:       30 * time.Second,
+			},
+			StoragePoolScan: StoragePoolScanConfig{
+				Enabled:  true,
+				Interval: 15 * time.Minute,
+				Jitter:   30 * time.Second,
+			},
+		},
+		AgentClient: AgentClientConfig{
+			Enabled:         false,
+			Timeout:         5 * time.Minute,
+			PollInterval:    1 * time.Second,
+			PollMaxInterval: 30 * time.Second,
+		},
+		CPCert: CPCertConfig{
+			Validity: 365 * 24 * time.Hour,
+			LocalCache: CPCertCacheConfig{
+				Enabled:  false,
+				CertPath: "/opt/otherix/certs/cp-cert.crt",
+				KeyPath:  "/opt/otherix/certs/cp-cert.key",
+			},
+		},
+		Placement: PlacementConfig{
+			Algorithm: "resource_aware",
+			Resources: defaultResourcesConfig(),
+			Pressure:  defaultPressureConfig(),
+		},
+		StoragePools: StoragePoolsConfig{
+			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+		},
+	}
+}
+
+// Validate сanitises the allowlist — empty prefix list is а rejection
+// of every path, which is а footgun на boot. Operators that want to
+// allow `/` explicitly must list it. Trailing-slash invariant: every
+// prefix must end with `/` so substring match `/opt/otherix/pools-evil/`
+// does not match an `/opt/otherix/pools` prefix.
+func (s StoragePoolsConfig) Validate() error {
+	if len(s.AllowedPathPrefixes) == 0 {
+		return errors.New("storage_pools.allowed_path_prefixes must contain at least one entry")
+	}
+	for _, p := range s.AllowedPathPrefixes {
+		if p == "" {
+			return errors.New("storage_pools.allowed_path_prefixes: empty prefix")
+		}
+		if p[0] != '/' {
+			return fmt.Errorf("storage_pools.allowed_path_prefixes: %q must be absolute", p)
+		}
+		if p[len(p)-1] != '/' {
+			return fmt.Errorf("storage_pools.allowed_path_prefixes: %q must end with '/'", p)
+		}
+	}
+	return nil
+}
+
+// Validate checks the server listen address, database DSN, auth
+// config, and console access mode.
+func (c APIConfig) Validate() error {
+	if err := c.Server.Validate(); err != nil {
+		return err
+	}
+	if err := c.AgentServer.Validate(); err != nil {
+		return err
+	}
+	if err := c.AgentClient.Validate(); err != nil {
+		return err
+	}
+	if err := c.CPCert.Validate(); err != nil {
+		return err
+	}
+	if err := c.Database.Validate(); err != nil {
+		return err
+	}
+	if err := c.Auth.Validate(); err != nil {
+		return err
+	}
+	if c.Console.AccessMode != "proxy" && c.Console.AccessMode != "direct" {
+		return errors.New(`console.access_mode must be "proxy" or "direct"`)
+	}
+	if err := c.Placement.Validate(); err != nil {
+		return err
+	}
+	if err := c.Workers.StoragePoolScan.Validate(); err != nil {
+		return err
+	}
+	if err := c.StoragePools.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
