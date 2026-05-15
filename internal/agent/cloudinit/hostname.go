@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package cloudinit
+
+import (
+	"bytes"
+	"fmt"
+
+	yaml "gopkg.in/yaml.v3"
+)
+
+// userDataHeader is the literal `#cloud-config` marker cloud-init
+// requires on the first line. Preserved verbatim through hostname
+// injection so the resulting blob remains а valid cloud-config.
+const userDataHeader = "#cloud-config"
+
+// injectHostname returns user-data with а top-level `hostname:` key
+// matching the VM name. If the input already pins а top-level
+// `hostname:` (regardless of value), the input is returned unchanged
+// — operator intent takes precedence over the VM name even when the
+// values differ, matching the Area 3 sub-3 "full replace" lock.
+//
+// Empty or whitespace-only user-data materialises к а minimal
+// `#cloud-config\nhostname: <name>\n` so the resulting ISO still
+// satisfies the NoCloud datasource.
+func injectHostname(userData []byte, hostname string) ([]byte, error) {
+	if hostname == "" {
+		return nil, ErrEmptyHostname
+	}
+	trimmed := bytes.TrimSpace(userData)
+	if len(trimmed) == 0 {
+		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
+	}
+
+	body := trimmed
+	header := userDataHeader
+	if bytes.HasPrefix(body, []byte(userDataHeader)) {
+		// Strip the marker so yaml.Unmarshal sees pure YAML;
+		// re-attach on output. The marker is а cloud-init
+		// directive, not part of the YAML document.
+		body = body[len(userDataHeader):]
+	} else {
+		header = ""
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		// Header-only input ("#cloud-config\n") collapses к
+		// the same empty-input path — minimal cloud-config
+		// с the VM hostname so the guest still picks it up.
+		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
+	}
+
+	var node yaml.Node
+	if err := yaml.Unmarshal(body, &node); err != nil {
+		return nil, fmt.Errorf("parse user-data yaml: %w", err)
+	}
+
+	root := documentRoot(&node)
+	switch {
+	case root == nil:
+		// Empty document после the header — still emit а minimal
+		// `hostname:` mapping so the guest takes the VM name.
+		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
+	case root.Kind != yaml.MappingNode:
+		// Non-mapping top-level (e.g. а bare scalar or sequence)
+		// is а user-supplied cloud-config that cannot have keys
+		// merged into it. Leave it untouched — operator's
+		// problem to interpret, not ours к rewrite.
+		return userData, nil
+	}
+
+	if hasMappingKey(root, "hostname") {
+		return userData, nil
+	}
+
+	hostnameKey := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "hostname"}
+	hostnameVal := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: hostname}
+	root.Content = append([]*yaml.Node{hostnameKey, hostnameVal}, root.Content...)
+
+	var buf bytes.Buffer
+	if header != "" {
+		buf.WriteString(header)
+		buf.WriteByte('\n')
+	}
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&node); err != nil {
+		return nil, fmt.Errorf("re-encode user-data: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("close yaml encoder: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+func documentRoot(n *yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.DocumentNode {
+		if len(n.Content) == 0 {
+			return nil
+		}
+		return n.Content[0]
+	}
+	return n
+}
+
+func hasMappingKey(mapping *yaml.Node, key string) bool {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		k := mapping.Content[i]
+		if k.Kind == yaml.ScalarNode && k.Value == key {
+			return true
+		}
+	}
+	return false
+}
