@@ -1,0 +1,25 @@
+server:
+  listen: "0.0.0.0:9443"
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_grace: 30s
+
+logger:
+  level: "info"
+  format: "json"
+
+state_path: "/opt/otherix/vms"
+
+control_plane:
+  url: "https://cp.otherix.local:8080"
+  heartbeat_interval: 30s
+
+tls:
+  ca_cert_path: "/etc/otherix/certs/ca.crt"
+  cert_path:    "/etc/otherix/certs/agent.crt"
+  key_path:     "/etc/otherix/certs/agent.key"
+
+migration:
+  host: "10.0.10.5"   # dedicated migration network/VLAN
+  port_range_start: 49152
+  port_range_end: 49251

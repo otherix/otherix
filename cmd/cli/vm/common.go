@@ -1,0 +1,140 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package vm
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/spf13/cobra"
+
+	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+)
+
+// clientFromFlags resolves --endpoint / --token / --cluster /
+// --config + their env-var counterparts through cliauth.BuildClient
+// и returns а ready *cpclient.Client. Errors are already operator-
+// shaped (see cliauth.translateResolveError); cobra's RunE chain
+// surfaces them through main()'s "error: <msg>" stderr formatter.
+func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
+	return cliauth.BuildClient(cmd)
+}
+
+// printf writes к cmd.OutOrStdout — preserves cobra's testability
+// (each command's stdout / stderr is rebindable in tests).
+func printf(cmd *cobra.Command, format string, args ...any) {
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), format, args...)
+}
+
+// classifyError maps an err из cpclient к the operator-facing
+// "<category>: <detail>" prefix shape that ping-agent established
+// (see cmd/cli/ping_agent.go). Shell scripts grep on the prefix —
+// this string is part of the CLI's contract. Returns an error so
+// callers can simply `return classifyError(err)` from RunE; main
+// renders it to stderr с the standard "error: " preamble.
+func classifyError(err error) error {
+	var apiErr *cpclient.APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Errorf("%s", apiErr.Error())
+	}
+	msg := err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("request_timeout: %s", msg)
+	case strings.Contains(msg, "connection refused"):
+		return fmt.Errorf("connection_refused: %s", msg)
+	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
+		return fmt.Errorf("tls_handshake_failed: %s", msg)
+	default:
+		return fmt.Errorf("request_failed: %s", msg)
+	}
+}
+
+// parseTaskID parses the task id из the CP's AsyncTaskAccepted
+// envelope. Surfaces a helpful error if the CP ever returns a
+// malformed value (defensive — should not happen in practice).
+func parseTaskID(raw string) (uuid.UUID, error) {
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("malformed task id %q: %v", raw, err)
+	}
+	return id, nil
+}
+
+// waitForTask polls the supplied taskID until it reaches a terminal
+// state, the timeout fires, or ctx is cancelled. The progress
+// callback emits a single dot per poll к cmd.ErrOrStderr — picks
+// stderr so stdout stays parseable for tooling that captures
+// success-line output. На terminal-failed surfaces the embedded
+// error envelope as a Go error; на success returns nil.
+func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, taskID uuid.UUID, timeout time.Duration) error {
+	stderr := cmd.ErrOrStderr()
+	dotsEmitted := 0
+	task, err := c.WaitTask(ctx, taskID, cpclient.WaitOptions{
+		Timeout: timeout,
+		OnPoll: func(t cpclient.Task) {
+			_, _ = io.WriteString(stderr, ".")
+			dotsEmitted++
+		},
+	})
+	if dotsEmitted > 0 {
+		_, _ = io.WriteString(stderr, "\n")
+	}
+	if err != nil {
+		return err
+	}
+	if !task.IsTerminal() {
+		// WaitTask only returns when terminal или error; defensive
+		// branch для future surface drift.
+		return fmt.Errorf("wait task: non-terminal status %q", task.Status)
+	}
+	if task.Status == "success" {
+		return nil
+	}
+	env, decErr := task.DecodeError()
+	if decErr != nil || env == nil {
+		return fmt.Errorf("task %s terminated с status %q (no error envelope)", taskID, task.Status)
+	}
+	return fmt.Errorf("task %s %s: %s: %s", taskID, task.Status, env.Code, env.Message)
+}
+
+// requireStringFlag fetches a string flag и rejects empty values as
+// usage errors. The CLI forwards the raw string and the server
+// resolves it (name-only for VM/Template/Node; polymorphic for
+// storage pools). Format validation happens at the resolver layer,
+// не the CLI edge.
+func requireStringFlag(cmd *cobra.Command, name string) (string, error) {
+	raw, err := cmd.Flags().GetString(name)
+	if err != nil {
+		return "", err
+	}
+	if raw == "" {
+		return "", fmt.Errorf("--%s is required", name)
+	}
+	return raw, nil
+}
+
+// outputFormat reads the --output flag (default "text"). Unknown
+// values surface as usage errors so subcommands fail fast rather than
+// rendering garbage.
+func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
+	raw, err := cmd.Flags().GetString(flagOutput)
+	if err != nil {
+		return "", err
+	}
+	if raw == "" {
+		raw = defaultFormat
+	}
+	switch raw {
+	case "text", "json", "table":
+		return raw, nil
+	}
+	return "", fmt.Errorf("--%s: unknown format %q (text, json, table)", flagOutput, raw)
+}

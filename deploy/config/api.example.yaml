@@ -1,0 +1,218 @@
+server:
+  listen: "0.0.0.0:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_grace: 30s
+
+database:
+  dsn: "postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable"
+  max_conns: 10
+  min_conns: 2
+  max_conn_lifetime: 1h
+
+logger:
+  level: "info"
+  format: "json"
+
+auth:
+  # MUST be replaced before any non-dev deploy. At least 32 bytes; use
+  # `openssl rand -hex 32` or similar. Rotation invalidates all
+  # outstanding access tokens (refresh tokens are stateful and unaffected).
+  jwt_secret: "dev-only-jwt-secret-32-bytes-pad!"
+  jwt_access_ttl: 15m
+  jwt_refresh_ttl: 720h
+
+console:
+  access_mode: "proxy"   # "proxy" (production) or "direct" (lab/dev)
+
+# VM placement algorithm. "resource_aware" (default) ranks
+# candidate nodes by post-placement LeastAllocated — kubernetes-style
+# average utilization across the enabled resource dimensions (CPU,
+# memory, disk by default) — and picks the least-allocated node; ties
+# break on node name lexicographic (lowercase). "least_vm_count" is
+# the legacy algorithm: minimum pinned-VM count wins, same tie-break.
+# Both paths fall back к count-based scoring per-
+# candidate when а node has not yet reported heartbeat metrics, so
+# cluster bootstrap is not а special case.
+#
+# Per-resource placement gates (`resources.{cpu,memory,disk}`):
+#   enabled            — include this dimension в fit check + scoring.
+#                        Disabling drops the resource from both
+#                        constraints AND the score; all three disabled
+#                        degrades scheduling к count-based fallback
+#                        (a startup warning surfaces this case).
+#   overcommit_ratio   — multiplier on effective availability:
+#                          1.0  = strict, no overcommit (default)
+#                          >1.0 = inflate capacity (overcommit)
+#                          <1.0 = reserve headroom (deflate capacity)
+#
+# WARNING: memory overcommit (memory.overcommit_ratio > 1.0) carries
+# OOM-kill risk. Configure swap and review host vm.overcommit_memory
+# sysctl BEFORE enabling. Disk overcommit risks runaway sparse-qcow2
+# growth filling the pool. The api binary emits а slog Warn line at
+# startup for each overcommit-enabled resource (and on the all-
+# disabled scenario), surfaced on each restart as а reminder.
+#
+# Read the operator guide before deviating от the strict default:
+#   docs/scheduler-configuration.md
+placement:
+  algorithm: "resource_aware"
+  resources:
+    cpu:
+      enabled: true
+      overcommit_ratio: 1.0
+    memory:
+      enabled: true
+      overcommit_ratio: 1.0      # >1.0 enables overcommit (OOM kill risk)
+    disk:
+      enabled: true
+      overcommit_ratio: 1.0      # >1.0 enables overcommit (disk-full risk)
+  # Node-pressure detection. Independent of the fit-check /
+  # scoring path above — pressure conditions are computed CP-side from
+  # heartbeat / scan metrics; nodes (or pools, for disk pressure) flagged
+  # with an active condition are excluded от placement until recovery
+  # (hard constraint, no override для MVP). Three pressure types:
+  #
+  #   - memory       — per-node, heartbeat-driven. Free memory below
+  #                    threshold_percent of total. OOM-kill risk.
+  #   - system_disk  — per-node, heartbeat-driven. Free root filesystem
+  #                    bytes below threshold_percent of total. Agent
+  #                    crash / log truncation risk.
+  #   - disk         — per-pool, scan-driven. Free pool bytes below
+  #                    threshold_percent of capacity. Pool-scoped: other
+  #                    pools на the same node remain eligible.
+  #
+  # Asymmetric debouncing (slow к set, fast к clear):
+  #   - SET   — `consecutive_required` observations с reported
+  #             availability below `threshold_percent`. At the default
+  #             30 s heartbeat cadence, memory + system_disk require
+  #             3 observations (≈ 90 s sustained). Pool disk defaults
+  #             к 1 since scan cadence is 15 min — а single observation
+  #             is sufficient signal.
+  #   - CLEAR — first observation at-or-above the threshold immediately
+  #             clears the flag и zeroes the counter.
+  #
+  # Shared filesystem (typical homelab): когда the storage pool lives
+  # on the root filesystem, both system_disk и pool disk fire on the
+  # same physical condition. Both conditions render в the CLI — this
+  # is accurate (shared resource), not duplication.
+  #
+  # Operator guide: docs/scheduler-configuration.md.
+  pressure:
+    memory:
+      enabled: true              # set false к disable detection entirely
+      threshold_percent: 10      # flag когда free memory < 10% of total
+      consecutive_required: 3    # ~90 s sustained at default heartbeat cadence
+
+    system_disk:
+      enabled: true              # set false к disable detection entirely
+      threshold_percent: 10      # flag когда free root-fs bytes < 10% of total
+      consecutive_required: 3    # ~90 s sustained at default heartbeat cadence
+
+    disk:
+      enabled: true              # set false к disable detection entirely
+      threshold_percent: 15      # flag когда free pool bytes < 15% of capacity
+      consecutive_required: 1    # single scan sets pressure (scans are 15 min apart)
+
+workers:
+  enabled: true
+  max_workers: 10
+  # Per-state retention windows for the tasks resource. Finalized
+  # rows past these ages are deleted hourly by the tasks.cleanup
+  # periodic worker.
+  tasks:
+    retention:
+      completed: 168h  # 7d  — successful tasks
+      failed:    720h  # 30d — failed / cancelled tasks
+  # Heartbeat reconciler — flips nodes between 'ready' и 'unreachable'
+  # based on whether last_heartbeat_at falls inside the stale_threshold
+  # window. Interval is the cadence of the periodic check (must be
+  # less than stale_threshold; otherwise transient blips would flap
+  # state).
+  heartbeat:
+    stale_threshold: 90s
+    interval:        30s
+  # Periodic storage_pool.scan trigger. Each tick enumerates active
+  # pools whose owning node
+  # is scannable и enqueues а fresh scan task — handler-side dedup
+  # skips pools that already have an in-flight scan. Jitter spreads
+  # per-pool ScheduledAt across the interval so agent walks don't
+  # stampede. Disable к keep scans on-demand-only via
+  # `POST /v1/storage-pools/{id}/scan`.
+  storage_pool_scan:
+    enabled:  true
+    interval: 15m
+    jitter:   30s
+
+
+# Outbound CP→agent HTTP client. Drives async operations like
+# storage_pool.scan from in-process river workers. mTLS material
+# (replica's leaf cert + cluster CA trust anchor) is sourced
+# automatically by LoadOrGenerateCPCert at boot — no cert / key / ca
+# file paths configured here. See the `cp_cert:` block below for
+# cert lifecycle knobs.
+#
+# Cross-block invariant: когда `workers.enabled: true`, this block
+# MUST set `enabled: true` — the api binary fails fast otherwise
+# (rather than ship fake stub data into storage_pools or wedge scan
+# tasks forever). To run the api as a HTTP-only smoke target без
+# provisioned mTLS, flip `workers.enabled: false` above.
+#
+# Polling defaults: 1s initial interval, 30s exponential cap, 5m
+# total budget per scan.
+agent_client:
+  enabled: false
+  timeout:           5m
+  poll_interval:     1s
+  poll_max_interval: 30s
+
+# CP server cert lifecycle (per-replica certs).
+# Each replica auto-generates its own ECDSA P-384 leaf cert signed by
+# the cluster CA в DB. Single leaf cert serves both directions
+# (inbound agent_server listener + outbound agent_client dialer) via
+# ExtKeyUsage serverAuth+clientAuth.
+#
+# Three modes:
+#
+#   Mode A — operator override. Set cert_file + key_file to externally-
+#     managed cert (Let's Encrypt, corporate CA, FIPS scenarios). Both
+#     paths must be set together. Missing files when paths configured
+#     = fatal at boot.
+#
+#   Mode B — local cache. local_cache.enabled = true → generated cert
+#     persisted к local_cache.{cert_path,key_path} after generation;
+#     valid cache reused on subsequent boots (chain checked against
+#     current cluster CA, NotAfter > now + 30d buffer, SANs cover
+#     expected set). Operator-friendly for replica restarts.
+#
+#   Mode C — auto-generate (default). Fresh cert per boot, in-memory
+#     only. SANs = auto-detected baseline (localhost, 127.0.0.1,
+#     os.Hostname(), non-wildcard listen address) ∪ additional_sans.
+#
+# Cluster CA always loaded от DB. Legacy `cert_file` / `key_file` /
+# `ca_file` fields под agent_server / agent_client blocks are removed
+# entirely (pre-prod squash window).
+#
+# SAN composition examples (production):
+#   - "cp.otherix.example.com"        # external FQDN
+#   - "otherix-api.svc.cluster.local" # k8s in-cluster DNS
+#   - "10.0.0.100"                    # alternate IP
+
+cp_cert:
+  # Mode A — operator-supplied cert paths (optional; both or neither).
+  # cert_file: "/etc/otherix/cp-cert/tls.crt"
+  # key_file:  "/etc/otherix/cp-cert/tls.key"
+
+  # Mode B — local cache (optional).
+  local_cache:
+    enabled:   false
+    cert_path: "/opt/otherix/certs/cp-cert.crt"
+    key_path:  "/opt/otherix/certs/cp-cert.key"
+
+  # Mode C — additional SANs above auto-detected baseline.
+  additional_sans:
+    # - "cp.otherix.example.com"
+    # - "10.0.0.100"
+
+  # Cert lifetime (1 year default). Rotation = future ROADMAP slice.
+  validity: "8760h"

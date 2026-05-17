@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+// Package cliauth wires а cobra command's persistent flags into а
+// fully-constructed authenticated cpclient.Client. It is the single
+// source of truth для the precedence chain that turns flags + env
+// + config file into а (endpoint, token) pair — every resource
+// subcommand (vm, future template / pool / node) calls
+// BuildClient instead of inlining its own flag plumbing.
+//
+// The package owns no state и has no test of its own: cliconfig
+// covers the precedence logic, и vm subcommand tests exercise the
+// composite path. cliauth's value is purely deduplication.
+package cliauth
+
+import (
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/otherix/otherix/cmd/cli/internal/cliconfig"
+	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+)
+
+// Flag names shared с the root cobra command. Exported so future
+// subcommands can read them via cmd.Flag(cliauth.FlagX) instead of
+// re-hard-coding strings и risking drift.
+const (
+	FlagEndpoint = "endpoint"
+	FlagToken    = "token"
+	FlagCluster  = "cluster"
+	FlagConfig   = "config"
+)
+
+// BuildClient inspects cmd's persistent flags + the process env,
+// resolves an (endpoint, token) pair via cliconfig.Resolve, и
+// returns а ready-to-use *cpclient.Client. The error chain
+// surfaces actionable hints для each missing-credential case —
+// callers should `return err` from RunE и let main render it.
+func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
+	flagEndpoint, _ := cmd.Flags().GetString(FlagEndpoint)
+	flagToken, _ := cmd.Flags().GetString(FlagToken)
+	flagCluster, _ := cmd.Flags().GetString(FlagCluster)
+	flagConfigPath, _ := cmd.Flags().GetString(FlagConfig)
+
+	path, err := cliconfig.ResolvePath(flagConfigPath)
+	if err != nil && !errors.Is(err, cliconfig.ErrNoHome) {
+		return nil, err
+	}
+	var cfg *cliconfig.Config
+	if path != "" {
+		loaded, loadErr := cliconfig.Load(path)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load config %s: %v", path, loadErr)
+		}
+		cfg = loaded
+	}
+
+	auth, err := cliconfig.Resolve(cliconfig.ResolveOptions{
+		FlagEndpoint: flagEndpoint,
+		FlagToken:    flagToken,
+		FlagCluster:  flagCluster,
+		EnvEndpoint:  os.Getenv(cliconfig.EnvServer),
+		EnvToken:     os.Getenv(cliconfig.EnvToken),
+		Config:       cfg,
+	})
+	if err != nil {
+		return nil, translateResolveError(err, path)
+	}
+
+	return cpclient.New(cpclient.Options{
+		BaseURL: auth.Endpoint,
+		Token:   auth.Token,
+	})
+}
+
+// translateResolveError rewrites cliconfig sentinels into
+// operator-facing messages с suggested actions. Keeps cliconfig's
+// API surface lean (it knows about flags / env только in names,
+// not commands) while still steering users to the right
+// remediation в the CLI.
+func translateResolveError(err error, path string) error {
+	switch {
+	case errors.Is(err, cliconfig.ErrEndpointMissing):
+		return fmt.Errorf("no endpoint configured: pass --%s, set %s, or `otherix config use <cluster>`",
+			FlagEndpoint, cliconfig.EnvServer)
+	case errors.Is(err, cliconfig.ErrTokenMissing):
+		return fmt.Errorf("no token configured: pass --%s, set %s, or `otherix config use <cluster>`",
+			FlagToken, cliconfig.EnvToken)
+	case errors.Is(err, cliconfig.ErrClusterNotFound):
+		hint := ""
+		if path != "" {
+			hint = fmt.Sprintf(" (config: %s)", path)
+		}
+		return fmt.Errorf("%v%s — run `otherix config list` to see available clusters", err, hint)
+	default:
+		return err
+	}
+}

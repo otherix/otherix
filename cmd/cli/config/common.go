@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package config
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
+	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/cliconfig"
+)
+
+// promptInput reads а line of user input from stdin, trimming the
+// trailing newline. Used для plain-text fields (cluster name,
+// server URL, login). The label is printed К stderr so test
+// fixtures that capture stdout for assertions are not polluted by
+// prompts.
+func promptInput(out io.Writer, label string, reader *bufio.Reader) (string, error) {
+	if _, err := fmt.Fprintf(out, "%s: ", label); err != nil {
+		return "", err
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// promptPassword reads а password from /dev/stdin (или whatever
+// terminal stdin is bound к) without echoing the typed characters.
+// Uses golang.org/x/term.ReadPassword which falls back К а
+// raw-mode read on the underlying file descriptor.
+func promptPassword(out io.Writer, label string) (string, error) {
+	if _, err := fmt.Fprintf(out, "%s: ", label); err != nil {
+		return "", err
+	}
+	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if _, ferr := fmt.Fprintln(out); ferr != nil && err == nil {
+		err = ferr
+	}
+	if err != nil {
+		return "", fmt.Errorf("read password: %v", err)
+	}
+	return string(raw), nil
+}
+
+// stdinIsTerminal reports whether stdin is а TTY — used к gate
+// interactive prompts. Pipes / heredocs / CI stdin all return
+// false, in which case missing required values must come from
+// flags или env.
+func stdinIsTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// resolveConfigPath sits between cobra и cliconfig для the
+// `config` subcommands: each of add / list / use / remove / show
+// inherits --config from the root, и every one needs the same
+// "use the flag if set, else default" lookup.
+func resolveConfigPath(cmd *cobra.Command) (string, error) {
+	flag, _ := cmd.Flags().GetString(cliauth.FlagConfig)
+	path, err := cliconfig.ResolvePath(flag)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// maskToken returns а display-safe rendering of а plaintext API
+// token. The first 8 chars ("otx_xxxx") survive — they match the
+// stored Prefix и suffice к distinguish two tokens — а the rest
+// is replaced with `***`. Tokens shorter than 8 chars (corrupt
+// inputs) fall back to a pure `***`.
+func maskToken(token string) string {
+	const visible = 8
+	if len(token) <= visible {
+		return "***"
+	}
+	return token[:visible] + "***"
+}
+
+// confirmYN reads y/N from stdin, treating empty (just Enter) as
+// "no". Returns false when stdin is not а TTY и noTTYDefault is
+// false — non-interactive contexts must use --force к pre-confirm.
+func confirmYN(out io.Writer, reader *bufio.Reader, prompt string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "%s [y/N]: ", prompt); err != nil {
+		return false, err
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	trimmed := strings.TrimSpace(strings.ToLower(line))
+	return trimmed == "y" || trimmed == "yes", nil
+}
