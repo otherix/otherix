@@ -1,0 +1,105 @@
+# Otherix dev VM (Linux agent host on macOS).
+#
+# Lima creates an Ubuntu 24.04 VM with native arch matching (aarch64 on
+# Apple Silicon, x86_64 on Intel). Provision installs qemu plus tooling
+# Iteration 1+ needs, prepares Otherix runtime directories, and registers
+# the otherix-agent systemd unit (binary + config copied via Make targets
+# after the VM is up).
+#
+# vmType is intentionally unspecified — Lima picks per host. M1/M2 machines
+# fall back to qemu mode without nested KVM (agent runs in TCG, slow but
+# functional). M3+ via vz mode gets native KVM. See docs/macos-development.md.
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+cpus: 4
+memory: "8GiB"
+disk: "60GiB"
+
+mounts:
+  - location: "~"
+    writable: false
+
+portForwards:
+  - guestPort: 9443
+    hostIP: "127.0.0.1"
+    hostPort: 9443
+
+ssh:
+  loadDotSSHPubKeys: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Lima creates the VM's primary user from the macOS host's $USER
+      # (sometimes suffixed with .guest) and reuses the host UID (501 on
+      # macOS), so a UID-based filter misses it. Detect by home directory
+      # under /home/ instead — Lima always places the host-mapped user
+      # there.
+      LIMA_USER=$(awk -F: '$6 ~ /^\/home\// {print $1; exit}' /etc/passwd)
+      if [ -z "$LIMA_USER" ]; then
+        echo "no /home/* user found in /etc/passwd; aborting" >&2
+        exit 1
+      fi
+
+      apt-get update
+      apt-get install -y \
+        qemu-system-x86 qemu-system-arm qemu-utils \
+        qemu-efi-aarch64 ovmf \
+        genisoimage cloud-image-utils \
+        curl jq socat
+
+      if [ -e /dev/kvm ]; then
+        echo "✓ KVM available, nested virtualization OK"
+        usermod -aG kvm "$LIMA_USER"
+      else
+        echo "⚠ /dev/kvm not available; agent will use TCG (slow)"
+      fi
+
+      mkdir -p /opt/otherix/vms
+      mkdir -p /opt/otherix/pools/default/templates
+      mkdir -p /opt/otherix/pools/default/vms
+      mkdir -p /opt/otherix/certs
+      mkdir -p /var/run/otherix
+      mkdir -p /etc/otherix
+
+      chown -R "$LIMA_USER:$LIMA_USER" /opt/otherix /var/run/otherix /etc/otherix
+      # Cert directory mode 0750 — agent process reads + writes (key file
+      # gets 0600 on its own via bootstrap.Persist atomic writes).
+      chmod 0750 /opt/otherix/certs
+
+      # systemd unit (polling-loop): the agent boots в State A (polls
+      # 5s для cert material + config) и transitions к State B once
+      # `otherix-agent bootstrap` writes the four files. No
+      # EnvironmentFile, no `--config` flag — agent reads
+      # /etc/otherix/agent.yaml at the default path.
+      cat > /etc/systemd/system/otherix-agent.service <<EOF
+      [Unit]
+      Description=Otherix Agent (development)
+      After=network.target
+
+      [Service]
+      Type=simple
+      User=${LIMA_USER}
+      ExecStart=/usr/local/bin/otherix-agent serve
+      Restart=on-failure
+      RestartSec=5s
+      StandardOutput=journal
+      StandardError=journal
+      AmbientCapabilities=CAP_NET_ADMIN
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      # Auto-enable + start — the polling loop happily waits в State A
+      # until `otherix-agent bootstrap` materialises the cert files.
+      systemctl daemon-reload
+      systemctl enable otherix-agent.service
