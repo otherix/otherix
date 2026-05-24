@@ -39,17 +39,21 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 }
 
 // mapAsyncLifecycleError translates Manager sentinel errors to the
-// standard HTTP envelope для the L2 async surface (start / stop /
-// poweroff / reboot). Same shape as L1's mapLifecycleError but
-// reaches more sentinels — every L2 op may surface ErrNotFound,
-// ErrInvalidState, ErrQMPUnavailable. Validation against
-// per-operation phase preconditions happens inside Manager; this
-// helper just maps к the standard envelope.
+// standard HTTP envelope for the async lifecycle surface (start /
+// stop / poweroff / reboot). ErrInFlight surfaces as 409 with a
+// retry_after_seconds hint mirroring the CP-side idempotency
+// middleware's transient-collision shape, so a CLI / SDK client has
+// a single retry contract for "operation in flight, try again
+// shortly".
 func mapAsyncLifecycleError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, vm.ErrNotFound):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeNotFound, "vm not found", nil)
+	case errors.Is(err, vm.ErrInFlight):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "vm operation already in flight",
+			map[string]any{"retry_after_seconds": 1})
 	case errors.Is(err, vm.ErrInvalidState):
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict, err.Error(), nil)
