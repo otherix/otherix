@@ -4,12 +4,10 @@
 package vms
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/response"
 )
 
@@ -26,13 +24,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.manager.DeleteByName(r.Context(), name)
 	if err != nil {
-		if errors.Is(err, vm.ErrNotFound) {
-			response.WriteError(w, r, http.StatusNotFound,
-				response.CodeNotFound, "vm not found", nil)
-			return
-		}
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "internal error", nil)
+		mapAsyncLifecycleError(w, r, err)
 		return
 	}
 	response.WriteJSON(w, r, http.StatusAccepted, asyncAccepted{

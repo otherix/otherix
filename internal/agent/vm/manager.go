@@ -765,7 +765,7 @@ func (m *Manager) runStop(taskID, vmID uuid.UUID) {
 		log.Error("read pidfile", "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "qemu_supervision_failed", err.Error())
+		m.failTaskOnly(taskID, "qemu_supervision_failed", err.Error())
 		return
 	}
 
@@ -774,7 +774,7 @@ func (m *Manager) runStop(taskID, vmID uuid.UUID) {
 		log.Error("qmp dial", "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "qmp_unavailable", err.Error())
+		m.failTaskOnly(taskID, "qmp_unavailable", err.Error())
 		return
 	}
 	if err := client.SystemPowerdown(); err != nil {
@@ -782,7 +782,7 @@ func (m *Manager) runStop(taskID, vmID uuid.UUID) {
 		log.Error("qmp system_powerdown", "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "qmp_unavailable", err.Error())
+		m.failTaskOnly(taskID, "qmp_unavailable", err.Error())
 		return
 	}
 	_ = client.Close()
@@ -793,7 +793,7 @@ func (m *Manager) runStop(taskID, vmID uuid.UUID) {
 		log.Warn("graceful shutdown timed out", "pid", pid, "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "stop_timeout",
+		m.failTaskOnly(taskID, "stop_timeout",
 			fmt.Sprintf("guest did not honour ACPI shutdown within %s; use poweroff or stop --force", shutdownGrace))
 		return
 	}
@@ -956,7 +956,7 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 		log.Error("read pidfile", "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "qemu_supervision_failed", err.Error())
+		m.failTaskOnly(taskID, "qemu_supervision_failed", err.Error())
 		return
 	}
 
@@ -965,7 +965,7 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 		log.Error("qmp dial", "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "qmp_unavailable", err.Error())
+		m.failTaskOnly(taskID, "qmp_unavailable", err.Error())
 		return
 	}
 	if err := client.SystemPowerdown(); err != nil {
@@ -973,7 +973,7 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 		log.Error("qmp system_powerdown", "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "qmp_unavailable", err.Error())
+		m.failTaskOnly(taskID, "qmp_unavailable", err.Error())
 		return
 	}
 	_ = client.Close()
@@ -984,7 +984,7 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 		log.Warn("reboot stop phase timed out", "pid", pid, "err", err)
 		m.transitionVM(vmID, StatusRunning, "")
 		_ = m.persistVM(vmID)
-		m.failTask(taskID, vmID, "stop_timeout",
+		m.failTaskOnly(taskID, "stop_timeout",
 			fmt.Sprintf("guest did not honour ACPI shutdown within %s; use reset to force", shutdownGrace))
 		return
 	}
@@ -1173,6 +1173,23 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 func (m *Manager) failTask(taskID, vmID uuid.UUID, code, message string) {
 	m.transitionVM(vmID, StatusFailed, message)
 	_ = m.persistVM(vmID)
+	m.tasks.Update(taskID, func(t *AgentTask) {
+		t.Status = TaskStatusFailed
+		t.Error = &TaskError{Code: code, Message: message}
+	})
+}
+
+// failTaskOnly marks the agent task as failed without mutating VM
+// status. Reserved for stop / reboot failure paths where the QEMU
+// process is still alive (ACPI ignored, QMP socket flapped, etc.);
+// the orchestration failed but the VM is still running, so callers
+// transition the VM back to StatusRunning + persist before calling
+// this. Using failTask there would override the revert and persist
+// a misleading StatusFailed, masking the live qemu process from the
+// operator's recovery path (Start would re-spawn against a live
+// pidfile lock; observedStatus on persisted Failed does not re-probe
+// the pid).
+func (m *Manager) failTaskOnly(taskID uuid.UUID, code, message string) {
 	m.tasks.Update(taskID, func(t *AgentTask) {
 		t.Status = TaskStatusFailed
 		t.Error = &TaskError{Code: code, Message: message}
