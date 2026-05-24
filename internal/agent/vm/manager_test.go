@@ -200,6 +200,97 @@ func TestManager_InFlightGuard_AcquireReleaseAndQuery(t *testing.T) {
 	}
 }
 
+// TestManager_FailTaskOnly_DoesNotMutateVMStatus pins the contract of
+// failTaskOnly: it marks the task as failed but leaves the VM's
+// persisted status unchanged. Used by stop / reboot timeout paths
+// where the VM is still running (qemu refused to honour ACPI); the
+// task surfaces the failure but the VM itself is not in StatusFailed.
+func TestManager_FailTaskOnly_DoesNotMutateVMStatus(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	m, err := New(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	vmID := uuid.New()
+	m.mu.Lock()
+	m.vms[vmID] = &VM{
+		ID:     vmID,
+		Name:   "test-vm",
+		Status: StatusRunning,
+	}
+	m.mu.Unlock()
+
+	task := m.tasks.Create(TaskKindVMStop, vmID)
+	m.failTaskOnly(task.ID, "stop_timeout", "guest ignored ACPI")
+
+	got := m.tasks.Get(task.ID)
+	if got == nil {
+		t.Fatal("task not found after failTaskOnly")
+	}
+	if got.Status != TaskStatusFailed {
+		t.Errorf("task.Status = %q, want %q", got.Status, TaskStatusFailed)
+	}
+	if got.Error == nil {
+		t.Fatal("task.Error = nil, want populated")
+	}
+	if got.Error.Code != "stop_timeout" || got.Error.Message != "guest ignored ACPI" {
+		t.Errorf("task.Error = {%q, %q}, want {%q, %q}",
+			got.Error.Code, got.Error.Message, "stop_timeout", "guest ignored ACPI")
+	}
+
+	v, err := m.snapshotVM(vmID)
+	if err != nil {
+		t.Fatalf("snapshotVM: %v", err)
+	}
+	if v.Status != StatusRunning {
+		t.Errorf("VM status mutated by failTaskOnly: got %q, want %q (unchanged)",
+			v.Status, StatusRunning)
+	}
+}
+
+// TestManager_FailTask_MutatesVMStatusToFailed locks the existing
+// semantics of failTask: VM transitions to StatusFailed AND task is
+// recorded as failed. Reserved for paths where the VM legitimately
+// entered a failed state (create / start spawn failures, stuck-qemu
+// poweroff escalation).
+func TestManager_FailTask_MutatesVMStatusToFailed(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	m, err := New(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	vmID := uuid.New()
+	m.mu.Lock()
+	m.vms[vmID] = &VM{
+		ID:     vmID,
+		Name:   "test-vm",
+		Status: StatusCreating,
+	}
+	m.mu.Unlock()
+
+	task := m.tasks.Create(TaskKindVMCreate, vmID)
+	m.failTask(task.ID, vmID, "qemu_spawn_failed", "boom")
+
+	got := m.tasks.Get(task.ID)
+	if got == nil {
+		t.Fatal("task not found after failTask")
+	}
+	if got.Status != TaskStatusFailed {
+		t.Errorf("task.Status = %q, want %q", got.Status, TaskStatusFailed)
+	}
+
+	v, err := m.snapshotVM(vmID)
+	if err != nil {
+		t.Fatalf("snapshotVM: %v", err)
+	}
+	if v.Status != StatusFailed {
+		t.Errorf("VM status = %q, want %q (failTask must mark VM failed)",
+			v.Status, StatusFailed)
+	}
+}
+
 func TestManager_InFlightGuard_EmptyName_IsNoOp(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
 	m, err := New(cfg, discardLogger())
