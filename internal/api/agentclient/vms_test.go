@@ -188,7 +188,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 	})
 	_, baseURL := startAgentTLSServer(t, mux)
 
-	got, err := newClientAutoDir(t).GetVM(context.Background(), baseURL, vmName)
+	got, err := newClientAutoDir(t).VM(context.Background(), baseURL, vmName)
 	if err != nil {
 		t.Fatalf("GetVM: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestGetVM_NotFound(t *testing.T) {
 	})
 	_, baseURL := startAgentTLSServer(t, mux)
 
-	_, err := newClientAutoDir(t).GetVM(context.Background(), baseURL, "no-such-vm")
+	_, err := newClientAutoDir(t).VM(context.Background(), baseURL, "no-such-vm")
 	if err == nil {
 		t.Fatalf("expected 404 error")
 	}

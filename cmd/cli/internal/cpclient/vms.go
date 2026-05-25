@@ -131,10 +131,10 @@ func (c *Client) CreateVM(ctx context.Context, req CreateVMRequest) (TaskAccepte
 	return out, nil
 }
 
-// GetVM fetches /v1/vms/{identifier}. The parameter is a VM name;
+// VM fetches /v1/vms/{identifier}. The parameter is a VM name;
 // UUID literals are rejected by the server with 400 validation_failed.
 // 200 returns the parsed VM; 404 / 5xx surface as *APIError.
-func (c *Client) GetVM(ctx context.Context, identifier string) (VM, error) {
+func (c *Client) VM(ctx context.Context, identifier string) (VM, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/vms/"+url.PathEscape(identifier), nil)
 	if err != nil {
 		return VM{}, err

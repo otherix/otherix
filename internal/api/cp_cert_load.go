@@ -234,7 +234,7 @@ func loadClusterCAFromDB(ctx context.Context, s *store.Store) (*x509.Certificate
 	}
 	signer, ok := key.(crypto.Signer)
 	if !ok {
-		return nil, nil, errors.New("CA key does not implement crypto.Signer")
+		return nil, nil, errors.New("ca key does not implement crypto.Signer")
 	}
 	return caCert, signer, nil
 }

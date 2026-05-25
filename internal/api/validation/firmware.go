@@ -25,12 +25,12 @@ const FirmwareNameMaxLength = 255
 const FirmwareVersionMaxLength = 255
 
 // ValidateArchitecture returns nil when s is a recognised
-// store.CpuArch enum value (`amd64` or `arm64`). The validator is
+// store.CPUArch enum value (`amd64` or `arm64`). The validator is
 // shared across resources whose API surface carries the architecture
 // (firmwares, templates, future vms) so a single source of truth
 // controls the wire-level enum.
 func ValidateArchitecture(s string) error {
-	switch store.CpuArch(s) {
+	switch store.CPUArch(s) {
 	case store.CpuArchAmd64, store.CpuArchArm64:
 		return nil
 	}

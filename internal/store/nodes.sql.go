@@ -61,16 +61,16 @@ func (q *Queries) CordonNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.MigrationPortRangeEnd,
 		&i.Status,
 		&i.CordonedAt,
-		&i.CpuCoresTotal,
-		&i.CpuCoresAvailable,
-		&i.CpuModel,
+		&i.CPUCoresTotal,
+		&i.CPUCoresAvailable,
+		&i.CPUModel,
 		&i.CpuFlags,
 		&i.MemoryTotalMib,
 		&i.MemoryAvailableMib,
 		&i.Hugepages2mibTotal,
 		&i.Hugepages1gibTotal,
 		&i.KernelVersion,
-		&i.QemuVersion,
+		&i.QEMUVersion,
 		&i.NumaTopology,
 		&i.Capabilities,
 		&i.LastHeartbeatAt,
@@ -148,7 +148,7 @@ returning id, name, architecture, advertised_endpoint, migration_host, migration
 type CreateNodeParams struct {
 	ID                      uuid.UUID
 	Name                    string
-	Architecture            CpuArch
+	Architecture            CPUArch
 	AdvertisedEndpoint      string
 	MigrationHost           string
 	MigrationPortRangeStart int32
@@ -180,16 +180,16 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.MigrationPortRangeEnd,
 		&i.Status,
 		&i.CordonedAt,
-		&i.CpuCoresTotal,
-		&i.CpuCoresAvailable,
-		&i.CpuModel,
+		&i.CPUCoresTotal,
+		&i.CPUCoresAvailable,
+		&i.CPUModel,
 		&i.CpuFlags,
 		&i.MemoryTotalMib,
 		&i.MemoryAvailableMib,
 		&i.Hugepages2mibTotal,
 		&i.Hugepages1gibTotal,
 		&i.KernelVersion,
-		&i.QemuVersion,
+		&i.QEMUVersion,
 		&i.NumaTopology,
 		&i.Capabilities,
 		&i.LastHeartbeatAt,
@@ -228,16 +228,16 @@ func (q *Queries) GetNodeByID(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.MigrationPortRangeEnd,
 		&i.Status,
 		&i.CordonedAt,
-		&i.CpuCoresTotal,
-		&i.CpuCoresAvailable,
-		&i.CpuModel,
+		&i.CPUCoresTotal,
+		&i.CPUCoresAvailable,
+		&i.CPUModel,
 		&i.CpuFlags,
 		&i.MemoryTotalMib,
 		&i.MemoryAvailableMib,
 		&i.Hugepages2mibTotal,
 		&i.Hugepages1gibTotal,
 		&i.KernelVersion,
-		&i.QemuVersion,
+		&i.QEMUVersion,
 		&i.NumaTopology,
 		&i.Capabilities,
 		&i.LastHeartbeatAt,
@@ -281,16 +281,16 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 		&i.MigrationPortRangeEnd,
 		&i.Status,
 		&i.CordonedAt,
-		&i.CpuCoresTotal,
-		&i.CpuCoresAvailable,
-		&i.CpuModel,
+		&i.CPUCoresTotal,
+		&i.CPUCoresAvailable,
+		&i.CPUModel,
 		&i.CpuFlags,
 		&i.MemoryTotalMib,
 		&i.MemoryAvailableMib,
 		&i.Hugepages2mibTotal,
 		&i.Hugepages1gibTotal,
 		&i.KernelVersion,
-		&i.QemuVersion,
+		&i.QEMUVersion,
 		&i.NumaTopology,
 		&i.Capabilities,
 		&i.LastHeartbeatAt,
@@ -334,16 +334,16 @@ func (q *Queries) GetNodeEffectiveByID(ctx context.Context, id uuid.UUID) (NodeE
 		&i.MigrationPortRangeEnd,
 		&i.Status,
 		&i.CordonedAt,
-		&i.CpuCoresTotal,
-		&i.CpuCoresAvailable,
-		&i.CpuModel,
+		&i.CPUCoresTotal,
+		&i.CPUCoresAvailable,
+		&i.CPUModel,
 		&i.CpuFlags,
 		&i.MemoryTotalMib,
 		&i.MemoryAvailableMib,
 		&i.Hugepages2mibTotal,
 		&i.Hugepages1gibTotal,
 		&i.KernelVersion,
-		&i.QemuVersion,
+		&i.QEMUVersion,
 		&i.NumaTopology,
 		&i.Capabilities,
 		&i.LastHeartbeatAt,
@@ -358,7 +358,7 @@ func (q *Queries) GetNodeEffectiveByID(ctx context.Context, id uuid.UUID) (NodeE
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
-		&i.CpuCoresEffective,
+		&i.CPUCoresEffective,
 		&i.MemoryEffectiveMib,
 	)
 	return i, err
@@ -380,7 +380,7 @@ where id = $1
 
 type GetNodeForHeartbeatRow struct {
 	ID                      uuid.UUID
-	Architecture            CpuArch
+	Architecture            CPUArch
 	Status                  NodeStatus
 	MemoryPressureSince     *time.Time
 	MemoryPressureCount     int32
@@ -428,7 +428,7 @@ limit $5
 `
 
 type ListNodesParams struct {
-	Architecture    *CpuArch
+	Architecture    *CPUArch
 	Status          *NodeStatus
 	CursorCreatedAt *time.Time
 	CursorID        *uuid.UUID
@@ -461,16 +461,16 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 			&i.MigrationPortRangeEnd,
 			&i.Status,
 			&i.CordonedAt,
-			&i.CpuCoresTotal,
-			&i.CpuCoresAvailable,
-			&i.CpuModel,
+			&i.CPUCoresTotal,
+			&i.CPUCoresAvailable,
+			&i.CPUModel,
 			&i.CpuFlags,
 			&i.MemoryTotalMib,
 			&i.MemoryAvailableMib,
 			&i.Hugepages2mibTotal,
 			&i.Hugepages1gibTotal,
 			&i.KernelVersion,
-			&i.QemuVersion,
+			&i.QEMUVersion,
 			&i.NumaTopology,
 			&i.Capabilities,
 			&i.LastHeartbeatAt,
@@ -514,7 +514,7 @@ limit $5
 `
 
 type ListNodesEffectiveParams struct {
-	Architecture    *CpuArch
+	Architecture    *CPUArch
 	Status          *NodeStatus
 	CursorCreatedAt *time.Time
 	CursorID        *uuid.UUID
@@ -551,16 +551,16 @@ func (q *Queries) ListNodesEffective(ctx context.Context, arg ListNodesEffective
 			&i.MigrationPortRangeEnd,
 			&i.Status,
 			&i.CordonedAt,
-			&i.CpuCoresTotal,
-			&i.CpuCoresAvailable,
-			&i.CpuModel,
+			&i.CPUCoresTotal,
+			&i.CPUCoresAvailable,
+			&i.CPUModel,
 			&i.CpuFlags,
 			&i.MemoryTotalMib,
 			&i.MemoryAvailableMib,
 			&i.Hugepages2mibTotal,
 			&i.Hugepages1gibTotal,
 			&i.KernelVersion,
-			&i.QemuVersion,
+			&i.QEMUVersion,
 			&i.NumaTopology,
 			&i.Capabilities,
 			&i.LastHeartbeatAt,
@@ -575,7 +575,7 @@ func (q *Queries) ListNodesEffective(ctx context.Context, arg ListNodesEffective
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
-			&i.CpuCoresEffective,
+			&i.CPUCoresEffective,
 			&i.MemoryEffectiveMib,
 		); err != nil {
 			return nil, err
@@ -622,16 +622,16 @@ func (q *Queries) ListStaleNodes(ctx context.Context, staleBefore time.Time) ([]
 			&i.MigrationPortRangeEnd,
 			&i.Status,
 			&i.CordonedAt,
-			&i.CpuCoresTotal,
-			&i.CpuCoresAvailable,
-			&i.CpuModel,
+			&i.CPUCoresTotal,
+			&i.CPUCoresAvailable,
+			&i.CPUModel,
 			&i.CpuFlags,
 			&i.MemoryTotalMib,
 			&i.MemoryAvailableMib,
 			&i.Hugepages2mibTotal,
 			&i.Hugepages1gibTotal,
 			&i.KernelVersion,
-			&i.QemuVersion,
+			&i.QEMUVersion,
 			&i.NumaTopology,
 			&i.Capabilities,
 			&i.LastHeartbeatAt,
@@ -796,16 +796,16 @@ func (q *Queries) UncordonNode(ctx context.Context, id uuid.UUID) (Node, error) 
 		&i.MigrationPortRangeEnd,
 		&i.Status,
 		&i.CordonedAt,
-		&i.CpuCoresTotal,
-		&i.CpuCoresAvailable,
-		&i.CpuModel,
+		&i.CPUCoresTotal,
+		&i.CPUCoresAvailable,
+		&i.CPUModel,
 		&i.CpuFlags,
 		&i.MemoryTotalMib,
 		&i.MemoryAvailableMib,
 		&i.Hugepages2mibTotal,
 		&i.Hugepages1gibTotal,
 		&i.KernelVersion,
-		&i.QemuVersion,
+		&i.QEMUVersion,
 		&i.NumaTopology,
 		&i.Capabilities,
 		&i.LastHeartbeatAt,
@@ -855,16 +855,16 @@ type UpdateNodeHeartbeatParams struct {
 	MigrationHost            string
 	MigrationPortRangeStart  int32
 	MigrationPortRangeEnd    int32
-	CpuCoresTotal            *int32
-	CpuCoresAvailable        *int32
-	CpuModel                 *string
+	CPUCoresTotal            *int32
+	CPUCoresAvailable        *int32
+	CPUModel                 *string
 	CpuFlags                 []string
 	MemoryTotalMib           *int64
 	MemoryAvailableMib       *int64
 	Hugepages2mibTotal       *int32
 	Hugepages1gibTotal       *int32
 	KernelVersion            *string
-	QemuVersion              *string
+	QEMUVersion              *string
 	NumaTopology             []byte
 	Capabilities             []byte
 	SystemDiskTotalBytes     *int64
@@ -889,16 +889,16 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		arg.MigrationHost,
 		arg.MigrationPortRangeStart,
 		arg.MigrationPortRangeEnd,
-		arg.CpuCoresTotal,
-		arg.CpuCoresAvailable,
-		arg.CpuModel,
+		arg.CPUCoresTotal,
+		arg.CPUCoresAvailable,
+		arg.CPUModel,
 		arg.CpuFlags,
 		arg.MemoryTotalMib,
 		arg.MemoryAvailableMib,
 		arg.Hugepages2mibTotal,
 		arg.Hugepages1gibTotal,
 		arg.KernelVersion,
-		arg.QemuVersion,
+		arg.QEMUVersion,
 		arg.NumaTopology,
 		arg.Capabilities,
 		arg.SystemDiskTotalBytes,

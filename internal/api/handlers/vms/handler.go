@@ -152,7 +152,7 @@ type vmViewNames struct {
 // exists yet (worker has not upserted) — projectStatus collapses that
 // case to "creating". The vm_disks row is consumed upstream to derive
 // names.pool and is not threaded through here.
-func toView(vm store.Vm, runtime *store.VmRuntime, names vmViewNames) vmView {
+func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 	return vmView{
 		ID:           vm.ID.String(),
 		Name:         vm.Name,

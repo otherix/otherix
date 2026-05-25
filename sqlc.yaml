@@ -18,6 +18,36 @@ sql:
         emit_interface: true
         emit_exact_table_names: false
         emit_empty_slices: true
+        # Apply Google Go Style initialism conventions to identifiers
+        # sqlc derives from SQL names. Keys are SQL identifiers (table,
+        # column, or enum value names) and values are the Go-side form.
+        # Without these, `vms` table becomes type `Vm` (style violation:
+        # initialism `VM` should keep one case) and the `qemu_*` columns
+        # in `nodes` / `vm_runtime` become `Qemu*` fields.
+        rename:
+          # VM family tables → exported types. sqlc strips trailing
+          # plural `s` before applying rename, so keys are singular.
+          vm: "VM"
+          vm_disk: "VMDisk"
+          vm_disk_runtime: "VMDiskRuntime"
+          vm_nic: "VMNic"
+          vm_nic_runtime: "VMNicRuntime"
+          vm_runtime: "VMRuntime"
+          # VM family enums
+          vm_phase: "VMPhase"
+          vm_desired_phase: "VMDesiredPhase"
+          vm_state_at_snapshot: "VMStateAtSnapshot"
+          # QEMU columns surface on the `nodes` and `vm_runtime` tables
+          qemu_version: "QEMUVersion"
+          qemu_binaries: "QEMUBinaries"
+          qemu_pid: "QEMUPID"
+          # CPU columns surface on the `nodes` table
+          cpu_model: "CPUModel"
+          cpu_features: "CPUFeatures"
+          cpu_cores_total: "CPUCoresTotal"
+          cpu_cores_available: "CPUCoresAvailable"
+          cpu_cores_effective: "CPUCoresEffective"
+          cpu_arch: "CPUArch"
         overrides:
           - db_type: "uuid"
             go_type:

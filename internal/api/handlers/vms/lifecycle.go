@@ -89,7 +89,7 @@ func (op syncOp) label() string {
 // resultPhase returns the vm_runtime.phase value the CP writes after
 // а successful action. Reset is а runtime-identity-preserving reboot
 // so phase stays running.
-func (op syncOp) resultPhase() store.VmPhase {
+func (op syncOp) resultPhase() store.VMPhase {
 	switch op {
 	case syncOpPause:
 		return store.VmPhasePaused

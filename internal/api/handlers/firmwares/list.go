@@ -33,7 +33,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 				response.CodeValidationFailed, err.Error(), nil)
 			return
 		}
-		arch := store.CpuArch(a)
+		arch := store.CPUArch(a)
 		params.Architecture = &arch
 	}
 	if t := q.Get("type"); t != "" {

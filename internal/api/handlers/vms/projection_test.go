@@ -20,14 +20,14 @@ func TestProjectStatus(t *testing.T) {
 	deleted := time.Now().UTC()
 	cases := []struct {
 		name    string
-		vm      store.Vm
-		runtime *store.VmRuntime
+		vm      store.VM
+		runtime *store.VMRuntime
 		want    string
 	}{
 		{
 			name: "deleted vm overrides runtime",
-			vm:   store.Vm{ID: uuid.New(), DeletedAt: &deleted, DesiredPhase: store.VmDesiredPhaseRunning},
-			runtime: &store.VmRuntime{
+			vm:   store.VM{ID: uuid.New(), DeletedAt: &deleted, DesiredPhase: store.VmDesiredPhaseRunning},
+			runtime: &store.VMRuntime{
 				VmID:  uuid.New(),
 				Phase: store.VmPhaseRunning,
 			},
@@ -35,50 +35,50 @@ func TestProjectStatus(t *testing.T) {
 		},
 		{
 			name:    "nil runtime → creating",
-			vm:      store.Vm{ID: uuid.New(), DesiredPhase: store.VmDesiredPhaseRunning},
+			vm:      store.VM{ID: uuid.New(), DesiredPhase: store.VmDesiredPhaseRunning},
 			runtime: nil,
 			want:    statusCreating,
 		},
 		{
 			name:    "runtime pending → creating",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhasePending},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhasePending},
 			want:    statusCreating,
 		},
 		{
 			name:    "runtime running → running",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhaseRunning},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhaseRunning},
 			want:    statusRunning,
 		},
 		{
 			name:    "runtime paused → paused",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhasePaused},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhasePaused},
 			want:    statusPaused,
 		},
 		{
 			name:    "runtime stopped → stopped",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhaseStopped},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhaseStopped},
 			want:    statusStopped,
 		},
 		{
 			name:    "runtime error → error",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhaseError},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhaseError},
 			want:    statusError,
 		},
 		{
 			name:    "runtime gone → gone",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhaseGone},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhaseGone},
 			want:    statusGone,
 		},
 		{
 			name:    "runtime orphaned → orphaned",
-			vm:      store.Vm{ID: uuid.New()},
-			runtime: &store.VmRuntime{Phase: store.VmPhaseOrphaned},
+			vm:      store.VM{ID: uuid.New()},
+			runtime: &store.VMRuntime{Phase: store.VmPhaseOrphaned},
 			want:    statusOrphaned,
 		},
 	}
@@ -97,12 +97,12 @@ func TestProjectStatus(t *testing.T) {
 func TestMachineTypeFor(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		arch store.CpuArch
+		arch store.CPUArch
 		want string
 	}{
 		{arch: store.CpuArchAmd64, want: "q35"},
 		{arch: store.CpuArchArm64, want: "virt"},
-		{arch: store.CpuArch("unknown"), want: "q35"},
+		{arch: store.CPUArch("unknown"), want: "q35"},
 	}
 	for _, tc := range cases {
 		got := machineTypeFor(tc.arch)

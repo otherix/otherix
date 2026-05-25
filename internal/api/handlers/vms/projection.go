@@ -6,8 +6,8 @@ package vms
 import "github.com/otherix/otherix/internal/store"
 
 // User-facing VM status strings. Surfaced through the public API (the
-// `status` field on VM). Distinct from store.VmDesiredPhase (user
-// intent) and store.VmPhase (agent-observed runtime) — this is the
+// `status` field on VM). Distinct from store.VMDesiredPhase (user
+// intent) and store.VMPhase (agent-observed runtime) — this is the
 // projected union the API exposes.
 const (
 	statusCreating = "creating"
@@ -36,7 +36,7 @@ const (
 // pointer. Tested independently of the GET handler — the truth table
 // is the single source of behavioural truth for the wire `status`
 // field.
-func projectStatus(vm store.Vm, runtime *store.VmRuntime) string {
+func projectStatus(vm store.VM, runtime *store.VMRuntime) string {
 	if vm.DeletedAt != nil {
 		return statusGone
 	}

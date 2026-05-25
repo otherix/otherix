@@ -112,7 +112,7 @@ func buildListParams(w http.ResponseWriter, r *http.Request, caller *auth.User, 
 			writeValidation(w, r, err.Error())
 			return params, false
 		}
-		arch := store.CpuArch(v)
+		arch := store.CPUArch(v)
 		params.ArchitectureFilter = &arch
 	}
 	if v := first(q, "os_family"); v != "" {

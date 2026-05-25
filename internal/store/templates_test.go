@@ -331,7 +331,7 @@ func TestTemplatesListFilters(t *testing.T) {
 	bob := seedUser(t, ctx, s, "developer")
 
 	// Set up a small distinguishable fixture.
-	mk := func(owner uuid.UUID, arch store.CpuArch, fam store.OsFamily, name string) uuid.UUID {
+	mk := func(owner uuid.UUID, arch store.CPUArch, fam store.OsFamily, name string) uuid.UUID {
 		id := uuid.New()
 		params := defaultTemplateParams(id, owner, name)
 		params.Architecture = arch

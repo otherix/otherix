@@ -51,5 +51,5 @@ type Querier interface {
 	ListStoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	GetClusterSettings(ctx context.Context) (store.ClusterSetting, error)
 	GetNodeByName(ctx context.Context, name string) (store.Node, error)
-	GetVMByName(ctx context.Context, name string) (store.Vm, error)
+	GetVMByName(ctx context.Context, name string) (store.VM, error)
 }

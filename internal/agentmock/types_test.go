@@ -102,8 +102,8 @@ func TestImageToAPI_ZeroLastUsedAtOmitted(t *testing.T) {
 	if got.LastUsedAt != nil {
 		t.Errorf("LastUsedAt = %v, want nil for zero time", got.LastUsedAt)
 	}
-	if got.SourceUrl != nil {
-		t.Errorf("SourceUrl = %v, want nil for empty input", got.SourceUrl)
+	if got.SourceURL != nil {
+		t.Errorf("SourceURL = %v, want nil for empty input", got.SourceURL)
 	}
 }
 

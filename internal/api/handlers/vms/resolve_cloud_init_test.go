@@ -81,7 +81,7 @@ func TestResolveCloudInitUserData_ThreeState(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			vm := store.Vm{
+			vm := store.VM{
 				UserData:          tc.vmUserData,
 				CloudInitDisabled: tc.vmDisabled,
 			}

@@ -70,10 +70,10 @@ func postVMCreate(t *testing.T, m *agentmock.Mock, body vmCreateBody) uuid.UUID 
 	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil {
 		t.Fatalf("decode AsyncTaskAccepted: %v", err)
 	}
-	if accepted.TaskId == uuid.Nil {
-		t.Fatal("accepted.TaskId is zero")
+	if accepted.TaskID == uuid.Nil {
+		t.Fatal("accepted.TaskID is zero")
 	}
-	return accepted.TaskId
+	return accepted.TaskID
 }
 
 func TestVmsCreate_DefaultSuccessMaterialises(t *testing.T) {
@@ -87,9 +87,9 @@ func TestVmsCreate_DefaultSuccessMaterialises(t *testing.T) {
 		t.Fatalf("status = %q, want success", task.Status)
 	}
 
-	v, ok := m.GetStoredVM("demo")
+	v, ok := m.StoredVM("demo")
 	if !ok {
-		t.Fatalf("GetStoredVM(%q) = false; want staged after terminal-success", "demo")
+		t.Fatalf("StoredVM(%q) = false; want staged after terminal-success", "demo")
 	}
 	if v.ID != vmID {
 		t.Errorf("stored vm.ID = %s, want %s", v.ID, vmID)
@@ -127,7 +127,7 @@ func TestVmsCreate_QueuedFailure(t *testing.T) {
 	if task.Error == nil || task.Error.Code == nil || *task.Error.Code != "internal" {
 		t.Fatalf("error = %+v, want code=internal", task.Error)
 	}
-	if _, present := m.GetStoredVM("demo"); present {
+	if _, present := m.StoredVM("demo"); present {
 		t.Errorf("VM materialised on failed create")
 	}
 }
@@ -296,11 +296,11 @@ func TestVmsDelete_HappyPath(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	task := pollUntilTerminal(t, m, accepted.TaskId, 2*time.Second)
+	task := pollUntilTerminal(t, m, accepted.TaskID, 2*time.Second)
 	if string(task.Status) != "success" {
 		t.Fatalf("delete status = %q, want success", task.Status)
 	}
-	if _, present := m.GetStoredVM("demo"); present {
+	if _, present := m.StoredVM("demo"); present {
 		t.Errorf("VM still present after successful delete")
 	}
 }
@@ -346,11 +346,11 @@ func TestVmsDelete_QueuedFailurePreservesVM(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&accepted)
 	_ = resp.Body.Close()
 
-	task := pollUntilTerminal(t, m, accepted.TaskId, 2*time.Second)
+	task := pollUntilTerminal(t, m, accepted.TaskID, 2*time.Second)
 	if string(task.Status) != "failed" {
 		t.Fatalf("delete status = %q, want failed", task.Status)
 	}
-	if _, present := m.GetStoredVM("demo"); !present {
+	if _, present := m.StoredVM("demo"); !present {
 		t.Errorf("VM removed despite failed delete")
 	}
 }

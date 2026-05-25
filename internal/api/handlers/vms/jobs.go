@@ -58,8 +58,8 @@ func (VMDeleteArgs) Kind() string { return "vm.delete" }
 type CreateArgs struct {
 	TaskID        uuid.UUID
 	AgentTaskID   *uuid.UUID
-	VM            store.Vm
-	Disk          store.VmDisk
+	VM            store.VM
+	Disk          store.VMDisk
 	Template      store.Template
 	Pool          store.StoragePool
 	Node          store.Node
@@ -204,34 +204,34 @@ func (w *VMCreateWorker) Work(ctx context.Context, j *river.Job[VMCreateArgs]) e
 // matching error code.
 func (w *VMCreateWorker) loadCreateEntities(
 	ctx context.Context, taskID uuid.UUID, args VMCreateArgs,
-) (store.Vm, store.VmDisk, store.Template, store.StoragePool, store.Node, error) {
+) (store.VM, store.VMDisk, store.Template, store.StoragePool, store.Node, error) {
 	vm, err := w.store.Queries().GetVMByID(ctx, args.VMID)
 	if err != nil {
-		return store.Vm{}, store.VmDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
+		return store.VM{}, store.VMDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
 			w.fail(ctx, taskID, classifyLoadError(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
 	disks, err := w.store.Queries().ListVMDisksByVM(ctx, args.VMID)
 	if err != nil {
-		return store.Vm{}, store.VmDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
+		return store.VM{}, store.VMDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
 			w.fail(ctx, taskID, "internal", fmt.Errorf("list vm disks: %v", err))
 	}
 	if len(disks) == 0 {
-		return store.Vm{}, store.VmDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
+		return store.VM{}, store.VMDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
 			w.fail(ctx, taskID, "internal", fmt.Errorf("vm %s has no disks", args.VMID))
 	}
 	tpl, err := w.store.Queries().GetTemplate(ctx, args.TemplateID)
 	if err != nil {
-		return store.Vm{}, store.VmDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
+		return store.VM{}, store.VMDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
 			w.fail(ctx, taskID, classifyLoadError(err, errCodeVMTemplateMissing), fmt.Errorf("load template: %v", err))
 	}
 	pool, err := w.store.Queries().GetStoragePoolByID(ctx, args.PoolID)
 	if err != nil {
-		return store.Vm{}, store.VmDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
+		return store.VM{}, store.VMDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
 			w.fail(ctx, taskID, classifyLoadError(err, errCodeVMPoolMissing), fmt.Errorf("load pool: %v", err))
 	}
 	node, err := w.store.Queries().GetNodeByID(ctx, args.NodeID)
 	if err != nil {
-		return store.Vm{}, store.VmDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
+		return store.VM{}, store.VMDisk{}, store.Template{}, store.StoragePool{}, store.Node{},
 			w.fail(ctx, taskID, classifyLoadError(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
 	}
 	return vm, disks[0], tpl, pool, node, nil
@@ -322,15 +322,15 @@ func (w *VMDeleteWorker) Work(ctx context.Context, j *river.Job[VMDeleteArgs]) e
 // loadDeleteEntities resolves the vm + node FKs.
 func (w *VMDeleteWorker) loadDeleteEntities(
 	ctx context.Context, taskID uuid.UUID, args VMDeleteArgs,
-) (store.Vm, store.Node, error) {
+) (store.VM, store.Node, error) {
 	vm, err := w.store.Queries().GetVMByID(ctx, args.VMID)
 	if err != nil {
-		return store.Vm{}, store.Node{},
+		return store.VM{}, store.Node{},
 			w.fail(ctx, taskID, classifyLoadError(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
 	node, err := w.store.Queries().GetNodeByID(ctx, args.NodeID)
 	if err != nil {
-		return store.Vm{}, store.Node{},
+		return store.VM{}, store.Node{},
 			w.fail(ctx, taskID, classifyLoadError(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
 	}
 	return vm, node, nil
@@ -342,7 +342,7 @@ func (w *VMDeleteWorker) loadDeleteEntities(
 // template path leaves a nil here, in which case there's nothing
 // к decrement.
 func (w *VMDeleteWorker) projectDeleteSuccess(
-	ctx context.Context, taskID uuid.UUID, vm store.Vm, result DeleteResult,
+	ctx context.Context, taskID uuid.UUID, vm store.VM, result DeleteResult,
 ) error {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {

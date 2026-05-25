@@ -173,7 +173,7 @@ func (h *Handler) resolveListFilter(
 // views, filtered by statusFilter when non-empty. Inconsistent rows
 // (no vm_disks) are skipped silently — the inventory listing must not
 // abort because one row is in a transient state.
-func (h *Handler) projectPage(ctx context.Context, rows []store.Vm, statusFilter string) ([]vmView, error) {
+func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter string) ([]vmView, error) {
 	views := make([]vmView, 0, len(rows))
 	for _, vm := range rows {
 		runtime, err := h.loadRuntimeOrNil(ctx, vm.ID)
@@ -202,7 +202,7 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.Vm, statusFilter
 
 // loadRuntimeOrNil collapses pgx.ErrNoRows to (nil, nil). Used by Get
 // and List so the "creating" state projection stays consistent.
-func (h *Handler) loadRuntimeOrNil(ctx context.Context, vmID uuid.UUID) (*store.VmRuntime, error) {
+func (h *Handler) loadRuntimeOrNil(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, error) {
 	rt, err := h.store.Queries().GetVMRuntime(ctx, vmID)
 	switch {
 	case err == nil:
@@ -219,7 +219,7 @@ func (h *Handler) loadRuntimeOrNil(ctx context.Context, vmID uuid.UUID) (*store.
 // the inventory ended or the post-projection filter dropped rows but
 // the SQL pagination already advanced; the next call still resumes
 // from rows[last].
-func nextCursorFor(rows []store.Vm, limit int) *string {
+func nextCursorFor(rows []store.VM, limit int) *string {
 	if len(rows) < limit {
 		return nil
 	}

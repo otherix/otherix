@@ -36,10 +36,10 @@ type heartbeatCapabilities struct {
 	Hugepages2MibTotal *int              `json:"hugepages_2mib_total,omitempty"`
 	Hugepages1GibTotal *int              `json:"hugepages_1gib_total,omitempty"`
 	KernelVersion      string            `json:"kernel_version"`
-	QemuVersion        string            `json:"qemu_version"`
+	QEMUVersion        string            `json:"qemu_version"`
 	KvmAvailable       bool              `json:"kvm_available"`
 	NestedVirt         bool              `json:"nested_virt"`
-	QemuBinaries       map[string]string `json:"qemu_binaries"`
+	QEMUBinaries       map[string]string `json:"qemu_binaries"`
 	Firmwares          []heartbeatFW     `json:"firmwares"`
 }
 
@@ -115,10 +115,10 @@ func (m *Mock) buildHeartbeatBody() ([]byte, error) {
 		Hugepages2MibTotal: s.hugepages2MiBTotal,
 		Hugepages1GibTotal: s.hugepages1GiBTotal,
 		KernelVersion:      s.kernelVersion,
-		QemuVersion:        s.qemuVersion,
+		QEMUVersion:        s.qemuVersion,
 		KvmAvailable:       s.kvmAvailable,
 		NestedVirt:         s.nestedVirt,
-		QemuBinaries:       cloneStringMap(s.qemuBinaries),
+		QEMUBinaries:       cloneStringMap(s.qemuBinaries),
 	}
 	for _, f := range s.firmwares {
 		fw := heartbeatFW{
@@ -182,15 +182,15 @@ func (m *Mock) pushHeartbeat(ctx context.Context, body []byte) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// heartbeatLoop drives the periodic push. It exits when the
-// goroutine context is cancelled.
-func (m *Mock) heartbeatLoop() {
+// heartbeatLoop drives the periodic push. It exits when ctx is
+// cancelled (Stop() owns the cancel func).
+func (m *Mock) heartbeatLoop(ctx context.Context) {
 	defer close(m.heartbeatDone)
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-m.heartbeatCtx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			m.state.mu.Lock()
@@ -204,9 +204,9 @@ func (m *Mock) heartbeatLoop() {
 				m.logger.Warn("agentmock: heartbeat build failed", slog.String("error", err.Error()))
 				continue
 			}
-			status, err := m.pushHeartbeat(m.heartbeatCtx, body)
+			status, err := m.pushHeartbeat(ctx, body)
 			if err != nil {
-				if m.heartbeatCtx.Err() == nil {
+				if ctx.Err() == nil {
 					m.logger.Warn("agentmock: heartbeat push failed", slog.String("error", err.Error()))
 				}
 				continue

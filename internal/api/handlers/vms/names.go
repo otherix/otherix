@@ -28,7 +28,7 @@ import (
 // last-seen name and an error sentinel that the caller decides how to
 // handle. Currently every caller surfaces such inconsistencies as 500
 // — they should not happen against the live schema.
-func (h *Handler) resolveViewNames(ctx context.Context, vm store.Vm, runtime *store.VmRuntime, disk store.VmDisk) (vmViewNames, error) {
+func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *store.VMRuntime, disk store.VMDisk) (vmViewNames, error) {
 	names := vmViewNames{}
 
 	if vm.TemplateID != nil {
@@ -76,7 +76,7 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.Vm, runtime *st
 // state). When no runtime row exists yet, falls back к
 // vms.pinned_node_id so a 'creating' VM still shows where the
 // scheduler placed it; returns nil otherwise.
-func observedNodeID(vm store.Vm, runtime *store.VmRuntime) *uuid.UUID {
+func observedNodeID(vm store.VM, runtime *store.VMRuntime) *uuid.UUID {
 	if runtime != nil && runtime.CurrentNodeID != nil {
 		id := *runtime.CurrentNodeID
 		return &id

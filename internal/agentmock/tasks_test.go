@@ -105,18 +105,18 @@ func TestStoragePoolsScan_DefaultSuccess(t *testing.T) {
 	poolID := "test-pool"
 
 	accepted := scanPool(t, m, poolID)
-	if accepted.TaskId == uuid.Nil {
+	if accepted.TaskID == uuid.Nil {
 		t.Fatal("AsyncTaskAccepted.task_id is zero uuid")
 	}
 	if string(accepted.Status) != "pending" {
 		t.Errorf("AsyncTaskAccepted.status = %q, want pending", accepted.Status)
 	}
-	want := "/v1/tasks/" + accepted.TaskId.String()
+	want := "/v1/tasks/" + accepted.TaskID.String()
 	if accepted.Links.Self != want {
 		t.Errorf("AsyncTaskAccepted.links.self = %q, want %q", accepted.Links.Self, want)
 	}
 
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 	if string(final.Status) != "success" {
 		t.Errorf("final status = %q, want success", final.Status)
 	}
@@ -150,7 +150,7 @@ func TestStoragePoolsScan_QueuedSuccess(t *testing.T) {
 	})
 
 	accepted := scanPool(t, m, poolID)
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 
 	if string(final.Status) != "success" {
 		t.Errorf("status = %q, want success", final.Status)
@@ -185,7 +185,7 @@ func TestStoragePoolsScan_QueuedFailure(t *testing.T) {
 	})
 
 	accepted := scanPool(t, m, poolID)
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 
 	if string(final.Status) != "failed" {
 		t.Errorf("status = %q, want failed", final.Status)
@@ -226,7 +226,7 @@ func TestStoragePoolsScan_FIFOOrder(t *testing.T) {
 
 	for _, want := range []int64{100, 200, 300} {
 		accepted := scanPool(t, m, poolID)
-		final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+		final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 		if got := (*final.Result)["capacity_bytes"]; got != float64(want) {
 			t.Errorf("capacity_bytes = %v, want %d", got, want)
 		}
@@ -235,7 +235,7 @@ func TestStoragePoolsScan_FIFOOrder(t *testing.T) {
 	// Queue exhausted — fourth scan falls back to default success
 	// with zero capacity.
 	accepted := scanPool(t, m, poolID)
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 	if got := (*final.Result)["capacity_bytes"]; got != float64(0) {
 		t.Errorf("post-exhaustion default capacity_bytes = %v, want 0", got)
 	}
@@ -255,13 +255,13 @@ func TestStoragePoolsScan_PerPoolQueue(t *testing.T) {
 	})
 
 	acceptedA := scanPool(t, m, poolA)
-	finalA := pollUntilTerminal(t, m, acceptedA.TaskId, 500*time.Millisecond)
+	finalA := pollUntilTerminal(t, m, acceptedA.TaskID, 500*time.Millisecond)
 	if got := (*finalA.Result)["capacity_bytes"]; got != float64(111) {
 		t.Errorf("pool A capacity_bytes = %v, want 111", got)
 	}
 
 	acceptedB := scanPool(t, m, poolB)
-	finalB := pollUntilTerminal(t, m, acceptedB.TaskId, 500*time.Millisecond)
+	finalB := pollUntilTerminal(t, m, acceptedB.TaskID, 500*time.Millisecond)
 	if got := (*finalB.Result)["capacity_bytes"]; got != float64(222) {
 		t.Errorf("pool B capacity_bytes = %v, want 222", got)
 	}
@@ -281,13 +281,13 @@ func TestStoragePoolsScan_ResourceID(t *testing.T) {
 
 	m.AddPoolScanResult(poolID, agentmock.PoolScanResult{Delay: 20 * time.Millisecond})
 	accepted := scanPool(t, m, poolID)
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 
-	if final.ResourceId == nil {
+	if final.ResourceID == nil {
 		t.Fatal("ResourceId is nil")
 	}
-	if *final.ResourceId != poolUUID.String() {
-		t.Errorf("ResourceId = %q, want %q", *final.ResourceId, poolUUID.String())
+	if *final.ResourceID != poolUUID.String() {
+		t.Errorf("ResourceId = %q, want %q", *final.ResourceID, poolUUID.String())
 	}
 	if final.ResourceType != "storage_pool" {
 		t.Errorf("ResourceType = %q, want storage_pool", final.ResourceType)
@@ -322,19 +322,19 @@ func TestTasksGet_PendingRunningTerminalProgression(t *testing.T) {
 
 	// Immediate poll: pending. The mock just registered the task, so
 	// elapsed ≈ 0 < delay/2 = 100ms.
-	if _, body := getTask(t, m, accepted.TaskId); string(body.Status) != "pending" {
+	if _, body := getTask(t, m, accepted.TaskID); string(body.Status) != "pending" {
 		t.Errorf("immediate status = %q, want pending", body.Status)
 	}
 
 	// Poll once we expect to be inside the running window.
 	time.Sleep(delay/2 + 20*time.Millisecond)
-	if _, body := getTask(t, m, accepted.TaskId); string(body.Status) != "running" {
+	if _, body := getTask(t, m, accepted.TaskID); string(body.Status) != "running" {
 		t.Errorf("mid-delay status = %q, want running", body.Status)
 	}
 
 	// Poll past the terminal boundary.
 	time.Sleep(delay/2 + 30*time.Millisecond)
-	_, body := getTask(t, m, accepted.TaskId)
+	_, body := getTask(t, m, accepted.TaskID)
 	if string(body.Status) != "success" {
 		t.Errorf("post-delay status = %q, want success", body.Status)
 	}
@@ -376,14 +376,14 @@ func TestTasksGet_HonoursInjection(t *testing.T) {
 	m.InjectError("tasks.get", agentmock.InjectedError{
 		Status: 500, Code: "internal", Message: "synthetic",
 	})
-	status, _ := getTask(t, m, accepted.TaskId)
+	status, _ := getTask(t, m, accepted.TaskID)
 	if status != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (injection)", status)
 	}
 
 	// Subsequent calls (single-shot injection consumed) revert to
 	// the functional path.
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 	if string(final.Status) != "success" {
 		t.Errorf("post-injection status = %q, want success", final.Status)
 	}
@@ -414,7 +414,7 @@ func TestTasksGet_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range polls {
-				status, body := getTask(t, m, accepted.TaskId)
+				status, body := getTask(t, m, accepted.TaskID)
 				if status != http.StatusOK {
 					errs <- fmt.Errorf("status = %d", status)
 					return
@@ -447,7 +447,7 @@ func TestPoolScanResult_StatusDefault(t *testing.T) {
 	})
 
 	accepted := scanPool(t, m, poolID)
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 	if string(final.Status) != "success" {
 		t.Errorf("status = %q, want success (empty Status defaults)", final.Status)
 	}
@@ -463,7 +463,7 @@ func TestPoolScanResult_FailedWithoutErrorEnvelope(t *testing.T) {
 	})
 
 	accepted := scanPool(t, m, poolID)
-	final := pollUntilTerminal(t, m, accepted.TaskId, 500*time.Millisecond)
+	final := pollUntilTerminal(t, m, accepted.TaskID, 500*time.Millisecond)
 	if string(final.Status) != "failed" {
 		t.Errorf("status = %q, want failed", final.Status)
 	}

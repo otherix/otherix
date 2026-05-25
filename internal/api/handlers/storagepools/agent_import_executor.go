@@ -95,7 +95,7 @@ func (e *agentImportExecutor) postOrResume(ctx context.Context, args ImportArgs)
 	idemKey := uuid.NewString()
 	url := args.Template.ImageUrl
 	body := agentapi.ImageImportRequest{
-		SourceUrl: &url,
+		SourceURL: &url,
 		Format:    agentapi.ImageImportRequestFormat(args.Template.ImageFormat),
 	}
 	// nil bytes → compute mode (agent computes during

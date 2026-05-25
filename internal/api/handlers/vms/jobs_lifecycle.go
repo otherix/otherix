@@ -73,7 +73,7 @@ func (VMRebootArgs) Kind() string { return "vm.reboot" }
 type LifecycleArgs struct {
 	TaskID        uuid.UUID
 	AgentTaskID   *uuid.UUID
-	VM            store.Vm
+	VM            store.VM
 	Node          store.Node
 	OnAgentTaskID func(ctx context.Context, agentTaskID uuid.UUID) error
 }
@@ -146,8 +146,8 @@ func (w *vmLifecycleAsyncWorker) runOne(
 	ctx context.Context,
 	taskID, vmID, nodeID uuid.UUID,
 	op string,
-	desiredPhase store.VmDesiredPhase,
-	runtimePhase store.VmPhase,
+	desiredPhase store.VMDesiredPhase,
+	runtimePhase store.VMPhase,
 	failureCode string,
 ) error {
 	if w.executor == nil {
@@ -198,8 +198,8 @@ func (w *vmLifecycleAsyncWorker) runOne(
 func (w *vmLifecycleAsyncWorker) projectSuccess(
 	ctx context.Context,
 	taskID, vmID uuid.UUID,
-	desiredPhase store.VmDesiredPhase,
-	runtimePhase store.VmPhase,
+	desiredPhase store.VMDesiredPhase,
+	runtimePhase store.VMPhase,
 	result LifecycleResult,
 ) error {
 	resultJSON, err := json.Marshal(result)
@@ -289,7 +289,7 @@ type VMRebootWorker struct {
 func (w *VMRebootWorker) Work(ctx context.Context, j *river.Job[VMRebootArgs]) error {
 	return w.engine.runOne(ctx,
 		j.Args.TaskID, j.Args.VMID, j.Args.NodeID,
-		"reboot", store.VmDesiredPhase(""), store.VmPhaseRunning, errCodeVMRebootFailed)
+		"reboot", store.VMDesiredPhase(""), store.VmPhaseRunning, errCodeVMRebootFailed)
 }
 
 // LifecycleWorkers registers the four async lifecycle workers on the

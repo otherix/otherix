@@ -42,7 +42,7 @@ type stubQuerier struct {
 	nodeErr    error
 	nodeByName bool
 
-	vm       store.Vm
+	vm       store.VM
 	vmErr    error
 	vmByName bool
 }
@@ -74,7 +74,7 @@ func (s *stubQuerier) GetNodeByName(_ context.Context, _ string) (store.Node, er
 	return s.node, s.nodeErr
 }
 
-func (s *stubQuerier) GetVMByName(_ context.Context, _ string) (store.Vm, error) {
+func (s *stubQuerier) GetVMByName(_ context.Context, _ string) (store.VM, error) {
 	s.vmByName = true
 	return s.vm, s.vmErr
 }

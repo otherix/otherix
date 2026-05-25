@@ -231,7 +231,7 @@ func (h *Handler) upsertNode(ctx context.Context, q *store.Queries, req joinRequ
 	node, err := q.CreateNode(ctx, store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    req.NodeName,
-		Architecture:            store.CpuArch(req.Architecture),
+		Architecture:            store.CPUArch(req.Architecture),
 		AdvertisedEndpoint:      req.AdvertisedEndpoint,
 		MigrationHost:           req.MigrationHost,
 		MigrationPortRangeStart: req.MigrationPortRangeStart,

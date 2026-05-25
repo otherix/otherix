@@ -426,16 +426,16 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, q *store.Queries, nodeID 
 		MigrationHost:            migHost,
 		MigrationPortRangeStart:  migStart,
 		MigrationPortRangeEnd:    migEnd,
-		CpuCoresTotal:            ptrInt32(caps.CPUCoresTotal),
-		CpuCoresAvailable:        ptrInt32(body.Resources.CPUCoresAvailable),
-		CpuModel:                 ptrString(caps.CPUModel),
+		CPUCoresTotal:            ptrInt32(caps.CPUCoresTotal),
+		CPUCoresAvailable:        ptrInt32(body.Resources.CPUCoresAvailable),
+		CPUModel:                 ptrString(caps.CPUModel),
 		CpuFlags:                 nonNilStrings(caps.CPUFlags),
 		MemoryTotalMib:           ptrInt64(caps.MemoryTotalMib),
 		MemoryAvailableMib:       ptrInt64(body.Resources.MemoryAvailableMib),
 		Hugepages2mibTotal:       caps.Hugepages2MibTotal,
 		Hugepages1gibTotal:       caps.Hugepages1GibTotal,
 		KernelVersion:            ptrString(caps.KernelVersion),
-		QemuVersion:              ptrString(caps.QemuVersion),
+		QEMUVersion:              ptrString(caps.QEMUVersion),
 		NumaTopology:             numaBlob,
 		Capabilities:             capsBlob,
 		SystemDiskTotalBytes:     body.Resources.SystemDiskTotalBytes,
@@ -467,7 +467,7 @@ func (h *Handler) applyFirmwares(ctx context.Context, q *store.Queries, nodeID u
 	for _, fr := range reports {
 		fwID, err := q.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{
 			Name:         fr.Name,
-			Architecture: store.CpuArch(fr.Architecture),
+			Architecture: store.CPUArch(fr.Architecture),
 			Type:         store.FirmwareType(fr.Type),
 		})
 		if err != nil {
@@ -540,9 +540,9 @@ func (h *Handler) applyVMs(ctx context.Context, q *store.Queries, nodeID uuid.UU
 		params := store.UpsertVMRuntimeParams{
 			VmID:               r.VMUUID,
 			CurrentNodeID:      &nodeIDCopy,
-			Phase:              store.VmPhase(r.Phase),
+			Phase:              store.VMPhase(r.Phase),
 			ObservedGeneration: obsGen,
-			QemuPid:            r.QemuPid,
+			QEMUPID:            r.QEMUPID,
 			LastStartedAt:      lastStarted,
 			LastErrorMessage:   r.LastErrorMessage,
 		}

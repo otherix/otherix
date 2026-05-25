@@ -57,7 +57,7 @@ func (h *Handler) ConsoleIssueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v, err := h.manager.GetByName(name)
+	v, err := h.manager.ByName(name)
 	if err != nil {
 		if errors.Is(err, vm.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
@@ -169,7 +169,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v, err := h.manager.GetByName(name)
+	v, err := h.manager.ByName(name)
 	if err != nil {
 		if errors.Is(err, vm.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,

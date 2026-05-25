@@ -59,7 +59,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	row, err := h.store.Queries().CreateNode(r.Context(), store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    req.Name,
-		Architecture:            store.CpuArch(req.Architecture),
+		Architecture:            store.CPUArch(req.Architecture),
 		AdvertisedEndpoint:      req.AdvertisedEndpoint,
 		MigrationHost:           req.MigrationHost,
 		MigrationPortRangeStart: req.MigrationPortRangeStart,

@@ -76,7 +76,7 @@ returning id, name, architecture, type, version, secure_boot, is_default, create
 type CreateFirmwareParams struct {
 	ID           uuid.UUID
 	Name         string
-	Architecture CpuArch
+	Architecture CPUArch
 	Type         FirmwareType
 	Version      *string
 	SecureBoot   bool
@@ -135,7 +135,7 @@ where architecture = $1
 `
 
 type GetDefaultFirmwareForArchAndTypeParams struct {
-	Architecture CpuArch
+	Architecture CPUArch
 	Type         FirmwareType
 }
 
@@ -207,7 +207,7 @@ limit $5
 `
 
 type ListFirmwaresParams struct {
-	Architecture    *CpuArch
+	Architecture    *CPUArch
 	Type            *FirmwareType
 	CursorCreatedAt *time.Time
 	CursorID        *uuid.UUID
@@ -261,7 +261,7 @@ where name = $1
 
 type LookupFirmwareByCatalogParams struct {
 	Name         string
-	Architecture CpuArch
+	Architecture CPUArch
 	Type         FirmwareType
 }
 

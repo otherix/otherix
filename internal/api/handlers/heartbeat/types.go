@@ -47,10 +47,10 @@ type nodeCapabilitiesReport struct {
 	Hugepages2MibTotal *int32            `json:"hugepages_2mib_total"`
 	Hugepages1GibTotal *int32            `json:"hugepages_1gib_total"`
 	KernelVersion      string            `json:"kernel_version"`
-	QemuVersion        string            `json:"qemu_version"`
+	QEMUVersion        string            `json:"qemu_version"`
 	KvmAvailable       bool              `json:"kvm_available"`
 	NestedVirt         bool              `json:"nested_virt"`
-	QemuBinaries       map[string]string `json:"qemu_binaries"`
+	QEMUBinaries       map[string]string `json:"qemu_binaries"`
 	NumaTopology       map[string]any    `json:"numa_topology,omitempty"`
 	Firmwares          []firmwareReport  `json:"firmwares"`
 }
@@ -80,7 +80,7 @@ type vmReport struct {
 	VMUUID             uuid.UUID `json:"vm_uuid"`
 	Phase              string    `json:"phase"`
 	ObservedGeneration *int64    `json:"observed_generation"`
-	QemuPid            *int32    `json:"qemu_pid"`
+	QEMUPID            *int32    `json:"qemu_pid"`
 	LastStartedAt      *string   `json:"last_started_at"`
 	LastErrorMessage   *string   `json:"last_error_message"`
 }

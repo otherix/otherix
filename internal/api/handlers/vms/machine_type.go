@@ -19,7 +19,7 @@ import "github.com/otherix/otherix/internal/store"
 // `qemu_spawn_failed` envelope. A future iteration adds a
 // `machine_type` column to templates and the helper falls back here
 // only when the override is empty.
-func machineTypeFor(arch store.CpuArch) string {
+func machineTypeFor(arch store.CPUArch) string {
 	switch arch {
 	case store.CpuArchArm64:
 		return "virt"
