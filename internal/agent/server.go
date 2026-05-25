@@ -288,9 +288,10 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 	tasksHandler := taskshandlers.New(manager, log)
 	storagePoolsHandler := storagepoolshandlers.New(manager, log)
 
-	// Streaming endpoint — registered before the Timeout Group below.
-	// Hijacked http.Server deadlines also cleared inside the handler.
+	// Streaming endpoints - registered before the Timeout Group below.
+	// Hijacked http.Server deadlines also cleared inside each handler.
 	r.Get("/v1/vms/{vm_name}/console-stream", vmsHandler.ConsoleStream)
+	r.Get("/v1/vms/{vm_name}/logs", vmsHandler.Logs)
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(cfg.Server.ReadTimeout))
