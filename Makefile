@@ -88,6 +88,7 @@ test-short: ## Run unit tests in short mode
 
 test-migrations: ## Run integration tests (requires Docker)
 	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
+	  ./internal/agent/... \
 	  ./internal/api/... \
 	  ./internal/auth/... \
 	  ./internal/migrationtest/... \

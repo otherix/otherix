@@ -33,7 +33,7 @@ jobs:
       - name: govulncheck
         run: make vuln
 
-  test:
+  test-unit:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -42,23 +42,33 @@ jobs:
           go-version: "1.26.3"
           cache: true
       - name: Unit tests
-        run: go test ./... -race -coverprofile=coverage.out
-      - name: Integration tests
-        run: |
-          go test -tags=integration,test_fast_argon -count=1 -race \
-            ./internal/agent/... \
-            ./internal/api/... \
-            ./internal/auth/... \
-            ./internal/migrationtest/... \
-            ./internal/store/... \
-            ./internal/store/migrate/... \
-            ./tests/migrations/...
-      - name: Integration tests (CP↔agent)
-        run: make test-integration
+        run: go test ./... -race -tags=test_fast_argon -coverprofile=coverage.out
       - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.out
+
+  test-migrations:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - name: Integration tests (migrations + store + api)
+        run: make test-migrations
+
+  test-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.3"
+          cache: true
+      - name: Integration tests (CP↔agent)
+        run: make test-integration
 
   build:
     runs-on: ubuntu-24.04
