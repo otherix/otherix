@@ -5,10 +5,13 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -75,8 +78,23 @@ func runConsole(cmd *cobra.Command, args []string) error {
 	if !term.IsTerminal(fd) {
 		return fmt.Errorf("stdin is not а terminal — console requires an interactive shell")
 	}
+
+	// Dial BEFORE flipping the terminal to raw mode so any failure
+	// surfaces against a normally-rendered stderr (no stale "connected
+	// to ..." banner above the error). Likewise we inspect the upstream
+	// response on dial failure and translate well-known HTTP statuses
+	// into operator-language instead of leaking the WebSocket internals.
+	wsConn, dialResp, err := websocket.Dial(cmd.Context(), resp.WebsocketURL, &websocket.DialOptions{
+		HTTPClient: c.HTTPClient(),
+	})
+	if err != nil {
+		return classifyConsoleDialError(vmName, dialResp, err)
+	}
+	defer func() { _ = wsConn.Close(websocket.StatusInternalError, "") }()
+
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
+		_ = wsConn.Close(websocket.StatusInternalError, "")
 		return fmt.Errorf("enter raw mode: %v", err)
 	}
 	restore := newTerminalRestorer(fd, oldState)
@@ -84,14 +102,6 @@ func runConsole(cmd *cobra.Command, args []string) error {
 
 	stderr := cmd.ErrOrStderr()
 	_, _ = fmt.Fprintf(stderr, "\r\nconnected к %s (serial console). Press Ctrl+] to detach.\r\n", vmName)
-
-	wsConn, _, err := websocket.Dial(cmd.Context(), resp.WebsocketURL, &websocket.DialOptions{
-		HTTPClient: c.HTTPClient(),
-	})
-	if err != nil {
-		return fmt.Errorf("websocket dial: %v", err)
-	}
-	defer func() { _ = wsConn.Close(websocket.StatusInternalError, "") }()
 
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
@@ -106,6 +116,76 @@ func runConsole(cmd *cobra.Command, args []string) error {
 	restore()
 	_, _ = fmt.Fprintln(stderr, "session ended.")
 	return nil
+}
+
+// classifyConsoleDialError turns a coder/websocket.Dial failure into an
+// operator-facing error. websocket.Dial returns the upstream HTTP
+// response when the upgrade was rejected (non-101 status); the CP and
+// the agent both populate a JSON error envelope on those 4xx / 5xx
+// paths, so the most-actionable message is the envelope's `message`
+// field. When the envelope is missing (network failure mid-handshake
+// etc.) we fall back to a generic message keyed off the HTTP status
+// so the operator never has to read about WebSocket frame negotiation.
+func classifyConsoleDialError(vmName string, resp *http.Response, dialErr error) error {
+	if resp == nil {
+		return fmt.Errorf("connect_failed: %s: %v", vmName, dialErr)
+	}
+	envelope := decodeErrorEnvelope(resp)
+	switch resp.StatusCode {
+	case http.StatusConflict:
+		switch envelope.Code {
+		case "console_in_use":
+			return fmt.Errorf("console_in_use: another console session is already open for %s; close it (Ctrl+] in the other terminal) and retry", vmName)
+		case "vm_not_running":
+			return fmt.Errorf("vm_not_running: %s is not running; start it first ('otherix vm start %s')", vmName, vmName)
+		case "protocol_not_available":
+			return fmt.Errorf("protocol_not_available: serial console is not exposed by %s", vmName)
+		}
+		return fmt.Errorf("conflict: %s: %s", vmName, envelope.Message)
+	case http.StatusUnauthorized:
+		return fmt.Errorf("unauthenticated: %s rejected the console token (likely expired or already consumed); retry the command", vmName)
+	case http.StatusForbidden:
+		return fmt.Errorf("permission_denied: you do not have permission to open a console on %s", vmName)
+	case http.StatusNotFound:
+		return fmt.Errorf("vm_not_found: %s", vmName)
+	case http.StatusBadGateway:
+		return fmt.Errorf("agent_unreachable: control plane could not reach the agent owning %s", vmName)
+	}
+	if envelope.Message != "" {
+		return fmt.Errorf("%s: %s", strings.ToLower(envelope.Code), envelope.Message)
+	}
+	return fmt.Errorf("connect_failed: %s: status %d", vmName, resp.StatusCode)
+}
+
+// errorEnvelope mirrors the JSON shape control-plane.yaml's
+// `components/schemas/Error` and the agent's matching shape. We keep
+// it local instead of importing the response package so the CLI does
+// not pull in the server-side envelope helpers.
+type errorEnvelope struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// decodeErrorEnvelope reads up to a few KiB of the response body and
+// extracts the inner error object. Missing / malformed payload yields
+// a zero-value envelope so the caller can fall back to status-based
+// classification.
+func decodeErrorEnvelope(resp *http.Response) errorEnvelope {
+	if resp.Body == nil {
+		return errorEnvelope{}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+	if err != nil || len(body) == 0 {
+		return errorEnvelope{}
+	}
+	var wire struct {
+		Error errorEnvelope `json:"error"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return errorEnvelope{}
+	}
+	return wire.Error
 }
 
 // newTerminalRestorer wraps term.Restore in а once-only closure so
