@@ -17,12 +17,17 @@ type vmFixture struct {
 }
 
 // randSlug returns a short hex-derived suffix to make seed names unique
-// across tests sharing one container. Uses uuid_generate_v7 for entropy + ms-time.
+// across tests sharing one container. Uses the full uuid_generate_v7
+// dash-stripped form (32 hex chars). The naive truncated form
+// (first 12 chars) is а pure millisecond timestamp в uuid v7,
+// so two calls within the same ms collide on `uq_nodes_name`.
+// 32 chars carries the full 128-bit identifier so consecutive
+// callers stay distinct.
 func randSlug(t *testing.T) string {
 	t.Helper()
 	var s string
 	if err := shared.Pool.QueryRow(context.Background(),
-		`select substring(replace(uuid_generate_v7()::text, '-', '') from 1 for 12)`,
+		`select replace(uuid_generate_v7()::text, '-', '')`,
 	).Scan(&s); err != nil {
 		t.Fatalf("randSlug: %v", err)
 	}

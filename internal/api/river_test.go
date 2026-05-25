@@ -92,14 +92,23 @@ func TestBuildRiverClientLifecycle(t *testing.T) {
 		t.Fatalf("InsertLivenessProbe: %v", err)
 	}
 
-	select {
-	case ev := <-completions:
-		if ev.Job.Kind != "system.liveness_probe" {
-			t.Fatalf("unexpected completed kind = %q, want %q", ev.Job.Kind, "system.liveness_probe")
+	// Production wiring also registers periodic workers
+	// (heartbeat.reconcile, etc.) that schedule themselves on Start,
+	// so other Kinds can race into `completions` ahead of our probe.
+	// Filter for the probe kind and treat anything else as background
+	// noise so this assertion stays specific to the wiring being tested.
+	probeDeadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-completions:
+			if ev.Job.Kind == "system.liveness_probe" {
+				goto probeCompleted
+			}
+		case <-probeDeadline:
+			t.Fatalf("liveness probe did not complete within 5s")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("liveness probe did not complete within 5s")
 	}
+probeCompleted:
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopCancel()
