@@ -8,37 +8,94 @@
 // rationale.
 package serialmux
 
-// sanitize applies moderate sanitization to raw serial bytes per the
-// L14 rules captured in the iteration spec:
+// maxPendingCarry caps the partial-CSI bytes held between Process
+// calls. A real CSI sequence is at most ~10 bytes; 64 gives us
+// generous slack for SS3 / OSC variations we may add later, while
+// still bounding worst-case memory growth if the guest emits a
+// long sequence of bare ESC bytes that never terminates.
+const maxPendingCarry = 64
+
+// Sanitizer is the stateful wrapper around the byte-level sanitize
+// rules in sanitizeWithCarry. The multiplexer instantiates one per
+// VM and feeds every chunk read from the QEMU socket through Process;
+// the Sanitizer carries partial ANSI CSI sequences across chunk
+// boundaries so the L14 "preserve ANSI CSI verbatim" rule is honored
+// even when the QEMU socket Read happens to split mid-sequence.
+//
+// Sanitizer is not safe for concurrent use; the pump is the sole
+// caller and serialises chunk processing by construction.
+type Sanitizer struct {
+	pending []byte
+}
+
+// NewSanitizer returns a fresh sanitizer with an empty carry buffer.
+func NewSanitizer() *Sanitizer { return &Sanitizer{} }
+
+// Process sanitizes the next chunk of raw serial bytes. It merges
+// any pending partial CSI bytes from the previous Process call,
+// applies the L14 sanitization rules, and saves any new trailing
+// partial CSI bytes into the carry buffer for the next call. The
+// returned slice is a fresh allocation.
+func (s *Sanitizer) Process(chunk []byte) []byte {
+	var data []byte
+	if len(s.pending) > 0 {
+		data = make([]byte, 0, len(s.pending)+len(chunk))
+		data = append(data, s.pending...)
+		data = append(data, chunk...)
+		s.pending = nil
+	} else {
+		data = chunk
+	}
+	out, carry := sanitizeWithCarry(data)
+	if len(carry) > 0 {
+		if len(carry) > maxPendingCarry {
+			// Pending grew past the cap; the carry is almost
+			// certainly garbage (orphan ESC bytes never terminated).
+			// Drop it so the next chunk starts clean.
+			return out
+		}
+		s.pending = append([]byte(nil), carry...)
+	}
+	return out
+}
+
+// sanitizeWithCarry applies the L14 sanitization rules to data and
+// returns (out, carry):
+//
+//   - out: sanitized bytes ready for emission.
+//   - carry: trailing bytes that may be the head of a CSI sequence
+//     whose tail is in the next chunk; the caller (Sanitizer) saves
+//     them and prepends to the next Process call.
+//
+// L14 rules:
 //
 //   - Strip control characters except \t (0x09) and \n (0x0A).
-//   - Normalize CRLF (\r\n) and standalone CR to LF: \r is unconditionally
-//     dropped, so a preceding \r before \n simply disappears.
-//   - Preserve UTF-8 multi-byte sequences (any byte >= 0x80 passes
-//     through unchanged; we do not validate UTF-8 - guest output may
-//     legitimately contain non-UTF-8 noise).
-//   - Preserve ANSI CSI escape sequences (ESC '[' parameters*
-//     intermediates* final) verbatim when fully present in the chunk.
+//   - Normalize CRLF (\r\n) and standalone CR to LF: \r is
+//     unconditionally dropped, so a preceding \r before \n simply
+//     disappears.
+//   - Preserve UTF-8 multi-byte sequences (bytes >= 0x80 pass through
+//     unchanged; we do not validate UTF-8).
+//   - Preserve ANSI CSI escape sequences (ESC '[' parameters?
+//     intermediates? final) verbatim. A CSI that runs off the end of
+//     the chunk surfaces in carry so the caller can stitch it back
+//     together on the next call.
 //   - Strip NUL (0x00), BEL (0x07), DEL (0x7F), and every other C0
 //     control byte not whitelisted above.
 //
-// The function operates on a single chunk; an ANSI CSI sequence split
-// across two calls will have its trailing fragment dropped. Spec §21
-// flags cross-chunk continuity as a future buffering concern - the
-// current implementation favours statelessness so the pump goroutine
-// can call sanitize with zero coordination.
-//
-// The input slice is never modified. The returned slice is a fresh
-// allocation (or an empty slice for empty input).
-func sanitize(data []byte) []byte {
-	out := make([]byte, 0, len(data))
+// The input slice is never modified.
+func sanitizeWithCarry(data []byte) (out, carry []byte) {
+	out = make([]byte, 0, len(data))
 	n := len(data)
 	for i := 0; i < n; i++ {
 		b := data[i]
 		if b == 0x1B {
 			emit, skip, incomplete := scanCSI(data, i)
 			if incomplete {
-				return out
+				// Save the partial CSI (ESC plus whatever follows
+				// in this chunk) so the next call can resume scan
+				// with the rest of the sequence.
+				carry = data[i:n]
+				return out, carry
 			}
 			if len(emit) > 0 {
 				out = append(out, emit...)
@@ -58,6 +115,15 @@ func sanitize(data []byte) []byte {
 			out = append(out, b)
 		}
 	}
+	return out, nil
+}
+
+// sanitize is the stateless single-chunk entry point retained for the
+// existing TestSanitize table and any caller that genuinely wants
+// per-chunk semantics (cross-chunk CSI splits drop). The production
+// pump uses Sanitizer.Process instead.
+func sanitize(data []byte) []byte {
+	out, _ := sanitizeWithCarry(data)
 	return out
 }
 
@@ -68,8 +134,8 @@ func sanitize(data []byte) []byte {
 //     when the ESC should be dropped (not a CSI sequence, or chunk
 //     ended before CSI termination).
 //   - skip: number of input bytes consumed from offset i.
-//   - incomplete: true when the chunk ends mid-CSI; the caller drops
-//     the remainder of the chunk.
+//   - incomplete: true when the chunk ends mid-CSI; the caller saves
+//     the remainder in the carry buffer for the next chunk.
 //
 // The CSI grammar (ECMA-48): ESC '[' parameters? intermediates? final
 //

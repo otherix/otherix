@@ -84,6 +84,12 @@ type Multiplexer struct {
 
 	ring *RingBuffer
 
+	// sanitizer carries partial ANSI CSI bytes across chunk
+	// boundaries so the pump's L14 sanitization preserves
+	// cross-chunk CSI sequences verbatim. Only the pump goroutine
+	// touches it, so no further synchronisation is needed.
+	sanitizer *Sanitizer
+
 	logMu        sync.Mutex
 	logFile      *os.File
 	bytesWritten atomic.Int64
@@ -164,6 +170,7 @@ func newMuxWithThreshold(vmName, logDir string, dial func() (net.Conn, error), l
 		rotationThreshold: threshold,
 		conn:              conn,
 		ring:              NewRingBuffer(ringBufferBytes),
+		sanitizer:         NewSanitizer(),
 		logFile:           logFile,
 		done:              make(chan struct{}),
 		rotationCh:        make(chan struct{}, 1),
@@ -319,7 +326,7 @@ func (m *Multiplexer) pump() {
 		}
 		n, err := conn.Read(buf)
 		if n > 0 {
-			clean := sanitize(buf[:n])
+			clean := m.sanitizer.Process(buf[:n])
 			if len(clean) > 0 {
 				m.ring.Write(clean)
 				m.writeToDisk(clean)
