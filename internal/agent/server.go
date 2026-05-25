@@ -115,14 +115,15 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("vm reconciler: %w", err)
 	}
 
-	// Console state — in-memory token store + per-VM single-session
-	// lock. Lifecycle bound к the agent process; restart drops both
-	// alongside the QEMU `-serial` sockets they reference.
+	// Console token store - in-memory, lifecycle bound to the agent
+	// process; restart drops the tokens alongside the QEMU `-serial`
+	// sockets they reference. The single-session lock that used to
+	// live next to it now lives inside serialmux.Multiplexer
+	// (ErrConsoleInUse) per ADR 0029.
 	consoleTokens := console.NewTokenStore()
 	consoleTokens.Start(ctx)
-	consoleConns := console.NewConnectionTracker()
 
-	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, consoleConns)
+	router := buildRouter(cfg, nodeName, log, manager, consoleTokens)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -268,7 +269,7 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 // goroutines inherit r.Context() и would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
 // below opts back в via а Group.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, consoleConns *console.ConnectionTracker) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -284,7 +285,7 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			response.CodeMethodNotAllowed, "method not allowed for this resource", nil)
 	})
 
-	vmsHandler := vmshandlers.New(manager, consoleTokens, consoleConns, log)
+	vmsHandler := vmshandlers.New(manager, consoleTokens, log)
 	tasksHandler := taskshandlers.New(manager, log)
 	storagePoolsHandler := storagepoolshandlers.New(manager, log)
 
