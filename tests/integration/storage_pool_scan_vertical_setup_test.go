@@ -283,36 +283,44 @@ func seedAdmin(t *testing.T, ctx context.Context, s *store.Store) (uuid.UUID, st
 func seedNode(t *testing.T, ctx context.Context, s *store.Store, agentURL string) store.Node {
 	t.Helper()
 	id := uuid.New()
-	node, err := s.Queries().CreateNode(ctx, store.CreateNodeParams{
-		ID:                      id,
-		Name:                    "vertical-node-" + uuid.NewString()[:8],
-		Architecture:            store.CpuArchAmd64,
-		AdvertisedEndpoint:      agentURL,
-		MigrationHost:           "10.0.0.10",
-		MigrationPortRangeStart: 49152,
-		MigrationPortRangeEnd:   49251,
-		Status:                  store.NodeStatusReady,
+	now := time.Now().UTC()
+
+	// Wrap the CreateNode + last_heartbeat_at bump in a single
+	// transaction so the heartbeat reconciler's RunOnStart fire never
+	// observes the freshly-seeded row in the intermediate
+	// `last_heartbeat_at IS NULL` state. Production reaches `status =
+	// ready` only after register → heartbeat → PromoteHealthyNodes;
+	// the vertical-slice tests shortcut to `status = ready` directly,
+	// so we shortcut the timestamp too. The store's typed CreateNode
+	// surface intentionally omits `last_heartbeat_at` (heartbeat-only
+	// territory), so we issue a raw UPDATE through the same pgx.Tx
+	// and rely on READ COMMITTED isolation in other backends to hide
+	// the intermediate state from MarkNodesUnreachable.
+	var node store.Node
+	err := s.InTxWithTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
+		n, err := q.CreateNode(ctx, store.CreateNodeParams{
+			ID:                      id,
+			Name:                    "vertical-node-" + uuid.NewString()[:8],
+			Architecture:            store.CpuArchAmd64,
+			AdvertisedEndpoint:      agentURL,
+			MigrationHost:           "10.0.0.10",
+			MigrationPortRangeStart: 49152,
+			MigrationPortRangeEnd:   49251,
+			Status:                  store.NodeStatusReady,
+		})
+		if err != nil {
+			return fmt.Errorf("CreateNode: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`update nodes set last_heartbeat_at = $1 where id = $2`, now, id,
+		); err != nil {
+			return fmt.Errorf("bump heartbeat: %w", err)
+		}
+		node = n
+		return nil
 	})
 	if err != nil {
-		t.Fatalf("CreateNode: %v", err)
-	}
-
-	// Stamp last_heartbeat_at к now() so the heartbeat reconciler's
-	// RunOnStart fire — which lands non-deterministically relative to
-	// this helper и is amplified by `-race` — does not demote the
-	// freshly-seeded node к `unreachable` via MarkNodesUnreachable's
-	// `last_heartbeat_at IS NULL` branch. Production reaches status
-	// `ready` через register → heartbeat → PromoteHealthyNodes; the
-	// vertical-slice tests shortcut к status=ready directly, so we
-	// shortcut the timestamp too к keep the row consistent с the
-	// reconciler's invariants. The store's typed surface intentionally
-	// omits `last_heartbeat_at` from CreateNode (heartbeat-only
-	// territory), so we touch it via raw SQL.
-	now := time.Now().UTC()
-	if _, err := s.Pool().Exec(ctx,
-		`update nodes set last_heartbeat_at = $1 where id = $2`, now, id,
-	); err != nil {
-		t.Fatalf("seedNode bump heartbeat: %v", err)
+		t.Fatalf("seedNode: %v", err)
 	}
 	node.LastHeartbeatAt = &now
 	return node
