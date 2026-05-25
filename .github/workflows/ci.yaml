@@ -12,12 +12,12 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.3"
           cache: true
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.1
           args: --timeout 5m
@@ -25,8 +25,8 @@ jobs:
   vuln:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.3"
           cache: true
@@ -36,8 +36,8 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.3"
           cache: true
@@ -55,7 +55,7 @@ jobs:
             ./tests/migrations/...
       - name: Integration tests (CP↔agent)
         run: make test-integration
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.out
@@ -68,8 +68,8 @@ jobs:
         binary: [api, agent]
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.3"
           cache: true
@@ -84,7 +84,7 @@ jobs:
             -ldflags "-s -w -X github.com/otherix/otherix/internal/version.Version=${GITHUB_SHA::7}" \
             -o out/otherix-${{ matrix.binary }}-linux-${{ matrix.arch }} \
             ./cmd/${{ matrix.binary }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: otherix-${{ matrix.binary }}-linux-${{ matrix.arch }}
           path: out/otherix-${{ matrix.binary }}-linux-${{ matrix.arch }}
@@ -92,11 +92,11 @@ jobs:
   api-validate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.3"
           cache: true
