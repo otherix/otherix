@@ -813,12 +813,12 @@ func (m *Mock) VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName ag
 		m.respondError(w, r, opID, http.StatusNotFound, "not_found", "vm not found")
 		return
 	}
-	if err := m.consoleConns.Acquire(name); err != nil {
+	if _, loaded := m.consoleLocks.LoadOrStore(name, struct{}{}); loaded {
 		m.respondError(w, r, opID, http.StatusConflict, "console_in_use",
 			"another console session is already open for this vm")
 		return
 	}
-	defer m.consoleConns.Release(name)
+	defer m.consoleLocks.Delete(name)
 
 	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
@@ -855,6 +855,63 @@ func (m *Mock) VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName ag
 		}
 		if werr := wsConn.Write(ctx, websocket.MessageBinary, echo); werr != nil {
 			return
+		}
+	}
+}
+
+// VmsLogs implements `GET /v1/vms/{vm_name}/logs`. The mock substitutes
+// a deterministic banner so integration tests have stable bytes to
+// assert against. With `follow=true` the handler also emits a steady
+// drip of `MOCK_AGENT_LIVE_LOG_TICK\n` lines once per 200 ms until
+// the client disconnects; with `follow=false` it ends after the
+// banner.
+//
+// VM resolution mirrors the real-agent handler: 404 when the VM is
+// not in StoredVMs. Tail / follow validation is intentionally
+// permissive - the codegen layer pre-parses them so we accept
+// whatever the wire produced.
+func (m *Mock) VmsLogs(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, params agentapi.VmsLogsParams) {
+	const opID = "vms.logs"
+	if m.preDispatch(w, r, opID) {
+		return
+	}
+	if _, ok := m.StoredVM(vmName); !ok {
+		m.respondError(w, r, opID, http.StatusNotFound, "vm_not_found",
+			"vm not found on mock")
+		return
+	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.WriteString(w, "MOCK_AGENT_VM_LOGS_READY vm="+vmName+"\n"); err != nil {
+		return
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	follow := params.Follow != nil && *params.Follow
+	if !follow {
+		return
+	}
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+			if _, err := io.WriteString(w, "MOCK_AGENT_LIVE_LOG_TICK\n"); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
 		}
 	}
 }

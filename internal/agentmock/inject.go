@@ -89,6 +89,7 @@ var operationIDs = map[string]struct{}{
 	"vmMigrations.cancel":        {},
 	"vmConsole.issueToken":       {},
 	"vmConsole.stream":           {},
+	"vms.logs":                   {},
 }
 
 // InjectError makes the next call to operationID return err as the

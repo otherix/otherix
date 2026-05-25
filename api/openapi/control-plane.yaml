@@ -2728,6 +2728,101 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/vms/{id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/VMName"
+    get:
+      operationId: vms.logs
+      tags: [vms]
+      summary: Stream a VM's serial console output (kubectl-style).
+      description: |
+        Returns a chunked `text/plain` stream of sanitized serial
+        console output for the named VM. Mirrors the `kubectl logs`
+        UX: by default the full retained history is delivered;
+        `tail=N` limits to the trailing N lines; `follow=true` keeps
+        the stream open and forwards live bytes as the VM emits them.
+
+        Authorization runs in two layers (per [ADR 0029](../../docs/decisions/0029-vm-serial-log-multiplexer.md)):
+        1. `vm:console` permission gates the route (admin / operator
+           hold it at any scope; developer holds it at own scope;
+           viewer is denied).
+        2. Ownership is checked inside the handler. Developers
+           reading another user's VM see 404 `vm_not_found`, not
+           403, per the project's no-existence-leak rule.
+
+        Concurrent with `POST /v1/vms/{id}/console`: a live console
+        session does **not** block logs subscribers (the agent's
+        serial multiplexer fans bytes to one bidirectional console
+        subscriber and any number of read-only logs subscribers).
+
+        The wire payload is post-sanitization text/plain: ANSI CSI
+        sequences are preserved verbatim, UTF-8 multi-byte passes
+        through, control bytes outside `\t` / `\n` are stripped, and
+        CRLF normalises to LF. Drop markers
+        (`\n[otherix: N bytes dropped]\n`) may appear inline when a
+        slow consumer triggers the multiplexer's overflow path.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: tail
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: -1
+          description: |
+            Trailing N lines from history. `-1` (default) yields the
+            full history, `0` skips history (live only with
+            `follow=true`; otherwise the response ends immediately),
+            positive N returns the last N lines.
+        - name: follow
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: |
+            Continue streaming live bytes after the initial history
+            flushes. Without `follow` the response ends after the
+            initial tail is delivered.
+      responses:
+        "200":
+          description: |
+            Chunked `text/plain` stream of sanitized serial output.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "400":
+          description: |
+            Invalid query parameter (for example, non-integer `tail`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            VM has no active multiplexer (stopped or recovered after
+            an agent restart). Operator restarts the VM to re-enable
+            streaming. Code: `vm_not_running`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: |
+            CP could not reach the owning agent for this VM.
+            Code: `agent_unreachable`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/vms/{id}/disks:
     parameters:
       - $ref: "#/components/parameters/VMName"
