@@ -18,6 +18,7 @@
 .claude/ROADMAP.md
 .claude/settings.local.json
 .claude/docs/
+.claude/specs/
 CLAUDE.local.md
 
 # Local env
