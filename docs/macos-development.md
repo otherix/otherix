@@ -138,7 +138,7 @@ Common boot patterns to look for:
 A direct mTLS dial is also possible via a CP-issued cert, but requires
 extracting the per-replica CP cert from the local cache (when enabled)
 OR an `openssl s_client` dump. The forthcoming CP-mediated `otherix
-node ping <name>` command (ROADMAP Planned) replaces this need —
+node ping <name>` command replaces this need —
 a direct ping-agent operator-workstation flow was removed in Step 4
 because the inter-step CP cert lifecycle (per-replica certs signed by
 the cluster CA, kept replica-local) made out-of-band distribution
@@ -152,10 +152,10 @@ over HTTP with a bearer token.
 
 **Prerequisites:**
 
-1. The Control Plane is running and has at least one admin user. The
-   bootstrap path (CLAUDE.md "Authentication" section) seeds an admin
-   when `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` + `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD`
-   are set on first start.
+1. The Control Plane is running and has at least one admin user.
+   The bootstrap path seeds an admin when
+   `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` +
+   `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD` are set on first start.
 2. A node is registered, has a storage pool, and a template with a
    matching storage_image has been imported. (Phase D will document
    the manual seed sequence end-to-end.)
@@ -418,7 +418,7 @@ dependent disks/images first.
 
 **Transitional note:** `seed-mvp.sh` continues to use direct SQL INSERT
 for initial pool registration — public pool-registration API is not
-yet exposed (tracked in ROADMAP Planned). The agent's pool registry
+yet exposed. The agent's pool registry
 is name-keyed and populated through reconciliation from CP (the `pools:`
 block in `agent.yaml` is eliminated), so CLI-created pools work
 end-to-end including agent-side image import + vm-disk allocation.
@@ -678,8 +678,7 @@ bootstrap flow end-to-end:
 5. Polls for `nodes.id WHERE name='node-mvp'` for up to 60s. The row
    appears once the CSR redemption commits at the CP side.
 6. Inserts the `storage_pools` row directly via psql (no public
-   registration API yet — tracked in ROADMAP Planned). FK to the
-   bootstrapped `nodes.id`.
+   registration API yet). FK to the bootstrapped `nodes.id`.
 7. Calls `otherix cluster set-default-pool pool-mvp` so subsequent
    `vm create` invocations resolve without `--pool`.
 8. Calls `otherix template create ubuntu-noble-<arch>-mvp --pool

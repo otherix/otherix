@@ -25,13 +25,11 @@ than abstractions over a cloud provider. Snapshots and templates are
 managed primitives, not afterthoughts.
 
 Otherix is built to be deployed in your own datacentre or homelab.
-Two control-plane deployment shapes are supported: a Helm chart for
-Kubernetes (the production target), and standalone binaries that run
-directly on a host. The latter works on a dedicated control-plane
-host, or on the same host that runs an agent for single-node
-installations. Agents install on each KVM/QEMU host as a single
-binary alongside qemu-system-*. No external dependencies beyond
-PostgreSQL.
+The control plane ships as standalone binaries that run directly on
+a host - either a dedicated control-plane host, or the same host
+that runs an agent for single-node installations. Agents install on
+each KVM/QEMU host as a single binary alongside qemu-system-*. No
+external dependencies beyond PostgreSQL.
 
 ## Status
 
@@ -50,8 +48,7 @@ between human authorship and AI assistance:
   documentation, and refactoring under review.
 
 Every commit is reviewed by a human before merging. AI assistants
-operate against the conventions documented in
-[CLAUDE.md](CLAUDE.md), which is itself a human-authored reference.
+operate against the conventions in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Architecture
 
@@ -72,52 +69,54 @@ Otherix ships two daemons and an operator CLI.
   workflows. Not a cluster component; installed wherever an operator
   runs commands.
 
-The control plane is designed to run in Kubernetes via Helm. Agents run on
-bare-metal hosts. Authoritative architecture records live in
-[`docs/`](docs/).
+The control plane runs as standalone binaries against PostgreSQL.
+Agents run on bare-metal hosts. Authoritative architecture records
+live in [`docs/`](docs/).
 
 ## Quick start (local development)
 
+The fastest path is the one-shot wrapper that brings up the entire
+dev stack (Postgres + control plane + agent + CLI configuration) in
+a single command:
+
 ```bash
-# 1. Start dev dependencies (Postgres)
-make dev-up
+make local-dev-start
+# When done, tear everything down (DESTRUCTIVE - wipes the Postgres bind mount):
+make local-dev-stop
+```
 
-# 2. Apply migrations
-make migrate-up
+After `local-dev-start` finishes, `./bin/otherix` works against a
+fresh cluster with no further setup. The default admin is seeded
+from `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` / `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD`
+(defaults: `admin@otherix.local` / `correct-horse-battery-staple`).
 
-# 3. Run components locally (one terminal each)
-make run-api
-make run-agent       # limited usefulness without QEMU on the host
+Verify the cluster:
 
-# 4. Verify the api-server is up
+```bash
 curl http://localhost:8080/healthz
 # {"status":"ok","version":"dev"}
-curl http://localhost:8080/readyz
-# {"status":"ok","version":"dev","checks":{"database":{"status":"ok"}}}
 
-# 5. Bootstrap an admin user (no admin-creation endpoint yet)
-HASH=$(./bin/otherix-api --hash-password 'pick-a-strong-password')
-psql "$DATABASE_URL" -c \
-  "INSERT INTO users (email, password_hash, role)
-   VALUES ('admin@local', '$HASH', 'admin');"
+./bin/otherix node list
+# NAME      ARCHITECTURE  STATUS  CORDONED  AGE
+# node-mvp  <arch>        ready   no        20s
+```
 
-# 6. Login and exercise an authenticated endpoint
-TOKEN=$(curl -s -X POST http://localhost:8080/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"admin@local","password":"pick-a-strong-password"}' \
-  | jq -r .access_token)
-curl http://localhost:8080/v1/users/me -H "Authorization: Bearer $TOKEN"
+Browse the API in a browser:
 
-# 7. Browse API docs in the browser
+```bash
 make api-preview
 # Swagger UI: http://localhost:8081
 # Redoc:      http://localhost:8082
 ```
 
-For local development on macOS, install [Lima](https://lima-vm.io)
-and run the agent inside a Lima VM; see
-[docs/macos-development.md](docs/macos-development.md) for the
-workflow and rationale.
+The one-shot wrapper dispatches to per-OS pipelines. On Linux the
+agent runs as a per-user systemd unit on the host; on macOS the
+agent runs inside a [Lima](https://lima-vm.io) VM (the agent itself
+is Linux-only, the control plane runs natively on macOS). See
+[docs/macos-development.md](docs/macos-development.md) for the macOS
+workflow and rationale. Lower-level targets
+(`bootstrap-dev` / `run-api-dev` / `seed-mvp` / `deploy-dev` /
+`clean-dev`) are documented below.
 
 ## Linux dev environment
 
@@ -221,9 +220,8 @@ docs/                                    # architecture, plans
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for project conventions and
-development practices. The canonical technical reference is
-[`CLAUDE.md`](CLAUDE.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for project conventions
+and development practices.
 
 ## License
 

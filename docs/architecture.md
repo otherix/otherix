@@ -1,8 +1,14 @@
 # Otherix — Architecture
 
-**Status:** v1 schema landed (2026-05-02). Application components (api-server, scheduler, reconciler, agent) not yet built — their shape informs the schema but their code lives in subsequent work.
+**Status:** Initial schema landed 2026-05-02; api-server, agent, and
+CLI are built and exercised end-to-end through the
+`tests/integration/` suite. Scheduler and reconciler loops run
+in-process inside `otherix-api`. The control plane is wired through
+the join-token bootstrap protocol against a single Postgres.
 
-This document is the high-level orientation. For the canonical schema see `migrations/00001_init.sql`.
+This document is the high-level orientation. The canonical schema
+lives in `internal/store/migrate/migrations/`; SQL queries live in
+`internal/store/queries/`.
 
 ---
 
@@ -14,27 +20,26 @@ A self-hosted VM orchestration control plane that manages QEMU virtual machines 
 
 ---
 
-## Components (planned)
+## Components
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                     Control Plane                        │
+│                  Control Plane (otherix-api)             │
 │                                                          │
-│   ┌──────────────┐   ┌───────────┐   ┌───────────────┐   │
-│   │  api-server  │   │ scheduler │   │  reconciler   │   │
-│   │  (+ river    │   │           │   │               │   │
-│   │   workers)   │   │           │   │               │   │
-│   └──────┬───────┘   └─────┬─────┘   └───────┬───────┘   │
-│          │                 │                 │           │
-│          └─────────────────┼─────────────────┘           │
-│                            │                             │
-│                    ┌───────┴────────┐                    │
-│                    │   PostgreSQL   │                    │
-│                    │   (single DB)  │                    │
-│                    └────────────────┘                    │
+│  ┌──────────┐  ┌───────────┐  ┌────────────┐  ┌───────┐  │
+│  │ REST API │  │ scheduler │  │ reconciler │  │ river │  │
+│  │ + mTLS   │  │ (in-proc) │  │  loops     │  │ jobs  │  │
+│  └────┬─────┘  └─────┬─────┘  └─────┬──────┘  └───┬───┘  │
+│       │              │              │             │      │
+│       └──────────────┴──────┬───────┴─────────────┘      │
+│                             │                            │
+│                    ┌────────┴────────┐                   │
+│                    │   PostgreSQL    │                   │
+│                    │   (single DB)   │                   │
+│                    └─────────────────┘                   │
 └──────────────────────────┬───────────────────────────────┘
                            │  REST + mTLS
-                           │  (CP → agent)
+                           │  (CP ↔ agent)
         ┌──────────────────┼──────────────────┐
         │                  │                  │
    ┌────▼────┐        ┌────▼────┐        ┌────▼────┐
@@ -45,15 +50,37 @@ A self-hosted VM orchestration control plane that manages QEMU virtual machines 
         └──── peer-to-peer QMP migrate ───────┘
 ```
 
-**`api-server`** — the public REST API. Runs `riverqueue/river` job workers in-process (no separate worker tier). Reads/writes desired state.
+**`otherix-api`** — the public REST API. Hosts the scheduler,
+reconciliation loops, and `riverqueue/river` workers in-process (no
+separate worker / scheduler / reconciler tiers). Reads/writes
+desired state. Designed for HA — multiple replicas share work via
+Postgres advisory locks.
 
-**`scheduler`** — picks a node for each new VM and decides when to evacuate/rebalance. Reads node capacity, template architecture, and labels. Writes nothing user-facing; emits work via river jobs.
+**Scheduler (in-process)** — picks a node for each new VM and decides
+when to evacuate/rebalance. Reads node capacity, template
+architecture, and labels. Writes nothing user-facing; emits work via
+river jobs.
 
-**`reconciler`** — closes the loop between desired state (`vms`, `vm_disks`, `vm_nics`) and observed state (`vm_runtime`, etc.). When `desired.generation > observed_generation`, it queues work for the agent and updates `observed_generation` once the agent confirms.
+**Reconciler (in-process)** — closes the loop between desired state
+(`vms`, `vm_disks`, `vm_nics`, storage pools, …) and observed state
+(`vm_runtime`, per-resource status columns). When desired generation
+advances past `observed_generation`, the matching loop queues agent
+work and bumps `observed_generation` once the agent confirms.
 
-**`agent`** — runs on each hypervisor node. Talks QEMU directly via QMP (no libvirt). Reports node capabilities, applies VM lifecycle commands, performs live migrations peer-to-peer. Authenticated to the CP via mTLS client certificate (issued through the `join_tokens` bootstrap flow).
+**`otherix-agent`** — runs on each hypervisor node. Talks QEMU
+directly via QMP (no libvirt). Reports node capabilities through
+heartbeat, applies VM lifecycle commands, performs live migrations
+peer-to-peer. Authenticated to the CP via mTLS client certificate
+issued through the `join_tokens` bootstrap protocol.
 
-**Deployment:** CP in Kubernetes via Helm; agents installed directly on hypervisor hosts.
+**`otherix`** — operator CLI. Not a cluster component; installed
+wherever an operator runs commands. Talks to the CP over HTTPS with
+a bearer token (JWT or `otx_*` API token).
+
+**Deployment:** standalone binaries. The control plane runs on a
+dedicated host or alongside an agent for single-node installations;
+agents install on each KVM/QEMU host alongside `qemu-system-*`. No
+external dependencies beyond PostgreSQL.
 
 ---
 
@@ -138,50 +165,93 @@ Every desired-state table has `generation bigint` bumped via `trg_bump_generatio
 
 ## Migration tooling
 
-`pressly/goose v3` (chosen over `golang-migrate v4` after the latter pulled ~180 indirect dependencies because its CLI vendors every supported database).
+`pressly/goose v3` used as a library (not the CLI) - migrations are
+embedded into the `otherix-api` binary via `go:embed` from
+`internal/store/migrate/migrations/` and applied via
+`otherix-api --migrate-action=up|down|status`, wrapped by
+`make migrate-up` / `migrate-down` / `migrate-status`.
 
-Single init file: `migrations/00001_init.sql` with `-- +goose Up` / `-- +goose Down` markers. Function bodies wrapped with `-- +goose StatementBegin` / `StatementEnd`. The whole file uses `-- +goose NO TRANSACTION` because river migration 4's `ALTER TYPE ADD VALUE` is referenced by migration 6's function (PostgreSQL forbids that within one transaction).
+The init migration `00001_init.sql` carries the full v1 schema with
+`-- +goose Up` / `-- +goose Down` markers. Function bodies wrap
+with `-- +goose StatementBegin` / `StatementEnd`. The file uses
+`-- +goose NO TRANSACTION` because river migration 4's
+`ALTER TYPE ADD VALUE` is referenced by migration 6's function
+(PostgreSQL forbids that within one transaction).
 
-The Down block does `drop schema public cascade; create schema public; ... insert into goose_db_version (0, true)` — the only honest rollback for a single-file init migration. Works because we re-seed goose's bookkeeping table after the drop.
-
-Future schema changes ship as new files (`00002_*.sql`, etc.). Goose computes deltas; we never modify `00001_init.sql` after launch.
+Subsequent migrations land as new files (`00002_*.sql` or
+`00002_*.go` for Go-bridge migrations). Goose computes deltas;
+`00001_init.sql` is never modified after launch.
 
 ### River queue sync
 
-River's own SQL migrations are embedded **verbatim** from upstream (`riverqueue/river v0.35.1`) into `00001_init.sql` between clearly-marked delimiters. Following that block, an `INSERT INTO river_migration (line, version) SELECT 'main', v FROM generate_series(1, 6)` records all bundled versions as applied so `rivermigrate.Migrator` doesn't try to re-run them.
+River's own SQL migrations are embedded **verbatim** from upstream
+(`riverqueue/river v0.35.1`) into `00001_init.sql` between
+clearly-marked delimiters. Following that block, an
+`INSERT INTO river_migration (line, version) SELECT 'main', v FROM generate_series(1, 6)`
+records all bundled versions as applied so `rivermigrate.Migrator`
+doesn't try to re-run them.
 
-To upgrade river: bump go.mod, read upstream changelog and migration delta, add **only the delta** as a new goose file (e.g., `00002_river_v0.36.0.up.sql`). Don't modify the embedded block. The `TestRiverHasNoPendingMigrations` test verifies the embedded schema agrees with the rivermigrate API on every run.
+Subsequent river upgrades ship as goose Go-bridge migrations
+(`00002_river_v6.go` is the current pattern). The
+`TestRiverHasNoPendingMigrations` test verifies the embedded schema
+agrees with the rivermigrate API on every run.
 
 ---
 
 ## Testing strategy
 
-`tests/migrations/` holds 46 integration tests that run against a fresh PostgreSQL 16 container started by testcontainers-go. One container per `go test` invocation (initialized via `TestMain` in `main_test.go`); all tests share it. Each test inserts rows with unique keys (slug suffixes derived from `uuid_generate_v7()`) so cross-test state pollution doesn't matter.
+Three test tiers, all build-tag gated.
 
-Coverage targets, in order of importance:
-1. **Constraints fire on synthetic violations** — partial unique indexes, CHECKs, FK actions.
-2. **Triggers behave** — `set_updated_at` advances on UPDATE; `bump_generation` fires on whitelisted fields, no-ops on cosmetic, handles NULL transitions, warns on unknown field names.
-3. **River sync stays in lockstep with upstream** — `rivermigrate.Migrator` dry-run reports zero pending.
-4. **Down→Up is idempotent** — separate isolated container exercises the full goose cycle.
+**Unit tests** (`make test`) - plain `go test ./...` with the
+`test_fast_argon` tag swapping OWASP Argon defaults for RFC 9106
+minimums in the test binary. No Docker.
 
-Run via `make test-migrations` (requires Docker, build tag `integration`). Typical runtime ~2–4 seconds.
+**Migration / store / API integration** (`make test-migrations`) -
+runs against a fresh PostgreSQL 16 container started by
+testcontainers-go. One container per `go test` invocation
+(initialised via `TestMain`); all tests share it via unique keys.
+Covers `tests/migrations/`, `internal/store/...`,
+`internal/api/...`, `internal/auth/...`, `internal/agent/...`.
+
+**CP↔agent integration** (`make test-integration`) - exercises the
+control plane against an in-process mock agent through the OpenAPI
+contract. Covers VM lifecycle, console + logs, storage pool scan,
+template + storage-image reconciliation, RBAC and idempotency
+end-to-end.
+
+Coverage targets for `tests/migrations/` specifically:
+1. **Constraints fire on synthetic violations** — partial unique
+   indexes, CHECKs, FK actions.
+2. **Triggers behave** — `set_updated_at` advances on UPDATE;
+   `bump_generation` fires on whitelisted fields, no-ops on
+   cosmetic, handles NULL transitions, warns on unknown field
+   names.
+3. **River sync stays in lockstep with upstream** —
+   `rivermigrate.Migrator` dry-run reports zero pending.
+4. **Down→Up is idempotent** — separate isolated container exercises
+   the full goose cycle.
+
+All three tiers require Docker for the integration tiers and run in
+parallel CI jobs.
 
 ---
 
 ## What's next
 
-The schema is v1-complete. Following work, in rough dependency order:
+The schema, api-server, agent, and CLI are wired end-to-end.
+Larger upcoming themes:
 
-1. **River jobs framework wiring** — generic worker bootstrap, then domain-specific workers.
-2. **Auto-partition job** — recurring river job creating next-month `audit_log` partitions ahead of time.
-3. **Idempotency-key GC job** — hourly delete of expired rows.
-4. **api-server REST handlers** — VM CRUD, template management, migration initiation.
-5. **mTLS issuance flow** — agent join-token redemption → CSR → signed cert.
-6. **agent** — QMP wrapper, image cache, peer-to-peer migrate.
-7. **scheduler** — placement decisions, eviction policies.
-8. **reconciler** — desired→observed convergence loop.
-9. **Helm chart** — CP deployment to Kubernetes.
-10. **Observability** — Prometheus metrics, structured logging, tracing.
+- **Live migration** — schema lands, agent-side QMP plumbing is the
+  next concrete deliverable.
+- **VM snapshots** — wired through the schema and reconciliation
+  framework; CLI / API surface to follow.
+- **Auto-partition job** — recurring river job creating next-month
+  `audit_log` partitions ahead of time.
+- **Cert rotation** — cluster CA, per-replica CP certs, and per-node
+  agent certs land via the bootstrap protocol but the rotation
+  loops are still backlog.
+- **Observability** — Prometheus metrics, structured logging
+  conventions, tracing.
 
 Schema additions deferred until they're actually needed:
 - `node_networks` link table (when bridge homogeneity assumption breaks)
@@ -198,7 +268,9 @@ Schema additions deferred until they're actually needed:
 
 ## Pointers
 
-- **Schema source of truth:** `migrations/00001_init.sql`
+- **Schema source of truth:** `internal/store/migrate/migrations/`
+- **SQL queries (sqlc input):** `internal/store/queries/`
 - **Test harness:** `internal/migrationtest/harness.go`
-- **Local dev DB:** `make db-up` (Postgres 16-alpine on `127.0.0.1:5432`)
+- **Local dev stack:** `make local-dev-start` (one-shot Postgres +
+  CP + agent + CLI config); `make dev-up` for just Postgres
 - **Run tests:** `make test-migrations` (Docker required)

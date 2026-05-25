@@ -5,22 +5,51 @@ Thanks for your interest in contributing.
 ## How this project is developed
 
 Architecture, technical decisions, code review, and roadmap are
-human-authored. AI coding assistants are used to draft implementation
-and tests within the boundaries set by those decisions, and every
-change is reviewed by a human before merging. See
-[CLAUDE.md](CLAUDE.md) for the conventions both humans and AI follow.
+human-authored. AI coding assistants are used to draft
+implementation and tests within the boundaries set by those
+decisions, and every change is reviewed by a human before merging.
 
 ## Project conventions
 
-The canonical reference for project conventions, architecture, code
-style, API design rules, and development practices is
-[CLAUDE.md](CLAUDE.md). It originally targeted Claude Code agent
-sessions but is the source of truth for any contributor — human or
-AI. Read it at the start of any non-trivial work.
+Architecture and design records live in [docs/](docs/):
 
-Companion documents:
+- [docs/architecture.md](docs/architecture.md) — high-level
+  orientation, data flow, schema design.
+- [docs/rbac.md](docs/rbac.md) — RBAC role / permission / scope
+  matrix.
+- [docs/scheduler-configuration.md](docs/scheduler-configuration.md)
+  — placement scoring and configuration.
+- [docs/macos-development.md](docs/macos-development.md) — macOS
+  dev workflow (Lima).
 
-- [docs/rbac.md](docs/rbac.md) — RBAC role/permission/scope matrix.
+Code style follows the
+[Google Go Style Guide](https://google.github.io/styleguide/go).
+Tooling is wired through Make targets:
+
+- `make fmt` — `gofumpt` + `goimports -local github.com/otherix/otherix`
+- `make vet` — `go vet ./...`
+- `make lint` — `golangci-lint run --timeout 5m`
+- `make vuln` — `govulncheck`
+
+Tests use the standard library `testing` package and
+[google/go-cmp](https://github.com/google/go-cmp) for structural
+diffs. **No assertion libraries** (no testify). Mock outbound HTTP
+with `net/http/httptest`. Test doubles end in `Stub` / `Fake` /
+`Spy` / `Mock`.
+
+All hand-written `.go` files carry the SPDX short-form Apache 2.0
+header on the first two lines:
+
+```
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+```
+
+Generated files (sqlc output in `internal/store/*.sql.go`,
+oapi-codegen output in `internal/agentapi/agent.gen.go`) keep their
+own `// Code generated …` preamble, do not receive the SPDX header,
+and must not be edited by hand. Regenerate via `make sqlc-generate`
+and `make agent-api-generate`.
 
 ## Development setup
 
@@ -47,9 +76,8 @@ Key make targets:
 - Lint clean (`make lint`).
 - OpenAPI specs valid (`make api-validate`) when API surface is
   touched.
-- New `.go` files include the SPDX header (see [CLAUDE.md](CLAUDE.md)).
-- New conventions or scope changes go into `CLAUDE.md` as part of the
-  same change.
+- New `.go` files include the SPDX Apache 2.0 header (see the
+  "Project conventions" section above).
 
 ## Issues and discussions
 
