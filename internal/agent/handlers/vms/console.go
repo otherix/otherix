@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -17,15 +16,10 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/otherix/otherix/internal/agent/console"
+	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/response"
 )
-
-// consoleStreamBufSize bounds а single read from the QEMU `-serial`
-// Unix socket. Serial output rate is keyboard-fast (login prompt,
-// boot messages) so the buffer earns its keep by amortising the
-// system call cost rather than chasing throughput.
-const consoleStreamBufSize = 4096
 
 // consoleTokenRequest mirrors the agent.yaml ConsoleTokenRequest
 // schema. We do not import the generated type to keep the package
@@ -128,99 +122,54 @@ func (h *Handler) ConsoleIssueToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ConsoleStream handles GET /v1/vms/{vm_name}/console-stream. Validates
-// the token (single-use, TTL, VM binding), acquires the per-VM
-// connection lock (returns 409 console_in_use на concurrent connect),
-// upgrades к WebSocket, и pumps bytes bidirectionally between the
-// WebSocket and the QEMU `-serial unix:` socket. Pump goroutines
-// cancel the shared context on either side closing so the other side
-// unwinds promptly.
+// the token (single-use, TTL, VM binding), attaches a console
+// subscriber to the per-VM multiplexer (the multiplexer enforces the
+// single-active-console invariant via serialmux.ErrConsoleInUse, the
+// 409 maps to console_in_use), upgrades to WebSocket, and pumps
+// bytes bidirectionally between the WebSocket and the multiplexer's
+// subscriber channel. The subscriber receives a 20-line history tail
+// plus a visual separator before live bytes, per ADR 0029 L18.
 func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "vm_name")
-	if name == "" {
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodeNotFound, "vm not found", nil)
+	name, token, ok := h.consoleStreamPrelude(w, r)
+	if !ok {
+		return
+	}
+	v, ok := h.consoleStreamLoadVM(w, r, name)
+	if !ok {
+		return
+	}
+	if !h.consoleStreamCheckToken(w, r, name, token) {
+		return
+	}
+	if !h.consoleStreamCheckRunnable(w, r, v) {
 		return
 	}
 
-	rawToken := r.URL.Query().Get("token")
-	if rawToken == "" {
-		response.WriteError(w, r, http.StatusUnauthorized,
-			response.CodeUnauthenticated, "missing token", nil)
-		return
-	}
-
-	token, err := h.tokens.Consume(rawToken, name)
-	if err != nil {
-		// All token-validation paths surface as 401 — the operator-facing
-		// distinction between "expired" vs "wrong vm" leaks information
-		// против а probing client.
-		h.log.Debug("console: token rejected",
-			"vm", name, "reason", err.Error())
-		response.WriteError(w, r, http.StatusUnauthorized,
-			response.CodeUnauthenticated, "invalid or expired token", nil)
-		return
-	}
-
-	if token.Protocol != console.ProtocolSerial {
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeProtocolNotAvailable,
-			"only serial protocol is implemented on this agent today",
-			map[string]any{"requested": string(token.Protocol)})
-		return
-	}
-
-	v, err := h.manager.ByName(name)
-	if err != nil {
-		if errors.Is(err, vm.ErrNotFound) {
-			response.WriteError(w, r, http.StatusNotFound,
-				response.CodeNotFound, "vm not found", nil)
-			return
-		}
-		h.log.Error("console: resolve vm at stream time failed",
-			"vm", name, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "internal error", nil)
-		return
-	}
-	if v.Status != vm.StatusRunning {
+	mux := h.manager.GetMux(name)
+	if mux == nil {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeVMNotRunning,
-			"vm is not running",
-			map[string]any{"current_status": string(v.Status)})
+			"vm has no active multiplexer; restart the vm to re-enable console", nil)
 		return
 	}
-	if v.ConsoleSocket == "" {
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeProtocolNotAvailable,
-			"vm does not expose а serial chardev (no -serial unix: socket)", nil)
-		return
-	}
-
-	if err := h.conns.Acquire(name); err != nil {
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeConsoleInUse,
-			"another console session is already open for this vm", nil)
-		return
-	}
-	defer h.conns.Release(name)
-
-	unixConn, err := net.Dial("unix", v.ConsoleSocket) //nolint:gosec // ConsoleSocket path is computed agent-side from m.stateDir + vmID — not operator input
+	sub, err := mux.SubscribeConsole()
 	if err != nil {
-		h.log.Error("console: dial serial socket",
-			"vm", name, "socket", v.ConsoleSocket, "error", err.Error())
+		if errors.Is(err, serialmux.ErrConsoleInUse) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeConsoleInUse,
+				"another console session is already open for this vm", nil)
+			return
+		}
+		h.log.Error("console: subscribe failed", "vm", name, "error", err.Error())
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "console socket unavailable", nil)
+			response.CodeInternal, "console subscribe failed", nil)
 		return
 	}
-	defer func() { _ = unixConn.Close() }()
+	defer func() { _ = sub.Close() }()
 
-	// Clear hijacked connection deadlines — http.Server.ReadTimeout /
-	// WriteTimeout are applied via SetRead/WriteDeadline at request
-	// start, и persist on the net.Conn after coder/websocket.Accept
-	// hijacks it. Without these calls, the WebSocket session drops at
-	// ~30s when those deadlines fire. Logged at WARN instead of bailing
-	// — а ResponseController error shouldn't kill an otherwise-healthy
-	// upgrade path.
+	// Clear hijacked connection deadlines so the long-lived WebSocket
+	// is not killed at ReadTimeout / WriteTimeout once the response
+	// has been hijacked. Logged at WARN but not fatal.
 	rc := http.NewResponseController(w)
 	if derr := rc.SetReadDeadline(time.Time{}); derr != nil {
 		h.log.Warn("console: clear read deadline", "vm", name, "error", derr.Error())
@@ -230,9 +179,6 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// CP-side proxy mode dials over mTLS от а non-browser process,
-		// so origin check is irrelevant; CLI direct mode also bypasses
-		// the browser. The token + mTLS-from-caller is the auth contract.
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
@@ -242,45 +188,125 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = wsConn.Close(websocket.StatusInternalError, "") }()
 
-	h.pumpConsole(r.Context(), name, wsConn, unixConn)
+	h.pumpConsoleViaMux(r.Context(), name, wsConn, sub)
 }
 
-// pumpConsole runs the bidirectional copy between WebSocket frames
-// and the Unix socket carrying QEMU's serial byte stream. Both pumps
-// share а context; the first side to close cancels it и the other
+// consoleStreamPrelude pulls vm_name + token out of the request and
+// writes the relevant error envelope if either is missing.
+func (h *Handler) consoleStreamPrelude(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	name := chi.URLParam(r, "vm_name")
+	if name == "" {
+		response.WriteError(w, r, http.StatusNotFound,
+			response.CodeNotFound, "vm not found", nil)
+		return "", "", false
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		response.WriteError(w, r, http.StatusUnauthorized,
+			response.CodeUnauthenticated, "missing token", nil)
+		return "", "", false
+	}
+	return name, token, true
+}
+
+// consoleStreamCheckToken consumes the token via the TokenStore. The
+// operator-facing distinction between "expired" / "wrong vm" is not
+// surfaced - we collapse every token failure to 401 so a probing
+// client cannot disambiguate.
+func (h *Handler) consoleStreamCheckToken(w http.ResponseWriter, r *http.Request, name, raw string) bool {
+	token, err := h.tokens.Consume(raw, name)
+	if err != nil {
+		h.log.Debug("console: token rejected",
+			"vm", name, "reason", err.Error())
+		response.WriteError(w, r, http.StatusUnauthorized,
+			response.CodeUnauthenticated, "invalid or expired token", nil)
+		return false
+	}
+	if token.Protocol != console.ProtocolSerial {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeProtocolNotAvailable,
+			"only serial protocol is implemented on this agent today",
+			map[string]any{"requested": string(token.Protocol)})
+		return false
+	}
+	return true
+}
+
+// consoleStreamLoadVM resolves the VM at stream time (the operator
+// could have stopped or deleted it between token issuance and the
+// WebSocket dial). Errors / misses surface to the caller before the
+// upgrade happens so they receive a JSON envelope rather than an
+// abruptly-closed WebSocket.
+func (h *Handler) consoleStreamLoadVM(w http.ResponseWriter, r *http.Request, name string) (*vm.VM, bool) {
+	v, err := h.manager.ByName(name)
+	if err != nil {
+		if errors.Is(err, vm.ErrNotFound) {
+			response.WriteError(w, r, http.StatusNotFound,
+				response.CodeNotFound, "vm not found", nil)
+			return nil, false
+		}
+		h.log.Error("console: resolve vm at stream time failed",
+			"vm", name, "error", err.Error())
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "internal error", nil)
+		return nil, false
+	}
+	return v, true
+}
+
+// consoleStreamCheckRunnable rejects requests when the VM is not in
+// a phase that admits a serial console attachment.
+func (h *Handler) consoleStreamCheckRunnable(w http.ResponseWriter, r *http.Request, v *vm.VM) bool {
+	if v.Status != vm.StatusRunning {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeVMNotRunning,
+			"vm is not running",
+			map[string]any{"current_status": string(v.Status)})
+		return false
+	}
+	if v.ConsoleSocket == "" {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeProtocolNotAvailable,
+			"vm does not expose а serial chardev (no -serial unix: socket)", nil)
+		return false
+	}
+	return true
+}
+
+// pumpConsoleViaMux runs the bidirectional copy between the
+// WebSocket and the multiplexer's console subscriber. Both pumps
+// share a context; the first side to close cancels it and the other
 // pump unwinds. WebSocket frames are binary (no framing wrapper, no
 // resize protocol).
-func (h *Handler) pumpConsole(parent context.Context, vmName string, wsConn *websocket.Conn, unixConn net.Conn) {
+func (h *Handler) pumpConsoleViaMux(parent context.Context, vmName string, wsConn *websocket.Conn, sub *serialmux.ConsoleSubscriber) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// mux -> websocket pump
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		// Force unixConn.Read к unblock once the context goes down so
-		// the unix→ws pump doesn't sit forever after ws→unix closed.
-		go func() {
-			<-ctx.Done()
-			_ = unixConn.SetReadDeadline(time.Now())
-		}()
-
-		buf := make([]byte, consoleStreamBufSize)
 		for {
-			n, err := unixConn.Read(buf)
-			if n > 0 {
-				if werr := wsConn.Write(ctx, websocket.MessageBinary, buf[:n]); werr != nil {
+			select {
+			case data, ok := <-sub.Bytes():
+				if !ok {
 					return
 				}
-			}
-			if err != nil {
+				if werr := wsConn.Write(ctx, websocket.MessageBinary, data); werr != nil {
+					return
+				}
+			case <-sub.Done():
+				return
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
+	// websocket -> mux pump (operator input)
 	go func() {
 		defer wg.Done()
 		defer cancel()
@@ -289,7 +315,7 @@ func (h *Handler) pumpConsole(parent context.Context, vmName string, wsConn *web
 			if err != nil {
 				return
 			}
-			if _, werr := unixConn.Write(data); werr != nil {
+			if werr := sub.Write(data); werr != nil {
 				return
 			}
 		}

@@ -19,24 +19,24 @@ import (
 	"github.com/otherix/otherix/internal/agent/vm"
 )
 
-// Handler bundles the VM manager dependency and the logger. The manager
-// owns all state; the handler only translates wire shapes. Console
-// state (tokens + per-VM connect lock) lives alongside - agent has а
-// single Handler instance per process so the in-memory surfaces are
-// naturally process-scoped.
+// Handler bundles the VM manager dependency and the logger. The
+// manager owns all state - including the per-VM serial multiplexer
+// registry (see ADR 0029) - so the handler only translates wire
+// shapes. The TokenStore is injected so tests can swap a
+// clock-controlled instance without touching production wiring.
 type Handler struct {
 	manager *vm.Manager
 	tokens  *console.TokenStore
-	conns   *console.ConnectionTracker
 	log     *slog.Logger
 }
 
-// New constructs a Handler. Console primitives are injected so tests
-// can swap а clock-controlled TokenStore in без touching production
-// wiring; production callers use the package's zero-config
-// NewTokenStore / NewConnectionTracker.
-func New(m *vm.Manager, tokens *console.TokenStore, conns *console.ConnectionTracker, log *slog.Logger) *Handler {
-	return &Handler{manager: m, tokens: tokens, conns: conns, log: log}
+// New constructs a Handler. Production callers use the package's
+// zero-config NewTokenStore. The per-VM console single-attach
+// invariant (former internal/agent/console.ConnectionTracker) is now
+// enforced inside serialmux.Multiplexer.SubscribeConsole, so the
+// Handler no longer takes a ConnectionTracker.
+func New(m *vm.Manager, tokens *console.TokenStore, log *slog.Logger) *Handler {
+	return &Handler{manager: m, tokens: tokens, log: log}
 }
 
 // Mount registers /v1/vms routes on r. The console-stream route is

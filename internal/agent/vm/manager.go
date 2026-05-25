@@ -19,6 +19,7 @@ import (
 
 	"github.com/otherix/otherix/internal/agent/cloudinit"
 	"github.com/otherix/otherix/internal/agent/qemu"
+	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/state"
 	"github.com/otherix/otherix/internal/agent/storage"
 	"github.com/otherix/otherix/internal/config"
@@ -109,6 +110,17 @@ type Manager struct {
 	// (regardless of success / fail). HasInFlight surfaces the
 	// state к the reconciler so it can skip enqueuing duplicates.
 	inFlight sync.Map
+
+	// muxes maps a running VM's name to its serial console
+	// multiplexer (see ADR 0029). An entry exists from the moment
+	// Start finishes attachMux until Delete tears it down. Stop /
+	// Poweroff intentionally do not remove the entry: the multiplexer
+	// keeps the on-disk log file readable until Delete removes the
+	// VM's state directory (L17). Agent restart leaves entries empty
+	// even for VMs that survived in-place; a subsequent reboot
+	// re-attaches via reconnectMux's fallback.
+	muxesMu sync.Mutex
+	muxes   map[string]*serialmux.Multiplexer
 }
 
 // inFlightAcquire records а new in-flight operation for name. Returns
@@ -176,6 +188,7 @@ func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
 		accelerator:     accelerator,
 		vms:             map[uuid.UUID]*VM{},
 		tasks:           NewTaskStore(),
+		muxes:           map[string]*serialmux.Multiplexer{},
 	}
 
 	metas, err := state.ScanState(cfg.StatePath, log)
@@ -465,6 +478,17 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 		return
 	}
 
+	// Per ADR 0029 L13 the multiplexer is a required prerequisite -
+	// if it cannot attach to the QEMU serial socket we tear the VM
+	// down rather than leave operators with a half-broken console.
+	// Same pattern runStart / runReboot apply for their spawn paths.
+	if err := m.attachMux(log, v); err != nil {
+		log.Error("attach multiplexer", "err", err)
+		m.killQEMU(v)
+		m.failTask(taskID, v.ID, "multiplexer_failed", err.Error())
+		return
+	}
+
 	m.transitionVM(v.ID, StatusRunning, "")
 	if err := m.persistVM(v.ID); err != nil {
 		log.Warn("persist meta.json (running)", "err", err)
@@ -702,6 +726,16 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 	}
 	if code, err := m.spawnAndVerify(log, v); err != nil {
 		m.failTask(taskID, vmID, code, err.Error())
+		return
+	}
+
+	// Per ADR 0029 L13 the multiplexer is a required prerequisite -
+	// if it cannot attach to the QEMU serial socket we tear the VM
+	// down rather than leave operators with a half-broken console.
+	if err := m.attachMux(log, v); err != nil {
+		log.Error("attach multiplexer", "err", err)
+		m.killQEMU(v)
+		m.failTask(taskID, vmID, "multiplexer_failed", err.Error())
 		return
 	}
 
@@ -1005,6 +1039,16 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 		return
 	}
 
+	// Per ADR 0029 L15 the multiplexer is reused across reboot so
+	// subscribers and the log file stay continuous. If the existing
+	// entry's Reconnect fails (e.g. the QEMU socket path moved), fall
+	// back to a fresh attachMux - existing subscribers see Done() on
+	// the dead instance and the next reconnect from clients lands on
+	// the replacement.
+	if err := m.reconnectMux(log, v2); err != nil {
+		log.Warn("reconnect multiplexer", "err", err)
+	}
+
 	m.transitionVM(vmID, StatusRunning, "")
 	if err := m.persistVM(vmID); err != nil {
 		log.Warn("persist meta.json (running)", "err", err)
@@ -1106,6 +1150,12 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 		}
 	}
 
+	// Tear down the multiplexer before removing the state directory so
+	// its log file handle is closed first (ADR 0029 L16). detachMux is
+	// keyed on VM name; the entry may already be absent (Stop /
+	// Poweroff do not remove it but agent restart would).
+	m.detachMux(v.Name)
+
 	// Cleanup disk + per-VM dirs. Errors logged but не fatal — operator
 	// can clean stale files manually if needed.
 	if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
@@ -1121,6 +1171,97 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
 	log.Info("vm deleted")
+}
+
+// GetMux returns the registered serial multiplexer for the named VM,
+// or nil when no multiplexer is currently registered (the VM is
+// stopped/deleted, or the agent restarted while the VM was running
+// and Start/Reboot have not yet re-attached one). Console and logs
+// handlers call this to attach subscribers.
+func (m *Manager) GetMux(name string) *serialmux.Multiplexer {
+	m.muxesMu.Lock()
+	defer m.muxesMu.Unlock()
+	return m.muxes[name]
+}
+
+// attachMux opens a serial multiplexer for v and registers it under
+// v.Name. A pre-existing entry (e.g. left behind by a failed Start)
+// is Close'd before the new one is installed.
+//
+// Per L13 a multiplexer dial failure is fatal: callers tear the
+// freshly-spawned QEMU down (via killQEMU) and fail the lifecycle
+// task. Per L16 the per-VM state directory is the multiplexer's log
+// directory; runDelete removes it after detachMux closes the file.
+func (m *Manager) attachMux(log *slog.Logger, v *VM) error {
+	logDir := filepath.Join(m.stateDir, v.ID.String())
+	mux, err := serialmux.New(v.Name, v.ConsoleSocket, logDir, log)
+	if err != nil {
+		return err
+	}
+	m.muxesMu.Lock()
+	if prior := m.muxes[v.Name]; prior != nil {
+		_ = prior.Close()
+	}
+	m.muxes[v.Name] = mux
+	m.muxesMu.Unlock()
+	return nil
+}
+
+// reconnectMux is the Reboot helper: it asks the existing multiplexer
+// to dial the new QEMU process. Subscribers and the log file stay
+// continuous (L15). If the existing entry is missing or its Reconnect
+// errors out, the multiplexer is replaced via attachMux - clients of
+// the failed instance see Done() and reconnect to the fresh one.
+func (m *Manager) reconnectMux(log *slog.Logger, v *VM) error {
+	m.muxesMu.Lock()
+	prior := m.muxes[v.Name]
+	m.muxesMu.Unlock()
+	if prior == nil {
+		return m.attachMux(log, v)
+	}
+	if err := prior.Reconnect(); err != nil {
+		_ = prior.Close()
+		m.muxesMu.Lock()
+		delete(m.muxes, v.Name)
+		m.muxesMu.Unlock()
+		if attachErr := m.attachMux(log, v); attachErr != nil {
+			return fmt.Errorf("multiplexer reconnect failed (%v); fresh attach also failed: %v", err, attachErr)
+		}
+	}
+	return nil
+}
+
+// detachMux closes the multiplexer registered under name (if any) and
+// drops the registry entry. Idempotent.
+func (m *Manager) detachMux(name string) {
+	m.muxesMu.Lock()
+	mux := m.muxes[name]
+	delete(m.muxes, name)
+	m.muxesMu.Unlock()
+	if mux != nil {
+		_ = mux.Close()
+	}
+}
+
+// killQEMU best-effort terminates the QEMU process supervising v.
+// Used by runStart when the multiplexer fails to attach: we cannot
+// safely leave a running guest the agent has no observable channel
+// into. Quiet on missing pidfile / already-dead process.
+func (m *Manager) killQEMU(v *VM) {
+	pid, err := qemu.ReadPIDFile(v.PIDFile)
+	if err != nil || pid <= 0 {
+		return
+	}
+	if !qemu.IsAlive(pid) {
+		return
+	}
+	if err := qemu.Kill(pid); err != nil {
+		m.log.Warn("killQEMU: SIGKILL failed", "pid", pid, "err", err)
+		return
+	}
+	killCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = qemu.WaitGone(killCtx, pid, 3*time.Second)
 }
 
 func (m *Manager) snapshotVM(id uuid.UUID) (*VM, error) {

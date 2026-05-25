@@ -46,6 +46,7 @@ endpoint resolution flow through the root-level --endpoint /
 	cmd.AddCommand(newPoweroffCommand())
 	cmd.AddCommand(newRebootCommand())
 	cmd.AddCommand(newConsoleCommand())
+	cmd.AddCommand(newLogsCommand())
 
 	return cmd
 }

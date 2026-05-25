@@ -1037,6 +1037,84 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/vms/{vm_name}/logs:
+    parameters:
+      - $ref: "#/components/parameters/VmName"
+    get:
+      operationId: vms.logs
+      tags: [vms]
+      summary: Stream this VM's serial console output.
+      description: |
+        Returns a chunked `text/plain` stream of sanitized serial
+        console output for the named VM, produced by the per-VM
+        serial multiplexer described in ADR 0029.
+
+        Query parameters:
+          - `tail` (default `-1`): trailing N lines from history;
+            `-1` yields every available byte, `0` skips history
+            entirely.
+          - `follow` (default `false`): keep streaming live bytes
+            after the initial history flushes; without `follow` the
+            response ends after the initial tail is delivered.
+
+        The wire protocol is plain text with sanitization applied:
+        ANSI CSI sequences are preserved verbatim, UTF-8 passes
+        through, control bytes outside `\t` / `\n` are stripped,
+        CRLF normalizes to LF. Drop markers
+        (`\n[otherix: N bytes dropped]\n`) may appear inline when a
+        slow consumer triggers the multiplexer's overflow path.
+
+        Auth is mTLS; the Control Plane proxies operator requests
+        through this endpoint after applying its own RBAC layer
+        (PermVMConsole + ownership).
+      security:
+        - mutualTLS: []
+      parameters:
+        - name: tail
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: -1
+          description: |
+            Trailing N lines from history. `-1` = full history,
+            `0` = no history (live only), positive N = last N lines.
+        - name: follow
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: |
+            Continue streaming live bytes after the initial history
+            flushes.
+      responses:
+        "200":
+          description: |
+            Chunked text/plain stream of sanitized serial output.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "400":
+          description: Invalid query parameter (e.g. non-integer `tail`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            VM has no active multiplexer (stopped or recovered after
+            an agent restart). The operator restarts the VM to
+            re-enable streaming.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/storage-pools:
     get:
       operationId: storagePools.list

@@ -62,9 +62,11 @@ type Mock struct {
 	// Console state - token store + per-VM single-session lock.
 	// Mirror the real agent shape so the mock-driven integration
 	// tests exercise the same token / 409 plumbing the production
-	// agent owns.
+	// agent owns. The lock is a sync.Map of vm-name -> struct{}
+	// (presence == in-use), mirroring the ErrConsoleInUse semantic
+	// the real agent's multiplexer enforces inside SubscribeConsole.
 	consoleTokens *console.TokenStore
-	consoleConns  *console.ConnectionTracker
+	consoleLocks  sync.Map
 
 	httpServer *httptest.Server
 
@@ -151,7 +153,6 @@ func Start(t TestingT, opts Options) *Mock {
 		architecture:  opts.Architecture,
 		tlsMode:       opts.TLS,
 		consoleTokens: console.NewTokenStore(),
-		consoleConns:  console.NewConnectionTracker(),
 	}
 
 	router := chi.NewRouter()
