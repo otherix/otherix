@@ -95,14 +95,24 @@ func NewRouter(deps RouterDeps) http.Handler {
 			response.CodeMethodNotAllowed, "method not allowed for this resource", nil)
 	})
 
-	// Streaming endpoint — registered before the Timeout Group below.
-	// Anonymous (token = auth credential); hijacked
-	// http.Server deadlines also cleared inside the handler.
+	// Streaming endpoints - registered before the Timeout Group below.
+	// console-stream is anonymous (token = auth credential); vms.logs
+	// runs under Authn + RequirePermission(PermVMConsole), with
+	// ownership enforced inside the handler. Hijacked http.Server
+	// deadlines are cleared inside each handler so the long-lived
+	// stream is not killed at 30 s.
 	if deps.AuthService != nil && deps.Store != nil {
 		streamingVMs := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger,
 			deps.PlacementAlgorithm, deps.PlacementResources,
 			deps.VMLifecycle, deps.VMConsole)
 		r.Get("/v1/vms/{id}/console-stream", streamingVMs.ConsoleStream)
+
+		streamAuthn := middleware.Authn(deps.AuthService)
+		r.Group(func(r chi.Router) {
+			r.Use(streamAuthn)
+			r.Use(middleware.RequirePermission(auth.PermVMConsole, deps.Logger))
+			r.Get("/v1/vms/{id}/logs", streamingVMs.Logs)
+		})
 	}
 
 	r.Group(func(r chi.Router) {
