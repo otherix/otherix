@@ -63,22 +63,29 @@ func (s *Sanitizer) Process(chunk []byte) []byte {
 // returns (out, carry):
 //
 //   - out: sanitized bytes ready for emission.
-//   - carry: trailing bytes that may be the head of a CSI sequence
-//     whose tail is in the next chunk; the caller (Sanitizer) saves
-//     them and prepends to the next Process call.
+//   - carry: trailing bytes that may be the head of an ANSI escape
+//     sequence whose tail is in the next chunk; the caller
+//     (Sanitizer) saves them and prepends to the next Process call.
 //
-// L14 rules:
+// L14 rules (revised after real-agent smoke caught the staircase
+// effect that stripping CR produced on console-stream sessions):
 //
-//   - Strip control characters except \t (0x09) and \n (0x0A).
-//   - Normalize CRLF (\r\n) and standalone CR to LF: \r is
-//     unconditionally dropped, so a preceding \r before \n simply
-//     disappears.
+//   - Strip C0 control bytes except \t (0x09), \n (0x0A), and \r (0x0D).
+//     CR is preserved so a terminal in raw mode (the interactive
+//     console CLI) renders `\r\n` line endings as "col 0, next row"
+//     and so progress bars / spinner output that overwrites the
+//     current line with `\r[ * ]\r[ ** ]` keeps working both live
+//     and replayed via the on-disk log file.
 //   - Preserve UTF-8 multi-byte sequences (bytes >= 0x80 pass through
 //     unchanged; we do not validate UTF-8).
 //   - Preserve ANSI CSI escape sequences (ESC '[' parameters?
 //     intermediates? final) verbatim. A CSI that runs off the end of
 //     the chunk surfaces in carry so the caller can stitch it back
 //     together on the next call.
+//   - Drop non-CSI ESC sequences wholesale - charset designation,
+//     RI / IND / NEL single-byte controls, DEC private modes - so
+//     their trailing printable byte (e.g. the `M` of `\x1bM`) does
+//     not leak into the output as if it were normal text.
 //   - Strip NUL (0x00), BEL (0x07), DEL (0x7F), and every other C0
 //     control byte not whitelisted above.
 //
@@ -105,9 +112,7 @@ func sanitizeWithCarry(data []byte) (out, carry []byte) {
 			continue
 		}
 		switch {
-		case b == '\r':
-			continue
-		case b == '\t' || b == '\n':
+		case b == '\t' || b == '\n' || b == '\r':
 			out = append(out, b)
 		case b < 0x20, b == 0x7F:
 			continue

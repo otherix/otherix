@@ -47,14 +47,14 @@ func TestSanitize(t *testing.T) {
 			want: []byte("a\nb"),
 		},
 		{
-			name: "strip standalone CR",
+			name: "preserve standalone CR (progress bar carriage return)",
 			in:   []byte("a\rb"),
-			want: []byte("ab"),
+			want: []byte("a\rb"),
 		},
 		{
-			name: "normalize CRLF to LF",
+			name: "preserve CRLF line endings (raw-mode console correctness)",
 			in:   []byte("a\r\nb"),
-			want: []byte("a\nb"),
+			want: []byte("a\r\nb"),
 		},
 		{
 			name: "strip BS VT FF other ctrl",
@@ -92,9 +92,9 @@ func TestSanitize(t *testing.T) {
 			want: []byte("ok 🚀 done"),
 		},
 		{
-			name: "mixed boot output",
+			name: "mixed boot output preserves CRLF",
 			in:   []byte("boot\r\nmsg\x07\x1b[32mok\x1b[0m\r\n"),
-			want: []byte("boot\nmsg\x1b[32mok\x1b[0m\n"),
+			want: []byte("boot\r\nmsg\x1b[32mok\x1b[0m\r\n"),
 		},
 		{
 			name: "ESC followed by RI (M) drops both bytes",

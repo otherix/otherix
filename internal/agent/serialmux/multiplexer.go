@@ -204,7 +204,12 @@ func (m *Multiplexer) SubscribeConsole() (*ConsoleSubscriber, error) {
 	history := m.ring.LastNLines(consoleHistoryLines)
 	if len(history) > 0 {
 		_ = sub.tryDeliver(history)
-		_ = sub.tryDeliver([]byte("\n[otherix: --- live console ---]\n"))
+		// The CLI flips stdin to raw mode for console sessions, so
+		// the terminal does not auto-translate `\n` to `\r\n` the
+		// way it does for cooked-mode stdout. Use a CRLF here so
+		// the separator lands on its own line at column 0 instead
+		// of staircase-indenting after the last history byte.
+		_ = sub.tryDeliver([]byte("\r\n[otherix: --- live console ---]\r\n"))
 	}
 	return sub, nil
 }
@@ -431,7 +436,7 @@ func (m *Multiplexer) deliverToSubscribers(data []byte) {
 		drops := sub.SwapDropped()
 		toSend := payload
 		if drops > 0 {
-			marker := fmt.Appendf(nil, "\n[otherix: %d bytes dropped]\n", drops)
+			marker := fmt.Appendf(nil, "\r\n[otherix: %d bytes dropped]\r\n", drops)
 			toSend = make([]byte, 0, len(marker)+len(payload))
 			toSend = append(toSend, marker...)
 			toSend = append(toSend, payload...)
