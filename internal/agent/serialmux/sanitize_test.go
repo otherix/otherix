@@ -97,13 +97,33 @@ func TestSanitize(t *testing.T) {
 			want: []byte("boot\nmsg\x1b[32mok\x1b[0m\n"),
 		},
 		{
-			name: "lone ESC not followed by CSI introducer dropped",
-			in:   []byte("a\x1bbc"),
-			want: []byte("abc"),
+			name: "ESC followed by RI (M) drops both bytes",
+			in:   []byte("a\x1bMb"),
+			want: []byte("ab"),
+		},
+		{
+			name: "ESC followed by IND (D) drops both bytes",
+			in:   []byte("x\x1bDy"),
+			want: []byte("xy"),
+		},
+		{
+			name: "ESC charset designate (3 bytes) dropped",
+			in:   []byte("a\x1b(Bb"),
+			want: []byte("ab"),
+		},
+		{
+			name: "ESC DEC private 3-byte (#8 DECALN) dropped",
+			in:   []byte("a\x1b#8b"),
+			want: []byte("ab"),
 		},
 		{
 			name: "incomplete CSI at chunk tail dropped",
 			in:   []byte("data\x1b[3"),
+			want: []byte("data"),
+		},
+		{
+			name: "incomplete 3-byte ESC at chunk tail dropped",
+			in:   []byte("data\x1b("),
 			want: []byte("data"),
 		},
 		{
@@ -182,6 +202,22 @@ func TestSanitizer_CrossChunkCSIPreserved(t *testing.T) {
 				[]byte("[0mb"),
 			},
 			want: []byte("\x1b[31ma\x1b[0mb"),
+		},
+		{
+			name: "RI escape split across chunks drops both",
+			chunks: [][]byte{
+				[]byte("running\x1b"),
+				[]byte("M\x1b[0;32m  OK  \x1b[0m"),
+			},
+			want: []byte("running\x1b[0;32m  OK  \x1b[0m"),
+		},
+		{
+			name: "3-byte charset designate split across chunks",
+			chunks: [][]byte{
+				[]byte("a\x1b("),
+				[]byte("Bb"),
+			},
+			want: []byte("ab"),
 		},
 	}
 

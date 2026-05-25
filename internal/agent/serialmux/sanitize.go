@@ -131,17 +131,31 @@ func sanitize(data []byte) []byte {
 // (0x1B), and decides what to emit. Returns:
 //
 //   - emit: the CSI sequence bytes to copy through verbatim, or nil
-//     when the ESC should be dropped (not a CSI sequence, or chunk
-//     ended before CSI termination).
+//     when the entire escape sequence should be dropped (a non-CSI
+//     escape, a chunk that ends mid-sequence, etc.).
 //   - skip: number of input bytes consumed from offset i.
-//   - incomplete: true when the chunk ends mid-CSI; the caller saves
-//     the remainder in the carry buffer for the next chunk.
+//   - incomplete: true when the chunk ends mid-sequence; the caller
+//     saves the remainder in the carry buffer for the next chunk.
 //
-// The CSI grammar (ECMA-48): ESC '[' parameters? intermediates? final
+// L14 preserves CSI sequences. The other ANSI / VT-style escapes
+// (charset designation, RI / IND / NEL single-byte controls, DEC
+// private modes) are dropped wholesale - they carry no visible
+// glyph but their bytes after ESC are in the printable ASCII range
+// and would otherwise leak as literal text. The famous example is
+// systemd-networkd's `\x1bM` reverse-index emitted when a progress
+// line collapses; before this carve-out the trailing `M` surfaced
+// in the log right before the `[  OK  ]` marker.
 //
-//	parameters    = 0x30-0x3F bytes (digits, ';', ':', '?', '<', '=', '>')
-//	intermediates = 0x20-0x2F bytes
-//	final         = 0x40-0x7E byte (single)
+// The grammars handled:
+//
+//   - CSI:       ESC '[' parameters? intermediates? final     -> preserve
+//     parameters    = 0x30-0x3F bytes (digits, ';', ':', '?', '<', '=', '>')
+//     intermediates = 0x20-0x2F bytes
+//     final         = 0x40-0x7E byte (single)
+//   - 3-byte:    ESC ('(' | ')' | '*' | '+' | '-' | '.' | '/' | '#' | '%') X
+//     Charset designation (ISO 2022) and DEC private 3-byte forms.
+//   - 2-byte:    ESC X for any other byte after ESC (Fe controls,
+//     simple 2-byte escapes).
 func scanCSI(data []byte, i int) (emit []byte, skip int, incomplete bool) {
 	n := len(data)
 	// ESC at the very end of the chunk - we cannot tell whether a
@@ -149,20 +163,39 @@ func scanCSI(data []byte, i int) (emit []byte, skip int, incomplete bool) {
 	if i+1 >= n {
 		return nil, n - i, true
 	}
-	if data[i+1] != '[' {
-		// ESC not followed by '['; drop just the ESC byte and resume
-		// normal sanitization on the next byte.
-		return nil, 1, false
+	second := data[i+1]
+	if second == '[' {
+		k := i + 2
+		for k < n && data[k] >= 0x30 && data[k] <= 0x3F {
+			k++
+		}
+		for k < n && data[k] >= 0x20 && data[k] <= 0x2F {
+			k++
+		}
+		if k < n && data[k] >= 0x40 && data[k] <= 0x7E {
+			return data[i : k+1], (k + 1) - i, false
+		}
+		return nil, n - i, true
 	}
-	k := i + 2
-	for k < n && data[k] >= 0x30 && data[k] <= 0x3F {
-		k++
+	// 3-byte ESC sequences (charset designation, DEC private). Need
+	// the byte at i+2 to know the full length; if absent, carry the
+	// 2 bytes we have to the next chunk.
+	if isThreeByteEscIntroducer(second) {
+		if i+2 >= n {
+			return nil, n - i, true
+		}
+		return nil, 3, false
 	}
-	for k < n && data[k] >= 0x20 && data[k] <= 0x2F {
-		k++
+	// 2-byte ESC sequence: ESC + a single Fe control or similar. Drop
+	// both bytes so the second byte does not leak into the output
+	// as if it were a printable character.
+	return nil, 2, false
+}
+
+func isThreeByteEscIntroducer(b byte) bool {
+	switch b {
+	case '(', ')', '*', '+', '-', '.', '/', '#', '%':
+		return true
 	}
-	if k < n && data[k] >= 0x40 && data[k] <= 0x7E {
-		return data[i : k+1], (k + 1) - i, false
-	}
-	return nil, n - i, true
+	return false
 }
