@@ -56,7 +56,7 @@ func loginAsReturningUserID(t *testing.T, h *e2eHarness, role auth.Role) (uuid.U
 
 // createTemplate posts the body as the bearer and returns the parsed
 // id. Fails the test on non-201.
-// createTemplate seeds а template via the API and returns its
+// createTemplate seeds a template via the API and returns its
 // operator-facing name (the body's `name` field). `/v1/templates/{name}`
 // is name-only — call sites that build path URLs use the returned
 // value directly. Tests that need the UUID for SQL-direct fixtures
@@ -74,7 +74,7 @@ func createTemplate(t *testing.T, h *e2eHarness, body map[string]any, bearer str
 	return name
 }
 
-// lookupTemplateID resolves а template name к its row UUID for
+// lookupTemplateID resolves a template name to its row UUID for
 // SQL-direct fixtures that touch the DB outside the public surface.
 func lookupTemplateID(t *testing.T, h *e2eHarness, name string) string {
 	t.Helper()
@@ -319,9 +319,9 @@ func TestE2E_Templates_ListVisibilityClamp(t *testing.T) {
 	pubID := createTemplate(t, h, templateBody(uniqueTemplateName("pub")), devTok)
 	publishTemplate(t, h, pubID, adminTok)
 
-	// Helper: page through /v1/templates and look for а name.
+	// Helper: page through /v1/templates and look for a name.
 	// createTemplate returns the operator-facing name (used as the
-	// path identifier elsewhere в this file), so this match keys off
+	// path identifier elsewhere in this file), so this match keys off
 	// the response's `name` field rather than `id`.
 	listHas := func(token, name string, query string) bool {
 		t.Helper()
@@ -421,7 +421,7 @@ func TestE2E_Templates_UpdateOwnAndCrossUser(t *testing.T) {
 
 	// Own dev: 200, fields stick. The path keys on name -
 	// renaming the template via PATCH would invalidate the path for the
-	// follow-up PATCHes, so the rename is exercised under а separate
+	// follow-up PATCHes, so the rename is exercised under a separate
 	// test rather than chained here.
 	resp := h.patch(t, "/v1/templates/"+id, map[string]any{
 		"description":        "patched desc",

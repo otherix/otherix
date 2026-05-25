@@ -22,9 +22,9 @@ import (
 // substitutes the cluster_settings value before calling SchedulePlacement).
 // NodeHint is the optional explicit-placement override accepted by the
 // VM-create endpoint as `node`; when set, the scheduler restricts the
-// candidate list к exactly that node (UUID или case-insensitive name).
-// VCPUs, MemoryMiB и DiskBytes drive the resource-aware fit check +
-// scoring; DiskBytes is derived от the template's default_disk_gib in
+// candidate list to exactly that node (UUID or case-insensitive name).
+// VCPUs, MemoryMiB and DiskBytes drive the resource-aware fit check +
+// scoring; DiskBytes is derived from the template's default_disk_gib in
 // the single-root-disk model.
 type PlacementRequest struct {
 	PoolName  string
@@ -39,10 +39,10 @@ type PlacementRequest struct {
 // as the storage_pool_id for the VM-create transaction and Node.ID as
 // the pinned_node_id.
 //
-// Both `Node` и `PoolInstance` carry view-backed rows — Node from
+// Both `Node` and `PoolInstance` carry view-backed rows — Node from
 // node_effective_availability, PoolInstance from pool_effective_capacity
 // — so post-decision callers can inspect either raw heartbeat / scan
-// columns или the effective columns с pending-VM accounting.
+// columns or the effective columns with pending-VM accounting.
 type PlacementDecision struct {
 	Node         store.NodeEffectiveAvailability
 	PoolInstance store.PoolEffectiveCapacity
@@ -50,19 +50,19 @@ type PlacementDecision struct {
 
 // PlacementConfig groups the placement-time knobs SchedulePlacement
 // consumes. Algorithm selects the scoring algorithm; Resources gates
-// which dimensions participate in fit checks + scoring и assigns
-// per-resource overcommit ratios. Empty Algorithm defaults к
+// which dimensions participate in fit checks + scoring and assigns
+// per-resource overcommit ratios. Empty Algorithm defaults to
 // AlgorithmResourceAware. Zero-value Resources disables every resource
-// и degrades scoring к count-based — handler wire-up uses
-// `defaultResourcesConfig` so zero-value only surfaces в tests.
+// and degrades scoring to count-based — handler wire-up uses
+// `defaultResourcesConfig` so zero-value only surfaces in tests.
 type PlacementConfig struct {
 	Algorithm string
 	Resources ResourcesConfig
 }
 
 // ResourcesConfig is the scheduler-internal mirror of
-// config.ResourcesConfig (internal/config/api.go). Keeping а dedicated
-// type at the scheduler layer keeps the leaf-package free of а cycle
+// config.ResourcesConfig (internal/config/api.go). Keeping a dedicated
+// type at the scheduler layer keeps the leaf-package free of a cycle
 // into internal/config; the api-server copies fields at construction
 // time.
 type ResourcesConfig struct {
@@ -72,9 +72,9 @@ type ResourcesConfig struct {
 }
 
 // ResourceConfig pins one resource dimension's placement contribution.
-// Enabled toggles inclusion в the fit check + score; OvercommitRatio
+// Enabled toggles inclusion in the fit check + score; OvercommitRatio
 // multiplies effective availability (values > 1.0 enable overcommit,
-// values < 1.0 reserve headroom). Both forwarded verbatim от
+// values < 1.0 reserve headroom). Both forwarded verbatim from
 // config.ResourceConfig.
 type ResourceConfig struct {
 	Enabled         bool
@@ -94,7 +94,7 @@ const (
 
 	// AlgorithmLeastVMCount preserves the pre-resource-aware
 	// algorithm — minimum pinned-VM count wins. Kept as an operator-
-	// configurable opt-out для clusters that prefer count-based
+	// configurable opt-out for clusters that prefer count-based
 	// spread or whose heartbeat metrics are unreliable. Both paths use
 	// the same name lexicographic tie-break.
 	AlgorithmLeastVMCount = "least_vm_count"
@@ -103,8 +103,8 @@ const (
 // Sentinel errors. SchedulePlacement wraps these with %w so handlers
 // can route them to envelope codes via errors.Is.
 var (
-	// ErrPoolNotFound — no pool instance с this name exists on any
-	// node, или every instance lives on a node that is not eligible
+	// ErrPoolNotFound — no pool instance with this name exists on any
+	// node, or every instance lives on a node that is not eligible
 	// for scheduling (soft-deleted, not-ready, cordoned). Handler maps
 	// to 404 pool_not_found.
 	ErrPoolNotFound = errors.New("pool not found in cluster")
@@ -122,8 +122,8 @@ var (
 	ErrNoEligibleNodes = errors.New("no eligible nodes available")
 
 	// ErrInsufficientResources — pool instances exist on eligible
-	// nodes, but no node has enough free CPU / memory / disk к
-	// accommodate the request. Wrapped error carries а
+	// nodes, but no node has enough free CPU / memory / disk to
+	// accommodate the request. Wrapped error carries a
 	// *InsufficientResourcesDetail accessible via errors.As; the
 	// handler renders it into the 409 no_eligible_nodes envelope's
 	// `details` payload so operators see what each candidate had on
@@ -139,18 +139,18 @@ var (
 	// ErrNodeHintIsUUID — NodeHint accepts a node name only. A UUID
 	// literal in the request body's `node` field surfaces this sentinel
 	// so the handler can emit the canonical 400 validation_failed
-	// envelope с uuid-rejection details.
+	// envelope with uuid-rejection details.
 	ErrNodeHintIsUUID = errors.New("node hint must be a name, not a uuid")
 
-	// ErrUnknownAlgorithm — defensive guard на the hot path; the
+	// ErrUnknownAlgorithm — defensive guard on the hot path; the
 	// startup-time config validation prevents this from being reached
 	// in production. Surfaces as 500 internal.
 	ErrUnknownAlgorithm = errors.New("unknown placement algorithm")
 )
 
-// NodeUtilization is а single-node snapshot rendered into the
-// insufficient-resources error response. Operators read this к see
-// which candidates were considered и why none fit. Nodes are
+// NodeUtilization is a single-node snapshot rendered into the
+// insufficient-resources error response. Operators read this to see
+// which candidates were considered and why none fit. Nodes are
 // referenced by name. The pool name + disk fields are included
 // because disk capacity is per-pool, not per-node, so the rendered
 // payload pins down the exact (node, pool) pair that fell short.
@@ -165,8 +165,8 @@ type NodeUtilization struct {
 	DiskTotalBytes int64  `json:"disk_total_bytes"`
 }
 
-// InsufficientResourcesDetail is the structured payload attached к
-// ErrInsufficientResources. Callers extract it via errors.As и copy the
+// InsufficientResourcesDetail is the structured payload attached to
+// ErrInsufficientResources. Callers extract it via errors.As and copy the
 // fields into the wire envelope's `details` map. The detail keeps the
 // rendered NodeUtilization slice plus the required-vs-considered
 // summary so the operator can spot the smallest-fit gap.
@@ -179,7 +179,7 @@ type InsufficientResourcesDetail struct {
 	NodeUtilization      []NodeUtilization
 }
 
-// insufficientResourcesError attaches an InsufficientResourcesDetail к
+// insufficientResourcesError attaches an InsufficientResourcesDetail to
 // ErrInsufficientResources via the standard error-wrap chain. Handlers
 // extract the detail via ExtractInsufficientResources rather than poking
 // at this type directly — keeps the error implementation private.
@@ -195,12 +195,12 @@ func (e *insufficientResourcesError) Error() string {
 
 func (e *insufficientResourcesError) Unwrap() error { return ErrInsufficientResources }
 
-// ExtractInsufficientResources walks the error chain looking for а
+// ExtractInsufficientResources walks the error chain looking for a
 // resource-shortage payload. Returns (detail, true) when the chain
-// carries one и (nil, true) when ErrInsufficientResources is matched
+// carries one and (nil, true) when ErrInsufficientResources is matched
 // but the structured detail is unreachable (defensive — production
-// paths always attach а detail). Returns (nil, false) otherwise so
-// the caller can fall through к other sentinel checks.
+// paths always attach a detail). Returns (nil, false) otherwise so
+// the caller can fall through to other sentinel checks.
 func ExtractInsufficientResources(err error) (*InsufficientResourcesDetail, bool) {
 	if !errors.Is(err, ErrInsufficientResources) {
 		return nil, false
@@ -213,13 +213,13 @@ func ExtractInsufficientResources(err error) (*InsufficientResourcesDetail, bool
 	return nil, true
 }
 
-// PressuredNode is а single-entry в the `filtered_due_to_pressure`
+// PressuredNode is a single-entry in the `filtered_due_to_pressure`
 // payload. Nodes / pools are referenced by name. `Pool` is non-empty
-// when the pressure is pool-scoped (disk_pressure) и empty for
+// when the pressure is pool-scoped (disk_pressure) and empty for
 // node-scoped conditions (memory_pressure, system_disk_pressure).
 // `Conditions` enumerates every active pressure
-// flag on the entry — а node с both memory + system_disk pressure
-// emits а single entry с two conditions[]. Per-condition timestamps
+// flag on the entry — a node with both memory + system_disk pressure
+// emits a single entry with two conditions[]. Per-condition timestamps
 // are optional pointers — present only when their condition is in
 // `Conditions`.
 type PressuredNode struct {
@@ -231,21 +231,21 @@ type PressuredNode struct {
 	DiskPressureSince       *time.Time `json:"disk_pressure_since,omitempty"`
 }
 
-// NodePressureDetail is the structured payload attached к
-// ErrNoEligibleNodes when at least one pool instance was excluded от
-// placement specifically by an active pressure condition. Distinct от
+// NodePressureDetail is the structured payload attached to
+// ErrNoEligibleNodes when at least one pool instance was excluded from
+// placement specifically by an active pressure condition. Distinct from
 // InsufficientResourcesDetail because the operator action is different:
-// pressure-filtered nodes recover automatically (или never, если
-// hardware is undersized), while insufficient resources call для а
-// larger VM-create request, more capacity, или а different pool.
+// pressure-filtered nodes recover automatically (or never, if
+// hardware is undersized), while insufficient resources call for a
+// larger VM-create request, more capacity, or a different pool.
 type NodePressureDetail struct {
 	Nodes []PressuredNode
 }
 
-// nodePressureError wraps ErrNoEligibleNodes c а structured pressure
-// payload. Surfaced by the handler edge через ExtractNodePressureDetail
+// nodePressureError wraps ErrNoEligibleNodes c a structured pressure
+// payload. Surfaced by the handler edge via ExtractNodePressureDetail
 // → 409 no_eligible_nodes envelope with `details.reason="node_pressure"`
-// и `details.filtered_due_to_pressure`.
+// and `details.filtered_due_to_pressure`.
 type nodePressureError struct {
 	Detail NodePressureDetail
 }
@@ -257,10 +257,10 @@ func (e *nodePressureError) Error() string {
 
 func (e *nodePressureError) Unwrap() error { return ErrNoEligibleNodes }
 
-// ExtractNodePressureDetail walks the error chain looking for а
+// ExtractNodePressureDetail walks the error chain looking for a
 // pressure-filtered payload. Returns (detail, true) when the chain
 // carries one. Returns (nil, false) otherwise so the caller can fall
-// through к the bare ErrNoEligibleNodes envelope.
+// through to the bare ErrNoEligibleNodes envelope.
 func ExtractNodePressureDetail(err error) (*NodePressureDetail, bool) {
 	var wrap *nodePressureError
 	if errors.As(err, &wrap) && wrap != nil {
@@ -274,11 +274,11 @@ func ExtractNodePressureDetail(err error) (*NodePressureDetail, bool) {
 // Keeping the surface narrow lets unit tests pass an in-memory fake.
 //
 // The three `List*PressuredCandidatesByName` / `ListDiskPressuredPoolsByName`
-// queries are diagnostic-only. They run от the failure branch когда
-// the regular eligibility list comes back empty но the pool exists
+// queries are diagnostic-only. They run from the failure branch when
+// the regular eligibility list comes back empty but the pool exists
 // somewhere. Their combined hit list populates the
 // `filtered_due_to_pressure` envelope payload — one entry per
-// (node, pool) с every active condition aggregated.
+// (node, pool) with every active condition aggregated.
 type Querier interface {
 	ListEligiblePoolsByName(ctx context.Context, name string) ([]store.ListEligiblePoolsByNameRow, error)
 	ListMemoryPressuredCandidatesByName(ctx context.Context, name string) ([]store.ListMemoryPressuredCandidatesByNameRow, error)
@@ -292,23 +292,23 @@ type Querier interface {
 //
 // Algorithm (resource-aware, default):
 //  1. Enumerate eligible (pool instance, node) tuples for PoolName.
-//     Eligibility is "node is ready и not cordoned" — encoded in the
-//     SQL query, not re-derived here. The query reads от the
+//     Eligibility is "node is ready and not cordoned" — encoded in the
+//     SQL query, not re-derived here. The query reads from the
 //     pool_effective_capacity + node_effective_availability views so
-//     each candidate carries effective-availability columns с
+//     each candidate carries effective-availability columns with
 //     pending-VM accounting.
-//  2. If NodeHint is set, narrow the list к the matching node by
+//  2. If NodeHint is set, narrow the list to the matching node by
 //     case-insensitive name. UUID literals reject early.
-//  3. Resource fit check: а node fits if its effective availability
+//  3. Resource fit check: a node fits if its effective availability
 //     for each enabled resource (CPU, memory, disk) meets the request,
-//     multiplied by the per-resource OvercommitRatio. Resources с
+//     multiplied by the per-resource OvercommitRatio. Resources with
 //     Enabled=false drop out of the check. Nodes / pools that are
 //     missing the underlying metric columns fall back to count-based
 //     scoring for that candidate (graceful at cluster bootstrap).
 //  4. Score by configured algorithm. resource_aware ranks by
 //     LeastAllocated across enabled resources: lower post-placement
 //     utilization wins. least_vm_count preserves the count-based
-//     algorithm для operators who prefer count-based spread.
+//     algorithm for operators who prefer count-based spread.
 //  5. Tie-break by node name lexicographic (lowercase) — operator-
 //     observable identifier consistent with the name-based reference
 //     model. Both algorithm paths use the same tie-break.
@@ -331,7 +331,7 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 		// Distinguish "pool name not in cluster at all" from "pool
 		// exists but every host is cordoned/unreachable/pressured". A
 		// separate ListStoragePoolsByName lookup is cheap and the
-		// diagnostic is worth it; the handler maps the two к different
+		// diagnostic is worth it; the handler maps the two to different
 		// envelope codes (404 vs 409).
 		any, listErr := q.ListStoragePoolsByName(ctx, req.PoolName)
 		if listErr != nil {
@@ -340,8 +340,8 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 		if len(any) == 0 {
 			return PlacementDecision{}, fmt.Errorf("scheduler: pool %q: %w", req.PoolName, ErrPoolNotFound)
 		}
-		// Pool exists somewhere но nothing was eligible. Run the three
-		// diagnostic queries (one per pressure type) и combine into а
+		// Pool exists somewhere but nothing was eligible. Run the three
+		// diagnostic queries (one per pressure type) and combine into a
 		// single per-(node, pool) detail. Even when only one type fires,
 		// the structured payload gives the operator something actionable
 		// to look at.
@@ -375,9 +375,9 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 	considered := len(eligible)
 	fits, rejected := filterByResources(eligible, req, cfg.Resources)
 	if len(fits) == 0 {
-		// Every candidate exists but none fit. Build а structured
+		// Every candidate exists but none fit. Build a structured
 		// utilization payload so the operator can see what each node
-		// had on hand. NodeHint paths land here too — а hint-matched
+		// had on hand. NodeHint paths land here too — a hint-matched
 		// node that cannot fit the request gets the same envelope.
 		detail := InsufficientResourcesDetail{
 			RequiredCPU:          clampInt32(req.VCPUs),
@@ -401,10 +401,10 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 	}, nil
 }
 
-// filterByNodeHint narrows the candidate list к the row whose node
+// filterByNodeHint narrows the candidate list to the row whose node
 // matches the hint by case-insensitive name. UUID literals are
-// rejected с ErrNodeHintIsUUID before any scan; the handler maps that
-// к the 400 validation_failed envelope. Empty narrowed list →
+// rejected with ErrNodeHintIsUUID before any scan; the handler maps that
+// to the 400 validation_failed envelope. Empty narrowed list →
 // ErrPoolNotOnNode; the handler emits 409 pool_not_on_node.
 func filterByNodeHint(rows []store.ListEligiblePoolsByNameRow, hint string) ([]store.ListEligiblePoolsByNameRow, error) {
 	if _, err := uuid.Parse(hint); err == nil {
@@ -428,9 +428,9 @@ type candidate struct {
 	useCountFallback bool
 }
 
-// scoredCandidate adds the comparator score onto а candidate. Lower
-// score = better fit. The fallback path produces а large numeric
-// value so any metric-bearing candidate wins ahead of а fallback one
+// scoredCandidate adds the comparator score onto a candidate. Lower
+// score = better fit. The fallback path produces a large numeric
+// value so any metric-bearing candidate wins ahead of a fallback one
 // at equal load — the operator should see resource-aware placement
 // kick in as soon as heartbeats arrive.
 type scoredCandidate struct {
@@ -442,10 +442,10 @@ type scoredCandidate struct {
 // gating: each enabled resource (CPU, memory, disk) must individually
 // satisfy the request before the candidate is kept. OvercommitRatio
 // multiplies the effective availability so values > 1.0 inflate
-// capacity, values < 1.0 reserve headroom. Candidates с any required
+// capacity, values < 1.0 reserve headroom. Candidates with any required
 // metric column missing fall back to count-based scoring (kept in fits
-// с useCountFallback=true) — preserves the bootstrap-friendly behaviour
-// от Sub-iteration A. Returned rejected slice feeds the insufficient-
+// with useCountFallback=true) — preserves the bootstrap-friendly behaviour
+// from Sub-iteration A. Returned rejected slice feeds the insufficient-
 // resources error payload.
 func filterByResources(rows []store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) (fits, rejected []candidate) {
 	for _, r := range rows {
@@ -467,7 +467,7 @@ func filterByResources(rows []store.ListEligiblePoolsByNameRow, req PlacementReq
 // fitsAllResources walks the per-resource gate. Effective columns are
 // guaranteed non-nil by candidateHasMetrics for every enabled resource,
 // so the deref is safe. For disk specifically `req.DiskBytes <= 0`
-// short-circuits the check — а handler that does not derive а disk
+// short-circuits the check — a handler that does not derive a disk
 // requirement (e.g. tests, future per-resource-disabled flows) skips
 // disk regardless of cfg.Disk.Enabled.
 func fitsAllResources(r store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) bool {
@@ -494,12 +494,12 @@ func fitsAllResources(r store.ListEligiblePoolsByNameRow, req PlacementRequest, 
 
 // candidateHasMetrics reports whether the candidate carries every
 // metric column the configured fit check + scoring path will read.
-// Per-resource gating: only enabled resources are required к have
-// their underlying columns set. А node без heartbeat metrics fails
-// the CPU / memory checks; а pool без last-scan numbers fails the
-// disk check. Partial nils — а node reporting CPU but not memory —
-// are treated as missing metrics, не "zero available", consistent
-// с the bootstrap-fallback semantic since Sub-iteration A.
+// Per-resource gating: only enabled resources are required to have
+// their underlying columns set. A node without heartbeat metrics fails
+// the CPU / memory checks; a pool without last-scan numbers fails the
+// disk check. Partial nils — a node reporting CPU but not memory —
+// are treated as missing metrics, not "zero available", consistent
+// with the bootstrap-fallback semantic since Sub-iteration A.
 func candidateHasMetrics(r store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) bool {
 	n := r.NodeEffectiveAvailability
 	if cfg.CPU.Enabled {
@@ -523,7 +523,7 @@ func candidateHasMetrics(r store.ListEligiblePoolsByNameRow, req PlacementReques
 
 // renderUtilization builds the NodeUtilization slice for the
 // insufficient-resources detail. Used cores / memory / disk are
-// computed против the effective columns so the envelope reflects the
+// computed against the effective columns so the envelope reflects the
 // scheduler's actual view (including pending VMs / disks) rather than
 // the raw heartbeat / scan snapshot — operators reading "8/8 used"
 // should see why their request didn't fit, not the agent's stale
@@ -574,7 +574,7 @@ func renderUtilization(rejected []candidate) []NodeUtilization {
 	return out
 }
 
-// scoreCandidates dispatches к the per-algorithm scorer. Unknown
+// scoreCandidates dispatches to the per-algorithm scorer. Unknown
 // algorithm values reach here only if the startup-time config check
 // was bypassed; surfacing ErrUnknownAlgorithm keeps the handler edge
 // honest.
@@ -591,12 +591,12 @@ func scoreCandidates(ctx context.Context, q Querier, fits []candidate, req Place
 
 // scoreResourceAware applies the LeastAllocated formula averaged across
 // enabled resources. Effective columns are read instead of raw heartbeat
-// / scan columns so VMs / disks pinned после the last observation
-// contribute к the utilization estimate. Nodes / pools without metrics
-// fall back к а count-derived score scaled by а large multiplier so
+// / scan columns so VMs / disks pinned after the last observation
+// contribute to the utilization estimate. Nodes / pools without metrics
+// fall back to a count-derived score scaled by a large multiplier so
 // metric-bearing candidates win ahead of fallback ones whenever both
-// fit. All-resources-disabled also degrades к count-based scoring
-// (Least-VM-count parity без switching algorithms).
+// fit. All-resources-disabled also degrades to count-based scoring
+// (Least-VM-count parity without switching algorithms).
 func scoreResourceAware(ctx context.Context, q Querier, fits []candidate, req PlacementRequest, cfg ResourcesConfig) ([]scoredCandidate, error) {
 	out := make([]scoredCandidate, 0, len(fits))
 	for _, c := range fits {
@@ -608,17 +608,17 @@ func scoreResourceAware(ctx context.Context, q Querier, fits []candidate, req Pl
 			}
 			// Fallback score sits well above the resource-aware
 			// scoring range (which lives in [0, 1]) so any candidate
-			// с real metrics outranks а fallback one at equal load.
+			// with real metrics outranks a fallback one at equal load.
 			out = append(out, scoredCandidate{candidate: c, score: 1.0 + float64(count)})
 			continue
 		}
 		score, factors := utilizationScore(c.row, req, cfg)
 		if factors == 0 {
-			// Every resource disabled (или disk skipped because
+			// Every resource disabled (or disk skipped because
 			// DiskBytes=0 with cfg.Disk.Enabled=false elsewhere): the
 			// candidate has no utilization signal to score against,
-			// so fall back к count-based ranking. Equivalent к
-			// least_vm_count for этой candidate but без switching the
+			// so fall back to count-based ranking. Equivalent to
+			// least_vm_count for this candidate but without switching the
 			// whole cluster algorithm — operators can disable every
 			// resource for "pure count" behaviour ad hoc.
 			nodeID := c.row.NodeEffectiveAvailability.ID
@@ -657,13 +657,13 @@ func utilizationScore(r store.ListEligiblePoolsByNameRow, req PlacementRequest, 
 	return sum, factors
 }
 
-// computeUtil returns post-placement utilization для one resource
+// computeUtil returns post-placement utilization for one resource
 // dimension: (used + need) / (total * ratio). Effective availability
 // already excludes pending VMs / disks, so `used = total - effective`
-// captures observed-plus-pending consumption. Floored at zero к guard
+// captures observed-plus-pending consumption. Floored at zero to guard
 // against view-projection edge cases (real schema invariants prevent
 // negative used values). Pure function — keeps the score loop testable
-// в isolation от Querier interactions.
+// in isolation from Querier interactions.
 func computeUtil(total, effective, need int64, ratio float64) float64 {
 	if total <= 0 || ratio <= 0 {
 		return 0
@@ -677,8 +677,8 @@ func computeUtil(total, effective, need int64, ratio float64) float64 {
 
 // scoreLeastVMCount implements the count-based algorithm: minimum
 // pinned-VM count wins. CountRunningVMsByNode runs once per candidate
-// — fine for fleet sizes anticipated в MVP (< 100 nodes); а future
-// revision may batch this into а single query when nodes climb past
+// — fine for fleet sizes anticipated in MVP (< 100 nodes); a future
+// revision may batch this into a single query when nodes climb past
 // that range.
 func scoreLeastVMCount(ctx context.Context, q Querier, fits []candidate) ([]scoredCandidate, error) {
 	out := make([]scoredCandidate, 0, len(fits))
@@ -709,20 +709,20 @@ func pickWinner(scored []scoredCandidate) scoredCandidate {
 }
 
 // buildNodePressureDetail merges the three diagnostic-query results
-// into а deduplicated NodePressureDetail. Memory + system_disk are
+// into a deduplicated NodePressureDetail. Memory + system_disk are
 // node-scoped, disk is pool-scoped. Entries key on (node, pool) so:
 //
-//   - А node с both memory + system_disk pressure → ONE entry,
+//   - A node with both memory + system_disk pressure → ONE entry,
 //     pool="", conditions=[memory_pressure, system_disk_pressure].
-//   - А pool с disk_pressure → ONE entry, pool=<name>, conditions=
-//     [disk_pressure]. Distinct от any node-scoped entry that might
-//     reference the same node — operator wants к see что the pool
-//     itself is exhausted независимо от node health.
+//   - A pool with disk_pressure → ONE entry, pool=<name>, conditions=
+//     [disk_pressure]. Distinct from any node-scoped entry that might
+//     reference the same node — operator wants to see that the pool
+//     itself is exhausted regardless from node health.
 //   - Same node hosting two pools, both disk-pressured → TWO entries
 //     (one per pool).
 //
 // Ordering is preserved per source query (node id asc per the SQL),
-// which gives а stable presentation order across runs.
+// which gives a stable presentation order across runs.
 func buildNodePressureDetail(
 	mem []store.ListMemoryPressuredCandidatesByNameRow,
 	sysDisk []store.ListSystemDiskPressuredCandidatesByNameRow,
@@ -793,7 +793,7 @@ func appendUnique(out []string, s string) []string {
 
 // clampInt32 narrows the validated int request fields into the int32
 // shape NodeUtilization expects. validateCreateRequest already caps
-// vcpus к 128 and memory к 524288, so saturation never trips in
+// vcpus to 128 and memory to 524288, so saturation never trips in
 // production — the bound is for defensive consistency.
 func clampInt32(v int) int32 {
 	const maxInt32 = int32(1<<31 - 1)

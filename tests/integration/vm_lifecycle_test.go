@@ -17,7 +17,7 @@ import (
 
 // TestVMLifecycle_PauseResumeReset_HappyPath drives the full L1 sync
 // pipeline end-to-end against the mock-agent: create → pause →
-// resume → reset → delete. Each sync op is а direct CP→agent HTTP
+// resume → reset → delete. Each sync op is a direct CP→agent HTTP
 // call (no river — the L1 path is synchronous per spec). The test
 // asserts both the wire response (200 + projected status) and the
 // post-call vm_runtime row.
@@ -78,7 +78,7 @@ func TestVMLifecycle_PauseResumeReset_HappyPath(t *testing.T) {
 	}
 }
 
-// TestVMLifecycle_PauseWhenStopped_Conflict — pausing а VM that the
+// TestVMLifecycle_PauseWhenStopped_Conflict — pausing a VM that the
 // mock-agent reports as `stopped` must return 409 from the CP. Agent
 // returns 409; CP propagates the envelope verbatim through
 // writeLifecycleError.
@@ -102,7 +102,7 @@ func TestVMLifecycle_PauseWhenStopped_Conflict(t *testing.T) {
 	vmID := extractVMIDFromTask(t, createRow)
 
 	// Walk the agent's inventory entry into a non-running state by
-	// pausing first; subsequent pause must reject с 409.
+	// pausing first; subsequent pause must reject with 409.
 	if status, _ := v.postVMLifecycleRequest(t, ctx, vmID, "pause", ""); status != http.StatusOK {
 		t.Fatalf("first pause status = %d, want 200", status)
 	}
@@ -112,8 +112,8 @@ func TestVMLifecycle_PauseWhenStopped_Conflict(t *testing.T) {
 	}
 }
 
-// TestVMLifecycle_CrossUserNotFound — developer attempts К pause
-// admin's VM. PermVMLifecycle scope=own + cross-user maps к 404 (no
+// TestVMLifecycle_CrossUserNotFound — developer attempts to pause
+// admin's VM. PermVMLifecycle scope=own + cross-user maps to 404 (no
 // leak) per the project's 403-vs-404 rule.
 func TestVMLifecycle_CrossUserNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

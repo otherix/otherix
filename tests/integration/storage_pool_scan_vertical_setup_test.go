@@ -224,9 +224,9 @@ func newVerticalSliceWithLogger(t *testing.T, ctx context.Context, agentClientCf
 }
 
 // wireCertMaterial writes the agentmock testdata cert chain to a
-// fresh temp directory и loads it via agentclient.LoadMaterialFromFiles.
+// fresh temp directory and loads it via agentclient.LoadMaterialFromFiles.
 // The CA chain agentmock distributes is the same material the real
-// agent presents (node.crt) и the real CP presents (controlplane.crt),
+// agent presents (node.crt) and the real CP presents (controlplane.crt),
 // so the helper stays stable while the per-replica CP cert lifecycle
 // moved DB-side.
 func wireCertMaterial(t *testing.T) (tls.Certificate, *x509.Certificate) {

@@ -13,9 +13,9 @@ import (
 )
 
 // waitForTaskTerminal polls the in-memory TaskStore until the task
-// reaches a terminal status (success / failed) или the budget expires.
-// The scan goroutine runs statfs synchronously — microseconds на а
-// healthy filesystem — so а short budget is sufficient.
+// reaches a terminal status (success / failed) or the budget expires.
+// The scan goroutine runs statfs synchronously — microseconds on a
+// healthy filesystem — so a short budget is sufficient.
 func waitForTaskTerminal(t *testing.T, m *Manager, id uuid.UUID, budget time.Duration) *AgentTask {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -56,10 +56,10 @@ func TestManager_ScanPool_StatfsFailure(t *testing.T) {
 		t.Fatalf("AddPool: %v", err)
 	}
 
-	// AddPool already created poolRoot и ran а write probe там;
-	// deleting it before the scan triggers а statfs ENOENT failure.
+	// AddPool already created poolRoot and ran a write probe there;
+	// deleting it before the scan triggers a statfs ENOENT failure.
 	// Portable across CI environments (root-running tests would
-	// bypass а chmod 000 fixture; ENOENT cannot be bypassed).
+	// bypass a chmod 000 fixture; ENOENT cannot be bypassed).
 	if err := os.RemoveAll(poolRoot); err != nil {
 		t.Fatalf("remove pool root: %v", err)
 	}

@@ -22,7 +22,7 @@ where d.storage_pool_id = $1
 
 // Distinct-VM count for a given storage_pool_id, used by
 // storage_pools.delete to refuse deletion of pools backing live VMs.
-// Counts via vm_disks (the only place pool_id lives для a vm) and
+// Counts via vm_disks (the only place pool_id lives for a vm) and
 // excludes soft-deleted disks AND soft-deleted VMs.
 func (q *Queries) CountVMsByPool(ctx context.Context, storagePoolID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countVMsByPool, storagePoolID)
@@ -88,7 +88,7 @@ type CreateVMDiskParams struct {
 // pinned to one storage_pool. CountVMsByPool joins through vm_disks
 // to support the storage_pools.delete extended-refusal check (Phase B).
 // Inserts a single disk row for a vm. Phase B vm.create handler invokes
-// this once per VM (single-disk MVP). Multi-disk callers loop с distinct
+// this once per VM (single-disk MVP). Multi-disk callers loop with distinct
 // device_order values.
 func (q *Queries) CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VMDisk, error) {
 	row := q.db.QueryRow(ctx, createVMDisk,
@@ -184,8 +184,8 @@ where vm_id = $1
   and deleted_at is null
 `
 
-// Bulk soft-delete every disk row attached к a VM. Called by the
-// worker's vm.delete cleanup phase together с SoftDeleteVM. The
+// Bulk soft-delete every disk row attached to a VM. Called by the
+// worker's vm.delete cleanup phase together with SoftDeleteVM. The
 // per-row deleted_at stamp keeps the on delete cascade behaviour of
 // vm_disks.vm_id from removing rows that audit reads might still
 // need.

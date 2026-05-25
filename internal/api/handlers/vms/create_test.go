@@ -191,10 +191,10 @@ func TestValidateCreateRequest(t *testing.T) {
 
 // TestBuildNoEligibleDetails verifies the 409 envelope's
 // `filtered_due_to_pressure` payload: it renders each nullable pressure
-// timestamp only когда its condition is active, и surfaces the `pool`
-// name on pool-scoped entries. The nil-safety guard на the three
-// `*time.Time` fields prevents `.IsZero()` from being called on а nil
-// pointer когда only system_disk_pressure или disk_pressure is active.
+// timestamp only when its condition is active, and surfaces the `pool`
+// name on pool-scoped entries. The nil-safety guard on the three
+// `*time.Time` fields prevents `.IsZero()` from being called on a nil
+// pointer when only system_disk_pressure or disk_pressure is active.
 func TestBuildNoEligibleDetails(t *testing.T) {
 	t.Parallel()
 
@@ -220,7 +220,7 @@ func TestBuildNoEligibleDetails(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "wrapped ErrNoEligibleNodes без pressure detail returns nil",
+			name: "wrapped ErrNoEligibleNodes without pressure detail returns nil",
 			err:  fmt.Errorf("upstream: %w", scheduler.ErrNoEligibleNodes),
 			want: nil,
 		},
@@ -354,10 +354,10 @@ func TestBuildNoEligibleDetails(t *testing.T) {
 
 // TestBuildNoEligibleDetails_DoesNotPanicOnNilTimestamps is the
 // targeted A3 regression net. The pre-fix implementation called
-// `.IsZero()` on а nil *time.Time pointer; any pressure type other
+// `.IsZero()` on a nil *time.Time pointer; any pressure type other
 // than memory (where MemoryPressureSince was always populated)
-// triggered the nil-deref. Asserting "does not panic" в isolation
-// catches future drift if а new pressure timestamp is added без
+// triggered the nil-deref. Asserting "does not panic" in isolation
+// catches future drift if a new pressure timestamp is added without
 // matching nil-check.
 func TestBuildNoEligibleDetails_DoesNotPanicOnNilTimestamps(t *testing.T) {
 	t.Parallel()
@@ -385,7 +385,7 @@ func TestBuildNoEligibleDetails_DoesNotPanicOnNilTimestamps(t *testing.T) {
 	if !ok || len(filtered) != 1 {
 		t.Fatalf("filtered_due_to_pressure shape mismatch: %v", got["filtered_due_to_pressure"])
 	}
-	// None of the *_pressure_since keys should be present когда the
+	// None of the *_pressure_since keys should be present when the
 	// timestamp pointer was nil.
 	for _, key := range []string{"memory_pressure_since", "system_disk_pressure_since", "disk_pressure_since"} {
 		if _, ok := filtered[0][key]; ok {
@@ -396,6 +396,6 @@ func TestBuildNoEligibleDetails_DoesNotPanicOnNilTimestamps(t *testing.T) {
 	// detectable through the test helper's error chain (defensive — if
 	// the helper's wrap pattern changes the extractor breaks silently).
 	if !errors.Is(err, scheduler.ErrNoEligibleNodes) {
-		t.Errorf("test helper error chain does not unwrap к ErrNoEligibleNodes")
+		t.Errorf("test helper error chain does not unwrap to ErrNoEligibleNodes")
 	}
 }

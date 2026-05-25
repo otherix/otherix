@@ -18,13 +18,13 @@ import (
 )
 
 // TestVMList_VerticalSliceStatusFilter creates two VMs (both reach
-// status=running through the worker) и asserts the post-projection
+// status=running through the worker) and asserts the post-projection
 // `?status=running` filter returns both, while `?status=stopped`
 // returns none.
 //
 // Pool / pinned-node filters live in the schema (idx_vm_disks_pool +
 // idx_vms_pinned_node) but the API surface in Phase B exposes only
-// status — Phase D's broader filter coverage is тail-pinned то the
+// status — Phase D's broader filter coverage is tail-pinned to the
 // status surface that actually exists.
 func TestVMList_VerticalSliceStatusFilter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -93,7 +93,7 @@ func TestVMList_VerticalSliceStatusFilter(t *testing.T) {
 		}
 	}
 
-	// No filter → both VMs included (plus any others в this test's
+	// No filter → both VMs included (plus any others in this test's
 	// fresh DB).
 	all := listWith("")
 	if len(all.Data) < total {

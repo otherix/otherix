@@ -17,27 +17,27 @@ import (
 	"net"
 )
 
-// generateKeypairAndCSR builds an ECDSA P-384 keypair и а CSR signed
+// generateKeypairAndCSR builds an ECDSA P-384 keypair and a CSR signed
 // by it. ECDSA P-384 matches the cluster CA's algorithm
 // (auth.GenerateClusterCA) so the issued cert chains naturally
-// без forcing the CA to handle multiple key families.
+// without forcing the CA to handle multiple key families.
 //
 // CSR fields:
 //
-//   - Subject CN: "node-<nodeName>" — populated для realism. The
-//     SignCSR path discards the CSR Subject entirely и derives the
-//     issued cert's Subject от the validated request body
+//   - Subject CN: "node-<nodeName>" — populated for realism. The
+//     SignCSR path discards the CSR Subject entirely and derives the
+//     issued cert's Subject from the validated request body
 //     (defense-in-depth against CN injection).
 //   - SAN DNS: "node-<nodeName>.agents.otherix.local" + "localhost".
 //   - SAN IP: 127.0.0.1.
 //
 // Key encoding: PKCS#8 PEM ("PRIVATE KEY" block). Matches the cluster
-// CA's storage format и stays portable across Go x509 revisions.
+// CA's storage format and stays portable across Go x509 revisions.
 //
-// The returned *ecdsa.PrivateKey is only useful если the caller wants
-// к assert something on the keypair (unit tests do this — production
+// The returned *ecdsa.PrivateKey is only useful if the caller wants
+// to assert something on the keypair (unit tests do this — production
 // agent code discards it once the CSR is built; the key is loaded
-// от disk for subsequent mTLS handshakes).
+// from disk for subsequent mTLS handshakes).
 func generateKeypairAndCSR(nodeName string) (keyPEM, csrPEM []byte, priv *ecdsa.PrivateKey, err error) {
 	priv, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
@@ -75,16 +75,16 @@ func generateKeypairAndCSR(nodeName string) (keyPEM, csrPEM []byte, priv *ecdsa.
 }
 
 // verifyResponseChain enforces two invariants on the /v1/nodes/join
-// response before any file is persisted к disk:
+// response before any file is persisted to disk:
 //
 //  1. sha256(returned_ca_cert.Raw) == operator-pinned fingerprint.
-//     Defense-in-depth — а MITM на the join request could otherwise
-//     swap в а malicious CA + matching leaf, и the agent would
+//     Defense-in-depth — a MITM on the join request could otherwise
+//     swap in a malicious CA + matching leaf, and the agent would
 //     trust both.
-//  2. The returned leaf cert must chain back к the returned CA
+//  2. The returned leaf cert must chain back to the returned CA
 //     using x509.Certificate.Verify. Without this, the issued cert
 //     could carry any CA in `ca_cert_pem` while pointing the trust
-//     anchor at а different one.
+//     anchor at a different one.
 //
 // Either failure aborts before persistence — caller short-circuits
 // the bootstrap and the token (now consumed) is wasted, but no
@@ -92,7 +92,7 @@ func generateKeypairAndCSR(nodeName string) (keyPEM, csrPEM []byte, priv *ecdsa.
 func verifyResponseChain(certPEM, caCertPEM, pinnedFingerprint string) error {
 	caBlock, _ := pem.Decode([]byte(caCertPEM))
 	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
-		return errors.New("ca_cert_pem is not а CERTIFICATE PEM block")
+		return errors.New("ca_cert_pem is not a CERTIFICATE PEM block")
 	}
 	caCert, err := x509.ParseCertificate(caBlock.Bytes)
 	if err != nil {
@@ -107,7 +107,7 @@ func verifyResponseChain(certPEM, caCertPEM, pinnedFingerprint string) error {
 
 	leafBlock, _ := pem.Decode([]byte(certPEM))
 	if leafBlock == nil || leafBlock.Type != "CERTIFICATE" {
-		return errors.New("cert_pem is not а CERTIFICATE PEM block")
+		return errors.New("cert_pem is not a CERTIFICATE PEM block")
 	}
 	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
 	if err != nil {
@@ -117,14 +117,14 @@ func verifyResponseChain(certPEM, caCertPEM, pinnedFingerprint string) error {
 	pool := x509.NewCertPool()
 	pool.AddCert(caCert)
 
-	// ExtKeyUsageAny — the agent will eventually present this cert как
-	// both а server (CP→agent path) и а client (heartbeat path), so
+	// ExtKeyUsageAny — the agent will eventually present this cert as
+	// both a server (CP→agent path) and a client (heartbeat path), so
 	// the standard ServerAuth-only constraint is too narrow here.
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots:     pool,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	}); err != nil {
-		return fmt.Errorf("issued cert does not chain к returned CA: %v", err)
+		return fmt.Errorf("issued cert does not chain to returned CA: %v", err)
 	}
 	return nil
 }

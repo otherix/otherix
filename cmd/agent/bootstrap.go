@@ -25,13 +25,13 @@ import (
 
 const (
 	// defaultCertDir is the on-disk directory the bootstrap protocol
-	// targets для cert material per Otherix filesystem convention
-	// (`/opt/otherix/` for runtime state, `/etc/otherix/` для operator
+	// targets for cert material per Otherix filesystem convention
+	// (`/opt/otherix/` for runtime state, `/etc/otherix/` for operator
 	// config).
 	defaultCertDir = "/opt/otherix/certs"
 
 	// defaultMigrationPortStart / defaultMigrationPortEnd mirror the
-	// ephemeral-range default. Operators may override через
+	// ephemeral-range default. Operators may override via
 	// --migration-port-range-start / --migration-port-range-end.
 	defaultMigrationPortStart = 49152
 	defaultMigrationPortEnd   = 49251
@@ -47,24 +47,24 @@ const (
 )
 
 // newBootstrapCommand builds the `otherix-agent bootstrap` subcommand.
-// One-shot: invoke от an operator shell on а freshly-installed host,
-// it executes the join-token protocol и writes cert material + config
-// к disk. The running `serve` loop picks up the new files на the next
+// One-shot: invoke from an operator shell on a freshly-installed host,
+// it executes the join-token protocol and writes cert material + config
+// to disk. The running `serve` loop picks up the new files on the next
 // 5s tick.
 func newBootstrapCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Provision cert material + agent-config.yml на а fresh host",
+		Short: "Provision cert material + agent-config.yml on a fresh host",
 		Long: `One-shot bootstrap subcommand. Reads operator-supplied flags,
-executes the join-token protocol against the CP, и writes the issued
-cert material plus а generated agent-config.yml к disk. Idempotent — а
+executes the join-token protocol against the CP, and writes the issued
+cert material plus a generated agent-config.yml to disk. Idempotent — a
 repeat invocation without --force on an already-bootstrapped host
-exits 0 с а "already bootstrapped" message.
+exits 0 with a "already bootstrapped" message.
 
-The agent's serve loop polls для these files every 5 seconds, so
+The agent's serve loop polls for these files every 5 seconds, so
 bootstrap completion automatically unblocks the runtime — no service
-restart needed (а partial state on disk без cert material is what
-keeps serve в State A; bootstrap writes the missing pieces atomically).
+restart needed (a partial state on disk without cert material is what
+keeps serve in State A; bootstrap writes the missing pieces atomically).
 
 Examples:
   # Token literal:
@@ -75,40 +75,40 @@ Examples:
     --advertised-endpoint=https://127.0.0.1:9443 \
     --migration-host=0.0.0.0
 
-  # Token от file:
+  # Token from file:
   otherix-agent bootstrap --token-path=/etc/otherix/bootstrap-token ...
 
-  # Token от env var (resolves at invocation):
+  # Token from env var (resolves at invocation):
   OTX_TOKEN=otx_join_... otherix-agent bootstrap --token-env=OTX_TOKEN ...`,
 		Args: cobra.NoArgs,
 		RunE: runBootstrap,
 	}
 	flags := cmd.Flags()
 	// Token sources (L7 — exactly one must be set).
-	flags.String("token", "", "join token plaintext (mutually exclusive с --token-path / --token-env)")
+	flags.String("token", "", "join token plaintext (mutually exclusive with --token-path / --token-env)")
 	flags.String("token-path", "", "path to file holding the join token (whitespace-trimmed)")
 	flags.String("token-env", "", "name of env var holding the join token (resolved at invocation)")
 	// Required identity / endpoint inputs.
-	flags.String("ca-fingerprint", "", "cluster CA sha256 fingerprint (sha256:<hex> или bare hex)")
+	flags.String("ca-fingerprint", "", "cluster CA sha256 fingerprint (sha256:<hex> or bare hex)")
 	flags.String("cp-url", "", "control-plane base URL (https://...)")
 	flags.String("node-name", "", "cluster-unique node name")
-	flags.String("advertised-endpoint", "", "HTTPS URL the CP uses к reach the agent")
-	flags.String("migration-host", "", "hostname/IP the agent advertises для migration ingress (L14)")
+	flags.String("advertised-endpoint", "", "HTTPS URL the CP uses to reach the agent")
+	flags.String("migration-host", "", "hostname/IP the agent advertises for migration ingress (L14)")
 	// Optional knobs.
 	flags.Int("migration-port-range-start", defaultMigrationPortStart, "migration port range lower bound")
 	flags.Int("migration-port-range-end", defaultMigrationPortEnd, "migration port range upper bound")
 	flags.String("listen", defaultListenAddr, "agent HTTPS bind address (baked into agent-config.yml)")
 	flags.Duration("heartbeat-interval", defaultHeartbeatInterval, "heartbeat cadence (baked into agent-config.yml)")
-	flags.String("cert-dir", defaultCertDir, "directory для cert material (key/cert/CA atomic writes)")
-	flags.String("config-path", defaultConfigPath, "destination для the generated agent-config.yml")
+	flags.String("cert-dir", defaultCertDir, "directory for cert material (key/cert/CA atomic writes)")
+	flags.String("config-path", defaultConfigPath, "destination for the generated agent-config.yml")
 	flags.Bool("force", false, "overwrite existing cert material + config (re-bootstrap)")
 	flags.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout against the CP")
 	return cmd
 }
 
 // bootstrapInputs is the validated CLI flag bundle, derived once at
-// runBootstrap entry. Drives both idempotency checking и the
-// `bootstrap.Bootstrap()` library call. Architecture comes от
+// runBootstrap entry. Drives both idempotency checking and the
+// `bootstrap.Bootstrap()` library call. Architecture comes from
 // runtime.GOARCH per L10.
 type bootstrapInputs struct {
 	token                   string
@@ -140,25 +140,25 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 
 	keyPath, certPath, caPath := certPaths(in.certDir)
 
-	// Idempotency is scoped к cert material only (key + cert + CA).
+	// Idempotency is scoped to cert material only (key + cert + CA).
 	// The config file (agent-config.yml) is preserved if it already
-	// exists — operators commonly hand-tune logger / pools / etc., и
+	// exists — operators commonly hand-tune logger / pools / etc., and
 	// blindly overwriting that on every bootstrap would erase work.
-	// --force does overwrite both cert material и config.
+	// --force does overwrite both cert material and config.
 	if !in.force {
 		switch state := inspectCertState(keyPath, certPath, caPath); state {
 		case stateAllPresent:
-			log.Info("agent: already bootstrapped — cert material present (use --force к re-bootstrap)",
+			log.Info("agent: already bootstrapped — cert material present (use --force to re-bootstrap)",
 				slog.String("cert_path", certPath),
 				slog.String("key_path", keyPath),
 				slog.String("ca_path", caPath),
 			)
 			return nil
 		case statePartial:
-			return fmt.Errorf("partial cert material on disk — some of (%s, %s, %s) present но не все; delete the partial files или re-run с --force",
+			return fmt.Errorf("partial cert material on disk — some of (%s, %s, %s) present but not all; delete the partial files or re-run with --force",
 				keyPath, certPath, caPath)
 		case stateClean:
-			// fall through к bootstrap protocol
+			// fall through to bootstrap protocol
 		}
 	}
 
@@ -197,7 +197,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Config write: idempotent — bootstrap writes the agent runtime
-	// config only когда absent. --force re-issues cert material but
+	// config only when absent. --force re-issues cert material but
 	// never overwrites the config, so operator-tuned settings (logger,
 	// pools, etc.) survive across re-bootstraps. Fresh deployments
 	// still get the baseline yaml automatically.
@@ -230,8 +230,8 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 }
 
 // readBootstrapInputs gathers flags, resolves the token via L7's three-
-// way --token / --token-path / --token-env mux, и rejects invalid
-// combinations. Returns а fully-formed bootstrapInputs ready для use.
+// way --token / --token-path / --token-env mux, and rejects invalid
+// combinations. Returns a fully-formed bootstrapInputs ready for use.
 func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
 	flags := cmd.Flags()
 	tokenLit, _ := flags.GetString("token")
@@ -261,7 +261,7 @@ func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
 }
 
 // resolveTokenFromFlags returns the plaintext token, applying the L7
-// three-way mux. Whitespace is trimmed от path/env reads.
+// three-way mux. Whitespace is trimmed from path/env reads.
 func resolveTokenFromFlags(tokenLit, tokenPath, tokenEnv string) (string, error) {
 	sources := 0
 	if tokenLit != "" {
@@ -298,7 +298,7 @@ func resolveTokenFromFlags(tokenLit, tokenPath, tokenEnv string) (string, error)
 	// tokenEnv path.
 	s := strings.TrimSpace(os.Getenv(tokenEnv))
 	if s == "" {
-		return "", fmt.Errorf("token-env %q is unset или empty", tokenEnv)
+		return "", fmt.Errorf("token-env %q is unset or empty", tokenEnv)
 	}
 	return s, nil
 }
@@ -314,8 +314,8 @@ const (
 )
 
 // inspectCertState reports whether the three cert material files are
-// all-present, all-absent, или partial. The polling-loop reframe
-// requires all three to be present (alongside the runtime config) для
+// all-present, all-absent, or partial. The polling-loop reframe
+// requires all three to be present (alongside the runtime config) for
 // State B; partial without --force is rejected at the API edge here
 // per SL6.
 //
@@ -338,8 +338,8 @@ func inspectCertState(keyPath, certPath, caPath string) presenceState {
 	}
 }
 
-// certPaths derives the (key, cert, CA) destination paths от --cert-dir.
-// File names match the convention в dev/config/agent-*.yaml so the
+// certPaths derives the (key, cert, CA) destination paths from --cert-dir.
+// File names match the convention in dev/config/agent-*.yaml so the
 // generated agent-config.yml points at the right files without operator
 // intervention.
 func certPaths(certDir string) (keyPath, certPath, caPath string) {
@@ -348,8 +348,8 @@ func certPaths(certDir string) (keyPath, certPath, caPath string) {
 		filepath.Join(certDir, "ca.crt")
 }
 
-// fileExists treats permission-denied identically к not-found — the
-// agent runtime would fail к use the file either way.
+// fileExists treats permission-denied identically to not-found — the
+// agent runtime would fail to use the file either way.
 func fileExists(path string) bool {
 	if path == "" {
 		return false
@@ -359,7 +359,7 @@ func fileExists(path string) bool {
 }
 
 // agentConfigInputs is the data the agent-config.yml template needs.
-// Kept narrow so the template stays decoupled от the larger bootstrapInputs.
+// Kept narrow so the template stays decoupled from the larger bootstrapInputs.
 type agentConfigInputs struct {
 	CPURL                   string
 	HeartbeatInterval       time.Duration
@@ -372,6 +372,6 @@ type agentConfigInputs struct {
 	MigrationPortRangeEnd   int
 }
 
-// _ ensures context import stays used когда the file evolves; placeholder
+// _ ensures context import stays used when the file evolves; placeholder
 // removed once additional ctx-aware helpers land.
 var _ = context.Background

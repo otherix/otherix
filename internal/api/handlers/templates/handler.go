@@ -96,7 +96,7 @@ type templateView struct {
 	ImageURL     string `json:"image_url"`
 	// Nullable - null indicates the template has not yet been
 	// materialised in compute mode (back-propagation fills the column
-	// на first successful import).
+	// on first successful import).
 	ImageChecksumSHA256    *string         `json:"image_checksum_sha256"`
 	ImageFormat            string          `json:"image_format"`
 	ImageSizeBytes         *int64          `json:"image_size_bytes"`
@@ -146,7 +146,7 @@ func toView(t store.Template) templateView {
 	return v
 }
 
-// optionalHexChecksum lifts а possibly-null bytea checksum onto the
+// optionalHexChecksum lifts a possibly-null bytea checksum onto the
 // wire shape: nil bytes (NULL column, compute-mode template not yet
 // materialised) → nil *string (JSON null); non-nil bytes
 // → pointer-to-lowercase-hex. The hex encoder produces the canonical

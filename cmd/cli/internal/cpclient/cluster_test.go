@@ -58,7 +58,7 @@ func TestGetClusterDefaultPool_UnsetReturnsNilNoError(t *testing.T) {
 	c := fixtureClient(t, srv)
 	got, err := c.GetClusterDefaultPool(context.Background())
 	if err != nil {
-		t.Fatalf("expected nil error для unset default, got %v", err)
+		t.Fatalf("expected nil error for unset default, got %v", err)
 	}
 	if got != nil {
 		t.Errorf("got = %+v, want nil", got)
@@ -77,7 +77,7 @@ func TestGetClusterDefaultPool_OtherErrorSurfaces(t *testing.T) {
 	c := fixtureClient(t, srv)
 	_, err := c.GetClusterDefaultPool(context.Background())
 	if err == nil {
-		t.Fatal("expected error для 500")
+		t.Fatal("expected error for 500")
 	}
 	var ae *cpclient.APIError
 	if !errors.As(err, &ae) {
@@ -129,7 +129,7 @@ func TestSetClusterDefaultPool_UnknownPoolName(t *testing.T) {
 	c := fixtureClient(t, srv)
 	_, err := c.SetClusterDefaultPool(context.Background(), "missing")
 	if err == nil {
-		t.Fatal("expected error для unknown pool")
+		t.Fatal("expected error for unknown pool")
 	}
 	var ae *cpclient.APIError
 	if !errors.As(err, &ae) {

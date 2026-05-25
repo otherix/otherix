@@ -31,8 +31,8 @@ func newListCommand() *cobra.Command {
 		Long: `Cursor-paginated list. Server-side filters: pool (name or uuid),
 node (name or uuid — filters by the agent-reported current location,
 not by pinned intent), status (creating/running/paused/stopped/error/
-gone/orphaned). The next page's cursor lives в the JSON envelope's
-meta.next_cursor and is opaque — re-pass с --cursor.`,
+gone/orphaned). The next page's cursor lives in the JSON envelope's
+meta.next_cursor and is opaque — re-pass with --cursor.`,
 		RunE: runList,
 	}
 
@@ -106,10 +106,10 @@ func runList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// printVMTable renders an aligned table к stdout. text/tabwriter
-// computes column widths once и flushes on Close. The bottom hint
+// printVMTable renders an aligned table to stdout. text/tabwriter
+// computes column widths once and flushes on Close. The bottom hint
 // includes meta.next_cursor when populated so operators can chain
-// the next page без digging in JSON. The ID column is hidden by
+// the next page without digging in JSON. The ID column is hidden by
 // default — referenced-resource fields are names, and the VM's own
 // UUID is operator-noise unless --show-ids opts back in.
 func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {

@@ -17,10 +17,10 @@ import (
 )
 
 // VMManager is the narrow vm.Manager surface the VM reconciler needs.
-// vm.Manager satisfies it structurally; tests pass а fake без
+// vm.Manager satisfies it structurally; tests pass a fake without
 // importing the production package. Per L3 D2 the manager exposes
 // HasInFlight so the reconciler can short-circuit corrective ops
-// while а prior tick's enqueue is still running.
+// while a prior tick's enqueue is still running.
 type VMManager interface {
 	List() []*vm.VM
 	HasInFlight(name string) bool
@@ -37,7 +37,7 @@ type VMManager interface {
 //
 // Implements heartbeat.ResponseHandler (HandleHeartbeatResponse) +
 // heartbeat.VMReporter (VMReports). The sender wires the same
-// reconciler к both seams.
+// reconciler to both seams.
 type VMs struct {
 	log     *slog.Logger
 	manager VMManager
@@ -53,7 +53,7 @@ type VMs struct {
 // ErrNilVMManager guards nil-injection at construction time.
 var ErrNilVMManager = errors.New("reconciler: VMManager is required")
 
-// NewVMs constructs the VM reconciler. tick==0 falls back к
+// NewVMs constructs the VM reconciler. tick==0 falls back to
 // DefaultTickInterval. Returns ErrNilVMManager when manager is nil.
 func NewVMs(manager VMManager, log *slog.Logger, tick time.Duration) (*VMs, error) {
 	if manager == nil {
@@ -72,8 +72,8 @@ func NewVMs(manager VMManager, log *slog.Logger, tick time.Duration) (*VMs, erro
 }
 
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies
-// the declared_vms slice (the sender's response struct может быть
-// reused) и nudges the reconciler. Nil response is а no-op.
+// the declared_vms slice (the sender's response struct may be
+// reused) and nudges the reconciler. Nil response is a no-op.
 func (r *VMs) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {
 	if resp == nil {
 		return
@@ -87,10 +87,10 @@ func (r *VMs) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Respons
 }
 
 // VMReports implements heartbeat.VMReporter. Returns the reconciler's
-// observed-state cache в name-sorted order. The cache is refreshed
+// observed-state cache in name-sorted order. The cache is refreshed
 // at the end of every reconcile pass. Returns nil on empty so the
 // JSON marshaller emits an empty array (matches HeartbeatRequest.vms
-// being а required field).
+// being a required field).
 func (r *VMs) VMReports() []heartbeat.VMReport {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,7 +113,7 @@ func (r *VMs) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.tick)
 	defer ticker.Stop()
 	// Initial pass — sets baseline reports immediately so the first
-	// heartbeat-after-boot carries а populated vms[] regardless of
+	// heartbeat-after-boot carries a populated vms[] regardless of
 	// when the first declared_vms payload lands.
 	r.reconcile(ctx)
 	for {
@@ -129,7 +129,7 @@ func (r *VMs) Run(ctx context.Context) error {
 }
 
 // reconcile is one pass over the (desired, observed) diff. Builds the
-// reports map от Manager.List() и dispatches corrective lifecycle
+// reports map from Manager.List() and dispatches corrective lifecycle
 // ops:
 //
 //   - desired_phase=running, observed=stopped → Start
@@ -141,8 +141,8 @@ func (r *VMs) Run(ctx context.Context) error {
 //   - observed transitional (pending /
 //     creating / stopping / deleting / paused) → skip; next tick re-checks
 //
-// All dispatch errors are logged but не propagated — the reconciler
-// is retry-forever и eventually consistent.
+// All dispatch errors are logged but not propagated — the reconciler
+// is retry-forever and eventually consistent.
 func (r *VMs) reconcile(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
@@ -166,11 +166,11 @@ func (r *VMs) reconcile(ctx context.Context) {
 	for _, v := range observed {
 		decl, declared := desiredByName[v.Name]
 		if !declared {
-			// VM observed locally но CP does not declare it on this
+			// VM observed locally but CP does not declare it on this
 			// node. Could be: 1) CP-side delete tasks lost; 2) VM
-			// migrated away и CP forgot к declare elsewhere. Per L3
+			// migrated away and CP forgot to declare elsewhere. Per L3
 			// D4 lock, CP orphan-detects via omission; agent simply
-			// reports the VM в heartbeat и waits. No corrective op.
+			// reports the VM in heartbeat and waits. No corrective op.
 			continue
 		}
 		r.dispatch(ctx, v, decl)
@@ -182,7 +182,7 @@ func (r *VMs) reconcile(ctx context.Context) {
 }
 
 // dispatch handles one observed-vs-declared pair. Side-effect: may
-// enqueue а Manager lifecycle op when convergence requires action.
+// enqueue a Manager lifecycle op when convergence requires action.
 func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM) {
 	if r.manager.HasInFlight(v.Name) {
 		return
@@ -239,11 +239,11 @@ func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM)
 	}
 }
 
-// vmReport projects а vm.VM snapshot к heartbeat.VMReport. Currently
+// vmReport projects a vm.VM snapshot to heartbeat.VMReport. Currently
 // surfaces vm_uuid + phase only; pid / observed_generation / timestamps
 // are forward-compatibility slots that the agent does not yet
-// populate (vm.VM has no field для observed_generation; CP records
-// it CP-side via the desired generation в declared_vms once the
+// populate (vm.VM has no field for observed_generation; CP records
+// it CP-side via the desired generation in declared_vms once the
 // reconciler runs).
 func vmReport(v *vm.VM) heartbeat.VMReport {
 	return heartbeat.VMReport{
@@ -252,8 +252,8 @@ func vmReport(v *vm.VM) heartbeat.VMReport {
 	}
 }
 
-// mapPhase coerces an agent-side vm.Status string к the wire enum
-// values declared в HeartbeatVMReport.phase (pending, running,
+// mapPhase coerces an agent-side vm.Status string to the wire enum
+// values declared in HeartbeatVMReport.phase (pending, running,
 // paused, stopped, error, gone). Internal-only phases (creating,
 // stopping, deleting) collapse to the closest user-visible phase to
 // keep the wire enum stable.

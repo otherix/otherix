@@ -30,7 +30,7 @@ type vmCreateRequestBody struct {
 	// UserData (L3) carries the CP-resolved cloud-init blob. Mock
 	// stores it on the AgentVM record so integration tests can
 	// assert the resolver picked the right source (vm.user_data ?:
-	// template.cloud_init_user_data) и the agent wire shape
+	// template.cloud_init_user_data) and the agent wire shape
 	// propagates the field.
 	UserData string `json:"user_data,omitempty"`
 }
@@ -239,7 +239,7 @@ func (m *Mock) vmGet(w http.ResponseWriter, r *http.Request, vmName string, opID
 
 // vmLifecycle implements the L1 sync surface (pause / resume / reset).
 // Looks up the stored AgentVM by name, validates the current status
-// matches `requireStatus`, then transitions к `newStatus` and returns
+// matches `requireStatus`, then transitions to `newStatus` and returns
 // the refreshed entry. For reset, callers pass `newStatus == requireStatus`
 // because the QMP `system_reset` action preserves runtime identity.
 func (m *Mock) vmLifecycle(w http.ResponseWriter, r *http.Request, opID, vmName, requireStatus, newStatus string) {
@@ -318,8 +318,8 @@ func (m *Mock) materializeVMDeleteLocked(snapshot *agentTask, now time.Time) {
 	delete(m.state.storedVMs, snapshot.vmDeleteName)
 }
 
-// vmLifecycleAsync registers а new async lifecycle agentTask for the
-// supplied op (start / stop / poweroff / reboot) и returns 202 +
+// vmLifecycleAsync registers a new async lifecycle agentTask for the
+// supplied op (start / stop / poweroff / reboot) and returns 202 +
 // AsyncTaskAccepted. The materialise hook (status transition) lands
 // lazily on later TasksGet calls. Mirrors vmCreate / vmDelete shape.
 func (m *Mock) vmLifecycleAsync(w http.ResponseWriter, r *http.Request, opID, vmName, op string) {
@@ -356,7 +356,7 @@ func (m *Mock) vmLifecycleAsync(w http.ResponseWriter, r *http.Request, opID, vm
 
 // materializeVMLifecycleLocked transitions storedVMs[name].Status
 // per the queued outcome once an async lifecycle task has reached
-// terminal-success. Caller holds m.state.mu. Failed terminals are а
+// terminal-success. Caller holds m.state.mu. Failed terminals are a
 // no-op (the inventory entry stays in its prior phase per Area 4-IV
 // — manual intervention only).
 func (m *Mock) materializeVMLifecycleLocked(snapshot *agentTask, now time.Time) {

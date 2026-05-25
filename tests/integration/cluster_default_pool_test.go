@@ -25,15 +25,15 @@ import (
 //
 //  1. GET returns 404 default_pool_not_set when no default is
 //     configured (the seed verticalSlice never sets one).
-//  2. PUT с an unknown name returns 400 pool_not_found.
-//  3. PUT с the seeded pool's name succeeds and surfaces the
+//  2. PUT with an unknown name returns 400 pool_not_found.
+//  3. PUT with the seeded pool's name succeeds and surfaces the
 //     canonical-case spelling on the response.
-//  4. GET now returns 200 с the persisted name.
+//  4. GET now returns 200 with the persisted name.
 //  5. DELETE clears the reference; subsequent GET is 404 again.
 //
 // One verticalSlice carries the whole flow — every test step
 // re-uses the same control plane (faster setup than per-step
-// teardown, и matches the operator's real lifecycle).
+// teardown, and matches the operator's real lifecycle).
 func TestClusterDefaultPool_FullLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -111,10 +111,10 @@ func TestVMCreate_FallsBackToClusterDefault(t *testing.T) {
 		// Pool intentionally omitted.
 	}, v.adminToken, "")
 	if status != http.StatusBadRequest {
-		t.Fatalf("create без --pool status = %d, body = %s, want 400", status, body)
+		t.Fatalf("create without --pool status = %d, body = %s, want 400", status, body)
 	}
 	if !jsonContains(body, "default_pool_not_set") {
-		t.Errorf("create без --pool body = %s, want code default_pool_not_set", body)
+		t.Errorf("create without --pool body = %s, want code default_pool_not_set", body)
 	}
 
 	// Set the seeded pool as default — same name resolution.
@@ -122,7 +122,7 @@ func TestVMCreate_FallsBackToClusterDefault(t *testing.T) {
 		t.Fatalf("PUT default pool status = %d, body = %s, want 200", status, body)
 	}
 
-	// Now the same request should succeed and dispatch к the seeded
+	// Now the same request should succeed and dispatch to the seeded
 	// pool's owning node.
 	taskID, _ := v.createVM(t, ctx, vmCreateBody{
 		Name:     "fallback-ok-" + uuid.NewString()[:8],
@@ -143,8 +143,8 @@ func TestVMCreate_FallsBackToClusterDefault(t *testing.T) {
 
 // clusterGetDefaultPool / clusterSetDefaultPool / clusterClearDefaultPool
 // are local thin wrappers around v.cpServer.URL + /v1/cluster/default-pool.
-// Kept here rather than в vm_vertical_setup_test.go because they are
-// specific к this file's flow — the rest of the suite does not exercise
+// Kept here rather than in vm_vertical_setup_test.go because they are
+// specific to this file's flow — the rest of the suite does not exercise
 // /v1/cluster/* directly.
 func (v *verticalSlice) clusterGetDefaultPool(t *testing.T, ctx context.Context) (int, []byte) {
 	t.Helper()

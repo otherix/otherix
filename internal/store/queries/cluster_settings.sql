@@ -8,7 +8,7 @@ where id = 1;
 
 -- name: SetDefaultPoolName :exec
 -- Sets the cluster's default pool name. The handler validates beforehand
--- that at least one pool instance с this name exists.
+-- that at least one pool instance with this name exists.
 update cluster_settings
 set default_pool_name = @default_pool_name
 where id = 1;

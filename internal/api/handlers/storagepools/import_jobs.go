@@ -119,7 +119,7 @@ const (
 //     matching `template_not_found` / `pool_not_found` /
 //     `node_not_found` code.
 //  3. Re-load the task to inspect agent_task_id (resumption seam:
-//     non-nil means a previous attempt already POSTed к agent).
+//     non-nil means a previous attempt already POSTed to agent).
 //  4. Delegate to executor with an OnAgentTaskID callback that
 //     persists the agent task id back through UpdateTaskAgentTaskID
 //     on the first 202.
@@ -229,10 +229,10 @@ func (w *StorageImageImportWorker) persistAgentTaskID(taskID uuid.UUID) func(con
 // folds the agent-computed checksum onto the template row in the
 // same transaction. UpdateTemplateImageChecksumIfNull is idempotent
 // (its WHERE clause guards on `image_checksum_sha256 is null`), so
-// two concurrent compute-mode imports cannot conflict and а repeat
-// import after back-propagation is а no-op. After this point the
+// two concurrent compute-mode imports cannot conflict and a repeat
+// import after back-propagation is a no-op. After this point the
 // template behaves as if verify mode had been used originally —
-// future imports k other pools hit the agent с а known
+// future imports k other pools hit the agent with a known
 // expected_checksum_sha256.
 func (w *StorageImageImportWorker) projectAndFinalize(
 	ctx context.Context,

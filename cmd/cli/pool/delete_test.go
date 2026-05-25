@@ -63,7 +63,7 @@ func TestPoolDelete_BlockedTextOutput(t *testing.T) {
 
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-mvp", "--force"})
 	if err == nil {
-		t.Fatalf("expected error для blocked delete")
+		t.Fatalf("expected error for blocked delete")
 	}
 	if !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("err missing 'blocked': %v", err)
@@ -96,7 +96,7 @@ func TestPoolDelete_BlockedJSONOutput(t *testing.T) {
 
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-mvp", "--force", "--output", "json"})
 	if err == nil {
-		t.Fatalf("expected error для blocked delete")
+		t.Fatalf("expected error for blocked delete")
 	}
 	var obj map[string]any
 	if jerr := json.Unmarshal([]byte(stdout), &obj); jerr != nil {
@@ -128,7 +128,7 @@ func TestPoolDelete_NotFound(t *testing.T) {
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{"delete", "missing", "--force"})
 	if err == nil {
-		t.Fatalf("expected error для 404")
+		t.Fatalf("expected error for 404")
 	}
 	if !strings.Contains(err.Error(), "not_found") {
 		t.Errorf("err = %v, want mention of not_found", err)
@@ -136,13 +136,13 @@ func TestPoolDelete_NotFound(t *testing.T) {
 }
 
 // TestPoolDelete_NoForceOnPipedStdin verifies the confirmation prompt
-// is skipped when stdin is not а TTY (e.g. CI / script redirection).
-// Without --force и без TTY → delete proceeds. Mirror VM delete UX.
+// is skipped when stdin is not a TTY (e.g. CI / script redirection).
+// Without --force and without TTY → delete proceeds. Mirror VM delete UX.
 func TestPoolDelete_NoForceOnPipedStdin(t *testing.T) {
 	t.Parallel()
-	// Test harness uses а non-TTY stdin by default (го test pipe),
+	// Test harness uses a non-TTY stdin by default (go test pipe),
 	// so the no-prompt branch fires automatically — exercises the
-	// "automation runs через без prompt" path.
+	// "automation runs via without prompt" path.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))

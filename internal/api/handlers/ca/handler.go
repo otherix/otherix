@@ -2,15 +2,15 @@
 // Copyright 2026 Andrei Taranik
 
 // Package ca hosts the anonymous /v1/ca endpoint. The active cluster
-// CA cert и its SHA-256 fingerprint are returned so Step 3 agent
+// CA cert and its SHA-256 fingerprint are returned so Step 3 agent
 // bootstrap can perform TOFU validation of the CP server cert before
-// submitting а CSR. The CA private key never leaves the server — the
+// submitting a CSR. The CA private key never leaves the server — the
 // view projection in this package omits the key_pem column from
 // ca_certs entirely.
 //
 // The endpoint is mounted outside any auth middleware: agents at
-// bootstrap time have neither а Bearer JWT nor an mTLS client cert
-// (the chicken-and-egg the join-token bootstrap exists к solve). The
+// bootstrap time have neither a Bearer JWT nor an mTLS client cert
+// (the chicken-and-egg the join-token bootstrap exists to solve). The
 // fingerprint distributed via the operator out of band (alongside
 // the join token plaintext) is the only authentication channel.
 package ca
@@ -39,7 +39,7 @@ func New(s *store.Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 
-// clusterCAView mirrors components/schemas/ClusterCA в
+// clusterCAView mirrors components/schemas/ClusterCA in
 // api/openapi/control-plane.yaml. KeyPem is intentionally absent —
 // the projection guarantees the CA private key cannot leak via this
 // endpoint.
@@ -51,9 +51,9 @@ type clusterCAView struct {
 }
 
 // Get implements GET /v1/ca (anonymous). Returns 200 with the
-// projected CA view on the happy path; 500 internal когда no active
+// projected CA view on the happy path; 500 internal when no active
 // CA row exists (the boot-time BootstrapClusterCA hook guarantees
-// this row exists в production — а 500 here surfaces an operational
+// this row exists in production — a 500 here surfaces an operational
 // invariant violation).
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	row, err := h.store.Queries().GetActiveCACert(r.Context())

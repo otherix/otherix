@@ -29,9 +29,9 @@ const MetaFileName = "meta.json"
 // across restarts. Path fields are absolute so the manager can act on
 // them without re-deriving conventions.
 //
-// The pool reference is а string name; the pre-landing UUID schema
-// is а clean break, not а migration. Existing dev Lima environments
-// must `make clean-dev` после landing.
+// The pool reference is a string name; the pre-landing UUID schema
+// is a clean break, not a migration. Existing dev Lima environments
+// must `make clean-dev` after landing.
 type VMMeta struct {
 	VMID          uuid.UUID `json:"vm_id"`
 	Name          string    `json:"name"`
@@ -49,7 +49,7 @@ type VMMeta struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// WriteMeta persists m к <vmDir>/meta.json using a temp-file + rename
+// WriteMeta persists m to <vmDir>/meta.json using a temp-file + rename
 // atomic write. The directory is created with 0o750 if missing.
 func WriteMeta(vmDir string, m *VMMeta) error {
 	if err := os.MkdirAll(vmDir, 0o750); err != nil {

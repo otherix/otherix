@@ -99,7 +99,7 @@ func boolYesNo(b bool) string {
 	return "no"
 }
 
-// humanBytes renders а byte count в IEC binary units. nil → "-". Used
+// humanBytes renders a byte count in IEC binary units. nil → "-". Used
 // by the system_disk rendering in `otherix node get` so operators see
 // "80.5 GiB" rather than the raw integer. Parallels the pool package
 // helper of the same name.

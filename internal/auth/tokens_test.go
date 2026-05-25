@@ -11,9 +11,9 @@ import (
 )
 
 // TestHashToken_DeterministicAndDistinct asserts the post-refactor
-// invariants: same plaintext hashes к the same bytes (lookup works),
+// invariants: same plaintext hashes to the same bytes (lookup works),
 // distinct plaintexts produce distinct hashes (collision-free for
-// random tokens), и the digest length matches sha256 (32 bytes —
+// random tokens), and the digest length matches sha256 (32 bytes —
 // the column type encoded as bytea).
 func TestHashToken_DeterministicAndDistinct(t *testing.T) {
 	const a = "otx_join_aaaaaa"
@@ -31,20 +31,20 @@ func TestHashToken_DeterministicAndDistinct(t *testing.T) {
 }
 
 // TestHashAPIToken_HashTokenAlias asserts the legacy HashAPIToken
-// wrapper produces identical output к HashToken — guarantees the
+// wrapper produces identical output to HashToken — guarantees the
 // post-refactor contract for existing apitokens call sites.
 func TestHashAPIToken_HashTokenAlias(t *testing.T) {
 	const plain = "otx_abcdef"
 	if !bytes.Equal(auth.HashAPIToken(plain), auth.HashToken(plain)) {
-		t.Error("HashAPIToken не равно HashToken — refactor regression")
+		t.Error("HashAPIToken not equal HashToken — refactor regression")
 	}
 }
 
 // TestHashRefreshToken_HashTokenAlias asserts the legacy
-// HashRefreshToken wrapper produces identical output к HashToken.
+// HashRefreshToken wrapper produces identical output to HashToken.
 func TestHashRefreshToken_HashTokenAlias(t *testing.T) {
 	const plain = "deadbeefdeadbeefdeadbeef"
 	if !bytes.Equal(auth.HashRefreshToken(plain), auth.HashToken(plain)) {
-		t.Error("HashRefreshToken не равно HashToken — refactor regression")
+		t.Error("HashRefreshToken not equal HashToken — refactor regression")
 	}
 }

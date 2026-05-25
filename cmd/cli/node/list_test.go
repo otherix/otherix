@@ -12,7 +12,7 @@ import (
 // TestRenderNodeStatus covers the STATUS-column computation of the
 // node list view. Reachable nodes append "under_pressure" when any
 // pressure condition is active; unreachable suppresses pressure
-// rendering because heartbeat data — and pressure data derived от it
+// rendering because heartbeat data — and pressure data derived from it
 // — is stale.
 func TestRenderNodeStatus(t *testing.T) {
 	mem := &cpclient.PressureCondition{Since: "2026-05-12T12:00:00Z", ConsecutiveCount: 3}

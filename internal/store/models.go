@@ -1050,11 +1050,11 @@ type Node struct {
 	MemoryPressureSince *time.Time
 	// Consecutive heartbeat observations below memory pressure threshold. Used for debouncing — count reaches placement.pressure.memory.consecutive_required → pressure set. Reset to 0 on first observation at-or-above threshold.
 	MemoryPressureCount int32
-	// Root filesystem total capacity (bytes) reported by the agent via syscall.Statfs("/"). NULL когда the agent could not read the metric — CP carries existing pressure state forward.
+	// Root filesystem total capacity (bytes) reported by the agent via syscall.Statfs("/"). NULL when the agent could not read the metric — CP carries existing pressure state forward.
 	SystemDiskTotalBytes *int64
-	// Root filesystem available bytes reported by the agent. Pairs с system_disk_total_bytes; both nullable together. Volatile per heartbeat.
+	// Root filesystem available bytes reported by the agent. Pairs with system_disk_total_bytes; both nullable together. Volatile per heartbeat.
 	SystemDiskAvailableBytes *int64
-	// Timestamp когда system_disk pressure condition was set. NULL когда condition not active. CP-side computed from heartbeat metrics against placement.pressure.system_disk.threshold_percent.
+	// Timestamp when system_disk pressure condition was set. NULL when condition not active. CP-side computed from heartbeat metrics against placement.pressure.system_disk.threshold_percent.
 	SystemDiskPressureSince *time.Time
 	// Consecutive heartbeat observations below system_disk pressure threshold. Used for debouncing — count reaches placement.pressure.system_disk.consecutive_required → pressure set. Reset to 0 on first observation at-or-above threshold.
 	SystemDiskPressureCount int32
@@ -1063,7 +1063,7 @@ type Node struct {
 	DeletedAt               *time.Time
 }
 
-// Node availability с pending-VM accounting. Subtracts vms.cpu_cores / vms.memory_mib pinned после last heartbeat (CP committed но agent has not yet observed). Self-correcting once next heartbeat arrives. Read by the scheduler at placement time.
+// Node availability with pending-VM accounting. Subtracts vms.cpu_cores / vms.memory_mib pinned after last heartbeat (CP committed but agent has not yet observed). Self-correcting once next heartbeat arrives. Read by the scheduler at placement time.
 type NodeEffectiveAvailability struct {
 	ID                       uuid.UUID
 	Name                     string
@@ -1111,7 +1111,7 @@ type NodeFirmware struct {
 	ReportedAt time.Time
 }
 
-// Pool availability с pending-VM-disk accounting. Subtracts vm_disks committed после last scan (CP committed но agent has not yet observed). Self-correcting once next scan completes. Operator-visible via the pool API + CLI; future scheduler integration.
+// Pool availability with pending-VM-disk accounting. Subtracts vm_disks committed after last scan (CP committed but agent has not yet observed). Self-correcting once next scan completes. Operator-visible via the pool API + CLI; future scheduler integration.
 type PoolEffectiveCapacity struct {
 	ID                      uuid.UUID
 	NodeID                  uuid.UUID
@@ -1246,9 +1246,9 @@ type StoragePool struct {
 	AvailableBytes *int64
 	ReportedAt     *time.Time
 	Config         []byte
-	// Timestamp когда pool disk pressure was set. NULL когда condition not active. CP-side computed from scan metrics against placement.pressure.disk.threshold_percent.
+	// Timestamp when pool disk pressure was set. NULL when condition not active. CP-side computed from scan metrics against placement.pressure.disk.threshold_percent.
 	DiskPressureSince *time.Time
-	// Consecutive scan observations below pool disk pressure threshold. Used for debouncing — default consecutive_required=1 means а single scan sets pressure. Reset к 0 on first observation at-or-above threshold.
+	// Consecutive scan observations below pool disk pressure threshold. Used for debouncing — default consecutive_required=1 means a single scan sets pressure. Reset to 0 on first observation at-or-above threshold.
 	DiskPressureCount    int32
 	ReconciliationStatus string
 	LastReconciledAt     *time.Time

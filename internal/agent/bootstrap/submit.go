@@ -16,7 +16,7 @@ import (
 	"github.com/otherix/otherix/internal/config"
 )
 
-// joinRequest mirrors components/schemas/NodeJoinRequest в
+// joinRequest mirrors components/schemas/NodeJoinRequest in
 // control-plane.yaml. Hand-written because agent-side oapi-codegen
 // targets agent.yaml only.
 type joinRequest struct {
@@ -38,9 +38,9 @@ type joinResponse struct {
 }
 
 // errorEnvelope mirrors the standard error response shape emitted
-// by internal/api/response.WriteError. Used to extract а structured
-// code/message от non-2xx responses so the bootstrap log records
-// the CP's rejection reason без leaking raw bytes.
+// by internal/api/response.WriteError. Used to extract a structured
+// code/message from non-2xx responses so the bootstrap log records
+// the CP's rejection reason without leaking raw bytes.
 type errorEnvelope struct {
 	Error struct {
 		Code    string         `json:"code"`
@@ -49,15 +49,15 @@ type errorEnvelope struct {
 	} `json:"error"`
 }
 
-// submitCSR posts the CSR + token к /v1/nodes/join. Same
-// InsecureSkipVerify posture as fetchAndVerifyCA. Security comes от
+// submitCSR posts the CSR + token to /v1/nodes/join. Same
+// InsecureSkipVerify posture as fetchAndVerifyCA. Security comes from
 // verifyResponseChain downstream of the response decode.
 //
-// Non-2xx response → wrapped ErrCSRRejected с the parsed envelope.
+// Non-2xx response → wrapped ErrCSRRejected with the parsed envelope.
 // Network / decode failure → plain fmt.Errorf chain. Token consumption
 // happens at the CP side when this function returns nil; partial
 // success (response observed by CP but lost in transit) leaves the
-// token consumed without а usable cert и forces operator intervention.
+// token consumed without a usable cert and forces operator intervention.
 func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM string, timeout time.Duration) (*joinResponse, error) {
 	body := joinRequest{
 		Token:                   token,

@@ -516,8 +516,8 @@ func TestDeleteTemplate_404(t *testing.T) {
 
 func TestDeleteTemplate_409WithoutBlockingResources(t *testing.T) {
 	t.Parallel()
-	// Defensive: если CP ever returns 409 без details.blocking_resources,
-	// CLI должен surface raw *APIError (not crash, not wrap blindly).
+	// Defensive: if CP ever returns 409 without details.blocking_resources,
+	// CLI must surface raw *APIError (not crash, not wrap blindly).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -529,7 +529,7 @@ func TestDeleteTemplate_409WithoutBlockingResources(t *testing.T) {
 	err := c.DeleteTemplate(context.Background(), "anything")
 	var blocked *cpclient.ErrTemplateBlocked
 	if errors.As(err, &blocked) {
-		t.Fatalf("err = %v, want plain *APIError (no blocking_resources в payload)", err)
+		t.Fatalf("err = %v, want plain *APIError (no blocking_resources in payload)", err)
 	}
 	var apiErr *cpclient.APIError
 	if !errors.As(err, &apiErr) {

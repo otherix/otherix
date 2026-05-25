@@ -45,7 +45,7 @@ const (
 // VM (either from a fresh CreateSpec or by replaying a meta.json on
 // startup) and never crossed wire boundaries.
 //
-// The pool reference is а name. The agent's pool registry is
+// The pool reference is a name. The agent's pool registry is
 // name-keyed; the CP-side per-instance UUID stays at the operator
 // API edge.
 type VM struct {
@@ -62,11 +62,11 @@ type VM struct {
 	QMPSocket     string
 	ConsoleSocket string
 	PIDFile       string
-	// CidataPath, if non-empty, points к the NoCloud cidata ISO
-	// the agent generates during Create когда the spec carries
+	// CidataPath, if non-empty, points to the NoCloud cidata ISO
+	// the agent generates during Create when the spec carries
 	// UserData. Lives inside the per-VM state directory so the
 	// existing teardown (RemoveAll of stateDir/<vmID>) cleans it.
-	// Empty for VMs created без cloud-init (legacy /v1/vms calls
+	// Empty for VMs created without cloud-init (legacy /v1/vms calls
 	// that omit the field; smoke tests that drop the seed).
 	CidataPath string
 }
@@ -76,9 +76,9 @@ type VM struct {
 // exactly one arch, MVP supports same-arch only).
 //
 // UUID is optional: when uuid.Nil the manager generates a fresh id
-// (backward-compatible с curl-driven smoke tests). When non-zero it is
+// (backward-compatible with curl-driven smoke tests). When non-zero it is
 // used as the VM id, which is how the CP-side worker passes the
-// pre-minted vms.id through к the agent (unified UUID model: CP
+// pre-minted vms.id through to the agent (unified UUID model: CP
 // mints, agent uses).
 type CreateSpec struct {
 	UUID             uuid.UUID
@@ -89,8 +89,8 @@ type CreateSpec struct {
 	TemplateChecksum string
 	// UserData carries already-resolved raw `#cloud-config` YAML
 	// per L3 Area 3 lock — CP-side has merged vm.user_data ?:
-	// template.cloud_init_user_data и injected hostname when
+	// template.cloud_init_user_data and injected hostname when
 	// needed. When empty the agent skips cidata generation (legacy
-	// VMs still boot, just без а NoCloud seed).
+	// VMs still boot, just without a NoCloud seed).
 	UserData []byte
 }

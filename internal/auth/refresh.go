@@ -32,7 +32,7 @@ func GenerateRefreshToken() (plaintext string, hash []byte, err error) {
 // 256 bits of entropy, so a salt buys nothing and would defeat lookup).
 //
 // Deprecated alias; prefer auth.HashToken directly. Retained so
-// existing call sites compile after the consolidation в tokens.go.
+// existing call sites compile after the consolidation in tokens.go.
 func HashRefreshToken(plaintext string) []byte {
 	return HashToken(plaintext)
 }

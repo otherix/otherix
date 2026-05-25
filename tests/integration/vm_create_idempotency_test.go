@@ -21,7 +21,7 @@ import (
 // middleware.Idempotency replay path: two POSTs against /v1/vms
 // carrying the same Idempotency-Key + same body should return the
 // SAME task_id (the first call's), the SAME 202 + AsyncTaskAccepted
-// envelope, и produce exactly ONE vms row.
+// envelope, and produce exactly ONE vms row.
 func TestVMCreate_VerticalSliceIdempotency(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

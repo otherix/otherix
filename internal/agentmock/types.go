@@ -88,15 +88,15 @@ type ImageImportResult struct {
 	Format    string
 	Error     *ErrorEnvelope
 	Delay     time.Duration
-	// ComputedChecksumSHA256 is the checksum the mock surfaces в
-	// task.result.checksum_sha256 when the request lands в compute
+	// ComputedChecksumSHA256 is the checksum the mock surfaces in
+	// task.result.checksum_sha256 when the request lands in compute
 	// mode (`expected_checksum_sha256` null/absent/empty). Verify-mode
 	// requests echo the request's expected value regardless of what
 	// this field carries. Test authors driving compute-mode scenarios
 	// populate this so the resulting storage_images row carries the
-	// right hash; an empty value in compute mode falls back to а
+	// right hash; an empty value in compute mode falls back to a
 	// deterministic synthetic checksum (see computeFallbackChecksum)
-	// so tests that don't care about the value still get а valid
+	// so tests that don't care about the value still get a valid
 	// lowercase-hex string.
 	ComputedChecksumSHA256 string
 }
@@ -128,8 +128,8 @@ type AgentVM struct {
 	Status       string
 	// UserData (L3) records the cloud-init blob the CP-side resolver
 	// shipped with the create request. Empty when the operator left
-	// both vm.user_data и template.cloud_init_user_data unset.
-	// Surfaced through StoredVM так integration tests can
+	// both vm.user_data and template.cloud_init_user_data unset.
+	// Surfaced through StoredVM so integration tests can
 	// assert L3 resolution end-to-end.
 	UserData  string
 	CreatedAt time.Time
@@ -172,9 +172,9 @@ type VMDeleteResult struct {
 // vm.poweroff / vm.reboot) against the matching VM name. Tests seed
 // per-(name, op) FIFO queues via AddVMLifecycleResult. Default success
 // transitions the AgentVM entry's Status field per op semantics; tests
-// can override `NewStatus` (most useful для verifying that stop
-// timeout failure leaves the inventory entry в `running` rather than
-// `stopped`). On Status="failed" the materialise hook is skipped и
+// can override `NewStatus` (most useful for verifying that stop
+// timeout failure leaves the inventory entry in `running` rather than
+// `stopped`). On Status="failed" the materialise hook is skipped and
 // the task surfaces the Error envelope verbatim.
 type VMLifecycleResult struct {
 	Status    string

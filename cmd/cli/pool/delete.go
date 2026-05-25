@@ -20,8 +20,8 @@ import (
 const flagForce = "force"
 
 // newDeleteCommand returns the `otherix pool delete` cobra command.
-// Positional accepts а pool name or а UUID literal; the server resolves
-// either form. Confirmation prompt fires когда stdin is а TTY и --force
+// Positional accepts a pool name or a UUID literal; the server resolves
+// either form. Confirmation prompt fires when stdin is a TTY and --force
 // is absent, mirror VM delete UX.
 func newDeleteCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -30,24 +30,24 @@ func newDeleteCommand() *cobra.Command {
 		Long: `Submits DELETE /v1/storage-pools/{identifier}. The command fails with
 409 conflict when the pool still has dependent resources:
 
-  - storage_images materialised в the pool;
+  - storage_images materialised in the pool;
   - vm_disks still referencing the pool.
 
 Storage pools have no force-delete counterpart by design — the operator
 must remove or migrate the dependent disks/images before retrying. The
-failure output lists the blocking resources и their counts so operators
-know what к clean up first.
+failure output lists the blocking resources and their counts so operators
+know what to clean up first.
 
-The CLI accepts both а pool name (cluster-wide concept, resolves only
-когда а single per-node instance exists for that name) и а UUID literal
+The CLI accepts both a pool name (cluster-wide concept, resolves only
+when a single per-node instance exists for that name) and a UUID literal
 (targets one specific instance row). Multi-instance pools must be
-addressed by UUID; the server returns 400 multiple_instances on а bare
-name in that case и the operator should switch к 'otherix pool list'
+addressed by UUID; the server returns 400 multiple_instances on a bare
+name in that case and the operator should switch to 'otherix pool list'
 to discover the per-node UUIDs.
 
 --force skips the confirmation prompt; the prompt is offered when
-stdin is а TTY и --force is absent (non-TTY automation runs through
-без prompt).
+stdin is a TTY and --force is absent (non-TTY automation runs through
+without prompt).
 
 Example:
   otherix pool delete pool-mvp --force
@@ -104,10 +104,10 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// renderBlockedDelete prints the blocking-resources envelope в the
-// requested format и returns а non-zero-exit error. The text mode
+// renderBlockedDelete prints the blocking-resources envelope in the
+// requested format and returns a non-zero-exit error. The text mode
 // formats each resource type → count pair so operators can scan the
-// list и decide what to clean up first. Mirror template delete's
+// list and decide what to clean up first. Mirror template delete's
 // rendering — the wire shape is identical so the operator sees
 // consistent output across resource types.
 func renderBlockedDelete(cmd *cobra.Command, identifier string, blocked *cpclient.ErrPoolBlocked, format string) error {
@@ -139,11 +139,11 @@ func renderBlockedDelete(cmd *cobra.Command, identifier string, blocked *cpclien
 	return fmt.Errorf("pool %s blocked: %s", identifier, blocked.Code)
 }
 
-// stdinIsTTY reports whether stdin is а terminal. Tests redirect stdin
-// к а pipe / file → returns false → confirmation is skipped без
-// --force. Production interactive use passes through к the prompt path.
+// stdinIsTTY reports whether stdin is a terminal. Tests redirect stdin
+// to a pipe / file → returns false → confirmation is skipped without
+// --force. Production interactive use passes through to the prompt path.
 // Parallel of cmd/cli/vm.stdinIsTTY; kept package-local pending
-// promotion when а third group needs it.
+// promotion when a third group needs it.
 func stdinIsTTY() bool {
 	fi, err := os.Stdin.Stat()
 	if err != nil {
@@ -152,8 +152,8 @@ func stdinIsTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// readYes reads а single line from stdin and returns true on а y/Y
-// prefix. Empty input или anything else → false (defaults к no, the
+// readYes reads a single line from stdin and returns true on a y/Y
+// prefix. Empty input or anything else → false (defaults to no, the
 // safer side).
 func readYes() bool {
 	r := bufio.NewReader(os.Stdin)

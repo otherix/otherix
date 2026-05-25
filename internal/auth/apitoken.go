@@ -41,7 +41,7 @@ func GenerateAPIToken() (plaintext string, hash []byte, displayPrefix string, er
 // it up in api_tokens.token_hash; equal hashes mean equal plaintexts.
 //
 // Deprecated alias; prefer auth.HashToken directly. Retained so
-// existing call sites compile after the consolidation в tokens.go.
+// existing call sites compile after the consolidation in tokens.go.
 func HashAPIToken(plaintext string) []byte {
 	return HashToken(plaintext)
 }

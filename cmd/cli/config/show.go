@@ -16,7 +16,7 @@ func newShowCommand() *cobra.Command {
 	var showToken bool
 	cmd := &cobra.Command{
 		Use:   "show [name]",
-		Short: "Print а cluster's details (token masked unless --show-token)",
+		Short: "Print a cluster's details (token masked unless --show-token)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := ""

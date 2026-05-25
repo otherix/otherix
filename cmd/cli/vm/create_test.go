@@ -20,10 +20,10 @@ import (
 	"github.com/otherix/otherix/cmd/cli/vm"
 )
 
-// runVMCmd mirrors runTemplateCmd в template/create_test.go: mounts
-// the `vm` subcommand tree on а throwaway parent с the persistent
+// runVMCmd mirrors runTemplateCmd in template/create_test.go: mounts
+// the `vm` subcommand tree on a throwaway parent with the persistent
 // flags the real root provides, then executes args. Returns captured
-// stdout / stderr и the cobra error.
+// stdout / stderr and the cobra error.
 func runVMCmd(t *testing.T, endpoint string, args []string) (stdout, stderr string, err error) {
 	t.Helper()
 	parent := vm.NewCommand()
@@ -90,7 +90,7 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 		t.Errorf("user_data = %v, want %q", got, ciBody)
 	}
 	if disabled, _ := captured["cloud_init_disabled"].(bool); disabled {
-		t.Errorf("cloud_init_disabled = true, want false когда --no-cloud-init not set")
+		t.Errorf("cloud_init_disabled = true, want false when --no-cloud-init not set")
 	}
 }
 
@@ -98,12 +98,12 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 // through os.Stdin. The cobra command does not let us inject stdin
 // directly, but the cloudinit package's stdinReader var is swapped
 // in the helper test; here we only verify the CLI passes "-" through
-// as а path, and that ReadSource's actual stdin path is covered by
+// as a path, and that ReadSource's actual stdin path is covered by
 // TestReadSource in the helper package.
 func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 	t.Parallel()
-	// Empty stdin будет parsed as empty body (warning, no error); the
-	// CLI sends user_data="" to the server, и the request still goes
+	// Empty stdin will be parsed as empty body (warning, no error); the
+	// CLI sends user_data="" to the server, and the request still goes
 	// through. The test asserts the dispatch happened — not the body
 	// shape, since the stdin redirection lives in package-level state.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -113,10 +113,10 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Swap stdin к а deterministic, non-blocking buffer so the cobra
+	// Swap stdin to a deterministic, non-blocking buffer so the cobra
 	// command does not hang waiting for input on the test runner's
 	// terminal. ReadAll on an empty buffer returns nil, []byte{} —
-	// Validate emits "empty body" warning, no error, и dispatch
+	// Validate emits "empty body" warning, no error, and dispatch
 	// proceeds.
 	prevStdin := os.Stdin
 	r, w, _ := os.Pipe()
@@ -139,7 +139,7 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 }
 
 // TestVMCreate_NoCloudInit sends --no-cloud-init and verifies the
-// request body carries cloud_init_disabled=true с user_data absent.
+// request body carries cloud_init_disabled=true with user_data absent.
 func TestVMCreate_NoCloudInit(t *testing.T) {
 	t.Parallel()
 	var captured map[string]any
@@ -175,7 +175,7 @@ func TestVMCreate_NoCloudInit(t *testing.T) {
 // supplying both --cloud-init AND --no-cloud-init fails before any
 // HTTP call leaves the box. DB CHECK + handler validation are the
 // server-side backstops; this test covers the operator-friendly UX
-// (failure без round-trip).
+// (failure without round-trip).
 func TestVMCreate_CloudInitMutualExclusion(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -207,7 +207,7 @@ func TestVMCreate_CloudInitMutualExclusion(t *testing.T) {
 }
 
 // TestVMCreate_CloudInitMalformedYAML locks in the validator gating:
-// а malformed YAML file is rejected by the CLI before dispatch.
+// a malformed YAML file is rejected by the CLI before dispatch.
 func TestVMCreate_CloudInitMalformedYAML(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

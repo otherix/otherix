@@ -93,7 +93,7 @@ func TestTemplatesDelete_VerticalSliceBlockedByStorageImages(t *testing.T) {
 }
 
 // TestTemplatesDelete_VerticalSliceBlockedByVMs covers the
-// active-VM extension к the existing template-delete refusal: a
+// active-VM extension to the existing template-delete refusal: a
 // template underpinning at least one active VM cannot be deleted
 // until the VMs are removed first. The handler runs CountActiveVMsForTemplate
 // inside its InTx; this test exercises the full chain — real

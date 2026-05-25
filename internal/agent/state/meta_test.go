@@ -90,7 +90,7 @@ func TestScanState_PicksUpVMDirs(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(stateDir, "scratch"), 0o755); err != nil {
 		t.Fatalf("mkdir scratch: %v", err)
 	}
-	// Stray UUID directory without meta.json — must be skipped с warning.
+	// Stray UUID directory without meta.json — must be skipped with warning.
 	if err := os.Mkdir(filepath.Join(stateDir, uuid.NewString()), 0o755); err != nil {
 		t.Fatalf("mkdir orphan: %v", err)
 	}

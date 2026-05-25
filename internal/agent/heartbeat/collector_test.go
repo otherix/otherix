@@ -19,8 +19,8 @@ type stubLister struct{ vms []*vm.VM }
 
 func (s stubLister) List() []*vm.VM { return s.vms }
 
-// TestLinuxCollector_ReadsProcCpuinfoAndMeminfo lays а synthetic
-// /proc tree in а tempdir и confirms the collector parses the
+// TestLinuxCollector_ReadsProcCpuinfoAndMeminfo lays a synthetic
+// /proc tree in a tempdir and confirms the collector parses the
 // canonical Linux file formats correctly. We do not exercise the
 // real /proc here — the syscall integration is covered by the
 // runtime test below, and the parsers are the brittle parts worth
@@ -57,7 +57,7 @@ func TestLinuxCollector_ReadsProcCpuinfoAndMeminfo(t *testing.T) {
 
 // TestLinuxCollector_FreeResourceSubtraction confirms the
 // running-VM allocation arithmetic. Non-running VMs are excluded;
-// negative values clamp к zero.
+// negative values clamp to zero.
 func TestLinuxCollector_FreeResourceSubtraction(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
@@ -89,8 +89,8 @@ func TestLinuxCollector_FreeResourceSubtraction(t *testing.T) {
 		t.Errorf("memory_available_mib = %d, want %d", got, want)
 	}
 	if got, want := len(rep.VMs), 3; got != want {
-		// Stopped VM still surfaces в the heartbeat (с phase=stopped) —
-		// CP-side reconciler reads inventory от full snapshots, not
+		// Stopped VM still surfaces in the heartbeat (with phase=stopped) —
+		// CP-side reconciler reads inventory from full snapshots, not
 		// only running rows.
 		t.Errorf("vms count = %d, want %d", got, want)
 	}
@@ -98,7 +98,7 @@ func TestLinuxCollector_FreeResourceSubtraction(t *testing.T) {
 
 // TestMapVMStatus pins the agent→server phase mapping. The CP-side
 // validator rejects anything outside the supported VmPhase enum, so
-// drift here surfaces as а run-time 400.
+// drift here surfaces as a run-time 400.
 func TestMapVMStatus(t *testing.T) {
 	cases := map[vm.Status]string{
 		vm.StatusPending:  "pending",
@@ -132,9 +132,9 @@ func TestArchFromGo(t *testing.T) {
 }
 
 // TestClampNonNegative confirms underflow handling — sum of
-// running VMs may exceed total reported cores/memory если the
+// running VMs may exceed total reported cores/memory if the
 // host's accounting drifts. Negative values surface as 0 rather
-// than wrap-around к а huge positive number.
+// than wrap-around to a huge positive number.
 func TestClampNonNegative(t *testing.T) {
 	if got := clampNonNegative32(-5); got != 0 {
 		t.Errorf("clampNonNegative32(-5) = %d, want 0", got)
@@ -148,7 +148,7 @@ func TestClampNonNegative(t *testing.T) {
 }
 
 // TestNewLinux_RejectsMissingVMs ensures the constructor surfaces
-// а usable error rather than panicking when wiring is incomplete.
+// a usable error rather than panicking when wiring is incomplete.
 func TestNewLinux_RejectsMissingVMs(t *testing.T) {
 	_, err := NewLinux(CollectorDeps{Migration: config.MigrationConfig{}})
 	if err == nil {

@@ -297,7 +297,7 @@ where id = $1
 // success projection inside the same InTx as the soft-delete chain.
 // The decrement is a guarded UPDATE — `where deleted_at is null and
 // derived_vm_count > 0` — so a stale call against a soft-deleted
-// template OR a counter that has already drifted к zero is a silent
+// template OR a counter that has already drifted to zero is a silent
 // no-op rather than a 23514 check-constraint violation.
 func (q *Queries) DecrementTemplateDerivedVMCount(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, decrementTemplateDerivedVMCount, id)
@@ -702,21 +702,21 @@ type UpdateTemplateImageChecksumIfNullParams struct {
 	ID                  uuid.UUID
 }
 
-// Back-propagates the agent-computed image_checksum_sha256 onto а
+// Back-propagates the agent-computed image_checksum_sha256 onto a
 // template row that was registered without one (compute mode).
-// The `image_checksum_sha256 is null` guard в the WHERE clause makes
+// The `image_checksum_sha256 is null` guard in the WHERE clause makes
 // this idempotent and race-safe:
 //
 //   - First successful compute-mode import for the template lands the
-//     hash; subsequent imports (к other pools, OR re-imports к the same
+//     hash; subsequent imports (to other pools, OR re-imports to the same
 //     pool) become no-ops because the column is no longer NULL.
-//   - Two concurrent compute-mode imports к different pools that happen
-//     к compute different bytes (corrupted download) cannot both win:
+//   - Two concurrent compute-mode imports to different pools that happen
+//     to compute different bytes (corrupted download) cannot both win:
 //     whichever transaction commits first wins; the second's UPDATE
-//     affects 0 rows и is silently absorbed.
+//     affects 0 rows and is silently absorbed.
 //
-// The :exec return shape is acceptable because the worker treats а
-// failed update as а warning, not а terminal-fail signal — the
+// The :exec return shape is acceptable because the worker treats a
+// failed update as a warning, not a terminal-fail signal — the
 // storage_images row is already authoritative for the (template, pool)
 // combination.
 func (q *Queries) UpdateTemplateImageChecksumIfNull(ctx context.Context, arg UpdateTemplateImageChecksumIfNullParams) error {

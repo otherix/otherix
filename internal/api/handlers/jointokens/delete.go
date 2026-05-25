@@ -18,8 +18,8 @@ import (
 
 // Delete implements DELETE /v1/nodes/join-tokens/{id}. Required
 // permission: node:manage. Sets expires_at = LEAST(expires_at, now())
-// — а live token jumps к the past, an already-expired token stays
-// where it is и the handler returns 409 per the spec.
+// — a live token jumps to the past, an already-expired token stays
+// where it is and the handler returns 409 per the spec.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

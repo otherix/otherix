@@ -19,9 +19,9 @@ type ClusterCA struct {
 }
 
 // GetCA fetches GET /v1/ca — the anonymous CA introspection endpoint
-// used by agent bootstrap к learn the cluster CA cert PEM + sha256
+// used by agent bootstrap to learn the cluster CA cert PEM + sha256
 // fingerprint. The request bypasses bearer-auth header injection by
-// using newRequest under а Client constructed via NewAnonymous; an
+// using newRequest under a Client constructed via NewAnonymous; an
 // authenticated Client also works (server accepts both).
 func (c *Client) GetCA(ctx context.Context) (ClusterCA, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/ca", nil)

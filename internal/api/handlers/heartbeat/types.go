@@ -22,10 +22,10 @@ type requestBody struct {
 
 // poolReport mirrors HeartbeatPoolReport — agent's per-pool
 // reconciliation outcome. The CP joins each entry against
-// `storage_pools` by (node_id, lower(name)) и applies
-// `reconciliation_status` / `reconciliation_error` к the matched row.
+// `storage_pools` by (node_id, lower(name)) and applies
+// `reconciliation_status` / `reconciliation_error` to the matched row.
 // Capacity / availability fields exist on the OpenAPI side for
-// forward-compatibility но are not deserialised
+// forward-compatibility but are not deserialised
 // here yet — scan-driven capacity reporting remains canonical.
 type poolReport struct {
 	Name                 string  `json:"name"`
@@ -58,8 +58,8 @@ type nodeCapabilitiesReport struct {
 type nodeResourcesReport struct {
 	CPUCoresAvailable  int32 `json:"cpu_cores_available"`
 	MemoryAvailableMib int64 `json:"memory_available_mib"`
-	// Root filesystem metrics для system_disk
-	// pressure detection. Both nullable: the agent reports them когда
+	// Root filesystem metrics for system_disk
+	// pressure detection. Both nullable: the agent reports them when
 	// statfs("/") succeeds, omits when the syscall fails. The CP holds
 	// last-known values across heartbeat gaps and the pressure
 	// transition function silently carries state forward on NULL input.
@@ -87,7 +87,7 @@ type vmReport struct {
 
 // responseBody mirrors HeartbeatResponse — acknowledgement plus
 // desired-state pool inventory. The agent reconciler
-// replaces its desired-state cache от declared_pools every heartbeat.
+// replaces its desired-state cache from declared_pools every heartbeat.
 // declared_vms follows the same pattern for VMs.
 type responseBody struct {
 	ReceivedAt    string         `json:"received_at"`

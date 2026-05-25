@@ -74,7 +74,7 @@ func TestLogin_NetworkError(t *testing.T) {
 
 	c, _ := cpclient.NewAnonymous(url, cpclient.Options{})
 	if _, err := c.Login(context.Background(), cpclient.LoginRequest{Email: "a@b", Password: "p"}); err == nil {
-		t.Errorf("Login против closed server returned nil")
+		t.Errorf("Login against closed server returned nil")
 	}
 }
 

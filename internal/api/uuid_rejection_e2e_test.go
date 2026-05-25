@@ -19,15 +19,15 @@ import (
 
 // TestE2E_UUIDRejection_PathParams locks the path narrowing
 // behaviour: every operator-facing name-only path returns 400
-// validation_failed when а UUID literal is supplied. The structured
+// validation_failed when a UUID literal is supplied. The structured
 // `details` payload must carry (field, reason, hint) so CLI scripts
 // can branch programmatically without parsing the human-readable
 // message.
 //
 // Storage pool paths are intentionally NOT covered here — they
-// retain UUID acceptance as а multi-instance carve-out (`pool get
+// retain UUID acceptance as a multi-instance carve-out (`pool get
 // <uuid>` returns the flat per-node instance; addressing via UUID is
-// essential когда the pool has more than one row).
+// essential when the pool has more than one row).
 func TestE2E_UUIDRejection_PathParams(t *testing.T) {
 	h := newE2E(t)
 	defer h.close()
@@ -68,9 +68,9 @@ func TestE2E_UUIDRejection_PathParams(t *testing.T) {
 }
 
 // TestE2E_UUIDRejection_VMCreateBody covers the body field narrowing
-// for vm create: `template` rejects а UUID literal с the canonical
-// 400 envelope. `pool` retains а carve-out — passing а pool UUID
-// still works (the handler accepts both forms по the scheduler-input
+// for vm create: `template` rejects a UUID literal with the canonical
+// 400 envelope. `pool` retains a carve-out — passing a pool UUID
+// still works (the handler accepts both forms by the scheduler-input
 // pre-translation step in vms/create.go) so it is NOT exercised
 // here.
 func TestE2E_UUIDRejection_VMCreateBody(t *testing.T) {

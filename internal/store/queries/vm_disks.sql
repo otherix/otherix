@@ -9,7 +9,7 @@
 
 -- name: CreateVMDisk :one
 -- Inserts a single disk row for a vm. Phase B vm.create handler invokes
--- this once per VM (single-disk MVP). Multi-disk callers loop с distinct
+-- this once per VM (single-disk MVP). Multi-disk callers loop with distinct
 -- device_order values.
 insert into vm_disks (
     vm_id,
@@ -52,8 +52,8 @@ where vm_id = @vm_id
 order by device_order asc;
 
 -- name: SoftDeleteVMDisksByVM :exec
--- Bulk soft-delete every disk row attached к a VM. Called by the
--- worker's vm.delete cleanup phase together с SoftDeleteVM. The
+-- Bulk soft-delete every disk row attached to a VM. Called by the
+-- worker's vm.delete cleanup phase together with SoftDeleteVM. The
 -- per-row deleted_at stamp keeps the on delete cascade behaviour of
 -- vm_disks.vm_id from removing rows that audit reads might still
 -- need.
@@ -65,7 +65,7 @@ where vm_id = @vm_id
 -- name: CountVMsByPool :one
 -- Distinct-VM count for a given storage_pool_id, used by
 -- storage_pools.delete to refuse deletion of pools backing live VMs.
--- Counts via vm_disks (the only place pool_id lives для a vm) and
+-- Counts via vm_disks (the only place pool_id lives for a vm) and
 -- excludes soft-deleted disks AND soft-deleted VMs.
 select count(distinct d.vm_id)::bigint
 from vm_disks d

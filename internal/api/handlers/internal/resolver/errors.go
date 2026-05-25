@@ -45,7 +45,7 @@ const (
 	CodeUUIDInName ErrorCode = "uuid_in_name"
 )
 
-// IsUUIDInName reports whether err is a resolver Error с
+// IsUUIDInName reports whether err is a resolver Error with
 // Code=CodeUUIDInName. Handlers branch on this so the rejection path
 // produces the canonical `validation_failed` envelope with the
 // structured details payload from response.WriteUUIDNotAllowedError.

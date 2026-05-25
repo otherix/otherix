@@ -778,7 +778,7 @@ func TestE2E_StorageImages_Import_BadBody(t *testing.T) {
 
 // TestE2E_StorageImages_Import_UnknownTemplateName404 — the template
 // path identifier is polymorphic: a non-UUID value resolves through a
-// name lookup и surfaces as 404, not 400.
+// name lookup and surfaces as 404, not 400.
 func TestE2E_StorageImages_Import_UnknownTemplateName404(t *testing.T) {
 	h := newE2E(t)
 	defer h.close()

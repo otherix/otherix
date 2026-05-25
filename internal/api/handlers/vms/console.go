@@ -23,19 +23,19 @@ import (
 
 // consoleClient is the narrow agentclient surface the CP console
 // handler depends on. *agentclient.Client satisfies it structurally;
-// tests substitute а stub through the Handler factory.
+// tests substitute a stub through the Handler factory.
 type consoleClient interface {
 	IssueConsoleToken(ctx context.Context, endpoint, vmName, protocol string) (agentclient.IssueConsoleTokenResponse, error)
 	HTTPClient() *http.Client
 }
 
-// ConsoleDeps is the dependency bundle the api binary supplies к the
+// ConsoleDeps is the dependency bundle the api binary supplies to the
 // Handler so the console handler (POST /v1/vms/{id}/console) can
-// dispatch к the pinned agent. AccessMode is the validated
+// dispatch to the pinned agent. AccessMode is the validated
 // `config.ConsoleConfig.AccessMode` value — "proxy" (production
-// default) или "direct" (lab/dev). Kept separate от LifecycleDeps so
-// console-handler tests can mount the console primitive with а stub
-// client без touching the sync lifecycle wiring.
+// default) or "direct" (lab/dev). Kept separate from LifecycleDeps so
+// console-handler tests can mount the console primitive with a stub
+// client without touching the sync lifecycle wiring.
 type ConsoleDeps struct {
 	AgentClient consoleClient
 	AccessMode  string
@@ -43,7 +43,7 @@ type ConsoleDeps struct {
 
 // consoleResponse mirrors components/schemas/VMConsoleResponse in
 // api/openapi/control-plane.yaml. Built handler-side instead of
-// shared encoder so the wire format stays close к the OpenAPI
+// shared encoder so the wire format stays close to the OpenAPI
 // contract for diff review.
 type consoleResponse struct {
 	Token        string `json:"token"`
@@ -53,17 +53,17 @@ type consoleResponse struct {
 }
 
 // consoleRequest is the optional body that selects the console
-// protocol. Empty body / omitted field → defaults к "vnc" per the
-// OpenAPI spec, но the agent today only implements serial. Operators
-// must pass `{"protocol": "serial"}` к exercise the working path.
+// protocol. Empty body / omitted field → defaults to "vnc" per the
+// OpenAPI spec, but the agent today only implements serial. Operators
+// must pass `{"protocol": "serial"}` to exercise the working path.
 type consoleRequest struct {
 	Protocol string `json:"protocol"`
 }
 
-// Console implements POST /v1/vms/{id}/console. Issues а single-use
-// console session token by relaying к the pinned agent, builds the
+// Console implements POST /v1/vms/{id}/console. Issues a single-use
+// console session token by relaying to the pinned agent, builds the
 // websocket URL according to the configured access mode (proxy /
-// direct), и returns the operator-facing envelope.
+// direct), and returns the operator-facing envelope.
 //
 // Required permission: `vm:console` (admin / operator: any;
 // developer: own; viewer: none). Cross-user developer attempts
@@ -101,7 +101,7 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 	// VM must be running before the agent can usefully proxy console
 	// bytes. Phase check uses vm_runtime since that's the agent-
 	// reported observed phase; desired_phase=running with no runtime
-	// row means the VM is still booting и returns 409 vm_not_running.
+	// row means the VM is still booting and returns 409 vm_not_running.
 	runtime, err := h.store.Queries().GetVMRuntime(r.Context(), vm.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -166,7 +166,7 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 
 // parseConsoleProtocol decodes the optional body. Returns ("vnc", true)
 // for empty body, the supplied value otherwise. Unsupported protocols
-// return (..., false) после writing 400 validation_failed to the
+// return (..., false) after writing 400 validation_failed to the
 // response writer; caller should bail.
 func parseConsoleProtocol(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if r.Body == nil || r.ContentLength == 0 {
@@ -235,29 +235,29 @@ func writeConsoleAgentError(w http.ResponseWriter, r *http.Request, log interfac
 
 // buildConsoleWebsocketURL composes the ws(s):// URL the CLI dials. In
 // proxy mode the CP returns its own host so the operator's CLI never
-// reaches an agent directly; в direct mode the URL points to the
+// reaches an agent directly; in direct mode the URL points to the
 // agent's advertised endpoint, bypassing the CP data path.
 //
 // Proxy-mode scheme tracks the incoming request: ws:// when the CP
 // listener serves plain HTTP (local dev), wss:// when TLS is terminated
-// either at the listener itself или upstream at а reverse proxy that
+// either at the listener itself or upstream at a reverse proxy that
 // forwards `X-Forwarded-Proto`. Direct mode always emits wss:// — the
 // agent serves HTTPS via mTLS unconditionally.
 func buildConsoleWebsocketURL(mode string, r *http.Request, agentEndpoint, vmName string, agentResp agentclient.IssueConsoleTokenResponse) (string, error) {
 	switch mode {
 	case "", "proxy":
 		// CP-facing relay. Mirror the operator's incoming host —
-		// что's the URL они used к reach us, и by definition reachable.
+		// that's the URL they used to reach us, and by definition reachable.
 		host := r.Host
 		if host == "" {
-			return "", errors.New("proxy mode requires а Host header on the incoming request")
+			return "", errors.New("proxy mode requires a Host header on the incoming request")
 		}
 		wsScheme := httpSchemeToWebSocket(detectScheme(r))
 		return fmt.Sprintf("%s://%s/v1/vms/%s/console-stream?token=%s",
 			wsScheme, host, vmName, agentResp.Token), nil
 	case "direct":
-		// agentEndpoint is `https://host:port`; swap к wss:// и tail
-		// в the agent-supplied websocket path. The agent owns the
+		// agentEndpoint is `https://host:port`; swap to wss:// and tail
+		// in the agent-supplied websocket path. The agent owns the
 		// path shape; we only host-swap. Agent always serves HTTPS
 		// via mTLS — no scheme detection here.
 		hostPart, err := stripScheme(agentEndpoint)
@@ -272,15 +272,15 @@ func buildConsoleWebsocketURL(mode string, r *http.Request, agentEndpoint, vmNam
 }
 
 // detectScheme returns "http" or "https" for the operator-facing leg
-// of а CP request. Priority:
+// of a CP request. Priority:
 //
-//  1. `X-Forwarded-Proto` header (reverse proxy с TLS termination —
-//     the proxy speaks HTTPS к the operator and plain HTTP к CP).
+//  1. `X-Forwarded-Proto` header (reverse proxy with TLS termination —
+//     the proxy speaks HTTPS to the operator and plain HTTP to CP).
 //     Comma-separated chains (multi-hop) are resolved by taking the
-//     leftmost entry (closest к the operator). Values other than
+//     leftmost entry (closest to the operator). Values other than
 //     "http" or "https" are ignored.
 //  2. `r.TLS != nil` — direct TLS termination at the CP listener.
-//  3. Fallback "http" — plain-HTTP dev и test setups.
+//  3. Fallback "http" — plain-HTTP dev and test setups.
 //
 // This is the WebSocket-URL composition helper only; do not use it to
 // gate auth or any security-sensitive decision (operator-controlled
@@ -302,10 +302,10 @@ func detectScheme(r *http.Request) string {
 	return "http"
 }
 
-// httpSchemeToWebSocket maps the operator-facing HTTP scheme к its
+// httpSchemeToWebSocket maps the operator-facing HTTP scheme to its
 // WebSocket counterpart (http→ws, https→wss). Unknown inputs fall
-// back к "ws" — defensive default since detectScheme is the only
-// caller и returns the canonical pair.
+// back to "ws" — defensive default since detectScheme is the only
+// caller and returns the canonical pair.
 func httpSchemeToWebSocket(httpScheme string) string {
 	if httpScheme == "https" {
 		return "wss"
@@ -313,9 +313,9 @@ func httpSchemeToWebSocket(httpScheme string) string {
 	return "ws"
 }
 
-// stripScheme returns the host:port piece of а scheme-prefixed URL.
+// stripScheme returns the host:port piece of a scheme-prefixed URL.
 // Accepts `https://host:port` and `http://host:port`; rejects bare
-// hosts (operator misconfiguration we want к surface loudly rather
+// hosts (operator misconfiguration we want to surface loudly rather
 // than silently producing an invalid wss:// URL).
 func stripScheme(endpoint string) (string, error) {
 	const httpsPrefix = "https://"

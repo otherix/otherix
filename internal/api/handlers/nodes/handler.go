@@ -38,15 +38,15 @@ func New(s *store.Store, log *slog.Logger) *Handler {
 // reported values. `cpu_cores_effective` / `memory_effective_mib` are
 // the scheduler-relevant view that subtracts VMs pinned after the last
 // heartbeat. Operators reading
-// the two side-by-side can spot а race window — divergence implies а
+// the two side-by-side can spot a race window — divergence implies a
 // pending placement that the agent has not yet observed. Both pairs
-// are nullable: NULL until the first heartbeat lands, и effective
+// are nullable: NULL until the first heartbeat lands, and effective
 // stays NULL whenever its raw counterpart is NULL.
 //
 // Endpoints that mutate node state (cordon / uncordon) return effective
 // fields = nil — the post-mutation row is fetched via the raw nodes
-// table for the RETURNING-row idiom, и effective values right after а
-// state flip are not meaningful (а cordoned node will not receive new
+// table for the RETURNING-row idiom, and effective values right after a
+// state flip are not meaningful (a cordoned node will not receive new
 // placements anyway).
 type nodeView struct {
 	ID                       string            `json:"id"`
@@ -83,8 +83,8 @@ type nodeView struct {
 
 // pressureView mirrors components/schemas/MemoryPressureCondition
 // /SystemDiskPressureCondition. Both pressure types share
-// the same wire shape so а single struct serves them; nullable on the
-// wire — а node без active pressure has the parent field set к JSON
+// the same wire shape so a single struct serves them; nullable on the
+// wire — a node without active pressure has the parent field set to JSON
 // null.
 type pressureView struct {
 	Since            string `json:"since"`
@@ -116,7 +116,7 @@ type migrationCap struct {
 // toViewEffective builds the full nodeView from the view-backed row.
 // Surfaces cpu_cores_effective / memory_effective_mib alongside the
 // raw heartbeat columns. Used by GET /v1/nodes/{name}
-// и GET /v1/nodes (list).
+// and GET /v1/nodes (list).
 func toViewEffective(n store.NodeEffectiveAvailability) nodeView {
 	v := nodeView{
 		ID:                 n.ID.String(),
@@ -162,12 +162,12 @@ func toViewEffective(n store.NodeEffectiveAvailability) nodeView {
 	return v
 }
 
-// toPressureView projects the (since, count) pair on а view-backed
+// toPressureView projects the (since, count) pair on a view-backed
 // row into the nullable wire shape used by both
-// MemoryPressureCondition и SystemDiskPressureCondition. Returns nil
-// когда the condition is not active — `since == nil`. Production
+// MemoryPressureCondition and SystemDiskPressureCondition. Returns nil
+// when the condition is not active — `since == nil`. Production
 // invariant: the count is non-zero only while either the condition is
-// active OR the debounce is mid-flight; once the count hits zero on а
+// active OR the debounce is mid-flight; once the count hits zero on a
 // cleared pressure both fields are NULL.
 func toPressureView(since *time.Time, count int32) *pressureView {
 	if since == nil {
@@ -181,8 +181,8 @@ func toPressureView(since *time.Time, count int32) *pressureView {
 
 // toSummaryViewEffective is the reduced projection counterpart. The
 // summary shape excludes resource fields by design (developer / viewer
-// roles see only identity и status), so the only "effective" leak is
-// что the row was view-backed — no field-level diff vs toSummaryView.
+// roles see only identity and status), so the only "effective" leak is
+// that the row was view-backed — no field-level diff vs toSummaryView.
 func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
 	v := nodeSummaryView{
 		ID:           n.ID.String(),
@@ -201,7 +201,7 @@ func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
 
 // writeNodeResponseEffective is the view-backed sibling of
 // writeNodeResponse. admin / operator get the full effective projection;
-// other roles get the summary, identical к the raw-row path (summary
+// other roles get the summary, identical to the raw-row path (summary
 // has no resource fields).
 func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, write func(http.ResponseWriter, *http.Request, int, any)) {
 	user := auth.UserFromContext(r.Context())

@@ -80,8 +80,8 @@ func TestGenerateClusterCA_ParametersHonored(t *testing.T) {
 }
 
 // TestParseClusterCAKey_RoundTrip verifies the PKCS#8 private-key
-// encoding survives а parse/marshal round-trip — Step 2 CSR signing
-// path uses this к load the key from ca_certs.key_pem.
+// encoding survives a parse/marshal round-trip — Step 2 CSR signing
+// path uses this to load the key from ca_certs.key_pem.
 func TestParseClusterCAKey_RoundTrip(t *testing.T) {
 	result, err := auth.GenerateClusterCA(time.Now())
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 )
 
 // LoginRequest is the body of POST /v1/auth/login. Mirrors
-// loginRequest в internal/api/handlers/auth.
+// loginRequest in internal/api/handlers/auth.
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -17,7 +17,7 @@ type LoginRequest struct {
 
 // LoginResponse mirrors the loginResponse shape on the CP. The user
 // subobject is intentionally omitted — `config add cluster` only
-// needs the access token, и keeping the wire-type lean keeps the
+// needs the access token, and keeping the wire-type lean keeps the
 // CLI binary's JSON surface small.
 type LoginResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -28,7 +28,7 @@ type LoginResponse struct {
 
 // Login exchanges email + password for an access / refresh pair.
 // May be called on an anonymous Client (NewAnonymous); the
-// returned access token is the input к WithToken для the second
+// returned access token is the input to WithToken for the second
 // hop (CreateAPIToken).
 func (c *Client) Login(ctx context.Context, in LoginRequest) (LoginResponse, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, "/v1/auth/login", in)
@@ -47,9 +47,9 @@ func (c *Client) Login(ctx context.Context, in LoginRequest) (LoginResponse, err
 }
 
 // CreateAPITokenRequest is the body of POST /v1/users/me/api-tokens.
-// Mirrors ApiTokenCreate в api/openapi/control-plane.yaml — note
+// Mirrors ApiTokenCreate in api/openapi/control-plane.yaml — note
 // the server has no `scopes` parameter; permission resolution is
-// role-driven и happens at request time, not at token-creation
+// role-driven and happens at request time, not at token-creation
 // time. ExpiresAt, when non-nil, is an RFC3339 string in the
 // future; nil means "long-lived" (the CLI's default for cluster
 // tokens, which we expect to outlive any single session).
@@ -60,9 +60,9 @@ type CreateAPITokenRequest struct {
 
 // APIToken is the full server projection of an api_tokens row.
 // Token is the plaintext, returned exactly once on creation; the
-// CLI stores it в the config file. Prefix is the first 12 chars
-// of plaintext (`otx_<6 chars>`) и lets us identify а token в
-// `config show --show-token=false` без leaking the secret.
+// CLI stores it in the config file. Prefix is the first 12 chars
+// of plaintext (`otx_<6 chars>`) and lets us identify a token in
+// `config show --show-token=false` without leaking the secret.
 type APIToken struct {
 	ID         string  `json:"id"`
 	UserID     string  `json:"user_id"`
@@ -76,7 +76,7 @@ type APIToken struct {
 }
 
 // CreateAPIToken creates an API token under the calling user's
-// account. The Client must be authenticated с a JWT (typically
+// account. The Client must be authenticated with a JWT (typically
 // freshly minted via Login).
 func (c *Client) CreateAPIToken(ctx context.Context, in CreateAPITokenRequest) (APIToken, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, "/v1/users/me/api-tokens", in)
@@ -96,7 +96,7 @@ func (c *Client) CreateAPIToken(ctx context.Context, in CreateAPITokenRequest) (
 
 // RevokeAPIToken revokes one of the calling user's API tokens by
 // id. The CP's DELETE /v1/users/me/api-tokens/{token_id} is
-// idempotent (204 on both fresh-revoke и already-revoked). Used
+// idempotent (204 on both fresh-revoke and already-revoked). Used
 // by `config add cluster --force` to retire the previous cluster's
 // token before overwriting the entry.
 func (c *Client) RevokeAPIToken(ctx context.Context, tokenID string) error {

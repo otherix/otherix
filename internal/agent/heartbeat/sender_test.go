@@ -37,7 +37,7 @@ func (s *stubPoster) Send(_ context.Context, _ Report) (int, *Response, error) {
 }
 
 // TestSender_FirstTickFiresImmediately confirms the loop does NOT
-// wait а full interval before its first POST. Operators expect node
+// wait a full interval before its first POST. Operators expect node
 // promotion to ready inside seconds of agent startup, not minutes.
 func TestSender_FirstTickFiresImmediately(t *testing.T) {
 	collector := &stubCollector{report: Report{AgentVersion: "test"}, err: nil}
@@ -67,7 +67,7 @@ func TestSender_FirstTickFiresImmediately(t *testing.T) {
 }
 
 // TestSender_ContinuesAfterPostError confirms the loop does not bail
-// when the POST fails. Heartbeat is fire-and-forget от the agent's
+// when the POST fails. Heartbeat is fire-and-forget from the agent's
 // side; transient CP unavailability must not crash the agent.
 func TestSender_ContinuesAfterPostError(t *testing.T) {
 	collector := &stubCollector{report: Report{AgentVersion: "test"}}
@@ -86,8 +86,8 @@ func TestSender_ContinuesAfterPostError(t *testing.T) {
 	}
 }
 
-// TestSender_SkipsPostOnCollectError confirms а failed collect does
-// not trigger а POST с stale data.
+// TestSender_SkipsPostOnCollectError confirms a failed collect does
+// not trigger a POST with stale data.
 func TestSender_SkipsPostOnCollectError(t *testing.T) {
 	collector := &stubCollector{err: errors.New("nope")}
 	poster := &stubPoster{status: 200}

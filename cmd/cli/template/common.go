@@ -28,9 +28,9 @@ const (
 	flagCursor  = "cursor"
 	flagVisible = "visibility"
 	// flagArch is the short-form architecture flag. The prior
-	// `--architecture` was renamed к `--arch` for conciseness; the
-	// rename is а clean break (no alias) since the surface is still
-	// pre-prod. Both `template create --arch` (template-attribute) и
+	// `--architecture` was renamed to `--arch` for conciseness; the
+	// rename is a clean break (no alias) since the surface is still
+	// pre-prod. Both `template create --arch` (template-attribute) and
 	// `template list --arch` (filter) share this constant.
 	flagArch        = "arch"
 	flagOSFamily    = "os-family"
@@ -45,8 +45,8 @@ func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
 	return cliauth.BuildClient(cmd)
 }
 
-// printf writes к cmd.OutOrStdout, swallowing the Write error — used
-// for routine status output where the only failure mode is а closed
+// printf writes to cmd.OutOrStdout, swallowing the Write error — used
+// for routine status output where the only failure mode is a closed
 // pipe (caller already gone).
 func printf(cmd *cobra.Command, format string, args ...any) {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), format, args...)
@@ -93,7 +93,7 @@ func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
 	return "", fmt.Errorf("--%s: unknown format %q (text, json, table)", flagOutput, raw)
 }
 
-// parseTaskID parses а task id из the CP's AsyncTaskAccepted envelope.
+// parseTaskID parses a task id from the CP's AsyncTaskAccepted envelope.
 // Mirrors cmd/cli/vm.parseTaskID — kept package-local pending promotion
 // when a third caller appears.
 func parseTaskID(raw string) (uuid.UUID, error) {
@@ -106,8 +106,8 @@ func parseTaskID(raw string) (uuid.UUID, error) {
 
 // waitForTask polls taskID until it reaches a terminal state, the
 // timeout fires, or ctx is cancelled. Mirrors cmd/cli/vm.waitForTask —
-// emits stderr dots на every poll so stdout stays parseable. Returns
-// nil on success, а wrapped envelope error on failed/cancelled
+// emits stderr dots on every poll so stdout stays parseable. Returns
+// nil on success, a wrapped envelope error on failed/cancelled
 // terminals.
 func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, taskID uuid.UUID, timeout time.Duration) error {
 	stderr := cmd.ErrOrStderr()
@@ -133,7 +133,7 @@ func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, ta
 	}
 	env, decErr := task.DecodeError()
 	if decErr != nil || env == nil {
-		return fmt.Errorf("task %s terminated с status %q (no error envelope)", taskID, task.Status)
+		return fmt.Errorf("task %s terminated with status %q (no error envelope)", taskID, task.Status)
 	}
 	return fmt.Errorf("task %s %s: %s: %s", taskID, task.Status, env.Code, env.Message)
 }

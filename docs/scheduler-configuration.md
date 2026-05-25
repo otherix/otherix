@@ -3,7 +3,7 @@
 Otherix's VM placement scheduler ranks candidate (node, pool) targets
 by a kubernetes-style LeastAllocated score across the enabled resource
 dimensions. This document covers the per-resource knobs operators
-expose в `placement.resources` and the safety trade-offs of memory
+expose in `placement.resources` and the safety trade-offs of memory
 and disk overcommit.
 
 Companion references:
@@ -13,7 +13,7 @@ Companion references:
 
 ## Per-resource placement settings
 
-Each of `cpu`, `memory`, и `disk` is configured independently:
+Each of `cpu`, `memory`, and `disk` is configured independently:
 
 ```yaml
 placement:
@@ -30,7 +30,7 @@ placement:
       overcommit_ratio: 1.0
 ```
 
-- **`enabled`** (default `true`) — include the resource в the fit check
+- **`enabled`** (default `true`) — include the resource in the fit check
   AND scoring formula. Disabling drops the resource from both. The
   LeastAllocated denominator floats with the count of enabled
   dimensions, so disabling one does not bias the score scale.
@@ -48,7 +48,7 @@ placement:
 
 ## Startup warnings
 
-`otherix-api` emits а `slog` Warn line at startup for each per-resource
+`otherix-api` emits a `slog` Warn line at startup for each per-resource
 overcommit and for the all-resources-disabled scenario:
 
 ```
@@ -56,13 +56,13 @@ WARN placement config warning="placement.resources.memory.overcommit_ratio=1.50 
 ```
 
 Ratios above `2.0` use stronger "extreme overcommit" language. All
-three resources disabled emits а separate warning that scoring degrades
-к count-based fallback (Least-VM-count parity без switching the cluster
+three resources disabled emits a separate warning that scoring degrades
+to count-based fallback (Least-VM-count parity without switching the cluster
 algorithm).
 
 Default config (every resource enabled at ratio 1.0) emits zero
 warnings — the absence on subsequent restarts confirms the cluster is
-running с strict accounting.
+running with strict accounting.
 
 ## Memory overcommit safety
 
@@ -71,9 +71,9 @@ VMs whose combined memory **requests** exceed physical host RAM. This
 is dangerous:
 
 - VMs allocate memory lazily. Actual usage trails allocation, so
-  combined working sets often fit even при aggressive overcommit.
+  combined working sets often fit even during aggressive overcommit.
 - BUT when cumulative actual usage exceeds (physical RAM + swap), the
-  Linux OOM killer reaps а process — typically QEMU — to recover
+  Linux OOM killer reaps a process — typically QEMU — to recover
   memory. Affected VMs crash abruptly.
 - No graceful degradation. The VM's guest OS does not get notified;
   qemu just disappears.
@@ -81,9 +81,9 @@ is dangerous:
 ### Host configuration before enabling memory overcommit
 
 1. **Provision adequate swap.** Rule of thumb:
-   `swap ≥ (overcommit_ratio - 1) × RAM`. Example: 16 GiB RAM с ratio
+   `swap ≥ (overcommit_ratio - 1) × RAM`. Example: 16 GiB RAM with ratio
    1.5 → at least 8 GiB swap recommended. Swap I/O is far slower than
-   RAM, so this is а safety net, not а performance feature.
+   RAM, so this is a safety net, not a performance feature.
 
 2. **Review the `vm.overcommit_memory` sysctl** on each agent host:
    - `0` (default, heuristic) — kernel decides per allocation. Usually
@@ -92,15 +92,15 @@ is dangerous:
      defers OOM to actual fault time.
    - `2` (strict accounting) — kernel refuses allocations that would
      push commit charge past `swap + vm.overcommit_ratio% × RAM`.
-     Predictable но requires careful sizing of the kernel
+     Predictable but requires careful sizing of the kernel
      `vm.overcommit_ratio` sysctl (distinct from Otherix's per-resource
      `overcommit_ratio` config).
 
    The conservative choice for production-ish Otherix homelabs is
-   either `0` или `2` с the kernel sysctl deliberately tuned. Do not
+   either `0` or `2` with the kernel sysctl deliberately tuned. Do not
    set `1`.
 
-3. **Monitor swap usage** continuously. Frequent swap activity is а
+3. **Monitor swap usage** continuously. Frequent swap activity is a
    leading indicator of memory pressure approaching kernel-OOM
    thresholds. Plumb host swap into your metrics pipeline before
    enabling overcommit.
@@ -130,21 +130,21 @@ allocated size. Risks:
 - VMs that write heavily can grow toward their allocated capacity.
   Multiple VMs hitting that limit simultaneously can fill the pool.
 - Pool scans (default 15 min, configurable via
-  `workers.storage_pool_scan`) detect filling pools но do not prevent
+  `workers.storage_pool_scan`) detect filling pools but do not prevent
   placement decisions made before the scan lands.
 - Cascading "no space left on device" errors corrupt guest filesystems
   and can wedge running VMs.
 
 The `pool_effective_capacity` view already subtracts pending-VM disk
 commitments from scan-reported availability, so the scheduler never
-double-counts. Disk overcommit explicitly opts out of that safety и
+double-counts. Disk overcommit explicitly opts out of that safety and
 trusts the operator's growth model.
 
 Safe disk overcommit requires:
 
 1. Sparse qcow2 disk format (Otherix default).
-2. Pool monitoring с alerting before fill.
-3. Awareness of typical workload growth patterns в the cluster.
+2. Pool monitoring with alerting before fill.
+3. Awareness of typical workload growth patterns in the cluster.
 
 ## Disabling resources entirely
 
@@ -154,20 +154,20 @@ consideration:
 - Fit check skipped — no constraint on the dimension.
 - Scoring formula adjusts — the denominator drops by one. Remaining
   enabled dimensions are scored at full magnitude (no scale shift).
-- All three disabled → scoring degrades к count-based (LeastAllocated
+- All three disabled → scoring degrades to count-based (LeastAllocated
   with zero enabled dimensions is undefined; the scheduler falls back
-  к Least-VM-count parity, which is the same algorithm `least_vm_count`
+  to Least-VM-count parity, which is the same algorithm `least_vm_count`
   applies cluster-wide).
 
 When to disable:
 
 - **CPU `enabled: false`** — VMs are mostly idle and memory/disk are
   the binding constraints. Rare; CPU is usually the cheapest signal
-  к keep.
+  to keep.
 - **Memory `enabled: false`** — almost never. Memory pressure is the
-  most common failure mode на Linux VM hosts.
+  most common failure mode on Linux VM hosts.
 - **Disk `enabled: false`** — shared network storage where per-pool
-  capacity reflects а pooled remote resource rather than node-local
+  capacity reflects a pooled remote resource rather than node-local
   bytes. Pool capacity tracking still happens; just doesn't influence
   placement.
 
@@ -175,16 +175,16 @@ When to disable:
 
 Independent of the capacity / overcommit knobs above, the scheduler
 honours pressure conditions surfaced under `placement.pressure.*`.
-Pressure detection excludes stressed nodes (or pools, для disk
-pressure) от placement — а hard constraint, no operator override
-в MVP. Three pressure types land together с Sub-iteration B:
+Pressure detection excludes stressed nodes (or pools, for disk
+pressure) from placement — a hard constraint, no operator override
+in MVP. Three pressure types land together with Sub-iteration B:
 
 - **memory** — per-node, heartbeat-driven. Free memory below
   threshold. OOM-kill risk.
 - **system_disk** — per-node, heartbeat-driven. Free root-filesystem
   bytes below threshold. Agent crash / log truncation risk.
 - **disk** — per-pool, scan-driven. Free pool bytes below threshold.
-  Pool-scoped — other pools на the same node remain eligible.
+  Pool-scoped — other pools on the same node remain eligible.
 
 ### Memory pressure
 
@@ -200,19 +200,19 @@ placement:
 Mechanics:
 
 - **CP-side computation.** The api-server compares
-  `memory_available_mib / memory_total_mib` reported в every
+  `memory_available_mib / memory_total_mib` reported in every
   heartbeat against `threshold_percent`. The agent does not
-  pre-compute pressure — operators tune one set of thresholds в the
+  pre-compute pressure — operators tune one set of thresholds in the
   api config rather than per-agent.
 - **Asymmetric debouncing.** Pressure is set after
   `consecutive_required` consecutive below-threshold observations
   (default ≈ 90 s at the 30 s heartbeat cadence). Recovery is
   immediate — the first at-or-above-threshold observation clears the
-  flag и resets the counter. Slow-to-set / fast-to-clear prevents
+  flag and resets the counter. Slow-to-set / fast-to-clear prevents
   flapping on transient spikes while restoring eligibility promptly.
 - **Hard exclusion.** Pressured nodes are filtered out of
   `ListEligiblePoolsByName`. The 409 `no_eligible_nodes` envelope
-  carries `details.reason: "node_pressure"` и а
+  carries `details.reason: "node_pressure"` and a
   `filtered_due_to_pressure` list when pressure accounts for the
   exclusion.
 
@@ -223,18 +223,18 @@ placement:
   pressure:
     system_disk:
       enabled: true              # disable to skip detection entirely
-      threshold_percent: 10      # flag когда free root-fs bytes < 10% of total
+      threshold_percent: 10      # flag when free root-fs bytes < 10% of total
       consecutive_required: 3    # ~90 s sustained at default heartbeat cadence
 ```
 
 Mechanics mirror memory pressure exactly — same heartbeat-driven CP-
 side computation, same asymmetric debouncing, same hard-exclusion
 semantics. Only the raw metric differs: the agent reads
-`syscall.Statfs("/")` on every heartbeat и reports
+`syscall.Statfs("/")` on every heartbeat and reports
 `system_disk_total_bytes` / `system_disk_available_bytes` (both
-nullable когда the syscall fails — pressure state carries forward
-across NULL observations). А system_disk-pressured node is excluded
-от placement entirely; agent logs / NVRAM allocation / QMP sockets
+nullable when the syscall fails — pressure state carries forward
+across NULL observations). A system_disk-pressured node is excluded
+from placement entirely; agent logs / NVRAM allocation / QMP sockets
 all live on the root filesystem, so disk exhaustion threatens the
 agent itself rather than just any individual VM.
 
@@ -245,7 +245,7 @@ placement:
   pressure:
     disk:
       enabled: true              # disable to skip detection entirely
-      threshold_percent: 15      # flag когда free pool bytes < 15% of capacity
+      threshold_percent: 15      # flag when free pool bytes < 15% of capacity
       consecutive_required: 1    # single scan sets pressure (scans are 15 min apart)
 ```
 
@@ -253,23 +253,23 @@ Mechanics:
 
 - **Scan-driven CP computation.** The scan worker reads pool
   `available_bytes` / `capacity_bytes` from the agent's scan response
-  и runs the same transition function inside the same transaction
+  and runs the same transition function inside the same transaction
   as `UpsertStoragePoolUsage`. Scan-completion-only — heartbeat-time
   observations are not relevant for pool metrics.
 - **Single-observation default.** Scans are 15 min apart (default
-  `workers.storage_pool_scan.interval`), so а single sub-threshold
-  observation is а sufficient signal; operators can raise
+  `workers.storage_pool_scan.interval`), so a single sub-threshold
+  observation is a sufficient signal; operators can raise
   `consecutive_required` for multi-scan debouncing if their scan
   cadence is more aggressive.
-- **Pool-scoped exclusion.** Pressured pools are filtered из
-  `ListEligiblePoolsByName`; other pools на the same node remain
+- **Pool-scoped exclusion.** Pressured pools are filtered from
+  `ListEligiblePoolsByName`; other pools on the same node remain
   eligible. The 409 envelope's `filtered_due_to_pressure` payload
   carries an explicit `pool` field for these entries.
 
 ### Operator visibility
 
-`otherix node list` shows а computed STATUS column combining raw
-status с active **node-scoped** pressure conditions (memory +
+`otherix node list` shows a computed STATUS column combining raw
+status with active **node-scoped** pressure conditions (memory +
 system_disk):
 
 ```
@@ -279,7 +279,7 @@ cordoned, under_pressure
 unreachable                   # pressure data suppressed (stale)
 ```
 
-`otherix node get <node>` renders а `pressure:` section с one row per
+`otherix node get <node>` renders a `pressure:` section with one row per
 node-scoped condition:
 
 ```
@@ -288,7 +288,7 @@ pressure:
   system_disk: ok
 ```
 
-`otherix pool list` shows pool STATUS independently — а pool с
+`otherix pool list` shows pool STATUS independently — a pool with
 `disk_pressure` reads `under_pressure` regardless of its owning node's
 condition:
 
@@ -298,35 +298,35 @@ default  node-a  100 GiB                  ready
 default  node-b  2 GiB                    under_pressure
 ```
 
-`otherix pool get <pool>` adds а `pressure:` section с the `disk:`
+`otherix pool get <pool>` adds a `pressure:` section with the `disk:`
 condition state.
 
 ### Shared filesystem behavior
 
 In typical homelab setups the storage pool's `path` lives on the
-same filesystem as `/` — а single physical disk hosts both the
-agent runtime и VM images. Когда that filesystem fills, both
-`system_disk_pressure` (heartbeat-driven, node-level) и
+same filesystem as `/` — a single physical disk hosts both the
+agent runtime and VM images. When that filesystem fills, both
+`system_disk_pressure` (heartbeat-driven, node-level) and
 `disk_pressure` (scan-driven, pool-level) fire on the same physical
-condition. Both surface в the CLI и the envelope. This is accurate —
+condition. Both surface in the CLI and the envelope. This is accurate —
 the resource is genuinely shared — not duplication. Multi-mount
 setups (advanced) detect independently per filesystem.
 
-### When к tune
+### When to tune
 
-- **Lower `threshold_percent`** if the cluster runs hot и operators
-  want later (less conservative) flagging. 5% is а reasonable floor;
+- **Lower `threshold_percent`** if the cluster runs hot and operators
+  want later (less conservative) flagging. 5% is a reasonable floor;
   below that, OOM / disk-full becomes statistically imminent before
   pressure can fire.
 - **Raise `threshold_percent`** for predictable workloads or
   conservative homelab setups. 15-20% memory / 20-25% disk is typical
   for clusters carrying interactive workloads.
-- **Lower `consecutive_required` к 1** to react on first observation
-  — useful for testing the path or clusters с long heartbeat
+- **Lower `consecutive_required` to 1** to react on first observation
+  — useful for testing the path or clusters with long heartbeat
   intervals.
 - **Set `enabled: false`** to disable detection entirely. Pressure
-  columns still update on the row (the transition function is а
-  no-op when disabled), но flags never set и the SQL filter never
+  columns still update on the row (the transition function is a
+  no-op when disabled), but flags never set and the SQL filter never
   excludes anyone. Acceptable for homelab clusters where the operator
   prefers strict capacity-only scheduling.
 
@@ -336,34 +336,34 @@ setups (advanced) detect independently per filesystem.
 
 - `resource_aware` (default) — kubernetes-style LeastAllocated across
   the enabled resources. Tie-break: node name lowercase lexicographic.
-- `least_vm_count` — Phase 1.5 algorithm. Picks the node с the fewest
-  pinned VMs. Same tie-break. Operator opt-out для clusters that
+- `least_vm_count` — Phase 1.5 algorithm. Picks the node with the fewest
+  pinned VMs. Same tie-break. Operator opt-out for clusters that
   cannot rely on heartbeat metrics or want pure count-based spread.
 
-Per-resource configuration is meaningful only с `resource_aware`. Under
-`least_vm_count`, the `resources` block is parsed and validated но does
+Per-resource configuration is meaningful only with `resource_aware`. Under
+`least_vm_count`, the `resources` block is parsed and validated but does
 not influence placement decisions. Validation warnings still fire,
-which keeps the configuration honest if an operator flips back к
+which keeps the configuration honest if an operator flips back to
 `resource_aware` later.
 
 ## Operator workflow when changing config
 
-1. Edit `placement.resources` в your api yaml.
+1. Edit `placement.resources` in your api yaml.
 2. Restart `otherix-api`. Watch for startup warnings — each overcommit
    choice produces one line.
 3. Validate placement behaviour: `otherix node list` shows raw vs
    effective free CPU / memory; `otherix pool list` shows raw vs
    effective free disk. The "(effective N free)" suffix renders when
-   pending placements have not yet been observed by а heartbeat / scan.
-4. Trigger а test VM create. The scheduler's decision should respect
-   the new ratios. `vm create` against а saturated pool returns 409
-   `no_eligible_nodes` с а structured `details.node_utilization`
+   pending placements have not yet been observed by a heartbeat / scan.
+4. Trigger a test VM create. The scheduler's decision should respect
+   the new ratios. `vm create` against a saturated pool returns 409
+   `no_eligible_nodes` with a structured `details.node_utilization`
    payload listing each candidate by name + per-resource usage.
 
 There is currently no API or CLI endpoint to read or change the
-placement config at runtime — it's а deploy-time decision. Restart
+placement config at runtime — it's a deploy-time decision. Restart
 required to apply changes; the apartment graceful-shutdown path keeps
-in-flight tasks alive до the next replica.
+in-flight tasks alive to the next replica.
 
 ## See also
 

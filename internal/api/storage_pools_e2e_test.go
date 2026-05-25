@@ -65,8 +65,8 @@ func seedNodeForE2E(t *testing.T, ctx context.Context, s *store.Store) string {
 
 // putJSON sends PUT against the e2e harness's HTTP surface. Mirrors
 // h.post / h.patch — there is no h.put on the shared harness today,
-// and this helper stays scoped к cluster endpoint tests rather than
-// promoting к the common surface until a second caller appears.
+// and this helper stays scoped to cluster endpoint tests rather than
+// promoting to the common surface until a second caller appears.
 func putJSON(t *testing.T, h *e2eHarness, path string, body any, bearer string) *http.Response {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -92,7 +92,7 @@ func putJSON(t *testing.T, h *e2eHarness, path string, body any, bearer string) 
 // cluster_settings (if set). The cluster default-pool semantic lives
 // in the cluster_settings singleton (not in a per-row is_default
 // flag); tests that exercise default-pool behaviour against a shared
-// harness must clear the slot first к avoid bleed-through from
+// harness must clear the slot first to avoid bleed-through from
 // earlier tests.
 func clearDefaultPoolE2E(t *testing.T, h *e2eHarness) {
 	t.Helper()
@@ -164,7 +164,7 @@ func TestE2E_StoragePools_CreateHappyPath(t *testing.T) {
 
 	// The response field carries the node *name*; the request body
 	// uses the same narrowing, so the seedNodeForE2E helper returns
-	// а name directly. The view's `node` must echo the same name we
+	// a name directly. The view's `node` must echo the same name we
 	// POSTed (round-trip preservation).
 	if view.Node != nodeID {
 		t.Errorf("node = %q, want %q (seed helper returns the name)", view.Node, nodeID)
@@ -263,7 +263,7 @@ func TestE2E_StoragePools_CreateValidation(t *testing.T) {
 
 // TestE2E_StoragePools_UnknownNodeName404 covers the name-based
 // references: passing a non-UUID, non-existent value for `node`
-// resolves к a name lookup that returns 404 (no leak).
+// resolves to a name lookup that returns 404 (no leak).
 func TestE2E_StoragePools_UnknownNodeName404(t *testing.T) {
 	h := newE2E(t)
 	defer h.close()
@@ -338,7 +338,7 @@ func TestE2E_StoragePools_CreateRejectsIsDefaultField(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("forbidden_fields = %v, want к contain is_default", fields)
+		t.Errorf("forbidden_fields = %v, want to contain is_default", fields)
 	}
 }
 
@@ -402,7 +402,7 @@ func TestE2E_StoragePools_ListByNodeAndType(t *testing.T) {
 	if len(page.Data) == 0 {
 		t.Errorf("empty data, want >=1 pool for the seeded node")
 	}
-	// Response narrows the owning-node field к its name, not the
+	// Response narrows the owning-node field to its name, not the
 	// UUID. The handler already filtered by node_id at the SQL
 	// layer; we just spot-check the wire shape and trust the query.
 	for _, row := range page.Data {
@@ -505,8 +505,8 @@ func TestE2E_StoragePools_UpdateRejectsImmutableFields(t *testing.T) {
 
 // TestE2E_StoragePools_ClusterDefaultRoundTrip exercises the cluster
 // default-pool endpoints through the e2e harness: GET returns 404
-// default_pool_not_set when unset; PUT с an unknown name returns 400
-// pool_not_found; PUT с a seeded name succeeds; subsequent GET
+// default_pool_not_set when unset; PUT with an unknown name returns 400
+// pool_not_found; PUT with a seeded name succeeds; subsequent GET
 // returns the persisted name; the per-instance flat view surfaces
 // `is_cluster_default = true` for instances whose name matches the
 // reference; DELETE clears.
@@ -526,7 +526,7 @@ func TestE2E_StoragePools_ClusterDefaultRoundTrip(t *testing.T) {
 		t.Fatalf("initial GET status = %d, want 404", resp.StatusCode)
 	}
 
-	// PUT с unknown name: 400 pool_not_found.
+	// PUT with unknown name: 400 pool_not_found.
 	resp = putJSON(t, h, "/v1/cluster/default-pool", map[string]any{"name": "no-such-pool"}, adminToken)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("PUT unknown status = %d, want 400", resp.StatusCode)
@@ -537,7 +537,7 @@ func TestE2E_StoragePools_ClusterDefaultRoundTrip(t *testing.T) {
 		t.Errorf("code = %q, want %q", b.Error.Code, response.CodePoolNotFound)
 	}
 
-	// PUT с seeded name: 200 + canonical echo.
+	// PUT with seeded name: 200 + canonical echo.
 	resp = putJSON(t, h, "/v1/cluster/default-pool", map[string]any{"name": name}, adminToken)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT happy status = %d, want 200", resp.StatusCode)

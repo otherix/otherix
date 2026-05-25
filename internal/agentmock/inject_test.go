@@ -46,7 +46,7 @@ func operationIDToMethodName(opID string) string {
 	joined := strings.Join(parts, "")
 	// Mirror the oapi-codegen initialism overrides from
 	// api/openapi/oapi-codegen.yaml. Order matters: longer
-	// prefixes first так не collide с shorter ones.
+	// prefixes first so not collide with shorter ones.
 	initialismPrefixes := []struct{ from, to string }{
 		{"Vm", "VM"},
 	}

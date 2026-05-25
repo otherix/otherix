@@ -60,7 +60,7 @@ func createNodeAsAdmin(t *testing.T, h *e2eHarness, name string) string {
 	return name
 }
 
-// lookupNodeID fetches the row UUID for а node seeded via the API.
+// lookupNodeID fetches the row UUID for a node seeded via the API.
 // Used by SQL-direct fixtures (status flip, vm_runtime seed) that need
 // to address rows by primary key outside the public surface.
 func lookupNodeID(t *testing.T, h *e2eHarness, name string) string {

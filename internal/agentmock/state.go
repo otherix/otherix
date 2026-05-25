@@ -95,7 +95,7 @@ type state struct {
 	// is one of "start" / "stop" / "poweroff" / "reboot". Empty queue
 	// yields a default success per vmLifecycleOpDefaultTransition. Per
 	// L2 Step 5 the materialisation hook transitions storedVMs[name]
-	// either to the per-op default phase or к VMLifecycleResult.NewStatus
+	// either to the per-op default phase or to VMLifecycleResult.NewStatus
 	// if non-empty.
 	vmLifecycleResults map[vmLifecycleKey][]VMLifecycleResult
 
@@ -119,7 +119,7 @@ type storagePool struct {
 // imageImportKey indexes the per-(pool, checksum) FIFO queue of
 // synthetic import outcomes. Composite-key lookup is the unit of
 // fault injection — different checksums against the same pool carry
-// independent queues. The pool dimension is а string name; it was
+// independent queues. The pool dimension is a string name; it was
 // previously the pool UUID.
 type imageImportKey struct {
 	PoolName       string
@@ -128,8 +128,8 @@ type imageImportKey struct {
 
 // vmLifecycleKey indexes the per-(vm name, op) FIFO queue of L2 async
 // lifecycle outcomes. Op is one of "start" / "stop" / "poweroff" /
-// "reboot"; per-op separation lets one VM stage а stop-timeout failure
-// и а subsequent start success без interference.
+// "reboot"; per-op separation lets one VM stage a stop-timeout failure
+// and a subsequent start success without interference.
 type vmLifecycleKey struct {
 	VMName string
 	Op     string
@@ -159,9 +159,9 @@ func (m *Mock) RemoveFirmware(name, architecture, fwType string) bool {
 }
 
 // AddStoragePool registers a pool. Keying is by pool **name**; the
-// exported StoragePool.ID UUID is preserved as а traceability label
+// exported StoragePool.ID UUID is preserved as a traceability label
 // surfaced in the agent's wire response. Replaces any existing pool
-// с the same name.
+// with the same name.
 func (m *Mock) AddStoragePool(p StoragePool) {
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
@@ -272,7 +272,7 @@ func (m *Mock) AddVMDeleteResult(vmName string, r VMDeleteResult) {
 
 // AddVMLifecycleResult queues a synthetic outcome for the next async
 // lifecycle invocation against (vmName, op). Calls are FIFO per
-// (name, op). Empty queue yields а default success that transitions
+// (name, op). Empty queue yields a default success that transitions
 // the inventory entry per vmLifecycleOpDefaultTransition.
 func (m *Mock) AddVMLifecycleResult(vmName, op string, r VMLifecycleResult) {
 	m.state.mu.Lock()

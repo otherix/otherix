@@ -16,10 +16,10 @@ import (
 // AgentConfig is the configuration for the otherix-agent binary.
 //
 // Agent identity is name-keyed:
-//   - No NodeID field. Agent identity derives от the cert CN at
+//   - No NodeID field. Agent identity derives from the cert CN at
 //     startup (`node-<name>` SubjectCN per auth.SignCSR).
-//   - No Bootstrap field. Bootstrap is а standalone subcommand
-//     (`otherix-agent bootstrap`) что reads flags directly; the serve
+//   - No Bootstrap field. Bootstrap is a standalone subcommand
+//     (`otherix-agent bootstrap`) that reads flags directly; the serve
 //     subcommand consumes only the runtime config below.
 type AgentConfig struct {
 	Server       ServerConfig       `koanf:"server"`
@@ -57,22 +57,22 @@ type TLSConfig struct {
 }
 
 // BootstrapConfig is the value struct consumed by `bootstrap.Bootstrap()`
-// — populated inline by the `otherix-agent bootstrap` subcommand от
+// — populated inline by the `otherix-agent bootstrap` subcommand from
 // CLI flags. No koanf binding; no env-var path. Bootstrap is driven via
-// explicit CLI flags rather than а bootstrap.env file.
+// explicit CLI flags rather than a bootstrap.env file.
 //
 // Field semantics, mostly mirroring the public /v1/nodes/join contract:
 //   - Token / TokenPath are mutually exclusive; exactly one must be set.
-//   - CAFingerprint accepts "sha256:<64-hex>" или а bare 64-hex string
-//     (case-insensitive; normalised к lowercase during validation).
+//   - CAFingerprint accepts "sha256:<64-hex>" or a bare 64-hex string
+//     (case-insensitive; normalised to lowercase during validation).
 //   - CPURL is the control-plane base URL; the bootstrap package
-//     appends /v1/ca и /v1/nodes/join itself.
-//   - Architecture is auto-detected от runtime.GOARCH at subcommand
+//     appends /v1/ca and /v1/nodes/join itself.
+//   - Architecture is auto-detected from runtime.GOARCH at subcommand
 //     entry (operators do not supply this).
 //   - NodeName, AdvertisedEndpoint, MigrationHost,
 //     MigrationPortRange{Start,End} mirror the request body fields
 //     enforced by Step 2's API edge.
-//   - RequestTimeout caps а single HTTP request (default 30s). Set
+//   - RequestTimeout caps a single HTTP request (default 30s). Set
 //     conservatively short on link-flaky networks since the bootstrap
 //     does not retry.
 type BootstrapConfig struct {
@@ -90,17 +90,17 @@ type BootstrapConfig struct {
 }
 
 // fingerprintHexPattern matches the canonical 64-char lowercase hex
-// form (post-normalisation). Used by both BootstrapConfig.Validate и
+// form (post-normalisation). Used by both BootstrapConfig.Validate and
 // the bootstrap package's NormalizeFingerprint helper.
 var fingerprintHexPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-// Validate enforces the bootstrap config invariants. Returns а single
+// Validate enforces the bootstrap config invariants. Returns a single
 // error describing the first failure encountered — the operator's
-// remediation is to edit the config / env vars и retry.
+// remediation is to edit the config / env vars and retry.
 //
-// Implementation is split into per-group helpers so каждый stays under
-// gocyclo's complexity ceiling и so future fields can extend the
-// relevant group без touching the rest.
+// Implementation is split into per-group helpers so each stays under
+// gocyclo's complexity ceiling and so future fields can extend the
+// relevant group without touching the rest.
 func (b *BootstrapConfig) Validate() error {
 	if err := b.validateTokenSource(); err != nil {
 		return err
@@ -122,7 +122,7 @@ func (b *BootstrapConfig) validateTokenSource() error {
 	hasPath := b.TokenPath != ""
 	switch {
 	case hasToken && hasPath:
-		return errors.New("bootstrap: token и token_path are mutually exclusive")
+		return errors.New("bootstrap: token and token_path are mutually exclusive")
 	case !hasToken && !hasPath:
 		return errors.New("bootstrap: one of token or token_path is required")
 	}
@@ -157,8 +157,8 @@ func (b *BootstrapConfig) validateIdentity() error {
 	if len(b.NodeName) > 253 {
 		return errors.New("bootstrap: node_name must be at most 253 characters")
 	}
-	// Architecture is auto-detected от runtime.GOARCH at subcommand entry.
-	// Defensive check stays so а caller that mints а BootstrapConfig
+	// Architecture is auto-detected from runtime.GOARCH at subcommand entry.
+	// Defensive check stays so a caller that mints a BootstrapConfig
 	// directly (tests, future integrations) does not pass an empty /
 	// wrong value silently.
 	switch b.Architecture {
@@ -215,8 +215,8 @@ func defaultAgentConfig() AgentConfig {
 }
 
 // Validate checks the server listen address, that control_plane.url is set,
-// и that the migration port range is valid. Bootstrap config is no
-// longer carried в the runtime config — the `otherix-agent bootstrap`
+// and that the migration port range is valid. Bootstrap config is no
+// longer carried in the runtime config — the `otherix-agent bootstrap`
 // subcommand validates its flags inline.
 func (c AgentConfig) Validate() error {
 	if err := c.Server.Validate(); err != nil {

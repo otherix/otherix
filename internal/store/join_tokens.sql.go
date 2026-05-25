@@ -20,7 +20,7 @@ where join_token_id = $1
 `
 
 // Used by Step 2 redemption to enforce max_uses + by the get handler
-// to surface consumption_count on а single-row lookup.
+// to surface consumption_count on a single-row lookup.
 func (q *Queries) CountJoinTokenConsumptions(ctx context.Context, joinTokenID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countJoinTokenConsumptions, joinTokenID)
 	var column_1 int64
@@ -49,7 +49,7 @@ type CreateJoinTokenParams struct {
 	MaxUses          *int32
 }
 
-// Persists а freshly minted join token. Plaintext is never stored —
+// Persists a freshly minted join token. Plaintext is never stored —
 // the caller hashes via auth.HashToken before invoking this query.
 // intended_node_name + max_uses are validated at the API edge AND by
 // SQL CHECK constraints (defense-in-depth).
@@ -92,9 +92,9 @@ type CreateJoinTokenConsumptionParams struct {
 	SourceIp         *netip.Addr
 }
 
-// Step 2 dependency: redemption handler inserts а consumption row в
+// Step 2 dependency: redemption handler inserts a consumption row in
 // the same TX as agent_certs INSERT + optional node UPSERT. Pre-
-// declared в Step 1 so the signature locks early и Step 2 only
+// declared in Step 1 so the signature locks early and Step 2 only
 // changes call sites.
 func (q *Queries) CreateJoinTokenConsumption(ctx context.Context, arg CreateJoinTokenConsumptionParams) (JoinTokenConsumption, error) {
 	row := q.db.QueryRow(ctx, createJoinTokenConsumption,
@@ -121,10 +121,10 @@ where token_hash = $1
   and expires_at > now()
 `
 
-// Non-locking read for callers that need а token row outside an
-// exclusive transaction. Filters expired tokens at SQL так а fresh
-// read never returns а usable-but-expired row. Step 2 redemption
-// uses GetJoinTokenByHashForUpdate instead (acquires а row lock for
+// Non-locking read for callers that need a token row outside an
+// exclusive transaction. Filters expired tokens at SQL so a fresh
+// read never returns a usable-but-expired row. Step 2 redemption
+// uses GetJoinTokenByHashForUpdate instead (acquires a row lock for
 // race-safe max_uses enforcement). pgx.ErrNoRows ⇒ ErrTokenInvalid.
 func (q *Queries) GetJoinTokenByHash(ctx context.Context, tokenHash []byte) (JoinToken, error) {
 	row := q.db.QueryRow(ctx, getJoinTokenByHash, tokenHash)
@@ -150,10 +150,10 @@ for update
 `
 
 // Row-locking variant used by the Step 2 redemption handler. Acquires
-// а FOR UPDATE lock so concurrent redemptions on the same token
+// a FOR UPDATE lock so concurrent redemptions on the same token
 // queue, then race-fairly observe each other's consumption count.
 // Preserves the expires_at filter — an already-expired token surfaces
-// as ErrNoRows и no lock is held. pgx.ErrNoRows ⇒ ErrTokenInvalid.
+// as ErrNoRows and no lock is held. pgx.ErrNoRows ⇒ ErrTokenInvalid.
 func (q *Queries) GetJoinTokenByHashForUpdate(ctx context.Context, tokenHash []byte) (JoinToken, error) {
 	row := q.db.QueryRow(ctx, getJoinTokenByHashForUpdate, tokenHash)
 	var i JoinToken
@@ -175,7 +175,7 @@ from join_tokens
 where id = $1
 `
 
-// Includes expired rows; the caller (admin handler) decides what к do.
+// Includes expired rows; the caller (admin handler) decides what to do.
 func (q *Queries) GetJoinTokenByID(ctx context.Context, id uuid.UUID) (JoinToken, error) {
 	row := q.db.QueryRow(ctx, getJoinTokenByID, id)
 	var i JoinToken
@@ -214,7 +214,7 @@ type ListJoinTokenConsumptionsParams struct {
 }
 
 // Cursor pagination. Chronologically-ordered audit
-// entries for а single token. Empty until Step 2 ships redemption.
+// entries for a single token. Empty until Step 2 ships redemption.
 func (q *Queries) ListJoinTokenConsumptions(ctx context.Context, arg ListJoinTokenConsumptionsParams) ([]JoinTokenConsumption, error) {
 	rows, err := q.db.Query(ctx, listJoinTokenConsumptions,
 		arg.JoinTokenID,
@@ -329,8 +329,8 @@ set expires_at = least(expires_at, now())
 where id = $1
 `
 
-// Sets expires_at to the lesser of its current value и now() — а
-// token already в the past stays where it is, а live token jumps к
+// Sets expires_at to the lesser of its current value and now() — a
+// token already in the past stays where it is, a live token jumps to
 // the deadline. Idempotent; repeat calls produce no further effect.
 func (q *Queries) RevokeJoinToken(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, revokeJoinToken, id)

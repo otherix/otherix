@@ -20,25 +20,25 @@ import (
 
 // clientFromFlags resolves --endpoint / --token / --cluster /
 // --config + their env-var counterparts through cliauth.BuildClient
-// и returns а ready *cpclient.Client. Errors are already operator-
+// and returns a ready *cpclient.Client. Errors are already operator-
 // shaped (see cliauth.translateResolveError); cobra's RunE chain
 // surfaces them through main()'s "error: <msg>" stderr formatter.
 func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
 	return cliauth.BuildClient(cmd)
 }
 
-// printf writes к cmd.OutOrStdout — preserves cobra's testability
+// printf writes to cmd.OutOrStdout — preserves cobra's testability
 // (each command's stdout / stderr is rebindable in tests).
 func printf(cmd *cobra.Command, format string, args ...any) {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), format, args...)
 }
 
-// classifyError maps an err из cpclient к the operator-facing
+// classifyError maps an err from cpclient to the operator-facing
 // "<category>: <detail>" prefix shape that ping-agent established
 // (see cmd/cli/ping_agent.go). Shell scripts grep on the prefix —
 // this string is part of the CLI's contract. Returns an error so
 // callers can simply `return classifyError(err)` from RunE; main
-// renders it to stderr с the standard "error: " preamble.
+// renders it to stderr with the standard "error: " preamble.
 func classifyError(err error) error {
 	var apiErr *cpclient.APIError
 	if errors.As(err, &apiErr) {
@@ -57,7 +57,7 @@ func classifyError(err error) error {
 	}
 }
 
-// parseTaskID parses the task id из the CP's AsyncTaskAccepted
+// parseTaskID parses the task id from the CP's AsyncTaskAccepted
 // envelope. Surfaces a helpful error if the CP ever returns a
 // malformed value (defensive — should not happen in practice).
 func parseTaskID(raw string) (uuid.UUID, error) {
@@ -70,10 +70,10 @@ func parseTaskID(raw string) (uuid.UUID, error) {
 
 // waitForTask polls the supplied taskID until it reaches a terminal
 // state, the timeout fires, or ctx is cancelled. The progress
-// callback emits a single dot per poll к cmd.ErrOrStderr — picks
+// callback emits a single dot per poll to cmd.ErrOrStderr — picks
 // stderr so stdout stays parseable for tooling that captures
-// success-line output. На terminal-failed surfaces the embedded
-// error envelope as a Go error; на success returns nil.
+// success-line output. On terminal-failed surfaces the embedded
+// error envelope as a Go error; on success returns nil.
 func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, taskID uuid.UUID, timeout time.Duration) error {
 	stderr := cmd.ErrOrStderr()
 	dotsEmitted := 0
@@ -91,8 +91,8 @@ func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, ta
 		return err
 	}
 	if !task.IsTerminal() {
-		// WaitTask only returns when terminal или error; defensive
-		// branch для future surface drift.
+		// WaitTask only returns when terminal or error; defensive
+		// branch for future surface drift.
 		return fmt.Errorf("wait task: non-terminal status %q", task.Status)
 	}
 	if task.Status == "success" {
@@ -100,16 +100,16 @@ func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, ta
 	}
 	env, decErr := task.DecodeError()
 	if decErr != nil || env == nil {
-		return fmt.Errorf("task %s terminated с status %q (no error envelope)", taskID, task.Status)
+		return fmt.Errorf("task %s terminated with status %q (no error envelope)", taskID, task.Status)
 	}
 	return fmt.Errorf("task %s %s: %s: %s", taskID, task.Status, env.Code, env.Message)
 }
 
-// requireStringFlag fetches a string flag и rejects empty values as
+// requireStringFlag fetches a string flag and rejects empty values as
 // usage errors. The CLI forwards the raw string and the server
 // resolves it (name-only for VM/Template/Node; polymorphic for
 // storage pools). Format validation happens at the resolver layer,
-// не the CLI edge.
+// not the CLI edge.
 func requireStringFlag(cmd *cobra.Command, name string) (string, error) {
 	raw, err := cmd.Flags().GetString(name)
 	if err != nil {

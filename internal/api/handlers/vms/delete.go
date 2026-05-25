@@ -60,13 +60,13 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // errVMNotVisible is the in-flight signal that the row exists but the
-// caller may not see it (developer scope=own + cross-user). Mapped к
+// caller may not see it (developer scope=own + cross-user). Mapped to
 // 404 (no leak), same as a missing row.
 var errVMNotVisible = errors.New("vm not visible to caller")
 
 // errVMNoNode is the in-flight signal that the vm has no resolvable
 // agent endpoint at delete time — vm_disks row missing, pool deleted,
-// pinned node missing. Surfaces as 409 node_not_found так как the
+// pinned node missing. Surfaces as 409 node_not_found because the
 // async pipeline cannot proceed without a target.
 var errVMNoNode = errors.New("vm has no resolvable node")
 
@@ -154,7 +154,7 @@ func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.VM) (uuid.UUID,
 	return pool.NodeID, nil
 }
 
-// writeDeleteError maps the in-flight error returned by runDelete к
+// writeDeleteError maps the in-flight error returned by runDelete to
 // the standard envelope.
 func writeDeleteError(w http.ResponseWriter, r *http.Request, log interface {
 	ErrorContext(ctx context.Context, msg string, args ...any)

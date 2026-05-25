@@ -20,7 +20,7 @@ import (
 //
 // {id} is polymorphic. A UUID literal returns the single per-node
 // storage_pool instance row (flat StoragePool view); a name returns
-// the aggregated PoolConceptView с every per-node instance plus the
+// the aggregated PoolConceptView with every per-node instance plus the
 // cluster-default flag. The two shapes are surfaced via a `oneOf` on
 // the OpenAPI side — the mental model is StorageClass (name) vs
 // PersistentVolume (instance UUID).
@@ -56,8 +56,8 @@ func (h *Handler) getByName(w http.ResponseWriter, r *http.Request, name string)
 	}
 	// Re-fetch every instance from the effective view so each rendered
 	// row carries available_bytes_effective. resolver.PoolByName uses
-	// the raw table к stay backwards-compatible with the per-instance
-	// disambiguation logic; the view re-read closes the loop здесь.
+	// the raw table to stay backwards-compatible with the per-instance
+	// disambiguation logic; the view re-read closes the loop here.
 	rows, err := h.store.Queries().ListPoolsEffectiveByName(r.Context(), name)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -88,9 +88,9 @@ func (h *Handler) getByName(w http.ResponseWriter, r *http.Request, name string)
 func (h *Handler) projectInstanceForConcept(ctx context.Context, p store.PoolEffectiveCapacity, isClusterDefault bool) (storagePoolView, error) {
 	node, err := h.store.Queries().GetNodeByID(ctx, p.NodeID)
 	if err != nil {
-		// Aligned с projectView: a soft-deleted owning node yields an
+		// Aligned with projectView: a soft-deleted owning node yields an
 		// empty Node field rather than a hard error, so the operator
-		// can still see the instance в the aggregated view.
+		// can still see the instance in the aggregated view.
 		node = store.Node{}
 	}
 	return toViewEffective(p, node.Name, node.Status, isClusterDefault), nil

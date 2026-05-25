@@ -9,7 +9,7 @@
 // and fault injection.
 //
 // The package is contract-bound: it serves the OpenAPI surface so
-// integration tests exercise the wire contract without booting а
+// integration tests exercise the wire contract without booting a
 // real agent.
 //
 // Six functional endpoints are implemented (health, info,

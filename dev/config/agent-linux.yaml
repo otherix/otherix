@@ -5,14 +5,14 @@
 # User-mode runtime keeps cert material under XDG_CONFIG_HOME — /opt/otherix
 # would require root.
 #
-# The agent boots в State A polling-loop mode (no manual restart
+# The agent boots in State A polling-loop mode (no manual restart
 # needed). seed-mvp runs `otherix-agent bootstrap` to materialise
 # cert material; this yaml is preserved across re-bootstrap (bootstrap
-# writes the config file only когда absent или с --force, so
+# writes the config file only when absent or with --force, so
 # hand-edits survive).
 #
-# The agent receives pool desired state through heartbeat и reconciles
-# autonomously; this file no longer carries а `pools:` block.
+# The agent receives pool desired state through heartbeat and reconciles
+# autonomously; this file no longer carries a `pools:` block.
 
 server:
   listen: "127.0.0.1:9443"

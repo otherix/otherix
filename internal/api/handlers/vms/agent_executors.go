@@ -14,11 +14,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// resolveCloudInitUserData merges а VM-level override against the
+// resolveCloudInitUserData merges a VM-level override against the
 // template-level default per L3 Area 3 lock — explicit disable wins,
-// else VM wins когда set, else template's cloud_init_user_data wins,
+// else VM wins when set, else template's cloud_init_user_data wins,
 // else empty (agent skips cidata generation). Both source columns are
-// tri-state nullable *string в the store; we treat NULL и "" identically
+// tri-state nullable *string in the store; we treat NULL and "" identically
 // as "absent" so the operator can pass either form interchangeably.
 //
 // Three-state semantic (operator UX iteration):
@@ -30,7 +30,7 @@ import (
 //
 // The DB CHECK chk_vms_cloud_init_disabled_no_userdata makes the
 // disabled-AND-userdata combination unreachable; the early return
-// here is а defense-in-depth signal к the reader, not а runtime branch.
+// here is a defense-in-depth signal to the reader, not a runtime branch.
 func resolveCloudInitUserData(vm store.VM, tpl store.Template) string {
 	if vm.CloudInitDisabled {
 		return ""
@@ -141,7 +141,7 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 }
 
 // agentVMDeleteExecutor is the production DeleteExecutor: DeleteVM
-// then PollTask с the same resumption pattern.
+// then PollTask with the same resumption pattern.
 type agentVMDeleteExecutor struct {
 	client agentVMClient
 }

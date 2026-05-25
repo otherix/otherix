@@ -54,10 +54,10 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// tlsHarness wraps а freshly-migrated store, the active cluster CA's
-// fingerprint, и an httptest.NewTLSServer serving the full CP router.
-// `httptest.NewTLSServer` uses а self-signed cert; bootstrap's
-// InsecureSkipVerify posture lets that through и the chain pins
+// tlsHarness wraps a freshly-migrated store, the active cluster CA's
+// fingerprint, and an httptest.NewTLSServer serving the full CP router.
+// `httptest.NewTLSServer` uses a self-signed cert; bootstrap's
+// InsecureSkipVerify posture lets that through and the chain pins
 // everything via the operator-supplied fingerprint.
 type tlsHarness struct {
 	srv           *httptest.Server
@@ -130,7 +130,7 @@ func newTLSHarness(t *testing.T) *tlsHarness {
 	return &tlsHarness{srv: srv, store: s, caFingerprint: fingerprint}
 }
 
-// mintOption tweaks а freshly-minted join token's params before insert.
+// mintOption tweaks a freshly-minted join token's params before insert.
 type mintOption func(*store.CreateJoinTokenParams)
 
 func withMaxUses(n int32) mintOption {
@@ -154,8 +154,8 @@ func withExpiry(when time.Time) mintOption {
 	}
 }
 
-// mintJoinToken creates а join token directly via SQL (bypassing the
-// management endpoint к keep these tests focused on the bootstrap
+// mintJoinToken creates a join token directly via SQL (bypassing the
+// management endpoint to keep these tests focused on the bootstrap
 // flow). Returns the plaintext token.
 func mintJoinToken(t *testing.T, h *tlsHarness, opts ...mintOption) string {
 	t.Helper()
@@ -210,7 +210,7 @@ func TestBootstrap_HappyPath(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	if _, err := uuid.Parse(result.NodeID); err != nil {
-		t.Errorf("Result.NodeID = %q, not а UUID: %v", result.NodeID, err)
+		t.Errorf("Result.NodeID = %q, not a UUID: %v", result.NodeID, err)
 	}
 	if !strings.Contains(string(result.CertPEM), "BEGIN CERTIFICATE") {
 		t.Error("CertPEM missing BEGIN CERTIFICATE")
@@ -230,7 +230,7 @@ func TestBootstrap_BareHexFingerprintAccepted(t *testing.T) {
 	cfg.CAFingerprint = h.caFingerprint // no sha256: prefix
 
 	if _, err := bootstrap.Bootstrap(context.Background(), cfg, discardLog()); err != nil {
-		t.Errorf("Bootstrap с bare hex fingerprint: %v", err)
+		t.Errorf("Bootstrap with bare hex fingerprint: %v", err)
 	}
 }
 
@@ -285,7 +285,7 @@ func TestBootstrap_FingerprintMismatch(t *testing.T) {
 
 	_, err := bootstrap.Bootstrap(context.Background(), cfg, discardLog())
 	if err == nil {
-		t.Fatal("Bootstrap с wrong fingerprint = nil err, want error")
+		t.Fatal("Bootstrap with wrong fingerprint = nil err, want error")
 	}
 	var fpErr *bootstrap.FingerprintMismatchError
 	if !errors.As(err, &fpErr) {
@@ -299,7 +299,7 @@ func TestBootstrap_TokenInvalid(t *testing.T) {
 
 	_, err := bootstrap.Bootstrap(context.Background(), cfg, discardLog())
 	if err == nil {
-		t.Fatal("Bootstrap с invalid token = nil err, want error")
+		t.Fatal("Bootstrap with invalid token = nil err, want error")
 	}
 	if !errors.Is(err, bootstrap.ErrCSRRejected) {
 		t.Errorf("expected ErrCSRRejected, got %v", err)
@@ -312,7 +312,7 @@ func TestBootstrap_TokenExpired(t *testing.T) {
 
 	_, err := bootstrap.Bootstrap(context.Background(), h.joinCfg(token, uniqueName("expired")), discardLog())
 	if err == nil {
-		t.Fatal("Bootstrap с expired token = nil err, want error")
+		t.Fatal("Bootstrap with expired token = nil err, want error")
 	}
 	if !errors.Is(err, bootstrap.ErrCSRRejected) {
 		t.Errorf("expected ErrCSRRejected, got %v", err)
@@ -326,7 +326,7 @@ func TestBootstrap_PreboundMismatch(t *testing.T) {
 	cfg := h.joinCfg(token, "wrong-name-"+uuid.NewString()[:8])
 	_, err := bootstrap.Bootstrap(context.Background(), cfg, discardLog())
 	if err == nil {
-		t.Fatal("Bootstrap с mismatched name = nil err, want error")
+		t.Fatal("Bootstrap with mismatched name = nil err, want error")
 	}
 	if !errors.Is(err, bootstrap.ErrCSRRejected) {
 		t.Errorf("expected ErrCSRRejected, got %v", err)
@@ -413,6 +413,6 @@ func TestBootstrap_BadCPURL(t *testing.T) {
 
 	_, err := bootstrap.Bootstrap(context.Background(), cfg, discardLog())
 	if err == nil {
-		t.Fatal("Bootstrap с unreachable CP = nil err, want error")
+		t.Fatal("Bootstrap with unreachable CP = nil err, want error")
 	}
 }

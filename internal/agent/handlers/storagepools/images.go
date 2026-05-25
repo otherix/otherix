@@ -17,7 +17,7 @@ import (
 
 // importImageBody is the wire shape the import handler decodes. Mirrors
 // agent.yaml's `ImageImportRequest`. Only source_url is accepted;
-// source_path is rejected с 400 unsupported_format (ROADMAP entry
+// source_path is rejected with 400 unsupported_format (ROADMAP entry
 // tracks the future-iteration local-file ingestion path).
 type importImageBody struct {
 	SourceURL              *string `json:"source_url"`
@@ -27,8 +27,8 @@ type importImageBody struct {
 }
 
 // cachedImageView mirrors agent.yaml's `CachedImage` schema. Hand-
-// crafted (а la asyncAccepted) pending а shared types package; keep
-// in sync с CachedImageList + the agent.yaml component.
+// crafted (a la asyncAccepted) pending a shared types package; keep
+// in sync with CachedImageList + the agent.yaml component.
 type cachedImageView struct {
 	ChecksumSHA256 string  `json:"checksum_sha256"`
 	Format         string  `json:"format"`
@@ -53,17 +53,17 @@ type cachedImageMeta struct {
 // ImportImage handles POST /v1/storage-pools/{pool_name}/images.
 //
 //   - Decodes the body, rejecting source_path (deferred enum
-//     extension) и empty/malformed fields с 400.
-//   - Asks the manager к begin an import; receives an agent task в
+//     extension) and empty/malformed fields with 400.
+//   - Asks the manager to begin an import; receives an agent task in
 //     `pending` status.
-//   - Returns 202 с the task_id immediately; CP polls
-//     /v1/tasks/{task_id} к observe terminal status и result.
+//   - Returns 202 with the task_id immediately; CP polls
+//     /v1/tasks/{task_id} to observe terminal status and result.
 //
 // Errors:
 //   - 400 validation_failed — pool_name is empty, body decode failed,
-//     source_url empty, или expected_checksum_sha256 malformed.
-//   - 400 unsupported_format — format != "qcow2" или source_path set.
-//   - 404 not_found — pool_name does not match а configured pool.
+//     source_url empty, or expected_checksum_sha256 malformed.
+//   - 400 unsupported_format — format != "qcow2" or source_path set.
+//   - 404 not_found — pool_name does not match a configured pool.
 //   - 500 internal — unexpected manager failure.
 func (h *Handler) ImportImage(w http.ResponseWriter, r *http.Request) {
 	poolName := chi.URLParam(r, "pool_name")
@@ -132,14 +132,14 @@ func (h *Handler) ImportImage(w http.ResponseWriter, r *http.Request) {
 
 // DeleteImage handles DELETE /v1/storage-pools/{pool_name}/images/{checksum}.
 //
-// Synchronous, idempotent — 204 whether или not the file was present
+// Synchronous, idempotent — 204 whether or not the file was present
 // (matches the CP-side agentclient.DeleteImage contract, which
-// collapses 204 / 404 к nil так that а stale row removal stays safe
+// collapses 204 / 404 to nil so that a stale row removal stays safe
 // under agent-side manual cleanup).
 //
 // Errors:
-//   - 400 validation_failed — pool_name empty или checksum malformed.
-//   - 404 not_found — pool_name does not match а configured pool.
+//   - 400 validation_failed — pool_name empty or checksum malformed.
+//   - 404 not_found — pool_name does not match a configured pool.
 //   - 500 internal — unexpected filesystem failure.
 func (h *Handler) DeleteImage(w http.ResponseWriter, r *http.Request) {
 	poolName := chi.URLParam(r, "pool_name")
@@ -172,14 +172,14 @@ func (h *Handler) DeleteImage(w http.ResponseWriter, r *http.Request) {
 
 // ListImages handles GET /v1/storage-pools/{pool_name}/images.
 //
-// First-cut pagination returns the entire inventory в `data` с
+// First-cut pagination returns the entire inventory in `data` with
 // `meta.next_cursor = null`. ROADMAP entry "agent storage_images list
 // — cursor pagination" tracks the deferred cursor implementation;
 // CP-side agentclient.ListImages handles null next_cursor gracefully.
 //
 // Errors:
 //   - 400 validation_failed — pool_name is empty.
-//   - 404 not_found — pool_name does not match а configured pool.
+//   - 404 not_found — pool_name does not match a configured pool.
 //   - 500 internal — filesystem failure walking templates/.
 func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 	poolName := chi.URLParam(r, "pool_name")

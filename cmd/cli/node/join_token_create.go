@@ -14,21 +14,21 @@ import (
 )
 
 // newJoinTokenCreateCommand builds `otherix node join-token create`.
-// Mints а fresh token bundle и prints it exactly once.
+// Mints a fresh token bundle and prints it exactly once.
 func newJoinTokenCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Mint а fresh join token (admin only).",
-		Long: `Mints а new bootstrap token. Output is the token bundle —
+		Short: "Mint a fresh join token (admin only).",
+		Long: `Mints a new bootstrap token. Output is the token bundle —
 plaintext token + active cluster CA fingerprint — returned exactly
-once. Save BOTH NOW; the server stores only sha256(token) и
+once. Save BOTH NOW; the server stores only sha256(token) and
 plaintext cannot be retrieved.
 
-Use --node-name к bind the token к а specific node identity
-(single-use only). Omit --node-name и pass --max-uses=N (or
-leave unset for unlimited) к mint а fleet-bootstrap token.
+Use --node-name to bind the token to a specific node identity
+(single-use only). Omit --node-name and pass --max-uses=N (or
+leave unset for unlimited) to mint a fleet-bootstrap token.
 
-Pass token + fingerprint к the agent via:
+Pass token + fingerprint to the agent via:
   OTHERIX_BOOTSTRAP__TOKEN=<token>
   OTHERIX_BOOTSTRAP__CA_FINGERPRINT=<fingerprint>
 (double underscore: koanf env-nesting separator)
@@ -41,7 +41,7 @@ Examples:
 	}
 	cmd.Flags().Duration(flagTTL, defaultTokenTTL, "token validity duration (1m..24h)")
 	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = unlimited within TTL)")
-	cmd.Flags().String(flagNodeName, "", "bind token к а specific node identity (forces single-use)")
+	cmd.Flags().String(flagNodeName, "", "bind token to a specific node identity (forces single-use)")
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	return cmd
 }
@@ -60,7 +60,7 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 	}
 
 	if ttl < time.Minute || ttl > 24*time.Hour {
-		return fmt.Errorf("validation_failed: --ttl must be в [1m, 24h]")
+		return fmt.Errorf("validation_failed: --ttl must be in [1m, 24h]")
 	}
 
 	req := cpclient.CreateJoinTokenRequest{}
@@ -78,7 +78,7 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 		req.IntendedNodeName = &nodeName
 		// Pre-bound tokens are single-use by construction. CLI sets
 		// max_uses=1 explicitly so the request body is self-describing
-		// и the server-side validator accepts it.
+		// and the server-side validator accepts it.
 		one := int32(1)
 		req.MaxUses = &one
 	}
@@ -101,7 +101,7 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// printTokenBundle renders the bundle в the block-style layout:
+// printTokenBundle renders the bundle in the block-style layout:
 // prominent plaintext + fingerprint + Save-BOTH-NOW warning + expiry
 // / max-uses metadata.
 func printTokenBundle(cmd *cobra.Command, resp cpclient.CreateJoinTokenResponse, ttl time.Duration) {
@@ -114,6 +114,6 @@ func printTokenBundle(cmd *cobra.Command, resp cpclient.CreateJoinTokenResponse,
 	printf(cmd, "Expires: %s (TTL: %s).\n", resp.ExpiresAt, ttl)
 	printf(cmd, "Max uses: %s.\n", maxUsesLabel(resp.MaxUses))
 	if resp.IntendedNodeName != nil {
-		printf(cmd, "Bound к node-name: %s (single-use).\n", *resp.IntendedNodeName)
+		printf(cmd, "Bound to node-name: %s (single-use).\n", *resp.IntendedNodeName)
 	}
 }

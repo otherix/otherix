@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-# Distroless image for otherix-api. The control plane is а single
-# binary now — placement runs in-process под store.LockKeyPlacement,
+# Distroless image for otherix-api. The control plane is a single
+# binary now — placement runs in-process under store.LockKeyPlacement,
 # reconcilers run as river periodic workers inside the same process.
 ARG GO_VERSION=1.26.3
 

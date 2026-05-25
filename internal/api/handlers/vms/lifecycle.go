@@ -22,18 +22,18 @@ import (
 
 // syncLifecycleClient is the narrow agentclient surface the sync
 // lifecycle handlers depend on. *agentclient.Client satisfies it
-// structurally; tests substitute а stub by passing а handler
-// constructed с the stub through the public Handler factory.
+// structurally; tests substitute a stub by passing a handler
+// constructed with the stub through the public Handler factory.
 type syncLifecycleClient interface {
 	PauseVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (agentclient.AgentVM, error)
 	ResumeVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (agentclient.AgentVM, error)
 	ResetVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (agentclient.AgentVM, error)
 }
 
-// LifecycleDeps is the dependency bundle the api binary supplies к
+// LifecycleDeps is the dependency bundle the api binary supplies to
 // the Handler so the sync lifecycle handlers (Pause / Resume /
-// Reset) can dispatch к the pinned agent. Kept separate from the
-// async-handler deps so test wiring can plug а fakeSyncLifecycle
+// Reset) can dispatch to the pinned agent. Kept separate from the
+// async-handler deps so test wiring can plug a fakeSyncLifecycle
 // client without touching the river-backed create / delete seams.
 type LifecycleDeps struct {
 	AgentClient syncLifecycleClient
@@ -63,7 +63,7 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 
 // syncOp enumerates the three sync lifecycle actions. Drives both
 // the agentclient method dispatch and the post-success phase the
-// CP writes к vm_runtime.
+// CP writes to vm_runtime.
 type syncOp int
 
 const (
@@ -87,7 +87,7 @@ func (op syncOp) label() string {
 }
 
 // resultPhase returns the vm_runtime.phase value the CP writes after
-// а successful action. Reset is а runtime-identity-preserving reboot
+// a successful action. Reset is a runtime-identity-preserving reboot
 // so phase stays running.
 func (op syncOp) resultPhase() store.VMPhase {
 	switch op {
@@ -102,9 +102,9 @@ func (op syncOp) resultPhase() store.VMPhase {
 	}
 }
 
-// runSyncLifecycle is the shared engine для Pause / Resume / Reset.
+// runSyncLifecycle is the shared engine for Pause / Resume / Reset.
 // Sequence: resolve VM by name → ownership check → resolve owning
-// node → POST к agent → update vm_runtime.phase → re-project the
+// node → POST to agent → update vm_runtime.phase → re-project the
 // VM view from the freshly written runtime row. Returns 200 + VM.
 func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op syncOp) {
 	if h.lifecycle.AgentClient == nil {
@@ -172,9 +172,9 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 	response.WriteJSON(w, r, http.StatusOK, toView(vm, runtime, names))
 }
 
-// dispatchSyncOp dispatches к the correct agentclient method based
+// dispatchSyncOp dispatches to the correct agentclient method based
 // on op. Centralised so writeLifecycleError can stay table-driven
-// без а per-op switch.
+// without a per-op switch.
 func (h *Handler) dispatchSyncOp(
 	ctx context.Context, op syncOp, endpoint, vmName, idemKey string,
 ) (agentclient.AgentVM, error) {
@@ -191,9 +191,9 @@ func (h *Handler) dispatchSyncOp(
 }
 
 // writeLifecycleError maps the in-flight error from runSyncLifecycle
-// к the standard envelope. Agent 404 surfaces as 404 not_found, 409
+// to the standard envelope. Agent 404 surfaces as 404 not_found, 409
 // passes through verbatim (invalid-state preconditions), other
-// agent codes collapse к 500.
+// agent codes collapse to 500.
 func writeLifecycleError(w http.ResponseWriter, r *http.Request, log interface {
 	ErrorContext(ctx context.Context, msg string, args ...any)
 }, op syncOp, err error,

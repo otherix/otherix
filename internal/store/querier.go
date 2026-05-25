@@ -13,10 +13,10 @@ import (
 
 type Querier interface {
 	// Cluster-wide advisory locks. Keys are dispensed by internal/store/locks.go
-	// so callers reference а typed constant rather than а raw integer. All
+	// so callers reference a typed constant rather than a raw integer. All
 	// locks below are transaction-scoped (pg_advisory_xact_lock) — callers
-	// MUST acquire them inside an InTxWithTx callback и MUST NOT use them
-	// outside а transaction (autocommit acquires + releases on the same
+	// MUST acquire them inside an InTxWithTx callback and MUST NOT use them
+	// outside a transaction (autocommit acquires + releases on the same
 	// statement, which serializes nothing). See locks.go for the namespace
 	// contract.
 	// Serializes VM placement decisions cluster-wide. Acquired inside the
@@ -34,7 +34,7 @@ type Querier interface {
 	// Cancel a task only while it is still pending. Returns the updated
 	// row when status was pending; returns pgx.ErrNoRows for any other
 	// state — the caller maps that to a 409 (running cancel is deferred
-	// к future work; terminal cancel is idempotent-409).
+	// to future work; terminal cancel is idempotent-409).
 	CancelTaskIfPending(ctx context.Context, id uuid.UUID) (Task, error)
 	// Clears the cluster default-pool reference. VM create without --pool
 	// afterwards returns default_pool_not_set until a new default is set.
@@ -82,9 +82,9 @@ type Querier interface {
 	// does not satisfy the precondition.
 	CountAdmins(ctx context.Context) (int64, error)
 	// Used by Step 2 redemption to enforce max_uses + by the get handler
-	// to surface consumption_count on а single-row lookup.
+	// to surface consumption_count on a single-row lookup.
 	CountJoinTokenConsumptions(ctx context.Context, joinTokenID uuid.UUID) (int64, error)
-	// Counts VMs intended к run on the given node. Used by the placement
+	// Counts VMs intended to run on the given node. Used by the placement
 	// scheduler for Least-VM-count tie-breaking. Counted by
 	// vms.pinned_node_id (intent) rather than vm_runtime.current_node_id
 	// (observed) so a burst of concurrent creates targeting the same
@@ -136,7 +136,7 @@ type Querier interface {
 	CountVMRuntimeOnNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	// Distinct-VM count for a given storage_pool_id, used by
 	// storage_pools.delete to refuse deletion of pools backing live VMs.
-	// Counts via vm_disks (the only place pool_id lives для a vm) and
+	// Counts via vm_disks (the only place pool_id lives for a vm) and
 	// excludes soft-deleted disks AND soft-deleted VMs.
 	CountVMsByPool(ctx context.Context, storagePoolID uuid.UUID) (int64, error)
 	// Precheck before DELETE /v1/firmwares/{id}: counts active vms that
@@ -145,32 +145,32 @@ type Querier interface {
 	// ON DELETE RESTRICT, so this check also avoids the SQL-level error
 	// path; the handler surfaces 409 with a typed payload instead.
 	CountVMsForFirmware(ctx context.Context, firmwareID uuid.UUID) (int64, error)
-	// Inserts agent cert metadata after Step 2 redemption signs а CSR.
-	// The cert PEM itself is NOT stored — returned к the agent в the
+	// Inserts agent cert metadata after Step 2 redemption signs a CSR.
+	// The cert PEM itself is NOT stored — returned to the agent in the
 	// redemption response, agent persists locally on disk. CP keeps only
 	// the metadata (serial, fingerprint, subject DN, validity) for
-	// AgentMTLS fingerprint lookup и future revocation tracking. The
+	// AgentMTLS fingerprint lookup and future revocation tracking. The
 	// caller passes serial as DER big-endian bytes (big.Int.Bytes() of
 	// the cert's SerialNumber).
 	CreateAgentCert(ctx context.Context, arg CreateAgentCertParams) (AgentCert, error)
 	CreateApiToken(ctx context.Context, arg CreateApiTokenParams) (ApiToken, error)
 	// Idempotent at the row level via the uq_ca_certs_active partial
-	// unique index — а second active row insert returns 23505, which the
-	// CA bootstrap hook traps к fetch the winner race-
+	// unique index — a second active row insert returns 23505, which the
+	// CA bootstrap hook traps to fetch the winner race-
 	// safety semantics.
 	CreateCACert(ctx context.Context, arg CreateCACertParams) (CaCert, error)
 	// Identity-and-flag columns only. The CP API treats firmwares as flat
 	// metadata records — per-node availability lives in node_firmwares and
 	// is populated by the future heartbeat receiver, not by this query.
 	CreateFirmware(ctx context.Context, arg CreateFirmwareParams) (Firmware, error)
-	// Persists а freshly minted join token. Plaintext is never stored —
+	// Persists a freshly minted join token. Plaintext is never stored —
 	// the caller hashes via auth.HashToken before invoking this query.
 	// intended_node_name + max_uses are validated at the API edge AND by
 	// SQL CHECK constraints (defense-in-depth).
 	CreateJoinToken(ctx context.Context, arg CreateJoinTokenParams) (JoinToken, error)
-	// Step 2 dependency: redemption handler inserts а consumption row в
+	// Step 2 dependency: redemption handler inserts a consumption row in
 	// the same TX as agent_certs INSERT + optional node UPSERT. Pre-
-	// declared в Step 1 so the signature locks early и Step 2 only
+	// declared in Step 1 so the signature locks early and Step 2 only
 	// changes call sites.
 	CreateJoinTokenConsumption(ctx context.Context, arg CreateJoinTokenConsumptionParams) (JoinTokenConsumption, error)
 	// Caller materialises mtu to its API default (1500) when not supplied;
@@ -222,7 +222,7 @@ type Querier interface {
 	// names.
 	// Inserts a new vms row. Caller supplies the id explicitly (unified
 	// UUID, CP mints / agent uses). desired_phase defaults to 'running'
-	// so the operator's "create" intent maps к "VM should run" without a
+	// so the operator's "create" intent maps to "VM should run" without a
 	// separate state transition.
 	CreateVM(ctx context.Context, arg CreateVMParams) (VM, error)
 	// vm_disks queries — Phase A foundations. The vms table itself does
@@ -234,18 +234,18 @@ type Querier interface {
 	// pinned to one storage_pool. CountVMsByPool joins through vm_disks
 	// to support the storage_pools.delete extended-refusal check (Phase B).
 	// Inserts a single disk row for a vm. Phase B vm.create handler invokes
-	// this once per VM (single-disk MVP). Multi-disk callers loop с distinct
+	// this once per VM (single-disk MVP). Multi-disk callers loop with distinct
 	// device_order values.
 	CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VMDisk, error)
-	// Future rotation step (not invoked в Step 1). Marks every active row
-	// inactive so а new active row can be inserted under the partial
-	// unique index. Held в Step 1 как Step 2/3 dependency.
+	// Future rotation step (not invoked in Step 1). Marks every active row
+	// inactive so a new active row can be inserted under the partial
+	// unique index. Held in Step 1 as Step 2/3 dependency.
 	DeactivateCACerts(ctx context.Context) error
 	// Drops templates.derived_vm_count by one. Called from VMDeleteWorker's
 	// success projection inside the same InTx as the soft-delete chain.
 	// The decrement is a guarded UPDATE — `where deleted_at is null and
 	// derived_vm_count > 0` — so a stale call against a soft-deleted
-	// template OR a counter that has already drifted к zero is a silent
+	// template OR a counter that has already drifted to zero is a silent
 	// no-op rather than a 23514 check-constraint violation.
 	DecrementTemplateDerivedVMCount(ctx context.Context, id uuid.UUID) error
 	// Cleanup hook for the future maintenance loop. Not wired up yet.
@@ -281,9 +281,9 @@ type Querier interface {
 	// heartbeat carries up to a node's worth of VMs.
 	FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
 	// Returns the single active cluster CA row. /v1/ca handler uses this
-	// to project к the public ClusterCA view (cert_pem + fingerprint
+	// to project to the public ClusterCA view (cert_pem + fingerprint
 	// only — key_pem stays server-side). Step 2 CSR signing path uses
-	// this к load the signer keypair into memory at request time.
+	// this to load the signer keypair into memory at request time.
 	GetActiveCACert(ctx context.Context) (CaCert, error)
 	// Used by the authn middleware on every API-token request. Excludes
 	// revoked and expired tokens at the SQL layer — a hit means the token
@@ -324,19 +324,19 @@ type Querier interface {
 	//   4. After the wrapped handler finishes, Complete records the cached
 	//      response and flips state to 'completed'.
 	GetIdempotencyKey(ctx context.Context, key string) (IdempotencyKey, error)
-	// Non-locking read for callers that need а token row outside an
-	// exclusive transaction. Filters expired tokens at SQL так а fresh
-	// read never returns а usable-but-expired row. Step 2 redemption
-	// uses GetJoinTokenByHashForUpdate instead (acquires а row lock for
+	// Non-locking read for callers that need a token row outside an
+	// exclusive transaction. Filters expired tokens at SQL so a fresh
+	// read never returns a usable-but-expired row. Step 2 redemption
+	// uses GetJoinTokenByHashForUpdate instead (acquires a row lock for
 	// race-safe max_uses enforcement). pgx.ErrNoRows ⇒ ErrTokenInvalid.
 	GetJoinTokenByHash(ctx context.Context, tokenHash []byte) (JoinToken, error)
 	// Row-locking variant used by the Step 2 redemption handler. Acquires
-	// а FOR UPDATE lock so concurrent redemptions on the same token
+	// a FOR UPDATE lock so concurrent redemptions on the same token
 	// queue, then race-fairly observe each other's consumption count.
 	// Preserves the expires_at filter — an already-expired token surfaces
-	// as ErrNoRows и no lock is held. pgx.ErrNoRows ⇒ ErrTokenInvalid.
+	// as ErrNoRows and no lock is held. pgx.ErrNoRows ⇒ ErrTokenInvalid.
 	GetJoinTokenByHashForUpdate(ctx context.Context, tokenHash []byte) (JoinToken, error)
-	// Includes expired rows; the caller (admin handler) decides what к do.
+	// Includes expired rows; the caller (admin handler) decides what to do.
 	GetJoinTokenByID(ctx context.Context, id uuid.UUID) (JoinToken, error)
 	GetNetworkByID(ctx context.Context, id uuid.UUID) (Network, error)
 	// Case-insensitive on lower(name) to match the uq_networks_name
@@ -364,20 +364,20 @@ type Querier interface {
 	// Pre-flight read for the heartbeat receiver: fetches the immutable
 	// and policy-relevant fields needed for the architecture / status
 	// guards plus the current pressure state used by the transition logic.
-	// Both memory and system_disk pressure live на the row; the receiver
+	// Both memory and system_disk pressure live on the row; the receiver
 	// reads both inside the same transaction as the metric writes.
 	// Excludes soft-deleted rows (deleted_at IS NOT NULL → 404, as opposed
 	// to status='gone' which surfaces as 409 node_gone).
 	GetNodeForHeartbeat(ctx context.Context, id uuid.UUID) (GetNodeForHeartbeatRow, error)
 	// Pre-read for the scan worker's pool disk pressure transition.
 	// Mirrors GetNodeForHeartbeat's pressure-state read on the node side.
-	// Excludes soft-deleted rows — а scan that lands после the pool is
-	// soft-deleted is а no-op overall.
+	// Excludes soft-deleted rows — a scan that lands after the pool is
+	// soft-deleted is a no-op overall.
 	GetPoolDiskPressureState(ctx context.Context, id uuid.UUID) (GetPoolDiskPressureStateRow, error)
 	// View-backed read returning every storage_pools column plus the
 	// `available_bytes_effective` synthesized by pool_effective_capacity.
 	// Consumed by the GET-by-id handler so operator-facing responses
-	// surface both raw и effective bytes.
+	// surface both raw and effective bytes.
 	GetPoolEffectiveByID(ctx context.Context, id uuid.UUID) (PoolEffectiveCapacity, error)
 	// Returns the row regardless of revocation state. The caller inspects
 	// revoked_at to detect replay (sentinel for token theft) and expires_at
@@ -409,18 +409,18 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetVMByID(ctx context.Context, id uuid.UUID) (VM, error)
-	// Used by the create handler для globally-unique-name precheck before
+	// Used by the create handler for globally-unique-name precheck before
 	// the insert (the unique partial index would catch it as a 23505 too,
 	// but a friendly 409 with the existing id is preferable). Also backs
 	// ResolveVM in the name-based resolver (internal/api/handlers/internal/
-	// resolver) — every GET / DELETE на /v1/vms/{id} folds к this query when
+	// resolver) — every GET / DELETE on /v1/vms/{id} folds to this query when
 	// the identifier is not a UUID. The lookup is case-insensitive to match
 	// uq_vms_name on lower(name); the row preserves the operator's chosen
 	// casing.
 	GetVMByName(ctx context.Context, name string) (VM, error)
 	// Read the runtime snapshot for a VM, used by GET /v1/vms/{id} to
 	// project a combined desired+observed status. Returns ErrNoRows when
-	// the worker has not yet upserted (i.e. the VM is still в
+	// the worker has not yet upserted (i.e. the VM is still in
 	// desired_phase='running' but the agent hasn't acknowledged).
 	GetVMRuntime(ctx context.Context, vmID uuid.UUID) (VMRuntime, error)
 	// Bumps templates.derived_vm_count by one. Called from VMCreateWorker's
@@ -436,9 +436,9 @@ type Querier interface {
 	// Caller passes limit_count = clamp(limit, 1, 200).
 	ListApiTokensByUser(ctx context.Context, arg ListApiTokensByUserParams) ([]ApiToken, error)
 	// Diagnostic-only sibling for pool disk pressure. Returns pool
-	// instances для the given name whose own disk_pressure flag is set —
+	// instances for the given name whose own disk_pressure flag is set —
 	// independent of the owning node's pressure status. Pool-scoped
-	// pressure is the only condition that excludes а pool independently
+	// pressure is the only condition that excludes a pool independently
 	// of its node.
 	ListDiskPressuredPoolsByName(ctx context.Context, name string) ([]ListDiskPressuredPoolsByNameRow, error)
 	// Joined query used by the scheduler at VM placement time: enumerates
@@ -447,8 +447,8 @@ type Querier interface {
 	// effective-availability row in a single round-trip.
 	//
 	// Sources pool columns from pool_effective_capacity so the scheduler
-	// reads `available_bytes_effective` — pool availability с pending-VM-
-	// disk accounting. Node columns come от node_effective_availability so
+	// reads `available_bytes_effective` — pool availability with pending-VM-
+	// disk accounting. Node columns come from node_effective_availability so
 	// `cpu_cores_effective` / `memory_effective_mib` are available with
 	// pending-VM accounting too. Both views are supersets of their
 	// underlying tables, so the eligibility filters
@@ -459,7 +459,7 @@ type Querier interface {
 	// Optional ?architecture and ?type filters. Cursor pagination.
 	ListFirmwares(ctx context.Context, arg ListFirmwaresParams) ([]Firmware, error)
 	// Cursor pagination. Chronologically-ordered audit
-	// entries for а single token. Empty until Step 2 ships redemption.
+	// entries for a single token. Empty until Step 2 ships redemption.
 	ListJoinTokenConsumptions(ctx context.Context, arg ListJoinTokenConsumptionsParams) ([]JoinTokenConsumption, error)
 	// Cursor pagination. include_expired toggles whether
 	// expired rows surface (default false; UI / scripts opt in). The
@@ -467,11 +467,11 @@ type Querier interface {
 	// has low cardinality, no perf concern.
 	ListJoinTokens(ctx context.Context, arg ListJoinTokensParams) ([]ListJoinTokensRow, error)
 	// Diagnostic query consumed by the scheduler on the failure path
-	// (`len(eligible) == 0` for а pool that does exist somewhere). Returns
+	// (`len(eligible) == 0` for a pool that does exist somewhere). Returns
 	// pool instances for the given name whose owning node would have been
 	// eligible except for an active **memory** pressure condition.
 	// Same node-status / cordoned / deleted_at filters as
-	// ListEligiblePoolsByName, но the memory pressure filter is inverted
+	// ListEligiblePoolsByName, but the memory pressure filter is inverted
 	// (memory_pressure_since IS NOT NULL).
 	ListMemoryPressuredCandidatesByName(ctx context.Context, name string) ([]ListMemoryPressuredCandidatesByNameRow, error)
 	// Optional ?type filter (only 'bridge' is currently a meaningful value
@@ -496,16 +496,16 @@ type Querier interface {
 	// View-backed variant of ListNodes used by GET /v1/nodes. Returns the
 	// same row shape as ListNodes plus cpu_cores_effective /
 	// memory_effective_mib so the operator can compare raw heartbeat
-	// availability vs the scheduler's view in а single response.
-	// Filters / pagination semantics identical к ListNodes.
+	// availability vs the scheduler's view in a single response.
+	// Filters / pagination semantics identical to ListNodes.
 	ListNodesEffective(ctx context.Context, arg ListNodesEffectiveParams) ([]NodeEffectiveAvailability, error)
-	// View-backed parallel к ListStoragePools — same optional ?node_id /
-	// ?type filters и (created_at, id) cursor pagination,
-	// но every row carries `available_bytes_effective`. Soft-deleted rows
+	// View-backed parallel to ListStoragePools — same optional ?node_id /
+	// ?type filters and (created_at, id) cursor pagination,
+	// but every row carries `available_bytes_effective`. Soft-deleted rows
 	// excluded by construction (view itself emits no rows when raw is
 	// soft-deleted — see the WHERE clause on the view).
 	ListPoolsEffective(ctx context.Context, arg ListPoolsEffectiveParams) ([]PoolEffectiveCapacity, error)
-	// View-backed parallel к ListStoragePoolsByName. Drives the
+	// View-backed parallel to ListStoragePoolsByName. Drives the
 	// name-aggregated `GET /v1/storage-pools/{name}` projection so each
 	// per-node instance carries effective bytes.
 	ListPoolsEffectiveByName(ctx context.Context, name string) ([]PoolEffectiveCapacity, error)
@@ -513,8 +513,8 @@ type Querier interface {
 	// status, excluding pools that already have an in-flight scan task
 	// (a `tasks` row of type `storage_pool.scan` in status pending or
 	// running referencing the pool). Drives the `storage_pool.scan_trigger`
-	// periodic worker: each tick fans out fresh scan tasks only к pools
-	// that need а refresh, leaving in-flight scans untouched. Ordering on
+	// periodic worker: each tick fans out fresh scan tasks only to pools
+	// that need a refresh, leaving in-flight scans untouched. Ordering on
 	// `p.id` is stable across ticks so log lines correlate predictably.
 	ListPoolsNeedingScan(ctx context.Context) ([]ListPoolsNeedingScanRow, error)
 	// Nodes whose last heartbeat is older than the supplied cutoff, or which
@@ -544,7 +544,7 @@ type Querier interface {
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
 	// Diagnostic-only sibling of ListMemoryPressuredCandidatesByName for
 	// the system-disk pressure condition.
-	// Returns pool instances on nodes flagged с system_disk_pressure_since
+	// Returns pool instances on nodes flagged with system_disk_pressure_since
 	// IS NOT NULL. Same eligibility predicates as the memory variant —
 	// only the inverted pressure filter differs.
 	ListSystemDiskPressuredCandidatesByName(ctx context.Context, name string) ([]ListSystemDiskPressuredCandidatesByNameRow, error)
@@ -605,7 +605,7 @@ type Querier interface {
 	// currently inactive (vm:read=any for every role) but kept for future
 	// restricted-role flows.
 	ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) ([]VM, error)
-	// Per-node VM desired-state inventory для HeartbeatResponse.declared_vms.
+	// Per-node VM desired-state inventory for HeartbeatResponse.declared_vms.
 	// Joins vms × vm_runtime on the runtime's current_node_id (D6 — current
 	// location, not pinned intent). Soft-deleted vms are excluded; runtime
 	// rows whose phase has reached 'gone' are excluded too (the VM is no
@@ -624,7 +624,7 @@ type Querier interface {
 	// firmware in the catalogue; the handler then skips the entry with a
 	// WARN log instead of auto-registering it.
 	LookupFirmwareByCatalog(ctx context.Context, arg LookupFirmwareByCatalogParams) (uuid.UUID, error)
-	// Reconciler step that demotes stale 'ready' or 'pending' rows к
+	// Reconciler step that demotes stale 'ready' or 'pending' rows to
 	// 'unreachable'. 'cordoned' and 'draining' are operator-pinned states
 	// and stay put even when heartbeats lapse — the operator deliberately
 	// isolated the node, so liveness is not the signal that flips it.
@@ -632,11 +632,11 @@ type Querier interface {
 	// Returns the affected rows so callers can log id + name + the stale
 	// timestamp without an extra round-trip.
 	MarkNodesUnreachable(ctx context.Context, staleBefore time.Time) ([]MarkNodesUnreachableRow, error)
-	// Used by the Step 2 redemption handler к detect node-name conflicts
-	// before signing а fresh cert. "Active" means revoked_at IS NULL —
-	// а revoked cert does NOT block reuse of the node row (the operator
+	// Used by the Step 2 redemption handler to detect node-name conflicts
+	// before signing a fresh cert. "Active" means revoked_at IS NULL —
+	// a revoked cert does NOT block reuse of the node row (the operator
 	// already invalidated it, fresh bootstrap is the recovery path).
-	// Returns false когда either no cert row exists for the node OR all
+	// Returns false when either no cert row exists for the node OR all
 	// existing certs have been revoked.
 	NodeHasActiveCert(ctx context.Context, nodeID uuid.UUID) (bool, error)
 	// Force-delete step. Marks every vm_runtime row currently on the node
@@ -644,7 +644,7 @@ type Querier interface {
 	// intentionally NOT touched (migration 00003): the user still wants
 	// whatever they wanted before; only the observed runtime is affected.
 	OrphanVMRuntimeOnNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
-	// Reconciler step that promotes rows к 'ready' once a fresh heartbeat
+	// Reconciler step that promotes rows to 'ready' once a fresh heartbeat
 	// lands. Two source states qualify: 'pending' (first heartbeat after
 	// registration) and 'unreachable' (recovery after a network blip).
 	// 'cordoned' and 'draining' stay put — only the operator clears those.
@@ -662,8 +662,8 @@ type Querier interface {
 	// the user-delete handler so a soft-deleted user cannot continue to
 	// authenticate via a long-lived API token.
 	RevokeApiTokensForUser(ctx context.Context, userID uuid.UUID) error
-	// Sets expires_at to the lesser of its current value и now() — а
-	// token already в the past stays where it is, а live token jumps к
+	// Sets expires_at to the lesser of its current value and now() — a
+	// token already in the past stays where it is, a live token jumps to
 	// the deadline. Idempotent; repeat calls produce no further effect.
 	RevokeJoinToken(ctx context.Context, id uuid.UUID) error
 	// Idempotent: re-revoking a token is a no-op.
@@ -672,7 +672,7 @@ type Querier interface {
 	// is presented at /v1/auth/refresh — the canonical signal of token theft.
 	RevokeRefreshTokenFamily(ctx context.Context, familyID uuid.UUID) error
 	// Sets the cluster's default pool name. The handler validates beforehand
-	// that at least one pool instance с this name exists.
+	// that at least one pool instance with this name exists.
 	SetDefaultPoolName(ctx context.Context, defaultPoolName *string) error
 	// Updates only `visibility` (and `updated_at` via the existing trigger).
 	// The handler runs a SELECT-then-conditional-UPDATE: when the requested
@@ -703,10 +703,10 @@ type Querier interface {
 	// Soft delete sets deleted_at; the unique partial index on (name) where
 	// deleted_at is null releases the name immediately so a fresh create
 	// with the same name can succeed. The vm_runtime row (if any) is
-	// handled separately by DeleteVMRuntime в the worker's cleanup phase.
+	// handled separately by DeleteVMRuntime in the worker's cleanup phase.
 	SoftDeleteVM(ctx context.Context, id uuid.UUID) error
-	// Bulk soft-delete every disk row attached к a VM. Called by the
-	// worker's vm.delete cleanup phase together с SoftDeleteVM. The
+	// Bulk soft-delete every disk row attached to a VM. Called by the
+	// worker's vm.delete cleanup phase together with SoftDeleteVM. The
 	// per-row deleted_at stamp keeps the on delete cascade behaviour of
 	// vm_disks.vm_id from removing rows that audit reads might still
 	// need.
@@ -746,7 +746,7 @@ type Querier interface {
 	// Persists the memory-pressure transition computed by the heartbeat
 	// receiver. Memory_pressure_since is NULL
 	// when the condition is not active; the count increments on every
-	// below-threshold observation и resets к 0 on an at-or-above-threshold
+	// below-threshold observation and resets to 0 on an at-or-above-threshold
 	// observation. Caller runs this inside the same transaction as
 	// UpdateNodeHeartbeat so the pressure state never drifts ahead of the
 	// raw metrics that determined it.
@@ -756,9 +756,9 @@ type Querier interface {
 	// callers pass cordoned_at = NULL to clear it.
 	UpdateNodeStatus(ctx context.Context, arg UpdateNodeStatusParams) error
 	// Persists the system-disk pressure transition.
-	// Mirror of UpdateNodeMemoryPressure: NULL pressure_since когда condition
+	// Mirror of UpdateNodeMemoryPressure: NULL pressure_since when condition
 	// is not active; count increments on each below-threshold observation,
-	// resets к 0 on the first at-or-above observation. Runs inside the same
+	// resets to 0 on the first at-or-above observation. Runs inside the same
 	// transaction as UpdateNodeHeartbeat.
 	UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error
 	// Persists the pool disk pressure transition.
@@ -774,12 +774,12 @@ type Querier interface {
 	UpdateStoragePool(ctx context.Context, arg UpdateStoragePoolParams) (StoragePool, error)
 	// Applies the agent's reconciliation report for a single pool. Called
 	// by the heartbeat handler once per reported pool per heartbeat. The
-	// match key is (node_id, lower(name)) — а pool name maps к multiple
+	// match key is (node_id, lower(name)) — a pool name maps to multiple
 	// rows cluster-wide, but only one per node. Soft-deleted rows are
 	// skipped silently (no rows affected): operator deleted the pool
-	// mid-tick; the agent will drop it от observed state on the next
-	// reconciliation cycle. error is set к the empty string когда the
-	// agent reports success, NULL когда the status itself is not 'failed'.
+	// mid-tick; the agent will drop it from observed state on the next
+	// reconciliation cycle. error is set to the empty string when the
+	// agent reports success, NULL when the status itself is not 'failed'.
 	UpdateStoragePoolReconciliation(ctx context.Context, arg UpdateStoragePoolReconciliationParams) error
 	// Stamps the agent-side task id on the CP task row. Called by an
 	// insert-driven agent-saga worker after the agent's 202 response
@@ -812,35 +812,35 @@ type Querier interface {
 	// API-immutable. visibility is also absent: it moves only through
 	// SetTemplateVisibility.
 	UpdateTemplate(ctx context.Context, arg UpdateTemplateParams) (Template, error)
-	// Back-propagates the agent-computed image_checksum_sha256 onto а
+	// Back-propagates the agent-computed image_checksum_sha256 onto a
 	// template row that was registered without one (compute mode).
-	// The `image_checksum_sha256 is null` guard в the WHERE clause makes
+	// The `image_checksum_sha256 is null` guard in the WHERE clause makes
 	// this idempotent and race-safe:
 	//
 	//   - First successful compute-mode import for the template lands the
-	//     hash; subsequent imports (к other pools, OR re-imports к the same
+	//     hash; subsequent imports (to other pools, OR re-imports to the same
 	//     pool) become no-ops because the column is no longer NULL.
-	//   - Two concurrent compute-mode imports к different pools that happen
-	//     к compute different bytes (corrupted download) cannot both win:
+	//   - Two concurrent compute-mode imports to different pools that happen
+	//     to compute different bytes (corrupted download) cannot both win:
 	//     whichever transaction commits first wins; the second's UPDATE
-	//     affects 0 rows и is silently absorbed.
+	//     affects 0 rows and is silently absorbed.
 	//
-	// The :exec return shape is acceptable because the worker treats а
-	// failed update as а warning, not а terminal-fail signal — the
+	// The :exec return shape is acceptable because the worker treats a
+	// failed update as a warning, not a terminal-fail signal — the
 	// storage_images row is already authoritative for the (template, pool)
 	// combination.
 	UpdateTemplateImageChecksumIfNull(ctx context.Context, arg UpdateTemplateImageChecksumIfNullParams) error
 	// Caller merges patch with current values; this query updates the lot.
 	// updated_at is bumped by the trg_set_updated_at trigger.
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
-	// Used by the worker to flip desired_phase к 'deleted' as the user-visible
+	// Used by the worker to flip desired_phase to 'deleted' as the user-visible
 	// delete starts (before the agent acknowledges teardown). Clean read-side
 	// semantics: desired_phase reflects user intent; vm_runtime.phase reflects
 	// observed.
 	UpdateVMDesiredPhase(ctx context.Context, arg UpdateVMDesiredPhaseParams) error
 	// Single-field phase patch used by the synchronous VM lifecycle
 	// handlers (pause / resume / reset). The CP-side handler invokes
-	// this after the agent confirms а QMP-driven transition so the
+	// this after the agent confirms a QMP-driven transition so the
 	// next projected `status` reflects the new state without waiting
 	// for the heartbeat reconciler to catch up. last_observed_at is
 	// stamped to keep the wire's observed-state freshness signal
@@ -852,11 +852,11 @@ type Querier interface {
 	// so race-free.
 	UpsertNodeFirmware(ctx context.Context, arg UpsertNodeFirmwareParams) error
 	// Scan-result projection. Agent-reported capacity /
-	// availability merge onto the row; handler-driven CRUD никогда не
-	// writes these columns. The scan worker pairs this с
+	// availability merge onto the row; handler-driven CRUD never not
+	// writes these columns. The scan worker pairs this with
 	// GetPoolDiskPressureState + UpdatePoolDiskPressure inside the same
 	// transaction so pool disk pressure stays
-	// consistent с the metrics that determined it.
+	// consistent with the metrics that determined it.
 	UpsertStoragePoolUsage(ctx context.Context, arg UpsertStoragePoolUsageParams) error
 	// Heartbeat-driven projection of a per-VM runtime snapshot. Conflict
 	// on the primary key (vm_id) resolves to UPDATE; the heartbeat is

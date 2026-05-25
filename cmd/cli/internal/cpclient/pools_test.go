@@ -139,7 +139,7 @@ func TestGetPoolByID_404(t *testing.T) {
 	c := fixtureClient(t, srv)
 	_, err := c.GetPoolByID(context.Background(), uuid.New())
 	if err == nil {
-		t.Fatalf("expected error для 404")
+		t.Fatalf("expected error for 404")
 	}
 	var ae *cpclient.APIError
 	if !errors.As(err, &ae) {
@@ -506,7 +506,7 @@ func TestDeletePool_409WithoutBlockingResources(t *testing.T) {
 	err := c.DeletePool(context.Background(), "anything")
 	var blocked *cpclient.ErrPoolBlocked
 	if errors.As(err, &blocked) {
-		t.Fatalf("err = %v, want plain *APIError (no blocking_resources в payload)", err)
+		t.Fatalf("err = %v, want plain *APIError (no blocking_resources in payload)", err)
 	}
 	var apiErr *cpclient.APIError
 	if !errors.As(err, &apiErr) {

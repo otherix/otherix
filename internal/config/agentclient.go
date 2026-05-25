@@ -15,16 +15,16 @@ import (
 //
 // mTLS material (the CP's replica-specific leaf cert signed by the
 // cluster CA, plus the cluster CA itself) is NOT configured here.
-// Cert lifecycle is owned by а DB-backed LoadOrGenerateCPCert boot
+// Cert lifecycle is owned by a DB-backed LoadOrGenerateCPCert boot
 // hook on the api side: each replica auto-generates its own cert
-// from the cluster CA в DB и passes the material к
+// from the cluster CA in DB and passes the material to
 // agentclient.New(cfg, cert, ca). CLI tools (ping-agent, integration
-// tests) что don't have DB access use agentclient.LoadMaterialFromFiles
+// tests) that don't have DB access use agentclient.LoadMaterialFromFiles
 // instead.
 //
 // Enabled gates the constructor: the api binary skips client
-// construction entirely когда false (HTTP-only smoke loops). The
-// scan executor and other river workers что dispatch to agents
+// construction entirely when false (HTTP-only smoke loops). The
+// scan executor and other river workers that dispatch to agents
 // require enabled=true.
 type AgentClientConfig struct {
 	Enabled         bool          `koanf:"enabled"`
@@ -35,7 +35,7 @@ type AgentClientConfig struct {
 
 // Validate enforces the agent-client invariants. Disabled configs
 // skip every check so dev / test environments still load. When
-// enabled, polling parameters must be strictly positive и ordered
+// enabled, polling parameters must be strictly positive and ordered
 // (PollMaxInterval >= PollInterval).
 func (c AgentClientConfig) Validate() error {
 	if !c.Enabled {

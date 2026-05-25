@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// validBootstrap returns а BootstrapConfig that passes Validate. Tests
-// mutate а single field at а time so failure messages point clearly
+// validBootstrap returns a BootstrapConfig that passes Validate. Tests
+// mutate a single field at a time so failure messages point clearly
 // at the rule being exercised.
 func validBootstrap() BootstrapConfig {
 	return BootstrapConfig{
@@ -64,7 +64,7 @@ func TestBootstrapConfigValidate_TableOfFailures(t *testing.T) {
 		want string
 	}{
 		{
-			name: "both token и token_path",
+			name: "both token and token_path",
 			mut:  func(c *BootstrapConfig) { c.TokenPath = "/path" },
 			want: "mutually exclusive",
 		},
@@ -164,8 +164,8 @@ func TestBootstrapConfigValidate_TableOfFailures(t *testing.T) {
 	}
 }
 
-// AgentConfig no longer carries а Bootstrap field — bootstrap is а
-// separate subcommand с standalone flag validation. The runtime-config
+// AgentConfig no longer carries a Bootstrap field — bootstrap is a
+// separate subcommand with standalone flag validation. The runtime-config
 // Validate path therefore checks only the agent runtime invariants
 // (server, control_plane, migration).
 func TestAgentConfigValidate_RuntimeMinimumOK(t *testing.T) {

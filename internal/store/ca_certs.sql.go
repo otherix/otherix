@@ -34,8 +34,8 @@ type CreateCACertParams struct {
 }
 
 // Idempotent at the row level via the uq_ca_certs_active partial
-// unique index — а second active row insert returns 23505, which the
-// CA bootstrap hook traps к fetch the winner race-
+// unique index — a second active row insert returns 23505, which the
+// CA bootstrap hook traps to fetch the winner race-
 // safety semantics.
 func (q *Queries) CreateCACert(ctx context.Context, arg CreateCACertParams) (CaCert, error) {
 	row := q.db.QueryRow(ctx, createCACert,
@@ -64,9 +64,9 @@ const deactivateCACerts = `-- name: DeactivateCACerts :exec
 update ca_certs set active = false where active = true
 `
 
-// Future rotation step (not invoked в Step 1). Marks every active row
-// inactive so а new active row can be inserted under the partial
-// unique index. Held в Step 1 как Step 2/3 dependency.
+// Future rotation step (not invoked in Step 1). Marks every active row
+// inactive so a new active row can be inserted under the partial
+// unique index. Held in Step 1 as Step 2/3 dependency.
 func (q *Queries) DeactivateCACerts(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, deactivateCACerts)
 	return err
@@ -79,9 +79,9 @@ where active = true
 `
 
 // Returns the single active cluster CA row. /v1/ca handler uses this
-// to project к the public ClusterCA view (cert_pem + fingerprint
+// to project to the public ClusterCA view (cert_pem + fingerprint
 // only — key_pem stays server-side). Step 2 CSR signing path uses
-// this к load the signer keypair into memory at request time.
+// this to load the signer keypair into memory at request time.
 func (q *Queries) GetActiveCACert(ctx context.Context) (CaCert, error) {
 	row := q.db.QueryRow(ctx, getActiveCACert)
 	var i CaCert

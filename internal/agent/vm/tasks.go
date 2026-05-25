@@ -39,7 +39,7 @@ const (
 	// task. The TaskStore.Create call carries the pool's UUID through
 	// the `vmID` parameter — transitional reuse pending the broader
 	// taskView contract alignment (rename `VMID` → `ResourceID`, json
-	// `vm_id` → `resource_id`) tracked under contract-test parity в
+	// `vm_id` → `resource_id`) tracked under contract-test parity in
 	// ROADMAP.
 	TaskKindStoragePoolScan TaskKind = "storage_pool.scan"
 	// TaskKindStorageImageImport tracks a POST
@@ -86,10 +86,10 @@ func NewTaskStore() *TaskStore {
 }
 
 // Create allocates a new task ID and inserts the task in pending
-// status. Returns а **copy** of the task: the live pointer stays
+// status. Returns a **copy** of the task: the live pointer stays
 // inside the store and is mutated by Update under the store lock; the
-// caller's copy is а stable initial snapshot they can hand к the HTTP
-// layer (status="pending") без racing the goroutine that immediately
+// caller's copy is a stable initial snapshot they can hand to the HTTP
+// layer (status="pending") without racing the goroutine that immediately
 // transitions to "running" inside Update. Callers reuse only the ID
 // for the goroutine handle.
 func (s *TaskStore) Create(kind TaskKind, vmID uuid.UUID) *AgentTask {

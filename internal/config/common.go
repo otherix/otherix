@@ -55,10 +55,10 @@ func (c DatabaseConfig) Validate() error {
 // — the standard dev workflow runs the user listener only.
 //
 // mTLS material is NOT configured here: each api replica
-// auto-generates its own server cert от the cluster CA в DB via the
-// LoadOrGenerateCPCert boot hook. Operator manual override moves к
+// auto-generates its own server cert from the cluster CA in DB via the
+// LoadOrGenerateCPCert boot hook. Operator manual override moves to
 // the `cp_cert:` block (`cert_file` + `key_file`). Cluster CA always
-// loaded от DB. Legacy `cert_file` / `key_file` / `ca_file` fields
+// loaded from DB. Legacy `cert_file` / `key_file` / `ca_file` fields
 // under this block are removed outright (pre-prod squash window — no
 // production deploys carry them).
 type AgentServerConfig struct {

@@ -20,16 +20,16 @@ import (
 )
 
 // defaultRequestTimeout is the per-request budget when the caller has
-// not pinned one. Long enough to absorb а cold TLS handshake plus
-// the receiver's transaction (typical: ~50 ms), short enough that а
+// not pinned one. Long enough to absorb a cold TLS handshake plus
+// the receiver's transaction (typical: ~50 ms), short enough that a
 // slow CP cannot stall the loop indefinitely.
 const defaultRequestTimeout = 10 * time.Second
 
-// Client posts heartbeats over mTLS. Safe для concurrent use; the
+// Client posts heartbeats over mTLS. Safe for concurrent use; the
 // underlying *http.Transport pools connections, so back-to-back
 // heartbeats reuse the TLS session.
 //
-// The client identifies itself к the CP by node NAME (parsed от the
+// The client identifies itself to the CP by node NAME (parsed from the
 // cert CN at agent startup), not UUID. The heartbeat URL is
 // `/v1/nodes/{name}/heartbeat`.
 type Client struct {
@@ -50,7 +50,7 @@ type ClientConfig struct {
 	RequestTimeout time.Duration
 }
 
-// NewClient constructs а Client. Cert/key/CA paths are read at
+// NewClient constructs a Client. Cert/key/CA paths are read at
 // construction time so misconfiguration surfaces at agent boot, not
 // in the middle of the run loop.
 func NewClient(cfg ClientConfig) (*Client, error) {
@@ -88,9 +88,9 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 // Send posts the report to the CP and returns the parsed response.
 // Returns the HTTP status, the decoded response (including
-// declared_pools), и а non-nil error если the request fails before
-// getting а response or the response status is non-2xx (the body is
-// read and embedded в the error for diagnostics).
+// declared_pools), and a non-nil error if the request fails before
+// getting a response or the response status is non-2xx (the body is
+// read and embedded in the error for diagnostics).
 func (c *Client) Send(ctx context.Context, report Report) (int, *Response, error) {
 	body, err := json.Marshal(report)
 	if err != nil {
@@ -131,12 +131,12 @@ func (c *Client) Send(ctx context.Context, report Report) (int, *Response, error
 	return resp.StatusCode, &decoded, nil
 }
 
-// buildTLSConfig wires the mTLS material on disk into а *tls.Config.
+// buildTLSConfig wires the mTLS material on disk into a *tls.Config.
 // Errors surface at construction time per the no-half-configured-agent
 // rule.
 func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 	if cfg.CertPath == "" || cfg.KeyPath == "" {
-		return nil, fmt.Errorf("heartbeat client: cert_path и key_path are required")
+		return nil, fmt.Errorf("heartbeat client: cert_path and key_path are required")
 	}
 	if cfg.CACertPath == "" {
 		return nil, fmt.Errorf("heartbeat client: ca_cert_path is required")

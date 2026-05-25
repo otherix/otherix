@@ -15,15 +15,15 @@ import (
 
 // newPauseCommand wires `otherix vm pause <vm>` — synchronous per the
 // CP spec. The handler issues QMP `stop` against the pinned agent
-// and returns the refreshed VM с status=paused.
+// and returns the refreshed VM with status=paused.
 func newPauseCommand() *cobra.Command {
 	return newLifecycleCommand(
 		"pause",
 		"Pause a running VM (QMP stop, synchronous).",
 		`Sends POST /v1/vms/<vm>/pause to the Control Plane. The CP forwards
-к the pinned agent, which issues QMP `+"`stop`"+` к the QEMU process —
+to the pinned agent, which issues QMP `+"`stop`"+` to the QEMU process —
 vCPUs freeze, memory stays resident. Synchronous: the response
-carries the refreshed VM view с status=paused. desired_phase is
+carries the refreshed VM view with status=paused. desired_phase is
 unchanged. Re-pausing an already-paused VM returns 409 conflict.`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.VM, error) {
 			return c.PauseVM(ctx, name)
@@ -38,9 +38,9 @@ func newResumeCommand() *cobra.Command {
 		"resume",
 		"Resume a paused VM (QMP cont, synchronous).",
 		`Sends POST /v1/vms/<vm>/resume to the Control Plane. The CP forwards
-к the pinned agent, which issues QMP `+"`cont`"+` к the QEMU process —
-vCPUs unfreeze and the guest continues от where Pause left it.
-Synchronous: the response carries the refreshed VM view с
+to the pinned agent, which issues QMP `+"`cont`"+` to the QEMU process —
+vCPUs unfreeze and the guest continues from where Pause left it.
+Synchronous: the response carries the refreshed VM view with
 status=running. Re-resuming an already-running VM returns 409
 conflict.`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.VM, error) {
@@ -56,20 +56,20 @@ func newResetCommand() *cobra.Command {
 		"reset",
 		"Hard reset a running VM (QMP system_reset, synchronous).",
 		`Sends POST /v1/vms/<vm>/reset to the Control Plane. The CP forwards
-к the pinned agent, which issues QMP `+"`system_reset`"+` — equivalent
-к the physical reset button. The QEMU process keeps running and the
-guest OS reboots без notification, so an in-flight write may surface
+to the pinned agent, which issues QMP `+"`system_reset`"+` — equivalent
+to the physical reset button. The QEMU process keeps running and the
+guest OS reboots without notification, so an in-flight write may surface
 inconsistencies. Synchronous: the response carries the refreshed VM
-view с status=running (the runtime identity is preserved — operators
-detect the reboot through guest uptime, не через CP state).`,
+view with status=running (the runtime identity is preserved — operators
+detect the reboot through guest uptime, not via CP state).`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.VM, error) {
 			return c.ResetVM(ctx, name)
 		},
 	)
 }
 
-// newLifecycleCommand is the shared builder для the three sync
-// lifecycle subcommands. They differ только in the cpclient method
+// newLifecycleCommand is the shared builder for the three sync
+// lifecycle subcommands. They differ only in the cpclient method
 // they invoke; everything else (flag wiring, output format,
 // error mapping) is identical.
 func newLifecycleCommand(

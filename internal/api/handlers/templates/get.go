@@ -31,7 +31,7 @@ var errTemplateInvisible = errors.New("template invisible to caller")
 //
 // {id} is a template name; UUID literals are rejected with 400
 // validation_failed at the resolver. Cross-user private access
-// surfaces as 404, never 403, к prevent existence probing via
+// surfaces as 404, never 403, to prevent existence probing via
 // differing status codes.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	caller := auth.UserFromContext(r.Context())
@@ -50,7 +50,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusOK, toView(row))
 }
 
-// resolveVisibleTemplate folds the resolver lookup и the visibility /
+// resolveVisibleTemplate folds the resolver lookup and the visibility /
 // ownership check into a single helper. Returns:
 //
 //   - (row, nil) when the caller may see it.

@@ -36,7 +36,7 @@ type Task struct {
 
 // IsTerminal reports whether the task has reached one of the three
 // terminal statuses. Used by WaitTask's polling loop and by callers
-// that want to render a one-shot summary без awaiting.
+// that want to render a one-shot summary without awaiting.
 func (t *Task) IsTerminal() bool {
 	switch t.Status {
 	case "success", "failed", "cancelled":
@@ -46,7 +46,7 @@ func (t *Task) IsTerminal() bool {
 }
 
 // TaskErrorEnvelope is the inner-error shape the worker writes into
-// tasks.error on failed / cancelled terminals. Exported так that the
+// tasks.error on failed / cancelled terminals. Exported so that the
 // CLI can render it verbatim.
 type TaskErrorEnvelope struct {
 	Code    string         `json:"code"`
@@ -55,7 +55,7 @@ type TaskErrorEnvelope struct {
 }
 
 // DecodeError unmarshals the task's error JSONB into a typed envelope.
-// Returns (nil, nil) when error is empty (success terminal или not
+// Returns (nil, nil) when error is empty (success terminal or not
 // yet finished); a populated envelope on failed / cancelled.
 func (t *Task) DecodeError() (*TaskErrorEnvelope, error) {
 	if len(t.Error) == 0 || string(t.Error) == "null" {
@@ -69,7 +69,7 @@ func (t *Task) DecodeError() (*TaskErrorEnvelope, error) {
 }
 
 // WaitOptions configures WaitTask's polling cadence. Zero values fall
-// back к sensible defaults (1s initial, 5s ceiling, 5min total).
+// back to sensible defaults (1s initial, 5s ceiling, 5min total).
 type WaitOptions struct {
 	Initial time.Duration
 	Max     time.Duration
@@ -103,7 +103,7 @@ func (c *Client) GetTask(ctx context.Context, taskID uuid.UUID) (Task, error) {
 
 // WaitTask polls /v1/tasks/{id} until the task reaches a terminal
 // status, opts.Timeout is hit, or ctx is cancelled. The polling
-// cadence starts at opts.Initial и doubles up к opts.Max — the same
+// cadence starts at opts.Initial and doubles up to opts.Max — the same
 // shape agentclient.PollTask uses, lighter parameters because the
 // CP-side latency is human-poll friendly.
 //
@@ -112,8 +112,8 @@ func (c *Client) GetTask(ctx context.Context, taskID uuid.UUID) (Task, error) {
 // context.DeadlineExceeded so callers can errors.Is them.
 //
 // opts.OnPoll fires after every successful poll (terminal or not),
-// letting the CLI emit progress dots / status updates без the wait
-// helper having к know about output formatting.
+// letting the CLI emit progress dots / status updates without the wait
+// helper having to know about output formatting.
 func (c *Client) WaitTask(ctx context.Context, taskID uuid.UUID, opts WaitOptions) (Task, error) {
 	if opts.Initial <= 0 {
 		opts.Initial = defaultPollInitial
@@ -146,7 +146,7 @@ func (c *Client) WaitTask(ctx context.Context, taskID uuid.UUID, opts WaitOption
 			if !errors.As(err, &apiErr) && loopCtx.Err() != nil {
 				return Task{}, fmt.Errorf("wait task: %w", loopCtx.Err())
 			}
-			// Transient — fall through к sleep + retry.
+			// Transient — fall through to sleep + retry.
 		}
 
 		if err := sleepCtx(loopCtx, delay); err != nil {
@@ -159,7 +159,7 @@ func (c *Client) WaitTask(ctx context.Context, taskID uuid.UUID, opts WaitOption
 	}
 }
 
-// sleepCtx blocks for d или until ctx is done, whichever fires first.
+// sleepCtx blocks for d or until ctx is done, whichever fires first.
 // Returns ctx.Err() on cancellation, nil on full sleep.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {

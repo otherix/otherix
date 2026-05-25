@@ -118,7 +118,7 @@ where id = @id;
 -- Cancel a task only while it is still pending. Returns the updated
 -- row when status was pending; returns pgx.ErrNoRows for any other
 -- state — the caller maps that to a 409 (running cancel is deferred
--- к future work; terminal cancel is idempotent-409).
+-- to future work; terminal cancel is idempotent-409).
 update tasks
 set status      = 'cancelled',
     finished_at = now()

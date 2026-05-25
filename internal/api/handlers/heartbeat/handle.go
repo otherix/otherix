@@ -28,11 +28,11 @@ import (
 //
 // Path identifier is the cluster-unique node name (name-keyed agent
 // identity). The agent does not know
-// its own UUID; identity is derived от the cert CN at startup и
-// carried inline в the URL. The cert→UUID binding inside agent_certs
+// its own UUID; identity is derived from the cert CN at startup and
+// carried inline in the URL. The cert→UUID binding inside agent_certs
 // stays UUID-keyed (unchanged) — this handler resolves name→UUID
 // once via GetNodeByName, then enforces the binding check against
-// agent.NodeID, identical к the prior UUID-only contract.
+// agent.NodeID, identical to the prior UUID-only contract.
 func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 	agent := auth.AgentFromContext(r.Context())
 	if agent == nil {
@@ -63,9 +63,9 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if node.ID != agent.NodeID {
-		// The cert is bound to а different node — refuse without
-		// disclosing whether the requested name maps к а UUID that
-		// happens к exist.
+		// The cert is bound to a different node — refuse without
+		// disclosing whether the requested name maps to a UUID that
+		// happens to exist.
 		response.WriteError(w, r, http.StatusUnauthorized,
 			response.CodeUnauthenticated, "client certificate is not bound to this node",
 			map[string]any{"reason": "cert_san_unknown"})
@@ -112,9 +112,9 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 }
 
 // logPressureTransition emits one slog line per pressure-state change
-// (set → WARN, clear → INFO). Steady-state и counting outcomes stay
+// (set → WARN, clear → INFO). Steady-state and counting outcomes stay
 // quiet — operators want signal on transitions, not on every heartbeat.
-// Logged after InTx commits so the line never appears для а rolled-back
+// Logged after InTx commits so the line never appears for a rolled-back
 // projection.
 func (h *Handler) logPressureTransition(ctx context.Context, nodeID uuid.UUID, body *requestBody, outcome heartbeatOutcome) {
 	switch outcome.memory {
@@ -149,8 +149,8 @@ func (h *Handler) logPressureTransition(ctx context.Context, nodeID uuid.UUID, b
 
 // memoryPercent returns the percentage available reported by the
 // heartbeat body, or 0 when totals are missing or zero. Used for the
-// log line only — pressure decision logic lives в
-// computePressureTransition и does not rely on this helper.
+// log line only — pressure decision logic lives in
+// computePressureTransition and does not rely on this helper.
 func memoryPercent(body *requestBody) float64 {
 	total := body.Capabilities.MemoryTotalMib
 	if total <= 0 {
@@ -160,7 +160,7 @@ func memoryPercent(body *requestBody) float64 {
 }
 
 // systemDiskPercent returns the percentage available reported for the
-// root filesystem. Zero когда the agent omitted the metric (statfs
+// root filesystem. Zero when the agent omitted the metric (statfs
 // failed). Used for the log line only.
 func systemDiskPercent(body *requestBody) float64 {
 	total := body.Resources.SystemDiskTotalBytes
@@ -172,8 +172,8 @@ func systemDiskPercent(body *requestBody) float64 {
 }
 
 // heartbeatOutcome bundles state-change signals computed during the
-// projection that the receive handler needs к surface after the
-// transaction commits (currently pressure transitions for memory и
+// projection that the receive handler needs to surface after the
+// transaction commits (currently pressure transitions for memory and
 // system_disk). One field per pressure dimension; pool disk transitions
 // live entirely on the scan worker side.
 type heartbeatOutcome struct {
@@ -185,7 +185,7 @@ type heartbeatOutcome struct {
 
 // project runs the full state projection in a single transaction.
 // It returns the post-commit heartbeatOutcome (currently only pressure
-// state transitions) и а typed *projectionError for HTTP-shaped
+// state transitions) and a typed *projectionError for HTTP-shaped
 // failures (404 / 409); any other error is treated as internal.
 func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestBody) (heartbeatOutcome, error) {
 	var outcome heartbeatOutcome
@@ -258,7 +258,7 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 }
 
 // loadDeclaredVMs returns the per-node VM desired-state inventory the CP
-// wants the agent's VM reconciler к converge on. Surfaces as
+// wants the agent's VM reconciler to converge on. Surfaces as
 // `HeartbeatResponse.declared_vms`. The
 // underlying SQL orders rows lower(name) asc so the agent's diff stays
 // deterministic. Soft-deleted VMs are filtered out at the SQL layer;
@@ -288,7 +288,7 @@ func (h *Handler) loadDeclaredVMs(ctx context.Context, q *store.Queries, nodeID 
 // `storage_pools` row. The join key is
 // (node_id, lower(name)); rows that no longer exist (operator deleted
 // the pool mid-tick) yield zero rows affected — the agent reconciles
-// on its next tick. failure here propagates as а projection error;
+// on its next tick. failure here propagates as a projection error;
 // the transaction rolls back.
 func (h *Handler) applyPoolReports(ctx context.Context, q *store.Queries, nodeID uuid.UUID, reports []poolReport) error {
 	for _, p := range reports {
@@ -329,7 +329,7 @@ func (h *Handler) loadDeclaredPools(ctx context.Context, q *store.Queries, nodeI
 			cfg := make(map[string]any)
 			if err := json.Unmarshal(row.Config, &cfg); err != nil {
 				// Storage_pools.config is a JSON object literal per the
-				// CHECK constraint, but а malformed value should not
+				// CHECK constraint, but a malformed value should not
 				// take down the whole heartbeat. Log + skip the field.
 				h.log.WarnContext(ctx, "storage_pools.config unmarshal failed; emitting empty object",
 					slog.String("pool_name", row.Name),
@@ -345,11 +345,11 @@ func (h *Handler) loadDeclaredPools(ctx context.Context, q *store.Queries, nodeI
 }
 
 // applyMemoryPressure computes the next memory-pressure state via the
-// pure computePressureTransition function и persists it через
+// pure computePressureTransition function and persists it via
 // UpdateNodeMemoryPressure. Runs inside the same transaction as the
 // rest of the projection so pressure state never drifts ahead of the
 // raw metrics that determined it. Returns the transition kind so the
-// caller can log set / clear lines после InTx commits.
+// caller can log set / clear lines after InTx commits.
 func (h *Handler) applyMemoryPressure(ctx context.Context, q *store.Queries, nodeID uuid.UUID, node store.GetNodeForHeartbeatRow, body *requestBody, now time.Time) (pressureTransitionKind, error) {
 	availMib := body.Resources.MemoryAvailableMib
 	totalMib := body.Capabilities.MemoryTotalMib
@@ -379,8 +379,8 @@ func (h *Handler) applyMemoryPressure(ctx context.Context, q *store.Queries, nod
 
 // applySystemDiskPressure mirrors applyMemoryPressure for the root
 // filesystem dimension. Both pressures share the same debouncing
-// pattern; only the raw metrics (bytes vs MiB) и the configured knobs
-// differ. Same no-op write avoidance applies — а heartbeat that does
+// pattern; only the raw metrics (bytes vs MiB) and the configured knobs
+// differ. Same no-op write avoidance applies — a heartbeat that does
 // not change the pressure state writes nothing.
 func (h *Handler) applySystemDiskPressure(ctx context.Context, q *store.Queries, nodeID uuid.UUID, node store.GetNodeForHeartbeatRow, body *requestBody, now time.Time) (pressureTransitionKind, error) {
 	newSince, newCount, kind := computePressureTransition(

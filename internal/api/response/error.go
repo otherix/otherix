@@ -49,9 +49,9 @@ const (
 	CodeImageCollision            ErrorCode = "image_collision"
 	CodeDownloadFailed            ErrorCode = "download_failed"
 	// CodePathNotAllowed surfaces allowlist rejection: the requested
-	// `path` field on POST /v1/storage-pools is not а prefix of any
+	// `path` field on POST /v1/storage-pools is not a prefix of any
 	// configured `storage_pools.allowed_path_prefixes` entry. Recovery
-	// is operator-side — widen the allowlist OR pick а path under one
+	// is operator-side — widen the allowlist OR pick a path under one
 	// of the existing prefixes.
 	CodePathNotAllowed ErrorCode = "path_not_allowed"
 
@@ -83,8 +83,8 @@ const (
 	// Console flow surface. vm_not_running gates `vms.console`
 	// against non-running VMs; console_in_use surfaces the agent-side
 	// per-VM single-session lock; protocol_not_available surfaces the
-	// agent refusing а protocol the VM does not expose (e.g. serial
-	// без `-serial unix:` chardev).
+	// agent refusing a protocol the VM does not expose (e.g. serial
+	// without `-serial unix:` chardev).
 	CodeVMNotRunning         ErrorCode = "vm_not_running"
 	CodeConsoleInUse         ErrorCode = "console_in_use"
 	CodeProtocolNotAvailable ErrorCode = "protocol_not_available"

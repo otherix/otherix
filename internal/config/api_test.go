@@ -151,7 +151,7 @@ func TestPressureConfig_Validate(t *testing.T) {
 
 func TestPlacementConfig_Validate_ResourcesPropagated(t *testing.T) {
 	// PlacementConfig.Validate must surface ResourcesConfig errors so
-	// the api-server fails fast at startup rather than на the hot path.
+	// the api-server fails fast at startup rather than on the hot path.
 	cfg := PlacementConfig{
 		Algorithm: "resource_aware",
 		Resources: ResourcesConfig{
@@ -169,7 +169,7 @@ func TestPlacementConfig_Validate_ResourcesPropagated(t *testing.T) {
 func TestPlacementConfig_Warnings(t *testing.T) {
 	// Each case asserts the operator-facing warning content surfaced
 	// by `Warnings()`. Substrings are checked rather than full strings
-	// so the format helper can evolve без touching every case.
+	// so the format helper can evolve without touching every case.
 	tests := []struct {
 		name     string
 		cfg      PlacementConfig
@@ -299,7 +299,7 @@ func TestStoragePoolScanConfig_Validate(t *testing.T) {
 			cfg:  StoragePoolScanConfig{Enabled: true, Interval: 15 * time.Minute, Jitter: 30 * time.Second},
 		},
 		{
-			name: "zero values fall through к worker defaults",
+			name: "zero values fall through to worker defaults",
 			cfg:  StoragePoolScanConfig{},
 		},
 		{

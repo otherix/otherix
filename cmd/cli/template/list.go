@@ -16,13 +16,13 @@ import (
 func newListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List templates visible к the caller.",
+		Short: "List templates visible to the caller.",
 		Long: `Cursor-paginated list of templates. Server-side visibility scoping is
 applied per the caller's role (admin/operator see every template;
 developer sees public + own private; viewer sees public only). Optional
 filters: visibility, architecture, os_family. The next page's cursor
-lives в the JSON envelope's meta.next_cursor and is opaque —
-re-pass с --cursor.`,
+lives in the JSON envelope's meta.next_cursor and is opaque —
+re-pass with --cursor.`,
 		RunE: runList,
 	}
 	cmd.Flags().String(flagVisible, "", "filter by visibility (public|private)")

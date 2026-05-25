@@ -8,8 +8,8 @@
 //
 // **Wire-shape note:** the wire types here mirror the actual
 // internal/api/handlers/vms shape (MVP simplified), NOT the richer
-// design declared в api/openapi/control-plane.yaml. Reconciliation
-// deferred к a future iteration; the package doc on
+// design declared in api/openapi/control-plane.yaml. Reconciliation
+// deferred to a future iteration; the package doc on
 // internal/api/handlers/vms documents the truth on the server side.
 package cpclient
 
@@ -27,12 +27,12 @@ import (
 )
 
 // defaultTimeout is the per-request deadline applied when Options.Timeout
-// is zero. Generous enough к accommodate the create handler's atomic
-// enqueue (one round-trip к Postgres + river insert) without masking a
+// is zero. Generous enough to accommodate the create handler's atomic
+// enqueue (one round-trip to Postgres + river insert) without masking a
 // genuinely-stuck server.
 const defaultTimeout = 30 * time.Second
 
-// Client talks к the CP's /v1/* surface over HTTP с a bearer token.
+// Client talks to the CP's /v1/* surface over HTTP with a bearer token.
 // All methods are safe for concurrent use; the underlying http.Client
 // is shared.
 type Client struct {
@@ -45,7 +45,7 @@ type Client struct {
 // rest are tuned by the callsite when needed.
 type Options struct {
 	// BaseURL is the CP's root URL ("http://localhost:8080" in the
-	// dev workflow; an HTTPS URL behind a TLS terminator в production).
+	// dev workflow; an HTTPS URL behind a TLS terminator in production).
 	// Trailing slashes are trimmed before use.
 	BaseURL string
 
@@ -53,7 +53,7 @@ type Options struct {
 	// API token (`otx_*`) — the CP's Authn middleware accepts both.
 	Token string
 
-	// Timeout is the per-request deadline. Zero defaults к
+	// Timeout is the per-request deadline. Zero defaults to
 	// defaultTimeout (30s).
 	Timeout time.Duration
 
@@ -88,14 +88,14 @@ func New(opts Options) (*Client, error) {
 }
 
 // NewAnonymous constructs a Client without a bearer token. The only
-// CP endpoints that accept anonymous calls are /v1/auth/login и
+// CP endpoints that accept anonymous calls are /v1/auth/login and
 // /v1/auth/refresh — used by the `otherix config add cluster` flow
-// to obtain а JWT before issuing an API token. Subsequent calls
-// against authenticated endpoints will fail с 401.
+// to obtain a JWT before issuing an API token. Subsequent calls
+// against authenticated endpoints will fail with 401.
 //
 // Callers that need to upgrade an anonymous client to authenticated
 // (login → JWT → CreateAPIToken) can do so by constructing a fresh
-// Client с New once the token is in hand.
+// Client with New once the token is in hand.
 func NewAnonymous(baseURL string, opts Options) (*Client, error) {
 	if baseURL == "" {
 		return nil, errors.New("cpclient: BaseURL is required")
@@ -114,10 +114,10 @@ func NewAnonymous(baseURL string, opts Options) (*Client, error) {
 	}, nil
 }
 
-// WithToken returns a shallow copy of c authenticated с the
+// WithToken returns a shallow copy of c authenticated with the
 // supplied bearer. Used by `config add cluster` to upgrade an
-// anonymous client после а successful Login → JWT. The receiver is
-// not mutated, so this is safe против concurrent reads.
+// anonymous client after a successful Login → JWT. The receiver is
+// not mutated, so this is safe against concurrent reads.
 func (c *Client) WithToken(token string) *Client {
 	clone := *c
 	clone.token = token
@@ -125,7 +125,7 @@ func (c *Client) WithToken(token string) *Client {
 }
 
 // BaseURL returns the configured base URL. Useful for the CLI's
-// "you are talking к https://..." preamble.
+// "you are talking to https://..." preamble.
 func (c *Client) BaseURL() string { return c.baseURL }
 
 // HTTPClient returns the underlying *http.Client. Exposed so the
@@ -137,7 +137,7 @@ func (c *Client) HTTPClient() *http.Client { return c.httpClient }
 // do issues req, returning (status, body) on success and a typed
 // *APIError on a non-2xx envelope. Network failures wrap the
 // underlying error verbatim so callers can errors.Is them against
-// context.DeadlineExceeded и friends.
+// context.DeadlineExceeded and friends.
 func (c *Client) do(req *http.Request) (int, []byte, error) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -163,10 +163,10 @@ func (c *Client) do(req *http.Request) (int, []byte, error) {
 	return resp.StatusCode, body, parseAPIError(resp.StatusCode, body)
 }
 
-// newRequest builds an *http.Request с the URL joined onto baseURL и
+// newRequest builds an *http.Request with the URL joined onto baseURL and
 // the body marshalled as JSON. body=nil produces a body-less request
 // (GET / DELETE). path may carry a `?key=value` suffix — the helper
-// splits it out before url.JoinPath к keep the question mark unescaped.
+// splits it out before url.JoinPath to keep the question mark unescaped.
 func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	cleanPath, rawQuery := splitQuery(path)
 	u, err := url.JoinPath(c.baseURL, cleanPath)
@@ -193,10 +193,10 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body any) 
 	return req, nil
 }
 
-// splitQuery separates path from query на the first `?`. Returns the
-// path и the (already-encoded) query string. Callers concatenate
-// rawQuery back onto the joined URL c a single `?` к keep the
-// stdlib's parser happy при request construction.
+// splitQuery separates path from query on the first `?`. Returns the
+// path and the (already-encoded) query string. Callers concatenate
+// rawQuery back onto the joined URL c a single `?` to keep the
+// stdlib's parser happy at request construction.
 func splitQuery(path string) (string, string) {
 	for i := 0; i < len(path); i++ {
 		if path[i] == '?' {

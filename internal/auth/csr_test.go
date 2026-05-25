@@ -21,9 +21,9 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// generateValidCSR returns а PEM CSR signed by а fresh ECDSA P-256
+// generateValidCSR returns a PEM CSR signed by a fresh ECDSA P-256
 // keypair. Subject CN matches the helper's input arg — the redemption
-// handler ignores it but the helper sets it для realism.
+// handler ignores it but the helper sets it for realism.
 func generateValidCSR(t *testing.T, cn string) ([]byte, *ecdsa.PrivateKey) {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -99,7 +99,7 @@ func TestValidateCSR_Reject_EmptyOrMalformedPEM(t *testing.T) {
 		input []byte
 	}{
 		{"empty", []byte{}},
-		{"garbage", []byte("not а pem")},
+		{"garbage", []byte("not a pem")},
 		{"wrong_block_type", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{0x00}})},
 	}
 	for _, c := range cases {
@@ -127,7 +127,7 @@ func TestValidateCSR_Reject_CorruptedSignature(t *testing.T) {
 	block, _ := pem.Decode(pemBytes)
 	corrupted := make([]byte, len(block.Bytes))
 	copy(corrupted, block.Bytes)
-	// Flip last byte — likely в the signature segment.
+	// Flip last byte — likely in the signature segment.
 	corrupted[len(corrupted)-1] ^= 0xFF
 	pemBytes = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: corrupted})
 
@@ -234,9 +234,9 @@ func TestValidateCSR_Reject_KeyUsage_CertSign(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ecdsa key: %v", err)
 	}
-	// Encoded KeyUsage с keyCertSign (bit 5) set:
+	// Encoded KeyUsage with keyCertSign (bit 5) set:
 	// BIT STRING (3 octets) — 2 unused bits, byte = 0x04 (bit 5 MSB-first).
-	// DER: 03 02 02 04 — but encoded в extension Value as raw bytes from
+	// DER: 03 02 02 04 — but encoded in extension Value as raw bytes from
 	// caller's perspective: the parser sees the BIT STRING starting at index 0.
 	tmpl := &x509.CertificateRequest{
 		Subject: pkix.Name{CommonName: "n"},
@@ -244,7 +244,7 @@ func TestValidateCSR_Reject_KeyUsage_CertSign(t *testing.T) {
 			{
 				Id:       []int{2, 5, 29, 15},
 				Critical: true,
-				Value:    []byte{0x03, 0x02, 0x02, 0x04}, // BIT STRING с keyCertSign
+				Value:    []byte{0x03, 0x02, 0x02, 0x04}, // BIT STRING with keyCertSign
 			},
 		},
 	}
@@ -345,7 +345,7 @@ func TestSignCSR_HappyPath_TemplateFieldsCorrect(t *testing.T) {
 		t.Error("ExtKeyUsage missing ClientAuth")
 	}
 
-	// Validity period — NotBefore is 1m back для skew, NotAfter is 1y forward.
+	// Validity period — NotBefore is 1m back for skew, NotAfter is 1y forward.
 	if !parsed.NotBefore.Before(now) {
 		t.Errorf("NotBefore = %v, want < %v", parsed.NotBefore, now)
 	}
@@ -391,7 +391,7 @@ func TestSignCSR_ChainVerifies_AgainstCA(t *testing.T) {
 	opts := x509.VerifyOptions{
 		Roots:       roots,
 		CurrentTime: now.Add(time.Hour),
-		// Both ServerAuth и ClientAuth set — verifier picks one.
+		// Both ServerAuth and ClientAuth set — verifier picks one.
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 	}
 	if _, err := leafCert.Verify(opts); err != nil {

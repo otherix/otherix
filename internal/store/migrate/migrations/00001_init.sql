@@ -218,9 +218,9 @@ create table nodes (
 -- below placement.pressure.memory.threshold_percent, the count increments;
 -- once it reaches placement.pressure.memory.consecutive_required the row
 -- transitions to "pressured" by stamping memory_pressure_since with now().
--- Recovery is asymmetric — а single observation at-or-above the threshold
--- clears memory_pressure_since и zeroes the counter. The scheduler joins
--- through node_effective_availability и excludes rows where
+-- Recovery is asymmetric — a single observation at-or-above the threshold
+-- clears memory_pressure_since and zeroes the counter. The scheduler joins
+-- through node_effective_availability and excludes rows where
 -- memory_pressure_since IS NOT NULL (see queries/storage_pools.sql).
 comment on column nodes.memory_pressure_since is
     'Timestamp when memory pressure condition was set. NULL when condition not active. '
@@ -238,12 +238,12 @@ comment on column nodes.memory_pressure_count is
 -- memory.
 comment on column nodes.system_disk_total_bytes is
     'Root filesystem total capacity (bytes) reported by the agent via syscall.Statfs("/"). '
-    'NULL когда the agent could not read the metric — CP carries existing pressure state forward.';
+    'NULL when the agent could not read the metric — CP carries existing pressure state forward.';
 comment on column nodes.system_disk_available_bytes is
-    'Root filesystem available bytes reported by the agent. Pairs с system_disk_total_bytes; both '
+    'Root filesystem available bytes reported by the agent. Pairs with system_disk_total_bytes; both '
     'nullable together. Volatile per heartbeat.';
 comment on column nodes.system_disk_pressure_since is
-    'Timestamp когда system_disk pressure condition was set. NULL когда condition not active. '
+    'Timestamp when system_disk pressure condition was set. NULL when condition not active. '
     'CP-side computed from heartbeat metrics against placement.pressure.system_disk.threshold_percent.';
 comment on column nodes.system_disk_pressure_count is
     'Consecutive heartbeat observations below system_disk pressure threshold. Used for debouncing — '
@@ -283,7 +283,7 @@ create index idx_agent_certs_node on agent_certs(node_id) where revoked_at is nu
 -- ============ join_tokens ============
 -- Multi-use bootstrap tokens. max_uses NULL = unlimited
 -- within TTL; non-null = strict consumption cap (decremented at
--- redemption time в Step 2 of the join-token bootstrap landing).
+-- redemption time in Step 2 of the join-token bootstrap landing).
 -- intended_node_name SET ⇒ max_uses MUST be 1 (single-use pre-bound)
 -- — defense-in-depth: API edge validates, SQL CHECK constraint
 -- enforces. consumption_count is a derived value computed via
@@ -291,7 +291,7 @@ create index idx_agent_certs_node on agent_certs(node_id) where revoked_at is nu
 --
 -- Revocation: set expires_at = LEAST(expires_at, now()). No
 -- revoked_at column — TTL-driven natural decay is the only
--- invalidation path. Idx on expires_at supports both range queries и
+-- invalidation path. Idx on expires_at supports both range queries and
 -- the inevitable cleanup sweep (future ROADMAP item).
 create table join_tokens (
   id                    uuid primary key default uuid_generate_v7(),
@@ -308,24 +308,24 @@ create table join_tokens (
 );
 create unique index uq_join_tokens_hash on join_tokens(token_hash);
 -- Predicate index on expires_at without a `now()` clause — PostgreSQL
--- forbids volatile functions в index predicates. Range queries over
--- the column still benefit from the index в practice.
+-- forbids volatile functions in index predicates. Range queries over
+-- the column still benefit from the index in practice.
 create index idx_join_tokens_expiry on join_tokens(expires_at);
 
 -- ============ join_token_consumptions ============
--- Audit trail для multi-use join tokens. Each successful redemption
+-- Audit trail for multi-use join tokens. Each successful redemption
 -- (Step 2 of the bootstrap landing) inserts a row in the same TX as
--- the agent_certs INSERT и optional node row UPSERT. The audit
+-- the agent_certs INSERT and optional node row UPSERT. The audit
 -- surface (GET /v1/nodes/join-tokens/{id}/consumptions) is operator-
 -- facing.
 --
 -- FK semantics:
 --   - join_token_id ON DELETE CASCADE — wiping a token wipes its trail
---     (operator action; if а revoked token is then deleted out-of-band,
+--     (operator action; if a revoked token is then deleted out-of-band,
 --     orphan rows have no caller).
---   - consumed_by_node_id ON DELETE SET NULL — а soft-deleted node
+--   - consumed_by_node_id ON DELETE SET NULL — a soft-deleted node
 --     should not erase the historical fact that some agent bootstrapped
---     via this token. NULL surfaces в API as "node since removed".
+--     via this token. NULL surfaces in API as "node since removed".
 create table join_token_consumptions (
   id                  uuid primary key default uuid_generate_v7(),
   join_token_id       uuid not null references join_tokens(id) on delete cascade,
@@ -341,14 +341,14 @@ create index idx_join_token_consumptions_by_node
 
 -- ============ ca_certs ============
 -- Cluster Certificate Authority material. The CP
--- auto-generates an ECDSA P-384 self-signed CA на first boot когда
+-- auto-generates an ECDSA P-384 self-signed CA on first boot when
 -- no active row exists; subsequent boots skip generation idempotently.
 -- Rotation (future ROADMAP) flips active=false on existing row before
--- inserting а new active=true row — partial unique index enforces the
+-- inserting a new active=true row — partial unique index enforces the
 -- at-most-one-active invariant.
 --
 -- Trust model: cert_pem + key_pem stored plaintext (DB-level security
--- responsibility, equivalent posture к jwt_secret / refresh tokens /
+-- responsibility, equivalent posture to jwt_secret / refresh tokens /
 -- argon2id password hashes). KMS / encryption-at-rest tracked as
 -- future iteration.
 create table ca_certs (
@@ -401,7 +401,7 @@ create table node_firmwares (
 
 -- ============ storage_pools ============
 -- Multi-instance pool architecture:
--- Pool name is a cluster-wide concept (analogous к k8s StorageClass);
+-- Pool name is a cluster-wide concept (analogous to k8s StorageClass);
 -- a pool *instance* is the per-node row materialising that name on a
 -- specific node's storage. The same name `default` may exist on
 -- multiple nodes simultaneously, each as its own instance row. The
@@ -414,9 +414,9 @@ create table storage_pools (
   -- type is text + check (not enum): future pool backends (lvm-thin,
   -- nfs, ceph-rbd, zfspool) widen the constraint rather than requiring
   -- an ENUM ALTER. The value 'local_dir' is preserved from the prior
-  -- enum к keep the
+  -- enum to keep the
   -- agent OpenAPI contract (StoragePoolReportType) and downstream
-  -- generated code unchanged; renaming к a shorter canonical name
+  -- generated code unchanged; renaming to a shorter canonical name
   -- is its own naming-alignment slice.
   type                text not null default 'local_dir' check (type in ('local_dir')),
   path                text not null,
@@ -431,8 +431,8 @@ create table storage_pools (
   -- attempt through the heartbeat path; CP merges the report onto the row so
   -- operator-facing `GET /v1/storage-pools/{id}` surfaces real readiness.
   -- 'pending' is the initial state right after `POST /v1/storage-pools`;
-  -- the owning node moves it к 'ready' on successful reconciliation или
-  -- 'failed' when mkdir / path validation на the node fails.
+  -- the owning node moves it to 'ready' on successful reconciliation or
+  -- 'failed' when mkdir / path validation on the node fails.
   reconciliation_status text not null default 'pending'
       check (reconciliation_status in ('pending', 'ready', 'failed')),
   last_reconciled_at  timestamptz,
@@ -443,18 +443,18 @@ create table storage_pools (
   constraint chk_pools_disk_pressure_count_nonneg check (disk_pressure_count >= 0)
 );
 -- Pressure-tracking columns. CP-side
--- computed at scan-completion: когда the agent's UpsertStoragePoolUsage
+-- computed at scan-completion: when the agent's UpsertStoragePoolUsage
 -- write lands, the scan worker compares `available_bytes / capacity_bytes`
--- against `placement.pressure.disk.threshold_percent` и runs the same
+-- against `placement.pressure.disk.threshold_percent` and runs the same
 -- transition logic as node-level memory / system_disk pressure. Defaults
--- к single-observation debouncing (`consecutive_required: 1`) since scan
+-- to single-observation debouncing (`consecutive_required: 1`) since scan
 -- cadence is minutes apart, not seconds.
 comment on column storage_pools.disk_pressure_since is
-    'Timestamp когда pool disk pressure was set. NULL когда condition not active. '
+    'Timestamp when pool disk pressure was set. NULL when condition not active. '
     'CP-side computed from scan metrics against placement.pressure.disk.threshold_percent.';
 comment on column storage_pools.disk_pressure_count is
     'Consecutive scan observations below pool disk pressure threshold. Used for debouncing — '
-    'default consecutive_required=1 means а single scan sets pressure. Reset к 0 on first '
+    'default consecutive_required=1 means a single scan sets pressure. Reset to 0 on first '
     'observation at-or-above threshold.';
 -- uq_storage_pools_name is per-node UNIQUE on lower(name): same
 -- conceptual pool may be materialised across multiple nodes (one
@@ -466,7 +466,7 @@ create trigger storage_pools_set_updated_at before update on storage_pools
   for each row execute function trg_set_updated_at();
 
 -- ============ cluster_settings ============
--- Singleton table for cluster-level configuration. Row PK is fixed к
+-- Singleton table for cluster-level configuration. Row PK is fixed to
 -- 1 by check constraint so the table holds exactly one row; the seed
 -- INSERT below materialises it during migration. Future-extensible
 -- (default_template_name, default_network_name, …) without altering
@@ -536,7 +536,7 @@ create table templates (
   -- compute-mode import, the worker idempotently back-propagates the
   -- computed hash via UpdateTemplateImageChecksumIfNull (only when
   -- column is still NULL) so the template effectively transitions
-  -- к verify mode for all future operations.
+  -- to verify mode for all future operations.
   image_checksum_sha256       bytea,
   image_format                image_format not null default 'qcow2',
   image_size_bytes            bigint,
@@ -646,12 +646,12 @@ create table vms (
   scheduler_hints     jsonb not null default '{}'::jsonb,
   user_data           text,
   -- L3 cloud-init disable flag (operator UX iteration). When true, the
-  -- CP-side resolver returns empty user_data к the agent even если
-  -- the template has а baked cloud_init_user_data — the agent skips
-  -- cidata.iso generation entirely. Mutually exclusive с user_data:
-  -- the operator either supplies а VM-level override OR explicitly
+  -- CP-side resolver returns empty user_data to the agent even if
+  -- the template has a baked cloud_init_user_data — the agent skips
+  -- cidata.iso generation entirely. Mutually exclusive with user_data:
+  -- the operator either supplies a VM-level override OR explicitly
   -- disables cloud-init, never both. The CHECK enforces that pairing
-  -- so the resolver does not have к guess intent on conflicting input.
+  -- so the resolver does not have to guess intent on conflicting input.
   cloud_init_disabled boolean not null default false,
   meta_data           text,
   network_config      text,
@@ -691,15 +691,15 @@ create trigger vms_bump_generation before update on vms
 -- heartbeat that subtracts the new VM's resources: until that
 -- heartbeat lands, the agent-reported cpu_cores_available /
 -- memory_available_mib are stale.
--- А second placement decision in that window reads the unsubtracted
+-- A second placement decision in that window reads the unsubtracted
 -- numbers and can over-allocate even though the advisory lock
 -- (store.LockKeyPlacement) serializes the decisions.
 --
 -- This view recomputes "effective" availability by subtracting VMs
--- pinned после the node's last heartbeat from the raw heartbeat-
+-- pinned after the node's last heartbeat from the raw heartbeat-
 -- reported availability. Filter:
 --
---   - vms.pinned_node_id = n.id        — pinned by the scheduler к this node
+--   - vms.pinned_node_id = n.id        — pinned by the scheduler to this node
 --   - vms.deleted_at IS NULL           — not soft-deleted
 --   - vms.desired_phase != 'deleted'   — operator intent is not "tear down"
 --                                         (matches CountRunningVMsByNode)
@@ -708,20 +708,20 @@ create trigger vms_bump_generation before update on vms
 --                                       — agent has not yet observed the VM
 --
 -- Self-correcting: once the next heartbeat lands, vms.created_at <
--- n.last_heartbeat_at и the VM drops out of the LATERAL aggregate;
+-- n.last_heartbeat_at and the VM drops out of the LATERAL aggregate;
 -- the agent's report now reflects it, so no double-counting.
 --
 -- Edge cases:
 --   - Raw column NULL (node has never heartbeat'd, or heartbeat
---     omitted а metric column): effective stays NULL, preserving the
---     scheduler's "fall back to count-based scoring" path для that
+--     omitted a metric column): effective stays NULL, preserving the
+--     scheduler's "fall back to count-based scoring" path for that
 --     node — partial nils stay treated as missing metrics.
 --   - Sum(pending) > raw available: floor at zero via GREATEST.
 --   - Soft-deleted nodes: passed through; callers (ListEligiblePools‑
 --     ByName) filter on deleted_at IS NULL same as before.
 --
--- Trade-off: а VM committed within the agent's heartbeat round-trip
--- (~100ms) можно under-subtract — agent's snapshot predates the VM but
+-- Trade-off: a VM committed within the agent's heartbeat round-trip
+-- (~100ms) can be under-subtract — agent's snapshot predates the VM but
 -- last_heartbeat_at is stamped on receipt (after the commit). Window
 -- closes on the next heartbeat. Tightening requires agent-side
 -- observed_at tracking; future iteration.
@@ -781,8 +781,8 @@ left join lateral (
 ) pending on true;
 
 comment on view node_effective_availability is
-    'Node availability с pending-VM accounting. Subtracts vms.cpu_cores / vms.memory_mib '
-    'pinned после last heartbeat (CP committed но agent has not yet observed). '
+    'Node availability with pending-VM accounting. Subtracts vms.cpu_cores / vms.memory_mib '
+    'pinned after last heartbeat (CP committed but agent has not yet observed). '
     'Self-correcting once next heartbeat arrives. Read by the scheduler at placement time.';
 
 -- ============ vm_disks ============
@@ -823,15 +823,15 @@ create trigger vm_disks_bump_generation before update on vm_disks
   );
 
 -- ============ pool_effective_capacity (view) ============
--- Disk-dimension parallel к node_effective_availability (above):
--- subtracts VM disks committed since the pool's last scan от the
--- agent-reported availability. Closes а race analogous к pinned-but-
+-- Disk-dimension parallel to node_effective_availability (above):
+-- subtracts VM disks committed since the pool's last scan from the
+-- agent-reported availability. Closes a race analogous to pinned-but-
 -- not-running VMs, just at storage layer. Read by Sub-iteration C of
--- the disk-aware scheduler; operator-visible на the pool
+-- the disk-aware scheduler; operator-visible on the pool
 -- API + CLI immediately so divergence is observable.
 --
 -- Filter:
---   - vd.storage_pool_id = p.id        — disk pinned к this pool
+--   - vd.storage_pool_id = p.id        — disk pinned to this pool
 --   - vd.deleted_at IS NULL            — not soft-deleted. vm_disks
 --                                         lifecycle is independent of
 --                                         vms.desired_phase per
@@ -849,7 +849,7 @@ create trigger vm_disks_bump_generation before update on vm_disks
 --                                         every scan).
 --
 -- Self-correcting: once the next scan lands, p.reported_at advances
--- past vd.created_at и the disk drops out of the LATERAL aggregate;
+-- past vd.created_at and the disk drops out of the LATERAL aggregate;
 -- the agent's report now reflects it, so no double-counting.
 --
 -- Edge cases:
@@ -859,16 +859,16 @@ create trigger vm_disks_bump_generation before update on vm_disks
 --     nils stay treated as "no signal".
 --   - Sum(pending) > raw available: floor at zero via GREATEST so the
 --     operator sees "0 free" rather than negative bytes.
---   - size_gib INT × 1 GiB per row. Cast к bigint before the multiply
+--   - size_gib INT × 1 GiB per row. Cast to bigint before the multiply
 --     so the per-row product cannot overflow int (size_gib max 65536,
 --     ×1073741824 = 70 TiB; bigint range is ±9.2 EiB — comfortable
 --     headroom). The outer ::bigint pin keeps the column type
---     consistent с available_bytes.
+--     consistent with available_bytes.
 --
 -- Trade-off: VM disks committed during the scan's network round-trip
 -- can fall on either side of the reported_at stamp — the agent's
--- filesystem snapshot is taken before reported_at lands, so а disk
--- created в that window may already be в the scan's available_bytes
+-- filesystem snapshot is taken before reported_at lands, so a disk
+-- created in that window may already be in the scan's available_bytes
 -- AND subtracted here. Effect: one-cycle over-subtraction →
 -- over-conservative placement, never
 -- over-allocation. Tightening requires agent-side observed_at
@@ -906,8 +906,8 @@ left join lateral (
 ) pending on true;
 
 comment on view pool_effective_capacity is
-    'Pool availability с pending-VM-disk accounting. Subtracts vm_disks '
-    'committed после last scan (CP committed но agent has not yet observed). '
+    'Pool availability with pending-VM-disk accounting. Subtracts vm_disks '
+    'committed after last scan (CP committed but agent has not yet observed). '
     'Self-correcting once next scan completes. Operator-visible via the pool '
     'API + CLI; future scheduler integration.';
 
@@ -1110,7 +1110,7 @@ create index idx_idempotency_keys_expires on idempotency_keys(expires_at);
 -- The table mirrors the public OpenAPI Task schema verbatim. river_job_id
 -- is a *weak reference* to river_job.id (no FK, by design): the
 -- transactional-enqueue guarantee removes the need for DB-level
--- integrity, and skipping the FK keeps tasks immune к river schema
+-- integrity, and skipping the FK keeps tasks immune to river schema
 -- churn.
 create type task_status as enum (
     'pending', 'running', 'success', 'failed', 'cancelled'

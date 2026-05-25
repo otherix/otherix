@@ -4,20 +4,20 @@
 package jointokens
 
 // createRequest is the body of POST /v1/nodes/join-tokens. Mirrors
-// components/schemas/JoinTokenCreate в control-plane.yaml.
+// components/schemas/JoinTokenCreate in control-plane.yaml.
 // IntendedNodeName uses *string so the absent / null cases are
-// distinguishable от the empty-string case during validation;
+// distinguishable from the empty-string case during validation;
 // MaxUses uses *int32 with the same nil-vs-zero discipline (zero on
-// the wire is а validation error — server rejects 0 explicitly).
+// the wire is a validation error — server rejects 0 explicitly).
 type createRequest struct {
 	IntendedNodeName *string `json:"intended_node_name"`
 	TTLSeconds       *int    `json:"ttl_seconds"`
 	MaxUses          *int32  `json:"max_uses"`
 }
 
-// joinTokenView is the public projection of а join_tokens row. The
+// joinTokenView is the public projection of a join_tokens row. The
 // stored token_hash is NEVER part of this shape. consumption_count
-// is а derived value (correlated subquery in ListJoinTokens / dedicated
+// is a derived value (correlated subquery in ListJoinTokens / dedicated
 // CountJoinTokenConsumptions on Get).
 type joinTokenView struct {
 	ID               string  `json:"id"`
@@ -29,9 +29,9 @@ type joinTokenView struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
-// createResponse extends joinTokenView с the plaintext token and the
+// createResponse extends joinTokenView with the plaintext token and the
 // active cluster CA fingerprint. The "token bundle" — operator
-// copies the token + fingerprint к the agent host in one go.
+// copies the token + fingerprint to the agent host in one go.
 type createResponse struct {
 	joinTokenView
 	Token               string `json:"token"`
@@ -45,7 +45,7 @@ type listResponse struct {
 }
 
 // consumptionView mirrors components/schemas/JoinTokenConsumption.
-// source_ip stringifies к the netip.Addr canonical form.
+// source_ip stringifies to the netip.Addr canonical form.
 type consumptionView struct {
 	ID               string  `json:"id"`
 	JoinTokenID      string  `json:"join_token_id"`
@@ -60,7 +60,7 @@ type consumptionsListResponse struct {
 	Meta paginationMeta    `json:"meta"`
 }
 
-// paginationMeta carries the opaque next_cursor; nil когда current
+// paginationMeta carries the opaque next_cursor; nil when current
 // page is the last.
 type paginationMeta struct {
 	NextCursor *string `json:"next_cursor"`

@@ -21,9 +21,9 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Redemption sentinel errors. The handler type-switches on these к
+// Redemption sentinel errors. The handler type-switches on these to
 // emit the right HTTP envelope; the slog WARN line distinguishes them
-// от each other для forensics.
+// from each other for forensics.
 var (
 	errTokenInvalid     = errors.New("join token is unknown or expired")
 	errTokenExhausted   = errors.New("join token max_uses exceeded")
@@ -32,7 +32,7 @@ var (
 )
 
 // caBundle is the in-memory projection of the active ca_certs row
-// used by redemption. Pre-parsed cert + key к avoid re-parsing inside
+// used by redemption. Pre-parsed cert + key to avoid re-parsing inside
 // the atomic transaction.
 type caBundle struct {
 	cert    *x509.Certificate
@@ -40,10 +40,10 @@ type caBundle struct {
 	certPEM []byte
 }
 
-// loadCA fetches the active cluster CA row, parses both cert и key,
-// и returns а caBundle ready для SignCSR. Per-request load mirrors
+// loadCA fetches the active cluster CA row, parses both cert and key,
+// and returns a caBundle ready for SignCSR. Per-request load mirrors
 // the /v1/ca handler pattern — the bootstrap
-// path is infrequent enough that the parse cost is acceptable, и
+// path is infrequent enough that the parse cost is acceptable, and
 // avoiding cached state simplifies CA rotation flows landing later.
 func (h *Handler) loadCA(ctx context.Context) (*caBundle, error) {
 	row, err := h.store.Queries().GetActiveCACert(ctx)
@@ -65,9 +65,9 @@ func (h *Handler) loadCA(ctx context.Context) (*caBundle, error) {
 	return &caBundle{cert: cert, key: signer, certPEM: row.CertPem}, nil
 }
 
-// redeemResult is the in-memory shape of а successful redemption,
-// passed back к the handler для response construction. The full
-// cert PEM lives here (and в the HTTP response); the database keeps
+// redeemResult is the in-memory shape of a successful redemption,
+// passed back to the handler for response construction. The full
+// cert PEM lives here (and in the HTTP response); the database keeps
 // only metadata.
 type redeemResult struct {
 	nodeID  string
@@ -80,16 +80,16 @@ type redeemResult struct {
 //
 //  1. Acquire row lock on join_tokens (SELECT FOR UPDATE).
 //  2. Enforce max_uses cap against consumption count.
-//  3. Enforce intended_node_name binding если present.
+//  3. Enforce intended_node_name binding if present.
 //  4. Lookup or create the nodes row.
-//  5. Reject если existing node has an active cert (409 conflict).
+//  5. Reject if existing node has an active cert (409 conflict).
 //  6. Sign the CSR using the loaded CA.
 //  7. Insert agent_certs metadata row.
 //  8. Insert join_token_consumptions audit row.
 //  9. Commit.
 //
 // Any failure rolls back the entire transaction — cert is NOT issued
-// downstream и no observable state lands.
+// downstream and no observable state lands.
 func (h *Handler) redeem(ctx context.Context, req joinRequest, csr *x509.CertificateRequest, ca *caBundle, sourceIP *netip.Addr) (redeemResult, error) {
 	var result redeemResult
 
@@ -156,10 +156,10 @@ func (h *Handler) redeem(ctx context.Context, req joinRequest, csr *x509.Certifi
 	return result, nil
 }
 
-// lookupToken acquires а FOR UPDATE row lock on the join_tokens row
-// для race-safe max_uses enforcement. pgx.ErrNoRows ⇒ errTokenInvalid
+// lookupToken acquires a FOR UPDATE row lock on the join_tokens row
+// for race-safe max_uses enforcement. pgx.ErrNoRows ⇒ errTokenInvalid
 // (the query filters expired tokens out, so unknown + expired collapse
-// к the same sentinel — no info leak via differing 401 envelopes).
+// to the same sentinel — no info leak via differing 401 envelopes).
 func (h *Handler) lookupToken(ctx context.Context, q *store.Queries, plaintext string) (store.JoinToken, error) {
 	hash := auth.HashToken(plaintext)
 	token, err := q.GetJoinTokenByHashForUpdate(ctx, hash)
@@ -172,9 +172,9 @@ func (h *Handler) lookupToken(ctx context.Context, q *store.Queries, plaintext s
 	return token, nil
 }
 
-// enforceMaxUses checks the cap (если non-null) against the current
+// enforceMaxUses checks the cap (if non-null) against the current
 // consumption count inside the held row lock. Returns errTokenExhausted
-// если the cap would be exceeded.
+// if the cap would be exceeded.
 func (h *Handler) enforceMaxUses(ctx context.Context, q *store.Queries, token store.JoinToken) error {
 	if token.MaxUses == nil {
 		return nil
@@ -189,10 +189,10 @@ func (h *Handler) enforceMaxUses(ctx context.Context, q *store.Queries, token st
 	return nil
 }
 
-// enforceBinding ensures а pre-bound token is being redeemed for the
+// enforceBinding ensures a pre-bound token is being redeemed for the
 // exact node_name it was minted for. Case-sensitive match — node names
 // are addressed case-insensitively elsewhere (uq_nodes_name on
-// lower(name)) but tokens bind к the exact string the operator
+// lower(name)) but tokens bind to the exact string the operator
 // supplied.
 func (h *Handler) enforceBinding(token store.JoinToken, requestedName string) error {
 	if token.IntendedNodeName == nil {
@@ -204,14 +204,14 @@ func (h *Handler) enforceBinding(token store.JoinToken, requestedName string) er
 	return nil
 }
 
-// upsertNode looks up the node by name; creates а fresh `pending` row
-// если absent. Returns errNodeNameTaken если the existing node already
+// upsertNode looks up the node by name; creates a fresh `pending` row
+// if absent. Returns errNodeNameTaken if the existing node already
 // has an active (non-revoked) cert — the operator must revoke first
-// before re-bootstrapping with а fresh keypair.
+// before re-bootstrapping with a fresh keypair.
 func (h *Handler) upsertNode(ctx context.Context, q *store.Queries, req joinRequest) (store.Node, error) {
 	existing, err := q.GetNodeByName(ctx, req.NodeName)
 	if err == nil {
-		// Existing node — check для active cert collision.
+		// Existing node — check for active cert collision.
 		hasActive, err := q.NodeHasActiveCert(ctx, existing.ID)
 		if err != nil {
 			return store.Node{}, fmt.Errorf("check active cert: %v", err)
@@ -225,9 +225,9 @@ func (h *Handler) upsertNode(ctx context.Context, q *store.Queries, req joinRequ
 		return store.Node{}, fmt.Errorf("node lookup: %v", err)
 	}
 
-	// Fresh node — create в the same TX so concurrent redemptions can't
-	// race-create twins under а unique-violation. Status starts pending;
-	// the heartbeat reconciler promotes к ready on first heartbeat.
+	// Fresh node — create in the same TX so concurrent redemptions can't
+	// race-create twins under a unique-violation. Status starts pending;
+	// the heartbeat reconciler promotes to ready on first heartbeat.
 	node, err := q.CreateNode(ctx, store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    req.NodeName,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # seed-mvp — operator-driven Step 4 bootstrap orchestration.
 #
-# The agent runs continuously в State A polling-loop mode
-# (systemd-managed) и we drive bootstrap by invoking
+# The agent runs continuously in State A polling-loop mode
+# (systemd-managed) and we drive bootstrap by invoking
 # `otherix-agent bootstrap` directly on the agent host, passing
 # token + ca-fingerprint + cp-url + node-name + advertised-endpoint
 # + migration-host as CLI flags. No bootstrap.env, no EnvironmentFile,
@@ -10,26 +10,26 @@
 # written by bootstrap within 5 seconds.
 #
 # Pool creation goes through `otherix pool create` — the CP returns
-# the pool в `declared_pools` on heartbeat и the agent reconciler
-# registers it locally. No SQL INSERT, no hardcoded UUID. См. Step 7
-# comment block для full context.
+# the pool in `declared_pools` on heartbeat and the agent reconciler
+# registers it locally. No SQL INSERT, no hardcoded UUID. See Step 7
+# comment block for full context.
 #
 # Idempotent — re-runs are safe:
 #   - `otherix config add cluster --force` revokes prior token, mints fresh;
-#   - `otherix-agent bootstrap` is а no-op when cert material is already
-#     present (use --force к re-bootstrap explicitly);
-#   - storage_pools / cluster_settings INSERT|UPDATE с ON CONFLICT;
-#   - `otherix template create` falls through на 409 к materialise step;
+#   - `otherix-agent bootstrap` is a no-op when cert material is already
+#     present (use --force to re-bootstrap explicitly);
+#   - storage_pools / cluster_settings INSERT|UPDATE with ON CONFLICT;
+#   - `otherix template create` falls through on 409 to materialise step;
 #
 # Required env:
-#   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin email used для CP bootstrap
+#   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin email used for CP bootstrap
 #   OTHERIX_BOOTSTRAP_ADMIN_PASSWORD — admin password
 #
-# Optional env (с defaults):
+# Optional env (with defaults):
 #   OTHERIX_DB_DSN        — psql connection string
 #   OTHERIX_LIMA_INSTANCE — Lima VM name (default: otherix-dev) — only used on macOS
-#   OTHERIX_CP_URL        — CP base URL для CLI auth (default: http://localhost:8080)
-#   OTHERIX_NODE_ARCH     — node architecture (auto от uname)
+#   OTHERIX_CP_URL        — CP base URL for CLI auth (default: http://localhost:8080)
+#   OTHERIX_NODE_ARCH     — node architecture (auto from uname)
 
 set -euo pipefail
 
@@ -48,18 +48,18 @@ fi
 : "${OTHERIX_NODE_ARCH:=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')}"
 
 if [ -z "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL:-}" ] || [ -z "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
-    echo "OTHERIX_BOOTSTRAP_ADMIN_EMAIL и OTHERIX_BOOTSTRAP_ADMIN_PASSWORD must be set" >&2
-    echo "(same env vars the CP boot hook uses к seed the admin row)" >&2
+    echo "OTHERIX_BOOTSTRAP_ADMIN_EMAIL and OTHERIX_BOOTSTRAP_ADMIN_PASSWORD must be set" >&2
+    echo "(same env vars the CP boot hook uses to seed the admin row)" >&2
     exit 1
 fi
 
-# psql wrapper — prefers а local client, else falls back К docker exec.
+# psql wrapper — prefers a local client, else falls back to docker exec.
 if command -v psql >/dev/null 2>&1; then
     psql_run() { psql "${OTHERIX_DB_DSN}" "$@"; }
 elif docker ps --format '{{.Names}}' | grep -q '^otherix-dev-postgres$'; then
     psql_run() { docker exec -i otherix-dev-postgres psql -U otherix -d otherix "$@"; }
 else
-    echo "psql not available locally и otherix-dev-postgres container not running — run 'make dev-up' first" >&2
+    echo "psql not available locally and otherix-dev-postgres container not running — run 'make dev-up' first" >&2
     exit 1
 fi
 
@@ -71,8 +71,8 @@ case "$(uname -s)" in
 esac
 
 # Ubuntu Noble minimal cloudimg — ~150 MiB vs ~664 MiB for the server
-# variant, ~4× faster smoke iteration. Switch к server-cloudimg only
-# if а test needs features minimal strips (GUI, full runtimes).
+# variant, ~4× faster smoke iteration. Switch to server-cloudimg only
+# if a test needs features minimal strips (GUI, full runtimes).
 case "${OTHERIX_NODE_ARCH}" in
     amd64)
         OTHERIX_TEMPLATE_URL="${OTHERIX_TEMPLATE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img}"
@@ -99,7 +99,7 @@ echo "   template name   : ${TEMPLATE_NAME}"
 echo "   CP url          : ${OTHERIX_CP_URL}"
 [ "${PLATFORM}" = "lima" ] && echo "   Lima instance   : ${OTHERIX_LIMA_INSTANCE}"
 
-# --- Step 1: wait для CP к become reachable ----------------------------------
+# --- Step 1: wait for CP to become reachable ----------------------------------
 
 echo ""
 echo ">> Step 1/8 — waiting for CP at ${OTHERIX_CP_URL}/healthz"
@@ -129,7 +129,7 @@ echo ">> Step 2/8 — configuring CLI cluster (mints long-lived API token)"
 # --- Step 3: mint join token + capture fingerprint ---------------------------
 
 echo ""
-echo ">> Step 3/8 — minting join token (pre-bound к ${NODE_NAME}, single-use)"
+echo ">> Step 3/8 — minting join token (pre-bound to ${NODE_NAME}, single-use)"
 TOKEN_BUNDLE="$("${CLI}" node join-token create \
     --node-name "${NODE_NAME}" \
     --ttl 10m \
@@ -157,7 +157,7 @@ case "${PLATFORM}" in
         ;;
 esac
 
-# --- Step 4: run bootstrap subcommand на the agent host ----------------------
+# --- Step 4: run bootstrap subcommand on the agent host ----------------------
 
 echo ""
 echo ">> Step 4/8 — invoking otherix-agent bootstrap on agent host"
@@ -165,10 +165,10 @@ echo ">> Step 4/8 — invoking otherix-agent bootstrap on agent host"
 run_bootstrap() {
     case "${PLATFORM}" in
         lima)
-            # No sudo — /opt/otherix/certs/ is chown'd к the Lima user
-            # in the provision script (dev/lima/otherix-dev.yaml), и
+            # No sudo — /opt/otherix/certs/ is chown'd to the Lima user
+            # in the provision script (dev/lima/otherix-dev.yaml), and
             # /etc/otherix is also owned by the user. Running bootstrap
-            # as the regular user writes the cert material с the
+            # as the regular user writes the cert material with the
             # ownership the systemd unit expects (User=$LIMA_USER).
             limactl shell "${OTHERIX_LIMA_INSTANCE}" -- /usr/local/bin/otherix-agent bootstrap \
                 --token "${JOIN_TOKEN}" \
@@ -184,7 +184,7 @@ run_bootstrap() {
             ;;
         native)
             # Linux user-mode dev: writes cert material under $XDG_CONFIG_HOME
-            # so we override cert-dir + config-path к match the user-mode unit.
+            # so we override cert-dir + config-path to match the user-mode unit.
             mkdir -p "${HOME}/.config/otherix/certs"
             "${REPO_ROOT}/bin/otherix-agent" bootstrap \
                 --token "${JOIN_TOKEN}" \
@@ -210,8 +210,8 @@ echo ""
 echo ">> Step 5/8 — ensuring agent service is running"
 case "${PLATFORM}" in
     lima)
-        # The unit auto-starts on Lima boot (enabled в otherix-dev.yaml provision);
-        # `restart` here is а safety net против stuck State A loops at first deploy.
+        # The unit auto-starts on Lima boot (enabled in otherix-dev.yaml provision);
+        # `restart` here is a safety net against stuck State A loops at first deploy.
         limactl shell "${OTHERIX_LIMA_INSTANCE}" -- \
             sudo systemctl restart otherix-agent
         ;;
@@ -221,10 +221,10 @@ case "${PLATFORM}" in
         ;;
 esac
 
-# --- Step 6: wait для first heartbeat (node row populated) -------------------
+# --- Step 6: wait for first heartbeat (node row populated) -------------------
 
 echo ""
-echo ">> Step 6/8 — waiting для bootstrap + first heartbeat (poll nodes.id where name='${NODE_NAME}')"
+echo ">> Step 6/8 — waiting for bootstrap + first heartbeat (poll nodes.id where name='${NODE_NAME}')"
 NODE_ID=""
 for i in $(seq 1 60); do
     NODE_ID="$(psql_run -tA -c \
@@ -250,8 +250,8 @@ fi
 # The agent's pool registry is name-keyed and reconciled autonomously
 # via heartbeat. The CLI `otherix pool create` lands the
 # row in storage_pools; the heartbeat handler returns it in
-# `declared_pools`; the agent reconciler mkdir's the path и registers
-# it locally; `reconciliation_status` flips к `ready` on the next
+# `declared_pools`; the agent reconciler mkdir's the path and registers
+# it locally; `reconciliation_status` flips to `ready` on the next
 # heartbeat. No agent restart, no SQL INSERT, no hardcoded UUID.
 #
 # The wait-loop polls `otherix pool get` until reconciliation_status

@@ -19,21 +19,21 @@ import (
 )
 
 // BootstrapClusterCA ensures the ca_certs table holds an active
-// cluster CA row. On а fresh DB it generates an ECDSA P-384 self-
-// signed CA и persists it; on subsequent boots it
-// observes the existing row и returns. Concurrent boots resolve via
+// cluster CA row. On a fresh DB it generates an ECDSA P-384 self-
+// signed CA and persists it; on subsequent boots it
+// observes the existing row and returns. Concurrent boots resolve via
 // the uq_ca_certs_active partial unique index — the loser hits 23505,
-// falls through к GetActiveCACert, и proceeds with the winner's row.
+// falls through to GetActiveCACert, and proceeds with the winner's row.
 //
-// Call after migrations have been applied и before the HTTP server
-// starts. Required by the /v1/ca endpoint и by the Step 2 CSR
+// Call after migrations have been applied and before the HTTP server
+// starts. Required by the /v1/ca endpoint and by the Step 2 CSR
 // signing handler.
 func BootstrapClusterCA(ctx context.Context, s *store.Store, log *slog.Logger) error {
 	return bootstrapClusterCAWithClock(ctx, s, log, time.Now)
 }
 
 // bootstrapClusterCAWithClock is the clock-injectable form of
-// BootstrapClusterCA. Tests pass а fixed clock к assert deterministic
+// BootstrapClusterCA. Tests pass a fixed clock to assert deterministic
 // not_before / not_after fields; production wiring uses time.Now.
 func bootstrapClusterCAWithClock(ctx context.Context, s *store.Store, log *slog.Logger, now func() time.Time) error {
 	existing, err := s.Queries().GetActiveCACert(ctx)
@@ -62,8 +62,8 @@ func bootstrapClusterCAWithClock(ctx context.Context, s *store.Store, log *slog.
 		NotAfter:          result.NotAfter,
 	})
 	if err != nil {
-		// Concurrent boot lost the race — а sibling api-server inserted
-		// first. Fetch the winner и return success. Any non-unique-
+		// Concurrent boot lost the race — a sibling api-server inserted
+		// first. Fetch the winner and return success. Any non-unique-
 		// violation error is fatal.
 		if isUniqueViolation(err) {
 			winner, fetchErr := s.Queries().GetActiveCACert(ctx)

@@ -24,18 +24,18 @@ import (
 // worker uses, reused in VMCreateWorker). The test drives:
 //
 //  1. A real first vm.create attempt (full happy path) so the
-//     agentmock task uuid и the CP-side tasks.agent_task_id linkage
+//     agentmock task uuid and the CP-side tasks.agent_task_id linkage
 //     get established.
 //
 //  2. The vm_runtime row is removed to simulate "projection lost
-//     between agent commit и CP finalize" — same Window B shape
+//     between agent commit and CP finalize" — same Window B shape
 //     the storage_image.import resumption test exercises. A second
-//     tasks row is created с the SAME agent_task_id pre-populated
+//     tasks row is created with the SAME agent_task_id pre-populated
 //     (status=running), simulating a CP-side restart mid-poll.
 //
-// Worker.Work is invoked directly (bypasses river retry) с the new
+// Worker.Work is invoked directly (bypasses river retry) with the new
 // task id. The production agentVMCreateExecutor observes
-// args.AgentTaskID != nil и skips PostVMCreate, going straight to
+// args.AgentTaskID != nil and skips PostVMCreate, going straight to
 // PollTask. The mock task projection still resolves to terminal-
 // success on the second poll, so the worker re-projects via
 // UpsertVMRuntime + IncrementTemplateDerivedVMCount.
@@ -117,7 +117,7 @@ func TestVMCreate_VerticalSliceResumption(t *testing.T) {
 	}
 
 	// Drive Worker.Work directly — bypasses river so the test does
-	// not have к mutate river_job rows.
+	// not have to mutate river_job rows.
 	deps := vmshandlers.CreateDeps{
 		Store:    v.store,
 		Executor: vmshandlers.NewAgentVMCreateExecutor(v.agentClient),

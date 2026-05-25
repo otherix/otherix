@@ -235,8 +235,8 @@ func TestE2E_Heartbeat_MigrationCapabilityChanged(t *testing.T) {
 
 // --- helpers ---
 
-// seededNode bundles the (id, name) pair returned от seedNodeOnly so
-// callers can both seed agent_certs (by ID) и target the heartbeat
+// seededNode bundles the (id, name) pair returned from seedNodeOnly so
+// callers can both seed agent_certs (by ID) and target the heartbeat
 // path (by name) without re-querying the DB.
 type seededNode struct {
 	ID   uuid.UUID

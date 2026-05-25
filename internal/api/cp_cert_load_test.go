@@ -14,10 +14,10 @@ import (
 )
 
 // TestLoadOrGenerateCPCert_SkipWhenNoConsumer verifies the skip lock:
-// когда neither agent_server nor agent_client is enabled, the
-// orchestrator returns а Source="skipped" zero material и does NOT
-// touch the database. This test passes а nil store к prove the no-
-// DB code path исполняется only the skip branch.
+// when neither agent_server nor agent_client is enabled, the
+// orchestrator returns a Source="skipped" zero material and does NOT
+// touch the database. This test passes a nil store to prove the no-
+// DB code path executes only the skip branch.
 func TestLoadOrGenerateCPCert_SkipWhenNoConsumer(t *testing.T) {
 	t.Parallel()
 	cfg := config.APIConfig{

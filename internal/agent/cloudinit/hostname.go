@@ -12,16 +12,16 @@ import (
 
 // userDataHeader is the literal `#cloud-config` marker cloud-init
 // requires on the first line. Preserved verbatim through hostname
-// injection so the resulting blob remains а valid cloud-config.
+// injection so the resulting blob remains a valid cloud-config.
 const userDataHeader = "#cloud-config"
 
-// injectHostname returns user-data with а top-level `hostname:` key
-// matching the VM name. If the input already pins а top-level
+// injectHostname returns user-data with a top-level `hostname:` key
+// matching the VM name. If the input already pins a top-level
 // `hostname:` (regardless of value), the input is returned unchanged
 // — operator intent takes precedence over the VM name even when the
 // values differ, matching the Area 3 sub-3 "full replace" lock.
 //
-// Empty or whitespace-only user-data materialises к а minimal
+// Empty or whitespace-only user-data materialises to a minimal
 // `#cloud-config\nhostname: <name>\n` so the resulting ISO still
 // satisfies the NoCloud datasource.
 func injectHostname(userData []byte, hostname string) ([]byte, error) {
@@ -37,16 +37,16 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 	header := userDataHeader
 	if bytes.HasPrefix(body, []byte(userDataHeader)) {
 		// Strip the marker so yaml.Unmarshal sees pure YAML;
-		// re-attach on output. The marker is а cloud-init
+		// re-attach on output. The marker is a cloud-init
 		// directive, not part of the YAML document.
 		body = body[len(userDataHeader):]
 	} else {
 		header = ""
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		// Header-only input ("#cloud-config\n") collapses к
+		// Header-only input ("#cloud-config\n") collapses to
 		// the same empty-input path — minimal cloud-config
-		// с the VM hostname so the guest still picks it up.
+		// with the VM hostname so the guest still picks it up.
 		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
 	}
 
@@ -58,14 +58,14 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 	root := documentRoot(&node)
 	switch {
 	case root == nil:
-		// Empty document после the header — still emit а minimal
+		// Empty document after the header — still emit a minimal
 		// `hostname:` mapping so the guest takes the VM name.
 		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
 	case root.Kind != yaml.MappingNode:
-		// Non-mapping top-level (e.g. а bare scalar or sequence)
-		// is а user-supplied cloud-config that cannot have keys
+		// Non-mapping top-level (e.g. a bare scalar or sequence)
+		// is a user-supplied cloud-config that cannot have keys
 		// merged into it. Leave it untouched — operator's
-		// problem to interpret, not ours к rewrite.
+		// problem to interpret, not ours to rewrite.
 		return userData, nil
 	}
 

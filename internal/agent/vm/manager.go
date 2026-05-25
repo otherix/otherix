@@ -34,36 +34,36 @@ var (
 	ErrInvalidSpec     = errors.New("invalid create spec")
 
 	// ErrInvalidState is returned by sync lifecycle ops (Pause /
-	// Resume / Reset) when the VM is not in а phase that accepts
+	// Resume / Reset) when the VM is not in a phase that accepts
 	// the requested transition (e.g. resume-when-running,
-	// pause-when-stopped). Handlers map this к 409 conflict.
+	// pause-when-stopped). Handlers map this to 409 conflict.
 	ErrInvalidState = errors.New("vm not in a valid state for this operation")
 
-	// ErrQMPUnavailable wraps а failed QMP socket dial or command
-	// dispatch. Handlers map this к 500 — the operator can re-
-	// invoke the action; the agent does not retry автоматически
+	// ErrQMPUnavailable wraps a failed QMP socket dial or command
+	// dispatch. Handlers map this to 500 — the operator can re-
+	// invoke the action; the agent does not retry automatically
 	// (Area 4-IV lock).
 	ErrQMPUnavailable = errors.New("qmp socket unavailable or rejected command")
 
 	// ErrInFlight is returned by async lifecycle entrypoints when the
 	// same VM (by name) already has an operation in progress. Locked
 	// via inFlight sync.Map[name]struct{} per L3 D2: prevents the VM
-	// reconciler от racing concurrent Start / Stop / Poweroff /
-	// Reboot / Delete на the same VM. Handlers map this к 409
+	// reconciler from racing concurrent Start / Stop / Poweroff /
+	// Reboot / Delete on the same VM. Handlers map this to 409
 	// conflict; the reconciler reads HasInFlight before enqueuing
-	// corrective ops к short-circuit без the sentinel round-trip.
+	// corrective ops to short-circuit without the sentinel round-trip.
 	ErrInFlight = errors.New("vm operation already in flight")
 )
 
-// shutdownGrace bounds how long Delete и Stop wait for system_powerdown
-// to take effect. For Stop the timeout is а task-failure trigger (Area
-// 4-II lock — graceful only; operator dispatches к poweroff via CLI
+// shutdownGrace bounds how long Delete and Stop wait for system_powerdown
+// to take effect. For Stop the timeout is a task-failure trigger (Area
+// 4-II lock — graceful only; operator dispatches to poweroff via CLI
 // --force on timeout). For Delete the timeout cascades through Quit /
 // SIGKILL.
 const shutdownGrace = 60 * time.Second
 
 // poweroffGrace bounds how long Poweroff waits for QMP `quit` to take
-// effect before resorting к SIGKILL. Short by design — poweroff is the
+// effect before resorting to SIGKILL. Short by design — poweroff is the
 // force path; operators reach for it when graceful shutdown would not
 // suffice.
 const poweroffGrace = 5 * time.Second
@@ -80,9 +80,9 @@ type pool struct {
 // agent process. All state is in-memory; Manager.New rebuilds it from
 // disk on startup.
 //
-// The pool registry has its own RWMutex distinct от `mu` (which
+// The pool registry has its own RWMutex distinct from `mu` (which
 // serialises VM-state changes). Pool churn driven by the reconciler
-// must not block VM ops, и VM op pool lookups want only а read lock.
+// must not block VM ops, and VM op pool lookups want only a read lock.
 type Manager struct {
 	log             *slog.Logger
 	stateDir        string
@@ -98,8 +98,8 @@ type Manager struct {
 
 	// imageLocks serialises concurrent storage-image work on the same
 	// (pool, sha256). Keys are imageLockKey, values are *sync.Mutex.
-	// The map grows monotonically — bounded по active distinct content
-	// the operator imports. Cleanup is а future iteration concern (see
+	// The map grows monotonically — bounded by active distinct content
+	// the operator imports. Cleanup is a future iteration concern (see
 	// ROADMAP). sync.Map's zero value is usable so no init is needed.
 	imageLocks sync.Map
 
@@ -108,7 +108,7 @@ type Manager struct {
 	// Loaded into via LoadOrStore at Start / Stop / Poweroff /
 	// Reboot / Delete entry; Deleted by the goroutine on completion
 	// (regardless of success / fail). HasInFlight surfaces the
-	// state к the reconciler so it can skip enqueuing duplicates.
+	// state to the reconciler so it can skip enqueuing duplicates.
 	inFlight sync.Map
 
 	// muxes maps a running VM's name to its serial console
@@ -123,11 +123,11 @@ type Manager struct {
 	muxes   map[string]*serialmux.Multiplexer
 }
 
-// inFlightAcquire records а new in-flight operation for name. Returns
-// (release, ok) — ok=true когда the slot was free и the caller may
-// proceed (must call release когда the goroutine ends); ok=false когда
-// а prior operation is still resident, в which case the caller must
-// reject с ErrInFlight без spawning work.
+// inFlightAcquire records a new in-flight operation for name. Returns
+// (release, ok) — ok=true when the slot was free and the caller may
+// proceed (must call release when the goroutine ends); ok=false when
+// a prior operation is still resident, in which case the caller must
+// reject with ErrInFlight without spawning work.
 func (m *Manager) inFlightAcquire(name string) (release func(), ok bool) {
 	if name == "" {
 		return func() {}, true
@@ -138,9 +138,9 @@ func (m *Manager) inFlightAcquire(name string) (release func(), ok bool) {
 	return func() { m.inFlight.Delete(name) }, true
 }
 
-// HasInFlight reports whether а lifecycle operation is currently
-// running on name. Read-only — does not register а new operation. The
-// VM reconciler uses this к skip diff-driven corrections когда the
+// HasInFlight reports whether a lifecycle operation is currently
+// running on name. Read-only — does not register a new operation. The
+// VM reconciler uses this to skip diff-driven corrections when the
 // previous tick's enqueue is still in progress.
 func (m *Manager) HasInFlight(name string) bool {
 	if name == "" {
@@ -150,7 +150,7 @@ func (m *Manager) HasInFlight(name string) bool {
 	return ok
 }
 
-// PoolView is the read-only projection of а registered pool. Consumed
+// PoolView is the read-only projection of a registered pool. Consumed
 // by the reconciler's diff loop AND by future external introspection
 // (e.g. an admin endpoint listing locally-materialised pools). The
 // internal `pool` struct stays unexported.
@@ -160,9 +160,9 @@ type PoolView struct {
 }
 
 // New constructs a Manager. The pool registry starts **empty** — the
-// reconciler populates it от desired-state delivered through
-// heartbeat. The constructor only ensures the state directory и
-// replays existing meta.json files. VM ops that reference а pool not
+// reconciler populates it from desired-state delivered through
+// heartbeat. The constructor only ensures the state directory and
+// replays existing meta.json files. VM ops that reference a pool not
 // yet reconciled return ErrPoolUnknown until the reconciler lands the
 // entry; the first heartbeat tick typically closes the window.
 //
@@ -222,16 +222,16 @@ func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
 	return m, nil
 }
 
-// AddPool registers а pool в the in-memory registry. The reconciler
-// invokes this when а declared_pools entry arrives that the agent
+// AddPool registers a pool in the in-memory registry. The reconciler
+// invokes this when a declared_pools entry arrives that the agent
 // has not yet materialised. The function is idempotent - re-adding
-// an identical (name, root) pair is а no-op; re-adding with а
+// an identical (name, root) pair is a no-op; re-adding with a
 // different root replaces the registry entry but does **not** move
 // existing files on disk (operator responsibility).
 //
-// Filesystem-side: ensures root и the conventional pool subdirs
-// (templates/, scratch/import/) exist и are writable. Errors here
-// propagate up к the reconciler, which records а `failed` outcome on
+// Filesystem-side: ensures root and the conventional pool subdirs
+// (templates/, scratch/import/) exist and are writable. Errors here
+// propagate up to the reconciler, which records a `failed` outcome on
 // the next heartbeat.
 func (m *Manager) AddPool(name, root string) error {
 	if name == "" {
@@ -255,7 +255,7 @@ func (m *Manager) AddPool(name, root string) error {
 	return nil
 }
 
-// RemovePool drops а pool от the in-memory registry. Per SL11 the
+// RemovePool drops a pool from the in-memory registry. Per SL11 the
 // filesystem is left intact — operator responsibility to reclaim
 // space if desired. Subsequent VM ops referencing this pool name
 // return ErrPoolUnknown.
@@ -265,7 +265,7 @@ func (m *Manager) RemovePool(name string) {
 	m.poolsMu.Unlock()
 }
 
-// ListPools returns а snapshot of the registered pools. Order is not
+// ListPools returns a snapshot of the registered pools. Order is not
 // guaranteed (map iteration); callers that want deterministic order
 // sort by Name. Read-only — mutations require AddPool / RemovePool.
 func (m *Manager) ListPools() []PoolView {
@@ -292,7 +292,7 @@ func ensureWritableDir(path string) error {
 
 // ensurePoolSubdirs creates the per-pool subdirectories the storage-
 // image surface depends on: `templates/` for committed image files
-// (the path Manager.Create clones from) и `scratch/import/` for
+// (the path Manager.Create clones from) and `scratch/import/` for
 // in-progress downloads. Idempotent — MkdirAll returns nil on
 // existing directories.
 func ensurePoolSubdirs(root string) error {
@@ -500,12 +500,12 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 	})
 }
 
-// spawnAndVerify boots а qemu process for v, verifies the pidfile is
-// alive, и confirms QMP responds к query-status. Returns ("", nil) on
-// success или (code, err) where `code` is the agent task error code
-// the caller should pass к failTask. Pure side-effect: forks а
+// spawnAndVerify boots a qemu process for v, verifies the pidfile is
+// alive, and confirms QMP responds to query-status. Returns ("", nil) on
+// success or (code, err) where `code` is the agent task error code
+// the caller should pass to failTask. Pure side-effect: forks a
 // daemonized qemu process; does not mutate Manager state. Shared by
-// runCreate (fresh VM, first boot) и runStart (existing VM, restart
+// runCreate (fresh VM, first boot) and runStart (existing VM, restart
 // after stop / poweroff).
 func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 	binary, err := qemu.Binary(v.Architecture)
@@ -564,15 +564,15 @@ func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 	return "", nil
 }
 
-// Pause issues QMP `stop` against the running guest и transitions
-// the persisted status к paused. Returns ErrNotFound when no VM
+// Pause issues QMP `stop` against the running guest and transitions
+// the persisted status to paused. Returns ErrNotFound when no VM
 // matches; ErrInvalidState when the VM is not currently observed
 // as running; ErrQMPUnavailable when the QMP dial or command call
 // fails. Synchronous — the QMP `stop` command returns immediately.
 //
 // Per Area 4-IV the agent does not auto-retry on QMP failure: the
-// VM stays в its prior phase, the error surfaces to the operator,
-// and they decide whether к re-invoke.
+// VM stays in its prior phase, the error surfaces to the operator,
+// and they decide whether to re-invoke.
 func (m *Manager) Pause(ctx context.Context, name string) (*VM, error) {
 	return m.runSyncLifecycle(ctx, name, "pause", func(v *VM, observed Status) (Status, error) {
 		if observed != StatusRunning {
@@ -590,8 +590,8 @@ func (m *Manager) Pause(ctx context.Context, name string) (*VM, error) {
 	})
 }
 
-// Resume issues QMP `cont` against the paused guest и transitions
-// the persisted status back к running. Returns ErrInvalidState
+// Resume issues QMP `cont` against the paused guest and transitions
+// the persisted status back to running. Returns ErrInvalidState
 // when the observed status is not paused.
 func (m *Manager) Resume(ctx context.Context, name string) (*VM, error) {
 	return m.runSyncLifecycle(ctx, name, "resume", func(v *VM, observed Status) (Status, error) {
@@ -614,7 +614,7 @@ func (m *Manager) Resume(ctx context.Context, name string) (*VM, error) {
 // QEMU process keeps running and the guest CPU is reset; the
 // persisted status stays running (the wire `phase` is unchanged
 // because runtime-side identity is preserved — operators detect
-// the reboot through guest uptime, не through CP-side state).
+// the reboot through guest uptime, not through CP-side state).
 // Returns ErrInvalidState when the observed status is not running.
 func (m *Manager) Reset(ctx context.Context, name string) (*VM, error) {
 	return m.runSyncLifecycle(ctx, name, "reset", func(v *VM, observed Status) (Status, error) {
@@ -633,15 +633,15 @@ func (m *Manager) Reset(ctx context.Context, name string) (*VM, error) {
 	})
 }
 
-// runSyncLifecycle is the shared engine для Pause / Resume / Reset.
+// runSyncLifecycle is the shared engine for Pause / Resume / Reset.
 // It resolves the VM by name, snapshots the entry under the manager
 // mutex, runs the supplied action without holding the lock (so QMP
-// dial does not block other handlers), и applies the resulting
-// status transition + meta.json persist под the mutex. Returns the
+// dial does not block other handlers), and applies the resulting
+// status transition + meta.json persist under the mutex. Returns the
 // post-transition VM snapshot for the handler's 200 response.
 //
 // Failures are logged at the agent's component logger so operators
-// can correlate the structured handler 5xx с the underlying QMP
+// can correlate the structured handler 5xx with the underlying QMP
 // fault; the persisted phase is unchanged on failure (Area 4-IV).
 func (m *Manager) runSyncLifecycle(
 	_ context.Context,
@@ -674,13 +674,13 @@ func (m *Manager) runSyncLifecycle(
 	return updated, nil
 }
 
-// Start begins async VM boot и returns the agent task tracking it.
-// Validates that the VM is in а startable observed phase (stopped,
-// failed, or already running — а start-when-running is а task-success
+// Start begins async VM boot and returns the agent task tracking it.
+// Validates that the VM is in a startable observed phase (stopped,
+// failed, or already running — a start-when-running is a task-success
 // no-op per CP spec). Spawns the QEMU process, verifies QMP responds,
-// then transitions persisted status к running. Returns ErrNotFound
+// then transitions persisted status to running. Returns ErrNotFound
 // when no VM matches; ErrInvalidState when phase is paused / creating
-// / deleting (use resume или wait, не start).
+// / deleting (use resume or wait, not start).
 func (m *Manager) Start(ctx context.Context, name string) (*AgentTask, error) {
 	v, err := m.ByName(name)
 	if err != nil {
@@ -709,7 +709,7 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
 	if observed == StatusRunning {
-		log.Info("vm already running; start is а no-op")
+		log.Info("vm already running; start is a no-op")
 		result, _ := json.Marshal(map[string]string{"vm_id": vmID.String()})
 		m.tasks.Update(taskID, func(t *AgentTask) {
 			t.Status = TaskStatusSuccess
@@ -751,11 +751,11 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 }
 
 // Stop begins async graceful VM shutdown via ACPI (QMP
-// system_powerdown). The agent waits up к shutdownGrace (60s) for the
-// guest к honour the signal; if the guest does not exit within the
-// window the task completes as failed с code `stop_timeout` и the
+// system_powerdown). The agent waits up to shutdownGrace (60s) for the
+// guest to honour the signal; if the guest does not exit within the
+// window the task completes as failed with code `stop_timeout` and the
 // observed phase stays running per Area 4-II lock (operators dispatch
-// к poweroff via the CLI `--force` flag or the explicit poweroff
+// to poweroff via the CLI `--force` flag or the explicit poweroff
 // endpoint).
 func (m *Manager) Stop(ctx context.Context, name string) (*AgentTask, error) {
 	v, err := m.ByName(name)
@@ -844,9 +844,9 @@ func (m *Manager) runStop(taskID, vmID uuid.UUID) {
 }
 
 // Poweroff begins async hard shutdown. Attempts QMP `quit` first (so
-// qemu releases sockets / pidfile cleanly) и falls back к SIGKILL
-// после poweroffGrace (5s) if quit does not land. The guest OS is not
-// notified per spec; data loss inside the guest is а documented
+// qemu releases sockets / pidfile cleanly) and falls back to SIGKILL
+// after poweroffGrace (5s) if quit does not land. The guest OS is not
+// notified per spec; data loss inside the guest is a documented
 // possibility. Returns ErrInvalidState only when phase is pending or
 // creating (the VM is mid-spawn — operators wait); every other phase
 // admits poweroff (the wire intent is "make it stop").
@@ -857,7 +857,7 @@ func (m *Manager) Poweroff(ctx context.Context, name string) (*AgentTask, error)
 	}
 	switch v.Status {
 	case StatusPending, StatusCreating, StatusDeleting:
-		return nil, fmt.Errorf("%w: poweroff requires а past-spawn phase, got %q", ErrInvalidState, v.Status)
+		return nil, fmt.Errorf("%w: poweroff requires a past-spawn phase, got %q", ErrInvalidState, v.Status)
 	}
 	release, ok := m.inFlightAcquire(v.Name)
 	if !ok {
@@ -889,7 +889,7 @@ func (m *Manager) runPoweroff(taskID, vmID uuid.UUID) {
 
 	pid, err := qemu.ReadPIDFile(v.PIDFile)
 	if err != nil || pid <= 0 || !qemu.IsAlive(pid) {
-		log.Info("qemu already gone; poweroff is а no-op", "pid", pid, "err", err)
+		log.Info("qemu already gone; poweroff is a no-op", "pid", pid, "err", err)
 		m.transitionVM(vmID, StatusStopped, "")
 		_ = m.persistVM(vmID)
 		result, _ := json.Marshal(map[string]string{"vm_id": vmID.String()})
@@ -902,11 +902,11 @@ func (m *Manager) runPoweroff(taskID, vmID uuid.UUID) {
 
 	if client, dialErr := qemu.DialQMP(v.QMPSocket, 5*time.Second); dialErr == nil {
 		if err := client.Quit(); err != nil {
-			log.Warn("qmp quit failed; falling through к SIGKILL", "err", err)
+			log.Warn("qmp quit failed; falling through to SIGKILL", "err", err)
 		}
 		_ = client.Close()
 	} else {
-		log.Warn("qmp dial during poweroff failed; falling through к SIGKILL", "err", dialErr)
+		log.Warn("qmp dial during poweroff failed; falling through to SIGKILL", "err", dialErr)
 	}
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), poweroffGrace)
@@ -946,8 +946,8 @@ func (m *Manager) runPoweroff(taskID, vmID uuid.UUID) {
 // followed by an internal start (Area 4-III lock — reboot ≠ reset; the
 // QEMU process is replaced so the PID changes). Stop honours
 // shutdownGrace; if the guest does not exit within the window the
-// reboot task fails с code `stop_timeout` и the observed phase stays
-// running (operators dispatch к reset via the dedicated endpoint).
+// reboot task fails with code `stop_timeout` and the observed phase stays
+// running (operators dispatch to reset via the dedicated endpoint).
 func (m *Manager) Reboot(ctx context.Context, name string) (*AgentTask, error) {
 	v, err := m.ByName(name)
 	if err != nil {
@@ -1128,11 +1128,11 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 		client, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
 		if err == nil {
 			if err := client.SystemPowerdown(); err != nil {
-				log.Warn("system_powerdown failed; will fall back к force", "err", err)
+				log.Warn("system_powerdown failed; will fall back to force", "err", err)
 			}
 			_ = client.Close()
 		} else {
-			log.Warn("qmp dial during delete; falling back к kill", "err", err)
+			log.Warn("qmp dial during delete; falling back to kill", "err", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
@@ -1156,7 +1156,7 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	// Poweroff do not remove it but agent restart would).
 	m.detachMux(v.Name)
 
-	// Cleanup disk + per-VM dirs. Errors logged but не fatal — operator
+	// Cleanup disk + per-VM dirs. Errors logged but not fatal — operator
 	// can clean stale files manually if needed.
 	if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
 		log.Warn("remove disk dir", "path", filepath.Dir(v.DiskPath), "err", err)

@@ -200,7 +200,7 @@ func (w *VMCreateWorker) Work(ctx context.Context, j *river.Job[VMCreateArgs]) e
 }
 
 // loadCreateEntities resolves the five FK targets needed by the
-// executor. Each lookup classifies its own pgx.ErrNoRows к the
+// executor. Each lookup classifies its own pgx.ErrNoRows to the
 // matching error code.
 func (w *VMCreateWorker) loadCreateEntities(
 	ctx context.Context, taskID uuid.UUID, args VMCreateArgs,
@@ -340,7 +340,7 @@ func (w *VMDeleteWorker) loadDeleteEntities(
 // alongside UpdateTaskFinalized. derived_vm_count is decremented
 // only when vm.template_id is set — soft-delete-set-null on the
 // template path leaves a nil here, in which case there's nothing
-// к decrement.
+// to decrement.
 func (w *VMDeleteWorker) projectDeleteSuccess(
 	ctx context.Context, taskID uuid.UUID, vm store.VM, result DeleteResult,
 ) error {
@@ -444,8 +444,8 @@ func marshalTaskError(code, message string) ([]byte, error) {
 	}{Code: code, Message: message})
 }
 
-// classifyLoadError maps a pgx error к one of the *_not_found codes
-// (when ErrNoRows) или "internal" for anything else.
+// classifyLoadError maps a pgx error to one of the *_not_found codes
+// (when ErrNoRows) or "internal" for anything else.
 func classifyLoadError(err error, notFoundCode string) string {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return notFoundCode
@@ -453,10 +453,10 @@ func classifyLoadError(err error, notFoundCode string) string {
 	return "internal"
 }
 
-// classifyVMError maps an executor error к a tasks.error.code.
+// classifyVMError maps an executor error to a tasks.error.code.
 // Agent envelope passthrough preserves agent-side codes verbatim;
-// network / 5xx failures collapse к agent_unreachable; poll-budget
-// exhaustion к request_timeout; everything else falls through to the
+// network / 5xx failures collapse to agent_unreachable; poll-budget
+// exhaustion to request_timeout; everything else falls through to the
 // supplied fallback (vm_create_failed / vm_delete_failed).
 func classifyVMError(err error, fallback string) string {
 	var ae *agentclient.AgentError
@@ -490,7 +490,7 @@ func NewVMDeleteWorker(deps DeleteDeps) *VMDeleteWorker {
 
 // Workers registers the vm.create and vm.delete workers on the bundle.
 // Registration is unconditional — river requires the job kind to be
-// in the workers registry for handler-side InsertTx к succeed even
+// in the workers registry for handler-side InsertTx to succeed even
 // when the queue is never started. When deps.Executor is nil the
 // registered worker still answers Insert but errors out cleanly if
 // it is ever fetched (see Work()).
@@ -499,7 +499,7 @@ func Workers(workers *river.Workers, create CreateDeps, del DeleteDeps) {
 	river.AddWorker(workers, NewVMDeleteWorker(del))
 }
 
-// templateChecksumHex projects the template's binary checksum к the
+// templateChecksumHex projects the template's binary checksum to the
 // hex-encoded form the agent's wire shape carries. The
 // agentclient.VMCreateRequest's TemplateChecksum field is a
 // 64-character hex string per the Iteration 1 agent's contract.

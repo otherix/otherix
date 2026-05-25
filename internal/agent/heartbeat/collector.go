@@ -21,14 +21,14 @@ import (
 )
 
 // VMLister is the narrow vm.Manager surface the collector depends on.
-// Constructed by the agent runtime; tests pass а fake.
+// Constructed by the agent runtime; tests pass a fake.
 type VMLister interface {
 	List() []*vm.VM
 }
 
 // Collector returns the heartbeat report for the current tick. Implementations
 // must be safe to call concurrently — the sender invokes Collect
-// from а single goroutine, but tests may exercise the method in
+// from a single goroutine, but tests may exercise the method in
 // parallel.
 type Collector interface {
 	Collect(ctx context.Context) (Report, error)
@@ -45,15 +45,15 @@ type PoolReporter interface {
 // VMReporter returns the per-VM observed-state slice the collector
 // folds into HeartbeatRequest.vms. Implemented by the VM reconciler
 // per L3 D3 — single ownership of observed VM state mirrors the
-// pool reconciler precedent. Nil disables the seam и the collector
-// falls back к Manager.List() directly (legacy / test paths).
+// pool reconciler precedent. Nil disables the seam and the collector
+// falls back to Manager.List() directly (legacy / test paths).
 type VMReporter interface {
 	VMReports() []VMReport
 }
 
 // LinuxCollector reads host inventory from /proc, runs qemu-system-*
 // --version best-effort, and asks the supplied VMLister for the live
-// VM list. Designed для Linux (the only supported agent platform);
+// VM list. Designed for Linux (the only supported agent platform);
 // other platforms fail-fast in New rather than at Collect time.
 type LinuxCollector struct {
 	procPath     string
@@ -71,9 +71,9 @@ type LinuxCollector struct {
 // procPath defaults to /proc; tests override it for synthetic
 // fixtures. Pools may be nil — collector skips the pool-report field.
 // VMReporter (L3 D3): when supplied, the collector uses it as the
-// authoritative source for HeartbeatRequest.vms[] и keeps VMs only
+// authoritative source for HeartbeatRequest.vms[] and keeps VMs only
 // for resource accounting (sumRunningVMs). When nil, the collector
-// falls back к VMs.List() for backward compatibility с tests.
+// falls back to VMs.List() for backward compatibility with tests.
 type CollectorDeps struct {
 	ProcPath   string
 	VMs        VMLister
@@ -83,7 +83,7 @@ type CollectorDeps struct {
 	QEMU       config.QEMUConfig
 }
 
-// NewLinux constructs а LinuxCollector. Returns an error on non-Linux
+// NewLinux constructs a LinuxCollector. Returns an error on non-Linux
 // hosts so the agent fails fast at boot rather than producing
 // degraded heartbeats forever.
 func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
@@ -158,9 +158,9 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 		CPUCoresAvailable:  clampNonNegative32(caps.CPUCoresTotal - usedCores),
 		MemoryAvailableMib: clampNonNegative64(caps.MemoryTotalMib - usedMib),
 	}
-	// Root filesystem metrics. Errors are not propagated - а statfs
+	// Root filesystem metrics. Errors are not propagated - a statfs
 	// failure should not block the heartbeat liveness signal. Caller
-	// carries the metric forward as NULL и the CP receiver preserves
+	// carries the metric forward as NULL and the CP receiver preserves
 	// existing system_disk pressure state.
 	if total, avail, err := rootFilesystemStats(); err == nil {
 		resources.SystemDiskTotalBytes = total
@@ -190,11 +190,11 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	return report, nil
 }
 
-// buildVMReports prefers the reconciler-owned cache когда supplied и
-// falls back к а direct Manager.List() projection for legacy / test
+// buildVMReports prefers the reconciler-owned cache when supplied and
+// falls back to a direct Manager.List() projection for legacy / test
 // paths. Per L3 D3 the reconciler is the single owner of observed VM
 // state once wired; the fallback exists so collector_test fixtures
-// can stay decoupled от the reconciler package.
+// can stay decoupled from the reconciler package.
 func (c *LinuxCollector) buildVMReports() []VMReport {
 	if c.vmReporter != nil {
 		return c.vmReporter.VMReports()
@@ -202,9 +202,9 @@ func (c *LinuxCollector) buildVMReports() []VMReport {
 	return c.collectVMs()
 }
 
-// readCPUInfo parses /proc/cpuinfo for model name, flags (от the first
-// CPU block), и core count. Missing or unreadable file returns
-// empty / 0 — caller falls back на runtime.NumCPU.
+// readCPUInfo parses /proc/cpuinfo for model name, flags (from the first
+// CPU block), and core count. Missing or unreadable file returns
+// empty / 0 — caller falls back on runtime.NumCPU.
 func (c *LinuxCollector) readCPUInfo() (model string, flags []string, cores int) {
 	f, err := os.Open(filepath.Join(c.procPath, "cpuinfo"))
 	if err != nil {
@@ -237,7 +237,7 @@ func (c *LinuxCollector) readCPUInfo() (model string, flags []string, cores int)
 }
 
 // readMemTotalMib parses /proc/meminfo's MemTotal key. The value is
-// reported в kB; convert к MiB. Missing or unreadable returns 0.
+// reported in kB; convert to MiB. Missing or unreadable returns 0.
 func (c *LinuxCollector) readMemTotalMib() int64 {
 	f, err := os.Open(filepath.Join(c.procPath, "meminfo"))
 	if err != nil {
@@ -270,7 +270,7 @@ func (c *LinuxCollector) readMemTotalMib() int64 {
 
 // readKernelVersion preferentially uses the platform's uname syscall
 // (see kernel_*.go for the per-platform implementation). Falls back
-// to /proc/version если uname is not available or fails.
+// to /proc/version if uname is not available or fails.
 func (c *LinuxCollector) readKernelVersion() string {
 	if v := kernelReleaseFromUname(); v != "" {
 		return v
@@ -311,7 +311,7 @@ func (c *LinuxCollector) readQemuInventory() (map[string]string, string) {
 
 // runQEMUVersion parses `qemu-system-* --version` first line.
 // Format: "QEMU emulator version 8.2.0 (...)". Returns the version
-// token или an empty string if the command fails or the output is
+// token or an empty string if the command fails or the output is
 // unexpected.
 func runQEMUVersion(path string) string {
 	cmd := exec.Command(path, "--version")
@@ -329,7 +329,7 @@ func runQEMUVersion(path string) string {
 	return ""
 }
 
-// kvmAvailable returns true iff /dev/kvm is openable. Cheap проверка
+// kvmAvailable returns true iff /dev/kvm is openable. Cheap check
 // avoids the cost of probing CPU flags; the device file is the
 // authoritative liveness signal anyway.
 func (c *LinuxCollector) kvmAvailable() bool {
@@ -341,13 +341,13 @@ func (c *LinuxCollector) kvmAvailable() bool {
 }
 
 // nestedVirtEnabled reads /sys/module/kvm_{intel,amd}/parameters/nested.
-// Either "Y", "1", или "true" → enabled.
+// Either "Y", "1", or "true" → enabled.
 func (c *LinuxCollector) nestedVirtEnabled() bool {
 	for _, path := range []string{
 		"/sys/module/kvm_intel/parameters/nested",
 		"/sys/module/kvm_amd/parameters/nested",
 	} {
-		// #nosec G304 — path comes from а fixed, package-private list.
+		// #nosec G304 — path comes from a fixed, package-private list.
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -361,10 +361,10 @@ func (c *LinuxCollector) nestedVirtEnabled() bool {
 	return false
 }
 
-// sumRunningVMs iterates the agent's VM list и sums vCPUs / memory
-// для rows whose Status is StatusRunning. Non-running VMs do not
+// sumRunningVMs iterates the agent's VM list and sums vCPUs / memory
+// for rows whose Status is StatusRunning. Non-running VMs do not
 // consume host resources (the qemu process exists only for the
-// running ones, по design of vm.Manager).
+// running ones, by design of vm.Manager).
 func (c *LinuxCollector) sumRunningVMs() (int32, int64) {
 	var cores int32
 	var mib int64
@@ -424,11 +424,11 @@ func mapVMStatus(s vm.Status) string {
 	}
 }
 
-// archFromGo maps the Go runtime.GOARCH constant к the heartbeat
+// archFromGo maps the Go runtime.GOARCH constant to the heartbeat
 // architecture enum. Anything outside the two supported architectures
 // surfaces as an empty string — caller has no way to validate against
 // the spec, so the receiver returns 400 architecture / 409
-// architecture_mismatch и the agent retries every tick.
+// architecture_mismatch and the agent retries every tick.
 func archFromGo(goarch string) string {
 	switch goarch {
 	case "amd64", "arm64":
@@ -460,10 +460,10 @@ func clampNonNegative64(v int64) int64 {
 	return v
 }
 
-// clampToInt32 narrows an int к int32, saturating на overflow. Used
+// clampToInt32 narrows an int to int32, saturating on overflow. Used
 // when feeding host-reported counts (cores, port numbers, vCPUs) into
 // the wire schema, which fixes those fields at int32. The schema
-// upper bounds are well below math.MaxInt32 в practice; the clamp
+// upper bounds are well below math.MaxInt32 in practice; the clamp
 // keeps gosec G115 quiet without burying the conversion intent.
 func clampToInt32(v int) int32 {
 	if v > math.MaxInt32 {

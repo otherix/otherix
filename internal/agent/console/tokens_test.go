@@ -150,8 +150,8 @@ func TestTokenStore_SweepExpiredRemovesConsumedAndExpired(t *testing.T) {
 	}
 
 	// Once swept the entry is gone; Consume distinguishes "not in store"
-	// от "in store but expired" only до the next sweep. Both surface as
-	// 401 в the handler — the test just locks the post-sweep shape.
+	// from "in store but expired" only to the next sweep. Both surface as
+	// 401 in the handler — the test just locks the post-sweep shape.
 	if _, err := s.Consume(rawFresh, "vm-c"); !errors.Is(err, ErrTokenNotFound) {
 		t.Errorf("Consume(post-sweep) = %v, want ErrTokenNotFound (entry was swept)", err)
 	}

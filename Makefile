@@ -50,7 +50,7 @@ $(addprefix build-,$(BINARIES)): build-%: ## Build a single daemon binary (api/a
 
 # CLI is a special case: cmd dir is `cli/` for layout consistency with the
 # four daemons (cmd/<short>/), but the binary is `otherix` (no component
-# suffix) per the kubectl/docker/gh convention для operator CLIs.
+# suffix) per the kubectl/docker/gh convention for operator CLIs.
 build-cli: ## Build the otherix operator CLI to bin/otherix
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/otherix ./cmd/cli
@@ -179,7 +179,7 @@ LIMA_VM     := otherix-dev
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
 
-bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise с 'make seed-mvp')
+bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise with 'make seed-mvp')
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) bootstrap-dev-linux ;; \
 	  Darwin) $(MAKE) bootstrap-dev-macos ;; \
@@ -201,17 +201,17 @@ clean-dev: ## Tear down dev environment (per OS)
 	esac
 
 # seed-mvp orchestrates the join-token bootstrap end-to-end:
-# mints token, provisions bootstrap.env + token к agent host, starts agent,
-# waits для cert-material commit, seeds pool + default + Ubuntu template via
+# mints token, provisions bootstrap.env + token to agent host, starts agent,
+# waits for cert-material commit, seeds pool + default + Ubuntu template via
 # CLI. Run AFTER `make bootstrap-dev` + `make run-api-dev`.
 seed-mvp: build-cli ## Run the join-token bootstrap + MVP seed (requires CP running + bootstrap-dev staged)
 	@bash dev/scripts/seed-mvp.sh
 
 # local-dev-start / local-dev-stop wrap the full dev stack lifecycle (Postgres
 # + api-server + Lima VM + agent + CLI cluster config) into two commands.
-# After `make local-dev-start`, `./bin/otherix` works against а fresh cluster
-# с no further setup. `make local-dev-stop` wipes everything including the
-# Postgres bind mount — pair these two when you need а clean slate.
+# After `make local-dev-start`, `./bin/otherix` works against a fresh cluster
+# with no further setup. `make local-dev-stop` wipes everything including the
+# Postgres bind mount — pair these two when you need a clean slate.
 .PHONY: local-dev-start local-dev-stop
 local-dev-start: ## One-shot bring-up: Postgres + CP + Lima + agent + CLI (admin@otherix.local / correct-horse-battery-staple by default)
 	@bash dev/scripts/local-dev-start.sh
@@ -222,10 +222,10 @@ local-dev-stop: ## Stop everything + db-reset (DESTRUCTIVE — wipes Postgres bi
 # ----- Linux -----
 
 # Stage user-mode systemd unit + binary. seed-mvp.sh starts the unit
-# після provisioning bootstrap material (token + bootstrap.env);
-# auto-start would race с the provisioning.
+# after provisioning bootstrap material (token + bootstrap.env);
+# auto-start would race with the provisioning.
 bootstrap-dev-linux: build-agent install-agent-systemd-user
-	@echo ">> bootstrap-dev-linux done; agent staged. Finalise с 'make seed-mvp' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-linux done; agent staged. Finalise with 'make seed-mvp' after 'make run-api-dev'"
 
 deploy-dev-linux: build-agent
 	@cp $(BIN_DIR)/otherix-agent $(HOME)/.local/bin/otherix-agent
@@ -260,9 +260,9 @@ clean-dev-linux:
 # ----- macOS (Lima) -----
 
 # Stage Lima VM + agent binary + config. Agent NOT started — seed-mvp.sh
-# provisions bootstrap material и starts it.
+# provisions bootstrap material and starts it.
 bootstrap-dev-macos: lima-ensure copy-config-lima build-agent-lima copy-agent-lima
-	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise с 'make seed-mvp' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise with 'make seed-mvp' after 'make run-api-dev'"
 
 deploy-dev-macos: build-agent-lima copy-agent-lima restart-agent-lima
 	@echo ">> deploy-dev-macos done"

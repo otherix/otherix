@@ -13,7 +13,7 @@ import "encoding/json"
 // (internal/api/handlers/internal/resolver).
 //
 // There is no per-row `is_default` flag - cluster default-pool is
-// held в cluster_settings.default_pool_name. POST bodies carrying
+// held in cluster_settings.default_pool_name. POST bodies carrying
 // `is_default` are rejected by the forbidden-fields key sweep.
 //
 // Config is RawMessage so the handler can persist it verbatim into the

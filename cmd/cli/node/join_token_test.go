@@ -37,7 +37,7 @@ func TestNodeNameLabel(t *testing.T) {
 }
 
 // TestHumanTTLRemaining verifies the duration label rendering across
-// the s / m / h / d boundaries и the past-timestamp ("expired") path.
+// the s / m / h / d boundaries and the past-timestamp ("expired") path.
 func TestHumanTTLRemaining(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
@@ -47,7 +47,7 @@ func TestHumanTTLRemaining(t *testing.T) {
 		offset time.Duration
 		want   string
 	}{
-		{"future minutes", 5 * time.Minute, "4m"}, // truncates к 4 since the helper subtracts а small fudge
+		{"future minutes", 5 * time.Minute, "4m"}, // truncates to 4 since the helper subtracts a small fudge
 		{"future hours", 3 * time.Hour, "2h"},     // same truncation pattern
 		{"future days", 3 * 24 * time.Hour, "2d"},
 		{"already expired", -time.Hour, "expired"},
@@ -62,7 +62,7 @@ func TestHumanTTLRemaining(t *testing.T) {
 			got := humanTTLRemaining(input)
 			if c.name == "empty string" {
 				// Empty input branch returns "-" per the helper, not
-				// "expired". Adjust expectation для this special case.
+				// "expired". Adjust expectation for this special case.
 				if got != "-" && got != "expired" {
 					t.Errorf("humanTTLRemaining(empty) = %q, want - or expired", got)
 				}
@@ -76,7 +76,7 @@ func TestHumanTTLRemaining(t *testing.T) {
 }
 
 // TestHumanTTLRemaining_UnparseableInput verifies malformed input
-// falls back к "-".
+// falls back to "-".
 func TestHumanTTLRemaining_UnparseableInput(t *testing.T) {
 	t.Parallel()
 	if got := humanTTLRemaining("not-a-timestamp"); got != "-" {

@@ -25,11 +25,11 @@ import (
 // stop (running → stopped) → start (stopped → running) → reboot
 // (running → running) → poweroff (running → stopped) → start → delete.
 // Each L2 op is enqueued through the river worker (CP-side), the
-// agent emits the matching task, и the CP projects success +
+// agent emits the matching task, and the CP projects success +
 // desired_phase write. Asserts: 202 from the handler, terminal
 // success from the task row, vms.desired_phase updates per spec
 // (start → running, stop / poweroff → stopped, reboot unchanged),
-// и agent inventory state.
+// and agent inventory state.
 func TestVMAsyncLifecycle_StartStopRebootPoweroff_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -60,9 +60,9 @@ func TestVMAsyncLifecycle_StartStopRebootPoweroff_HappyPath(t *testing.T) {
 }
 
 // TestVMAsyncLifecycle_StopTimeout_TaskFailsLeavesRunning verifies
-// that an agent-side stop_timeout failure surfaces as а terminal-
-// failed CP task с the agent code preserved verbatim, и that the
-// CP does NOT write desired_phase к stopped on failure (the InTx
+// that an agent-side stop_timeout failure surfaces as a terminal-
+// failed CP task with the agent code preserved verbatim, and that the
+// CP does NOT write desired_phase to stopped on failure (the InTx
 // rolls back). Mock-agent stages stop-timeout via
 // AddVMLifecycleResult.
 func TestVMAsyncLifecycle_StopTimeout_TaskFailsLeavesRunning(t *testing.T) {
@@ -113,8 +113,8 @@ func TestVMAsyncLifecycle_StopTimeout_TaskFailsLeavesRunning(t *testing.T) {
 	}
 }
 
-// TestVMAsyncLifecycle_CrossUserNotFound — developer attempts к
-// start admin's VM. PermVMLifecycle scope=own + cross-user maps к
+// TestVMAsyncLifecycle_CrossUserNotFound — developer attempts to
+// start admin's VM. PermVMLifecycle scope=own + cross-user maps to
 // 404 (no leak) per the project's 403-vs-404 rule. Same shape as
 // L1 TestVMLifecycle_CrossUserNotFound.
 func TestVMAsyncLifecycle_CrossUserNotFound(t *testing.T) {
@@ -146,9 +146,9 @@ func TestVMAsyncLifecycle_CrossUserNotFound(t *testing.T) {
 	}
 }
 
-// runAsyncOp POSTs the supplied op, awaits the task terminal, и
+// runAsyncOp POSTs the supplied op, awaits the task terminal, and
 // asserts the post-state matches expectations: terminal-success, CP
-// desired_phase, CP vm_runtime.phase (observed-state mirror), и
+// desired_phase, CP vm_runtime.phase (observed-state mirror), and
 // mock-agent inventory phase.
 func runAsyncOp(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.UUID, op string, wantDesired store.VMDesiredPhase, wantRuntime store.VMPhase, wantAgentStatus string) {
 	t.Helper()
@@ -182,8 +182,8 @@ func runAsyncOp(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.U
 	}
 }
 
-// postAsyncLifecycle returns the task_id from а 202 response, fatal
-// на а non-202 status.
+// postAsyncLifecycle returns the task_id from a 202 response, fatal
+// on a non-202 status.
 func postAsyncLifecycle(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.UUID, op, token string) uuid.UUID {
 	t.Helper()
 	status, body := postAsyncLifecycleRaw(t, ctx, v, vmID, op, token)
@@ -203,8 +203,8 @@ func postAsyncLifecycle(t *testing.T, ctx context.Context, v *verticalSlice, vmI
 	return id
 }
 
-// postAsyncLifecycleRaw issues the POST и returns (status, body)
-// без status validation — used by negative-path tests checking 404
+// postAsyncLifecycleRaw issues the POST and returns (status, body)
+// without status validation — used by negative-path tests checking 404
 // / 409 / 401.
 func postAsyncLifecycleRaw(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.UUID, op, token string) (int, []byte) {
 	t.Helper()
@@ -233,10 +233,10 @@ func postAsyncLifecycleRaw(t *testing.T, ctx context.Context, v *verticalSlice, 
 	return resp.StatusCode, body
 }
 
-// awaitTaskTerminal polls the task row until it reaches а terminal
+// awaitTaskTerminal polls the task row until it reaches a terminal
 // status (success / failed / cancelled), or the deadline fires.
 // Uses the store directly rather than the GET /v1/tasks/{id} surface
-// — equivalent for our purposes, и saves the auth dance for а tail
+// — equivalent for our purposes, and saves the auth dance for a tail
 // poll. Sleeps 50ms between polls so the test bench does not burn
 // CPU.
 func awaitTaskTerminal(t *testing.T, ctx context.Context, v *verticalSlice, taskID uuid.UUID, deadline time.Duration) {

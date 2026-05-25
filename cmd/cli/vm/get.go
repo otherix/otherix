@@ -18,9 +18,9 @@ func newGetCommand() *cobra.Command {
 		Short: "Show a VM's projection.",
 		Long: `Fetches the VM's projected view from the CP. The positional is a
 VM name (UUID literals rejected by the server with 400
-validation_failed). The status field is computed at read time из
+validation_failed). The status field is computed at read time from
 (vms.deleted_at, vm_runtime.phase) — see the projectStatus truth
-table в internal/api/handlers/vms/projection.go.`,
+table in internal/api/handlers/vms/projection.go.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
@@ -59,9 +59,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 // printVMText renders the operator-friendly multi-line key=value form
 // (one field per line). Nullable fields print "<unset>" so the
-// formatter is unambiguous под empty templates / unscheduled VMs.
+// formatter is unambiguous under empty templates / unscheduled VMs.
 // Referenced resources are surfaced by name — the wire field tags are
-// `template` / `pool` / `node`, и so are the labels below.
+// `template` / `pool` / `node`, and so are the labels below.
 func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "id: %s\n", vm.ID)
 	printf(cmd, "name: %s\n", vm.Name)

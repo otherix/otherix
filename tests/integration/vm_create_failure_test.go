@@ -26,9 +26,9 @@ import (
 // failed with `error.code = "qemu_spawn_failed"`.
 //
 // The vms row stays — operators inspect the `failed` task to decide
-// remediation, and the eventual user-driven delete walks через the
+// remediation, and the eventual user-driven delete walks via the
 // regular vm.delete path. derived_vm_count was never incremented
-// (increment happens только in the success projectAndFinalize InTx).
+// (increment happens only in the success projectAndFinalize InTx).
 func TestVMCreate_VerticalSliceAgentFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -39,7 +39,7 @@ func TestVMCreate_VerticalSliceAgentFailure(t *testing.T) {
 	v.mock.InjectError("vms.create", agentmock.InjectedError{
 		Status:  http.StatusInternalServerError,
 		Code:    "qemu_spawn_failed",
-		Message: "kvm not available и tcg fallback disabled",
+		Message: "kvm not available and tcg fallback disabled",
 	})
 
 	taskID, _ := v.createVM(t, ctx, vmCreateBody{
@@ -70,7 +70,7 @@ func TestVMCreate_VerticalSliceAgentFailure(t *testing.T) {
 	}
 
 	// derived_vm_count untouched — increment lives inside the success
-	// InTx, не on the failure path.
+	// InTx, not on the failure path.
 	tplAfter, err := v.store.Queries().GetTemplate(ctx, tpl.ID)
 	if err != nil {
 		t.Fatalf("GetTemplate (after): %v", err)
@@ -98,7 +98,7 @@ func TestVMCreate_VerticalSliceAgentFailure(t *testing.T) {
 }
 
 // TestVMCreate_VerticalSliceValidation covers the API-edge validation
-// branches не hit by the unit tests' http-recorder fakes. The
+// branches not hit by the unit tests' http-recorder fakes. The
 // integration path is end-to-end: real router, real auth, real
 // envelope encoder.
 func TestVMCreate_VerticalSliceValidation(t *testing.T) {

@@ -22,8 +22,8 @@ func newGetCommand() *cobra.Command {
   - Name positional → aggregated PoolConceptView listing every per-node
     instance plus the cluster-default flag.
 
-The CLI parses the positional locally к pick which roundtrip к make.
-Behaviour mirrors the server's polymorphic GET — но keeping the
+The CLI parses the positional locally to pick which roundtrip to make.
+Behaviour mirrors the server's polymorphic GET — but keeping the
 discrimination CLI-side avoids an unintended aggregated-view fetch on
 a UUID input.`,
 		Args: cobra.ExactArgs(1),
@@ -97,7 +97,7 @@ func renderInstance(cmd *cobra.Command, p cpclient.Pool, format string) error {
 // printPoolPressure renders the pool's disk_pressure condition.
 // One-line per condition mirror of the node detail's `pressure:`
 // section. Always emitted — operators can see "disk: ok" or "disk:
-// active since 30m ago" parallel к node-level pressure rendering.
+// active since 30m ago" parallel to node-level pressure rendering.
 func printPoolPressure(cmd *cobra.Command, p cpclient.Pool) {
 	printf(cmd, "pressure:\n")
 	if p.DiskPressure != nil {

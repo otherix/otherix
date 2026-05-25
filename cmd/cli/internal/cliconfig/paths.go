@@ -11,7 +11,7 @@ import (
 )
 
 // ConfigEnvVar names the env override for the config file path —
-// mirrors KUBECONFIG / DOCKER_CONFIG. Empty или unset → fall through
+// mirrors KUBECONFIG / DOCKER_CONFIG. Empty or unset → fall through
 // to the home-directory default.
 const ConfigEnvVar = "OTHERIX_CONFIG"
 
@@ -22,19 +22,19 @@ const HomeRelativePath = ".otherix/config"
 
 // ErrNoHome is returned by ResolvePath when both $OTHERIX_CONFIG and
 // $HOME are missing — a degenerate environment where the CLI cannot
-// pick a default file location. Callers translate this к "set
+// pick a default file location. Callers translate this to "set
 // OTHERIX_CONFIG or pass --config".
 var ErrNoHome = errors.New("cliconfig: no $HOME and no OTHERIX_CONFIG — cannot resolve default config path")
 
-// ResolvePath picks the config file path в this order:
+// ResolvePath picks the config file path in this order:
 //
 //  1. flagPath (the --config flag) — caller's strongest intent;
 //  2. $OTHERIX_CONFIG — operator override at the shell layer;
 //  3. $HOME/.otherix/config — the default ("kubectl-style" location).
 //
-// XDG_CONFIG_HOME is deliberately not consulted. kubectl и docker
+// XDG_CONFIG_HOME is deliberately not consulted. kubectl and docker
 // both ship per-tool home-relative defaults (~/.kube, ~/.docker)
-// и we follow the same pattern для predictability — users grep'ing
+// and we follow the same pattern for predictability — users grep'ing
 // "where is my config?" find one canonical answer.
 //
 // The path may not exist yet; cliconfig.Load tolerates absent files.

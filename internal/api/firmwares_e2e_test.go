@@ -664,9 +664,9 @@ func seedVMOnFirmware(t *testing.T, ctx context.Context, s *store.Store, ownerID
 	return vmID
 }
 
-// seedTemplateOnFirmware inserts a templates row pinning fwID и
-// returns both the row UUID (для FK references) и the operator-
-// facing name (для name-based path constructs).
+// seedTemplateOnFirmware inserts a templates row pinning fwID and
+// returns both the row UUID (for FK references) and the operator-
+// facing name (for name-based path constructs).
 func seedTemplateOnFirmware(t *testing.T, ctx context.Context, s *store.Store, ownerID, fwID uuid.UUID) (uuid.UUID, string) {
 	t.Helper()
 	tplID := uuid.New()

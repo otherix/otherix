@@ -10,23 +10,23 @@ import (
 	"path/filepath"
 )
 
-// Persist writes the bootstrap result к disk atomically, в the order
+// Persist writes the bootstrap result to disk atomically, in the order
 //
 //  1. key (mode 0600 — secret, owner-only)
 //  2. cert (mode 0644)
 //  3. CA (mode 0644)
 //
-// Each file is written via а tempfile + rename so partial writes are
-// не observed by concurrent readers. The set-wide invariant ("all
-// three present, или none") is enforced by the boot orchestrator's
-// polling-loop check on subsequent agent start - а failure between
-// files 1 и 3 leaves detectable partial state что the polling loop
-// logs at WARN и does not transition к State B.
+// Each file is written via a tempfile + rename so partial writes are
+// not observed by concurrent readers. The set-wide invariant ("all
+// three present, or none") is enforced by the boot orchestrator's
+// polling-loop check on subsequent agent start - a failure between
+// files 1 and 3 leaves detectable partial state that the polling loop
+// logs at WARN and does not transition to State B.
 //
 // The agent identifies itself by name: it reads its identity (node
-// name) от the cert CN at startup; the CP-assigned UUID is no longer
-// needed agent-side. `Result.NodeID` остаётся carried for logging
-// (operators can correlate с CP-side records via the log line).
+// name) from the cert CN at startup; the CP-assigned UUID is no longer
+// needed agent-side. `Result.NodeID` remains carried for logging
+// (operators can correlate with CP-side records via the log line).
 func Persist(certPath, keyPath, caPath string, result *Result) error {
 	if result == nil {
 		return errors.New("bootstrap: Persist called with nil result")
@@ -43,18 +43,18 @@ func Persist(certPath, keyPath, caPath string, result *Result) error {
 	return nil
 }
 
-// writeFileAtomic writes content к path through а tempfile + rename
-// so concurrent readers (или а crash mid-write) never see а partial
-// file. The tempfile lives в the same directory as the target so the
-// rename stays atomic — cross-device renames degrade к copy + replace,
+// writeFileAtomic writes content to path through a tempfile + rename
+// so concurrent readers (or a crash mid-write) never see a partial
+// file. The tempfile lives in the same directory as the target so the
+// rename stays atomic — cross-device renames degrade to copy + replace,
 // which loses the atomicity guarantee.
 //
-// The parent directory is created с mode 0750 если absent (group-
-// readable, world-not — enough for а dedicated agent process running
-// as its own uid/gid; the individual file modes (0600 для key, 0644
-// для cert / CA) are what govern actual content access). Mode on the
+// The parent directory is created with mode 0750 if absent (group-
+// readable, world-not — enough for a dedicated agent process running
+// as its own uid/gid; the individual file modes (0600 for key, 0644
+// for cert / CA) are what govern actual content access). Mode on the
 // tempfile is applied via Chmod before the rename so the final file
-// lands on disk с the requested permissions от moment one.
+// lands on disk with the requested permissions from moment one.
 func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {

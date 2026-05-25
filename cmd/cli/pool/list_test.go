@@ -14,10 +14,10 @@ import (
 //
 //	failed > unreachable > cordoned > under_pressure > pending > ready
 //
-// Cases pair every priority level в isolation and then walk
+// Cases pair every priority level in isolation and then walk
 // cross-conditions to lock the order semantics. Orphaned pools (nil
 // node_status) and other node lifecycle values (draining, gone)
-// fall through к the pool-level checks per the rendering doc-
+// fall through to the pool-level checks per the rendering doc-
 // comment.
 func TestRenderPoolStatus(t *testing.T) {
 	pressure := &cpclient.PressureCondition{Since: "2026-05-15T12:00:00Z", ConsecutiveCount: 1}

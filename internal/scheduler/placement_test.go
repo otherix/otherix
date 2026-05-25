@@ -80,17 +80,17 @@ func (f *fakeQuerier) CountRunningVMsByNode(_ context.Context, nodeID *uuid.UUID
 	return f.vmCounts[*nodeID], nil
 }
 
-// nodeFixture controls а fake (pool, node) row. Defaults yield а node
-// without heartbeat metrics — set the metrics fields explicitly when а
-// case needs resource-aware behaviour. nameOverride lets а case break
-// the alphabetic alignment between UUID byte order и node name, which
+// nodeFixture controls a fake (pool, node) row. Defaults yield a node
+// without heartbeat metrics — set the metrics fields explicitly when a
+// case needs resource-aware behaviour. nameOverride lets a case break
+// the alphabetic alignment between UUID byte order and node name, which
 // is how we exercise the name lexicographic tie-break independently of
 // UUID ordering.
 //
 // cpuEffective / memEffectiveMib mirror the view-backed effective
 // columns. When left nil, makeRow defaults them to the raw available
-// values — the no-pending-VMs base case the unit tests use по
-// умолчанию. А case can override either к simulate а pending-VM
+// values — the no-pending-VMs base case the unit tests use by
+// default. A case can override either to simulate a pending-VM
 // subtraction (raw available stays high, effective drops).
 type nodeFixture struct {
 	uuidSuffix              byte
@@ -124,9 +124,9 @@ func makeRow(f nodeFixture) store.ListEligiblePoolsByNameRow {
 		poolName = "default"
 	}
 	// Default effective to raw available — most tests do not simulate
-	// pending-VM subtraction и want fit check / scoring к behave as
-	// "no pending". А case с pending sets cpuEffective / memEffective‑
-	// Mib explicitly к а smaller value.
+	// pending-VM subtraction and want fit check / scoring to behave as
+	// "no pending". A case with pending sets cpuEffective / memEffective‑
+	// Mib explicitly to a smaller value.
 	cpuEff := f.cpuEffective
 	if cpuEff == nil && f.cpuAvailable != nil {
 		v := *f.cpuAvailable
@@ -137,10 +137,10 @@ func makeRow(f nodeFixture) store.ListEligiblePoolsByNameRow {
 		v := *f.memAvailMib
 		memEff = &v
 	}
-	// Pool effective column defaults к raw available — parallel к the
+	// Pool effective column defaults to raw available — parallel to the
 	// node CPU / memory effective fallback (no pending disks). Tests
-	// с disk-aware coverage override either field. CapacityBytes is
-	// left as f.capacityBytes verbatim — а nil capacity is а valid
+	// with disk-aware coverage override either field. CapacityBytes is
+	// left as f.capacityBytes verbatim — a nil capacity is a valid
 	// pre-scan state.
 	availEff := f.availableBytesEffective
 	if availEff == nil && f.availableBytes != nil {
@@ -170,26 +170,26 @@ func makeRow(f nodeFixture) store.ListEligiblePoolsByNameRow {
 	}
 }
 
-// metrics is а convenience helper producing the four-pointer signature
-// of а node with reported heartbeat data. The fit-check + scoring
+// metrics is a convenience helper producing the four-pointer signature
+// of a node with reported heartbeat data. The fit-check + scoring
 // paths read cpu_cores_effective / memory_effective_mib; makeRow
-// defaults those к raw available so this helper still covers the
-// "no pending" case с four arguments.
+// defaults those to raw available so this helper still covers the
+// "no pending" case with four arguments.
 func metrics(cpuTotal, cpuAvail int32, memTotalMib, memAvailMib int64) (*int32, *int32, *int64, *int64) {
 	return &cpuTotal, &cpuAvail, &memTotalMib, &memAvailMib
 }
 
 // effective returns pointers for the effective-availability columns —
-// used by tests that simulate а pending VM subtracting from raw
-// availability. Pair с metrics() при building а fixture.
+// used by tests that simulate a pending VM subtracting from raw
+// availability. Pair with metrics() when building a fixture.
 func effective(cpuEff int32, memEffMib int64) (*int32, *int64) {
 	return &cpuEff, &memEffMib
 }
 
-// toStoragePool projects а PoolEffectiveCapacity row back onto the
+// toStoragePool projects a PoolEffectiveCapacity row back onto the
 // raw storage_pools shape — the same projection sqlc would produce
-// от `ListStoragePoolsByName`. Used in tests that need to populate
-// fakeQuerier.allPools (the existence-fallback path) от an `r*`
+// from `ListStoragePoolsByName`. Used in tests that need to populate
+// fakeQuerier.allPools (the existence-fallback path) from an `r*`
 // fixture already built via makeRow.
 func toStoragePool(r store.ListEligiblePoolsByNameRow) store.StoragePool {
 	p := r.PoolEffectiveCapacity
@@ -211,10 +211,10 @@ func toStoragePool(r store.ListEligiblePoolsByNameRow) store.StoragePool {
 
 // defaultResources is the scheduler-internal default ResourcesConfig
 // — every resource enabled, ratio 1.0. Mirror of
-// internal/config::defaultResourcesConfig; кept here so test cases
-// can build PlacementConfig values без crossing package boundaries.
+// internal/config::defaultResourcesConfig; kept here so test cases
+// can build PlacementConfig values without crossing package boundaries.
 // Sub-iteration C tests that exercise per-resource gating override
-// individual fields на top of this value.
+// individual fields on top of this value.
 func defaultResources() ResourcesConfig {
 	return ResourcesConfig{
 		CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
@@ -266,7 +266,7 @@ func TestSchedulePlacement(t *testing.T) {
 			wantErrIs: ErrNoEligibleNodes,
 		},
 		{
-			name: "single eligible node без metrics — count fallback selects it",
+			name: "single eligible node without metrics — count fallback selects it",
 			req:  PlacementRequest{PoolName: "default", VCPUs: 4, MemoryMiB: 8192},
 			querier: &fakeQuerier{
 				eligible: []store.ListEligiblePoolsByNameRow{r1},
@@ -326,11 +326,11 @@ func TestSchedulePlacement(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Table-test cases predate Sub-iteration C — their cfg
-			// literals do not set Resources. А zero-value
+			// literals do not set Resources. A zero-value
 			// ResourcesConfig has every resource disabled, which
 			// would skip the fit check entirely. Substitute the
 			// strict default so each case exercises the same gates
-			// it did before С-iteration.
+			// it did before With-iteration.
 			cfg := tc.cfg
 			if cfg.Resources == (ResourcesConfig{}) {
 				cfg.Resources = defaultResources()
@@ -374,7 +374,7 @@ func TestSchedulePlacement_ListErrorSurfaced(t *testing.T) {
 		t.Fatal("SchedulePlacement = no error, want non-nil")
 	}
 	if !strings.Contains(err.Error(), "list eligible pools") {
-		t.Errorf("err = %q, want chain к mention 'list eligible pools'", err)
+		t.Errorf("err = %q, want chain to mention 'list eligible pools'", err)
 	}
 }
 
@@ -384,7 +384,7 @@ func TestSchedulePlacement_ListErrorSurfaced(t *testing.T) {
 func TestSchedulePlacement_ResourceAware(t *testing.T) {
 	// node-busy: 8 cores total, 1 effective (87.5% used).
 	// node-spare: 8 cores total, 6 effective (25% used).
-	// Both fit the 1-core request; node-spare должен win on score.
+	// Both fit the 1-core request; node-spare must win on score.
 	busyCPUTotal, busyCPUAvail, busyMemTotal, busyMemAvail := metrics(8, 1, 16384, 2048)
 	spareCPUTotal, spareCPUAvail, spareMemTotal, spareMemAvail := metrics(8, 6, 16384, 12288)
 	busy := makeRow(nodeFixture{
@@ -411,12 +411,12 @@ func TestSchedulePlacement_ResourceAware(t *testing.T) {
 }
 
 // TestSchedulePlacement_EffectiveDrivesFit confirms the fit check uses
-// the effective columns, not the raw heartbeat columns: а node that
-// reports 8 free cores via heartbeat но carries 4 cores of pending
+// the effective columns, not the raw heartbeat columns: a node that
+// reports 8 free cores via heartbeat but carries 4 cores of pending
 // VMs (effective=4) correctly rejects an 8-core request.
 func TestSchedulePlacement_EffectiveDrivesFit(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
-	// Simulate а pending 4-vCPU / 8 GiB VM subtracting от raw.
+	// Simulate a pending 4-vCPU / 8 GiB VM subtracting from raw.
 	cpuEff, memEff := effective(4, 8192)
 	row := makeRow(nodeFixture{
 		uuidSuffix: 1, name: "node-a", nameOverride: true,
@@ -425,7 +425,7 @@ func TestSchedulePlacement_EffectiveDrivesFit(t *testing.T) {
 	})
 	q := &fakeQuerier{eligible: []store.ListEligiblePoolsByNameRow{row}}
 
-	// 8-vCPU request fits raw availability (8 ≤ 8) но not effective (8 > 4).
+	// 8-vCPU request fits raw availability (8 ≤ 8) but not effective (8 > 4).
 	_, err := SchedulePlacement(context.Background(), q,
 		PlacementRequest{PoolName: "default", VCPUs: 8, MemoryMiB: 4096},
 		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
@@ -433,7 +433,7 @@ func TestSchedulePlacement_EffectiveDrivesFit(t *testing.T) {
 		t.Fatalf("err = %v, want errors.Is ErrInsufficientResources (fit should use effective, not raw)", err)
 	}
 
-	// 4-vCPU request fits effective (4 ≤ 4) и lands.
+	// 4-vCPU request fits effective (4 ≤ 4) and lands.
 	got, err := SchedulePlacement(context.Background(), q,
 		PlacementRequest{PoolName: "default", VCPUs: 4, MemoryMiB: 4096},
 		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
@@ -446,8 +446,8 @@ func TestSchedulePlacement_EffectiveDrivesFit(t *testing.T) {
 }
 
 // TestSchedulePlacement_InsufficientCPU verifies the fit check rejects
-// а node that cannot accommodate the requested CPU, и the resulting
-// error carries а structured payload.
+// a node that cannot accommodate the requested CPU, and the resulting
+// error carries a structured payload.
 func TestSchedulePlacement_InsufficientCPU(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(4, 1, 16384, 14336)
 	row := makeRow(nodeFixture{
@@ -485,7 +485,7 @@ func TestSchedulePlacement_InsufficientCPU(t *testing.T) {
 }
 
 // TestSchedulePlacement_InsufficientCPU_ReportsEffective verifies that
-// when а pending VM brings effective below raw, the utilization
+// when a pending VM brings effective below raw, the utilization
 // payload reflects the effective (post-pending) accounting — operators
 // see the scheduler's actual view, not the agent's stale snapshot.
 func TestSchedulePlacement_InsufficientCPU_ReportsEffective(t *testing.T) {
@@ -505,7 +505,7 @@ func TestSchedulePlacement_InsufficientCPU_ReportsEffective(t *testing.T) {
 		t.Fatalf("err = %v, want errors.Is ErrInsufficientResources", err)
 	}
 	detail, _ := ExtractInsufficientResources(err)
-	// total - effective = 8 - 2 = 6 cores "used" по effective view.
+	// total - effective = 8 - 2 = 6 cores "used" per effective view.
 	wantUtil := []NodeUtilization{
 		{Node: "node-a", Pool: "default", CPUUsed: 6, CPUTotal: 8, MemUsedMiB: 12288, MemTotalMiB: 16384},
 	}
@@ -536,7 +536,7 @@ func TestSchedulePlacement_InsufficientMemory(t *testing.T) {
 // TestSchedulePlacement_TieBreakByNameNotUUID is the core consistency
 // test for the algorithm change: when two candidates score equally,
 // the **name lexicographic** (lowercase) tie-break decides, not UUID
-// byte order. The fixture deliberately sets up а contradiction —
+// byte order. The fixture deliberately sets up a contradiction —
 // node-z carries the smallest UUID byte, node-a the largest — so the
 // old UUID byte-order tie-break would pick node-z; the new name
 // tie-break correctly picks node-a.
@@ -546,7 +546,7 @@ func TestSchedulePlacement_TieBreakByNameNotUUID(t *testing.T) {
 	cpuTotalC, cpuAvailC, memTotalC, memAvailC := metrics(8, 4, 16384, 8192)
 	// UUID byte order: nodeZ (suffix 1) < nodeM (suffix 2) < nodeA (suffix 3).
 	// Lowercase name order: node-a < node-m < node-z. The two orderings
-	// are reversed, so а passing test confirms the name tie-break wins.
+	// are reversed, so a passing test confirms the name tie-break wins.
 	nodeZ := makeRow(nodeFixture{
 		uuidSuffix: 1, name: "node-z", nameOverride: true,
 		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
@@ -605,9 +605,9 @@ func TestSchedulePlacement_TieBreakCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestSchedulePlacement_MixedMetrics confirms that а cluster where some
-// nodes report heartbeat metrics и others have not yet keeps both
-// classes eligible, и that а metric-bearing winner outranks а
+// TestSchedulePlacement_MixedMetrics confirms that a cluster where some
+// nodes report heartbeat metrics and others have not yet keeps both
+// classes eligible, and that a metric-bearing winner outranks a
 // fallback candidate of comparable apparent load.
 func TestSchedulePlacement_MixedMetrics(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 6, 16384, 12288)
@@ -659,8 +659,8 @@ func TestSchedulePlacement_AllWithoutMetrics(t *testing.T) {
 }
 
 // TestSchedulePlacement_LeastVMCountAlgorithm exercises the count-based
-// algorithm path. With identical heartbeat metrics, the candidate с
-// fewer pinned VMs wins — а pure-count decision unaffected by
+// algorithm path. With identical heartbeat metrics, the candidate with
+// fewer pinned VMs wins — a pure-count decision unaffected by
 // resource utilization.
 func TestSchedulePlacement_LeastVMCountAlgorithm(t *testing.T) {
 	// Both nodes equally utilized but node-b carries fewer VMs.
@@ -692,13 +692,13 @@ func TestSchedulePlacement_LeastVMCountAlgorithm(t *testing.T) {
 }
 
 // TestSchedulePlacement_LeastVMCountSharesTieBreak confirms that both
-// algorithm paths use the same name lexicographic tie-break — а
+// algorithm paths use the same name lexicographic tie-break — a
 // least_vm_count tie resolves by name, not by UUID byte order.
 func TestSchedulePlacement_LeastVMCountSharesTieBreak(t *testing.T) {
 	// Identical metrics, identical VM counts → tie → name decides.
 	cpuTotalA, cpuAvailA, memTotalA, memAvailA := metrics(8, 4, 16384, 8192)
 	cpuTotalZ, cpuAvailZ, memTotalZ, memAvailZ := metrics(8, 4, 16384, 8192)
-	// node-z carries а smaller UUID (suffix 1), node-a carries а bigger
+	// node-z carries a smaller UUID (suffix 1), node-a carries a bigger
 	// UUID (suffix 9) — UUID byte order would pick node-z.
 	z := makeRow(nodeFixture{
 		uuidSuffix: 1, name: "node-z", nameOverride: true,
@@ -728,7 +728,7 @@ func TestSchedulePlacement_LeastVMCountSharesTieBreak(t *testing.T) {
 // TestSchedulePlacement_UnknownAlgorithm guards the defensive surface:
 // if an unknown algorithm reaches the hot path despite config
 // validation, the scheduler returns the typed sentinel rather than
-// silently picking а default.
+// silently picking a default.
 func TestSchedulePlacement_UnknownAlgorithm(t *testing.T) {
 	row := makeRow(nodeFixture{uuidSuffix: 1})
 	q := &fakeQuerier{eligible: []store.ListEligiblePoolsByNameRow{row}}
@@ -741,7 +741,7 @@ func TestSchedulePlacement_UnknownAlgorithm(t *testing.T) {
 }
 
 // TestSchedulePlacement_NodeHintInsufficientFits surfaces the case
-// where the operator pins а hint to а specific node и that node
+// where the operator pins a hint to a specific node and that node
 // cannot fit the request — the resulting envelope carries the
 // insufficient-resources detail (not pool_not_on_node), since the
 // pool IS hosted on the node.
@@ -766,8 +766,8 @@ func stringPtr(s string) *string { return &s }
 
 // TestSchedulePlacement_PressureDetailWhenAllFiltered exercises the
 // memory-pressure failure path: the eligible list is empty (every
-// candidate filtered out) и the diagnostic query reports nodes under
-// memory pressure. The error wraps ErrNoEligibleNodes и carries а
+// candidate filtered out) and the diagnostic query reports nodes under
+// memory pressure. The error wraps ErrNoEligibleNodes and carries a
 // NodePressureDetail accessible via ExtractNodePressureDetail.
 func TestSchedulePlacement_PressureDetailWhenAllFiltered(t *testing.T) {
 	r1 := makeRow(nodeFixture{uuidSuffix: 1, name: "node-a", nameOverride: true})
@@ -811,7 +811,7 @@ func TestSchedulePlacement_PressureDetailWhenAllFiltered(t *testing.T) {
 
 // TestSchedulePlacement_NoPressureWhenAllCordoned confirms the bare
 // ErrNoEligibleNodes path stays untouched when the diagnostic query
-// returns no pressured candidates — pool exists, всё cordoned, no
+// returns no pressured candidates — pool exists, all cordoned, no
 // pressure → no NodePressureDetail attached.
 func TestSchedulePlacement_NoPressureWhenAllCordoned(t *testing.T) {
 	r1 := makeRow(nodeFixture{uuidSuffix: 1, name: "node-a", nameOverride: true})
@@ -832,9 +832,9 @@ func TestSchedulePlacement_NoPressureWhenAllCordoned(t *testing.T) {
 }
 
 // TestSchedulePlacement_AllThreePressureTypesCombined exercises the
-// merge logic в buildNodePressureDetail: memory pressure on node-a,
-// system_disk pressure on node-b, и pool disk pressure on node-c's
-// pool. Result: three entries в the detail, each carrying the
+// merge logic in buildNodePressureDetail: memory pressure on node-a,
+// system_disk pressure on node-b, and pool disk pressure on node-c's
+// pool. Result: three entries in the detail, each carrying the
 // appropriate condition flag.
 func TestSchedulePlacement_AllThreePressureTypesCombined(t *testing.T) {
 	memTs := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
@@ -904,9 +904,9 @@ func TestSchedulePlacement_AllThreePressureTypesCombined(t *testing.T) {
 }
 
 // TestSchedulePlacement_NodeWithBothMemoryAndSystemDiskPressure
-// exercises the dedup logic в buildNodePressureDetail: both node-
-// scoped queries return the same node, и the result merges into а
-// single entry с two conditions[].
+// exercises the dedup logic in buildNodePressureDetail: both node-
+// scoped queries return the same node, and the result merges into a
+// single entry with two conditions[].
 func TestSchedulePlacement_NodeWithBothMemoryAndSystemDiskPressure(t *testing.T) {
 	memTs := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	sysTs := time.Date(2026, 5, 12, 12, 5, 0, 0, time.UTC)
@@ -952,14 +952,14 @@ func TestSchedulePlacement_NodeWithBothMemoryAndSystemDiskPressure(t *testing.T)
 
 // ----- Sub-iteration C: disk-aware fit + per-resource gate -----
 //
-// Helpers below build rows с disk capacity / availability populated.
-// Existing tests default disk fields к nil, which makes
-// candidateHasMetrics fall back к count-based for disk-enabled
-// configs; the С-aware cases pin them explicitly.
+// Helpers below build rows with disk capacity / availability populated.
+// Existing tests default disk fields to nil, which makes
+// candidateHasMetrics fall back to count-based for disk-enabled
+// configs; the With-aware cases pin them explicitly.
 
-// diskRow wraps makeRow с disk capacity + availability set к the
-// supplied bytes. AvailableBytesEffective defaults к raw available
-// (no pending disks); cases с pending pressure pass an explicit
+// diskRow wraps makeRow with disk capacity + availability set to the
+// supplied bytes. AvailableBytesEffective defaults to raw available
+// (no pending disks); cases with pending pressure pass an explicit
 // override.
 func diskRow(f nodeFixture, capacity, available int64) store.ListEligiblePoolsByNameRow {
 	f.capacityBytes = i64Ptr(capacity)
@@ -992,7 +992,7 @@ func TestSchedulePlacement_DiskFit_Sufficient(t *testing.T) {
 }
 
 // TestSchedulePlacement_DiskFit_Insufficient — disk-aware enabled,
-// pool too tight → ErrInsufficientResources с disk fields populated.
+// pool too tight → ErrInsufficientResources with disk fields populated.
 func TestSchedulePlacement_DiskFit_Insufficient(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
 	row := diskRow(nodeFixture{
@@ -1076,7 +1076,7 @@ func TestSchedulePlacement_CPUDisabled_TwoFactorScore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	// loose pool ranks lower на disk axis → wins despite equal memory util.
+	// loose pool ranks lower on disk axis → wins despite equal memory util.
 	if got.Node.ID != loose.NodeEffectiveAvailability.ID {
 		t.Errorf("winner = %s, want node-b (loose pool)", got.Node.Name)
 	}
@@ -1084,7 +1084,7 @@ func TestSchedulePlacement_CPUDisabled_TwoFactorScore(t *testing.T) {
 
 // TestSchedulePlacement_AllDisabled_CountFallback — every resource
 // off → score derived from CountRunningVMsByNode (Least-VM-count
-// parity без switching the cluster algorithm).
+// parity without switching the cluster algorithm).
 func TestSchedulePlacement_AllDisabled_CountFallback(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
 	a := makeRow(nodeFixture{
@@ -1122,12 +1122,12 @@ func TestSchedulePlacement_AllDisabled_CountFallback(t *testing.T) {
 }
 
 // TestSchedulePlacement_OvercommitInflatesCapacity — ratio > 1.0
-// allows а fit that strict 1.0 would reject. Asserts the multiplier
+// allows a fit that strict 1.0 would reject. Asserts the multiplier
 // reaches the fit check.
 func TestSchedulePlacement_OvercommitInflatesCapacity(t *testing.T) {
 	// Memory is the tight resource: 8192 MiB total, 2048 MiB effective,
 	// request 3000 MiB. Strict 1.0 rejects (2048 < 3000); ratio 2.0
-	// inflates effective к 4096 и admits the candidate.
+	// inflates effective to 4096 and admits the candidate.
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 8192, 2048)
 	row := diskRow(nodeFixture{
 		uuidSuffix: 1, name: "node-a", nameOverride: true,
@@ -1145,7 +1145,7 @@ func TestSchedulePlacement_OvercommitInflatesCapacity(t *testing.T) {
 		t.Errorf("strict err = %v, want ErrInsufficientResources", err)
 	}
 
-	// 2.0 overcommit на memory: admitted.
+	// 2.0 overcommit on memory: admitted.
 	loose := defaultResources()
 	loose.Memory.OvercommitRatio = 2.0
 	got, err := SchedulePlacement(context.Background(), q,
@@ -1159,8 +1159,8 @@ func TestSchedulePlacement_OvercommitInflatesCapacity(t *testing.T) {
 	}
 }
 
-// TestSchedulePlacement_ThreeFactorScoring — three pools одинаковая
-// CPU / memory load, разный disk → выбор по disk util.
+// TestSchedulePlacement_ThreeFactorScoring — three pools same
+// CPU / memory load, different disk → choice per disk util.
 func TestSchedulePlacement_ThreeFactorScoring(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 4, 8192, 4096)
 	heavy := diskRow(nodeFixture{
@@ -1197,13 +1197,13 @@ func TestSchedulePlacement_ThreeFactorScoring(t *testing.T) {
 }
 
 // TestSchedulePlacement_PoolWithoutMetrics_FallsBackToCount — pool
-// row missing capacity / available (pre-scan) и disk-aware enabled →
+// row missing capacity / available (pre-scan) and disk-aware enabled →
 // candidate falls into count-based scoring rather than rejection.
-// Parallel к the node-without-heartbeat fallback for CPU/memory.
+// Parallel to the node-without-heartbeat fallback for CPU/memory.
 func TestSchedulePlacement_PoolWithoutMetrics_FallsBackToCount(t *testing.T) {
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
-	// Two candidates: А has pool metrics (low load); B has none. Disk-
-	// aware should rank А ahead because B uses count fallback.
+	// Two candidates: A has pool metrics (low load); B has none. Disk-
+	// aware should rank A ahead because B uses count fallback.
 	a := diskRow(nodeFixture{
 		uuidSuffix: 1, name: "node-a", nameOverride: true,
 		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
@@ -1225,8 +1225,8 @@ func TestSchedulePlacement_PoolWithoutMetrics_FallsBackToCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	// А wins — resource-aware scoring lives в [0, 1]; B's fallback
-	// score sits at 1.0+0 = 1.0, so А (small disk util) outranks.
+	// A wins — resource-aware scoring lives in [0, 1]; B's fallback
+	// score sits at 1.0+0 = 1.0, so A (small disk util) outranks.
 	if got.Node.ID != a.NodeEffectiveAvailability.ID {
 		t.Errorf("winner = %s, want node-a (metric-bearing outranks fallback)", got.Node.Name)
 	}

@@ -16,7 +16,7 @@ import (
 // Node carries both the full admin/operator projection and the
 // reduced developer/viewer summary in a single struct: every
 // admin-only field uses a pointer / json.RawMessage so a summary-view
-// JSON response decodes cleanly с those fields left zero/nil. The
+// JSON response decodes cleanly with those fields left zero/nil. The
 // always-present fields (ID, Name, Architecture, Status, Labels,
 // CreatedAt) match between the two server-side shapes.
 //
@@ -62,15 +62,15 @@ type Node struct {
 
 // PressureCondition mirrors the wire schema's MemoryPressureCondition
 // / SystemDiskPressureCondition / DiskPressureCondition. All three
-// pressure types share the same wire shape — а single struct decodes
-// any of them. NULL когда pressure is not active; `omitempty` keeps
+// pressure types share the same wire shape — a single struct decodes
+// any of them. NULL when pressure is not active; `omitempty` keeps
 // an empty payload off the JSON wire entirely.
 type PressureCondition struct {
 	Since            string `json:"since"`
 	ConsecutiveCount int32  `json:"consecutive_count"`
 }
 
-// MemoryPressure is а legacy alias retained для callers that imported
+// MemoryPressure is a legacy alias retained for callers that imported
 // the earlier name. New code should use PressureCondition directly.
 type MemoryPressure = PressureCondition
 
@@ -103,8 +103,8 @@ type ListNodesParams struct {
 	Status       string
 }
 
-// ListNodes fetches GET /v1/nodes с the supplied query filters.
-// Pagination is the caller's responsibility (re-issue с
+// ListNodes fetches GET /v1/nodes with the supplied query filters.
+// Pagination is the caller's responsibility (re-issue with
 // NodeList.Meta.NextCursor on Params.Cursor).
 func (c *Client) ListNodes(ctx context.Context, params ListNodesParams) (NodeList, error) {
 	q := url.Values{}

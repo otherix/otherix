@@ -48,7 +48,7 @@ func TestCloneTemplate_MissingSource(t *testing.T) {
 }
 
 func TestCloneTemplate_OverwriteExistingFinalIsAtomic(t *testing.T) {
-	// If dst already exists, CloneTemplate writes к dst+".tmp" then renames,
+	// If dst already exists, CloneTemplate writes to dst+".tmp" then renames,
 	// so the final file is replaced atomically. Verify that a pre-existing
 	// dst is replaced (not corrupted by interleaved writes).
 	dir := t.TempDir()

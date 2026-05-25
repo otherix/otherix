@@ -23,18 +23,18 @@ import (
 const defaultTTLSeconds = 3600
 
 // intendedNodeNameMaxLength bounds the API-edge length check. 253
-// matches the practical DNS-name ceiling и the nodes.name validator
-// (defense-in-depth — SQL accepts arbitrary text, but а 4 KB blob
+// matches the practical DNS-name ceiling and the nodes.name validator
+// (defense-in-depth — SQL accepts arbitrary text, but a 4 KB blob
 // would be unusable anyway).
 const intendedNodeNameMaxLength = 253
 
 // Create implements POST /v1/nodes/join-tokens. Required permission:
 // node:manage (admin only — gated by the router-level
-// RequirePermission middleware). Mints а fresh token bundle (token +
-// CA fingerprint) и returns the plaintext exactly once.
+// RequirePermission middleware). Mints a fresh token bundle (token +
+// CA fingerprint) and returns the plaintext exactly once.
 //
-// Idempotency-Key intentionally not honored — каждый call mints а
-// fresh token (sharing а cached response would compromise the once-
+// Idempotency-Key intentionally not honored — each call mints a
+// fresh token (sharing a cached response would compromise the once-
 // only plaintext invariant). The route is mounted outside the idem
 // middleware to enforce this.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Audit log: INFO-level, never plaintext. Captures
-	// the operator-driving fields plus а small projection of the row.
+	// the operator-driving fields plus a small projection of the row.
 	h.log.InfoContext(r.Context(), "join token created",
 		slog.String("token_id", row.ID.String()),
 		slog.String("created_by_user_id", callerID.String()),
@@ -109,7 +109,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusCreated, resp)
 }
 
-// parseCreateRequest decodes the JSON body. Returns а sentinel error
+// parseCreateRequest decodes the JSON body. Returns a sentinel error
 // suitable for direct status mapping by the caller.
 func parseCreateRequest(r *http.Request) (createRequest, error) {
 	var req createRequest
@@ -152,7 +152,7 @@ func normaliseCreateRequest(req createRequest) (*string, int, *int32, error) {
 				return nil, 0, nil, errIntendedNameTooLong
 			}
 			// Pre-bound + multi-use combination — defense-in-depth
-			// against the SQL CHECK constraint. Refuses каждое
+			// against the SQL CHECK constraint. Refuses each
 			// max_uses != 1 (including nil meaning unlimited).
 			if maxUses == nil || *maxUses != 1 {
 				return nil, 0, nil, errPreboundMultiUse
@@ -164,13 +164,13 @@ func normaliseCreateRequest(req createRequest) (*string, int, *int32, error) {
 	return intendedNodeName, ttl, maxUses, nil
 }
 
-// writeCreateError maps validation sentinels к 400 envelopes;
-// anything else falls к "invalid request body".
+// writeCreateError maps validation sentinels to 400 envelopes;
+// anything else falls to "invalid request body".
 func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errTTLOutOfRange):
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "ttl_seconds must be в [60, 86400]", nil)
+			response.CodeValidationFailed, "ttl_seconds must be in [60, 86400]", nil)
 	case errors.Is(err, errMaxUsesNotPositive):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "max_uses must be >= 1 when set", nil)

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package cliauth wires а cobra command's persistent flags into а
+// Package cliauth wires a cobra command's persistent flags into a
 // fully-constructed authenticated cpclient.Client. It is the single
-// source of truth для the precedence chain that turns flags + env
-// + config file into а (endpoint, token) pair — every resource
+// source of truth for the precedence chain that turns flags + env
+// + config file into a (endpoint, token) pair — every resource
 // subcommand (vm, future template / pool / node) calls
 // BuildClient instead of inlining its own flag plumbing.
 //
-// The package owns no state и has no test of its own: cliconfig
-// covers the precedence logic, и vm subcommand tests exercise the
+// The package owns no state and has no test of its own: cliconfig
+// covers the precedence logic, and vm subcommand tests exercise the
 // composite path. cliauth's value is purely deduplication.
 package cliauth
 
@@ -24,9 +24,9 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// Flag names shared с the root cobra command. Exported so future
+// Flag names shared with the root cobra command. Exported so future
 // subcommands can read them via cmd.Flag(cliauth.FlagX) instead of
-// re-hard-coding strings и risking drift.
+// re-hard-coding strings and risking drift.
 const (
 	FlagEndpoint = "endpoint"
 	FlagToken    = "token"
@@ -35,10 +35,10 @@ const (
 )
 
 // BuildClient inspects cmd's persistent flags + the process env,
-// resolves an (endpoint, token) pair via cliconfig.Resolve, и
-// returns а ready-to-use *cpclient.Client. The error chain
-// surfaces actionable hints для each missing-credential case —
-// callers should `return err` from RunE и let main render it.
+// resolves an (endpoint, token) pair via cliconfig.Resolve, and
+// returns a ready-to-use *cpclient.Client. The error chain
+// surfaces actionable hints for each missing-credential case —
+// callers should `return err` from RunE and let main render it.
 func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
 	flagEndpoint, _ := cmd.Flags().GetString(FlagEndpoint)
 	flagToken, _ := cmd.Flags().GetString(FlagToken)
@@ -77,10 +77,10 @@ func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
 }
 
 // translateResolveError rewrites cliconfig sentinels into
-// operator-facing messages с suggested actions. Keeps cliconfig's
-// API surface lean (it knows about flags / env только in names,
+// operator-facing messages with suggested actions. Keeps cliconfig's
+// API surface lean (it knows about flags / env only in names,
 // not commands) while still steering users to the right
-// remediation в the CLI.
+// remediation in the CLI.
 func translateResolveError(err error, path string) error {
 	switch {
 	case errors.Is(err, cliconfig.ErrEndpointMissing):

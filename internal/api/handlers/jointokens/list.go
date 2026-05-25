@@ -13,9 +13,9 @@ import (
 
 // List implements GET /v1/nodes/join-tokens. Required permission:
 // node:manage (admin-only). Cursor pagination;
-// include_expired=true к surface expired rows (default false).
+// include_expired=true to surface expired rows (default false).
 //
-// consumption_count surfaces via correlated subquery в the sqlc-
+// consumption_count surfaces via correlated subquery in the sqlc-
 // generated query — first slice has low cardinality so the
 // non-index'd subquery is acceptable.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +33,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	params := store.ListJoinTokensParams{
 		IncludeExpired: includeExpired,
-		LimitCount:     limit + 1, // +1 row к detect next page.
+		LimitCount:     limit + 1, // +1 row to detect next page.
 	}
 	if cur != nil {
 		params.CursorCreatedAt = &cur.CreatedAt

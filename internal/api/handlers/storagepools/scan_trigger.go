@@ -29,7 +29,7 @@ type ScanTriggerArgs struct{}
 
 // Kind names the job kind. Distinct from `storage_pool.scan` (the
 // per-pool unit of work) so river surfaces the two cleanly in
-// observability tooling и so the periodic dedup window stays scoped
+// observability tooling and so the periodic dedup window stays scoped
 // to the trigger itself.
 func (ScanTriggerArgs) Kind() string { return "storage_pool.scan_trigger" }
 
@@ -39,10 +39,10 @@ func (ScanTriggerArgs) Kind() string { return "storage_pool.scan_trigger" }
 type ScanTriggerConfig struct {
 	// Interval between trigger firings. Defaults to 15 minutes —
 	// pool capacity changes far slower than CPU / memory (which use
-	// 30 s heartbeat), и filesystem walks dominate scan cost.
+	// 30 s heartbeat), and filesystem walks dominate scan cost.
 	Interval time.Duration
 
-	// Jitter caps the random delay applied к each per-pool enqueue
+	// Jitter caps the random delay applied to each per-pool enqueue
 	// within a trigger fire. Spreads agent-side load when many pools
 	// would otherwise scan back-to-back. Must be strictly less than
 	// Interval at validation time. Defaults to 30 s.
@@ -51,10 +51,10 @@ type ScanTriggerConfig struct {
 
 // withDefaults backfills package defaults for zero-valued knobs. Mirrors
 // the heartbeat reconciler pattern: time.Duration cannot distinguish
-// "unset" от an explicit zero, so we treat <= 0 as "use the default."
+// "unset" from an explicit zero, so we treat <= 0 as "use the default."
 // Operators who legitimately want zero jitter (single-pool clusters,
-// deterministic test runs) bypass the config seam и invoke jitterDelay
-// directly — а non-issue at MVP scale.
+// deterministic test runs) bypass the config seam and invoke jitterDelay
+// directly — a non-issue at MVP scale.
 func (c ScanTriggerConfig) withDefaults() ScanTriggerConfig {
 	out := c
 	if out.Interval <= 0 {
@@ -76,8 +76,8 @@ type ScanTriggerDeps struct {
 	Logger *slog.Logger
 }
 
-// triggerStore narrows *store.Store к the surface the trigger needs.
-// Lets the unit tests pass а stub без the entire Queries struct.
+// triggerStore narrows *store.Store to the surface the trigger needs.
+// Lets the unit tests pass a stub without the entire Queries struct.
 type triggerStore interface {
 	ListPoolsNeedingScan(ctx context.Context) ([]store.ListPoolsNeedingScanRow, error)
 }
@@ -85,7 +85,7 @@ type triggerStore interface {
 // triggerEnqueuer abstracts the per-pool atomic enqueue (CreateTask +
 // InsertTx + UpdateTaskRiverJobID). Production wires
 // productionTriggerEnqueuer over *store.Store + *river.Client; tests
-// supply а recording fake.
+// supply a recording fake.
 type triggerEnqueuer interface {
 	EnqueueScan(ctx context.Context, poolID uuid.UUID, scheduledAt time.Time) error
 }
@@ -93,11 +93,11 @@ type triggerEnqueuer interface {
 // ScanTriggerWorker fans out per-pool scan tasks on a configured cadence.
 // Each fire:
 //
-//  1. Reads ListPoolsNeedingScan — pools on scannable nodes без an
+//  1. Reads ListPoolsNeedingScan — pools on scannable nodes without an
 //     in-flight scan task (handler-side dedup, see the SQL comment).
-//  2. For each pool, schedules а fresh scan task с а jittered
+//  2. For each pool, schedules a fresh scan task with a jittered
 //     ScheduledAt so concurrent agent walks spread.
-//  3. Errors on individual pools log а WARN и do not block siblings;
+//  3. Errors on individual pools log a WARN and do not block siblings;
 //     the periodic schedule recovers automatically on the next fire.
 type ScanTriggerWorker struct {
 	river.WorkerDefaults[ScanTriggerArgs]
@@ -117,8 +117,8 @@ func (w *ScanTriggerWorker) Work(ctx context.Context, _ *river.Job[ScanTriggerAr
 }
 
 // runScanTriggerTick is the testable seam. It iterates pools-needing-
-// scan и delegates per-pool enqueue к the supplied enqueuer. Per-pool
-// errors are logged и swallowed; the only fatal error is а failure
+// scan and delegates per-pool enqueue to the supplied enqueuer. Per-pool
+// errors are logged and swallowed; the only fatal error is a failure
 // to list pools (which prevents the whole tick).
 func runScanTriggerTick(
 	ctx context.Context,
@@ -156,24 +156,24 @@ func runScanTriggerTick(
 	return nil
 }
 
-// jitterDelay returns а random delay in [0, max). Zero or negative
+// jitterDelay returns a random delay in [0, max). Zero or negative
 // max disables jitter (deterministic, immediate enqueue) — useful in
-// tests и whenever an operator pins Jitter=0 в config.
+// tests and whenever an operator pins Jitter=0 in config.
 //
 // math/rand/v2 is deliberate here: the jitter spreads agent-side
-// load — а scheduling concern, not а security primitive — и keying
+// load — a scheduling concern, not a security primitive — and keying
 // off the global PRNG is exactly the kubernetes-scheduler practice.
 func jitterDelay(max time.Duration) time.Duration {
 	if max <= 0 {
 		return 0
 	}
-	return time.Duration(mathrand.Int64N(int64(max))) //nolint:gosec // G404: jitter is а scheduling primitive, not security-sensitive
+	return time.Duration(mathrand.Int64N(int64(max))) //nolint:gosec // G404: jitter is a scheduling primitive, not security-sensitive
 }
 
 // productionTriggerEnqueuer is the real-world implementation: opens
-// а transaction, inserts the `tasks` row + the river job atomically,
-// и stamps the river_job_id back onto the task row. Mirrors the
-// operator-triggered enqueueScan path в scan.go exactly (CreatedBy is
+// a transaction, inserts the `tasks` row + the river job atomically,
+// and stamps the river_job_id back onto the task row. Mirrors the
+// operator-triggered enqueueScan path in scan.go exactly (CreatedBy is
 // nil because the periodic trigger has no user identity).
 type productionTriggerEnqueuer struct {
 	store  *store.Store
@@ -218,7 +218,7 @@ func (e *productionTriggerEnqueuer) EnqueueScan(ctx context.Context, poolID uuid
 
 // ScanTriggerWorkers registers the periodic-trigger worker on the
 // supplied bundle. Registration is unconditional once enabled — the
-// periodic schedule is gated separately в ScanTriggerPeriodicJobs.
+// periodic schedule is gated separately in ScanTriggerPeriodicJobs.
 func ScanTriggerWorkers(workers *river.Workers, deps ScanTriggerDeps) {
 	cfg := deps.Config.withDefaults()
 	river.AddWorker(workers, &ScanTriggerWorker{
@@ -230,9 +230,9 @@ func ScanTriggerWorkers(workers *river.Workers, deps ScanTriggerDeps) {
 
 // ScanTriggerPeriodicJobs returns the periodic schedule for the
 // trigger. RunOnStart is false: an api-server restart should not
-// race с in-flight scan tasks от the previous run, и the operator-
+// race with in-flight scan tasks from the previous run, and the operator-
 // triggered `POST /v1/storage-pools/{id}/scan` path stays the
-// on-demand escape hatch для immediate scans.
+// on-demand escape hatch for immediate scans.
 func ScanTriggerPeriodicJobs(deps ScanTriggerDeps) []*river.PeriodicJob {
 	cfg := deps.Config.withDefaults()
 	return []*river.PeriodicJob{

@@ -103,7 +103,7 @@ const (
 	PermTaskCancel Permission = "task:cancel"
 
 	// Cluster-level configuration. Reads (GET /v1/cluster/default-pool,
-	// future cluster setting endpoints) are open к every authenticated
+	// future cluster setting endpoints) are open to every authenticated
 	// role — the default-pool name is operator-facing context, not a
 	// secret. Mutations are admin-only by precedent with other
 	// cluster-shaping permissions (storage_pool:manage, node:manage).

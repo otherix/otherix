@@ -63,8 +63,8 @@ func TestTimeout_SlowHandlerYields503(t *testing.T) {
 // run the handler. The upstream Recoverer middleware cannot catch
 // panics that occur on a different goroutine, so without the recover
 // inside Timeout itself a handler panic would crash the whole api
-// process. This test guards both the recovery и the wire shape —
-// status 500 с the standard error envelope, mirroring Recoverer's
+// process. This test guards both the recovery and the wire shape —
+// status 500 with the standard error envelope, mirroring Recoverer's
 // contract.
 func TestTimeout_RecoversPanicInSpawnedGoroutine(t *testing.T) {
 	var logBuf bytes.Buffer
@@ -107,10 +107,10 @@ func TestTimeout_RecoversPanicInSpawnedGoroutine(t *testing.T) {
 }
 
 // TestTimeout_PanicWithErrAbortHandlerSilentlyAborts pins the
-// goroutine-boundary divergence от Recoverer: re-panicking из а
+// goroutine-boundary divergence from Recoverer: re-panicking from a
 // spawned goroutine crashes the process, so Timeout swallows
-// http.ErrAbortHandler without logging or writing а response. The
-// outer select sees done close и returns с whatever zero-value the
+// http.ErrAbortHandler without logging or writing a response. The
+// outer select sees done close and returns with whatever zero-value the
 // ResponseWriter carries — matching the spirit of the sentinel.
 func TestTimeout_PanicWithErrAbortHandlerSilentlyAborts(t *testing.T) {
 	var logBuf bytes.Buffer
@@ -133,6 +133,6 @@ func TestTimeout_PanicWithErrAbortHandlerSilentlyAborts(t *testing.T) {
 		t.Errorf("rec.Body = %q, want empty (silent abort)", rec.Body.String())
 	}
 	if logBuf.Len() != 0 {
-		t.Errorf("expected no log output для ErrAbortHandler, got: %s", logBuf.String())
+		t.Errorf("expected no log output for ErrAbortHandler, got: %s", logBuf.String())
 	}
 }

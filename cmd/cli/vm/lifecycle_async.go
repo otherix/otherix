@@ -13,15 +13,15 @@ import (
 )
 
 // newStartCommand wires `otherix vm start <vm>` — async per CP spec.
-// The CP enqueues а vm.start task; the agent boots the QEMU process
-// и verifies QMP. --wait blocks until the task reaches terminal.
+// The CP enqueues a vm.start task; the agent boots the QEMU process
+// and verifies QMP. --wait blocks until the task reaches terminal.
 func newStartCommand() *cobra.Command {
 	return newAsyncLifecycleCommand(
 		"start",
 		"Start a stopped VM (async).",
-		`Sends POST /v1/vms/<vm>/start to the Control Plane. The CP enqueues а
+		`Sends POST /v1/vms/<vm>/start to the Control Plane. The CP enqueues a
 vm.start task pinned to the VM's node; the agent boots the QEMU
-process и verifies QMP responsiveness before reporting success.
+process and verifies QMP responsiveness before reporting success.
 Sets desired_phase = 'running' on success. Idempotent: starting an
 already-running VM completes successfully without re-spawning.`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.TaskAccepted, error) {
@@ -32,37 +32,37 @@ already-running VM completes successfully without re-spawning.`,
 }
 
 // newStopCommand wires `otherix vm stop <vm>` — async graceful ACPI
-// shutdown. --force dispatches к the poweroff endpoint per Area 4-II
-// lock (CLI-level dispatch, NOT а stop-with-force flag on the API).
+// shutdown. --force dispatches to the poweroff endpoint per Area 4-II
+// lock (CLI-level dispatch, NOT a stop-with-force flag on the API).
 func newStopCommand() *cobra.Command {
 	return newAsyncLifecycleCommand(
 		"stop",
 		"Graceful ACPI shutdown of a running VM (async).",
-		`Sends POST /v1/vms/<vm>/stop to the Control Plane. The CP enqueues а
-vm.stop task; the agent issues QMP system_powerdown и waits up to
-the server-configured shutdown grace для the guest к honour the
-signal. On timeout the task completes as failed с code
-stop_timeout — operators dispatch к the poweroff path к force.
+		`Sends POST /v1/vms/<vm>/stop to the Control Plane. The CP enqueues a
+vm.stop task; the agent issues QMP system_powerdown and waits up to
+the server-configured shutdown grace for the guest to honour the
+signal. On timeout the task completes as failed with code
+stop_timeout — operators dispatch to the poweroff path to force.
 
 --force: short-circuits to POST /v1/vms/<vm>/poweroff instead (hard
-shutdown, guest not notified). This is а CLI-level dispatch к а
-different endpoint, not а server-side flag.`,
+shutdown, guest not notified). This is a CLI-level dispatch to a
+different endpoint, not a server-side flag.`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.TaskAccepted, error) {
 			return c.StopVM(ctx, name)
 		},
-		true, // --force flag dispatches к poweroff
+		true, // --force flag dispatches to poweroff
 	)
 }
 
 // newPoweroffCommand wires `otherix vm poweroff <vm>` — async hard
-// shutdown. Equivalent к pulling the power cable.
+// shutdown. Equivalent to pulling the power cable.
 func newPoweroffCommand() *cobra.Command {
 	return newAsyncLifecycleCommand(
 		"poweroff",
 		"Hard power-off of a VM (async).",
 		`Sends POST /v1/vms/<vm>/poweroff to the Control Plane. The CP enqueues
-а vm.poweroff task; the agent attempts QMP quit (clean socket
-release) и falls back к SIGKILL after а short grace. The guest OS
+a vm.poweroff task; the agent attempts QMP quit (clean socket
+release) and falls back to SIGKILL after a short grace. The guest OS
 is not notified — data loss inside the guest is possible. Sets
 desired_phase = 'stopped' on success.`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.TaskAccepted, error) {
@@ -79,11 +79,11 @@ func newRebootCommand() *cobra.Command {
 		"reboot",
 		"Graceful ACPI reboot of a running VM (async).",
 		`Sends POST /v1/vms/<vm>/reboot to the Control Plane. The CP enqueues
-а vm.reboot task; the agent orchestrates an internal stop+start —
-the QEMU process is replaced so the PID changes (distinct от
+a vm.reboot task; the agent orchestrates an internal stop+start —
+the QEMU process is replaced so the PID changes (distinct from
 reset, which preserves runtime identity through QMP system_reset).
-On stop-phase timeout the task fails с stop_timeout; operators
-dispatch к reset к force.`,
+On stop-phase timeout the task fails with stop_timeout; operators
+dispatch to reset to force.`,
 		func(c *cpclient.Client, ctx context.Context, name string) (cpclient.TaskAccepted, error) {
 			return c.RebootVM(ctx, name)
 		},
@@ -91,14 +91,14 @@ dispatch к reset к force.`,
 	)
 }
 
-// newAsyncLifecycleCommand is the shared builder для the four async
-// lifecycle subcommands. They differ только в the cpclient method
-// они invoke и (для stop) the --force flag that dispatches к the
+// newAsyncLifecycleCommand is the shared builder for the four async
+// lifecycle subcommands. They differ only in the cpclient method
+// they invoke and (for stop) the --force flag that dispatches to the
 // poweroff endpoint. All four support --wait / --wait-timeout.
 //
-// When forceFlag is true, --force is added к the command's flag set
-// и dispatched к cpclient.PoweroffVM на parse time — the spec's
-// Area 4-II lock requires CLI-level dispatch rather than а server-
+// When forceFlag is true, --force is added to the command's flag set
+// and dispatched to cpclient.PoweroffVM on parse time — the spec's
+// Area 4-II lock requires CLI-level dispatch rather than a server-
 // side flag.
 func newAsyncLifecycleCommand(
 	use, short, long string,

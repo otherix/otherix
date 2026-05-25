@@ -25,17 +25,17 @@ import (
 //
 //  1. CP-side template registered with NULL image_checksum_sha256 (no
 //     upstream hash provided by the operator);
-//  2. POST /v1/templates/{name}/images enqueues а storage_image.import
+//  2. POST /v1/templates/{name}/images enqueues a storage_image.import
 //     task; worker dispatches to the production executor;
 //  3. Executor sends the agent request without expected_checksum_sha256
-//     (omitempty on а *string field strips it от the wire body);
-//  4. Mock-agent recognises compute mode и surfaces the queued
+//     (omitempty on a *string field strips it from the wire body);
+//  4. Mock-agent recognises compute mode and surfaces the queued
 //     ComputedChecksumSHA256 in task.result.checksum_sha256;
-//  5. Worker projects the result в storage_images AND back-propagates
+//  5. Worker projects the result in storage_images AND back-propagates
 //     the computed value onto the template row via
 //     UpdateTemplateImageChecksumIfNull (idempotent IS NULL guard).
 //
-// The test asserts the template row transitions from NULL к the agent-
+// The test asserts the template row transitions from NULL to the agent-
 // computed value, locking the round-trip CP ↔ agent contract.
 func TestStorageImageImport_ComputeMode_BackPropagatesChecksum(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -43,8 +43,8 @@ func TestStorageImageImport_ComputeMode_BackPropagatesChecksum(t *testing.T) {
 
 	v := newVerticalSlice(t, ctx, fastAgentClientCfg())
 
-	// Seed а compute-mode template — ImageChecksumSha256 nil →
-	// NULL bytea в DB → executor sends agent request с omitted
+	// Seed a compute-mode template — ImageChecksumSha256 nil →
+	// NULL bytea in DB → executor sends agent request with omitted
 	// expected_checksum_sha256.
 	tpl, err := v.store.Queries().CreateTemplate(ctx, store.CreateTemplateParams{
 		ID:                     uuid.New(),
@@ -71,9 +71,9 @@ func TestStorageImageImport_ComputeMode_BackPropagatesChecksum(t *testing.T) {
 		t.Fatalf("CreateTemplate compute-mode fixture: %v", err)
 	}
 
-	// Stage the agent-computed checksum the mock will surface в
+	// Stage the agent-computed checksum the mock will surface in
 	// task.result. The mock-agent's compute-mode FIFO is keyed by the
-	// empty string (matches how а real agent would respond when
+	// empty string (matches how a real agent would respond when
 	// expected_checksum_sha256 is absent).
 	wantComputed := hex.EncodeToString(bytes.Repeat([]byte{0xc1}, 32))
 	const wantSize int64 = 2 << 20
@@ -111,7 +111,7 @@ func TestStorageImageImport_ComputeMode_BackPropagatesChecksum(t *testing.T) {
 			result.ChecksumSHA256, wantComputed)
 	}
 
-	// storage_images row projected с the computed checksum.
+	// storage_images row projected with the computed checksum.
 	imgRow, err := v.store.Queries().GetStorageImageByTemplateAndPool(ctx, store.GetStorageImageByTemplateAndPoolParams{
 		TemplateID: tpl.ID,
 		PoolID:     v.pool.ID,
@@ -139,9 +139,9 @@ func TestStorageImageImport_ComputeMode_BackPropagatesChecksum(t *testing.T) {
 }
 
 // TestStorageImageImport_VerifyMode_DoesNotOverwriteChecksum confirms
-// the IS NULL guard on UpdateTemplateImageChecksumIfNull: а template
-// that was registered с а checksum (verify mode) does not have its
-// column overwritten by а successful import, even though the worker
+// the IS NULL guard on UpdateTemplateImageChecksumIfNull: a template
+// that was registered with a checksum (verify mode) does not have its
+// column overwritten by a successful import, even though the worker
 // runs the same back-propagation call site.
 func TestStorageImageImport_VerifyMode_DoesNotOverwriteChecksum(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -151,7 +151,7 @@ func TestStorageImageImport_VerifyMode_DoesNotOverwriteChecksum(t *testing.T) {
 	tpl := seedTemplate(t, ctx, v.store, v.adminID, "tpl-verify-preserve", 0xab)
 	originalChecksum := hexChecksum(tpl.ImageChecksumSha256)
 
-	// Stage а success outcome keyed by the verify-mode checksum.
+	// Stage a success outcome keyed by the verify-mode checksum.
 	const wantSize int64 = 1 << 20
 	v.mock.AddImageImportResult(v.pool.Name, originalChecksum, agentmock.ImageImportResult{
 		Status:    "success",

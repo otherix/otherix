@@ -21,7 +21,7 @@ import (
 )
 
 // runConfigCmd executes the `config` cobra subcommand tree against
-// args, mounting it on а throwaway parent that exposes the same
+// args, mounting it on a throwaway parent that exposes the same
 // persistent flags the real root provides. Returns stdout / stderr
 // captured during execution.
 func runConfigCmd(t *testing.T, configPath string, args []string, stdin string) (stdout, stderr string, err error) {
@@ -43,7 +43,7 @@ func runConfigCmd(t *testing.T, configPath string, args []string, stdin string) 
 	return out.String(), errBuf.String(), err
 }
 
-// loginSrv is а minimal httptest CP that handles login и api-token
+// loginSrv is a minimal httptest CP that handles login and api-token
 // create. Used by add-cluster tests.
 type loginSrv struct {
 	*httptest.Server
@@ -166,7 +166,7 @@ func TestAddCluster_LoginFailureSurfaces(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "login") {
 		t.Errorf("err = %v, want login failure", err)
 	}
-	// On failure no config file должен быть written.
+	// On failure no config file must be written.
 	if _, statErr := cliconfig.Load(path); statErr != nil {
 		t.Fatalf("Load: %v", statErr)
 	}
@@ -262,7 +262,7 @@ func TestUse_UnknownClusterFails(t *testing.T) {
 	}
 }
 
-// ensure no leftover usage error в the io.EOF-or-similar shapes that
+// ensure no leftover usage error in the io.EOF-or-similar shapes that
 // would confuse callers reading stderr.
 func TestAddCluster_LoginErrorContext(t *testing.T) {
 	closedSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

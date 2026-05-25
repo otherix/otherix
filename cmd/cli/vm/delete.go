@@ -19,8 +19,8 @@ func newDeleteCommand() *cobra.Command {
 		Use:   "delete <vm>",
 		Short: "Delete a VM (async).",
 		Long: `Submits a vm.delete task. The positional is a VM name (UUID
-literals rejected by the server with 400 validation_failed). На
---wait blocks until the agent confirms teardown и the CP soft-delete
+literals rejected by the server with 400 validation_failed). On
+--wait blocks until the agent confirms teardown and the CP soft-delete
 chain commits. --force skips the confirmation prompt; otherwise the
 CLI prompts when stdin is a TTY.`,
 		Args: cobra.ExactArgs(1),
@@ -81,8 +81,8 @@ func runDelete(cmd *cobra.Command, args []string) error {
 }
 
 // stdinIsTTY reports whether stdin is a terminal. Tests redirect
-// stdin к a pipe / file → returns false → confirmation is skipped
-// без --force. Production interactive use passes through к the
+// stdin to a pipe / file → returns false → confirmation is skipped
+// without --force. Production interactive use passes through to the
 // prompt path.
 func stdinIsTTY() bool {
 	fi, err := os.Stdin.Stat()
@@ -92,14 +92,14 @@ func stdinIsTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// readYes reads a single line из stdin and returns true on a y/Y
-// prefix. Empty input или anything else → false (defaults к no, the
+// readYes reads a single line from stdin and returns true on a y/Y
+// prefix. Empty input or anything else → false (defaults to no, the
 // safer side).
 func readYes(cmd *cobra.Command) bool {
 	r := bufio.NewReader(os.Stdin)
 	line, err := r.ReadString('\n')
 	if err != nil {
-		// EOF на a piped stdin — treat as "no" (already covered by
+		// EOF on a piped stdin — treat as "no" (already covered by
 		// stdinIsTTY in caller, defensive here too).
 		return false
 	}

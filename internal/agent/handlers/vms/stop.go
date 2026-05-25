@@ -15,9 +15,9 @@ import (
 // Returns 202 + AsyncTaskAccepted; Manager.Stop runs QMP
 // system_powerdown followed by WaitGone(shutdownGrace). If the
 // guest does not honour the signal within the window the task
-// completes as failed с code `stop_timeout` per Area 4-II lock —
-// no internal escalation к poweroff; operators dispatch к the
-// poweroff endpoint (or `stop --force` on the CLI) к force.
+// completes as failed with code `stop_timeout` per Area 4-II lock —
+// no internal escalation to poweroff; operators dispatch to the
+// poweroff endpoint (or `stop --force` on the CLI) to force.
 func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "vm_name")
 	if name == "" {

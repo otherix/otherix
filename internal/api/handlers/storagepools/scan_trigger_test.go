@@ -52,7 +52,7 @@ func (f *fakeTriggerStore) ListPoolsNeedingScan(_ context.Context) ([]store.List
 
 type recordingEnqueuer struct {
 	calls  []enqueueCall
-	failOn map[uuid.UUID]error // poolID -> err к return on that call
+	failOn map[uuid.UUID]error // poolID -> err to return on that call
 }
 
 type enqueueCall struct {
@@ -197,11 +197,11 @@ func TestRunScanTriggerTick_JitterBounds(t *testing.T) {
 		}
 	}
 
-	// Sanity: with 200 pools и 250 ms jitter, at least one ScheduledAt
-	// should differ от the others by more than 1 ms. Catches а silent
+	// Sanity: with 200 pools and 250 ms jitter, at least one ScheduledAt
+	// should differ from the others by more than 1 ms. Catches a silent
 	// "jitter=0" regression. Spread is max(scheduledAt) - min(scheduledAt)
-	// across all enqueues — а one-sided diff от calls[0] would silently
-	// return 0 when calls[0] happens к draw the largest jitter (1/200
+	// across all enqueues — a one-sided diff from calls[0] would silently
+	// return 0 when calls[0] happens to draw the largest jitter (1/200
 	// probability, the prior bug).
 	minAt, maxAt := enq.calls[0].scheduledAt, enq.calls[0].scheduledAt
 	for _, c := range enq.calls {

@@ -52,7 +52,7 @@ func TestBuildArgs_AMD64(t *testing.T) {
 
 	// -nographic conflicts with -daemonize on qemu 8.x — must not appear.
 	if strings.Contains(joined, "-nographic") {
-		t.Errorf("amd64 must not use -nographic (incompatible с -daemonize): %s", joined)
+		t.Errorf("amd64 must not use -nographic (incompatible with -daemonize): %s", joined)
 	}
 	if strings.Contains(joined, "-machine virt") {
 		t.Errorf("amd64 should not use -machine virt: %s", joined)

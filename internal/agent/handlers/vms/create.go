@@ -17,7 +17,7 @@ import (
 type createRequest struct {
 	// UUID is optional. When supplied it is used as the agent-side VM
 	// id (unified UUID model: CP mints, agent uses). When absent the
-	// agent generates a fresh uuid - backward compatible с pre-Phase A
+	// agent generates a fresh uuid - backward compatible with pre-Phase A
 	// callers.
 	//
 	// `pool` is the pool **name**. The agent's local registry is
@@ -32,7 +32,7 @@ type createRequest struct {
 	// UserData carries CP-resolved raw `#cloud-config` YAML (L3 Area
 	// 3 lock). Optional — empty value skips cidata generation.
 	// CP-side resolver merges vm.user_data ?:
-	// template.cloud_init_user_data и injects а top-level `hostname:`
+	// template.cloud_init_user_data and injects a top-level `hostname:`
 	// matching the VM name when missing.
 	UserData string `json:"user_data,omitempty"`
 }

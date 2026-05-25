@@ -86,19 +86,19 @@ func ValidatePoolPath(s string) error {
 // `validation_failed`.
 var ErrPoolPathNotAllowed = errors.New("path is not on the storage_pools allowlist")
 
-// ValidatePoolPathAgainstAllowlist returns nil when path is а prefix
+// ValidatePoolPathAgainstAllowlist returns nil when path is a prefix
 // of one of the operator-configured allowed prefixes. This gate
-// prevents POST /v1/storage-pools от targeting filesystem locations
+// prevents POST /v1/storage-pools from targeting filesystem locations
 // the operator has not opted into (default allowlist
 // `/opt/otherix/pools/`).
 //
-// Trailing-slash invariant: prefixes are validated к end в `/` so
+// Trailing-slash invariant: prefixes are validated to end in `/` so
 // `/opt/otherix/pools` cannot match `/opt/otherix/pools-evil/`.
-// Callers МUST run ValidatePoolPath first — this gate trusts the
+// Callers MUST run ValidatePoolPath first — this gate trusts the
 // path to already be syntactically valid (absolute, NUL-free).
 func ValidatePoolPathAgainstAllowlist(path string, prefixes []string) error {
 	// path is already validated by ValidatePoolPath — absolute, NUL-free.
-	// Ensure path itself ends в `/` for the substring match so
+	// Ensure path itself ends in `/` for the substring match so
 	// `/opt/otherix/pools` matches `/opt/otherix/pools/`.
 	candidate := path
 	if !strings.HasSuffix(candidate, "/") {

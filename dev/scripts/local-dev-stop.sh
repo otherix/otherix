@@ -6,7 +6,7 @@
 # confirmation prompt; user runs this when they want clean slate.
 #
 # Sequence:
-#   1. Stop otherix-api  — SIGTERM, wait для graceful shutdown (35s budget),
+#   1. Stop otherix-api  — SIGTERM, wait for graceful shutdown (35s budget),
 #                          SIGKILL fallback
 #   2. clean-dev         — stop + delete Lima VM
 #   3. db-reset          — DROPS Postgres bind mount, recreates fresh
@@ -60,7 +60,7 @@ if [ -n "${orphans}" ]; then
     fi
 fi
 if [ "${stopped}" -eq 0 ] && [ -z "${orphans}" ]; then
-    echo "   no api-server processes к stop"
+    echo "   no api-server processes to stop"
 fi
 
 echo ">> Step 2/3 — Stop + delete Lima VM"

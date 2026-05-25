@@ -216,8 +216,8 @@ func newE2EWithImageDeleter(t *testing.T, deleter storagepoolshandlers.ImageDele
 
 	// Cluster CA bootstrap mirrors the production boot hook so any
 	// e2e test that touches /v1/ca or /v1/nodes/join-tokens sees an
-	// active CA row. Idempotent — repeat calls по the shared DB
-	// observe the existing row и no-op (race-safety).
+	// active CA row. Idempotent — repeat calls by the shared DB
+	// observe the existing row and no-op (race-safety).
 	if err := api.BootstrapClusterCA(context.Background(), s,
 		slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatalf("BootstrapClusterCA: %v", err)

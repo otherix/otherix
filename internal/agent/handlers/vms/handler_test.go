@@ -30,7 +30,7 @@ func TestMapAsyncLifecycleError(t *testing.T) {
 		},
 		{
 			name:       "ErrInvalidState maps to 409",
-			err:        fmt.Errorf("%w: poweroff requires а past-spawn phase, got %q", vm.ErrInvalidState, "pending"),
+			err:        fmt.Errorf("%w: poweroff requires a past-spawn phase, got %q", vm.ErrInvalidState, "pending"),
 			wantStatus: http.StatusConflict,
 			wantCode:   response.CodeConflict,
 		},

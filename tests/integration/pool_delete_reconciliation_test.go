@@ -13,10 +13,10 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// TestE2E_PoolReconciliation_DeletionPropagates confirms что soft-
-// deleting а storage_pools row drops it от the heartbeat's
+// TestE2E_PoolReconciliation_DeletionPropagates confirms that soft-
+// deleting a storage_pools row drops it from the heartbeat's
 // declared_pools list on the next cycle. The agent
-// reconciler observes the absence и unregisters from its local
+// reconciler observes the absence and unregisters from its local
 // map; filesystem state is left intact. This test exercises
 // only the CP-side surface — the absence-from-declared_pools is the
 // signal the agent acts on.
@@ -45,8 +45,8 @@ func TestE2E_PoolReconciliation_DeletionPropagates(t *testing.T) {
 	}
 }
 
-// TestE2E_PoolReconciliation_MultiNodeFilter confirms что the CP
-// returns only the per-node pool inventory: pools owned by а
+// TestE2E_PoolReconciliation_MultiNodeFilter confirms that the CP
+// returns only the per-node pool inventory: pools owned by a
 // different node MUST NOT appear in this node's declared_pools.
 // SL15 invariant — multi-instance pool names disambiguate per-node
 // on the CP side, agents see only their own row.

@@ -100,9 +100,9 @@ func (e *agentImportExecutor) postOrResume(ctx context.Context, args ImportArgs)
 	}
 	// nil bytes → compute mode (agent computes during
 	// streaming download). Non-nil bytes → verify mode (agent compares
-	// against this value, fails с `checksum_mismatch` on disagreement).
+	// against this value, fails with `checksum_mismatch` on disagreement).
 	// agentapi.ImageImportRequest.ExpectedChecksumSha256 is *string
-	// (omitempty), so leaving it nil produces а wire body without
+	// (omitempty), so leaving it nil produces a wire body without
 	// the field — agent treats it as compute mode.
 	if len(args.Template.ImageChecksumSha256) > 0 {
 		hexChecksum := hex.EncodeToString(args.Template.ImageChecksumSha256)

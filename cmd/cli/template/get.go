@@ -100,12 +100,12 @@ func printTemplateText(cmd *cobra.Command, t cpclient.Template, showIDs bool) {
 	printf(cmd, "updated_at: %s\n", t.UpdatedAt)
 }
 
-// printCloudInitUserData renders the baked cloud-init blob с а
+// printCloudInitUserData renders the baked cloud-init blob with a
 // terse, copy-friendly summary so the default text output doesn't
-// drown the operator's terminal in а multi-line YAML dump. nil → one
+// drown the operator's terminal in a multi-line YAML dump. nil → one
 // line "(unset)"; set → "set, N bytes (first line: …)" where the
-// first line is trimmed к 60 chars so even а 1 KB user-data fits
-// в two terminal lines. Operators wanting the full payload reach
+// first line is trimmed to 60 chars so even a 1 KB user-data fits
+// in two terminal lines. Operators wanting the full payload reach
 // for `--output=json` which surfaces the raw string verbatim.
 func printCloudInitUserData(cmd *cobra.Command, ud *string) {
 	if ud == nil {

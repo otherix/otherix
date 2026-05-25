@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-// genTestCA mints а fresh cluster CA для tests that need а signing
+// genTestCA mints a fresh cluster CA for tests that need a signing
 // key. Mirrors the production GenerateClusterCA path so chains line
 // up exactly.
 func genTestCA(t *testing.T) (*x509.Certificate, crypto.Signer) {
@@ -38,7 +38,7 @@ func genTestCA(t *testing.T) (*x509.Certificate, crypto.Signer) {
 	}
 	signer, ok := key.(crypto.Signer)
 	if !ok {
-		t.Fatalf("ParseClusterCAKey: not а crypto.Signer (got %T)", key)
+		t.Fatalf("ParseClusterCAKey: not a crypto.Signer (got %T)", key)
 	}
 	return cert, signer
 }
@@ -187,12 +187,12 @@ func TestGenerateReplicaCert_NoSANs(t *testing.T) {
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	_, _, err := GenerateReplicaCert(caCert, caKey, nil, nil, CPCertValidity, now)
 	if err == nil {
-		t.Fatal("GenerateReplicaCert с empty SANs: expected error, got nil")
+		t.Fatal("GenerateReplicaCert with empty SANs: expected error, got nil")
 	}
 }
 
 func TestAutoDetectSANs_ListenAddrParsing(t *testing.T) {
-	// Pin hostname к а known value для deterministic baseline.
+	// Pin hostname to a known value for deterministic baseline.
 	prev := hostnameFn
 	t.Cleanup(func() { hostnameFn = prev })
 	hostnameFn = func() (string, error) { return "test-replica", nil }
@@ -200,8 +200,8 @@ func TestAutoDetectSANs_ListenAddrParsing(t *testing.T) {
 	cases := []struct {
 		name     string
 		listen   string
-		extraDNS []string // expected на top of baseline {localhost, test-replica}
-		extraIPs []net.IP // expected на top of baseline {127.0.0.1}
+		extraDNS []string // expected on top of baseline {localhost, test-replica}
+		extraIPs []net.IP // expected on top of baseline {127.0.0.1}
 	}{
 		{"empty", "", nil, nil},
 		{"port-only", ":8443", nil, nil},
@@ -367,13 +367,13 @@ func TestCertCacheValid(t *testing.T) {
 
 	t.Run("nil cert", func(t *testing.T) {
 		if err := CertCacheValid(nil, expectedDNS, expectedIPs, caCert, now); err == nil {
-			t.Error("expected error на nil cert")
+			t.Error("expected error on nil cert")
 		}
 	})
 
 	t.Run("nil ca", func(t *testing.T) {
 		if err := CertCacheValid(fresh, expectedDNS, expectedIPs, nil, now); err == nil {
-			t.Error("expected error на nil ca")
+			t.Error("expected error on nil ca")
 		}
 	})
 }
