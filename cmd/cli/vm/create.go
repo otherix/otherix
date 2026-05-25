@@ -48,7 +48,7 @@ Multi-instance pools + scheduler:
     set-default-pool'). Missing default returns 400
     default_pool_not_set.
   - --node is an optional placement hint: when set, the scheduler
-    pins the VM к exactly that node; mismatch (pool not present on
+    pins the VM to exactly that node; mismatch (pool not present on
     the requested node) returns 409 pool_not_on_node.`,
 		RunE: runCreate,
 	}
@@ -60,9 +60,9 @@ Multi-instance pools + scheduler:
 	cmd.Flags().Int(flagVCPUs, defaultVCPUs, "vCPU count (1..128)")
 	cmd.Flags().Int(flagMemoryMB, defaultMemoryMB, "memory in MiB (128..524288)")
 	cmd.Flags().String(flagCloudInitPath, "",
-		"path к а `#cloud-config` YAML override; use '-' к read stdin. Mutually exclusive с --no-cloud-init.")
+		"path to a `#cloud-config` YAML override; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
 	cmd.Flags().Bool(flagCloudInitDisable, false,
-		"explicitly disable cloud-init, ignoring any template pre-bake. Mutually exclusive с --cloud-init.")
+		"explicitly disable cloud-init, ignoring any template pre-bake. Mutually exclusive with --cloud-init.")
 	cmd.Flags().Bool(flagWait, false, "block until the task reaches terminal status")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
@@ -129,9 +129,9 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 
 // readCloudInitFlag turns the `--cloud-init=<path|->` flag into the
 // resolved YAML content. Empty flag returns nil; non-empty reads
-// (file or stdin) и validates (best-effort). Mirrors the template
+// (file or stdin) and validates (best-effort). Mirrors the template
 // CLI helper of the same name; both surfaces consume the shared
-// cloudinit package so the contract (warnings к stderr, parse errors
+// cloudinit package so the contract (warnings to stderr, parse errors
 // bubble up) stays uniform across resources.
 func readCloudInitFlag(cmd *cobra.Command, name string) (*string, error) {
 	raw, err := cmd.Flags().GetString(name)

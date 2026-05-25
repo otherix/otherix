@@ -42,7 +42,7 @@ type vmCreateBody struct {
 	CloudInitDisabled bool    `json:"cloud_init_disabled,omitempty"`
 }
 
-// createVM POSTs /v1/vms, asserts 202, и returns the decoded task uuid.
+// createVM POSTs /v1/vms, asserts 202, and returns the decoded task uuid.
 // idemKey is the optional Idempotency-Key header — empty omits it.
 func (v *verticalSlice) createVM(t *testing.T, ctx context.Context, body vmCreateBody, idemKey string) (uuid.UUID, []byte) {
 	t.Helper()
@@ -116,9 +116,9 @@ func (v *verticalSlice) createVMRaw(t *testing.T, ctx context.Context, body vmCr
 	return resp.StatusCode, respBody
 }
 
-// deleteVMRequest issues a DELETE /v1/vms/{name} с the supplied
+// deleteVMRequest issues a DELETE /v1/vms/{name} with the supplied
 // auth token. The path is name-only — the helper resolves the
-// caller's vmID к its name via the store before building the URL
+// caller's vmID to its name via the store before building the URL
 // so test fixtures keep their UUID-based addressing at the seam
 // where they have it (extractVMIDFromTask).
 func (v *verticalSlice) deleteVMRequest(t *testing.T, ctx context.Context, vmID uuid.UUID, token, idemKey string) (int, []byte) {
@@ -151,7 +151,7 @@ func (v *verticalSlice) deleteVMRequest(t *testing.T, ctx context.Context, vmID 
 	return resp.StatusCode, body
 }
 
-// postVMLifecycleRequest issues POST /v1/vms/{name}/<action> с the
+// postVMLifecycleRequest issues POST /v1/vms/{name}/<action> with the
 // supplied auth token. Used by the L1 sync ops integration tests —
 // the action segment must be one of `pause`, `resume`, `reset`.
 // Returns raw status / body so callers can decode either the success
@@ -183,9 +183,9 @@ func (v *verticalSlice) postVMLifecycleRequest(t *testing.T, ctx context.Context
 	return resp.StatusCode, body
 }
 
-// getVMRequest issues GET /v1/vms/{name} с the supplied token (admin
+// getVMRequest issues GET /v1/vms/{name} with the supplied token (admin
 // when empty). Returns raw status / body — caller decodes. The
-// helper resolves vmID к its name before constructing the URL
+// helper resolves vmID to its name before constructing the URL
 // (mirrors deleteVMRequest).
 func (v *verticalSlice) getVMRequest(t *testing.T, ctx context.Context, vmID uuid.UUID, token string) (int, []byte) {
 	t.Helper()
@@ -214,7 +214,7 @@ func (v *verticalSlice) getVMRequest(t *testing.T, ctx context.Context, vmID uui
 	return resp.StatusCode, body
 }
 
-// listVMsRequest issues GET /v1/vms?... с the supplied query string
+// listVMsRequest issues GET /v1/vms?... with the supplied query string
 // suffix (e.g. "limit=2&pool_id=..."). Empty suffix issues a no-args
 // list.
 func (v *verticalSlice) listVMsRequest(t *testing.T, ctx context.Context, query string) (int, []byte) {
@@ -277,7 +277,7 @@ func (v *verticalSlice) awaitVMDeleteEvent(t *testing.T, deadline time.Duration)
 
 // agentVMCreateCallCount returns how many times the mock-agent has
 // observed POST /v1/vms — used by idempotency / resumption tests
-// к assert the CP did not double-call the agent.
+// to assert the CP did not double-call the agent.
 func (v *verticalSlice) agentVMCreateCallCount() int {
 	return v.countOperation("vms.create")
 }
@@ -288,7 +288,7 @@ func (v *verticalSlice) agentVMDeleteCallCount() int {
 	return v.countOperation("vms.delete")
 }
 
-// loginUser is a generic login helper для non-admin role tests.
+// loginUser is a generic login helper for non-admin role tests.
 // loginAdmin only knows the admin token; this lets RBAC tests acquire
 // developer / viewer JWTs.
 func loginUser(t *testing.T, cpURL, email, password string) string {
@@ -315,7 +315,7 @@ func loginUser(t *testing.T, cpURL, email, password string) string {
 	return login.AccessToken
 }
 
-// seedUser inserts a non-admin user with the given role и returns
+// seedUser inserts a non-admin user with the given role and returns
 // (id, email, password). Mirrors seedAdmin for the RBAC tests that
 // need developer / viewer principals.
 func seedUser(t *testing.T, ctx context.Context, s *store.Store, role string) (uuid.UUID, string, string) {
@@ -340,13 +340,13 @@ func seedUser(t *testing.T, ctx context.Context, s *store.Store, role string) (u
 	return id, email, password
 }
 
-// seedTemplateForVM seeds a template + agentmock-staged image для use
+// seedTemplateForVM seeds a template + agentmock-staged image for use
 // by vm.create. Future behaviour will require a storage_images row;
 // the MVP agent reads the file directly, so the integration path
-// stages a pre-existing CachedImage on the agentmock side и uses
-// the matching checksum в the template row.
+// stages a pre-existing CachedImage on the agentmock side and uses
+// the matching checksum in the template row.
 //
-// Returns the template plus the hex checksum the test will pass через
+// Returns the template plus the hex checksum the test will pass via
 // the API request body's template_id (the request body carries
 // template_id only; the worker derives the checksum from the row).
 func seedTemplateForVM(t *testing.T, ctx context.Context, v *verticalSlice, ownerID uuid.UUID, name string, checksumByte byte, visibility string) store.Template {
@@ -359,7 +359,7 @@ func seedTemplateForVM(t *testing.T, ctx context.Context, v *verticalSlice, owne
 		}); err != nil {
 			t.Fatalf("SetTemplateVisibility public: %v", err)
 		}
-		// Re-load после the visibility flip.
+		// Re-load after the visibility flip.
 		tpl, _ = v.store.Queries().GetTemplate(ctx, tpl.ID)
 	}
 
@@ -367,7 +367,7 @@ func seedTemplateForVM(t *testing.T, ctx context.Context, v *verticalSlice, owne
 	// vm.create executor's downstream agent observes a "template
 	// present" world. The agentmock's vm.create handler does NOT verify
 	// template presence (vms.go is currently permissive); this is here
-	// for completeness и для future drift protection.
+	// for completeness and for future drift protection.
 	checksum := hexChecksum(tpl.ImageChecksumSha256)
 	_ = v.mock.AddImage(v.pool.Name, agentmock.CachedImage{
 		ChecksumSHA256: checksum,
@@ -379,8 +379,8 @@ func seedTemplateForVM(t *testing.T, ctx context.Context, v *verticalSlice, owne
 	return tpl
 }
 
-// stageVMCreateSuccess pre-loads the agentmock с a successful
-// VMCreateResult против the supplied vm name. Per Pre-L1 Path D the
+// stageVMCreateSuccess pre-loads the agentmock with a successful
+// VMCreateResult against the supplied vm name. Per Pre-L1 Path D the
 // mock's vm-create result queue is keyed by name (was UUID); callers
 // pass the same `Name` they wrote into the `vmCreateBody`. Tests that
 // want terminal-failed staging use stageVMCreateFailure instead.
@@ -391,7 +391,7 @@ func stageVMCreateSuccess(v *verticalSlice, vmName string, delay time.Duration) 
 	})
 }
 
-// stageVMCreateFailure pre-loads the agentmock с a terminal-failed
+// stageVMCreateFailure pre-loads the agentmock with a terminal-failed
 // outcome carrying the supplied agent error code.
 func stageVMCreateFailure(v *verticalSlice, vmName, code, message string, delay time.Duration) {
 	v.mock.AddVMCreateResult(vmName, agentmock.VMCreateResult{
@@ -401,8 +401,8 @@ func stageVMCreateFailure(v *verticalSlice, vmName, code, message string, delay 
 	})
 }
 
-// stageVMDeleteSuccess pre-loads the agentmock с a successful
-// VMDeleteResult против the supplied vm name.
+// stageVMDeleteSuccess pre-loads the agentmock with a successful
+// VMDeleteResult against the supplied vm name.
 func stageVMDeleteSuccess(v *verticalSlice, vmName string, delay time.Duration) {
 	v.mock.AddVMDeleteResult(vmName, agentmock.VMDeleteResult{
 		Status: "success",
@@ -410,7 +410,7 @@ func stageVMDeleteSuccess(v *verticalSlice, vmName string, delay time.Duration) 
 	})
 }
 
-// stageVMDeleteFailure pre-loads the agentmock с a terminal-failed
+// stageVMDeleteFailure pre-loads the agentmock with a terminal-failed
 // outcome.
 func stageVMDeleteFailure(v *verticalSlice, vmName, code, message string, delay time.Duration) {
 	v.mock.AddVMDeleteResult(vmName, agentmock.VMDeleteResult{
@@ -420,7 +420,7 @@ func stageVMDeleteFailure(v *verticalSlice, vmName, code, message string, delay 
 	})
 }
 
-// extractVMIDFromTask reads the task row, parses task.result, и
+// extractVMIDFromTask reads the task row, parses task.result, and
 // returns the vm_id the worker projected. Helper because every vm
 // test validates this projection at the tail.
 func extractVMIDFromTask(t *testing.T, row store.Task) uuid.UUID {
@@ -431,7 +431,7 @@ func extractVMIDFromTask(t *testing.T, row store.Task) uuid.UUID {
 	return *row.ResourceID
 }
 
-// jsonContains is a tiny matcher that returns true когда haystack
+// jsonContains is a tiny matcher that returns true when haystack
 // (raw JSON bytes) contains the needle substring. Used for snapshot-
 // style assertions where a typed decode would be overkill.
 func jsonContains(haystack []byte, needle string) bool {

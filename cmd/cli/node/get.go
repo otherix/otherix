@@ -20,7 +20,7 @@ func newGetCommand() *cobra.Command {
 (UUID literals rejected by the server with 400 validation_failed).
 The text renderer
 prints only fields the server populated: admin / operator callers
-get migration capability и hardware inventory; developer / viewer
+get migration capability and hardware inventory; developer / viewer
 callers see the reduced NodeSummary shape.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
@@ -63,8 +63,8 @@ func runGet(cmd *cobra.Command, args []string) error {
 // printNodeText renders only fields the wire envelope populated.
 // nil pointer / empty string / nil map fields are skipped so the
 // reduced NodeSummary projection (developer/viewer) renders cleanly
-// без empty-key noise. The body is split into per-section helpers
-// к keep cyclomatic complexity below the linter cap.
+// without empty-key noise. The body is split into per-section helpers
+// to keep cyclomatic complexity below the linter cap.
 func printNodeText(cmd *cobra.Command, n cpclient.Node, showIDs bool) {
 	if showIDs {
 		printf(cmd, "id: %s\n", n.ID)
@@ -129,8 +129,8 @@ func printNodeHardware(cmd *cobra.Command, n cpclient.Node) {
 }
 
 // formatSystemDiskUsage renders "used N / M GiB" with the percentage
-// available trailing in parens. Symmetric к formatMemoryUsage but
-// stays в bytes. NULL available falls к а bare-total form for the
+// available trailing in parens. Symmetric to formatMemoryUsage but
+// stays in bytes. NULL available falls to a bare-total form for the
 // pre-heartbeat case.
 func formatSystemDiskUsage(total, available *int64) string {
 	if total == nil {
@@ -155,8 +155,8 @@ func formatSystemDiskUsage(total, available *int64) string {
 // printNodePressure renders the pressure-conditions section of the
 // detail view. One line per node-scoped pressure type: memory +
 // system_disk. Pool disk pressure is
-// rendered through `otherix pool get` — а node hosting а pressured
-// pool stays "ready" от the node's perspective. Suppressed entirely
+// rendered through `otherix pool get` — a node hosting a pressured
+// pool stays "ready" from the node's perspective. Suppressed entirely
 // on unreachable nodes — stale heartbeat data would mislead the
 // operator.
 func printNodePressure(cmd *cobra.Command, n cpclient.Node) {
@@ -170,7 +170,7 @@ func printNodePressure(cmd *cobra.Command, n cpclient.Node) {
 
 // printNodePressureLine emits one indented `<type>: ...` row. Active
 // pressure prints since-age + count; inactive prints "ok". Shared
-// between memory и system_disk because the two conditions render
+// between memory and system_disk because the two conditions render
 // identically.
 func printNodePressureLine(cmd *cobra.Command, label string, p *cpclient.PressureCondition) {
 	if p == nil {
@@ -193,10 +193,10 @@ func printNodeAgent(cmd *cobra.Command, n cpclient.Node) {
 
 // formatCoresUsage renders "used N/M cores" (raw heartbeat) optionally
 // followed by "(effective N free)" when the view-reported effective
-// availability disagrees с the raw available — а pending VM is
+// availability disagrees with the raw available — a pending VM is
 // pinned but not yet observed by the agent. When raw available is
-// NULL the row is pre-heartbeat и we render the bare
-// total. When effective equals raw available, the suffix is omitted к
+// NULL the row is pre-heartbeat and we render the bare
+// total. When effective equals raw available, the suffix is omitted to
 // reduce noise.
 func formatCoresUsage(total, available, effective *int32) string {
 	if total == nil {
@@ -216,7 +216,7 @@ func formatCoresUsage(total, available, effective *int32) string {
 	return base
 }
 
-// formatMemoryUsage renders "used N/M MiB" symmetrical к
+// formatMemoryUsage renders "used N/M MiB" symmetrical to
 // formatCoresUsage, with the same effective-divergence suffix.
 func formatMemoryUsage(total, available, effective *int64) string {
 	if total == nil {

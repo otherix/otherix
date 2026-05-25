@@ -41,7 +41,7 @@ var forbiddenCreateKeys = []string{
 // (never leak existence with a 4xx distinction). 409 conflict is
 // returned for duplicate pool name on the same node - multiple nodes
 // may host the same pool name under the multi-instance model. Default-
-// pool selection has moved к the cluster_settings endpoint and no
+// pool selection has moved to the cluster_settings endpoint and no
 // longer collides with create.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeCreateRequest(w, r)
@@ -52,7 +52,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	// Path allowlist gate. Runs after the syntactic
 	// path check (decodeCreateRequest → validateCreateFields →
 	// ValidatePoolPath) so the dedicated path_not_allowed envelope only
-	// fires когда the path is well-formed но points outside the
+	// fires when the path is well-formed but points outside the
 	// operator-configured prefixes.
 	if err := validation.ValidatePoolPathAgainstAllowlist(req.Path, h.cfg.AllowedPathPrefixes); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
@@ -107,7 +107,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 // decodeCreateRequest reads, sanitises, and validates the POST body.
 // It returns the typed request; ok=false signals the response has
 // already been written. The `node` field stays a raw string — the
-// caller hands it к the resolver, which decides UUID vs name.
+// caller hands it to the resolver, which decides UUID vs name.
 func decodeCreateRequest(w http.ResponseWriter, r *http.Request) (createRequest, bool) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -149,7 +149,7 @@ func decodeCreateRequest(w http.ResponseWriter, r *http.Request) (createRequest,
 // validateCreateFields runs the API-edge validators in dependency
 // order: name, type, path, config. The first failure short-circuits.
 // Allowlist enforcement runs separately in the handler so the dedicated
-// `path_not_allowed` error code stays distinguishable от generic
+// `path_not_allowed` error code stays distinguishable from generic
 // `validation_failed`.
 func validateCreateFields(req *createRequest) error {
 	if err := validation.ValidateStoragePoolName(req.Name); err != nil {
@@ -165,8 +165,8 @@ func validateCreateFields(req *createRequest) error {
 }
 
 // writeCreateError maps the post-Insert error returned by the
-// database к the standard envelope. The 23505 unique-violation maps
-// к uq_storage_pools_name's per-node scope: two pools may share a
+// database to the standard envelope. The 23505 unique-violation maps
+// to uq_storage_pools_name's per-node scope: two pools may share a
 // name across nodes, but never on the same node.
 func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	var pgErr *pgconn.PgError

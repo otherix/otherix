@@ -97,16 +97,16 @@ func printPoolTable(cmd *cobra.Command, pools cpclient.PoolList, showIDs bool) {
 	}
 }
 
-// renderPoolStatus computes the operator-facing STATUS column for а
-// pool row using а worst-of priority order that composes node-level
-// и pool-level conditions into а single label:
+// renderPoolStatus computes the operator-facing STATUS column for a
+// pool row using a worst-of priority order that composes node-level
+// and pool-level conditions into a single label:
 //
 //	failed > unreachable > cordoned > under_pressure > pending > ready
 //
-// Rationale: the STATUS column is а single-cell summary, so the most
+// Rationale: the STATUS column is a single-cell summary, so the most
 // actionable condition wins. Reconciliation `failed` outranks
-// `unreachable` because а recorded failure is operator-actionable
-// (read the error, fix the path) even через а dead node; once the
+// `unreachable` because a recorded failure is operator-actionable
+// (read the error, fix the path) even via a dead node; once the
 // node returns the row stays failed until reconciled. Node-level
 // `unreachable` outranks operator-driven `cordoned` because lost
 // connectivity invalidates other conditions (pressure data goes
@@ -114,7 +114,7 @@ func printPoolTable(cmd *cobra.Command, pools cpclient.PoolList, showIDs bool) {
 // `pending` because pressure has placement consequences and pending
 // is transitional. `ready` is the all-clear path.
 //
-// Other node statuses (`draining`, `gone`) и а nil node_status
+// Other node statuses (`draining`, `gone`) and a nil node_status
 // (orphaned pool — owning node soft-deleted) fall through to the
 // pool-level checks; operators can dig via `otherix node get` if
 // they need the raw lifecycle value.

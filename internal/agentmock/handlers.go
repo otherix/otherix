@@ -157,8 +157,8 @@ func (m *Mock) respondNotFound(w http.ResponseWriter, r *http.Request, operation
 	m.recordRequest(operationID, r, http.StatusNotFound)
 }
 
-// respondError writes а custom error envelope с the given status,
-// code, message, и optional details. Centralises the boilerplate
+// respondError writes a custom error envelope with the given status,
+// code, message, and optional details. Centralises the boilerplate
 // every new mock handler would otherwise duplicate.
 func (m *Mock) respondError(w http.ResponseWriter, r *http.Request, operationID string, status int, code, message string, details ...map[string]any) {
 	body := errorEnvelope{
@@ -445,7 +445,7 @@ func (m *Mock) StoragePoolsScan(w http.ResponseWriter, r *http.Request, poolName
 	scan := m.state.takePoolScanResultLocked(poolName)
 	// resourceID carries the per-instance row uuid if the pool was
 	// registered through AddStoragePool; otherwise zero. Test code
-	// asserts по taskType + result content, не on resourceID.
+	// asserts by taskType + result content, not on resourceID.
 	var resourceID uuid.UUID
 	if p, ok := m.state.pools[poolName]; ok {
 		resourceID = p.ID
@@ -521,8 +521,8 @@ func (m *Mock) VmsStart(w http.ResponseWriter, r *http.Request, vmName agentapi.
 
 // VmsStop implements POST /v1/vms/{vm_name}/stop — async graceful
 // ACPI shutdown. Default success transitions running → stopped; tests
-// stage stop-timeout failure via AddVMLifecycleResult с Status="failed"
-// и а stop_timeout error envelope.
+// stage stop-timeout failure via AddVMLifecycleResult with Status="failed"
+// and a stop_timeout error envelope.
 func (m *Mock) VmsStop(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsStopParams) {
 	const opID = "vms.stop"
 	if m.preDispatch(w, r, opID) {
@@ -542,10 +542,10 @@ func (m *Mock) VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName agenta
 }
 
 // VmsReboot implements POST /v1/vms/{vm_name}/reboot — async stop+
-// start cycle. Default success transitions running → running (а
-// reboot cycle viewed на the inventory edge looks like а no-op since
-// the wire status converges back к running; the real-agent
-// distinction от reset — PID change — is not modelled at the mock
+// start cycle. Default success transitions running → running (a
+// reboot cycle viewed on the inventory edge looks like a no-op since
+// the wire status converges back to running; the real-agent
+// distinction from reset — PID change — is not modelled at the mock
 // layer because the wire shape carries no PID).
 func (m *Mock) VmsReboot(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsRebootParams) {
 	const opID = "vms.reboot"
@@ -557,10 +557,10 @@ func (m *Mock) VmsReboot(w http.ResponseWriter, r *http.Request, vmName agentapi
 
 // VmsPause implements POST /v1/vms/{vm_name}/pause — L1 sync vertical
 // slice. Looks up the stored AgentVM by name, transitions its status
-// к paused, and returns the refreshed entry. 404 when the inventory
+// to paused, and returns the refreshed entry. 404 when the inventory
 // has no entry for `vmName`; 409 when the current status is not
 // `running`. Both error envelopes match the agent contract — the CP
-// handler maps them straight через к the operator surface.
+// handler maps them straight via to the operator surface.
 func (m *Mock) VmsPause(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsPauseParams) {
 	const opID = "vms.pause"
 	if m.preDispatch(w, r, opID) {
@@ -580,7 +580,7 @@ func (m *Mock) VmsResume(w http.ResponseWriter, r *http.Request, vmName agentapi
 }
 
 // VmsReset implements POST /v1/vms/{vm_name}/reset — sync per the
-// Pre-L1 spec amendment. Requires `running` и leaves the status
+// Pre-L1 spec amendment. Requires `running` and leaves the status
 // `running` (reset preserves runtime identity; the QEMU process
 // keeps going, only the guest CPU is reset).
 func (m *Mock) VmsReset(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsResetParams) {
@@ -736,9 +736,9 @@ func (m *Mock) VMMigrationsCancel(w http.ResponseWriter, r *http.Request, _ agen
 }
 
 // VMConsoleIssueToken implements `POST /v1/vms/{vm_name}/console-token`
-// для mock-driven integration tests. Mirrors the real-agent contract:
-// looks up the stored VM, rejects non-running phase с 409, mints а
-// single-use token via the shared TokenStore, и returns the
+// for mock-driven integration tests. Mirrors the real-agent contract:
+// looks up the stored VM, rejects non-running phase with 409, mints a
+// single-use token via the shared TokenStore, and returns the
 // agent-side wire shape (`ConsoleTokenResponse`).
 func (m *Mock) VMConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VMConsoleIssueTokenParams) {
 	const opID = "vmConsole.issueToken"
@@ -793,7 +793,7 @@ func (m *Mock) VMConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmNam
 // VMConsoleStream implements `GET /v1/vms/{vm_name}/console-stream`
 // for mock-driven integration tests. Validates the token, enforces
 // the per-VM single-session lock, performs the WebSocket upgrade,
-// и enters а minimal pump loop что echoes operator input back
+// and enters a minimal pump loop that echoes operator input back
 // (enough so integration tests can prove bidirectional plumbing).
 func (m *Mock) VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, params agentapi.VMConsoleStreamParams) {
 	const opID = "vmConsole.stream"
@@ -828,17 +828,17 @@ func (m *Mock) VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName ag
 	}
 	defer func() { _ = wsConn.Close(websocket.StatusInternalError, "") }()
 
-	// Send а banner so integration tests have something concrete к
+	// Send a banner so integration tests have something concrete to
 	// observe arrive on the WebSocket. Operator-facing real agent
 	// emits whatever QEMU's serial chardev produces (kernel boot
-	// messages, login prompt); the mock substitutes а deterministic
+	// messages, login prompt); the mock substitutes a deterministic
 	// fixture so assertions stay stable.
 	if werr := wsConn.Write(r.Context(), websocket.MessageBinary, []byte("MOCK_AGENT_SERIAL_READY\r\n")); werr != nil {
 		return
 	}
 	// Echo loop: every binary frame the operator sends comes back
-	// uppercased so tests can detect round-trip plumbing с а distinct
-	// signal от the banner. Exit when either side closes.
+	// uppercased so tests can detect round-trip plumbing with a distinct
+	// signal from the banner. Exit when either side closes.
 	ctx := r.Context()
 	for {
 		_, data, err := wsConn.Read(ctx)

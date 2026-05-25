@@ -12,17 +12,17 @@ import (
 	"syscall"
 )
 
-// pathFilesystemStats reports total и available bytes of the filesystem
-// containing path via syscall.Statfs. Mirrors the pattern в
+// pathFilesystemStats reports total and available bytes of the filesystem
+// containing path via syscall.Statfs. Mirrors the pattern in
 // internal/agent/heartbeat/statfs_linux.go (rootFilesystemStats) —
-// duplicated rather than relocated к avoid touching the heartbeat
-// package during the A1 fix; consolidation under а shared
-// internal/agent/fsutil/ package is tracked в ROADMAP.
+// duplicated rather than relocated to avoid touching the heartbeat
+// package during the A1 fix; consolidation under a shared
+// internal/agent/fsutil/ package is tracked in ROADMAP.
 //
 // Returns (nil, nil, error) on syscall failure — caller surfaces the
-// failure as а terminal-failed agent task. clampUintToInt64 /
+// failure as a terminal-failed agent task. clampUintToInt64 /
 // clampIntToInt64 keep gosec G115 quiet on the kernel's
-// uint64/int64 block-count и block-size fields.
+// uint64/int64 block-count and block-size fields.
 func pathFilesystemStats(path string) (*int64, *int64, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
@@ -34,7 +34,7 @@ func pathFilesystemStats(path string) (*int64, *int64, error) {
 	return &total, &avail, nil
 }
 
-// clampUintToInt64 saturates an unsigned block-count к the int64
+// clampUintToInt64 saturates an unsigned block-count to the int64
 // range. Real filesystems never reach this bound; the clamp keeps
 // gosec G115 quiet on uint64→int64 conversions.
 func clampUintToInt64(v uint64) int64 {
@@ -44,9 +44,9 @@ func clampUintToInt64(v uint64) int64 {
 	return int64(v) //nolint:gosec // bounded immediately above
 }
 
-// clampIntToInt64 normalises the signed block-size field к а strictly
-// positive value. The kernel returns positive values в practice;
-// clamping non-positive к 1 byte avoids а multiply by zero or by an
+// clampIntToInt64 normalises the signed block-size field to a strictly
+// positive value. The kernel returns positive values in practice;
+// clamping non-positive to 1 byte avoids a multiply by zero or by an
 // over-large absolute value should the field ever come back malformed.
 func clampIntToInt64(v int64) int64 {
 	if v <= 0 {

@@ -20,7 +20,7 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// fixtureClient builds a Client pointing at srv.URL с a stable test
+// fixtureClient builds a Client pointing at srv.URL with a stable test
 // token. The server's handler observes the token via Authorization
 // header, so tests assert auth is wired without parsing it themselves.
 func fixtureClient(t *testing.T, srv *httptest.Server) *cpclient.Client {
@@ -40,14 +40,14 @@ func fixtureClient(t *testing.T, srv *httptest.Server) *cpclient.Client {
 func TestNew_RejectsEmptyBaseURL(t *testing.T) {
 	t.Parallel()
 	if _, err := cpclient.New(cpclient.Options{Token: "x"}); err == nil {
-		t.Fatalf("expected error для empty BaseURL")
+		t.Fatalf("expected error for empty BaseURL")
 	}
 }
 
 func TestNew_RejectsEmptyToken(t *testing.T) {
 	t.Parallel()
 	if _, err := cpclient.New(cpclient.Options{BaseURL: "http://x"}); err == nil {
-		t.Fatalf("expected error для empty Token")
+		t.Fatalf("expected error for empty Token")
 	}
 }
 
@@ -115,7 +115,7 @@ func TestCreateVM_APIError404(t *testing.T) {
 		Name: "demo", Template: uuid.NewString(), Pool: uuid.NewString(), VCPUs: 2, MemoryMB: 1024,
 	})
 	if err == nil {
-		t.Fatalf("expected error для 404")
+		t.Fatalf("expected error for 404")
 	}
 	var ae *cpclient.APIError
 	if !errors.As(err, &ae) {

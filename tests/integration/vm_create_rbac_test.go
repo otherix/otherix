@@ -25,7 +25,7 @@ import (
 //     OWN template → 202 (own-match branch).
 //   - developer creating against ANOTHER user's private template →
 //     404 (no leak; route gate admits, handler-side composite returns
-//     errVMTemplateForbidden which projects к not_found).
+//     errVMTemplateForbidden which projects to not_found).
 //   - developer creating against PUBLIC template → 202 (read:public
 //     bypass).
 //   - viewer (no vm:create) → 403 at the route gate.
@@ -39,8 +39,8 @@ func TestVMCreate_VerticalSliceRBAC(t *testing.T) {
 
 	v := newVerticalSlice(t, ctx, fastAgentClientCfg())
 
-	// Seed two principals: dev1 (template owner) и dev2 (cross-user
-	// developer). Plus a viewer для the role-gate denial branch.
+	// Seed two principals: dev1 (template owner) and dev2 (cross-user
+	// developer). Plus a viewer for the role-gate denial branch.
 	_, dev1Email, dev1PW := seedUser(t, ctx, v.store, "developer")
 	dev2ID, dev2Email, dev2PW := seedUser(t, ctx, v.store, "developer")
 	_, viewerEmail, viewerPW := seedUser(t, ctx, v.store, "viewer")
@@ -52,10 +52,10 @@ func TestVMCreate_VerticalSliceRBAC(t *testing.T) {
 	// dev2 owns a private template — for the "own template" branch.
 	dev2OwnTpl := seedTemplateForVM(t, ctx, v, dev2ID, "vm-rbac-dev2-own", 0xa6, "private")
 
-	// dev1 owns a private template — для the "cross-user" branch.
+	// dev1 owns a private template — for the "cross-user" branch.
 	dev1OwnTpl := seedTemplateForVM(t, ctx, v, v.adminID, "vm-rbac-admin-priv", 0xb7, "private")
 
-	// public template — для the read:public bypass branch.
+	// public template — for the read:public bypass branch.
 	publicTpl := seedTemplateForVM(t, ctx, v, v.adminID, "vm-rbac-public", 0xc8, "public")
 
 	mkBody := func(tplName string) vmCreateBody {

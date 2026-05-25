@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// effectiveFixture seeds а user + node tailored для node_effective_
+// effectiveFixture seeds a user + node tailored for node_effective_
 // availability tests: caller controls cpu_cores_{total,available},
-// memory_{total,available}_mib, и last_heartbeat_at. Returns
+// memory_{total,available}_mib, and last_heartbeat_at. Returns
 // (ownerID, nodeID).
 type effectiveFixture struct {
 	cpuTotal     *int32
@@ -47,8 +47,8 @@ func seedNodeForEffective(t *testing.T, f effectiveFixture) (ownerID, nodeID str
 	return ownerID, nodeID
 }
 
-// pinVM inserts а VM pinned к the supplied node, с the supplied
-// resource shape и optional createdAt / desiredPhase / deletedAt
+// pinVM inserts a VM pinned to the supplied node, with the supplied
+// resource shape and optional createdAt / desiredPhase / deletedAt
 // overrides. defaults: desired_phase='running', created_at=now(),
 // deleted_at=NULL.
 type pinVMArgs struct {
@@ -67,7 +67,7 @@ func pinVM(t *testing.T, args pinVMArgs) string {
 	if desired == "" {
 		desired = "running"
 	}
-	// Construct а fully random name via uuid_generate_v7 — randSlug
+	// Construct a fully random name via uuid_generate_v7 — randSlug
 	// alone returns only the v7 timestamp prefix, which collides for
 	// pins issued in the same millisecond (multi-VM tests).
 	var id string
@@ -88,7 +88,7 @@ func pinVM(t *testing.T, args pinVMArgs) string {
 	return id
 }
 
-// queryEffective reads the view row for nodeID и returns the effective
+// queryEffective reads the view row for nodeID and returns the effective
 // columns. Nil pointers when the view emits NULL.
 func queryEffective(t *testing.T, nodeID string) (cpuEff *int32, memEff *int64) {
 	t.Helper()
@@ -109,7 +109,7 @@ func plus(d time.Duration) *time.Time { v := time.Now().Add(d); return &v }
 func ago(d time.Duration) *time.Time  { v := time.Now().Add(-d); return &v }
 
 // TestEffectiveAvailability_PendingVMSubtracted is the core happy path:
-// а VM created after the node's last heartbeat is subtracted from raw
+// a VM created after the node's last heartbeat is subtracted from raw
 // availability. This is the race window the view closes.
 func TestEffectiveAvailability_PendingVMSubtracted(t *testing.T) {
 	_, nodeID := seedNodeForEffective(t, effectiveFixture{
@@ -121,7 +121,7 @@ func TestEffectiveAvailability_PendingVMSubtracted(t *testing.T) {
 	_ = pinVM(t, pinVMArgs{
 		ownerID: ownerID, nodeID: nodeID,
 		cpuCores: 4, memoryMib: 8192,
-		// createdAt defaults к now() → after last heartbeat → subtracted.
+		// createdAt defaults to now() → after last heartbeat → subtracted.
 	})
 
 	cpuEff, memEff := queryEffective(t, nodeID)
@@ -134,9 +134,9 @@ func TestEffectiveAvailability_PendingVMSubtracted(t *testing.T) {
 }
 
 // TestEffectiveAvailability_PostHeartbeatNoDoubleCount confirms the
-// self-correcting property: once а heartbeat arrives newer than the
+// self-correcting property: once a heartbeat arrives newer than the
 // VM's created_at, the view stops subtracting (agent's report already
-// accounts для it).
+// accounts for it).
 func TestEffectiveAvailability_PostHeartbeatNoDoubleCount(t *testing.T) {
 	ownerID, nodeID := seedNodeForEffective(t, effectiveFixture{
 		cpuTotal: i32(8), cpuAvailable: i32(4), // agent already accounted -4 cores
@@ -163,7 +163,7 @@ func TestEffectiveAvailability_PostHeartbeatNoDoubleCount(t *testing.T) {
 // TestEffectiveAvailability_NullHeartbeatSubtractsAll covers the
 // bootstrap case: node row exists but never heartbeat'd
 // (last_heartbeat_at IS NULL). The view treats this as "no agent
-// observation has happened" и subtracts every pinned VM. cpu_cores_
+// observation has happened" and subtracts every pinned VM. cpu_cores_
 // available is also nil (no heartbeat); effective stays nil (CASE).
 func TestEffectiveAvailability_NullHeartbeatSubtractsAll(t *testing.T) {
 	ownerID, nodeID := seedNodeForEffective(t, effectiveFixture{
@@ -183,8 +183,8 @@ func TestEffectiveAvailability_NullHeartbeatSubtractsAll(t *testing.T) {
 }
 
 // TestEffectiveAvailability_NullHeartbeatWithMetricsSubtractsAll covers
-// the unusual case where raw availability is set но last_heartbeat_at
-// is NULL (synthetic state е.g., seeded directly without heartbeat).
+// the unusual case where raw availability is set but last_heartbeat_at
+// is NULL (synthetic state e.g., seeded directly without heartbeat).
 // The view's LATERAL filter takes the `n.last_heartbeat_at is null OR
 // vms.created_at > n.last_heartbeat_at` branch → all pinned VMs
 // subtracted.
@@ -216,7 +216,7 @@ func TestEffectiveAvailability_FloorAtZero(t *testing.T) {
 		memTotalMib: i64(4096), memAvailMib: i64(2048),
 		lastHB: ago(1 * time.Hour),
 	})
-	// Pin а VM that wants more than the node can supply (post-pending).
+	// Pin a VM that wants more than the node can supply (post-pending).
 	_ = pinVM(t, pinVMArgs{
 		ownerID: ownerID, nodeID: nodeID,
 		cpuCores: 16, memoryMib: 32768,
@@ -264,8 +264,8 @@ func TestEffectiveAvailability_MultiplePendingStack(t *testing.T) {
 
 // TestEffectiveAvailability_DesiredDeletedNotSubtracted confirms that
 // VMs whose `desired_phase` is `'deleted'` (operator wants tear-down)
-// do not contribute к the pending aggregate. They are en-route к
-// removal; reserving capacity для them would block fresh placements
+// do not contribute to the pending aggregate. They are en-route to
+// removal; reserving capacity for them would block fresh placements
 // for no purpose.
 func TestEffectiveAvailability_DesiredDeletedNotSubtracted(t *testing.T) {
 	ownerID, nodeID := seedNodeForEffective(t, effectiveFixture{
@@ -288,7 +288,7 @@ func TestEffectiveAvailability_DesiredDeletedNotSubtracted(t *testing.T) {
 }
 
 // TestEffectiveAvailability_SoftDeletedNotSubtracted confirms that
-// VMs с `deleted_at IS NOT NULL` (soft-deleted) drop out of the
+// VMs with `deleted_at IS NOT NULL` (soft-deleted) drop out of the
 // pending aggregate. Same intent as desired_phase='deleted' guard —
 // don't reserve capacity for departed VMs.
 func TestEffectiveAvailability_SoftDeletedNotSubtracted(t *testing.T) {
@@ -309,7 +309,7 @@ func TestEffectiveAvailability_SoftDeletedNotSubtracted(t *testing.T) {
 }
 
 // TestEffectiveAvailability_PinnedElsewhereNotSubtracted confirms the
-// per-node scope of the LATERAL: а VM pinned к node-Y does not
+// per-node scope of the LATERAL: a VM pinned to node-Y does not
 // reduce node-X's effective availability.
 func TestEffectiveAvailability_PinnedElsewhereNotSubtracted(t *testing.T) {
 	_, nodeX := seedNodeForEffective(t, effectiveFixture{
@@ -329,7 +329,7 @@ func TestEffectiveAvailability_PinnedElsewhereNotSubtracted(t *testing.T) {
 	// nodeX's effective stays at raw (8 / 16384).
 	cpuEffX, memEffX := queryEffective(t, nodeX)
 	if cpuEffX == nil || *cpuEffX != 8 {
-		t.Errorf("node-X cpu_effective = %v, want *int32(8) (VM pinned к node-Y, not subtracted)", deref32(cpuEffX))
+		t.Errorf("node-X cpu_effective = %v, want *int32(8) (VM pinned to node-Y, not subtracted)", deref32(cpuEffX))
 	}
 	if memEffX == nil || *memEffX != 16384 {
 		t.Errorf("node-X mem_effective = %v, want *int64(16384)", deref64(memEffX))
@@ -345,8 +345,8 @@ func TestEffectiveAvailability_PinnedElsewhereNotSubtracted(t *testing.T) {
 // reproduction. Two placements happen back-to-back inside the
 // heartbeat window: first VM commits, second VM's placement query
 // must see effective availability reflecting the first. Without the
-// view (or с naive raw availability), the second query reads stale
-// "8 cores free" и a hypothetical second 6-core placement would
+// view (or with naive raw availability), the second query reads stale
+// "8 cores free" and a hypothetical second 6-core placement would
 // over-allocate.
 func TestEffectiveAvailability_RaceReproduction(t *testing.T) {
 	ownerID, nodeID := seedNodeForEffective(t, effectiveFixture{
@@ -359,7 +359,7 @@ func TestEffectiveAvailability_RaceReproduction(t *testing.T) {
 		ownerID: ownerID, nodeID: nodeID,
 		cpuCores: 6, memoryMib: 12288,
 	})
-	// Second placement query reads the view BEFORE а new heartbeat
+	// Second placement query reads the view BEFORE a new heartbeat
 	// arrives. Without the fix, raw cpu_cores_available still says 8
 	// (agent has not yet observed VM-A); the view's effective surfaces
 	// the truth.
@@ -372,7 +372,7 @@ func TestEffectiveAvailability_RaceReproduction(t *testing.T) {
 	}
 }
 
-// helpers — *int{32,64} → printable form для error messages.
+// helpers — *int{32,64} → printable form for error messages.
 func deref32(p *int32) any {
 	if p == nil {
 		return "<nil>"

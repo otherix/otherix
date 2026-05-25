@@ -11,7 +11,7 @@ import (
 )
 
 // TestResolve_Matrix walks the precedence truth-table. Each case
-// fixes inputs at every layer и asserts which layer Resolve picked.
+// fixes inputs at every layer and asserts which layer Resolve picked.
 // Failure messages quote the row name so a failure points straight
 // at the broken case.
 func TestResolve_Matrix(t *testing.T) {

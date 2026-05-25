@@ -22,7 +22,7 @@ func newListCommand() *cobra.Command {
 gone). admin / operator callers see the full Node projection;
 developer / viewer callers see NodeSummary (no migration capability,
 no hardware inventory) — the renderer keeps the table columns
-constant и derives CORDONED from the cordoned_at timestamp.`,
+constant and derives CORDONED from the cordoned_at timestamp.`,
 		RunE: runList,
 	}
 	cmd.Flags().String(flagArch, "", "filter by architecture (amd64|arm64)")
@@ -103,8 +103,8 @@ func printNodeTable(cmd *cobra.Command, nodes cpclient.NodeList, showIDs bool) {
 
 // renderNodeStatus combines the server-side raw status with any active
 // pressure conditions to produce the operator-facing STATUS column
-// string. Reachable nodes append "under_pressure" к their status
-// когда any pressure condition is active. "unreachable" suppresses
+// string. Reachable nodes append "under_pressure" to their status
+// when any pressure condition is active. "unreachable" suppresses
 // pressure rendering — heartbeat is stale, so pressure data is too.
 //
 // Renderable combinations:
@@ -127,8 +127,8 @@ func renderNodeStatus(n cpclient.Node) string {
 
 // nodeUnderPressure reports whether any pressure condition is active
 // on the node. Node-scoped conditions: memory + system_disk. Pool
-// disk pressure is reported on the pool view, не the node — а node
-// hosting а pressured pool stays "ready" from the node's perspective.
+// disk pressure is reported on the pool view, not the node — a node
+// hosting a pressured pool stays "ready" from the node's perspective.
 func nodeUnderPressure(n cpclient.Node) bool {
 	return n.MemoryPressure != nil || n.SystemDiskPressure != nil
 }

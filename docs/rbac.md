@@ -241,7 +241,7 @@ tracking; the "owner" of a task is the user that initiated it.
 
 Cluster-level settings (today: default-pool reference held in the
 `cluster_settings` singleton; future: default-template, default-network,
-…) sit on `/v1/cluster/*`. Reads are open к every authenticated role
+…) sit on `/v1/cluster/*`. Reads are open to every authenticated role
 because the operator-facing context (e.g. "which pool defaults?") is
 not a secret; mutations are admin-only by precedent with other
 cluster-shaping permissions (`storage_pool:manage`, `node:manage`).

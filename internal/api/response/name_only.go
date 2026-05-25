@@ -13,7 +13,7 @@ import "net/http"
 //
 // resource — operator-facing kind (e.g. "vm", "template", "node");
 // field — wire location of the offending value (path param name,
-// body field name, query param name); kept identical к the user's
+// body field name, query param name); kept identical to the user's
 // input so error renderers can echo back.
 func WriteUUIDNotAllowedError(w http.ResponseWriter, r *http.Request, resource, field string) {
 	WriteError(w, r, http.StatusBadRequest,

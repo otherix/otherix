@@ -18,9 +18,9 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cliconfig"
 )
 
-// promptInput reads а line of user input from stdin, trimming the
-// trailing newline. Used для plain-text fields (cluster name,
-// server URL, login). The label is printed К stderr so test
+// promptInput reads a line of user input from stdin, trimming the
+// trailing newline. Used for plain-text fields (cluster name,
+// server URL, login). The label is printed to stderr so test
 // fixtures that capture stdout for assertions are not polluted by
 // prompts.
 func promptInput(out io.Writer, label string, reader *bufio.Reader) (string, error) {
@@ -34,9 +34,9 @@ func promptInput(out io.Writer, label string, reader *bufio.Reader) (string, err
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// promptPassword reads а password from /dev/stdin (или whatever
-// terminal stdin is bound к) without echoing the typed characters.
-// Uses golang.org/x/term.ReadPassword which falls back К а
+// promptPassword reads a password from /dev/stdin (or whatever
+// terminal stdin is bound to) without echoing the typed characters.
+// Uses golang.org/x/term.ReadPassword which falls back to a
 // raw-mode read on the underlying file descriptor.
 func promptPassword(out io.Writer, label string) (string, error) {
 	if _, err := fmt.Fprintf(out, "%s: ", label); err != nil {
@@ -52,17 +52,17 @@ func promptPassword(out io.Writer, label string) (string, error) {
 	return string(raw), nil
 }
 
-// stdinIsTerminal reports whether stdin is а TTY — used к gate
+// stdinIsTerminal reports whether stdin is a TTY — used to gate
 // interactive prompts. Pipes / heredocs / CI stdin all return
 // false, in which case missing required values must come from
-// flags или env.
+// flags or env.
 func stdinIsTerminal() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-// resolveConfigPath sits between cobra и cliconfig для the
+// resolveConfigPath sits between cobra and cliconfig for the
 // `config` subcommands: each of add / list / use / remove / show
-// inherits --config from the root, и every one needs the same
+// inherits --config from the root, and every one needs the same
 // "use the flag if set, else default" lookup.
 func resolveConfigPath(cmd *cobra.Command) (string, error) {
 	flag, _ := cmd.Flags().GetString(cliauth.FlagConfig)
@@ -73,9 +73,9 @@ func resolveConfigPath(cmd *cobra.Command) (string, error) {
 	return path, nil
 }
 
-// maskToken returns а display-safe rendering of а plaintext API
+// maskToken returns a display-safe rendering of a plaintext API
 // token. The first 8 chars ("otx_xxxx") survive — they match the
-// stored Prefix и suffice к distinguish two tokens — а the rest
+// stored Prefix and suffice to distinguish two tokens — a the rest
 // is replaced with `***`. Tokens shorter than 8 chars (corrupt
 // inputs) fall back to a pure `***`.
 func maskToken(token string) string {
@@ -87,8 +87,8 @@ func maskToken(token string) string {
 }
 
 // confirmYN reads y/N from stdin, treating empty (just Enter) as
-// "no". Returns false when stdin is not а TTY и noTTYDefault is
-// false — non-interactive contexts must use --force к pre-confirm.
+// "no". Returns false when stdin is not a TTY and noTTYDefault is
+// false — non-interactive contexts must use --force to pre-confirm.
 func confirmYN(out io.Writer, reader *bufio.Reader, prompt string) (bool, error) {
 	if _, err := fmt.Fprintf(out, "%s [y/N]: ", prompt); err != nil {
 		return false, err

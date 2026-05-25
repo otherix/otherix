@@ -15,9 +15,9 @@ import (
 	"github.com/otherix/otherix/internal/agent/vm"
 )
 
-// fakeVMManager implements VMManager with optional fault injection и
+// fakeVMManager implements VMManager with optional fault injection and
 // call recording so the reconciler tests can assert dispatch outcomes
-// без touching the production Manager.
+// without touching the production Manager.
 type fakeVMManager struct {
 	mu       sync.Mutex
 	vms      []*vm.VM
@@ -207,7 +207,7 @@ func TestVMs_Reconcile_SkipsInFlightOps(t *testing.T) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 	if len(mgr.starts) != 0 {
-		t.Errorf("reconciler started а VM с in-flight op: starts=%v", mgr.starts)
+		t.Errorf("reconciler started a VM with in-flight op: starts=%v", mgr.starts)
 	}
 }
 

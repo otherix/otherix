@@ -6,8 +6,8 @@ package store
 // Advisory-lock key namespace for HA-safe api-server coordination.
 //
 // Otherix api-server is deployed multi-replica for HA. Operations that
-// read mutable state и act on it in а separate write (placement is the
-// canonical case — pick а node, then insert а VM pinned to it) must
+// read mutable state and act on it in a separate write (placement is the
+// canonical case — pick a node, then insert a VM pinned to it) must
 // serialize their critical section across replicas, otherwise concurrent
 // decisions can over-allocate. Postgres advisory transaction locks
 // (`pg_advisory_xact_lock`) are the chosen primitive: cluster-scoped,
@@ -15,14 +15,14 @@ package store
 //
 // Contract:
 //
-//   - Every key here is acquired ONLY inside а transaction. Calling
+//   - Every key here is acquired ONLY inside a transaction. Calling
 //     AcquirePlacementLock outside an InTxWithTx callback acquires the
-//     lock и immediately releases it on the same statement (pgx
+//     lock and immediately releases it on the same statement (pgx
 //     autocommit), which serializes nothing.
 //   - Keys are bigint, namespaced by reservation in this file. Reserve
-//     before use, never reuse а freed key (the symbol stays, even if
+//     before use, never reuse a freed key (the symbol stays, even if
 //     the workflow that minted it goes away — an in-flight transaction
-//     under а recycled key would silently coordinate with the wrong
+//     under a recycled key would silently coordinate with the wrong
 //     thing).
 //   - Range 1..99 is reserved for core scheduler / placement / cluster-
 //     wide singleton workflows. 100..999 is reserved for future domain-

@@ -15,7 +15,7 @@ import (
 
 // Pause handles POST /v1/vms/{vm_name}/pause. Synchronous per L1
 // scope: the agent dials QMP, issues `stop`, returns the refreshed
-// VM view с phase=paused. Maps Manager errors:
+// VM view with phase=paused. Maps Manager errors:
 //
 //   - ErrNotFound       → 404 not_found
 //   - ErrInvalidState   → 409 conflict (e.g. pause-when-stopped)

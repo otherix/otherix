@@ -114,9 +114,9 @@ func run() error {
 }
 
 // runServe handles the post-bootstrap serving lifecycle — extracted
-// from run() к keep cyclomatic complexity under gocyclo's ceiling.
+// from run() to keep cyclomatic complexity under gocyclo's ceiling.
 // Threading is straightforward: bootstrap hooks → CP cert load → agent
-// client → river → HTTP server. Каждый step's failure path returns
+// client → river → HTTP server. Each step's failure path returns
 // after wrapping the error.
 func runServe(ctx context.Context, cfg *config.APIConfig, s *store.Store, authSvc *auth.Service, log *slog.Logger) error {
 	if err := runBootstrapHooks(ctx, s, log); err != nil {
@@ -157,10 +157,10 @@ func runServe(ctx context.Context, cfg *config.APIConfig, s *store.Store, authSv
 }
 
 // runBootstrapHooks runs the post-migration / pre-serve bootstrap
-// hooks в the canonical order: BootstrapAdmin first (seeds the first
+// hooks in the canonical order: BootstrapAdmin first (seeds the first
 // admin user), then BootstrapClusterCA (provisions the cluster CA so
-// the /v1/ca endpoint и the Step 2 CSR signer have an active row).
-// Both hooks are idempotent — repeat boots observe existing rows и
+// the /v1/ca endpoint and the Step 2 CSR signer have an active row).
+// Both hooks are idempotent — repeat boots observe existing rows and
 // no-op.
 func runBootstrapHooks(ctx context.Context, s *store.Store, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, s, log); err != nil {
@@ -256,18 +256,18 @@ func startRiver(ctx context.Context, cfg *config.APIConfig, s *store.Store, agen
 // handler returns 502 agent_unreachable on the count==0 path).
 //
 // mTLS material (replica's leaf cert + cluster CA trust anchor)
-// flows in via material — produced upstream по LoadOrGenerateCPCert.
+// flows in via material — produced upstream per LoadOrGenerateCPCert.
 //
 // Construction errors at this stage (config validation, empty
 // material when AgentClient.Enabled=true) are boot-time fatal: the
-// api binary must not start with а half-configured agent client.
+// api binary must not start with a half-configured agent client.
 func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog.Logger) (*agentclient.Client, error) {
 	if !cfg.AgentClient.Enabled {
 		log.Info("agent client disabled; storage_image.delete and scan workers will surface degraded responses")
 		return nil, nil
 	}
 	if material.Skipped() || len(material.Cert.Certificate) == 0 || material.ClusterCA == nil {
-		return nil, errors.New("agent_client.enabled=true requires valid CP cert material (LoadOrGenerateCPCert produced а skipped/empty result — check agent_server / agent_client config consistency)")
+		return nil, errors.New("agent_client.enabled=true requires valid CP cert material (LoadOrGenerateCPCert produced a skipped/empty result — check agent_server / agent_client config consistency)")
 	}
 	client, err := agentclient.New(cfg.AgentClient, material.Cert, material.ClusterCA)
 	if err != nil {

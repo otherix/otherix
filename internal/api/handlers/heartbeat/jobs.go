@@ -71,7 +71,7 @@ type ReconcileDeps struct {
 // ReconcileWorker flips nodes between 'ready' and 'unreachable' on a
 // fixed cadence. Two passes per tick:
 //   - PromoteHealthyNodes converts 'pending' / 'unreachable' rows
-//     with a fresh heartbeat к 'ready';
+//     with a fresh heartbeat to 'ready';
 //   - MarkNodesUnreachable demotes 'ready' / 'pending' rows whose
 //     heartbeat has lapsed.
 //
@@ -135,7 +135,7 @@ func Workers(workers *river.Workers, deps ReconcileDeps) {
 
 // PeriodicJobs returns the periodic schedule for the reconciler.
 // RunOnStart is true so an api-server restart promotes any node that
-// has continued heartbeating during the outage без waiting for the
+// has continued heartbeating during the outage without waiting for the
 // next tick.
 func PeriodicJobs(deps ReconcileDeps) []*river.PeriodicJob {
 	cfg := deps.Config.withDefaults()

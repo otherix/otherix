@@ -23,7 +23,7 @@ import (
 
 // consoleTokenRequest mirrors the agent.yaml ConsoleTokenRequest
 // schema. We do not import the generated type to keep the package
-// chi-router-shaped (the generated ServerInterface is wired only по
+// chi-router-shaped (the generated ServerInterface is wired only by
 // the mock-agent surface today).
 type consoleTokenRequest struct {
 	Protocol string `json:"protocol"`
@@ -38,8 +38,8 @@ type consoleTokenResponse struct {
 }
 
 // ConsoleIssueToken handles POST /v1/vms/{vm_name}/console-token.
-// Validates the VM exists и is running, mints а single-use token
-// scoped к (vm, protocol) via the agent's TokenStore, returns the
+// Validates the VM exists and is running, mints a single-use token
+// scoped to (vm, protocol) via the agent's TokenStore, returns the
 // token + websocket path to the caller (the CP). The agent stores
 // only sha256(plaintext); the plaintext returned here is the only
 // copy.
@@ -94,13 +94,13 @@ func (h *Handler) ConsoleIssueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// `serial` requires the VM к expose а Unix-socket chardev; agents
-	// что lack ConsoleSocket return 409 protocol_not_available rather
-	// than 500 — the CP surfaces this к the operator с the same code.
+	// `serial` requires the VM to expose a Unix-socket chardev; agents
+	// that lack ConsoleSocket return 409 protocol_not_available rather
+	// than 500 — the CP surfaces this to the operator with the same code.
 	if protocol == console.ProtocolSerial && v.ConsoleSocket == "" {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeProtocolNotAvailable,
-			"vm does not expose а serial chardev (no -serial unix: socket)",
+			"vm does not expose a serial chardev (no -serial unix: socket)",
 			map[string]any{"protocol": "serial"})
 		return
 	}
@@ -267,7 +267,7 @@ func (h *Handler) consoleStreamCheckRunnable(w http.ResponseWriter, r *http.Requ
 	if v.ConsoleSocket == "" {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeProtocolNotAvailable,
-			"vm does not expose а serial chardev (no -serial unix: socket)", nil)
+			"vm does not expose a serial chardev (no -serial unix: socket)", nil)
 		return false
 	}
 	return true

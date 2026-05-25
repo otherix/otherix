@@ -73,7 +73,7 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 
 // observedNodeID returns the node the VM is currently *located on* per
 // D6: vm_runtime.current_node_id wins (real-time agent-reported
-// state). When no runtime row exists yet, falls back к
+// state). When no runtime row exists yet, falls back to
 // vms.pinned_node_id so a 'creating' VM still shows where the
 // scheduler placed it; returns nil otherwise.
 func observedNodeID(vm store.VM, runtime *store.VMRuntime) *uuid.UUID {

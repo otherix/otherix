@@ -45,7 +45,7 @@ func (c *Client) GetClusterDefaultPool(ctx context.Context) (*ClusterDefaultPool
 }
 
 // SetClusterDefaultPool submits PUT /v1/cluster/default-pool. The
-// server validates the supplied name resolves к at least one existing
+// server validates the supplied name resolves to at least one existing
 // pool instance — unknown names surface as *APIError carrying
 // `pool_not_found`.
 func (c *Client) SetClusterDefaultPool(ctx context.Context, name string) (ClusterDefaultPool, error) {

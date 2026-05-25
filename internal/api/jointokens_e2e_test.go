@@ -37,7 +37,7 @@ type joinTokenCreateResponse struct {
 }
 
 // TestE2E_JoinTokens_CreateRequiresAdmin verifies node:manage gating
-// — only admin can mint а join token; the other three roles get 403.
+// — only admin can mint a join token; the other three roles get 403.
 func TestE2E_JoinTokens_CreateRequiresAdmin(t *testing.T) {
 	h := newE2E(t)
 	for _, role := range []auth.Role{auth.RoleOperator, auth.RoleDeveloper, auth.RoleViewer} {
@@ -54,7 +54,7 @@ func TestE2E_JoinTokens_CreateRequiresAdmin(t *testing.T) {
 // TestE2E_JoinTokens_CreateHappyPath verifies the token bundle shape
 // — token plaintext present, CA fingerprint matches the active CA
 // row's fingerprint, max_uses null by default, consumption_count = 0,
-// created_by_user_id set к the admin caller.
+// created_by_user_id set to the admin caller.
 func TestE2E_JoinTokens_CreateHappyPath(t *testing.T) {
 	h := newE2E(t)
 	admin := loginAs(t, h, auth.RoleAdmin)
@@ -116,7 +116,7 @@ func TestE2E_JoinTokens_CreatePreboundEnforcesSingleUse(t *testing.T) {
 }
 
 // TestE2E_JoinTokens_CreatePreboundSingleUseAccepted verifies the
-// happy path для intended_node_name + max_uses=1.
+// happy path for intended_node_name + max_uses=1.
 func TestE2E_JoinTokens_CreatePreboundSingleUseAccepted(t *testing.T) {
 	h := newE2E(t)
 	admin := loginAs(t, h, auth.RoleAdmin)
@@ -167,8 +167,8 @@ func TestE2E_JoinTokens_CreateMaxUsesBounds(t *testing.T) {
 }
 
 // TestE2E_JoinTokens_CreateIgnoresIdempotencyKey verifies that
-// re-issuing the same idempotency key produces а NEW token
-// (каждый create call mints а fresh token).
+// re-issuing the same idempotency key produces a NEW token
+// (each create call mints a fresh token).
 func TestE2E_JoinTokens_CreateIgnoresIdempotencyKey(t *testing.T) {
 	h := newE2E(t)
 	admin := loginAs(t, h, auth.RoleAdmin)
@@ -191,10 +191,10 @@ func TestE2E_JoinTokens_CreateIgnoresIdempotencyKey(t *testing.T) {
 	decodeJSON(t, resp2, &second)
 
 	if first.Token == second.Token {
-		t.Error("identical Idempotency-Key produced same token — idempotency must NOT apply к create")
+		t.Error("identical Idempotency-Key produced same token — idempotency must NOT apply to create")
 	}
 	if first.ID == second.ID {
-		t.Error("identical Idempotency-Key produced same token id — idempotency must NOT apply к create")
+		t.Error("identical Idempotency-Key produced same token id — idempotency must NOT apply to create")
 	}
 }
 
@@ -204,7 +204,7 @@ func TestE2E_JoinTokens_ListAndGet(t *testing.T) {
 	h := newE2E(t)
 	admin := loginAs(t, h, auth.RoleAdmin)
 
-	// Mint а fresh token.
+	// Mint a fresh token.
 	resp := h.post(t, "/v1/nodes/join-tokens", map[string]any{
 		"ttl_seconds": 600,
 	}, admin)
@@ -238,8 +238,8 @@ func TestE2E_JoinTokens_ListAndGet(t *testing.T) {
 	}
 }
 
-// TestE2E_JoinTokens_DeleteRevoke verifies that revoke is а 204 on
-// the happy path и subsequent revoke returns 409.
+// TestE2E_JoinTokens_DeleteRevoke verifies that revoke is a 204 on
+// the happy path and subsequent revoke returns 409.
 func TestE2E_JoinTokens_DeleteRevoke(t *testing.T) {
 	h := newE2E(t)
 	admin := loginAs(t, h, auth.RoleAdmin)
@@ -263,7 +263,7 @@ func TestE2E_JoinTokens_DeleteRevoke(t *testing.T) {
 	}
 }
 
-// TestE2E_JoinTokens_DeleteUnknown verifies а random uuid returns 404.
+// TestE2E_JoinTokens_DeleteUnknown verifies a random uuid returns 404.
 func TestE2E_JoinTokens_DeleteUnknown(t *testing.T) {
 	h := newE2E(t)
 	admin := loginAs(t, h, auth.RoleAdmin)
@@ -274,7 +274,7 @@ func TestE2E_JoinTokens_DeleteUnknown(t *testing.T) {
 }
 
 // TestE2E_JoinTokens_ListConsumptionsEmpty verifies the audit endpoint
-// returns an empty list для а freshly-minted token (no redemption
+// returns an empty list for a freshly-minted token (no redemption
 // pre-Step 2).
 func TestE2E_JoinTokens_ListConsumptionsEmpty(t *testing.T) {
 	h := newE2E(t)
@@ -306,7 +306,7 @@ func TestE2E_JoinTokens_ListConsumptionsEmpty(t *testing.T) {
 	}
 }
 
-// TestE2E_JoinTokens_ListConsumptionsUnknownToken verifies а random
+// TestE2E_JoinTokens_ListConsumptionsUnknownToken verifies a random
 // uuid returns 404 from the audit endpoint.
 func TestE2E_JoinTokens_ListConsumptionsUnknownToken(t *testing.T) {
 	h := newE2E(t)
@@ -317,9 +317,9 @@ func TestE2E_JoinTokens_ListConsumptionsUnknownToken(t *testing.T) {
 	}
 }
 
-// hexEncodeBytes is а small helper к keep tests readable. The auth
-// package's hex.EncodeToString is already wired в production code,
-// но pulling encoding/hex into the test file is а thinner dependency.
+// hexEncodeBytes is a small helper to keep tests readable. The auth
+// package's hex.EncodeToString is already wired in production code,
+// but pulling encoding/hex into the test file is a thinner dependency.
 func hexEncodeBytes(b []byte) string {
 	const hexChars = "0123456789abcdef"
 	out := make([]byte, len(b)*2)

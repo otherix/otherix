@@ -28,7 +28,7 @@ import (
 	"github.com/otherix/otherix/internal/config"
 )
 
-// fastConfig returns an enabled AgentClientConfig с compressed
+// fastConfig returns an enabled AgentClientConfig with compressed
 // polling intervals so backoff / timeout tests finish in tens of
 // milliseconds. dir is unused after the inter-step refactor —
 // mTLS material now flows through agentclient.New's
@@ -37,7 +37,7 @@ import (
 // PollMaxInterval doubles as the per-request httpClient.Timeout (see
 // agentclient.New). 400ms preserves the "fast tests" intent while
 // giving the race-detector + parallel-test scheduler enough headroom
-// для TLS handshake + roundtrip variance под concurrent load (lint +
+// for TLS handshake + roundtrip variance under concurrent load (lint +
 // api-validate + test running together). Production callers pass real
 // PollMaxInterval values from config.
 func fastConfig(t *testing.T, _ string) config.AgentClientConfig {
@@ -51,8 +51,8 @@ func fastConfig(t *testing.T, _ string) config.AgentClientConfig {
 }
 
 // loadMaterial reads the tls.crt / tls.key / ca.crt files writeMaterial
-// dropped in dir и parses them via agentclient.LoadMaterialFromFiles.
-// Tests use this together с fastConfig к build the (cfg, cert, ca)
+// dropped in dir and parses them via agentclient.LoadMaterialFromFiles.
+// Tests use this together with fastConfig to build the (cfg, cert, ca)
 // triple agentclient.New expects after the cp_cert lifecycle refactor.
 func loadMaterial(t *testing.T, dir string) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
@@ -67,9 +67,9 @@ func loadMaterial(t *testing.T, dir string) (tls.Certificate, *x509.Certificate)
 	return cert, ca
 }
 
-// newClient is а one-stop wrapper that pairs fastConfig с loadMaterial
-// и invokes agentclient.New. Used by the bulk of agentclient tests
-// что don't need к vary individual config / material pieces.
+// newClient is a one-stop wrapper that pairs fastConfig with loadMaterial
+// and invokes agentclient.New. Used by the bulk of agentclient tests
+// that don't need to vary individual config / material pieces.
 func newClient(t *testing.T, dir string) *agentclient.Client {
 	t.Helper()
 	cert, ca := loadMaterial(t, dir)
@@ -415,7 +415,7 @@ func TestPollTask_BackoffProgression(t *testing.T) {
 	// PollMaxInterval=400ms). Assertions are deliberately loose: under
 	// -race + parallel-test scheduler, per-roundtrip overhead jitter
 	// (20-100ms) can dwarf the intended sleep step (10-20ms), so strict
-	// monotonicity fails при tied gaps. We assert direction-of-growth
+	// monotonicity fails at tied gaps. We assert direction-of-growth
 	// only ("non-decreasing"), not magnitude.
 	gap := func(i int) time.Duration { return stamps[i+1].Sub(stamps[i]) }
 
@@ -428,9 +428,9 @@ func TestPollTask_BackoffProgression(t *testing.T) {
 		t.Errorf("gap1 = %v, want >= 8ms (~PollInterval)", g1)
 	}
 	// Growth direction: g2 >= g1 (non-strict — ms ties on loaded CI are
-	// not regressions), g3 >= g2/2 (cap clamping и overhead jitter can
+	// not regressions), g3 >= g2/2 (cap clamping and overhead jitter can
 	// pull g3 below g2; halving threshold keeps "backoff didn't collapse"
-	// signal без being wall-clock-strict).
+	// signal without being wall-clock-strict).
 	if g2 < g1 {
 		t.Errorf("gap2 (%v) < gap1 (%v) — backoff regressed", g2, g1)
 	}

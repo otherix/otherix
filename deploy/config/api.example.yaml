@@ -31,15 +31,15 @@ console:
 # memory, disk by default) — and picks the least-allocated node; ties
 # break on node name lexicographic (lowercase). "least_vm_count" is
 # the legacy algorithm: minimum pinned-VM count wins, same tie-break.
-# Both paths fall back к count-based scoring per-
-# candidate when а node has not yet reported heartbeat metrics, so
-# cluster bootstrap is not а special case.
+# Both paths fall back to count-based scoring per-
+# candidate when a node has not yet reported heartbeat metrics, so
+# cluster bootstrap is not a special case.
 #
 # Per-resource placement gates (`resources.{cpu,memory,disk}`):
-#   enabled            — include this dimension в fit check + scoring.
+#   enabled            — include this dimension in fit check + scoring.
 #                        Disabling drops the resource from both
 #                        constraints AND the score; all three disabled
-#                        degrades scheduling к count-based fallback
+#                        degrades scheduling to count-based fallback
 #                        (a startup warning surfaces this case).
 #   overcommit_ratio   — multiplier on effective availability:
 #                          1.0  = strict, no overcommit (default)
@@ -49,11 +49,11 @@ console:
 # WARNING: memory overcommit (memory.overcommit_ratio > 1.0) carries
 # OOM-kill risk. Configure swap and review host vm.overcommit_memory
 # sysctl BEFORE enabling. Disk overcommit risks runaway sparse-qcow2
-# growth filling the pool. The api binary emits а slog Warn line at
+# growth filling the pool. The api binary emits a slog Warn line at
 # startup for each overcommit-enabled resource (and on the all-
-# disabled scenario), surfaced on each restart as а reminder.
+# disabled scenario), surfaced on each restart as a reminder.
 #
-# Read the operator guide before deviating от the strict default:
+# Read the operator guide before deviating from the strict default:
 #   docs/scheduler-configuration.md
 placement:
   algorithm: "resource_aware"
@@ -70,8 +70,8 @@ placement:
   # Node-pressure detection. Independent of the fit-check /
   # scoring path above — pressure conditions are computed CP-side from
   # heartbeat / scan metrics; nodes (or pools, for disk pressure) flagged
-  # with an active condition are excluded от placement until recovery
-  # (hard constraint, no override для MVP). Three pressure types:
+  # with an active condition are excluded from placement until recovery
+  # (hard constraint, no override for MVP). Three pressure types:
   #
   #   - memory       — per-node, heartbeat-driven. Free memory below
   #                    threshold_percent of total. OOM-kill risk.
@@ -80,38 +80,38 @@ placement:
   #                    crash / log truncation risk.
   #   - disk         — per-pool, scan-driven. Free pool bytes below
   #                    threshold_percent of capacity. Pool-scoped: other
-  #                    pools на the same node remain eligible.
+  #                    pools on the same node remain eligible.
   #
-  # Asymmetric debouncing (slow к set, fast к clear):
-  #   - SET   — `consecutive_required` observations с reported
+  # Asymmetric debouncing (slow to set, fast to clear):
+  #   - SET   — `consecutive_required` observations with reported
   #             availability below `threshold_percent`. At the default
   #             30 s heartbeat cadence, memory + system_disk require
   #             3 observations (≈ 90 s sustained). Pool disk defaults
-  #             к 1 since scan cadence is 15 min — а single observation
+  #             to 1 since scan cadence is 15 min — a single observation
   #             is sufficient signal.
   #   - CLEAR — first observation at-or-above the threshold immediately
-  #             clears the flag и zeroes the counter.
+  #             clears the flag and zeroes the counter.
   #
-  # Shared filesystem (typical homelab): когда the storage pool lives
-  # on the root filesystem, both system_disk и pool disk fire on the
-  # same physical condition. Both conditions render в the CLI — this
+  # Shared filesystem (typical homelab): when the storage pool lives
+  # on the root filesystem, both system_disk and pool disk fire on the
+  # same physical condition. Both conditions render in the CLI — this
   # is accurate (shared resource), not duplication.
   #
   # Operator guide: docs/scheduler-configuration.md.
   pressure:
     memory:
-      enabled: true              # set false к disable detection entirely
-      threshold_percent: 10      # flag когда free memory < 10% of total
+      enabled: true              # set false to disable detection entirely
+      threshold_percent: 10      # flag when free memory < 10% of total
       consecutive_required: 3    # ~90 s sustained at default heartbeat cadence
 
     system_disk:
-      enabled: true              # set false к disable detection entirely
-      threshold_percent: 10      # flag когда free root-fs bytes < 10% of total
+      enabled: true              # set false to disable detection entirely
+      threshold_percent: 10      # flag when free root-fs bytes < 10% of total
       consecutive_required: 3    # ~90 s sustained at default heartbeat cadence
 
     disk:
-      enabled: true              # set false к disable detection entirely
-      threshold_percent: 15      # flag когда free pool bytes < 15% of capacity
+      enabled: true              # set false to disable detection entirely
+      threshold_percent: 15      # flag when free pool bytes < 15% of capacity
       consecutive_required: 1    # single scan sets pressure (scans are 15 min apart)
 
 workers:
@@ -124,7 +124,7 @@ workers:
     retention:
       completed: 168h  # 7d  — successful tasks
       failed:    720h  # 30d — failed / cancelled tasks
-  # Heartbeat reconciler — flips nodes between 'ready' и 'unreachable'
+  # Heartbeat reconciler — flips nodes between 'ready' and 'unreachable'
   # based on whether last_heartbeat_at falls inside the stale_threshold
   # window. Interval is the cadence of the periodic check (must be
   # less than stale_threshold; otherwise transient blips would flap
@@ -134,10 +134,10 @@ workers:
     interval:        30s
   # Periodic storage_pool.scan trigger. Each tick enumerates active
   # pools whose owning node
-  # is scannable и enqueues а fresh scan task — handler-side dedup
+  # is scannable and enqueues a fresh scan task — handler-side dedup
   # skips pools that already have an in-flight scan. Jitter spreads
   # per-pool ScheduledAt across the interval so agent walks don't
-  # stampede. Disable к keep scans on-demand-only via
+  # stampede. Disable to keep scans on-demand-only via
   # `POST /v1/storage-pools/{id}/scan`.
   storage_pool_scan:
     enabled:  true
@@ -152,10 +152,10 @@ workers:
 # file paths configured here. See the `cp_cert:` block below for
 # cert lifecycle knobs.
 #
-# Cross-block invariant: когда `workers.enabled: true`, this block
+# Cross-block invariant: when `workers.enabled: true`, this block
 # MUST set `enabled: true` — the api binary fails fast otherwise
 # (rather than ship fake stub data into storage_pools or wedge scan
-# tasks forever). To run the api as a HTTP-only smoke target без
+# tasks forever). To run the api as a HTTP-only smoke target without
 # provisioned mTLS, flip `workers.enabled: false` above.
 #
 # Polling defaults: 1s initial interval, 30s exponential cap, 5m
@@ -168,7 +168,7 @@ agent_client:
 
 # CP server cert lifecycle (per-replica certs).
 # Each replica auto-generates its own ECDSA P-384 leaf cert signed by
-# the cluster CA в DB. Single leaf cert serves both directions
+# the cluster CA in DB. Single leaf cert serves both directions
 # (inbound agent_server listener + outbound agent_client dialer) via
 # ExtKeyUsage serverAuth+clientAuth.
 #
@@ -180,7 +180,7 @@ agent_client:
 #     = fatal at boot.
 #
 #   Mode B — local cache. local_cache.enabled = true → generated cert
-#     persisted к local_cache.{cert_path,key_path} after generation;
+#     persisted to local_cache.{cert_path,key_path} after generation;
 #     valid cache reused on subsequent boots (chain checked against
 #     current cluster CA, NotAfter > now + 30d buffer, SANs cover
 #     expected set). Operator-friendly for replica restarts.
@@ -189,8 +189,8 @@ agent_client:
 #     only. SANs = auto-detected baseline (localhost, 127.0.0.1,
 #     os.Hostname(), non-wildcard listen address) ∪ additional_sans.
 #
-# Cluster CA always loaded от DB. Legacy `cert_file` / `key_file` /
-# `ca_file` fields под agent_server / agent_client blocks are removed
+# Cluster CA always loaded from DB. Legacy `cert_file` / `key_file` /
+# `ca_file` fields under agent_server / agent_client blocks are removed
 # entirely (pre-prod squash window).
 #
 # SAN composition examples (production):

@@ -13,7 +13,7 @@ import (
 
 // Poweroff handles POST /v1/vms/{vm_name}/poweroff — async per spec.
 // Returns 202 + AsyncTaskAccepted; Manager.Poweroff attempts QMP
-// `quit` (clean socket / pidfile release) и falls back к SIGKILL
+// `quit` (clean socket / pidfile release) and falls back to SIGKILL
 // after poweroffGrace (5s). The guest OS is not notified per spec.
 func (h *Handler) Poweroff(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "vm_name")

@@ -157,7 +157,7 @@ func TestGenerateKeypairAndCSR_AcceptedByAuthValidateCSR(t *testing.T) {
 	}
 }
 
-// caChain bundles а freshly-generated cluster CA + а leaf cert signed
+// caChain bundles a freshly-generated cluster CA + a leaf cert signed
 // by it. Used by chain-verification tests to avoid repeating boilerplate.
 type caChain struct {
 	caPEM    []byte
@@ -431,7 +431,7 @@ func TestResolveToken_FileEmpty(t *testing.T) {
 func TestResolveToken_NeitherSet(t *testing.T) {
 	cfg := &config.BootstrapConfig{}
 	if _, err := resolveToken(cfg); err == nil {
-		t.Error("resolveToken with no token и no path = nil err, want error")
+		t.Error("resolveToken with no token and no path = nil err, want error")
 	}
 }
 

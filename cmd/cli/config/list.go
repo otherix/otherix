@@ -38,9 +38,9 @@ func runList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// writeClusterTable renders the cluster list as а tabwriter-aligned
+// writeClusterTable renders the cluster list as a tabwriter-aligned
 // three-column table — NAME / SERVER / CURRENT. The current
-// cluster is marked с `*` в the third column.
+// cluster is marked with `*` in the third column.
 func writeClusterTable(w io.Writer, cfg *cliconfig.Config) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tSERVER\tCURRENT")

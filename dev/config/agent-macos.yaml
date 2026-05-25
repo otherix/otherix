@@ -1,19 +1,19 @@
 # Otherix agent dev config — Lima VM (Linux agent on macOS host).
 #
 # Installed by `make bootstrap-dev` to /etc/otherix/agent.yaml inside the
-# Lima VM. The agent listens on 0.0.0.0:9443 inside the VM и Lima
+# Lima VM. The agent listens on 0.0.0.0:9443 inside the VM and Lima
 # forwards 127.0.0.1:9443 on the macOS host (see dev/lima/otherix-dev.yaml).
-# The control plane runs natively on macOS и is reached via the
-# host.lima.internal alias от inside the VM.
+# The control plane runs natively on macOS and is reached via the
+# host.lima.internal alias from inside the VM.
 #
-# The agent boots в State A polling-loop mode (no manual restart
+# The agent boots in State A polling-loop mode (no manual restart
 # needed). seed-mvp runs `otherix-agent bootstrap` to materialise
 # cert material; this yaml is preserved across re-bootstrap (bootstrap
-# writes the config file only когда absent или с --force, so
+# writes the config file only when absent or with --force, so
 # hand-edits survive).
 #
-# The agent receives pool desired state through heartbeat и reconciles
-# autonomously; this file no longer carries а `pools:` block.
+# The agent receives pool desired state through heartbeat and reconciles
+# autonomously; this file no longer carries a `pools:` block.
 
 server:
   listen: "0.0.0.0:9443"

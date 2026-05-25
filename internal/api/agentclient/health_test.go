@@ -142,7 +142,7 @@ func TestHealth_ConnectionRefused(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Health against closed listener returned nil error")
 	}
-	// Don't pin к exact error string — Go versions vary on
+	// Don't pin to exact error string — Go versions vary on
 	// "connection refused" vs "connect: connection refused" — but
 	// we expect SOMETHING on the get-/health wrapper.
 	if !strings.Contains(err.Error(), "agentclient: get /health") {

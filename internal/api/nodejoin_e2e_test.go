@@ -28,9 +28,9 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// generateE2ECSR returns а PEM-encoded CERTIFICATE REQUEST signed by а
-// fresh ECDSA P-256 keypair. The Subject CN is set к "node-test" —
-// the handler ignores Subject но we set it для realism.
+// generateE2ECSR returns a PEM-encoded CERTIFICATE REQUEST signed by a
+// fresh ECDSA P-256 keypair. The Subject CN is set to "node-test" —
+// the handler ignores Subject but we set it for realism.
 func generateE2ECSR(t *testing.T) string {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -47,7 +47,7 @@ func generateE2ECSR(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
 
-// mintE2EToken creates а join token via the management endpoint и
+// mintE2EToken creates a join token via the management endpoint and
 // returns the plaintext. The mint always succeeds — admin caller via
 // the existing loginAs helper has node:manage permission.
 func mintE2EToken(t *testing.T, h *e2eHarness, body map[string]any) (plaintext string, id string) {
@@ -71,8 +71,8 @@ func uniqueNodeName(prefix string) string {
 	return prefix + "-" + uuid.NewString()[:8]
 }
 
-// joinBody builds а valid /v1/nodes/join body. Caller can override
-// individual fields через keyword args.
+// joinBody builds a valid /v1/nodes/join body. Caller can override
+// individual fields via keyword args.
 func joinBody(token, csr, nodeName string) map[string]any {
 	return map[string]any{
 		"token":                      token,
@@ -104,7 +104,7 @@ func TestE2E_NodeJoin_HappyPath_Anonymous(t *testing.T) {
 	decodeJSON(t, resp, &body)
 
 	if _, err := uuid.Parse(body.NodeID); err != nil {
-		t.Errorf("node_id not а UUID: %v", err)
+		t.Errorf("node_id not a UUID: %v", err)
 	}
 	if !strings.Contains(body.CertPEM, "BEGIN CERTIFICATE") {
 		t.Error("cert_pem missing BEGIN CERTIFICATE")
@@ -184,8 +184,8 @@ func TestE2E_NodeJoin_UnknownToken_401(t *testing.T) {
 
 func TestE2E_NodeJoin_ExpiredToken_401(t *testing.T) {
 	h := newE2E(t)
-	// Mint а token then expire it via direct UPDATE — bypasses TTL
-	// minimum (60s) and avoids а time.Sleep в the test path.
+	// Mint a token then expire it via direct UPDATE — bypasses TTL
+	// minimum (60s) and avoids a time.Sleep in the test path.
 	token, id := mintE2EToken(t, h, map[string]any{"ttl_seconds": 60})
 	if _, err := h.store.Pool().Exec(context.Background(),
 		`update join_tokens set expires_at = now() - interval '1 hour' where id = $1`, id); err != nil {
@@ -249,7 +249,7 @@ func TestE2E_NodeJoin_ExistingActiveCert_409(t *testing.T) {
 		t.Fatalf("first redemption status = %d, want 201", resp1.StatusCode)
 	}
 
-	// Second redemption — same node_name with а fresh token. Active
+	// Second redemption — same node_name with a fresh token. Active
 	// cert from first redemption blocks it.
 	token2, _ := mintE2EToken(t, h, map[string]any{"ttl_seconds": 600})
 	csr2 := generateE2ECSR(t)
@@ -302,7 +302,7 @@ func TestE2E_NodeJoin_MalformedCSR_400(t *testing.T) {
 	token, _ := mintE2EToken(t, h, map[string]any{"ttl_seconds": 600})
 
 	resp := h.post(t, "/v1/nodes/join",
-		joinBody(token, "not а pem block", uniqueNodeName("mal")), "")
+		joinBody(token, "not a pem block", uniqueNodeName("mal")), "")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -442,9 +442,9 @@ func TestE2E_NodeJoin_NodePending_OnFreshCreate(t *testing.T) {
 		t.Fatalf("status lookup: %v", err)
 	}
 	if status != "pending" {
-		t.Errorf("status = %q, want pending (heartbeat reconciler flips к ready)", status)
+		t.Errorf("status = %q, want pending (heartbeat reconciler flips to ready)", status)
 	}
 
-	// Brief к keep linter happy + ensure DB has settled.
+	// Brief to keep linter happy + ensure DB has settled.
 	time.Sleep(10 * time.Millisecond)
 }

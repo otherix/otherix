@@ -50,7 +50,7 @@ where id = 1
 `
 
 // Sets the cluster's default pool name. The handler validates beforehand
-// that at least one pool instance с this name exists.
+// that at least one pool instance with this name exists.
 func (q *Queries) SetDefaultPoolName(ctx context.Context, defaultPoolName *string) error {
 	_, err := q.db.Exec(ctx, setDefaultPoolName, defaultPoolName)
 	return err

@@ -2,7 +2,7 @@
 // Copyright 2026 Andrei Taranik
 
 // Package storagepools hosts the agent's /v1/storage-pools/* HTTP
-// handlers. The Control Plane dials these endpoints over mTLS к learn
+// handlers. The Control Plane dials these endpoints over mTLS to learn
 // the live capacity / available bytes of every pool the agent serves.
 //
 // The URL parameter is `{pool_name}` - the agent's pool registry is
@@ -22,7 +22,7 @@ import (
 )
 
 // Handler bundles the VM manager (which owns the pool registry +
-// TaskStore) и the logger. The manager owns all state; the handler
+// TaskStore) and the logger. The manager owns all state; the handler
 // only translates wire shapes.
 type Handler struct {
 	manager *vm.Manager
@@ -42,9 +42,9 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Delete("/{pool_name}/images/{checksum}", h.DeleteImage)
 }
 
-// asyncAccepted mirrors `AsyncTaskAccepted` в api/openapi/agent.yaml.
-// Duplicated from handlers/vms/create.go pending а shared types
-// package; status enum is constrained к [pending, running] by spec.
+// asyncAccepted mirrors `AsyncTaskAccepted` in api/openapi/agent.yaml.
+// Duplicated from handlers/vms/create.go pending a shared types
+// package; status enum is constrained to [pending, running] by spec.
 type asyncAccepted struct {
 	TaskID string         `json:"task_id"`
 	Status string         `json:"status"`
@@ -54,14 +54,14 @@ type asyncAccepted struct {
 // Scan handles POST /v1/storage-pools/{pool_name}/scan.
 //
 //   - Validates the pool_name URL parameter.
-//   - Asks the manager к begin а scan; receives an agent task в
+//   - Asks the manager to begin a scan; receives an agent task in
 //     `pending` status.
-//   - Returns 202 с the task_id immediately; the CP polls
-//     /v1/tasks/{task_id} к observe terminal status.
+//   - Returns 202 with the task_id immediately; the CP polls
+//     /v1/tasks/{task_id} to observe terminal status.
 //
 // Errors:
 //   - 400 validation_failed — pool_name is empty.
-//   - 404 not_found — pool_name does not match а configured pool.
+//   - 404 not_found — pool_name does not match a configured pool.
 //   - 500 internal — unexpected manager failure.
 func (h *Handler) Scan(w http.ResponseWriter, r *http.Request) {
 	poolName := chi.URLParam(r, "pool_name")

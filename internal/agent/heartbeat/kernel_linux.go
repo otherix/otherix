@@ -20,9 +20,9 @@ func kernelReleaseFromUname() string {
 }
 
 // utsnameReleaseString converts the syscall.Utsname.Release byte array
-// to а Go string, terminating at the first NUL. Generic over int8 и
+// to a Go string, terminating at the first NUL. Generic over int8 and
 // uint8 because the underlying type differs between linux/amd64
-// (int8) и linux/arm64 (uint8).
+// (int8) and linux/arm64 (uint8).
 func utsnameReleaseString[T ~int8 | ~uint8](buf [65]T) string {
 	out := make([]byte, 0, len(buf))
 	for _, c := range buf {

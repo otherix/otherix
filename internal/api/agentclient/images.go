@@ -21,7 +21,7 @@ import (
 // agent's task id from the AsyncTaskAccepted body. The agent is
 // expected to respond with 202 + JSON matching
 // api/openapi/agent.yaml#components/schemas/AsyncTaskAccepted; non-2xx
-// responses surface as *AgentError, malformed body as а generic error.
+// responses surface as *AgentError, malformed body as a generic error.
 //
 // The agent's pool registry is name-keyed; CP-side callers load the
 // `storage_pools` row and pass `pool.Name`. The per-instance UUID

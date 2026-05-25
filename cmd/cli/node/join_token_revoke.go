@@ -16,7 +16,7 @@ func newJoinTokenRevokeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "revoke <id>",
 		Short: "Revoke an unconsumed join token (admin only).",
-		Long: `Sets the token's expires_at к LEAST(expires_at, now()), making
+		Long: `Sets the token's expires_at to LEAST(expires_at, now()), making
 it un-redeemable. Idempotent at the server (repeat calls produce
 no further effect); already-expired tokens return 409.`,
 		Args: cobra.ExactArgs(1),
@@ -32,7 +32,7 @@ func runJoinTokenRevoke(cmd *cobra.Command, args []string) error {
 	}
 	id, err := uuid.Parse(args[0])
 	if err != nil {
-		return fmt.Errorf("validation_failed: id must be а uuid: %v", err)
+		return fmt.Errorf("validation_failed: id must be a uuid: %v", err)
 	}
 	if err := c.DeleteJoinToken(cmd.Context(), id); err != nil {
 		return classifyError(err)

@@ -10,23 +10,23 @@ import (
 )
 
 // Poster is the narrow Client surface the Sender depends on. The
-// production *Client satisfies it; tests pass а fake to drive the
-// loop without spinning up а real CP server.
+// production *Client satisfies it; tests pass a fake to drive the
+// loop without spinning up a real CP server.
 type Poster interface {
 	Send(ctx context.Context, report Report) (int, *Response, error)
 }
 
 // ResponseHandler is the optional sink for heartbeat responses. The
-// pool reconciler implements it и receives the desired-pool inventory
+// pool reconciler implements it and receives the desired-pool inventory
 // every tick. nil handler means the loop runs without downstream
 // notification (used by collector-only test paths).
 type ResponseHandler interface {
 	HandleHeartbeatResponse(ctx context.Context, resp *Response)
 }
 
-// MultiResponseHandler fans the heartbeat response к multiple
+// MultiResponseHandler fans the heartbeat response to multiple
 // reconcilers (e.g. pool + VM). Nil entries are skipped so callers
-// can wire optional reconcilers без а nil-check dance.
+// can wire optional reconcilers without a nil-check dance.
 type MultiResponseHandler []ResponseHandler
 
 // HandleHeartbeatResponse implements ResponseHandler by dispatching to
@@ -46,7 +46,7 @@ type SenderConfig struct {
 }
 
 // Sender runs the heartbeat loop. One instance per agent process;
-// the agent runtime owns the goroutine lifecycle и cancels the
+// the agent runtime owns the goroutine lifecycle and cancels the
 // context to stop the loop.
 type Sender struct {
 	collector       Collector
@@ -56,9 +56,9 @@ type Sender struct {
 	logger          *slog.Logger
 }
 
-// NewSender constructs а Sender. Collector / poster / logger are
+// NewSender constructs a Sender. Collector / poster / logger are
 // required; responseHandler is optional (nil disables response
-// dispatch). Zero Interval defaults к 30 s.
+// dispatch). Zero Interval defaults to 30 s.
 func NewSender(collector Collector, poster Poster, handler ResponseHandler, cfg SenderConfig, logger *slog.Logger) *Sender {
 	interval := cfg.Interval
 	if interval <= 0 {
@@ -74,10 +74,10 @@ func NewSender(collector Collector, poster Poster, handler ResponseHandler, cfg 
 }
 
 // Run blocks until ctx is cancelled. First tick fires immediately so
-// а fresh agent flips the node к 'ready' without waiting а full
+// a fresh agent flips the node to 'ready' without waiting a full
 // interval. Subsequent ticks fire every Interval.
 //
-// Errors (collect или post) are logged at WARN и the loop continues;
+// Errors (collect or post) are logged at WARN and the loop continues;
 // the heartbeat protocol is fire-and-forget per design (the CP
 // reconciler closes the loop by marking stale nodes unreachable).
 func (s *Sender) Run(ctx context.Context) error {

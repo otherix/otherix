@@ -96,13 +96,13 @@ func TestRouter_MiddlewareStackIsActive(t *testing.T) {
 
 // TestRouter_BoundedRESTInheritsTimeout locks the structural pattern
 // adopted by the timeout-fix iteration: NewRouter wraps bounded REST
-// routes в а Group that applies middleware.Timeout, while long-lived
+// routes in a Group that applies middleware.Timeout, while long-lived
 // WebSocket routes (vms.consoleStream) are registered as siblings
 // outside the Group. This regression test mirrors that structure
-// directly с probe handlers — fail loudly если а future refactor
-// drops the Group или the Timeout middleware от inside it.
+// directly with probe handlers — fail loudly if a future refactor
+// drops the Group or the Timeout middleware from inside it.
 //
-// Pre-fix landing the Timeout was applied at root и blanketed every
+// Pre-fix landing the Timeout was applied at root and blanketed every
 // route, including console-stream. Post-fix the Group pattern is the
 // invariant: bounded subtree → Timeout enforced; streaming sibling →
 // Timeout absent.
@@ -113,8 +113,8 @@ func TestRouter_BoundedRESTInheritsTimeout(t *testing.T) {
 	r := chi.NewRouter()
 
 	// Streaming sibling — registered before the Group, must NOT inherit
-	// Timeout. The probe handler sleeps past requestTimeout и expects
-	// to run к completion without being cancelled.
+	// Timeout. The probe handler sleeps past requestTimeout and expects
+	// to run to completion without being cancelled.
 	streamingDone := make(chan struct{})
 	r.Get("/streaming", func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(handlerSleep)
@@ -122,7 +122,7 @@ func TestRouter_BoundedRESTInheritsTimeout(t *testing.T) {
 	})
 
 	// Bounded REST Group — Timeout middleware applies. The probe
-	// handler sleeps past requestTimeout и should surface а 503 с
+	// handler sleeps past requestTimeout and should surface a 503 with
 	// the standard timeout envelope.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(requestTimeout))
@@ -153,7 +153,7 @@ func TestRouter_BoundedRESTInheritsTimeout(t *testing.T) {
 		}
 	}
 
-	// Streaming route → 200 после full sleep (Timeout не applied).
+	// Streaming route → 200 after full sleep (Timeout not applied).
 	streamingRec := httptest.NewRecorder()
 	start = time.Now()
 	r.ServeHTTP(streamingRec, httptest.NewRequest(http.MethodGet, "/streaming", nil))
@@ -161,7 +161,7 @@ func TestRouter_BoundedRESTInheritsTimeout(t *testing.T) {
 	select {
 	case <-streamingDone:
 	default:
-		t.Errorf("streaming handler did not run к completion (Timeout middleware leaked?)")
+		t.Errorf("streaming handler did not run to completion (Timeout middleware leaked?)")
 	}
 	if streamingElapsed < handlerSleep {
 		t.Errorf("streaming route returned early at %v, want ≥ %v (Timeout cancelled it)",

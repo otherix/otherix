@@ -92,7 +92,7 @@ func TestAgentImportExecutor_VerifyMode_PostsExpectedChecksum(t *testing.T) {
 		t.Fatalf("post body not captured")
 	}
 	if body.ExpectedChecksumSha256 == nil {
-		t.Fatal("ExpectedChecksumSha256 = nil, want pointer к 'deadbeef'")
+		t.Fatal("ExpectedChecksumSha256 = nil, want pointer to 'deadbeef'")
 	}
 	if *body.ExpectedChecksumSha256 != "deadbeef" {
 		t.Errorf("ExpectedChecksumSha256 = %q, want 'deadbeef'", *body.ExpectedChecksumSha256)
@@ -100,10 +100,10 @@ func TestAgentImportExecutor_VerifyMode_PostsExpectedChecksum(t *testing.T) {
 }
 
 // TestAgentImportExecutor_ComputeMode_OmitsExpectedChecksum confirms
-// the compute-mode shape: а template с nil/empty ImageChecksumSha256
+// the compute-mode shape: a template with nil/empty ImageChecksumSha256
 // triggers an agent request without expected_checksum_sha256 set.
 // The agentapi field is *string + omitempty, so leaving it nil
-// produces а body the agent's relaxed validator interprets как
+// produces a body the agent's relaxed validator interprets as
 // "no upstream hash; compute during download".
 func TestAgentImportExecutor_ComputeMode_OmitsExpectedChecksum(t *testing.T) {
 	t.Parallel()

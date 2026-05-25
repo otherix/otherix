@@ -19,10 +19,10 @@ import (
 )
 
 // ConsoleStream implements GET /v1/vms/{id}/console-stream — the
-// CP-side proxy WebSocket relay для proxy mode.
-// The operator's CLI hits this URL с the agent-issued token in the
+// CP-side proxy WebSocket relay for proxy mode.
+// The operator's CLI hits this URL with the agent-issued token in the
 // query string; the CP resolves the owning agent, opens its own
-// WebSocket к the agent's `console-stream` endpoint forwarding the
+// WebSocket to the agent's `console-stream` endpoint forwarding the
 // token verbatim, and pumps binary frames bidirectionally. The token
 // is the auth contract — the agent validates it, the CP only
 // transports.
@@ -32,9 +32,9 @@ import (
 // so the CLI dials the agent without crossing this handler.
 //
 // This handler is intentionally anonymous (no Authn middleware): the
-// agent token in the query string is the auth credential, и
-// requiring а user JWT here would force the CLI к maintain а second
-// credential path в parallel.
+// agent token in the query string is the auth credential, and
+// requiring a user JWT here would force the CLI to maintain a second
+// credential path in parallel.
 func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 	if h.consoleDeps.AgentClient == nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -98,9 +98,9 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 
 	// Dial the agent's WebSocket using the agentclient's mTLS-configured
 	// HTTP client. Agent validates the token before completing the
-	// handshake; non-101 surfaces as а Dial error here, и we relay
-	// the agent's status / body к the operator's client как 5xx
-	// (we cannot return 4xx after the upgrade has begun, и agent-
+	// handshake; non-101 surfaces as a Dial error here, and we relay
+	// the agent's status / body to the operator's client as 5xx
+	// (we cannot return 4xx after the upgrade has begun, and agent-
 	// reported 401 / 409 should reach the operator with their full
 	// fidelity — coder/websocket carries the original response).
 	upstream, upstreamResp, err := websocket.Dial(r.Context(), agentURL, &websocket.DialOptions{
@@ -114,7 +114,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 
 	// Clear hijacked connection deadlines — http.Server.ReadTimeout /
 	// WriteTimeout are applied via SetRead/WriteDeadline at request
-	// start, и persist on the net.Conn after coder/websocket.Accept
+	// start, and persist on the net.Conn after coder/websocket.Accept
 	// hijacks it. Without these calls, the WebSocket relay drops at
 	// ~30s when those deadlines fire. Logged at WARN instead of bailing.
 	rc := http.NewResponseController(w)
@@ -131,7 +131,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		// Accept already wrote а response; nothing к do beyond cleaning
+		// Accept already wrote a response; nothing to do beyond cleaning
 		// up the upstream connection (deferred above).
 		h.log.ErrorContext(r.Context(), "vms.consoleStream downstream accept",
 			"vm", vmName, "error", err.Error())
@@ -143,9 +143,9 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // relayUpstreamDialError translates failures dialing the agent's
-// WebSocket к the operator-facing envelope. WebSocket.Dial preserves
+// WebSocket to the operator-facing envelope. WebSocket.Dial preserves
 // the upstream HTTP response when available, so the agent's 401 /
-// 409 codes can be echoed verbatim before we burn through к 502.
+// 409 codes can be echoed verbatim before we burn through to 502.
 func (h *Handler) relayUpstreamDialError(w http.ResponseWriter, r *http.Request, upstreamResp *http.Response, err error) {
 	if upstreamResp != nil {
 		switch upstreamResp.StatusCode {
@@ -156,11 +156,11 @@ func (h *Handler) relayUpstreamDialError(w http.ResponseWriter, r *http.Request,
 		case http.StatusConflict:
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConsoleInUse,
-				"console session already open or vm not running на the agent", nil)
+				"console session already open or vm not running on the agent", nil)
 			return
 		case http.StatusNotFound:
 			response.WriteError(w, r, http.StatusNotFound,
-				response.CodeVMNotFound, "vm not found на agent", nil)
+				response.CodeVMNotFound, "vm not found on agent", nil)
 			return
 		}
 	}
@@ -172,7 +172,7 @@ func (h *Handler) relayUpstreamDialError(w http.ResponseWriter, r *http.Request,
 
 // relayConsoleFrames pumps binary WebSocket frames in both directions
 // between downstream (operator) and upstream (agent). First close on
-// either side cancels the shared context и the other pump unwinds.
+// either side cancels the shared context and the other pump unwinds.
 // Frame types pass through verbatim.
 func (h *Handler) relayConsoleFrames(parent context.Context, vmName string, downstream, upstream *websocket.Conn) {
 	ctx, cancel := context.WithCancel(parent)

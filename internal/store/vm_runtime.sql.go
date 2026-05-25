@@ -64,7 +64,7 @@ where vm_id = $1
 
 // Read the runtime snapshot for a VM, used by GET /v1/vms/{id} to
 // project a combined desired+observed status. Returns ErrNoRows when
-// the worker has not yet upserted (i.e. the VM is still в
+// the worker has not yet upserted (i.e. the VM is still in
 // desired_phase='running' but the agent hasn't acknowledged).
 func (q *Queries) GetVMRuntime(ctx context.Context, vmID uuid.UUID) (VMRuntime, error) {
 	row := q.db.QueryRow(ctx, getVMRuntime, vmID)
@@ -109,7 +109,7 @@ type UpdateVMRuntimePhaseParams struct {
 
 // Single-field phase patch used by the synchronous VM lifecycle
 // handlers (pause / resume / reset). The CP-side handler invokes
-// this after the agent confirms а QMP-driven transition so the
+// this after the agent confirms a QMP-driven transition so the
 // next projected `status` reflects the new state without waiting
 // for the heartbeat reconciler to catch up. last_observed_at is
 // stamped to keep the wire's observed-state freshness signal

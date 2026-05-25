@@ -49,7 +49,7 @@ func TestResolvePath_HomeFallback(t *testing.T) {
 
 func TestResolvePath_EmptyEnvFallsThrough(t *testing.T) {
 	// Setting the env var to an empty string must behave as unset —
-	// kubectl и docker treat empty the same way, и we follow.
+	// kubectl and docker treat empty the same way, and we follow.
 	t.Setenv(cliconfig.ConfigEnvVar, "")
 	t.Setenv("HOME", "/h")
 	got, err := cliconfig.ResolvePath("")

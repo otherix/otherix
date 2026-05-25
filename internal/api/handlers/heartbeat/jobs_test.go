@@ -41,9 +41,9 @@ func (s *stubReconciler) MarkNodesUnreachable(_ context.Context, staleBefore tim
 }
 
 // TestReconcileWorker_RunsBothPasses confirms one tick exercises both
-// promotion и demotion. Identical cutoff (`freshAfter == staleBefore
-// == now - StaleThreshold`) is а deliberate property of the SQL —
-// "fresh" и "stale" are complements on the same time axis.
+// promotion and demotion. Identical cutoff (`freshAfter == staleBefore
+// == now - StaleThreshold`) is a deliberate property of the SQL —
+// "fresh" and "stale" are complements on the same time axis.
 func TestReconcileWorker_RunsBothPasses(t *testing.T) {
 	rec := &stubReconciler{
 		promoted: []store.PromoteHealthyNodesRow{{ID: uuid.New(), Name: "n1", Status: store.NodeStatusReady}},
@@ -71,9 +71,9 @@ func TestReconcileWorker_RunsBothPasses(t *testing.T) {
 	}
 }
 
-// TestReconcileWorker_PropagatesPromoteError confirms а failed
-// promote pass aborts the tick rather than masking the error и
-// silently continuing к demote.
+// TestReconcileWorker_PropagatesPromoteError confirms a failed
+// promote pass aborts the tick rather than masking the error and
+// silently continuing to demote.
 func TestReconcileWorker_PropagatesPromoteError(t *testing.T) {
 	rec := &stubReconciler{promoteErr: errors.New("db down")}
 	w := &ReconcileWorker{
@@ -91,7 +91,7 @@ func TestReconcileWorker_PropagatesPromoteError(t *testing.T) {
 }
 
 // TestReconcileConfig_Defaults pins the fallback values applied by
-// withDefaults. Changing these affects every test that ships with а
+// withDefaults. Changing these affects every test that ships with a
 // zero config; reviewers must consciously update.
 func TestReconcileConfig_Defaults(t *testing.T) {
 	cfg := ReconcileConfig{}.withDefaults()

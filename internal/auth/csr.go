@@ -26,17 +26,17 @@ import (
 const LeafCertValidity = 365 * 24 * time.Hour
 
 // minRSABits is the lower bound enforced on incoming CSR public keys.
-// 2048 bits is the modern weak-end; RSA 1024 was deprecated by NIST в
+// 2048 bits is the modern weak-end; RSA 1024 was deprecated by NIST in
 // 2013. Whitelist also accepts ECDSA P-256 and P-384.
 const minRSABits = 2048
 
 // Sentinel errors returned by ValidateCSR. The redemption handler
-// type-switches on these к surface specific operator-facing messages
+// type-switches on these to surface specific operator-facing messages
 // inside the wrapped 400 envelope.
 var (
-	// ErrCSRPEM is returned when the input bytes are not а valid
+	// ErrCSRPEM is returned when the input bytes are not a valid
 	// "CERTIFICATE REQUEST" PEM block.
-	ErrCSRPEM = errors.New("csr: not а CERTIFICATE REQUEST PEM block")
+	ErrCSRPEM = errors.New("csr: not a CERTIFICATE REQUEST PEM block")
 
 	// ErrCSRParse is returned when x509.ParseCertificateRequest
 	// rejects the DER contents.
@@ -50,16 +50,16 @@ var (
 	// the whitelist (RSA 2048+, ECDSA P-256/P-384).
 	ErrCSRKeyType = errors.New("csr: key type not allowed")
 
-	// ErrCSRForbidExt is returned when the CSR carries а CA-creating
+	// ErrCSRForbidExt is returned when the CSR carries a CA-creating
 	// extension (BasicConstraints CA:TRUE or KeyUsage with certSign /
 	// crlSign). Defense-in-depth — the cert template always overrides
-	// these на signing, but rejecting them upfront keeps the audit
+	// these on signing, but rejecting them upfront keeps the audit
 	// trail clean.
 	ErrCSRForbidExt = errors.New("csr: forbidden extension present")
 )
 
 // Extension OIDs used by validateExtensions to inspect CSR-attached
-// extensions без а full x509 parse. Sourced from RFC 5280.
+// extensions without a full x509 parse. Sourced from RFC 5280.
 var (
 	oidBasicConstraints = []int{2, 5, 29, 19}
 	oidKeyUsage         = []int{2, 5, 29, 15}
@@ -67,11 +67,11 @@ var (
 
 // ValidateCSR parses + validates an incoming CSR per Otherix policy.
 // Returns the parsed *x509.CertificateRequest on success; the CSR is
-// ready для SignCSR. On rejection returns one of the Err* sentinels
-// wrapped с context (use errors.Is к dispatch).
+// ready for SignCSR. On rejection returns one of the Err* sentinels
+// wrapped with context (use errors.Is to dispatch).
 //
-// The CSR Subject и SAN are NOT examined here — SignCSR ignores them
-// entirely и sets the cert template от validated request parameters
+// The CSR Subject and SAN are NOT examined here — SignCSR ignores them
+// entirely and sets the cert template from validated request parameters
 // (defense-in-depth against CN injection).
 func ValidateCSR(pemBytes []byte) (*x509.CertificateRequest, error) {
 	block, _ := pem.Decode(pemBytes)
@@ -100,7 +100,7 @@ func ValidateCSR(pemBytes []byte) (*x509.CertificateRequest, error) {
 }
 
 // validateKeyType accepts RSA 2048+ and ECDSA P-256 / P-384. Ed25519
-// rejected in the first slice - future expansion easy (add к
+// rejected in the first slice - future expansion easy (add to
 // the type switch).
 func validateKeyType(key crypto.PublicKey) error {
 	switch k := key.(type) {
@@ -122,7 +122,7 @@ func validateKeyType(key crypto.PublicKey) error {
 }
 
 // validateExtensions rejects CA-creating extensions: BasicConstraints
-// CA:TRUE и KeyUsage с certSign or crlSign bits. The cert template
+// CA:TRUE and KeyUsage with certSign or crlSign bits. The cert template
 // downstream of validation always overrides these, but rejecting
 // upfront keeps the audit trail honest about what the agent actually
 // submitted.
@@ -135,7 +135,7 @@ func validateExtensions(csr *x509.CertificateRequest) error {
 			}
 		case ext.Id.Equal(oidKeyUsage):
 			if hasCAKeyUsageBits(ext.Value) {
-				return fmt.Errorf("%w: KeyUsage с certSign or crlSign", ErrCSRForbidExt)
+				return fmt.Errorf("%w: KeyUsage with certSign or crlSign", ErrCSRForbidExt)
 			}
 		}
 	}
@@ -143,8 +143,8 @@ func validateExtensions(csr *x509.CertificateRequest) error {
 }
 
 // isCABasicConstraints reports whether the encoded BasicConstraints
-// extension flags CA:TRUE. The DER encoding is а SEQUENCE — the BOOLEAN
-// `cA` value lives at byte 4 когда present (SEQUENCE tag, length, BOOLEAN
+// extension flags CA:TRUE. The DER encoding is a SEQUENCE — the BOOLEAN
+// `cA` value lives at byte 4 when present (SEQUENCE tag, length, BOOLEAN
 // tag, length, value). False / absent CA bit ⇒ false.
 func isCABasicConstraints(value []byte) bool {
 	// 0x30 = SEQUENCE; 0x01 = BOOLEAN; 0xFF = TRUE
@@ -156,8 +156,8 @@ func isCABasicConstraints(value []byte) bool {
 }
 
 // hasCAKeyUsageBits reports whether the encoded KeyUsage extension
-// contains certSign (bit 5) or crlSign (bit 6). The DER form is а
-// BIT STRING; the first content byte signals unused bits, и
+// contains certSign (bit 5) or crlSign (bit 6). The DER form is a
+// BIT STRING; the first content byte signals unused bits, and
 // subsequent bytes carry the flags in MSB-first order.
 //
 // Bit positions per RFC 5280 §4.2.1.3:
@@ -167,8 +167,8 @@ func isCABasicConstraints(value []byte) bool {
 //	cRLSign (6)          | encipherOnly (7)   | decipherOnly (8)
 func hasCAKeyUsageBits(value []byte) bool {
 	// Find the BIT STRING contents. Outer wrapper is OCTET STRING (0x04)
-	// containing the BIT STRING (0x03). We scan для the bit-string
-	// header rather than depending on а full ASN.1 parse.
+	// containing the BIT STRING (0x03). We scan for the bit-string
+	// header rather than depending on a full ASN.1 parse.
 	var idx int
 	switch {
 	case len(value) > 0 && value[0] == 0x03:
@@ -202,22 +202,22 @@ func hasCAKeyUsageBits(value []byte) bool {
 	return false
 }
 
-// SignCSR signs а validated CSR using the cluster CA. Returns the
-// issued cert в PEM form plus the parsed *x509.Certificate for the
+// SignCSR signs a validated CSR using the cluster CA. Returns the
+// issued cert in PEM form plus the parsed *x509.Certificate for the
 // caller's metadata-extraction needs (serial, fingerprint, subject DN).
 //
 // Cert template is server-authoritative — the CSR's Subject / SAN /
 // extensions are ignored entirely. Template fields:
 //
-//   - Subject CN: "node-<nodeName>" derived от the validated request.
+//   - Subject CN: "node-<nodeName>" derived from the validated request.
 //   - SAN DNS: "node-<nodeName>.agents.otherix.local", "localhost".
 //   - SAN IP: 127.0.0.1.
-//   - Validity: LeafCertValidity (1 year), с а 1m skew tolerance on
+//   - Validity: LeafCertValidity (1 year), with a 1m skew tolerance on
 //     NotBefore so freshly-issued certs don't fail validation on
-//     callers с slightly-fast clocks.
+//     callers with slightly-fast clocks.
 //   - KeyUsage: DigitalSignature | KeyEncipherment.
 //   - ExtKeyUsage: serverAuth | clientAuth (agents serve CP→agent
-//     requests и act as clients on the heartbeat path).
+//     requests and act as clients on the heartbeat path).
 //   - Serial: cryptographically-random 64-bit positive integer.
 //   - SignatureAlgorithm: ECDSAWithSHA384 (matches the CA's P-384 key).
 func SignCSR(csr *x509.CertificateRequest, nodeName string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
@@ -267,17 +267,17 @@ func SignCSR(csr *x509.CertificateRequest, nodeName string, caCert *x509.Certifi
 	return certPEM, parsed, nil
 }
 
-// randomLeafSerial returns а cryptographically-random positive 64-bit
-// integer suitable для а leaf cert serial. 64 bits gives ~10^19
+// randomLeafSerial returns a cryptographically-random positive 64-bit
+// integer suitable for a leaf cert serial. 64 bits gives ~10^19
 // distinct values — collision probability is negligible across any
-// realistic fleet size (RFC 5280 allows up к 20 octets / 160 bits;
-// 64 bits is plenty for а homelab CA's lifetime).
+// realistic fleet size (RFC 5280 allows up to 20 octets / 160 bits;
+// 64 bits is plenty for a homelab CA's lifetime).
 func randomLeafSerial() (*big.Int, error) {
 	maxSerial := new(big.Int).Lsh(big.NewInt(1), 63)
 	n, err := rand.Int(rand.Reader, maxSerial)
 	if err != nil {
 		return nil, err
 	}
-	// Add 1 к guarantee positive non-zero (rand.Int returns [0, max)).
+	// Add 1 to guarantee positive non-zero (rand.Int returns [0, max)).
 	return n.Add(n, big.NewInt(1)), nil
 }

@@ -91,7 +91,7 @@ var ErrEmptyConfig = errors.New("config has no clusters")
 // ENOENT) returns the underlying error wrapped.
 func Load(path string) (*Config, error) {
 	// Path is operator-controlled (via --config flag, $OTHERIX_CONFIG,
-	// или $HOME-derived default) — there is no untrusted source. The
+	// or $HOME-derived default) — there is no untrusted source. The
 	// gosec G304 check flags os.ReadFile of any variable path, but
 	// reading the operator's own credential store is the package's job.
 	raw, err := os.ReadFile(path) //nolint:gosec
@@ -139,7 +139,7 @@ func Save(path string, cfg *Config) error {
 		return fmt.Errorf("cliconfig: create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	// Best-effort cleanup на любом failure path. The successful path
+	// Best-effort cleanup on any failure path. The successful path
 	// renames the file, after which Remove is a no-op (ENOENT
 	// swallowed below).
 	defer func() {

@@ -22,7 +22,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// importHTTPTimeout caps the worst-case duration of а single import
+// importHTTPTimeout caps the worst-case duration of a single import
 // download. 1h is the agent-side default; ROADMAP entry
 // "agent.storage.dir.import_timeout config" tracks operator-facing
 // exposure.
@@ -32,16 +32,16 @@ const importHTTPTimeout = time.Hour
 // fetches.
 const importMaxRedirects = 5
 
-// Image-surface sentinel errors. Handlers map к 400 / 404 envelopes;
-// task-error envelopes для async failures live в TaskError on the
+// Image-surface sentinel errors. Handlers map to 400 / 404 envelopes;
+// task-error envelopes for async failures live in TaskError on the
 // agent task itself.
 var (
 	// ErrUnsupportedFormat is returned when ImportImageRequest.Format is
 	// not "qcow2". `raw` is a deferred enum extension.
 	ErrUnsupportedFormat = errors.New("unsupported image format (qcow2 only)")
 	// ErrMissingSourceURL is returned when ImportImageRequest.SourceURL
-	// is empty. Only source_url is accepted; source_path не implemented
-	// (separate iteration tracked в ROADMAP).
+	// is empty. Only source_url is accepted; source_path not implemented
+	// (separate iteration tracked in ROADMAP).
 	ErrMissingSourceURL = errors.New("source_url is required")
 	// ErrInvalidChecksumFormat is returned when expected_checksum_sha256
 	// fails the 64-char lowercase hex pattern.
@@ -50,7 +50,7 @@ var (
 
 // ImportImageRequest is the agent-internal struct the HTTP handler
 // constructs from the wire body. Wire shape mirrors agent.yaml's
-// ImageImportRequest; this struct stays minimal по design — only
+// ImageImportRequest; this struct stays minimal by design — only
 // source_url is accepted, format must be "qcow2".
 type ImportImageRequest struct {
 	SourceURL              string
@@ -58,9 +58,9 @@ type ImportImageRequest struct {
 	Format                 string
 }
 
-// CachedImage is the agent-internal view of an entry в the pool's
-// image cache, projected by ListImages from а filesystem walk of
-// {pool.Root}/templates/. The HTTP handler shapes this к the wire
+// CachedImage is the agent-internal view of an entry in the pool's
+// image cache, projected by ListImages from a filesystem walk of
+// {pool.Root}/templates/. The HTTP handler shapes this to the wire
 // CachedImage schema.
 type CachedImage struct {
 	ChecksumSHA256 string
@@ -73,17 +73,17 @@ type CachedImage struct {
 
 // imageLockKey indexes the per-(pool, sha256) mutex preventing
 // concurrent imports of the same content from clobbering each other.
-// The mutex stays alive in the map для the lifetime of the manager —
-// cleanup is а future iteration concern. The pool dimension is а
+// The mutex stays alive in the map for the lifetime of the manager —
+// cleanup is a future iteration concern. The pool dimension is a
 // string name (the agent's pool registry is name-keyed).
 type imageLockKey struct {
 	pool string
 	sha  string
 }
 
-// lockForImage returns the mutex для (poolName, sha256). LoadOrStore
-// keeps а stable identity, so two concurrent goroutines see the same
-// *sync.Mutex и serialise correctly.
+// lockForImage returns the mutex for (poolName, sha256). LoadOrStore
+// keeps a stable identity, so two concurrent goroutines see the same
+// *sync.Mutex and serialise correctly.
 func (m *Manager) lockForImage(poolName, sha string) *sync.Mutex {
 	actual, _ := m.imageLocks.LoadOrStore(imageLockKey{pool: poolName, sha: sha}, &sync.Mutex{})
 	mu, _ := actual.(*sync.Mutex)
@@ -91,30 +91,30 @@ func (m *Manager) lockForImage(poolName, sha string) *sync.Mutex {
 }
 
 // ImportImage downloads the image identified by req.SourceURL,
-// optionally verifies its sha256, validates qcow2 magic, и atomically
-// places it at {pool.Root}/templates/{sha}.{format}. Returns 202 + а
-// pending task immediately; the goroutine progresses к
+// optionally verifies its sha256, validates qcow2 magic, and atomically
+// places it at {pool.Root}/templates/{sha}.{format}. Returns 202 + a
+// pending task immediately; the goroutine progresses to
 // running → success/failed.
 //
 // Two modes:
 //
 //   - **Verify mode** (req.ExpectedChecksumSHA256 non-empty): pre-
 //     existence check stats {pool.Root}/templates/{expected}.qcow2 and
-//     returns terminal-success без re-download when the file is
+//     returns terminal-success without re-download when the file is
 //     already present. Otherwise the streamed bytes are compared
-//     against expected after download; mismatch terminates с
+//     against expected after download; mismatch terminates with
 //     `checksum_mismatch`.
 //   - **Compute mode** (req.ExpectedChecksumSHA256 empty): no pre-
 //     existence fast-path (filename unknown until download completes);
-//     the download streams к а task-scoped scratch path, the agent
-//     computes the sha256 в-flight, и the atomic rename lands the
+//     the download streams to a task-scoped scratch path, the agent
+//     computes the sha256 in-flight, and the atomic rename lands the
 //     file at {pool.Root}/templates/{computed}.qcow2. The computed
-//     checksum is returned в the task result so the CP-side worker
+//     checksum is returned in the task result so the CP-side worker
 //     can back-propagate it onto the template row
 //     (UpdateTemplateImageChecksumIfNull).
 //
-// The agent always returns the computed checksum в the terminal-
-// success result regardless of mode; verify mode just adds а gate.
+// The agent always returns the computed checksum in the terminal-
+// success result regardless of mode; verify mode just adds a gate.
 //
 // Errors (synchronous, caller-facing):
 //   - ErrPoolUnknown — pool_id is not configured
@@ -137,7 +137,7 @@ func (m *Manager) ImportImage(ctx context.Context, poolName string, req ImportIm
 	}
 	// Accept empty checksum (compute mode); validate the
 	// 64-char-lowercase-hex pattern only when the operator supplied
-	// а value.
+	// a value.
 	if req.ExpectedChecksumSHA256 != "" && !isHexSHA256Lower(req.ExpectedChecksumSHA256) {
 		return nil, ErrInvalidChecksumFormat
 	}
@@ -154,7 +154,7 @@ func (m *Manager) ImportImage(ctx context.Context, poolName string, req ImportIm
 	task := m.tasks.Create(TaskKindStorageImageImport, uuid.New())
 
 	// #nosec G118 -- async task work intentionally outlives the HTTP
-	// request; CP polls /v1/tasks/{id} к observe progress.
+	// request; CP polls /v1/tasks/{id} to observe progress.
 	go m.runImageImport(task.ID, poolName, p.root, req)
 	return task, nil
 }
@@ -169,8 +169,8 @@ func (m *Manager) ImportImage(ctx context.Context, poolName string, req ImportIm
 // callers serialise correctly. Compute-mode imports key on the empty
 // string — distinct compute-mode imports against the same pool
 // serialise via the per-pool empty-string lock. The cost is mild
-// (one compute-mode import at а time per pool); the alternative
-// (locking only on output path) would require а post-download lock
+// (one compute-mode import at a time per pool); the alternative
+// (locking only on output path) would require a post-download lock
 // re-acquire that does not buy much in practice.
 func (m *Manager) runImageImport(taskID uuid.UUID, poolName, poolRoot string, req ImportImageRequest) {
 	verifyMode := req.ExpectedChecksumSHA256 != ""
@@ -187,10 +187,10 @@ func (m *Manager) runImageImport(taskID uuid.UUID, poolName, poolRoot string, re
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Pre-existence fast-path applies к verify mode only. Compute
-	// mode cannot stat а filename it does not yet know — the agent
+	// Pre-existence fast-path applies to verify mode only. Compute
+	// mode cannot stat a filename it does not yet know — the agent
 	// always streams, then the back-propagation flow on the CP side
-	// ensures а repeat materialisation hits this branch (the template
+	// ensures a repeat materialisation hits this branch (the template
 	// row's checksum is filled after the first compute-mode success).
 	if verifyMode {
 		finalPath := filepath.Join(poolRoot, "templates", req.ExpectedChecksumSHA256+"."+req.Format)
@@ -251,7 +251,7 @@ func (m *Manager) runImageImport(taskID uuid.UUID, poolName, poolRoot string, re
 	// the computed (or, equivalently in verify mode, expected) sha.
 	// Compute mode determines the filename here, after the download
 	// completes; verify mode would land at the same path because
-	// computedSHA == expectedSHA на success.
+	// computedSHA == expectedSHA on success.
 	finalPath := filepath.Join(poolRoot, "templates", computedSHA+"."+req.Format)
 	if err := os.Rename(tempPath, finalPath); err != nil {
 		log.Error("atomic rename", "err", err)
@@ -263,7 +263,7 @@ func (m *Manager) runImageImport(taskID uuid.UUID, poolName, poolRoot string, re
 	log.Info("image imported", "size_bytes", size, "final_path", finalPath, "computed_checksum", computedSHA)
 }
 
-// modeLabel renders the mode label for slog. Kept а tiny helper для
+// modeLabel renders the mode label for slog. Kept a tiny helper for
 // log-tag consistency across runImageImport call sites.
 func modeLabel(verify bool) string {
 	if verify {
@@ -285,7 +285,7 @@ func (d *downloadError) Error() string { return d.cause.Error() }
 func (d *downloadError) Unwrap() error { return d.cause }
 
 // downloadAndHash streams sourceURL → tempPath while hashing the body
-// в one pass. Returns (size_bytes, hex_sha256, nil) on success или
+// in one pass. Returns (size_bytes, hex_sha256, nil) on success or
 // (0, "", *downloadError) on any failure. HTTP-level failures populate
 // downloadError.status; transport failures leave it zero.
 func downloadAndHash(sourceURL, tempPath string) (int64, string, error) {
@@ -322,7 +322,7 @@ func downloadAndHash(sourceURL, tempPath string) (int64, string, error) {
 	// poolRoot (operator-configured) + task uuid (server-minted) — no
 	// user-controlled component reaches this path.
 	// Mirrors internal/agent/storage/clone.go's 0o600 permission for
-	// CP-written image files; the agent process owns the pool root и
+	// CP-written image files; the agent process owns the pool root and
 	// is the only writer.
 	f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -346,7 +346,7 @@ func downloadAndHash(sourceURL, tempPath string) (int64, string, error) {
 // validation deferred — ROADMAP entry "full qcow2 header validation".
 var qcow2Magic = [4]byte{'Q', 'F', 'I', 0xfb}
 
-// validateQcow2Magic reads the first 4 bytes of path и rejects
+// validateQcow2Magic reads the first 4 bytes of path and rejects
 // anything other than qcow2Magic. Magic-only validation; the remaining
 // 8 header rules (version, backing_file, crypt_method, cluster_bits,
 // virtual_size, v3 extensions) ride on the deferred work item.
@@ -385,9 +385,9 @@ func (m *Manager) finishImportSuccess(taskID uuid.UUID, sha string, size int64, 
 	})
 }
 
-// failImportTask marks the task failed с the supplied envelope. Code
-// is the snake_case identifier mapped к response.ErrorCode by CP-side
-// classifyImportError; message и details are operator-facing.
+// failImportTask marks the task failed with the supplied envelope. Code
+// is the snake_case identifier mapped to response.ErrorCode by CP-side
+// classifyImportError; message and details are operator-facing.
 func (m *Manager) failImportTask(taskID uuid.UUID, code, message string, details map[string]any) {
 	m.tasks.Update(taskID, func(t *AgentTask) {
 		t.Status = TaskStatusFailed
@@ -400,12 +400,12 @@ func (m *Manager) failImportTask(taskID uuid.UUID, code, message string, details
 }
 
 // DeleteImage removes {pool.Root}/templates/{checksum}.qcow2. Returns
-// nil whether или нет the file existed (idempotent — the CP-side
-// delete handler relies on this к stay safe under agent-side manual
-// cleanup или а previous import being unwound). Returns
+// nil whether or not the file existed (idempotent — the CP-side
+// delete handler relies on this to stay safe under agent-side manual
+// cleanup or a previous import being unwound). Returns
 // ErrPoolUnknown for unknown pools.
 //
-// Held under the per-(pool, sha) mutex to prevent а concurrent import
+// Held under the per-(pool, sha) mutex to prevent a concurrent import
 // race (import goroutine renames into the same path).
 func (m *Manager) DeleteImage(ctx context.Context, poolName, checksum string) error {
 	m.poolsMu.RLock()
@@ -432,10 +432,10 @@ func (m *Manager) DeleteImage(ctx context.Context, poolName, checksum string) er
 	return nil
 }
 
-// ListImages walks {pool.Root}/templates/ и returns the inventory of
+// ListImages walks {pool.Root}/templates/ and returns the inventory of
 // qcow2 files matching {64-char lowercase hex sha}.qcow2. Entries
 // failing the naming convention are silently skipped — they could be
-// the operator's manual scratch files и shouldn't surface как cached
+// the operator's manual scratch files and shouldn't surface as cached
 // images. Returns ErrPoolUnknown for unknown pools, nil error and
 // empty slice when templates/ is absent.
 //
@@ -492,7 +492,7 @@ func (m *Manager) ListImages(ctx context.Context, poolName string) ([]CachedImag
 	return images, nil
 }
 
-// isHexSHA256Lower returns true когда s is а 64-char lowercase hex
+// isHexSHA256Lower returns true when s is a 64-char lowercase hex
 // string. Mirrors agent.yaml's `pattern: "^[0-9a-f]{64}$"`.
 func isHexSHA256Lower(s string) bool {
 	if len(s) != 64 {

@@ -87,7 +87,7 @@ func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// projectImageView builds the public storageImageView для a row.
+// projectImageView builds the public storageImageView for a row.
 // poolName is supplied by the caller (already resolved from URL).
 // Template name comes through a GetTemplate lookup; a soft-deleted
 // template materialises as an empty string rather than 500ing the
@@ -107,7 +107,7 @@ func (h *Handler) projectImageView(ctx context.Context, im store.StorageImage, p
 }
 
 // toImageView projects a store.StorageImage onto its public
-// storageImageView, substituting the pre-resolved template и pool
+// storageImageView, substituting the pre-resolved template and pool
 // names. ImportedAt formats in RFC 3339 nanoseconds in UTC, matching
 // the rest of the codebase.
 func toImageView(im store.StorageImage, templateName, poolName string) storageImageView {

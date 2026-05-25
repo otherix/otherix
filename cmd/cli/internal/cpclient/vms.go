@@ -26,10 +26,10 @@ import (
 //
 // Multi-instance pools + scheduler:
 //   - `Pool` is optional. When empty, the server uses the cluster
-//     default-pool (`PUT /v1/cluster/default-pool` к set); если
-//     неустановлен, returns 400 `default_pool_not_set`.
+//     default-pool (`PUT /v1/cluster/default-pool` to set); if
+//     not set, returns 400 `default_pool_not_set`.
 //   - `Node` is a new optional placement hint. When non-nil, the
-//     scheduler restricts placement к exactly that node; mismatch
+//     scheduler restricts placement to exactly that node; mismatch
 //     returns 409 `pool_not_on_node`.
 type CreateVMRequest struct {
 	Name     string  `json:"name"`
@@ -40,14 +40,14 @@ type CreateVMRequest struct {
 	MemoryMB int     `json:"memory_mb"`
 	// UserData is the optional VM-level cloud-init override (L3 /
 	// operator UX iteration). When set, fully replaces the template's
-	// baked cloud_init_user_data в the per-VM resolved blob; agent
-	// receives whichever wins. Mutually exclusive с
-	// CloudInitDisabled — server rejects both set с 400
+	// baked cloud_init_user_data in the per-VM resolved blob; agent
+	// receives whichever wins. Mutually exclusive with
+	// CloudInitDisabled — server rejects both set with 400
 	// validation_failed (CLI also gates this before dispatch).
 	UserData *string `json:"user_data,omitempty"`
 	// CloudInitDisabled is the explicit-disable signal. When true,
-	// the resolver returns empty user_data к the agent even если the
-	// template has а baked cloud_init_user_data. omitempty lets the
+	// the resolver returns empty user_data to the agent even if the
+	// template has a baked cloud_init_user_data. omitempty lets the
 	// JSON encoder skip the default-false case so existing handlers
 	// that decode the historical wire shape still parse cleanly.
 	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
@@ -55,7 +55,7 @@ type CreateVMRequest struct {
 
 // VM mirrors the response shape internal/api/handlers/vms.toView
 // produces. Name-based references narrowed the referenced-resource
-// fields к names instead of UUIDs: `template` carries templates.name
+// fields to names instead of UUIDs: `template` carries templates.name
 // (nil when the row was deleted), `pool` carries storage_pools.name,
 // `node` carries the agent-reported current location's name. owner_id
 // keeps its UUID rendering because users are excluded from the
@@ -151,7 +151,7 @@ func (c *Client) VM(ctx context.Context, identifier string) (VM, error) {
 	return out, nil
 }
 
-// ListVMs fetches /v1/vms с the supplied query filters. Returns the
+// ListVMs fetches /v1/vms with the supplied query filters. Returns the
 // parsed envelope; pagination is the caller's responsibility (use
 // VMList.Meta.NextCursor as the next page's params.Cursor).
 func (c *Client) ListVMs(ctx context.Context, params ListVMsParams) (VMList, error) {
@@ -193,14 +193,14 @@ func (c *Client) ListVMs(ctx context.Context, params ListVMsParams) (VMList, err
 }
 
 // PauseVM submits POST /v1/vms/{identifier}/pause — synchronous per
-// the CP spec. 200 returns the refreshed VM с phase=paused; 404 /
+// the CP spec. 200 returns the refreshed VM with phase=paused; 404 /
 // 409 / 5xx surface as *APIError.
 func (c *Client) PauseVM(ctx context.Context, identifier string) (VM, error) {
 	return c.postVMLifecycle(ctx, identifier, "pause")
 }
 
 // ResumeVM submits POST /v1/vms/{identifier}/resume — synchronous
-// per the CP spec. 200 returns the refreshed VM с phase=running.
+// per the CP spec. 200 returns the refreshed VM with phase=running.
 func (c *Client) ResumeVM(ctx context.Context, identifier string) (VM, error) {
 	return c.postVMLifecycle(ctx, identifier, "resume")
 }
@@ -213,7 +213,7 @@ func (c *Client) ResetVM(ctx context.Context, identifier string) (VM, error) {
 	return c.postVMLifecycle(ctx, identifier, "reset")
 }
 
-// postVMLifecycle is the shared engine для PauseVM / ResumeVM /
+// postVMLifecycle is the shared engine for PauseVM / ResumeVM /
 // ResetVM. The CP endpoint shape is identical — POST, empty body,
 // 200 returns the refreshed VM view.
 func (c *Client) postVMLifecycle(ctx context.Context, identifier, action string) (VM, error) {
@@ -234,15 +234,15 @@ func (c *Client) postVMLifecycle(ctx context.Context, identifier, action string)
 }
 
 // StartVM submits POST /v1/vms/{identifier}/start — async per spec.
-// 202 returns TaskAccepted; clients poll the task для terminal state.
+// 202 returns TaskAccepted; clients poll the task for terminal state.
 func (c *Client) StartVM(ctx context.Context, identifier string) (TaskAccepted, error) {
 	return c.postVMLifecycleAsync(ctx, identifier, "start")
 }
 
 // StopVM submits POST /v1/vms/{identifier}/stop — async graceful
 // ACPI shutdown. If the guest does not honour the signal within the
-// server-side timeout the task fails с `stop_timeout` (operators
-// dispatch к poweroff or `stop --force` к force).
+// server-side timeout the task fails with `stop_timeout` (operators
+// dispatch to poweroff or `stop --force` to force).
 func (c *Client) StopVM(ctx context.Context, identifier string) (TaskAccepted, error) {
 	return c.postVMLifecycleAsync(ctx, identifier, "stop")
 }
@@ -254,12 +254,12 @@ func (c *Client) PoweroffVM(ctx context.Context, identifier string) (TaskAccepte
 }
 
 // RebootVM submits POST /v1/vms/{identifier}/reboot — async stop+
-// start cycle (distinct от Reset; the QEMU PID changes).
+// start cycle (distinct from Reset; the QEMU PID changes).
 func (c *Client) RebootVM(ctx context.Context, identifier string) (TaskAccepted, error) {
 	return c.postVMLifecycleAsync(ctx, identifier, "reboot")
 }
 
-// postVMLifecycleAsync is the shared engine для the four async
+// postVMLifecycleAsync is the shared engine for the four async
 // lifecycle CLI subcommands. The CP endpoint shape is identical —
 // POST, empty body, 202 returns TaskAccepted.
 func (c *Client) postVMLifecycleAsync(ctx context.Context, identifier, action string) (TaskAccepted, error) {
@@ -282,7 +282,7 @@ func (c *Client) postVMLifecycleAsync(ctx context.Context, identifier, action st
 // DeleteVM submits a DELETE /v1/vms/{identifier}. The identifier is
 // a VM name; UUID literals are rejected by the server with 400
 // validation_failed. 202 returns the parsed TaskAccepted; 404
-// surfaces as *APIError so callers can decide whether к treat absent
+// surfaces as *APIError so callers can decide whether to treat absent
 // VMs as success (typical for retry loops).
 func (c *Client) DeleteVM(ctx context.Context, identifier string) (TaskAccepted, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodDelete, "/v1/vms/"+url.PathEscape(identifier), nil)
@@ -300,8 +300,8 @@ func (c *Client) DeleteVM(ctx context.Context, identifier string) (TaskAccepted,
 	return out, nil
 }
 
-// VMConsoleRequest is the body POSTed к /v1/vms/{id}/console. Empty
-// protocol defaults к "vnc" CP-side; CLI callers pass "serial" к
+// VMConsoleRequest is the body POSTed to /v1/vms/{id}/console. Empty
+// protocol defaults to "vnc" CP-side; CLI callers pass "serial" to
 // drive the operator-facing console subcommand.
 type VMConsoleRequest struct {
 	Protocol string `json:"protocol,omitempty"`
@@ -310,7 +310,7 @@ type VMConsoleRequest struct {
 // VMConsoleResponse mirrors the OpenAPI VMConsoleResponse schema. The
 // token is single-use, 30s TTL on the agent side; websocket_url
 // already embeds the token as the `?token=...` query parameter — the
-// CLI just opens the URL и lets the WebSocket dial handle the rest.
+// CLI just opens the URL and lets the WebSocket dial handle the rest.
 type VMConsoleResponse struct {
 	Token        string `json:"token"`
 	WebsocketURL string `json:"websocket_url"`
@@ -318,7 +318,7 @@ type VMConsoleResponse struct {
 	ExpiresAt    string `json:"expires_at"`
 }
 
-// VMConsole issues а console-session ticket against `POST /v1/vms/{id}/console`.
+// VMConsole issues a console-session ticket against `POST /v1/vms/{id}/console`.
 // 200 returns the parsed envelope; 401 / 403 / 404 / 409 / 5xx surface
 // as *APIError.
 func (c *Client) VMConsole(ctx context.Context, vmName, protocol string) (VMConsoleResponse, error) {

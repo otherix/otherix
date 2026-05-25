@@ -42,7 +42,7 @@ func runPoolCmd(t *testing.T, endpoint string, args []string) (stdout, stderr st
 	return out.String(), errBuf.String(), err
 }
 
-// poolJSON emits а minimal valid Pool projection the CLI can decode.
+// poolJSON emits a minimal valid Pool projection the CLI can decode.
 // Mirrors the handlers/storagepools.toView output shape.
 func poolJSON(name, node string) []byte {
 	body := map[string]any{
@@ -136,7 +136,7 @@ func TestPoolCreate_ExplicitType(t *testing.T) {
 func TestPoolCreate_MissingNode(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Errorf("HTTP call must not happen когда required flag is missing")
+		t.Errorf("HTTP call must not happen when required flag is missing")
 	}))
 	defer srv.Close()
 
@@ -145,7 +145,7 @@ func TestPoolCreate_MissingNode(t *testing.T) {
 		"--path", "/opt/otherix/pools/default",
 	})
 	if err == nil {
-		t.Fatalf("expected error для missing --node")
+		t.Fatalf("expected error for missing --node")
 	}
 	if !strings.Contains(err.Error(), "node") {
 		t.Errorf("err = %v, want mention of node", err)
@@ -155,7 +155,7 @@ func TestPoolCreate_MissingNode(t *testing.T) {
 func TestPoolCreate_MissingPath(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Errorf("HTTP call must not happen когда required flag is missing")
+		t.Errorf("HTTP call must not happen when required flag is missing")
 	}))
 	defer srv.Close()
 
@@ -164,7 +164,7 @@ func TestPoolCreate_MissingPath(t *testing.T) {
 		"--node", "node-mvp",
 	})
 	if err == nil {
-		t.Fatalf("expected error для missing --path")
+		t.Fatalf("expected error for missing --path")
 	}
 	if !strings.Contains(err.Error(), "path") {
 		t.Errorf("err = %v, want mention of path", err)
@@ -186,7 +186,7 @@ func TestPoolCreate_409Conflict(t *testing.T) {
 		"--path", "/opt/otherix/pools/default",
 	})
 	if err == nil {
-		t.Fatalf("expected error для 409 conflict")
+		t.Fatalf("expected error for 409 conflict")
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("err = %v, want mention of already exists", err)
@@ -211,7 +211,7 @@ func TestPoolCreate_404NodeMissing(t *testing.T) {
 		"--path", "/opt/otherix/pools/default",
 	})
 	if err == nil {
-		t.Fatalf("expected error для 404")
+		t.Fatalf("expected error for 404")
 	}
 	if !strings.Contains(err.Error(), "not_found") {
 		t.Errorf("err = %v, want mention of not_found", err)

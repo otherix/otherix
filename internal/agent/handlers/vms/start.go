@@ -15,10 +15,10 @@ import (
 
 // Start handles POST /v1/vms/{vm_name}/start — async per spec.
 // Returns 202 + AsyncTaskAccepted; the spawn pipeline (build args →
-// qemu spawn → QMP verify → status transition) runs in а goroutine
-// и progresses through the task surface (`GET /v1/tasks/{id}`).
+// qemu spawn → QMP verify → status transition) runs in a goroutine
+// and progresses through the task surface (`GET /v1/tasks/{id}`).
 // Idempotent: start-when-running completes the task successfully
-// без re-spawning the qemu process.
+// without re-spawning the qemu process.
 func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "vm_name")
 	if name == "" {

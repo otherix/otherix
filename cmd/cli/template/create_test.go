@@ -44,7 +44,7 @@ func runTemplateCmd(t *testing.T, endpoint string, args []string) (stdout, stder
 }
 
 // templateJSONComputeMode mirrors templateJSON but emits null for
-// `image_checksum_sha256` — the wire shape а compute-mode template
+// `image_checksum_sha256` — the wire shape a compute-mode template
 // carries before its first successful materialisation.
 func templateJSONComputeMode(name string) []byte {
 	body := map[string]any{
@@ -64,7 +64,7 @@ func templateJSONComputeMode(name string) []byte {
 	return raw
 }
 
-// templateJSON helps tests emit а minimal valid Template projection
+// templateJSON helps tests emit a minimal valid Template projection
 // the CLI can decode. Mirrors handlers/templates.toView output.
 func templateJSON(name string) []byte {
 	body := map[string]any{
@@ -166,14 +166,14 @@ func TestTemplateCreate_HappyWithPoolNoWait(t *testing.T) {
 		t.Errorf("stdout missing materialise accepted line: %q", stdout)
 	}
 	if strings.Contains(stdout, "image materialised") {
-		t.Errorf("stdout should not contain terminal-success message без --wait: %q", stdout)
+		t.Errorf("stdout should not contain terminal-success message without --wait: %q", stdout)
 	}
 }
 
 func TestTemplateCreate_IdempotentFallThrough(t *testing.T) {
 	t.Parallel()
 	// First POST /v1/templates returns 409; CLI must fall through to
-	// GET /v1/templates/{name} (к surface а usable Template view) и
+	// GET /v1/templates/{name} (to surface a usable Template view) and
 	// then POST /v1/templates/{name}/images. Verifies idempotent retry.
 	var createCalls, getCalls, importCalls int32
 	taskID := uuid.NewString()
@@ -215,12 +215,12 @@ func TestTemplateCreate_IdempotentFallThrough(t *testing.T) {
 		t.Errorf("createCalls = %d, want 1", createCalls)
 	}
 	if atomic.LoadInt32(&getCalls) != 1 {
-		t.Errorf("getCalls = %d, want 1 (fall-through к fetch existing template)", getCalls)
+		t.Errorf("getCalls = %d, want 1 (fall-through to fetch existing template)", getCalls)
 	}
 	if atomic.LoadInt32(&importCalls) != 1 {
 		t.Errorf("importCalls = %d, want 1", importCalls)
 	}
-	if !strings.Contains(stdout, "already exists; proceeding к materialisation") {
+	if !strings.Contains(stdout, "already exists; proceeding to materialisation") {
 		t.Errorf("stdout missing fall-through message: %q", stdout)
 	}
 }
@@ -228,7 +228,7 @@ func TestTemplateCreate_IdempotentFallThrough(t *testing.T) {
 func TestTemplateCreate_MaterialiseRejected(t *testing.T) {
 	t.Parallel()
 	// Registration succeeds, materialise returns 404 — confirm the
-	// CLI surfaces а retry-friendly message и exits non-zero.
+	// CLI surfaces a retry-friendly message and exits non-zero.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/templates":
@@ -254,7 +254,7 @@ func TestTemplateCreate_MaterialiseRejected(t *testing.T) {
 		"--pool", "missing-pool",
 	})
 	if err == nil {
-		t.Fatalf("expected error для materialise failure")
+		t.Fatalf("expected error for materialise failure")
 	}
 	if !strings.Contains(err.Error(), "remains registered") {
 		t.Errorf("err missing retry hint: %v", err)
@@ -280,7 +280,7 @@ func TestTemplateCreate_WaitWithoutPoolErrors(t *testing.T) {
 		"--wait",
 	})
 	if err == nil {
-		t.Fatalf("expected error для --wait without --pool")
+		t.Fatalf("expected error for --wait without --pool")
 	}
 	if !strings.Contains(err.Error(), "--wait requires --pool") {
 		t.Errorf("err = %v, want '--wait requires --pool'", err)
@@ -305,7 +305,7 @@ func TestTemplateCreate_MissingRequiredFlag(t *testing.T) {
 		"--image-url", "https://example.com/img.qcow2",
 	})
 	if err == nil {
-		t.Fatalf("expected error для missing --arch")
+		t.Fatalf("expected error for missing --arch")
 	}
 	if !strings.Contains(err.Error(), "arch") {
 		t.Errorf("err = %v, want mention of arch", err)
@@ -329,7 +329,7 @@ func TestTemplateCreate_ArchitectureFlagRejected(t *testing.T) {
 		"--image-url", "https://example.com/img.qcow2",
 	})
 	if err == nil {
-		t.Fatalf("expected error для retired --architecture flag")
+		t.Fatalf("expected error for retired --architecture flag")
 	}
 	if !strings.Contains(err.Error(), "unknown flag: --architecture") {
 		t.Errorf("err = %v, want 'unknown flag: --architecture'", err)
@@ -337,10 +337,10 @@ func TestTemplateCreate_ArchitectureFlagRejected(t *testing.T) {
 }
 
 // TestTemplateCreate_ComputeMode locks in compute mode: omitting
-// --expected-sha256 produces а request body without (or с nil)
+// --expected-sha256 produces a request body without (or with nil)
 // `image_checksum_sha256`, and the CP-side compute-mode flow proceeds
 // normally (registration succeeds; the back-propagation is observable
-// in а full integration test, not at the CLI handler-test layer).
+// in a full integration test, not at the CLI handler-test layer).
 func TestTemplateCreate_ComputeMode(t *testing.T) {
 	t.Parallel()
 	var captured map[string]any
@@ -362,8 +362,8 @@ func TestTemplateCreate_ComputeMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	// The CreateTemplateRequest's ImageChecksumSHA256 is а plain
-	// string в the CLI wire shape, so omitting the flag results in
+	// The CreateTemplateRequest's ImageChecksumSHA256 is a plain
+	// string in the CLI wire shape, so omitting the flag results in
 	// an empty value. The CP treats empty as absent (compute mode).
 	got, present := captured["image_checksum_sha256"]
 	switch {

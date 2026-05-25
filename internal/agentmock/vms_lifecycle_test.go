@@ -49,7 +49,7 @@ func TestVmsLifecycle_PauseResumeReset_HappyPath(t *testing.T) {
 	}
 }
 
-// TestVmsLifecycle_PauseWhenPaused_Conflict — а second pause against
+// TestVmsLifecycle_PauseWhenPaused_Conflict — a second pause against
 // the same VM returns 409 from the mock-agent. Mirrors the real-agent
 // state-precondition envelope so CP-side tests can rely on the same
 // shape.
@@ -70,7 +70,7 @@ func TestVmsLifecycle_PauseWhenPaused_Conflict(t *testing.T) {
 	}
 }
 
-// TestVmsLifecycle_NotFound — the mock returns 404 for а name not в
+// TestVmsLifecycle_NotFound — the mock returns 404 for a name not in
 // the inventory regardless of action.
 func TestVmsLifecycle_NotFound(t *testing.T) {
 	m := startMock(t)

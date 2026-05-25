@@ -19,15 +19,15 @@ import (
 func newJoinTokenConsumptionsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "consumptions <id>",
-		Short: "List consumption audit entries for а join token (admin only).",
+		Short: "List consumption audit entries for a join token (admin only).",
 		Long: `Cursor-paginated audit trail of agent bootstrap events that
-consumed the token. Empty в Step 1 (redemption endpoint lands в
+consumed the token. Empty in Step 1 (redemption endpoint lands in
 Step 2 of the bootstrap rollout).`,
 		Args: cobra.ExactArgs(1),
 		RunE: runJoinTokenConsumptions,
 	}
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
-	cmd.Flags().String(flagCursor, "", "opaque cursor from а previous page")
+	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
 	cmd.Flags().String(flagOutput, "table", "output format: table|json")
 	return cmd
 }
@@ -39,7 +39,7 @@ func runJoinTokenConsumptions(cmd *cobra.Command, args []string) error {
 	}
 	id, err := uuid.Parse(args[0])
 	if err != nil {
-		return fmt.Errorf("validation_failed: id must be а uuid: %v", err)
+		return fmt.Errorf("validation_failed: id must be a uuid: %v", err)
 	}
 	limit, _ := cmd.Flags().GetInt(flagLimit)
 	cursor, _ := cmd.Flags().GetString(flagCursor)

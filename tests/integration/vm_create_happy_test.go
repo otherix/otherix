@@ -54,7 +54,7 @@ func TestVMCreate_VerticalSliceHappyPath(t *testing.T) {
 	}
 	vmID := extractVMIDFromTask(t, row)
 
-	// Phase B worker upserts vm_runtime с phase=running on success.
+	// Phase B worker upserts vm_runtime with phase=running on success.
 	rt, err := v.store.Queries().GetVMRuntime(ctx, vmID)
 	if err != nil {
 		t.Fatalf("GetVMRuntime: %v", err)
@@ -66,7 +66,7 @@ func TestVMCreate_VerticalSliceHappyPath(t *testing.T) {
 		t.Errorf("vm_runtime.current_node_id = %v, want %s", rt.CurrentNodeID, v.node.ID)
 	}
 
-	// derived_vm_count incremented в the same InTx as task finalization.
+	// derived_vm_count incremented in the same InTx as task finalization.
 	tplAfter, err := v.store.Queries().GetTemplate(ctx, tpl.ID)
 	if err != nil {
 		t.Fatalf("GetTemplate (after): %v", err)
@@ -75,7 +75,7 @@ func TestVMCreate_VerticalSliceHappyPath(t *testing.T) {
 		t.Errorf("template.derived_vm_count = %d, want 1", tplAfter.DerivedVmCount)
 	}
 
-	// vm_disks row was inserted at handler time (atomic enqueue) и
+	// vm_disks row was inserted at handler time (atomic enqueue) and
 	// carries the storage_pool_id reference per Phase A D3.
 	disks, err := v.store.Queries().ListVMDisksByVM(ctx, vmID)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestVMCreate_VerticalSliceHappyPath(t *testing.T) {
 	}
 
 	// task.result carries the vm_id projection — single round-trip
-	// observable to operators без a follow-up GET.
+	// observable to operators without a follow-up GET.
 	var result struct {
 		VMID string `json:"vm_id"`
 	}

@@ -10,11 +10,11 @@ import (
 )
 
 // APIError is the typed error every Client method returns when the CP
-// responds с a non-2xx envelope. Mirrors the shape of
+// responds with a non-2xx envelope. Mirrors the shape of
 // internal/api/response.ErrorBody — separate type so the CLI does not
 // import the server-side response package.
 //
-// Callers can inspect Code (the stable string из the spec's ErrorCode
+// Callers can inspect Code (the stable string from the spec's ErrorCode
 // catalog) to decide remediation: e.g. `vm_not_found` is operator
 // input error; `agent_unreachable` is transient and should retry.
 type APIError struct {
@@ -38,7 +38,7 @@ func (e *APIError) Error() string {
 // transparent retry — 408, 429, 5xx. 4xx (except those two) are
 // permanent input or auth errors. Callers (most interestingly
 // WaitTask) use this to decide between continuing the polling loop
-// и aborting.
+// and aborting.
 func (e *APIError) IsRetryable() bool {
 	switch e.StatusCode {
 	case http.StatusRequestTimeout, http.StatusTooManyRequests:
@@ -59,7 +59,7 @@ type envelope struct {
 
 // parseAPIError decodes the response body into an APIError. A missing
 // or malformed envelope still yields a non-nil error so callers do
-// not have к null-check separately из the status code; the Code stays
+// not have to null-check separately from the status code; the Code stays
 // empty in that case.
 func parseAPIError(status int, body []byte) *APIError {
 	out := &APIError{StatusCode: status}

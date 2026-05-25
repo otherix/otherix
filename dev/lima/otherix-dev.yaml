@@ -75,8 +75,8 @@ provision:
       # gets 0600 on its own via bootstrap.Persist atomic writes).
       chmod 0750 /opt/otherix/certs
 
-      # systemd unit (polling-loop): the agent boots в State A (polls
-      # 5s для cert material + config) и transitions к State B once
+      # systemd unit (polling-loop): the agent boots in State A (polls
+      # 5s for cert material + config) and transitions to State B once
       # `otherix-agent bootstrap` writes the four files. No
       # EnvironmentFile, no `--config` flag — agent reads
       # /etc/otherix/agent.yaml at the default path.
@@ -99,7 +99,7 @@ provision:
       WantedBy=multi-user.target
       EOF
 
-      # Auto-enable + start — the polling loop happily waits в State A
+      # Auto-enable + start — the polling loop happily waits in State A
       # until `otherix-agent bootstrap` materialises the cert files.
       systemctl daemon-reload
       systemctl enable otherix-agent.service

@@ -14,7 +14,7 @@ import (
 // TestGenerateJoinToken_FormatAndUniqueness verifies:
 //   - plaintext carries the otx_join_ prefix;
 //   - distinct calls return distinct plaintexts (crypto/rand variance);
-//   - hash matches sha256(plaintext) и is deterministic per plaintext;
+//   - hash matches sha256(plaintext) and is deterministic per plaintext;
 //   - hash length is 32 bytes (the bytea column shape).
 func TestGenerateJoinToken_FormatAndUniqueness(t *testing.T) {
 	plain1, hash1, err := auth.GenerateJoinToken()
@@ -36,7 +36,7 @@ func TestGenerateJoinToken_FormatAndUniqueness(t *testing.T) {
 		t.Errorf("hash1 length = %d, want 32", len(hash1))
 	}
 	if !bytes.Equal(hash1, auth.HashToken(plain1)) {
-		t.Error("hash1 != HashToken(plain1) — generation diverged от storage")
+		t.Error("hash1 != HashToken(plain1) — generation diverged from storage")
 	}
 	if bytes.Equal(hash1, hash2) {
 		t.Error("distinct plaintexts produced equal hashes")
@@ -44,7 +44,7 @@ func TestGenerateJoinToken_FormatAndUniqueness(t *testing.T) {
 }
 
 // TestIsJoinTokenFormat_PrefixDetection verifies the dispatch helper
-// used by the future redemption handler accepts join tokens и
+// used by the future redemption handler accepts join tokens and
 // rejects API tokens / random strings.
 func TestIsJoinTokenFormat_PrefixDetection(t *testing.T) {
 	cases := []struct {

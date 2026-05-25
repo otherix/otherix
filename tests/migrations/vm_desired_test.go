@@ -19,7 +19,7 @@ type vmFixture struct {
 // randSlug returns a short hex-derived suffix to make seed names unique
 // across tests sharing one container. Uses the full uuid_generate_v7
 // dash-stripped form (32 hex chars). The naive truncated form
-// (first 12 chars) is а pure millisecond timestamp в uuid v7,
+// (first 12 chars) is a pure millisecond timestamp in uuid v7,
 // so two calls within the same ms collide on `uq_nodes_name`.
 // 32 chars carries the full 128-bit identifier so consecutive
 // callers stay distinct.

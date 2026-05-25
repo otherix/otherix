@@ -14,9 +14,9 @@ import (
 
 // ISO9660 Primary Volume Descriptor starts at byte offset 32768
 // (logical sector 16). Magic "CD001" sits at PVD+1 (PVD[0] is the
-// volume descriptor type, 0x01 для PVD). VolumeIdentifier lives at
-// PVD+40 для 32 bytes ASCII, space-padded but go-diskfs uses NUL
-// padding в practice.
+// volume descriptor type, 0x01 for PVD). VolumeIdentifier lives at
+// PVD+40 for 32 bytes ASCII, space-padded but go-diskfs uses NUL
+// padding in practice.
 const (
 	pvdOffset           = 32768
 	pvdMagic            = "CD001"

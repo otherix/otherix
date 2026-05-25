@@ -60,7 +60,7 @@ func TestDetectScheme(t *testing.T) {
 			want:           "https",
 		},
 		{
-			name:           "invalid value falls back к tls",
+			name:           "invalid value falls back to tls",
 			forwardedProto: "wss",
 			tlsState:       &tls.ConnectionState{},
 			want:           "https",
@@ -188,7 +188,7 @@ func TestBuildConsoleWebsocketURLDirectAlwaysWSS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	// Even с plain HTTP к the CP, direct mode emits wss:// — agent
+	// Even with plain HTTP to the CP, direct mode emits wss:// — agent
 	// always serves HTTPS via mTLS.
 	req.Host = "localhost:8080"
 

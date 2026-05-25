@@ -2595,16 +2595,16 @@ components:
         both. `expected_checksum_sha256` is optional:
 
           - When provided, the agent verifies the streamed bytes against
-            it and refuses к retain the file on mismatch
+            it and refuses to retain the file on mismatch
             (`checksum_mismatch` failure code).
           - When null/absent/empty, the agent computes the sha256 during
             streaming download and returns it in the task result. No
             verification gate fires; the operator trusts source URL
             integrity (TLS + reputable mirror).
 
-        The agent always returns the computed checksum в the
+        The agent always returns the computed checksum in the
         terminal-success `result` regardless of which mode was used;
-        verify mode just adds а gate before placement. Storage layout
+        verify mode just adds a gate before placement. Storage layout
         invariant: the on-disk filename always equals the (computed or
         verified) checksum.
       required: [format]
@@ -2787,7 +2787,7 @@ components:
         Storage pool name as declared by the Control Plane.
         Agent-facing pool endpoints address pools by name (the
         agent's local registry is name-keyed). The cluster-wide
-        UUID-vs-name polymorphism is а CP-edge-only concern; agents
+        UUID-vs-name polymorphism is a CP-edge-only concern; agents
         see only their per-instance row.
 
     NetworkId:

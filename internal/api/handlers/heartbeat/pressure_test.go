@@ -85,7 +85,7 @@ func TestComputePressureTransition(t *testing.T) {
 			description: "third below-threshold tick stamps pressure_since",
 		},
 		{
-			name:        "already pressured — keep count rising но кind=None",
+			name:        "already pressured — keep count rising but kind=None",
 			current:     &earlier,
 			count:       3,
 			avail:       &low,
@@ -94,7 +94,7 @@ func TestComputePressureTransition(t *testing.T) {
 			wantSince:   &earlier,
 			wantCount:   4,
 			wantKind:    pressureTransitionNone,
-			description: "subsequent below-threshold ticks bump count, не re-set",
+			description: "subsequent below-threshold ticks bump count, not re-set",
 		},
 		{
 			name:        "above threshold while pressured — clear",
@@ -154,7 +154,7 @@ func TestComputePressureTransition(t *testing.T) {
 			wantSince:   &now,
 			wantCount:   1,
 			wantKind:    pressureTransitionSet,
-			description: "consecutive_required=1 collapses debounce к first observation",
+			description: "consecutive_required=1 collapses debounce to first observation",
 		},
 	}
 
@@ -190,8 +190,8 @@ func zeroInt64() *int64 {
 }
 
 // TestComputePressureTransition_SystemDiskBytes confirms the generic
-// transition function applies equally к byte-level metrics (system_disk)
-// as it does к MiB (memory). The same threshold percentage и debounce
+// transition function applies equally to byte-level metrics (system_disk)
+// as it does to MiB (memory). The same threshold percentage and debounce
 // counter semantics hold; only the input unit changes.
 func TestComputePressureTransition_SystemDiskBytes(t *testing.T) {
 	now := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)

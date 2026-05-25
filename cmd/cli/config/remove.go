@@ -17,7 +17,7 @@ func newRemoveCommand() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "remove <name>",
-		Short: "Remove а cluster from the config",
+		Short: "Remove a cluster from the config",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRemove(cmd, args[0], force)

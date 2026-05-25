@@ -23,18 +23,18 @@ import (
 // TestE2E_PoolReconciliation_HappyPath drives the full happy-path
 // wire interaction in two heartbeat cycles:
 //
-//  1. Seed а pool row directly via SQL с reconciliation_status='pending'
+//  1. Seed a pool row directly via SQL with reconciliation_status='pending'
 //     (the row is operator-declared but the agent has not reported on
-//     it yet — the state а freshly-created pool is in immediately
+//     it yet — the state a freshly-created pool is in immediately
 //     after POST /v1/storage-pools).
-//  2. First heartbeat carries no pool reports — expect 200 OK with а
-//     declared_pools entry для the seeded pool. The row stays pending.
-//  3. Second heartbeat carries а pool report c status=ready. Expect 200
-//     plus the storage_pools row's reconciliation_status flipping к
-//     `ready` и last_reconciled_at populated.
+//  2. First heartbeat carries no pool reports — expect 200 OK with a
+//     declared_pools entry for the seeded pool. The row stays pending.
+//  3. Second heartbeat carries a pool report c status=ready. Expect 200
+//     plus the storage_pools row's reconciliation_status flipping to
+//     `ready` and last_reconciled_at populated.
 //
 // The test bypasses the production agent reconciler (we drive raw
-// HTTP) so the interactions stay observable in а single test function.
+// HTTP) so the interactions stay observable in a single test function.
 func TestE2E_PoolReconciliation_HappyPath(t *testing.T) {
 	h := newCPAgentHarness(t)
 	ctx := context.Background()
@@ -105,8 +105,8 @@ type heartbeatDeclaredPool struct {
 	Config map[string]interface{} `json:"config,omitempty"`
 }
 
-// heartbeatBodyWithPools builds а minimal-but-valid heartbeat request
-// с pools[] populated by reports. Mirrors minimalHeartbeatBody (in
+// heartbeatBodyWithPools builds a minimal-but-valid heartbeat request
+// with pools[] populated by reports. Mirrors minimalHeartbeatBody (in
 // heartbeat_test.go) but extended for the new pool field.
 func heartbeatBodyWithPools(arch string, reports []heartbeatPoolReport) []byte {
 	body := map[string]any{
@@ -138,8 +138,8 @@ func heartbeatBodyWithPools(arch string, reports []heartbeatPoolReport) []byte {
 }
 
 // postHeartbeatExpect200 sends body via the mTLS client wrapper and
-// asserts а 200 OK response, returning the decoded body. The test
-// fails-fast when the wrapper returns а non-200; tests that exercise
+// asserts a 200 OK response, returning the decoded body. The test
+// fails-fast when the wrapper returns a non-200; tests that exercise
 // 4xx / 5xx behaviour go through postHeartbeatWithMockTLS directly.
 func postHeartbeatExpect200(t *testing.T, ctx context.Context, h *cpAgentHarness, nodeName string, body []byte) heartbeatResponseDecoded {
 	t.Helper()
@@ -159,10 +159,10 @@ func postHeartbeatExpect200(t *testing.T, ctx context.Context, h *cpAgentHarness
 	return decoded
 }
 
-// seedPoolDirect inserts а storage_pools row directly via the sqlc
+// seedPoolDirect inserts a storage_pools row directly via the sqlc
 // CreateStoragePool query. Avoids the public API edge so the test can
-// exercise the reconciliation projection on its own. Uses а timestamp
-// suffix on the path к keep concurrent test runs isolated.
+// exercise the reconciliation projection on its own. Uses a timestamp
+// suffix on the path to keep concurrent test runs isolated.
 func seedPoolDirect(t *testing.T, h *cpAgentHarness, node seededNode, name, path string) store.StoragePool {
 	t.Helper()
 	row, err := h.store.Queries().CreateStoragePool(context.Background(), store.CreateStoragePoolParams{
@@ -176,8 +176,8 @@ func seedPoolDirect(t *testing.T, h *cpAgentHarness, node seededNode, name, path
 	if err != nil {
 		t.Fatalf("CreateStoragePool(%s): %v", name, err)
 	}
-	// Force pending-state read к isolate test от any default-drift —
-	// the schema default is `pending`, но if а future migration changes
+	// Force pending-state read to isolate test from any default-drift —
+	// the schema default is `pending`, but if a future migration changes
 	// the default the test would silently miss the transition assertion.
 	if row.ReconciliationStatus != "pending" {
 		t.Fatalf("seeded pool reconciliation_status = %q, want pending (schema default drifted?)", row.ReconciliationStatus)
@@ -185,7 +185,7 @@ func seedPoolDirect(t *testing.T, h *cpAgentHarness, node seededNode, name, path
 	return row
 }
 
-// Used implicitly by other tests in the file; keep а reference so
+// Used implicitly by other tests in the file; keep a reference so
 // goimports doesn't strip the import on partial saves.
 var (
 	_ = strings.HasPrefix

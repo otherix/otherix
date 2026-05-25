@@ -55,9 +55,9 @@ func TestAgentCertCascadesWithNode(t *testing.T) {
 }
 
 // TestJoinTokenConsumptionNodeFKSetNull verifies the audit-table FK
-// semantics: deleting а node nulls the consumed_by_node_id pointer в
+// semantics: deleting a node nulls the consumed_by_node_id pointer in
 // join_token_consumptions, preserving the audit row but losing the
-// link к the (now-gone) node.
+// link to the (now-gone) node.
 func TestJoinTokenConsumptionNodeFKSetNull(t *testing.T) {
 	h := shared
 	ctx := context.Background()
@@ -150,7 +150,7 @@ func TestJoinTokenPreboundMultiUseCheckRejects(t *testing.T) {
 
 // TestCAActiveAtMostOne verifies the partial unique index
 // uq_ca_certs_active enforces at-most-one-active. Required by the
-// race-safety guarantee для concurrent CA bootstrap.
+// race-safety guarantee for concurrent CA bootstrap.
 func TestCAActiveAtMostOne(t *testing.T) {
 	h := shared
 	ctx := context.Background()
@@ -229,8 +229,8 @@ func TestStoragePoolSameNameAcrossNodesAllowed(t *testing.T) {
 }
 
 func TestClusterSettingsSingleton(t *testing.T) {
-	// cluster_settings holds a single row pinned к id=1 by check
-	// constraint. Attempting к insert another row must fail the
+	// cluster_settings holds a single row pinned to id=1 by check
+	// constraint. Attempting to insert another row must fail the
 	// check; the singleton itself was seeded by the migration.
 	h := shared
 	ctx := context.Background()

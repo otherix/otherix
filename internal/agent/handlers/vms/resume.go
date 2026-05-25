@@ -13,7 +13,7 @@ import (
 
 // Resume handles POST /v1/vms/{vm_name}/resume. Synchronous per L1
 // scope: the agent dials QMP, issues `cont`, returns the refreshed
-// VM view с phase=running.
+// VM view with phase=running.
 func (h *Handler) Resume(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "vm_name")
 	if name == "" {

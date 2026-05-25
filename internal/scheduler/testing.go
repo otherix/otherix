@@ -5,11 +5,11 @@ package scheduler
 
 // NewNodePressureErrorForTest constructs an ErrNoEligibleNodes-wrapped
 // error carrying the supplied NodePressureDetail. Used by handler /
-// CLI tests that need к exercise the `ExtractNodePressureDetail` path
-// без spinning up the full SchedulePlacement saga; production code
-// мins these errors only through `placeWithPressure`. The `ForTest`
-// suffix flags the test-only intent — это symbol exists для cross-
-// package test wiring (handlers/vms, cmd/cli) и nowhere else.
+// CLI tests that need to exercise the `ExtractNodePressureDetail` path
+// without spinning up the full SchedulePlacement saga; production code
+// mints these errors only through `placeWithPressure`. The `ForTest`
+// suffix flags the test-only intent — this symbol exists for cross-
+// package test wiring (handlers/vms, cmd/cli) and nowhere else.
 func NewNodePressureErrorForTest(detail NodePressureDetail) error {
 	return &nodePressureError{Detail: detail}
 }

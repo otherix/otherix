@@ -99,7 +99,7 @@ func writeResolveError(w http.ResponseWriter, r *http.Request, err error) {
 		response.CodeInternal, "load vm", nil)
 }
 
-// writeVMLoadError maps load errors к wire envelopes. Missing rows
+// writeVMLoadError maps load errors to wire envelopes. Missing rows
 // surface as 404; missing disks (non-API state) as 500 with the cause
 // suppressed from the wire.
 func writeVMLoadError(w http.ResponseWriter, r *http.Request, err error) {

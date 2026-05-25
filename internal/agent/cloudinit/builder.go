@@ -15,31 +15,31 @@ import (
 	"github.com/diskfs/go-diskfs/filesystem/iso9660"
 )
 
-// DefaultDiskSize is the ISO image size в bytes used when Builder.Size
-// is zero. 10 MiB is generous для а NoCloud cidata payload (typical
-// user-data + meta-data are under а kilobyte); ISO9660 minimum
-// usable size is around 350 KiB но go-diskfs needs slack для its
+// DefaultDiskSize is the ISO image size in bytes used when Builder.Size
+// is zero. 10 MiB is generous for a NoCloud cidata payload (typical
+// user-data + meta-data are under a kilobyte); ISO9660 minimum
+// usable size is around 350 KiB but go-diskfs needs slack for its
 // workspace. Bumping past the default is cheap (sparse file
-// allocation) и safe.
+// allocation) and safe.
 const DefaultDiskSize int64 = 10 * 1024 * 1024
 
 // VolumeLabel is the ISO9660 volume identifier the NoCloud datasource
-// looks for. cloud-init treats а CD-ROM с this label as the NoCloud
+// looks for. cloud-init treats a CD-ROM with this label as the NoCloud
 // seed source. Constant by spec — must not be configurable.
 const VolumeLabel = "cidata"
 
 // ErrEmptyHostname signals that the caller passed an empty Hostname
-// although hostname injection was requested. The package refuses к
-// generate а cidata ISO с meta-data missing local-hostname так как
-// guest behaviour без one is implementation-defined.
+// although hostname injection was requested. The package refuses to
+// generate a cidata ISO with meta-data missing local-hostname since
+// guest behaviour without one is implementation-defined.
 var ErrEmptyHostname = errors.New("cloudinit: empty hostname")
 
-// Builder composes а NoCloud cidata ISO. Build assembles the
+// Builder composes a NoCloud cidata ISO. Build assembles the
 // ISO9660 filesystem, writes meta-data + user-data (+ optional
-// network-config), и returns the closed ISO image path.
+// network-config), and returns the closed ISO image path.
 type Builder struct {
-	// Hostname feeds local-hostname в meta-data и (if missing
-	// от UserData) is injected as а top-level `hostname:` key.
+	// Hostname feeds local-hostname in meta-data and (if missing
+	// from UserData) is injected as a top-level `hostname:` key.
 	// Required — see ErrEmptyHostname.
 	Hostname string
 
@@ -48,19 +48,19 @@ type Builder struct {
 	// just consumes the blob. Empty UserData is acceptable —
 	// the resulting ISO carries only meta-data, which is enough
 	// to satisfy the NoCloud datasource (cloud-init will boot
-	// the guest с no extra config beyond hostname).
+	// the guest with no extra config beyond hostname).
 	UserData []byte
 
 	// NetworkData is optional `#cloud-config` network YAML. When
-	// non-empty, writes /network-config; otherwise omitted и
-	// cloud-init falls back к DHCP discovery.
+	// non-empty, writes /network-config; otherwise omitted and
+	// cloud-init falls back to DHCP discovery.
 	NetworkData []byte
 
-	// Size overrides the ISO image size в bytes. Zero → DefaultDiskSize.
+	// Size overrides the ISO image size in bytes. Zero → DefaultDiskSize.
 	Size int64
 }
 
-// Build writes the cidata ISO к outputPath. The parent directory must
+// Build writes the cidata ISO to outputPath. The parent directory must
 // exist; existing files at outputPath are overwritten. Returns the
 // constructed path (== outputPath) on success.
 func (b *Builder) Build(outputPath string) (string, error) {
@@ -106,7 +106,7 @@ func (b *Builder) validate(outputPath string) error {
 }
 
 // populateAndFinalize assembles the filesystem, writes the three
-// NoCloud files, и finalizes the ISO с the cidata volume label. The
+// NoCloud files, and finalizes the ISO with the cidata volume label. The
 // caller owns disk lifecycle (Create / Close); this helper only
 // touches the filesystem layer.
 func (b *Builder) populateAndFinalize(d *disk.Disk) error {
@@ -142,9 +142,9 @@ func (b *Builder) populateAndFinalize(d *disk.Disk) error {
 	// RockRidge + Joliet preserve full POSIX filenames in the on-disk
 	// directory entries. cloud-init's NoCloud datasource matches the
 	// canonical names `meta-data` / `user-data` / `network-config` —
-	// plain ISO9660 Level 1 would truncate к `META_DAT` (8.3 +
-	// underscore substitution) и the guest would silently ignore the
-	// seed. Without these extensions the cidata ISO mounts на the
+	// plain ISO9660 Level 1 would truncate to `META_DAT` (8.3 +
+	// underscore substitution) and the guest would silently ignore the
+	// seed. Without these extensions the cidata ISO mounts on the
 	// guest but cloud-init never picks up any data.
 	if err := iso.Finalize(iso9660.FinalizeOptions{
 		VolumeIdentifier: VolumeLabel,

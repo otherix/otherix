@@ -12,8 +12,8 @@ import "github.com/google/uuid"
 //
 // The CP-side receiver (internal/api/handlers/heartbeat/types.go)
 // has the symmetric type with the same JSON tags — keeping these
-// two declarations in sync is а manual contract obligation. Drift
-// surfaces as а 400 validation_failed на the receiver.
+// two declarations in sync is a manual contract obligation. Drift
+// surfaces as a 400 validation_failed on the receiver.
 type Report struct {
 	AgentVersion string           `json:"agent_version"`
 	Architecture string           `json:"architecture"`
@@ -38,8 +38,8 @@ type PoolReport struct {
 
 // Response mirrors HeartbeatResponse. The CP returns the desired
 // pool inventory (declared_pools) on every heartbeat so the agent
-// reconciler keeps its desired-state cache fresh без requiring а
-// separate channel. The same shape extends к VMs: declared_vms
+// reconciler keeps its desired-state cache fresh without requiring a
+// separate channel. The same shape extends to VMs: declared_vms
 // carries the CP-declared per-node desired-state VM set (name +
 // desired_phase + generation) so the agent's VM reconciler can diff
 // observed vs declared and apply corrective lifecycle ops.
@@ -62,9 +62,9 @@ type DeclaredPool struct {
 
 // DeclaredVM mirrors HeartbeatDeclaredVM — desired-state record per
 // VM the CP wants converged on this node. The VM reconciler reads
-// DesiredPhase + the live Manager observation и dispatches Start /
+// DesiredPhase + the live Manager observation and dispatches Start /
 // Stop / Delete; Generation is the spec generation the agent must
-// catch up к (observed_generation в vm_runtime).
+// catch up to (observed_generation in vm_runtime).
 type DeclaredVM struct {
 	Name         string `json:"name"`
 	DesiredPhase string `json:"desired_phase"`
@@ -104,7 +104,7 @@ type NodeCapabilities struct {
 //
 // SystemDiskTotalBytes / SystemDiskAvailableBytes carry root
 // filesystem capacity from syscall.Statfs("/"). Both nullable: the
-// agent omits them когда the syscall fails, и the CP receiver
+// agent omits them when the syscall fails, and the CP receiver
 // carries existing pressure state forward on NULL input.
 type NodeResources struct {
 	CPUCoresAvailable        int32  `json:"cpu_cores_available"`
@@ -114,7 +114,7 @@ type NodeResources struct {
 }
 
 // FirmwareReport describes one firmware blob the agent has on disk.
-// The CP joins on (name, architecture, type) к firmwares.id и upserts
+// The CP joins on (name, architecture, type) to firmwares.id and upserts
 // the resulting node_firmware row.
 type FirmwareReport struct {
 	Name             string  `json:"name"`
@@ -125,8 +125,8 @@ type FirmwareReport struct {
 	SecureBoot       bool    `json:"secure_boot"`
 }
 
-// VMReport is one entry в the per-VM runtime list. The CP joins on
-// vm_uuid и updates vm_runtime; absent VMs are reconciled as missing
+// VMReport is one entry in the per-VM runtime list. The CP joins on
+// vm_uuid and updates vm_runtime; absent VMs are reconciled as missing
 // on the node (full-snapshot semantics).
 type VMReport struct {
 	VMUUID             uuid.UUID `json:"vm_uuid"`

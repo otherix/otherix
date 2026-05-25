@@ -23,10 +23,10 @@ import (
 // only. The richer agent.yaml VMSpec is a future design target;
 // reconciliation between the two is tracked as future iteration work.
 //
-// The `pool` field carries the pool name, not а UUID. The agent's
+// The `pool` field carries the pool name, not a UUID. The agent's
 // local pool registry is name-keyed; the cluster-wide multi-instance
 // UUID polymorphism stays an operator-edge concern. CP-side worker
-// reads `pool.Name` от the loaded `store.StoragePool` row before
+// reads `pool.Name` from the loaded `store.StoragePool` row before
 // constructing this request.
 //
 // UUID carries the CP-minted vms.id — agent uses it as the per-VM
@@ -42,7 +42,7 @@ type VMCreateRequest struct {
 	// UserData carries the CP-resolved cloud-init `#cloud-config`
 	// blob (L3 Area 3 lock — already-merged vm.user_data ?:
 	// template.cloud_init_user_data, hostname-injected). Empty
-	// string на the wire means "no cidata"; the agent skips
+	// string on the wire means "no cidata"; the agent skips
 	// ISO generation when absent.
 	UserData string `json:"user_data,omitempty"`
 }
@@ -55,7 +55,7 @@ type VMCreateRequest struct {
 // agentclient contract.
 //
 // The `pool` field carries the pool name. The agent's local registry
-// is name-keyed; the per-instance row UUID stays а CP-edge concern.
+// is name-keyed; the per-instance row UUID stays a CP-edge concern.
 type AgentVM struct {
 	ID           uuid.UUID `json:"id"`
 	Name         string    `json:"name"`
@@ -69,8 +69,8 @@ type AgentVM struct {
 }
 
 // agentVMListResponse mirrors the agent's listResponse wire shape
-// (handler.go list.go). The meta envelope is forward-compatible с
-// cursor pagination но Iteration 1 agent leaves next_cursor null.
+// (handler.go list.go). The meta envelope is forward-compatible with
+// cursor pagination but Iteration 1 agent leaves next_cursor null.
 type agentVMListResponse struct {
 	Data []AgentVM      `json:"data"`
 	Meta map[string]any `json:"meta"`
@@ -146,7 +146,7 @@ func (c *Client) VM(ctx context.Context, endpoint string, vmName string) (AgentV
 }
 
 // ListVMs returns the agent's full VM inventory. Iteration 1 agent
-// returns a single page без pagination; future iterations may layer
+// returns a single page without pagination; future iterations may layer
 // on cursor pagination — this method's signature stays the same since
 // the meta envelope holds the cursor server-side.
 func (c *Client) ListVMs(ctx context.Context, endpoint string) ([]AgentVM, error) {
@@ -168,29 +168,29 @@ func (c *Client) ListVMs(ctx context.Context, endpoint string) ([]AgentVM, error
 	return resp.Data, nil
 }
 
-// PauseVM issues а synchronous POST /v1/vms/{vm_name}/pause against
+// PauseVM issues a synchronous POST /v1/vms/{vm_name}/pause against
 // the agent and returns the refreshed AgentVM. 200 is the happy
 // path; 404 / 409 / 5xx surface as *AgentError so the CP handler
 // can translate downstream codes (409 conflict for invalid state)
-// verbatim к the operator envelope.
+// verbatim to the operator envelope.
 func (c *Client) PauseVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (AgentVM, error) {
 	return c.postVMLifecycle(ctx, endpoint, "pause", vmName, idempotencyKey)
 }
 
-// ResumeVM issues а synchronous POST /v1/vms/{vm_name}/resume. Same
+// ResumeVM issues a synchronous POST /v1/vms/{vm_name}/resume. Same
 // envelope contract as PauseVM.
 func (c *Client) ResumeVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (AgentVM, error) {
 	return c.postVMLifecycle(ctx, endpoint, "resume", vmName, idempotencyKey)
 }
 
-// ResetVM issues а synchronous POST /v1/vms/{vm_name}/reset. Same
+// ResetVM issues a synchronous POST /v1/vms/{vm_name}/reset. Same
 // envelope contract as PauseVM. Per Pre-L1 spec amendment reset is
 // sync (200 + VMDetail) rather than the previous 202 + task.
 func (c *Client) ResetVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (AgentVM, error) {
 	return c.postVMLifecycle(ctx, endpoint, "reset", vmName, idempotencyKey)
 }
 
-// postVMLifecycle is the shared engine для the three sync lifecycle
+// postVMLifecycle is the shared engine for the three sync lifecycle
 // calls. The agent endpoint shape is identical — POST, no body, 200
 // returns the refreshed VM view — so the dispatch sites differ only
 // in the URL action segment.
@@ -219,7 +219,7 @@ func (c *Client) postVMLifecycle(
 }
 
 // StartVM submits an async POST /v1/vms/{vm_name}/start to the agent
-// и returns the agent's task id. Mirrors DeleteVM's wire pattern: 202
+// and returns the agent's task id. Mirrors DeleteVM's wire pattern: 202
 // is the happy path; non-2xx surface as *AgentError so the CP worker
 // can classify (404 → not_found, 409 → conflict, etc.).
 func (c *Client) StartVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (uuid.UUID, error) {
@@ -227,16 +227,16 @@ func (c *Client) StartVM(ctx context.Context, endpoint, vmName, idempotencyKey s
 }
 
 // StopVM submits POST /v1/vms/{vm_name}/stop. Same envelope contract
-// as StartVM. Stop is а graceful ACPI shutdown — the agent's task may
+// as StartVM. Stop is a graceful ACPI shutdown — the agent's task may
 // terminate with `stop_timeout` if the guest does not honour the
 // signal (Area 4-II lock — no internal escalation; operators dispatch
-// к poweroff or `stop --force`).
+// to poweroff or `stop --force`).
 func (c *Client) StopVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (uuid.UUID, error) {
 	return c.postVMLifecycleAsync(ctx, endpoint, "stop", vmName, idempotencyKey)
 }
 
 // PoweroffVM submits POST /v1/vms/{vm_name}/poweroff. Hard shutdown
-// path; the agent attempts QMP `quit` first и falls back к SIGKILL
+// path; the agent attempts QMP `quit` first and falls back to SIGKILL
 // after poweroffGrace (5s). The guest OS is not notified.
 func (c *Client) PoweroffVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (uuid.UUID, error) {
 	return c.postVMLifecycleAsync(ctx, endpoint, "poweroff", vmName, idempotencyKey)
@@ -244,13 +244,13 @@ func (c *Client) PoweroffVM(ctx context.Context, endpoint, vmName, idempotencyKe
 
 // RebootVM submits POST /v1/vms/{vm_name}/reboot. The agent
 // orchestrates an internal stop+start (Area 4-III lock — distinct
-// от Reset; the QEMU process is replaced so the PID changes). On
-// stop-phase timeout the agent task fails с `stop_timeout`.
+// from Reset; the QEMU process is replaced so the PID changes). On
+// stop-phase timeout the agent task fails with `stop_timeout`.
 func (c *Client) RebootVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (uuid.UUID, error) {
 	return c.postVMLifecycleAsync(ctx, endpoint, "reboot", vmName, idempotencyKey)
 }
 
-// IssueConsoleTokenRequest is the body posted к the agent's
+// IssueConsoleTokenRequest is the body posted to the agent's
 // `POST /v1/vms/{vm_name}/console-token`. Protocol selects the wire
 // format the stream endpoint will speak after WebSocket upgrade.
 type IssueConsoleTokenRequest struct {
@@ -259,8 +259,8 @@ type IssueConsoleTokenRequest struct {
 
 // IssueConsoleTokenResponse mirrors the agent's ConsoleTokenResponse
 // schema (api/openapi/agent.yaml). The CP combines `websocket_path`
-// с the agent's external host (direct mode) или с the CP's own host
-// (proxy mode) к build the user-facing `wss://` URL.
+// with the agent's external host (direct mode) or with the CP's own host
+// (proxy mode) to build the user-facing `wss://` URL.
 type IssueConsoleTokenResponse struct {
 	Token         string    `json:"token"`
 	ExpiresAt     time.Time `json:"expires_at"`
@@ -268,10 +268,10 @@ type IssueConsoleTokenResponse struct {
 	Protocol      string    `json:"protocol"`
 }
 
-// IssueConsoleToken posts к the agent's console-token endpoint and
+// IssueConsoleToken posts to the agent's console-token endpoint and
 // returns the agent's response. The token is single-use, TTL 30
 // seconds; the caller (CP handler `vms.console`) hands the
-// plaintext value back к the operator immediately. Plaintext is never
+// plaintext value back to the operator immediately. Plaintext is never
 // persisted on the CP — agents are the only authority for token
 // state.
 //

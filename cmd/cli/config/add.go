@@ -18,9 +18,9 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// Env-var names mirror the flag names (kubectl-style: каждый flag
+// Env-var names mirror the flag names (kubectl-style: each flag
 // has an env counterpart). The token & endpoint vars match the
-// names defined в cliconfig (re-used here for consistency); the
+// names defined in cliconfig (re-used here for consistency); the
 // login & password vars are introduced by this command.
 const (
 	envLogin    = "OTHERIX_LOGIN"
@@ -30,7 +30,7 @@ const (
 func newAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
-		Short: "Add а cluster credential (currently: `add cluster`)",
+		Short: "Add a cluster credential (currently: `add cluster`)",
 	}
 	cmd.AddCommand(newAddClusterCommand())
 	return cmd
@@ -47,16 +47,16 @@ func newAddClusterCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "cluster",
-		Short: "Authenticate against а CP, create an API token, store it",
-		Long: `add cluster runs а one-time bootstrap:
-  1. Logs into the CP с the supplied email + password (JWT).
-  2. Calls /v1/users/me/api-tokens с the JWT, creating а long-
+		Short: "Authenticate against a CP, create an API token, store it",
+		Long: `add cluster runs a one-time bootstrap:
+  1. Logs into the CP with the supplied email + password (JWT).
+  2. Calls /v1/users/me/api-tokens with the JWT, creating a long-
      lived otx_* token named "otherix-cli-<cluster>".
-  3. Persists (server, token, token-id) into the config file as а
+  3. Persists (server, token, token-id) into the config file as a
      new cluster entry.
 
 Missing required values trigger interactive prompts when stdin is
-а TTY; --force replaces an existing entry с the same name (best-
+a TTY; --force replaces an existing entry with the same name (best-
 effort revoking the old API token server-side first).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runAddCluster(cmd, addClusterOptions{
@@ -74,7 +74,7 @@ effort revoking the old API token server-side first).`,
 	cmd.Flags().StringVar(&login, "login", os.Getenv(envLogin), "operator email (env: OTHERIX_LOGIN)")
 	cmd.Flags().StringVar(&password, "password", os.Getenv(envPassword), "operator password (env: OTHERIX_PASSWORD)")
 	cmd.Flags().BoolVar(&setCurrent, "set-current", true, "make this the current cluster (default true for the first cluster)")
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing cluster с the same name (revokes the previous token server-side)")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing cluster with the same name (revokes the previous token server-side)")
 	return cmd
 }
 
@@ -121,10 +121,10 @@ func runAddCluster(cmd *cobra.Command, opts addClusterOptions) error {
 	return nil
 }
 
-// loginAndIssueToken handles the two-hop bootstrap — login на the
-// anonymous client → upgrade К JWT → create API token. Returns
-// the authenticated client (handy for а subsequent best-effort
-// revoke) и the created token row.
+// loginAndIssueToken handles the two-hop bootstrap — login on the
+// anonymous client → upgrade to JWT → create API token. Returns
+// the authenticated client (handy for a subsequent best-effort
+// revoke) and the created token row.
 func loginAndIssueToken(ctx context.Context, server string, opts addClusterOptions) (*cpclient.Client, cpclient.APIToken, error) {
 	anon, err := cpclient.NewAnonymous(server, cpclient.Options{})
 	if err != nil {
@@ -147,14 +147,14 @@ func loginAndIssueToken(ctx context.Context, server string, opts addClusterOptio
 	return authed, token, nil
 }
 
-// writeClusterEntry mutates cfg в-place: optionally revoking the
-// previous token under --force, replacing the cluster entry, и
+// writeClusterEntry mutates cfg in-place: optionally revoking the
+// previous token under --force, replacing the cluster entry, and
 // flipping current-cluster when appropriate. The caller persists
 // the result.
 func writeClusterEntry(ctx context.Context, cfg *cliconfig.Config, authed *cpclient.Client, server string, token cpclient.APIToken, opts addClusterOptions, stderr io.Writer) error {
 	if existing, lookupErr := cfg.FindCluster(opts.name); lookupErr == nil {
 		if !opts.force {
-			return fmt.Errorf("cluster %q already exists: rerun с --force to replace it", opts.name)
+			return fmt.Errorf("cluster %q already exists: rerun with --force to replace it", opts.name)
 		}
 		bestEffortRevoke(ctx, authed, existing, stderr)
 		if err := cfg.RemoveCluster(opts.name); err != nil {
@@ -179,8 +179,8 @@ func writeClusterEntry(ctx context.Context, cfg *cliconfig.Config, authed *cpcli
 }
 
 // fillMissingAddInputs prompts interactively for missing required
-// fields when stdin is а TTY; в non-TTY context (CI, scripts) а
-// missing value is а hard error and the caller must rerun с the
+// fields when stdin is a TTY; in non-TTY context (CI, scripts) a
+// missing value is a hard error and the caller must rerun with the
 // missing flag set explicitly.
 func fillMissingAddInputs(stderr io.Writer, reader *bufio.Reader, opts *addClusterOptions) error {
 	tty := stdinIsTerminal()
@@ -209,13 +209,13 @@ func fillMissingAddInputs(stderr io.Writer, reader *bufio.Reader, opts *addClust
 		*f.target = v
 	}
 	if opts.name == "" || opts.login == "" || opts.password == "" {
-		return errors.New("name, login и password must all be non-empty")
+		return errors.New("name, login and password must all be non-empty")
 	}
 	return nil
 }
 
-// readField is а small adapter that picks the prompt flavour by
-// whether the field is а secret. Keeps fillMissingAddInputs free
+// readField is a small adapter that picks the prompt flavour by
+// whether the field is a secret. Keeps fillMissingAddInputs free
 // of nested switches over input kind.
 func readField(out io.Writer, reader *bufio.Reader, label string, secret bool) (string, error) {
 	if secret {
@@ -225,10 +225,10 @@ func readField(out io.Writer, reader *bufio.Reader, label string, secret bool) (
 }
 
 // bestEffortRevoke fires DELETE /v1/users/me/api-tokens/{id} on
-// the previous token. Failures are logged К stderr но never block
+// the previous token. Failures are logged to stderr but never block
 // the --force path; the operator can clean up manually if revoke
-// fails (e.g. the CP is unreachable but they want К replace а
-// known-bad token локально).
+// fails (e.g. the CP is unreachable but they want to replace a
+// known-bad token locally).
 func bestEffortRevoke(ctx context.Context, c *cpclient.Client, prev *cliconfig.Cluster, stderr io.Writer) {
 	if prev == nil || prev.TokenID == "" {
 		_, _ = fmt.Fprintf(stderr, "warning: previous cluster %q has no recorded token id; leaving old token active server-side\n", prev.Name)
@@ -239,8 +239,8 @@ func bestEffortRevoke(ctx context.Context, c *cpclient.Client, prev *cliconfig.C
 	}
 }
 
-// printf is а tiny wrapper that swallows the Write error — used
-// for routine status output where the only failure mode is а
+// printf is a tiny wrapper that swallows the Write error — used
+// for routine status output where the only failure mode is a
 // closed pipe (caller already gone).
 func printf(out io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(out, format, args...)

@@ -28,8 +28,8 @@ type agentVMLifecycleClient interface {
 // agentVMLifecycleExecutor is the production LifecycleExecutor: POST
 // to the agent's per-op endpoint, persist the agent task id, then
 // PollTask. agent_task_id resumption mirrors the create / delete
-// executor — when args.AgentTaskID is non-nil the POST is skipped и
-// the executor goes straight к polling.
+// executor — when args.AgentTaskID is non-nil the POST is skipped and
+// the executor goes straight to polling.
 type agentVMLifecycleExecutor struct {
 	client agentVMLifecycleClient
 }
@@ -43,7 +43,7 @@ func NewAgentVMLifecycleExecutor(client agentVMLifecycleClient) LifecycleExecuto
 
 // Execute implements LifecycleExecutor. Drives one of four
 // agentclient methods based on op, then polls the resulting agent
-// task к terminal status.
+// task to terminal status.
 func (e *agentVMLifecycleExecutor) Execute(ctx context.Context, op string, args LifecycleArgs) (LifecycleResult, error) {
 	agentTaskID, err := e.postOrResume(ctx, op, args)
 	if err != nil {
@@ -66,7 +66,7 @@ func (e *agentVMLifecycleExecutor) Execute(ctx context.Context, op string, args 
 	}
 }
 
-// postOrResume returns the agent task id к poll. On а fresh attempt
+// postOrResume returns the agent task id to poll. On a fresh attempt
 // it dispatches the appropriate agent endpoint and persists the
 // returned id; on resumption it echoes the supplied id back without
 // contacting the agent.

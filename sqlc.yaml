@@ -70,9 +70,9 @@ sql:
               type: "Time"
               pointer: true
           # node_effective_availability view: CASE expressions return NULL
-          # when raw heartbeat columns are NULL (see view definition в
+          # when raw heartbeat columns are NULL (see view definition in
           # 00001_init.sql). PostgreSQL's information_schema
-          # surfaces these as nullable, но sqlc 1.31's inference does not
+          # surfaces these as nullable, but sqlc 1.31's inference does not
           # propagate it through CASE arms — force pointer types here so
           # the Go side matches the on-the-wire NULL semantic.
           - column: "node_effective_availability.cpu_cores_effective"
@@ -83,8 +83,8 @@ sql:
             go_type:
               type: "int64"
               pointer: true
-          # pool_effective_capacity view: parallel rationale к node view —
-          # the CASE arms wrap а nullable column, sqlc 1.31 does not
+          # pool_effective_capacity view: parallel rationale to node view —
+          # the CASE arms wrap a nullable column, sqlc 1.31 does not
           # propagate nullability through them. Force pointer types
           # here so Go-side semantics match the on-the-wire NULL.
           - column: "pool_effective_capacity.available_bytes_effective"

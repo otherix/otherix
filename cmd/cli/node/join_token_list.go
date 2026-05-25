@@ -19,15 +19,15 @@ func newJoinTokenListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List join tokens (admin only).",
 		Long: `Cursor-paginated list of join tokens. Expired tokens are excluded
-by default — pass --include-expired к surface them. Output is а
+by default — pass --include-expired to surface them. Output is a
 human-friendly table (Q20 lock columns: ID | NODE-NAME |
-TTL-REMAINING | MAX-USES | CONSUMED | CREATED-BY) или JSON for
+TTL-REMAINING | MAX-USES | CONSUMED | CREATED-BY) or JSON for
 scripting.`,
 		RunE: runJoinTokenList,
 	}
 	cmd.Flags().Bool(flagIncExpired, false, "surface expired tokens")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
-	cmd.Flags().String(flagCursor, "", "opaque cursor from а previous page")
+	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
 	cmd.Flags().String(flagOutput, "table", "output format: table|json")
 	return cmd
 }

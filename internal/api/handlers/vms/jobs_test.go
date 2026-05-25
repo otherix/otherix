@@ -14,7 +14,7 @@ import (
 
 // TestClassifyVMError covers the executor-error → tasks.error.code
 // mapping. Agent envelopes pass through verbatim; TimeoutError
-// collapses to request_timeout; everything else falls back к the
+// collapses to request_timeout; everything else falls back to the
 // caller-supplied bucket.
 func TestClassifyVMError(t *testing.T) {
 	t.Parallel()

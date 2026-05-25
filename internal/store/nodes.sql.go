@@ -391,7 +391,7 @@ type GetNodeForHeartbeatRow struct {
 // Pre-flight read for the heartbeat receiver: fetches the immutable
 // and policy-relevant fields needed for the architecture / status
 // guards plus the current pressure state used by the transition logic.
-// Both memory and system_disk pressure live на the row; the receiver
+// Both memory and system_disk pressure live on the row; the receiver
 // reads both inside the same transaction as the metric writes.
 // Excludes soft-deleted rows (deleted_at IS NOT NULL → 404, as opposed
 // to status='gone' which surfaces as 409 node_gone).
@@ -524,8 +524,8 @@ type ListNodesEffectiveParams struct {
 // View-backed variant of ListNodes used by GET /v1/nodes. Returns the
 // same row shape as ListNodes plus cpu_cores_effective /
 // memory_effective_mib so the operator can compare raw heartbeat
-// availability vs the scheduler's view in а single response.
-// Filters / pagination semantics identical к ListNodes.
+// availability vs the scheduler's view in a single response.
+// Filters / pagination semantics identical to ListNodes.
 func (q *Queries) ListNodesEffective(ctx context.Context, arg ListNodesEffectiveParams) ([]NodeEffectiveAvailability, error) {
 	rows, err := q.db.Query(ctx, listNodesEffective,
 		arg.Architecture,
@@ -672,7 +672,7 @@ type MarkNodesUnreachableRow struct {
 	LastHeartbeatAt *time.Time
 }
 
-// Reconciler step that demotes stale 'ready' or 'pending' rows к
+// Reconciler step that demotes stale 'ready' or 'pending' rows to
 // 'unreachable'. 'cordoned' and 'draining' are operator-pinned states
 // and stay put even when heartbeats lapse — the operator deliberately
 // isolated the node, so liveness is not the signal that flips it.
@@ -734,7 +734,7 @@ type PromoteHealthyNodesRow struct {
 	Status NodeStatus
 }
 
-// Reconciler step that promotes rows к 'ready' once a fresh heartbeat
+// Reconciler step that promotes rows to 'ready' once a fresh heartbeat
 // lands. Two source states qualify: 'pending' (first heartbeat after
 // registration) and 'unreachable' (recovery after a network blip).
 // 'cordoned' and 'draining' stay put — only the operator clears those.
@@ -926,7 +926,7 @@ type UpdateNodeMemoryPressureParams struct {
 // Persists the memory-pressure transition computed by the heartbeat
 // receiver. Memory_pressure_since is NULL
 // when the condition is not active; the count increments on every
-// below-threshold observation и resets к 0 on an at-or-above-threshold
+// below-threshold observation and resets to 0 on an at-or-above-threshold
 // observation. Caller runs this inside the same transaction as
 // UpdateNodeHeartbeat so the pressure state never drifts ahead of the
 // raw metrics that determined it.
@@ -973,9 +973,9 @@ type UpdateNodeSystemDiskPressureParams struct {
 }
 
 // Persists the system-disk pressure transition.
-// Mirror of UpdateNodeMemoryPressure: NULL pressure_since когда condition
+// Mirror of UpdateNodeMemoryPressure: NULL pressure_since when condition
 // is not active; count increments on each below-threshold observation,
-// resets к 0 on the first at-or-above observation. Runs inside the same
+// resets to 0 on the first at-or-above observation. Runs inside the same
 // transaction as UpdateNodeHeartbeat.
 func (q *Queries) UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error {
 	_, err := q.db.Exec(ctx, updateNodeSystemDiskPressure, arg.SystemDiskPressureSince, arg.SystemDiskPressureCount, arg.ID)

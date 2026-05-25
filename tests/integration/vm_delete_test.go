@@ -20,7 +20,7 @@ import (
 
 // TestVMDelete_VerticalSliceHappyPath drives the full delete chain:
 // vm.create runs first (so the row exists), then vm.delete fires the
-// async pipeline through к the soft-delete InTx (DeleteVMRuntime +
+// async pipeline through to the soft-delete InTx (DeleteVMRuntime +
 // SoftDeleteVMDisksByVM + SoftDeleteVM + DecrementTemplateDerivedVMCount).
 func TestVMDelete_VerticalSliceHappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -48,7 +48,7 @@ func TestVMDelete_VerticalSliceHappyPath(t *testing.T) {
 	}
 	vmID := extractVMIDFromTask(t, createRow)
 
-	// Pre-load mock с a delete-success outcome — per Pre-L1 Path D
+	// Pre-load mock with a delete-success outcome — per Pre-L1 Path D
 	// the agentmock keys vm.delete results by name.
 	stageVMDeleteSuccess(v, vmName, 30*time.Millisecond)
 
@@ -89,9 +89,9 @@ func TestVMDelete_VerticalSliceHappyPath(t *testing.T) {
 	}
 }
 
-// TestVMDelete_VerticalSliceAgentFailure injects а 500 on the agent's
-// vm.delete; the worker classifies the error и marks the task failed.
-// Crucially the vm row stays — operators can re-issue delete или
+// TestVMDelete_VerticalSliceAgentFailure injects a 500 on the agent's
+// vm.delete; the worker classifies the error and marks the task failed.
+// Crucially the vm row stays — operators can re-issue delete or
 // inspect.
 func TestVMDelete_VerticalSliceAgentFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -125,15 +125,15 @@ func TestVMDelete_VerticalSliceAgentFailure(t *testing.T) {
 	ev := v.awaitVMDeleteEvent(t, 15*time.Second)
 	_ = ev
 
-	// vms row still present (soft-delete только on success).
+	// vms row still present (soft-delete only on success).
 	if _, err := v.store.Queries().GetVMByID(ctx, vmID); err != nil {
 		t.Errorf("GetVMByID after failed delete returned %v; want row present", err)
 	}
 }
 
-// TestVMDelete_VerticalSliceCrossUserNotFound — developer attempts К
+// TestVMDelete_VerticalSliceCrossUserNotFound — developer attempts To
 // delete admin's VM. CheckOwnership returns ErrPermissionDenied →
-// handler maps К 404 (no leak).
+// handler maps To 404 (no leak).
 func TestVMDelete_VerticalSliceCrossUserNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -153,9 +153,9 @@ func TestVMDelete_VerticalSliceCrossUserNotFound(t *testing.T) {
 	createRow, _ := v.store.Queries().GetTask(ctx, createTaskID)
 	vmID := extractVMIDFromTask(t, createRow)
 
-	// Developer тries к delete it. Developer holds vm:delete=own; the
+	// Developer tries to delete it. Developer holds vm:delete=own; the
 	// admin-owned VM matches neither the own-scope branch nor the
-	// any-scope branch, so CheckOwnership rejects → handler maps к 404.
+	// any-scope branch, so CheckOwnership rejects → handler maps to 404.
 	_, devEmail, devPW := seedUser(t, ctx, v.store, "developer")
 	devToken := loginUser(t, v.cpServer.URL, devEmail, devPW)
 

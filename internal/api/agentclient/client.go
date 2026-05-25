@@ -44,15 +44,15 @@ type Client struct {
 	cfg        config.AgentClientConfig
 }
 
-// New constructs a Client from cfg + а pre-built TLS material bundle.
+// New constructs a Client from cfg + a pre-built TLS material bundle.
 // The CP-side mTLS material (replica's own client cert + cluster CA
 // trust anchor) is produced upstream — either by the API binary's
-// LoadOrGenerateCPCert hook, or by а CLI
+// LoadOrGenerateCPCert hook, or by a CLI
 // tool's filesystem loader (LoadMaterialFromFiles). Either way, this
-// constructor takes primitives и does no I/O.
+// constructor takes primitives and does no I/O.
 //
-// cfg.Enabled must be true; the caller decides whether к construct
-// the client at all (HTTP-only smoke loops can skip с workers.enabled
+// cfg.Enabled must be true; the caller decides whether to construct
+// the client at all (HTTP-only smoke loops can skip with workers.enabled
 // = false).
 func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Certificate) (*Client, error) {
 	if !cfg.Enabled {
@@ -102,25 +102,25 @@ func (c *Client) Config() config.AgentClientConfig { return c.cfg }
 
 // HTTPClient returns the underlying *http.Client. Exposed so the
 // CP-side WebSocket proxy can hand the same mTLS-configured client
-// к coder/websocket.Dial — reusing the same TLS material the agent
+// to coder/websocket.Dial — reusing the same TLS material the agent
 // HTTP client already trusts. Treat the returned client as read-only;
 // mutating its Transport breaks every concurrent call on this Client.
 func (c *Client) HTTPClient() *http.Client { return c.httpClient }
 
-// LoadMaterialFromFiles is а filesystem-based loader для callers that
-// don't have DB access к the cluster CA — primarily the ping-agent
-// CLI и agentclient tests. Returns the parsed cert pair + the first
-// CA cert от the caFile PEM bundle.
+// LoadMaterialFromFiles is a filesystem-based loader for callers that
+// don't have DB access to the cluster CA — primarily the ping-agent
+// CLI and agentclient tests. Returns the parsed cert pair + the first
+// CA cert from the caFile PEM bundle.
 //
 // The api binary boot path does NOT use this helper — it threads
-// in-memory material от LoadOrGenerateCPCert through agentclient.New
+// in-memory material from LoadOrGenerateCPCert through agentclient.New
 // directly.
 func LoadMaterialFromFiles(certFile, keyFile, caFile string) (tls.Certificate, *x509.Certificate, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return tls.Certificate{}, nil, fmt.Errorf("agentclient: load client cert: %v", err)
 	}
-	caBytes, err := os.ReadFile(caFile) //nolint:gosec // operator-supplied CA path для CLI tools that don't have DB access; the function exists exactly к open this file
+	caBytes, err := os.ReadFile(caFile) //nolint:gosec // operator-supplied CA path for CLI tools that don't have DB access; the function exists exactly to open this file
 	if err != nil {
 		return tls.Certificate{}, nil, fmt.Errorf("agentclient: read ca: %v", err)
 	}

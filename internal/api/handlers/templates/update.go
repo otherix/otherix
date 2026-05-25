@@ -222,7 +222,7 @@ func applySizingPatches(w http.ResponseWriter, r *http.Request, row *store.Templ
 // applyCapabilityPatches handles cloud_init_supported,
 // cloud_init_user_data (L3) and qemu_guest_agent_expected. The two
 // boolean fields are tri-state pointers (omit / set); user-data is
-// tri-state via json.RawMessage (omit / null / string) к support
+// tri-state via json.RawMessage (omit / null / string) to support
 // explicit clearing.
 func applyCapabilityPatches(w http.ResponseWriter, r *http.Request, row *store.Template, req *updateRequest) bool {
 	if req.CloudInitSupported != nil {

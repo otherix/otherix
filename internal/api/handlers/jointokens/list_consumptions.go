@@ -17,8 +17,8 @@ import (
 
 // ListConsumptions implements GET /v1/nodes/join-tokens/{id}/consumptions.
 // Required permission: node:manage. Cursor pagination.
-// Returns empty data array в Step 1 — the redemption endpoint (which
-// would populate join_token_consumptions) lands в Step 2.
+// Returns empty data array in Step 1 — the redemption endpoint (which
+// would populate join_token_consumptions) lands in Step 2.
 func (h *Handler) ListConsumptions(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

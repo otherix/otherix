@@ -18,15 +18,15 @@ import (
 	"time"
 )
 
-// ClusterCAValidity is the lifetime of а freshly generated cluster
+// ClusterCAValidity is the lifetime of a freshly generated cluster
 // CA cert. 10 years - operator-friendly default for
 // homelab / on-prem deployments. Rotation (planned ROADMAP) lets
 // operators issue fresher CAs before this window closes.
 const ClusterCAValidity = 10 * 365 * 24 * time.Hour
 
 // ClusterCAResult is the bundle GenerateClusterCA returns. CertPEM /
-// KeyPEM are the persisted forms (bytea в ca_certs); Fingerprint is
-// sha256(cert.Raw) as 32 raw bytes — convert к hex via
+// KeyPEM are the persisted forms (bytea in ca_certs); Fingerprint is
+// sha256(cert.Raw) as 32 raw bytes — convert to hex via
 // hex.EncodeToString at the API surface.
 type ClusterCAResult struct {
 	CertPEM     []byte
@@ -36,7 +36,7 @@ type ClusterCAResult struct {
 	NotAfter    time.Time
 }
 
-// GenerateClusterCA produces а fresh self-signed cluster CA на ECDSA
+// GenerateClusterCA produces a fresh self-signed cluster CA on ECDSA
 // P-384. Parameters:
 //
 //   - Subject: CN=otherix-cluster-ca, OU=Otherix CA.
@@ -45,10 +45,10 @@ type ClusterCAResult struct {
 //   - BasicConstraints: CA:TRUE, MaxPathLen:0 — signs leaf certs
 //     only, no intermediate CAs.
 //   - KeyUsage: certSign | crlSign | digitalSignature.
-//   - SubjectKeyId derived от the public key per RFC 5280 §4.2.1.2.
+//   - SubjectKeyId derived from the public key per RFC 5280 §4.2.1.2.
 //
-// PEM encoding: the cert as а CERTIFICATE block, the private key as
-// а PKCS#8 PRIVATE KEY block (more portable than SEC1).
+// PEM encoding: the cert as a CERTIFICATE block, the private key as
+// a PKCS#8 PRIVATE KEY block (more portable than SEC1).
 func GenerateClusterCA(now time.Time) (ClusterCAResult, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
@@ -114,9 +114,9 @@ func GenerateClusterCA(now time.Time) (ClusterCAResult, error) {
 	}, nil
 }
 
-// ParseClusterCACert lifts а PEM-encoded cert blob back into the
+// ParseClusterCACert lifts a PEM-encoded cert blob back into the
 // parsed x509 form so callers can read fields (validity, fingerprint
-// recomputation in tests). Returns the parsed cert и the underlying
+// recomputation in tests). Returns the parsed cert and the underlying
 // DER bytes (so fingerprints can be recomputed without re-marshalling).
 func ParseClusterCACert(certPEM []byte) (*x509.Certificate, []byte, error) {
 	block, _ := pem.Decode(certPEM)
@@ -133,8 +133,8 @@ func ParseClusterCACert(certPEM []byte) (*x509.Certificate, []byte, error) {
 	return cert, block.Bytes, nil
 }
 
-// ParseClusterCAKey lifts а PEM-encoded PKCS#8 private key blob back
-// into the parsed crypto form. Step 2 CSR signing path uses it к load
+// ParseClusterCAKey lifts a PEM-encoded PKCS#8 private key blob back
+// into the parsed crypto form. Step 2 CSR signing path uses it to load
 // the signing key from ca_certs.key_pem.
 func ParseClusterCAKey(keyPEM []byte) (any, error) {
 	block, _ := pem.Decode(keyPEM)
@@ -151,7 +151,7 @@ func ParseClusterCAKey(keyPEM []byte) (any, error) {
 	return key, nil
 }
 
-// randomSerial draws а 128-bit random integer suitable for а cert
+// randomSerial draws a 128-bit random integer suitable for a cert
 // serial (RFC 5280 §4.1.2.2 — positive integer up to 20 octets).
 func randomSerial() (*big.Int, error) {
 	max := new(big.Int).Lsh(big.NewInt(1), 128)
@@ -166,13 +166,13 @@ func randomSerial() (*big.Int, error) {
 // SHA-1 of the DER-encoded SubjectPublicKeyInfo. crypto/x509 already
 // fills this field automatically when the template's SubjectKeyId is
 // empty, but explicit computation keeps the cert-template self-
-// describing для tests that assert на the field. SHA-1 here is purely
-// для а stable identifier, not а security primitive.
+// describing for tests that assert on the field. SHA-1 here is purely
+// for a stable identifier, not a security primitive.
 func subjectKeyID(pub *ecdsa.PublicKey) ([]byte, error) {
 	spkiDER, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
 		return nil, err
 	}
-	h := sha1.Sum(spkiDER) //nolint:gosec // SHA-1 is the standard RFC 5280 §4.2.1.2 hash для SubjectKeyIdentifier, not а cryptographic signature primitive
+	h := sha1.Sum(spkiDER) //nolint:gosec // SHA-1 is the standard RFC 5280 §4.2.1.2 hash for SubjectKeyIdentifier, not a cryptographic signature primitive
 	return h[:], nil
 }

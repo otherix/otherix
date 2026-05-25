@@ -14,9 +14,9 @@ import (
 
 const bytesPerGiB int64 = 1073741824
 
-// poolFixture seeds а node + pool tailored для pool_effective_capacity
-// tests. Caller controls `available_bytes` и `reported_at` directly
-// (no scan worker involvement); the node row is а minimal placeholder
+// poolFixture seeds a node + pool tailored for pool_effective_capacity
+// tests. Caller controls `available_bytes` and `reported_at` directly
+// (no scan worker involvement); the node row is a minimal placeholder
 // — disk subtraction does not key off any node-side column.
 type poolFixture struct {
 	availableBytes *int64
@@ -50,8 +50,8 @@ func seedPoolForEffective(t *testing.T, f poolFixture) (poolID, nodeID string) {
 }
 
 // pinDiskArgs is the disk-commitment seed. Caller controls size_gib,
-// pool, и optional created_at / deleted_at — every other column gets
-// schema defaults. The VM is а throwaway placeholder с unique name;
+// pool, and optional created_at / deleted_at — every other column gets
+// schema defaults. The VM is a throwaway placeholder with unique name;
 // device_order increments through pool's slot count so the per-VM
 // unique-index does not collide on re-runs.
 type pinDiskArgs struct {
@@ -70,7 +70,7 @@ func pinDisk(t *testing.T, args pinDiskArgs) (diskID, vmID string) {
 
 	// Each disk owns its own VM — keeps the unique
 	// `uq_vm_disks_order on vm_disks(vm_id, device_order)` trivially
-	// satisfied и lets tests pin multiple disks к the same pool без
+	// satisfied and lets tests pin multiple disks to the same pool without
 	// coordinating device_order.
 	if err := shared.Pool.QueryRow(ctx, `
 		insert into vms
@@ -83,7 +83,7 @@ func pinDisk(t *testing.T, args pinDiskArgs) (diskID, vmID string) {
 		t.Fatalf("pinDisk seed vm: %v", err)
 	}
 
-	// vm_disks requires а blank-or-template source; pick blank к keep
+	// vm_disks requires a blank-or-template source; pick blank to keep
 	// the seed self-contained — no templates table touched.
 	if err := shared.Pool.QueryRow(ctx, `
 		insert into vm_disks
@@ -114,7 +114,7 @@ func queryPoolEffective(t *testing.T, poolID string) (effective *int64) {
 }
 
 // TestPoolEffective_PendingDiskSubtracted is the core happy path:
-// а disk created after the pool's last scan is subtracted from raw
+// a disk created after the pool's last scan is subtracted from raw
 // availability. Mirror of node-iteration's PendingVMSubtracted test.
 func TestPoolEffective_PendingDiskSubtracted(t *testing.T) {
 	rawAvail := 100 * bytesPerGiB
@@ -125,7 +125,7 @@ func TestPoolEffective_PendingDiskSubtracted(t *testing.T) {
 	_, _ = pinDisk(t, pinDiskArgs{
 		poolID:  poolID,
 		sizeGiB: 10,
-		// createdAt defaults к now() → after reported_at → subtracted.
+		// createdAt defaults to now() → after reported_at → subtracted.
 	})
 
 	eff := queryPoolEffective(t, poolID)
@@ -138,7 +138,7 @@ func TestPoolEffective_PendingDiskSubtracted(t *testing.T) {
 // TestPoolEffective_PostScanNoDoubleCount confirms the self-correcting
 // property: once the agent's scan timestamp advances past the disk's
 // created_at, the view stops subtracting (the disk is already
-// reflected в available_bytes).
+// reflected in available_bytes).
 func TestPoolEffective_PostScanNoDoubleCount(t *testing.T) {
 	rawAvail := 90 * bytesPerGiB // agent already accounted -10 GiB
 	poolID, _ := seedPoolForEffective(t, poolFixture{
@@ -159,12 +159,12 @@ func TestPoolEffective_PostScanNoDoubleCount(t *testing.T) {
 }
 
 // TestPoolEffective_NullReportedAtSubtractsAll covers the bootstrap
-// case: pool row exists но has never been scanned (reported_at IS
+// case: pool row exists but has never been scanned (reported_at IS
 // NULL). The LATERAL filter takes the `reported_at is null` branch
-// и subtracts every committed disk. If available_bytes is also nil
+// and subtracts every committed disk. If available_bytes is also nil
 // (real bootstrap state) the effective field stays NULL — that case
 // is exercised in NullAvailableBytesPreservesNull below; here we
-// pin а stale available_bytes to focus on the timestamp branch.
+// pin a stale available_bytes to focus on the timestamp branch.
 func TestPoolEffective_NullReportedAtSubtractsAll(t *testing.T) {
 	rawAvail := 50 * bytesPerGiB
 	poolID, _ := seedPoolForEffective(t, poolFixture{
@@ -182,7 +182,7 @@ func TestPoolEffective_NullReportedAtSubtractsAll(t *testing.T) {
 
 // TestPoolEffective_FloorAtZero confirms the GREATEST(0, ...) guard:
 // pending disks totaling more than raw availability cannot produce
-// а negative effective value. Operator sees "0 free" instead.
+// a negative effective value. Operator sees "0 free" instead.
 func TestPoolEffective_FloorAtZero(t *testing.T) {
 	poolID, _ := seedPoolForEffective(t, poolFixture{
 		availableBytes: i64(5 * bytesPerGiB), // small raw availability
@@ -216,7 +216,7 @@ func TestPoolEffective_MultiplePendingStack(t *testing.T) {
 }
 
 // TestPoolEffective_SoftDeletedDiskNotSubtracted asserts the
-// `vd.deleted_at IS NULL` predicate. А soft-deleted disk reflects the
+// `vd.deleted_at IS NULL` predicate. A soft-deleted disk reflects the
 // SoftDeleteVMDisksByVM lifecycle stamp — its space is no longer
 // considered committed CP-side.
 func TestPoolEffective_SoftDeletedDiskNotSubtracted(t *testing.T) {
@@ -243,7 +243,7 @@ func TestPoolEffective_SoftDeletedDiskNotSubtracted(t *testing.T) {
 }
 
 // TestPoolEffective_DiskInDifferentPoolNotSubtracted asserts per-pool
-// scope: а disk pinned к pool A does not appear in pool B's effective.
+// scope: a disk pinned to pool A does not appear in pool B's effective.
 func TestPoolEffective_DiskInDifferentPoolNotSubtracted(t *testing.T) {
 	rawAvail := 100 * bytesPerGiB
 	poolA, _ := seedPoolForEffective(t, poolFixture{
@@ -271,10 +271,10 @@ func TestPoolEffective_DiskInDifferentPoolNotSubtracted(t *testing.T) {
 }
 
 // TestPoolEffective_NullAvailableBytesPreservesNull confirms the
-// CASE preserves NULL through к the effective column. Future
+// CASE preserves NULL through to the effective column. Future
 // scheduler keys its fallback path off `available_bytes_effective IS
-// NULL` (or hasMetrics) — а pool that has never been scanned must
-// stay distinguishable from one с zero free bytes.
+// NULL` (or hasMetrics) — a pool that has never been scanned must
+// stay distinguishable from one with zero free bytes.
 func TestPoolEffective_NullAvailableBytesPreservesNull(t *testing.T) {
 	poolID, _ := seedPoolForEffective(t, poolFixture{
 		// Neither availableBytes nor reportedAt set → both NULL.
@@ -290,8 +290,8 @@ func TestPoolEffective_NullAvailableBytesPreservesNull(t *testing.T) {
 // TestPoolEffective_RaceReproduction reproduces the bug Sub-iteration B
 // closes: two sequential disk-committing operations within the same
 // scan window cumulatively reduce effective availability. Without the
-// view, the second placement decision would read а stale
-// available_bytes that did not yet reflect the first commit и
+// view, the second placement decision would read a stale
+// available_bytes that did not yet reflect the first commit and
 // potentially over-allocate.
 func TestPoolEffective_RaceReproduction(t *testing.T) {
 	rawAvail := 30 * bytesPerGiB

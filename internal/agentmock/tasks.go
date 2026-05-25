@@ -19,7 +19,7 @@ const defaultPoolScanDelay = 100 * time.Millisecond
 
 // agentTask is the in-memory record of an agent-side executional
 // task projected through GET /v1/tasks/{id}. Covers
-// `storage_pool.scan` и `storage_image.import`.
+// `storage_pool.scan` and `storage_image.import`.
 // projectAgentTask switches on `taskType` to select the appropriate
 // terminal-result projection, so future task types (vm.start,
 // template.import, etc.) can extend the struct without reshaping
@@ -36,9 +36,9 @@ type agentTask struct {
 	resourceType string
 	resourceID   uuid.UUID
 	// poolName captures the agent-side pool key when the task targets
-	// а pool resource (storage_pool.scan / storage_image.import). The
+	// a pool resource (storage_pool.scan / storage_image.import). The
 	// agent's pool registry is name-keyed; the materialise-on-tasks.get
-	// side effect uses this к stage the image bucket under the right
+	// side effect uses this to stage the image bucket under the right
 	// name. Empty for VM tasks.
 	poolName  string
 	createdAt time.Time
@@ -347,7 +347,7 @@ func projectVMDeleteTerminal(task *agentapi.Task, t *agentTask) {
 // (start / stop / poweroff / reboot) terminal projection. Same shape
 // as create / delete success — `vm_id` under task.result. The
 // materialisation side effect (transitioning storedVMs[name].Status)
-// lives в materializeVMLifecycleLocked, invoked от the TasksGet
+// lives in materializeVMLifecycleLocked, invoked from the TasksGet
 // handler.
 func projectVMLifecycleTerminal(task *agentapi.Task, t *agentTask) {
 	if t.vmLifecycleResult == nil {
@@ -372,8 +372,8 @@ func projectVMLifecycleTerminal(task *agentapi.Task, t *agentTask) {
 // materialise hook applies on terminal-success when the queued
 // VMLifecycleResult.NewStatus is empty. Mirrors the per-op semantics
 // the real agent honours: start → running, stop / poweroff → stopped,
-// reboot → running (PID changes но wire status converges back to
-// running). Unknown op falls back к "running" — defensive only;
+// reboot → running (PID changes but wire status converges back to
+// running). Unknown op falls back to "running" — defensive only;
 // production code paths only ever pass the four enumerated ops.
 func vmLifecycleOpDefaultTransition(op string) string {
 	switch op {
@@ -391,7 +391,7 @@ func vmLifecycleOpDefaultTransition(op string) string {
 }
 
 // takeVMLifecycleResultLocked pops the next queued VMLifecycleResult
-// for (vmName, op), normalising defaults. An empty queue yields а
+// for (vmName, op), normalising defaults. An empty queue yields a
 // default success. Caller holds mu.
 func (s *state) takeVMLifecycleResultLocked(vmName, op string) VMLifecycleResult {
 	key := vmLifecycleKey{VMName: vmName, Op: op}

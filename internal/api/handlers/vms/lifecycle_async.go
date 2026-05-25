@@ -50,9 +50,9 @@ func (op asyncOp) label() string {
 }
 
 // Start implements POST /v1/vms/{id}/start — async per spec.
-// Returns 202 + AsyncTaskAccepted. Sets vms.desired_phase к
+// Returns 202 + AsyncTaskAccepted. Sets vms.desired_phase to
 // 'running' on success (handled by the worker, not the handler, so
-// а worker failure rolls the write back с the rest of the
+// a worker failure rolls the write back with the rest of the
 // transaction). Required permission: `vm:lifecycle` (admin /
 // operator: any; developer: own; viewer: none). Cross-user
 // developer attempts surface as 404 (no leak).
@@ -61,20 +61,20 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 }
 
 // Stop implements POST /v1/vms/{id}/stop — async graceful ACPI
-// shutdown. On agent-side timeout the task completes as failed с
+// shutdown. On agent-side timeout the task completes as failed with
 // `stop_timeout` (Area 4-II lock — no internal escalation).
 func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	h.runAsyncLifecycle(w, r, asyncOpStop)
 }
 
 // Poweroff implements POST /v1/vms/{id}/poweroff — async hard
-// shutdown. Sets vms.desired_phase к 'stopped' on success.
+// shutdown. Sets vms.desired_phase to 'stopped' on success.
 func (h *Handler) Poweroff(w http.ResponseWriter, r *http.Request) {
 	h.runAsyncLifecycle(w, r, asyncOpPoweroff)
 }
 
 // Reboot implements POST /v1/vms/{id}/reboot — async stop+start
-// cycle (Area 4-III lock — distinct от Reset; the agent's QEMU PID
+// cycle (Area 4-III lock — distinct from Reset; the agent's QEMU PID
 // changes). desired_phase stays 'running'.
 func (h *Handler) Reboot(w http.ResponseWriter, r *http.Request) {
 	h.runAsyncLifecycle(w, r, asyncOpReboot)
@@ -117,7 +117,7 @@ func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op a
 	})
 }
 
-// runAsyncLifecycleEnqueue resolves the owning node и atomically
+// runAsyncLifecycleEnqueue resolves the owning node and atomically
 // inserts the tasks row + river job + agent task id pointer inside
 // one transaction. Returns the freshly-minted task id on success.
 // Shared by all four async lifecycle ops — the only difference is
@@ -168,8 +168,8 @@ func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm s
 	return taskID, nil
 }
 
-// insertRiverJobForOp dispatches к the matching river args type for
-// op. Cannot be done через а map[op]args because each Args is а
+// insertRiverJobForOp dispatches to the matching river args type for
+// op. Cannot be done via a map[op]args because each Args is a
 // distinct type — river.InsertTx is generic over the args type.
 func (h *Handler) insertRiverJobForOp(
 	ctx context.Context, tx pgx.Tx, op asyncOp, taskID, vmID, nodeID uuid.UUID,
@@ -197,7 +197,7 @@ func (h *Handler) insertRiverJobForOp(
 }
 
 // writeAsyncLifecycleError maps the in-flight error from
-// runAsyncLifecycleEnqueue к the standard envelope. Same шаблон as
+// runAsyncLifecycleEnqueue to the standard envelope. Same template as
 // writeDeleteError: errVMNotVisible → 404 (no leak), errVMNoNode →
 // 409, default → 500. Op label is rendered into the log line for
 // audit correlation.

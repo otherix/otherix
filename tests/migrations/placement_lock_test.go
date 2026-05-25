@@ -16,14 +16,14 @@ import (
 )
 
 // TestPlacementLockSerializesConcurrentTransactions exercises the HA
-// guarantee: `pg_advisory_xact_lock` taken inside а transaction blocks
-// а concurrent acquirer until the holder commits or rolls back. Two
-// goroutines each begin а transaction и call AcquirePlacementLock; the
+// guarantee: `pg_advisory_xact_lock` taken inside a transaction blocks
+// a concurrent acquirer until the holder commits or rolls back. Two
+// goroutines each begin a transaction and call AcquirePlacementLock; the
 // second one's acquire must wait until the first commits.
 //
-// Without the lock — or если а future refactor accidentally calls
+// Without the lock — or if a future refactor accidentally calls
 // AcquirePlacementLock outside an InTxWithTx callback — this test
-// would observe near-zero wait times и fail.
+// would observe near-zero wait times and fail.
 func TestPlacementLockSerializesConcurrentTransactions(t *testing.T) {
 	h := shared
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -43,7 +43,7 @@ func TestPlacementLockSerializesConcurrentTransactions(t *testing.T) {
 			close(aCommitted)
 			return
 		}
-		// Rollback is а no-op after а successful Commit; safe under
+		// Rollback is a no-op after a successful Commit; safe under
 		// every exit path.
 		defer func() { _ = tx.Rollback(ctx) }()
 
@@ -68,8 +68,8 @@ func TestPlacementLockSerializesConcurrentTransactions(t *testing.T) {
 		t.Fatalf("goroutine A failed before holding the lock: %v", aErr)
 	}
 
-	// B begins а transaction while A is still holding the lock и tries
-	// к acquire. The acquire call must block; we measure how long.
+	// B begins a transaction while A is still holding the lock and tries
+	// to acquire. The acquire call must block; we measure how long.
 	bTx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("B begin: %v", err)
@@ -87,8 +87,8 @@ func TestPlacementLockSerializesConcurrentTransactions(t *testing.T) {
 		t.Fatalf("goroutine A failed after holding the lock: %v", aErr)
 	}
 
-	// Lower bound chosen с slack: holdDur=300ms, allow scheduling jitter
-	// и goroutine startup to shave off up to ~half the interval. Without
+	// Lower bound chosen with slack: holdDur=300ms, allow scheduling jitter
+	// and goroutine startup to shave off up to ~half the interval. Without
 	// the lock the wait would be < 5 ms, well below this threshold.
 	if waited < holdDur/2 {
 		t.Errorf("B acquired lock in %v, want at least %v (A held it for %v)",
@@ -96,10 +96,10 @@ func TestPlacementLockSerializesConcurrentTransactions(t *testing.T) {
 	}
 }
 
-// TestPlacementLockReleasesOnRollback confirms that аборт-via-rollback
+// TestPlacementLockReleasesOnRollback confirms that abort-via-rollback
 // releases the lock just like commit does — important because the
 // vm.create transaction returns on the first scheduler / DB error
-// path, which triggers rollback. А leaked lock would stall every
+// path, which triggers rollback. A leaked lock would stall every
 // subsequent placement attempt.
 func TestPlacementLockReleasesOnRollback(t *testing.T) {
 	h := shared
@@ -118,7 +118,7 @@ func TestPlacementLockReleasesOnRollback(t *testing.T) {
 		t.Fatalf("first rollback: %v", err)
 	}
 
-	// А fresh transaction should acquire immediately — no waiter, no
+	// A fresh transaction should acquire immediately — no waiter, no
 	// stuck lock.
 	tx2, err := h.Pool.Begin(ctx)
 	if err != nil {
@@ -137,10 +137,10 @@ func TestPlacementLockReleasesOnRollback(t *testing.T) {
 }
 
 // TestPlacementLockConcurrentAcquires fans out N concurrent acquirers
-// и confirms strict serialization: only one transaction at а time can
-// hold the lock. Each goroutine bumps а counter inside the locked
-// section и sleeps briefly; а correct implementation observes the
-// counter advance one-at-a-time, while а broken (non-serialized) lock
+// and confirms strict serialization: only one transaction at a time can
+// hold the lock. Each goroutine bumps a counter inside the locked
+// section and sleeps briefly; a correct implementation observes the
+// counter advance one-at-a-time, while a broken (non-serialized) lock
 // would let multiple goroutines see the same starting counter value.
 func TestPlacementLockConcurrentAcquires(t *testing.T) {
 	h := shared
@@ -189,9 +189,9 @@ func TestPlacementLockConcurrentAcquires(t *testing.T) {
 	if len(observations) != N {
 		t.Fatalf("expected %d observations, got %d", N, len(observations))
 	}
-	// Each goroutine entered the critical section serialized по advisory
+	// Each goroutine entered the critical section serialized per advisory
 	// lock, so observations[] must be the strictly-increasing sequence
-	// 1..N (in some order based on lock-wait scheduling). А duplicate
+	// 1..N (in some order based on lock-wait scheduling). A duplicate
 	// value would mean two goroutines were inside the critical section
 	// simultaneously.
 	seen := make(map[int]bool, N)

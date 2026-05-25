@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Local flag names для the join-token subcommand group. Output /
-// limit / cursor / arch flags are inherited от common.go.
+// Local flag names for the join-token subcommand group. Output /
+// limit / cursor / arch flags are inherited from common.go.
 const (
 	flagTTL         = "ttl"
 	flagMaxUses     = "max-uses"
@@ -25,19 +25,19 @@ const (
 func newJoinTokenCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "join-token",
-		Short: "Mint, list, и revoke node-agent bootstrap tokens (admin only).",
-		Long: `join-token groups the admin-facing subcommands против the Control
+		Short: "Mint, list, and revoke node-agent bootstrap tokens (admin only).",
+		Long: `join-token groups the admin-facing subcommands against the Control
 Plane's /v1/nodes/join-tokens surface.
 
-Tokens are how а fresh agent process bootstraps its mTLS identity
-без manual cert distribution. Step 1 of the bootstrap landing
+Tokens are how a fresh agent process bootstraps its mTLS identity
+without manual cert distribution. Step 1 of the bootstrap landing
 exposes the management surface (this group); Step 2 lands the
-redemption endpoint the agent calls с the token; Steps 3-4 land
-the agent-side flow и dev-env migration.
+redemption endpoint the agent calls with the token; Steps 3-4 land
+the agent-side flow and dev-env migration.
 
-Output на 'create' is the token bundle — plaintext token + active
+Output on 'create' is the token bundle — plaintext token + active
 cluster CA fingerprint — printed exactly once. Save BOTH NOW;
-server stores only sha256(token) и plaintext cannot be retrieved.`,
+server stores only sha256(token) and plaintext cannot be retrieved.`,
 	}
 	cmd.AddCommand(newJoinTokenCreateCommand())
 	cmd.AddCommand(newJoinTokenListCommand())
@@ -46,7 +46,7 @@ server stores only sha256(token) и plaintext cannot be retrieved.`,
 	return cmd
 }
 
-// humanTTLRemaining renders the time-until-expires_at as а short
+// humanTTLRemaining renders the time-until-expires_at as a short
 // "5m", "2h", "3d" string. Past timestamps surface as "expired".
 func humanTTLRemaining(rfc3339 string) string {
 	if rfc3339 == "" {
@@ -75,7 +75,7 @@ func humanTTLRemaining(rfc3339 string) string {
 	}
 }
 
-// maxUsesLabel returns "∞" when MaxUses is nil (unlimited) или the
+// maxUsesLabel returns "∞" when MaxUses is nil (unlimited) or the
 // numeric value. Mirrors the CLI list table convention (Q20 lock).
 func maxUsesLabel(maxUses *int64) string {
 	if maxUses == nil {
@@ -84,7 +84,7 @@ func maxUsesLabel(maxUses *int64) string {
 	return fmt.Sprintf("%d", *maxUses)
 }
 
-// nodeNameLabel returns "-" when IntendedNodeName is nil либо the
+// nodeNameLabel returns "-" when IntendedNodeName is nil or the
 // printable string. Used by the list table.
 func nodeNameLabel(s *string) string {
 	if s == nil {

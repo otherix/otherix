@@ -13,19 +13,19 @@ import (
 )
 
 // ScanPool reports the current filesystem state of the pool identified
-// by poolName. The task is created in `pending` status и the caller
-// receives 202 + AsyncTaskAccepted immediately; statfs runs в а
-// goroutine и the terminal status (success / failed) surfaces via
+// by poolName. The task is created in `pending` status and the caller
+// receives 202 + AsyncTaskAccepted immediately; statfs runs in a
+// goroutine and the terminal status (success / failed) surfaces via
 // GET /v1/tasks/{task_id}.
 //
 // The goroutine pattern is forced by api/openapi/agent.yaml — the
-// AsyncTaskAccepted.status enum is strictly [pending, running], so а
-// synchronous statfs cannot return its terminal result в the 202
-// body. Goroutine isolation also makes the path extensible к the
+// AsyncTaskAccepted.status enum is strictly [pending, running], so a
+// synchronous statfs cannot return its terminal result in the 202
+// body. Goroutine isolation also makes the path extensible to the
 // longer scans (image-cache enumeration) future iterations will need.
 //
-// Returns (nil, ErrPoolUnknown) when poolName is not в the agent's
-// configured pool registry. The HTTP layer maps that к 404 not_found.
+// Returns (nil, ErrPoolUnknown) when poolName is not in the agent's
+// configured pool registry. The HTTP layer maps that to 404 not_found.
 func (m *Manager) ScanPool(ctx context.Context, poolName string) (*AgentTask, error) {
 	m.poolsMu.RLock()
 	p, ok := m.pools[poolName]
@@ -34,10 +34,10 @@ func (m *Manager) ScanPool(ctx context.Context, poolName string) (*AgentTask, er
 		return nil, ErrPoolUnknown
 	}
 
-	// TaskStore.Create's `vmID` parameter is overloaded к carry the
+	// TaskStore.Create's `vmID` parameter is overloaded to carry the
 	// scan task's correlation id. The pool registry is name-keyed so
-	// the field carries а freshly-minted uuid за per-task correlation
-	// only. See TaskKindStoragePoolScan doc-comment в tasks.go.
+	// the field carries a freshly-minted uuid for per-task correlation
+	// only. See TaskKindStoragePoolScan doc-comment in tasks.go.
 	task := m.tasks.Create(TaskKindStoragePoolScan, uuid.New())
 
 	// #nosec G118 -- async task work intentionally outlives the HTTP
@@ -47,8 +47,8 @@ func (m *Manager) ScanPool(ctx context.Context, poolName string) (*AgentTask, er
 	return task, nil
 }
 
-// runScan executes the filesystem stat against poolRoot и transitions
-// the task к its terminal state. statfs is microseconds on healthy
+// runScan executes the filesystem stat against poolRoot and transitions
+// the task to its terminal state. statfs is microseconds on healthy
 // filesystems; the goroutine isolation exists for AsyncTaskAccepted
 // contract conformance (see ScanPool docs), not because the work itself
 // is long.

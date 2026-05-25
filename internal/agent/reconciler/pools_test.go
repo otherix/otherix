@@ -98,7 +98,7 @@ func TestNewPools_RejectsNilManager(t *testing.T) {
 	}
 }
 
-// TestNewPools_DefaultsTick confirms а zero tick falls back to the
+// TestNewPools_DefaultsTick confirms a zero tick falls back to the
 // documented default.
 func TestNewPools_DefaultsTick(t *testing.T) {
 	mgr := newFakeManager()
@@ -111,9 +111,9 @@ func TestNewPools_DefaultsTick(t *testing.T) {
 	}
 }
 
-// TestReconcile_AddsNewPool confirms one cycle: declared_pools with а
+// TestReconcile_AddsNewPool confirms one cycle: declared_pools with a
 // pool not in the observed set drives AddPool with the right (name,
-// root) и records а `ready` outcome.
+// root) and records a `ready` outcome.
 func TestReconcile_AddsNewPool(t *testing.T) {
 	mgr := newFakeManager()
 	rec, _ := NewPools(mgr, discardLogger(), DefaultTickInterval)
@@ -137,7 +137,7 @@ func TestReconcile_AddsNewPool(t *testing.T) {
 	}
 }
 
-// TestReconcile_RemovesUndeclaredPool confirms that а pool the agent
+// TestReconcile_RemovesUndeclaredPool confirms that a pool the agent
 // observes but the CP no longer declares is unregistered. Filesystem
 // state is left intact (assertable only indirectly through ListPools
 // dropping the entry).
@@ -146,7 +146,7 @@ func TestReconcile_RemovesUndeclaredPool(t *testing.T) {
 	_ = mgr.AddPool("removed", "/opt/otherix/pools/removed")
 	rec, _ := NewPools(mgr, discardLogger(), DefaultTickInterval)
 
-	// Empty declared_pools — CP wants this node к hold zero pools.
+	// Empty declared_pools — CP wants this node to hold zero pools.
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{})
 	rec.reconcile(context.Background())
 
@@ -159,8 +159,8 @@ func TestReconcile_RemovesUndeclaredPool(t *testing.T) {
 }
 
 // TestReconcile_FailedAddRecordedAsFailed confirms an AddPool failure
-// (e.g. mkdir permission) is captured как а `failed` PoolReport with
-// the error message в the report's ReconciliationError field.
+// (e.g. mkdir permission) is captured as a `failed` PoolReport with
+// the error message in the report's ReconciliationError field.
 func TestReconcile_FailedAddRecordedAsFailed(t *testing.T) {
 	mgr := newFakeManager()
 	mgr.addError = errors.New("mkdir: permission denied")
@@ -186,8 +186,8 @@ func TestReconcile_FailedAddRecordedAsFailed(t *testing.T) {
 	}
 }
 
-// TestReconcile_RecoversFromFailure confirms а previously-failed pool
-// flips к `ready` once the underlying error clears на the next pass.
+// TestReconcile_RecoversFromFailure confirms a previously-failed pool
+// flips to `ready` once the underlying error clears on the next pass.
 func TestReconcile_RecoversFromFailure(t *testing.T) {
 	mgr := newFakeManager()
 	mgr.addError = errors.New("transient")
@@ -215,8 +215,8 @@ func TestReconcile_RecoversFromFailure(t *testing.T) {
 	}
 }
 
-// TestRun_HandlesTriggerAndTick confirms the run loop reconciles на
-// trigger AND на ticker, и exits cleanly on ctx cancellation.
+// TestRun_HandlesTriggerAndTick confirms the run loop reconciles on
+// trigger AND on ticker, and exits cleanly on ctx cancellation.
 func TestRun_HandlesTriggerAndTick(t *testing.T) {
 	mgr := newFakeManager()
 	rec, _ := NewPools(mgr, discardLogger(), 20*time.Millisecond)
@@ -224,7 +224,7 @@ func TestRun_HandlesTriggerAndTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var reconcileCount atomic.Int64
 
-	// Wrap the reconcile method via а tiny ticker observer: each
+	// Wrap the reconcile method via a tiny ticker observer: each
 	// reconcile pass calls AddPool only when desired is non-empty, so
 	// counting AddPool calls per declared cycle approximates pass count.
 	done := make(chan struct{})
@@ -254,7 +254,7 @@ func TestRun_HandlesTriggerAndTick(t *testing.T) {
 		}
 	}
 
-	// Wait for а second AddPool call from the periodic tick (idempotent
+	// Wait for a second AddPool call from the periodic tick (idempotent
 	// AddPool keeps getting called every pass).
 	deadline = time.After(2 * time.Second)
 	for {

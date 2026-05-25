@@ -20,7 +20,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// vmConsoleResponse mirrors VMConsoleResponse в the CP OpenAPI spec.
+// vmConsoleResponse mirrors VMConsoleResponse in the CP OpenAPI spec.
 // Locally declared so the integration package doesn't import the CLI
 // cpclient view (keeps test/code coupling thin).
 type vmConsoleResponse struct {
@@ -30,8 +30,8 @@ type vmConsoleResponse struct {
 	ExpiresAt    string `json:"expires_at"`
 }
 
-// postConsoleRequest issues `POST /v1/vms/{name}/console` с the
-// admin token и returns raw status / body. Helper mirrors the shape
+// postConsoleRequest issues `POST /v1/vms/{name}/console` with the
+// admin token and returns raw status / body. Helper mirrors the shape
 // of postVMLifecycleRequest.
 func (v *verticalSlice) postConsoleRequest(t *testing.T, ctx context.Context, vmID uuid.UUID, protocol, token string) (int, []byte) {
 	t.Helper()
@@ -61,10 +61,10 @@ func (v *verticalSlice) postConsoleRequest(t *testing.T, ctx context.Context, vm
 }
 
 // TestVMConsole_HappyPath_ProxyMode drives the full proxy-mode flow
-// end-to-end: create VM, transition к running, issue console token,
-// open WebSocket via the CP relay, exchange а frame с the mock-agent,
+// end-to-end: create VM, transition to running, issue console token,
+// open WebSocket via the CP relay, exchange a frame with the mock-agent,
 // verify echo. Locks the proxy mode plumbing including the CP→agent
-// WebSocket dial и bidirectional binary pump.
+// WebSocket dial and bidirectional binary pump.
 func TestVMConsole_HappyPath_ProxyMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -109,7 +109,7 @@ func TestVMConsole_HappyPath_ProxyMode(t *testing.T) {
 		t.Errorf("Protocol = %q, want serial", resp.Protocol)
 	}
 	// Proxy mode → URL host should be the CP, not the mock-agent.
-	// httptest CP listens on plain HTTP, так что handler emits ws://
+	// httptest CP listens on plain HTTP, so that handler emits ws://
 	// (scheme tracks the incoming request — r.TLS=nil here).
 	if !strings.HasPrefix(resp.WebsocketURL, "ws://") {
 		t.Errorf("WebsocketURL %q lacks ws:// prefix (proxy mode tracks request scheme)", resp.WebsocketURL)
@@ -141,10 +141,10 @@ func TestVMConsole_HappyPath_ProxyMode(t *testing.T) {
 		t.Errorf("banner message type = %v, want MessageBinary", msgType)
 	}
 	if !strings.Contains(string(data), "MOCK_AGENT_SERIAL_READY") {
-		t.Errorf("banner = %q, want к contain MOCK_AGENT_SERIAL_READY", string(data))
+		t.Errorf("banner = %q, want to contain MOCK_AGENT_SERIAL_READY", string(data))
 	}
 
-	// Send а frame; mock-agent uppercases-and-echoes.
+	// Send a frame; mock-agent uppercases-and-echoes.
 	if err := wsConn.Write(readCtx, websocket.MessageBinary, []byte("hello")); err != nil {
 		t.Fatalf("write echo input: %v", err)
 	}
@@ -162,8 +162,8 @@ func TestVMConsole_HappyPath_ProxyMode(t *testing.T) {
 	_ = wsConn.Close(websocket.StatusNormalClosure, "")
 }
 
-// TestVMConsole_VMNotRunning_409 locks the gate что the CP rejects
-// console requests на VMs not в phase=running. The test stops the VM
+// TestVMConsole_VMNotRunning_409 locks the gate that the CP rejects
+// console requests on VMs not in phase=running. The test stops the VM
 // (transitions vm_runtime → stopped) and then expects 409.
 func TestVMConsole_VMNotRunning_409(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -184,7 +184,7 @@ func TestVMConsole_VMNotRunning_409(t *testing.T) {
 	createRow, _ := v.store.Queries().GetTask(ctx, createTaskID)
 	vmID := extractVMIDFromTask(t, createRow)
 
-	// Flip vm_runtime.phase к 'stopped'. The CP handler reads from
+	// Flip vm_runtime.phase to 'stopped'. The CP handler reads from
 	// store directly, so writing the row is enough — no agent hop.
 	if _, err := v.store.Pool().Exec(ctx, `UPDATE vm_runtime SET phase = 'stopped' WHERE vm_id = $1`, vmID); err != nil {
 		t.Fatalf("update vm_runtime phase: %v", err)
@@ -200,8 +200,8 @@ func TestVMConsole_VMNotRunning_409(t *testing.T) {
 }
 
 // TestVMConsole_ConsoleInUse_409 locks the per-VM single-session
-// guard. Opens one WebSocket session, then attempts to open а second
-// before closing the first; second attempt должно surface 409
+// guard. Opens one WebSocket session, then attempts to open a second
+// before closing the first; second attempt must surface 409
 // console_in_use. The CP proxy translates the agent's 409 verbatim.
 func TestVMConsole_ConsoleInUse_409(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -247,8 +247,8 @@ func TestVMConsole_ConsoleInUse_409(t *testing.T) {
 		t.Fatalf("drain banner: %v", err)
 	}
 
-	// Second console: token issuance succeeds (the lock is а
-	// connection-level guard, not а token guard), but the dial
+	// Second console: token issuance succeeds (the lock is a
+	// connection-level guard, not a token guard), but the dial
 	// itself returns 409 console_in_use.
 	status2, body2 := v.postConsoleRequest(t, ctx, vmID, "serial", "")
 	if status2 != http.StatusOK {
@@ -264,7 +264,7 @@ func TestVMConsole_ConsoleInUse_409(t *testing.T) {
 		HTTPClient: v.cpServer.Client(),
 	})
 	if err == nil {
-		t.Fatal("second dial succeeded, want failure due к console_in_use")
+		t.Fatal("second dial succeeded, want failure due to console_in_use")
 	}
 	if dialResp == nil || dialResp.StatusCode != http.StatusConflict {
 		t.Errorf("second dial response status = %v, want 409 (err=%v)", dialResp, err)
@@ -272,8 +272,8 @@ func TestVMConsole_ConsoleInUse_409(t *testing.T) {
 }
 
 // TestVMConsole_InvalidToken_401 locks the agent's token-validation
-// path. Issues а token но dials с а fabricated value; CP proxy
-// receives 401 от agent и echoes к client.
+// path. Issues a token but dials with a fabricated value; CP proxy
+// receives 401 from agent and echoes to client.
 func TestVMConsole_InvalidToken_401(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -293,7 +293,7 @@ func TestVMConsole_InvalidToken_401(t *testing.T) {
 	createRow, _ := v.store.Queries().GetTask(ctx, createTaskID)
 	vmID := extractVMIDFromTask(t, createRow)
 
-	// Get а valid console URL, then poison the token query parameter.
+	// Get a valid console URL, then poison the token query parameter.
 	status, body := v.postConsoleRequest(t, ctx, vmID, "serial", "")
 	if status != http.StatusOK {
 		t.Fatalf("console POST = %d, body = %s", status, body)
@@ -302,7 +302,7 @@ func TestVMConsole_InvalidToken_401(t *testing.T) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode console response: %v", err)
 	}
-	poisoned := strings.Replace(resp.WebsocketURL, resp.Token, "not-а-real-token", 1)
+	poisoned := strings.Replace(resp.WebsocketURL, resp.Token, "not-a-real-token", 1)
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dialCancel()
@@ -310,7 +310,7 @@ func TestVMConsole_InvalidToken_401(t *testing.T) {
 		HTTPClient: v.cpServer.Client(),
 	})
 	if err == nil {
-		t.Fatal("dial с poisoned token succeeded, want failure")
+		t.Fatal("dial with poisoned token succeeded, want failure")
 	}
 	if dialResp == nil || dialResp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("dial response status = %v, want 401 (err=%v)", dialResp, err)
@@ -319,24 +319,24 @@ func TestVMConsole_InvalidToken_401(t *testing.T) {
 
 // TestVMConsole_LongSession_NoTimeoutDrop locks the timeout-fix
 // landing (closes the ~30s session-drop bug discovered post-Iteration
-// Z + scheme detection): а WebSocket console session must survive
+// Z + scheme detection): a WebSocket console session must survive
 // past the configured ServerWriteTimeout/ReadTimeout (30s default)
 // without dropping. Pre-fix the session terminated at ~30s because:
 //  1. middleware.Timeout(30s) wrapped r.Context() — pump goroutines
-//     inherited the deadline и returned ctx.Err() at 30s;
-//  2. http.Server.WriteTimeout=30s set а deadline on the underlying
+//     inherited the deadline and returned ctx.Err() at 30s;
+//  2. http.Server.WriteTimeout=30s set a deadline on the underlying
 //     net.Conn via SetWriteDeadline at request start — the deadline
 //     persisted on the hijacked WebSocket connection.
 //
 // The fix lifts console-stream out of the Timeout middleware Group
-// и clears hijacked deadlines via http.NewResponseController. This
-// test exercises both layers — а pump-context cancel WOULD reproduce
-// regression #1; а TCP-deadline fire WOULD reproduce regression #2.
+// and clears hijacked deadlines via http.NewResponseController. This
+// test exercises both layers — a pump-context cancel WOULD reproduce
+// regression #1; a TCP-deadline fire WOULD reproduce regression #2.
 //
-// 35-second wall-clock test (past the 30s boundary, short enough к
+// 35-second wall-clock test (past the 30s boundary, short enough to
 // keep integration-suite duration manageable). Five iterations of
 // 7s sleep + write+read verification — six verification points around
-// и past the boundary.
+// and past the boundary.
 func TestVMConsole_LongSession_NoTimeoutDrop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -383,10 +383,10 @@ func TestVMConsole_LongSession_NoTimeoutDrop(t *testing.T) {
 		t.Fatalf("read banner: %v", berr)
 	}
 
-	// Walk the session past the 30s middleware.Timeout boundary с а
+	// Walk the session past the 30s middleware.Timeout boundary with a
 	// fresh write+read cycle at each step. Pre-fix any iteration on or
-	// after the boundary would have surfaced ctx.DeadlineExceeded на
-	// the next Read OR а StatusGoingAway close frame от the agent's
+	// after the boundary would have surfaced ctx.DeadlineExceeded on
+	// the next Read OR a StatusGoingAway close frame from the agent's
 	// pump unwinding.
 	const stepCount = 5
 	const stepInterval = 7 * time.Second

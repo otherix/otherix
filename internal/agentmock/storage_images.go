@@ -67,15 +67,15 @@ func (m *Mock) StorageImagesImport(
 	// `expected_checksum_sha256` is *string + omitempty after the
 	// agent.yaml relaxation. Two trust modes:
 	//
-	//   - Verify mode: pointer non-nil и value is а 64-char lowercase
-	//     hex. The mock keys the pre-existence shortcut и the FIFO
-	//     queue lookup on this value, и echoes it back as the result's
-	//     `checksum_sha256` so the wire shape matches а real agent's
+	//   - Verify mode: pointer non-nil and value is a 64-char lowercase
+	//     hex. The mock keys the pre-existence shortcut and the FIFO
+	//     queue lookup on this value, and echoes it back as the result's
+	//     `checksum_sha256` so the wire shape matches a real agent's
 	//     verify-mode terminal projection.
-	//   - Compute mode: pointer nil или empty. No pre-existence
+	//   - Compute mode: pointer nil or empty. No pre-existence
 	//     shortcut (the agent would not know the filename). The mock
 	//     consumes the empty-checksum FIFO queue slot, then surfaces
-	//     either the queued ComputedChecksumSHA256 (when set) or а
+	//     either the queued ComputedChecksumSHA256 (when set) or a
 	//     deterministic synthetic checksum from sha256(pool || source).
 	expectedChecksum := ""
 	if body.ExpectedChecksumSha256 != nil {
@@ -102,11 +102,11 @@ func (m *Mock) StorageImagesImport(
 		outcome = m.state.takeImageImportResultLocked(poolName, "")
 	}
 
-	// Resolve the checksum the mock surfaces в task.result.
+	// Resolve the checksum the mock surfaces in task.result.
 	// Verify mode echoes the request's expected value; compute mode
-	// uses the queued ComputedChecksumSHA256 OR а deterministic
+	// uses the queued ComputedChecksumSHA256 OR a deterministic
 	// fallback so tests that don't care about the value still get
-	// а valid 64-char lowercase hex.
+	// a valid 64-char lowercase hex.
 	importChecksum := expectedChecksum
 	if !verifyMode {
 		importChecksum = outcome.ComputedChecksumSHA256
@@ -137,10 +137,10 @@ func (m *Mock) StorageImagesImport(
 	})
 }
 
-// computeFallbackChecksum produces а deterministic stand-in sha256 hex
-// for compute-mode requests that don't carry а queued
-// ComputedChecksumSHA256. Derives the digest from the pool uuid и the
-// request's source identifier (URL or path) so repeated calls в the
+// computeFallbackChecksum produces a deterministic stand-in sha256 hex
+// for compute-mode requests that don't carry a queued
+// ComputedChecksumSHA256. Derives the digest from the pool uuid and the
+// request's source identifier (URL or path) so repeated calls in the
 // same test scenario land at the same `templates/{sha}.qcow2` path,
 // preserving the storage-layout invariant the real agent enforces.
 func computeFallbackChecksum(poolID uuid.UUID, body agentapi.ImageImportRequest) string {

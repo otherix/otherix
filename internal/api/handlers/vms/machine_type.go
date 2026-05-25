@@ -13,7 +13,7 @@ import "github.com/otherix/otherix/internal/store"
 //   - amd64 → q35  (modern Intel chipset, KVM-friendly defaults)
 //   - arm64 → virt (the canonical ARM virtual machine type)
 //
-// Unknown architectures fall back к "q35" rather than failing —
+// Unknown architectures fall back to "q35" rather than failing —
 // schema-level NOT NULL leaves no zero-value option, and the agent
 // will surface an arch / machine mismatch on launch with an explicit
 // `qemu_spawn_failed` envelope. A future iteration adds a

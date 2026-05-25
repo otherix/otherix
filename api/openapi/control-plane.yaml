@@ -73,10 +73,10 @@ tags:
       default-network) at the same path.
   - name: ca
     description: |
-      Cluster Certificate Authority introspection. Today serves а
+      Cluster Certificate Authority introspection. Today serves a
       single anonymous endpoint that returns the active CA cert PEM
       plus its SHA-256 fingerprint, used by agent bootstrap to
-      validate the CP server cert before submitting а CSR
+      validate the CP server cert before submitting a CSR
       (kubeadm-style TOFU pattern).
   - name: agents
     description: |
@@ -787,7 +787,7 @@ paths:
         schema: { type: string, maxLength: 253 }
         description: |
           Cluster-unique node name. The agent identifies itself by the
-          name encoded в its cert CN (`node-<name>`); UUIDs are never
+          name encoded in its cert CN (`node-<name>`); UUIDs are never
           used on the heartbeat path. Agent identity is name-keyed.
     post:
       operationId: agents.heartbeat
@@ -872,7 +872,7 @@ paths:
       tags: [join-tokens]
       summary: Create a multi-use join token (admin only).
       description: |
-        Mints а bootstrap token an agent process exchanges for а
+        Mints a bootstrap token an agent process exchanges for a
         per-node certificate during enrolment. Multi-use semantics:
 
         - `max_uses = null` — unlimited within TTL (fleet bootstrap).
@@ -882,11 +882,11 @@ paths:
 
         Response is the "token bundle" — plaintext token plus the
         active cluster CA fingerprint the agent uses to validate
-        the CP server cert before submitting а CSR. Operator copies
-        both к the agent host.
+        the CP server cert before submitting a CSR. Operator copies
+        both to the agent host.
 
         **Idempotency-Key intentionally not honored** — each call
-        mints а fresh token (sharing а cached response would
+        mints a fresh token (sharing a cached response would
         compromise the once-only plaintext invariant).
 
         **Required permission:** `node:manage` (admin).
@@ -915,7 +915,7 @@ paths:
       tags: [join-tokens]
       summary: List join tokens (admin only).
       description: |
-        Cursor-paginated. `consumption_count` is а derived field
+        Cursor-paginated. `consumption_count` is a derived field
         sourced from the audit table. Expired tokens are excluded
         by default — `include_expired=true` to surface them.
 
@@ -983,9 +983,9 @@ paths:
     get:
       operationId: joinTokens.listConsumptions
       tags: [join-tokens]
-      summary: List consumption audit entries for а join token (admin only).
+      summary: List consumption audit entries for a join token (admin only).
       description: |
-        Returns а chronologically-ordered list of agent bootstrap
+        Returns a chronologically-ordered list of agent bootstrap
         events that consumed this token. Empty until Step 2 of the
         join-token bootstrap landing ships the redemption endpoint.
 
@@ -1017,7 +1017,7 @@ paths:
         Anonymous endpoint. The agent submits its CSR plus the
         plaintext join token; the CP validates the token, signs the
         CSR using the cluster CA, creates (or reuses) the node row,
-        и returns the issued cert + the active CA cert. Plaintext
+        and returns the issued cert + the active CA cert. Plaintext
         token is the bearer credential; TLS protects transport (the
         operator pinned the CA fingerprint out of band via the token
         bundle).
@@ -1025,7 +1025,7 @@ paths:
         Atomic transaction:
         1. Acquire row lock on the join_tokens row (SELECT FOR UPDATE).
         2. Enforce max_uses cap against the consumption count.
-        3. Enforce intended_node_name binding если present.
+        3. Enforce intended_node_name binding if present.
         4. Lookup or create the node row.
         5. Reject if existing node has an active (non-revoked) cert.
         6. Sign the CSR using the cluster CA.
@@ -1035,8 +1035,8 @@ paths:
         Any failure rolls back. Cert is never partially issued.
 
         Failure mapping (token-unknown / expired / exhausted collapse
-        к а single 401 envelope — no info leak; slog WARN с а
-        token-hash-prefix distinguishes them для forensics):
+        to a single 401 envelope — no info leak; slog WARN with a
+        token-hash-prefix distinguishes them for forensics):
 
         - 400 validation_failed — request body or CSR malformed.
         - 400 validation_failed — node_name mismatches pre-binding.
@@ -1074,12 +1074,12 @@ paths:
       summary: Get cluster CA cert + fingerprint (anonymous).
       description: |
         Returns the active cluster CA cert PEM plus its SHA-256
-        fingerprint. Used by the agent bootstrap flow (Step 3) к
-        validate the CP server cert before submitting а CSR — the
+        fingerprint. Used by the agent bootstrap flow (Step 3) to
+        validate the CP server cert before submitting a CSR — the
         operator copies the fingerprint alongside the join token at
         enrolment time (TOFU pattern).
 
-        Anonymous — bootstrap-time agents have neither а Bearer JWT
+        Anonymous — bootstrap-time agents have neither a Bearer JWT
         nor an mTLS client cert. The endpoint reveals only the
         public CA material; the CA private key never leaves the
         server.
@@ -1368,10 +1368,10 @@ paths:
                 $ref: "#/components/schemas/StoragePoolGetResponse"
         "400":
           description: |
-            Returned when a bare name resolves к multiple per-node
+            Returned when a bare name resolves to multiple per-node
             instances and the caller addressed a write endpoint
             (Update / Delete / Scan / Image*). GET-by-name short-circuits
-            к the aggregated view and never produces this branch.
+            to the aggregated view and never produces this branch.
           content:
             application/json:
               schema:
@@ -3494,10 +3494,10 @@ paths:
       tags: [cluster]
       summary: Get the cluster default-pool name.
       description: |
-        Returns the cluster default-pool reference held в the
+        Returns the cluster default-pool reference held in the
         `cluster_settings` singleton. The cluster default is used by
         VM-create requests that omit `pool`; the scheduler resolves
-        the name к a per-node pool instance at placement time.
+        the name to a per-node pool instance at placement time.
 
         **Required permission:** `cluster:read` (every role).
       security:
@@ -3523,8 +3523,8 @@ paths:
       tags: [cluster]
       summary: Set the cluster default-pool name (admin only).
       description: |
-        The supplied `name` must resolve к at least one existing
-        per-node pool instance в the cluster; unknown names return
+        The supplied `name` must resolve to at least one existing
+        per-node pool instance in the cluster; unknown names return
         400 `pool_not_found`. The server persists the canonical-case
         spelling of the name so subsequent GET responses are stable.
 
@@ -3550,7 +3550,7 @@ paths:
         "400":
           description: |
             Either the request body is malformed or the supplied
-            `name` does not match any existing pool instance в the
+            `name` does not match any existing pool instance in the
             cluster. The error `code` is `validation_failed` or
             `pool_not_found` respectively.
           content:
@@ -3567,7 +3567,7 @@ paths:
       summary: Clear the cluster default-pool reference (admin only).
       description: |
         Idempotent — clearing an already-null reference returns 204.
-        After clear, VM-create requests без `pool` return 400
+        After clear, VM-create requests without `pool` return 400
         `default_pool_not_set` until a fresh default is configured.
 
         **Required permission:** `cluster:manage` (admin only).
@@ -3985,7 +3985,7 @@ components:
           type: string
           format: uri
           description: |
-            HTTPS URL the Control Plane uses к reach the agent (mTLS).
+            HTTPS URL the Control Plane uses to reach the agent (mTLS).
             The agent advertises this on bootstrap. Does not need to
             equal the address the agent LISTENS on (NAT / port-forward
             scenarios).
@@ -4050,14 +4050,14 @@ components:
           format: int64
           description: |
             Root filesystem total capacity (bytes) reported by the
-            last heartbeat. NULL когда the agent could not read the
+            last heartbeat. NULL when the agent could not read the
             metric.
         system_disk_available_bytes:
           type: [integer, "null"]
           format: int64
           description: |
             Root filesystem available bytes reported by the last
-            heartbeat. Pairs с `system_disk_total_bytes`.
+            heartbeat. Pairs with `system_disk_total_bytes`.
         system_disk_pressure:
           $ref: "#/components/schemas/SystemDiskPressureCondition"
         created_at: { type: string, format: date-time }
@@ -4066,47 +4066,47 @@ components:
     MemoryPressureCondition:
       type: [object, "null"]
       description: |
-        Memory pressure condition state. NULL когда the condition is
+        Memory pressure condition state. NULL when the condition is
         not active. CP-side computed from
-        heartbeat metrics: pressure is set когда reported free memory
+        heartbeat metrics: pressure is set when reported free memory
         falls below the configured
         `placement.pressure.memory.threshold_percent` for
         `consecutive_required` consecutive heartbeats, and cleared
         immediately on the first at-or-above-threshold observation.
-        Pressured nodes are excluded от placement decisions until
+        Pressured nodes are excluded from placement decisions until
         recovery.
       required: [since, consecutive_count]
       properties:
         since:
           type: string
           format: date-time
-          description: Timestamp когда pressure was set.
+          description: Timestamp when pressure was set.
         consecutive_count:
           type: integer
           description: |
             Consecutive below-threshold observations sustained since
-            pressure was set. Diagnostic — operators reading а fresh-
+            pressure was set. Diagnostic — operators reading a fresh-
             transitioning row see this advance until clear.
 
     SystemDiskPressureCondition:
       type: [object, "null"]
       description: |
         Root filesystem (system disk) pressure condition state.
-        NULL когда the condition is not active.
+        NULL when the condition is not active.
         CP-side computed from heartbeat-reported root filesystem
-        metrics: pressure is set когда free bytes fall below
+        metrics: pressure is set when free bytes fall below
         `placement.pressure.system_disk.threshold_percent` of total for
-        `consecutive_required` consecutive heartbeats, и cleared
+        `consecutive_required` consecutive heartbeats, and cleared
         immediately on the first at-or-above-threshold observation.
-        Pressured nodes are excluded от placement decisions until
+        Pressured nodes are excluded from placement decisions until
         recovery. Same wire shape as MemoryPressureCondition — clients
-        can decode both с the same parser.
+        can decode both with the same parser.
       required: [since, consecutive_count]
       properties:
         since:
           type: string
           format: date-time
-          description: Timestamp когда system_disk pressure was set.
+          description: Timestamp when system_disk pressure was set.
         consecutive_count:
           type: integer
           description: |
@@ -4188,7 +4188,7 @@ components:
           format: uri
           maxLength: 2048
           description: |
-            HTTPS URL the Control Plane uses к reach the agent (mTLS).
+            HTTPS URL the Control Plane uses to reach the agent (mTLS).
             May be overridden later by the heartbeat path.
         migration_host:
           type: string
@@ -4331,8 +4331,8 @@ components:
           minimum: 0
           description: |
             Root filesystem total capacity (bytes) reported by the agent
-            via syscall.Statfs("/"). Used CP-side для system_disk
-            pressure detection. NULL когда the agent could not read the
+            via syscall.Statfs("/"). Used CP-side for system_disk
+            pressure detection. NULL when the agent could not read the
             metric (statfs failure) — pressure detection silently
             carries existing state forward on NULL input.
         system_disk_available_bytes:
@@ -4340,7 +4340,7 @@ components:
           format: int64
           minimum: 0
           description: |
-            Root filesystem available bytes. Pairs с
+            Root filesystem available bytes. Pairs with
             system_disk_total_bytes; both nullable together.
 
     HeartbeatVMReport:
@@ -4432,11 +4432,11 @@ components:
             Agent's observed pool inventory after the most recent
             reconciliation pass. Full snapshot: pools that
             the CP previously declared but the agent has dropped (e.g.
-            after a CP-side delete reconciled на the agent) MUST be
+            after a CP-side delete reconciled on the agent) MUST be
             absent from this list. The CP heartbeat handler joins each
-            entry against `storage_pools` by (node_id, lower(name)) и
+            entry against `storage_pools` by (node_id, lower(name)) and
             applies `reconciliation_status` / `reconciliation_error`
-            к the matched row; entries that no longer match a row are
+            to the matched row; entries that no longer match a row are
             silently dropped (eventually consistent, agent reconciles
             on next tick).
           items:
@@ -4445,7 +4445,7 @@ components:
     HeartbeatPoolReport:
       type: object
       description: |
-        One entry в HeartbeatRequest.pools — per-pool reconciliation
+        One entry in HeartbeatRequest.pools — per-pool reconciliation
         outcome reported by the agent. capacity_bytes / available_bytes /
         reported_at are agent-reported telemetry; these fields are
         accepted but NOT yet projected onto
@@ -4497,7 +4497,7 @@ components:
         the per-node pool list so the agent reconciler can replace its
         desired-state cache on every heartbeat — heartbeats are the
         only desired-state channel agents listen on. The same pattern
-        extends к VMs: `declared_vms` carries the per-node VM
+        extends to VMs: `declared_vms` carries the per-node VM
         desired-state set; the agent's VM reconciler diffs the live
         Manager.List() observed set against this on every tick.
       required: [received_at, declared_pools, declared_vms]
@@ -4521,10 +4521,10 @@ components:
           type: array
           description: |
             CP-declared VM desired-state inventory for this node (L3).
-            Filtered к VMs whose `vm_runtime.current_node_id` matches
+            Filtered to VMs whose `vm_runtime.current_node_id` matches
             the agent's node_id. Full snapshot semantics: VMs absent
             from this list are treated as "not on this node, nothing
-            к reconcile" — neither created nor deleted by the
+            to reconcile" — neither created nor deleted by the
             reconciler. Soft-deleted rows are omitted. Order is stable
             (lower(name) asc) for deterministic agent-side diffing.
             Per Area 3 / L3 lock the payload carries name + desired
@@ -4536,13 +4536,13 @@ components:
     HeartbeatDeclaredVM:
       type: object
       description: |
-        One entry в HeartbeatResponse.declared_vms — desired-state
-        record для а single VM the CP wants converged on the agent.
+        One entry in HeartbeatResponse.declared_vms — desired-state
+        record for a single VM the CP wants converged on the agent.
         The reconciler reads `desired_phase` + the live Manager
-        observation и selects а corrective action (start, stop,
+        observation and selects a corrective action (start, stop,
         delete). `generation` is monotonically bumped on every spec
-        change (trigger trg_bump_generation, see 00001_init.sql) и
-        lets the reconciler short-circuit когда observed_generation
+        change (trigger trg_bump_generation, see 00001_init.sql) and
+        lets the reconciler short-circuit when observed_generation
         has already caught up.
       required: [name, desired_phase, generation]
       properties:
@@ -4551,15 +4551,15 @@ components:
           minLength: 1
           maxLength: 253
           description: |
-            VM name as known к the agent (Pre-L1 Path D — all agent-
+            VM name as known to the agent (Pre-L1 Path D — all agent-
             side identity is name-keyed).
         desired_phase:
           type: string
           enum: [running, stopped, deleted]
           description: |
-            Operator intent. Maps directly к `vms.desired_phase`.
-            `deleted` triggers а Manager.DeleteByName from the
-            reconciler если the VM is still observed locally.
+            Operator intent. Maps directly to `vms.desired_phase`.
+            `deleted` triggers a Manager.DeleteByName from the
+            reconciler if the VM is still observed locally.
         generation:
           type: integer
           format: int64
@@ -4573,11 +4573,11 @@ components:
     HeartbeatDeclaredPool:
       type: object
       description: |
-        One entry в HeartbeatResponse.declared_pools — desired-state
-        record for а single pool the CP wants materialised on the
+        One entry in HeartbeatResponse.declared_pools — desired-state
+        record for a single pool the CP wants materialised on the
         agent. Per L11 / L13 the agent autonomously `mkdir -p path`
-        for new pools и unregisters removed ones; the filesystem
-        is left intact на removal (operator responsibility per L12).
+        for new pools and unregisters removed ones; the filesystem
+        is left intact on removal (operator responsibility per L12).
       required: [name, type, path]
       properties:
         name:
@@ -4595,7 +4595,7 @@ components:
           type: object
           additionalProperties: true
           description: |
-            Pool-type-specific configuration, opaque к the agent in
+            Pool-type-specific configuration, opaque to the agent in
             the current iteration. Reserved for future backends
             (nfs, iscsi, …).
 
@@ -4610,7 +4610,7 @@ components:
           type: [string, "null"]
           maxLength: 253
           description: |
-            If set, redemption is restricted to а node registering
+            If set, redemption is restricted to a node registering
             with this exact name. Pre-bound tokens are single-use
             by construction (max_uses must equal 1).
         expires_at:
@@ -4675,7 +4675,7 @@ components:
               description: |
                 Lowercase hex SHA-256 of the active cluster CA cert
                 (DER bytes). Returned alongside the plaintext token
-                so the operator can copy both к the agent host;
+                so the operator can copy both to the agent host;
                 Step 3 agent bootstrap verifies the CP-served CA
                 cert matches this fingerprint before trusting the
                 TLS chain.
@@ -4705,8 +4705,8 @@ components:
           type: [string, "null"]
           format: uuid
           description: |
-            Set к the node row created or matched at redemption
-            time. NULL когда the consuming node was subsequently
+            Set to the node row created or matched at redemption
+            time. NULL when the consuming node was subsequently
             soft-deleted (FK ON DELETE SET NULL preserves the audit
             entry).
         consumed_at:
@@ -4716,7 +4716,7 @@ components:
           type: [string, "null"]
           description: |
             Originating IP address of the bootstrap call (inet).
-            NULL когда the redemption pre-dated source-IP capture.
+            NULL when the redemption pre-dated source-IP capture.
 
     JoinTokenConsumptionList:
       type: object
@@ -4766,24 +4766,24 @@ components:
           type: string
           description: |
             Plaintext join token (`otx_join_<base64url>`) minted via
-            `joinTokens.create`. The server hashes к sha256 и looks
+            `joinTokens.create`. The server hashes to sha256 and looks
             up the join_tokens row. Token-unknown / expired /
-            exhausted all collapse к а 401 envelope (no info leak).
+            exhausted all collapse to a 401 envelope (no info leak).
         csr_pem:
           type: string
           description: |
             PEM-encoded `CERTIFICATE REQUEST`. The server validates:
             signature, public-key whitelist (RSA 2048+, ECDSA P-256
-            или P-384), и rejects CA-creating extensions (BasicConstraints
-            CA:TRUE, KeyUsage certSign / crlSign). The CSR Subject и
-            SAN are ignored — the issued cert's CN и SAN are derived
-            от `node_name`.
+            or P-384), and rejects CA-creating extensions (BasicConstraints
+            CA:TRUE, KeyUsage certSign / crlSign). The CSR Subject and
+            SAN are ignored — the issued cert's CN and SAN are derived
+            from `node_name`.
         node_name:
           type: string
           maxLength: 253
           description: |
-            Identity для the issued cert + the nodes row. Must match
-            the token's `intended_node_name` если the token was minted
+            Identity for the issued cert + the nodes row. Must match
+            the token's `intended_node_name` if the token was minted
             pre-bound.
         architecture:
           type: string
@@ -4791,7 +4791,7 @@ components:
         advertised_endpoint:
           type: string
           maxLength: 2048
-          description: HTTPS URL the CP uses к reach the agent.
+          description: HTTPS URL the CP uses to reach the agent.
         migration_host:
           type: string
           maxLength: 253
@@ -4812,23 +4812,23 @@ components:
           type: string
           format: uuid
           description: |
-            UUID of the node row the cert is bound к. The agent uses
-            this в the heartbeat URL path после bootstrap.
+            UUID of the node row the cert is bound to. The agent uses
+            this in the heartbeat URL path after bootstrap.
         cert_pem:
           type: string
           description: |
             PEM-encoded leaf certificate signed by the cluster CA.
             Returned exactly once — the agent persists locally on
             disk. The CP stores only metadata (serial, fingerprint,
-            subject DN, validity) в `agent_certs`; the cert PEM
-            itself is NOT kept в the database.
+            subject DN, validity) in `agent_certs`; the cert PEM
+            itself is NOT kept in the database.
         ca_cert_pem:
           type: string
           description: |
             PEM-encoded cluster CA certificate, mirroring the body
             returned by `GET /v1/ca`. Included so the agent can
             persist the trust anchor + optionally re-verify the
-            pinned fingerprint в а single response.
+            pinned fingerprint in a single response.
 
     Firmware:
       type: object
@@ -4979,10 +4979,10 @@ components:
             Mirrored onto the pool view so operators reading
             `pool list` can see node-level conditions
             (`unreachable` / `cordoned`) alongside pool-level
-            reconciliation outcomes без а second roundtrip. Null when
-            the owning node row was soft-deleted из под the pool —
-            а transient inconsistency surfaced for diagnosis rather
-            than masked. Composes with `disk_pressure` и
+            reconciliation outcomes without a second roundtrip. Null when
+            the owning node row was soft-deleted from under the pool —
+            a transient inconsistency surfaced for diagnosis rather
+            than masked. Composes with `disk_pressure` and
             `reconciliation_status` into the CLI's STATUS column
             (extended worst-of priority).
         name:
@@ -5007,12 +5007,12 @@ components:
           type: [integer, "null"]
           format: int64
           description: |
-            Pool availability с pending-VM-disk accounting. Subtracts
-            vm_disks committed после the pool's last scan от
+            Pool availability with pending-VM-disk accounting. Subtracts
+            vm_disks committed after the pool's last scan from
             `available_bytes` and floors at zero — disks that the CP
             has pinned but the agent has not yet observed. Null when
             `available_bytes` is null (pool has never been scanned).
-            Surfaced for operator visibility — divergence от
+            Surfaced for operator visibility — divergence from
             `available_bytes` signals pending placement pressure.
         reported_at:
           type: [string, "null"]
@@ -5040,8 +5040,8 @@ components:
             attempt for this pool. `pending` is the initial state
             right after `POST /v1/storage-pools`; the agent
             reports `ready` after successful mkdir + registry
-            registration, или `failed` when path validation, mkdir,
-            или filesystem permission fails. Updated по the heartbeat
+            registration, or `failed` when path validation, mkdir,
+            or filesystem permission fails. Updated per the heartbeat
             handler.
         last_reconciled_at:
           type: [string, "null"]
@@ -5061,22 +5061,22 @@ components:
     DiskPressureCondition:
       type: [object, "null"]
       description: |
-        Pool disk pressure condition state. NULL когда the condition
+        Pool disk pressure condition state. NULL when the condition
         is not active. CP-side computed at
-        scan completion: pressure is set когда reported
+        scan completion: pressure is set when reported
         `available_bytes / capacity_bytes` falls below
         `placement.pressure.disk.threshold_percent` for
         `consecutive_required` consecutive scans (default 1 — single
         observation suffices). Cleared immediately on the first
-        at-or-above-threshold scan. Pressured pools are excluded от
-        placement decisions until recovery; other pools на the same
+        at-or-above-threshold scan. Pressured pools are excluded from
+        placement decisions until recovery; other pools on the same
         node remain eligible.
       required: [since, consecutive_count]
       properties:
         since:
           type: string
           format: date-time
-          description: Timestamp когда pool disk pressure was set.
+          description: Timestamp when pool disk pressure was set.
         consecutive_count:
           type: integer
           description: |
@@ -5120,9 +5120,9 @@ components:
       type: object
       required: [node, name, type, path]
       description: |
-        `node` accepts а node name only — UUID format rejected with
+        `node` accepts a node name only — UUID format rejected with
         400 `validation_failed`. The per-row `is_default` field is
-        gone — promote a pool name к cluster default via
+        gone — promote a pool name to cluster default via
         `PUT /v1/cluster/default-pool` instead.
       properties:
         node:
@@ -5178,7 +5178,7 @@ components:
       required: [name]
       description: |
         Body of `PUT /v1/cluster/default-pool`. The name must resolve
-        к at least one existing storage_pool instance в the cluster.
+        to at least one existing storage_pool instance in the cluster.
       properties:
         name:
           type: string
@@ -5267,8 +5267,8 @@ components:
           type: string
           description: |
             Target storage pool the image is materialised into.
-            Multi-instance carve-out: accepts а UUID literal (specific
-            per-node instance) or а pool name (resolves к the single
+            Multi-instance carve-out: accepts a UUID literal (specific
+            per-node instance) or a pool name (resolves to the single
             instance, returns 400 `pool_name_ambiguous` when multiple
             instances share the name).
 
@@ -5453,10 +5453,10 @@ components:
           pattern: "^[0-9a-f]{64}$"
           description: |
             Lowercase hex sha256 of the source image. Nullable: when
-            null, the agent computed the checksum during а previous
+            null, the agent computed the checksum during a previous
             compute-mode import (and back-propagated it) or the
             template has not yet been materialised in any pool.
-            Always non-null после the first successful materialisation
+            Always non-null after the first successful materialisation
             regardless of which mode was used.
         image_format:
           type: string
@@ -5492,9 +5492,9 @@ components:
             Optional raw `#cloud-config` YAML baked into the template.
             On VM create, the resolution order is `vm.user_data ?:
             template.cloud_init_user_data ?: empty`; the resolved
-            payload feeds the NoCloud `cidata` ISO attached к the
+            payload feeds the NoCloud `cidata` ISO attached to the
             guest. CP-side hostname injection (via gopkg.in/yaml.v3)
-            adds а top-level `hostname: <vm_name>` only когда the
+            adds a top-level `hostname: <vm_name>` only when the
             resolved YAML omits one.
         qemu_guest_agent_expected: { type: boolean }
         metadata:
@@ -5546,17 +5546,17 @@ components:
 
               - **Verify mode** (value provided): agent verifies the
                 computed sha256 against this value during streaming
-                download. Mismatch terminates the import task с
-                `checksum_mismatch`. Use when the operator has а
+                download. Mismatch terminates the import task with
+                `checksum_mismatch`. Use when the operator has a
                 trusted upstream checksum (signed releases, SHA256SUMS
                 files, compliance requirements).
               - **Compute mode** (null/absent/empty): agent computes
                 the checksum during streaming download and returns it
-                в the task result. The worker back-propagates the
+                in the task result. The worker back-propagates the
                 computed value onto the template row so future
                 operations behave as if verify mode had been used.
 
-            Empty string is treated identically к absent. Storage
+            Empty string is treated identically to absent. Storage
             layout invariant preserved: the on-disk filename always
             equals the checksum (computed in compute mode, supplied
             in verify mode).
@@ -5596,7 +5596,7 @@ components:
           type: [string, "null"]
           description: |
             Optional raw `#cloud-config` YAML baked into the template
-            (L3). Used as the fallback source когда а VM is created
+            (L3). Used as the fallback source when a VM is created
             without an own `user_data` override. Hostname injection
             CP-side ensures the guest takes the VM's name unless the
             YAML already pins one.
@@ -5648,7 +5648,7 @@ components:
           type: [string, "null"]
           description: |
             Replace the template's baked `#cloud-config` YAML. Send
-            `null` to clear; omit к leave unchanged (PATCH semantics).
+            `null` to clear; omit to leave unchanged (PATCH semantics).
         qemu_guest_agent_expected: { type: boolean }
         metadata:
           type: object
@@ -6023,8 +6023,8 @@ components:
         `pool_not_on_node`.
 
         Name-only narrowing: `template`, `pool`, and `node` accept
-        names only — UUID literals в any of those fields surface as
-        400 `validation_failed`. The pool field retains а multi-
+        names only — UUID literals in any of those fields surface as
+        400 `validation_failed`. The pool field retains a multi-
         instance carve-out for the storage_image import path
         elsewhere; vm create demands names for all three identifiers.
 
@@ -6032,7 +6032,7 @@ components:
         is `{name, template, pool, node, vcpus, memory_mb}` — the
         wider schema below describes the eventual API contract and
         is acknowledged as drifted from the live handler. Schema
-        sync is а separate iteration.
+        sync is a separate iteration.
       required: [name, architecture, cpu_cores, memory_mib, machine_type]
       properties:
         name:
@@ -6089,19 +6089,19 @@ components:
           description: |
             VM-level cloud-init `#cloud-config` YAML override. When set,
             fully replaces the template's `cloud_init_user_data` (Area 3
-            lock — full-replace, never merge). Mutually exclusive с
+            lock — full-replace, never merge). Mutually exclusive with
             `cloud_init_disabled`; sending both → 400 `validation_failed`.
-            Empty string і null are treated identically by the resolver
-            (both fall through к the template's pre-bake unless
+            Empty string and null are treated identically by the resolver
+            (both fall through to the template's pre-bake unless
             `cloud_init_disabled=true`).
         cloud_init_disabled:
           type: boolean
           default: false
           description: |
             Explicit cloud-init disable. When `true`, the CP-side resolver
-            returns empty user_data к the agent even if the template has
-            а baked `cloud_init_user_data` — the agent skips cidata.iso
-            generation entirely. Mutually exclusive с `user_data`; sending
+            returns empty user_data to the agent even if the template has
+            a baked `cloud_init_user_data` — the agent skips cidata.iso
+            generation entirely. Mutually exclusive with `user_data`; sending
             both → 400 `validation_failed`. Three-state semantic:
             `user_data` set → VM-level override; `user_data` absent +
             `cloud_init_disabled=false` (default) → template fallback;
@@ -6878,8 +6878,8 @@ components:
         409 `idempotency_key_mismatch`.
 
     # Name-only path parameters. Each resource family
-    # (templates / nodes / vms) accepts а case-insensitive name in
-    # the `{id}` path slot и rejects UUID format with 400
+    # (templates / nodes / vms) accepts a case-insensitive name in
+    # the `{id}` path slot and rejects UUID format with 400
     # `validation_failed`. Storage pools keep the polymorphic
     # legacy `{id}` shape per the multi-instance carve-out
     # (per-instance addressing requires UUID disambiguation).

@@ -17,10 +17,10 @@ import (
 	"time"
 )
 
-// validQcow2Bytes returns а synthetic blob whose first 4 bytes match
+// validQcow2Bytes returns a synthetic blob whose first 4 bytes match
 // the qcow2 magic 'QFI\xfb'. The remaining payload is arbitrary —
 // magic-only validation (Q2 scope decision) ignores everything past
-// byte 4. Each byte after the magic adds к the sha256 deterministically,
+// byte 4. Each byte after the magic adds to the sha256 deterministically,
 // so tests can pre-compute the expected hex digest.
 func validQcow2Bytes() []byte {
 	b := make([]byte, 64)
@@ -28,11 +28,11 @@ func validQcow2Bytes() []byte {
 	b[1] = 'F'
 	b[2] = 'I'
 	b[3] = 0xfb
-	// bytes 4..63 stay zero; deterministic для sha256 verification.
+	// bytes 4..63 stay zero; deterministic for sha256 verification.
 	return b
 }
 
-// invalidMagicBytes returns а blob whose first 4 bytes are NOT the
+// invalidMagicBytes returns a blob whose first 4 bytes are NOT the
 // qcow2 magic. Used to drive the qcow2_header_invalid task-error path.
 func invalidMagicBytes() []byte {
 	return []byte{'N', 'O', 'P', 'E', 0, 0, 0, 0}
@@ -44,8 +44,8 @@ func hexSHA256(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// serveBytes spins up an httptest server that responds к GET requests
-// с the supplied payload (HTTP 200 + body). Returns the URL и а
+// serveBytes spins up an httptest server that responds to GET requests
+// with the supplied payload (HTTP 200 + body). Returns the URL and a
 // cleanup func.
 func serveBytes(t *testing.T, body []byte) string {
 	t.Helper()
@@ -59,7 +59,7 @@ func serveBytes(t *testing.T, body []byte) string {
 // serveBytesCounting mirrors serveBytes but accumulates the cumulative
 // bytes served into *served. Used by compute-mode pre-existence tests
 // to prove the download path actually engaged (compute mode must not
-// short-circuit on а pre-staged file because the filename is unknown
+// short-circuit on a pre-staged file because the filename is unknown
 // upfront).
 func serveBytesCounting(t *testing.T, body []byte, served *int64) string {
 	t.Helper()
@@ -71,8 +71,8 @@ func serveBytesCounting(t *testing.T, body []byte, served *int64) string {
 	return srv.URL
 }
 
-// serveStatus spins up an httptest server that responds к every GET
-// с the supplied status (no body).
+// serveStatus spins up an httptest server that responds to every GET
+// with the supplied status (no body).
 func serveStatus(t *testing.T, status int) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -127,9 +127,9 @@ func TestManager_ImportImage_ValidationErrors(t *testing.T) {
 		{
 			// Empty checksum is compute mode, not an error. The
 			// validator must NOT reject - only malformed non-empty
-			// values fail. The test asserts а non-error outcome here;
-			// the surrounding test loop expects а sentinel for every
-			// row, so this case lives separately below in а dedicated
+			// values fail. The test asserts a non-error outcome here;
+			// the surrounding test loop expects a sentinel for every
+			// row, so this case lives separately below in a dedicated
 			// subtest.
 			name: "checksum too short",
 			req:  ImportImageRequest{SourceURL: "http://x.invalid", ExpectedChecksumSHA256: "deadbeef", Format: "qcow2"},
@@ -266,7 +266,7 @@ func TestManager_ImportImage_PreExistence(t *testing.T) {
 		t.Fatalf("seed final path: %v", err)
 	}
 
-	// Server should never be called, but provide а valid URL to keep
+	// Server should never be called, but provide a valid URL to keep
 	// the validation surface honest.
 	url := serveBytes(t, []byte("should not be downloaded"))
 
@@ -292,13 +292,13 @@ func TestManager_ImportImage_PreExistence(t *testing.T) {
 		t.Fatalf("read final path: %v", err)
 	}
 	if string(got) != string(body) {
-		t.Errorf("final content mutated; idempotent pre-existence path должен сохранить existing file")
+		t.Errorf("final content mutated; idempotent pre-existence path must preserve existing file")
 	}
 }
 
 // TestManager_ImportImage_ComputeMode_HappyPath locks in compute
 // mode: the request omits expected_checksum_sha256, the agent
-// downloads, computes the sha in-flight, и atomically renames к
+// downloads, computes the sha in-flight, and atomically renames to
 // templates/{computed}.qcow2. The terminal result carries the
 // computed checksum so the CP-side worker can back-propagate it.
 func TestManager_ImportImage_ComputeMode_HappyPath(t *testing.T) {
@@ -351,7 +351,7 @@ func TestManager_ImportImage_ComputeMode_HappyPath(t *testing.T) {
 }
 
 // TestManager_ImportImage_ComputeMode_NoPreExistenceFastPath confirms
-// compute mode never short-circuits на а pre-existing file. The
+// compute mode never short-circuits on a pre-existing file. The
 // filename is unknown upfront, so the agent always streams; CP-side
 // back-propagation turns the template into verify mode for next time.
 func TestManager_ImportImage_ComputeMode_NoPreExistenceFastPath(t *testing.T) {
@@ -368,7 +368,7 @@ func TestManager_ImportImage_ComputeMode_NoPreExistenceFastPath(t *testing.T) {
 	expectedSha := hexSHA256(body)
 	finalPath := filepath.Join(poolRoot, "templates", expectedSha+".qcow2")
 	// Pre-seed the file. Verify mode would skip the download, compute
-	// mode must NOT — it has no checksum к key the stat against.
+	// mode must NOT — it has no checksum to key the stat against.
 	if err := os.WriteFile(finalPath, body, 0o640); err != nil {
 		t.Fatalf("seed final path: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestManager_ImportImage_ChecksumMismatch(t *testing.T) {
 	}
 
 	body := validQcow2Bytes()
-	// Hand the request а sha that doesn't match the body's actual sha.
+	// Hand the request a sha that doesn't match the body's actual sha.
 	wrongSha := hexSHA256([]byte("different"))
 	url := serveBytes(t, body)
 
@@ -501,10 +501,10 @@ func TestManager_ImportImage_DownloadFailedHTTPStatus(t *testing.T) {
 	if terminal.Error == nil || terminal.Error.Code != "download_failed" {
 		t.Fatalf("error = %+v, want code=download_failed", terminal.Error)
 	}
-	// downloadError preserves the source status в details.status.
+	// downloadError preserves the source status in details.status.
 	if got := terminal.Error.Details["status"]; got != float64(http.StatusNotFound) && got != http.StatusNotFound {
-		// json.Marshal of map[string]any{int} вернёт float64 when later
-		// decoded; здесь we hold the original Details map directly so
+		// json.Marshal of map[string]any{int} returns float64 when later
+		// decoded; here we hold the original Details map directly so
 		// it stays an int — accept either to make the assertion robust.
 		t.Errorf("details.status = %v (%T), want %d", got, got, http.StatusNotFound)
 	}
@@ -645,7 +645,7 @@ func TestManager_ListImages_Populated(t *testing.T) {
 			t.Errorf("img.SizeBytes = %d, want > 0", img.SizeBytes)
 		}
 		if img.LastUsedAt == nil {
-			t.Errorf("img.LastUsedAt = nil, want pointer к file mtime")
+			t.Errorf("img.LastUsedAt = nil, want pointer to file mtime")
 		}
 		if img.SourceURL != nil {
 			t.Errorf("img.SourceURL = %v, want nil (agent does not track post-import)", *img.SourceURL)
@@ -716,7 +716,7 @@ func TestIsHexSHA256Lower(t *testing.T) {
 	}
 }
 
-// minStr is а tiny helper для the table-driven list test.
+// minStr is a tiny helper for the table-driven list test.
 func minStr(a, b string) string {
 	if a < b {
 		return a

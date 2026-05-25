@@ -44,7 +44,7 @@ func TestTemplateDelete_BlockedTextOutput(t *testing.T) {
 
 	stdout, _, err := runTemplateCmd(t, srv.URL, []string{"delete", "ubuntu-jammy"})
 	if err == nil {
-		t.Fatalf("expected error для blocked delete")
+		t.Fatalf("expected error for blocked delete")
 	}
 	if !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("err missing 'blocked': %v", err)
@@ -77,7 +77,7 @@ func TestTemplateDelete_BlockedJSONOutput(t *testing.T) {
 
 	stdout, _, err := runTemplateCmd(t, srv.URL, []string{"delete", "ubuntu-jammy", "--output", "json"})
 	if err == nil {
-		t.Fatalf("expected error для blocked delete")
+		t.Fatalf("expected error for blocked delete")
 	}
 	var obj map[string]any
 	if jsonErr := json.Unmarshal([]byte(stdout), &obj); jsonErr != nil {
@@ -107,7 +107,7 @@ func TestTemplateDelete_NotFound(t *testing.T) {
 
 	_, _, err := runTemplateCmd(t, srv.URL, []string{"delete", "missing"})
 	if err == nil {
-		t.Fatalf("expected error для 404")
+		t.Fatalf("expected error for 404")
 	}
 	if !strings.Contains(err.Error(), "not_found") {
 		t.Errorf("err = %v, want mention of not_found", err)

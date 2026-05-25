@@ -64,7 +64,7 @@ func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
 	return "", fmt.Errorf("--%s: unknown format %q (text, json)", flagOutput, raw)
 }
 
-// stdinIsTerminal reports whether stdin is a TTY — used к gate
+// stdinIsTerminal reports whether stdin is a TTY — used to gate
 // interactive prompts. Pipes / heredocs / CI stdin all return false,
 // in which case missing required confirmations must come from --force.
 func stdinIsTerminal() bool {
@@ -73,7 +73,7 @@ func stdinIsTerminal() bool {
 
 // confirmYN reads y/N from stdin, treating empty / non-y prefix as
 // "no". Returns false when stdin is not a TTY — non-interactive
-// contexts must use --force к pre-confirm. EOF на pipe-close also
+// contexts must use --force to pre-confirm. EOF on pipe-close also
 // reads as "no" (read-error path).
 func confirmYN(cmd *cobra.Command, prompt string) (bool, error) {
 	if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N]: ", prompt); err != nil {

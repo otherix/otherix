@@ -86,7 +86,7 @@ func TestImportImage_HappyPath(t *testing.T) {
 	case "pending", "running":
 		// expected
 	default:
-		t.Errorf("status = %q, want pending или running", accepted.Status)
+		t.Errorf("status = %q, want pending or running", accepted.Status)
 	}
 	drainAgentTask(t, m, taskID, 5*time.Second)
 }
@@ -113,7 +113,7 @@ func TestImportImage_UnknownPool(t *testing.T) {
 }
 
 // TestImportImage_NonUUIDPoolName confirms that any non-empty string
-// в the URL is treated as a pool name. Unknown names — including
+// in the URL is treated as a pool name. Unknown names — including
 // strings that don't parse as UUIDs — return 404 not_found from the
 // manager, not 400 validation_failed.
 func TestImportImage_NonUUIDPoolName(t *testing.T) {
@@ -228,7 +228,7 @@ func TestDeleteImage_HappyPath(t *testing.T) {
 	h := New(m, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	router := mountTestRouter(h)
 
-	// Seed а file at templates/{sha}.qcow2.
+	// Seed a file at templates/{sha}.qcow2.
 	poolRoot := poolRootForTest(t, m, poolID)
 	body := validQcow2()
 	sha := hexSum(body)

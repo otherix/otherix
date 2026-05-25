@@ -29,7 +29,7 @@ import (
 
 // schedulerResourcesFromConfig translates the koanf-bound
 // config.ResourcesConfig into the scheduler-local mirror.
-// internal/scheduler is а leaf package so it does not import config —
+// internal/scheduler is a leaf package so it does not import config —
 // the api binary copies fields at construction time. Field shapes are
 // kept in lock-step by hand; the per-resource Validate calls run at
 // startup so an inconsistent ratio cannot reach this conversion.
@@ -66,13 +66,13 @@ type Server struct {
 // here; callers do not need to wire it up themselves. When
 // cfg.AgentServer.Enabled is true, the agent listener is wired
 // alongside the user listener — material's Cert + ClusterCA build the
-// TLS config (mTLS на the agent listener side, ClientCAs = cluster CA
+// TLS config (mTLS on the agent listener side, ClientCAs = cluster CA
 // trust anchor).
 //
 // material is produced upstream by LoadOrGenerateCPCert. When
 // AgentServer.Enabled is false the material may be zero (Source =
-// "skipped") и no listener is constructed; the validation here only
-// activates когда AgentServer.Enabled = true.
+// "skipped") and no listener is constructed; the validation here only
+// activates when AgentServer.Enabled = true.
 //
 // The river client is required because at least one user-facing route
 // (`tasks.cancel`) needs transactional access to river_job. Tests that
@@ -216,18 +216,18 @@ func (s *Server) Run(ctx context.Context) error {
 // ClientAuth is `tls.VerifyClientCertIfGiven` rather than
 // `RequireAndVerifyClientCert` because the same listener serves both
 // authenticated agent routes (heartbeat — gated by the AgentMTLS
-// middleware which rejects connections без PeerCertificates) и the
+// middleware which rejects connections without PeerCertificates) and the
 // anonymous bootstrap routes (`/v1/ca`, `/v1/nodes/join`).
 // Bootstrap clients have no cert material yet — that's the
 // whole point of the bootstrap protocol — so the listener must accept
 // anonymous TLS connections and let routing + middleware enforce
 // per-endpoint requirements. The Step 4 real-agent smoke surfaced
 // the prior posture (`RequireAndVerifyClientCert`) returning
-// `tls: certificate required` к the bootstrapping agent.
+// `tls: certificate required` to the bootstrapping agent.
 //
 // material is produced upstream by LoadOrGenerateCPCert. Empty
-// material here is а programmer error — caller should have skipped
-// this construction path когда material.Skipped().
+// material here is a programmer error — caller should have skipped
+// this construction path when material.Skipped().
 func buildAgentServerTLSConfig(material TLSMaterial) (*tls.Config, error) {
 	if len(material.Cert.Certificate) == 0 {
 		return nil, errors.New("material.Cert is empty (no leaf bytes)")

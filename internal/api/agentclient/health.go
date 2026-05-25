@@ -31,7 +31,7 @@ type HealthResponse struct {
 // suitable for any future probe-style validation tooling.
 //
 // Returns the parsed envelope on 2xx; *AgentError on non-2xx (callers
-// can branch on errors.As); a wrapped error на TLS / network failure
+// can branch on errors.As); a wrapped error on TLS / network failure
 // or a malformed response body.
 func (c *Client) Health(ctx context.Context, endpoint string) (HealthResponse, error) {
 	var zero HealthResponse

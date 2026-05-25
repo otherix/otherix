@@ -22,8 +22,8 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// TLSMaterial bundles the in-memory artefacts а CP replica needs к
-// build its mTLS posture: the replica's own leaf cert (presented к
+// TLSMaterial bundles the in-memory artefacts a CP replica needs to
+// build its mTLS posture: the replica's own leaf cert (presented to
 // agents on both directions per ExtKeyUsage serverAuth+clientAuth)
 // + the cluster CA trust anchor (validates agent client certs on
 // the inbound listener AND agent server certs on outbound dials).
@@ -31,9 +31,9 @@ import (
 // Source carries the load-path label so callers' structured logs
 // expose which mode produced the material:
 //
-//   - "operator_files" — Mode A, loaded от cp_cert.cert_file/key_file.
-//   - "local_cache"    — Mode B, loaded от /opt/otherix/certs/cp-cert.*.
-//   - "auto_generate"  — Mode C, freshly minted на boot.
+//   - "operator_files" — Mode A, loaded from cp_cert.cert_file/key_file.
+//   - "local_cache"    — Mode B, loaded from /opt/otherix/certs/cp-cert.*.
+//   - "auto_generate"  — Mode C, freshly minted on boot.
 //   - "skipped"        — neither agent_server nor agent_client enabled;
 //     material zero-valued, downstream skips wiring.
 type TLSMaterial struct {
@@ -42,15 +42,15 @@ type TLSMaterial struct {
 	Source    string
 }
 
-// Skipped reports whether the material is а sentinel for а no-
-// consumer boot path. Callers что would normally wire agent
-// listener / client check this к skip those steps cleanly.
+// Skipped reports whether the material is a sentinel for a no-
+// consumer boot path. Callers that would normally wire agent
+// listener / client check this to skip those steps cleanly.
 func (m TLSMaterial) Skipped() bool { return m.Source == "skipped" }
 
 // LoadOrGenerateCPCert orchestrates the three-mode CP server cert
-// lifecycle. Called по cmd/api/main.go after BootstrapClusterCA,
-// before agent client / server construction. Returns а fully-loaded
-// TLSMaterial для downstream passing к agentclient.New + the inbound
+// lifecycle. Called by cmd/api/main.go after BootstrapClusterCA,
+// before agent client / server construction. Returns a fully-loaded
+// TLSMaterial for downstream passing to agentclient.New + the inbound
 // listener's TLS config.
 //
 // Mode dispatch order:
@@ -59,11 +59,11 @@ func (m TLSMaterial) Skipped() bool { return m.Source == "skipped" }
 //     agent_client.enabled → return Source="skipped" zero material.
 //  2. Mode A (operator files) — cp_cert.cert_file + key_file both set;
 //     files must exist (missing-when-configured = fatal).
-//  3. Mode B (local cache) — cp_cert.local_cache.enabled = true и
+//  3. Mode B (local cache) — cp_cert.local_cache.enabled = true and
 //     existing cache satisfies CertCacheValid invariants.
-//  4. Mode C (auto-generate) — fallback default. Если cache also
-//     enabled, the generated cert is persisted к disk after success
-//     (write failure logged WARN — boot succeeds на in-memory cert
+//  4. Mode C (auto-generate) — fallback default. If cache also
+//     enabled, the generated cert is persisted to disk after success
+//     (write failure logged WARN — boot succeeds on in-memory cert
 //     alone).
 func LoadOrGenerateCPCert(ctx context.Context, s *store.Store, cfg config.APIConfig, log *slog.Logger) (TLSMaterial, error) {
 	if !cfg.AgentServer.Enabled && !cfg.AgentClient.Enabled {
@@ -92,9 +92,9 @@ func LoadOrGenerateCPCert(ctx context.Context, s *store.Store, cfg config.APICon
 		return material, nil
 	}
 
-	// Load cluster CA от DB (needed by Mode B chain check и Mode C
+	// Load cluster CA from DB (needed by Mode B chain check and Mode C
 	// signing). Failure here = boot order bug (BootstrapClusterCA
-	// должен have run первый) OR DB connectivity failure — either way
+	// must have run first) OR DB connectivity failure — either way
 	// fatal for the listener / agent client wiring.
 	caCert, caKey, err := loadClusterCAFromDB(ctx, s)
 	if err != nil {
@@ -122,7 +122,7 @@ func LoadOrGenerateCPCert(ctx context.Context, s *store.Store, cfg config.APICon
 		log.InfoContext(ctx, "cp_cert.cache_invalid_regenerating",
 			slog.String("cert_path", cpCfg.LocalCache.CertPath),
 			slog.String("reason", reuseErr.Error()))
-		// Fall through к Mode C.
+		// Fall through to Mode C.
 	}
 
 	// Mode C — auto-generate.
@@ -168,8 +168,8 @@ func LoadOrGenerateCPCert(ctx context.Context, s *store.Store, cfg config.APICon
 
 // loadOperatorFiles implements Mode A. Both paths must exist
 // (configured intent + missing files = fatal, not silent fallback).
-// Cluster CA still loaded от DB so the inbound listener's ClientCAs
-// pool has the correct trust anchor для agent client cert validation.
+// Cluster CA still loaded from DB so the inbound listener's ClientCAs
+// pool has the correct trust anchor for agent client cert validation.
 func loadOperatorFiles(certFile, keyFile string, s *store.Store, ctx context.Context) (TLSMaterial, error) {
 	if _, err := os.Stat(certFile); err != nil {
 		return TLSMaterial{}, fmt.Errorf("cp_cert.cert_file %s: %v (Mode A configured but file missing)", certFile, err)
@@ -183,7 +183,7 @@ func loadOperatorFiles(certFile, keyFile string, s *store.Store, ctx context.Con
 	}
 	caCert, _, err := loadClusterCAFromDB(ctx, s)
 	if err != nil {
-		return TLSMaterial{}, fmt.Errorf("load cluster CA (Mode A still needs CA для ClientCAs pool): %v", err)
+		return TLSMaterial{}, fmt.Errorf("load cluster CA (Mode A still needs CA for ClientCAs pool): %v", err)
 	}
 	return TLSMaterial{Cert: cert, ClusterCA: caCert, Source: "operator_files"}, nil
 }
@@ -191,13 +191,13 @@ func loadOperatorFiles(certFile, keyFile string, s *store.Store, ctx context.Con
 // tryLoadLocalCache implements Mode B. Reads the cached cert + key,
 // validates the cert against (expected SANs, current CA, not-near-
 // expiry). On any failure returns the descriptive error so the
-// orchestrator logs the reason и falls through к Mode C.
+// orchestrator logs the reason and falls through to Mode C.
 func tryLoadLocalCache(certPath, keyPath string, expectedDNS []string, expectedIPs []net.IP, currentCA *x509.Certificate, now time.Time) (TLSMaterial, error) {
-	certBytes, err := os.ReadFile(certPath) //nolint:gosec // operator-configured cache path; this function exists exactly к open it
+	certBytes, err := os.ReadFile(certPath) //nolint:gosec // operator-configured cache path; this function exists exactly to open it
 	if err != nil {
 		return TLSMaterial{}, fmt.Errorf("read cache cert: %v", err)
 	}
-	keyBytes, err := os.ReadFile(keyPath) //nolint:gosec // operator-configured cache path; this function exists exactly к open it
+	keyBytes, err := os.ReadFile(keyPath) //nolint:gosec // operator-configured cache path; this function exists exactly to open it
 	if err != nil {
 		return TLSMaterial{}, fmt.Errorf("read cache key: %v", err)
 	}
@@ -240,8 +240,8 @@ func loadClusterCAFromDB(ctx context.Context, s *store.Store) (*x509.Certificate
 }
 
 // fingerprintHex returns the hex-encoded SHA256 of the leaf cert's
-// DER bytes — operator-facing identifier для structured logs +
-// cross-referencing с openssl s_client output.
+// DER bytes — operator-facing identifier for structured logs +
+// cross-referencing with openssl s_client output.
 func fingerprintHex(cert tls.Certificate) string {
 	if len(cert.Certificate) == 0 {
 		return ""
@@ -250,9 +250,9 @@ func fingerprintHex(cert tls.Certificate) string {
 	return hex.EncodeToString(fp[:])
 }
 
-// ipsToString renders а []net.IP as а space-separated string for
-// structured log fields. Less verbose than slog.Any on а large slice,
-// и keeps the line operator-readable.
+// ipsToString renders a []net.IP as a space-separated string for
+// structured log fields. Less verbose than slog.Any on a large slice,
+// and keeps the line operator-readable.
 func ipsToString(ips []net.IP) string {
 	if len(ips) == 0 {
 		return ""

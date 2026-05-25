@@ -4,7 +4,7 @@
 // Package cluster hosts the `otherix cluster` cobra subcommand group.
 // The cluster_settings singleton is surfaced via three endpoints —
 // GET / PUT / DELETE /v1/cluster/default-pool. This group exposes
-// those endpoints через three subcommands:
+// those endpoints via three subcommands:
 //
 //   - get-default-pool
 //   - set-default-pool <name>
@@ -24,10 +24,10 @@ func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cluster",
 		Short: "Manage cluster-wide settings (CP /v1/cluster surface)",
-		Long: `cluster groups the operator-facing commands против the Control
+		Long: `cluster groups the operator-facing commands against the Control
 Plane's cluster-wide settings surface. The first knob exposed is the
-default-pool reference: а cluster-wide pool name VM create falls
-back к когда the request omits --pool.`,
+default-pool reference: a cluster-wide pool name VM create falls
+back to when the request omits --pool.`,
 	}
 	cmd.AddCommand(newGetDefaultPoolCommand())
 	cmd.AddCommand(newSetDefaultPoolCommand())

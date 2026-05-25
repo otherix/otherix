@@ -28,19 +28,19 @@ import (
 //
 // Panics from the spawned goroutine cannot be caught by the upstream
 // Recoverer (different goroutine), so a defer-recover here writes the
-// standard 500 envelope и logs the panic at ERROR — parallel к the
-// Recoverer's behaviour. Two divergences от Recoverer, both forced by
+// standard 500 envelope and logs the panic at ERROR — parallel to the
+// Recoverer's behaviour. Two divergences from Recoverer, both forced by
 // the goroutine boundary:
 //
 //   - http.ErrAbortHandler is swallowed silently here (no log, no
-//     response). Re-panicking from а goroutine crashes the entire
+//     response). Re-panicking from a goroutine crashes the entire
 //     process, so the Recoverer's re-panic contract cannot be honoured
-//     verbatim. The outer select sees done close и returns с whatever
+//     verbatim. The outer select sees done close and returns with whatever
 //     zero-value the ResponseWriter carries — which matches the spirit
 //     of ErrAbortHandler ("abort silently").
-//   - А late panic (timeout already fired) hits the same "headers
+//   - A late panic (timeout already fired) hits the same "headers
 //     already written" path documented for the Recoverer; the WriteError
-//     call below is silently dropped by net/http, и the log line
+//     call below is silently dropped by net/http, and the log line
 //     remains the source of truth.
 func Timeout(d time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -57,10 +57,10 @@ func Timeout(d time.Duration) func(http.Handler) http.Handler {
 						return
 					}
 					if rec == http.ErrAbortHandler {
-						// ErrAbortHandler asks для а silent abort. The
-						// goroutine boundary prevents us от re-panicking
-						// (would crash the process), so swallow без а
-						// log line или а response — same wire effect as
+						// ErrAbortHandler asks for a silent abort. The
+						// goroutine boundary prevents us from re-panicking
+						// (would crash the process), so swallow without a
+						// log line or a response — same wire effect as
 						// the sentinel's net/http-server-side intent.
 						return
 					}

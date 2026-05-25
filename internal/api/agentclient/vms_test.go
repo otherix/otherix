@@ -17,9 +17,9 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 )
 
-// newClientAutoDir creates а fresh tempdir, drops cert material in
-// it via writeMaterial, и constructs an agentclient. Used по тестов
-// что don't need access к the underlying dir.
+// newClientAutoDir creates a fresh tempdir, drops cert material in
+// it via writeMaterial, and constructs an agentclient. Used by tests
+// that don't need access to the underlying dir.
 func newClientAutoDir(t *testing.T) *agentclient.Client {
 	t.Helper()
 	dir := writeMaterial(t)
@@ -98,7 +98,7 @@ func TestPostVMCreate_AgentError5xx(t *testing.T) {
 		t.Errorf("Status = %d, want 503", ae.Status)
 	}
 	if !ae.IsRetryable() {
-		t.Errorf("IsRetryable() = false, want true для 5xx")
+		t.Errorf("IsRetryable() = false, want true for 5xx")
 	}
 }
 

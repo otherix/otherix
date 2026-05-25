@@ -3,23 +3,23 @@
 
 // Package nodejoin hosts the anonymous /v1/nodes/join endpoint that
 // closes the redemption pathway of the join-token bootstrap
-// landing. An agent process submits its CSR + а plaintext
+// landing. An agent process submits its CSR + a plaintext
 // join token; the CP validates the token, signs the CSR using the
-// cluster CA, creates / reuses the node row, и returns the issued
-// cert + the active CA cert in а single response ("token bundle"
+// cluster CA, creates / reuses the node row, and returns the issued
+// cert + the active CA cert in a single response ("token bundle"
 // pattern).
 //
 // The endpoint is mounted outside any auth middleware — bootstrap-
-// time agents have neither а Bearer JWT nor an mTLS client cert
-// (the chicken-and-egg this whole landing exists к solve). Token
-// plaintext в the body is the bearer credential; TLS protects
+// time agents have neither a Bearer JWT nor an mTLS client cert
+// (the chicken-and-egg this whole landing exists to solve). Token
+// plaintext in the body is the bearer credential; TLS protects
 // transport (operator pinned the CA fingerprint out of band via the
 // token bundle).
 //
 // Race safety is achieved via SELECT FOR UPDATE on the join_tokens
 // row (see internal/store/queries/join_tokens.sql:GetJoinTokenByHashForUpdate)
 // rather than SERIALIZABLE isolation — concurrent redemptions queue
-// at the lock и observe each other's consumption rows transactionally.
+// at the lock and observe each other's consumption rows transactionally.
 package nodejoin
 
 import (
@@ -36,10 +36,10 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Handler bundles dependencies для the /v1/nodes/join routes.
+// Handler bundles dependencies for the /v1/nodes/join routes.
 // Per-request CA load (mirrors /v1/ca handler pattern) means the
 // handler holds nothing CA-specific — the store is consulted on each
-// request к pick up the active CA row.
+// request to pick up the active CA row.
 type Handler struct {
 	store *store.Store
 	log   *slog.Logger
@@ -52,11 +52,11 @@ func New(s *store.Store, log *slog.Logger) *Handler {
 
 // Join implements POST /v1/nodes/join (anonymous). Validates the
 // request body + CSR, orchestrates the atomic redemption transaction,
-// и returns the token bundle (signed cert + CA) on success.
+// and returns the token bundle (signed cert + CA) on success.
 //
-// All redemption failures emit а WARN slog с а token-hash-prefix
+// All redemption failures emit a WARN slog with a token-hash-prefix
 // (first 8 chars of hex sha256) tag so forensics can correlate
-// failures без leaking the plaintext token к logs.
+// failures without leaking the plaintext token to logs.
 func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 	var req joinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -101,10 +101,10 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// writeRedeemError maps а redemption sentinel к its HTTP envelope
-// и logs the failure с а tokenized hash prefix. Token-unknown /
-// expired / exhausted all collapse к identical 401 envelopes (no
-// info leak) — the slog WARN field distinguishes them для forensics.
+// writeRedeemError maps a redemption sentinel to its HTTP envelope
+// and logs the failure with a tokenized hash prefix. Token-unknown /
+// expired / exhausted all collapse to identical 401 envelopes (no
+// info leak) — the slog WARN field distinguishes them for forensics.
 func (h *Handler) writeRedeemError(w http.ResponseWriter, r *http.Request, tokenPlain string, err error) {
 	prefix := tokenHashPrefix(tokenPlain)
 
@@ -147,9 +147,9 @@ func (h *Handler) writeRedeemError(w http.ResponseWriter, r *http.Request, token
 }
 
 // tokenHashPrefix returns the first 8 hex chars of sha256(plaintext).
-// Used as а forensics tag в slog records — sufficient к correlate а
-// failure stream без revealing the plaintext (or even the full hash,
-// which could enable а fingerprint-style replay against а malicious
+// Used as a forensics tag in slog records — sufficient to correlate a
+// failure stream without revealing the plaintext (or even the full hash,
+// which could enable a fingerprint-style replay against a malicious
 // logging sink).
 func tokenHashPrefix(plaintext string) string {
 	if plaintext == "" {
@@ -165,16 +165,16 @@ func tokenHashPrefix(plaintext string) string {
 
 // extractSourceIP parses r.RemoteAddr (host:port format) into an
 // optional *netip.Addr suitable for the source_ip column. Proxy
-// headers (X-Forwarded-For) are NOT consulted в this slice —
+// headers (X-Forwarded-For) are NOT consulted in this slice —
 // the contract is intentionally simple, deferring trusted-proxy-chain
-// handling к а future iteration.
+// handling to a future iteration.
 //
-// Returns nil когда the address cannot be parsed (test harnesses,
+// Returns nil when the address cannot be parsed (test harnesses,
 // unusual transports). The nullable column accepts NULL.
 func extractSourceIP(r *http.Request) *netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		// Sometimes RemoteAddr is а bare host (test harnesses); try the
+		// Sometimes RemoteAddr is a bare host (test harnesses); try the
 		// raw value before giving up.
 		host = r.RemoteAddr
 	}

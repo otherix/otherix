@@ -109,7 +109,7 @@ func (c *Client) ListPools(ctx context.Context, params ListPoolsParams) (PoolLis
 	return out, nil
 }
 
-// GetPoolByID fetches GET /v1/storage-pools/{id} с a UUID literal and
+// GetPoolByID fetches GET /v1/storage-pools/{id} with a UUID literal and
 // returns the flat per-instance Pool view. Use this when targeting a
 // specific node's pool row (the equivalent of addressing a Kubernetes
 // PersistentVolume by name).
@@ -150,10 +150,10 @@ func (c *Client) GetPoolByName(ctx context.Context, name string) (PoolConceptVie
 	return out, nil
 }
 
-// CreatePoolRequest mirrors components/schemas/StoragePoolCreate в
-// api/openapi/control-plane.yaml. The `node` field accepts а node name
-// (UUID literals are rejected с 400 validation_failed). `config` is
-// optional — omitted bodies land as the canonical empty object на the
+// CreatePoolRequest mirrors components/schemas/StoragePoolCreate in
+// api/openapi/control-plane.yaml. The `node` field accepts a node name
+// (UUID literals are rejected with 400 validation_failed). `config` is
+// optional — omitted bodies land as the canonical empty object on the
 // server.
 type CreatePoolRequest struct {
 	Node   string                 `json:"node"`
@@ -166,13 +166,13 @@ type CreatePoolRequest struct {
 // ErrPoolExists is the sentinel returned by CreatePool when the server
 // responds 409 conflict on the (name, node) uniqueness violation.
 // Detection is purely status-based: the CP emits the generic `conflict`
-// code on uq_storage_pools_name, not а specialised `pool_exists` code.
-// The CLI uses `errors.Is(err, ErrPoolExists)` к drive idempotent
+// code on uq_storage_pools_name, not a specialised `pool_exists` code.
+// The CLI uses `errors.Is(err, ErrPoolExists)` to drive idempotent
 // re-runs of seed scripts that may hit an already-registered pool.
 var ErrPoolExists = errors.New("storage pool already exists on the target node")
 
 // CreatePool submits POST /v1/storage-pools. 201 returns the parsed
-// Pool view; 409 collapses к ErrPoolExists; any other non-2xx surfaces
+// Pool view; 409 collapses to ErrPoolExists; any other non-2xx surfaces
 // as *APIError. Admin-only (`storage_pool:manage`); the CP returns
 // 403 permission_denied for other roles.
 func (c *Client) CreatePool(ctx context.Context, req CreatePoolRequest) (Pool, error) {
@@ -210,16 +210,16 @@ type ErrPoolBlocked struct {
 }
 
 // Error renders the operator-facing message, listing resource types
-// and counts sorted by key для stable output.
+// and counts sorted by key for stable output.
 func (e *ErrPoolBlocked) Error() string {
 	return fmt.Sprintf("storage pool delete blocked: %s: %v", e.Code, e.Resources)
 }
 
 // DeletePool submits DELETE /v1/storage-pools/{identifier}. The server
-// accepts either а UUID literal or a pool name — single-instance pools
+// accepts either a UUID literal or a pool name — single-instance pools
 // resolve cleanly; multi-instance names return 400 multiple_instances
-// и the caller must address by UUID instead. 204 returns nil; 409
-// collapses к *ErrPoolBlocked carrying the parsed blocking_resources
+// and the caller must address by UUID instead. 204 returns nil; 409
+// collapses to *ErrPoolBlocked carrying the parsed blocking_resources
 // map; any other non-2xx (404 / 5xx) surfaces as *APIError. Admin-only.
 func (c *Client) DeletePool(ctx context.Context, identifier string) error {
 	httpReq, err := c.newRequest(ctx, http.MethodDelete, "/v1/storage-pools/"+url.PathEscape(identifier), nil)
@@ -242,8 +242,8 @@ func (c *Client) DeletePool(ctx context.Context, identifier string) error {
 // decodePoolBlockingResources lifts the `details.blocking_resources`
 // map off an APIError into the typed ErrPoolBlocked shape. Returns nil
 // when the details payload is absent or malformed — the caller falls
-// back к the raw *APIError so the operator at least sees the status
-// code. Parallel of decodeBlockingResources в templates.go; the two
+// back to the raw *APIError so the operator at least sees the status
+// code. Parallel of decodeBlockingResources in templates.go; the two
 // remain separate to keep the typed-error shape per-domain.
 func decodePoolBlockingResources(apiErr *APIError) *ErrPoolBlocked {
 	if apiErr.Details == nil {

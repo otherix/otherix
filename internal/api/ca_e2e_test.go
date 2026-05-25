@@ -18,8 +18,8 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// TestE2E_CA_GetAnonymous_HappyPath verifies anonymous access к
-// /v1/ca returns а valid PEM cert plus а fingerprint that matches
+// TestE2E_CA_GetAnonymous_HappyPath verifies anonymous access to
+// /v1/ca returns a valid PEM cert plus a fingerprint that matches
 // sha256(cert.Raw) computed independently from the PEM payload.
 func TestE2E_CA_GetAnonymous_HappyPath(t *testing.T) {
 	h := newE2E(t)
@@ -60,7 +60,7 @@ func TestE2E_CA_GetAnonymous_HappyPath(t *testing.T) {
 }
 
 // TestE2E_CA_GetWithBearer verifies the endpoint accepts authenticated
-// callers too — the spec marks `security: []` (anonymous), но an
+// callers too — the spec marks `security: []` (anonymous), but an
 // admin Bearer must not be rejected.
 func TestE2E_CA_GetWithBearer(t *testing.T) {
 	h := newE2E(t)
@@ -72,7 +72,7 @@ func TestE2E_CA_GetWithBearer(t *testing.T) {
 }
 
 // TestE2E_CA_DoesNotExposeKey asserts the JSON response shape does
-// not carry any `key_pem` field — defense-in-depth against а
+// not carry any `key_pem` field — defense-in-depth against a
 // regression that surfaces the CA private key over the wire.
 func TestE2E_CA_DoesNotExposeKey(t *testing.T) {
 	h := newE2E(t)

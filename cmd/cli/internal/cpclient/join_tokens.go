@@ -12,9 +12,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// JoinToken mirrors components/schemas/JoinToken в
+// JoinToken mirrors components/schemas/JoinToken in
 // api/openapi/control-plane.yaml. The plaintext token is NEVER part
-// of this shape — it surfaces only once в CreateJoinTokenResponse.
+// of this shape — it surfaces only once in CreateJoinTokenResponse.
 type JoinToken struct {
 	ID               uuid.UUID  `json:"id"`
 	IntendedNodeName *string    `json:"intended_node_name"`
@@ -43,7 +43,7 @@ type CreateJoinTokenRequest struct {
 }
 
 // CreateJoinTokenResponse mirrors JoinTokenCreateResponse — the join
-// token row projection PLUS the plaintext token и active cluster CA
+// token row projection PLUS the plaintext token and active cluster CA
 // fingerprint. The "token bundle" returned exactly once on creation.
 type CreateJoinTokenResponse struct {
 	JoinToken
@@ -77,8 +77,8 @@ func (c *Client) CreateJoinToken(ctx context.Context, req CreateJoinTokenRequest
 	return out, nil
 }
 
-// ListJoinTokens fetches GET /v1/nodes/join-tokens с the supplied
-// filter knobs. Pagination is the caller's responsibility (re-issue с
+// ListJoinTokens fetches GET /v1/nodes/join-tokens with the supplied
+// filter knobs. Pagination is the caller's responsibility (re-issue with
 // JoinTokenList.Meta.NextCursor on Params.Cursor).
 func (c *Client) ListJoinTokens(ctx context.Context, params ListJoinTokensParams) (JoinTokenList, error) {
 	q := url.Values{}
@@ -114,7 +114,7 @@ func (c *Client) ListJoinTokens(ctx context.Context, params ListJoinTokensParams
 
 // DeleteJoinToken submits DELETE /v1/nodes/join-tokens/{id}. 204
 // returns nil; 404 / 409 / any non-2xx surfaces as *APIError so
-// callers can errors.As на StatusCode.
+// callers can errors.As on StatusCode.
 func (c *Client) DeleteJoinToken(ctx context.Context, id uuid.UUID) error {
 	httpReq, err := c.newRequest(ctx, http.MethodDelete, "/v1/nodes/join-tokens/"+id.String(), nil)
 	if err != nil {
@@ -149,7 +149,7 @@ type ListJoinTokenConsumptionsParams struct {
 }
 
 // ListJoinTokenConsumptions fetches GET
-// /v1/nodes/join-tokens/{id}/consumptions. Empty в Step 1 (redemption
+// /v1/nodes/join-tokens/{id}/consumptions. Empty in Step 1 (redemption
 // endpoint not yet implemented).
 func (c *Client) ListJoinTokenConsumptions(ctx context.Context, id uuid.UUID, params ListJoinTokenConsumptionsParams) (JoinTokenConsumptionList, error) {
 	q := url.Values{}

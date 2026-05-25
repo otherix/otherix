@@ -86,10 +86,10 @@ type VMSpec struct {
 	ConsoleSocket   string
 	PIDFile         string
 	AArch64Firmware string // required when Architecture==ArchARM64
-	// CidataPath, if non-empty, attaches the NoCloud cidata ISO as а
+	// CidataPath, if non-empty, attaches the NoCloud cidata ISO as a
 	// read-only virtio drive. cloud-init's NoCloud datasource scans
 	// every block device for the `cidata` volume label so virtio
-	// presentation works alongside the OS disk без media-type
+	// presentation works alongside the OS disk without media-type
 	// gymnastics. Empty value skips attachment entirely.
 	CidataPath string
 }
@@ -104,7 +104,7 @@ type VMSpec struct {
 // "tcg". Manager picks one at startup via DetectAccelerator so M1/M2
 // Lima (no /dev/kvm) gets tcg software emulation while bare-metal
 // Linux and M3+ Lima vz get kvm. The fallback-list form
-// (`kvm:tcg`) only works in `-machine accel=` syntax, не в `-accel`.
+// (`kvm:tcg`) only works in `-machine accel=` syntax, not in `-accel`.
 func BuildArgs(spec VMSpec) ([]string, error) {
 	if err := validateSpec(spec); err != nil {
 		return nil, err
@@ -124,9 +124,9 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		"-pidfile", spec.PIDFile,
 		"-daemonize",
 		// -display none disables the graphical display only. -nographic
-		// would also redirect serial/monitor к stdio, which conflicts
+		// would also redirect serial/monitor to stdio, which conflicts
 		// with -daemonize on qemu 8.x ("cannot be used with -daemonize").
-		// Serial и QMP are already wired к explicit unix sockets above.
+		// Serial and QMP are already wired to explicit unix sockets above.
 		"-display", "none",
 	}
 	if spec.CidataPath != "" {

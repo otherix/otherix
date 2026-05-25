@@ -15,7 +15,7 @@ import (
 )
 
 // TestManager_ScanPool_HappyPath exercises ScanPool end-to-end against
-// а real Linux statfs. Linux-only because the !linux build tag of
+// a real Linux statfs. Linux-only because the !linux build tag of
 // pathFilesystemStats returns an explicit error — there is no portable
 // filesystem-stats syscall the agent could fall back to. Skipped on
 // macOS dev hosts via //go:build linux; runs in CI ubuntu-24.04 and on
@@ -26,9 +26,9 @@ func TestManager_ScanPool_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Manager.New starts с empty pool registry; the reconciler
+	// Manager.New starts with empty pool registry; the reconciler
 	// populates it in production. Test seeds the registry directly to
-	// mirror what а post-heartbeat state would look like.
+	// mirror what a post-heartbeat state would look like.
 	if err := m.AddPool(poolName, poolRoot); err != nil {
 		t.Fatalf("AddPool: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestManager_ScanPool_HappyPath(t *testing.T) {
 		t.Fatalf("ScanPool: %v", err)
 	}
 	if task == nil || task.ID == uuid.Nil {
-		t.Fatalf("ScanPool returned nil или zero task")
+		t.Fatalf("ScanPool returned nil or zero task")
 	}
 	if task.Kind != TaskKindStoragePoolScan {
 		t.Errorf("task.Kind = %q, want %q", task.Kind, TaskKindStoragePoolScan)
@@ -62,7 +62,7 @@ func TestManager_ScanPool_HappyPath(t *testing.T) {
 		t.Errorf("capacity_bytes = %d, want > 0", result.CapacityBytes)
 	}
 	if result.AvailableBytes < 0 || result.AvailableBytes > result.CapacityBytes {
-		t.Errorf("available_bytes = %d, want в [0, %d]",
+		t.Errorf("available_bytes = %d, want in [0, %d]",
 			result.AvailableBytes, result.CapacityBytes)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, result.ReportedAt); err != nil {

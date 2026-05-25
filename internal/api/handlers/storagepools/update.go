@@ -22,8 +22,8 @@ import (
 // rejects with 400 forbidden_fields. `node` / `type` / `path` are
 // API-immutable; the agent-reported usage fields are out-of-band.
 // `is_default` is rejected because there is no per-row
-// default flag - cluster default-pool lives в cluster_settings.
-// The legacy `node_id` spelling is kept в the forbidden list so an
+// default flag - cluster default-pool lives in cluster_settings.
+// The legacy `node_id` spelling is kept in the forbidden list so an
 // older client sees a clear envelope rather than a silently-ignored
 // field. Keep alphabetised.
 var forbiddenUpdateKeys = []string{
@@ -110,8 +110,8 @@ func decodeUpdateRequest(w http.ResponseWriter, r *http.Request) (updateRequest,
 	return req, true
 }
 
-// writeUpdateError maps the post-UPDATE database error к the standard
-// envelope. The 23505 unique-violation maps к the per-node scope of
+// writeUpdateError maps the post-UPDATE database error to the standard
+// envelope. The 23505 unique-violation maps to the per-node scope of
 // uq_storage_pools_name.
 func writeUpdateError(w http.ResponseWriter, r *http.Request, err error) {
 	var pgErr *pgconn.PgError
@@ -168,7 +168,7 @@ func writePoolResolveError(w http.ResponseWriter, r *http.Request, err error, no
 	if errors.As(err, &rerr) && rerr.Code == resolver.CodeAmbiguous {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodePoolNameAmbiguous,
-			"pool name resolves к multiple instances; address by UUID",
+			"pool name resolves to multiple instances; address by UUID",
 			map[string]any{"name": rerr.Identifier})
 		return
 	}

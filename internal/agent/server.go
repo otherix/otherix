@@ -34,27 +34,27 @@ import (
 
 // nodeCNPrefix is the literal prefix all agent cert CommonName values
 // share — `node-<name>` per internal/auth/csr.go SignCSR template.
-// parseNodeNameFromCert strips this prefix к surface the operator-
+// parseNodeNameFromCert strips this prefix to surface the operator-
 // supplied name.
 const nodeCNPrefix = "node-"
 
-// parseNodeNameFromCert loads the agent's own cert от certPath, parses
-// the leaf, и returns the operator-supplied node name encoded в the
+// parseNodeNameFromCert loads the agent's own cert from certPath, parses
+// the leaf, and returns the operator-supplied node name encoded in the
 // Subject CN. The cert template (internal/auth/csr.go SignCSR) emits
 // CN `node-<nodeName>`; this function strips the prefix.
 //
-// The agent identifies itself via the cert CN rather than а separate
+// The agent identifies itself via the cert CN rather than a separate
 // sidecar file. Cert tampering is out of scope - the file is owned
-// by the agent uid и the CP-side mTLS verifier validates fingerprint
+// by the agent uid and the CP-side mTLS verifier validates fingerprint
 // + chain.
 func parseNodeNameFromCert(certPath string) (string, error) {
-	raw, err := os.ReadFile(certPath) //nolint:gosec // path is operator-configured (agent.yaml tls.cert_path); the function exists к open this exact file
+	raw, err := os.ReadFile(certPath) //nolint:gosec // path is operator-configured (agent.yaml tls.cert_path); the function exists to open this exact file
 	if err != nil {
 		return "", fmt.Errorf("read cert %s: %v", certPath, err)
 	}
 	block, _ := pem.Decode(raw)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("cert %s: not а CERTIFICATE PEM block", certPath)
+		return "", fmt.Errorf("cert %s: not a CERTIFICATE PEM block", certPath)
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
@@ -79,7 +79,7 @@ func parseNodeNameFromCert(certPath string) (string, error) {
 // surface — /v1/vms, /v1/tasks — alongside the Iteration 0 /health
 // endpoint, all guarded by mTLS client cert verification.
 //
-// Name-keyed agent identity: the node name is parsed от the cert CN
+// Name-keyed agent identity: the node name is parsed from the cert CN
 // at startup. cfg.NodeID is no longer carried; the heartbeat URL
 // uses the name (per the `/v1/nodes/{name}/heartbeat` endpoint).
 func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
@@ -92,23 +92,23 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("parse node name from cert: %w", err)
 	}
-	log.Info("agent: resolved node name от cert CN", "node_name", nodeName)
+	log.Info("agent: resolved node name from cert CN", "node_name", nodeName)
 
 	manager, err := vm.New(cfg, log)
 	if err != nil {
 		return fmt.Errorf("vm manager: %w", err)
 	}
 
-	// Pool reconciler. Consumes desired_pools от heartbeat responses
-	// и mutates manager's pool registry. Same instance plugs into the
-	// heartbeat sender as both ResponseHandler и PoolReporter.
+	// Pool reconciler. Consumes desired_pools from heartbeat responses
+	// and mutates manager's pool registry. Same instance plugs into the
+	// heartbeat sender as both ResponseHandler and PoolReporter.
 	poolReconciler, err := reconciler.NewPools(manager, log, 0)
 	if err != nil {
 		return fmt.Errorf("pool reconciler: %w", err)
 	}
 
 	// VM reconciler. Mirrors the pool reconciler shape - single
-	// ownership of observed VM state (heartbeat.VMReporter) и
+	// ownership of observed VM state (heartbeat.VMReporter) and
 	// desired-vs-observed convergence (heartbeat.ResponseHandler).
 	vmReconciler, err := reconciler.NewVMs(manager, log, 0)
 	if err != nil {
@@ -192,11 +192,11 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 }
 
 // startHeartbeat wires up the agent → CP heartbeat sender alongside
-// the HTTPS server. Returns а channel that is closed when the
+// the HTTPS server. Returns a channel that is closed when the
 // goroutine exits (so Run can wait for clean shutdown before
-// returning). Returns а never-closed-but-immediately-closed channel
-// если the heartbeat path cannot be initialised: heartbeats are
-// fire-and-forget от the agent's perspective; misconfiguration must
+// returning). Returns a never-closed-but-immediately-closed channel
+// if the heartbeat path cannot be initialised: heartbeats are
+// fire-and-forget from the agent's perspective; misconfiguration must
 // not block the rest of the agent (vm lifecycle, console, etc.)
 // from running.
 func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, log *slog.Logger) <-chan struct{} {
@@ -237,10 +237,10 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 		return done
 	}
 
-	// MultiResponseHandler fans the heartbeat response к both
+	// MultiResponseHandler fans the heartbeat response to both
 	// reconcilers (L3 D3). Pool reconciler consumes declared_pools;
 	// VM reconciler consumes declared_vms. Each ignores the other's
-	// payload без needing к know about it.
+	// payload without needing to know about it.
 	handler := heartbeat.MultiResponseHandler{poolRec, vmRec}
 	sender := heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
 		Interval: cfg.ControlPlane.HeartbeatInterval,
@@ -266,9 +266,9 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 // final status, Recoverer third so panics turn into the standard error
 // envelope. middleware.Timeout is NOT applied at root — long-lived
 // WebSocket routes (vms.consoleStream) must opt out because the pump
-// goroutines inherit r.Context() и would terminate at
+// goroutines inherit r.Context() and would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
-// below opts back в via а Group.
+// below opts back in via a Group.
 func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore) http.Handler {
 	r := chi.NewRouter()
 

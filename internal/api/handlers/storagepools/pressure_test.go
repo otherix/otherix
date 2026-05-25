@@ -12,10 +12,10 @@ import (
 
 // TestComputePoolDiskPressureTransition covers the scan-driven pool
 // disk pressure transition logic. Default
-// `consecutive_required=1` means а single below-threshold scan sets
-// pressure — distinct от the heartbeat-driven path which requires 3
+// `consecutive_required=1` means a single below-threshold scan sets
+// pressure — distinct from the heartbeat-driven path which requires 3
 // consecutive observations. The function still honours larger
-// ConsecutiveRequired values если the operator explicitly wants
+// ConsecutiveRequired values if the operator explicitly wants
 // multi-scan debouncing.
 func TestComputePoolDiskPressureTransition(t *testing.T) {
 	now := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
@@ -103,7 +103,7 @@ func TestComputePoolDiskPressureTransition(t *testing.T) {
 			wantSince:   nil,
 			wantCount:   0,
 			wantKind:    poolPressureTransitionNone,
-			description: "scan that reports availability but not capacity is а no-op",
+			description: "scan that reports availability but not capacity is a no-op",
 		},
 		{
 			name:        "above threshold not pressured — steady state",

@@ -14,7 +14,7 @@ import (
 )
 
 // TestE2E_PoolReconciliation_AgentReportsFailed confirms that the
-// heartbeat handler projects а failed pool report onto the
+// heartbeat handler projects a failed pool report onto the
 // storage_pools row: reconciliation_status='failed' + error message
 // stored verbatim. The agent retries forever; the CP
 // surfaces the latest reported error for operator visibility (no
@@ -54,9 +54,9 @@ func TestE2E_PoolReconciliation_AgentReportsFailed(t *testing.T) {
 }
 
 // TestE2E_PoolReconciliation_RecoverFromFailed confirms the row flips
-// back к `ready` когда the agent reports success after а prior
+// back to `ready` when the agent reports success after a prior
 // `failed` cycle. Closes the loop on eventual-consistency: nothing
-// special needs to happen on the CP — а later heartbeat with а
+// special needs to happen on the CP — a later heartbeat with a
 // happy report just overwrites the column.
 func TestE2E_PoolReconciliation_RecoverFromFailed(t *testing.T) {
 	h := newCPAgentHarness(t)

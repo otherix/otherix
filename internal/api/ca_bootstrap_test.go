@@ -15,10 +15,10 @@ import (
 	"github.com/otherix/otherix/internal/api"
 )
 
-// freshStoreNoCA returns а fresh Store and clears the ca_certs
+// freshStoreNoCA returns a fresh Store and clears the ca_certs
 // table so BootstrapClusterCA exercises the generate path. Tests
 // that simply need an active CA can use the e2eHarness directly
-// (which calls BootstrapClusterCA по construction).
+// (which calls BootstrapClusterCA by construction).
 func freshStoreNoCA(t *testing.T) *e2eHarness {
 	t.Helper()
 	h := newE2E(t)
@@ -29,8 +29,8 @@ func freshStoreNoCA(t *testing.T) *e2eHarness {
 	return h
 }
 
-// TestBootstrapClusterCA_GeneratesOnFreshDB verifies а fresh ca_certs
-// table results в а single active row after one bootstrap call.
+// TestBootstrapClusterCA_GeneratesOnFreshDB verifies a fresh ca_certs
+// table results in a single active row after one bootstrap call.
 func TestBootstrapClusterCA_GeneratesOnFreshDB(t *testing.T) {
 	h := freshStoreNoCA(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -44,7 +44,7 @@ func TestBootstrapClusterCA_GeneratesOnFreshDB(t *testing.T) {
 		t.Fatalf("GetActiveCACert: %v", err)
 	}
 	if !row.Active {
-		t.Error("Active = false на freshly-generated row")
+		t.Error("Active = false on freshly-generated row")
 	}
 	if len(row.CertPem) == 0 {
 		t.Error("CertPem empty")
@@ -57,9 +57,9 @@ func TestBootstrapClusterCA_GeneratesOnFreshDB(t *testing.T) {
 	}
 }
 
-// TestBootstrapClusterCA_IdempotentOnExisting verifies а repeat call
-// against а DB that already has an active CA leaves the row
-// untouched и does not produce an error.
+// TestBootstrapClusterCA_IdempotentOnExisting verifies a repeat call
+// against a DB that already has an active CA leaves the row
+// untouched and does not produce an error.
 func TestBootstrapClusterCA_IdempotentOnExisting(t *testing.T) {
 	h := freshStoreNoCA(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

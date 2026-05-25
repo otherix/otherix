@@ -52,16 +52,16 @@ type vmCreateRequest struct {
 	MemoryMB int     `json:"memory_mb"`
 	// UserData is an optional VM-level cloud-init override (L3
 	// Area 3 lock). When provided, fully replaces the template's
-	// baked cloud_init_user_data в the per-VM resolved blob; the
-	// agent receives whichever wins. Stored verbatim в vms.user_data
-	// so the resolution stays а pure function of the VM row.
+	// baked cloud_init_user_data in the per-VM resolved blob; the
+	// agent receives whichever wins. Stored verbatim in vms.user_data
+	// so the resolution stays a pure function of the VM row.
 	UserData *string `json:"user_data,omitempty"`
 	// CloudInitDisabled is the explicit-disable signal (operator UX
-	// iteration). When true, the resolver returns empty user_data к
-	// the agent even если the template has а baked
+	// iteration). When true, the resolver returns empty user_data to
+	// the agent even if the template has a baked
 	// cloud_init_user_data — the agent skips cidata.iso generation.
-	// Mutually exclusive с UserData; sending both surfaces as 400
-	// validation_failed. Defaults к false; the DB CHECK
+	// Mutually exclusive with UserData; sending both surfaces as 400
+	// validation_failed. Defaults to false; the DB CHECK
 	// chk_vms_cloud_init_disabled_no_userdata is the schema-level
 	// backstop for the same invariant.
 	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
@@ -102,7 +102,7 @@ func (e *poolNotWritableError) Error() string {
 // first statement inside
 // the create transaction, so concurrent api-server replicas serialize
 // their placement decisions cluster-wide. Scheduler reads (candidate
-// pools + heartbeat metrics) и subsequent inserts (vms + vm_disks +
+// pools + heartbeat metrics) and subsequent inserts (vms + vm_disks +
 // tasks + river job + UpdateTaskRiverJobID) live under the same
 // transaction-scoped lock; commit/rollback releases it.
 //
@@ -175,7 +175,7 @@ func decodeCreateBody(w http.ResponseWriter, r *http.Request) (vmCreateRequest, 
 // schema also carries CHECK constraints (vms.cpu_cores / memory_mib)
 // so a defective request fails twice; the API-edge check produces a
 // friendlier envelope than a raw 23514. Identifier well-formedness
-// (template / pool) is deferred к the resolver layer — it accepts
+// (template / pool) is deferred to the resolver layer — it accepts
 // either UUID literals or names and returns a 404 for either branch
 // when no row matches.
 func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
@@ -199,9 +199,9 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			response.CodeValidationFailed, "memory_mb must be in [128, 524288]", nil)
 		return false
 	}
-	// Mutual-exclusion check для the three-state cloud-init contract.
+	// Mutual-exclusion check for the three-state cloud-init contract.
 	// The DB CHECK is the durable backstop; this edge check produces
-	// а friendlier 400 envelope than the raw 23514 the handler would
+	// a friendlier 400 envelope than the raw 23514 the handler would
 	// otherwise propagate.
 	if req.CloudInitDisabled && req.UserData != nil && *req.UserData != "" {
 		response.WriteError(w, r, http.StatusBadRequest,
@@ -242,15 +242,15 @@ type scheduleInputs struct {
 }
 
 // scheduleAndEnqueueCreate runs the atomic critical section: acquire
-// the cluster-wide placement lock, score candidates с the configured
-// algorithm, и persist vms/vm_disks/tasks rows + the river job in one
+// the cluster-wide placement lock, score candidates with the configured
+// algorithm, and persist vms/vm_disks/tasks rows + the river job in one
 // transaction. Returns the freshly-minted task id on success.
 //
 // Lock scope matters: pg_advisory_xact_lock releases on commit/rollback,
 // so the scheduler's reads (ListEligiblePoolsByName + CountRunningVMs‑
-// ByNode) и the CreateVM write (pinned_node_id) MUST share а single
+// ByNode) and the CreateVM write (pinned_node_id) MUST share a single
 // transaction. Otherwise concurrent api-server replicas can observe
-// stale candidate availability и double-allocate. See store.LockKey‑
+// stale candidate availability and double-allocate. See store.LockKey‑
 // Placement.
 func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInputs) (uuid.UUID, error) {
 	vmID := uuid.New()
@@ -263,11 +263,11 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			return fmt.Errorf("acquire placement lock: %v", err)
 		}
 
-		// Disk requirement is derived от the template's
+		// Disk requirement is derived from the template's
 		// default_disk_gib in the single-root-disk model.
-		// default_disk_gib is INT NOT NULL with а
+		// default_disk_gib is INT NOT NULL with a
 		// CHECK between 1 and 65536, so the multiplication is well-
-		// defined и cannot overflow int64.
+		// defined and cannot overflow int64.
 		diskBytes := int64(in.Template.DefaultDiskGib) * 1073741824
 		decision, err := scheduler.SchedulePlacement(ctx, q, scheduler.PlacementRequest{
 			PoolName:  in.PoolName,
@@ -304,8 +304,8 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			Description:       "",
 			TemplateID:        ptrUUID(in.Template.ID),
 			Architecture:      in.Template.Architecture,
-			CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded к 1..128 by validateCreateRequest
-			MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded к 128..524288 by validateCreateRequest
+			CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded to 1..128 by validateCreateRequest
+			MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded to 128..524288 by validateCreateRequest
 			CPUModel:          "host",
 			MachineType:       machineTypeFor(in.Template.Architecture),
 			FirmwareID:        nil,
@@ -399,7 +399,7 @@ func writeTemplateLoadError(w http.ResponseWriter, r *http.Request, err error) {
 //     a backward-compatible escape hatch into the scheduler's
 //     name-driven placement).
 //   - bare string: passed through as a pool name; the scheduler
-//     resolves к instances.
+//     resolves to instances.
 //
 // The boolean second return mirrors the decode* helpers' short-circuit
 // signal.
@@ -438,7 +438,7 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 }
 
 // writeCreateError dispatches the merged scheduleAndEnqueueCreate
-// error к а wire envelope. Categories, in priority order:
+// error to a wire envelope. Categories, in priority order:
 //
 //   - ErrInsufficientResources (structured details) → 409 no_eligible_nodes
 //   - Other scheduler sentinels                     → 400 / 404 / 409
@@ -503,7 +503,7 @@ func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err e
 
 // insufficientResourcesView is the handler-edge projection of the
 // scheduler's structured detail payload. It carries enough metadata to
-// build the `details` map on the 409 envelope без leaking scheduler-
+// build the `details` map on the 409 envelope without leaking scheduler-
 // internal field types into the wire layer.
 type insufficientResourcesView struct {
 	requiredCPU          int32
@@ -515,9 +515,9 @@ type insufficientResourcesView struct {
 }
 
 // toDetails renders the view into the `details` map expected by
-// response.WriteError. `reason` is а stable string the operator (or а
-// CLI) can branch on к detect the resource-shortage subcase. Disk
-// fields (pool, disk_used_bytes, disk_total_bytes) на each utilization
+// response.WriteError. `reason` is a stable string the operator (or a
+// CLI) can branch on to detect the resource-shortage subcase. Disk
+// fields (pool, disk_used_bytes, disk_total_bytes) on each utilization
 // entry land under additionalProperties — the OpenAPI envelope is
 // free-form.
 func (v *insufficientResourcesView) toDetails() map[string]any {
@@ -548,22 +548,22 @@ func (v *insufficientResourcesView) toDetails() map[string]any {
 }
 
 // buildNoEligibleDetails projects an ErrNoEligibleNodes chain into the
-// 409 envelope's `details` map. When the chain carries а
+// 409 envelope's `details` map. When the chain carries a
 // NodePressureDetail the payload includes
-// `reason="node_pressure"` и а per-node breakdown so operators can see
-// which hosts были filtered out by an active pressure condition. The
+// `reason="node_pressure"` and a per-node breakdown so operators can see
+// which hosts were filtered out by an active pressure condition. The
 // bare sentinel (pool exists but every host is cordoned / unreachable
 // / soft-deleted) returns nil, keeping the bare envelope shape that
 // pre-pressure clients already understand.
 //
 // Each entry emits the timestamps for whichever pressure conditions are
-// active on it и nothing else: PressuredNode's three `*time.Time`
+// active on it and nothing else: PressuredNode's three `*time.Time`
 // fields are nullable (present only when the matching
-// condition is in `Conditions`), so the nil-checks are both а wire
-// hygiene requirement (omit absent fields) и а runtime correctness
-// requirement (calling а method on а nil *time.Time panics).
+// condition is in `Conditions`), so the nil-checks are both a wire
+// hygiene requirement (omit absent fields) and a runtime correctness
+// requirement (calling a method on a nil *time.Time panics).
 // Pool-scoped entries (disk_pressure) additionally surface the `pool`
-// name so the operator can distinguish а node-wide problem от а
+// name so the operator can distinguish a node-wide problem from a
 // per-pool exhaustion.
 func buildNoEligibleDetails(err error) map[string]any {
 	pressure, ok := scheduler.ExtractNodePressureDetail(err)

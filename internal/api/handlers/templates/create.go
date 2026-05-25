@@ -88,7 +88,7 @@ func buildCreateParams(ownerID uuid.UUID, req *createRequest) (store.CreateTempl
 	if err := validateCreateIdentity(req); err != nil {
 		return store.CreateTemplateParams{}, err
 	}
-	// image_checksum_sha256 is optional. Empty string или absent →
+	// image_checksum_sha256 is optional. Empty string or absent →
 	// compute mode; the column stays NULL until the worker
 	// back-propagates the agent-computed value via
 	// UpdateTemplateImageChecksumIfNull. Non-empty values run through
@@ -144,9 +144,9 @@ func buildCreateParams(ownerID uuid.UUID, req *createRequest) (store.CreateTempl
 	}, nil
 }
 
-// decodeOptionalChecksum returns the 32-byte digest for а non-empty
-// hex string, or nil bytes для an empty input (compute mode). Strict
-// validation kicks в only when the operator supplied а value - empty
+// decodeOptionalChecksum returns the 32-byte digest for a non-empty
+// hex string, or nil bytes for an empty input (compute mode). Strict
+// validation kicks in only when the operator supplied a value - empty
 // string never errors.
 func decodeOptionalChecksum(s string) ([]byte, error) {
 	if s == "" {

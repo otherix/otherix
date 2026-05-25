@@ -77,7 +77,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		NodeIDFilter:    nodeID,
 		CursorCreatedAt: cursor.cursorTs,
 		CursorID:        cursor.cursorID,
-		LimitCount:      int32(limit), //nolint:gosec // bounded к 1..200 by parseLimit
+		LimitCount:      int32(limit), //nolint:gosec // bounded to 1..200 by parseLimit
 	})
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "vms.list query failed", "error", err)
@@ -157,7 +157,7 @@ func (h *Handler) resolveListFilter(
 		if errors.As(err, &rerr) && rerr.Code == resolver.CodeAmbiguous {
 			response.WriteError(w, r, http.StatusBadRequest,
 				response.CodePoolNameAmbiguous,
-				"filter value resolves к multiple instances; pass an instance UUID",
+				"filter value resolves to multiple instances; pass an instance UUID",
 				map[string]any{param: raw})
 			return nil, false
 		}
@@ -214,7 +214,7 @@ func (h *Handler) loadRuntimeOrNil(ctx context.Context, vmID uuid.UUID) (*store.
 	}
 }
 
-// nextCursorFor returns the encoded cursor pointing к the last row in
+// nextCursorFor returns the encoded cursor pointing to the last row in
 // rows when the page is full (len == limit). nil otherwise — either
 // the inventory ended or the post-projection filter dropped rows but
 // the SQL pagination already advanced; the next call still resumes
@@ -235,7 +235,7 @@ func nextCursorFor(rows []store.VM, limit int) *string {
 	return &enc
 }
 
-// parseLimit decodes ?limit; defaults to listDefaultLimit, clamped к
+// parseLimit decodes ?limit; defaults to listDefaultLimit, clamped to
 // [1, listMaxLimit].
 func parseLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	raw := r.URL.Query().Get("limit")

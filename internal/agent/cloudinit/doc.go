@@ -12,7 +12,7 @@
 // VM-level override is CP-side; the agent receives a single
 // already-resolved blob via VMSpec.cloud_init.user_data.
 //
-// The on-disk layout is ISO9660 с volume label "cidata", containing:
+// The on-disk layout is ISO9660 with volume label "cidata", containing:
 //
 //	/meta-data       — instance-id + local-hostname (generated)
 //	/user-data       — operator-provided `#cloud-config` YAML

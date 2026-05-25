@@ -11,7 +11,7 @@ import (
 )
 
 // Validation sentinels surfaced as 400 validation_failed envelopes by
-// the handler. Each carries а distinct details key для operator
+// the handler. Each carries a distinct details key for operator
 // debugging.
 var (
 	errMissingToken              = errors.New("token is required")
@@ -24,7 +24,7 @@ var (
 	errAdvertisedEndpointTooLong = errors.New("advertised_endpoint must be at most 2048 characters")
 	errMissingMigrationHost      = errors.New("migration_host is required")
 	errMigrationHostTooLong      = errors.New("migration_host must be at most 253 characters")
-	errMigrationPortInvalid      = errors.New("migration_port_range must lie in [1024, 65535] с end >= start")
+	errMigrationPortInvalid      = errors.New("migration_port_range must lie in [1024, 65535] with end >= start")
 )
 
 // Bounds mirror the existing nodes.create handler — same column
@@ -37,9 +37,9 @@ const (
 	maxMigrationPort            = 65535
 )
 
-// validate normalises и validates the request body. Returns the
-// canonicalised values + а sentinel error suitable for direct status
-// mapping. Whitespace-only fields collapse к empty string и are
+// validate normalises and validates the request body. Returns the
+// canonicalised values + a sentinel error suitable for direct status
+// mapping. Whitespace-only fields collapse to empty string and are
 // treated as missing.
 func (req joinRequest) validate() error {
 	if strings.TrimSpace(req.Token) == "" {
@@ -93,9 +93,9 @@ func (req joinRequest) validate() error {
 	return nil
 }
 
-// validationMessage maps а sentinel к its operator-facing message
-// для inclusion в the 400 envelope. Returns the error's own .Error()
-// when the value isn't а recognised sentinel (defensive fallback).
+// validationMessage maps a sentinel to its operator-facing message
+// for inclusion in the 400 envelope. Returns the error's own .Error()
+// when the value isn't a recognised sentinel (defensive fallback).
 func validationMessage(err error) string {
 	return err.Error()
 }

@@ -20,7 +20,7 @@ where pinned_node_id = $1
   and desired_phase != 'deleted'
 `
 
-// Counts VMs intended к run on the given node. Used by the placement
+// Counts VMs intended to run on the given node. Used by the placement
 // scheduler for Least-VM-count tie-breaking. Counted by
 // vms.pinned_node_id (intent) rather than vm_runtime.current_node_id
 // (observed) so a burst of concurrent creates targeting the same
@@ -98,7 +98,7 @@ type CreateVMParams struct {
 // names.
 // Inserts a new vms row. Caller supplies the id explicitly (unified
 // UUID, CP mints / agent uses). desired_phase defaults to 'running'
-// so the operator's "create" intent maps к "VM should run" without a
+// so the operator's "create" intent maps to "VM should run" without a
 // separate state transition.
 func (q *Queries) CreateVM(ctx context.Context, arg CreateVMParams) (VM, error) {
 	row := q.db.QueryRow(ctx, createVM,
@@ -194,11 +194,11 @@ where lower(name) = lower($1)
   and deleted_at is null
 `
 
-// Used by the create handler для globally-unique-name precheck before
+// Used by the create handler for globally-unique-name precheck before
 // the insert (the unique partial index would catch it as a 23505 too,
 // but a friendly 409 with the existing id is preferable). Also backs
 // ResolveVM in the name-based resolver (internal/api/handlers/internal/
-// resolver) — every GET / DELETE на /v1/vms/{id} folds к this query when
+// resolver) — every GET / DELETE on /v1/vms/{id} folds to this query when
 // the identifier is not a UUID. The lookup is case-insensitive to match
 // uq_vms_name on lower(name); the row preserves the operator's chosen
 // casing.
@@ -437,7 +437,7 @@ type ListVMsForNodeDeclaredRow struct {
 	Generation   int64
 }
 
-// Per-node VM desired-state inventory для HeartbeatResponse.declared_vms.
+// Per-node VM desired-state inventory for HeartbeatResponse.declared_vms.
 // Joins vms × vm_runtime on the runtime's current_node_id (D6 — current
 // location, not pinned intent). Soft-deleted vms are excluded; runtime
 // rows whose phase has reached 'gone' are excluded too (the VM is no
@@ -474,7 +474,7 @@ where id = $1
 // Soft delete sets deleted_at; the unique partial index on (name) where
 // deleted_at is null releases the name immediately so a fresh create
 // with the same name can succeed. The vm_runtime row (if any) is
-// handled separately by DeleteVMRuntime в the worker's cleanup phase.
+// handled separately by DeleteVMRuntime in the worker's cleanup phase.
 func (q *Queries) SoftDeleteVM(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, softDeleteVM, id)
 	return err
@@ -493,7 +493,7 @@ type UpdateVMDesiredPhaseParams struct {
 	ID           uuid.UUID
 }
 
-// Used by the worker to flip desired_phase к 'deleted' as the user-visible
+// Used by the worker to flip desired_phase to 'deleted' as the user-visible
 // delete starts (before the agent acknowledges teardown). Clean read-side
 // semantics: desired_phase reflects user intent; vm_runtime.phase reflects
 // observed.

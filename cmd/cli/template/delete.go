@@ -21,16 +21,16 @@ func newDeleteCommand() *cobra.Command {
 		Long: `Submits DELETE /v1/templates/{name}. The command fails with 409 conflict
 when the template still has dependent resources:
 
-  - storage_images materialised в pools;
+  - storage_images materialised in pools;
   - virtual machines still referencing the template.
 
-The failure output lists the blocking resources и their counts so
+The failure output lists the blocking resources and their counts so
 operators know what to clean up. Storage images are deleted via
 storage-images.delete; VMs via vms.delete. No confirmation prompt is
 emitted — the cascade-refusal contract guards against accidental
 blast radius.
 
-Path argument is the template name; UUID literals are rejected с 400
+Path argument is the template name; UUID literals are rejected with 400
 validation_failed per the name-only narrowing of Template identifiers.
 
 Example:
@@ -72,7 +72,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// renderBlockedDelete prints the blocking-resources envelope в the
+// renderBlockedDelete prints the blocking-resources envelope in the
 // requested format and returns a non-zero-exit error. The text mode
 // formats each resource type → count pair so operators can scan the
 // list and decide what to clean up first.

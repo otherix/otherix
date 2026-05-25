@@ -5,7 +5,7 @@
 // surface is a thin facade over the cluster_settings singleton table —
 // today only the default-pool reference (used by VM create when the
 // request body omits `pool`), tomorrow potentially default-template,
-// default-network, and similar cluster-shaping knobs. Reads are open к
+// default-network, and similar cluster-shaping knobs. Reads are open to
 // every authenticated role (cluster:read), mutations are admin-only
 // (cluster:manage); see docs/rbac.md.
 package cluster

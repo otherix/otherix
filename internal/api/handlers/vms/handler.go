@@ -60,10 +60,10 @@ import (
 // surface needs the store; Create / Delete additionally need the river
 // client to enqueue the underlying job inside the same transaction as
 // the task row insert. placementAlgorithm threads through to
-// internal/scheduler.SchedulePlacement; the empty string defers к the
+// internal/scheduler.SchedulePlacement; the empty string defers to the
 // package default ("resource_aware"). placementResources threads the
-// per-resource gate - zero-value disables every resource и degrades
-// scoring к count-based fallback,
+// per-resource gate - zero-value disables every resource and degrades
+// scoring to count-based fallback,
 // so production wiring always passes the config.ResourcesConfig the
 // api binary validated at startup.
 type Handler struct {
@@ -79,15 +79,15 @@ type Handler struct {
 // New constructs a Handler. riverClient is required for Create /
 // Delete; the production wiring (cmd/api/main.go) always supplies one.
 // placementAlgorithm is the validated APIConfig.Placement.Algorithm
-// value — pass "" к accept the scheduler default. placementResources
-// pins the per-resource gate; pass а zero-value (every resource
+// value — pass "" to accept the scheduler default. placementResources
+// pins the per-resource gate; pass a zero-value (every resource
 // disabled) only in tests / scaffolding contexts that explicitly want
 // count-based scoring across the board. lifecycle bundles the
 // agentclient dependency the sync Pause / Resume / Reset handlers
-// need; tests that exercise the sync surface pass а stub through
-// here без importing the production client. console bundles the
+// need; tests that exercise the sync surface pass a stub through
+// here without importing the production client. console bundles the
 // console-handler deps (agentclient + access mode); tests that don't
-// exercise the console flow pass а zero-value ConsoleDeps.
+// exercise the console flow pass a zero-value ConsoleDeps.
 func New(
 	s *store.Store,
 	riverClient *river.Client[pgx.Tx],

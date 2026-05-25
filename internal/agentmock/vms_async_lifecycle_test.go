@@ -62,8 +62,8 @@ func TestVmsAsyncLifecycle_StartStopRebootPoweroff_HappyPath(t *testing.T) {
 }
 
 // TestVmsAsyncLifecycle_StopTimeout_FailureLeavesRunning verifies
-// that а queued stop-timeout failure surfaces as task.status="failed"
-// и leaves the inventory entry в running (no transition on failure
+// that a queued stop-timeout failure surfaces as task.status="failed"
+// and leaves the inventory entry in running (no transition on failure
 // per Area 4-IV — manual intervention only).
 func TestVmsAsyncLifecycle_StopTimeout_FailureLeavesRunning(t *testing.T) {
 	m := startMock(t)
@@ -98,11 +98,11 @@ func TestVmsAsyncLifecycle_StopTimeout_FailureLeavesRunning(t *testing.T) {
 
 // TestVmsAsyncLifecycle_NotFound — the mock returns 202 always (the
 // real agent surfaces 404 only when there is no inventory entry, but
-// the mock's task surface is name-keyed and registers а task row
+// the mock's task surface is name-keyed and registers a task row
 // regardless). The materialise hook is the differentiator: it skips
 // when the inventory is empty, so the task succeeds without staging
-// а phantom inventory entry. Verifies the contract for а repeated
-// op against а non-existent VM does not corrupt state.
+// a phantom inventory entry. Verifies the contract for a repeated
+// op against a non-existent VM does not corrupt state.
 func TestVmsAsyncLifecycle_NotFound(t *testing.T) {
 	m := startMock(t)
 	for _, op := range []string{"start", "stop", "poweroff", "reboot"} {
@@ -111,7 +111,7 @@ func TestVmsAsyncLifecycle_NotFound(t *testing.T) {
 			t.Errorf("%s no-such status = %q, want success (mock layer no-op)", op, task.Status)
 		}
 		if _, ok := m.StoredVM("no-such-vm"); ok {
-			t.Errorf("%s materialised а phantom inventory entry for no-such-vm", op)
+			t.Errorf("%s materialised a phantom inventory entry for no-such-vm", op)
 		}
 	}
 }

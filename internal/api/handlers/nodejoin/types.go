@@ -4,12 +4,12 @@
 package nodejoin
 
 // joinRequest is the body of POST /v1/nodes/join. Mirrors
-// components/schemas/NodeJoinRequest в control-plane.yaml. All fields
-// required by Step 2 contract — the server creates the nodes row если
+// components/schemas/NodeJoinRequest in control-plane.yaml. All fields
+// required by Step 2 contract — the server creates the nodes row if
 // it doesn't exist yet, so the agent must supply identity (name,
-// architecture) и migration ingress upfront.
+// architecture) and migration ingress upfront.
 //
-// Pointer types where useful for tri-state decoding в later iterations;
+// Pointer types where useful for tri-state decoding in later iterations;
 // Step 2 keeps the simple required-non-empty contract.
 type joinRequest struct {
 	Token                   string `json:"token"`
@@ -23,9 +23,9 @@ type joinRequest struct {
 }
 
 // joinResponse is the 201 envelope. The plaintext leaf cert is
-// returned exactly once — agent persists locally on disk и uses it
-// для каждый subsequent mTLS handshake. CACertPEM is included so the
-// agent can also persist the trust anchor от the same response (and
+// returned exactly once — agent persists locally on disk and uses it
+// for each subsequent mTLS handshake. CACertPEM is included so the
+// agent can also persist the trust anchor from the same response (and
 // optionally compare against the fingerprint it pinned at bootstrap
 // time, defense-in-depth).
 type joinResponse struct {

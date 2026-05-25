@@ -17,8 +17,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestVMList_VerticalSlicePagination creates 5 VMs и walks the cursor
-// pagination forward с limit=2 expecting 3 pages (2 + 2 + 1) и a
+// TestVMList_VerticalSlicePagination creates 5 VMs and walks the cursor
+// pagination forward with limit=2 expecting 3 pages (2 + 2 + 1) and a
 // nil next_cursor on the last.
 func TestVMList_VerticalSlicePagination(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -69,7 +69,7 @@ func TestVMList_VerticalSlicePagination(t *testing.T) {
 
 	// Walk pages — collect ids, assert no duplicates, last page's
 	// next_cursor nil. Note: the order is by (created_at, id) DESC,
-	// which is stable but not predictable от outside.
+	// which is stable but not predictable from outside.
 	seen := map[string]struct{}{}
 	cursor := ""
 	pageNum := 0
@@ -90,7 +90,7 @@ func TestVMList_VerticalSlicePagination(t *testing.T) {
 			if pageNum < 2 {
 				// 5 / 2 = 3 pages. Hitting the end on page 1 means
 				// pagination is not actually paging.
-				t.Errorf("only %d page(s) walked, want ≥ 3 для total=%d limit=2", pageNum, total)
+				t.Errorf("only %d page(s) walked, want ≥ 3 for total=%d limit=2", pageNum, total)
 			}
 			return
 		}

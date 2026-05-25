@@ -92,7 +92,7 @@ type ScanDeps struct {
 	// detection knobs. Honoured during
 	// projectAndFinalize: every successful scan invokes the pure
 	// computePoolDiskPressureTransition function against the scan
-	// result + current pressure state и persists the next state в
+	// result + current pressure state and persists the next state in
 	// the same transaction as UpsertStoragePoolUsage.
 	PressureDisk config.PressureConditionConfig
 }
@@ -187,9 +187,9 @@ func (w *StoragePoolScanWorker) Work(ctx context.Context, j *river.Job[StoragePo
 }
 
 // logPoolPressureTransition emits one slog line per pool-disk pressure
-// state change (set → WARN, clear → INFO). Steady-state и counting
-// outcomes stay quiet. Logged после InTx commits so the line never
-// appears для а rolled-back projection. Mirror of the heartbeat
+// state change (set → WARN, clear → INFO). Steady-state and counting
+// outcomes stay quiet. Logged after InTx commits so the line never
+// appears for a rolled-back projection. Mirror of the heartbeat
 // receiver's logPressureTransition.
 func (w *StoragePoolScanWorker) logPoolPressureTransition(ctx context.Context, poolID uuid.UUID, poolName string, result ScanResult, kind poolPressureTransitionKind) {
 	switch kind {
@@ -211,8 +211,8 @@ func (w *StoragePoolScanWorker) logPoolPressureTransition(ctx context.Context, p
 }
 
 // poolDiskPercent returns the percentage available reported by the
-// scan, or 0 когда capacity is missing or zero. Diagnostic-only —
-// pressure decision logic lives в computePoolDiskPressureTransition.
+// scan, or 0 when capacity is missing or zero. Diagnostic-only —
+// pressure decision logic lives in computePoolDiskPressureTransition.
 func poolDiskPercent(r ScanResult) float64 {
 	if r.CapacityBytes <= 0 {
 		return 0
@@ -226,10 +226,10 @@ func poolDiskPercent(r ScanResult) float64 {
 // agent-reported capacity / availability columns are
 // owned by scan / heartbeat paths.
 //
-// Returns the pressure transition kind so the caller can emit а log
-// line после the transaction commits (parallel pattern к the
-// heartbeat receiver). Steady-state и counting outcomes are
-// poolPressureTransitionNone и produce no log noise.
+// Returns the pressure transition kind so the caller can emit a log
+// line after the transaction commits (parallel pattern to the
+// heartbeat receiver). Steady-state and counting outcomes are
+// poolPressureTransitionNone and produce no log noise.
 func (w *StoragePoolScanWorker) projectAndFinalize(
 	ctx context.Context,
 	taskID, poolID uuid.UUID,

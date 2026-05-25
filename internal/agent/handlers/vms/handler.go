@@ -40,7 +40,7 @@ func New(m *vm.Manager, tokens *console.TokenStore, log *slog.Logger) *Handler {
 }
 
 // Mount registers /v1/vms routes on r. The console-stream route is
-// intentionally NOT registered here — it's long-lived и mounts в
+// intentionally NOT registered here — it's long-lived and mounts in
 // internal/agent/server.go::buildRouter outside the middleware.Timeout
 // Group. Adding it back here would re-introduce the ~30s session-drop
 // bug closed by the timeout-fix iteration.

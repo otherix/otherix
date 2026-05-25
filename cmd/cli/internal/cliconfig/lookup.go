@@ -8,9 +8,9 @@ import (
 	"fmt"
 )
 
-// EnvToken и EnvServer name the env vars Resolve consults. The
+// EnvToken and EnvServer name the env vars Resolve consults. The
 // token var matches Phase C's existing OTHERIX_API_TOKEN; the
-// server var is new — operators can pin а CP URL без editing
+// server var is new — operators can pin a CP URL without editing
 // the config file (typical CI: `OTHERIX_API_TOKEN=… OTHERIX_SERVER=…
 // otherix vm list`).
 const (
@@ -18,10 +18,10 @@ const (
 	EnvServer = "OTHERIX_SERVER"
 )
 
-// SourceFlag, SourceEnv и SourceConfig describe where Resolve
-// picked the endpoint / token from. They surface в the
+// SourceFlag, SourceEnv and SourceConfig describe where Resolve
+// picked the endpoint / token from. They surface in the
 // ResolvedAuth.EndpointSource / TokenSource fields, used by `config
-// show` и by log lines that help operators reason about precedence
+// show` and by log lines that help operators reason about precedence
 // surprises.
 const (
 	SourceFlag   = "flag"
@@ -30,7 +30,7 @@ const (
 )
 
 // ResolvedAuth is the output of Resolve — endpoint + token ready
-// to hand to cpclient.New. EndpointSource и TokenSource record
+// to hand to cpclient.New. EndpointSource and TokenSource record
 // where each piece came from (`flag`, `env`, `config:<cluster>`);
 // they are not load-bearing for the network call but help operators
 // debug "why is the CLI using this token".
@@ -43,7 +43,7 @@ type ResolvedAuth struct {
 }
 
 // ResolveOptions captures every input Resolve uses — populated by
-// the caller from flags, env vars и a preloaded *Config. Callers
+// the caller from flags, env vars and a preloaded *Config. Callers
 // should pass the empty string for any layer they want to skip.
 type ResolveOptions struct {
 	FlagEndpoint string
@@ -61,7 +61,7 @@ type ResolveOptions struct {
 var ErrEndpointMissing = errors.New("cliconfig: no endpoint configured")
 
 // ErrTokenMissing signals that no precedence layer supplied a
-// bearer token. Surfaces к the user as "no token: pass --token,
+// bearer token. Surfaces to the user as "no token: pass --token,
 // set OTHERIX_API_TOKEN, or `otherix config use <cluster>`".
 var ErrTokenMissing = errors.New("cliconfig: no token configured")
 
@@ -76,15 +76,15 @@ var ErrTokenMissing = errors.New("cliconfig: no token configured")
 //
 //	--token flag → OTHERIX_API_TOKEN → --cluster entry → current-cluster → fail
 //
-// The two are intentionally independent — а typical CI/CD pattern
-// is "env var token, flag endpoint" и each precedence chain
+// The two are intentionally independent — a typical CI/CD pattern
+// is "env var token, flag endpoint" and each precedence chain
 // shortcuts independently. When --cluster is set, only that
-// cluster is consulted на the config layer (NOT current-cluster as
+// cluster is consulted on the config layer (NOT current-cluster as
 // fallback); this matches kubectl's --context behaviour.
 //
-// A nil opts.Config behaves как an empty config — Resolve still
-// works против flags + env alone, which is the Phase C smoke-test
-// path и must not regress.
+// A nil opts.Config behaves as an empty config — Resolve still
+// works against flags + env alone, which is the Phase C smoke-test
+// path and must not regress.
 func Resolve(opts ResolveOptions) (ResolvedAuth, error) {
 	out := ResolvedAuth{}
 
@@ -130,7 +130,7 @@ func Resolve(opts ResolveOptions) (ResolvedAuth, error) {
 // selectCluster picks the config cluster for Resolve: --cluster
 // flag wins (and surfaces ErrClusterNotFound if missing — never
 // silently falls through); otherwise current-cluster. Returns
-// (nil, nil) when neither names а cluster — that is а valid state
+// (nil, nil) when neither names a cluster — that is a valid state
 // (flags + env alone may carry the full credential pair).
 func selectCluster(opts ResolveOptions) (*Cluster, error) {
 	if opts.Config == nil {

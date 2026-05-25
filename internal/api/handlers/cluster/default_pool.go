@@ -26,7 +26,7 @@ type DefaultPool struct {
 
 // setDefaultPoolRequest is the PUT body. Name must reference an
 // existing pool name (at least one instance across the cluster); the
-// handler validates this before writing к cluster_settings.
+// handler validates this before writing to cluster_settings.
 type setDefaultPoolRequest struct {
 	Name string `json:"name"`
 }
@@ -52,8 +52,8 @@ func (h *Handler) GetDefaultPool(w http.ResponseWriter, r *http.Request) {
 }
 
 // SetDefaultPool implements PUT /v1/cluster/default-pool. Validates
-// the requested name resolves к at least one existing pool instance,
-// then writes к cluster_settings.default_pool_name. Permission:
+// the requested name resolves to at least one existing pool instance,
+// then writes to cluster_settings.default_pool_name. Permission:
 // cluster:manage.
 func (h *Handler) SetDefaultPool(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)

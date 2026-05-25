@@ -13,15 +13,15 @@ import (
 // semantic the operator UX iteration introduced:
 //
 //	cloud_init_disabled=true     → "" (explicit disable wins over both
-//	                                    VM user_data и template baked)
+//	                                    VM user_data and template baked)
 //	vm.user_data set             → override
 //	template.cloud_init_user_data → fallback
 //	none of the above            → ""
 //
 // The DB CHECK chk_vms_cloud_init_disabled_no_userdata makes the
 // "disabled-AND-userdata" combination unreachable in practice; the
-// edge case is exercised here as а defense-in-depth assertion that
-// the resolver still chooses disable если both surfaced (e.g. via а
+// edge case is exercised here as a defense-in-depth assertion that
+// the resolver still chooses disable if both surfaced (e.g. via a
 // schema drift bug or future migration mishap).
 func TestResolveCloudInitUserData_ThreeState(t *testing.T) {
 	t.Parallel()

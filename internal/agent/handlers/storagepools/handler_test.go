@@ -21,18 +21,18 @@ import (
 	"github.com/otherix/otherix/internal/config"
 )
 
-// testPoolRoots remembers the filesystem root associated с each pool
+// testPoolRoots remembers the filesystem root associated with each pool
 // name minted by newTestManager. Image-surface tests retrieve the
-// root via poolRootForTest к seed / inspect files. Keeps the existing
+// root via poolRootForTest to seed / inspect files. Keeps the existing
 // 2-value newTestManager signature stable; nothing observable from
 // production code.
 var testPoolRoots sync.Map // map[string]string
 
-// newTestManager spins up а vm.Manager backed by а temp pool. Mirrors
-// the pattern в internal/agent/vm/manager_test.go. Returns the
-// manager и the pool's name so the test can drive scan requests.
+// newTestManager spins up a vm.Manager backed by a temp pool. Mirrors
+// the pattern in internal/agent/vm/manager_test.go. Returns the
+// manager and the pool's name so the test can drive scan requests.
 //
-// The pool's filesystem root is cached в testPoolRoots so image
+// The pool's filesystem root is cached in testPoolRoots so image
 // tests can recover it via poolRootForTest.
 func newTestManager(t *testing.T) (*vm.Manager, string) {
 	t.Helper()
@@ -67,10 +67,10 @@ func poolRootForTest(t *testing.T, _ *vm.Manager, poolName string) string {
 	return root
 }
 
-// drainAgentTask polls m.Task(id) until the task reaches а terminal
+// drainAgentTask polls m.Task(id) until the task reaches a terminal
 // status (success / failed) or budget expires. Mirrors
-// waitForTaskTerminal в internal/agent/vm/scan_test.go; prevents
-// t.TempDir auto-cleanup от racing с handler-spawned goroutines that
+// waitForTaskTerminal in internal/agent/vm/scan_test.go; prevents
+// t.TempDir auto-cleanup from racing with handler-spawned goroutines that
 // outlive the synchronous 202 response (ImportImage writes to scratch
 // dir; Scan only stats — drained for symmetry against future growth).
 func drainAgentTask(t *testing.T, m *vm.Manager, id uuid.UUID, budget time.Duration) {
@@ -89,7 +89,7 @@ func drainAgentTask(t *testing.T, m *vm.Manager, id uuid.UUID, budget time.Durat
 	t.Fatalf("task %s did not reach terminal status within %s", id, budget)
 }
 
-// mountTestRouter wires the handler under /v1/storage-pools на а chi
+// mountTestRouter wires the handler under /v1/storage-pools on a chi
 // router shaped like the production agent router (path scope-only;
 // middleware bypassed for unit isolation).
 func mountTestRouter(h *Handler) chi.Router {
@@ -121,7 +121,7 @@ func TestScan_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Errorf("task_id = %q, want UUID", body.TaskID)
 	}
-	// Spec restricts AsyncTaskAccepted.status к [pending, running]. The
+	// Spec restricts AsyncTaskAccepted.status to [pending, running]. The
 	// goroutine may finish before the handler returns, so the status
 	// could be either when read out of the in-memory store. Either
 	// value satisfies the contract.
@@ -129,7 +129,7 @@ func TestScan_HappyPath(t *testing.T) {
 	case "pending", "running":
 		// expected
 	default:
-		t.Errorf("status = %q, want pending или running", body.Status)
+		t.Errorf("status = %q, want pending or running", body.Status)
 	}
 	self, ok := body.Links["self"].(string)
 	if !ok || self != "/v1/tasks/"+body.TaskID {
@@ -169,7 +169,7 @@ func TestScan_UnknownPool(t *testing.T) {
 // as a pool name and routed to the manager. Unknown names — including
 // strings that don't look like UUIDs — return 404 not_found from the
 // manager, not 400 validation_failed. Empty pool_name is the only path
-// that yields 400, but it cannot be expressed in а chi URL.
+// that yields 400, but it cannot be expressed in a chi URL.
 func TestScan_NonUUIDPoolName(t *testing.T) {
 	m, _ := newTestManager(t)
 	h := New(m, slog.New(slog.NewTextHandler(io.Discard, nil)))

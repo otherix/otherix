@@ -21,25 +21,25 @@ import (
 
 // escapeByte is the telnet-style escape character the CLI reserves
 // to bring up the local "close console?" prompt. Ctrl+] = 0x1D.
-// Operators that need к send 0x1D to the guest must double-tap (one
-// к invoke the prompt, decline, then re-send) or rely on а future
+// Operators that need to send 0x1D to the guest must double-tap (one
+// to invoke the prompt, decline, then re-send) or rely on a future
 // "send literal byte" prompt command.
 const escapeByte byte = 0x1D
 
-// stdinBufSize bounds а single read of operator keystrokes. Picked
-// keyboard-friendly — bigger than typical paste blocks без burning
+// stdinBufSize bounds a single read of operator keystrokes. Picked
+// keyboard-friendly — bigger than typical paste blocks without burning
 // memory.
 const stdinBufSize = 4096
 
 // newConsoleCommand returns `otherix vm console <vm-name>`. The
-// subcommand drops the operator into the VM's serial console via а
+// subcommand drops the operator into the VM's serial console via a
 // WebSocket session opened against the CP's `vms.console` ticket.
-// Terminal goes к raw mode for the duration; `Ctrl+]` brings up а
+// Terminal goes to raw mode for the duration; `Ctrl+]` brings up a
 // local prompt (yes/no) to close the session.
 func newConsoleCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "console <vm-name>",
-		Short: "Attach to а VM's serial console (interactive).",
+		Short: "Attach to a VM's serial console (interactive).",
 		Long: `Opens an interactive serial console session against the named VM
 through the Control Plane's console-ticket flow.
 
@@ -47,11 +47,11 @@ The VM must be running. Only the serial protocol is implemented;
 vnc / spice are reserved for future iterations.
 
 Escape sequence:
-  Ctrl+]    bring up а local "close console? (y/N)" prompt. Answering
+  Ctrl+]    bring up a local "close console? (y/N)" prompt. Answering
             'y' detaches; any other key resumes the session.
 
-The CLI never sends Ctrl+] (0x1D) to the guest. Operators что need
-к pass that byte literally must use а different tool (this is the
+The CLI never sends Ctrl+] (0x1D) to the guest. Operators that need
+to pass that byte literally must use a different tool (this is the
 same trade-off ` + "`virsh console`" + ` and similar tools accept).`,
 		Args: cobra.ExactArgs(1),
 		RunE: runConsole,
@@ -76,7 +76,7 @@ func runConsole(cmd *cobra.Command, args []string) error {
 
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("stdin is not а terminal — console requires an interactive shell")
+		return fmt.Errorf("stdin is not a terminal — console requires an interactive shell")
 	}
 
 	// Dial BEFORE flipping the terminal to raw mode so any failure
@@ -101,7 +101,7 @@ func runConsole(cmd *cobra.Command, args []string) error {
 	defer restore()
 
 	stderr := cmd.ErrOrStderr()
-	_, _ = fmt.Fprintf(stderr, "\r\nconnected к %s (serial console). Press Ctrl+] to detach.\r\n", vmName)
+	_, _ = fmt.Fprintf(stderr, "\r\nconnected to %s (serial console). Press Ctrl+] to detach.\r\n", vmName)
 
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
@@ -188,8 +188,8 @@ func decodeErrorEnvelope(resp *http.Response) errorEnvelope {
 	return wire.Error
 }
 
-// newTerminalRestorer wraps term.Restore in а once-only closure so
-// happy-path explicit calls и the deferred safety net cooperate
+// newTerminalRestorer wraps term.Restore in a once-only closure so
+// happy-path explicit calls and the deferred safety net cooperate
 // without restoring twice.
 func newTerminalRestorer(fd int, oldState *term.State) func() {
 	restored := false
@@ -201,8 +201,8 @@ func newTerminalRestorer(fd int, oldState *term.State) func() {
 	}
 }
 
-// pumpWebSocketToStdout copies binary frames received от the
-// WebSocket к stdout. First failure cancels the shared context so
+// pumpWebSocketToStdout copies binary frames received from the
+// WebSocket to stdout. First failure cancels the shared context so
 // the stdin pump unwinds promptly.
 func pumpWebSocketToStdout(ctx context.Context, wg *sync.WaitGroup, cancel context.CancelFunc, wsConn *websocket.Conn) {
 	defer wg.Done()
@@ -218,7 +218,7 @@ func pumpWebSocketToStdout(ctx context.Context, wg *sync.WaitGroup, cancel conte
 	}
 }
 
-// pumpStdinToWebSocket copies operator keystrokes к the WebSocket с
+// pumpStdinToWebSocket copies operator keystrokes to the WebSocket with
 // inline Ctrl+] escape detection. When the escape byte arrives,
 // anything in the same read buffer ahead of it is flushed first
 // (so half-typed input still reaches the guest), then the
@@ -240,9 +240,9 @@ func pumpStdinToWebSocket(ctx context.Context, wg *sync.WaitGroup, cancel contex
 	}
 }
 
-// handleStdinChunk processes а single stdin read. Returns false к
+// handleStdinChunk processes a single stdin read. Returns false to
 // signal "stop the pump" (operator detached, write failed). The
-// caller's loop continues когда true.
+// caller's loop continues when true.
 func handleStdinChunk(ctx context.Context, wsConn *websocket.Conn, data []byte, fd int, oldState *term.State, restore func(), stderr io.Writer) bool {
 	idx := findEscape(data)
 	if idx < 0 {
@@ -265,9 +265,9 @@ func handleStdinChunk(ctx context.Context, wsConn *websocket.Conn, data []byte, 
 	return true
 }
 
-// findEscape returns the index of the first escapeByte в data, or -1
-// if absent. Operator presses Ctrl+] и we route around the
-// WebSocket — sending it would deliver the byte к the guest, which
+// findEscape returns the index of the first escapeByte in data, or -1
+// if absent. Operator presses Ctrl+] and we route around the
+// WebSocket — sending it would deliver the byte to the guest, which
 // is the opposite of what the operator means with that keystroke.
 func findEscape(data []byte) int {
 	for i, b := range data {
@@ -279,10 +279,10 @@ func findEscape(data []byte) int {
 }
 
 // promptCloseConsole temporarily restores cooked terminal mode, asks
-// the operator "close console? (y/N)", и returns true if they
-// confirm. Any read error short-circuits к "close" (we cannot
-// recover а usable terminal от а partial restore). The caller is
-// responsible для re-entering raw mode когда the operator declines.
+// the operator "close console? (y/N)", and returns true if they
+// confirm. Any read error short-circuits to "close" (we cannot
+// recover a usable terminal from a partial restore). The caller is
+// responsible for re-entering raw mode when the operator declines.
 func promptCloseConsole(fd int, oldState *term.State, stderr io.Writer) (bool, error) {
 	if err := term.Restore(fd, oldState); err != nil {
 		return true, fmt.Errorf("restore terminal: %v", err)

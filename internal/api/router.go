@@ -47,7 +47,7 @@ type RouterDeps struct {
 	StoragePools       config.StoragePoolsConfig         // path allowlist
 	Logger             *slog.Logger
 	RequestTimeout     time.Duration
-	PlacementAlgorithm string                    // empty falls к scheduler default
+	PlacementAlgorithm string                    // empty falls to scheduler default
 	PlacementResources scheduler.ResourcesConfig // zero-value disables every resource → count-based fallback
 	PressureMemory     config.PressureConditionConfig
 	PressureSystemDisk config.PressureConditionConfig
@@ -82,9 +82,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Use(middleware.Recoverer(deps.Logger))
 	// middleware.Timeout is NOT applied at root — long-lived WebSocket
 	// routes (vms.consoleStream) must opt out, because the pump
-	// goroutines inherit r.Context() и would terminate at
+	// goroutines inherit r.Context() and would terminate at
 	// deps.RequestTimeout (~30s by default). The bounded-REST subtree
-	// below opts back в via а Group.
+	// below opts back in via a Group.
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, r, http.StatusNotFound,
@@ -136,12 +136,12 @@ func NewRouter(deps RouterDeps) http.Handler {
 // route runs under Authn, then Idempotency, then per-route
 // RequirePermission checks where applicable.
 //
-// The /v1/ca и /v1/nodes/join-tokens subtrees also live outside the
+// The /v1/ca and /v1/nodes/join-tokens subtrees also live outside the
 // main Authn + Idempotency block:
 //   - /v1/ca is anonymous (bootstrap-time agents have no credentials).
-//   - /v1/nodes/join-tokens POST mints а fresh token per call —
-//     replaying а cached response would compromise the once-only
-//     plaintext invariant. The remaining methods opt в к idem
+//   - /v1/nodes/join-tokens POST mints a fresh token per call —
+//     replaying a cached response would compromise the once-only
+//     plaintext invariant. The remaining methods opt in to idem
 //     individually.
 func mountV1(r chi.Router, deps RouterDeps) {
 	authH := authhandlers.New(deps.AuthService, deps.Store)
@@ -174,26 +174,26 @@ func mountV1(r chi.Router, deps RouterDeps) {
 		// fingerprint for TOFU validation.
 		r.Get("/ca", caH.Get)
 
-		// NOTE: vms.consoleStream is mounted в NewRouter (outside the
-		// Timeout Group) — anonymous, agent-issued token в query string
+		// NOTE: vms.consoleStream is mounted in NewRouter (outside the
+		// Timeout Group) — anonymous, agent-issued token in query string
 		// is the auth credential (single-use, 30s TTL, sha256 stored
 		// on agent). Direct-mode operators bypass that handler entirely
-		// (websocket_url returned by `vms.console` points straight к the
+		// (websocket_url returned by `vms.console` points straight to the
 		// agent).
 
 		// Anonymous redemption endpoint (Step 2 of the join-token
-		// bootstrap landing). Token plaintext в body is the
+		// bootstrap landing). Token plaintext in body is the
 		// bearer credential; TLS protects transport. The handler
 		// orchestrates an atomic transaction that validates the token,
-		// signs the CSR, upserts the node row, и records а consumption
-		// audit entry — all under а SELECT FOR UPDATE row lock on the
+		// signs the CSR, upserts the node row, and records a consumption
+		// audit entry — all under a SELECT FOR UPDATE row lock on the
 		// join_tokens row for race-safe max_uses enforcement.
 		r.Post("/nodes/join", nodeJoinH.Join)
 
 		// Join-token management. Mounted before the main Authn +
 		// Idempotency block so POST (create) can opt out of idem
-		// replay (каждый call mints а fresh token).
-		// The remaining methods opt в к idem individually.
+		// replay (each call mints a fresh token).
+		// The remaining methods opt in to idem individually.
 		r.Route("/nodes/join-tokens", func(r chi.Router) {
 			r.Use(authn)
 			// Create — authn yes, idem NO (intentional fresh-token-
@@ -388,11 +388,11 @@ func NewAgentRouter(deps RouterDeps) http.Handler {
 	// Bootstrap-time endpoints are anonymous — agents have no cert
 	// material yet (that is the entire point of these endpoints).
 	// The listener uses tls.VerifyClientCertIfGiven so anonymous TLS
-	// connections reach this routing tree; routes that require а
-	// verified agent identity (heartbeat) opt в к the AgentMTLS
-	// middleware below. Ordering matters только в так far as both
+	// connections reach this routing tree; routes that require a
+	// verified agent identity (heartbeat) opt in to the AgentMTLS
+	// middleware below. Ordering matters only in so far as both
 	// groups must be siblings — chi router resolves routes by exact
-	// match before fall-through, и the URLs do not overlap.
+	// match before fall-through, and the URLs do not overlap.
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
 	r.Get("/v1/ca", caH.Get)

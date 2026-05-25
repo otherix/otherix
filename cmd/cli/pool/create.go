@@ -24,8 +24,8 @@ const (
 
 	// waitPoolPollInterval / waitPoolTimeout control the --wait
 	// reconciliation poll. Interval long enough to keep CP load low,
-	// short enough к feel responsive on the typical 30 s heartbeat
-	// cadence. Timeout sized к 2× heartbeat for slack.
+	// short enough to feel responsive on the typical 30 s heartbeat
+	// cadence. Timeout sized to 2× heartbeat for slack.
 	waitPoolPollInterval = 2 * time.Second
 	waitPoolTimeout      = 60 * time.Second
 )
@@ -40,15 +40,15 @@ func newCreateCommand() *cobra.Command {
 		Use:   "create <name>",
 		Short: "Register a storage pool on a node (admin-only).",
 		Long: `Submits POST /v1/storage-pools. Required permission:
-storage_pool:manage (admin role). The CLI accepts а node name in
+storage_pool:manage (admin role). The CLI accepts a node name in
 --node (UUID literals rejected by the server with 400
 validation_failed). Multi-instance: one invocation registers one
 (name, node) row — the same pool name may live on multiple nodes by
 re-running the command per node.
 
 The command is NOT idempotent at the CLI surface (unlike 'template
-create' which falls through к materialise on 409): a duplicate (name,
-node) returns ErrPoolExists and the CLI surfaces а clear error.
+create' which falls through to materialise on 409): a duplicate (name,
+node) returns ErrPoolExists and the CLI surfaces a clear error.
 Operators driving seed scripts that need re-run safety should pre-check
 existence via 'otherix pool get <name>' before invoking create.
 
@@ -116,7 +116,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		if errors.Is(err, cpclient.ErrPoolExists) {
-			return fmt.Errorf("pool %s already exists on node %s — use 'otherix pool get %s' to inspect, or pick а different name",
+			return fmt.Errorf("pool %s already exists on node %s — use 'otherix pool get %s' to inspect, or pick a different name",
 				name, node, name)
 		}
 		return classifyError(err)
@@ -135,7 +135,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 }
 
 // renderCreateOutput writes the JSON or text representation of the
-// (possibly waited-for) pool view. Split от runCreate к keep its
+// (possibly waited-for) pool view. Split from runCreate to keep its
 // cyclomatic complexity in check.
 func renderCreateOutput(cmd *cobra.Command, p cpclient.Pool, format string, showIDs, wait bool) error {
 	if format == "json" {
@@ -166,9 +166,9 @@ func renderCreateOutput(cmd *cobra.Command, p cpclient.Pool, format string, show
 
 // waitForReady polls GET /v1/storage-pools/{id} until
 // reconciliation_status reaches `ready` (returns the latest Pool view)
-// или `failed` (returns the failed view + а non-nil error so callers
-// surface а non-zero exit). Times out after waitPoolTimeout с
-// а user-facing error noting the operator can re-poll manually via
+// or `failed` (returns the failed view + a non-nil error so callers
+// surface a non-zero exit). Times out after waitPoolTimeout with
+// a user-facing error noting the operator can re-poll manually via
 // `otherix pool get`.
 func waitForReady(cmd *cobra.Command, c *cpclient.Client, initial cpclient.Pool) (cpclient.Pool, error) {
 	ctx := cmd.Context()
@@ -186,7 +186,7 @@ func waitForReady(cmd *cobra.Command, c *cpclient.Client, initial cpclient.Pool)
 			return current, fmt.Errorf("pool reconciliation failed: %s", msg)
 		}
 		if time.Now().After(deadline) {
-			return current, fmt.Errorf("pool reconciliation did not reach 'ready' within %s — last status: %q (retry с 'otherix pool get %s' to keep polling)",
+			return current, fmt.Errorf("pool reconciliation did not reach 'ready' within %s — last status: %q (retry with 'otherix pool get %s' to keep polling)",
 				waitPoolTimeout, current.ReconciliationStatus, current.Name)
 		}
 		select {

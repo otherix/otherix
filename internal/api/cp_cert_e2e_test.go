@@ -30,9 +30,9 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// freshStoreWithCA returns а Store с fresh ca_certs row populated по
-// BootstrapClusterCA. Tests что depend on cluster CA loading use this
-// helper к skip the BootstrapAdmin path (irrelevant к cp_cert lifecycle).
+// freshStoreWithCA returns a Store with fresh ca_certs row populated by
+// BootstrapClusterCA. Tests that depend on cluster CA loading use this
+// helper to skip the BootstrapAdmin path (irrelevant to cp_cert lifecycle).
 func freshStoreWithCA(t *testing.T) *store.Store {
 	t.Helper()
 	if sharedHarness == nil {
@@ -98,7 +98,7 @@ func TestCPCert_BootGeneratesFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificate: %v", err)
 	}
-	// Operator's additional_sans should appear в DNSNames.
+	// Operator's additional_sans should appear in DNSNames.
 	found := false
 	for _, name := range parsed.DNSNames {
 		if name == "replica-1.cluster.local" {
@@ -170,7 +170,7 @@ func TestCPCert_RestartRegeneratesOnSANDrift(t *testing.T) {
 		t.Fatalf("first call: %v", err)
 	}
 
-	// Add а new SAN — cache should invalidate.
+	// Add a new SAN — cache should invalidate.
 	cfg.CPCert.AdditionalSANs = []string{"old-name.example.com", "new-name.example.com"}
 	second, err := api.LoadOrGenerateCPCert(context.Background(), s, cfg, log)
 	if err != nil {
@@ -199,10 +199,10 @@ func TestCPCert_HASimulation(t *testing.T) {
 	s := freshStoreWithCA(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// Two replicas с different hostnames — simulate via hostnameFn swap
+	// Two replicas with different hostnames — simulate via hostnameFn swap
 	// since auth.AutoDetectSANs is the only consumer of os.Hostname.
 	// We can't easily run two concurrent boots through one process
-	// without coordinating the swap, so test serial regeneration с
+	// without coordinating the swap, so test serial regeneration with
 	// different hostnames + verify both chains validate against the
 	// same cluster CA.
 
@@ -222,7 +222,7 @@ func TestCPCert_HASimulation(t *testing.T) {
 		t.Fatalf("replica2: %v", err)
 	}
 
-	// Both chain к same CA.
+	// Both chain to same CA.
 	pool := x509.NewCertPool()
 	pool.AddCert(mat1.ClusterCA)
 	for i, mat := range []api.TLSMaterial{mat1, mat2} {
@@ -267,7 +267,7 @@ func TestCPCert_HASimulationConcurrent(t *testing.T) {
 	}
 	// Same CA loaded by both.
 	if results[0].ClusterCA == nil || results[1].ClusterCA == nil {
-		t.Fatal("ClusterCA nil в one or both results")
+		t.Fatal("ClusterCA nil in one or both results")
 	}
 	if results[0].ClusterCA.SerialNumber.Cmp(results[1].ClusterCA.SerialNumber) != 0 {
 		t.Error("replicas loaded different CA rows — partial unique index broken?")
@@ -278,7 +278,7 @@ func TestCPCert_ManualOverride(t *testing.T) {
 	s := freshStoreWithCA(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// Generate а cert externally + write к temp paths to simulate
+	// Generate a cert externally + write to temp paths to simulate
 	// operator-supplied Mode A material. The "external" CA here = same
 	// cluster CA in DB so chain validation passes downstream; in
 	// production operator might use Let's Encrypt OR corporate CA.
@@ -355,7 +355,7 @@ func TestCPCert_AgentMTLSHandshake(t *testing.T) {
 		t.Fatalf("LoadOrGenerateCPCert: %v", err)
 	}
 
-	// Stand up а TLS server presenting mat.Cert; client built с pool
+	// Stand up a TLS server presenting mat.Cert; client built with pool
 	// rooted at mat.ClusterCA must complete handshake.
 	pool := x509.NewCertPool()
 	pool.AddCert(mat.ClusterCA)
@@ -391,8 +391,8 @@ func TestCPCert_AgentMTLSHandshake(t *testing.T) {
 }
 
 func TestCPCert_PEMShapeStable(t *testing.T) {
-	// Catch accidental encoding drift в PEM output — both PEM blocks
-	// must decode cleanly и round-trip back through tls.X509KeyPair.
+	// Catch accidental encoding drift in PEM output — both PEM blocks
+	// must decode cleanly and round-trip back through tls.X509KeyPair.
 	s := freshStoreWithCA(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := cpCertConfigBase()

@@ -17,9 +17,9 @@ import (
 
 // VMStartArgs / VMStopArgs / VMPoweroffArgs / VMRebootArgs are the
 // river JobArgs for the L2 async lifecycle pipeline. The atomic-
-// enqueue handlers insert the task row, mint а fresh task id, и
+// enqueue handlers insert the task row, mint a fresh task id, and
 // enqueue this payload via riverClient.InsertTx. The worker re-loads
-// the VM + node from the database before dispatching к the executor —
+// the VM + node from the database before dispatching to the executor —
 // same pattern as VMCreateArgs / VMDeleteArgs.
 type VMStartArgs struct {
 	TaskID uuid.UUID `json:"task_id"`
@@ -30,7 +30,7 @@ type VMStartArgs struct {
 // Kind names the job kind.
 func (VMStartArgs) Kind() string { return "vm.start" }
 
-// VMStopArgs is the river JobArgs for а `vm.stop` task.
+// VMStopArgs is the river JobArgs for a `vm.stop` task.
 type VMStopArgs struct {
 	TaskID uuid.UUID `json:"task_id"`
 	VMID   uuid.UUID `json:"vm_id"`
@@ -40,7 +40,7 @@ type VMStopArgs struct {
 // Kind names the job kind.
 func (VMStopArgs) Kind() string { return "vm.stop" }
 
-// VMPoweroffArgs is the river JobArgs for а `vm.poweroff` task.
+// VMPoweroffArgs is the river JobArgs for a `vm.poweroff` task.
 type VMPoweroffArgs struct {
 	TaskID uuid.UUID `json:"task_id"`
 	VMID   uuid.UUID `json:"vm_id"`
@@ -50,7 +50,7 @@ type VMPoweroffArgs struct {
 // Kind names the job kind.
 func (VMPoweroffArgs) Kind() string { return "vm.poweroff" }
 
-// VMRebootArgs is the river JobArgs for а `vm.reboot` task.
+// VMRebootArgs is the river JobArgs for a `vm.reboot` task.
 type VMRebootArgs struct {
 	TaskID uuid.UUID `json:"task_id"`
 	VMID   uuid.UUID `json:"vm_id"`
@@ -65,7 +65,7 @@ func (VMRebootArgs) Kind() string { return "vm.reboot" }
 // dispatch shape (endpoint, vmName, idempotency key) is identical.
 // AgentTaskID carries the persisted agent-side task uuid for
 // resumption — nil on first run, non-nil when the worker is recovering
-// from а CP-side restart.
+// from a CP-side restart.
 //
 // OnAgentTaskID is the callback the executor invokes immediately
 // after the agent's 202 returns, persisting the agent task id via
@@ -79,7 +79,7 @@ type LifecycleArgs struct {
 }
 
 // LifecycleResult is the executor's output. Surfaces verbatim into
-// the task's `result` JSONB so operators can correlate без а follow-
+// the task's `result` JSONB so operators can correlate without a follow-
 // up GET.
 type LifecycleResult struct {
 	VMID string `json:"vm_id"`
@@ -87,7 +87,7 @@ type LifecycleResult struct {
 
 // LifecycleExecutor is the per-task-type seam for vm.start /
 // vm.stop / vm.poweroff / vm.reboot. Production implementation lives
-// in agent_executors_lifecycle.go; tests pass а stub. The op string
+// in agent_executors_lifecycle.go; tests pass a stub. The op string
 // is one of "start" / "stop" / "poweroff" / "reboot" — drives the
 // agent-side endpoint selection.
 type LifecycleExecutor interface {
@@ -96,9 +96,9 @@ type LifecycleExecutor interface {
 
 // LifecycleDepsAsync is the dependency bundle BuildRiverClient passes
 // to the four lifecycle worker registrations. Executor optional —
-// nil-tolerant в the same way as CreateDeps / DeleteDeps. Named
-// LifecycleDepsAsync rather than LifecycleDeps к avoid colliding с
-// the sync-lifecycle LifecycleDeps в lifecycle.go.
+// nil-tolerant in the same way as CreateDeps / DeleteDeps. Named
+// LifecycleDepsAsync rather than LifecycleDeps to avoid colliding with
+// the sync-lifecycle LifecycleDeps in lifecycle.go.
 type LifecycleDepsAsync struct {
 	Store    *store.Store
 	Executor LifecycleExecutor
@@ -107,13 +107,13 @@ type LifecycleDepsAsync struct {
 
 // vmLifecycleAsyncWorker is the shared worker engine that drives the
 // four async lifecycle operations. The four kind-specific worker
-// types are thin shells над this engine; they differ only в the
-// TaskKind / Args они unmarshal и the op string they pass through к
+// types are thin shells above this engine; they differ only in the
+// TaskKind / Args they unmarshal and the op string they pass through to
 // the executor + desired_phase write.
 //
-// Sequence: UpdateTaskRunning → load vm + node → reload task для
+// Sequence: UpdateTaskRunning → load vm + node → reload task for
 // AgentTaskID → executor.Execute → on success write vms.desired_phase
-// (when applicable) + UpdateTaskFinalized в InTx → on error
+// (when applicable) + UpdateTaskFinalized in InTx → on error
 // classifyVMError + fail. Mirrors the VMCreateWorker / VMDeleteWorker
 // shape verbatim except for the dispatch indirection.
 type vmLifecycleAsyncWorker struct {
@@ -122,7 +122,7 @@ type vmLifecycleAsyncWorker struct {
 	logger   *slog.Logger
 }
 
-// Failure codes specific к the L2 async surface. Pass-through agent
+// Failure codes specific to the L2 async surface. Pass-through agent
 // codes (stop_timeout, qemu_supervision_failed, qmp_unavailable, ...)
 // are preserved verbatim by classifyVMError.
 const (
@@ -135,12 +135,12 @@ const (
 // runOne dispatches one async lifecycle job. Used by each of the
 // four kind-specific worker wrappers. op is the agent-side action
 // segment ("start" / "stop" / ...). desiredPhase is the
-// vms.desired_phase к write on success per CP spec: start → running,
+// vms.desired_phase to write on success per CP spec: start → running,
 // stop / poweroff → stopped, reboot → unchanged (caller passes
-// VmDesiredPhase("")). runtimePhase is the vm_runtime.phase к write
+// VmDesiredPhase("")). runtimePhase is the vm_runtime.phase to write
 // on success — mirrors the agent's observed outcome verbatim so the
 // projected `status` field converges immediately rather than waiting
-// for а heartbeat-driven reconcile. L3 reconciler eventually owns
+// for a heartbeat-driven reconcile. L3 reconciler eventually owns
 // vm_runtime.phase; until then the worker writes through.
 func (w *vmLifecycleAsyncWorker) runOne(
 	ctx context.Context,
@@ -190,10 +190,10 @@ func (w *vmLifecycleAsyncWorker) runOne(
 }
 
 // projectSuccess writes vms.desired_phase (when non-empty),
-// vm_runtime.phase, и finalises the task in one transaction.
-// Bundling всех three writes под one InTx keeps the projected
-// `status` field consistent с the runtime — а half-applied
-// terminal would surface а VM where the user's desire converged but
+// vm_runtime.phase, and finalises the task in one transaction.
+// Bundling all three writes under one InTx keeps the projected
+// `status` field consistent with the runtime — a half-applied
+// terminal would surface a VM where the user's desire converged but
 // the observed runtime stayed stale until the next heartbeat.
 func (w *vmLifecycleAsyncWorker) projectSuccess(
 	ctx context.Context,
@@ -240,8 +240,8 @@ type VMStartWorker struct {
 	engine *vmLifecycleAsyncWorker
 }
 
-// Work executes one VMStartArgs job: dispatches к the shared engine
-// с op="start", desiredPhase="running", runtimePhase="running".
+// Work executes one VMStartArgs job: dispatches to the shared engine
+// with op="start", desiredPhase="running", runtimePhase="running".
 func (w *VMStartWorker) Work(ctx context.Context, j *river.Job[VMStartArgs]) error {
 	return w.engine.runOne(ctx,
 		j.Args.TaskID, j.Args.VMID, j.Args.NodeID,
@@ -254,7 +254,7 @@ type VMStopWorker struct {
 	engine *vmLifecycleAsyncWorker
 }
 
-// Work executes one VMStopArgs job: dispatches с op="stop",
+// Work executes one VMStopArgs job: dispatches with op="stop",
 // desiredPhase="stopped", runtimePhase="stopped".
 func (w *VMStopWorker) Work(ctx context.Context, j *river.Job[VMStopArgs]) error {
 	return w.engine.runOne(ctx,
@@ -285,7 +285,7 @@ type VMRebootWorker struct {
 // Work executes one VMRebootArgs job: op="reboot", desiredPhase
 // unchanged (reboot leaves the user intent at "running" per CP spec
 // — the runtime cycles, the desire does not), runtimePhase="running"
-// (the post-cycle observed state is а fresh QEMU process в running).
+// (the post-cycle observed state is a fresh QEMU process in running).
 func (w *VMRebootWorker) Work(ctx context.Context, j *river.Job[VMRebootArgs]) error {
 	return w.engine.runOne(ctx,
 		j.Args.TaskID, j.Args.VMID, j.Args.NodeID,

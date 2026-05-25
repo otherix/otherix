@@ -22,7 +22,7 @@ import (
 // re-marshalling.
 //
 // owner_id stays a UUID string here — name-based references narrow
-// VM-referenced resources к names, but users are intentionally
+// VM-referenced resources to names, but users are intentionally
 // outside that scope. Template name itself is surfaced as Name;
 // operators address templates by name through every CLI path.
 type Template struct {
@@ -35,11 +35,11 @@ type Template struct {
 	OSFamily     string    `json:"os_family"`
 	OSVariant    string    `json:"os_variant"`
 	ImageURL     string    `json:"image_url"`
-	// Nullable — null indicates the template was registered в
-	// compute mode (no upstream checksum) и has not yet been
+	// Nullable — null indicates the template was registered in
+	// compute mode (no upstream checksum) and has not yet been
 	// materialised. After the first successful import the CP
 	// back-propagates the agent-computed value, so this field holds
-	// а non-nil pointer in steady state.
+	// a non-nil pointer in steady state.
 	ImageChecksumSHA256 *string `json:"image_checksum_sha256"`
 	ImageFormat         string  `json:"image_format"`
 	ImageSizeBytes      *int64  `json:"image_size_bytes"`
@@ -52,7 +52,7 @@ type Template struct {
 	// CloudInitUserData carries the optional `#cloud-config` YAML the
 	// operator baked into the template at create/update time (L3 /
 	// operator UX iterations). Server returns nil when unset. Earlier
-	// drift hid this column from the CLI even though the server и DB
+	// drift hid this column from the CLI even though the server and DB
 	// persisted it correctly — operators using `otherix template get`
 	// could not verify what cloud-init was actually baked.
 	CloudInitUserData      *string         `json:"cloud_init_user_data"`
@@ -82,8 +82,8 @@ type ListTemplatesParams struct {
 	OSFamily     string
 }
 
-// ListTemplates fetches GET /v1/templates с the supplied query
-// filters. Pagination is the caller's responsibility (re-issue с
+// ListTemplates fetches GET /v1/templates with the supplied query
+// filters. Pagination is the caller's responsibility (re-issue with
 // TemplateList.Meta.NextCursor on Params.Cursor).
 func (c *Client) ListTemplates(ctx context.Context, params ListTemplatesParams) (TemplateList, error) {
 	q := url.Values{}
@@ -143,22 +143,22 @@ func (c *Client) GetTemplate(ctx context.Context, identifier string) (Template, 
 	return out, nil
 }
 
-// CreateTemplateRequest mirrors components/schemas/TemplateCreate в
+// CreateTemplateRequest mirrors components/schemas/TemplateCreate in
 // api/openapi/control-plane.yaml. Optional fields use pointer types so
 // the encoder can omit them, letting the server apply spec defaults
 // (e.g. image_format=qcow2, firmware_type=uefi, default_cpu_cores=2).
 //
 // `image_checksum_sha256` is optional. Two trust modes:
 //
-//   - Non-empty value (verify mode) — server stores the bytes и the
+//   - Non-empty value (verify mode) — server stores the bytes and the
 //     agent verifies the streamed download against them.
 //   - Empty string (compute mode) — the server treats the field as
-//     absent, agent computes the sha256 during streaming download и
+//     absent, agent computes the sha256 during streaming download and
 //     CP back-propagates it onto the template row idempotently.
 //
-// The CLI flag layer normalises absent flags к empty string, so the
+// The CLI flag layer normalises absent flags to empty string, so the
 // wire body always carries the field — the server-side handler maps
-// empty к "absent" before writing к the nullable bytea column.
+// empty to "absent" before writing to the nullable bytea column.
 //
 // `visibility` is intentionally absent — POST /v1/templates rejects it
 // via the forbidden-key sweep (templates always start `private`; flip
@@ -180,11 +180,11 @@ type CreateTemplateRequest struct {
 	// CloudInitUserData is the optional raw `#cloud-config` YAML the
 	// operator wants baked into the template (L3 / operator UX
 	// iteration). When set, the server stores it on
-	// templates.cloud_init_user_data; on VM create без а per-VM
-	// override the resolver falls back к this value. Pointer-typed
+	// templates.cloud_init_user_data; on VM create without a per-VM
+	// override the resolver falls back to this value. Pointer-typed
 	// so omitting the flag leaves the JSON encoder skipping the
 	// field — matching the spec's "omit = unchanged" PATCH semantics
-	// и the create path's "omit = no pre-bake" default.
+	// and the create path's "omit = no pre-bake" default.
 	CloudInitUserData      *string `json:"cloud_init_user_data,omitempty"`
 	QemuGuestAgentExpected *bool   `json:"qemu_guest_agent_expected,omitempty"`
 }
@@ -200,7 +200,7 @@ type CreateTemplateRequest struct {
 var ErrTemplateExists = errors.New("template already exists")
 
 // CreateTemplate submits POST /v1/templates. 201 returns the parsed
-// Template; 409 collapses к ErrTemplateExists; any other non-2xx
+// Template; 409 collapses to ErrTemplateExists; any other non-2xx
 // surfaces as *APIError.
 func (c *Client) CreateTemplate(ctx context.Context, req CreateTemplateRequest) (Template, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodPost, "/v1/templates", req)
@@ -237,13 +237,13 @@ type ErrTemplateBlocked struct {
 }
 
 // Error renders the operator-facing message, listing resource types
-// and counts sorted by key для stable output.
+// and counts sorted by key for stable output.
 func (e *ErrTemplateBlocked) Error() string {
 	return fmt.Sprintf("template delete blocked: %s: %v", e.Code, e.Resources)
 }
 
 // DeleteTemplate submits DELETE /v1/templates/{name}. 204 returns nil;
-// 409 collapses к *ErrTemplateBlocked carrying the parsed blocking_resources
+// 409 collapses to *ErrTemplateBlocked carrying the parsed blocking_resources
 // map; any other non-2xx (404 / 5xx) surfaces as *APIError.
 //
 // The handler enforces name-only addressing; UUID literals return
@@ -269,7 +269,7 @@ func (c *Client) DeleteTemplate(ctx context.Context, name string) error {
 // decodeBlockingResources lifts the `details.blocking_resources` map
 // off an APIError into the typed ErrTemplateBlocked shape. Returns nil
 // when the details payload is absent or malformed — the caller falls
-// back к the raw *APIError so the operator at least sees the status code.
+// back to the raw *APIError so the operator at least sees the status code.
 func decodeBlockingResources(apiErr *APIError) *ErrTemplateBlocked {
 	if apiErr.Details == nil {
 		return nil
