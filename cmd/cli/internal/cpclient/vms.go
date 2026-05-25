@@ -6,6 +6,7 @@ package cpclient
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -339,6 +340,58 @@ func (c *Client) VMConsole(ctx context.Context, vmName, protocol string) (VMCons
 		return VMConsoleResponse{}, err
 	}
 	return out, nil
+}
+
+// VMLogs opens GET /v1/vms/{name}/logs and returns the streaming
+// response body. The caller is responsible for Close. tailLines
+// follows kubectl semantics: -1 (default) yields the full retained
+// history, 0 skips history entirely, positive N returns the trailing
+// N lines. follow keeps the stream open for live bytes after the
+// initial history flushes.
+//
+// Non-2xx envelopes surface as *APIError before any bytes are
+// returned to the caller; on success the returned reader streams the
+// agent's chunked text/plain body verbatim.
+func (c *Client) VMLogs(ctx context.Context, vmName string, tailLines int, follow bool) (io.ReadCloser, error) {
+	if vmName == "" {
+		return nil, fmt.Errorf("cpclient.VMLogs: vm name is required")
+	}
+	qry := url.Values{}
+	qry.Set("tail", strconv.Itoa(tailLines))
+	if follow {
+		qry.Set("follow", "true")
+	}
+	path := "/v1/vms/" + url.PathEscape(vmName) + "/logs?" + qry.Encode()
+
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "text/plain")
+
+	// The shared httpClient carries a per-request Timeout to bound
+	// regular REST calls; streaming logs would hit that timeout. Wrap
+	// the same Transport in a fresh client without a Timeout so TLS
+	// trust and connection pooling are preserved.
+	transport := c.httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	streamClient := &http.Client{Transport: transport, Jar: c.httpClient.Jar}
+
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cpclient: VMLogs: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, parseAPIError(resp.StatusCode, body)
+	}
+	return resp.Body, nil
 }
 
 // Compile-time check that response.AsyncTaskAccepted shares the same
