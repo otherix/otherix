@@ -229,12 +229,14 @@ func TestMultiplexer_ConsoleHistoryDeliveredOnSubscribe(t *testing.T) {
 	}
 	defer func() { _ = sub.Close() }()
 
-	got := readSubscriber(t, sub.Bytes(), 30, 2*time.Second)
-	if !bytes.Contains(got, []byte("line-3")) {
+	// Sample at least the ring-buffered seed length so we know history
+	// landed without depending on the now-removed visual separator.
+	got := readSubscriber(t, sub.Bytes(), len("line-1\nline-2\nline-3\n"), 2*time.Second)
+	if !bytes.Contains(got, []byte("line-1")) {
 		t.Errorf("first delivery should carry history, got %q", got)
 	}
-	if !bytes.Contains(got, []byte("--- live console ---")) {
-		t.Errorf("history must be followed by visual separator, got %q", got)
+	if !bytes.Contains(got, []byte("line-3")) {
+		t.Errorf("first delivery should carry history through to the tail, got %q", got)
 	}
 }
 

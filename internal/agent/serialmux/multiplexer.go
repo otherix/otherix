@@ -201,15 +201,15 @@ func (m *Multiplexer) SubscribeConsole() (*ConsoleSubscriber, error) {
 	sub := newConsoleSubscriber(m.writeToQEMU, defaultSubscriberCapacity)
 	m.consoleSub = sub
 
+	// L18: deliver a recent-history tail on attach so the operator
+	// has context for what just happened. The original spec also
+	// emitted a visual separator between history and live bytes,
+	// but real-agent smoke showed the marker sitting awkwardly
+	// after the login prompt and visually fragmenting the console
+	// view, so it is omitted. History flows directly into live.
 	history := m.ring.LastNLines(consoleHistoryLines)
 	if len(history) > 0 {
 		_ = sub.tryDeliver(history)
-		// The CLI flips stdin to raw mode for console sessions, so
-		// the terminal does not auto-translate `\n` to `\r\n` the
-		// way it does for cooked-mode stdout. Use a CRLF here so
-		// the separator lands on its own line at column 0 instead
-		// of staircase-indenting after the last history byte.
-		_ = sub.tryDeliver([]byte("\r\n[otherix: --- live console ---]\r\n"))
 	}
 	return sub, nil
 }
