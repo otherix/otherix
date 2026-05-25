@@ -61,7 +61,7 @@ func validateCapabilities(c *nodeCapabilitiesReport) *validationFailure {
 	if c.KernelVersion == "" {
 		return &validationFailure{field: "capabilities.kernel_version", message: "kernel_version is required"}
 	}
-	if c.QemuVersion == "" {
+	if c.QEMUVersion == "" {
 		return &validationFailure{field: "capabilities.qemu_version", message: "qemu_version is required"}
 	}
 	return nil
@@ -130,7 +130,7 @@ func validateMigration(m *migrationCapability) *validationFailure {
 }
 
 func validVMPhase(p string) bool {
-	switch store.VmPhase(p) {
+	switch store.VMPhase(p) {
 	case store.VmPhasePending, store.VmPhaseRunning, store.VmPhasePaused,
 		store.VmPhaseStopped, store.VmPhaseError, store.VmPhaseGone:
 		return true
@@ -143,7 +143,7 @@ func validVMPhase(p string) bool {
 // nodes.capabilities jsonb. kvm_available, nested_virt, and
 // qemu_binaries land here per the NodeCapabilitiesReport mapping.
 func buildCapabilitiesJSON(c nodeCapabilitiesReport) ([]byte, error) {
-	binaries := c.QemuBinaries
+	binaries := c.QEMUBinaries
 	if binaries == nil {
 		binaries = map[string]string{}
 	}

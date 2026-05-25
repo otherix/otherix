@@ -27,7 +27,7 @@ func imageImportReq(checksum string) agentapi.ImageImportRequest {
 	return agentapi.ImageImportRequest{
 		ExpectedChecksumSha256: &checksum,
 		Format:                 agentapi.ImageImportRequestFormat("qcow2"),
-		SourceUrl:              &url,
+		SourceURL:              &url,
 	}
 }
 

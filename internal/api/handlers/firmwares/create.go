@@ -46,7 +46,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	arch := store.CpuArch(req.Architecture)
+	arch := store.CPUArch(req.Architecture)
 	fwType := store.FirmwareType(req.Type)
 	isDefault := req.IsDefault != nil && *req.IsDefault
 	secureBoot := req.SecureBoot != nil && *req.SecureBoot

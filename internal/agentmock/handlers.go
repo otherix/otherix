@@ -257,20 +257,20 @@ func (m *Mock) buildNodeInfoLocked() agentapi.NodeInfo {
 	}
 	uptime := max(int64(time.Since(s.startedAt).Seconds()), 0)
 	info := agentapi.NodeInfo{
-		NodeId:             s.nodeID,
+		NodeID:             s.nodeID,
 		Hostname:           s.hostname,
 		AgentVersion:       s.agentVersion,
 		Architecture:       agentapi.NodeInfoArchitecture(s.architecture),
 		KvmAvailable:       s.kvmAvailable,
-		CpuModel:           s.cpuModel,
-		CpuFeatures:        append([]string(nil), s.cpuFeatures...),
-		CpuCoresTotal:      s.cpuCoresTotal,
-		CpuCoresAvailable:  s.cpuCoresAvailable,
+		CPUModel:           s.cpuModel,
+		CPUFeatures:        append([]string(nil), s.cpuFeatures...),
+		CPUCoresTotal:      s.cpuCoresTotal,
+		CPUCoresAvailable:  s.cpuCoresAvailable,
 		MemoryTotalMib:     s.memoryTotalMib,
 		MemoryAvailableMib: s.memoryAvailableMib,
-		QemuVersion:        s.qemuVersion,
+		QEMUVersion:        s.qemuVersion,
 		KernelVersion:      s.kernelVersion,
-		QemuBinaries:       cloneStringMap(s.qemuBinaries),
+		QEMUBinaries:       cloneStringMap(s.qemuBinaries),
 		Firmwares:          firmwares,
 		Migration:          migrationToAPI(s.migration),
 		StartedAt:          s.startedAt,
@@ -282,11 +282,11 @@ func (m *Mock) buildNodeInfoLocked() agentapi.NodeInfo {
 	}
 	if s.hugepages2MiBTotal != nil {
 		v := *s.hugepages2MiBTotal
-		info.Hugepages2mibTotal = &v
+		info.Hugepages2MibTotal = &v
 	}
 	if s.hugepages1GiBTotal != nil {
 		v := *s.hugepages1GiBTotal
-		info.Hugepages1gibTotal = &v
+		info.Hugepages1GibTotal = &v
 	}
 	if len(s.labels) > 0 {
 		labels := cloneStringMap(s.labels)
@@ -365,7 +365,7 @@ func (m *Mock) StorageImagesList(w http.ResponseWriter, r *http.Request, poolNam
 // the handler materialises the imported file in state.images on the
 // way out — the side effect mirrors a real agent's "file is on disk
 // once the task is done" semantics, observable to subsequent
-// StorageImagesList calls and the Test API's GetStoredImage helper.
+// StorageImagesList calls and the Test API's StoredImage helper.
 func (m *Mock) TasksGet(w http.ResponseWriter, r *http.Request, taskID uuid.UUID) {
 	const opID = "tasks.get"
 	if m.preDispatch(w, r, opID) {
@@ -412,7 +412,7 @@ func (m *Mock) NetworksConfigure(w http.ResponseWriter, r *http.Request, _ agent
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) NetworksDelete(w http.ResponseWriter, r *http.Request, _ agentapi.NetworkId, _ agentapi.NetworksDeleteParams) {
+func (m *Mock) NetworksDelete(w http.ResponseWriter, r *http.Request, _ agentapi.NetworkID, _ agentapi.NetworksDeleteParams) {
 	const opID = "networks.delete"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -420,7 +420,7 @@ func (m *Mock) NetworksDelete(w http.ResponseWriter, r *http.Request, _ agentapi
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) NetworksGet(w http.ResponseWriter, r *http.Request, _ agentapi.NetworkId) {
+func (m *Mock) NetworksGet(w http.ResponseWriter, r *http.Request, _ agentapi.NetworkID) {
 	const opID = "networks.get"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -462,7 +462,7 @@ func (m *Mock) StoragePoolsScan(w http.ResponseWriter, r *http.Request, poolName
 	m.state.mu.Unlock()
 
 	body := agentapi.AsyncTaskAccepted{
-		TaskId: agentTaskID,
+		TaskID: agentTaskID,
 		Status: agentapi.AsyncTaskAcceptedStatus("pending"),
 		Links: struct {
 			Self string `json:"self"`
@@ -491,7 +491,7 @@ func (m *Mock) VmsCreate(w http.ResponseWriter, r *http.Request, _ agentapi.VmsC
 }
 
 // VmsDelete implements DELETE /v1/vms/{vm_name} — Phase A vertical slice.
-func (m *Mock) VmsDelete(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsDeleteParams) {
+func (m *Mock) VmsDelete(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsDeleteParams) {
 	const opID = "vms.delete"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -500,7 +500,7 @@ func (m *Mock) VmsDelete(w http.ResponseWriter, r *http.Request, vmName agentapi
 }
 
 // VmsGet implements GET /v1/vms/{vm_name} — Phase A vertical slice.
-func (m *Mock) VmsGet(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName) {
+func (m *Mock) VmsGet(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName) {
 	const opID = "vms.get"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -511,7 +511,7 @@ func (m *Mock) VmsGet(w http.ResponseWriter, r *http.Request, vmName agentapi.Vm
 // VmsStart implements POST /v1/vms/{vm_name}/start — L2 async vertical
 // slice. Returns 202 + AsyncTaskAccepted; the inventory transition
 // (stopped/failed → running) lands lazily on later TasksGet calls.
-func (m *Mock) VmsStart(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsStartParams) {
+func (m *Mock) VmsStart(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsStartParams) {
 	const opID = "vms.start"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -523,7 +523,7 @@ func (m *Mock) VmsStart(w http.ResponseWriter, r *http.Request, vmName agentapi.
 // ACPI shutdown. Default success transitions running → stopped; tests
 // stage stop-timeout failure via AddVMLifecycleResult с Status="failed"
 // и а stop_timeout error envelope.
-func (m *Mock) VmsStop(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsStopParams) {
+func (m *Mock) VmsStop(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsStopParams) {
 	const opID = "vms.stop"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -533,7 +533,7 @@ func (m *Mock) VmsStop(w http.ResponseWriter, r *http.Request, vmName agentapi.V
 
 // VmsPoweroff implements POST /v1/vms/{vm_name}/poweroff — async
 // hard shutdown. Default success transitions any → stopped.
-func (m *Mock) VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsPoweroffParams) {
+func (m *Mock) VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsPoweroffParams) {
 	const opID = "vms.poweroff"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -547,7 +547,7 @@ func (m *Mock) VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName agenta
 // the wire status converges back к running; the real-agent
 // distinction от reset — PID change — is not modelled at the mock
 // layer because the wire shape carries no PID).
-func (m *Mock) VmsReboot(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsRebootParams) {
+func (m *Mock) VmsReboot(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsRebootParams) {
 	const opID = "vms.reboot"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -561,7 +561,7 @@ func (m *Mock) VmsReboot(w http.ResponseWriter, r *http.Request, vmName agentapi
 // has no entry for `vmName`; 409 when the current status is not
 // `running`. Both error envelopes match the agent contract — the CP
 // handler maps them straight через к the operator surface.
-func (m *Mock) VmsPause(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsPauseParams) {
+func (m *Mock) VmsPause(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsPauseParams) {
 	const opID = "vms.pause"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -571,7 +571,7 @@ func (m *Mock) VmsPause(w http.ResponseWriter, r *http.Request, vmName agentapi.
 
 // VmsResume implements POST /v1/vms/{vm_name}/resume — mirror of
 // VmsPause, paused → running.
-func (m *Mock) VmsResume(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsResumeParams) {
+func (m *Mock) VmsResume(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsResumeParams) {
 	const opID = "vms.resume"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -583,7 +583,7 @@ func (m *Mock) VmsResume(w http.ResponseWriter, r *http.Request, vmName agentapi
 // Pre-L1 spec amendment. Requires `running` и leaves the status
 // `running` (reset preserves runtime identity; the QEMU process
 // keeps going, only the guest CPU is reset).
-func (m *Mock) VmsReset(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmsResetParams) {
+func (m *Mock) VmsReset(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsResetParams) {
 	const opID = "vms.reset"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -591,7 +591,7 @@ func (m *Mock) VmsReset(w http.ResponseWriter, r *http.Request, vmName agentapi.
 	m.vmLifecycle(w, r, opID, vmName, "running", "running")
 }
 
-func (m *Mock) VmsResize(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmsResizeParams) {
+func (m *Mock) VmsResize(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VmsResizeParams) {
 	const opID = "vms.resize"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -599,7 +599,7 @@ func (m *Mock) VmsResize(w http.ResponseWriter, r *http.Request, _ agentapi.VmNa
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmsRevert(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmsRevertParams) {
+func (m *Mock) VmsRevert(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VmsRevertParams) {
 	const opID = "vms.revert"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -607,7 +607,7 @@ func (m *Mock) VmsRevert(w http.ResponseWriter, r *http.Request, _ agentapi.VmNa
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmDisksList(w http.ResponseWriter, r *http.Request, _ agentapi.VmName) {
+func (m *Mock) VMDisksList(w http.ResponseWriter, r *http.Request, _ agentapi.VMName) {
 	const opID = "vmDisks.list"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -615,7 +615,7 @@ func (m *Mock) VmDisksList(w http.ResponseWriter, r *http.Request, _ agentapi.Vm
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmDisksAttach(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmDisksAttachParams) {
+func (m *Mock) VMDisksAttach(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMDisksAttachParams) {
 	const opID = "vmDisks.attach"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -623,7 +623,7 @@ func (m *Mock) VmDisksAttach(w http.ResponseWriter, r *http.Request, _ agentapi.
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmDisksDetach(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.DeviceOrder, _ agentapi.VmDisksDetachParams) {
+func (m *Mock) VMDisksDetach(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.DeviceOrder, _ agentapi.VMDisksDetachParams) {
 	const opID = "vmDisks.detach"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -631,7 +631,7 @@ func (m *Mock) VmDisksDetach(w http.ResponseWriter, r *http.Request, _ agentapi.
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmDisksUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.DeviceOrder, _ agentapi.VmDisksUpdateParams) {
+func (m *Mock) VMDisksUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.DeviceOrder, _ agentapi.VMDisksUpdateParams) {
 	const opID = "vmDisks.update"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -639,7 +639,7 @@ func (m *Mock) VmDisksUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmNicsList(w http.ResponseWriter, r *http.Request, _ agentapi.VmName) {
+func (m *Mock) VMNicsList(w http.ResponseWriter, r *http.Request, _ agentapi.VMName) {
 	const opID = "vmNics.list"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -647,7 +647,7 @@ func (m *Mock) VmNicsList(w http.ResponseWriter, r *http.Request, _ agentapi.VmN
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmNicsAttach(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmNicsAttachParams) {
+func (m *Mock) VMNicsAttach(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMNicsAttachParams) {
 	const opID = "vmNics.attach"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -655,7 +655,7 @@ func (m *Mock) VmNicsAttach(w http.ResponseWriter, r *http.Request, _ agentapi.V
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmNicsDetach(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.DeviceOrder, _ agentapi.VmNicsDetachParams) {
+func (m *Mock) VMNicsDetach(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.DeviceOrder, _ agentapi.VMNicsDetachParams) {
 	const opID = "vmNics.detach"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -663,7 +663,7 @@ func (m *Mock) VmNicsDetach(w http.ResponseWriter, r *http.Request, _ agentapi.V
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmNicsUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.DeviceOrder, _ agentapi.VmNicsUpdateParams) {
+func (m *Mock) VMNicsUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.DeviceOrder, _ agentapi.VMNicsUpdateParams) {
 	const opID = "vmNics.update"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -671,7 +671,7 @@ func (m *Mock) VmNicsUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.V
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmSnapshotsList(w http.ResponseWriter, r *http.Request, _ agentapi.VmName) {
+func (m *Mock) VMSnapshotsList(w http.ResponseWriter, r *http.Request, _ agentapi.VMName) {
 	const opID = "vmSnapshots.list"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -679,7 +679,7 @@ func (m *Mock) VmSnapshotsList(w http.ResponseWriter, r *http.Request, _ agentap
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmSnapshotsCreate(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmSnapshotsCreateParams) {
+func (m *Mock) VMSnapshotsCreate(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMSnapshotsCreateParams) {
 	const opID = "vmSnapshots.create"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -687,7 +687,7 @@ func (m *Mock) VmSnapshotsCreate(w http.ResponseWriter, r *http.Request, _ agent
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmSnapshotsGet(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.SnapshotName) {
+func (m *Mock) VMSnapshotsGet(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.SnapshotName) {
 	const opID = "vmSnapshots.get"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -695,7 +695,7 @@ func (m *Mock) VmSnapshotsGet(w http.ResponseWriter, r *http.Request, _ agentapi
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmSnapshotsDelete(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.SnapshotName, _ agentapi.VmSnapshotsDeleteParams) {
+func (m *Mock) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.SnapshotName, _ agentapi.VMSnapshotsDeleteParams) {
 	const opID = "vmSnapshots.delete"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -703,7 +703,7 @@ func (m *Mock) VmSnapshotsDelete(w http.ResponseWriter, r *http.Request, _ agent
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmMigrationsStartIncomingParams) {
+func (m *Mock) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMMigrationsStartIncomingParams) {
 	const opID = "vmMigrations.startIncoming"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -711,7 +711,7 @@ func (m *Mock) VmMigrationsStartIncoming(w http.ResponseWriter, r *http.Request,
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.VmMigrationsStartOutgoingParams) {
+func (m *Mock) VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMMigrationsStartOutgoingParams) {
 	const opID = "vmMigrations.startOutgoing"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -719,7 +719,7 @@ func (m *Mock) VmMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request,
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmMigrationsGet(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.MigrationId) {
+func (m *Mock) VMMigrationsGet(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.MigrationID) {
 	const opID = "vmMigrations.get"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -727,7 +727,7 @@ func (m *Mock) VmMigrationsGet(w http.ResponseWriter, r *http.Request, _ agentap
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VmMigrationsCancel(w http.ResponseWriter, r *http.Request, _ agentapi.VmName, _ agentapi.MigrationId, _ agentapi.VmMigrationsCancelParams) {
+func (m *Mock) VMMigrationsCancel(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.MigrationID, _ agentapi.VMMigrationsCancelParams) {
 	const opID = "vmMigrations.cancel"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -735,18 +735,18 @@ func (m *Mock) VmMigrationsCancel(w http.ResponseWriter, r *http.Request, _ agen
 	m.respondNotImplemented(w, r, opID)
 }
 
-// VmConsoleIssueToken implements `POST /v1/vms/{vm_name}/console-token`
+// VMConsoleIssueToken implements `POST /v1/vms/{vm_name}/console-token`
 // для mock-driven integration tests. Mirrors the real-agent contract:
 // looks up the stored VM, rejects non-running phase с 409, mints а
 // single-use token via the shared TokenStore, и returns the
 // agent-side wire shape (`ConsoleTokenResponse`).
-func (m *Mock) VmConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, _ agentapi.VmConsoleIssueTokenParams) {
+func (m *Mock) VMConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VMConsoleIssueTokenParams) {
 	const opID = "vmConsole.issueToken"
 	if m.preDispatch(w, r, opID) {
 		return
 	}
 	name := vmName
-	vm, ok := m.GetStoredVM(name)
+	vm, ok := m.StoredVM(name)
 	if !ok {
 		m.respondError(w, r, opID, http.StatusNotFound, "not_found", "vm not found")
 		return
@@ -790,12 +790,12 @@ func (m *Mock) VmConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmNam
 	m.respondJSON(w, r, opID, http.StatusOK, resp)
 }
 
-// VmConsoleStream implements `GET /v1/vms/{vm_name}/console-stream`
+// VMConsoleStream implements `GET /v1/vms/{vm_name}/console-stream`
 // for mock-driven integration tests. Validates the token, enforces
 // the per-VM single-session lock, performs the WebSocket upgrade,
 // и enters а minimal pump loop что echoes operator input back
 // (enough so integration tests can prove bidirectional plumbing).
-func (m *Mock) VmConsoleStream(w http.ResponseWriter, r *http.Request, vmName agentapi.VmName, params agentapi.VmConsoleStreamParams) {
+func (m *Mock) VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, params agentapi.VMConsoleStreamParams) {
 	const opID = "vmConsole.stream"
 	if m.preDispatch(w, r, opID) {
 		return
@@ -809,7 +809,7 @@ func (m *Mock) VmConsoleStream(w http.ResponseWriter, r *http.Request, vmName ag
 		m.respondError(w, r, opID, http.StatusUnauthorized, "unauthenticated", "invalid or expired token")
 		return
 	}
-	if _, ok := m.GetStoredVM(name); !ok {
+	if _, ok := m.StoredVM(name); !ok {
 		m.respondError(w, r, opID, http.StatusNotFound, "not_found", "vm not found")
 		return
 	}

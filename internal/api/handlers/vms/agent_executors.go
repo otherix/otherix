@@ -31,7 +31,7 @@ import (
 // The DB CHECK chk_vms_cloud_init_disabled_no_userdata makes the
 // disabled-AND-userdata combination unreachable; the early return
 // here is а defense-in-depth signal к the reader, not а runtime branch.
-func resolveCloudInitUserData(vm store.Vm, tpl store.Template) string {
+func resolveCloudInitUserData(vm store.VM, tpl store.Template) string {
 	if vm.CloudInitDisabled {
 		return ""
 	}

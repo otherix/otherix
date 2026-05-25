@@ -129,7 +129,7 @@ func (m *Mock) StorageImagesImport(
 	m.state.mu.Unlock()
 
 	m.respondJSON(w, r, opID, http.StatusAccepted, agentapi.AsyncTaskAccepted{
-		TaskId: agentTaskID,
+		TaskID: agentTaskID,
 		Status: agentapi.AsyncTaskAcceptedStatus("pending"),
 		Links: struct {
 			Self string `json:"self"`
@@ -146,8 +146,8 @@ func (m *Mock) StorageImagesImport(
 func computeFallbackChecksum(poolID uuid.UUID, body agentapi.ImageImportRequest) string {
 	h := sha256.New()
 	h.Write(poolID[:])
-	if body.SourceUrl != nil {
-		_, _ = h.Write([]byte(*body.SourceUrl))
+	if body.SourceURL != nil {
+		_, _ = h.Write([]byte(*body.SourceURL))
 	}
 	if body.SourcePath != nil {
 		_, _ = h.Write([]byte(*body.SourcePath))
@@ -195,7 +195,7 @@ func (m *Mock) StorageImagesDelete(
 // has reached terminal-success and the corresponding (pool, sha256)
 // entry is not yet staged in state.images, the handler stages it
 // now using the import outcome's size / format. Tests observe the
-// materialisation through ListStoredImages, GetStoredImage, or a
+// materialisation through ListStoredImages, StoredImage, or a
 // follow-up StorageImagesList call.
 //
 // Caller holds m.state.mu. The function operates on the live

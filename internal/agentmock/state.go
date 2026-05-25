@@ -216,10 +216,10 @@ func (m *Mock) EvictImage(poolName, checksum string) bool {
 	return true
 }
 
-// GetStoredImage returns the staged image for (poolName, checksum).
+// StoredImage returns the staged image for (poolName, checksum).
 // The second return is false when the pool is unregistered or the
 // image is not staged.
-func (m *Mock) GetStoredImage(poolName, checksum string) (CachedImage, bool) {
+func (m *Mock) StoredImage(poolName, checksum string) (CachedImage, bool) {
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
 	bucket, ok := m.state.images[poolName]
@@ -284,11 +284,11 @@ func (m *Mock) AddVMLifecycleResult(vmName, op string, r VMLifecycleResult) {
 	m.state.vmLifecycleResults[key] = append(m.state.vmLifecycleResults[key], r)
 }
 
-// GetStoredVM returns the materialised AgentVM for vmName. The second
+// StoredVM returns the materialised AgentVM for vmName. The second
 // return is false when the VM is not in the inventory. Test
 // introspection — used to assert post-create / post-delete state in
 // vm-lifecycle tests.
-func (m *Mock) GetStoredVM(vmName string) (AgentVM, bool) {
+func (m *Mock) StoredVM(vmName string) (AgentVM, bool) {
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
 	v, ok := m.state.storedVMs[vmName]
@@ -365,7 +365,7 @@ func capabilitySetters() map[string]func(*state, string, any) error {
 		"memory_available_mib": func(s *state, p string, v any) error { return assignInt64(&s.memoryAvailableMib, p, v) },
 		"kvm_available":        func(s *state, p string, v any) error { return assignBool(&s.kvmAvailable, p, v) },
 		"nested_virt":          func(s *state, p string, v any) error { return assignBool(&s.nestedVirt, p, v) },
-		"qemu_binaries":        setQemuBinaries,
+		"qemu_binaries":        setQEMUBinaries,
 		"hugepages_2mib_total": func(s *state, p string, v any) error { return assignNullableInt(&s.hugepages2MiBTotal, p, v) },
 		"hugepages_1gib_total": func(s *state, p string, v any) error { return assignNullableInt(&s.hugepages1GiBTotal, p, v) },
 	}
@@ -380,7 +380,7 @@ func setCPUFeatures(s *state, path string, value any) error {
 	return nil
 }
 
-func setQemuBinaries(s *state, path string, value any) error {
+func setQEMUBinaries(s *state, path string, value any) error {
 	v, ok := value.(map[string]string)
 	if !ok {
 		return fmt.Errorf("%w: %s expects map[string]string, got %T", ErrInvalidPath, path, value)

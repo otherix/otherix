@@ -78,10 +78,10 @@ type CreateVMParams struct {
 	Name              string
 	Description       string
 	TemplateID        *uuid.UUID
-	Architecture      CpuArch
+	Architecture      CPUArch
 	CpuCores          int32
 	MemoryMib         int32
-	CpuModel          string
+	CPUModel          string
 	MachineType       string
 	FirmwareID        *uuid.UUID
 	PinnedNodeID      *uuid.UUID
@@ -100,7 +100,7 @@ type CreateVMParams struct {
 // UUID, CP mints / agent uses). desired_phase defaults to 'running'
 // so the operator's "create" intent maps к "VM should run" without a
 // separate state transition.
-func (q *Queries) CreateVM(ctx context.Context, arg CreateVMParams) (Vm, error) {
+func (q *Queries) CreateVM(ctx context.Context, arg CreateVMParams) (VM, error) {
 	row := q.db.QueryRow(ctx, createVM,
 		arg.ID,
 		arg.OwnerID,
@@ -110,7 +110,7 @@ func (q *Queries) CreateVM(ctx context.Context, arg CreateVMParams) (Vm, error) 
 		arg.Architecture,
 		arg.CpuCores,
 		arg.MemoryMib,
-		arg.CpuModel,
+		arg.CPUModel,
 		arg.MachineType,
 		arg.FirmwareID,
 		arg.PinnedNodeID,
@@ -118,7 +118,7 @@ func (q *Queries) CreateVM(ctx context.Context, arg CreateVMParams) (Vm, error) 
 		arg.CloudInitDisabled,
 		arg.Labels,
 	)
-	var i Vm
+	var i VM
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerID,
@@ -129,7 +129,7 @@ func (q *Queries) CreateVM(ctx context.Context, arg CreateVMParams) (Vm, error) 
 		&i.Architecture,
 		&i.CpuCores,
 		&i.MemoryMib,
-		&i.CpuModel,
+		&i.CPUModel,
 		&i.MachineType,
 		&i.FirmwareID,
 		&i.PinnedNodeID,
@@ -155,9 +155,9 @@ where id = $1
   and deleted_at is null
 `
 
-func (q *Queries) GetVMByID(ctx context.Context, id uuid.UUID) (Vm, error) {
+func (q *Queries) GetVMByID(ctx context.Context, id uuid.UUID) (VM, error) {
 	row := q.db.QueryRow(ctx, getVMByID, id)
-	var i Vm
+	var i VM
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerID,
@@ -168,7 +168,7 @@ func (q *Queries) GetVMByID(ctx context.Context, id uuid.UUID) (Vm, error) {
 		&i.Architecture,
 		&i.CpuCores,
 		&i.MemoryMib,
-		&i.CpuModel,
+		&i.CPUModel,
 		&i.MachineType,
 		&i.FirmwareID,
 		&i.PinnedNodeID,
@@ -202,9 +202,9 @@ where lower(name) = lower($1)
 // the identifier is not a UUID. The lookup is case-insensitive to match
 // uq_vms_name on lower(name); the row preserves the operator's chosen
 // casing.
-func (q *Queries) GetVMByName(ctx context.Context, name string) (Vm, error) {
+func (q *Queries) GetVMByName(ctx context.Context, name string) (VM, error) {
 	row := q.db.QueryRow(ctx, getVMByName, name)
-	var i Vm
+	var i VM
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerID,
@@ -215,7 +215,7 @@ func (q *Queries) GetVMByName(ctx context.Context, name string) (Vm, error) {
 		&i.Architecture,
 		&i.CpuCores,
 		&i.MemoryMib,
-		&i.CpuModel,
+		&i.CPUModel,
 		&i.MachineType,
 		&i.FirmwareID,
 		&i.PinnedNodeID,
@@ -291,7 +291,7 @@ type ListVMsParams struct {
 //     per vm_runtime.current_node_id (D6 — current location, not
 //     pinned intent). 'creating' VMs without a runtime row never
 //     match.
-func (q *Queries) ListVMs(ctx context.Context, arg ListVMsParams) ([]Vm, error) {
+func (q *Queries) ListVMs(ctx context.Context, arg ListVMsParams) ([]VM, error) {
 	rows, err := q.db.Query(ctx, listVMs,
 		arg.PoolIDFilter,
 		arg.NodeIDFilter,
@@ -303,9 +303,9 @@ func (q *Queries) ListVMs(ctx context.Context, arg ListVMsParams) ([]Vm, error) 
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Vm{}
+	items := []VM{}
 	for rows.Next() {
-		var i Vm
+		var i VM
 		if err := rows.Scan(
 			&i.ID,
 			&i.OwnerID,
@@ -316,7 +316,7 @@ func (q *Queries) ListVMs(ctx context.Context, arg ListVMsParams) ([]Vm, error) 
 			&i.Architecture,
 			&i.CpuCores,
 			&i.MemoryMib,
-			&i.CpuModel,
+			&i.CPUModel,
 			&i.MachineType,
 			&i.FirmwareID,
 			&i.PinnedNodeID,
@@ -368,7 +368,7 @@ type ListVMsByOwnerParams struct {
 // Same shape as ListVMs but filtered by owner_id. RBAC scope=own path —
 // currently inactive (vm:read=any for every role) but kept for future
 // restricted-role flows.
-func (q *Queries) ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) ([]Vm, error) {
+func (q *Queries) ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) ([]VM, error) {
 	rows, err := q.db.Query(ctx, listVMsByOwner,
 		arg.OwnerID,
 		arg.CursorCreatedAt,
@@ -379,9 +379,9 @@ func (q *Queries) ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) 
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Vm{}
+	items := []VM{}
 	for rows.Next() {
-		var i Vm
+		var i VM
 		if err := rows.Scan(
 			&i.ID,
 			&i.OwnerID,
@@ -392,7 +392,7 @@ func (q *Queries) ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) 
 			&i.Architecture,
 			&i.CpuCores,
 			&i.MemoryMib,
-			&i.CpuModel,
+			&i.CPUModel,
 			&i.MachineType,
 			&i.FirmwareID,
 			&i.PinnedNodeID,
@@ -433,7 +433,7 @@ order by lower(vms.name) asc
 
 type ListVMsForNodeDeclaredRow struct {
 	Name         string
-	DesiredPhase VmDesiredPhase
+	DesiredPhase VMDesiredPhase
 	Generation   int64
 }
 
@@ -489,7 +489,7 @@ where id = $2
 `
 
 type UpdateVMDesiredPhaseParams struct {
-	DesiredPhase VmDesiredPhase
+	DesiredPhase VMDesiredPhase
 	ID           uuid.UUID
 }
 

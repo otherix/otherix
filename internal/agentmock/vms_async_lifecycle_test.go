@@ -50,7 +50,7 @@ func TestVmsAsyncLifecycle_StartStopRebootPoweroff_HappyPath(t *testing.T) {
 			if task := pollUntilTerminal(t, m, taskID, 2*time.Second); string(task.Status) != "success" {
 				t.Fatalf("%s status = %q, want success", tc.op, task.Status)
 			}
-			v, ok := m.GetStoredVM("demo")
+			v, ok := m.StoredVM("demo")
 			if !ok {
 				t.Fatalf("vm absent after %s", tc.op)
 			}
@@ -91,7 +91,7 @@ func TestVmsAsyncLifecycle_StopTimeout_FailureLeavesRunning(t *testing.T) {
 	if task.Error == nil || task.Error.Code == nil || string(*task.Error.Code) != "stop_timeout" {
 		t.Errorf("stop error.code = %+v, want stop_timeout", task.Error)
 	}
-	if v, _ := m.GetStoredVM("demo"); v.Status != "running" {
+	if v, _ := m.StoredVM("demo"); v.Status != "running" {
 		t.Errorf("inventory status after stop-fail = %q, want running (Area 4-IV: manual intervention)", v.Status)
 	}
 }
@@ -110,7 +110,7 @@ func TestVmsAsyncLifecycle_NotFound(t *testing.T) {
 		if task := pollUntilTerminal(t, m, taskID, 2*time.Second); string(task.Status) != "success" {
 			t.Errorf("%s no-such status = %q, want success (mock layer no-op)", op, task.Status)
 		}
-		if _, ok := m.GetStoredVM("no-such-vm"); ok {
+		if _, ok := m.StoredVM("no-such-vm"); ok {
 			t.Errorf("%s materialised а phantom inventory entry for no-such-vm", op)
 		}
 	}

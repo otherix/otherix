@@ -119,7 +119,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	caps := NodeCapabilities{
 		CPUFlags:     []string{},
-		QemuBinaries: map[string]string{},
+		QEMUBinaries: map[string]string{},
 		Firmwares:    []FirmwareReport{},
 	}
 
@@ -145,9 +145,9 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 		caps.KernelVersion = "unknown"
 	}
 
-	caps.QemuBinaries, caps.QemuVersion = c.readQemuInventory()
-	if caps.QemuVersion == "" {
-		caps.QemuVersion = "unknown"
+	caps.QEMUBinaries, caps.QEMUVersion = c.readQemuInventory()
+	if caps.QEMUVersion == "" {
+		caps.QEMUVersion = "unknown"
 	}
 
 	caps.KvmAvailable = c.kvmAvailable()
@@ -297,7 +297,7 @@ func (c *LinuxCollector) readQemuInventory() (map[string]string, string) {
 		if err != nil {
 			continue
 		}
-		v := runQemuVersion(path)
+		v := runQEMUVersion(path)
 		if v == "" {
 			continue
 		}
@@ -309,11 +309,11 @@ func (c *LinuxCollector) readQemuInventory() (map[string]string, string) {
 	return out, first
 }
 
-// runQemuVersion parses `qemu-system-* --version` first line.
+// runQEMUVersion parses `qemu-system-* --version` first line.
 // Format: "QEMU emulator version 8.2.0 (...)". Returns the version
 // token или an empty string if the command fails or the output is
 // unexpected.
-func runQemuVersion(path string) string {
+func runQEMUVersion(path string) string {
 	cmd := exec.Command(path, "--version")
 	output, err := cmd.Output()
 	if err != nil {

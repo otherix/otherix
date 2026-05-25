@@ -310,12 +310,11 @@ func (m *Manager) Get(id uuid.UUID) (*VM, error) {
 	return &cp, nil
 }
 
-// GetByName returns a snapshot of the VM identified by name. Per
-// Pre-L1 Path D rekey the agent's wire surface addresses VMs by
-// name; this is the resolver the handlers hit on every name-keyed
-// request. Returns ErrNotFound when no live (non-deleted) entry
-// matches.
-func (m *Manager) GetByName(name string) (*VM, error) {
+// ByName returns a snapshot of the VM identified by name. The
+// agent's wire surface addresses VMs by name; this is the resolver
+// the handlers hit on every name-keyed request. Returns ErrNotFound
+// when no live (non-deleted) entry matches.
+func (m *Manager) ByName(name string) (*VM, error) {
 	m.mu.Lock()
 	var found *VM
 	for _, v := range m.vms {
@@ -625,7 +624,7 @@ func (m *Manager) runSyncLifecycle(
 	name, op string,
 	action func(v *VM, observed Status) (Status, error),
 ) (*VM, error) {
-	v, err := m.GetByName(name)
+	v, err := m.ByName(name)
 	if err != nil {
 		return nil, err
 	}
@@ -644,7 +643,7 @@ func (m *Manager) runSyncLifecycle(
 			"op", op, "vm_name", name, "vm_id", v.ID.String(), "err", persistErr)
 	}
 
-	updated, err := m.GetByName(name)
+	updated, err := m.ByName(name)
 	if err != nil {
 		return nil, err
 	}
@@ -659,7 +658,7 @@ func (m *Manager) runSyncLifecycle(
 // when no VM matches; ErrInvalidState when phase is paused / creating
 // / deleting (use resume или wait, не start).
 func (m *Manager) Start(ctx context.Context, name string) (*AgentTask, error) {
-	v, err := m.GetByName(name)
+	v, err := m.ByName(name)
 	if err != nil {
 		return nil, err
 	}
@@ -725,7 +724,7 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 // к poweroff via the CLI `--force` flag or the explicit poweroff
 // endpoint).
 func (m *Manager) Stop(ctx context.Context, name string) (*AgentTask, error) {
-	v, err := m.GetByName(name)
+	v, err := m.ByName(name)
 	if err != nil {
 		return nil, err
 	}
@@ -818,7 +817,7 @@ func (m *Manager) runStop(taskID, vmID uuid.UUID) {
 // creating (the VM is mid-spawn — operators wait); every other phase
 // admits poweroff (the wire intent is "make it stop").
 func (m *Manager) Poweroff(ctx context.Context, name string) (*AgentTask, error) {
-	v, err := m.GetByName(name)
+	v, err := m.ByName(name)
 	if err != nil {
 		return nil, err
 	}
@@ -916,7 +915,7 @@ func (m *Manager) runPoweroff(taskID, vmID uuid.UUID) {
 // reboot task fails с code `stop_timeout` и the observed phase stays
 // running (operators dispatch к reset via the dedicated endpoint).
 func (m *Manager) Reboot(ctx context.Context, name string) (*AgentTask, error) {
-	v, err := m.GetByName(name)
+	v, err := m.ByName(name)
 	if err != nil {
 		return nil, err
 	}

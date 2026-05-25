@@ -39,7 +39,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	vm, err := c.GetVM(cmd.Context(), identifier)
+	vm, err := c.VM(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}

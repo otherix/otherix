@@ -224,7 +224,7 @@ type Querier interface {
 	// UUID, CP mints / agent uses). desired_phase defaults to 'running'
 	// so the operator's "create" intent maps к "VM should run" without a
 	// separate state transition.
-	CreateVM(ctx context.Context, arg CreateVMParams) (Vm, error)
+	CreateVM(ctx context.Context, arg CreateVMParams) (VM, error)
 	// vm_disks queries — Phase A foundations. The vms table itself does
 	// not carry a pool_id / node_id column (per the original schema design
 	// multi-disk VMs span pools and node placement is observed through
@@ -236,7 +236,7 @@ type Querier interface {
 	// Inserts a single disk row for a vm. Phase B vm.create handler invokes
 	// this once per VM (single-disk MVP). Multi-disk callers loop с distinct
 	// device_order values.
-	CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VmDisk, error)
+	CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VMDisk, error)
 	// Future rotation step (not invoked в Step 1). Marks every active row
 	// inactive so а new active row can be inserted under the partial
 	// unique index. Held в Step 1 как Step 2/3 dependency.
@@ -408,7 +408,7 @@ type Querier interface {
 	// Email uniqueness is case-insensitive (uq_users_email on lower(email)).
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
-	GetVMByID(ctx context.Context, id uuid.UUID) (Vm, error)
+	GetVMByID(ctx context.Context, id uuid.UUID) (VM, error)
 	// Used by the create handler для globally-unique-name precheck before
 	// the insert (the unique partial index would catch it as a 23505 too,
 	// but a friendly 409 with the existing id is preferable). Also backs
@@ -417,12 +417,12 @@ type Querier interface {
 	// the identifier is not a UUID. The lookup is case-insensitive to match
 	// uq_vms_name on lower(name); the row preserves the operator's chosen
 	// casing.
-	GetVMByName(ctx context.Context, name string) (Vm, error)
+	GetVMByName(ctx context.Context, name string) (VM, error)
 	// Read the runtime snapshot for a VM, used by GET /v1/vms/{id} to
 	// project a combined desired+observed status. Returns ErrNoRows when
 	// the worker has not yet upserted (i.e. the VM is still в
 	// desired_phase='running' but the agent hasn't acknowledged).
-	GetVMRuntime(ctx context.Context, vmID uuid.UUID) (VmRuntime, error)
+	GetVMRuntime(ctx context.Context, vmID uuid.UUID) (VMRuntime, error)
 	// Bumps templates.derived_vm_count by one. Called from VMCreateWorker's
 	// success projection inside the same InTx as UpdateTaskFinalized. The
 	// column carries a check (derived_vm_count >= 0) at the schema level;
@@ -582,7 +582,7 @@ type Querier interface {
 	// Returns every active (not soft-deleted) disk row for a vm, ordered
 	// by device_order. Phase B's GET /v1/vms/{id} response projects the
 	// pool_id from disk[0].storage_pool_id (single-disk MVP).
-	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]VmDisk, error)
+	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]VMDisk, error)
 	// Cursor pagination. First page passes nulls; subsequent
 	// pages pass the previous page's last (created_at, id) tuple. Ordering
 	// (created_at desc, id desc) matches every other paginated endpoint.
@@ -600,11 +600,11 @@ type Querier interface {
 	//     per vm_runtime.current_node_id (D6 — current location, not
 	//     pinned intent). 'creating' VMs without a runtime row never
 	//     match.
-	ListVMs(ctx context.Context, arg ListVMsParams) ([]Vm, error)
+	ListVMs(ctx context.Context, arg ListVMsParams) ([]VM, error)
 	// Same shape as ListVMs but filtered by owner_id. RBAC scope=own path —
 	// currently inactive (vm:read=any for every role) but kept for future
 	// restricted-role flows.
-	ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) ([]Vm, error)
+	ListVMsByOwner(ctx context.Context, arg ListVMsByOwnerParams) ([]VM, error)
 	// Per-node VM desired-state inventory для HeartbeatResponse.declared_vms.
 	// Joins vms × vm_runtime on the runtime's current_node_id (D6 — current
 	// location, not pinned intent). Soft-deleted vms are excluded; runtime

@@ -202,10 +202,10 @@ func (s *state) takePoolScanResultLocked(poolName string) PoolScanResult {
 func projectAgentTask(t *agentTask, now time.Time) agentapi.Task {
 	resourceID := t.resourceID.String()
 	task := agentapi.Task{
-		Id:           t.id,
+		ID:           t.id,
 		Type:         t.taskType,
 		ResourceType: t.resourceType,
-		ResourceId:   &resourceID,
+		ResourceID:   &resourceID,
 		Attempts:     1,
 		MaxAttempts:  25,
 		CreatedAt:    t.createdAt,

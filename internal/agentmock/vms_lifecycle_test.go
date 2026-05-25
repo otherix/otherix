@@ -31,7 +31,7 @@ func TestVmsLifecycle_PauseResumeReset_HappyPath(t *testing.T) {
 	if pause["status"] != "paused" {
 		t.Errorf("pause status = %v, want paused", pause["status"])
 	}
-	if v, _ := m.GetStoredVM("demo"); v.Status != "paused" {
+	if v, _ := m.StoredVM("demo"); v.Status != "paused" {
 		t.Errorf("stored status after pause = %q, want paused", v.Status)
 	}
 
@@ -39,7 +39,7 @@ func TestVmsLifecycle_PauseResumeReset_HappyPath(t *testing.T) {
 	if resume["status"] != "running" {
 		t.Errorf("resume status = %v, want running", resume["status"])
 	}
-	if v, _ := m.GetStoredVM("demo"); v.Status != "running" {
+	if v, _ := m.StoredVM("demo"); v.Status != "running" {
 		t.Errorf("stored status after resume = %q, want running", v.Status)
 	}
 

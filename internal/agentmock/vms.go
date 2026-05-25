@@ -173,7 +173,7 @@ func (m *Mock) vmCreate(w http.ResponseWriter, r *http.Request, opID string) {
 	m.state.mu.Unlock()
 
 	m.respondJSON(w, r, opID, http.StatusAccepted, agentapi.AsyncTaskAccepted{
-		TaskId: agentTaskID,
+		TaskID: agentTaskID,
 		Status: agentapi.AsyncTaskAcceptedStatus("pending"),
 		Links: struct {
 			Self string `json:"self"`
@@ -217,7 +217,7 @@ func (m *Mock) vmDelete(w http.ResponseWriter, r *http.Request, vmName string, o
 	m.state.mu.Unlock()
 
 	m.respondJSON(w, r, opID, http.StatusAccepted, agentapi.AsyncTaskAccepted{
-		TaskId: agentTaskID,
+		TaskID: agentTaskID,
 		Status: agentapi.AsyncTaskAcceptedStatus("pending"),
 		Links: struct {
 			Self string `json:"self"`
@@ -346,7 +346,7 @@ func (m *Mock) vmLifecycleAsync(w http.ResponseWriter, r *http.Request, opID, vm
 	m.state.mu.Unlock()
 
 	m.respondJSON(w, r, opID, http.StatusAccepted, agentapi.AsyncTaskAccepted{
-		TaskId: agentTaskID,
+		TaskID: agentTaskID,
 		Status: agentapi.AsyncTaskAcceptedStatus("pending"),
 		Links: struct {
 			Self string `json:"self"`

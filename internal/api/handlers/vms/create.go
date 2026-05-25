@@ -306,7 +306,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			Architecture:      in.Template.Architecture,
 			CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded к 1..128 by validateCreateRequest
 			MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded к 128..524288 by validateCreateRequest
-			CpuModel:          "host",
+			CPUModel:          "host",
 			MachineType:       machineTypeFor(in.Template.Architecture),
 			FirmwareID:        nil,
 			PinnedNodeID:      &nodeID,

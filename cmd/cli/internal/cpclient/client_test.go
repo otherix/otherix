@@ -182,7 +182,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetVM(context.Background(), vmID.String())
+	got, err := c.VM(context.Background(), vmID.String())
 	if err != nil {
 		t.Fatalf("GetVM: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestGetVM_AcceptsName(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetVM(context.Background(), "demo-vm")
+	got, err := c.VM(context.Background(), "demo-vm")
 	if err != nil {
 		t.Fatalf("GetVM: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestNetworkFailureSurfacesAsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = c.GetVM(context.Background(), uuid.New().String())
+	_, err = c.VM(context.Background(), uuid.New().String())
 	if err == nil {
 		t.Fatalf("expected network error")
 	}

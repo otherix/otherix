@@ -90,7 +90,7 @@ type CreateVMDiskParams struct {
 // Inserts a single disk row for a vm. Phase B vm.create handler invokes
 // this once per VM (single-disk MVP). Multi-disk callers loop с distinct
 // device_order values.
-func (q *Queries) CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VmDisk, error) {
+func (q *Queries) CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VMDisk, error) {
 	row := q.db.QueryRow(ctx, createVMDisk,
 		arg.VmID,
 		arg.StoragePoolID,
@@ -105,7 +105,7 @@ func (q *Queries) CreateVMDisk(ctx context.Context, arg CreateVMDiskParams) (VmD
 		arg.Discard,
 		arg.BootOrder,
 	)
-	var i VmDisk
+	var i VMDisk
 	err := row.Scan(
 		&i.ID,
 		&i.VmID,
@@ -139,15 +139,15 @@ order by device_order asc
 // Returns every active (not soft-deleted) disk row for a vm, ordered
 // by device_order. Phase B's GET /v1/vms/{id} response projects the
 // pool_id from disk[0].storage_pool_id (single-disk MVP).
-func (q *Queries) ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]VmDisk, error) {
+func (q *Queries) ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]VMDisk, error) {
 	rows, err := q.db.Query(ctx, listVMDisksByVM, vmID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []VmDisk{}
+	items := []VMDisk{}
 	for rows.Next() {
-		var i VmDisk
+		var i VMDisk
 		if err := rows.Scan(
 			&i.ID,
 			&i.VmID,

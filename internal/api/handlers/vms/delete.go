@@ -74,7 +74,7 @@ var errVMNoNode = errors.New("vm has no resolvable node")
 // vm.pinned_node_id (or vm_disks → pool fallback), and atomically
 // inserts the tasks row + river job inside one transaction. Returns
 // the task id on success.
-func (h *Handler) runDelete(ctx context.Context, vm store.Vm, caller *auth.User) (uuid.UUID, error) {
+func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User) (uuid.UUID, error) {
 	if err := auth.CheckOwnership(caller, &vm.OwnerID, auth.PermVMDelete); err != nil {
 		if errors.Is(err, auth.ErrPermissionDenied) {
 			return uuid.Nil, errVMNotVisible
@@ -136,7 +136,7 @@ func (h *Handler) runDelete(ctx context.Context, vm store.Vm, caller *auth.User)
 // when set (the create handler always pins for MVP); falls back to
 // the pool's node otherwise. Returns errVMNoNode when neither path
 // yields a node.
-func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.Vm) (uuid.UUID, error) {
+func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.VM) (uuid.UUID, error) {
 	if vm.PinnedNodeID != nil {
 		return *vm.PinnedNodeID, nil
 	}

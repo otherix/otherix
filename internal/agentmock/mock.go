@@ -68,9 +68,11 @@ type Mock struct {
 
 	httpServer *httptest.Server
 
-	// Lifecycle plumbing for the heartbeat goroutine.
+	// Lifecycle plumbing for the heartbeat goroutine. The context
+	// itself is passed to the goroutine as a parameter rather than
+	// stored on the struct — only the cancel func and done channel
+	// need to survive on Mock for Stop() to coordinate shutdown.
 	stopOnce      sync.Once
-	heartbeatCtx  context.Context
 	heartbeatStop context.CancelFunc
 	heartbeatDone chan struct{}
 
@@ -181,9 +183,10 @@ func Start(t TestingT, opts Options) *Mock {
 		m.heartbeatHTTP = client
 	}
 	if opts.HeartbeatInterval > 0 {
-		m.heartbeatCtx, m.heartbeatStop = context.WithCancel(context.Background())
+		ctx, stop := context.WithCancel(context.Background())
+		m.heartbeatStop = stop
 		m.heartbeatDone = make(chan struct{})
-		go m.heartbeatLoop()
+		go m.heartbeatLoop(ctx)
 	}
 
 	t.Cleanup(m.Stop)

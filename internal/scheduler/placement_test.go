@@ -151,9 +151,9 @@ func makeRow(f nodeFixture) store.ListEligiblePoolsByNameRow {
 		NodeEffectiveAvailability: store.NodeEffectiveAvailability{
 			ID:                 nodeID,
 			Name:               name,
-			CpuCoresTotal:      f.cpuTotal,
-			CpuCoresAvailable:  f.cpuAvailable,
-			CpuCoresEffective:  cpuEff,
+			CPUCoresTotal:      f.cpuTotal,
+			CPUCoresAvailable:  f.cpuAvailable,
+			CPUCoresEffective:  cpuEff,
 			MemoryTotalMib:     f.memTotalMib,
 			MemoryAvailableMib: f.memAvailMib,
 			MemoryEffectiveMib: memEff,

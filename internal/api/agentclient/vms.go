@@ -114,18 +114,17 @@ func (c *Client) PostVMCreate(
 	if err := json.Unmarshal(respBody, &accepted); err != nil {
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
-	if accepted.TaskId == uuid.Nil {
+	if accepted.TaskID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
-	return accepted.TaskId, nil
+	return accepted.TaskID, nil
 }
 
-// GetVM fetches the agent's view of a single VM. 200 returns a parsed
+// VM fetches the agent's view of a single VM. 200 returns a parsed
 // AgentVM; 404 / 5xx surface as *AgentError; malformed body as a
-// wrapped generic error. Per Pre-L1 Path D the agent's `GET
-// /v1/vms/{vm_name}` is name-keyed; callers pass the same name the
-// CP minted на VM-create.
-func (c *Client) GetVM(ctx context.Context, endpoint string, vmName string) (AgentVM, error) {
+// wrapped generic error. The agent's `GET /v1/vms/{vm_name}` is
+// name-keyed; callers pass the same name the CP minted at VM-create.
+func (c *Client) VM(ctx context.Context, endpoint string, vmName string) (AgentVM, error) {
 	var zero AgentVM
 
 	target, _ := url.JoinPath(endpoint, "/v1/vms/"+vmName)
@@ -331,10 +330,10 @@ func (c *Client) postVMLifecycleAsync(
 	if err := json.Unmarshal(body, &accepted); err != nil {
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted after %s: %v", action, err)
 	}
-	if accepted.TaskId == uuid.Nil {
+	if accepted.TaskID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid after %s", action)
 	}
-	return accepted.TaskId, nil
+	return accepted.TaskID, nil
 }
 
 // DeleteVM submits an async delete request to the agent and returns
@@ -369,8 +368,8 @@ func (c *Client) DeleteVM(
 	if err := json.Unmarshal(body, &accepted); err != nil {
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
-	if accepted.TaskId == uuid.Nil {
+	if accepted.TaskID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
-	return accepted.TaskId, nil
+	return accepted.TaskID, nil
 }

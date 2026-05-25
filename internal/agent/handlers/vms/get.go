@@ -21,7 +21,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 			response.CodeNotFound, "vm not found", nil)
 		return
 	}
-	v, err := h.manager.GetByName(name)
+	v, err := h.manager.ByName(name)
 	if err != nil {
 		if errors.Is(err, vm.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,

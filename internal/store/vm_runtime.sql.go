@@ -66,16 +66,16 @@ where vm_id = $1
 // project a combined desired+observed status. Returns ErrNoRows when
 // the worker has not yet upserted (i.e. the VM is still в
 // desired_phase='running' but the agent hasn't acknowledged).
-func (q *Queries) GetVMRuntime(ctx context.Context, vmID uuid.UUID) (VmRuntime, error) {
+func (q *Queries) GetVMRuntime(ctx context.Context, vmID uuid.UUID) (VMRuntime, error) {
 	row := q.db.QueryRow(ctx, getVMRuntime, vmID)
-	var i VmRuntime
+	var i VMRuntime
 	err := row.Scan(
 		&i.VmID,
 		&i.CurrentNodeID,
 		&i.Phase,
 		&i.Conditions,
 		&i.ObservedGeneration,
-		&i.QemuPid,
+		&i.QEMUPID,
 		&i.QmpSocketPath,
 		&i.VncPort,
 		&i.SpicePort,
@@ -103,7 +103,7 @@ where vm_id = $2
 `
 
 type UpdateVMRuntimePhaseParams struct {
-	Phase VmPhase
+	Phase VMPhase
 	VmID  uuid.UUID
 }
 
@@ -153,9 +153,9 @@ set current_node_id     = excluded.current_node_id,
 type UpsertVMRuntimeParams struct {
 	VmID               uuid.UUID
 	CurrentNodeID      *uuid.UUID
-	Phase              VmPhase
+	Phase              VMPhase
 	ObservedGeneration int64
-	QemuPid            *int32
+	QEMUPID            *int32
 	LastStartedAt      *time.Time
 	LastErrorMessage   *string
 }
@@ -173,7 +173,7 @@ func (q *Queries) UpsertVMRuntime(ctx context.Context, arg UpsertVMRuntimeParams
 		arg.CurrentNodeID,
 		arg.Phase,
 		arg.ObservedGeneration,
-		arg.QemuPid,
+		arg.QEMUPID,
 		arg.LastStartedAt,
 		arg.LastErrorMessage,
 	)

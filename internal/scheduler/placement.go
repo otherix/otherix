@@ -472,7 +472,7 @@ func filterByResources(rows []store.ListEligiblePoolsByNameRow, req PlacementReq
 // disk regardless of cfg.Disk.Enabled.
 func fitsAllResources(r store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) bool {
 	if cfg.CPU.Enabled {
-		avail := float64(*r.NodeEffectiveAvailability.CpuCoresEffective) * cfg.CPU.OvercommitRatio
+		avail := float64(*r.NodeEffectiveAvailability.CPUCoresEffective) * cfg.CPU.OvercommitRatio
 		if avail < float64(req.VCPUs) {
 			return false
 		}
@@ -503,7 +503,7 @@ func fitsAllResources(r store.ListEligiblePoolsByNameRow, req PlacementRequest, 
 func candidateHasMetrics(r store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) bool {
 	n := r.NodeEffectiveAvailability
 	if cfg.CPU.Enabled {
-		if n.CpuCoresTotal == nil || n.CpuCoresAvailable == nil || n.CpuCoresEffective == nil {
+		if n.CPUCoresTotal == nil || n.CPUCoresAvailable == nil || n.CPUCoresEffective == nil {
 			return false
 		}
 	}
@@ -538,11 +538,11 @@ func renderUtilization(rejected []candidate) []NodeUtilization {
 		var cpuTotal, cpuEff int32
 		var memTotal, memEff int64
 		var diskTotal, diskEff int64
-		if n.CpuCoresTotal != nil {
-			cpuTotal = *n.CpuCoresTotal
+		if n.CPUCoresTotal != nil {
+			cpuTotal = *n.CPUCoresTotal
 		}
-		if n.CpuCoresEffective != nil {
-			cpuEff = *n.CpuCoresEffective
+		if n.CPUCoresEffective != nil {
+			cpuEff = *n.CPUCoresEffective
 		}
 		if n.MemoryTotalMib != nil {
 			memTotal = *n.MemoryTotalMib
@@ -642,8 +642,8 @@ func scoreResourceAware(ctx context.Context, q Querier, fits []candidate, req Pl
 func utilizationScore(r store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) (sum float64, factors int) {
 	n := r.NodeEffectiveAvailability
 	p := r.PoolEffectiveCapacity
-	if cfg.CPU.Enabled && n.CpuCoresTotal != nil && n.CpuCoresEffective != nil {
-		sum += computeUtil(int64(*n.CpuCoresTotal), int64(*n.CpuCoresEffective), int64(req.VCPUs), cfg.CPU.OvercommitRatio)
+	if cfg.CPU.Enabled && n.CPUCoresTotal != nil && n.CPUCoresEffective != nil {
+		sum += computeUtil(int64(*n.CPUCoresTotal), int64(*n.CPUCoresEffective), int64(req.VCPUs), cfg.CPU.OvercommitRatio)
 		factors++
 	}
 	if cfg.Memory.Enabled && n.MemoryTotalMib != nil && n.MemoryEffectiveMib != nil {

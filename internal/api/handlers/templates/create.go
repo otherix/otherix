@@ -125,7 +125,7 @@ func buildCreateParams(ownerID uuid.UUID, req *createRequest) (store.CreateTempl
 		OwnerID:                ownerID,
 		Name:                   req.Name,
 		Description:            valueOrEmpty(req.Description),
-		Architecture:           store.CpuArch(req.Architecture),
+		Architecture:           store.CPUArch(req.Architecture),
 		OsFamily:               store.OsFamily(req.OSFamily),
 		OsVariant:              valueOrEmpty(req.OSVariant),
 		ImageUrl:               req.ImageURL,

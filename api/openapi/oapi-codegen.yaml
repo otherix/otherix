@@ -15,3 +15,18 @@ generate:
   chi-server: true
   models: true
   embedded-spec: true
+# Apply Google Go Style initialism conventions to derived identifiers.
+# Default normaliser leaves initialisms as ToCamelCase (Id, Vm, Qmp);
+# ToCamelCaseWithInitialisms keeps recognised initialisms in one case
+# (ID, VM, QMP). The additional-initialisms list extends the built-in
+# set with project-specific initialisms.
+output-options:
+  name-normalizer: "ToCamelCaseWithInitialisms"
+  additional-initialisms:
+    - VM
+    - QMP
+    - QEMU
+    - VNC
+    - SPICE
+    - SHA
+    - CSR

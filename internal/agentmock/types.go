@@ -116,7 +116,7 @@ type ErrorEnvelope struct {
 // the richer agentapi.VMSpec shape is a future design target and is
 // deliberately not surfaced through the MVP wire.
 //
-// Tests inspect the inventory through GetStoredVM / ListStoredVMs;
+// Tests inspect the inventory through StoredVM / ListStoredVMs;
 // production code uses the HTTP surface.
 type AgentVM struct {
 	ID           uuid.UUID
@@ -129,7 +129,7 @@ type AgentVM struct {
 	// UserData (L3) records the cloud-init blob the CP-side resolver
 	// shipped with the create request. Empty when the operator left
 	// both vm.user_data и template.cloud_init_user_data unset.
-	// Surfaced through GetStoredVM так integration tests can
+	// Surfaced through StoredVM так integration tests can
 	// assert L3 resolution end-to-end.
 	UserData  string
 	CreatedAt time.Time
@@ -220,7 +220,7 @@ func firmwareToAPI(f Firmware) agentapi.NodeInfoFirmware {
 // pool.
 func poolToAPI(p storagePool) agentapi.StoragePoolReport {
 	out := agentapi.StoragePoolReport{
-		Id:         p.ID,
+		ID:         p.ID,
 		Name:       p.Name,
 		Type:       agentapi.StoragePoolReportType(p.Type),
 		Path:       p.Path,
@@ -251,7 +251,7 @@ func imageToAPI(c CachedImage) agentapi.CachedImage {
 	}
 	if c.SourceURL != "" {
 		u := c.SourceURL
-		out.SourceUrl = &u
+		out.SourceURL = &u
 	}
 	return out
 }

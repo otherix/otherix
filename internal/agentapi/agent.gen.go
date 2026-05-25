@@ -86,7 +86,7 @@ func (e ConditionStatus) Valid() bool {
 // Defines values for ConsoleTokenRequestProtocol.
 const (
 	ConsoleTokenRequestProtocolSerial ConsoleTokenRequestProtocol = "serial"
-	ConsoleTokenRequestProtocolVnc    ConsoleTokenRequestProtocol = "vnc"
+	ConsoleTokenRequestProtocolVNC    ConsoleTokenRequestProtocol = "vnc"
 )
 
 // Valid indicates whether the value is a known member of the ConsoleTokenRequestProtocol enum.
@@ -94,7 +94,7 @@ func (e ConsoleTokenRequestProtocol) Valid() bool {
 	switch e {
 	case ConsoleTokenRequestProtocolSerial:
 		return true
-	case ConsoleTokenRequestProtocolVnc:
+	case ConsoleTokenRequestProtocolVNC:
 		return true
 	default:
 		return false
@@ -104,7 +104,7 @@ func (e ConsoleTokenRequestProtocol) Valid() bool {
 // Defines values for ConsoleTokenResponseProtocol.
 const (
 	ConsoleTokenResponseProtocolSerial ConsoleTokenResponseProtocol = "serial"
-	ConsoleTokenResponseProtocolVnc    ConsoleTokenResponseProtocol = "vnc"
+	ConsoleTokenResponseProtocolVNC    ConsoleTokenResponseProtocol = "vnc"
 )
 
 // Valid indicates whether the value is a known member of the ConsoleTokenResponseProtocol enum.
@@ -112,7 +112,7 @@ func (e ConsoleTokenResponseProtocol) Valid() bool {
 	switch e {
 	case ConsoleTokenResponseProtocolSerial:
 		return true
-	case ConsoleTokenResponseProtocolVnc:
+	case ConsoleTokenResponseProtocolVNC:
 		return true
 	default:
 		return false
@@ -137,9 +137,9 @@ const (
 	ErrorCodeRateLimited            ErrorCode = "rate_limited"
 	ErrorCodeShrinkNotSupported     ErrorCode = "shrink_not_supported"
 	ErrorCodeUnauthenticated        ErrorCode = "unauthenticated"
+	ErrorCodeVMExists               ErrorCode = "vm_exists"
+	ErrorCodeVMStateInvalid         ErrorCode = "vm_state_invalid"
 	ErrorCodeValidationFailed       ErrorCode = "validation_failed"
-	ErrorCodeVmExists               ErrorCode = "vm_exists"
-	ErrorCodeVmStateInvalid         ErrorCode = "vm_state_invalid"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -177,11 +177,11 @@ func (e ErrorCode) Valid() bool {
 		return true
 	case ErrorCodeUnauthenticated:
 		return true
+	case ErrorCodeVMExists:
+		return true
+	case ErrorCodeVMStateInvalid:
+		return true
 	case ErrorCodeValidationFailed:
-		return true
-	case ErrorCodeVmExists:
-		return true
-	case ErrorCodeVmStateInvalid:
 		return true
 	default:
 		return false
@@ -377,7 +377,7 @@ func (e NetworkConfigureRequestType) Valid() bool {
 // Defines values for NicUpdateRequestModel.
 const (
 	NicUpdateRequestModelE1000   NicUpdateRequestModel = "e1000"
-	NicUpdateRequestModelE1000e  NicUpdateRequestModel = "e1000e"
+	NicUpdateRequestModelE1000E  NicUpdateRequestModel = "e1000e"
 	NicUpdateRequestModelRtl8139 NicUpdateRequestModel = "rtl8139"
 	NicUpdateRequestModelVirtio  NicUpdateRequestModel = "virtio"
 )
@@ -387,7 +387,7 @@ func (e NicUpdateRequestModel) Valid() bool {
 	switch e {
 	case NicUpdateRequestModelE1000:
 		return true
-	case NicUpdateRequestModelE1000e:
+	case NicUpdateRequestModelE1000E:
 		return true
 	case NicUpdateRequestModelRtl8139:
 		return true
@@ -479,21 +479,21 @@ func (e SnapshotStatus) Valid() bool {
 	}
 }
 
-// Defines values for SnapshotVmStateAtSnapshot.
+// Defines values for SnapshotVMStateAtSnapshot.
 const (
-	SnapshotVmStateAtSnapshotPaused  SnapshotVmStateAtSnapshot = "paused"
-	SnapshotVmStateAtSnapshotRunning SnapshotVmStateAtSnapshot = "running"
-	SnapshotVmStateAtSnapshotStopped SnapshotVmStateAtSnapshot = "stopped"
+	SnapshotVMStateAtSnapshotPaused  SnapshotVMStateAtSnapshot = "paused"
+	SnapshotVMStateAtSnapshotRunning SnapshotVMStateAtSnapshot = "running"
+	SnapshotVMStateAtSnapshotStopped SnapshotVMStateAtSnapshot = "stopped"
 )
 
-// Valid indicates whether the value is a known member of the SnapshotVmStateAtSnapshot enum.
-func (e SnapshotVmStateAtSnapshot) Valid() bool {
+// Valid indicates whether the value is a known member of the SnapshotVMStateAtSnapshot enum.
+func (e SnapshotVMStateAtSnapshot) Valid() bool {
 	switch e {
-	case SnapshotVmStateAtSnapshotPaused:
+	case SnapshotVMStateAtSnapshotPaused:
 		return true
-	case SnapshotVmStateAtSnapshotRunning:
+	case SnapshotVMStateAtSnapshotRunning:
 		return true
-	case SnapshotVmStateAtSnapshotStopped:
+	case SnapshotVMStateAtSnapshotStopped:
 		return true
 	default:
 		return false
@@ -610,7 +610,7 @@ func (e VMSpecFirmwareType) Valid() bool {
 
 // Defines values for VMSpecSerialConsole.
 const (
-	VMSpecSerialConsoleLessThannil VMSpecSerialConsole = "<nil>"
+	VMSpecSerialConsoleLessThanNil VMSpecSerialConsole = "<nil>"
 	VMSpecSerialConsoleTtyAMA0     VMSpecSerialConsole = "ttyAMA0"
 	VMSpecSerialConsoleTtyS0       VMSpecSerialConsole = "ttyS0"
 )
@@ -618,7 +618,7 @@ const (
 // Valid indicates whether the value is a known member of the VMSpecSerialConsole enum.
 func (e VMSpecSerialConsole) Valid() bool {
 	switch e {
-	case VMSpecSerialConsoleLessThannil:
+	case VMSpecSerialConsoleLessThanNil:
 		return true
 	case VMSpecSerialConsoleTtyAMA0:
 		return true
@@ -718,7 +718,7 @@ func (e VMSpecDiskFormat) Valid() bool {
 
 // Defines values for VMSpecDiskSourceImageFormat.
 const (
-	VMSpecDiskSourceImageFormatLessThannil VMSpecDiskSourceImageFormat = "<nil>"
+	VMSpecDiskSourceImageFormatLessThanNil VMSpecDiskSourceImageFormat = "<nil>"
 	VMSpecDiskSourceImageFormatQcow2       VMSpecDiskSourceImageFormat = "qcow2"
 	VMSpecDiskSourceImageFormatRaw         VMSpecDiskSourceImageFormat = "raw"
 )
@@ -726,7 +726,7 @@ const (
 // Valid indicates whether the value is a known member of the VMSpecDiskSourceImageFormat enum.
 func (e VMSpecDiskSourceImageFormat) Valid() bool {
 	switch e {
-	case VMSpecDiskSourceImageFormatLessThannil:
+	case VMSpecDiskSourceImageFormatLessThanNil:
 		return true
 	case VMSpecDiskSourceImageFormatQcow2:
 		return true
@@ -758,7 +758,7 @@ func (e VMSpecDiskSourceKind) Valid() bool {
 // Defines values for VMSpecNicModel.
 const (
 	E1000   VMSpecNicModel = "e1000"
-	E1000e  VMSpecNicModel = "e1000e"
+	E1000E  VMSpecNicModel = "e1000e"
 	Rtl8139 VMSpecNicModel = "rtl8139"
 	Virtio  VMSpecNicModel = "virtio"
 )
@@ -768,7 +768,7 @@ func (e VMSpecNicModel) Valid() bool {
 	switch e {
 	case E1000:
 		return true
-	case E1000e:
+	case E1000E:
 		return true
 	case Rtl8139:
 		return true
@@ -848,7 +848,7 @@ type AsyncTaskAccepted struct {
 		Self string `json:"self"`
 	} `json:"links"`
 	Status AsyncTaskAcceptedStatus `json:"status"`
-	TaskId openapi_types.UUID      `json:"task_id"`
+	TaskID openapi_types.UUID      `json:"task_id"`
 }
 
 // AsyncTaskAcceptedStatus defines model for AsyncTaskAccepted.Status.
@@ -864,9 +864,9 @@ type CachedImage struct {
 	Path      string `json:"path"`
 	SizeBytes int64  `json:"size_bytes"`
 
-	// SourceUrl Origin URL the image was fetched from, for diagnostics.
+	// SourceURL Origin URL the image was fetched from, for diagnostics.
 	// Not used for cache lookup — checksum is the key.
-	SourceUrl *string `json:"source_url,omitempty"`
+	SourceURL *string `json:"source_url,omitempty"`
 }
 
 // CachedImageFormat defines model for CachedImage.Format.
@@ -999,7 +999,7 @@ type ImageImportRequest struct {
 
 	// SourcePath Absolute path on the node, when fetching from local disk.
 	SourcePath *string `json:"source_path,omitempty"`
-	SourceUrl  *string `json:"source_url,omitempty"`
+	SourceURL  *string `json:"source_url,omitempty"`
 }
 
 // ImageImportRequestFormat defines model for ImageImportRequest.Format.
@@ -1019,7 +1019,7 @@ type Migration struct {
 	ErrorMessage      *string            `json:"error_message,omitempty"`
 	MaxBandwidthBytes *int64             `json:"max_bandwidth_bytes,omitempty"`
 	MaxDowntimeMs     *int               `json:"max_downtime_ms,omitempty"`
-	MigrationId       openapi_types.UUID `json:"migration_id"`
+	MigrationID       openapi_types.UUID `json:"migration_id"`
 	Mode              MigrationMode      `json:"mode"`
 
 	// PeerEndpoint Counterpart endpoint for this side: `target_endpoint` on
@@ -1029,7 +1029,7 @@ type Migration struct {
 	ProgressPercent int                `json:"progress_percent"`
 	Role            MigrationRole      `json:"role"`
 	StartedAt       *time.Time         `json:"started_at,omitempty"`
-	VmUuid          openapi_types.UUID `json:"vm_uuid"`
+	VMUUID          openapi_types.UUID `json:"vm_uuid"`
 }
 
 // MigrationMode defines model for Migration.Mode.
@@ -1084,15 +1084,15 @@ type MigrationIncomingRequest struct {
 	// ExpectedSizeBytes Estimated transfer size, used only for progress UX
 	// until the actual figure is observed.
 	ExpectedSizeBytes *int64                       `json:"expected_size_bytes,omitempty"`
-	MigrationId       openapi_types.UUID           `json:"migration_id"`
+	MigrationID       openapi_types.UUID           `json:"migration_id"`
 	Mode              MigrationIncomingRequestMode `json:"mode"`
 
-	// VmSpec Full VM specification handed to the agent at create time. The
+	// VMSpec Full VM specification handed to the agent at create time. The
 	// Control Plane has already resolved every CP-only key
 	// (template, firmware, storage pool, network) into
 	// agent-consumable values; the agent treats this as the
 	// complete description of what to bring up.
-	VmSpec VMSpec `json:"vm_spec"`
+	VMSpec VMSpec `json:"vm_spec"`
 }
 
 // MigrationIncomingRequestMode defines model for MigrationIncomingRequest.Mode.
@@ -1110,7 +1110,7 @@ type MigrationIncomingResponse struct {
 	// this port from the range advertised in
 	// `NodeInfo.migration` (see `MigrationCapability`).
 	ListenEndpoint string             `json:"listen_endpoint"`
-	MigrationId    openapi_types.UUID `json:"migration_id"`
+	MigrationID    openapi_types.UUID `json:"migration_id"`
 }
 
 // MigrationOutgoingRequest Sent by the CP to the **source** agent after the target has
@@ -1126,7 +1126,7 @@ type MigrationOutgoingRequest struct {
 	// MaxDowntimeMs Maximum acceptable downtime during precopy convergence
 	// (live mode). When omitted, the agent's default applies.
 	MaxDowntimeMs *int                         `json:"max_downtime_ms,omitempty"`
-	MigrationId   openapi_types.UUID           `json:"migration_id"`
+	MigrationID   openapi_types.UUID           `json:"migration_id"`
 	Mode          MigrationOutgoingRequestMode `json:"mode"`
 
 	// TargetEndpoint `host:port` returned by the target's
@@ -1145,9 +1145,9 @@ type NetworkConfig struct {
 	ConfiguredAt time.Time `json:"configured_at"`
 	ErrorMessage *string   `json:"error_message,omitempty"`
 
-	// Id Network UUID assigned by the Control Plane. The agent
+	// ID Network UUID assigned by the Control Plane. The agent
 	// does not allocate its own.
-	Id      openapi_types.UUID  `json:"id"`
+	ID      openapi_types.UUID  `json:"id"`
 	Mtu     *int                `json:"mtu,omitempty"`
 	Name    string              `json:"name"`
 	Status  NetworkConfigStatus `json:"status"`
@@ -1165,8 +1165,8 @@ type NetworkConfigType string
 type NetworkConfigureRequest struct {
 	BridgeName string `json:"bridge_name"`
 
-	// Id Network UUID allocated by the Control Plane.
-	Id      openapi_types.UUID          `json:"id"`
+	// ID Network UUID allocated by the Control Plane.
+	ID      openapi_types.UUID          `json:"id"`
 	Mtu     *int                        `json:"mtu,omitempty"`
 	Name    string                      `json:"name"`
 	Type    NetworkConfigureRequestType `json:"type"`
@@ -1197,7 +1197,7 @@ type NicUpdateRequest struct {
 	Ipv6Address *string                `json:"ipv6_address,omitempty"`
 	Model       *NicUpdateRequestModel `json:"model,omitempty"`
 	Mtu         *int                   `json:"mtu,omitempty"`
-	NetworkId   *openapi_types.UUID    `json:"network_id,omitempty"`
+	NetworkID   *openapi_types.UUID    `json:"network_id,omitempty"`
 	VlanTag     *int                   `json:"vlan_tag,omitempty"`
 }
 
@@ -1213,25 +1213,25 @@ type NodeInfo struct {
 	AgentVersion string               `json:"agent_version"`
 	Architecture NodeInfoArchitecture `json:"architecture"`
 
-	// CpuCoresAvailable `cpu_cores_total` minus cores already accounted to running
+	// CPUCoresAvailable `cpu_cores_total` minus cores already accounted to running
 	// VMs. Snapshot value; the CP must not treat this as
 	// transactional.
-	CpuCoresAvailable int `json:"cpu_cores_available"`
+	CPUCoresAvailable int `json:"cpu_cores_available"`
 
-	// CpuCoresTotal Logical cores visible to the host kernel.
-	CpuCoresTotal int `json:"cpu_cores_total"`
+	// CPUCoresTotal Logical cores visible to the host kernel.
+	CPUCoresTotal int `json:"cpu_cores_total"`
 
-	// CpuFeatures CPU feature flags (e.g. `vmx`, `aes`, `sve2`). The
+	// CPUFeatures CPU feature flags (e.g. `vmx`, `aes`, `sve2`). The
 	// scheduler uses these to evaluate VM `cpu_model`
 	// compatibility.
-	CpuFeatures []string `json:"cpu_features"`
+	CPUFeatures []string `json:"cpu_features"`
 
-	// CpuModel Human-readable CPU model string, as reported by `/proc/cpuinfo`.
-	CpuModel           string             `json:"cpu_model"`
+	// CPUModel Human-readable CPU model string, as reported by `/proc/cpuinfo`.
+	CPUModel           string             `json:"cpu_model"`
 	Firmwares          []NodeInfoFirmware `json:"firmwares"`
 	Hostname           string             `json:"hostname"`
-	Hugepages1gibTotal *int               `json:"hugepages_1gib_total,omitempty"`
-	Hugepages2mibTotal *int               `json:"hugepages_2mib_total,omitempty"`
+	Hugepages1GibTotal *int               `json:"hugepages_1gib_total,omitempty"`
+	Hugepages2MibTotal *int               `json:"hugepages_2mib_total,omitempty"`
 	KernelVersion      string             `json:"kernel_version"`
 	KvmAvailable       bool               `json:"kvm_available"`
 
@@ -1255,16 +1255,16 @@ type NodeInfo struct {
 	Migration  MigrationCapability `json:"migration"`
 	NestedVirt *bool               `json:"nested_virt,omitempty"`
 
-	// NodeId UUID assigned by the Control Plane at registration time.
+	// NodeID UUID assigned by the Control Plane at registration time.
 	// Stored on disk by the agent and reused across restarts.
-	NodeId openapi_types.UUID `json:"node_id"`
+	NodeID openapi_types.UUID `json:"node_id"`
 
-	// QemuBinaries Map of architecture → absolute path to the QEMU
+	// QEMUBinaries Map of architecture → absolute path to the QEMU
 	// system-mode binary on this node. Populated for every
 	// architecture this node can run (typically just the
 	// host's, but cross-arch via emulation is allowed).
-	QemuBinaries  map[string]string `json:"qemu_binaries"`
-	QemuVersion   string            `json:"qemu_version"`
+	QEMUBinaries  map[string]string `json:"qemu_binaries"`
+	QEMUVersion   string            `json:"qemu_version"`
 	StartedAt     time.Time         `json:"started_at"`
 	UptimeSeconds int64             `json:"uptime_seconds"`
 }
@@ -1315,16 +1315,16 @@ type Snapshot struct {
 	MemorySizeBytes   *int64                    `json:"memory_size_bytes,omitempty"`
 	Name              string                    `json:"name"`
 	Status            SnapshotStatus            `json:"status"`
-	VmStateAtSnapshot SnapshotVmStateAtSnapshot `json:"vm_state_at_snapshot"`
-	VmUuid            openapi_types.UUID        `json:"vm_uuid"`
+	VMStateAtSnapshot SnapshotVMStateAtSnapshot `json:"vm_state_at_snapshot"`
+	VMUUID            openapi_types.UUID        `json:"vm_uuid"`
 	WithMemory        bool                      `json:"with_memory"`
 }
 
 // SnapshotStatus defines model for Snapshot.Status.
 type SnapshotStatus string
 
-// SnapshotVmStateAtSnapshot defines model for Snapshot.VmStateAtSnapshot.
-type SnapshotVmStateAtSnapshot string
+// SnapshotVMStateAtSnapshot defines model for Snapshot.VMStateAtSnapshot.
+type SnapshotVMStateAtSnapshot string
 
 // SnapshotCreateRequest defines model for SnapshotCreateRequest.
 type SnapshotCreateRequest struct {
@@ -1346,9 +1346,9 @@ type StoragePoolReport struct {
 	AvailableBytes *int64 `json:"available_bytes,omitempty"`
 	CapacityBytes  *int64 `json:"capacity_bytes,omitempty"`
 
-	// Id Pool UUID assigned by the Control Plane. The agent
+	// ID Pool UUID assigned by the Control Plane. The agent
 	// stores this as part of its local pool config.
-	Id   openapi_types.UUID `json:"id"`
+	ID   openapi_types.UUID `json:"id"`
 	Name string             `json:"name"`
 
 	// Path Absolute filesystem path of the pool root.
@@ -1390,18 +1390,18 @@ type Task struct {
 		Message *string                 `json:"message,omitempty"`
 	} `json:"error,omitempty"`
 	FinishedAt  *time.Time         `json:"finished_at,omitempty"`
-	Id          openapi_types.UUID `json:"id"`
+	ID          openapi_types.UUID `json:"id"`
 	MaxAttempts int                `json:"max_attempts"`
 
 	// Progress Progress percentage. `null` if the task type does not
 	// report progress.
 	Progress *int `json:"progress,omitempty"`
 
-	// ResourceId Resource identifier — UUID for VMs / pools / migrations,
+	// ResourceID Resource identifier — UUID for VMs / pools / migrations,
 	// `(vm_uuid, name)`-style composite for snapshots, or
 	// `(vm_uuid, device_order)` for disks / NICs. The exact
 	// format depends on `resource_type`.
-	ResourceId *string `json:"resource_id,omitempty"`
+	ResourceID *string `json:"resource_id,omitempty"`
 
 	// ResourceType The resource the task acts on, e.g. `vm`, `vm_disk`,
 	// `storage_pool`, `vm_migration`.
@@ -1453,7 +1453,7 @@ type VMDetail struct {
 	// agent-consumable values; the agent treats this as the
 	// complete description of what to bring up.
 	Spec   VMSpec             `json:"spec"`
-	VmUuid openapi_types.UUID `json:"vm_uuid"`
+	VMUUID openapi_types.UUID `json:"vm_uuid"`
 }
 
 // VMDetailPhase defines model for VMDetail.Phase.
@@ -1467,7 +1467,7 @@ type VMList struct {
 
 // VMResizeRequest At least one of `cpu_cores` or `memory_mib` must be set.
 type VMResizeRequest struct {
-	CpuCores  *int   `json:"cpu_cores,omitempty"`
+	CPUCores  *int   `json:"cpu_cores,omitempty"`
 	MemoryMib *int64 `json:"memory_mib,omitempty"`
 }
 
@@ -1482,24 +1482,24 @@ type VMRevertRequest struct {
 // are the agent's own bookkeeping and are deliberately hidden
 // from the public Control Plane API.
 type VMRuntime struct {
-	CpuUsagePercent  *float32  `json:"cpu_usage_percent,omitempty"`
+	CPUUsagePercent  *float32  `json:"cpu_usage_percent,omitempty"`
 	GuestHostname    *string   `json:"guest_hostname,omitempty"`
-	GuestIpAddresses *[]string `json:"guest_ip_addresses,omitempty"`
+	GuestIPAddresses *[]string `json:"guest_ip_addresses,omitempty"`
 	GuestOs          *string   `json:"guest_os,omitempty"`
 	MemoryUsedMib    *int64    `json:"memory_used_mib,omitempty"`
 
-	// QemuPid PID of the QEMU process, when running.
-	QemuPid *int `json:"qemu_pid,omitempty"`
+	// QEMUPid PID of the QEMU process, when running.
+	QEMUPid *int `json:"qemu_pid,omitempty"`
 
-	// QmpSocketPath Path to the QMP control socket.
-	QmpSocketPath     *string `json:"qmp_socket_path,omitempty"`
+	// QMPSocketPath Path to the QMP control socket.
+	QMPSocketPath     *string `json:"qmp_socket_path,omitempty"`
 	SerialConsolePath *string `json:"serial_console_path,omitempty"`
 
-	// VncEndpoint `host:port` of the QEMU VNC listener, when one is
+	// VNCEndpoint `host:port` of the QEMU VNC listener, when one is
 	// configured. The console-token / console-stream
 	// endpoints terminate in front of this — clients never
 	// see this address directly.
-	VncEndpoint *string `json:"vnc_endpoint,omitempty"`
+	VNCEndpoint *string `json:"vnc_endpoint,omitempty"`
 }
 
 // VMSpec Full VM specification handed to the agent at create time. The
@@ -1518,10 +1518,10 @@ type VMSpec struct {
 		NetworkConfig *string `json:"network_config,omitempty"`
 		UserData      *string `json:"user_data,omitempty"`
 	} `json:"cloud_init,omitempty"`
-	CpuCores int `json:"cpu_cores"`
+	CPUCores int `json:"cpu_cores"`
 
-	// CpuModel QEMU `-cpu` model. Defaults to `host` when not specified by the CP.
-	CpuModel string `json:"cpu_model"`
+	// CPUModel QEMU `-cpu` model. Defaults to `host` when not specified by the CP.
+	CPUModel string `json:"cpu_model"`
 
 	// Disks Position 0 is the boot disk by convention.
 	Disks []VMSpecDisk `json:"disks"`
@@ -1558,10 +1558,10 @@ type VMSpec struct {
 	// MachineType QEMU `-machine` type, e.g. `q35`, `pc-q35-8.2`, `virt`.
 	MachineType string `json:"machine_type"`
 
-	// MaxCpuCores Upper bound for CPU hotplug. When omitted, CPU hotplug is
+	// MaxCPUCores Upper bound for CPU hotplug. When omitted, CPU hotplug is
 	// disabled and `vms.resize` will return
 	// `hot_resize_not_supported` for CPU changes.
-	MaxCpuCores *int `json:"max_cpu_cores,omitempty"`
+	MaxCPUCores *int `json:"max_cpu_cores,omitempty"`
 
 	// MaxMemoryMib Upper bound for memory hotplug. Same semantics as `max_cpu_cores`.
 	MaxMemoryMib *int64      `json:"max_memory_mib,omitempty"`
@@ -1573,8 +1573,8 @@ type VMSpec struct {
 	// `ttyS0` for amd64 and `ttyAMA0` for arm64 by default.
 	SerialConsole *VMSpecSerialConsole `json:"serial_console,omitempty"`
 
-	// VmUuid Same UUID as the Control Plane's `vms.id`.
-	VmUuid openapi_types.UUID `json:"vm_uuid"`
+	// VMUUID Same UUID as the Control Plane's `vms.id`.
+	VMUUID openapi_types.UUID `json:"vm_uuid"`
 }
 
 // VMSpecArchitecture defines model for VMSpec.Architecture.
@@ -1612,9 +1612,9 @@ type VMSpecDisk struct {
 	// the agent allocates an empty image of `size_gib` instead.
 	Source VMSpecDiskSource `json:"source"`
 
-	// StoragePoolId CP-side pool id, included as a label so the agent can
+	// StoragePoolID CP-side pool id, included as a label so the agent can
 	// tag logs / metrics. Not used for any path lookup.
-	StoragePoolId *openapi_types.UUID `json:"storage_pool_id,omitempty"`
+	StoragePoolID *openapi_types.UUID `json:"storage_pool_id,omitempty"`
 
 	// StoragePoolPath Absolute filesystem path of the storage pool that backs
 	// this disk on this node. The CP picks the pool (or
@@ -1647,10 +1647,10 @@ type VMSpecDiskSource struct {
 	// ImageFormat Required when `kind = "template"`.
 	ImageFormat *VMSpecDiskSourceImageFormat `json:"image_format,omitempty"`
 
-	// ImageUrl Required when `kind = "template"`. Where to fetch the
+	// ImageURL Required when `kind = "template"`. Where to fetch the
 	// image if it is not already cached in the destination
 	// pool.
-	ImageUrl *string              `json:"image_url,omitempty"`
+	ImageURL *string              `json:"image_url,omitempty"`
 	Kind     VMSpecDiskSourceKind `json:"kind"`
 }
 
@@ -1679,8 +1679,8 @@ type VMSpecNic struct {
 	Model       VMSpecNicModel `json:"model"`
 	Mtu         *int           `json:"mtu,omitempty"`
 
-	// NetworkId CP-side network id, used as a log/metric label only.
-	NetworkId *openapi_types.UUID `json:"network_id,omitempty"`
+	// NetworkID CP-side network id, used as a log/metric label only.
+	NetworkID *openapi_types.UUID `json:"network_id,omitempty"`
 
 	// TapName Optional explicit tap name. The agent picks a name when
 	// null; explicit names are useful for operator tooling.
@@ -1697,7 +1697,7 @@ type VMSummary struct {
 	Name               string             `json:"name"`
 	ObservedGeneration *int64             `json:"observed_generation,omitempty"`
 	Phase              VMSummaryPhase     `json:"phase"`
-	VmUuid             openapi_types.UUID `json:"vm_uuid"`
+	VMUUID             openapi_types.UUID `json:"vm_uuid"`
 }
 
 // VMSummaryPhase defines model for VMSummary.Phase.
@@ -1715,11 +1715,11 @@ type IdempotencyKey = string
 // Limit defines model for Limit.
 type Limit = int
 
-// MigrationId defines model for MigrationId.
-type MigrationId = openapi_types.UUID
+// MigrationID defines model for MigrationId.
+type MigrationID = openapi_types.UUID
 
-// NetworkId defines model for NetworkId.
-type NetworkId = openapi_types.UUID
+// NetworkID defines model for NetworkId.
+type NetworkID = openapi_types.UUID
 
 // PoolName defines model for PoolName.
 type PoolName = string
@@ -1727,8 +1727,8 @@ type PoolName = string
 // SnapshotName defines model for SnapshotName.
 type SnapshotName = string
 
-// VmName defines model for VmName.
-type VmName = string
+// VMName defines model for VmName.
+type VMName = string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
@@ -1860,14 +1860,14 @@ type VmsDeleteParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmConsoleStreamParams defines parameters for VmConsoleStream.
-type VmConsoleStreamParams struct {
+// VMConsoleStreamParams defines parameters for VMConsoleStream.
+type VMConsoleStreamParams struct {
 	// Token Single-use token from `POST .../console-token`.
 	Token string `form:"token" json:"token"`
 }
 
-// VmConsoleIssueTokenParams defines parameters for VmConsoleIssueToken.
-type VmConsoleIssueTokenParams struct {
+// VMConsoleIssueTokenParams defines parameters for VMConsoleIssueToken.
+type VMConsoleIssueTokenParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1875,8 +1875,8 @@ type VmConsoleIssueTokenParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmDisksAttachParams defines parameters for VmDisksAttach.
-type VmDisksAttachParams struct {
+// VMDisksAttachParams defines parameters for VMDisksAttach.
+type VMDisksAttachParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1884,8 +1884,8 @@ type VmDisksAttachParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmDisksDetachParams defines parameters for VmDisksDetach.
-type VmDisksDetachParams struct {
+// VMDisksDetachParams defines parameters for VMDisksDetach.
+type VMDisksDetachParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1893,8 +1893,8 @@ type VmDisksDetachParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmDisksUpdateParams defines parameters for VmDisksUpdate.
-type VmDisksUpdateParams struct {
+// VMDisksUpdateParams defines parameters for VMDisksUpdate.
+type VMDisksUpdateParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1902,8 +1902,8 @@ type VmDisksUpdateParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmMigrationsStartIncomingParams defines parameters for VmMigrationsStartIncoming.
-type VmMigrationsStartIncomingParams struct {
+// VMMigrationsStartIncomingParams defines parameters for VMMigrationsStartIncoming.
+type VMMigrationsStartIncomingParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1911,8 +1911,8 @@ type VmMigrationsStartIncomingParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmMigrationsStartOutgoingParams defines parameters for VmMigrationsStartOutgoing.
-type VmMigrationsStartOutgoingParams struct {
+// VMMigrationsStartOutgoingParams defines parameters for VMMigrationsStartOutgoing.
+type VMMigrationsStartOutgoingParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1920,8 +1920,8 @@ type VmMigrationsStartOutgoingParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmMigrationsCancelParams defines parameters for VmMigrationsCancel.
-type VmMigrationsCancelParams struct {
+// VMMigrationsCancelParams defines parameters for VMMigrationsCancel.
+type VMMigrationsCancelParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1929,8 +1929,8 @@ type VmMigrationsCancelParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmNicsAttachParams defines parameters for VmNicsAttach.
-type VmNicsAttachParams struct {
+// VMNicsAttachParams defines parameters for VMNicsAttach.
+type VMNicsAttachParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1938,8 +1938,8 @@ type VmNicsAttachParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmNicsDetachParams defines parameters for VmNicsDetach.
-type VmNicsDetachParams struct {
+// VMNicsDetachParams defines parameters for VMNicsDetach.
+type VMNicsDetachParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -1947,8 +1947,8 @@ type VmNicsDetachParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmNicsUpdateParams defines parameters for VmNicsUpdate.
-type VmNicsUpdateParams struct {
+// VMNicsUpdateParams defines parameters for VMNicsUpdate.
+type VMNicsUpdateParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -2019,8 +2019,8 @@ type VmsRevertParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmSnapshotsCreateParams defines parameters for VmSnapshotsCreate.
-type VmSnapshotsCreateParams struct {
+// VMSnapshotsCreateParams defines parameters for VMSnapshotsCreate.
+type VMSnapshotsCreateParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -2028,8 +2028,8 @@ type VmSnapshotsCreateParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
-// VmSnapshotsDeleteParams defines parameters for VmSnapshotsDelete.
-type VmSnapshotsDeleteParams struct {
+// VMSnapshotsDeleteParams defines parameters for VMSnapshotsDelete.
+type VMSnapshotsDeleteParams struct {
 	// IdempotencyKey Optional idempotency key. The agent caches the response (in
 	// its local store) for 24 h. Same key + same body → cached
 	// response replayed verbatim. Same key + different body →
@@ -2064,26 +2064,26 @@ type StorageImagesImportJSONRequestBody = ImageImportRequest
 // VmsCreateJSONRequestBody defines body for VmsCreate for application/json ContentType.
 type VmsCreateJSONRequestBody = VMSpec
 
-// VmConsoleIssueTokenJSONRequestBody defines body for VmConsoleIssueToken for application/json ContentType.
-type VmConsoleIssueTokenJSONRequestBody = ConsoleTokenRequest
+// VMConsoleIssueTokenJSONRequestBody defines body for VMConsoleIssueToken for application/json ContentType.
+type VMConsoleIssueTokenJSONRequestBody = ConsoleTokenRequest
 
-// VmDisksAttachJSONRequestBody defines body for VmDisksAttach for application/json ContentType.
-type VmDisksAttachJSONRequestBody = DiskAttachRequest
+// VMDisksAttachJSONRequestBody defines body for VMDisksAttach for application/json ContentType.
+type VMDisksAttachJSONRequestBody = DiskAttachRequest
 
-// VmDisksUpdateJSONRequestBody defines body for VmDisksUpdate for application/json ContentType.
-type VmDisksUpdateJSONRequestBody = DiskUpdateRequest
+// VMDisksUpdateJSONRequestBody defines body for VMDisksUpdate for application/json ContentType.
+type VMDisksUpdateJSONRequestBody = DiskUpdateRequest
 
-// VmMigrationsStartIncomingJSONRequestBody defines body for VmMigrationsStartIncoming for application/json ContentType.
-type VmMigrationsStartIncomingJSONRequestBody = MigrationIncomingRequest
+// VMMigrationsStartIncomingJSONRequestBody defines body for VMMigrationsStartIncoming for application/json ContentType.
+type VMMigrationsStartIncomingJSONRequestBody = MigrationIncomingRequest
 
-// VmMigrationsStartOutgoingJSONRequestBody defines body for VmMigrationsStartOutgoing for application/json ContentType.
-type VmMigrationsStartOutgoingJSONRequestBody = MigrationOutgoingRequest
+// VMMigrationsStartOutgoingJSONRequestBody defines body for VMMigrationsStartOutgoing for application/json ContentType.
+type VMMigrationsStartOutgoingJSONRequestBody = MigrationOutgoingRequest
 
-// VmNicsAttachJSONRequestBody defines body for VmNicsAttach for application/json ContentType.
-type VmNicsAttachJSONRequestBody = NicAttachRequest
+// VMNicsAttachJSONRequestBody defines body for VMNicsAttach for application/json ContentType.
+type VMNicsAttachJSONRequestBody = NicAttachRequest
 
-// VmNicsUpdateJSONRequestBody defines body for VmNicsUpdate for application/json ContentType.
-type VmNicsUpdateJSONRequestBody = NicUpdateRequest
+// VMNicsUpdateJSONRequestBody defines body for VMNicsUpdate for application/json ContentType.
+type VMNicsUpdateJSONRequestBody = NicUpdateRequest
 
 // VmsResizeJSONRequestBody defines body for VmsResize for application/json ContentType.
 type VmsResizeJSONRequestBody = VMResizeRequest
@@ -2091,8 +2091,8 @@ type VmsResizeJSONRequestBody = VMResizeRequest
 // VmsRevertJSONRequestBody defines body for VmsRevert for application/json ContentType.
 type VmsRevertJSONRequestBody = VMRevertRequest
 
-// VmSnapshotsCreateJSONRequestBody defines body for VmSnapshotsCreate for application/json ContentType.
-type VmSnapshotsCreateJSONRequestBody = SnapshotCreateRequest
+// VMSnapshotsCreateJSONRequestBody defines body for VMSnapshotsCreate for application/json ContentType.
+type VMSnapshotsCreateJSONRequestBody = SnapshotCreateRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -2110,10 +2110,10 @@ type ServerInterface interface {
 	NetworksConfigure(w http.ResponseWriter, r *http.Request, params NetworksConfigureParams)
 	// Tear down a network on this node (asynchronous).
 	// (DELETE /v1/networks/{network_id})
-	NetworksDelete(w http.ResponseWriter, r *http.Request, networkId NetworkId, params NetworksDeleteParams)
+	NetworksDelete(w http.ResponseWriter, r *http.Request, networkID NetworkID, params NetworksDeleteParams)
 	// Get a network as configured on this node.
 	// (GET /v1/networks/{network_id})
-	NetworksGet(w http.ResponseWriter, r *http.Request, networkId NetworkId)
+	NetworksGet(w http.ResponseWriter, r *http.Request, networkID NetworkID)
 	// List storage pools known to this agent.
 	// (GET /v1/storage-pools)
 	StoragePoolsList(w http.ResponseWriter, r *http.Request, params StoragePoolsListParams)
@@ -2143,91 +2143,91 @@ type ServerInterface interface {
 	VmsCreate(w http.ResponseWriter, r *http.Request, params VmsCreateParams)
 	// Remove a VM from this node (asynchronous).
 	// (DELETE /v1/vms/{vm_name})
-	VmsDelete(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsDeleteParams)
+	VmsDelete(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsDeleteParams)
 	// Get VM detail with runtime state.
 	// (GET /v1/vms/{vm_name})
-	VmsGet(w http.ResponseWriter, r *http.Request, vmName VmName)
+	VmsGet(w http.ResponseWriter, r *http.Request, vmName VMName)
 	// WebSocket upgrade for the console stream.
 	// (GET /v1/vms/{vm_name}/console-stream)
-	VmConsoleStream(w http.ResponseWriter, r *http.Request, vmName VmName, params VmConsoleStreamParams)
+	VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName VMName, params VMConsoleStreamParams)
 	// Issue a single-use console token (synchronous).
 	// (POST /v1/vms/{vm_name}/console-token)
-	VmConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName VmName, params VmConsoleIssueTokenParams)
+	VMConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName VMName, params VMConsoleIssueTokenParams)
 	// List disks attached to a VM.
 	// (GET /v1/vms/{vm_name}/disks)
-	VmDisksList(w http.ResponseWriter, r *http.Request, vmName VmName)
+	VMDisksList(w http.ResponseWriter, r *http.Request, vmName VMName)
 	// Attach a disk to a VM (asynchronous).
 	// (POST /v1/vms/{vm_name}/disks)
-	VmDisksAttach(w http.ResponseWriter, r *http.Request, vmName VmName, params VmDisksAttachParams)
+	VMDisksAttach(w http.ResponseWriter, r *http.Request, vmName VMName, params VMDisksAttachParams)
 	// Detach a disk from a VM (asynchronous).
 	// (DELETE /v1/vms/{vm_name}/disks/{device_order})
-	VmDisksDetach(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmDisksDetachParams)
+	VMDisksDetach(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMDisksDetachParams)
 	// Update a disk (asynchronous).
 	// (PATCH /v1/vms/{vm_name}/disks/{device_order})
-	VmDisksUpdate(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmDisksUpdateParams)
+	VMDisksUpdate(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMDisksUpdateParams)
 	// Prepare to receive a migrating VM (synchronous).
 	// (POST /v1/vms/{vm_name}/migrations/incoming)
-	VmMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, vmName VmName, params VmMigrationsStartIncomingParams)
+	VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, vmName VMName, params VMMigrationsStartIncomingParams)
 	// Begin transferring a VM to a peer (asynchronous).
 	// (POST /v1/vms/{vm_name}/migrations/outgoing)
-	VmMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, vmName VmName, params VmMigrationsStartOutgoingParams)
+	VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, vmName VMName, params VMMigrationsStartOutgoingParams)
 	// Get migration status as observed by this agent.
 	// (GET /v1/vms/{vm_name}/migrations/{migration_id})
-	VmMigrationsGet(w http.ResponseWriter, r *http.Request, vmName VmName, migrationId MigrationId)
+	VMMigrationsGet(w http.ResponseWriter, r *http.Request, vmName VMName, migrationID MigrationID)
 	// Cancel a migration on this agent (best-effort).
 	// (POST /v1/vms/{vm_name}/migrations/{migration_id}/cancel)
-	VmMigrationsCancel(w http.ResponseWriter, r *http.Request, vmName VmName, migrationId MigrationId, params VmMigrationsCancelParams)
+	VMMigrationsCancel(w http.ResponseWriter, r *http.Request, vmName VMName, migrationID MigrationID, params VMMigrationsCancelParams)
 	// List NICs attached to a VM.
 	// (GET /v1/vms/{vm_name}/nics)
-	VmNicsList(w http.ResponseWriter, r *http.Request, vmName VmName)
+	VMNicsList(w http.ResponseWriter, r *http.Request, vmName VMName)
 	// Attach a NIC to a VM (asynchronous).
 	// (POST /v1/vms/{vm_name}/nics)
-	VmNicsAttach(w http.ResponseWriter, r *http.Request, vmName VmName, params VmNicsAttachParams)
+	VMNicsAttach(w http.ResponseWriter, r *http.Request, vmName VMName, params VMNicsAttachParams)
 	// Detach a NIC from a VM (asynchronous).
 	// (DELETE /v1/vms/{vm_name}/nics/{device_order})
-	VmNicsDetach(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmNicsDetachParams)
+	VMNicsDetach(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMNicsDetachParams)
 	// Update a NIC (asynchronous).
 	// (PATCH /v1/vms/{vm_name}/nics/{device_order})
-	VmNicsUpdate(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmNicsUpdateParams)
+	VMNicsUpdate(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMNicsUpdateParams)
 	// Pause a running VM (synchronous).
 	// (POST /v1/vms/{vm_name}/pause)
-	VmsPause(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsPauseParams)
+	VmsPause(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsPauseParams)
 	// Hard power off (asynchronous).
 	// (POST /v1/vms/{vm_name}/poweroff)
-	VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsPoweroffParams)
+	VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsPoweroffParams)
 	// Graceful reboot via ACPI (asynchronous).
 	// (POST /v1/vms/{vm_name}/reboot)
-	VmsReboot(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsRebootParams)
+	VmsReboot(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsRebootParams)
 	// Hard reset a running VM (synchronous).
 	// (POST /v1/vms/{vm_name}/reset)
-	VmsReset(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsResetParams)
+	VmsReset(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsResetParams)
 	// Resize CPU/memory (asynchronous).
 	// (POST /v1/vms/{vm_name}/resize)
-	VmsResize(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsResizeParams)
+	VmsResize(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsResizeParams)
 	// Resume a paused VM (synchronous).
 	// (POST /v1/vms/{vm_name}/resume)
-	VmsResume(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsResumeParams)
+	VmsResume(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsResumeParams)
 	// Revert VM to a snapshot (asynchronous).
 	// (POST /v1/vms/{vm_name}/revert)
-	VmsRevert(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsRevertParams)
+	VmsRevert(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsRevertParams)
 	// List snapshots of a VM.
 	// (GET /v1/vms/{vm_name}/snapshots)
-	VmSnapshotsList(w http.ResponseWriter, r *http.Request, vmName VmName)
+	VMSnapshotsList(w http.ResponseWriter, r *http.Request, vmName VMName)
 	// Create a snapshot (asynchronous).
 	// (POST /v1/vms/{vm_name}/snapshots)
-	VmSnapshotsCreate(w http.ResponseWriter, r *http.Request, vmName VmName, params VmSnapshotsCreateParams)
+	VMSnapshotsCreate(w http.ResponseWriter, r *http.Request, vmName VMName, params VMSnapshotsCreateParams)
 	// Delete a snapshot (asynchronous).
 	// (DELETE /v1/vms/{vm_name}/snapshots/{snapshot_name})
-	VmSnapshotsDelete(w http.ResponseWriter, r *http.Request, vmName VmName, snapshotName SnapshotName, params VmSnapshotsDeleteParams)
+	VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, vmName VMName, snapshotName SnapshotName, params VMSnapshotsDeleteParams)
 	// Get a snapshot.
 	// (GET /v1/vms/{vm_name}/snapshots/{snapshot_name})
-	VmSnapshotsGet(w http.ResponseWriter, r *http.Request, vmName VmName, snapshotName SnapshotName)
+	VMSnapshotsGet(w http.ResponseWriter, r *http.Request, vmName VMName, snapshotName SnapshotName)
 	// Start a VM (asynchronous).
 	// (POST /v1/vms/{vm_name}/start)
-	VmsStart(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsStartParams)
+	VmsStart(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsStartParams)
 	// Graceful shutdown via ACPI (asynchronous).
 	// (POST /v1/vms/{vm_name}/stop)
-	VmsStop(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsStopParams)
+	VmsStop(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsStopParams)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -2260,13 +2260,13 @@ func (_ Unimplemented) NetworksConfigure(w http.ResponseWriter, r *http.Request,
 
 // Tear down a network on this node (asynchronous).
 // (DELETE /v1/networks/{network_id})
-func (_ Unimplemented) NetworksDelete(w http.ResponseWriter, r *http.Request, networkId NetworkId, params NetworksDeleteParams) {
+func (_ Unimplemented) NetworksDelete(w http.ResponseWriter, r *http.Request, networkID NetworkID, params NetworksDeleteParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get a network as configured on this node.
 // (GET /v1/networks/{network_id})
-func (_ Unimplemented) NetworksGet(w http.ResponseWriter, r *http.Request, networkId NetworkId) {
+func (_ Unimplemented) NetworksGet(w http.ResponseWriter, r *http.Request, networkID NetworkID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2326,175 +2326,175 @@ func (_ Unimplemented) VmsCreate(w http.ResponseWriter, r *http.Request, params 
 
 // Remove a VM from this node (asynchronous).
 // (DELETE /v1/vms/{vm_name})
-func (_ Unimplemented) VmsDelete(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsDeleteParams) {
+func (_ Unimplemented) VmsDelete(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsDeleteParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get VM detail with runtime state.
 // (GET /v1/vms/{vm_name})
-func (_ Unimplemented) VmsGet(w http.ResponseWriter, r *http.Request, vmName VmName) {
+func (_ Unimplemented) VmsGet(w http.ResponseWriter, r *http.Request, vmName VMName) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // WebSocket upgrade for the console stream.
 // (GET /v1/vms/{vm_name}/console-stream)
-func (_ Unimplemented) VmConsoleStream(w http.ResponseWriter, r *http.Request, vmName VmName, params VmConsoleStreamParams) {
+func (_ Unimplemented) VMConsoleStream(w http.ResponseWriter, r *http.Request, vmName VMName, params VMConsoleStreamParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Issue a single-use console token (synchronous).
 // (POST /v1/vms/{vm_name}/console-token)
-func (_ Unimplemented) VmConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName VmName, params VmConsoleIssueTokenParams) {
+func (_ Unimplemented) VMConsoleIssueToken(w http.ResponseWriter, r *http.Request, vmName VMName, params VMConsoleIssueTokenParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // List disks attached to a VM.
 // (GET /v1/vms/{vm_name}/disks)
-func (_ Unimplemented) VmDisksList(w http.ResponseWriter, r *http.Request, vmName VmName) {
+func (_ Unimplemented) VMDisksList(w http.ResponseWriter, r *http.Request, vmName VMName) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Attach a disk to a VM (asynchronous).
 // (POST /v1/vms/{vm_name}/disks)
-func (_ Unimplemented) VmDisksAttach(w http.ResponseWriter, r *http.Request, vmName VmName, params VmDisksAttachParams) {
+func (_ Unimplemented) VMDisksAttach(w http.ResponseWriter, r *http.Request, vmName VMName, params VMDisksAttachParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Detach a disk from a VM (asynchronous).
 // (DELETE /v1/vms/{vm_name}/disks/{device_order})
-func (_ Unimplemented) VmDisksDetach(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmDisksDetachParams) {
+func (_ Unimplemented) VMDisksDetach(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMDisksDetachParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Update a disk (asynchronous).
 // (PATCH /v1/vms/{vm_name}/disks/{device_order})
-func (_ Unimplemented) VmDisksUpdate(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmDisksUpdateParams) {
+func (_ Unimplemented) VMDisksUpdate(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMDisksUpdateParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Prepare to receive a migrating VM (synchronous).
 // (POST /v1/vms/{vm_name}/migrations/incoming)
-func (_ Unimplemented) VmMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, vmName VmName, params VmMigrationsStartIncomingParams) {
+func (_ Unimplemented) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, vmName VMName, params VMMigrationsStartIncomingParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Begin transferring a VM to a peer (asynchronous).
 // (POST /v1/vms/{vm_name}/migrations/outgoing)
-func (_ Unimplemented) VmMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, vmName VmName, params VmMigrationsStartOutgoingParams) {
+func (_ Unimplemented) VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, vmName VMName, params VMMigrationsStartOutgoingParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get migration status as observed by this agent.
 // (GET /v1/vms/{vm_name}/migrations/{migration_id})
-func (_ Unimplemented) VmMigrationsGet(w http.ResponseWriter, r *http.Request, vmName VmName, migrationId MigrationId) {
+func (_ Unimplemented) VMMigrationsGet(w http.ResponseWriter, r *http.Request, vmName VMName, migrationID MigrationID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Cancel a migration on this agent (best-effort).
 // (POST /v1/vms/{vm_name}/migrations/{migration_id}/cancel)
-func (_ Unimplemented) VmMigrationsCancel(w http.ResponseWriter, r *http.Request, vmName VmName, migrationId MigrationId, params VmMigrationsCancelParams) {
+func (_ Unimplemented) VMMigrationsCancel(w http.ResponseWriter, r *http.Request, vmName VMName, migrationID MigrationID, params VMMigrationsCancelParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // List NICs attached to a VM.
 // (GET /v1/vms/{vm_name}/nics)
-func (_ Unimplemented) VmNicsList(w http.ResponseWriter, r *http.Request, vmName VmName) {
+func (_ Unimplemented) VMNicsList(w http.ResponseWriter, r *http.Request, vmName VMName) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Attach a NIC to a VM (asynchronous).
 // (POST /v1/vms/{vm_name}/nics)
-func (_ Unimplemented) VmNicsAttach(w http.ResponseWriter, r *http.Request, vmName VmName, params VmNicsAttachParams) {
+func (_ Unimplemented) VMNicsAttach(w http.ResponseWriter, r *http.Request, vmName VMName, params VMNicsAttachParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Detach a NIC from a VM (asynchronous).
 // (DELETE /v1/vms/{vm_name}/nics/{device_order})
-func (_ Unimplemented) VmNicsDetach(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmNicsDetachParams) {
+func (_ Unimplemented) VMNicsDetach(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMNicsDetachParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Update a NIC (asynchronous).
 // (PATCH /v1/vms/{vm_name}/nics/{device_order})
-func (_ Unimplemented) VmNicsUpdate(w http.ResponseWriter, r *http.Request, vmName VmName, deviceOrder DeviceOrder, params VmNicsUpdateParams) {
+func (_ Unimplemented) VMNicsUpdate(w http.ResponseWriter, r *http.Request, vmName VMName, deviceOrder DeviceOrder, params VMNicsUpdateParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Pause a running VM (synchronous).
 // (POST /v1/vms/{vm_name}/pause)
-func (_ Unimplemented) VmsPause(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsPauseParams) {
+func (_ Unimplemented) VmsPause(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsPauseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Hard power off (asynchronous).
 // (POST /v1/vms/{vm_name}/poweroff)
-func (_ Unimplemented) VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsPoweroffParams) {
+func (_ Unimplemented) VmsPoweroff(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsPoweroffParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Graceful reboot via ACPI (asynchronous).
 // (POST /v1/vms/{vm_name}/reboot)
-func (_ Unimplemented) VmsReboot(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsRebootParams) {
+func (_ Unimplemented) VmsReboot(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsRebootParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Hard reset a running VM (synchronous).
 // (POST /v1/vms/{vm_name}/reset)
-func (_ Unimplemented) VmsReset(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsResetParams) {
+func (_ Unimplemented) VmsReset(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsResetParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Resize CPU/memory (asynchronous).
 // (POST /v1/vms/{vm_name}/resize)
-func (_ Unimplemented) VmsResize(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsResizeParams) {
+func (_ Unimplemented) VmsResize(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsResizeParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Resume a paused VM (synchronous).
 // (POST /v1/vms/{vm_name}/resume)
-func (_ Unimplemented) VmsResume(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsResumeParams) {
+func (_ Unimplemented) VmsResume(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsResumeParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Revert VM to a snapshot (asynchronous).
 // (POST /v1/vms/{vm_name}/revert)
-func (_ Unimplemented) VmsRevert(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsRevertParams) {
+func (_ Unimplemented) VmsRevert(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsRevertParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // List snapshots of a VM.
 // (GET /v1/vms/{vm_name}/snapshots)
-func (_ Unimplemented) VmSnapshotsList(w http.ResponseWriter, r *http.Request, vmName VmName) {
+func (_ Unimplemented) VMSnapshotsList(w http.ResponseWriter, r *http.Request, vmName VMName) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Create a snapshot (asynchronous).
 // (POST /v1/vms/{vm_name}/snapshots)
-func (_ Unimplemented) VmSnapshotsCreate(w http.ResponseWriter, r *http.Request, vmName VmName, params VmSnapshotsCreateParams) {
+func (_ Unimplemented) VMSnapshotsCreate(w http.ResponseWriter, r *http.Request, vmName VMName, params VMSnapshotsCreateParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Delete a snapshot (asynchronous).
 // (DELETE /v1/vms/{vm_name}/snapshots/{snapshot_name})
-func (_ Unimplemented) VmSnapshotsDelete(w http.ResponseWriter, r *http.Request, vmName VmName, snapshotName SnapshotName, params VmSnapshotsDeleteParams) {
+func (_ Unimplemented) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, vmName VMName, snapshotName SnapshotName, params VMSnapshotsDeleteParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get a snapshot.
 // (GET /v1/vms/{vm_name}/snapshots/{snapshot_name})
-func (_ Unimplemented) VmSnapshotsGet(w http.ResponseWriter, r *http.Request, vmName VmName, snapshotName SnapshotName) {
+func (_ Unimplemented) VMSnapshotsGet(w http.ResponseWriter, r *http.Request, vmName VMName, snapshotName SnapshotName) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Start a VM (asynchronous).
 // (POST /v1/vms/{vm_name}/start)
-func (_ Unimplemented) VmsStart(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsStartParams) {
+func (_ Unimplemented) VmsStart(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsStartParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Graceful shutdown via ACPI (asynchronous).
 // (POST /v1/vms/{vm_name}/stop)
-func (_ Unimplemented) VmsStop(w http.ResponseWriter, r *http.Request, vmName VmName, params VmsStopParams) {
+func (_ Unimplemented) VmsStop(w http.ResponseWriter, r *http.Request, vmName VMName, params VmsStopParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2653,9 +2653,9 @@ func (siw *ServerInterfaceWrapper) NetworksDelete(w http.ResponseWriter, r *http
 	_ = err
 
 	// ------------- Path parameter "network_id" -------------
-	var networkId NetworkId
+	var networkID NetworkID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "network_id", chi.URLParam(r, "network_id"), &networkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	err = runtime.BindStyledParameterWithOptions("simple", "network_id", chi.URLParam(r, "network_id"), &networkID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "network_id", Err: err})
 		return
@@ -2692,7 +2692,7 @@ func (siw *ServerInterfaceWrapper) NetworksDelete(w http.ResponseWriter, r *http
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.NetworksDelete(w, r, networkId, params)
+		siw.Handler.NetworksDelete(w, r, networkID, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2709,9 +2709,9 @@ func (siw *ServerInterfaceWrapper) NetworksGet(w http.ResponseWriter, r *http.Re
 	_ = err
 
 	// ------------- Path parameter "network_id" -------------
-	var networkId NetworkId
+	var networkID NetworkID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "network_id", chi.URLParam(r, "network_id"), &networkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	err = runtime.BindStyledParameterWithOptions("simple", "network_id", chi.URLParam(r, "network_id"), &networkID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "network_id", Err: err})
 		return
@@ -2724,7 +2724,7 @@ func (siw *ServerInterfaceWrapper) NetworksGet(w http.ResponseWriter, r *http.Re
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.NetworksGet(w, r, networkId)
+		siw.Handler.NetworksGet(w, r, networkID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3207,7 +3207,7 @@ func (siw *ServerInterfaceWrapper) VmsDelete(w http.ResponseWriter, r *http.Requ
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3263,7 +3263,7 @@ func (siw *ServerInterfaceWrapper) VmsGet(w http.ResponseWriter, r *http.Request
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3288,14 +3288,14 @@ func (siw *ServerInterfaceWrapper) VmsGet(w http.ResponseWriter, r *http.Request
 	handler.ServeHTTP(w, r)
 }
 
-// VmConsoleStream operation middleware
-func (siw *ServerInterfaceWrapper) VmConsoleStream(w http.ResponseWriter, r *http.Request) {
+// VMConsoleStream operation middleware
+func (siw *ServerInterfaceWrapper) VMConsoleStream(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3310,7 +3310,7 @@ func (siw *ServerInterfaceWrapper) VmConsoleStream(w http.ResponseWriter, r *htt
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmConsoleStreamParams
+	var params VMConsoleStreamParams
 
 	// ------------- Required query parameter "token" -------------
 
@@ -3326,7 +3326,7 @@ func (siw *ServerInterfaceWrapper) VmConsoleStream(w http.ResponseWriter, r *htt
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmConsoleStream(w, r, vmName, params)
+		siw.Handler.VMConsoleStream(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3336,14 +3336,14 @@ func (siw *ServerInterfaceWrapper) VmConsoleStream(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
-// VmConsoleIssueToken operation middleware
-func (siw *ServerInterfaceWrapper) VmConsoleIssueToken(w http.ResponseWriter, r *http.Request) {
+// VMConsoleIssueToken operation middleware
+func (siw *ServerInterfaceWrapper) VMConsoleIssueToken(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3358,7 +3358,7 @@ func (siw *ServerInterfaceWrapper) VmConsoleIssueToken(w http.ResponseWriter, r 
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmConsoleIssueTokenParams
+	var params VMConsoleIssueTokenParams
 
 	headers := r.Header
 
@@ -3382,7 +3382,7 @@ func (siw *ServerInterfaceWrapper) VmConsoleIssueToken(w http.ResponseWriter, r 
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmConsoleIssueToken(w, r, vmName, params)
+		siw.Handler.VMConsoleIssueToken(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3392,14 +3392,14 @@ func (siw *ServerInterfaceWrapper) VmConsoleIssueToken(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
-// VmDisksList operation middleware
-func (siw *ServerInterfaceWrapper) VmDisksList(w http.ResponseWriter, r *http.Request) {
+// VMDisksList operation middleware
+func (siw *ServerInterfaceWrapper) VMDisksList(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3414,7 +3414,7 @@ func (siw *ServerInterfaceWrapper) VmDisksList(w http.ResponseWriter, r *http.Re
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmDisksList(w, r, vmName)
+		siw.Handler.VMDisksList(w, r, vmName)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3424,14 +3424,14 @@ func (siw *ServerInterfaceWrapper) VmDisksList(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
-// VmDisksAttach operation middleware
-func (siw *ServerInterfaceWrapper) VmDisksAttach(w http.ResponseWriter, r *http.Request) {
+// VMDisksAttach operation middleware
+func (siw *ServerInterfaceWrapper) VMDisksAttach(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3446,7 +3446,7 @@ func (siw *ServerInterfaceWrapper) VmDisksAttach(w http.ResponseWriter, r *http.
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmDisksAttachParams
+	var params VMDisksAttachParams
 
 	headers := r.Header
 
@@ -3470,7 +3470,7 @@ func (siw *ServerInterfaceWrapper) VmDisksAttach(w http.ResponseWriter, r *http.
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmDisksAttach(w, r, vmName, params)
+		siw.Handler.VMDisksAttach(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3480,14 +3480,14 @@ func (siw *ServerInterfaceWrapper) VmDisksAttach(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
-// VmDisksDetach operation middleware
-func (siw *ServerInterfaceWrapper) VmDisksDetach(w http.ResponseWriter, r *http.Request) {
+// VMDisksDetach operation middleware
+func (siw *ServerInterfaceWrapper) VMDisksDetach(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3511,7 +3511,7 @@ func (siw *ServerInterfaceWrapper) VmDisksDetach(w http.ResponseWriter, r *http.
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmDisksDetachParams
+	var params VMDisksDetachParams
 
 	headers := r.Header
 
@@ -3535,7 +3535,7 @@ func (siw *ServerInterfaceWrapper) VmDisksDetach(w http.ResponseWriter, r *http.
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmDisksDetach(w, r, vmName, deviceOrder, params)
+		siw.Handler.VMDisksDetach(w, r, vmName, deviceOrder, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3545,14 +3545,14 @@ func (siw *ServerInterfaceWrapper) VmDisksDetach(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
-// VmDisksUpdate operation middleware
-func (siw *ServerInterfaceWrapper) VmDisksUpdate(w http.ResponseWriter, r *http.Request) {
+// VMDisksUpdate operation middleware
+func (siw *ServerInterfaceWrapper) VMDisksUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3576,7 +3576,7 @@ func (siw *ServerInterfaceWrapper) VmDisksUpdate(w http.ResponseWriter, r *http.
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmDisksUpdateParams
+	var params VMDisksUpdateParams
 
 	headers := r.Header
 
@@ -3600,7 +3600,7 @@ func (siw *ServerInterfaceWrapper) VmDisksUpdate(w http.ResponseWriter, r *http.
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmDisksUpdate(w, r, vmName, deviceOrder, params)
+		siw.Handler.VMDisksUpdate(w, r, vmName, deviceOrder, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3610,14 +3610,14 @@ func (siw *ServerInterfaceWrapper) VmDisksUpdate(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
-// VmMigrationsStartIncoming operation middleware
-func (siw *ServerInterfaceWrapper) VmMigrationsStartIncoming(w http.ResponseWriter, r *http.Request) {
+// VMMigrationsStartIncoming operation middleware
+func (siw *ServerInterfaceWrapper) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3632,7 +3632,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsStartIncoming(w http.ResponseWrit
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmMigrationsStartIncomingParams
+	var params VMMigrationsStartIncomingParams
 
 	headers := r.Header
 
@@ -3656,7 +3656,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsStartIncoming(w http.ResponseWrit
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmMigrationsStartIncoming(w, r, vmName, params)
+		siw.Handler.VMMigrationsStartIncoming(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3666,14 +3666,14 @@ func (siw *ServerInterfaceWrapper) VmMigrationsStartIncoming(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
-// VmMigrationsStartOutgoing operation middleware
-func (siw *ServerInterfaceWrapper) VmMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request) {
+// VMMigrationsStartOutgoing operation middleware
+func (siw *ServerInterfaceWrapper) VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3688,7 +3688,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsStartOutgoing(w http.ResponseWrit
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmMigrationsStartOutgoingParams
+	var params VMMigrationsStartOutgoingParams
 
 	headers := r.Header
 
@@ -3712,7 +3712,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsStartOutgoing(w http.ResponseWrit
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmMigrationsStartOutgoing(w, r, vmName, params)
+		siw.Handler.VMMigrationsStartOutgoing(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3722,14 +3722,14 @@ func (siw *ServerInterfaceWrapper) VmMigrationsStartOutgoing(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
-// VmMigrationsGet operation middleware
-func (siw *ServerInterfaceWrapper) VmMigrationsGet(w http.ResponseWriter, r *http.Request) {
+// VMMigrationsGet operation middleware
+func (siw *ServerInterfaceWrapper) VMMigrationsGet(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3738,9 +3738,9 @@ func (siw *ServerInterfaceWrapper) VmMigrationsGet(w http.ResponseWriter, r *htt
 	}
 
 	// ------------- Path parameter "migration_id" -------------
-	var migrationId MigrationId
+	var migrationID MigrationID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "migration_id", chi.URLParam(r, "migration_id"), &migrationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	err = runtime.BindStyledParameterWithOptions("simple", "migration_id", chi.URLParam(r, "migration_id"), &migrationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "migration_id", Err: err})
 		return
@@ -3753,7 +3753,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsGet(w http.ResponseWriter, r *htt
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmMigrationsGet(w, r, vmName, migrationId)
+		siw.Handler.VMMigrationsGet(w, r, vmName, migrationID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3763,14 +3763,14 @@ func (siw *ServerInterfaceWrapper) VmMigrationsGet(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
-// VmMigrationsCancel operation middleware
-func (siw *ServerInterfaceWrapper) VmMigrationsCancel(w http.ResponseWriter, r *http.Request) {
+// VMMigrationsCancel operation middleware
+func (siw *ServerInterfaceWrapper) VMMigrationsCancel(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3779,9 +3779,9 @@ func (siw *ServerInterfaceWrapper) VmMigrationsCancel(w http.ResponseWriter, r *
 	}
 
 	// ------------- Path parameter "migration_id" -------------
-	var migrationId MigrationId
+	var migrationID MigrationID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "migration_id", chi.URLParam(r, "migration_id"), &migrationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	err = runtime.BindStyledParameterWithOptions("simple", "migration_id", chi.URLParam(r, "migration_id"), &migrationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "migration_id", Err: err})
 		return
@@ -3794,7 +3794,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsCancel(w http.ResponseWriter, r *
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmMigrationsCancelParams
+	var params VMMigrationsCancelParams
 
 	headers := r.Header
 
@@ -3818,7 +3818,7 @@ func (siw *ServerInterfaceWrapper) VmMigrationsCancel(w http.ResponseWriter, r *
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmMigrationsCancel(w, r, vmName, migrationId, params)
+		siw.Handler.VMMigrationsCancel(w, r, vmName, migrationID, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3828,14 +3828,14 @@ func (siw *ServerInterfaceWrapper) VmMigrationsCancel(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
-// VmNicsList operation middleware
-func (siw *ServerInterfaceWrapper) VmNicsList(w http.ResponseWriter, r *http.Request) {
+// VMNicsList operation middleware
+func (siw *ServerInterfaceWrapper) VMNicsList(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3850,7 +3850,7 @@ func (siw *ServerInterfaceWrapper) VmNicsList(w http.ResponseWriter, r *http.Req
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmNicsList(w, r, vmName)
+		siw.Handler.VMNicsList(w, r, vmName)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3860,14 +3860,14 @@ func (siw *ServerInterfaceWrapper) VmNicsList(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
-// VmNicsAttach operation middleware
-func (siw *ServerInterfaceWrapper) VmNicsAttach(w http.ResponseWriter, r *http.Request) {
+// VMNicsAttach operation middleware
+func (siw *ServerInterfaceWrapper) VMNicsAttach(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3882,7 +3882,7 @@ func (siw *ServerInterfaceWrapper) VmNicsAttach(w http.ResponseWriter, r *http.R
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmNicsAttachParams
+	var params VMNicsAttachParams
 
 	headers := r.Header
 
@@ -3906,7 +3906,7 @@ func (siw *ServerInterfaceWrapper) VmNicsAttach(w http.ResponseWriter, r *http.R
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmNicsAttach(w, r, vmName, params)
+		siw.Handler.VMNicsAttach(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3916,14 +3916,14 @@ func (siw *ServerInterfaceWrapper) VmNicsAttach(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
-// VmNicsDetach operation middleware
-func (siw *ServerInterfaceWrapper) VmNicsDetach(w http.ResponseWriter, r *http.Request) {
+// VMNicsDetach operation middleware
+func (siw *ServerInterfaceWrapper) VMNicsDetach(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -3947,7 +3947,7 @@ func (siw *ServerInterfaceWrapper) VmNicsDetach(w http.ResponseWriter, r *http.R
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmNicsDetachParams
+	var params VMNicsDetachParams
 
 	headers := r.Header
 
@@ -3971,7 +3971,7 @@ func (siw *ServerInterfaceWrapper) VmNicsDetach(w http.ResponseWriter, r *http.R
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmNicsDetach(w, r, vmName, deviceOrder, params)
+		siw.Handler.VMNicsDetach(w, r, vmName, deviceOrder, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3981,14 +3981,14 @@ func (siw *ServerInterfaceWrapper) VmNicsDetach(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
-// VmNicsUpdate operation middleware
-func (siw *ServerInterfaceWrapper) VmNicsUpdate(w http.ResponseWriter, r *http.Request) {
+// VMNicsUpdate operation middleware
+func (siw *ServerInterfaceWrapper) VMNicsUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4012,7 +4012,7 @@ func (siw *ServerInterfaceWrapper) VmNicsUpdate(w http.ResponseWriter, r *http.R
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmNicsUpdateParams
+	var params VMNicsUpdateParams
 
 	headers := r.Header
 
@@ -4036,7 +4036,7 @@ func (siw *ServerInterfaceWrapper) VmNicsUpdate(w http.ResponseWriter, r *http.R
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmNicsUpdate(w, r, vmName, deviceOrder, params)
+		siw.Handler.VMNicsUpdate(w, r, vmName, deviceOrder, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4053,7 +4053,7 @@ func (siw *ServerInterfaceWrapper) VmsPause(w http.ResponseWriter, r *http.Reque
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4109,7 +4109,7 @@ func (siw *ServerInterfaceWrapper) VmsPoweroff(w http.ResponseWriter, r *http.Re
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4165,7 +4165,7 @@ func (siw *ServerInterfaceWrapper) VmsReboot(w http.ResponseWriter, r *http.Requ
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4221,7 +4221,7 @@ func (siw *ServerInterfaceWrapper) VmsReset(w http.ResponseWriter, r *http.Reque
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4277,7 +4277,7 @@ func (siw *ServerInterfaceWrapper) VmsResize(w http.ResponseWriter, r *http.Requ
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4333,7 +4333,7 @@ func (siw *ServerInterfaceWrapper) VmsResume(w http.ResponseWriter, r *http.Requ
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4389,7 +4389,7 @@ func (siw *ServerInterfaceWrapper) VmsRevert(w http.ResponseWriter, r *http.Requ
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4438,14 +4438,14 @@ func (siw *ServerInterfaceWrapper) VmsRevert(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
-// VmSnapshotsList operation middleware
-func (siw *ServerInterfaceWrapper) VmSnapshotsList(w http.ResponseWriter, r *http.Request) {
+// VMSnapshotsList operation middleware
+func (siw *ServerInterfaceWrapper) VMSnapshotsList(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4460,7 +4460,7 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsList(w http.ResponseWriter, r *htt
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmSnapshotsList(w, r, vmName)
+		siw.Handler.VMSnapshotsList(w, r, vmName)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4470,14 +4470,14 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsList(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
-// VmSnapshotsCreate operation middleware
-func (siw *ServerInterfaceWrapper) VmSnapshotsCreate(w http.ResponseWriter, r *http.Request) {
+// VMSnapshotsCreate operation middleware
+func (siw *ServerInterfaceWrapper) VMSnapshotsCreate(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4492,7 +4492,7 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsCreate(w http.ResponseWriter, r *h
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmSnapshotsCreateParams
+	var params VMSnapshotsCreateParams
 
 	headers := r.Header
 
@@ -4516,7 +4516,7 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsCreate(w http.ResponseWriter, r *h
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmSnapshotsCreate(w, r, vmName, params)
+		siw.Handler.VMSnapshotsCreate(w, r, vmName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4526,14 +4526,14 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsCreate(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
-// VmSnapshotsDelete operation middleware
-func (siw *ServerInterfaceWrapper) VmSnapshotsDelete(w http.ResponseWriter, r *http.Request) {
+// VMSnapshotsDelete operation middleware
+func (siw *ServerInterfaceWrapper) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4557,7 +4557,7 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsDelete(w http.ResponseWriter, r *h
 	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
-	var params VmSnapshotsDeleteParams
+	var params VMSnapshotsDeleteParams
 
 	headers := r.Header
 
@@ -4581,7 +4581,7 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsDelete(w http.ResponseWriter, r *h
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmSnapshotsDelete(w, r, vmName, snapshotName, params)
+		siw.Handler.VMSnapshotsDelete(w, r, vmName, snapshotName, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4591,14 +4591,14 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsDelete(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
-// VmSnapshotsGet operation middleware
-func (siw *ServerInterfaceWrapper) VmSnapshotsGet(w http.ResponseWriter, r *http.Request) {
+// VMSnapshotsGet operation middleware
+func (siw *ServerInterfaceWrapper) VMSnapshotsGet(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4622,7 +4622,7 @@ func (siw *ServerInterfaceWrapper) VmSnapshotsGet(w http.ResponseWriter, r *http
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.VmSnapshotsGet(w, r, vmName, snapshotName)
+		siw.Handler.VMSnapshotsGet(w, r, vmName, snapshotName)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4639,7 +4639,7 @@ func (siw *ServerInterfaceWrapper) VmsStart(w http.ResponseWriter, r *http.Reque
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4695,7 +4695,7 @@ func (siw *ServerInterfaceWrapper) VmsStop(w http.ResponseWriter, r *http.Reques
 	_ = err
 
 	// ------------- Path parameter "vm_name" -------------
-	var vmName VmName
+	var vmName VMName
 
 	err = runtime.BindStyledParameterWithOptions("simple", "vm_name", chi.URLParam(r, "vm_name"), &vmName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
 	if err != nil {
@@ -4909,46 +4909,46 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/v1/vms/{vm_name}", wrapper.VmsGet)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/vms/{vm_name}/console-stream", wrapper.VmConsoleStream)
+		r.Get(options.BaseURL+"/v1/vms/{vm_name}/console-stream", wrapper.VMConsoleStream)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/console-token", wrapper.VmConsoleIssueToken)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/console-token", wrapper.VMConsoleIssueToken)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/vms/{vm_name}/disks", wrapper.VmDisksList)
+		r.Get(options.BaseURL+"/v1/vms/{vm_name}/disks", wrapper.VMDisksList)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/disks", wrapper.VmDisksAttach)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/disks", wrapper.VMDisksAttach)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/v1/vms/{vm_name}/disks/{device_order}", wrapper.VmDisksDetach)
+		r.Delete(options.BaseURL+"/v1/vms/{vm_name}/disks/{device_order}", wrapper.VMDisksDetach)
 	})
 	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/v1/vms/{vm_name}/disks/{device_order}", wrapper.VmDisksUpdate)
+		r.Patch(options.BaseURL+"/v1/vms/{vm_name}/disks/{device_order}", wrapper.VMDisksUpdate)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/migrations/incoming", wrapper.VmMigrationsStartIncoming)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/migrations/incoming", wrapper.VMMigrationsStartIncoming)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/migrations/outgoing", wrapper.VmMigrationsStartOutgoing)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/migrations/outgoing", wrapper.VMMigrationsStartOutgoing)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/vms/{vm_name}/migrations/{migration_id}", wrapper.VmMigrationsGet)
+		r.Get(options.BaseURL+"/v1/vms/{vm_name}/migrations/{migration_id}", wrapper.VMMigrationsGet)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/migrations/{migration_id}/cancel", wrapper.VmMigrationsCancel)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/migrations/{migration_id}/cancel", wrapper.VMMigrationsCancel)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/vms/{vm_name}/nics", wrapper.VmNicsList)
+		r.Get(options.BaseURL+"/v1/vms/{vm_name}/nics", wrapper.VMNicsList)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/nics", wrapper.VmNicsAttach)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/nics", wrapper.VMNicsAttach)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/v1/vms/{vm_name}/nics/{device_order}", wrapper.VmNicsDetach)
+		r.Delete(options.BaseURL+"/v1/vms/{vm_name}/nics/{device_order}", wrapper.VMNicsDetach)
 	})
 	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/v1/vms/{vm_name}/nics/{device_order}", wrapper.VmNicsUpdate)
+		r.Patch(options.BaseURL+"/v1/vms/{vm_name}/nics/{device_order}", wrapper.VMNicsUpdate)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/vms/{vm_name}/pause", wrapper.VmsPause)
@@ -4972,16 +4972,16 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/vms/{vm_name}/revert", wrapper.VmsRevert)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/vms/{vm_name}/snapshots", wrapper.VmSnapshotsList)
+		r.Get(options.BaseURL+"/v1/vms/{vm_name}/snapshots", wrapper.VMSnapshotsList)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/vms/{vm_name}/snapshots", wrapper.VmSnapshotsCreate)
+		r.Post(options.BaseURL+"/v1/vms/{vm_name}/snapshots", wrapper.VMSnapshotsCreate)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/v1/vms/{vm_name}/snapshots/{snapshot_name}", wrapper.VmSnapshotsDelete)
+		r.Delete(options.BaseURL+"/v1/vms/{vm_name}/snapshots/{snapshot_name}", wrapper.VMSnapshotsDelete)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/vms/{vm_name}/snapshots/{snapshot_name}", wrapper.VmSnapshotsGet)
+		r.Get(options.BaseURL+"/v1/vms/{vm_name}/snapshots/{snapshot_name}", wrapper.VMSnapshotsGet)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/vms/{vm_name}/start", wrapper.VmsStart)
@@ -5230,66 +5230,66 @@ var swaggerSpec = []string{
 	"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",
-	"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",
-	"5qwQjJQb1np9Z47Ume7DLx/+vwAAAP//",
+	"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",
+	"xwIxZ4VgpNyw1us7c6TOdB9++fD/BQAA//8=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

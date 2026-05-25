@@ -15,46 +15,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type CpuArch string
+type CPUArch string
 
 const (
-	CpuArchAmd64 CpuArch = "amd64"
-	CpuArchArm64 CpuArch = "arm64"
+	CpuArchAmd64 CPUArch = "amd64"
+	CpuArchArm64 CPUArch = "arm64"
 )
 
-func (e *CpuArch) Scan(src interface{}) error {
+func (e *CPUArch) Scan(src interface{}) error {
 	switch s := src.(type) {
 	case []byte:
-		*e = CpuArch(s)
+		*e = CPUArch(s)
 	case string:
-		*e = CpuArch(s)
+		*e = CPUArch(s)
 	default:
-		return fmt.Errorf("unsupported scan type for CpuArch: %T", src)
+		return fmt.Errorf("unsupported scan type for CPUArch: %T", src)
 	}
 	return nil
 }
 
-type NullCpuArch struct {
-	CpuArch CpuArch
-	Valid   bool // Valid is true if CpuArch is not NULL
+type NullCPUArch struct {
+	CPUArch CPUArch
+	Valid   bool // Valid is true if CPUArch is not NULL
 }
 
 // Scan implements the Scanner interface.
-func (ns *NullCpuArch) Scan(value interface{}) error {
+func (ns *NullCPUArch) Scan(value interface{}) error {
 	if value == nil {
-		ns.CpuArch, ns.Valid = "", false
+		ns.CPUArch, ns.Valid = "", false
 		return nil
 	}
 	ns.Valid = true
-	return ns.CpuArch.Scan(value)
+	return ns.CPUArch.Scan(value)
 }
 
 // Value implements the driver Valuer interface.
-func (ns NullCpuArch) Value() (driver.Value, error) {
+func (ns NullCPUArch) Value() (driver.Value, error) {
 	if !ns.Valid {
 		return nil, nil
 	}
-	return string(ns.CpuArch), nil
+	return string(ns.CPUArch), nil
 }
 
 type DiskBus string
@@ -675,137 +675,137 @@ func (ns NullTaskStatus) Value() (driver.Value, error) {
 	return string(ns.TaskStatus), nil
 }
 
-type VmDesiredPhase string
+type VMDesiredPhase string
 
 const (
-	VmDesiredPhaseRunning VmDesiredPhase = "running"
-	VmDesiredPhaseStopped VmDesiredPhase = "stopped"
-	VmDesiredPhaseDeleted VmDesiredPhase = "deleted"
+	VmDesiredPhaseRunning VMDesiredPhase = "running"
+	VmDesiredPhaseStopped VMDesiredPhase = "stopped"
+	VmDesiredPhaseDeleted VMDesiredPhase = "deleted"
 )
 
-func (e *VmDesiredPhase) Scan(src interface{}) error {
+func (e *VMDesiredPhase) Scan(src interface{}) error {
 	switch s := src.(type) {
 	case []byte:
-		*e = VmDesiredPhase(s)
+		*e = VMDesiredPhase(s)
 	case string:
-		*e = VmDesiredPhase(s)
+		*e = VMDesiredPhase(s)
 	default:
-		return fmt.Errorf("unsupported scan type for VmDesiredPhase: %T", src)
+		return fmt.Errorf("unsupported scan type for VMDesiredPhase: %T", src)
 	}
 	return nil
 }
 
-type NullVmDesiredPhase struct {
-	VmDesiredPhase VmDesiredPhase
-	Valid          bool // Valid is true if VmDesiredPhase is not NULL
+type NullVMDesiredPhase struct {
+	VMDesiredPhase VMDesiredPhase
+	Valid          bool // Valid is true if VMDesiredPhase is not NULL
 }
 
 // Scan implements the Scanner interface.
-func (ns *NullVmDesiredPhase) Scan(value interface{}) error {
+func (ns *NullVMDesiredPhase) Scan(value interface{}) error {
 	if value == nil {
-		ns.VmDesiredPhase, ns.Valid = "", false
+		ns.VMDesiredPhase, ns.Valid = "", false
 		return nil
 	}
 	ns.Valid = true
-	return ns.VmDesiredPhase.Scan(value)
+	return ns.VMDesiredPhase.Scan(value)
 }
 
 // Value implements the driver Valuer interface.
-func (ns NullVmDesiredPhase) Value() (driver.Value, error) {
+func (ns NullVMDesiredPhase) Value() (driver.Value, error) {
 	if !ns.Valid {
 		return nil, nil
 	}
-	return string(ns.VmDesiredPhase), nil
+	return string(ns.VMDesiredPhase), nil
 }
 
-type VmPhase string
+type VMPhase string
 
 const (
-	VmPhasePending  VmPhase = "pending"
-	VmPhaseRunning  VmPhase = "running"
-	VmPhasePaused   VmPhase = "paused"
-	VmPhaseStopped  VmPhase = "stopped"
-	VmPhaseError    VmPhase = "error"
-	VmPhaseGone     VmPhase = "gone"
-	VmPhaseOrphaned VmPhase = "orphaned"
+	VmPhasePending  VMPhase = "pending"
+	VmPhaseRunning  VMPhase = "running"
+	VmPhasePaused   VMPhase = "paused"
+	VmPhaseStopped  VMPhase = "stopped"
+	VmPhaseError    VMPhase = "error"
+	VmPhaseGone     VMPhase = "gone"
+	VmPhaseOrphaned VMPhase = "orphaned"
 )
 
-func (e *VmPhase) Scan(src interface{}) error {
+func (e *VMPhase) Scan(src interface{}) error {
 	switch s := src.(type) {
 	case []byte:
-		*e = VmPhase(s)
+		*e = VMPhase(s)
 	case string:
-		*e = VmPhase(s)
+		*e = VMPhase(s)
 	default:
-		return fmt.Errorf("unsupported scan type for VmPhase: %T", src)
+		return fmt.Errorf("unsupported scan type for VMPhase: %T", src)
 	}
 	return nil
 }
 
-type NullVmPhase struct {
-	VmPhase VmPhase
-	Valid   bool // Valid is true if VmPhase is not NULL
+type NullVMPhase struct {
+	VMPhase VMPhase
+	Valid   bool // Valid is true if VMPhase is not NULL
 }
 
 // Scan implements the Scanner interface.
-func (ns *NullVmPhase) Scan(value interface{}) error {
+func (ns *NullVMPhase) Scan(value interface{}) error {
 	if value == nil {
-		ns.VmPhase, ns.Valid = "", false
+		ns.VMPhase, ns.Valid = "", false
 		return nil
 	}
 	ns.Valid = true
-	return ns.VmPhase.Scan(value)
+	return ns.VMPhase.Scan(value)
 }
 
 // Value implements the driver Valuer interface.
-func (ns NullVmPhase) Value() (driver.Value, error) {
+func (ns NullVMPhase) Value() (driver.Value, error) {
 	if !ns.Valid {
 		return nil, nil
 	}
-	return string(ns.VmPhase), nil
+	return string(ns.VMPhase), nil
 }
 
-type VmStateAtSnapshot string
+type VMStateAtSnapshot string
 
 const (
-	VmStateAtSnapshotRunning VmStateAtSnapshot = "running"
-	VmStateAtSnapshotPaused  VmStateAtSnapshot = "paused"
-	VmStateAtSnapshotStopped VmStateAtSnapshot = "stopped"
+	VmStateAtSnapshotRunning VMStateAtSnapshot = "running"
+	VmStateAtSnapshotPaused  VMStateAtSnapshot = "paused"
+	VmStateAtSnapshotStopped VMStateAtSnapshot = "stopped"
 )
 
-func (e *VmStateAtSnapshot) Scan(src interface{}) error {
+func (e *VMStateAtSnapshot) Scan(src interface{}) error {
 	switch s := src.(type) {
 	case []byte:
-		*e = VmStateAtSnapshot(s)
+		*e = VMStateAtSnapshot(s)
 	case string:
-		*e = VmStateAtSnapshot(s)
+		*e = VMStateAtSnapshot(s)
 	default:
-		return fmt.Errorf("unsupported scan type for VmStateAtSnapshot: %T", src)
+		return fmt.Errorf("unsupported scan type for VMStateAtSnapshot: %T", src)
 	}
 	return nil
 }
 
-type NullVmStateAtSnapshot struct {
-	VmStateAtSnapshot VmStateAtSnapshot
-	Valid             bool // Valid is true if VmStateAtSnapshot is not NULL
+type NullVMStateAtSnapshot struct {
+	VMStateAtSnapshot VMStateAtSnapshot
+	Valid             bool // Valid is true if VMStateAtSnapshot is not NULL
 }
 
 // Scan implements the Scanner interface.
-func (ns *NullVmStateAtSnapshot) Scan(value interface{}) error {
+func (ns *NullVMStateAtSnapshot) Scan(value interface{}) error {
 	if value == nil {
-		ns.VmStateAtSnapshot, ns.Valid = "", false
+		ns.VMStateAtSnapshot, ns.Valid = "", false
 		return nil
 	}
 	ns.Valid = true
-	return ns.VmStateAtSnapshot.Scan(value)
+	return ns.VMStateAtSnapshot.Scan(value)
 }
 
 // Value implements the driver Valuer interface.
-func (ns NullVmStateAtSnapshot) Value() (driver.Value, error) {
+func (ns NullVMStateAtSnapshot) Value() (driver.Value, error) {
 	if !ns.Valid {
 		return nil, nil
 	}
-	return string(ns.VmStateAtSnapshot), nil
+	return string(ns.VMStateAtSnapshot), nil
 }
 
 type AgentCert struct {
@@ -940,7 +940,7 @@ type ClusterSetting struct {
 type Firmware struct {
 	ID           uuid.UUID
 	Name         string
-	Architecture CpuArch
+	Architecture CPUArch
 	Type         FirmwareType
 	Version      *string
 	SecureBoot   bool
@@ -1024,23 +1024,23 @@ type Network struct {
 type Node struct {
 	ID                      uuid.UUID
 	Name                    string
-	Architecture            CpuArch
+	Architecture            CPUArch
 	AdvertisedEndpoint      string
 	MigrationHost           string
 	MigrationPortRangeStart int32
 	MigrationPortRangeEnd   int32
 	Status                  NodeStatus
 	CordonedAt              *time.Time
-	CpuCoresTotal           *int32
-	CpuCoresAvailable       *int32
-	CpuModel                *string
+	CPUCoresTotal           *int32
+	CPUCoresAvailable       *int32
+	CPUModel                *string
 	CpuFlags                []string
 	MemoryTotalMib          *int64
 	MemoryAvailableMib      *int64
 	Hugepages2mibTotal      *int32
 	Hugepages1gibTotal      *int32
 	KernelVersion           *string
-	QemuVersion             *string
+	QEMUVersion             *string
 	NumaTopology            []byte
 	Capabilities            []byte
 	LastHeartbeatAt         *time.Time
@@ -1067,23 +1067,23 @@ type Node struct {
 type NodeEffectiveAvailability struct {
 	ID                       uuid.UUID
 	Name                     string
-	Architecture             CpuArch
+	Architecture             CPUArch
 	AdvertisedEndpoint       string
 	MigrationHost            string
 	MigrationPortRangeStart  int32
 	MigrationPortRangeEnd    int32
 	Status                   NodeStatus
 	CordonedAt               *time.Time
-	CpuCoresTotal            *int32
-	CpuCoresAvailable        *int32
-	CpuModel                 *string
+	CPUCoresTotal            *int32
+	CPUCoresAvailable        *int32
+	CPUModel                 *string
 	CpuFlags                 []string
 	MemoryTotalMib           *int64
 	MemoryAvailableMib       *int64
 	Hugepages2mibTotal       *int32
 	Hugepages1gibTotal       *int32
 	KernelVersion            *string
-	QemuVersion              *string
+	QEMUVersion              *string
 	NumaTopology             []byte
 	Capabilities             []byte
 	LastHeartbeatAt          *time.Time
@@ -1098,7 +1098,7 @@ type NodeEffectiveAvailability struct {
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	DeletedAt                *time.Time
-	CpuCoresEffective        *int32
+	CPUCoresEffective        *int32
 	MemoryEffectiveMib       *int64
 }
 
@@ -1217,7 +1217,7 @@ type Snapshot struct {
 	Description       string
 	Status            SnapshotStatus
 	WithMemory        bool
-	VmStateAtSnapshot VmStateAtSnapshot
+	VMStateAtSnapshot VMStateAtSnapshot
 	DiskSizeBytes     *int64
 	MemorySizeBytes   *int64
 	ErrorMessage      *string
@@ -1284,7 +1284,7 @@ type Template struct {
 	Name                   string
 	Description            string
 	Visibility             string
-	Architecture           CpuArch
+	Architecture           CPUArch
 	OsFamily               OsFamily
 	OsVariant              string
 	ImageUrl               string
@@ -1318,17 +1318,17 @@ type User struct {
 	DeletedAt    *time.Time
 }
 
-type Vm struct {
+type VM struct {
 	ID                uuid.UUID
 	OwnerID           uuid.UUID
 	Name              string
 	Description       string
-	DesiredPhase      VmDesiredPhase
+	DesiredPhase      VMDesiredPhase
 	TemplateID        *uuid.UUID
-	Architecture      CpuArch
+	Architecture      CPUArch
 	CpuCores          int32
 	MemoryMib         int32
-	CpuModel          string
+	CPUModel          string
 	MachineType       string
 	FirmwareID        *uuid.UUID
 	PinnedNodeID      *uuid.UUID
@@ -1345,7 +1345,7 @@ type Vm struct {
 	DeletedAt         *time.Time
 }
 
-type VmDisk struct {
+type VMDisk struct {
 	ID               uuid.UUID
 	VmID             uuid.UUID
 	StoragePoolID    uuid.UUID
@@ -1365,7 +1365,7 @@ type VmDisk struct {
 	DeletedAt        *time.Time
 }
 
-type VmDiskRuntime struct {
+type VMDiskRuntime struct {
 	VmDiskID           uuid.UUID
 	CurrentNodeID      *uuid.UUID
 	StoragePoolID      *uuid.UUID
@@ -1377,7 +1377,7 @@ type VmDiskRuntime struct {
 	UpdatedAt          time.Time
 }
 
-type VmNic struct {
+type VMNic struct {
 	ID          uuid.UUID
 	VmID        uuid.UUID
 	NetworkID   uuid.UUID
@@ -1392,7 +1392,7 @@ type VmNic struct {
 	DeletedAt   *time.Time
 }
 
-type VmNicRuntime struct {
+type VMNicRuntime struct {
 	VmNicID            uuid.UUID
 	CurrentNodeID      *uuid.UUID
 	TapDevice          *string
@@ -1401,13 +1401,13 @@ type VmNicRuntime struct {
 	UpdatedAt          time.Time
 }
 
-type VmRuntime struct {
+type VMRuntime struct {
 	VmID               uuid.UUID
 	CurrentNodeID      *uuid.UUID
-	Phase              VmPhase
+	Phase              VMPhase
 	Conditions         []byte
 	ObservedGeneration int64
-	QemuPid            *int32
+	QEMUPID            *int32
 	QmpSocketPath      *string
 	VncPort            *int32
 	SpicePort          *int32

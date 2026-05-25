@@ -50,8 +50,8 @@ func TestHandler_InfoIncludesPreloadedState(t *testing.T) {
 	}
 	var info agentapi.NodeInfo
 	decode(t, resp, &info)
-	if info.NodeId != m.NodeID() {
-		t.Errorf("NodeId = %v, want %v", info.NodeId, m.NodeID())
+	if info.NodeID != m.NodeID() {
+		t.Errorf("NodeId = %v, want %v", info.NodeID, m.NodeID())
 	}
 	if info.Hostname != "test-node" {
 		t.Errorf("Hostname = %q, want test-node", info.Hostname)
@@ -59,8 +59,8 @@ func TestHandler_InfoIncludesPreloadedState(t *testing.T) {
 	if !info.KvmAvailable {
 		t.Errorf("KvmAvailable = false, want true")
 	}
-	if info.CpuCoresTotal != 8 {
-		t.Errorf("CpuCoresTotal = %d, want 8", info.CpuCoresTotal)
+	if info.CPUCoresTotal != 8 {
+		t.Errorf("CpuCoresTotal = %d, want 8", info.CPUCoresTotal)
 	}
 	if len(info.Firmwares) != 1 {
 		t.Fatalf("len(Firmwares) = %d, want 1", len(info.Firmwares))
@@ -90,8 +90,8 @@ func TestHandler_StoragePoolsList(t *testing.T) {
 	if len(list.Data) != 1 {
 		t.Fatalf("len(Data) = %d, want 1", len(list.Data))
 	}
-	if list.Data[0].Id != id {
-		t.Errorf("pool id = %v, want %v", list.Data[0].Id, id)
+	if list.Data[0].ID != id {
+		t.Errorf("pool id = %v, want %v", list.Data[0].ID, id)
 	}
 	if list.Meta.NextCursor != nil {
 		t.Errorf("next_cursor = %v, want nil for single-page result", list.Meta.NextCursor)

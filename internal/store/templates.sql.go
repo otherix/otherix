@@ -204,7 +204,7 @@ type CreateTemplateParams struct {
 	OwnerID                uuid.UUID
 	Name                   string
 	Description            string
-	Architecture           CpuArch
+	Architecture           CPUArch
 	OsFamily               OsFamily
 	OsVariant              string
 	ImageUrl               string
@@ -442,7 +442,7 @@ type ListTemplatesParams struct {
 	CallerID           *uuid.UUID
 	OwnerIDFilter      *uuid.UUID
 	VisibilityFilter   *string
-	ArchitectureFilter *CpuArch
+	ArchitectureFilter *CPUArch
 	OsFamilyFilter     *OsFamily
 	CursorCreatedAt    *time.Time
 	CursorID           *uuid.UUID

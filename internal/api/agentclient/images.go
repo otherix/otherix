@@ -60,10 +60,10 @@ func (c *Client) PostImageImport(
 	if err := json.Unmarshal(respBody, &accepted); err != nil {
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
-	if accepted.TaskId == uuid.Nil {
+	if accepted.TaskID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
-	return accepted.TaskId, nil
+	return accepted.TaskID, nil
 }
 
 // DeleteImage removes the image identified by its lowercase-hex

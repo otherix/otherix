@@ -122,7 +122,7 @@ func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op a
 // one transaction. Returns the freshly-minted task id on success.
 // Shared by all four async lifecycle ops — the only difference is
 // the river args type, dispatched by jobArgsFor.
-func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm store.Vm, caller *auth.User) (uuid.UUID, error) {
+func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm store.VM, caller *auth.User) (uuid.UUID, error) {
 	nodeID, err := h.resolveNodeForVM(ctx, vm)
 	if err != nil {
 		return uuid.Nil, err

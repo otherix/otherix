@@ -69,10 +69,10 @@ func postImport(t *testing.T, m *agentmock.Mock, poolName string, req agentapi.I
 	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil {
 		t.Fatalf("decode accepted: %v", err)
 	}
-	if accepted.TaskId == uuid.Nil {
-		t.Fatal("accepted.TaskId is zero")
+	if accepted.TaskID == uuid.Nil {
+		t.Fatal("accepted.TaskID is zero")
 	}
-	return accepted.TaskId
+	return accepted.TaskID
 }
 
 func TestImport_DefaultSuccess(t *testing.T) {
@@ -103,9 +103,9 @@ func TestImport_DefaultSuccess(t *testing.T) {
 	}
 
 	// Materialisation: the cached image is staged on terminal poll.
-	img, ok := m.GetStoredImage(poolName, checksum)
+	img, ok := m.StoredImage(poolName, checksum)
 	if !ok {
-		t.Fatalf("GetStoredImage(%s, %s) = false; want staged after terminal-success", poolName, checksum)
+		t.Fatalf("StoredImage(%s, %s) = false; want staged after terminal-success", poolName, checksum)
 	}
 	if img.SizeBytes != 1<<20 || img.Format != "qcow2" {
 		t.Errorf("img = {SizeBytes: %d, Format: %q}, want {1<<20, qcow2}", img.SizeBytes, img.Format)
@@ -137,9 +137,9 @@ func TestImport_PreStaged(t *testing.T) {
 		t.Errorf("result.size_bytes = %v, want 5_000_000 (queued override)", got)
 	}
 
-	img, ok := m.GetStoredImage(poolName, checksum)
+	img, ok := m.StoredImage(poolName, checksum)
 	if !ok {
-		t.Fatalf("GetStoredImage = false; want staged")
+		t.Fatalf("StoredImage = false; want staged")
 	}
 	if img.SizeBytes != 5_000_000 {
 		t.Errorf("img.SizeBytes = %d, want 5_000_000", img.SizeBytes)
@@ -222,8 +222,8 @@ func TestImport_QueuedFailure(t *testing.T) {
 	if task.Error == nil || task.Error.Code == nil || *task.Error.Code != "image_checksum_mismatch" {
 		t.Fatalf("Error = %+v, want code=image_checksum_mismatch", task.Error)
 	}
-	if _, present := m.GetStoredImage(poolName, checksum); present {
-		t.Errorf("GetStoredImage = true after failed import; want false (no materialisation)")
+	if _, present := m.StoredImage(poolName, checksum); present {
+		t.Errorf("StoredImage = true after failed import; want false (no materialisation)")
 	}
 }
 
@@ -268,7 +268,7 @@ func TestDelete_HappyPath(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
-	if _, present := m.GetStoredImage(poolName, checksum); present {
+	if _, present := m.StoredImage(poolName, checksum); present {
 		t.Errorf("image still present after delete")
 	}
 }

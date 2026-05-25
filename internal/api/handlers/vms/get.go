@@ -56,8 +56,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 // transaction committed; absent disks indicate a row created
 // out-of-band, which surfaces as 500 since the API never produces that
 // state.
-func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.VmRuntime, store.VmDisk, error) {
-	var runtime *store.VmRuntime
+func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, store.VMDisk, error) {
+	var runtime *store.VMRuntime
 	rt, err := h.store.Queries().GetVMRuntime(ctx, vmID)
 	switch {
 	case err == nil:
@@ -65,14 +65,14 @@ func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.
 	case errors.Is(err, pgx.ErrNoRows):
 		// runtime stays nil — projectStatus → "creating".
 	default:
-		return nil, store.VmDisk{}, err
+		return nil, store.VMDisk{}, err
 	}
 	disks, err := h.store.Queries().ListVMDisksByVM(ctx, vmID)
 	if err != nil {
-		return nil, store.VmDisk{}, err
+		return nil, store.VMDisk{}, err
 	}
 	if len(disks) == 0 {
-		return nil, store.VmDisk{}, errVMDiskMissing
+		return nil, store.VMDisk{}, errVMDiskMissing
 	}
 	return runtime, disks[0], nil
 }

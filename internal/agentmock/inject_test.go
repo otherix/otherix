@@ -30,9 +30,11 @@ func TestInject_OperationIDsMatchServerInterface(t *testing.T) {
 }
 
 // operationIDToMethodName mirrors the codegen rule oapi-codegen
-// applies: split on '.', title-case each segment, concat. Keep this
-// function here in the test file rather than the package code — it
-// exists only to validate the static operationIDs map.
+// applies with ToCamelCaseWithInitialisms: split on '.', title-case
+// each segment, then apply the project's additional-initialisms
+// (VM, QMP, QEMU, VNC, SPICE, SHA, CSR). Keep this function in the
+// test file rather than the package code — it exists only to
+// validate the static operationIDs map.
 func operationIDToMethodName(opID string) string {
 	parts := strings.Split(opID, ".")
 	for i, p := range parts {
@@ -41,7 +43,22 @@ func operationIDToMethodName(opID string) string {
 		}
 		parts[i] = strings.ToUpper(p[:1]) + p[1:]
 	}
-	return strings.Join(parts, "")
+	joined := strings.Join(parts, "")
+	// Mirror the oapi-codegen initialism overrides from
+	// api/openapi/oapi-codegen.yaml. Order matters: longer
+	// prefixes first так не collide с shorter ones.
+	initialismPrefixes := []struct{ from, to string }{
+		{"Vm", "VM"},
+	}
+	for _, ip := range initialismPrefixes {
+		if strings.HasPrefix(joined, ip.from) && len(joined) > len(ip.from) {
+			next := joined[len(ip.from)]
+			if next >= 'A' && next <= 'Z' {
+				joined = ip.to + joined[len(ip.from):]
+			}
+		}
+	}
+	return joined
 }
 
 func TestInjectError_SingleShotConsumed(t *testing.T) {

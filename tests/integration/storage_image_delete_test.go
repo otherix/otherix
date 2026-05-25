@@ -55,8 +55,8 @@ func TestStorageImageDelete_VerticalSliceSingleReferent(t *testing.T) {
 		t.Errorf("agent.deleteImage calls = %d, want 1 on single-referent path", got)
 	}
 	v.pollStorageImageRowGone(t, ctx, imgRow.ID, 5*time.Second)
-	if _, ok := v.mock.GetStoredImage(v.pool.Name, checksum); ok {
-		t.Errorf("mock.GetStoredImage = true after single-referent delete; want evicted")
+	if _, ok := v.mock.StoredImage(v.pool.Name, checksum); ok {
+		t.Errorf("mock.StoredImage = true after single-referent delete; want evicted")
 	}
 }
 
@@ -116,7 +116,7 @@ func TestStorageImageDelete_VerticalSliceMultiReferent(t *testing.T) {
 	if _, err := v.store.Queries().GetStorageImageByID(ctx, rowB.ID); err != nil {
 		t.Errorf("storage_images row B disappeared: %v (sibling must survive)", err)
 	}
-	if _, ok := v.mock.GetStoredImage(v.pool.Name, checksum); !ok {
+	if _, ok := v.mock.StoredImage(v.pool.Name, checksum); !ok {
 		t.Errorf("mock-side file evicted on multi-referent delete; want preserved")
 	}
 }

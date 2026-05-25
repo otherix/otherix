@@ -31,7 +31,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if arch := q.Get("architecture"); arch != "" {
 		switch arch {
 		case string(store.CpuArchAmd64), string(store.CpuArchArm64):
-			a := store.CpuArch(arch)
+			a := store.CPUArch(arch)
 			params.Architecture = &a
 		default:
 			response.WriteError(w, r, http.StatusBadRequest,

@@ -510,7 +510,7 @@ func seedActiveMigration(t *testing.T, ctx context.Context, s *store.Store, vmID
 
 // selectVMRuntime returns the runtime row for vmID. Used to assert
 // post-force-delete state.
-func selectVMRuntime(t *testing.T, ctx context.Context, s *store.Store, vmID uuid.UUID) (store.VmRuntime, error) {
+func selectVMRuntime(t *testing.T, ctx context.Context, s *store.Store, vmID uuid.UUID) (store.VMRuntime, error) {
 	t.Helper()
 	const q = `
 		select vm_id, current_node_id, phase, conditions, observed_generation,
@@ -520,10 +520,10 @@ func selectVMRuntime(t *testing.T, ctx context.Context, s *store.Store, vmID uui
 		       last_error_message, last_observed_at, updated_at
 		from vm_runtime where vm_id = $1`
 	row := s.Pool().QueryRow(ctx, q, vmID)
-	var rt store.VmRuntime
+	var rt store.VMRuntime
 	err := row.Scan(
 		&rt.VmID, &rt.CurrentNodeID, &rt.Phase, &rt.Conditions, &rt.ObservedGeneration,
-		&rt.QemuPid, &rt.QmpSocketPath, &rt.VncPort, &rt.SpicePort, &rt.SerialConsolePath,
+		&rt.QEMUPID, &rt.QmpSocketPath, &rt.VncPort, &rt.SpicePort, &rt.SerialConsolePath,
 		&rt.GuestOs, &rt.GuestHostname, &rt.GuestIpAddresses, &rt.CpuUsagePercent,
 		&rt.MemoryUsedMib, &rt.LastStartedAt, &rt.LastStoppedAt, &rt.LastErrorAt,
 		&rt.LastErrorMessage, &rt.LastObservedAt, &rt.UpdatedAt,
@@ -531,9 +531,9 @@ func selectVMRuntime(t *testing.T, ctx context.Context, s *store.Store, vmID uui
 	return rt, err
 }
 
-func selectVMDesiredPhase(t *testing.T, ctx context.Context, s *store.Store, vmID uuid.UUID) store.VmDesiredPhase {
+func selectVMDesiredPhase(t *testing.T, ctx context.Context, s *store.Store, vmID uuid.UUID) store.VMDesiredPhase {
 	t.Helper()
-	var phase store.VmDesiredPhase
+	var phase store.VMDesiredPhase
 	if err := s.Pool().QueryRow(ctx, `select desired_phase from vms where id = $1`, vmID).Scan(&phase); err != nil {
 		t.Fatalf("select vms.desired_phase: %v", err)
 	}

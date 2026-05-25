@@ -65,9 +65,9 @@ func TestVMCreate_CloudInit_VMUserDataOverridesTemplate(t *testing.T) {
 		t.Fatalf("create task status = %q, want success: %s", row.Status, row.Error)
 	}
 
-	stored, ok := v.mock.GetStoredVM(vmName)
+	stored, ok := v.mock.StoredVM(vmName)
 	if !ok {
-		t.Fatalf("mock.GetStoredVM(%q) = false; want materialised", vmName)
+		t.Fatalf("mock.StoredVM(%q) = false; want materialised", vmName)
 	}
 	if stored.UserData != vmOverride {
 		t.Errorf("mock-agent UserData = %q, want VM-level override %q (CP-side resolver picked template instead)", stored.UserData, vmOverride)
@@ -114,9 +114,9 @@ func TestVMCreate_CloudInit_TemplateBakedFallback(t *testing.T) {
 	}, "")
 	v.awaitVMCreateEvent(t, 15*time.Second)
 
-	stored, ok := v.mock.GetStoredVM(vmName)
+	stored, ok := v.mock.StoredVM(vmName)
 	if !ok {
-		t.Fatalf("mock.GetStoredVM(%q) = false; want materialised", vmName)
+		t.Fatalf("mock.StoredVM(%q) = false; want materialised", vmName)
 	}
 	if stored.UserData != templateBaked {
 		t.Errorf("mock-agent UserData = %q, want template fallback %q", stored.UserData, templateBaked)
@@ -144,9 +144,9 @@ func TestVMCreate_CloudInit_NeitherSourceLeavesAgentWithoutCidata(t *testing.T) 
 	}, "")
 	v.awaitVMCreateEvent(t, 15*time.Second)
 
-	stored, ok := v.mock.GetStoredVM(vmName)
+	stored, ok := v.mock.StoredVM(vmName)
 	if !ok {
-		t.Fatalf("mock.GetStoredVM(%q) = false; want materialised", vmName)
+		t.Fatalf("mock.StoredVM(%q) = false; want materialised", vmName)
 	}
 	if stored.UserData != "" {
 		t.Errorf("mock-agent UserData = %q, want empty (no template baked, no vm override)", stored.UserData)
@@ -201,9 +201,9 @@ func TestVMCreate_CloudInit_DisabledOverridesTemplate(t *testing.T) {
 		t.Fatalf("create task status = %q, want success: %s", row.Status, row.Error)
 	}
 
-	stored, ok := v.mock.GetStoredVM(vmName)
+	stored, ok := v.mock.StoredVM(vmName)
 	if !ok {
-		t.Fatalf("mock.GetStoredVM(%q) = false; want materialised", vmName)
+		t.Fatalf("mock.StoredVM(%q) = false; want materialised", vmName)
 	}
 	if stored.UserData != "" {
 		t.Errorf("mock-agent UserData = %q, want empty (cloud_init_disabled=true must win over template baked)", stored.UserData)
@@ -241,7 +241,7 @@ func TestVMCreate_CloudInit_DisabledAndUserDataRejected(t *testing.T) {
 		t.Errorf("body missing 'mutually exclusive' phrase: %s", body)
 	}
 	// VM row must not exist — handler rejected before insert.
-	if _, ok := v.mock.GetStoredVM(vmName); ok {
+	if _, ok := v.mock.StoredVM(vmName); ok {
 		t.Errorf("mock-agent unexpectedly observed VM %q after rejection", vmName)
 	}
 }

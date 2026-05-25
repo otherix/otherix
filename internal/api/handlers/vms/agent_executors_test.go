@@ -63,13 +63,13 @@ func fixtureCreateArgs() (CreateArgs, *atomic.Int32, *atomic.Value) {
 	var arg atomic.Value
 	return CreateArgs{
 		TaskID: uuid.New(),
-		VM: store.Vm{
+		VM: store.VM{
 			ID:        uuid.New(),
 			Name:      "demo",
 			CpuCores:  2,
 			MemoryMib: 2048,
 		},
-		Disk: store.VmDisk{ID: uuid.New(), VmID: uuid.New()},
+		Disk: store.VMDisk{ID: uuid.New(), VmID: uuid.New()},
 		Template: store.Template{
 			ID:                  uuid.New(),
 			ImageChecksumSha256: []byte{0xab, 0xcd, 0xef},
