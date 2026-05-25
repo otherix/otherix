@@ -295,6 +295,19 @@ func (m *Mock) StoredVM(vmName string) (AgentVM, bool) {
 	return v, ok
 }
 
+// SetStoredVM seeds the inventory with vm. The handlers that key on
+// StoredVM (the console-stream / logs paths) see the entry the same
+// way they would after a VmsCreate, without forcing tests to drive
+// the full create flow when they only need a target VM to exist.
+func (m *Mock) SetStoredVM(vm AgentVM) {
+	m.state.mu.Lock()
+	defer m.state.mu.Unlock()
+	if m.state.storedVMs == nil {
+		m.state.storedVMs = map[string]AgentVM{}
+	}
+	m.state.storedVMs[vm.Name] = vm
+}
+
 // ListStoredVMs returns a snapshot of the AgentVMs currently in the
 // inventory. Order is not guaranteed (map iteration); callers that
 // need deterministic ordering sort by ID. Empty slice (not nil) for
