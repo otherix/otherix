@@ -478,6 +478,17 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 		return
 	}
 
+	// Per ADR 0029 L13 the multiplexer is a required prerequisite -
+	// if it cannot attach to the QEMU serial socket we tear the VM
+	// down rather than leave operators with a half-broken console.
+	// Same pattern runStart / runReboot apply for their spawn paths.
+	if err := m.attachMux(log, v); err != nil {
+		log.Error("attach multiplexer", "err", err)
+		m.killQEMU(v)
+		m.failTask(taskID, v.ID, "multiplexer_failed", err.Error())
+		return
+	}
+
 	m.transitionVM(v.ID, StatusRunning, "")
 	if err := m.persistVM(v.ID); err != nil {
 		log.Warn("persist meta.json (running)", "err", err)
