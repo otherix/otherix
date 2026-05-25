@@ -84,7 +84,7 @@ func TestVMDelete_VerticalSliceHappyPath(t *testing.T) {
 	if got := v.agentVMDeleteCallCount(); got < 1 {
 		t.Errorf("agent.vms.delete calls = %d, want ≥ 1", got)
 	}
-	if _, present := v.mock.GetStoredVM(vmName); present {
+	if _, present := v.mock.StoredVM(vmName); present {
 		t.Errorf("mock storedVM still present after agent delete success")
 	}
 }

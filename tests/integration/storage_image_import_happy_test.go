@@ -91,9 +91,9 @@ func TestStorageImageImport_VerticalSliceHappyPath(t *testing.T) {
 		t.Errorf("storage_images.size_bytes = %d, want %d", imgRow.SizeBytes, wantSize)
 	}
 
-	cached, ok := v.mock.GetStoredImage(v.pool.Name, checksum)
+	cached, ok := v.mock.StoredImage(v.pool.Name, checksum)
 	if !ok {
-		t.Fatal("mock.GetStoredImage = false — terminal-success projection did not stage the file")
+		t.Fatal("mock.StoredImage = false — terminal-success projection did not stage the file")
 	}
 	if cached.SizeBytes != wantSize {
 		t.Errorf("mock.cached.SizeBytes = %d, want %d", cached.SizeBytes, wantSize)

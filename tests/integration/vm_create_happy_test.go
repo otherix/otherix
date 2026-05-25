@@ -95,9 +95,9 @@ func TestVMCreate_VerticalSliceHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVMByID for mock lookup: %v", err)
 	}
-	stored, ok := v.mock.GetStoredVM(createdVM.Name)
+	stored, ok := v.mock.StoredVM(createdVM.Name)
 	if !ok {
-		t.Fatalf("mock.GetStoredVM(%q) = false; want VM materialised after terminal-success", createdVM.Name)
+		t.Fatalf("mock.StoredVM(%q) = false; want VM materialised after terminal-success", createdVM.Name)
 	}
 	if stored.ID != vmID || stored.PoolName != v.pool.Name {
 		t.Errorf("mock storedVM = %+v, want id=%s pool=%s", stored, vmID, v.pool.Name)

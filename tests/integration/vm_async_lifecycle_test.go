@@ -150,7 +150,7 @@ func TestVMAsyncLifecycle_CrossUserNotFound(t *testing.T) {
 // asserts the post-state matches expectations: terminal-success, CP
 // desired_phase, CP vm_runtime.phase (observed-state mirror), и
 // mock-agent inventory phase.
-func runAsyncOp(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.UUID, op string, wantDesired store.VmDesiredPhase, wantRuntime store.VmPhase, wantAgentStatus string) {
+func runAsyncOp(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.UUID, op string, wantDesired store.VMDesiredPhase, wantRuntime store.VMPhase, wantAgentStatus string) {
 	t.Helper()
 	taskID := postAsyncLifecycle(t, ctx, v, vmID, op, "")
 	awaitTaskTerminal(t, ctx, v, taskID, 15*time.Second)
@@ -175,7 +175,7 @@ func runAsyncOp(t *testing.T, ctx context.Context, v *verticalSlice, vmID uuid.U
 	if rt.Phase != wantRuntime {
 		t.Errorf("[%s] vm_runtime.phase = %q, want %q", op, rt.Phase, wantRuntime)
 	}
-	if vmFromMock, ok := v.mock.GetStoredVM(vmRow.Name); !ok {
+	if vmFromMock, ok := v.mock.StoredVM(vmRow.Name); !ok {
 		t.Errorf("[%s] mock-agent inventory missing entry for %s", op, vmRow.Name)
 	} else if vmFromMock.Status != wantAgentStatus {
 		t.Errorf("[%s] mock-agent inventory status = %q, want %q", op, vmFromMock.Status, wantAgentStatus)

@@ -59,7 +59,7 @@ func TestE2E_Heartbeat_Success(t *testing.T) {
 	if got.LastHeartbeatAt == nil {
 		t.Errorf("LastHeartbeatAt = nil after heartbeat, want set")
 	}
-	if got.CpuModel == nil {
+	if got.CPUModel == nil {
 		t.Errorf("CpuModel = nil after heartbeat, want populated")
 	}
 
@@ -243,7 +243,7 @@ type seededNode struct {
 	Name string
 }
 
-func seedNodeOnly(t *testing.T, h *cpAgentHarness, arch store.CpuArch, status store.NodeStatus) seededNode {
+func seedNodeOnly(t *testing.T, h *cpAgentHarness, arch store.CPUArch, status store.NodeStatus) seededNode {
 	t.Helper()
 	id := uuid.New()
 	name := fmt.Sprintf("e2e-node-%s", uuid.NewString())
@@ -262,7 +262,7 @@ func seedNodeOnly(t *testing.T, h *cpAgentHarness, arch store.CpuArch, status st
 	return seededNode{ID: id, Name: name}
 }
 
-func seedNodeWithCert(t *testing.T, h *cpAgentHarness, arch store.CpuArch, status store.NodeStatus, revoked bool) seededNode {
+func seedNodeWithCert(t *testing.T, h *cpAgentHarness, arch store.CPUArch, status store.NodeStatus, revoked bool) seededNode {
 	t.Helper()
 	node := seedNodeOnly(t, h, arch, status)
 	fp, err := agentmock.NodeCertFingerprint()
@@ -306,7 +306,7 @@ func insertAgentCert(t *testing.T, h *cpAgentHarness, nodeID uuid.UUID, fingerpr
 	}
 }
 
-func seedFirmware(t *testing.T, h *cpAgentHarness, name string, arch store.CpuArch, fwType store.FirmwareType) uuid.UUID {
+func seedFirmware(t *testing.T, h *cpAgentHarness, name string, arch store.CPUArch, fwType store.FirmwareType) uuid.UUID {
 	t.Helper()
 	row, err := h.store.Queries().CreateFirmware(context.Background(), store.CreateFirmwareParams{
 		ID:           uuid.New(),
