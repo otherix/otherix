@@ -8,24 +8,43 @@
 package users
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Handler bundles the data-access dependencies for the users routes.
-type Handler struct {
-	store *store.Store
+// Store is the storage surface the users handlers depend on. Depending
+// on the interface rather than the concrete *store.Store is the Phase 2
+// seam that lets a second backend (Phase 3) be substituted under the
+// same handler tests. *store.Store satisfies it.
+type Store interface {
+	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
+	UserByEmail(ctx context.Context, email string) (store.User, error)
+	CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error)
+	UpdateUser(ctx context.Context, arg store.UpdateUserParams) (store.User, error)
+	ListUsers(ctx context.Context, arg store.ListUsersParams) ([]store.User, error)
+	CountUserResources(ctx context.Context, id uuid.UUID) (store.CountUserResourcesRow, error)
+	DeleteUser(ctx context.Context, id uuid.UUID) error
 }
 
-// New constructs a Handler.
-func New(s *store.Store) *Handler {
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
+// Handler bundles the data-access dependencies for the users routes.
+type Handler struct {
+	store Store
+}
+
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
+func New(s Store) *Handler {
 	return &Handler{store: s}
 }
 
@@ -67,9 +86,9 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.store.Queries().GetUserByID(r.Context(), caller.ID)
+	u, err := h.store.UserByID(r.Context(), caller.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusUnauthorized,
 				response.CodeUnauthenticated, "user no longer exists", nil)
 			return

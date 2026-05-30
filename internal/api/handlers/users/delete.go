@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -45,8 +44,8 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.store.Queries().GetUserByID(r.Context(), id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if _, err := h.store.UserByID(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
 				response.CodeNotFound, "user not found", nil)
 			return
@@ -56,7 +55,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	counts, err := h.store.Queries().CountUserResources(r.Context(), id)
+	counts, err := h.store.CountUserResources(r.Context(), id)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "count owned resources", nil)
@@ -76,12 +75,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.InTx(r.Context(), func(q *store.Queries) error {
-		if err := q.RevokeApiTokensForUser(r.Context(), id); err != nil {
-			return err
-		}
-		return q.SoftDeleteUser(r.Context(), id)
-	}); err != nil {
+	if err := h.store.DeleteUser(r.Context(), id); err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "delete user", nil)
 		return

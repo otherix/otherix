@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -52,7 +51,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().CreateUser(r.Context(), store.CreateUserParams{
+	row, err := h.store.CreateUser(r.Context(), store.CreateUserParams{
 		ID:           uuid.New(),
 		Email:        req.Email,
 		PasswordHash: hash,
@@ -60,8 +59,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Role:         string(role),
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.Is(err, store.ErrUserEmailExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "email already in use", nil)
 			return
