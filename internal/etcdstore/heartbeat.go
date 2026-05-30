@@ -1,0 +1,278 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package etcdstore
+
+import (
+	"context"
+	"encoding/json"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/store"
+)
+
+// InHeartbeatTx runs the agent heartbeat projection against the etcd store.
+//
+// Unlike the SQL backend, this is NOT a single isolated transaction: etcd has no
+// equivalent of a multi-key read-write transaction spanning the whole
+// projection, so each method applies its write directly. This is safe because
+// the heartbeat projection is idempotent and retried forever (ADR 0027): a
+// partially applied heartbeat is re-applied on the next tick and converges. The
+// projection's reads (NodeForHeartbeat, NodeByID, lookups) do not depend on its
+// own writes, so direct application preserves the observable result.
+func (s *Store) InHeartbeatTx(ctx context.Context, fn func(store.HeartbeatTx) error) error {
+	return fn(heartbeatTx{s: s})
+}
+
+// heartbeatTx is the etcd-backed projection surface handed to the heartbeat
+// handler. Each method maps to the corresponding etcd read/write.
+type heartbeatTx struct{ s *Store }
+
+// NodeForHeartbeat returns the pre-flight node fields the projection guards on.
+func (h heartbeatTx) NodeForHeartbeat(ctx context.Context, nodeID uuid.UUID) (store.GetNodeForHeartbeatRow, error) {
+	n, err := h.s.NodeByID(ctx, nodeID)
+	if err != nil {
+		return store.GetNodeForHeartbeatRow{}, err
+	}
+	return store.GetNodeForHeartbeatRow{
+		ID:                      n.ID,
+		Architecture:            n.Architecture,
+		Status:                  n.Status,
+		MemoryPressureSince:     n.MemoryPressureSince,
+		MemoryPressureCount:     n.MemoryPressureCount,
+		SystemDiskPressureSince: n.SystemDiskPressureSince,
+		SystemDiskPressureCount: n.SystemDiskPressureCount,
+	}, nil
+}
+
+// NodeByID returns the bare node row.
+func (h heartbeatTx) NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error) {
+	return h.s.NodeByID(ctx, id)
+}
+
+// UpdateNodeHeartbeat refreshes the agent-reported capability + migration
+// fields, bumping updated_at. Architecture, labels, and status are left
+// untouched (the handler/reconciler own them).
+func (h heartbeatTx) UpdateNodeHeartbeat(ctx context.Context, arg store.UpdateNodeHeartbeatParams) error {
+	n, err := h.s.NodeByID(ctx, arg.ID)
+	if err != nil {
+		return err
+	}
+	n.AgentVersion = arg.AgentVersion
+	n.MigrationHost = arg.MigrationHost
+	n.MigrationPortRangeStart = arg.MigrationPortRangeStart
+	n.MigrationPortRangeEnd = arg.MigrationPortRangeEnd
+	n.CPUCoresTotal = arg.CPUCoresTotal
+	n.CPUCoresAvailable = arg.CPUCoresAvailable
+	n.CPUModel = arg.CPUModel
+	n.CpuFlags = arg.CpuFlags
+	n.MemoryTotalMib = arg.MemoryTotalMib
+	n.MemoryAvailableMib = arg.MemoryAvailableMib
+	n.Hugepages2mibTotal = arg.Hugepages2mibTotal
+	n.Hugepages1gibTotal = arg.Hugepages1gibTotal
+	n.KernelVersion = arg.KernelVersion
+	n.QEMUVersion = arg.QEMUVersion
+	n.NumaTopology = arg.NumaTopology
+	n.Capabilities = arg.Capabilities
+	n.SystemDiskTotalBytes = arg.SystemDiskTotalBytes
+	n.SystemDiskAvailableBytes = arg.SystemDiskAvailableBytes
+	now := time.Now().UTC()
+	n.LastHeartbeatAt = &now
+	n.UpdatedAt = now
+	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
+}
+
+// UpdateNodeMemoryPressure persists the memory-pressure transition.
+func (h heartbeatTx) UpdateNodeMemoryPressure(ctx context.Context, arg store.UpdateNodeMemoryPressureParams) error {
+	n, err := h.s.NodeByID(ctx, arg.ID)
+	if err != nil {
+		return err
+	}
+	n.MemoryPressureSince = arg.MemoryPressureSince
+	n.MemoryPressureCount = arg.MemoryPressureCount
+	n.UpdatedAt = time.Now().UTC()
+	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
+}
+
+// UpdateNodeSystemDiskPressure persists the system-disk pressure transition.
+func (h heartbeatTx) UpdateNodeSystemDiskPressure(ctx context.Context, arg store.UpdateNodeSystemDiskPressureParams) error {
+	n, err := h.s.NodeByID(ctx, arg.ID)
+	if err != nil {
+		return err
+	}
+	n.SystemDiskPressureSince = arg.SystemDiskPressureSince
+	n.SystemDiskPressureCount = arg.SystemDiskPressureCount
+	n.UpdatedAt = time.Now().UTC()
+	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
+}
+
+// LookupFirmwareByCatalog resolves a (name, architecture, type) triple to a
+// firmware id via the name+arch guard, or store.ErrNotFound when the catalogue
+// has no matching entry (the handler skips the entry with a WARN).
+func (h heartbeatTx) LookupFirmwareByCatalog(ctx context.Context, arg store.LookupFirmwareByCatalogParams) (uuid.UUID, error) {
+	id, found, err := h.s.resolveGuard(ctx, firmwareNameArchGuard(arg.Architecture, arg.Name))
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if !found {
+		return uuid.Nil, store.ErrNotFound
+	}
+	fw, err := h.s.FirmwareByID(ctx, id)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if fw.Type != arg.Type {
+		return uuid.Nil, store.ErrNotFound
+	}
+	return id, nil
+}
+
+// UpsertNodeFirmware refreshes the (node, firmware) availability row, stamping
+// reported_at.
+func (h heartbeatTx) UpsertNodeFirmware(ctx context.Context, arg store.UpsertNodeFirmwareParams) error {
+	nf := store.NodeFirmware{
+		NodeID:     arg.NodeID,
+		FirmwareID: arg.FirmwareID,
+		CodePath:   arg.CodePath,
+		VarsPath:   arg.VarsPath,
+		Available:  arg.Available,
+		ReportedAt: time.Now().UTC(),
+	}
+	return h.s.c.PutJSON(ctx, etcd.Key("node_firmwares", arg.NodeID.String(), arg.FirmwareID.String()), nf)
+}
+
+// FilterExistingVMIDs returns the subset of ids that reference a live vms row.
+func (h heartbeatTx) FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error) {
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if _, err := h.s.VMByID(ctx, id); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// UpsertVMRuntime projects a per-VM runtime snapshot, stamping last_observed_at
+// and maintaining the vm_runtime-by-node index that DeleteNode consumes.
+func (h heartbeatTx) UpsertVMRuntime(ctx context.Context, arg store.UpsertVMRuntimeParams) error {
+	var rt store.VMRuntime
+	found, err := h.s.c.GetJSON(ctx, vmRuntimeKey(arg.VmID), &rt)
+	if err != nil {
+		return err
+	}
+	oldNode := rt.CurrentNodeID
+	if !found {
+		rt = store.VMRuntime{VmID: arg.VmID}
+	}
+	rt.CurrentNodeID = arg.CurrentNodeID
+	rt.Phase = arg.Phase
+	rt.ObservedGeneration = arg.ObservedGeneration
+	rt.QEMUPID = arg.QEMUPID
+	rt.LastStartedAt = arg.LastStartedAt
+	rt.LastErrorMessage = arg.LastErrorMessage
+	now := time.Now().UTC()
+	rt.LastObservedAt = &now
+	if err := h.s.c.PutJSON(ctx, vmRuntimeKey(arg.VmID), rt); err != nil {
+		return err
+	}
+	return h.reindexRuntimeNode(ctx, arg.VmID, oldNode, arg.CurrentNodeID)
+}
+
+// reindexRuntimeNode keeps the vm_runtime-by-node index in step with a runtime's
+// current_node_id transition.
+func (h heartbeatTx) reindexRuntimeNode(ctx context.Context, vmID uuid.UUID, oldNode, newNode *uuid.UUID) error {
+	if oldNode != nil && (newNode == nil || *oldNode != *newNode) {
+		if _, err := h.s.c.Delete(ctx, etcd.Key("index", "vm_runtime", "node", oldNode.String(), vmID.String())); err != nil {
+			return err
+		}
+	}
+	if newNode != nil && (oldNode == nil || *oldNode != *newNode) {
+		if err := h.s.c.Put(ctx, etcd.Key("index", "vm_runtime", "node", newNode.String(), vmID.String()), []byte(vmID.String())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateStoragePoolReconciliation applies the agent's reconciliation report for
+// a pool, matched by (node_id, lower(name)). Soft-deleted / missing pools are
+// skipped silently.
+func (h heartbeatTx) UpdateStoragePoolReconciliation(ctx context.Context, arg store.UpdateStoragePoolReconciliationParams) error {
+	id, found, err := h.s.resolveGuard(ctx, storagePoolNodeNameGuard(arg.NodeID, arg.Name))
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	p, err := h.s.StoragePoolByID(ctx, id)
+	if err != nil {
+		return nil //nolint:nilerr // soft-deleted/missing pool is skipped silently per the SQL contract
+	}
+	p.ReconciliationStatus = arg.ReconciliationStatus
+	p.ReconciliationError = arg.ReconciliationError
+	now := time.Now().UTC()
+	p.LastReconciledAt = &now
+	p.UpdatedAt = now
+	return h.s.c.PutJSON(ctx, storagePoolKey(id), p)
+}
+
+// ListStoragePoolsByNode returns the non-deleted pools on a node.
+func (h heartbeatTx) ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]store.StoragePool, error) {
+	items, err := h.s.c.Range(ctx, storagePoolPrefix())
+	if err != nil {
+		return nil, err
+	}
+	var out []store.StoragePool
+	for _, kv := range items {
+		var p store.StoragePool
+		if err := json.Unmarshal(kv.Value, &p); err != nil {
+			return nil, err
+		}
+		if p.DeletedAt == nil && p.NodeID == nodeID {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// ListVMsForNodeDeclared returns the per-node VM desired-state inventory: live
+// vms whose runtime current_node_id is the node and whose phase has not reached
+// 'gone', sorted lower(name) ascending.
+func (h heartbeatTx) ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]store.ListVMsForNodeDeclaredRow, error) {
+	items, err := h.s.c.Range(ctx, vmRuntimeNodeIndexPrefix(nodeID))
+	if err != nil {
+		return nil, err
+	}
+	var out []store.ListVMsForNodeDeclaredRow
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
+		}
+		var rt store.VMRuntime
+		found, gerr := h.s.c.GetJSON(ctx, vmRuntimeKey(id), &rt)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || rt.Phase == store.VmPhaseGone {
+			continue
+		}
+		vm, err := h.s.VMByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		out = append(out, store.ListVMsForNodeDeclaredRow{
+			Name:         vm.Name,
+			DesiredPhase: vm.DesiredPhase,
+			Generation:   vm.Generation,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return out, nil
+}
