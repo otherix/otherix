@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -81,9 +80,9 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 // loadLogsTargetVM fetches the VM row by name and writes the error
 // envelope for misses / DB errors. Returns (vm, true) on success.
 func (h *Handler) loadLogsTargetVM(w http.ResponseWriter, r *http.Request, vmName string) (store.VM, bool) {
-	vm, err := h.store.Queries().GetVMByName(r.Context(), vmName)
+	vm, err := h.store.VMByName(r.Context(), vmName)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
 				response.CodeVMNotFound, "vm not found", nil)
 			return store.VM{}, false
@@ -109,7 +108,7 @@ func (h *Handler) buildLogsAgentURL(w http.ResponseWriter, r *http.Request, vm s
 			response.CodeInternal, "resolve node", nil)
 		return "", false
 	}
-	node, err := h.store.Queries().GetNodeByID(r.Context(), nodeID)
+	node, err := h.store.NodeByID(r.Context(), nodeID)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "vms.logs load node",
 			"node_id", nodeID, "error", err.Error())

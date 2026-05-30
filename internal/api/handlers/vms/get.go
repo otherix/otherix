@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -58,16 +57,16 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 // state.
 func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, store.VMDisk, error) {
 	var runtime *store.VMRuntime
-	rt, err := h.store.Queries().GetVMRuntime(ctx, vmID)
+	rt, err := h.store.VMRuntimeByID(ctx, vmID)
 	switch {
 	case err == nil:
 		runtime = &rt
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, store.ErrNotFound):
 		// runtime stays nil — projectStatus → "creating".
 	default:
 		return nil, store.VMDisk{}, err
 	}
-	disks, err := h.store.Queries().ListVMDisksByVM(ctx, vmID)
+	disks, err := h.store.ListVMDisksByVM(ctx, vmID)
 	if err != nil {
 		return nil, store.VMDisk{}, err
 	}
@@ -104,7 +103,7 @@ func writeResolveError(w http.ResponseWriter, r *http.Request, err error) {
 // suppressed from the wire.
 func writeVMLoadError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, store.ErrNotFound):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeVMNotFound, "vm not found", nil)
 	case errors.Is(err, errVMDiskMissing):

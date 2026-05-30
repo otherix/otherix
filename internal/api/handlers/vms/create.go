@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -72,10 +70,6 @@ type vmCreateRequest struct {
 // 404 (no leak) — every authenticated role holds template:read:public,
 // so a 403 here would lie about visibility.
 var errVMTemplateForbidden = errors.New("template not accessible")
-
-// errVMNameInUse marks a 23505 unique-violation on vms.name surfaced
-// to the wire as 409 vm_name_in_use.
-var errVMNameInUse = errors.New("vm name already in use")
 
 // poolNotWritableError signals that the scheduler's chosen pool has
 // a storage type vm.create cannot drive (only `local_dir` today). It
@@ -258,9 +252,16 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 	createdBy := in.Caller.ID
 	resID := vmID
 
-	err := h.store.InTxWithTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		if err := q.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
-			return fmt.Errorf("acquire placement lock: %v", err)
+	// The store owns the placement-locked transaction (lock release on
+	// commit/rollback keeps the scheduler reads and the pinned-node
+	// write atomic) and the enqueue; this plan callback acquires the
+	// lock through the tx-bound PlacementReader, scores candidates with
+	// the scheduler (the reader is assignable to scheduler.Querier), and
+	// builds the rows + job args from the chosen instance. A uq_vms_name
+	// violation is translated to store.ErrVMNameInUse by the store.
+	return h.store.CreateScheduledVM(ctx, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
+		if err := pr.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
+			return store.VMCreateWrites{}, fmt.Errorf("acquire placement lock: %v", err)
 		}
 
 		// Disk requirement is derived from the template's
@@ -269,7 +270,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 		// CHECK between 1 and 65536, so the multiplication is well-
 		// defined and cannot overflow int64.
 		diskBytes := int64(in.Template.DefaultDiskGib) * 1073741824
-		decision, err := scheduler.SchedulePlacement(ctx, q, scheduler.PlacementRequest{
+		decision, err := scheduler.SchedulePlacement(ctx, pr, scheduler.PlacementRequest{
 			PoolName:  in.PoolName,
 			NodeHint:  in.Req.Node,
 			VCPUs:     in.Req.VCPUs,
@@ -280,10 +281,10 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			Resources: h.placementResources,
 		})
 		if err != nil {
-			return err
+			return store.VMCreateWrites{}, err
 		}
 		if decision.PoolInstance.Type != "local_dir" {
-			return &poolNotWritableError{poolType: decision.PoolInstance.Type}
+			return store.VMCreateWrites{}, &poolNotWritableError{poolType: decision.PoolInstance.Type}
 		}
 
 		argsJSON, err := json.Marshal(map[string]any{
@@ -293,81 +294,61 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			"node_id":     decision.Node.ID.String(),
 		})
 		if err != nil {
-			return fmt.Errorf("marshal task args: %v", err)
+			return store.VMCreateWrites{}, fmt.Errorf("marshal task args: %v", err)
 		}
 
 		nodeID := decision.Node.ID
-		if _, err := q.CreateVM(ctx, store.CreateVMParams{
-			ID:                vmID,
-			OwnerID:           in.Caller.ID,
-			Name:              in.Req.Name,
-			Description:       "",
-			TemplateID:        ptrUUID(in.Template.ID),
-			Architecture:      in.Template.Architecture,
-			CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded to 1..128 by validateCreateRequest
-			MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded to 128..524288 by validateCreateRequest
-			CPUModel:          "host",
-			MachineType:       machineTypeFor(in.Template.Architecture),
-			FirmwareID:        nil,
-			PinnedNodeID:      &nodeID,
-			UserData:          in.Req.UserData,
-			CloudInitDisabled: in.Req.CloudInitDisabled,
-			Labels:            []byte(`{}`),
-		}); err != nil {
-			return err
-		}
-		if _, err := q.CreateVMDisk(ctx, store.CreateVMDiskParams{
-			VmID:             vmID,
-			StoragePoolID:    decision.PoolInstance.ID,
-			DeviceOrder:      0,
-			Bus:              store.DiskBusVirtio,
-			SizeGib:          in.Template.DefaultDiskGib,
-			SourceKind:       "template",
-			SourceTemplateID: ptrUUID(in.Template.ID),
-			Format:           in.Template.ImageFormat,
-			ReadOnly:         false,
-			CacheMode:        store.DiskCacheModeWriteback,
-			Discard:          store.DiskDiscardUnmap,
-			BootOrder:        nil,
-		}); err != nil {
-			return err
-		}
-		if _, err := q.CreateTask(ctx, store.CreateTaskParams{
-			ID:           taskID,
-			Type:         "vm.create",
-			Status:       store.TaskStatusPending,
-			ResourceType: "vm",
-			ResourceID:   &resID,
-			Args:         argsJSON,
-			MaxAttempts:  25,
-			CreatedBy:    &createdBy,
-		}); err != nil {
-			return err
-		}
-		insertResult, err := h.riverClient.InsertTx(ctx, tx, VMCreateArgs{
-			TaskID:     taskID,
-			VMID:       vmID,
-			TemplateID: in.Template.ID,
-			PoolID:     decision.PoolInstance.ID,
-			NodeID:     decision.Node.ID,
-		}, nil)
-		if err != nil {
-			return err
-		}
-		jobID := insertResult.Job.ID
-		return q.UpdateTaskRiverJobID(ctx, store.UpdateTaskRiverJobIDParams{
-			ID:         taskID,
-			RiverJobID: &jobID,
-		})
+		return store.VMCreateWrites{
+			VM: store.CreateVMParams{
+				ID:                vmID,
+				OwnerID:           in.Caller.ID,
+				Name:              in.Req.Name,
+				Description:       "",
+				TemplateID:        ptrUUID(in.Template.ID),
+				Architecture:      in.Template.Architecture,
+				CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded to 1..128 by validateCreateRequest
+				MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded to 128..524288 by validateCreateRequest
+				CPUModel:          "host",
+				MachineType:       machineTypeFor(in.Template.Architecture),
+				FirmwareID:        nil,
+				PinnedNodeID:      &nodeID,
+				UserData:          in.Req.UserData,
+				CloudInitDisabled: in.Req.CloudInitDisabled,
+				Labels:            []byte(`{}`),
+			},
+			Disk: store.CreateVMDiskParams{
+				VmID:             vmID,
+				StoragePoolID:    decision.PoolInstance.ID,
+				DeviceOrder:      0,
+				Bus:              store.DiskBusVirtio,
+				SizeGib:          in.Template.DefaultDiskGib,
+				SourceKind:       "template",
+				SourceTemplateID: ptrUUID(in.Template.ID),
+				Format:           in.Template.ImageFormat,
+				ReadOnly:         false,
+				CacheMode:        store.DiskCacheModeWriteback,
+				Discard:          store.DiskDiscardUnmap,
+				BootOrder:        nil,
+			},
+			Task: store.CreateTaskParams{
+				ID:           taskID,
+				Type:         "vm.create",
+				Status:       store.TaskStatusPending,
+				ResourceType: "vm",
+				ResourceID:   &resID,
+				Args:         argsJSON,
+				MaxAttempts:  25,
+				CreatedBy:    &createdBy,
+			},
+			Job: VMCreateArgs{
+				TaskID:     taskID,
+				VMID:       vmID,
+				TemplateID: in.Template.ID,
+				PoolID:     decision.PoolInstance.ID,
+				NodeID:     decision.Node.ID,
+			},
+		}, nil
 	})
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_vms_name" {
-			return uuid.Nil, errVMNameInUse
-		}
-		return uuid.Nil, err
-	}
-	return taskID, nil
 }
 
 // writeTemplateLoadError maps a resolver.Template error to a wire
@@ -405,7 +386,7 @@ func writeTemplateLoadError(w http.ResponseWriter, r *http.Request, err error) {
 // signal.
 func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, requested string) (string, bool) {
 	if requested == "" {
-		settings, err := h.store.Queries().GetClusterSettings(r.Context())
+		settings, err := h.store.ClusterSettings(r.Context())
 		if err != nil {
 			h.log.ErrorContext(r.Context(), "load cluster settings", "error", err)
 			response.WriteError(w, r, http.StatusInternalServerError,
@@ -421,9 +402,9 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 		return *settings.DefaultPoolName, true
 	}
 	if id, err := uuid.Parse(requested); err == nil {
-		row, err := h.store.Queries().GetStoragePoolByID(r.Context(), id)
+		row, err := h.store.StoragePoolByID(r.Context(), id)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, store.ErrNotFound) {
 				response.WriteError(w, r, http.StatusNotFound,
 					response.CodePoolNotFound, "storage pool not found", nil)
 				return "", false
@@ -490,7 +471,7 @@ func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err e
 		return
 	}
 
-	if errors.Is(err, errVMNameInUse) {
+	if errors.Is(err, store.ErrVMNameInUse) {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeVMNameInUse, "vm name already in use", nil)
 		return

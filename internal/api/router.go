@@ -111,7 +111,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 	// deadlines are cleared inside each handler so the long-lived
 	// stream is not killed at 30 s.
 	if deps.AuthService != nil && deps.Store != nil {
-		streamingVMs := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger,
+		streamingVMs := vmshandlers.New(deps.Store, deps.Logger,
 			deps.PlacementAlgorithm, deps.PlacementResources,
 			deps.VMLifecycle, deps.VMConsole)
 		r.Get("/v1/vms/{id}/console-stream", streamingVMs.ConsoleStream)
@@ -166,7 +166,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	templatesH := templateshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
-	vmsH := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
+	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store.Queries(), deps.Logger)

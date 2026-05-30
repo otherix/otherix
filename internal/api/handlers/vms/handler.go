@@ -45,21 +45,51 @@
 package vms
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
+	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
+	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Handler bundles the dependencies for the vms routes. The CRUD
-// surface needs the store; Create / Delete additionally need the river
-// client to enqueue the underlying job inside the same transaction as
-// the task row insert. placementAlgorithm threads through to
+// Store is the storage surface the vms handlers depend on: the VM
+// domain methods, the identifier-resolution contract (resolver.Querier)
+// used to resolve vm / template / pool / node parameters, the node and
+// template reads used by the view projectors, the placement-locked
+// CreateScheduledVM seam, and the backend-agnostic EnqueueTask producer
+// seam used by delete and the async lifecycle ops. *store.Store
+// satisfies it; depending on the interface rather than the concrete
+// store is the Phase 2 seam that lets a second backend (Phase 3) be
+// substituted under the same handler tests, and keeps river off the
+// request handlers. The vm create/delete/lifecycle river workers
+// (jobs.go, jobs_lifecycle.go) are consumer-side and keep the concrete
+// store until Phase 3 rewrites them.
+type Store interface {
+	resolver.Querier
+
+	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
+	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
+	ListVMs(ctx context.Context, arg store.ListVMsParams) ([]store.VM, error)
+	UpdateVMRuntimePhase(ctx context.Context, arg store.UpdateVMRuntimePhaseParams) error
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
+	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
+	CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
+	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
+// Handler bundles the dependencies for the vms routes. Create / Delete
+// and the async lifecycle ops enqueue through the store's
+// backend-agnostic CreateScheduledVM / EnqueueTask seams, so the handler
+// no longer holds a river client. placementAlgorithm threads through to
 // internal/scheduler.SchedulePlacement; the empty string defers to the
 // package default ("resource_aware"). placementResources threads the
 // per-resource gate - zero-value disables every resource and degrades
@@ -67,8 +97,7 @@ import (
 // so production wiring always passes the config.ResourcesConfig the
 // api binary validated at startup.
 type Handler struct {
-	store              *store.Store
-	riverClient        *river.Client[pgx.Tx]
+	store              Store
 	log                *slog.Logger
 	placementAlgorithm string
 	placementResources scheduler.ResourcesConfig
@@ -76,8 +105,8 @@ type Handler struct {
 	consoleDeps        ConsoleDeps
 }
 
-// New constructs a Handler. riverClient is required for Create /
-// Delete; the production wiring (cmd/api/main.go) always supplies one.
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
 // placementAlgorithm is the validated APIConfig.Placement.Algorithm
 // value — pass "" to accept the scheduler default. placementResources
 // pins the per-resource gate; pass a zero-value (every resource
@@ -89,8 +118,7 @@ type Handler struct {
 // console-handler deps (agentclient + access mode); tests that don't
 // exercise the console flow pass a zero-value ConsoleDeps.
 func New(
-	s *store.Store,
-	riverClient *river.Client[pgx.Tx],
+	s Store,
 	log *slog.Logger,
 	placementAlgorithm string,
 	placementResources scheduler.ResourcesConfig,
@@ -99,7 +127,6 @@ func New(
 ) *Handler {
 	return &Handler{
 		store:              s,
-		riverClient:        riverClient,
 		log:                log,
 		placementAlgorithm: placementAlgorithm,
 		placementResources: placementResources,
