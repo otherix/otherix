@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package etcdstore
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/queue"
+)
+
+// Background jobs replace river: each enqueued job is a key under /otherix/jobs/
+// keyed by a monotonic sequence (the int64 the queue.JobRef carries, persisted
+// as tasks.river_job_id), so the watch-driven worker runtime can consume them in
+// order. The sequence counter lives at /otherix/seq/jobs and is bumped with a
+// value-compare CAS loop.
+
+// JobState enumerates a job's lifecycle on the etcd queue.
+type JobState string
+
+// Job lifecycle states on the etcd-backed queue.
+const (
+	JobStatePending   JobState = "pending"
+	JobStateRunning   JobState = "running"
+	JobStateCompleted JobState = "completed"
+	JobStateFailed    JobState = "failed"
+	JobStateCancelled JobState = "cancelled"
+)
+
+// Job is the persisted unit of background work consumed by the worker runtime.
+type Job struct {
+	ID       int64    `json:"id"`
+	Kind     string   `json:"kind"`
+	Args     []byte   `json:"args"`
+	State    JobState `json:"state"`
+	Attempts int32    `json:"attempts"`
+}
+
+func jobSeqKey() string { return etcd.Key("seq", "jobs") }
+
+// jobKey zero-pads the sequence so lexical key order matches numeric order (the
+// worker consumes oldest-first).
+func jobKey(seq int64) string { return etcd.Key("jobs", fmt.Sprintf("%020d", seq)) }
+
+// nextJobSeq atomically allocates the next job sequence via a value-compare CAS
+// loop on the counter key.
+func (s *Store) nextJobSeq(ctx context.Context) (int64, error) {
+	key := jobSeqKey()
+	for range 64 {
+		cur, found, err := s.c.Get(ctx, key)
+		if err != nil {
+			return 0, err
+		}
+		var n int64
+		if found {
+			n, err = strconv.ParseInt(string(cur), 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("corrupt job sequence: %v", err)
+			}
+		}
+		next := n + 1
+		var cmp clientv3.Cmp
+		if found {
+			cmp = clientv3.Compare(clientv3.Value(key), "=", string(cur))
+		} else {
+			cmp = clientv3.Compare(clientv3.CreateRevision(key), "=", 0)
+		}
+		resp, err := s.c.Raw().Txn(ctx).
+			If(cmp).
+			Then(clientv3.OpPut(key, strconv.FormatInt(next, 10))).
+			Commit()
+		if err != nil {
+			return 0, fmt.Errorf("allocate job sequence: %v", err)
+		}
+		if resp.Succeeded {
+			return next, nil
+		}
+	}
+	return 0, errors.New("etcdstore: job sequence contention exceeded retry budget")
+}
+
+// enqueueJobOp allocates a sequence and returns the put op that persists a
+// pending job for args, plus the allocated sequence (the JobRef id). The op is
+// composed into the same transaction as the task row so the task and its job
+// commit together.
+func (s *Store) enqueueJobOp(ctx context.Context, args queue.JobArgs) (int64, clientv3.Op, error) {
+	seq, err := s.nextJobSeq(ctx)
+	if err != nil {
+		return 0, clientv3.Op{}, err
+	}
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return 0, clientv3.Op{}, fmt.Errorf("marshal job args: %v", err)
+	}
+	job := Job{ID: seq, Kind: args.Kind(), Args: payload, State: JobStatePending}
+	val, err := etcd.Marshal(job)
+	if err != nil {
+		return 0, clientv3.Op{}, err
+	}
+	return seq, clientv3.OpPut(jobKey(seq), string(val)), nil
+}
+
+// cancelJob best-effort flips a job to cancelled. A missing job is a no-op.
+func (s *Store) cancelJob(ctx context.Context, seq int64) error {
+	var job Job
+	found, err := s.c.GetJSON(ctx, jobKey(seq), &job)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	job.State = JobStateCancelled
+	return s.c.PutJSON(ctx, jobKey(seq), job)
+}
