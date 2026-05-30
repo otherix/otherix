@@ -21,11 +21,26 @@
 package heartbeat
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/store"
 )
+
+// Store is the storage surface the heartbeat receiver depends on: the
+// out-of-transaction node-name lookup plus the projection transaction
+// seam. *store.Store satisfies it; depending on the interface rather
+// than the concrete store is the Phase 2 seam that lets a second backend
+// (Phase 3) be substituted under the same handler tests. The
+// transactional projection drives store.HeartbeatTx inside InHeartbeatTx.
+type Store interface {
+	NodeByName(ctx context.Context, name string) (store.Node, error)
+	InHeartbeatTx(ctx context.Context, fn func(store.HeartbeatTx) error) error
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
 
 // Handler bundles the dependencies for the heartbeat receiver.
 //
@@ -35,14 +50,14 @@ import (
 // by computePressureTransition — the receiver still runs the rest of
 // the heartbeat projection unchanged.
 type Handler struct {
-	store              *store.Store
+	store              Store
 	log                *slog.Logger
 	pressureMemory     config.PressureConditionConfig
 	pressureSystemDisk config.PressureConditionConfig
 }
 
 // New constructs a Handler.
-func New(s *store.Store, log *slog.Logger, pressureMemory, pressureSystemDisk config.PressureConditionConfig) *Handler {
+func New(s Store, log *slog.Logger, pressureMemory, pressureSystemDisk config.PressureConditionConfig) *Handler {
 	return &Handler{
 		store:              s,
 		log:                log,
