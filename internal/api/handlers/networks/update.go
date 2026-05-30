@@ -14,8 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -56,9 +54,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().GetNetworkByID(r.Context(), id)
+	row, err := h.store.NetworkByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
 				response.CodeNotFound, "network not found", nil)
 			return
@@ -72,7 +70,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UpdateNetwork(r.Context(), store.UpdateNetworkParams{
+	updated, err := h.store.UpdateNetwork(r.Context(), store.UpdateNetworkParams{
 		ID:         row.ID,
 		Name:       row.Name,
 		BridgeName: row.BridgeName,
@@ -81,8 +79,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		Config:     row.Config,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.Is(err, store.ErrNetworkNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "network name already in use", nil)
 			return
