@@ -10,8 +10,6 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -52,13 +50,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	secureBoot := req.SecureBoot != nil && *req.SecureBoot
 
 	if isDefault {
-		existing, err := h.store.Queries().GetDefaultFirmwareForArchAndType(r.Context(),
-			store.GetDefaultFirmwareForArchAndTypeParams{Architecture: arch, Type: fwType})
+		existing, err := h.store.DefaultFirmwareForArchType(r.Context(), arch, fwType)
 		switch {
 		case err == nil:
 			writeDefaultConflict(w, r, existing.ID)
 			return
-		case errors.Is(err, pgx.ErrNoRows):
+		case errors.Is(err, store.ErrNotFound):
 			// fall through
 		default:
 			response.WriteError(w, r, http.StatusInternalServerError,
@@ -67,7 +64,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	row, err := h.store.Queries().CreateFirmware(r.Context(), store.CreateFirmwareParams{
+	row, err := h.store.CreateFirmware(r.Context(), store.CreateFirmwareParams{
 		ID:           uuid.New(),
 		Name:         req.Name,
 		Architecture: arch,
@@ -122,25 +119,21 @@ func normaliseVersion(v *string) *string {
 // uq_firmwares_default (rare race past the precheck) and
 // uq_firmwares_name_arch.
 func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		switch pgErr.ConstraintName {
-		case "uq_firmwares_default":
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict,
-				"another default firmware exists for this (architecture, type)",
-				map[string]any{"code": "default_already_set"})
-			return
-		case "uq_firmwares_name_arch":
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict,
-				"firmware name already in use for this architecture",
-				map[string]any{"field": "name"})
-			return
-		}
+	switch {
+	case errors.Is(err, store.ErrFirmwareDefaultExists):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict,
+			"another default firmware exists for this (architecture, type)",
+			map[string]any{"code": "default_already_set"})
+	case errors.Is(err, store.ErrFirmwareNameExists):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict,
+			"firmware name already in use for this architecture",
+			map[string]any{"field": "name"})
+	default:
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "persist firmware", nil)
 	}
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "persist firmware", nil)
 }
 
 // writeDefaultConflict writes the canonical 409 envelope for a
