@@ -36,6 +36,10 @@ func joinTokenConsumptionKey(id uuid.UUID) string {
 	return etcd.Key("join_token_consumptions", id.String())
 }
 
+func joinTokenConsumptionsIndexKey(tokenID, id uuid.UUID) string {
+	return etcd.Key("index", "join_token_consumptions", "token", tokenID.String(), id.String())
+}
+
 func joinTokenConsumptionsIndexPrefix(tokenID uuid.UUID) string {
 	return etcd.Key("index", "join_token_consumptions", "token", tokenID.String()) + "/"
 }
