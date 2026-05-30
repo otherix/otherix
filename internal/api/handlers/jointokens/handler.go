@@ -27,19 +27,36 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the join-tokens handlers depend on: the
+// join-token domain methods plus the active-CA lookup used to embed the
+// CA fingerprint in the create response. *store.Store satisfies it;
+// depending on the interface rather than the concrete store is the
+// Phase 2 seam that lets a second backend (Phase 3) be substituted
+// under the same handler tests.
+type Store interface {
+	ActiveCACert(ctx context.Context) (store.CaCert, error)
+	JoinTokenByID(ctx context.Context, id uuid.UUID) (store.JoinToken, error)
+	CreateJoinToken(ctx context.Context, arg store.CreateJoinTokenParams) (store.JoinToken, error)
+	ListJoinTokens(ctx context.Context, arg store.ListJoinTokensParams) ([]store.ListJoinTokensRow, error)
+	RevokeJoinToken(ctx context.Context, id uuid.UUID) error
+	ListJoinTokenConsumptions(ctx context.Context, arg store.ListJoinTokenConsumptionsParams) ([]store.JoinTokenConsumption, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
 // Handler holds the dependencies of the join-tokens routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
 // New constructs the Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 
@@ -61,9 +78,9 @@ var errTokenNotFound = errors.New("join token not found")
 // into errTokenNotFound for canonical 404 mapping at the handler
 // layer.
 func (h *Handler) loadToken(ctx context.Context, id uuid.UUID) (store.JoinToken, error) {
-	row, err := h.store.Queries().GetJoinTokenByID(ctx, id)
+	row, err := h.store.JoinTokenByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return store.JoinToken{}, errTokenNotFound
 		}
 		return store.JoinToken{}, err
@@ -75,7 +92,7 @@ func (h *Handler) loadToken(ctx context.Context, id uuid.UUID) (store.JoinToken,
 // returns the lowercase hex fingerprint. Used by Create to embed the
 // "token bundle" CA fingerprint in the response.
 func (h *Handler) activeCAFingerprintHex(ctx context.Context) (string, error) {
-	row, err := h.store.Queries().GetActiveCACert(ctx)
+	row, err := h.store.ActiveCACert(ctx)
 	if err != nil {
 		return "", err
 	}

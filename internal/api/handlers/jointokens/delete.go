@@ -46,7 +46,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.Queries().RevokeJoinToken(r.Context(), id); err != nil {
+	if err := h.store.RevokeJoinToken(r.Context(), id); err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "revoke token", nil)
 		return

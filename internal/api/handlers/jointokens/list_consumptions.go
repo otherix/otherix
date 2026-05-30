@@ -59,7 +59,7 @@ func (h *Handler) ListConsumptions(w http.ResponseWriter, r *http.Request) {
 		params.CursorID = &cur.ID
 	}
 
-	rows, err := h.store.Queries().ListJoinTokenConsumptions(r.Context(), params)
+	rows, err := h.store.ListJoinTokenConsumptions(r.Context(), params)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "list consumptions", nil)

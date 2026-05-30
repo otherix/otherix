@@ -76,7 +76,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().UTC().Add(time.Duration(ttl) * time.Second)
 	callerID := caller.ID
 
-	row, err := h.store.Queries().CreateJoinToken(r.Context(), store.CreateJoinTokenParams{
+	row, err := h.store.CreateJoinToken(r.Context(), store.CreateJoinTokenParams{
 		ID:               uuid.New(),
 		TokenHash:        hash,
 		IntendedNodeName: intendedNodeName,

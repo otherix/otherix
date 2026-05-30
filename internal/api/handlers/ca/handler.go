@@ -16,26 +16,37 @@
 package ca
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the /v1/ca handler depends on: a single
+// active-CA lookup. *store.Store satisfies it; depending on the
+// interface rather than the concrete store is the Phase 2 seam that
+// lets a second backend (Phase 3) be substituted under the same
+// handler tests.
+type Store interface {
+	ActiveCACert(ctx context.Context) (store.CaCert, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
 // Handler bundles the dependencies of the /v1/ca routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
 // New constructs the Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 
@@ -56,9 +67,9 @@ type clusterCAView struct {
 // this row exists in production — a 500 here surfaces an operational
 // invariant violation).
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	row, err := h.store.Queries().GetActiveCACert(r.Context())
+	row, err := h.store.ActiveCACert(r.Context())
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			h.log.WarnContext(r.Context(), "no active cluster CA row — bootstrap hook not run?",
 				slog.String("path", r.URL.Path))
 			response.WriteError(w, r, http.StatusInternalServerError,
