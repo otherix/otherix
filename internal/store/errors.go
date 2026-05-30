@@ -16,6 +16,14 @@ import (
 // package rather than on pgx directly. Match it with errors.Is.
 var ErrNotFound = errors.New("store: not found")
 
+// ErrCACertActiveExists is returned by a store backend's CreateCACert
+// when an active cluster CA row already exists. It mirrors the SQL
+// uq_ca_certs_active partial-unique-index violation (23505) for backends
+// that enforce the at-most-one-active invariant in the application layer
+// (the embedded-etcd store), so the CA bootstrap can trap the lost-race
+// path uniformly. Match it with errors.Is.
+var ErrCACertActiveExists = errors.New("store: active CA cert already exists")
+
 // ResourceInUseError reports that a resource cannot be deleted because
 // other rows still reference it. Resources maps each blocking kind
 // (e.g. "vms", "templates") to its count and is non-empty. The
