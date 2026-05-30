@@ -41,7 +41,7 @@ func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UncordonNode(r.Context(), current.ID)
+	updated, err := h.store.UncordonNode(r.Context(), current.ID)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "uncordon node", nil)

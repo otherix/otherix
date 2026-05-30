@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/store"
@@ -56,7 +55,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().CreateNode(r.Context(), store.CreateNodeParams{
+	row, err := h.store.CreateNode(r.Context(), store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    req.Name,
 		Architecture:            store.CPUArch(req.Architecture),
@@ -67,8 +66,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Status:                  store.NodeStatusPending,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.Is(err, store.ErrNodeNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "node name already in use", nil)
 			return

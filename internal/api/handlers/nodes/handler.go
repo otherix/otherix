@@ -9,10 +9,13 @@
 package nodes
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -20,14 +23,36 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the nodes handlers depend on: the node
+// domain methods plus the identifier-resolution contract
+// (resolver.Querier) the handlers use to resolve the name-only {id}
+// path parameter. Depending on the interface rather than the concrete
+// *store.Store is the Phase 2 seam that lets a second backend (Phase 3)
+// be substituted under the same handler tests. *store.Store satisfies
+// it.
+type Store interface {
+	resolver.Querier
+
+	NodeEffectiveByID(ctx context.Context, id uuid.UUID) (store.NodeEffectiveAvailability, error)
+	CreateNode(ctx context.Context, arg store.CreateNodeParams) (store.Node, error)
+	CordonNode(ctx context.Context, id uuid.UUID) (store.Node, error)
+	UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, error)
+	ListNodesEffective(ctx context.Context, arg store.ListNodesEffectiveParams) ([]store.NodeEffectiveAvailability, error)
+	DeleteNode(ctx context.Context, id uuid.UUID, force bool, callerID uuid.UUID) (store.NodeDeleteOutcome, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
 // Handler bundles the dependencies for the nodes routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
-// New constructs a Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 

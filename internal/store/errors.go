@@ -18,10 +18,13 @@ var ErrNotFound = errors.New("store: not found")
 
 // ResourceInUseError reports that a resource cannot be deleted because
 // other rows still reference it. Resources maps each blocking kind
-// (e.g. "vms", "templates") to its count and contains only non-zero
-// entries; it is non-empty. Handlers project it onto the API
-// blocking_resources envelope. This is shared across every resource
-// whose delete is gated on dependants, so the shape stays uniform.
+// (e.g. "vms", "templates") to its count and is non-empty. The
+// producing store method decides whether to include zero-count kinds:
+// most include only non-zero entries, but a resource whose API envelope
+// always lists a fixed set of kinds (e.g. nodes -> vms +
+// active_migrations) may populate every key. Handlers project it onto
+// the API blocking_resources envelope. Shared across every resource
+// whose delete is gated on dependants so the carrier stays uniform.
 type ResourceInUseError struct {
 	Resources map[string]int64
 }

@@ -38,7 +38,7 @@ func (h *Handler) Cordon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().CordonNode(r.Context(), current.ID)
+	updated, err := h.store.CordonNode(r.Context(), current.ID)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "cordon node", nil)
