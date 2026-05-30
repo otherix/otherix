@@ -27,7 +27,7 @@ import (
 // future iteration could resolve by name directly on the view if
 // the cost matters.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	resolved, err := resolver.Node(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	resolved, err := resolver.Node(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeNodeResolveError(w, r, err)
 		return

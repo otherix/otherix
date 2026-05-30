@@ -24,7 +24,7 @@ import (
 // clients can exercise the contract end-to-end ahead of the ingest
 // path.
 func (h *Handler) ListByNode(w http.ResponseWriter, r *http.Request) {
-	node, err := resolver.Node(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	node, err := resolver.Node(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		if resolver.IsUUIDInName(err) {
 			response.WriteUUIDNotAllowedError(w, r, "node", "id")

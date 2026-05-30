@@ -61,7 +61,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 //     and the caller does not hold `template:read` at scope=any).
 //   - (zero, other) for unexpected DB errors.
 func (h *Handler) resolveVisibleTemplate(ctx context.Context, identifier string, caller *auth.User) (store.Template, error) {
-	row, err := resolver.Template(ctx, h.store.Queries(), identifier)
+	row, err := resolver.Template(ctx, h.store, identifier)
 	if err != nil {
 		return store.Template{}, err
 	}

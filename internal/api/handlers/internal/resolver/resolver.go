@@ -39,17 +39,19 @@ const (
 	KindVM       Kind = "vm"
 )
 
-// Querier is the subset of store.Querier the resolver needs. Name-only
-// lookups for Template / Node / VM; both UUID-by-id and name-by-list
-// for Pool (multi-instance carve-out - UUID branch retained for
-// per-instance addressing). Keeping the surface narrow lets unit
-// tests pass a hand-rolled fake without implementing every
-// sqlc-generated method.
+// Querier is the subset of *store.Store domain lookups the resolver
+// needs. Name-only lookups for Template / Node / VM; both UUID-by-id
+// and name-by-list for Pool (multi-instance carve-out - UUID branch
+// retained for per-instance addressing). Keeping the surface narrow
+// lets unit tests pass a hand-rolled fake, and lets any store backend
+// satisfy it structurally. Method names match the store's domain
+// methods (no Get prefix); single-row lookups return store.ErrNotFound
+// when the row is missing.
 type Querier interface {
-	GetTemplateByName(ctx context.Context, name string) (store.Template, error)
-	GetStoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
-	ListStoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
-	GetClusterSettings(ctx context.Context) (store.ClusterSetting, error)
-	GetNodeByName(ctx context.Context, name string) (store.Node, error)
-	GetVMByName(ctx context.Context, name string) (store.VM, error)
+	TemplateByName(ctx context.Context, name string) (store.Template, error)
+	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
+	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
+	ClusterSettings(ctx context.Context) (store.ClusterSetting, error)
+	NodeByName(ctx context.Context, name string) (store.Node, error)
+	VMByName(ctx context.Context, name string) (store.VM, error)
 }

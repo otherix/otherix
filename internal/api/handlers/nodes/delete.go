@@ -65,7 +65,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := resolver.Node(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	node, err := resolver.Node(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeNodeResolveError(w, r, err)
 		return

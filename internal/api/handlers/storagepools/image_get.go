@@ -24,7 +24,7 @@ import (
 // rows return the same 404 envelope so callers cannot distinguish
 // "exists but in a different pool" from "does not exist".
 func (h *Handler) GetImage(w http.ResponseWriter, r *http.Request) {
-	pool, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "pool_id"))
+	pool, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "pool_id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return

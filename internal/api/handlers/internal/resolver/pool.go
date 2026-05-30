@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/store"
 )
@@ -24,19 +23,19 @@ import (
 // instead.
 func Pool(ctx context.Context, q Querier, identifier string) (store.StoragePool, error) {
 	if id, err := uuid.Parse(identifier); err == nil {
-		row, err := q.GetStoragePoolByID(ctx, id)
+		row, err := q.StoragePoolByID(ctx, id)
 		if err != nil {
 			return store.StoragePool{}, wrapLookupErr(KindPool, identifier, err)
 		}
 		return row, nil
 	}
-	rows, err := q.ListStoragePoolsByName(ctx, identifier)
+	rows, err := q.StoragePoolsByName(ctx, identifier)
 	if err != nil {
 		return store.StoragePool{}, wrapLookupErr(KindPool, identifier, err)
 	}
 	switch len(rows) {
 	case 0:
-		return store.StoragePool{}, wrapLookupErr(KindPool, identifier, pgx.ErrNoRows)
+		return store.StoragePool{}, wrapLookupErr(KindPool, identifier, store.ErrNotFound)
 	case 1:
 		return rows[0], nil
 	default:
@@ -63,14 +62,14 @@ type PoolConcept struct {
 // GET /v1/storage-pools/{name}); use Pool when the caller already
 // knows it wants a single per-node instance row.
 func PoolByName(ctx context.Context, q Querier, name string) (PoolConcept, error) {
-	rows, err := q.ListStoragePoolsByName(ctx, name)
+	rows, err := q.StoragePoolsByName(ctx, name)
 	if err != nil {
 		return PoolConcept{}, wrapLookupErr(KindPool, name, err)
 	}
 	if len(rows) == 0 {
-		return PoolConcept{}, wrapLookupErr(KindPool, name, pgx.ErrNoRows)
+		return PoolConcept{}, wrapLookupErr(KindPool, name, store.ErrNotFound)
 	}
-	settings, err := q.GetClusterSettings(ctx)
+	settings, err := q.ClusterSettings(ctx)
 	if err != nil {
 		return PoolConcept{}, wrapLookupErr(KindPool, name, err)
 	}

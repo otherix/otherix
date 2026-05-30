@@ -46,7 +46,7 @@ func (h *Handler) Scan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	pool, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return

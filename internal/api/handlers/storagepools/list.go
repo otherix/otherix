@@ -71,7 +71,7 @@ func (h *Handler) buildListParams(w http.ResponseWriter, r *http.Request) (store
 	}
 	params := store.ListStoragePoolsParams{LimitCount: limit + 1}
 	if nodeRaw := q.Get("node"); nodeRaw != "" {
-		node, err := resolver.Node(r.Context(), h.store.Queries(), nodeRaw)
+		node, err := resolver.Node(r.Context(), h.store, nodeRaw)
 		if err != nil {
 			if resolver.IsUUIDInName(err) {
 				response.WriteUUIDNotAllowedError(w, r, "node", "node")

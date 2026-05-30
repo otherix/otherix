@@ -47,17 +47,17 @@ type stubQuerier struct {
 	vmByName bool
 }
 
-func (s *stubQuerier) GetTemplateByName(_ context.Context, _ string) (store.Template, error) {
+func (s *stubQuerier) TemplateByName(_ context.Context, _ string) (store.Template, error) {
 	s.templateByName = true
 	return s.template, s.templateErr
 }
 
-func (s *stubQuerier) GetStoragePoolByID(_ context.Context, _ uuid.UUID) (store.StoragePool, error) {
+func (s *stubQuerier) StoragePoolByID(_ context.Context, _ uuid.UUID) (store.StoragePool, error) {
 	s.poolByID = true
 	return s.pool, s.poolErr
 }
 
-func (s *stubQuerier) ListStoragePoolsByName(_ context.Context, _ string) ([]store.StoragePool, error) {
+func (s *stubQuerier) StoragePoolsByName(_ context.Context, _ string) ([]store.StoragePool, error) {
 	s.poolByName = true
 	if s.poolErr != nil {
 		return nil, s.poolErr
@@ -65,16 +65,16 @@ func (s *stubQuerier) ListStoragePoolsByName(_ context.Context, _ string) ([]sto
 	return s.poolList, nil
 }
 
-func (s *stubQuerier) GetClusterSettings(_ context.Context) (store.ClusterSetting, error) {
+func (s *stubQuerier) ClusterSettings(_ context.Context) (store.ClusterSetting, error) {
 	return s.clusterSettings, s.clusterSettingsErr
 }
 
-func (s *stubQuerier) GetNodeByName(_ context.Context, _ string) (store.Node, error) {
+func (s *stubQuerier) NodeByName(_ context.Context, _ string) (store.Node, error) {
 	s.nodeByName = true
 	return s.node, s.nodeErr
 }
 
-func (s *stubQuerier) GetVMByName(_ context.Context, _ string) (store.VM, error) {
+func (s *stubQuerier) VMByName(_ context.Context, _ string) (store.VM, error) {
 	s.vmByName = true
 	return s.vm, s.vmErr
 }
@@ -116,7 +116,7 @@ func TestResolve(t *testing.T) {
 		{
 			name: "template name missing", kind: KindTemplate,
 			identifier: "no-such-template",
-			lookupErr:  pgx.ErrNoRows,
+			lookupErr:  store.ErrNotFound,
 			wantByName: true, wantCode: CodeNotFound,
 		},
 		{
@@ -165,7 +165,7 @@ func TestResolve(t *testing.T) {
 		{
 			name: "node name missing", kind: KindNode,
 			identifier: "no-such-node",
-			lookupErr:  pgx.ErrNoRows,
+			lookupErr:  store.ErrNotFound,
 			wantByName: true, wantCode: CodeNotFound,
 		},
 
@@ -183,7 +183,7 @@ func TestResolve(t *testing.T) {
 		{
 			name: "vm name missing", kind: KindVM,
 			identifier: "no-such-vm",
-			lookupErr:  pgx.ErrNoRows,
+			lookupErr:  store.ErrNotFound,
 			wantByName: true, wantCode: CodeNotFound,
 		},
 	}

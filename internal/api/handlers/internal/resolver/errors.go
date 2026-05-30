@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // ErrorCode classifies a resolution failure. Callers map these to wire
@@ -58,8 +58,8 @@ func IsUUIDInName(err error) bool {
 // returns. Kind names the resource class, Identifier echoes the raw
 // caller input (for the wire envelope's `details`), and Code lets the
 // handler branch on not-found vs. internal without unwrapping. The
-// underlying SQL error (if any) is held in cause so callers can
-// errors.Is(err, pgx.ErrNoRows) when convenient.
+// underlying store error (if any) is held in cause so callers can
+// errors.Is(err, store.ErrNotFound) when convenient.
 type Error struct {
 	Kind       Kind
 	Identifier string
@@ -76,19 +76,20 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.cause }
 
 // IsNotFound reports whether err is a resolver Error with
-// Code=CodeNotFound. Use this rather than testing for pgx.ErrNoRows
-// directly — the resolver may have promoted a different pgx state to
+// Code=CodeNotFound. Use this rather than testing for store.ErrNotFound
+// directly — the resolver may have promoted a different state to
 // not-found (e.g. soft-deleted rows look like missing rows here).
 func IsNotFound(err error) bool {
 	var e *Error
 	return errors.As(err, &e) && e.Code == CodeNotFound
 }
 
-// wrapLookupErr converts a pgx error returned by a Get* query to a
-// resolver Error. pgx.ErrNoRows promotes to CodeNotFound; anything
-// else stays as CodeInternal with the cause preserved for logging.
+// wrapLookupErr converts an error returned by a store lookup method to
+// a resolver Error. store.ErrNotFound promotes to CodeNotFound;
+// anything else stays as CodeInternal with the cause preserved for
+// logging.
 func wrapLookupErr(kind Kind, identifier string, err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, store.ErrNotFound) {
 		return &Error{Kind: kind, Identifier: identifier, Code: CodeNotFound, cause: err}
 	}
 	return &Error{Kind: kind, Identifier: identifier, Code: CodeInternal, cause: err}

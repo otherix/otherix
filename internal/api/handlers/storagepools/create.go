@@ -65,7 +65,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := resolver.Node(r.Context(), h.store.Queries(), req.Node)
+	node, err := resolver.Node(r.Context(), h.store, req.Node)
 	if err != nil {
 		if resolver.IsUUIDInName(err) {
 			response.WriteUUIDNotAllowedError(w, r, "node", "node")

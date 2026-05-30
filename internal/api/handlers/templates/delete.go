@@ -41,7 +41,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := resolver.Template(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	row, err := resolver.Template(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeLoadError(w, r, err)
 		return

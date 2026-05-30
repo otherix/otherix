@@ -30,7 +30,7 @@ import (
 // deleted-at timestamp directly. (A future ?include_deleted listing
 // would change this carve-out.)
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	vm, err := resolver.VM(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeResolveError(w, r, err)
 		return

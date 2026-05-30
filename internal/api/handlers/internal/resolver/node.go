@@ -21,7 +21,7 @@ func Node(ctx context.Context, q Querier, identifier string) (store.Node, error)
 	if _, err := uuid.Parse(identifier); err == nil {
 		return store.Node{}, &Error{Kind: KindNode, Identifier: identifier, Code: CodeUUIDInName}
 	}
-	row, err := q.GetNodeByName(ctx, identifier)
+	row, err := q.NodeByName(ctx, identifier)
 	if err != nil {
 		return store.Node{}, wrapLookupErr(KindNode, identifier, err)
 	}

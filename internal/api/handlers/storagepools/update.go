@@ -48,7 +48,7 @@ var forbiddenUpdateKeys = []string{
 // when multiple instances share the name - callers must address a
 // specific instance by UUID.
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
-	row, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	row, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return

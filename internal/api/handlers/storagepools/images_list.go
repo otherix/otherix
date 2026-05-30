@@ -29,7 +29,7 @@ import (
 // helper is generic across resources; for storage_images the slot
 // carries imported_at.
 func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
-	pool, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "pool_id"))
+	pool, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "pool_id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return

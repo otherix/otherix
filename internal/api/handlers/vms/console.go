@@ -82,7 +82,7 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vm, err := resolver.VM(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeResolveError(w, r, err)
 		return

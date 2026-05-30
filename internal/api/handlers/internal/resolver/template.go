@@ -28,7 +28,7 @@ func Template(ctx context.Context, q Querier, identifier string) (store.Template
 	if _, err := uuid.Parse(identifier); err == nil {
 		return store.Template{}, &Error{Kind: KindTemplate, Identifier: identifier, Code: CodeUUIDInName}
 	}
-	row, err := q.GetTemplateByName(ctx, identifier)
+	row, err := q.TemplateByName(ctx, identifier)
 	if err != nil {
 		return store.Template{}, wrapLookupErr(KindTemplate, identifier, err)
 	}

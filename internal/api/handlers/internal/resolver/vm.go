@@ -24,7 +24,7 @@ func VM(ctx context.Context, q Querier, identifier string) (store.VM, error) {
 	if _, err := uuid.Parse(identifier); err == nil {
 		return store.VM{}, &Error{Kind: KindVM, Identifier: identifier, Code: CodeUUIDInName}
 	}
-	row, err := q.GetVMByName(ctx, identifier)
+	row, err := q.VMByName(ctx, identifier)
 	if err != nil {
 		return store.VM{}, wrapLookupErr(KindVM, identifier, err)
 	}

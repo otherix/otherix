@@ -34,7 +34,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getByID(w http.ResponseWriter, r *http.Request, identifier string) {
-	row, err := resolver.Pool(r.Context(), h.store.Queries(), identifier)
+	row, err := resolver.Pool(r.Context(), h.store, identifier)
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return
@@ -49,7 +49,7 @@ func (h *Handler) getByID(w http.ResponseWriter, r *http.Request, identifier str
 }
 
 func (h *Handler) getByName(w http.ResponseWriter, r *http.Request, name string) {
-	concept, err := resolver.PoolByName(r.Context(), h.store.Queries(), name)
+	concept, err := resolver.PoolByName(r.Context(), h.store, name)
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return

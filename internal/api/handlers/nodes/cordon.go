@@ -20,7 +20,7 @@ import (
 // non-cordonable states (gone, draining). {id} is name-only; UUID
 // literals are rejected with 400 validation_failed at the resolver.
 func (h *Handler) Cordon(w http.ResponseWriter, r *http.Request) {
-	current, err := resolver.Node(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	current, err := resolver.Node(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeNodeResolveError(w, r, err)
 		return

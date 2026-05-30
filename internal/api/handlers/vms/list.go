@@ -132,7 +132,7 @@ func (h *Handler) resolveListFilter(
 	if raw == "" {
 		return nil, true
 	}
-	id, err := resolve(r.Context(), h.store.Queries(), raw)
+	id, err := resolve(r.Context(), h.store, raw)
 	if err != nil {
 		// Node filter rejects UUID format (name-only); the pool filter
 		// retains UUID acceptance for the multi-instance carve-out, so

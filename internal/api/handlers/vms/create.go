@@ -124,7 +124,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	template, err := resolver.Template(r.Context(), h.store.Queries(), req.Template)
+	template, err := resolver.Template(r.Context(), h.store, req.Template)
 	if err != nil {
 		writeTemplateLoadError(w, r, err)
 		return

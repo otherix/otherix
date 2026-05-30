@@ -23,7 +23,7 @@ import (
 // have no force-delete counterpart by design (the operator must
 // remove or migrate the dependent disks first).
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	row, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	row, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return
