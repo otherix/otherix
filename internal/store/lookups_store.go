@@ -72,3 +72,16 @@ func (s *Store) ClusterSettings(ctx context.Context) (ClusterSetting, error) {
 	}
 	return c, nil
 }
+
+// SetDefaultPoolName writes the cluster-wide default pool name on the
+// cluster_settings singleton. The caller validates that the name
+// resolves to at least one existing pool instance before calling.
+func (s *Store) SetDefaultPoolName(ctx context.Context, name *string) error {
+	return s.queries.SetDefaultPoolName(ctx, name)
+}
+
+// ClearDefaultPoolName nulls the cluster-wide default pool name.
+// Idempotent: clearing an already-null value is a no-op.
+func (s *Store) ClearDefaultPoolName(ctx context.Context) error {
+	return s.queries.ClearDefaultPoolName(ctx)
+}
