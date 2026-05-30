@@ -8,6 +8,7 @@ package etcdstore_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -67,6 +68,64 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 	task, err := s.TaskByID(ctx, taskID)
 	if err != nil || task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
 		t.Errorf("task = (%+v, %v), want success + finished", task, err)
+	}
+}
+
+func TestProjectVMDeleteSuccess(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, poolID, templateID, createTask := seedCreatedVM(t, s)
+	// Bring it to running (runtime row + derived_vm_count=1) so delete has
+	// something to tear down and a count to decrement.
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID,
+		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed create projection: %v", err)
+	}
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	name := vm.Name
+
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask(delete): %v", err)
+	}
+	if err := s.ProjectVMDeleteSuccess(ctx, vm,
+		store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess: %v", err)
+	}
+
+	// VM is soft-deleted: gone from reads, name reusable, runtime gone, disks gone.
+	if _, err := s.VMByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMByID after delete = %v, want ErrNotFound", err)
+	}
+	if _, err := s.VMByName(ctx, name); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMByName after delete = %v, want ErrNotFound (guard dropped)", err)
+	}
+	if _, err := s.VMRuntimeByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMRuntimeByID after delete = %v, want ErrNotFound", err)
+	}
+	disks, _ := s.ListVMDisksByVM(ctx, vmID)
+	if len(disks) != 0 {
+		t.Errorf("disks after delete = %d, want 0", len(disks))
+	}
+	// derived_vm_count decremented back to 0.
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 0 {
+		t.Errorf("derived_vm_count after delete = %d, want 0", tpl.DerivedVmCount)
+	}
+	// Pool no longer blocked by the (now-deleted) disk: delete must succeed.
+	if err := s.DeleteStoragePool(ctx, poolID); err != nil {
+		t.Errorf("DeleteStoragePool after vm delete = %v, want nil (disk pool-index dropped)", err)
+	}
+	task, _ := s.TaskByID(ctx, delTask.ID)
+	if task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
+		t.Errorf("delete task = %+v, want success + finished", task)
 	}
 }
 

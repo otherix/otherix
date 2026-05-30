@@ -132,6 +132,122 @@ func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, d
 	return nil
 }
 
+// ProjectVMDeleteSuccess soft-deletes a VM and its disks, drops the observed
+// runtime row, decrements the source template's derived_vm_count, and finalizes
+// the delete task - all in one transaction. Mirrors the pgx
+// VMDeleteWorker.projectDeleteSuccess InTx. The derived_vm_count decrement is
+// non-idempotent, so when the VM carries a template the projection commits under
+// a compare on the template mod-revision (bounded retry); a template-less VM
+// commits without a compare. Soft-delete drops the name guard (name reusable)
+// and the owner/template/firmware/pinned-node indexes, and each disk's vm + pool
+// indexes, so no index scan or blocking-count sees the deleted rows.
+func (s *Store) ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin store.UpdateTaskFinalizedParams) error {
+	now := time.Now().UTC()
+	taskVal, err := s.finalizedTaskValue(ctx, fin)
+	if err != nil {
+		return err
+	}
+	base, err := s.vmDeleteBaseOps(ctx, vm, now, taskVal, fin.ID)
+	if err != nil {
+		return err
+	}
+
+	if vm.TemplateID == nil {
+		if _, err := s.c.Raw().Txn(ctx).Then(base...).Commit(); err != nil {
+			return fmt.Errorf("project vm delete txn: %v", err)
+		}
+		return nil
+	}
+
+	for range projectTemplateCASRetries {
+		tmpl, modRev, found, err := s.templateWithRev(ctx, *vm.TemplateID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			// Template hard-gone (should not happen - templates soft-delete):
+			// commit the rest without a decrement rather than wedge the delete.
+			if _, err := s.c.Raw().Txn(ctx).Then(base...).Commit(); err != nil {
+				return fmt.Errorf("project vm delete txn: %v", err)
+			}
+			return nil
+		}
+		tmpl.DerivedVmCount--
+		tmplVal, err := etcd.Marshal(tmpl)
+		if err != nil {
+			return err
+		}
+		ops := append(append([]clientv3.Op{}, base...), clientv3.OpPut(templateKey(*vm.TemplateID), string(tmplVal)))
+		resp, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(templateKey(*vm.TemplateID)), "=", modRev)).
+			Then(ops...).
+			Commit()
+		if err != nil {
+			return fmt.Errorf("project vm delete txn: %v", err)
+		}
+		if resp.Succeeded {
+			return nil
+		}
+	}
+	return fmt.Errorf("project vm delete: template derived-count CAS exhausted after %d tries", projectTemplateCASRetries)
+}
+
+// vmDeleteBaseOps builds the soft-delete operations shared by the templated and
+// template-less delete paths: the VM row + guard/index removals, the runtime
+// delete, the per-disk soft-delete + index removals, and the task finalize.
+func (s *Store) vmDeleteBaseOps(ctx context.Context, vm store.VM, now time.Time, taskVal []byte, taskID uuid.UUID) ([]clientv3.Op, error) {
+	vm.DeletedAt = &now
+	vm.UpdatedAt = now
+	vmVal, err := etcd.Marshal(vm)
+	if err != nil {
+		return nil, err
+	}
+	ops := []clientv3.Op{
+		clientv3.OpPut(vmKey(vm.ID), string(vmVal)),
+		clientv3.OpDelete(vmNameGuard(vm.Name)),
+		clientv3.OpDelete(vmRuntimeKey(vm.ID)),
+	}
+	ops = append(ops, vmIndexDeleteOps(vm)...)
+
+	disks, err := s.disksOfVM(ctx, vm.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range disks {
+		d.DeletedAt = &now
+		d.UpdatedAt = now
+		dVal, err := etcd.Marshal(d)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops,
+			clientv3.OpPut(vmDiskKey(d.ID), string(dVal)),
+			clientv3.OpDelete(etcd.Key("index", "vm_disks", "vm", d.VmID.String(), d.ID.String())),
+			clientv3.OpDelete(etcd.Key("index", "vm_disks", "pool", d.StoragePoolID.String(), d.ID.String())),
+		)
+	}
+	ops = append(ops, clientv3.OpPut(taskKey(taskID), string(taskVal)))
+	return ops, nil
+}
+
+// vmIndexDeleteOps returns the secondary-index removals matching vmIndexOps:
+// owner, and (when set) template / firmware / pinned-node.
+func vmIndexDeleteOps(vm store.VM) []clientv3.Op {
+	ops := []clientv3.Op{
+		clientv3.OpDelete(etcd.Key("index", "vms", "owner", vm.OwnerID.String(), vm.ID.String())),
+	}
+	if vm.TemplateID != nil {
+		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "template", vm.TemplateID.String(), vm.ID.String())))
+	}
+	if vm.FirmwareID != nil {
+		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "firmware", vm.FirmwareID.String(), vm.ID.String())))
+	}
+	if vm.PinnedNodeID != nil {
+		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "pinned_node", vm.PinnedNodeID.String(), vm.ID.String())))
+	}
+	return ops
+}
+
 // vmRuntimeFromUpsert projects UpsertVMRuntimeParams onto a fresh runtime row,
 // stamping last_observed_at and updated_at. Used by the create projection where
 // the runtime row is written for the first time.
