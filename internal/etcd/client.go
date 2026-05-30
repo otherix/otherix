@@ -103,6 +103,20 @@ func (c *Client) PutJSON(ctx context.Context, key string, v any) error {
 	return c.Put(ctx, key, b)
 }
 
+// Get reads the raw bytes at key. found is false (with a nil error) when the
+// key is absent. Use for guard / index keys whose value is a plain id rather
+// than a JSON document.
+func (c *Client) Get(ctx context.Context, key string) (value []byte, found bool, err error) {
+	resp, err := c.c.Get(ctx, key)
+	if err != nil {
+		return nil, false, fmt.Errorf("get %q: %v", key, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil, false, nil
+	}
+	return resp.Kvs[0].Value, true, nil
+}
+
 // GetJSON reads key and unmarshals the value into v. found is false (with a nil
 // error) when the key is absent, so callers map absence to their own
 // not-found sentinel.
