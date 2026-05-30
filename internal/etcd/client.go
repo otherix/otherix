@@ -69,6 +69,20 @@ func capValue(b []byte) error {
 	return nil
 }
 
+// Marshal JSON-encodes v and enforces the size cap, returning the bytes a
+// caller can hand to a raw transaction (clientv3.OpPut) while keeping the same
+// size guarantee the Put helpers provide.
+func Marshal(v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshal value: %v", err)
+	}
+	if err := capValue(b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 // Put writes raw bytes at key, enforcing the size cap.
 func (c *Client) Put(ctx context.Context, key string, value []byte) error {
 	if err := capValue(value); err != nil {
