@@ -86,6 +86,11 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 // which cancels the backing job and flips the row atomically (the queue
 // seam hides the transaction). errCancel* sentinels map to envelopes in
 // writeCancelResponse.
+//
+// The TaskByID read is intentionally non-transactional: the real atomic
+// gate is CancelPendingTask's `WHERE status='pending'` conditional
+// update, so a status change racing between this read and the update
+// still yields ErrTaskNotCancellable (409), not a stale success.
 func (h *Handler) runCancel(
 	ctx context.Context,
 	caller *auth.User,

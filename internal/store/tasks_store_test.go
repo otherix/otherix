@@ -32,6 +32,24 @@ func (noopEnqueuer) Enqueue(context.Context, queue.JobArgs) (queue.JobRef, error
 }
 func (noopEnqueuer) Cancel(context.Context, queue.JobRef) error { return nil }
 
+// spyBinder is a store.QueueBinder whose Enqueuer records the JobRef
+// passed to Cancel, so tests can assert the cancel path actually
+// reaches the queue backend with the task's stored job ref.
+type spyBinder struct{ cancelled *[]queue.JobRef }
+
+func (b spyBinder) Bind(pgx.Tx) queue.Enqueuer { return spyEnqueuer{cancelled: b.cancelled} }
+
+type spyEnqueuer struct{ cancelled *[]queue.JobRef }
+
+func (spyEnqueuer) Enqueue(context.Context, queue.JobArgs) (queue.JobRef, error) {
+	return queue.JobRef{}, nil
+}
+
+func (e spyEnqueuer) Cancel(_ context.Context, ref queue.JobRef) error {
+	*e.cancelled = append(*e.cancelled, ref)
+	return nil
+}
+
 func pendingTaskParams(id uuid.UUID) store.CreateTaskParams {
 	return store.CreateTaskParams{
 		ID:           id,
@@ -103,5 +121,26 @@ func TestCancelPendingTask(t *testing.T) {
 	// Second attempt: no longer pending -> ErrTaskNotCancellable.
 	if _, err := s.CancelPendingTask(ctx, id, nil); !errors.Is(err, store.ErrTaskNotCancellable) {
 		t.Errorf("re-cancel error = %v, want store.ErrTaskNotCancellable", err)
+	}
+}
+
+func TestCancelPendingTaskCancelsBackingJob(t *testing.T) {
+	requireSharedHarness(t)
+	ctx := context.Background()
+	s := newStore(t, sharedHarness)
+	var cancelled []queue.JobRef
+	s.SetQueueBinder(spyBinder{cancelled: &cancelled})
+
+	id := uuid.New()
+	if _, err := s.Queries().CreateTask(ctx, pendingTaskParams(id)); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	jobID := int64(4242)
+	if _, err := s.CancelPendingTask(ctx, id, &jobID); err != nil {
+		t.Fatalf("CancelPendingTask: %v", err)
+	}
+	if len(cancelled) != 1 || cancelled[0].ID != jobID {
+		t.Errorf("backing-job cancel = %v, want one JobRef{ID:%d}", cancelled, jobID)
 	}
 }

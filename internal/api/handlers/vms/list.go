@@ -199,8 +199,8 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 	return views, nil
 }
 
-// loadRuntimeOrNil collapses pgx.ErrNoRows to (nil, nil). Used by Get
-// and List so the "creating" state projection stays consistent.
+// loadRuntimeOrNil collapses store.ErrNotFound to (nil, nil). Used by
+// Get and List so the "creating" state projection stays consistent.
 func (h *Handler) loadRuntimeOrNil(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, error) {
 	rt, err := h.store.VMRuntimeByID(ctx, vmID)
 	switch {

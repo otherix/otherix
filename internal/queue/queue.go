@@ -38,7 +38,11 @@ type JobRef struct {
 // Enqueuer enqueues and cancels background jobs within an ambient
 // transaction. Instances are bound to a specific transaction by the
 // store (see store.InTxEnqueue) so the job and the task row commit
-// atomically; no driver or river types cross this boundary.
+// atomically; no driver or river types appear in this interface. The
+// concrete JobArgs payloads still have to be serializable by whatever
+// backend is wired in (the river adapter reflects the concrete type in
+// InsertTx; a Phase-3 etcd backend would marshal the same structs its
+// own way).
 type Enqueuer interface {
 	// Enqueue submits args for background execution and returns a
 	// reference the caller can persist and later Cancel.

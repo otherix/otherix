@@ -180,6 +180,30 @@ func TestDeleteTemplateBlockedByVM(t *testing.T) {
 	}
 }
 
+func TestDeleteTemplateBlockedByImage(t *testing.T) {
+	requireSharedHarness(t)
+	ctx := context.Background()
+	s := newStore(t, sharedHarness)
+
+	owner := seedUser(t, ctx, s, "developer")
+	node := seedNodeForPools(t, ctx, s)
+	id := uuid.New()
+	if _, err := s.CreateTemplate(ctx, defaultTemplateParams(id, owner, uniqueTemplateName("dom-del-img"))); err != nil {
+		t.Fatalf("CreateTemplate: %v", err)
+	}
+	pool := seedPoolForImages(t, ctx, s, node, "dom-del-img")
+	seedImage(t, ctx, s, id, pool, imageSHA256(0x77))
+
+	err := s.DeleteTemplate(ctx, id)
+	var blocking *store.ResourceInUseError
+	if !errors.As(err, &blocking) {
+		t.Fatalf("DeleteTemplate err = %v, want *store.ResourceInUseError", err)
+	}
+	if blocking.Resources["storage_images"] != 1 {
+		t.Errorf("blocking storage_images = %d, want 1", blocking.Resources["storage_images"])
+	}
+}
+
 func TestNodeByIDNotFound(t *testing.T) {
 	requireSharedHarness(t)
 	ctx := context.Background()

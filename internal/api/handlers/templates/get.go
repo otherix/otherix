@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -87,7 +86,7 @@ func writeLoadError(w http.ResponseWriter, r *http.Request, err error) {
 	case resolver.IsUUIDInName(err):
 		response.WriteUUIDNotAllowedError(w, r, "template", "id")
 	case resolver.IsNotFound(err),
-		errors.Is(err, pgx.ErrNoRows),
+		errors.Is(err, store.ErrNotFound),
 		errors.Is(err, errTemplateInvisible):
 		writeNotFound(w, r)
 	default:

@@ -208,6 +208,31 @@ func TestDeleteStorageImageRefcountedSiblingSkipsCallback(t *testing.T) {
 	}
 }
 
+func TestDeleteStorageImageRefcountedOnLastReferentErrorRollsBack(t *testing.T) {
+	requireSharedHarness(t)
+	ctx := context.Background()
+	s := newStore(t, sharedHarness)
+
+	owner := seedUser(t, ctx, s, "developer")
+	node := seedNodeForPools(t, ctx, s)
+	tpl := seedTemplateForImages(t, ctx, s, owner, "dom-ref6")
+	pool := seedPoolForImages(t, ctx, s, node, "dom-ref6")
+	img := seedImage(t, ctx, s, tpl, pool, imageSHA256(0x66))
+
+	// The agent file-delete is the whole reason the delete runs inside a
+	// transaction: when onLastReferent fails the row must NOT be removed.
+	agentErr := errors.New("agent unreachable")
+	_, _, err := s.DeleteStorageImageRefcounted(ctx, pool, img,
+		func(store.Template) error { return nil },
+		func(context.Context, store.Node, string, string) error { return agentErr })
+	if !errors.Is(err, agentErr) {
+		t.Fatalf("DeleteStorageImageRefcounted err = %v, want agentErr", err)
+	}
+	if _, err := s.Queries().GetStorageImageByID(ctx, img); err != nil {
+		t.Errorf("image row removed despite onLastReferent failure: %v", err)
+	}
+}
+
 func TestDeleteStorageImageRefcountedNotFound(t *testing.T) {
 	requireSharedHarness(t)
 	ctx := context.Background()
