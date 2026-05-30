@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -78,32 +77,23 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cancelled store.Task
-	err = h.store.InTxWithTx(r.Context(), func(q *store.Queries, tx pgx.Tx) error {
-		out, err := h.runCancel(r.Context(), q, tx, caller, taskID)
-		if err != nil {
-			return err
-		}
-		cancelled = out
-		return nil
-	})
+	cancelled, err := h.runCancel(r.Context(), caller, taskID)
 	h.writeCancelResponse(w, r, taskID, cancelled, err)
 }
 
-// runCancel is the body of the cancel transaction. Returning a non-nil
-// error from this method rolls the transaction back, which is the
-// intended behaviour for every non-200 path (the river-side cancel and
-// the task UPDATE both unwind together).
+// runCancel loads the task, applies the ownership clamp, and dispatches
+// on status. The pending branch delegates to store.CancelPendingTask,
+// which cancels the backing job and flips the row atomically (the queue
+// seam hides the transaction). errCancel* sentinels map to envelopes in
+// writeCancelResponse.
 func (h *Handler) runCancel(
 	ctx context.Context,
-	q *store.Queries,
-	tx pgx.Tx,
 	caller *auth.User,
 	taskID uuid.UUID,
 ) (store.Task, error) {
-	row, err := q.GetTask(ctx, taskID)
+	row, err := h.store.TaskByID(ctx, taskID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return store.Task{}, errCancelNotFound
 		}
 		return store.Task{}, err
@@ -118,39 +108,19 @@ func (h *Handler) runCancel(
 
 	switch row.Status {
 	case store.TaskStatusPending:
-		return h.cancelPending(ctx, q, tx, row, taskID)
+		cancelled, err := h.store.CancelPendingTask(ctx, taskID, row.RiverJobID)
+		if err != nil {
+			if errors.Is(err, store.ErrTaskNotCancellable) {
+				return store.Task{}, errCancelNotCancellable
+			}
+			return store.Task{}, err
+		}
+		return cancelled, nil
 	case store.TaskStatusRunning:
 		return store.Task{}, errCancelNotCancellable
 	default: // success / failed / cancelled
 		return store.Task{}, errCancelAlreadyFinalized
 	}
-}
-
-// cancelPending handles the pending → cancelled branch: cancel the
-// underlying river job (if stamped), then atomically transition the
-// task row. Returning a non-nil error from CancelTaskIfPending means
-// the worker won the race; rollback unwinds the river-side cancel
-// alongside.
-func (h *Handler) cancelPending(
-	ctx context.Context,
-	q *store.Queries,
-	tx pgx.Tx,
-	row store.Task,
-	taskID uuid.UUID,
-) (store.Task, error) {
-	if row.RiverJobID != nil {
-		if _, err := h.riverClient.JobCancelTx(ctx, tx, *row.RiverJobID); err != nil {
-			return store.Task{}, err
-		}
-	}
-	out, err := q.CancelTaskIfPending(ctx, taskID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return store.Task{}, errCancelNotCancellable
-		}
-		return store.Task{}, err
-	}
-	return out, nil
 }
 
 // cancelVisible enforces the scope=own clamp: developers / viewers

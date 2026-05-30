@@ -23,10 +23,12 @@ import (
 )
 
 // Store wraps a pgx pool and the sqlc-generated Queries. Construct with
-// NewStore; close with Close.
+// NewStore; close with Close. The queueBinder is wired post-construction
+// via SetQueueBinder (the queue client is built after the store).
 type Store struct {
-	pool    *pgxpool.Pool
-	queries *Queries
+	pool        *pgxpool.Pool
+	queries     *Queries
+	queueBinder QueueBinder
 }
 
 // NewStore opens a pgx pool against cfg.DSN, applies pool-sizing

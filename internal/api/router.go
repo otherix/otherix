@@ -32,6 +32,7 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
+	"github.com/otherix/otherix/internal/queue/riverqueue"
 	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -75,6 +76,14 @@ type RouterDeps struct {
 // version-independent infrastructure and must not break when the API
 // rolls forward.
 func NewRouter(deps RouterDeps) http.Handler {
+	// Wire the queue backend into the store so store.InTxEnqueue can
+	// enqueue jobs atomically with their task rows. NewRouter is the
+	// common choke point for production (via NewServer) and the e2e
+	// harnesses, both of which supply the river client here.
+	if deps.Store != nil && deps.RiverClient != nil {
+		deps.Store.SetQueueBinder(riverqueue.New(deps.RiverClient))
+	}
+
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -156,7 +165,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	templatesH := templateshandlers.New(deps.Store, deps.RiverClient, deps.Logger)
-	tasksH := taskshandlers.New(deps.Store, deps.RiverClient, deps.Logger)
+	tasksH := taskshandlers.New(deps.Store, deps.Logger)
 	vmsH := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 
 	authn := middleware.Authn(deps.AuthService)
