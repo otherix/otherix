@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -69,7 +68,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().CreateTemplate(r.Context(), params)
+	row, err := h.store.CreateTemplate(r.Context(), params)
 	if err != nil {
 		writeCreateError(w, r, err)
 		return
@@ -267,27 +266,21 @@ func valueOrEmpty(p *string) string {
 	return *p
 }
 
-// writeCreateError maps the post-Insert database error to the standard
-// envelope. The interesting branch is the unique-violation on
-// uq_templates_name; FK violations on firmware_id are surfaced as
-// 400 (the caller is the only party that could have supplied a bogus
-// id).
+// writeCreateError maps the store domain error to the standard
+// envelope. ErrTemplateNameExists is the unique-violation on
+// uq_templates_name; ErrTemplateFirmwareNotFound (FK on firmware_id) is
+// surfaced as 400 (the caller is the only party that could have
+// supplied a bogus id).
 func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "23505":
-			if pgErr.ConstraintName == "uq_templates_name" {
-				writeNeutralNameConflict(w, r)
-				return
-			}
-		case "23503":
-			response.WriteError(w, r, http.StatusBadRequest,
-				response.CodeValidationFailed,
-				"firmware_id does not reference an existing firmware", nil)
-			return
-		}
+	switch {
+	case errors.Is(err, store.ErrTemplateNameExists):
+		writeNeutralNameConflict(w, r)
+	case errors.Is(err, store.ErrTemplateFirmwareNotFound):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"firmware_id does not reference an existing firmware", nil)
+	default:
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "persist template", nil)
 	}
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "persist template", nil)
 }

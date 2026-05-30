@@ -164,7 +164,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.RiverClient, deps.ImageDeleter, deps.StoragePools, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
-	templatesH := templateshandlers.New(deps.Store, deps.RiverClient, deps.Logger)
+	templatesH := templateshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
 	vmsH := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 

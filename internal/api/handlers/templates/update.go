@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -96,7 +95,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UpdateTemplate(r.Context(), store.UpdateTemplateParams{
+	updated, err := h.store.UpdateTemplate(r.Context(), store.UpdateTemplateParams{
 		ID:                     row.ID,
 		Name:                   row.Name,
 		Description:            row.Description,
@@ -256,25 +255,20 @@ func applyMetadataPatch(w http.ResponseWriter, r *http.Request, row *store.Templ
 	return true
 }
 
-// writeUpdateError maps the post-UPDATE database error to the standard
-// envelope. The interesting branches are uq_templates_name (rename
-// collision) and a stray firmware_id FK violation.
+// writeUpdateError maps the store domain error to the standard
+// envelope. The interesting branches are ErrTemplateNameExists (rename
+// collision) and a stray firmware_id FK violation
+// (ErrTemplateFirmwareNotFound).
 func writeUpdateError(w http.ResponseWriter, r *http.Request, err error) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "23505":
-			if pgErr.ConstraintName == "uq_templates_name" {
-				writeNeutralNameConflict(w, r)
-				return
-			}
-		case "23503":
-			response.WriteError(w, r, http.StatusBadRequest,
-				response.CodeValidationFailed,
-				"firmware_id does not reference an existing firmware", nil)
-			return
-		}
+	switch {
+	case errors.Is(err, store.ErrTemplateNameExists):
+		writeNeutralNameConflict(w, r)
+	case errors.Is(err, store.ErrTemplateFirmwareNotFound):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"firmware_id does not reference an existing firmware", nil)
+	default:
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "update template", nil)
 	}
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "update template", nil)
 }

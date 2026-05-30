@@ -10,8 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -80,7 +78,7 @@ func (h *Handler) Clone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().CloneTemplate(r.Context(), store.CloneTemplateParams{
+	row, err := h.store.CloneTemplate(r.Context(), store.CloneTemplateParams{
 		NewID:          uuid.New(),
 		NewOwnerID:     caller.ID,
 		NewName:        req.Name,
@@ -95,21 +93,19 @@ func (h *Handler) Clone(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusCreated, toView(row))
 }
 
-// writeCloneError maps the post-Clone database error to the standard
-// envelope. Sources that have been deleted between loadVisibleTemplate
-// and CloneTemplate yield pgx.ErrNoRows from the SQL layer — the race
-// is rare but preserved as 404. Name uniqueness collisions surface
+// writeCloneError maps the store domain error to the standard
+// envelope. Sources that have been deleted between resolveVisibleTemplate
+// and CloneTemplate yield store.ErrNotFound from the store layer - the
+// race is rare but preserved as 404. Name uniqueness collisions surface
 // with the same neutral message used by Create.
 func writeCloneError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		writeNotFound(w, r)
-		return
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_templates_name" {
+	case errors.Is(err, store.ErrTemplateNameExists):
 		writeNeutralNameConflict(w, r)
-		return
+	default:
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "clone template", nil)
 	}
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "clone template", nil)
 }

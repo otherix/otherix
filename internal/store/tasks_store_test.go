@@ -43,6 +43,36 @@ func pendingTaskParams(id uuid.UUID) store.CreateTaskParams {
 	}
 }
 
+// importArgsStub is a queue.JobArgs stand-in so EnqueueTask can be
+// exercised without importing a handler package (which would create an
+// import cycle). Its Kind matches a real task type for realism.
+type importArgsStub struct{}
+
+func (importArgsStub) Kind() string { return "storage_image.import" }
+
+func TestEnqueueTask(t *testing.T) {
+	requireSharedHarness(t)
+	ctx := context.Background()
+	s := newStore(t, sharedHarness)
+	s.SetQueueBinder(noopBinder{})
+
+	id := uuid.New()
+	got, err := s.EnqueueTask(ctx, pendingTaskParams(id), importArgsStub{})
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+	if got != id {
+		t.Errorf("EnqueueTask returned id %v, want %v", got, id)
+	}
+	row, err := s.TaskByID(ctx, id)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if row.Status != store.TaskStatusPending {
+		t.Errorf("task status = %v, want pending", row.Status)
+	}
+}
+
 func TestTaskByIDNotFound(t *testing.T) {
 	requireSharedHarness(t)
 	s := newStore(t, sharedHarness)

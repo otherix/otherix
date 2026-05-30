@@ -19,6 +19,34 @@ import (
 // finalized).
 var ErrTaskNotCancellable = errors.New("store: task not cancellable")
 
+// EnqueueTask inserts a task row and its backing background job inside
+// one transaction, then stamps the returned job reference onto the task
+// row. The three writes commit or unwind together so a task is never
+// visible without its job (and vice versa). Returns params.ID on
+// success. This is the producer-side seam every async resource uses;
+// the queue backend is selected by the configured QueueBinder, not by
+// the caller.
+func (s *Store) EnqueueTask(ctx context.Context, params CreateTaskParams, args queue.JobArgs) (uuid.UUID, error) {
+	err := s.InTxEnqueue(ctx, func(q *Queries, enq queue.Enqueuer) error {
+		if _, err := q.CreateTask(ctx, params); err != nil {
+			return err
+		}
+		ref, err := enq.Enqueue(ctx, args)
+		if err != nil {
+			return err
+		}
+		jobID := ref.ID
+		return q.UpdateTaskRiverJobID(ctx, UpdateTaskRiverJobIDParams{
+			ID:         params.ID,
+			RiverJobID: &jobID,
+		})
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return params.ID, nil
+}
+
 // TaskByID returns the task with the given id, or ErrNotFound.
 func (s *Store) TaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 	t, err := s.queries.GetTask(ctx, id)

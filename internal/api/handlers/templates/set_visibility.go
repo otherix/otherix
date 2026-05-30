@@ -61,7 +61,7 @@ func (h *Handler) SetVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().SetTemplateVisibility(r.Context(),
+	updated, err := h.store.SetTemplateVisibility(r.Context(),
 		store.SetTemplateVisibilityParams{
 			ID:         row.ID,
 			Visibility: req.Visibility,

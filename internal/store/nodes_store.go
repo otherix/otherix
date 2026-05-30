@@ -33,6 +33,18 @@ type NodeDeleteOutcome struct {
 	MigrationsCancelled int64
 }
 
+// NodeByID returns the bare node row, or ErrNotFound. Callers that need
+// the joined availability view use NodeEffectiveByID; this is for the
+// handful of paths (e.g. the storage-image import precheck) that only
+// read the node's own columns such as status.
+func (s *Store) NodeByID(ctx context.Context, id uuid.UUID) (Node, error) {
+	n, err := s.queries.GetNodeByID(ctx, id)
+	if err != nil {
+		return Node{}, translateNoRows(err)
+	}
+	return n, nil
+}
+
 // NodeEffectiveByID returns the node joined with its effective
 // availability view, or ErrNotFound.
 func (s *Store) NodeEffectiveByID(ctx context.Context, id uuid.UUID) (NodeEffectiveAvailability, error) {
