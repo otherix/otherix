@@ -11,7 +11,6 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -81,7 +80,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().CreateStoragePool(r.Context(), store.CreateStoragePoolParams{
+	row, err := h.store.CreateStoragePool(r.Context(), store.CreateStoragePoolParams{
 		ID:     uuid.New(),
 		NodeID: node.ID,
 		Name:   req.Name,
@@ -164,13 +163,12 @@ func validateCreateFields(req *createRequest) error {
 	return validateConfigShape(req.Config)
 }
 
-// writeCreateError maps the post-Insert error returned by the
-// database to the standard envelope. The 23505 unique-violation maps
-// to uq_storage_pools_name's per-node scope: two pools may share a
-// name across nodes, but never on the same node.
+// writeCreateError maps the store domain error to the standard
+// envelope. ErrStoragePoolNameExists is the per-node name-uniqueness
+// violation: two pools may share a name across nodes, but never on the
+// same node.
 func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if errors.Is(err, store.ErrStoragePoolNameExists) {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict,
 			"another storage pool with this name already exists on the target node",

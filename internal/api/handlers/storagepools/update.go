@@ -10,7 +10,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -62,7 +61,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UpdateStoragePool(r.Context(), store.UpdateStoragePoolParams{
+	updated, err := h.store.UpdateStoragePool(r.Context(), store.UpdateStoragePoolParams{
 		ID:     row.ID,
 		Name:   row.Name,
 		Config: row.Config,
@@ -110,12 +109,11 @@ func decodeUpdateRequest(w http.ResponseWriter, r *http.Request) (updateRequest,
 	return req, true
 }
 
-// writeUpdateError maps the post-UPDATE database error to the standard
-// envelope. The 23505 unique-violation maps to the per-node scope of
-// uq_storage_pools_name.
+// writeUpdateError maps the store domain error to the standard
+// envelope. ErrStoragePoolNameExists is the per-node name-uniqueness
+// violation.
 func writeUpdateError(w http.ResponseWriter, r *http.Request, err error) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if errors.Is(err, store.ErrStoragePoolNameExists) {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict,
 			"another storage pool with this name already exists on the target node",

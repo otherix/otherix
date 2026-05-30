@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/pagination"
@@ -55,7 +54,7 @@ func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 		params.CursorID = &id
 	}
 
-	rows, err := h.store.Queries().ListStorageImagesByPool(r.Context(), params)
+	rows, err := h.store.ListStorageImagesByPool(r.Context(), params)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "list storage images", nil)
@@ -94,11 +93,11 @@ func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 // listing — orphan storage images are still observable.
 func (h *Handler) projectImageView(ctx context.Context, im store.StorageImage, poolName string) (storageImageView, error) {
 	templateName := ""
-	tmpl, err := h.store.Queries().GetTemplate(ctx, im.TemplateID)
+	tmpl, err := h.store.TemplateByID(ctx, im.TemplateID)
 	switch {
 	case err == nil:
 		templateName = tmpl.Name
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, store.ErrNotFound):
 		// keep templateName empty — see godoc.
 	default:
 		return storageImageView{}, err

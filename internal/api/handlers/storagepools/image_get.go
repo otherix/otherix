@@ -9,10 +9,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // GetImage implements GET /v1/storage-pools/{pool_id}/images/{image_id}.
@@ -37,9 +37,9 @@ func (h *Handler) GetImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().GetStorageImageByID(r.Context(), imageID)
+	row, err := h.store.StorageImageByID(r.Context(), imageID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			writeImageNotFound(w, r)
 			return
 		}

@@ -37,37 +37,71 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
+	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/config"
+	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Handler bundles the dependencies for the storage-pools routes. CRUD
-// only needs the store; Scan additionally needs the river client to
-// enqueue the underlying job inside the same transaction as the task
-// row insert; DeleteImage additionally needs an
-// ImageDeleter to drive the agent's synchronous delete on the
+// Store is the storage surface the storage-pools handlers depend on:
+// the pool / storage-image domain methods, the identifier-resolution
+// contract (resolver.Querier) used to resolve pool and node parameters,
+// the node read used by the view projectors, and the
+// backend-agnostic EnqueueTask producer seam used by Scan.
+// *store.Store satisfies it; depending on the interface rather than the
+// concrete store is the Phase 2 seam that lets a second backend (Phase
+// 3) be substituted under the same handler tests, and keeps river off
+// the request handlers. The scan/import river workers (jobs.go,
+// import_jobs.go, scan_trigger.go) are consumer-side and keep the
+// concrete store until Phase 3 rewrites them.
+type Store interface {
+	resolver.Querier
+
+	CreateStoragePool(ctx context.Context, arg store.CreateStoragePoolParams) (store.StoragePool, error)
+	UpdateStoragePool(ctx context.Context, arg store.UpdateStoragePoolParams) (store.StoragePool, error)
+	PoolEffectiveByID(ctx context.Context, id uuid.UUID) (store.PoolEffectiveCapacity, error)
+	ListPoolsEffective(ctx context.Context, arg store.ListPoolsEffectiveParams) ([]store.PoolEffectiveCapacity, error)
+	ListPoolsEffectiveByName(ctx context.Context, name string) ([]store.PoolEffectiveCapacity, error)
+	DeleteStoragePool(ctx context.Context, id uuid.UUID) error
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
+	StorageImageByID(ctx context.Context, id uuid.UUID) (store.StorageImage, error)
+	ListStorageImagesByPool(ctx context.Context, arg store.ListStorageImagesByPoolParams) ([]store.StorageImage, error)
+	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
+	DeleteStorageImageRefcounted(
+		ctx context.Context,
+		poolID, imageID uuid.UUID,
+		authorize func(store.Template) error,
+		onLastReferent func(ctx context.Context, node store.Node, poolName, checksum string) error,
+	) (store.StorageImage, store.Template, error)
+	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
+// Handler bundles the dependencies for the storage-pools routes. Scan
+// enqueues through the store's backend-agnostic EnqueueTask seam, so
+// the handler no longer holds a river client; DeleteImage additionally
+// needs an ImageDeleter to drive the agent's synchronous delete on the
 // last-referent path.
 type Handler struct {
-	store        *store.Store
-	riverClient  *river.Client[pgx.Tx]
+	store        Store
 	imageDeleter ImageDeleter
 	cfg          config.StoragePoolsConfig
 	log          *slog.Logger
 }
 
-// New constructs a Handler. riverClient is required for Scan; the
-// production wiring (cmd/api/main.go) always supplies one.
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
 // imageDeleter may be nil — when AgentClient.Enabled is false the
 // DeleteImage handler responds 502 agent_unreachable on the
 // count==0 path rather than panicking. cfg pins the operator-facing
 // pool knobs (allowlist prefixes).
-func New(s *store.Store, riverClient *river.Client[pgx.Tx], imageDeleter ImageDeleter, cfg config.StoragePoolsConfig, log *slog.Logger) *Handler {
+func New(s Store, imageDeleter ImageDeleter, cfg config.StoragePoolsConfig, log *slog.Logger) *Handler {
 	return &Handler{
 		store:        s,
-		riverClient:  riverClient,
 		imageDeleter: imageDeleter,
 		cfg:          cfg,
 		log:          log,
@@ -197,13 +231,13 @@ func toDiskPressureView(since *time.Time, count int32) *diskPressureView {
 // the not-found fallback; the actual rendered fields come from the
 // view row.
 func (h *Handler) projectView(ctx context.Context, p store.StoragePool) (storagePoolView, error) {
-	row, err := h.store.Queries().GetPoolEffectiveByID(ctx, p.ID)
+	row, err := h.store.PoolEffectiveByID(ctx, p.ID)
 	if err != nil {
 		return storagePoolView{}, err
 	}
-	node, err := h.store.Queries().GetNodeByID(ctx, row.NodeID)
+	node, err := h.store.NodeByID(ctx, row.NodeID)
 	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !errors.Is(err, store.ErrNotFound) {
 			return storagePoolView{}, err
 		}
 		// Owning node was soft-deleted out from under the pool —
@@ -212,7 +246,7 @@ func (h *Handler) projectView(ctx context.Context, p store.StoragePool) (storage
 		// via /v1/nodes if needed.
 		node = store.Node{}
 	}
-	settings, err := h.store.Queries().GetClusterSettings(ctx)
+	settings, err := h.store.ClusterSettings(ctx)
 	if err != nil {
 		return storagePoolView{}, err
 	}

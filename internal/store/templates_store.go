@@ -50,6 +50,15 @@ func translateTemplateWrite(err error) error {
 	return err
 }
 
+// TemplateByID returns the template with the given id, or ErrNotFound.
+func (s *Store) TemplateByID(ctx context.Context, id uuid.UUID) (Template, error) {
+	t, err := s.queries.GetTemplate(ctx, id)
+	if err != nil {
+		return Template{}, translateNoRows(err)
+	}
+	return t, nil
+}
+
 // CreateTemplate inserts a template, translating the name-uniqueness and
 // firmware FK violations to their domain sentinels.
 func (s *Store) CreateTemplate(ctx context.Context, arg CreateTemplateParams) (Template, error) {

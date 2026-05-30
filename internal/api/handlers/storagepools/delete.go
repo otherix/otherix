@@ -4,12 +4,10 @@
 package storagepools
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -29,10 +27,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.store.InTx(r.Context(), func(q *store.Queries) error {
-		return runDelete(r.Context(), q, row.ID)
-	})
-	if err != nil {
+	if err := h.store.DeleteStoragePool(r.Context(), row.ID); err != nil {
 		writeDeleteError(w, r, err)
 		return
 	}
@@ -40,54 +35,34 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	response.WriteNoContent(w)
 }
 
-// runDelete is the transactional body of Delete. It returns a
-// *response.BlockingResourcesError when active vm_disks or
-// materialised storage images block the delete, or any underlying DB
-// error otherwise. Row-missing cases are caught upstream by the
-// resolver-driven Delete handler.
-func runDelete(ctx context.Context, q *store.Queries, id uuid.UUID) error {
-	diskCount, err := q.CountVMDisksOnStoragePool(ctx, id)
-	if err != nil {
-		return err
+// writeDeleteError maps the store domain error to the standard
+// envelope. A *store.ResourceInUseError carries the blocking counts;
+// the handler owns the wire policy of how those counts become a 409.
+// The storage-image branch carries the endpoint-specific
+// resource_in_use code; the vm_disks-only branch keeps the generic
+// `conflict` to preserve the historical wire contract.
+func writeDeleteError(w http.ResponseWriter, r *http.Request, err error) {
+	var blocking *store.ResourceInUseError
+	if !errors.As(err, &blocking) {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "delete storage pool", nil)
+		return
 	}
-	imageCount, err := q.CountStorageImagesByPool(ctx, id)
-	if err != nil {
-		return err
-	}
-	// Stacked refusal. Storage images carry the
-	// endpoint-specific code; the vm_disks-only branch keeps the
-	// generic `conflict` to preserve the historical wire contract.
-	if imageCount > 0 {
+	if imageCount := blocking.Resources["storage_images"]; imageCount > 0 {
 		resources := map[string]int64{"storage_images": imageCount}
-		if diskCount > 0 {
+		if diskCount := blocking.Resources["vm_disks"]; diskCount > 0 {
 			resources["vm_disks"] = diskCount
 		}
-		return &response.BlockingResourcesError{
+		response.WriteBlockingResources(w, r, &response.BlockingResourcesError{
 			Code:      response.CodeResourceInUse,
 			Kind:      "pool",
 			Message:   "storage pool still has materialised storage images; delete them first",
 			Resources: resources,
-		}
+		})
+		return
 	}
-	if diskCount > 0 {
-		return &response.BlockingResourcesError{
-			Message:   "storage pool is in use by virtual machine disks; remove or migrate them first",
-			Resources: map[string]int64{"vm_disks": diskCount},
-		}
-	}
-
-	return q.SoftDeleteStoragePool(ctx, id)
-}
-
-// writeDeleteError maps the in-flight error returned by runDelete to
-// the standard envelope.
-func writeDeleteError(w http.ResponseWriter, r *http.Request, err error) {
-	var blocking *response.BlockingResourcesError
-	switch {
-	case errors.As(err, &blocking):
-		response.WriteBlockingResources(w, r, blocking)
-	default:
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "delete storage pool", nil)
-	}
+	response.WriteBlockingResources(w, r, &response.BlockingResourcesError{
+		Message:   "storage pool is in use by virtual machine disks; remove or migrate them first",
+		Resources: map[string]int64{"vm_disks": blocking.Resources["vm_disks"]},
+	})
 }
