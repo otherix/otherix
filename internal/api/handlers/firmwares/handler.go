@@ -38,20 +38,47 @@
 package firmwares
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the firmwares handlers depend on: the
+// firmware domain methods plus the identifier-resolution contract
+// (resolver.Querier) that ListByNode uses to resolve the node path
+// parameter. *store.Store satisfies it; depending on the interface
+// rather than the concrete store is the Phase 2 seam that lets a
+// second backend (Phase 3) be substituted under the same handler
+// tests.
+type Store interface {
+	resolver.Querier
+
+	FirmwareByID(ctx context.Context, id uuid.UUID) (store.Firmware, error)
+	DefaultFirmwareForArchType(ctx context.Context, arch store.CPUArch, ftype store.FirmwareType) (store.Firmware, error)
+	CreateFirmware(ctx context.Context, arg store.CreateFirmwareParams) (store.Firmware, error)
+	UpdateFirmware(ctx context.Context, arg store.UpdateFirmwareParams) (store.Firmware, error)
+	ListFirmwares(ctx context.Context, arg store.ListFirmwaresParams) ([]store.Firmware, error)
+	ListNodeFirmwares(ctx context.Context, arg store.ListNodeFirmwaresParams) ([]store.ListNodeFirmwaresRow, error)
+	DeleteFirmware(ctx context.Context, id uuid.UUID) error
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+var _ Store = (*store.Store)(nil)
+
 // Handler bundles the dependencies for the firmwares routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
-// New constructs a Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 
