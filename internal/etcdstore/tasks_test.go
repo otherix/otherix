@@ -166,3 +166,95 @@ func taskIDs(ts []store.Task) []uuid.UUID {
 	}
 	return out
 }
+
+func TestUpdateTaskRunningStampsAndIncrements(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	got, _ := s.TaskByID(ctx, p.ID)
+	if got.Status != store.TaskStatusRunning || got.Attempts != 1 || got.StartedAt == nil {
+		t.Errorf("after first run: status=%v attempts=%d started_at=%v, want running/1/non-nil",
+			got.Status, got.Attempts, got.StartedAt)
+	}
+	firstStarted := *got.StartedAt
+
+	// Second transition: attempts++ but started_at is coalesced (unchanged).
+	if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning (retry): %v", err)
+	}
+	got, _ = s.TaskByID(ctx, p.ID)
+	if got.Attempts != 2 || got.StartedAt == nil || !got.StartedAt.Equal(firstStarted) {
+		t.Errorf("after retry: attempts=%d started_at=%v, want 2 and unchanged %v",
+			got.Attempts, got.StartedAt, firstStarted)
+	}
+
+	// Missing task.
+	if err := s.UpdateTaskRunning(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateTaskRunning(missing) = %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestUpdateTaskFinalizedWritesTerminal(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	result := []byte(`{"vm_id":"x"}`)
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
+		ID:     p.ID,
+		Status: store.TaskStatusSuccess,
+		Result: result,
+	}); err != nil {
+		t.Fatalf("UpdateTaskFinalized: %v", err)
+	}
+	got, _ := s.TaskByID(ctx, p.ID)
+	if got.Status != store.TaskStatusSuccess || string(got.Result) != string(result) || got.FinishedAt == nil {
+		t.Errorf("finalized = (status=%v result=%s finished_at=%v), want success/result/non-nil",
+			got.Status, got.Result, got.FinishedAt)
+	}
+
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
+		ID:     uuid.New(),
+		Status: store.TaskStatusFailed,
+	}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateTaskFinalized(missing) = %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestUpdateTaskAgentTaskID(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	agentTaskID := uuid.New()
+	if err := s.UpdateTaskAgentTaskID(ctx, store.UpdateTaskAgentTaskIDParams{
+		ID:          p.ID,
+		AgentTaskID: &agentTaskID,
+	}); err != nil {
+		t.Fatalf("UpdateTaskAgentTaskID: %v", err)
+	}
+	got, _ := s.TaskByID(ctx, p.ID)
+	if got.AgentTaskID == nil || *got.AgentTaskID != agentTaskID {
+		t.Errorf("agent_task_id = %v, want %v", got.AgentTaskID, agentTaskID)
+	}
+
+	if err := s.UpdateTaskAgentTaskID(ctx, store.UpdateTaskAgentTaskIDParams{
+		ID:          uuid.New(),
+		AgentTaskID: &agentTaskID,
+	}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateTaskAgentTaskID(missing) = %v, want store.ErrNotFound", err)
+	}
+}

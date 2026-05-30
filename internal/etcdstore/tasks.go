@@ -114,6 +114,55 @@ func (s *Store) CancelPendingTask(ctx context.Context, id uuid.UUID, jobRef *int
 	return t, nil
 }
 
+// updateTask applies mutate to the stored task and writes it back. Returns
+// store.ErrNotFound when the task is absent. The read-modify-write is not
+// transactional; task rows are single-writer in practice (one worker owns a
+// task at a time), so a lost update cannot occur.
+func (s *Store) updateTask(ctx context.Context, id uuid.UUID, mutate func(*store.Task)) error {
+	t, err := s.TaskByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	mutate(&t)
+	return s.c.PutJSON(ctx, taskKey(id), t)
+}
+
+// UpdateTaskRunning transitions a task pending -> running: it stamps started_at
+// on the first transition (coalesced across retries) and increments the attempt
+// counter. Mirrors the pgx UpdateTaskRunning query. Worker entry point.
+func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
+	return s.updateTask(ctx, id, func(t *store.Task) {
+		t.Status = store.TaskStatusRunning
+		if t.StartedAt == nil {
+			now := time.Now().UTC()
+			t.StartedAt = &now
+		}
+		t.Attempts++
+	})
+}
+
+// UpdateTaskFinalized writes a task's terminal status (success / failed /
+// cancelled), its result / error payloads, and finished_at. Mirrors the pgx
+// UpdateTaskFinalized query. Worker exit point.
+func (s *Store) UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error {
+	return s.updateTask(ctx, arg.ID, func(t *store.Task) {
+		t.Status = arg.Status
+		t.Result = arg.Result
+		t.Error = arg.Error
+		now := time.Now().UTC()
+		t.FinishedAt = &now
+	})
+}
+
+// UpdateTaskAgentTaskID stamps the agent-side task id onto the task row,
+// backing the worker resumption seam (a CP restart resumes polling the existing
+// agent task instead of re-POSTing). Mirrors the pgx UpdateTaskAgentTaskID query.
+func (s *Store) UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error {
+	return s.updateTask(ctx, arg.ID, func(t *store.Task) {
+		t.AgentTaskID = arg.AgentTaskID
+	})
+}
+
 // ListTasksAny returns tasks matching the optional filters (unscoped), ordered
 // by (created_at, id) descending, after the cursor, capped at LimitCount.
 func (s *Store) ListTasksAny(ctx context.Context, arg store.ListTasksAnyParams) ([]store.Task, error) {
