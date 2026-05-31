@@ -129,16 +129,9 @@ func parseCreateRequest(r *http.Request) (createRequest, error) {
 // validation surfaces errors as 400 (not 500 on constraint violation
 // at the DB layer).
 func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *string, ttl int, maxUses *int32, err error) {
-	kind = store.JoinTokenKindNode
-	if req.Kind != nil {
-		switch trimmed := strings.TrimSpace(*req.Kind); trimmed {
-		case "", store.JoinTokenKindNode:
-			kind = store.JoinTokenKindNode
-		case store.JoinTokenKindCluster:
-			kind = store.JoinTokenKindCluster
-		default:
-			return "", nil, 0, nil, errInvalidKind
-		}
+	kind, err = normaliseKind(req.Kind)
+	if err != nil {
+		return "", nil, 0, nil, err
 	}
 
 	ttl = defaultTTLSeconds
@@ -155,6 +148,16 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 		}
 		v := *req.MaxUses
 		maxUses = &v
+	}
+
+	// A cluster token redeems for the CA private key, so it must never be
+	// unlimited-use: default an omitted max_uses to 1 (the operator can still set
+	// a finite N explicitly for a multi-replica grow). This closes the footgun
+	// where a cluster token with no cap yields the CA key to anyone, repeatedly,
+	// for the whole TTL.
+	if kind == store.JoinTokenKindCluster && maxUses == nil {
+		one := int32(1)
+		maxUses = &one
 	}
 
 	if req.IntendedNodeName != nil {
@@ -179,6 +182,22 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 	}
 
 	return kind, intendedNodeName, ttl, maxUses, nil
+}
+
+// normaliseKind resolves the optional kind field to a canonical kind, defaulting
+// to node (also the reading of an empty string) and rejecting anything else.
+func normaliseKind(raw *string) (string, error) {
+	if raw == nil {
+		return store.JoinTokenKindNode, nil
+	}
+	switch trimmed := strings.TrimSpace(*raw); trimmed {
+	case "", store.JoinTokenKindNode:
+		return store.JoinTokenKindNode, nil
+	case store.JoinTokenKindCluster:
+		return store.JoinTokenKindCluster, nil
+	default:
+		return "", errInvalidKind
+	}
 }
 
 // writeCreateError maps validation sentinels to 400 envelopes;

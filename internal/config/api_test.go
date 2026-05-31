@@ -346,6 +346,27 @@ func TestStoragePoolScanConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestBackupConfigValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     BackupConfig
+		wantErr bool
+	}{
+		{name: "disabled, no dir", cfg: BackupConfig{Enabled: false}, wantErr: false},
+		{name: "enabled with dir", cfg: BackupConfig{Enabled: true, Dir: "/var/backups", Retention: 7}, wantErr: false},
+		{name: "enabled, no dir", cfg: BackupConfig{Enabled: true}, wantErr: true},
+		{name: "negative retention", cfg: BackupConfig{Enabled: true, Dir: "/d", Retention: -1}, wantErr: true},
+		{name: "negative interval", cfg: BackupConfig{Enabled: true, Dir: "/d", Interval: -1}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if gotErr := tc.cfg.Validate() != nil; gotErr != tc.wantErr {
+				t.Errorf("Validate() err present = %v, want %v", gotErr, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
 	got := defaultAPIConfig().Etcd
 	want := EtcdConfig{

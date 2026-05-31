@@ -70,3 +70,33 @@ func TestNormaliseCreateRequestKind(t *testing.T) {
 }
 
 func int32ptr(v int32) *int32 { return &v }
+
+func TestNormaliseCreateRequestClusterMaxUses(t *testing.T) {
+	// A cluster token with no max_uses must default to single-use - it must never
+	// be unlimited, since redemption yields the CA private key.
+	_, _, _, maxUses, err := normaliseCreateRequest(createRequest{Kind: strptr("cluster")})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest: %v", err)
+	}
+	if maxUses == nil || *maxUses != 1 {
+		t.Errorf("cluster max_uses = %v, want 1 (single-use default)", maxUses)
+	}
+
+	// An explicit finite cap is preserved (multi-replica grow with one token).
+	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("cluster"), MaxUses: int32ptr(3)})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest explicit: %v", err)
+	}
+	if maxUses == nil || *maxUses != 3 {
+		t.Errorf("cluster explicit max_uses = %v, want 3", maxUses)
+	}
+
+	// A node token with no max_uses stays unlimited (nil) - unchanged behavior.
+	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("node")})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest node: %v", err)
+	}
+	if maxUses != nil {
+		t.Errorf("node max_uses = %v, want nil (unlimited within TTL)", maxUses)
+	}
+}

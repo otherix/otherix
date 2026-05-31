@@ -459,6 +459,22 @@ type BackupConfig struct {
 	Retention int           `koanf:"retention"`
 }
 
+// Validate fails fast on a backup config that would silently not back up:
+// enabled with no destination dir is the worst failure mode (operator believes
+// backups run; they do not). Also rejects negative interval / retention.
+func (b BackupConfig) Validate() error {
+	if b.Enabled && b.Dir == "" {
+		return errors.New("workers.backup.dir is required when workers.backup.enabled is true")
+	}
+	if b.Interval < 0 {
+		return errors.New("workers.backup.interval must be >= 0")
+	}
+	if b.Retention < 0 {
+		return errors.New("workers.backup.retention must be >= 0")
+	}
+	return nil
+}
+
 // StoragePoolScanConfig pins the periodic `storage_pool.scan_trigger`
 // worker (disk-aware scheduling Sub-iteration A). The trigger fires at
 // Interval, enumerates active pools whose owning node is scannable, and
@@ -645,6 +661,9 @@ func (c APIConfig) Validate() error {
 		return err
 	}
 	if err := c.Workers.StoragePoolScan.Validate(); err != nil {
+		return err
+	}
+	if err := c.Workers.Backup.Validate(); err != nil {
 		return err
 	}
 	if err := c.StoragePools.Validate(); err != nil {
