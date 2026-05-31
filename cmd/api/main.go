@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -230,10 +231,14 @@ func buildInitialCluster(members []api.ClusterMemberRef, selfName, selfPeerURL s
 		if peer == "" {
 			return
 		}
-		if _, ok := names[peer]; !ok {
-			order = append(order, peer)
+		// Key by the canonical peer URL so a non-canonical configured peer_url
+		// (e.g. a trailing slash) cannot key differently from etcd's echoed form
+		// and list self twice, which would render an invalid initial-cluster.
+		key := canonPeerURL(peer)
+		if _, ok := names[key]; !ok {
+			order = append(order, key)
 		}
-		names[peer] = name
+		names[key] = name
 	}
 	for _, m := range members {
 		add(m.PeerURL, m.Name)
@@ -244,6 +249,23 @@ func buildInitialCluster(members []api.ClusterMemberRef, selfName, selfPeerURL s
 		parts = append(parts, names[peer]+"="+peer)
 	}
 	return strings.Join(parts, ",")
+}
+
+// canonPeerURL returns the canonical string form of a peer URL so two spellings
+// of the same endpoint (e.g. with and without a trailing slash) compare equal.
+// A peer URL that does not parse is returned unchanged rather than dropped.
+// url.Parse normalizes scheme/host but preserves a trailing slash, so trim a
+// lone trailing slash on an otherwise-empty path - the form etcd echoes for a
+// bare peer endpoint - to keep "host:2380/" and "host:2380" from keying apart.
+func canonPeerURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return s
+	}
+	if u.Path == "/" && u.RawQuery == "" && u.Fragment == "" {
+		u.Path = ""
+	}
+	return u.String()
 }
 
 // resolveClusterJoinToken reads the cluster join token from the configured

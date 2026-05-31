@@ -145,6 +145,50 @@ func TestJoinRejectsMissingPeerURL(t *testing.T) {
 	}
 }
 
+func TestJoinRejectsInvalidPeerURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		peerURL string
+	}{
+		// A non-https peer URL is rejected before redemption: the CA-key-returning
+		// flow must not consume the token for a plaintext etcd peer endpoint.
+		{name: "non-https scheme", peerURL: "http://10.0.0.2:2380"},
+		// A peer URL that does not parse is rejected the same way.
+		{name: "malformed", peerURL: "://bad"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &fakeStore{
+				ca: store.CaCert{
+					CertPem:           []byte("CACERT"),
+					KeyPem:            []byte("CAKEY"),
+					FingerprintSha256: []byte{1, 2},
+				},
+			}
+			fm := &fakeMembership{}
+
+			h := New(fs, fm, noopLog(t))
+
+			body, _ := json.Marshal(map[string]string{
+				"token":    validToken(),
+				"peer_url": tc.peerURL,
+			})
+			r := httptest.NewRequest(http.MethodPost, "/v1/cluster/join", bytes.NewReader(body))
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			h.Join(w, r)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("Join() status = %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+			if fs.redeemed != 0 {
+				t.Errorf("redeemed = %d, want 0 (token must not be consumed for an invalid peer_url)", fs.redeemed)
+			}
+		})
+	}
+}
+
 func TestJoinRegisterLearnerFailure(t *testing.T) {
 	fs := &fakeStore{
 		ca: store.CaCert{

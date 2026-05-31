@@ -5,11 +5,13 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -106,6 +108,11 @@ func (m *MembershipClient) RemoveMember(ctx context.Context, id uint64) error {
 	deadline := time.Now().Add(reconfigSettleTimeout)
 	attempt := 0
 	for {
+		// Honor cancellation promptly: a cancelled ctx (e.g. CP shutdown) must
+		// not keep retrying or sleeping through the settle window.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("remove member %x cancelled: %v", id, err)
+		}
 		attempt++
 		rctx, rcancel := context.WithTimeout(ctx, 3*time.Second)
 		_, rmErr := cli.MemberRemove(rctx, id)
@@ -226,10 +233,15 @@ func membersFrom(ctx context.Context, cli *clientv3.Client) ([]Member, error) {
 // isPeerURLExistErr reports whether err is etcd's rejection of an add whose peer
 // URL is already a member - the idempotency signal for RegisterLearner. etcd may
 // return "Peer URLs already exists" or "member ID already exist" depending on
-// whether the URL or the derived member ID collides first.
+// whether the URL or the derived member ID collides first. It matches the typed
+// clientv3 sentinels first (robust against message rewording) and falls back to
+// the message substrings for callers that hand it a plain string error.
 func isPeerURLExistErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, rpctypes.ErrPeerURLExist) || errors.Is(err, rpctypes.ErrMemberExist) {
+		return true
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "Peer URLs already exists") ||

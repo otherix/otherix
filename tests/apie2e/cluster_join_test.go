@@ -105,3 +105,23 @@ func TestClusterJoinRejectsGarbageToken(t *testing.T) {
 		t.Fatalf("garbage token status = %d, want 400", resp.StatusCode)
 	}
 }
+
+// TestClusterJoinNotOnMainRouter locks the invariant that the CA-key-returning
+// join endpoint is mounted only on the agent TLS router, never on the main
+// plain-HTTP listener. The request goes to the main server (h.post, not
+// h.postAgent) with an admin bearer so authn passes and routing resolves to
+// the unmatched-route NotFound: the join handler is anonymous, so a 404 here
+// (rather than the 400/201 the handler itself would return) proves it is not
+// mounted on this listener and the cluster CA key never reaches plain HTTP.
+func TestClusterJoinNotOnMainRouter(t *testing.T) {
+	h := newE2E(t)
+	adminTok, _ := loginAs(t, h, auth.RoleAdmin)
+
+	resp := h.post(t, "/v1/cluster/join", map[string]string{
+		"token":    "otx_join_" + strings.Repeat("a", 43),
+		"peer_url": "https://127.0.0.1:12380",
+	}, adminTok)
+	if resp.StatusCode != 404 {
+		t.Fatalf("/v1/cluster/join on main router status = %d, want 404", resp.StatusCode)
+	}
+}

@@ -4,9 +4,11 @@
 package etcd
 
 import (
+	"errors"
 	"strings"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -43,10 +45,17 @@ func dialMember(clientURL string) (*clientv3.Client, error) {
 
 // isTransientReconfigErr reports whether err is one of etcd's settling-related
 // reconfiguration rejections that clears with time (as opposed to a permanent
-// failure like an unknown member).
+// failure like an unknown member). It matches the typed clientv3 sentinels first
+// (robust against message rewording) and falls back to the message substrings
+// for callers that hand it a plain string error.
 func isTransientReconfigErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, rpctypes.ErrUnhealthy) ||
+		errors.Is(err, rpctypes.ErrTooManyLearners) ||
+		errors.Is(err, rpctypes.ErrMemberNotEnoughStarted) {
+		return true
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "unhealthy cluster") ||

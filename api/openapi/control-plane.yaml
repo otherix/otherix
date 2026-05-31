@@ -3679,11 +3679,13 @@ paths:
           required: true
           schema: { type: string }
           description: etcd member id in hex (from the list endpoint).
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "204": { description: Member removed. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
 components:
@@ -4991,7 +4993,7 @@ components:
 
     ClusterJoinResponse:
       type: object
-      required: [ca_cert_pem, ca_key_pem]
+      required: [ca_cert_pem, ca_key_pem, members]
       properties:
         ca_cert_pem:
           type: string

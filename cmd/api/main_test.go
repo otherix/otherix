@@ -49,6 +49,19 @@ func TestBuildInitialCluster(t *testing.T) {
 			selfPeerURL: "https://10.0.0.2:2380",
 			want:        "n0=https://10.0.0.1:2380,n1=https://10.0.0.2:2380",
 		},
+		{
+			// Self's configured peer_url carries a trailing slash while etcd echoes
+			// the bare form. Canonicalizing both collapses them to one key, so self
+			// appears exactly once under the configured name (no duplicate).
+			name: "trailing-slash self dedups against echoed bare form",
+			members: []api.ClusterMemberRef{
+				{Name: "n0", PeerURL: "https://10.0.0.1:2380"},
+				{Name: "", PeerURL: "https://10.0.0.2:2380"},
+			},
+			selfName:    "n2",
+			selfPeerURL: "https://10.0.0.2:2380/",
+			want:        "n0=https://10.0.0.1:2380,n2=https://10.0.0.2:2380",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
