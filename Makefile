@@ -99,6 +99,14 @@ test-migrations: ## Run integration tests (requires Docker)
 test-integration: ## Run CP-↔-agent integration tests (requires Docker)
 	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race ./tests/integration/...
 
+# test-etcd runs the etcd-backed suites: the store layer (internal/etcdstore)
+# and the api-server e2e (tests/apie2e). Both embed etcd in-process, so unlike
+# test-migrations / test-integration they need NO Docker.
+test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
+	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
+	  ./internal/etcdstore/... \
+	  ./tests/apie2e/...
+
 coverage: test ## Generate HTML coverage report
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "open coverage.html"
