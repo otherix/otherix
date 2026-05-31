@@ -24,10 +24,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -39,33 +41,53 @@ type Store interface {
 	RedeemClusterJoinToken(ctx context.Context, p store.RedeemClusterJoinTokenParams) (store.RedeemClusterJoinResult, error)
 }
 
+// Membership registers the joining replica as a learner against the local
+// member and returns the resulting membership for the joiner's initial-cluster.
+type Membership interface {
+	RegisterLearner(ctx context.Context, peerURL string) ([]etcd.Member, error)
+}
+
 // Handler bundles dependencies for the /v1/cluster/join route.
 type Handler struct {
-	store Store
-	log   *slog.Logger
+	store      Store
+	membership Membership
+	log        *slog.Logger
 }
 
 // New constructs the Handler.
-func New(s Store, log *slog.Logger) *Handler {
-	return &Handler{store: s, log: log}
+func New(s Store, m Membership, log *slog.Logger) *Handler {
+	return &Handler{store: s, membership: m, log: log}
 }
 
 // joinRequest is the body of POST /v1/cluster/join. The plaintext cluster
-// token is the bearer credential.
+// token is the bearer credential. peer_url is the etcd peer address the
+// joining replica will advertise; the handler registers it as a learner.
 type joinRequest struct {
-	Token string `json:"token"`
+	Token   string `json:"token"`
+	PeerURL string `json:"peer_url"`
 }
 
-// joinResponse returns the cluster CA cert + private key. The key is the
-// sensitive payload - it lets the joining replica sign its own peer cert and
-// (as a CP node) participate fully in the cluster PKI.
+// memberRef is one entry of the membership returned to the joiner so it can
+// build its etcd initial-cluster without operator-configured topology.
+type memberRef struct {
+	Name    string `json:"name"`
+	PeerURL string `json:"peer_url"`
+}
+
+// joinResponse returns the cluster CA cert + private key plus the current
+// membership. The key is the sensitive payload - it lets the joining replica
+// sign its own peer cert and (as a CP node) participate fully in the cluster
+// PKI. Members lets the joiner compute its initial-cluster string.
 type joinResponse struct {
-	CACertPEM string `json:"ca_cert_pem"`
-	CAKeyPEM  string `json:"ca_key_pem"`
+	CACertPEM string      `json:"ca_cert_pem"`
+	CAKeyPEM  string      `json:"ca_key_pem"`
+	Members   []memberRef `json:"members"`
 }
 
-// Join implements POST /v1/cluster/join (anonymous). Validates the token,
-// redeems it (kind=cluster only), and returns the cluster CA cert + key.
+// Join implements POST /v1/cluster/join (anonymous). Validates the token and
+// peer_url, redeems the token (kind=cluster only), registers the joiner as a
+// learner against the local member, and returns the cluster CA cert + key plus
+// the current membership.
 func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 	var req joinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -77,6 +99,13 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 	if token == "" || !auth.IsJoinTokenFormat(token) {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "token is required and must be a join token", nil)
+		return
+	}
+
+	peerURL := strings.TrimSpace(req.PeerURL)
+	if u, perr := url.Parse(peerURL); peerURL == "" || perr != nil || u.Scheme != "https" || u.Host == "" {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "peer_url must be a valid https URL", nil)
 		return
 	}
 
@@ -97,13 +126,34 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Token redeemed: register the joiner as a learner against the local member.
+	// Idempotent on an already-registered peer URL, so a retried join is safe.
+	members, regErr := h.membership.RegisterLearner(r.Context(), peerURL)
+	if regErr != nil {
+		h.log.ErrorContext(r.Context(), "register learner on cluster join",
+			slog.String("peer_url", peerURL), slog.String("error", regErr.Error()))
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "could not register replica as a learner", nil)
+		return
+	}
+	refs := make([]memberRef, 0, len(members))
+	for _, m := range members {
+		pu := ""
+		if len(m.PeerURLs) > 0 {
+			pu = m.PeerURLs[0]
+		}
+		refs = append(refs, memberRef{Name: m.Name, PeerURL: pu})
+	}
+
 	h.log.InfoContext(r.Context(), "cluster join redeemed",
 		slog.String("token_hash_prefix", tokenHashPrefix(token)),
+		slog.String("peer_url", peerURL),
 		slog.String("ca_fingerprint_sha256", hex.EncodeToString(caRow.FingerprintSha256)))
 
 	response.WriteJSON(w, r, http.StatusCreated, joinResponse{
 		CACertPEM: string(caRow.CertPem),
 		CAKeyPEM:  string(caRow.KeyPem),
+		Members:   refs,
 	})
 }
 
