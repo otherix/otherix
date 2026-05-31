@@ -32,3 +32,14 @@ type StubVMDeleteExecutor struct {
 func (s *StubVMDeleteExecutor) Execute(_ context.Context, _ DeleteArgs) (DeleteResult, error) {
 	return s.Result, s.Err
 }
+
+// StubVMLifecycleExecutor is the test-side LifecycleExecutor.
+type StubVMLifecycleExecutor struct {
+	Result LifecycleResult
+	Err    error
+}
+
+// Execute implements LifecycleExecutor.
+func (s *StubVMLifecycleExecutor) Execute(_ context.Context, _ string, _ LifecycleArgs) (LifecycleResult, error) {
+	return s.Result, s.Err
+}
