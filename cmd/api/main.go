@@ -82,7 +82,7 @@ func run() error {
 	defer cancel()
 
 	if *migrateAction != "" {
-		// ADR 0030: the etcd backend has no SQL migrations — the schema is
+		// ADR 0030: the etcd backend has no SQL migrations - the schema is
 		// enforced application-side in internal/etcdstore. The flag is kept as
 		// a no-op so existing deploy scripts (init containers, Helm hooks)
 		// that still invoke --migrate-action=up do not fail.
@@ -132,7 +132,7 @@ func run() error {
 	return runServe(ctx, cfg, st, authSvc, log)
 }
 
-// runServe handles the post-bootstrap serving lifecycle — extracted from run()
+// runServe handles the post-bootstrap serving lifecycle - extracted from run()
 // to keep cyclomatic complexity under gocyclo's ceiling. Threading: bootstrap
 // hooks → CP cert load → agent client → worker runtime → HTTP server. Each
 // step's failure path returns after wrapping the error.
@@ -181,7 +181,7 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 // runBootstrapHooks runs the post-start / pre-serve bootstrap hooks in the
 // canonical order: BootstrapAdmin first (seeds the first admin user), then
 // BootstrapClusterCA (provisions the cluster CA so the /v1/ca endpoint and the
-// Step 2 CSR signer have an active row). Both hooks are idempotent — repeat
+// Step 2 CSR signer have an active row). Both hooks are idempotent - repeat
 // boots observe existing rows and no-op.
 func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
@@ -195,7 +195,7 @@ func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, log *slog.Logge
 
 // startWorkers launches the etcd job dispatcher and the periodic scheduler when
 // cfg.Workers.Enabled. Both run for the lifetime of ctx; the returned closure
-// blocks until they have drained in-flight work after ctx is cancelled — the
+// blocks until they have drained in-flight work after ctx is cancelled - the
 // caller invokes it once the HTTP servers have stopped. Disabled-mode runs
 // neither (async tasks stay pending, periodic maintenance does not run) and the
 // closure is a no-op.
@@ -208,7 +208,7 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 	// import handlers all talk to agents over mTLS. Booting Enabled=true without
 	// the client would wedge every task in pending.
 	if agentClient == nil {
-		return nil, errors.New("workers.enabled requires agent_client.enabled — provision mTLS material")
+		return nil, errors.New("workers.enabled requires agent_client.enabled - provision mTLS material")
 	}
 
 	dispatcher := buildDispatcher(st, agentClient, cfg, log)
@@ -317,12 +317,12 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 
 // buildAgentClient constructs the *agentclient.Client used by both the scan /
 // import / vm executors and the storage_image.delete handler. Returns (nil, nil)
-// when AgentClient.Enabled is false — the api binary still boots so HTTP-only
+// when AgentClient.Enabled is false - the api binary still boots so HTTP-only
 // smoke testing stays available; the consumer paths each emit their own
 // degradation envelope.
 //
 // mTLS material (replica's leaf cert + cluster CA trust anchor) flows in via
-// material — produced upstream per LoadOrGenerateCPCert. Construction errors at
+// material - produced upstream per LoadOrGenerateCPCert. Construction errors at
 // this stage (config validation, empty material when AgentClient.Enabled=true)
 // are boot-time fatal: the api binary must not start with a half-configured
 // agent client.
@@ -332,7 +332,7 @@ func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog
 		return nil, nil
 	}
 	if material.Skipped() || len(material.Cert.Certificate) == 0 || material.ClusterCA == nil {
-		return nil, errors.New("agent_client.enabled=true requires valid CP cert material (LoadOrGenerateCPCert produced a skipped/empty result — check agent_server / agent_client config consistency)")
+		return nil, errors.New("agent_client.enabled=true requires valid CP cert material (LoadOrGenerateCPCert produced a skipped/empty result - check agent_server / agent_client config consistency)")
 	}
 	client, err := agentclient.New(cfg.AgentClient, material.Cert, material.ClusterCA)
 	if err != nil {

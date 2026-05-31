@@ -191,6 +191,47 @@ func TestUserDeleteAndEmailReuse(t *testing.T) {
 	}
 }
 
+func TestUserDeleteRevokesAPITokens(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := userParams(uniqueEmail("tokowner"))
+	if _, err := s.CreateUser(ctx, p); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	t1, err := s.CreateAPIToken(ctx, store.CreateApiTokenParams{
+		ID: uuid.New(), UserID: p.ID, Name: "tok-1", TokenHash: []byte("del-hash-1"), Prefix: "otx_aaaa",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIToken 1: %v", err)
+	}
+	t2, err := s.CreateAPIToken(ctx, store.CreateApiTokenParams{
+		ID: uuid.New(), UserID: p.ID, Name: "tok-2", TokenHash: []byte("del-hash-2"), Prefix: "otx_bbbb",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIToken 2: %v", err)
+	}
+
+	if err := s.DeleteUser(ctx, p.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	// Both tokens must be revoked, matching the SQL DeleteUser's
+	// RevokeApiTokensForUser cascade.
+	for _, id := range []uuid.UUID{t1.ID, t2.ID} {
+		got, err := s.APITokenByID(ctx, id)
+		if err != nil {
+			t.Fatalf("APITokenByID(%v) after user delete: %v", id, err)
+		}
+		if got.RevokedAt == nil {
+			t.Errorf("APIToken %v revoked_at = nil after user delete, want stamped", id)
+		}
+	}
+	// The revoked token no longer authenticates by hash.
+	if _, err := s.APITokenByHash(ctx, []byte("del-hash-1")); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("APITokenByHash after user delete = %v, want store.ErrNotFound", err)
+	}
+}
+
 func TestCountUserResources(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()

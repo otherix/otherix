@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -214,13 +215,16 @@ func (s *Store) CountUserResources(ctx context.Context, id uuid.UUID) (store.Cou
 }
 
 // DeleteUser soft-deletes the user (sets deleted_at, drops the email guard so
-// the address is reusable). The caller (handler) performs the owned-resource
-// refusal via CountUserResources first.
+// the address is reusable) and revokes every api token the user owns, all in one
+// transaction - matching the SQL DeleteUser's RevokeApiTokensForUser +
+// SoftDeleteUser InTx. The caller (handler) performs the owned-resource refusal
+// via CountUserResources first.
 //
-// TODO(phase-3 auth slice): revoke every api token the user owns, matching the
-// SQL DeleteUser's RevokeApiTokensForUser step. There are no api_tokens in the
-// etcd store until the auth-tokens slice lands, so this is currently a no-op;
-// that slice extends DeleteUser to range the api_token-by-user index and revoke.
+// The per-token revokes are stamped from a snapshot read of the by-user index;
+// a token created concurrently after that read is not revoked here, but it
+// cannot authenticate either - the user is soft-deleted and
+// auth.Service.VerifyAPIToken rejects on the UserByID -> ErrNotFound lookup.
+// This matches the pgx cascade, which has the same current-set semantics.
 func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	existing, err := s.UserByID(ctx, id)
 	if err != nil {
@@ -232,15 +236,56 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.c.Raw().Txn(ctx).
-		Then(
-			clientv3.OpPut(userKey(id), string(val)),
-			clientv3.OpDelete(userEmailGuard(existing.Email)),
-		).
-		Commit(); err != nil {
+
+	ops := []clientv3.Op{
+		clientv3.OpPut(userKey(id), string(val)),
+		clientv3.OpDelete(userEmailGuard(existing.Email)),
+	}
+	revokeOps, err := s.revokeUserAPITokenOps(ctx, id, now)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, revokeOps...)
+
+	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return fmt.Errorf("delete user txn: %v", err)
 	}
 	return nil
+}
+
+// revokeUserAPITokenOps returns the put ops that stamp revoked_at on every
+// not-yet-revoked api token owned by the user, read from the by-user index.
+// Returned for inclusion in the DeleteUser txn so the revocation is atomic with
+// the soft-delete. Already-revoked tokens are skipped (idempotent).
+func (s *Store) revokeUserAPITokenOps(ctx context.Context, userID uuid.UUID, revokedAt time.Time) ([]clientv3.Op, error) {
+	items, err := s.c.Range(ctx, apiTokenUserIndexPrefix(userID))
+	if err != nil {
+		return nil, err
+	}
+	ops := make([]clientv3.Op, 0, len(items))
+	for _, kv := range items {
+		tokenID, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return nil, fmt.Errorf("corrupt api token user index %q: %v", kv.Key, perr)
+		}
+		tok, err := s.APITokenByID(ctx, tokenID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if tok.RevokedAt != nil {
+			continue
+		}
+		tok.RevokedAt = &revokedAt
+		val, err := etcd.Marshal(tok)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, clientv3.OpPut(apiTokenKey(tokenID), string(val)))
+	}
+	return ops, nil
 }
 
 // countPrefix returns the number of keys under prefix.
