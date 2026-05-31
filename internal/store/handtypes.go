@@ -14,9 +14,9 @@ import (
 )
 
 // This file holds the hand-written domain types and narrow transaction
-// interfaces the store backends share (as opposed to the per-query Params/Row
-// types in the *_types.go files). They are backend-agnostic: a store
-// implementation realises the interfaces and consumes/produces the structs.
+// interfaces the store exposes (as opposed to the per-query Params/Row
+// types in the *_types.go files). The store implementation realises the
+// interfaces and consumes/produces the structs.
 
 // HeartbeatTx is the narrow transaction surface the heartbeat projection drives.
 // A store backend runs the heartbeat reconcile against an implementation of this

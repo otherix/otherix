@@ -18,7 +18,7 @@ import (
 )
 
 // ClusterCABootstrapStore is the storage surface the cluster-CA bootstrap
-// depends on. Both *store.Store (pgx) and *etcdstore.Store satisfy it.
+// depends on. *etcdstore.Store satisfies it.
 type ClusterCABootstrapStore interface {
 	ActiveCACert(ctx context.Context) (store.CaCert, error)
 	CreateCACert(ctx context.Context, arg store.CreateCACertParams) (store.CaCert, error)

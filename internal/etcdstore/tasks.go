@@ -129,7 +129,7 @@ func (s *Store) updateTask(ctx context.Context, id uuid.UUID, mutate func(*store
 
 // UpdateTaskRunning transitions a task pending -> running: it stamps started_at
 // on the first transition (coalesced across retries) and increments the attempt
-// counter. Mirrors the pgx UpdateTaskRunning query. Worker entry point.
+// counter. Worker entry point.
 func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
 	return s.updateTask(ctx, id, func(t *store.Task) {
 		t.Status = store.TaskStatusRunning
@@ -142,8 +142,7 @@ func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
 }
 
 // UpdateTaskFinalized writes a task's terminal status (success / failed /
-// cancelled), its result / error payloads, and finished_at. Mirrors the pgx
-// UpdateTaskFinalized query. Worker exit point.
+// cancelled), its result / error payloads, and finished_at. Worker exit point.
 func (s *Store) UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error {
 	return s.updateTask(ctx, arg.ID, func(t *store.Task) {
 		t.Status = arg.Status
@@ -156,7 +155,7 @@ func (s *Store) UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFin
 
 // UpdateTaskAgentTaskID stamps the agent-side task id onto the task row,
 // backing the worker resumption seam (a CP restart resumes polling the existing
-// agent task instead of re-POSTing). Mirrors the pgx UpdateTaskAgentTaskID query.
+// agent task instead of re-POSTing).
 func (s *Store) UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error {
 	return s.updateTask(ctx, arg.ID, func(t *store.Task) {
 		t.AgentTaskID = arg.AgentTaskID

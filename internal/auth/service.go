@@ -16,10 +16,11 @@ import (
 )
 
 // Store is the storage surface auth.Service depends on. Depending on the
-// interface rather than the concrete *store.Store lets either backend
-// (pgx or etcd) back the auth flow. Both satisfy it; the refresh-token
-// rotation that the SQL backend runs inside InTx is exposed here as the
-// single named atomic RotateRefreshToken so the service stays tx-agnostic.
+// interface rather than the concrete *etcdstore.Store narrows the service's
+// storage dependency to just the methods it uses and lets tests substitute a
+// fake. *etcdstore.Store satisfies it; the refresh-token rotation is exposed
+// here as the single named atomic RotateRefreshToken so the service stays
+// transaction-agnostic.
 type Store interface {
 	UserByEmail(ctx context.Context, email string) (store.User, error)
 	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)

@@ -549,8 +549,8 @@ func (s StoragePoolsConfig) Validate() error {
 	return nil
 }
 
-// Validate checks the server listen address, database DSN, auth
-// config, and console access mode.
+// Validate checks the server listen address, agent server/client and
+// CP cert config, auth config, and console access mode.
 func (c APIConfig) Validate() error {
 	if err := c.Server.Validate(); err != nil {
 		return err
@@ -564,10 +564,6 @@ func (c APIConfig) Validate() error {
 	if err := c.CPCert.Validate(); err != nil {
 		return err
 	}
-	// Database is legacy on the etcd backend; the embedded
-	// etcd member is the only stateful service. The dsn is no longer
-	// required, so Database is not validated here. The block remains in
-	// the struct until the pgx cutover (slice 8) removes it.
 	if err := c.Auth.Validate(); err != nil {
 		return err
 	}

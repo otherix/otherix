@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// This file holds the backend-agnostic queue contract for the storage_pool.scan
+// This file holds the queue contract for the storage_pool.scan
 // task: the job-arg payload, the executor seam + its argument/result shapes, the
 // terminal error-code catalogue, and the result/error marshallers. The worker
 // implementation that consumes this contract lives in run.go.

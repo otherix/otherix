@@ -51,10 +51,9 @@ import (
 // Store is the storage surface the firmwares handlers depend on: the
 // firmware domain methods plus the identifier-resolution contract
 // (resolver.Querier) that ListByNode uses to resolve the node path
-// parameter. *store.Store satisfies it; depending on the interface
-// rather than the concrete store is the Phase 2 seam that lets a
-// second backend (Phase 3) be substituted under the same handler
-// tests.
+// parameter. *etcdstore.Store satisfies it; depending on the interface
+// rather than the concrete store narrows the handler's storage dependency
+// to the methods it uses and lets tests substitute a fake.
 type Store interface {
 	resolver.Querier
 

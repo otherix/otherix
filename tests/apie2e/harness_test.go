@@ -10,7 +10,7 @@
 // no Postgres - the embedded member runs in-process. It is the etcd successor
 // to the Postgres-testcontainer e2e harness that lived in internal/api.
 //
-// The suite covers the backend-agnostic HTTP surface that needs no dependent-
+// The suite covers the HTTP surface that needs no dependent-
 // row seeding: auth (login/refresh/logout rotation), user CRUD + RBAC, the
 // infrastructure-resource CRUD (networks, firmwares, nodes, templates),
 // idempotency replay, and the health probes. Cross-resource delete-blocking

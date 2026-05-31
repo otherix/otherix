@@ -20,8 +20,8 @@ import (
 
 // Periodic-worker reads and sweeps that operate over whole collections: task
 // retention, node-health reconciliation, and the scan-trigger's pool list. Each
-// is a bounded primary-prefix scan with in-app predicates - the etcd analogue of
-// the pgx maintenance queries the periodic workers drive.
+// is a bounded primary-prefix scan with in-app predicates that the periodic
+// workers drive.
 
 // maxTxnOps caps how many delete operations ride in a single transaction; etcd's
 // default --max-txn-ops is 128, so retention sweeps commit in chunks below it.
@@ -30,7 +30,7 @@ const maxTxnOps = 120
 // DeleteExpiredTasks removes finalized tasks past their per-state retention
 // window (success past CompletedCutoff; failed / cancelled past FailedCutoff),
 // dropping each task's created-by index alongside the row. Returns the number of
-// tasks deleted. Mirrors the pgx DeleteExpiredTasks query.
+// tasks deleted.
 func (s *Store) DeleteExpiredTasks(ctx context.Context, arg store.DeleteExpiredTasksParams) (int64, error) {
 	items, err := s.c.Range(ctx, taskPrefix())
 	if err != nil {
@@ -90,7 +90,7 @@ func (s *Store) commitInChunks(ctx context.Context, ops []clientv3.Op) error {
 
 // PromoteHealthyNodes flips nodes in 'pending' or 'unreachable' with a heartbeat
 // at or after freshAfter to 'ready', returning the affected rows. 'cordoned' and
-// 'draining' are operator-pinned and untouched. Mirrors the pgx query.
+// 'draining' are operator-pinned and untouched.
 func (s *Store) PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) ([]store.PromoteHealthyNodesRow, error) {
 	nodes, err := s.liveNodes(ctx)
 	if err != nil {
@@ -117,8 +117,7 @@ func (s *Store) PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) (
 
 // MarkNodesUnreachable demotes nodes in 'ready' or 'pending' whose heartbeat is
 // missing or older than staleBefore to 'unreachable', returning the affected
-// rows. 'cordoned' and 'draining' are operator-pinned and untouched. Mirrors the
-// pgx query.
+// rows. 'cordoned' and 'draining' are operator-pinned and untouched.
 func (s *Store) MarkNodesUnreachable(ctx context.Context, staleBefore time.Time) ([]store.MarkNodesUnreachableRow, error) {
 	nodes, err := s.liveNodes(ctx)
 	if err != nil {
@@ -165,7 +164,7 @@ func (s *Store) liveNodes(ctx context.Context) ([]store.Node, error) {
 
 // ListPoolsNeedingScan returns active pools on a scannable node ('pending',
 // 'ready', or 'cordoned') that have no in-flight scan task, ordered by pool id.
-// Drives the periodic scan trigger. Mirrors the pgx query.
+// Drives the periodic scan trigger.
 func (s *Store) ListPoolsNeedingScan(ctx context.Context) ([]store.ListPoolsNeedingScanRow, error) {
 	inflight, err := s.poolsWithInflightScan(ctx)
 	if err != nil {

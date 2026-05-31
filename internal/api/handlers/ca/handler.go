@@ -28,10 +28,9 @@ import (
 )
 
 // Store is the storage surface the /v1/ca handler depends on: a single
-// active-CA lookup. *store.Store satisfies it; depending on the
-// interface rather than the concrete store is the Phase 2 seam that
-// lets a second backend (Phase 3) be substituted under the same
-// handler tests.
+// active-CA lookup. *etcdstore.Store satisfies it; depending on the
+// interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
 type Store interface {
 	ActiveCACert(ctx context.Context) (store.CaCert, error)
 }

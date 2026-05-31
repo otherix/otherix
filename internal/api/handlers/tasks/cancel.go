@@ -42,15 +42,14 @@ var errCancelAlreadyFinalized = errors.New("task already finalized")
 // Cancel implements POST /v1/tasks/{id}/cancel. Required permission:
 // `task:cancel`.
 //
-// Implements three-branch cancellation atomically inside one DB
+// Implements three-branch cancellation atomically inside one etcd
 // transaction:
 //
-//   - pending → riverClient.JobCancelTx + CancelTaskIfPending → 200
-//     with the cancelled Task body. If CancelTaskIfPending returns
-//     pgx.ErrNoRows, the worker won the race and committed status=
-//     running before we did; both writes (the river-side cancel and
-//     any phantom task update) roll back, and we return 409
-//     task_not_cancellable.
+//   - pending → store.CancelPendingTask cancels the backing job and flips
+//     the row to cancelled in one transaction → 200 with the cancelled Task
+//     body. If CancelPendingTask returns store.ErrTaskNotCancellable, the
+//     worker won the race and committed status=running before we did; the
+//     transaction does not commit, and we return 409 task_not_cancellable.
 //   - running → 409 task_not_cancellable.
 //   - success / failed / cancelled → 409 task_already_finalized.
 //

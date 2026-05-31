@@ -18,8 +18,8 @@ import (
 )
 
 // VM-domain worker projections. These are the named atomic mutators the
-// Run-form workers call in place of the pgx InTx blocks. Where a write is
-// non-idempotent (the template derived_vm_count bump) the projection commits
+// Run-form workers call, each committing in a single etcd transaction. Where a
+// write is non-idempotent (the template derived_vm_count bump) the projection commits
 // under a compare-on-mod-revision retry loop; the idempotent runtime and task
 // writes ride in the same transaction so a success is all-or-nothing.
 
@@ -31,8 +31,7 @@ const projectTemplateCASRetries = 64
 // source template's derived_vm_count, and finalizes the create task - all in one
 // transaction. The derived_vm_count bump is non-idempotent, so the whole
 // projection commits under a compare on the template's mod-revision (bounded
-// retry); the runtime and task writes are idempotent blind puts. Mirrors the
-// pgx VMCreateWorker.projectCreateSuccess InTx.
+// retry); the runtime and task writes are idempotent blind puts.
 func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, templateID uuid.UUID, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 	runtimeVal, err := etcd.Marshal(vmRuntimeFromUpsert(rt, now))
@@ -78,8 +77,7 @@ func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRun
 // observed runtime phase, and finalizes the lifecycle task - all in one
 // transaction. Every write here is idempotent, so no compare is needed; the
 // transaction only groups them so a poll never sees a half-applied terminal.
-// Mirrors the pgx vmLifecycleAsyncWorker.projectSuccess InTx. An empty
-// desiredPhase skips the vms write (reboot leaves user intent unchanged).
+// An empty desiredPhase skips the vms write (reboot leaves user intent unchanged).
 func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 	var ops []clientv3.Op
@@ -134,8 +132,7 @@ func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, d
 
 // ProjectVMDeleteSuccess soft-deletes a VM and its disks, drops the observed
 // runtime row, decrements the source template's derived_vm_count, and finalizes
-// the delete task - all in one transaction. Mirrors the pgx
-// VMDeleteWorker.projectDeleteSuccess InTx. The derived_vm_count decrement is
+// the delete task - all in one transaction. The derived_vm_count decrement is
 // non-idempotent, so when the VM carries a template the projection commits under
 // a compare on the template mod-revision (bounded retry); a template-less VM
 // commits without a compare. Soft-delete drops the name guard (name reusable)

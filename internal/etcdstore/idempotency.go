@@ -19,8 +19,8 @@ import (
 // key is the primary key: /otherix/idempotency_keys/<key> -> JSON row. The
 // middleware's in_flight -> completed lifecycle maps to compare-guarded writes
 // (begin inserts only if absent; reclaim overwrites only an expired row).
-// not-found / conflict / no-op cases return store.ErrNotFound, which the
-// middleware tolerates alongside pgx.ErrNoRows.
+// not-found / conflict / no-op cases return the store's not-found sentinel
+// store.ErrNotFound, which the middleware tolerates.
 
 func idempotencyKeyKey(key string) string { return etcd.Key("idempotency_keys") + "/" + key }
 

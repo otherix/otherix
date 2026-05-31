@@ -30,8 +30,8 @@ import (
 )
 
 // Store is the etcd-backed implementation of the handler Store interfaces. It
-// holds a KV client over the embedded member; one Store instance accumulates
-// every resource's methods as the Phase 3 slices land.
+// holds a KV client over the embedded member; one Store instance carries
+// every resource's methods.
 type Store struct {
 	c *etcd.Client
 }

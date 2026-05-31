@@ -32,10 +32,9 @@ import (
 
 // Store is the storage surface the api-tokens handlers depend on: the
 // api-token domain methods plus the target-user existence check used by
-// the admin-on-behalf surface. *store.Store satisfies it; depending on
-// the interface rather than the concrete store is the Phase 2 seam that
-// lets a second backend (Phase 3) be substituted under the same handler
-// tests.
+// the admin-on-behalf surface. *etcdstore.Store satisfies it; depending on
+// the interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
 type Store interface {
 	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	APITokenByID(ctx context.Context, id uuid.UUID) (store.ApiToken, error)

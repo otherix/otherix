@@ -25,7 +25,6 @@ import (
 // mod-revision (so the if-null checksum write never clobbers a concurrent
 // derived_vm_count change) plus, on the insert path, a create-revision compare
 // on the guard (so a concurrent insert loses and retries onto the upsert path).
-// Mirrors the pgx StorageImageImportWorker.projectAndFinalize.
 func (s *Store) ProjectStorageImageImport(ctx context.Context, img store.CreateStorageImageParams, tmplChecksum store.UpdateTemplateImageChecksumIfNullParams, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 	taskVal, err := s.finalizedTaskValue(ctx, fin)
@@ -120,7 +119,7 @@ func (s *Store) ProjectStorageImageImport(ctx context.Context, img store.CreateS
 // reported_at) and the recomputed disk-pressure state onto the pool row, then
 // finalizes the scan task - all in one transaction. A soft-deleted pool skips
 // the pool write (matching the SQL `where deleted_at is null` no-op) but the
-// task is still finalized. Mirrors the pgx StoragePoolScanWorker.projectAndFinalize.
+// task is still finalized.
 func (s *Store) ProjectStoragePoolScan(ctx context.Context, usage store.UpsertStoragePoolUsageParams, pressure store.UpdatePoolDiskPressureParams, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 	taskVal, err := s.finalizedTaskValue(ctx, fin)

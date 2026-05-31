@@ -30,9 +30,9 @@ import (
 
 // Store is the storage surface the heartbeat receiver depends on: the
 // out-of-transaction node-name lookup plus the projection transaction
-// seam. *store.Store satisfies it; depending on the interface rather
-// than the concrete store is the Phase 2 seam that lets a second backend
-// (Phase 3) be substituted under the same handler tests. The
+// seam. *etcdstore.Store satisfies it; depending on the interface rather
+// than the concrete store narrows the handler's storage dependency to the
+// methods it uses and lets tests substitute a fake. The
 // transactional projection drives store.HeartbeatTx inside InHeartbeatTx.
 type Store interface {
 	NodeByName(ctx context.Context, name string) (store.Node, error)

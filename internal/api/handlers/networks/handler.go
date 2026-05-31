@@ -20,9 +20,9 @@ import (
 )
 
 // Store is the storage surface the networks handlers depend on.
-// Depending on the interface rather than the concrete *store.Store is
-// the Phase 2 seam that lets a second backend (Phase 3) be substituted
-// under the same handler tests. *store.Store satisfies it.
+// Depending on the interface rather than the concrete *etcdstore.Store
+// narrows the handler's storage dependency to the methods it uses and lets
+// tests substitute a fake. *etcdstore.Store satisfies it.
 type Store interface {
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	CreateNetwork(ctx context.Context, arg store.CreateNetworkParams) (store.Network, error)

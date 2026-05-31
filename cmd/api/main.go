@@ -218,7 +218,7 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 
 // buildDispatcher registers the six async task-kind handlers on a dispatcher
 // polling the etcd job queue. Each handler reuses the production agent executor
-// and the backend-agnostic Run-form worker in its owning handler package.
+// and the Run-form worker in its owning handler package.
 func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *config.APIConfig, log *slog.Logger) *worker.Dispatcher {
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 

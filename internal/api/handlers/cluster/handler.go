@@ -19,10 +19,10 @@ import (
 
 // Store is the storage surface the cluster handlers depend on: the
 // cluster-settings singleton accessors plus the pool-name lookup used
-// to validate a default-pool reference. *store.Store satisfies it;
-// depending on the interface rather than the concrete store is the
-// Phase 2 seam that lets a second backend (Phase 3) be substituted
-// under the same handler tests.
+// to validate a default-pool reference. *etcdstore.Store satisfies it;
+// depending on the interface rather than the concrete store narrows the
+// handler's storage dependency to the methods it uses and lets tests
+// substitute a fake.
 type Store interface {
 	ClusterSettings(ctx context.Context) (store.ClusterSetting, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)

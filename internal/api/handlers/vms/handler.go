@@ -62,14 +62,13 @@ import (
 // domain methods, the identifier-resolution contract (resolver.Querier)
 // used to resolve vm / template / pool / node parameters, the node and
 // template reads used by the view projectors, the placement-locked
-// CreateScheduledVM seam, and the backend-agnostic EnqueueTask producer
-// seam used by delete and the async lifecycle ops. *store.Store
+// CreateScheduledVM seam, and the EnqueueTask producer
+// seam used by delete and the async lifecycle ops. *etcdstore.Store
 // satisfies it; depending on the interface rather than the concrete
-// store is the Phase 2 seam that lets a second backend (Phase 3) be
-// substituted under the same handler tests, and keeps river off the
-// request handlers. The vm create/delete/lifecycle river workers
-// (jobs.go, jobs_lifecycle.go) are consumer-side and keep the concrete
-// store until Phase 3 rewrites them.
+// store narrows the handler's storage dependency to the methods it uses,
+// lets tests substitute a fake, and keeps the queue off the
+// request handlers. The vm create/delete/lifecycle workers (jobs.go)
+// are consumer-side and hold the concrete store.
 type Store interface {
 	resolver.Querier
 
@@ -87,8 +86,8 @@ type Store interface {
 
 // Handler bundles the dependencies for the vms routes. Create / Delete
 // and the async lifecycle ops enqueue through the store's
-// backend-agnostic CreateScheduledVM / EnqueueTask seams, so the handler
-// no longer holds a river client. placementAlgorithm threads through to
+// CreateScheduledVM / EnqueueTask seams, so the handler
+// no longer holds a queue client. placementAlgorithm threads through to
 // internal/scheduler.SchedulePlacement; the empty string defers to the
 // package default ("resource_aware"). placementResources threads the
 // per-resource gate - zero-value disables every resource and degrades

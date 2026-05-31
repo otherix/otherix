@@ -21,9 +21,9 @@ import (
 )
 
 // Store is the storage surface the users handlers depend on. Depending
-// on the interface rather than the concrete *store.Store is the Phase 2
-// seam that lets a second backend (Phase 3) be substituted under the
-// same handler tests. *store.Store satisfies it.
+// on the interface rather than the concrete *etcdstore.Store narrows the
+// handler's storage dependency to the methods it uses and lets tests
+// substitute a fake. *etcdstore.Store satisfies it.
 type Store interface {
 	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	UserByEmail(ctx context.Context, email string) (store.User, error)

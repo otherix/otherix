@@ -39,9 +39,9 @@ import (
 // Store is the storage surface the tasks handlers depend on. Cancel's
 // transactional job-cancel is hidden inside store.CancelPendingTask
 // (which uses the queue seam), so the handler no longer holds a queue
-// or river client. Depending on the interface is the Phase 2 seam that
-// lets a second backend (Phase 3) be substituted under the same handler
-// tests. *store.Store satisfies it.
+// or river client. Depending on the interface narrows the handler's
+// storage dependency to the methods it uses and lets tests substitute a
+// fake. *etcdstore.Store satisfies it.
 type Store interface {
 	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
 	CancelPendingTask(ctx context.Context, id uuid.UUID, jobRef *int64) (store.Task, error)

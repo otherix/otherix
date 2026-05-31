@@ -6,7 +6,7 @@
 // single-node (default), 3-node HA, and a single->HA transition via learner
 // promotion. This package owns the embedded runtime lifecycle and the
 // zap->slog logging bridge; higher layers build a KV client over it
-// (Phase 3 slice 2) and the etcd-backed store over that (slice 3+).
+// and the etcd-backed store over that.
 package etcd
 
 import (

@@ -224,7 +224,6 @@ func (s *Store) CountUserResources(ctx context.Context, id uuid.UUID) (store.Cou
 // a token created concurrently after that read is not revoked here, but it
 // cannot authenticate either - the user is soft-deleted and
 // auth.Service.VerifyAPIToken rejects on the UserByID -> ErrNotFound lookup.
-// This matches the pgx cascade, which has the same current-set semantics.
 func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	existing, err := s.UserByID(ctx, id)
 	if err != nil {

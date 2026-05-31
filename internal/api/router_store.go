@@ -27,16 +27,16 @@ import (
 )
 
 // AgentCertLooker is the fingerprint -> agent-cert lookup the agent-mTLS verifier
-// adapter wraps. Both backends expose it directly.
+// adapter wraps. *etcdstore.Store exposes it directly.
 type AgentCertLooker interface {
 	AgentCertByFingerprint(ctx context.Context, fingerprint []byte) (store.AgentCert, error)
 }
 
 // RouterStore is the storage surface the api-server router depends on: the union
 // of every handler's Store contract plus the idempotency middleware store, the
-// readiness pinger, and the agent-cert lookup. Both *store.Store (pgx) and
-// *etcdstore.Store satisfy it, so the router and the whole api-server are
-// backend-agnostic - the single point the etcd switch substitutes.
+// readiness pinger, and the agent-cert lookup. *etcdstore.Store satisfies it.
+// Depending on the interface narrows the router's storage dependency to the
+// methods it uses and lets tests substitute a fake.
 type RouterStore interface {
 	authhandlers.Store
 	cahandlers.Store

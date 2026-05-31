@@ -14,7 +14,7 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// This file holds the backend-agnostic queue contract for the
+// This file holds the queue contract for the
 // storage_image.import task: the job-arg payload, the executor seam + its
 // argument/result shapes, the terminal error-code catalogue, the error
 // classifier, and the result marshaller. The worker implementation that

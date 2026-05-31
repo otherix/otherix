@@ -15,7 +15,7 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// This file holds the backend-agnostic queue contract for the async VM tasks:
+// This file holds the queue contract for the async VM tasks:
 // the job-arg payloads (with their Kind), the per-task executor seams + their
 // argument/result shapes, the terminal error-code catalogue, and the shared
 // error helpers. The worker implementations that consume this contract live in

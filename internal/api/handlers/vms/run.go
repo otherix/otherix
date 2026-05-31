@@ -15,11 +15,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Backend-agnostic Run-form async VM workers for the etcd job runtime. These
-// reuse the executor seams, Args payloads, and error classifiers of the river
+// Run-form async VM workers for the etcd job runtime. These
+// reuse the executor seams, Args payloads, and error classifiers of the former
 // workers but drive the orchestration against the WorkerStore interface (the
-// etcd store's task mutators + entity reads + atomic projections) instead of
-// pgx + InTx. The handler constructors return functions assignable to
+// etcd store's task mutators + entity reads + atomic projections). The handler
+// constructors return functions assignable to
 // worker.Handler; cmd/api registers them on the dispatcher.
 
 // WorkerStore is the storage surface the async VM worker handlers depend on:
@@ -255,8 +255,7 @@ func onAgentTaskID(st WorkerStore, taskID uuid.UUID) func(context.Context, uuid.
 }
 
 // classifyLoadErr maps an entity-read error to a *_not_found code (when the row
-// is absent) or "internal" otherwise. The etcd analogue of classifyLoadError
-// (which keys on pgx.ErrNoRows).
+// is absent) or "internal" otherwise. Keys on store.ErrNotFound.
 func classifyLoadErr(err error, notFoundCode string) string {
 	if errors.Is(err, store.ErrNotFound) {
 		return notFoundCode

@@ -27,7 +27,7 @@ import (
 )
 
 // The etcd-backed store satisfies the networks handler's storage contract -
-// the Phase 2 seam a second backend slots behind.
+// the narrow interface the handler depends on.
 var _ networkshandlers.Store = (*etcdstore.Store)(nil)
 
 // startStore spins up a single-node embedded member, a KV client, and an

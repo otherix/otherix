@@ -33,10 +33,10 @@ import (
 
 // Store is the storage surface the join-tokens handlers depend on: the
 // join-token domain methods plus the active-CA lookup used to embed the
-// CA fingerprint in the create response. *store.Store satisfies it;
-// depending on the interface rather than the concrete store is the
-// Phase 2 seam that lets a second backend (Phase 3) be substituted
-// under the same handler tests.
+// CA fingerprint in the create response. *etcdstore.Store satisfies it;
+// depending on the interface rather than the concrete store narrows the
+// handler's storage dependency to the methods it uses and lets tests
+// substitute a fake.
 type Store interface {
 	ActiveCACert(ctx context.Context) (store.CaCert, error)
 	JoinTokenByID(ctx context.Context, id uuid.UUID) (store.JoinToken, error)
@@ -73,7 +73,7 @@ var (
 // callers map it to 404.
 var errTokenNotFound = errors.New("join token not found")
 
-// loadToken fetches a join token row by id, lifting pgx.ErrNoRows
+// loadToken fetches a join token row by id, lifting store.ErrNotFound
 // into errTokenNotFound for canonical 404 mapping at the handler
 // layer.
 func (h *Handler) loadToken(ctx context.Context, id uuid.UUID) (store.JoinToken, error) {

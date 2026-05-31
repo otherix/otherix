@@ -39,10 +39,9 @@ import (
 
 // Store is the storage surface the /v1/nodes/join handler depends on:
 // the active-CA lookup loaded per request and the atomic join-token
-// redemption seam. *store.Store satisfies it; depending on the
-// interface rather than the concrete store is the Phase 2 seam that
-// lets a second backend (Phase 3) be substituted under the same handler
-// tests.
+// redemption seam. *etcdstore.Store satisfies it; depending on the
+// interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
 type Store interface {
 	ActiveCACert(ctx context.Context) (store.CaCert, error)
 	RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenParams, sign func(node store.Node) (store.IssuedCert, error)) (store.RedeemJoinTokenResult, error)

@@ -7,7 +7,7 @@
 //
 // /healthz is a process-liveness signal: returns 200 as long as the
 // handler can be reached. It must not call out to dependencies.
-// /readyz pings the database (and, in the future, any other dependency
+// /readyz pings etcd (and, in the future, any other dependency
 // the api-server cannot serve traffic without) and returns 503 if any
 // check fails.
 package health
@@ -51,8 +51,8 @@ type Check struct {
 }
 
 // Pinger is the readiness dependency the api-server cannot serve traffic
-// without: the storage backend. *store.Store (pgx) and *etcdstore.Store both
-// satisfy it, so /readyz is backend-agnostic.
+// without: the storage backend. *etcdstore.Store satisfies it; the readiness
+// check pings etcd.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
@@ -64,7 +64,7 @@ type Handler struct {
 }
 
 // New returns a Handler whose readiness probe pings p, reporting the outcome
-// under checkName in the /readyz response (e.g. "database" for pgx, "etcd").
+// under checkName in the /readyz response (e.g. "etcd").
 func New(p Pinger, checkName string) *Handler {
 	return &Handler{pinger: p, checkName: checkName}
 }

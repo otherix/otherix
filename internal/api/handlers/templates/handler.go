@@ -69,10 +69,10 @@ import (
 // template domain methods, the identifier-resolution contract
 // (resolver.Querier) used to resolve template / pool path parameters,
 // the node read used by the storage-image import precheck, and the
-// backend-agnostic EnqueueTask producer seam. *store.Store satisfies
-// it; depending on the interface rather than the concrete store is the
-// Phase 2 seam that lets a second backend (Phase 3) be substituted
-// under the same handler tests, and keeps river off the handler.
+// EnqueueTask producer seam. *etcdstore.Store satisfies
+// it; depending on the interface rather than the concrete store narrows the
+// handler's storage dependency to the methods it uses, lets tests substitute
+// a fake, and keeps the queue off the handler.
 type Store interface {
 	resolver.Querier
 
@@ -90,8 +90,7 @@ type Store interface {
 
 // Handler bundles the dependencies for the templates routes. The
 // storage_image.import sub-resource enqueues an async task through the
-// store's backend-agnostic EnqueueTask seam, so the handler no longer
-// holds a river client.
+// store's EnqueueTask seam, so the handler no longer holds a queue client.
 type Handler struct {
 	store Store
 	log   *slog.Logger

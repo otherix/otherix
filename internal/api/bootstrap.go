@@ -29,8 +29,7 @@ const (
 type BootstrapAdminEnv func(string) string
 
 // AdminBootstrapStore is the storage surface the admin bootstrap depends on.
-// Both *store.Store (pgx) and *etcdstore.Store satisfy it, so the boot hook is
-// backend-agnostic.
+// *etcdstore.Store satisfies it.
 type AdminBootstrapStore interface {
 	CountAdmins(ctx context.Context) (int64, error)
 	CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error)

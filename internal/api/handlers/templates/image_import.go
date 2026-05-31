@@ -157,9 +157,9 @@ func decodeImageImportBody(w http.ResponseWriter, r *http.Request) (string, bool
 }
 
 // enqueueImport runs the atomic enqueue through the store's
-// backend-agnostic EnqueueTask seam: the task row, its background job,
-// and the job-reference stamp commit together. The river specifics
-// (and, in Phase 3, the etcd-watch replacement) live behind the store;
+// EnqueueTask seam: the task row, its background job,
+// and the job-reference stamp commit together. The queue specifics
+// live behind the store;
 // the handler only supplies the task descriptor and the job args.
 // Mirrors the storage_pool.scan handler - the only differences are the
 // task type and the args payload shape.

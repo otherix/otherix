@@ -27,9 +27,8 @@ import (
 // domain methods plus the identifier-resolution contract
 // (resolver.Querier) the handlers use to resolve the name-only {id}
 // path parameter. Depending on the interface rather than the concrete
-// *store.Store is the Phase 2 seam that lets a second backend (Phase 3)
-// be substituted under the same handler tests. *store.Store satisfies
-// it.
+// *etcdstore.Store narrows the handler's storage dependency to the methods
+// it uses and lets tests substitute a fake. *etcdstore.Store satisfies it.
 type Store interface {
 	resolver.Querier
 

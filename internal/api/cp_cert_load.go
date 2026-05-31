@@ -48,8 +48,7 @@ type TLSMaterial struct {
 func (m TLSMaterial) Skipped() bool { return m.Source == "skipped" }
 
 // CPCertCAStore is the storage surface the CP-cert loader needs: the active
-// cluster CA to chain-check or sign against. Both *store.Store (pgx) and
-// *etcdstore.Store satisfy it.
+// cluster CA to chain-check or sign against. *etcdstore.Store satisfies it.
 type CPCertCAStore interface {
 	ActiveCACert(ctx context.Context) (store.CaCert, error)
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // IdempotencyCleaner is the storage surface the idempotency-key retention sweep
-// depends on. Both *store.Store and *etcdstore.Store satisfy it.
+// depends on. *etcdstore.Store satisfies it.
 type IdempotencyCleaner interface {
 	DeleteExpiredIdempotencyKeys(ctx context.Context) (int64, error)
 }

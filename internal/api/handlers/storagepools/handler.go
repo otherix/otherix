@@ -48,14 +48,13 @@ import (
 // Store is the storage surface the storage-pools handlers depend on:
 // the pool / storage-image domain methods, the identifier-resolution
 // contract (resolver.Querier) used to resolve pool and node parameters,
-// the node read used by the view projectors, and the
-// backend-agnostic EnqueueTask producer seam used by Scan.
-// *store.Store satisfies it; depending on the interface rather than the
-// concrete store is the Phase 2 seam that lets a second backend (Phase
-// 3) be substituted under the same handler tests, and keeps river off
-// the request handlers. The scan/import river workers (jobs.go,
-// import_jobs.go, scan_trigger.go) are consumer-side and keep the
-// concrete store until Phase 3 rewrites them.
+// the node read used by the view projectors, and the EnqueueTask
+// producer seam used by Scan.
+// *etcdstore.Store satisfies it; depending on the interface rather than the
+// concrete store narrows the handler's storage dependency to the methods it
+// uses, lets tests substitute a fake, and keeps the queue off the request
+// handlers. The scan/import workers (jobs.go, import_jobs.go,
+// scan_trigger.go) are consumer-side and hold the concrete store.
 type Store interface {
 	resolver.Querier
 
@@ -81,8 +80,8 @@ type Store interface {
 // Ensure the production store satisfies the handler's storage contract.
 
 // Handler bundles the dependencies for the storage-pools routes. Scan
-// enqueues through the store's backend-agnostic EnqueueTask seam, so
-// the handler no longer holds a river client; DeleteImage additionally
+// enqueues through the store's EnqueueTask seam, so the handler no longer
+// holds a queue client; DeleteImage additionally
 // needs an ImageDeleter to drive the agent's synchronous delete on the
 // last-referent path.
 type Handler struct {

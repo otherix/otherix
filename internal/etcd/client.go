@@ -200,8 +200,7 @@ func (c *Client) RangePaged(ctx context.Context, prefix, after string, limit int
 }
 
 // Watch returns the change stream for every key under prefix. The watch runs
-// until ctx is cancelled; the queue (Phase 3 slice 12) drives its worker loop
-// off this.
+// until ctx is cancelled; the queue drives its worker loop off this.
 func (c *Client) Watch(ctx context.Context, prefix string) clientv3.WatchChan {
 	return c.c.Watch(ctx, prefix, clientv3.WithPrefix())
 }

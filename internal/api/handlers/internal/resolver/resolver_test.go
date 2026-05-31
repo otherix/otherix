@@ -15,7 +15,7 @@ import (
 
 // stubQuerier is a hand-rolled fake implementing the resolver's
 // Querier interface. Each `*ByName` / pool `ByID` slot can be
-// programmed per test case to return a row, pgx.ErrNoRows, or an
+// programmed per test case to return a row, store.ErrNotFound, or an
 // arbitrary error; the corresponding `called` flag lets a test assert
 // that the branch it expected to fire actually fired (asserting on
 // side effects, not just the return value, catches "looked up by name

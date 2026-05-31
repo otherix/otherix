@@ -107,9 +107,9 @@ func (h *Handler) preflightScan(w http.ResponseWriter, r *http.Request, pool sto
 }
 
 // enqueueScan runs the atomic enqueue through the store's
-// backend-agnostic EnqueueTask seam: the task row, its background job,
-// and the job-reference stamp commit together. The river specifics
-// (and, in Phase 3, the etcd-watch replacement) live behind the store;
+// EnqueueTask seam: the task row, its background job,
+// and the job-reference stamp commit together. The queue specifics
+// live behind the store;
 // the handler only supplies the task descriptor and the job args.
 // Returns the freshly-minted task id on success.
 func (h *Handler) enqueueScan(ctx context.Context, poolID, callerID uuid.UUID) (uuid.UUID, error) {

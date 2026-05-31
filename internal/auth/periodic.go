@@ -11,7 +11,7 @@ import (
 )
 
 // RefreshTokenCleaner is the storage surface the refresh-token retention sweep
-// depends on. Both *store.Store and *etcdstore.Store satisfy it.
+// depends on. *etcdstore.Store satisfies it.
 type RefreshTokenCleaner interface {
 	DeleteExpiredRefreshTokens(ctx context.Context, cutoff time.Time) (int64, error)
 }

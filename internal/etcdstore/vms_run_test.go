@@ -20,7 +20,7 @@ import (
 )
 
 // The etcd store satisfies the async VM worker handlers' storage contract - the
-// seam the Run-form workers drive in place of pgx + InTx.
+// seam the Run-form workers drive.
 var _ vmshandlers.WorkerStore = (*etcdstore.Store)(nil)
 
 func TestVMCreateRunHandlerSuccess(t *testing.T) {

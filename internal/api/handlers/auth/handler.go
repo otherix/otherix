@@ -23,10 +23,9 @@ import (
 
 // Store is the storage surface the auth handlers depend on: a single
 // user-by-email lookup that Login uses to surface the authenticated
-// user inline in LoginResponse. *store.Store satisfies it; depending on
-// the interface rather than the concrete store is the Phase 2 seam that
-// lets a second backend (Phase 3) be substituted under the same handler
-// tests.
+// user inline in LoginResponse. *etcdstore.Store satisfies it; depending on
+// the interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
 type Store interface {
 	UserByEmail(ctx context.Context, email string) (store.User, error)
 }

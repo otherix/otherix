@@ -11,7 +11,7 @@ import (
 )
 
 // agentCertAdapter lifts an AgentCertLooker (the fingerprint -> agent-cert
-// lookup both backends expose) into auth.AgentCertLookupResult so
+// lookup *etcdstore.Store exposes) into auth.AgentCertLookupResult so
 // auth.AgentVerifier stays decoupled from the storage backend. Held inside
 // internal/api because the wiring already pairs storage with auth here.
 type agentCertAdapter struct {

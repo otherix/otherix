@@ -18,11 +18,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Backend-agnostic Run-form storage-pool workers for the etcd job runtime. They
+// Run-form storage-pool workers for the etcd job runtime. They
 // reuse the executor seams, Args payloads, error classifiers, and pressure
-// computation of the river workers but drive the orchestration against the
+// computation of the former workers but drive the orchestration against the
 // WorkerStore interface (the etcd store's task mutators + entity reads + atomic
-// projections) instead of pgx + InTx.
+// projections).
 //
 // The scan worker's passive post-scan inventory reconciliation (orphan/missing
 // image diagnostics) is intentionally omitted here; it is best-effort logging,
