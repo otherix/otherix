@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -103,12 +104,20 @@ func run() error {
 		log.Warn("placement config", "warning", msg)
 	}
 
+	// A join node with no cluster CA on disk fetches it from an existing
+	// replica before anything else: the peer plane needs the CA pre-start and
+	// a joiner must adopt the cluster's shared CA, not mint its own.
+	if cfg.Etcd.Mode == "join" {
+		if err := ensureClusterCAForJoin(ctx, cfg, log); err != nil {
+			return fmt.Errorf("fetch cluster CA for join: %v", err)
+		}
+	}
+
 	// Provision the cluster CA on disk before etcd starts: the peer (Raft)
 	// mTLS plane needs a CA-signed cert pre-start. A bootstrap / single node
-	// generates it on first boot and reloads it on restart; a join node must
-	// have received it via the replica-join protocol first (allowGenerate is
-	// false for join, so a missing CA fails fast rather than forking a new
-	// trust root).
+	// generates it on first boot and reloads it on restart; a join node loads
+	// the CA fetched above (allowGenerate is false for join, so a missing CA
+	// fails fast rather than forking a new trust root).
 	caMaterial, caGenerated, err := auth.LoadOrGenerateClusterCAOnDisk(
 		cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, cfg.Etcd.Mode != "join", time.Now())
 	if err != nil {
@@ -168,6 +177,73 @@ func run() error {
 	}
 
 	return runServe(ctx, cfg, st, authSvc, caMaterial, log)
+}
+
+// ensureClusterCAForJoin fetches the cluster CA from an existing replica and
+// persists it to disk when a join node has no CA yet. On a restart (CA already
+// on disk) it is a no-op, so the fetch happens exactly once per joining replica.
+// The CA cert + key land at the cluster_ca paths, ready for the on-disk
+// provisioning step that follows.
+func ensureClusterCAForJoin(ctx context.Context, cfg *config.APIConfig, log *slog.Logger) error {
+	if fileExists(cfg.ClusterCA.CertFile) && fileExists(cfg.ClusterCA.KeyFile) {
+		log.Info("cluster CA already on disk; skipping join fetch")
+		return nil
+	}
+
+	jc := cfg.ClusterJoin
+	token, err := resolveClusterJoinToken(jc)
+	if err != nil {
+		return err
+	}
+	if jc.CPURL == "" || jc.CAFingerprint == "" {
+		return errors.New("cluster_join.cp_url and cluster_join.ca_fingerprint are required to join with no CA on disk")
+	}
+	timeout := jc.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	ca, err := api.FetchClusterCA(ctx, api.ClusterJoinFetchParams{
+		CPURL:         jc.CPURL,
+		Token:         token,
+		CAFingerprint: jc.CAFingerprint,
+		Timeout:       timeout,
+	}, log)
+	if err != nil {
+		return err
+	}
+	if err := auth.WriteCertCacheAtomic(cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, ca.CertPEM, ca.KeyPEM); err != nil {
+		return fmt.Errorf("persist fetched cluster CA: %v", err)
+	}
+	log.Info("persisted cluster CA fetched on join",
+		"fingerprint_sha256", hex.EncodeToString(ca.Fingerprint),
+		"cert_file", cfg.ClusterCA.CertFile)
+	return nil
+}
+
+// resolveClusterJoinToken reads the cluster join token from the configured
+// path (preferred) or the inline value. Exactly one must be set.
+func resolveClusterJoinToken(jc config.ClusterJoinConfig) (string, error) {
+	switch {
+	case jc.TokenPath != "" && jc.Token != "":
+		return "", errors.New("set only one of cluster_join.token or cluster_join.token_path")
+	case jc.TokenPath != "":
+		b, err := os.ReadFile(jc.TokenPath)
+		if err != nil {
+			return "", fmt.Errorf("read cluster_join.token_path: %v", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	case jc.Token != "":
+		return jc.Token, nil
+	default:
+		return "", errors.New("cluster_join.token or cluster_join.token_path is required to join with no CA on disk")
+	}
+}
+
+// fileExists reports whether path exists as a regular readable entry.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // runServe handles the post-bootstrap serving lifecycle - extracted from run()

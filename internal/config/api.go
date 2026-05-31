@@ -18,6 +18,7 @@ type APIConfig struct {
 	AgentClient  AgentClientConfig  `koanf:"agent_client"`
 	CPCert       CPCertConfig       `koanf:"cp_cert"`
 	ClusterCA    ClusterCAConfig    `koanf:"cluster_ca"`
+	ClusterJoin  ClusterJoinConfig  `koanf:"cluster_join"`
 	Logger       logger.Config      `koanf:"logger"`
 	Auth         AuthConfig         `koanf:"auth"`
 	Console      ConsoleConfig      `koanf:"console"`
@@ -77,6 +78,21 @@ func (c ClusterCAConfig) Validate() error {
 		return errors.New("cluster_ca.cert_file and cluster_ca.key_file must both be set")
 	}
 	return nil
+}
+
+// ClusterJoinConfig drives the joiner-side cluster CA fetch, consulted only
+// when etcd.mode is "join" and no cluster CA is yet on disk. The replica
+// redeems a kind=cluster join token at an existing replica's
+// /v1/cluster/join (CPURL) and persists the returned CA cert + key. CAFingerprint
+// pins the expected CA out of band (TOFU). The token is supplied inline
+// (Token) or read from TokenPath (preferred - keeps the secret out of the
+// config file).
+type ClusterJoinConfig struct {
+	CPURL         string        `koanf:"cp_url"`
+	Token         string        `koanf:"token"`
+	TokenPath     string        `koanf:"token_path"`
+	CAFingerprint string        `koanf:"ca_fingerprint"`
+	Timeout       time.Duration `koanf:"timeout"`
 }
 
 // StoragePoolsConfig pins operator-facing knobs for `POST

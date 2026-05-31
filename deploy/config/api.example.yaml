@@ -277,3 +277,14 @@ cp_cert:
 cluster_ca:
   cert_file: "/opt/otherix/ca/cluster-ca.crt"
   key_file:  "/opt/otherix/ca/cluster-ca.key"
+
+# Joiner-side cluster CA fetch. Consulted only when etcd.mode is "join" and no
+# cluster CA is on disk yet: the replica redeems a kind=cluster join token at an
+# existing replica's /v1/cluster/join and persists the returned CA cert + key.
+# Mint the token with `kind: cluster` on the running cluster; pin its CA
+# fingerprint out of band. Prefer token_path over an inline token.
+# cluster_join:
+#   cp_url:         "https://10.0.0.10:8080"
+#   token_path:     "/etc/otherix/cluster-join-token"
+#   ca_fingerprint: "sha256:<64-hex>"
+#   timeout:        "30s"
