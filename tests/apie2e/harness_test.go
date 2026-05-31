@@ -136,6 +136,18 @@ func (f *fakeClusterMembership) RemoveMember(_ context.Context, id uint64) error
 
 func (f *fakeClusterMembership) TryPromoteLearners(context.Context) (int, error) { return 0, nil }
 
+func (f *fakeClusterMembership) lastJoinedURL() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.joinedURL
+}
+
+func (f *fakeClusterMembership) removedIDs() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uint64(nil), f.removed...)
+}
+
 // newE2E wipes the keyspace and builds a fresh router over the shared member.
 func newE2E(t *testing.T) *harness {
 	t.Helper()

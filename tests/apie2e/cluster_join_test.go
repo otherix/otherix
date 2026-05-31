@@ -51,6 +51,10 @@ func TestClusterJoinReturnsCAKeyPair(t *testing.T) {
 	var body struct {
 		CACertPEM string `json:"ca_cert_pem"`
 		CAKeyPEM  string `json:"ca_key_pem"`
+		Members   []struct {
+			Name    string `json:"name"`
+			PeerURL string `json:"peer_url"`
+		} `json:"members"`
 	}
 	decodeJSON(t, resp, &body)
 	if !strings.Contains(body.CACertPEM, "BEGIN CERTIFICATE") {
@@ -58,6 +62,24 @@ func TestClusterJoinReturnsCAKeyPair(t *testing.T) {
 	}
 	if !strings.Contains(body.CAKeyPEM, "BEGIN PRIVATE KEY") {
 		t.Errorf("ca_key_pem is not a PKCS#8 PEM key: %q", body.CAKeyPEM)
+	}
+	// The fake records the learner peer_url passed to RegisterLearner.
+	if got := h.membership.lastJoinedURL(); got != "https://127.0.0.1:12380" {
+		t.Errorf("RegisterLearner peer_url = %q, want %q", got, "https://127.0.0.1:12380")
+	}
+	// The response members list must contain the seeded voter plus the newly
+	// added learner: the fake appends the joiner's peer_url as a learner entry.
+	if len(body.Members) != 2 {
+		t.Fatalf("len(members) = %d, want 2", len(body.Members))
+	}
+	found := false
+	for _, m := range body.Members {
+		if m.PeerURL == "https://127.0.0.1:12380" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("members does not contain joiner peer_url %q: %+v", "https://127.0.0.1:12380", body.Members)
 	}
 }
 
