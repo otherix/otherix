@@ -90,11 +90,16 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// harness wires the etcd-backed router into an httptest.Server.
+// harness wires the etcd-backed router into an httptest.Server. agentSrv serves
+// the agent/bootstrap router (the TLS listener in production) so anonymous
+// bootstrap endpoints - /v1/ca, /v1/nodes/join, /v1/cluster/join - can be
+// exercised; the test server itself is plain HTTP (the route logic is under
+// test, not the transport).
 type harness struct {
-	srv   *httptest.Server
-	store *etcdstore.Store
-	svc   *auth.Service
+	srv      *httptest.Server
+	agentSrv *httptest.Server
+	store    *etcdstore.Store
+	svc      *auth.Service
 }
 
 // newE2E wipes the keyspace and builds a fresh router over the shared member.
@@ -139,7 +144,16 @@ func newE2E(t *testing.T) *harness {
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
-	return &harness{srv: srv, store: s, svc: svc}
+	agentRouter := api.NewAgentRouter(api.RouterDeps{
+		Store:          s,
+		AuthService:    svc,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RequestTimeout: 10 * time.Second,
+	})
+	agentSrv := httptest.NewServer(agentRouter)
+	t.Cleanup(agentSrv.Close)
+
+	return &harness{srv: srv, agentSrv: agentSrv, store: s, svc: svc}
 }
 
 func (h *harness) do(t *testing.T, method, path string, body any, bearer string, headers map[string]string) *http.Response {
@@ -174,6 +188,32 @@ func (h *harness) do(t *testing.T, method, path string, body any, bearer string,
 
 func (h *harness) post(t *testing.T, path string, body any, bearer string) *http.Response {
 	return h.do(t, http.MethodPost, path, body, bearer, nil)
+}
+
+// postAgent posts to the agent/bootstrap router (the TLS listener in
+// production) - used for the anonymous bootstrap endpoints mounted there.
+func (h *harness) postAgent(t *testing.T, path string, body any) *http.Response {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		rdr = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, h.agentSrv.URL+path, rdr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := h.agentSrv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	return resp
 }
 
 func (h *harness) get(t *testing.T, path, bearer string) *http.Response {

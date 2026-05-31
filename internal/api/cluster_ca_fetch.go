@@ -145,19 +145,8 @@ func verifyKeyMatchesCert(keyPEM []byte, certPub crypto.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("parse cluster CA key: %v", err)
 	}
-	signer, ok := key.(crypto.Signer)
-	if !ok {
-		return errors.New("cluster CA key does not implement crypto.Signer")
-	}
-	type equalable interface {
-		Equal(crypto.PublicKey) bool
-	}
-	pub, ok := signer.Public().(equalable)
-	if !ok {
-		return errors.New("cluster CA key public part is not comparable")
-	}
-	if !pub.Equal(certPub) {
-		return errors.New("cluster CA key does not match the CA cert public key")
+	if err := auth.KeyMatchesCert(key, certPub); err != nil {
+		return fmt.Errorf("cluster CA key: %v", err)
 	}
 	return nil
 }

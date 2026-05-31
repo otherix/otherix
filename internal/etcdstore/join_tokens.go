@@ -44,6 +44,14 @@ func joinTokenConsumptionsIndexPrefix(tokenID uuid.UUID) string {
 	return etcd.Key("index", "join_token_consumptions", "token", tokenID.String()) + "/"
 }
 
+// joinTokenConsumedCountKey holds the authoritative redemption count for a
+// token, CAS-incremented in the same txn as each cluster-join consumption so
+// max_uses is enforced atomically even under concurrent redemptions (the
+// consumption-index prefix count is non-atomic and only used for display).
+func joinTokenConsumedCountKey(tokenID uuid.UUID) string {
+	return etcd.Key("index", "join_token_consumed", tokenID.String())
+}
+
 // JoinTokenByID returns the join token with the given id, or store.ErrNotFound.
 func (s *Store) JoinTokenByID(ctx context.Context, id uuid.UUID) (store.JoinToken, error) {
 	var jt store.JoinToken

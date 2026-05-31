@@ -82,6 +82,21 @@ func (c *Config) initialClusterString() string {
 	return fmt.Sprintf("%s=%s", c.Name, c.PeerURL)
 }
 
+// validatePeerURL checks the peer URL is a valid URL and, when https, that peer
+// mTLS material is set (else etcd would serve an https peer listener with no TLS
+// config). Peer mTLS is always on in production; this guards a caller that sets
+// https without wiring the files.
+func (c *Config) validatePeerURL() error {
+	peerU, err := url.Parse(c.PeerURL)
+	if err != nil || c.PeerURL == "" || peerU.Host == "" {
+		return fmt.Errorf("peer-url is required and must be a valid URL")
+	}
+	if peerU.Scheme == "https" && !c.peerTLSEnabled() {
+		return fmt.Errorf("peer-url is https but peer mTLS files (cert/key/ca) are not all set")
+	}
+	return nil
+}
+
 // Validate checks the config invariants. It returns the first failure
 // encountered so the operator sees one clear error.
 func (c *Config) Validate() error {
@@ -96,8 +111,8 @@ func (c *Config) Validate() error {
 	if c.DataDir == "" {
 		return fmt.Errorf("data-dir is required")
 	}
-	if u, err := url.Parse(c.PeerURL); err != nil || c.PeerURL == "" || u.Host == "" {
-		return fmt.Errorf("peer-url is required and must be a valid URL")
+	if err := c.validatePeerURL(); err != nil {
+		return err
 	}
 	if u, err := url.Parse(c.ClientURL); err != nil || c.ClientURL == "" || u.Host == "" {
 		return fmt.Errorf("client-url is required and must be a valid URL")

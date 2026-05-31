@@ -151,7 +151,6 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	authH := authhandlers.New(deps.AuthService, deps.Store)
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
-	clusterJoinH := clusterjoinhandlers.New(deps.Store, deps.Logger)
 	usersH := usershandlers.New(deps.Store)
 	tokensH := apitokenshandlers.New(deps.Store)
 	nodesH := nodeshandlers.New(deps.Store, deps.Logger)
@@ -195,14 +194,9 @@ func mountV1(r chi.Router, deps RouterDeps) {
 		// join_tokens row for race-safe max_uses enforcement.
 		r.Post("/nodes/join", nodeJoinH.Join)
 
-		// Anonymous cluster-replica redemption. A joining control-plane
-		// replica presents a kind=cluster join token and receives the
-		// cluster CA cert + key to provision its peer-mTLS material before
-		// its etcd member starts. Token plaintext in body is the bearer
-		// credential; TLS protects transport (CA fingerprint pinned out of
-		// band). Higher-privilege sibling of /nodes/join - the handler
-		// accepts cluster-kind tokens only.
-		r.Post("/cluster/join", clusterJoinH.Join)
+		// NOTE: /v1/cluster/join is intentionally NOT mounted here. It returns
+		// the cluster CA private key and must only be served on the TLS agent
+		// listener (see NewAgentRouter), never on this plain-HTTP listener.
 
 		// Join-token management. Mounted before the main Authn +
 		// Idempotency block so POST (create) can opt out of idem
@@ -409,8 +403,15 @@ func NewAgentRouter(deps RouterDeps) http.Handler {
 	// match before fall-through, and the URLs do not overlap.
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
+	clusterJoinH := clusterjoinhandlers.New(deps.Store, deps.Logger)
 	r.Get("/v1/ca", caH.Get)
 	r.Post("/v1/nodes/join", nodeJoinH.Join)
+	// Cluster-replica join lives on the TLS listener, not the plain-HTTP
+	// control-plane listener: the response carries the cluster CA private key,
+	// so it must never traverse a plain-HTTP socket. Anonymous like the other
+	// bootstrap endpoints (token in body is the credential; the joiner TOFU-pins
+	// the CA fingerprint), so it sits outside the AgentMTLS group.
+	r.Post("/v1/cluster/join", clusterJoinH.Join)
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AgentMTLS(verifier))

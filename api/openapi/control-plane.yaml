@@ -1080,6 +1080,10 @@ paths:
         bearer credential; TLS protects transport (the operator pinned the
         CA fingerprint out of band).
 
+        Served only on the TLS bootstrap (agent) listener - the response
+        carries the CA private key and must never traverse the plain-HTTP
+        control-plane listener.
+
         Higher-privilege sibling of `/v1/nodes/join`: a node join returns a
         leaf cert, a cluster join hands over the CA key. The endpoint
         accepts `kind=cluster` tokens only - a node token is rejected with

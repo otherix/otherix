@@ -5,6 +5,7 @@ package api
 
 import (
 	"crypto"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,22 +65,7 @@ func (p PeerCertParams) operatorOverride() bool {
 // rotation lands.
 func ProvisionPeerCert(ca auth.ClusterCAResult, p PeerCertParams, now time.Time, log *slog.Logger) (PeerCertMaterial, error) {
 	if p.operatorOverride() {
-		for label, path := range map[string]string{
-			"peer_cert_file": p.OperatorCertFile,
-			"peer_key_file":  p.OperatorKeyFile,
-			"peer_ca_file":   p.OperatorCAFile,
-		} {
-			if _, err := os.Stat(path); err != nil {
-				return PeerCertMaterial{}, fmt.Errorf("etcd.%s %s: %v (operator peer material configured but file missing)", label, path, err)
-			}
-		}
-		log.Info("etcd peer cert: operator files", slog.String("cert_file", p.OperatorCertFile))
-		return PeerCertMaterial{
-			CertFile: p.OperatorCertFile,
-			KeyFile:  p.OperatorKeyFile,
-			CAFile:   p.OperatorCAFile,
-			Source:   "operator_files",
-		}, nil
+		return provisionOperatorPeerCert(p, ca, log)
 	}
 
 	if p.GenCertPath == "" || p.GenKeyPath == "" || p.GenCAPath == "" {
@@ -128,6 +114,58 @@ func ProvisionPeerCert(ca auth.ClusterCAResult, p PeerCertParams, now time.Time,
 		CAFile:   p.GenCAPath,
 		Source:   "auto_generate",
 	}, nil
+}
+
+// provisionOperatorPeerCert handles the operator-override branch: the three
+// peer files must exist and the cert must chain to the cluster CA (fail fast on
+// a cert issued by a different CA, which etcd would otherwise reject opaquely at
+// Raft-handshake time).
+func provisionOperatorPeerCert(p PeerCertParams, ca auth.ClusterCAResult, log *slog.Logger) (PeerCertMaterial, error) {
+	for label, path := range map[string]string{
+		"peer_cert_file": p.OperatorCertFile,
+		"peer_key_file":  p.OperatorKeyFile,
+		"peer_ca_file":   p.OperatorCAFile,
+	} {
+		if _, err := os.Stat(path); err != nil {
+			return PeerCertMaterial{}, fmt.Errorf("etcd.%s %s: %v (operator peer material configured but file missing)", label, path, err)
+		}
+	}
+	if err := verifyPeerCertChainsToCA(p.OperatorCertFile, ca.CertPEM); err != nil {
+		return PeerCertMaterial{}, fmt.Errorf("operator peer cert %s: %v", p.OperatorCertFile, err)
+	}
+	log.Info("etcd peer cert: operator files", slog.String("cert_file", p.OperatorCertFile))
+	return PeerCertMaterial{
+		CertFile: p.OperatorCertFile,
+		KeyFile:  p.OperatorKeyFile,
+		CAFile:   p.OperatorCAFile,
+		Source:   "operator_files",
+	}, nil
+}
+
+// verifyPeerCertChainsToCA confirms the leaf cert at certFile verifies against
+// the cluster CA (caCertPEM) for peer-mTLS usage (serverAuth+clientAuth).
+func verifyPeerCertChainsToCA(certFile string, caCertPEM []byte) error {
+	leafPEM, err := os.ReadFile(certFile) //nolint:gosec // operator-configured peer cert path
+	if err != nil {
+		return fmt.Errorf("read peer cert: %v", err)
+	}
+	leaf, _, err := auth.ParseClusterCACert(leafPEM)
+	if err != nil {
+		return fmt.Errorf("parse peer cert: %v", err)
+	}
+	caCert, _, err := auth.ParseClusterCACert(caCertPEM)
+	if err != nil {
+		return fmt.Errorf("parse cluster CA cert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return fmt.Errorf("does not chain to the cluster CA: %v", err)
+	}
+	return nil
 }
 
 // peerSANs derives the SAN set for the peer cert from the member's

@@ -116,6 +116,33 @@ func TestLoadOrGenerateClusterCAOnDiskPartialState(t *testing.T) {
 	}
 }
 
+func TestLoadOrGenerateClusterCAOnDiskRejectsMismatchedPair(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "cluster-ca.crt")
+	keyPath := filepath.Join(dir, "cluster-ca.key")
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+
+	ca1, err := auth.GenerateClusterCA(now)
+	if err != nil {
+		t.Fatalf("GenerateClusterCA ca1: %v", err)
+	}
+	ca2, err := auth.GenerateClusterCA(now)
+	if err != nil {
+		t.Fatalf("GenerateClusterCA ca2: %v", err)
+	}
+	// Cert from ca1, key from ca2: a mismatched pair on disk.
+	if err := os.WriteFile(certPath, ca1.CertPEM, 0o644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, ca2.KeyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	if _, _, err := auth.LoadOrGenerateClusterCAOnDisk(certPath, keyPath, true, now); err == nil {
+		t.Fatal("expected error loading a mismatched cert/key pair, got nil")
+	}
+}
+
 func TestLoadOrGenerateClusterCAOnDiskFileModes(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "cluster-ca.crt")

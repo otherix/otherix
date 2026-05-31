@@ -91,11 +91,11 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 	return store.RedeemJoinTokenResult{NodeID: node.ID, TokenID: token.ID}, nil
 }
 
-// validateRedeemToken enforces the redeemability invariants shared by node and
-// cluster joins: the token is unexpired, matches the expected kind (empty Kind
-// reads as node for back-compat - so a node token cannot redeem at the cluster
-// endpoint and vice versa), and has not exhausted its max_uses cap.
-func (s *Store) validateRedeemToken(ctx context.Context, token store.JoinToken, wantKind string) error {
+// validateRedeemTokenKind enforces the kind-and-expiry invariants shared by node
+// and cluster joins: the token is unexpired and matches the expected kind (empty
+// Kind reads as node for back-compat - so a node token cannot redeem at the
+// cluster endpoint and vice versa).
+func (s *Store) validateRedeemTokenKind(token store.JoinToken, wantKind string) error {
 	if !token.ExpiresAt.After(time.Now().UTC()) {
 		return store.ErrJoinTokenInvalid
 	}
@@ -105,6 +105,19 @@ func (s *Store) validateRedeemToken(ctx context.Context, token store.JoinToken, 
 	}
 	if kind != wantKind {
 		return store.ErrJoinTokenInvalid
+	}
+	return nil
+}
+
+// validateRedeemToken adds the (non-atomic) max_uses pre-check to the kind
+// invariants. The node-join path relies on it; max_uses enforcement here is a
+// read-then-write and is not race-tight under concurrent redemptions (tracked
+// for the HA advisory-lock work). The cluster-join path does NOT use this - it
+// enforces max_uses atomically via a CAS counter, since its payload is the CA
+// private key.
+func (s *Store) validateRedeemToken(ctx context.Context, token store.JoinToken, wantKind string) error {
+	if err := s.validateRedeemTokenKind(token, wantKind); err != nil {
+		return err
 	}
 	if token.MaxUses != nil {
 		count, err := s.countPrefix(ctx, joinTokenConsumptionsIndexPrefix(token.ID))

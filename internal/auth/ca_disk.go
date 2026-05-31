@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"crypto"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -88,8 +89,16 @@ func loadClusterCAFromDisk(certPath, keyPath string) (ClusterCAResult, error) {
 	if err != nil {
 		return ClusterCAResult{}, fmt.Errorf("parse on-disk cluster CA cert: %v", err)
 	}
-	if _, err := ParseClusterCAKey(keyPEM); err != nil {
+	key, err := ParseClusterCAKey(keyPEM)
+	if err != nil {
 		return ClusterCAResult{}, fmt.Errorf("parse on-disk cluster CA key: %v", err)
+	}
+	// The cert and key are parsed independently, so confirm they actually pair -
+	// a mismatched on-disk pair (wrong key copied, partial restore) would
+	// otherwise load cleanly and sign peer/leaf certs that do not chain to the
+	// published CA cert, surfacing far downstream as opaque TLS errors.
+	if err := keyMatchesCert(key, cert.PublicKey); err != nil {
+		return ClusterCAResult{}, fmt.Errorf("on-disk cluster CA: %v", err)
 	}
 	fp := sha256.Sum256(der)
 	return ClusterCAResult{
@@ -99,6 +108,31 @@ func loadClusterCAFromDisk(certPath, keyPath string) (ClusterCAResult, error) {
 		NotBefore:   cert.NotBefore,
 		NotAfter:    cert.NotAfter,
 	}, nil
+}
+
+// KeyMatchesCert reports an error unless the private key's public part equals
+// certPub - confirming a parsed key and cert actually pair. key must implement
+// crypto.Signer (every key ParseClusterCAKey returns does).
+func KeyMatchesCert(key any, certPub crypto.PublicKey) error {
+	return keyMatchesCert(key, certPub)
+}
+
+func keyMatchesCert(key any, certPub crypto.PublicKey) error {
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return errors.New("key does not implement crypto.Signer")
+	}
+	type equalable interface {
+		Equal(crypto.PublicKey) bool
+	}
+	pub, ok := signer.Public().(equalable)
+	if !ok {
+		return errors.New("key public part is not comparable")
+	}
+	if !pub.Equal(certPub) {
+		return errors.New("key does not match cert public key")
+	}
+	return nil
 }
 
 // fileExists reports whether path exists, distinguishing a genuine

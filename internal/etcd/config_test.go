@@ -31,6 +31,17 @@ func TestConfigValidate(t *testing.T) {
 		{name: "missing data-dir", mutate: func(c *Config) { c.DataDir = "" }, wantErr: true},
 		{name: "missing peer-url", mutate: func(c *Config) { c.PeerURL = "" }, wantErr: true},
 		{name: "malformed peer-url", mutate: func(c *Config) { c.PeerURL = "://nope" }, wantErr: true},
+		{name: "https peer without tls files", mutate: func(c *Config) { c.PeerURL = "https://127.0.0.1:12380" }, wantErr: true},
+		{
+			name: "https peer with tls files",
+			mutate: func(c *Config) {
+				c.PeerURL = "https://127.0.0.1:12380"
+				c.PeerCertFile = "/x/peer.crt"
+				c.PeerKeyFile = "/x/peer.key"
+				c.PeerCAFile = "/x/ca.crt"
+			},
+			wantErr: false,
+		},
 		{name: "missing client-url", mutate: func(c *Config) { c.ClientURL = "" }, wantErr: true},
 		{name: "missing cluster-token", mutate: func(c *Config) { c.ClusterToken = "" }, wantErr: true},
 		{name: "bootstrap needs initial-cluster", mutate: func(c *Config) { c.Mode = ModeBootstrap }, wantErr: true},

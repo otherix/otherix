@@ -41,7 +41,7 @@ func TestClusterJoinReturnsCAKeyPair(t *testing.T) {
 
 	token := mintToken(t, h, adminTok, "cluster")
 
-	resp := h.post(t, "/v1/cluster/join", map[string]string{"token": token}, "")
+	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{"token": token})
 	if resp.StatusCode != 201 {
 		t.Fatalf("/v1/cluster/join status = %d, want 201", resp.StatusCode)
 	}
@@ -64,7 +64,7 @@ func TestClusterJoinRejectsNodeToken(t *testing.T) {
 
 	// A node-kind token must not redeem at the cluster endpoint.
 	nodeToken := mintToken(t, h, adminTok, "node")
-	resp := h.post(t, "/v1/cluster/join", map[string]string{"token": nodeToken}, "")
+	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{"token": nodeToken})
 	if resp.StatusCode != 401 {
 		t.Fatalf("node token at /v1/cluster/join status = %d, want 401", resp.StatusCode)
 	}
@@ -72,7 +72,7 @@ func TestClusterJoinRejectsNodeToken(t *testing.T) {
 
 func TestClusterJoinRejectsGarbageToken(t *testing.T) {
 	h := newE2E(t)
-	resp := h.post(t, "/v1/cluster/join", map[string]string{"token": "not-a-join-token"}, "")
+	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{"token": "not-a-join-token"})
 	if resp.StatusCode != 400 {
 		t.Fatalf("garbage token status = %d, want 400", resp.StatusCode)
 	}

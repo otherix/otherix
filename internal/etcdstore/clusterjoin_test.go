@@ -9,6 +9,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,57 @@ import (
 
 	"github.com/otherix/otherix/internal/store"
 )
+
+// TestRedeemClusterJoinTokenConcurrentMaxUses fires N concurrent redemptions at
+// a max_uses=1 cluster token and asserts exactly one wins. The CA private key is
+// the payload, so the cap must hold under a concurrent-POST race, not just
+// serially.
+func TestRedeemClusterJoinTokenConcurrentMaxUses(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	hash := []byte("cluster-concurrent")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
+		ID:        uuid.New(),
+		TokenHash: hash,
+		Kind:      store.JoinTokenKindCluster,
+		MaxUses:   &one,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+
+	const workers = 8
+	results := make([]error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			_, err := s.RedeemClusterJoinToken(ctx, store.RedeemClusterJoinTokenParams{TokenHash: hash})
+			results[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	successes, exhausted := 0, 0
+	for _, err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, store.ErrJoinTokenExhausted):
+			exhausted++
+		default:
+			t.Errorf("unexpected redemption error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("successes = %d, want exactly 1 (max_uses=1 under concurrency)", successes)
+	}
+	if exhausted != workers-1 {
+		t.Errorf("exhausted = %d, want %d", exhausted, workers-1)
+	}
+}
 
 func TestRedeemClusterJoinToken(t *testing.T) {
 	s, _ := startStore(t)
