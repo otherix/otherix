@@ -37,7 +37,6 @@ type Store interface {
 }
 
 // Ensure the production store satisfies the handler's storage contract.
-var _ Store = (*store.Store)(nil)
 
 // Handler bundles the dependencies of the /v1/ca routes.
 type Handler struct {

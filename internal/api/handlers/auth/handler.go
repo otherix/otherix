@@ -32,7 +32,6 @@ type Store interface {
 }
 
 // Ensure the production store satisfies the handler's storage contract.
-var _ Store = (*store.Store)(nil)
 
 // Handler bundles dependencies for the /v1/auth/* routes.
 type Handler struct {

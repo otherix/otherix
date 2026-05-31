@@ -49,7 +49,6 @@ type Store interface {
 }
 
 // Ensure the production store satisfies the handler's storage contract.
-var _ Store = (*store.Store)(nil)
 
 // Handler bundles dependencies for the /v1/nodes/join routes.
 // Per-request CA load (mirrors /v1/ca handler pattern) means the

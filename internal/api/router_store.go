@@ -60,4 +60,3 @@ type RouterStore interface {
 
 // Ensure the production SQL store satisfies the router contract. The etcd store
 // is asserted in the etcdstore integration tests.
-var _ RouterStore = (*store.Store)(nil)

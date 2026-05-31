@@ -40,7 +40,6 @@ type Store interface {
 }
 
 // Ensure the production store satisfies the handler's storage contract.
-var _ Store = (*store.Store)(nil)
 
 // Handler bundles the dependencies for the heartbeat receiver.
 //

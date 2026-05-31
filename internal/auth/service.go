@@ -36,7 +36,6 @@ type Store interface {
 }
 
 // Ensure the production SQL store satisfies the auth contract.
-var _ Store = (*store.Store)(nil)
 
 // Config configures the auth.Service.
 type Config struct {

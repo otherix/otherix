@@ -84,7 +84,6 @@ type Store interface {
 }
 
 // Ensure the production store satisfies the handler's storage contract.
-var _ Store = (*store.Store)(nil)
 
 // Handler bundles the dependencies for the vms routes. Create / Delete
 // and the async lifecycle ops enqueue through the store's

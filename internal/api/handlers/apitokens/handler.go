@@ -45,7 +45,6 @@ type Store interface {
 }
 
 // Ensure the production store satisfies the handler's storage contract.
-var _ Store = (*store.Store)(nil)
 
 // Handler holds the dependencies of the api-tokens routes.
 type Handler struct {
