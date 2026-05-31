@@ -281,6 +281,10 @@ type CaCert struct {
 	NotAfter          time.Time
 	Active            bool
 	CreatedAt         time.Time
+	// RetiredAt marks a CA rotated out of the trust set. NULL while the CA is
+	// still trusted; once stamped, ListTrustedCACerts stops advertising it. Only
+	// the rotation flow (future) writes it; today it is always NULL.
+	RetiredAt *time.Time
 }
 
 type ClusterSetting struct {

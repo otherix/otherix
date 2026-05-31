@@ -77,6 +77,63 @@ func TestCreateCACertSecondActiveConflicts(t *testing.T) {
 	}
 }
 
+func TestListTrustedCACertsEmpty(t *testing.T) {
+	s, _ := startStore(t)
+	got, err := s.ListTrustedCACerts(context.Background())
+	if err != nil {
+		t.Fatalf("ListTrustedCACerts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListTrustedCACerts(fresh) = %d certs, want 0", len(got))
+	}
+}
+
+func TestListTrustedCACertsReturnsActiveSigner(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := caParams()
+	if _, err := s.CreateCACert(ctx, p); err != nil {
+		t.Fatalf("CreateCACert: %v", err)
+	}
+	got, err := s.ListTrustedCACerts(ctx)
+	if err != nil {
+		t.Fatalf("ListTrustedCACerts: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListTrustedCACerts = %d certs, want 1", len(got))
+	}
+	if got[0].ID != p.ID {
+		t.Errorf("trusted CA id = %v, want %v", got[0].ID, p.ID)
+	}
+	if got[0].RetiredAt != nil {
+		t.Errorf("trusted CA retired_at = %v, want nil", got[0].RetiredAt)
+	}
+}
+
+func TestListTrustedCACertsExcludesExpired(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	expired := store.CreateCACertParams{
+		ID:                uuid.New(),
+		CertPem:           []byte("cert"),
+		KeyPem:            []byte("key"),
+		FingerprintSha256: []byte("fingerprint"),
+		NotBefore:         now.Add(-48 * time.Hour),
+		NotAfter:          now.Add(-24 * time.Hour),
+	}
+	if _, err := s.CreateCACert(ctx, expired); err != nil {
+		t.Fatalf("CreateCACert(expired): %v", err)
+	}
+	got, err := s.ListTrustedCACerts(ctx)
+	if err != nil {
+		t.Fatalf("ListTrustedCACerts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListTrustedCACerts(expired CA) = %d certs, want 0 (expired excluded)", len(got))
+	}
+}
+
 func TestDeactivateCACertsAllowsReprovision(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

@@ -5,8 +5,10 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +26,8 @@ import (
 // CA bootstrap traps.
 
 func caCertKey(id uuid.UUID) string { return etcd.Key("ca_certs", id.String()) }
+
+func caCertPrefix() string { return etcd.Key("ca_certs") + "/" }
 
 func caCertActiveGuard() string { return etcd.Key("uniq", "ca_certs", "active") }
 
@@ -50,6 +54,41 @@ func (s *Store) ActiveCACert(ctx context.Context) (store.CaCert, error) {
 		return store.CaCert{}, store.ErrNotFound
 	}
 	return ca, nil
+}
+
+// ListTrustedCACerts returns the trust set: every CA row that is not retired and
+// is currently within its validity window, sorted by created_at then id. This is
+// the bundle every verifier (agents, etcd peers, the CP) must trust, as opposed
+// to ActiveCACert which returns the single signer. Today the set has exactly one
+// member - the active signer - since rotation (which adds a second, transiently
+// overlapping CA) is not yet implemented.
+func (s *Store) ListTrustedCACerts(ctx context.Context) ([]store.CaCert, error) {
+	items, err := s.c.Range(ctx, caCertPrefix())
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	var out []store.CaCert
+	for _, kv := range items {
+		var ca store.CaCert
+		if err := json.Unmarshal(kv.Value, &ca); err != nil {
+			return nil, err
+		}
+		if ca.RetiredAt != nil {
+			continue
+		}
+		if now.Before(ca.NotBefore) || now.After(ca.NotAfter) {
+			continue
+		}
+		out = append(out, ca)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return out, nil
 }
 
 // CreateCACert inserts a new active cluster CA row, stamping created_at and
