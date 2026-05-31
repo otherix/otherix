@@ -82,7 +82,7 @@ func run() error {
 	defer cancel()
 
 	if *migrateAction != "" {
-		// ADR 0030: the etcd backend has no SQL migrations - the schema is
+		// The etcd backend has no SQL migrations - the schema is
 		// enforced application-side in internal/etcdstore. The flag is kept as
 		// a no-op so existing deploy scripts (init containers, Helm hooks)
 		// that still invoke --migrate-action=up do not fail.

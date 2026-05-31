@@ -4,7 +4,7 @@ server:
   write_timeout: 30s
   shutdown_grace: 30s
 
-# Embedded etcd member backing the control-plane store (ADR 0030). etcd is
+# Embedded etcd member backing the control-plane store. etcd is
 # the only stateful service — there is no separate database process. The
 # single-node defaults below let a standalone api-server boot with no
 # operator input; HA topologies (3-node) override mode + initial_cluster +
@@ -38,7 +38,7 @@ etcd:
   # peer_key_file:  "/etc/otherix/peer/tls.key"
   # peer_ca_file:   "/etc/otherix/peer/ca.crt"
 
-# DEPRECATED (ADR 0030): the control plane no longer uses PostgreSQL — the
+# DEPRECATED: the control plane no longer uses PostgreSQL — the
 # embedded etcd member above is the only stateful service. This block is kept
 # only so deploy scripts that still set a dsn parse cleanly; it is ignored at
 # boot and removed entirely in the pgx cutover.

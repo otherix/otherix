@@ -148,14 +148,14 @@ run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd,
 # ========== Dev environment ==========
 
 # etcd-reset wipes the dev member's gitignored data dir for a clean-slate smoke
-# run (the ADR 0030 etcd analogue of db-reset). The api-server recreates the
+# run (the etcd analogue of db-reset). The api-server recreates the
 # dir + bootstraps the admin / cluster CA on next boot. Path mirrors
 # dev/config/api.yaml's etcd.data_dir.
 .PHONY: etcd-reset
 etcd-reset: ## Wipe the dev embedded-etcd data dir for a clean-slate smoke run
 	rm -rf .local/etcd
 
-# Postgres dev compose is LEGACY (ADR 0030): the control plane now boots on
+# Postgres dev compose is LEGACY: the control plane now boots on
 # embedded etcd and these targets are no longer part of the run-api-dev /
 # local-dev-start path. They survive only for the pgx integration suite
 # (make test-migrations spins its own testcontainer) and are removed entirely

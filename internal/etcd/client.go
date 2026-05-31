@@ -20,7 +20,7 @@ const KeyPrefix = "/otherix/"
 
 // MaxValueBytes caps a single value below etcd's default 1.5 MiB request limit,
 // leaving headroom for the key plus transaction framing. The API edge enforces
-// tighter per-field maxima (ADR 0030 #1); this is the backstop the KV layer
+// tighter per-field maxima; this is the backstop the KV layer
 // refuses to cross.
 const MaxValueBytes = 1024 * 1024
 
@@ -169,7 +169,7 @@ type KV struct {
 
 // Range returns every key/value under prefix, sorted by key ascending. Intended
 // for bounded collections; hot-path filtered lists use secondary-index prefixes
-// plus RangePaged, never an ad-hoc scan (ADR 0030 #7).
+// plus RangePaged, never an ad-hoc scan.
 func (c *Client) Range(ctx context.Context, prefix string) ([]KV, error) {
 	resp, err := c.c.Get(ctx, prefix,
 		clientv3.WithPrefix(),

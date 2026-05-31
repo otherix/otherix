@@ -125,7 +125,7 @@ func buildEmbedConfig(cfg *Config, log *slog.Logger) (*embed.Config, error) {
 	// Peer (Raft) mTLS. ClientCertAuth makes etcd require and verify a client
 	// cert on every inbound peer connection against the cluster CA, so a member
 	// without a cluster-issued cert cannot join the Raft transport - the
-	// protection for replicas talking over public networks (ADR 0030 #6).
+	// protection for replicas talking over public networks.
 	if cfg.peerTLSEnabled() {
 		ec.PeerTLSInfo.CertFile = cfg.PeerCertFile
 		ec.PeerTLSInfo.KeyFile = cfg.PeerKeyFile

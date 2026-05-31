@@ -15,7 +15,7 @@ import (
 // etcd logs through zap, Otherix logs through slog. Rather than switch Otherix
 // to zap, we hand etcd a zap.Logger whose core forwards every entry into
 // Otherix's slog handler, so etcd's internal logs join the one slog stream
-// (same format, sink, and level control). ADR 0030 constraint #5.
+// (same format, sink, and level control).
 
 // slogZapCore is a zapcore.Core that forwards entries to an slog.Logger. It
 // accumulates With()-bound fields and converts zap fields to slog attrs via a

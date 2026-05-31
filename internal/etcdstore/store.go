@@ -2,7 +2,7 @@
 // Copyright 2026 Andrei Taranik
 
 // Package etcdstore implements the control-plane storage surface over embedded
-// etcd (ADR 0030 Phase 3). It satisfies the same per-handler-package Store
+// etcd. It satisfies the same per-handler-package Store
 // interfaces the SQL-backed *store.Store satisfies, reusing the model, param,
 // and sentinel types from the store package so handlers stay untouched until
 // cutover.
@@ -20,7 +20,7 @@
 //     index and scan the primary prefix instead.
 //   - Application-layer enforcement of what the schema used to enforce:
 //     constraints, uniqueness, FK-cascade blocking, and updated_at bumps all
-//     move into these methods (ADR 0030 #7).
+//     move into these methods.
 package etcdstore
 
 import (

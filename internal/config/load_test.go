@@ -97,8 +97,8 @@ func TestLoadAgentBadPortRange(t *testing.T) {
 
 func TestLoadAPIDefaultsOnly(t *testing.T) {
 	// The defaults are deliberately incomplete: the operator must supply a
-	// jwt_secret. The database dsn is no longer required (etcd backend,
-	// ADR 0030), so the first missing-config failure is now the auth secret.
+	// jwt_secret. The database dsn is no longer required on the etcd backend,
+	// so the first missing-config failure is now the auth secret.
 	cfg, err := LoadAPI("")
 	if err == nil {
 		t.Fatalf("LoadAPI(\"\") = nil, want error (no jwt_secret in defaults)")

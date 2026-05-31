@@ -15,7 +15,7 @@ import (
 
 // TestZapToSlogBridge proves an etcd-style zap log line lands in the Otherix
 // slog stream tagged source=etcd, carrying its structured field, at the mapped
-// slog level - the ADR 0030 constraint #5 bridge.
+// slog level - the zap-to-slog bridge.
 func TestZapToSlogBridge(t *testing.T) {
 	var buf bytes.Buffer
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})

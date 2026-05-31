@@ -28,7 +28,7 @@ type APIConfig struct {
 }
 
 // EtcdConfig configures the embedded etcd member that backs the
-// control-plane store (ADR 0030). The single-node defaults let a
+// control-plane store. The single-node defaults let a
 // standalone api-server boot with no operator input; HA topologies
 // (slice 9) override Mode + InitialCluster + the peer mTLS material.
 //
@@ -570,7 +570,7 @@ func (c APIConfig) Validate() error {
 	if err := c.CPCert.Validate(); err != nil {
 		return err
 	}
-	// Database is legacy on the etcd backend (ADR 0030); the embedded
+	// Database is legacy on the etcd backend; the embedded
 	// etcd member is the only stateful service. The dsn is no longer
 	// required, so Database is not validated here. The block remains in
 	// the struct until the pgx cutover (slice 8) removes it.

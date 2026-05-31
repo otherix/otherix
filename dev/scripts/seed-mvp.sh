@@ -54,7 +54,7 @@ fi
 
 # node_id_by_name reads the node's UUID through the CLI (admin-authed by the
 # time this runs), replacing the old direct Postgres query - the control plane
-# now stores nodes in embedded etcd (ADR 0030) and the CLI is the only public
+# now stores nodes in embedded etcd and the CLI is the only public
 # read path. Prints the id on stdout, or nothing when the node is not yet
 # visible. Extraction is jq-free: the node JSON's "id" is a UUID string.
 node_id_by_name() {

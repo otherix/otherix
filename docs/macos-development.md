@@ -50,7 +50,7 @@ edit the VM template.
 
 ```bash
 # 1. (no external dependencies) The control plane runs an embedded etcd
-#    member (ADR 0030) - there is no Postgres to start and no migrations
+#    member - there is no Postgres to start and no migrations
 #    to apply. For a clean-slate run, wipe any prior dev state:
 make etcd-reset
 
@@ -419,7 +419,7 @@ dependent disks/images first.
 
 **Note:** `seed-mvp.sh` registers the initial pool through `otherix pool
 create` (no direct store access - the control plane is the sole writer,
-now backed by embedded etcd per ADR 0030). The agent's pool registry is
+now backed by embedded etcd). The agent's pool registry is
 name-keyed and populated through reconciliation from CP (the `pools:`
 block in `agent.yaml` is eliminated), so CLI-created pools work
 end-to-end including agent-side image import + vm-disk allocation.
@@ -632,7 +632,7 @@ through the full sequence.
 1. Steps 0+1+2 of this doc completed (Lima VM running, agent built,
    mTLS certs generated).
 2. No external store to provision: the api-server runs an embedded etcd
-   member (ADR 0030). For a clean-slate run, `make etcd-reset`.
+   member. For a clean-slate run, `make etcd-reset`.
 3. Bootstrap admin seeded — set the env vars BEFORE the first api
    start, then start the api with the dev config:
    ```bash

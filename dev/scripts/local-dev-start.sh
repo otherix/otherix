@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # local-dev-start — one-shot orchestration of the full local dev stack.
 #
-# Brings up api-server (embedded etcd, ADR 0030) + Lima VM + agent + CLI
+# Brings up api-server (embedded etcd) + Lima VM + agent + CLI
 # cluster config so that `./bin/otherix` works against a fresh local cluster
 # without any further setup. No Postgres, no migrations - the api-server runs
 # its own embedded etcd member (dev data dir .local/etcd).

@@ -2,7 +2,7 @@
 // Copyright 2026 Andrei Taranik
 
 // Package etcd embeds an etcd v3 cluster member in the Otherix control-plane
-// process (ADR 0030). One code path runs three operator-selected topologies:
+// process. One code path runs three operator-selected topologies:
 // single-node (default), 3-node HA, and a single->HA transition via learner
 // promotion. This package owns the embedded runtime lifecycle and the
 // zap->slog logging bridge; higher layers build a KV client over it
