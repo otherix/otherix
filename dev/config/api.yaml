@@ -35,9 +35,21 @@ etcd:
   mode:          "single"
   name:          "otherix-dev-0"
   data_dir:      ".local/etcd"
-  peer_url:      "http://127.0.0.1:2380"
+  # Peer mTLS is always on (uniform single-node + HA). https peer URL +
+  # auto-generated peer cert under a gitignored, dev-user-writable dir
+  # (the production default /opt/otherix/peer needs root).
+  peer_url:      "https://127.0.0.1:2380"
+  peer_auto_dir: ".local/pki/peer"
   client_url:    "http://127.0.0.1:2379"
   cluster_token: "otherix-dev"
+
+# Cluster CA on disk (provisioned before etcd starts; the peer plane needs it
+# pre-start). Dev points it at a gitignored, dev-user-writable dir; production
+# defaults to /opt/otherix/ca (needs root). `make etcd-reset` wipes .local/pki
+# too, so a reset re-generates a fresh CA in lockstep with the etcd data dir.
+cluster_ca:
+  cert_file: ".local/pki/cluster-ca.crt"
+  key_file:  ".local/pki/cluster-ca.key"
 
 logger:
   level: "info"
@@ -146,6 +158,6 @@ cp_cert:
     - "host.lima.internal"
   local_cache:
     enabled:   true
-    cert_path: "/opt/otherix/certs/cp-cert.crt"
-    key_path:  "/opt/otherix/certs/cp-cert.key"
+    cert_path: ".local/pki/cp-cert.crt"
+    key_path:  ".local/pki/cp-cert.key"
   validity: "8760h"

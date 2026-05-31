@@ -46,9 +46,10 @@ type EtcdConfig struct {
 	ClientURL      string `koanf:"client_url"`      // client advertise/listen URL
 	ClusterToken   string `koanf:"cluster_token"`   // initial-cluster token; isolates clusters on shared networks
 	InitialCluster string `koanf:"initial_cluster"` // full member list "n0=peer0,n1=peer1,..." (bootstrap|join)
-	PeerCertFile   string `koanf:"peer_cert_file"`  // peer (Raft) mTLS leaf cert
-	PeerKeyFile    string `koanf:"peer_key_file"`   // peer (Raft) mTLS leaf key
-	PeerCAFile     string `koanf:"peer_ca_file"`    // cluster CA trust anchor for peer mTLS
+	PeerCertFile   string `koanf:"peer_cert_file"`  // operator-provided peer (Raft) mTLS leaf cert (used verbatim when set)
+	PeerKeyFile    string `koanf:"peer_key_file"`   // operator-provided peer (Raft) mTLS leaf key
+	PeerCAFile     string `koanf:"peer_ca_file"`    // operator-provided cluster CA trust anchor for peer mTLS
+	PeerAutoDir    string `koanf:"peer_auto_dir"`   // directory the auto-generated peer cert/key/ca land in when no operator override is set
 
 	CompactionMode      string `koanf:"compaction_mode"`      // periodic | revision (default periodic)
 	CompactionRetention string `koanf:"compaction_retention"` // duration "1h" (periodic) or count "5000" (revision); default "1h"
@@ -588,6 +589,7 @@ func defaultAPIConfig() APIConfig {
 			PeerURL:      "https://127.0.0.1:2380",
 			ClientURL:    "http://127.0.0.1:2379",
 			ClusterToken: "otherix-cluster",
+			PeerAutoDir:  "/opt/otherix/peer",
 		},
 	}
 }

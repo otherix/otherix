@@ -355,6 +355,7 @@ func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
 		PeerURL:      "https://127.0.0.1:2380",
 		ClientURL:    "http://127.0.0.1:2379",
 		ClusterToken: "otherix-cluster",
+		PeerAutoDir:  "/opt/otherix/peer",
 	}
 	if got != want {
 		t.Errorf("defaultAPIConfig().Etcd = %+v, want %+v", got, want)

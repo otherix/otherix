@@ -133,12 +133,14 @@ run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd,
 
 # ========== Dev environment ==========
 
-# etcd-reset wipes the dev member's gitignored data dir for a clean-slate smoke
-# run. The api-server recreates the dir + bootstraps the admin / cluster CA on
-# next boot. Path mirrors dev/config/api.yaml's etcd.data_dir.
+# etcd-reset wipes the dev member's gitignored data dir AND the dev PKI for a
+# clean-slate smoke run. The api-server recreates the data dir, regenerates the
+# on-disk cluster CA + peer cert, and bootstraps the admin on next boot. Wiping
+# both in lockstep avoids a disk-CA/etcd-CA divergence (the on-disk CA is the
+# source of truth synced into etcd at boot). Paths mirror dev/config/api.yaml.
 .PHONY: etcd-reset
-etcd-reset: ## Wipe the dev embedded-etcd data dir for a clean-slate smoke run
-	rm -rf .local/etcd
+etcd-reset: ## Wipe the dev embedded-etcd data dir + PKI for a clean-slate smoke run
+	rm -rf .local/etcd .local/pki
 
 # ========== Dev environment (agent) ==========
 

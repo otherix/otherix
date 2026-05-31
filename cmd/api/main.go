@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,17 +35,6 @@ import (
 )
 
 const componentName = "api"
-
-// Default auto-generated etcd peer mTLS material paths. Used when the
-// operator leaves etcd.peer_cert_file / peer_key_file / peer_ca_file unset:
-// the api-server signs a fresh peer cert from the on-disk cluster CA on each
-// boot and writes it here. Under /opt/otherix (runtime state) per the
-// filesystem convention.
-const (
-	defaultPeerCertPath = "/opt/otherix/peer/peer.crt"
-	defaultPeerKeyPath  = "/opt/otherix/peer/peer.key"
-	defaultPeerCAPath   = "/opt/otherix/peer/ca.crt"
-)
 
 // workerMaxAttempts is the per-kind retry budget the dispatcher applies to every
 // async task kind. Mirrors the river MaxAttempts (25) set at enqueue time across
@@ -136,9 +126,9 @@ func run() error {
 		OperatorCertFile: cfg.Etcd.PeerCertFile,
 		OperatorKeyFile:  cfg.Etcd.PeerKeyFile,
 		OperatorCAFile:   cfg.Etcd.PeerCAFile,
-		GenCertPath:      defaultPeerCertPath,
-		GenKeyPath:       defaultPeerKeyPath,
-		GenCAPath:        defaultPeerCAPath,
+		GenCertPath:      filepath.Join(cfg.Etcd.PeerAutoDir, "peer.crt"),
+		GenKeyPath:       filepath.Join(cfg.Etcd.PeerAutoDir, "peer.key"),
+		GenCAPath:        filepath.Join(cfg.Etcd.PeerAutoDir, "peer-ca.crt"),
 	}, time.Now(), log)
 	if err != nil {
 		return fmt.Errorf("provision peer cert: %v", err)

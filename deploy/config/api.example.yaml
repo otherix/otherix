@@ -45,8 +45,10 @@ etcd:
   # compaction_retention: "1h"
   # initial_cluster: "otherix-0=https://10.0.0.10:2380,otherix-1=https://10.0.0.11:2380,otherix-2=https://10.0.0.12:2380"
   # Peer mTLS material. Left unset, the api-server auto-generates a peer cert
-  # from the on-disk cluster CA on each boot (default /opt/otherix/peer/...).
-  # Set all three to supply externally-managed peer material instead.
+  # from the on-disk cluster CA on each boot, writing it under peer_auto_dir.
+  # peer_auto_dir: "/opt/otherix/peer"
+  # Set all three peer_*_file to supply externally-managed peer material
+  # instead (used verbatim; the cold multi-node bootstrap path).
   # peer_cert_file: "/etc/otherix/peer/tls.crt"
   # peer_key_file:  "/etc/otherix/peer/tls.key"
   # peer_ca_file:   "/etc/otherix/peer/ca.crt"
