@@ -82,6 +82,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, riverClient *river.Client[pg
 		Store:              s,
 		AuthService:        authSvc,
 		RiverClient:        riverClient,
+		HealthCheckName:    "etcd",
 		ImageDeleter:       imageDeleter,
 		StoragePools:       cfg.StoragePools,
 		Logger:             log,

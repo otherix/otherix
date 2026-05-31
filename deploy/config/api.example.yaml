@@ -4,11 +4,49 @@ server:
   write_timeout: 30s
   shutdown_grace: 30s
 
-database:
-  dsn: "postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable"
-  max_conns: 10
-  min_conns: 2
-  max_conn_lifetime: 1h
+# Embedded etcd member backing the control-plane store (ADR 0030). etcd is
+# the only stateful service — there is no separate database process. The
+# single-node defaults below let a standalone api-server boot with no
+# operator input; HA topologies (3-node) override mode + initial_cluster +
+# the peer mTLS material.
+#
+#   mode             single | bootstrap | join
+#                      single    — self-only cluster, quorum of 1 (homelab/dev).
+#                      bootstrap — every member of a fresh HA cluster starts
+#                                  together to form quorum (initial_cluster required).
+#                      join      — add this member to an already-running cluster
+#                                  (initial_cluster required, including self).
+#   name             unique member name within the cluster.
+#   data_dir         member data directory (WAL + snapshots). Persist across restarts.
+#   peer_url         Raft peer advertise/listen URL.
+#   client_url       client advertise/listen URL.
+#   cluster_token    isolates clusters that share a network; distinct token per cluster.
+#   initial_cluster  full member list "n0=https://h0:2380,n1=https://h1:2380,..."
+#                    (bootstrap | join only).
+#   peer_{cert,key,ca}_file  peer (Raft) mTLS material issued by the cluster CA.
+#                            Set all three to require mutual TLS between members
+#                            (peer URLs must then use https).
+etcd:
+  mode:          "single"
+  name:          "otherix-0"
+  data_dir:      "/opt/otherix/etcd"
+  peer_url:      "http://127.0.0.1:2380"
+  client_url:    "http://127.0.0.1:2379"
+  cluster_token: "otherix-cluster"
+  # initial_cluster: "otherix-0=https://10.0.0.10:2380,otherix-1=https://10.0.0.11:2380,otherix-2=https://10.0.0.12:2380"
+  # peer_cert_file: "/etc/otherix/peer/tls.crt"
+  # peer_key_file:  "/etc/otherix/peer/tls.key"
+  # peer_ca_file:   "/etc/otherix/peer/ca.crt"
+
+# DEPRECATED (ADR 0030): the control plane no longer uses PostgreSQL — the
+# embedded etcd member above is the only stateful service. This block is kept
+# only so deploy scripts that still set a dsn parse cleanly; it is ignored at
+# boot and removed entirely in the pgx cutover.
+# database:
+#   dsn: "postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable"
+#   max_conns: 10
+#   min_conns: 2
+#   max_conn_lifetime: 1h
 
 logger:
   level: "info"

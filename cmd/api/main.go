@@ -9,28 +9,34 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
+	"time"
 
 	"github.com/otherix/otherix/internal/api"
 	"github.com/otherix/otherix/internal/api/agentclient"
+	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
+	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
+	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
+	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/logger"
-	"github.com/otherix/otherix/internal/store"
-	"github.com/otherix/otherix/internal/store/migrate"
 	"github.com/otherix/otherix/internal/version"
+	"github.com/otherix/otherix/internal/worker"
 )
 
 const componentName = "api"
+
+// workerMaxAttempts is the per-kind retry budget the dispatcher applies to every
+// async task kind. Mirrors the river MaxAttempts (25) set at enqueue time across
+// vm.create / vm.delete / vm.* lifecycle / storage_pool.scan / storage_image.import.
+const workerMaxAttempts = 25
 
 func main() {
 	if err := run(); err != nil {
@@ -43,7 +49,7 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "/etc/otherix/api.yaml", "path to config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	migrateAction := flag.String("migrate-action", "", "if set, run migration and exit (up|down|status)")
+	migrateAction := flag.String("migrate-action", "", "legacy no-op on the etcd backend (kept for deploy-script compatibility)")
 	hashPassword := flag.String("hash-password", "", "if set, print an argon2id hash of the given plaintext and exit (for bootstrap)")
 	flag.Parse()
 
@@ -76,11 +82,11 @@ func run() error {
 	defer cancel()
 
 	if *migrateAction != "" {
-		if err := runMigration(ctx, cfg.Database.DSN, migrate.Action(*migrateAction), log); err != nil {
-			log.Error("migration failed", "action", *migrateAction, "error", err)
-			return errors.New("migration failed")
-		}
-		log.Info("migration completed", "action", *migrateAction)
+		// ADR 0030: the etcd backend has no SQL migrations — the schema is
+		// enforced application-side in internal/etcdstore. The flag is kept as
+		// a no-op so existing deploy scripts (init containers, Helm hooks)
+		// that still invoke --migrate-action=up do not fail.
+		log.Info("migrate-action is a no-op on the etcd backend; skipping", "action", *migrateAction)
 		return nil
 	}
 
@@ -95,35 +101,47 @@ func run() error {
 		log.Warn("placement config", "warning", msg)
 	}
 
-	s, err := store.NewStore(ctx, cfg.Database)
+	// Start the embedded etcd member, then build the KV client and the
+	// etcd-backed store over it. Deferred cleanup runs LIFO: the client closes
+	// before the member stops, both bounded by ShutdownGrace.
+	rt, err := etcd.Start(ctx, etcdConfigFromAPI(cfg.Etcd), log)
 	if err != nil {
-		return fmt.Errorf("store init: %v", err)
+		return fmt.Errorf("etcd start: %v", err)
 	}
-	defer s.Close()
+	defer rt.Stop(cfg.Server.ShutdownGrace)
+
+	cli := etcd.NewClient(rt)
+	defer func() {
+		// Close races the shutdown context cancellation; a context.Canceled
+		// here is the benign result of a clean shutdown, not a failure.
+		if cerr := cli.Close(); cerr != nil && !errors.Is(cerr, context.Canceled) {
+			log.Error("etcd client close", "error", cerr)
+		}
+	}()
+	st := etcdstore.New(cli)
 
 	authSvc, err := auth.NewService(auth.Config{
 		JWTSecret:    []byte(cfg.Auth.JWTSecret),
 		JWTAccessTTL: cfg.Auth.JWTAccessTTL,
 		RefreshTTL:   cfg.Auth.JWTRefreshTTL,
-	}, s)
+	}, st)
 	if err != nil {
 		return fmt.Errorf("auth init: %v", err)
 	}
 
-	return runServe(ctx, cfg, s, authSvc, log)
+	return runServe(ctx, cfg, st, authSvc, log)
 }
 
-// runServe handles the post-bootstrap serving lifecycle — extracted
-// from run() to keep cyclomatic complexity under gocyclo's ceiling.
-// Threading is straightforward: bootstrap hooks → CP cert load → agent
-// client → river → HTTP server. Each step's failure path returns
-// after wrapping the error.
-func runServe(ctx context.Context, cfg *config.APIConfig, s *store.Store, authSvc *auth.Service, log *slog.Logger) error {
-	if err := runBootstrapHooks(ctx, s, log); err != nil {
+// runServe handles the post-bootstrap serving lifecycle — extracted from run()
+// to keep cyclomatic complexity under gocyclo's ceiling. Threading: bootstrap
+// hooks → CP cert load → agent client → worker runtime → HTTP server. Each
+// step's failure path returns after wrapping the error.
+func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, authSvc *auth.Service, log *slog.Logger) error {
+	if err := runBootstrapHooks(ctx, st, log); err != nil {
 		return err
 	}
 
-	material, err := api.LoadOrGenerateCPCert(ctx, s, *cfg, log)
+	material, err := api.LoadOrGenerateCPCert(ctx, st, *cfg, log)
 	if err != nil {
 		return fmt.Errorf("cp cert: %v", err)
 	}
@@ -133,13 +151,17 @@ func runServe(ctx context.Context, cfg *config.APIConfig, s *store.Store, authSv
 		return fmt.Errorf("agent client: %v", err)
 	}
 
-	riverClient, stopRiver, err := startRiver(ctx, cfg, s, agentClient, log)
+	stopWorkers, err := startWorkers(ctx, cfg, st, agentClient, log)
 	if err != nil {
 		return err
 	}
 
+	// riverClient is nil on the etcd backend: the etcd store self-enqueues
+	// (EnqueueTask writes the job inline) and tasks.cancel cancels through the
+	// store, so no river binder is needed. NewRouter skips SetQueueBinder when
+	// the client is nil.
 	server, err := api.NewServer(
-		*cfg, s, riverClient, agentClient,
+		*cfg, st, nil, agentClient,
 		vmshandlers.LifecycleDeps{AgentClient: agentClient},
 		vmshandlers.ConsoleDeps{AgentClient: agentClient, AccessMode: cfg.Console.AccessMode},
 		authSvc, material, log)
@@ -150,117 +172,160 @@ func runServe(ctx context.Context, cfg *config.APIConfig, s *store.Store, authSv
 		return fmt.Errorf("server: %v", err)
 	}
 
-	stopRiver()
+	stopWorkers()
 
 	log.Info("shutting down")
 	return nil
 }
 
-// runBootstrapHooks runs the post-migration / pre-serve bootstrap
-// hooks in the canonical order: BootstrapAdmin first (seeds the first
-// admin user), then BootstrapClusterCA (provisions the cluster CA so
-// the /v1/ca endpoint and the Step 2 CSR signer have an active row).
-// Both hooks are idempotent — repeat boots observe existing rows and
-// no-op.
-func runBootstrapHooks(ctx context.Context, s *store.Store, log *slog.Logger) error {
-	if err := api.BootstrapAdmin(ctx, s, log); err != nil {
+// runBootstrapHooks runs the post-start / pre-serve bootstrap hooks in the
+// canonical order: BootstrapAdmin first (seeds the first admin user), then
+// BootstrapClusterCA (provisions the cluster CA so the /v1/ca endpoint and the
+// Step 2 CSR signer have an active row). Both hooks are idempotent — repeat
+// boots observe existing rows and no-op.
+func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, log *slog.Logger) error {
+	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap admin: %v", err)
 	}
-	if err := api.BootstrapClusterCA(ctx, s, log); err != nil {
+	if err := api.BootstrapClusterCA(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap cluster CA: %v", err)
 	}
 	return nil
 }
 
-// startRiver constructs the in-process river client and starts it
-// when cfg.Workers.Enabled. Returns the client (always non-nil so
-// `tasks.cancel` can issue JobCancelTx against river_job even with
-// workers disabled), and a stop closure the caller invokes after the
-// HTTP servers have drained. Disabled-mode skips Start; the stop
+// startWorkers launches the etcd job dispatcher and the periodic scheduler when
+// cfg.Workers.Enabled. Both run for the lifetime of ctx; the returned closure
+// blocks until they have drained in-flight work after ctx is cancelled — the
+// caller invokes it once the HTTP servers have stopped. Disabled-mode runs
+// neither (async tasks stay pending, periodic maintenance does not run) and the
 // closure is a no-op.
-//
-// Stop runs against a fresh background context bounded by
-// ShutdownGrace because the parent ctx is already cancelled by the
-// time the caller invokes the closure.
-func startRiver(ctx context.Context, cfg *config.APIConfig, s *store.Store, agentClient *agentclient.Client, log *slog.Logger) (*river.Client[pgx.Tx], func(), error) {
-	var (
-		scanExecutor        storagepoolshandlers.ScanExecutor
-		importExecutor      storagepoolshandlers.ImportExecutor
-		vmCreateExecutor    vmshandlers.CreateExecutor
-		vmDeleteExecutor    vmshandlers.DeleteExecutor
-		vmLifecycleExecutor vmshandlers.LifecycleExecutor
-	)
-	if cfg.Workers.Enabled {
-		// Workers running require the agent client: scan / import / vm
-		// executors all talk to agents over mTLS. Booting Enabled=true
-		// without the client would either silently wedge tasks or
-		// (on a stub path) ship fake bytes — neither is acceptable
-		// in production.
-		if agentClient == nil {
-			return nil, nil, errors.New("workers.enabled requires agent_client.enabled — provision mTLS material")
-		}
-		scanExecutor = storagepoolshandlers.NewAgentScanExecutor(agentClient)
-		importExecutor = storagepoolshandlers.NewAgentImportExecutor(agentClient)
-		vmCreateExecutor = vmshandlers.NewAgentVMCreateExecutor(agentClient)
-		vmDeleteExecutor = vmshandlers.NewAgentVMDeleteExecutor(agentClient)
-		vmLifecycleExecutor = vmshandlers.NewAgentVMLifecycleExecutor(agentClient)
-	}
-	// BuildRiverClient validates MaxWorkers > 0. When Workers.Enabled
-	// is false we still build the client so tasks.cancel can issue
-	// JobCancelTx, but the queue is never Started — MaxWorkers is
-	// irrelevant. Synthesise a minimum value to pass the check while
-	// preserving the strict validation for the explicit Enabled=true +
-	// MaxWorkers=0 misconfig case.
-	workersCfg := cfg.Workers
-	if !workersCfg.Enabled && workersCfg.MaxWorkers <= 0 {
-		workersCfg.MaxWorkers = 1
-	}
-	c, err := api.BuildRiverClient(api.RiverDeps{
-		Pool:                s.Pool(),
-		Cfg:                 workersCfg,
-		Logger:              log,
-		Store:               s,
-		ScanExecutor:        scanExecutor,
-		ImportExecutor:      importExecutor,
-		VMCreateExecutor:    vmCreateExecutor,
-		VMDeleteExecutor:    vmDeleteExecutor,
-		VMLifecycleExecutor: vmLifecycleExecutor,
-		AgentClient:         agentClient,
-		PressureDisk:        cfg.Placement.Pressure.Disk,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("river client: %v", err)
-	}
+func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, agentClient *agentclient.Client, log *slog.Logger) (func(), error) {
 	if !cfg.Workers.Enabled {
-		return c, func() {}, nil
+		log.Info("workers disabled; async tasks will remain pending and periodic maintenance will not run")
+		return func() {}, nil
 	}
-	if err := c.Start(ctx); err != nil {
-		return nil, nil, fmt.Errorf("river start: %v", err)
+	// Workers require the agent client: the create / delete / lifecycle / scan /
+	// import handlers all talk to agents over mTLS. Booting Enabled=true without
+	// the client would wedge every task in pending.
+	if agentClient == nil {
+		return nil, errors.New("workers.enabled requires agent_client.enabled — provision mTLS material")
 	}
-	stop := func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
-		defer cancel()
-		if err := c.Stop(stopCtx); err != nil {
-			log.Error("river stop", "error", err)
-		}
-	}
-	return c, stop, nil
+
+	dispatcher := buildDispatcher(st, agentClient, cfg, log)
+	scheduler := buildScheduler(st, cfg, log)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = dispatcher.Run(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		_ = scheduler.Run(ctx)
+	}()
+
+	return wg.Wait, nil
 }
 
-// buildAgentClient constructs the *agentclient.Client used by both
-// the scan executor and the storage_image.delete handler.
-// Returns (nil, nil) when AgentClient.Enabled is
-// false — the api binary still boots so HTTP-only smoke testing
-// stays available; the consumer paths each emit their own
-// degradation envelope (scan tasks pile up in pending; the delete
-// handler returns 502 agent_unreachable on the count==0 path).
+// buildDispatcher registers the six async task-kind handlers on a dispatcher
+// polling the etcd job queue. Each handler reuses the production agent executor
+// and the backend-agnostic Run-form worker in its owning handler package.
+func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *config.APIConfig, log *slog.Logger) *worker.Dispatcher {
+	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
+
+	d.Register("vm.create", workerMaxAttempts,
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log))
+	d.Register("vm.delete", workerMaxAttempts,
+		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log))
+
+	lifecycleExec := vmshandlers.NewAgentVMLifecycleExecutor(agentClient)
+	for _, lk := range vmshandlers.LifecycleKinds() {
+		d.Register(lk.Kind, workerMaxAttempts,
+			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode))
+	}
+
+	d.Register("storage_pool.scan", workerMaxAttempts,
+		storagepoolshandlers.ScanHandler(st, storagepoolshandlers.NewAgentScanExecutor(agentClient), cfg.Placement.Pressure.Disk, log))
+	d.Register("storage_image.import", workerMaxAttempts,
+		storagepoolshandlers.ImportHandler(st, storagepoolshandlers.NewAgentImportExecutor(agentClient), log))
+
+	return d
+}
+
+// buildScheduler registers the periodic maintenance functions on a scheduler.
+// Cadences mirror the river periodic registrations: hourly retention sweeps, the
+// heartbeat reconcile on the configured interval (run-on-start so a restart
+// promotes nodes that kept heartbeating), and the scan trigger when enabled.
+func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger) *worker.Scheduler {
+	s := worker.NewScheduler(log)
+
+	s.Register("tasks.cleanup", time.Hour, false,
+		taskshandlers.CleanupFunc(st, taskshandlers.RetentionConfig{
+			Completed: cfg.Workers.Tasks.Retention.Completed,
+			Failed:    cfg.Workers.Tasks.Retention.Failed,
+		}, log))
+
+	s.Register("heartbeat.reconcile", positiveOr(cfg.Workers.Heartbeat.Interval, 30*time.Second), true,
+		heartbeathandlers.ReconcileFunc(st, heartbeathandlers.ReconcileConfig{
+			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,
+			Interval:       cfg.Workers.Heartbeat.Interval,
+		}, log))
+
+	s.Register("auth.refresh_token_cleanup", time.Hour, false,
+		auth.RefreshTokenCleanupFunc(st, log))
+
+	s.Register("idempotency.cleanup", time.Hour, false,
+		middleware.IdempotencyCleanupFunc(st, log))
+
+	if cfg.Workers.StoragePoolScan.Enabled {
+		s.Register("storage_pool.scan_trigger", positiveOr(cfg.Workers.StoragePoolScan.Interval, 15*time.Minute), false,
+			storagepoolshandlers.ScanTriggerFunc(st, log))
+	}
+
+	return s
+}
+
+// positiveOr returns d when it is positive, else fallback. Guards the scheduler
+// tickers against a 0 interval (time.NewTicker panics on a non-positive
+// duration) when an operator explicitly zeroes a cadence in config.
+func positiveOr(d, fallback time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return fallback
+}
+
+// etcdConfigFromAPI translates the koanf-bound config.EtcdConfig into the leaf
+// internal/etcd.Config. internal/etcd is a leaf package so it does not import
+// config; the api binary copies fields here. etcd.Config.Validate (invoked by
+// etcd.Start) is the single source of truth for the invariants.
+func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
+	return &etcd.Config{
+		Mode:           etcd.Mode(c.Mode),
+		Name:           c.Name,
+		DataDir:        c.DataDir,
+		PeerURL:        c.PeerURL,
+		ClientURL:      c.ClientURL,
+		ClusterToken:   c.ClusterToken,
+		InitialCluster: c.InitialCluster,
+		PeerCertFile:   c.PeerCertFile,
+		PeerKeyFile:    c.PeerKeyFile,
+		PeerCAFile:     c.PeerCAFile,
+	}
+}
+
+// buildAgentClient constructs the *agentclient.Client used by both the scan /
+// import / vm executors and the storage_image.delete handler. Returns (nil, nil)
+// when AgentClient.Enabled is false — the api binary still boots so HTTP-only
+// smoke testing stays available; the consumer paths each emit their own
+// degradation envelope.
 //
-// mTLS material (replica's leaf cert + cluster CA trust anchor)
-// flows in via material — produced upstream per LoadOrGenerateCPCert.
-//
-// Construction errors at this stage (config validation, empty
-// material when AgentClient.Enabled=true) are boot-time fatal: the
-// api binary must not start with a half-configured agent client.
+// mTLS material (replica's leaf cert + cluster CA trust anchor) flows in via
+// material — produced upstream per LoadOrGenerateCPCert. Construction errors at
+// this stage (config validation, empty material when AgentClient.Enabled=true)
+// are boot-time fatal: the api binary must not start with a half-configured
+// agent client.
 func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog.Logger) (*agentclient.Client, error) {
 	if !cfg.AgentClient.Enabled {
 		log.Info("agent client disabled; storage_image.delete and scan workers will surface degraded responses")
@@ -278,35 +343,4 @@ func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog
 		slog.Duration("poll_max_interval", cfg.AgentClient.PollMaxInterval),
 		slog.Duration("timeout", cfg.AgentClient.Timeout))
 	return client, nil
-}
-
-// runMigration opens a short-lived pool just for migrations. The api-server's
-// regular Store is intentionally not used here — its constructor pings and
-// configures pool sizing, neither of which a CLI one-shot needs.
-func runMigration(ctx context.Context, dsn string, action migrate.Action, log *slog.Logger) error {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return fmt.Errorf("connect to %q: %v", redactDSN(dsn), err)
-	}
-	defer pool.Close()
-	return migrate.Run(ctx, pool, action, log)
-}
-
-// redactDSN strips userinfo from a DSN for safe logging. Best-effort: if the
-// DSN does not parse as URL form (e.g. libpq keyword/value style), returns
-// "<dsn>" rather than risk leaking the raw string.
-func redactDSN(dsn string) string {
-	const placeholder = "<dsn>"
-	if dsn == "" {
-		return placeholder
-	}
-	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return placeholder
-	}
-	if u.User == nil {
-		return dsn
-	}
-	u.User = url.User("***")
-	return u.String()
 }

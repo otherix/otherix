@@ -24,6 +24,30 @@ type APIConfig struct {
 	Workers      WorkersConfig      `koanf:"workers"`
 	Placement    PlacementConfig    `koanf:"placement"`
 	StoragePools StoragePoolsConfig `koanf:"storage_pools"`
+	Etcd         EtcdConfig         `koanf:"etcd"`
+}
+
+// EtcdConfig configures the embedded etcd member that backs the
+// control-plane store (ADR 0030). The single-node defaults let a
+// standalone api-server boot with no operator input; HA topologies
+// (slice 9) override Mode + InitialCluster + the peer mTLS material.
+//
+// This is plain transport: cmd/api translates it into the leaf
+// internal/etcd.Config, whose Validate is the single source of truth
+// for the invariants (mode enum, required URLs, initial-cluster
+// requirement per mode). It is therefore not re-validated in
+// APIConfig.Validate.
+type EtcdConfig struct {
+	Mode           string `koanf:"mode"`            // single | bootstrap | join
+	Name           string `koanf:"name"`            // unique member name within the cluster
+	DataDir        string `koanf:"data_dir"`        // member data directory (WAL + snapshots)
+	PeerURL        string `koanf:"peer_url"`        // Raft peer advertise/listen URL
+	ClientURL      string `koanf:"client_url"`      // client advertise/listen URL
+	ClusterToken   string `koanf:"cluster_token"`   // initial-cluster token; isolates clusters on shared networks
+	InitialCluster string `koanf:"initial_cluster"` // full member list "n0=peer0,n1=peer1,..." (bootstrap|join)
+	PeerCertFile   string `koanf:"peer_cert_file"`  // peer (Raft) mTLS leaf cert
+	PeerKeyFile    string `koanf:"peer_key_file"`   // peer (Raft) mTLS leaf key
+	PeerCAFile     string `koanf:"peer_ca_file"`    // cluster CA trust anchor for peer mTLS
 }
 
 // StoragePoolsConfig pins operator-facing knobs for `POST
@@ -497,6 +521,14 @@ func defaultAPIConfig() APIConfig {
 		StoragePools: StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
 		},
+		Etcd: EtcdConfig{
+			Mode:         "single",
+			Name:         "otherix-0",
+			DataDir:      "/opt/otherix/etcd",
+			PeerURL:      "http://127.0.0.1:2380",
+			ClientURL:    "http://127.0.0.1:2379",
+			ClusterToken: "otherix-cluster",
+		},
 	}
 }
 
@@ -538,9 +570,10 @@ func (c APIConfig) Validate() error {
 	if err := c.CPCert.Validate(); err != nil {
 		return err
 	}
-	if err := c.Database.Validate(); err != nil {
-		return err
-	}
+	// Database is legacy on the etcd backend (ADR 0030); the embedded
+	// etcd member is the only stateful service. The dsn is no longer
+	// required, so Database is not validated here. The block remains in
+	// the struct until the pgx cutover (slice 8) removes it.
 	if err := c.Auth.Validate(); err != nil {
 		return err
 	}

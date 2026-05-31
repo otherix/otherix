@@ -345,3 +345,18 @@ func TestStoragePoolScanConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
+	got := defaultAPIConfig().Etcd
+	want := EtcdConfig{
+		Mode:         "single",
+		Name:         "otherix-0",
+		DataDir:      "/opt/otherix/etcd",
+		PeerURL:      "http://127.0.0.1:2380",
+		ClientURL:    "http://127.0.0.1:2379",
+		ClusterToken: "otherix-cluster",
+	}
+	if got != want {
+		t.Errorf("defaultAPIConfig().Etcd = %+v, want %+v", got, want)
+	}
+}

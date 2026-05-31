@@ -220,6 +220,32 @@ func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, l
 	return nil
 }
 
+// LifecycleKind describes one async lifecycle job kind and the success/failure
+// projection parameters LifecycleHandler needs. It exists so cmd/api can
+// register the four lifecycle handlers on the etcd dispatcher without reaching
+// into this package's unexported failure-code constants.
+type LifecycleKind struct {
+	Kind         string               // queue job kind ("vm.start", ...)
+	Op           string               // agent-side action segment passed to the executor
+	DesiredPhase store.VMDesiredPhase // vms.desired_phase written on success ("" = unchanged)
+	RuntimePhase store.VMPhase        // vm_runtime.phase written on success
+	FailureCode  string               // terminal failure envelope code
+}
+
+// LifecycleKinds returns the four async lifecycle kinds with their projection
+// parameters, matching the river LifecycleWorkers registration verbatim:
+// start → running/running, stop and poweroff → stopped/stopped, reboot leaves
+// the desired phase unchanged (the runtime cycles, the user intent does not)
+// and observes running.
+func LifecycleKinds() []LifecycleKind {
+	return []LifecycleKind{
+		{Kind: "vm.start", Op: "start", DesiredPhase: store.VmDesiredPhaseRunning, RuntimePhase: store.VmPhaseRunning, FailureCode: errCodeVMStartFailed},
+		{Kind: "vm.stop", Op: "stop", DesiredPhase: store.VmDesiredPhaseStopped, RuntimePhase: store.VmPhaseStopped, FailureCode: errCodeVMStopFailed},
+		{Kind: "vm.poweroff", Op: "poweroff", DesiredPhase: store.VmDesiredPhaseStopped, RuntimePhase: store.VmPhaseStopped, FailureCode: errCodeVMPoweroffFailed},
+		{Kind: "vm.reboot", Op: "reboot", DesiredPhase: store.VMDesiredPhase(""), RuntimePhase: store.VmPhaseRunning, FailureCode: errCodeVMRebootFailed},
+	}
+}
+
 // onAgentTaskID returns the resumption callback the executor invokes after the
 // agent's 202, persisting the agent task id through the task mutator.
 func onAgentTaskID(st WorkerStore, taskID uuid.UUID) func(context.Context, uuid.UUID) error {
