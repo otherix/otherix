@@ -26,6 +26,16 @@ import (
 // election timeout. Right after a prior change that connection has not matured,
 // so adds/removes retry until the cluster settles - the operator rule of "one
 // member at a time, let it settle" encoded as a loop.
+//
+// AddLearner, PromoteMember, WaitMemberServing, and VoterCount are the low-level
+// transition primitives exercised directly by the single->HA transition
+// integration test. The production control-plane path does not call them: it goes
+// through MembershipClient (membership.go), whose RegisterLearner is the
+// idempotent, context-aware learner-add used by the cluster-join handler and
+// whose TryPromoteLearners is the single-shot promote used by the periodic promote
+// loop. They are kept distinct on purpose - the test validates the etcd-layer
+// mechanics without the CP stack, while MembershipClient adds the handler-facing
+// semantics.
 const (
 	reconfigSettleTimeout = 20 * time.Second
 	reconfigRetryInterval = 500 * time.Millisecond

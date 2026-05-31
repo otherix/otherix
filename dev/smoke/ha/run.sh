@@ -122,12 +122,6 @@ voter_count() { # node_index, jwt
     | jq '[.data[] | select(.is_learner==false)] | length'
 }
 
-# member_count returns the total number of members (voters + learners).
-member_count() { # node_index, jwt
-  curl -fsS "http://127.0.0.1:${API_PORT[$1]}/v1/cluster/members" -H "Authorization: Bearer $2" \
-    | jq '.data | length'
-}
-
 # wait_voters polls GET /v1/cluster/members on node0 until the voter count
 # reaches $want or the timeout elapses. The self-driving join registers the new
 # learner and the always-on promote loop (15s cadence) converts it to a voter

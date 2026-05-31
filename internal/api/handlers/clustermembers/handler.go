@@ -105,5 +105,5 @@ func (h *Handler) Remove(w http.ResponseWriter, r *http.Request) {
 
 	h.log.InfoContext(r.Context(), "cluster member removed",
 		slog.String("member_id", raw))
-	w.WriteHeader(http.StatusNoContent)
+	response.WriteNoContent(w)
 }
