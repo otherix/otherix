@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/otherix/otherix/internal/api/response"
-	"github.com/otherix/otherix/internal/store"
 	"github.com/otherix/otherix/internal/version"
 )
 
@@ -51,14 +50,23 @@ type Check struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// Handler holds the dependencies required to answer health probes.
-type Handler struct {
-	store *store.Store
+// Pinger is the readiness dependency the api-server cannot serve traffic
+// without: the storage backend. *store.Store (pgx) and *etcdstore.Store both
+// satisfy it, so /readyz is backend-agnostic.
+type Pinger interface {
+	Ping(ctx context.Context) error
 }
 
-// New returns a Handler bound to the given store.
-func New(s *store.Store) *Handler {
-	return &Handler{store: s}
+// Handler holds the dependencies required to answer health probes.
+type Handler struct {
+	pinger    Pinger
+	checkName string
+}
+
+// New returns a Handler whose readiness probe pings p, reporting the outcome
+// under checkName in the /readyz response (e.g. "database" for pgx, "etcd").
+func New(p Pinger, checkName string) *Handler {
+	return &Handler{pinger: p, checkName: checkName}
 }
 
 // Live answers /healthz with 200 and a tiny payload identifying the
@@ -79,11 +87,11 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 
 	pingCtx, cancel := context.WithTimeout(r.Context(), pingTimeout)
 	defer cancel()
-	if err := h.store.Pool().Ping(pingCtx); err != nil {
-		checks["database"] = Check{Status: statusFail, Error: err.Error()}
+	if err := h.pinger.Ping(pingCtx); err != nil {
+		checks[h.checkName] = Check{Status: statusFail, Error: err.Error()}
 		overall = http.StatusServiceUnavailable
 	} else {
-		checks["database"] = Check{Status: statusOK}
+		checks[h.checkName] = Check{Status: statusOK}
 	}
 
 	status := statusOK

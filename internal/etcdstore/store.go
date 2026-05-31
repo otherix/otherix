@@ -23,7 +23,11 @@
 //     move into these methods (ADR 0030 #7).
 package etcdstore
 
-import "github.com/otherix/otherix/internal/etcd"
+import (
+	"context"
+
+	"github.com/otherix/otherix/internal/etcd"
+)
 
 // Store is the etcd-backed implementation of the handler Store interfaces. It
 // holds a KV client over the embedded member; one Store instance accumulates
@@ -35,4 +39,16 @@ type Store struct {
 // New constructs a Store over the given KV client.
 func New(c *etcd.Client) *Store {
 	return &Store{c: c}
+}
+
+// healthPingKey is a sentinel the readiness probe reads to confirm the etcd
+// member answers reads. It need not exist; a successful (empty) read still
+// round-trips to the member.
+const healthPingKey = "/otherix/health/ping"
+
+// Ping verifies the etcd member is reachable by issuing a linearizable read.
+// It backs the api-server's /readyz probe (health.Pinger).
+func (s *Store) Ping(ctx context.Context) error {
+	_, _, err := s.c.Get(ctx, healthPingKey)
+	return err
 }

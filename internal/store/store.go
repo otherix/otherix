@@ -156,3 +156,9 @@ func (s *Store) Close() {
 		s.pool.Close()
 	}
 }
+
+// Ping verifies the database is reachable. It backs the api-server's /readyz
+// probe (health.Pinger).
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}

@@ -39,7 +39,7 @@ func TestLive_AlwaysOK(t *testing.T) {
 		t.Fatal("sharedHarness not initialised")
 	}
 	s := newStore(t, sharedHarness)
-	handler := health.New(s)
+	handler := health.New(s, "database")
 
 	rec := httptest.NewRecorder()
 	handler.Live(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -65,7 +65,7 @@ func TestReady_DatabaseUp(t *testing.T) {
 		t.Fatal("sharedHarness not initialised")
 	}
 	s := newStore(t, sharedHarness)
-	handler := health.New(s)
+	handler := health.New(s, "database")
 
 	rec := httptest.NewRecorder()
 	handler.Ready(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -103,7 +103,7 @@ func TestReady_DatabaseDown(t *testing.T) {
 	defer cancel()
 	h.Stop(stopCtx)
 
-	handler := health.New(s)
+	handler := health.New(s, "database")
 
 	rec := httptest.NewRecorder()
 	handler.Ready(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))

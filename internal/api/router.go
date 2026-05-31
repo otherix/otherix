@@ -127,7 +127,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(deps.RequestTimeout))
 
-		healthHandler := health.New(deps.Store)
+		healthHandler := health.New(deps.Store, "database")
 		r.Get("/healthz", healthHandler.Live)
 		r.Get("/readyz", healthHandler.Ready)
 
