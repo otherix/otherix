@@ -51,6 +51,11 @@ func (m *MembershipClient) RegisterLearner(ctx context.Context, peerURL string) 
 	deadline := time.Now().Add(reconfigSettleTimeout)
 	attempt := 0
 	for {
+		// Honor cancellation promptly: a cancelled ctx (e.g. CP shutdown) must
+		// not keep retrying or sleeping through the settle window.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("register learner cancelled: %v", err)
+		}
 		attempt++
 		actx, acancel := context.WithTimeout(ctx, 3*time.Second)
 		resp, addErr := cli.MemberAddAsLearner(actx, []string{peerURL})
