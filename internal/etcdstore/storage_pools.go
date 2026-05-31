@@ -58,6 +58,14 @@ func storageImageTemplateIndexKey(templateID, id uuid.UUID) string {
 	return etcd.Key("index", "storage_images", "template", templateID.String(), id.String())
 }
 
+// storageImageTemplatePoolGuard enforces UNIQUE(template_id, pool_id) on
+// storage_images (the SQL ON CONFLICT target the import projection upserts
+// against): at most one image row per (template, pool). Written on insert,
+// dropped on refcounted delete.
+func storageImageTemplatePoolGuard(templateID, poolID uuid.UUID) string {
+	return etcd.Key("uniq", "storage_images", "template_pool", templateID.String(), poolID.String())
+}
+
 // vmDiskKey is the canonical primary key for vm_disks (reused by the vms slice).
 func vmDiskKey(id uuid.UUID) string { return etcd.Key("vm_disks", id.String()) }
 
@@ -396,6 +404,7 @@ func (s *Store) DeleteStorageImageRefcounted(
 			clientv3.OpDelete(storageImageKey(imageID)),
 			clientv3.OpDelete(storageImagePoolIndexKey(poolID, imageID)),
 			clientv3.OpDelete(storageImageTemplateIndexKey(image.TemplateID, imageID)),
+			clientv3.OpDelete(storageImageTemplatePoolGuard(image.TemplateID, poolID)),
 		).
 		Commit(); err != nil {
 		return store.StorageImage{}, store.Template{}, fmt.Errorf("delete storage image txn: %v", err)
