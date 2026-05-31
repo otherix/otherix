@@ -7,7 +7,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -15,6 +19,18 @@ import (
 
 // snapshotDialTimeout bounds the connect to the member client endpoint.
 const snapshotDialTimeout = 5 * time.Second
+
+// Snapshot files are named <prefix><sortable-utc-timestamp><suffix> so a lexical
+// sort is chronological, which is how pruneSnapshots picks the oldest.
+const (
+	snapshotPrefix = "otherix-"
+	snapshotSuffix = ".db"
+)
+
+// snapshotName builds the canonical snapshot filename for ts.
+func snapshotName(ts time.Time) string {
+	return snapshotPrefix + ts.UTC().Format("20060102T150405Z") + snapshotSuffix
+}
 
 // SnapshotSave streams a point-in-time snapshot of the member at clientURL to
 // outPath and returns the number of bytes written. The snapshot is the member's
@@ -76,4 +92,63 @@ func SnapshotSave(ctx context.Context, clientURL, outPath string) (int64, error)
 		return 0, fmt.Errorf("finalize snapshot: %v", err)
 	}
 	return n, nil
+}
+
+// pruneSnapshots keeps the newest `retention` snapshot files in dir (selected by
+// the snapshot prefix/suffix, ordered by their sortable timestamped names) and
+// removes the rest, returning how many it deleted. retention <= 0 disables
+// pruning. Files that are not snapshots are never touched.
+func pruneSnapshots(dir string, retention int) (int, error) {
+	if retention <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	var names []string
+	for _, e := range entries {
+		n := e.Name()
+		if !e.IsDir() && strings.HasPrefix(n, snapshotPrefix) && strings.HasSuffix(n, snapshotSuffix) {
+			names = append(names, n)
+		}
+	}
+	if len(names) <= retention {
+		return 0, nil
+	}
+	sort.Strings(names) // chronological, oldest first
+	removed := 0
+	for _, n := range names[:len(names)-retention] {
+		if err := os.Remove(filepath.Join(dir, n)); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+// BackupFunc returns a periodic-worker function that snapshots the member at
+// clientURL into dir (named by timestamp) and prunes to the newest `retention`
+// snapshots. A snapshot failure fails the tick (the scheduler logs + retries
+// next interval); a prune failure is logged but does not fail the tick, since
+// the fresh snapshot already succeeded.
+func BackupFunc(clientURL, dir string, retention int, log *slog.Logger) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create backup dir: %v", err)
+		}
+		path := filepath.Join(dir, snapshotName(time.Now()))
+		n, err := SnapshotSave(ctx, clientURL, path)
+		if err != nil {
+			return err
+		}
+		removed, perr := pruneSnapshots(dir, retention)
+		if perr != nil {
+			log.WarnContext(ctx, "etcd snapshot prune failed",
+				slog.String("dir", dir), slog.String("error", perr.Error()))
+		}
+		log.InfoContext(ctx, "etcd snapshot saved",
+			slog.String("path", path), slog.Int64("bytes", n), slog.Int("pruned", removed))
+		return nil
+	}
 }

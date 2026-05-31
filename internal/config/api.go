@@ -401,6 +401,18 @@ type WorkersConfig struct {
 	Tasks           TasksWorkersConfig     `koanf:"tasks"`
 	Heartbeat       HeartbeatWorkersConfig `koanf:"heartbeat"`
 	StoragePoolScan StoragePoolScanConfig  `koanf:"storage_pool_scan"`
+	Backup          BackupConfig           `koanf:"backup"`
+}
+
+// BackupConfig pins the periodic etcd snapshot worker. When Enabled (and Dir is
+// set) the api-server snapshots its member at Interval into Dir, keeping the
+// newest Retention files. Disabled by default: a backup needs an operator-chosen
+// destination, so it is opt-in rather than silently writing somewhere.
+type BackupConfig struct {
+	Enabled   bool          `koanf:"enabled"`
+	Interval  time.Duration `koanf:"interval"`
+	Dir       string        `koanf:"dir"`
+	Retention int           `koanf:"retention"`
 }
 
 // StoragePoolScanConfig pins the periodic `storage_pool.scan_trigger`
@@ -494,6 +506,10 @@ func defaultAPIConfig() APIConfig {
 				Enabled:  true,
 				Interval: 15 * time.Minute,
 				Jitter:   30 * time.Second,
+			},
+			Backup: BackupConfig{
+				Interval:  6 * time.Hour,
+				Retention: 7,
 			},
 		},
 		AgentClient: AgentClientConfig{

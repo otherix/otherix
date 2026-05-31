@@ -271,6 +271,11 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			storagepoolshandlers.ScanTriggerFunc(st, log))
 	}
 
+	if cfg.Workers.Backup.Enabled && cfg.Workers.Backup.Dir != "" {
+		s.Register("etcd.backup", positiveOr(cfg.Workers.Backup.Interval, 6*time.Hour), false,
+			etcd.BackupFunc(cfg.Etcd.ClientURL, cfg.Workers.Backup.Dir, cfg.Workers.Backup.Retention, log))
+	}
+
 	return s
 }
 

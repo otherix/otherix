@@ -178,6 +178,16 @@ workers:
     interval: 15m
     jitter:   30s
 
+  # Periodic etcd snapshot backup. Opt-in: set enabled + dir. The api-server
+  # snapshots its member into dir every interval, keeping the newest
+  # `retention` files. In an HA cluster run this on one replica (or target a
+  # follower) to avoid perturbing the leader.
+  backup:
+    enabled:   false
+    interval:  6h
+    dir:       "/opt/otherix/backups"
+    retention: 7
+
 
 # Outbound CP→agent HTTP client. Drives async operations like
 # storage_pool.scan from the in-process worker dispatcher. mTLS material
