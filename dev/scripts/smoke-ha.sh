@@ -17,10 +17,10 @@
 # and a heal/restart. The CP is a native binary, so no Lima is involved (Lima is
 # only for the Linux agent).
 #
-# Usage: bash dev/smoke/ha/run.sh   (run from repo root)
+# Usage: bash dev/scripts/smoke-ha.sh   (run from repo root)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 WORK="$ROOT/.local/smoke/run"
 API="$ROOT/.local/smoke/otherix-api"

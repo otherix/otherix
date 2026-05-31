@@ -91,7 +91,7 @@ coverage: test ## Generate HTML coverage report
 
 .PHONY: smoke-ha
 smoke-ha: ## HA multi-process smoke: 3 real api-server nodes form a cluster over peer mTLS (no Docker, no Lima)
-	bash dev/smoke/ha/run.sh
+	bash dev/scripts/smoke-ha.sh
 
 # ========== Lint ==========
 
