@@ -101,6 +101,11 @@ func PromoteMember(ctx context.Context, clientURL string, memberID uint64, log *
 	attempt := 0
 	var promoteErr error
 	for deadline := time.Now().Add(promoteTimeout); time.Now().Before(deadline); {
+		// Honor cancellation promptly: without this the loop would busy-retry
+		// for the full promoteTimeout on a cancelled ctx (e.g. CP shutdown).
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("promote member %x cancelled: %v", memberID, err)
+		}
 		attempt++
 		pctx, pcancel := context.WithTimeout(ctx, 2*time.Second)
 		_, promoteErr = cli.MemberPromote(pctx, memberID)

@@ -91,7 +91,25 @@ func SnapshotSave(ctx context.Context, clientURL, outPath string) (int64, error)
 		_ = os.Remove(tmp)
 		return 0, fmt.Errorf("finalize snapshot: %v", err)
 	}
+	// fsync the parent dir so the rename's directory entry is crash-durable - a
+	// backup that does not survive a crash right after the rename is worthless.
+	if err := syncDir(filepath.Dir(outPath)); err != nil {
+		return 0, fmt.Errorf("sync snapshot dir: %v", err)
+	}
 	return n, nil
+}
+
+// syncDir fsyncs a directory so a prior rename into it is crash-durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) //nolint:gosec // operator-configured backup directory
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // pruneSnapshots keeps the newest `retention` snapshot files in dir (selected by
