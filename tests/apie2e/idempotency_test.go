@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+//go:build integration
+// +build integration
+
+package apie2e
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/otherix/otherix/internal/api/middleware"
+	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/auth"
+)
+
+func TestIdempotencyReplaySameKeyAndBody(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+	body := newNetworkBody()
+	key := "idem-" + body["name"].(string)
+	hdr := map[string]string{middleware.HeaderIdempotencyKey: key, "Content-Type": "application/json"}
+
+	resp := h.do(t, http.MethodPost, "/v1/networks", body, admin, hdr)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first create status = %d, want 201", resp.StatusCode)
+	}
+	var first networkView
+	decodeJSON(t, resp, &first)
+
+	// Replay: same key + same body -> cached response verbatim, no second row.
+	resp = h.do(t, http.MethodPost, "/v1/networks", body, admin, hdr)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("replay status = %d, want 201 (cached)", resp.StatusCode)
+	}
+	var replay networkView
+	decodeJSON(t, resp, &replay)
+	if replay.ID != first.ID {
+		t.Errorf("replay id = %q, want cached %q", replay.ID, first.ID)
+	}
+
+	// Exactly one network exists.
+	resp = h.get(t, "/v1/networks", admin)
+	var list struct {
+		Data []networkView `json:"data"`
+	}
+	decodeJSON(t, resp, &list)
+	count := 0
+	for _, n := range list.Data {
+		if n.Name == body["name"] {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("network count = %d, want 1 (replay must not create a second)", count)
+	}
+}
+
+func TestIdempotencyMismatchSameKeyDifferentBody(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+	key := "idem-mismatch-key"
+	hdr := map[string]string{middleware.HeaderIdempotencyKey: key, "Content-Type": "application/json"}
+
+	resp := h.do(t, http.MethodPost, "/v1/networks", newNetworkBody(), admin, hdr)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first create status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Same key, different body -> 409 idempotency_key_mismatch.
+	resp = h.do(t, http.MethodPost, "/v1/networks", newNetworkBody(), admin, hdr)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("mismatch status = %d, want 409", resp.StatusCode)
+	}
+	var body response.ErrorBody
+	decodeJSON(t, resp, &body)
+	if body.Error.Code != response.CodeIdempotencyMismatch {
+		t.Errorf("code = %q, want %q", body.Error.Code, response.CodeIdempotencyMismatch)
+	}
+}
