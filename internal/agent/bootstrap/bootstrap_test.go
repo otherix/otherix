@@ -5,6 +5,7 @@ package bootstrap
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,9 +14,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,6 +271,51 @@ func TestVerifyResponseChain(t *testing.T) {
 		var fpErr *FingerprintMismatchError
 		if errors.As(err, &fpErr) {
 			t.Errorf("expected non-fingerprint error, got %v", err)
+		}
+	})
+}
+
+func TestFetchAndVerifyCA_Bundle(t *testing.T) {
+	chain := newCAChain(t, "bundle-node")
+
+	bundle := map[string]any{
+		"cas": []map[string]any{{
+			"cert_pem":           string(chain.caPEM),
+			"fingerprint_sha256": chain.pinned,
+			"not_before":         time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+			"not_after":          time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		}},
+		"signer_fingerprint_sha256": chain.pinned,
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/ca" {
+			t.Errorf("path = %s, want /v1/ca", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(bundle)
+	}))
+	defer srv.Close()
+
+	t.Run("pinned CA present in bundle", func(t *testing.T) {
+		bundlePEM, cert, err := fetchAndVerifyCA(context.Background(), srv.URL, chain.pinned, 5*time.Second)
+		if err != nil {
+			t.Fatalf("fetchAndVerifyCA: %v", err)
+		}
+		if !strings.Contains(string(bundlePEM), "BEGIN CERTIFICATE") {
+			t.Errorf("bundlePEM is not PEM: %q", bundlePEM)
+		}
+		if cert == nil {
+			t.Fatal("pinned cert is nil")
+		}
+		got := hex.EncodeToString(sha256Sum(cert.Raw))
+		if got != chain.pinned {
+			t.Errorf("pinned cert fingerprint = %q, want %q", got, chain.pinned)
+		}
+	})
+
+	t.Run("pinned fingerprint absent from bundle", func(t *testing.T) {
+		if _, _, err := fetchAndVerifyCA(context.Background(), srv.URL, strings.Repeat("b", 64), 5*time.Second); err == nil {
+			t.Fatal("expected error when pinned fingerprint not in bundle, got nil")
 		}
 	})
 }

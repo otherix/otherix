@@ -51,25 +51,34 @@ func NormalizeFingerprint(input string) (string, error) {
 	return s, nil
 }
 
-// caResponse mirrors components/schemas/ClusterCA in control-plane.yaml.
-// Hand-written because agent-side oapi-codegen targets agent.yaml only —
-// the CP API contract is consumed by the agent, not served by it.
-type caResponse struct {
+// caCertEntry mirrors components/schemas/ClusterCACert.
+type caCertEntry struct {
 	CertPEM           string `json:"cert_pem"`
 	FingerprintSHA256 string `json:"fingerprint_sha256"`
 	NotBefore         string `json:"not_before"`
 	NotAfter          string `json:"not_after"`
 }
 
+// caBundleResponse mirrors components/schemas/ClusterCA in control-plane.yaml:
+// the CA trust set plus the active signer's fingerprint. Hand-written because
+// agent-side oapi-codegen targets agent.yaml only — the CP API contract is
+// consumed by the agent, not served by it.
+type caBundleResponse struct {
+	CAs                     []caCertEntry `json:"cas"`
+	SignerFingerprintSHA256 string        `json:"signer_fingerprint_sha256"`
+}
+
 // fetchAndVerifyCA performs the first bootstrap network round-trip:
-// GET /v1/ca with InsecureSkipVerify, then sha256(cert.Raw) compared to
-// the operator-pinned fingerprint. The TLS skip is essential because
-// the CP's serving cert may not chain to the cluster CA we are
-// bootstrapping against.
+// GET /v1/ca with InsecureSkipVerify, decodes the CA trust-set bundle, and
+// pins the operator fingerprint against one of its entries (TOFU). The TLS
+// skip is essential because the CP's serving cert may not chain to the
+// cluster CA we are bootstrapping against.
 //
-// Returns the cert PEM bytes + parsed x509 cert. The parsed cert is
-// useful to the caller for chain verification (see verifyResponseChain
-// in csr.go) and for slog labelling.
+// Returns the concatenated trust bundle PEM (every CA the agent must trust,
+// to persist as its trust anchor) plus the parsed pinned CA cert (the one
+// matching the operator fingerprint, used for chain verification and slog
+// labelling). Each entry's server-reported fingerprint is recomputed and
+// checked (defense-in-depth against a MITM rewriting only part of the JSON).
 func fetchAndVerifyCA(ctx context.Context, cpURL, expectedFingerprint string, timeout time.Duration) ([]byte, *x509.Certificate, error) {
 	client := &http.Client{
 		Timeout:   timeout,
@@ -97,41 +106,48 @@ func fetchAndVerifyCA(ctx context.Context, cpURL, expectedFingerprint string, ti
 			resp.StatusCode, strings.TrimSpace(string(preview)))
 	}
 
-	var body caResponse
+	var body caBundleResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, nil, fmt.Errorf("decode /v1/ca response: %v", err)
 	}
-	if body.CertPEM == "" {
-		return nil, nil, errors.New("/v1/ca response has empty cert_pem")
+	if len(body.CAs) == 0 {
+		return nil, nil, errors.New("/v1/ca response has empty cas bundle")
 	}
 
-	cert, _, err := auth.ParseClusterCACert([]byte(body.CertPEM))
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse CA cert from /v1/ca: %v", err)
-	}
-
-	computed := sha256.Sum256(cert.Raw)
-	computedHex := hex.EncodeToString(computed[:])
-	if computedHex != expectedFingerprint {
-		return nil, nil, &FingerprintMismatchError{
-			Expected: expectedFingerprint,
-			Computed: computedHex,
+	var bundle strings.Builder
+	var pinned *x509.Certificate
+	for i, entry := range body.CAs {
+		if entry.CertPEM == "" {
+			return nil, nil, fmt.Errorf("/v1/ca cas[%d] has empty cert_pem", i)
 		}
+		cert, _, err := auth.ParseClusterCACert([]byte(entry.CertPEM))
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse /v1/ca cas[%d]: %v", i, err)
+		}
+		computed := sha256.Sum256(cert.Raw)
+		computedHex := hex.EncodeToString(computed[:])
+		// Defense-in-depth: the server-reported per-entry fingerprint must
+		// match what we recompute. A mismatch means the CP is returning
+		// inconsistent data or a MITM rewrote part of the JSON response.
+		reported := strings.ToLower(strings.TrimSpace(entry.FingerprintSHA256))
+		if reported != computedHex {
+			return nil, nil, fmt.Errorf(
+				"server-reported fingerprint %q for cas[%d] does not match computed %q",
+				reported, i, computedHex)
+		}
+		if computedHex == expectedFingerprint {
+			pinned = cert
+		}
+		bundle.WriteString(strings.TrimSpace(entry.CertPEM))
+		bundle.WriteByte('\n')
 	}
-
-	// Defense-in-depth: the server-reported fingerprint should also match
-	// what we just computed. A mismatch here means the CP is returning
-	// inconsistent data — either a bug in the CP or, more likely, a
-	// MITM rewriting only parts of the JSON response.
-	serverReported := strings.ToLower(strings.TrimSpace(body.FingerprintSHA256))
-	if serverReported != computedHex {
+	if pinned == nil {
 		return nil, nil, fmt.Errorf(
-			"server-reported fingerprint %q does not match computed %q from cert_pem",
-			serverReported, computedHex,
-		)
+			"operator-pinned fingerprint %s is not present in the /v1/ca bundle (%d CAs)",
+			expectedFingerprint, len(body.CAs))
 	}
 
-	return []byte(body.CertPEM), cert, nil
+	return []byte(bundle.String()), pinned, nil
 }
 
 // newBootstrapTransport is the *http.Transport used for every
