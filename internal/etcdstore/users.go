@@ -251,3 +251,24 @@ func (s *Store) countPrefix(ctx context.Context, prefix string) (int64, error) {
 	}
 	return int64(len(items)), nil
 }
+
+// CountAdmins returns the number of non-deleted users with the admin role.
+// Backs the boot-time admin bootstrap. The role is stored as the lowercase
+// wire string ("admin").
+func (s *Store) CountAdmins(ctx context.Context) (int64, error) {
+	items, err := s.c.Range(ctx, userPrefix())
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, kv := range items {
+		var u store.User
+		if err := json.Unmarshal(kv.Value, &u); err != nil {
+			return 0, fmt.Errorf("unmarshal user %q: %v", kv.Key, err)
+		}
+		if u.DeletedAt == nil && u.Role == "admin" {
+			n++
+		}
+	}
+	return n, nil
+}

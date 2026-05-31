@@ -6,17 +6,22 @@ package api
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
+
+// ClusterCABootstrapStore is the storage surface the cluster-CA bootstrap
+// depends on. Both *store.Store (pgx) and *etcdstore.Store satisfy it.
+type ClusterCABootstrapStore interface {
+	ActiveCACert(ctx context.Context) (store.CaCert, error)
+	CreateCACert(ctx context.Context, arg store.CreateCACertParams) (store.CaCert, error)
+}
 
 // BootstrapClusterCA ensures the ca_certs table holds an active
 // cluster CA row. On a fresh DB it generates an ECDSA P-384 self-
@@ -28,15 +33,15 @@ import (
 // Call after migrations have been applied and before the HTTP server
 // starts. Required by the /v1/ca endpoint and by the Step 2 CSR
 // signing handler.
-func BootstrapClusterCA(ctx context.Context, s *store.Store, log *slog.Logger) error {
+func BootstrapClusterCA(ctx context.Context, s ClusterCABootstrapStore, log *slog.Logger) error {
 	return bootstrapClusterCAWithClock(ctx, s, log, time.Now)
 }
 
 // bootstrapClusterCAWithClock is the clock-injectable form of
 // BootstrapClusterCA. Tests pass a fixed clock to assert deterministic
 // not_before / not_after fields; production wiring uses time.Now.
-func bootstrapClusterCAWithClock(ctx context.Context, s *store.Store, log *slog.Logger, now func() time.Time) error {
-	existing, err := s.Queries().GetActiveCACert(ctx)
+func bootstrapClusterCAWithClock(ctx context.Context, s ClusterCABootstrapStore, log *slog.Logger, now func() time.Time) error {
+	existing, err := s.ActiveCACert(ctx)
 	if err == nil {
 		log.InfoContext(ctx, "cluster CA already provisioned, skipping generation",
 			slog.String("ca_id", existing.ID.String()),
@@ -44,7 +49,7 @@ func bootstrapClusterCAWithClock(ctx context.Context, s *store.Store, log *slog.
 			slog.Time("not_after", existing.NotAfter))
 		return nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !noActiveCA(err) {
 		return fmt.Errorf("lookup active cluster CA: %v", err)
 	}
 
@@ -53,7 +58,7 @@ func bootstrapClusterCAWithClock(ctx context.Context, s *store.Store, log *slog.
 		return fmt.Errorf("generate cluster CA: %v", err)
 	}
 
-	row, err := s.Queries().CreateCACert(ctx, store.CreateCACertParams{
+	row, err := s.CreateCACert(ctx, store.CreateCACertParams{
 		ID:                uuid.New(),
 		CertPem:           result.CertPEM,
 		KeyPem:            result.KeyPEM,
@@ -63,10 +68,10 @@ func bootstrapClusterCAWithClock(ctx context.Context, s *store.Store, log *slog.
 	})
 	if err != nil {
 		// Concurrent boot lost the race — a sibling api-server inserted
-		// first. Fetch the winner and return success. Any non-unique-
-		// violation error is fatal.
-		if isUniqueViolation(err) {
-			winner, fetchErr := s.Queries().GetActiveCACert(ctx)
+		// first. Fetch the winner and return success. Any non-conflict
+		// error is fatal.
+		if caActiveConflict(err) {
+			winner, fetchErr := s.ActiveCACert(ctx)
 			if fetchErr != nil {
 				return fmt.Errorf("lost CA bootstrap race; refetch failed: %v", fetchErr)
 			}

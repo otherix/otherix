@@ -3,7 +3,12 @@
 
 package store
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
 
 // ActiveCACert returns the active cluster CA row, or ErrNotFound when no
 // active CA has been provisioned. In production the boot-time
@@ -14,6 +19,21 @@ func (s *Store) ActiveCACert(ctx context.Context) (CaCert, error) {
 	row, err := s.queries.GetActiveCACert(ctx)
 	if err != nil {
 		return CaCert{}, translateNoRows(err)
+	}
+	return row, nil
+}
+
+// CreateCACert inserts a CA row, translating the uq_ca_certs_active partial
+// unique violation to ErrCACertActiveExists so callers can detect a lost
+// bootstrap race backend-neutrally.
+func (s *Store) CreateCACert(ctx context.Context, arg CreateCACertParams) (CaCert, error) {
+	row, err := s.queries.CreateCACert(ctx, arg)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return CaCert{}, ErrCACertActiveExists
+		}
+		return CaCert{}, err
 	}
 	return row, nil
 }

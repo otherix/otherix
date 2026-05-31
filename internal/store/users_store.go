@@ -86,3 +86,9 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		return q.SoftDeleteUser(ctx, id)
 	})
 }
+
+// CountAdmins returns the number of non-deleted admin users. Used by the
+// boot-time admin bootstrap to decide whether to seed the first admin.
+func (s *Store) CountAdmins(ctx context.Context) (int64, error) {
+	return s.queries.CountAdmins(ctx)
+}
