@@ -1073,11 +1073,14 @@ paths:
       tags: [ca]
       summary: Get cluster CA cert + fingerprint (anonymous).
       description: |
-        Returns the active cluster CA cert PEM plus its SHA-256
-        fingerprint. Used by the agent bootstrap flow (Step 3) to
-        validate the CP server cert before submitting a CSR — the
-        operator copies the fingerprint alongside the join token at
-        enrolment time (TOFU pattern).
+        Returns the cluster CA trust set as a bundle (`cas`) plus the
+        fingerprint of the active signer. Used by the agent bootstrap
+        flow (Step 3) to validate the CP server cert before submitting a
+        CSR and to persist the full trust anchor — the operator copies
+        one CA's fingerprint alongside the join token at enrolment time
+        (TOFU pattern), and the agent trusts every CA in the bundle.
+        Normally one CA; during a rotation the incoming and outgoing CAs
+        appear together.
 
         Anonymous — bootstrap-time agents have neither a Bearer JWT
         nor an mTLS client cert. The endpoint reveals only the
@@ -1086,7 +1089,7 @@ paths:
       security: []
       responses:
         "200":
-          description: Active cluster CA.
+          description: Cluster CA trust set.
           content:
             application/json:
               schema:
@@ -4730,6 +4733,28 @@ components:
           $ref: "#/components/schemas/PaginationMeta"
 
     ClusterCA:
+      type: object
+      required: [cas, signer_fingerprint_sha256]
+      properties:
+        cas:
+          type: array
+          minItems: 1
+          description: |
+            The cluster CA trust set: every CA an agent or peer must
+            currently trust. Normally one entry (the signer); during a CA
+            rotation it transiently holds the incoming and outgoing CAs
+            together. Agents persist all of these as their trust anchor.
+          items:
+            $ref: "#/components/schemas/ClusterCACert"
+        signer_fingerprint_sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+          description: |
+            Fingerprint of the entry in `cas` that currently signs new
+            leaf certificates. Bootstrap TOFU pins the operator-supplied
+            fingerprint against one of the `cas` entries.
+
+    ClusterCACert:
       type: object
       required: [cert_pem, fingerprint_sha256, not_before, not_after]
       properties:
