@@ -142,24 +142,37 @@ $(addprefix run-,$(BINARIES)): run-%: build-% ## Build and run a binary against 
 	./$(BIN_DIR)/otherix-$* --config deploy/config/$*.example.yaml
 
 .PHONY: run-api-dev
-run-api-dev: build-api ## Run the api-server with the dev config
+run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd, no Postgres)
 	./$(BIN_DIR)/otherix-api --config dev/config/api.yaml
 
 # ========== Dev environment ==========
 
+# etcd-reset wipes the dev member's gitignored data dir for a clean-slate smoke
+# run (the ADR 0030 etcd analogue of db-reset). The api-server recreates the
+# dir + bootstraps the admin / cluster CA on next boot. Path mirrors
+# dev/config/api.yaml's etcd.data_dir.
+.PHONY: etcd-reset
+etcd-reset: ## Wipe the dev embedded-etcd data dir for a clean-slate smoke run
+	rm -rf .local/etcd
+
+# Postgres dev compose is LEGACY (ADR 0030): the control plane now boots on
+# embedded etcd and these targets are no longer part of the run-api-dev /
+# local-dev-start path. They survive only for the pgx integration suite
+# (make test-migrations spins its own testcontainer) and are removed entirely
+# at the pgx cutover (slice 8).
 .PHONY: dev-up dev-down dev-logs db-up db-down db-reset
-dev-up: ## Start dev dependencies (postgres)
+dev-up: ## (legacy) Start Postgres dev dependency - not needed by the etcd backend
 	$(DEV_COMPOSE) up -d
 
-dev-down: ## Stop dev dependencies
+dev-down: ## (legacy) Stop Postgres dev dependency
 	$(DEV_COMPOSE) down
 
-dev-logs: ## Tail dev compose logs
+dev-logs: ## (legacy) Tail Postgres dev compose logs
 	$(DEV_COMPOSE) logs -f
 
-db-up: dev-up ## Alias for dev-up
-db-down: dev-down ## Alias for dev-down
-db-reset: ## Wipe and re-create dev postgres data (bind-mounted, survives `down -v`)
+db-up: dev-up ## (legacy) Alias for dev-up
+db-down: dev-down ## (legacy) Alias for dev-down
+db-reset: ## (legacy) Wipe and re-create dev postgres data
 	$(DEV_COMPOSE) down -v
 	rm -rf .docker-data/postgres
 	$(MAKE) dev-up

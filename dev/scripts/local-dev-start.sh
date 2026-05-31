@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 # local-dev-start — one-shot orchestration of the full local dev stack.
 #
-# Brings up Postgres + api-server + Lima VM + agent + CLI cluster config
-# so that `./bin/otherix` works against a fresh local cluster without any
-# further setup.
+# Brings up api-server (embedded etcd, ADR 0030) + Lima VM + agent + CLI
+# cluster config so that `./bin/otherix` works against a fresh local cluster
+# without any further setup. No Postgres, no migrations - the api-server runs
+# its own embedded etcd member (dev data dir .local/etcd).
 #
 # Sequence:
 #    1. port pre-flight — fail if 8080 / 8443 / 9443 are in use
-#    2. dev-up          — Postgres bind mount up
-#    3. migrate-up      — schema
-#    4. pre-flight      — fail if a stale admin row blocks bootstrap
-#    5. build           — api + agent + cli
-#    6. bootstrap-dev   — Lima VM staging (idempotent — Lima detects existing VM)
-#    7. lima readiness  — macOS only: verify VM shell responsive + agent binary staged
-#    8. start api-server — background, PID + log in .local/run/
-#    9. wait /healthz   — 60s budget
-#   10. seed-mvp        — bootstrap protocol + seed pool + template + CLI cluster
-#   11. node list       — final sanity check
+#    2. build           — api + agent + cli
+#    3. bootstrap-dev   — Lima VM staging (idempotent — Lima detects existing VM)
+#    4. lima readiness  — macOS only: verify VM shell responsive + agent binary staged
+#    5. start api-server — background, PID + log in .local/run/ (boots embedded etcd)
+#    6. wait /healthz   — 60s budget
+#    7. seed-mvp        — bootstrap protocol + seed pool + template + CLI cluster
+#    8. node list       — final sanity check
 #
 # Fail-fast on existing state per locked decision (2a): if otherix-api is
-# already running OR the admin row email doesn't match the configured
-# bootstrap email, exit with a clear "run local-dev-stop first" message.
+# already running, exit with a clear "run local-dev-stop first" message.
+# The admin row now lives in embedded etcd (wiped by local-dev-stop's
+# etcd-reset), so the old Postgres admin-email pre-check is gone - a fresh
+# data dir has no admin and the api-server seeds on boot; a reused data dir
+# keeps the matching admin (BootstrapAdmin is idempotent).
 #
 # Default credentials (overridable):
 #   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin@otherix.local
@@ -87,11 +88,11 @@ check_port_free() {
     return 0
 }
 
-echo ">> Step 1/11 — Pre-flight port availability"
-# Only check ports we bind ourselves later in the flow. 5432 is owned by
-# Docker and `dev-up` is idempotent against already-running postgres
-# (including the one local-dev-stop re-creates via db-reset), so it
-# would always flag a false positive immediately after a stop.
+echo ">> Step 1/8 — Pre-flight port availability"
+# Only check ports we bind ourselves later in the flow: the two CP listeners
+# and the Lima agent forward. etcd's 2379/2380 are bound by the embedded
+# member we start in Step 5, not pre-flighted here (a stale dev member on
+# those ports surfaces as an "etcd start" failure in the api log).
 port_fails=0
 check_port_free 8080 "CP main listener"   || port_fails=$((port_fails+1))
 check_port_free 8443 "CP agent listener"  || port_fails=$((port_fails+1))
@@ -101,51 +102,20 @@ if [ "${port_fails}" -gt 0 ]; then
 fi
 echo "   ✓ 8080 / 8443 / 9443 all free"
 
-echo ">> Step 2/11 — Postgres dev dependencies"
-make --no-print-directory dev-up >/dev/null
-# Give Postgres a moment to accept connections (testcontainers-style wait).
-for _ in $(seq 1 15); do
-    if docker exec otherix-dev-postgres pg_isready -U otherix >/dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
-
-echo ">> Step 3/11 — Apply migrations"
-make --no-print-directory migrate-up >/dev/null
-
-echo ">> Step 4/11 — Pre-flight check (admin row matches expected email)"
-existing_email=$(docker exec otherix-dev-postgres \
-    psql -U otherix -d otherix -tA -c \
-    "select email from users where role='admin' and deleted_at is null limit 1" \
-    2>/dev/null | tr -d '[:space:]' || true)
-if [ -n "${existing_email}" ] && [ "${existing_email}" != "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}" ]; then
-    echo "✗ admin row exists with email '${existing_email}'" >&2
-    echo "  but local-dev-start is configured for '${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}'." >&2
-    echo "" >&2
-    echo "  Run 'make local-dev-stop' to wipe state, then 'make local-dev-start'." >&2
-    exit 1
-fi
-if [ -n "${existing_email}" ]; then
-    echo "   admin row already present with matching email — will reuse"
-else
-    echo "   no admin row — api-server will seed on boot"
-fi
-
-echo ">> Step 5/11 — Build api + agent + cli"
+echo ">> Step 2/8 — Build api + agent + cli"
 make --no-print-directory build >/dev/null
 
-echo ">> Step 6/11 — Stage Lima VM + agent (idempotent)"
+echo ">> Step 3/8 — Stage Lima VM + agent (idempotent)"
 make --no-print-directory bootstrap-dev
 
-# Step 7 closes the "Lima says Started, but not usable" gap. `limactl start`
+# Step 4 closes the "Lima says Started, but not usable" gap. `limactl start`
 # returns once the VM boots, but cloud-init + provisioning (apt install,
 # agent binary stage) run async and can take 30-60s longer on first start.
 # Without this gate, seed-mvp Step 4 (`limactl shell ... otherix-agent
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
 # landed yet. Linux native skips entirely — bootstrap-dev-linux is
 # synchronous (build + systemd unit install).
-echo ">> Step 7/11 — Lima VM readiness (macOS only)"
+echo ">> Step 4/8 — Lima VM readiness (macOS only)"
 if [ "$(uname -s)" = "Darwin" ]; then
     # Shell responsive — bounds Lima 'Started' to actual usability.
     # 60s budget (30 iterations × 2s) — first-start cloud-init occasionally
@@ -186,14 +156,14 @@ else
     echo "   (Linux native — bootstrap-dev is synchronous, no readiness gate needed)"
 fi
 
-echo ">> Step 8/11 — Start otherix-api in background"
+echo ">> Step 5/8 — Start otherix-api in background"
 nohup "${REPO_ROOT}/bin/otherix-api" --config "${REPO_ROOT}/dev/config/api.yaml" \
     > "${LOG_FILE}" 2>&1 &
 api_pid=$!
 echo "${api_pid}" > "${PID_FILE}"
 echo "   PID ${api_pid} → ${LOG_FILE}"
 
-echo ">> Step 9/11 — Wait for CP /healthz (60s budget)"
+echo ">> Step 6/8 — Wait for CP /healthz (60s budget)"
 ready=0
 for _ in $(seq 1 30); do
     if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
@@ -216,17 +186,17 @@ if [ "${ready}" -ne 1 ]; then
 fi
 echo "   ✓ CP reachable at http://localhost:8080"
 
-echo ">> Step 10/11 — Bootstrap agent + seed cluster (seed-mvp)"
+echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-mvp)"
 make --no-print-directory seed-mvp
 
-echo ">> Step 11/11 — Final sanity (otherix node list)"
+echo ">> Step 8/8 — Final sanity (otherix node list)"
 "${REPO_ROOT}/bin/otherix" node list
 
 cat <<EOF
 
 >> local-dev-start complete
 
-   Postgres   : 127.0.0.1:5432 (otherix/otherix)
+   etcd data  : ${REPO_ROOT}/.local/etcd (embedded member)
    api-server : http://localhost:8080 (PID $(cat "${PID_FILE}"))
    api log    : ${LOG_FILE}
    Lima VM    : otherix-dev (limactl shell otherix-dev)

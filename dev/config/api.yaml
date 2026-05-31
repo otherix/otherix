@@ -26,11 +26,18 @@ agent_server:
   enabled: true
   listen:  "0.0.0.0:8443"
 
-database:
-  dsn: "postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable"
-  max_conns: 10
-  min_conns: 2
-  max_conn_lifetime: 1h
+# Embedded etcd member (ADR 0030) - the only stateful service. Dev runs a
+# single-node member with a repo-relative, gitignored data dir (.local/etcd,
+# resolved against the api-server's working directory, which is the repo root
+# under both `make run-api-dev` and local-dev-start). `make etcd-reset` wipes
+# it for a clean-slate smoke run. No Postgres, no migrations.
+etcd:
+  mode:          "single"
+  name:          "otherix-dev-0"
+  data_dir:      ".local/etcd"
+  peer_url:      "http://127.0.0.1:2380"
+  client_url:    "http://127.0.0.1:2379"
+  cluster_token: "otherix-dev"
 
 logger:
   level: "info"

@@ -49,9 +49,10 @@ edit the VM template.
 ## Setup
 
 ```bash
-# 1. Start dev dependencies (Postgres) and apply migrations natively.
-make dev-up
-make migrate-up
+# 1. (no external dependencies) The control plane runs an embedded etcd
+#    member (ADR 0030) - there is no Postgres to start and no migrations
+#    to apply. For a clean-slate run, wipe any prior dev state:
+make etcd-reset
 
 # 2. Stage the Lima VM (Ubuntu 24.04, native arch): provision qemu /
 #    dirs / systemd unit, cross-build agent, copy binary + config
@@ -65,7 +66,7 @@ make bootstrap-dev
 #    in-process workers can dispatch to the agent over mTLS.
 #
 #    First-time only: provide bootstrap admin credentials so the CP
-#    seeds the admin user row on initial migration.
+#    seeds the admin user row on first boot.
 export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
 make run-api-dev
@@ -97,7 +98,7 @@ make deploy-dev
 limactl shell otherix-dev sudo journalctl -u otherix-agent -f
 
 # 8. Tear down (stops + deletes the Lima VM; CP cert + cluster CA
-#    persist in Postgres until `make db-reset`).
+#    persist in the embedded-etcd data dir until `make etcd-reset`).
 make clean-dev
 ```
 
@@ -416,10 +417,10 @@ the command per node to fan a pool name out across the cluster.
 Deletion has no `--force-cascade`; the operator must remove
 dependent disks/images first.
 
-**Transitional note:** `seed-mvp.sh` continues to use direct SQL INSERT
-for initial pool registration — public pool-registration API is not
-yet exposed. The agent's pool registry
-is name-keyed and populated through reconciliation from CP (the `pools:`
+**Note:** `seed-mvp.sh` registers the initial pool through `otherix pool
+create` (no direct store access - the control plane is the sole writer,
+now backed by embedded etcd per ADR 0030). The agent's pool registry is
+name-keyed and populated through reconciliation from CP (the `pools:`
 block in `agent.yaml` is eliminated), so CLI-created pools work
 end-to-end including agent-side image import + vm-disk allocation.
 
@@ -630,11 +631,8 @@ through the full sequence.
 
 1. Steps 0+1+2 of this doc completed (Lima VM running, agent built,
    mTLS certs generated).
-2. Local Postgres up and migrated:
-   ```bash
-   make dev-up
-   make migrate-up
-   ```
+2. No external store to provision: the api-server runs an embedded etcd
+   member (ADR 0030). For a clean-slate run, `make etcd-reset`.
 3. Bootstrap admin seeded — set the env vars BEFORE the first api
    start, then start the api with the dev config:
    ```bash

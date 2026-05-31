@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # local-dev-stop — destructive teardown of the local dev stack.
 #
-# Stops everything brought up by `make local-dev-start` AND wipes
-# Postgres state via `make db-reset`. Per locked decision (3a) — no
+# Stops everything brought up by `make local-dev-start` AND wipes the
+# embedded-etcd state via `make etcd-reset`. Per locked decision (3a) — no
 # confirmation prompt; user runs this when they want clean slate.
 #
 # Sequence:
 #   1. Stop otherix-api  — SIGTERM, wait for graceful shutdown (35s budget),
 #                          SIGKILL fallback
 #   2. clean-dev         — stop + delete Lima VM
-#   3. db-reset          — DROPS Postgres bind mount, recreates fresh
+#   3. etcd-reset        — wipe the embedded-etcd data dir (.local/etcd)
 
 set -euo pipefail
 
@@ -66,12 +66,12 @@ fi
 echo ">> Step 2/3 — Stop + delete Lima VM"
 make --no-print-directory clean-dev
 
-echo ">> Step 3/3 — Reset Postgres (DROPS bind mount)"
-make --no-print-directory db-reset >/dev/null
+echo ">> Step 3/3 — Reset embedded etcd (wipe data dir)"
+make --no-print-directory etcd-reset >/dev/null
 
 echo ""
 echo ">> local-dev-stop complete — system reset"
-echo "   Postgres bind mount wiped (.docker-data/postgres)"
+echo "   etcd data dir wiped (.local/etcd)"
 echo "   Lima VM destroyed (otherix-dev)"
 echo "   api-server stopped"
 echo ""
