@@ -260,3 +260,13 @@ cp_cert:
 
   # Cert lifetime (1 year default). Rotation = future ROADMAP slice.
   validity: "8760h"
+
+# Cluster CA (cert + key) on disk. The CA is a filesystem artifact under
+# the HA peer-PKI model: the peer (Raft) mTLS plane needs a CA-signed
+# cert before etcd starts, so the CA is provisioned to disk pre-start and
+# lives on every replica. A bootstrap / single node generates it on first
+# boot and reloads it on restart; a join node receives it via the
+# replica-join protocol before its member starts.
+cluster_ca:
+  cert_file: "/opt/otherix/ca/cluster-ca.crt"
+  key_file:  "/opt/otherix/ca/cluster-ca.key"

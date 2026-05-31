@@ -17,6 +17,7 @@ type APIConfig struct {
 	AgentServer  AgentServerConfig  `koanf:"agent_server"`
 	AgentClient  AgentClientConfig  `koanf:"agent_client"`
 	CPCert       CPCertConfig       `koanf:"cp_cert"`
+	ClusterCA    ClusterCAConfig    `koanf:"cluster_ca"`
 	Logger       logger.Config      `koanf:"logger"`
 	Auth         AuthConfig         `koanf:"auth"`
 	Console      ConsoleConfig      `koanf:"console"`
@@ -50,6 +51,32 @@ type EtcdConfig struct {
 
 	CompactionMode      string `koanf:"compaction_mode"`      // periodic | revision (default periodic)
 	CompactionRetention string `koanf:"compaction_retention"` // duration "1h" (periodic) or count "5000" (revision); default "1h"
+}
+
+// ClusterCAConfig pins the on-disk location of the cluster CA (cert +
+// key). Under the HA peer-PKI model the CA is a filesystem artifact: it
+// is provisioned to disk before etcd starts because the peer (Raft) mTLS
+// plane needs a CA-signed cert pre-start, and it lives on every replica
+// so each signs its own peer cert locally.
+//
+// A bootstrap / single node generates the CA here on first boot and
+// reloads it on restart; a join node receives it via the replica-join
+// protocol before its member starts. Defaults to
+// /opt/otherix/ca/cluster-ca.{crt,key}.
+type ClusterCAConfig struct {
+	CertFile string `koanf:"cert_file"`
+	KeyFile  string `koanf:"key_file"`
+}
+
+// Validate enforces that the CA cert and key paths are both set: the
+// on-disk CA provisioning needs both, and an empty path is an operator
+// error rather than a meaningful default (defaultAPIConfig always
+// populates them).
+func (c ClusterCAConfig) Validate() error {
+	if c.CertFile == "" || c.KeyFile == "" {
+		return errors.New("cluster_ca.cert_file and cluster_ca.key_file must both be set")
+	}
+	return nil
 }
 
 // StoragePoolsConfig pins operator-facing knobs for `POST
@@ -531,6 +558,10 @@ func defaultAPIConfig() APIConfig {
 			Resources: defaultResourcesConfig(),
 			Pressure:  defaultPressureConfig(),
 		},
+		ClusterCA: ClusterCAConfig{
+			CertFile: "/opt/otherix/ca/cluster-ca.crt",
+			KeyFile:  "/opt/otherix/ca/cluster-ca.key",
+		},
 		StoragePools: StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
 		},
@@ -581,6 +612,9 @@ func (c APIConfig) Validate() error {
 		return err
 	}
 	if err := c.CPCert.Validate(); err != nil {
+		return err
+	}
+	if err := c.ClusterCA.Validate(); err != nil {
 		return err
 	}
 	if err := c.Auth.Validate(); err != nil {

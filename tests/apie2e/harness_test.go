@@ -118,7 +118,11 @@ func newE2E(t *testing.T) *harness {
 		t.Fatalf("auth.NewService: %v", err)
 	}
 
-	if err := api.BootstrapClusterCA(ctx, s, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+	ca, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	if err := api.BootstrapClusterCA(ctx, s, ca, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatalf("BootstrapClusterCA: %v", err)
 	}
 

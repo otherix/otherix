@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -91,6 +92,22 @@ func run() error {
 		log.Warn("placement config", "warning", msg)
 	}
 
+	// Provision the cluster CA on disk before etcd starts: the peer (Raft)
+	// mTLS plane needs a CA-signed cert pre-start. A bootstrap / single node
+	// generates it on first boot and reloads it on restart; a join node must
+	// have received it via the replica-join protocol first (allowGenerate is
+	// false for join, so a missing CA fails fast rather than forking a new
+	// trust root).
+	caMaterial, caGenerated, err := auth.LoadOrGenerateClusterCAOnDisk(
+		cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, cfg.Etcd.Mode != "join", time.Now())
+	if err != nil {
+		return fmt.Errorf("provision cluster CA on disk: %v", err)
+	}
+	log.Info("cluster CA on disk",
+		"generated", caGenerated,
+		"fingerprint_sha256", hex.EncodeToString(caMaterial.Fingerprint),
+		"cert_file", cfg.ClusterCA.CertFile)
+
 	// Start the embedded etcd member, then build the KV client and the
 	// etcd-backed store over it. Deferred cleanup runs LIFO: the client closes
 	// before the member stops, both bounded by ShutdownGrace.
@@ -119,15 +136,15 @@ func run() error {
 		return fmt.Errorf("auth init: %v", err)
 	}
 
-	return runServe(ctx, cfg, st, authSvc, log)
+	return runServe(ctx, cfg, st, authSvc, caMaterial, log)
 }
 
 // runServe handles the post-bootstrap serving lifecycle - extracted from run()
 // to keep cyclomatic complexity under gocyclo's ceiling. Threading: bootstrap
 // hooks → CP cert load → agent client → worker runtime → HTTP server. Each
 // step's failure path returns after wrapping the error.
-func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, authSvc *auth.Service, log *slog.Logger) error {
-	if err := runBootstrapHooks(ctx, st, log); err != nil {
+func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, authSvc *auth.Service, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
+	if err := runBootstrapHooks(ctx, st, caMaterial, log); err != nil {
 		return err
 	}
 
@@ -168,14 +185,14 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 
 // runBootstrapHooks runs the post-start / pre-serve bootstrap hooks in the
 // canonical order: BootstrapAdmin first (seeds the first admin user), then
-// BootstrapClusterCA (provisions the cluster CA so the /v1/ca endpoint and the
-// Step 2 CSR signer have an active row). Both hooks are idempotent - repeat
-// boots observe existing rows and no-op.
-func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, log *slog.Logger) error {
+// BootstrapClusterCA (syncs the on-disk cluster CA into etcd so the /v1/ca
+// endpoint and the Step 2 CSR signer have an active row). Both hooks are
+// idempotent - repeat boots observe existing rows and no-op.
+func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap admin: %v", err)
 	}
-	if err := api.BootstrapClusterCA(ctx, st, log); err != nil {
+	if err := api.BootstrapClusterCA(ctx, st, caMaterial, log); err != nil {
 		return fmt.Errorf("bootstrap cluster CA: %v", err)
 	}
 	return nil
