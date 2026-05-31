@@ -49,18 +49,19 @@ func TestFetchClusterCASuccess(t *testing.T) {
 		CPURL:         srv.URL,
 		Token:         "otx_join_whatever",
 		CAFingerprint: fingerprintHexOf(ca.Fingerprint),
+		PeerURL:       "https://127.0.0.1:2380",
 		Timeout:       5 * time.Second,
 	}, nil)
 	if err != nil {
 		t.Fatalf("FetchClusterCA: %v", err)
 	}
-	if !bytes.Equal(got.CertPEM, ca.CertPEM) {
+	if !bytes.Equal(got.CA.CertPEM, ca.CertPEM) {
 		t.Errorf("fetched cert PEM differs from served CA")
 	}
-	if !bytes.Equal(got.Fingerprint, ca.Fingerprint) {
-		t.Errorf("fetched fingerprint = %x, want %x", got.Fingerprint, ca.Fingerprint)
+	if !bytes.Equal(got.CA.Fingerprint, ca.Fingerprint) {
+		t.Errorf("fetched fingerprint = %x, want %x", got.CA.Fingerprint, ca.Fingerprint)
 	}
-	if len(got.KeyPEM) == 0 {
+	if len(got.CA.KeyPEM) == 0 {
 		t.Error("fetched key PEM is empty")
 	}
 }

@@ -12,6 +12,8 @@ package etcd
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 )
 
 // Mode selects the embedded member's cluster bootstrap behaviour.
@@ -120,8 +122,21 @@ func (c *Config) Validate() error {
 	if c.ClusterToken == "" {
 		return fmt.Errorf("cluster-token is required")
 	}
-	if (c.Mode == ModeBootstrap || c.Mode == ModeJoin) && c.InitialCluster == "" {
-		return fmt.Errorf("initial-cluster is required for mode %q", c.Mode)
+	if (c.Mode == ModeBootstrap || c.Mode == ModeJoin) && c.InitialCluster == "" && !c.memberDirExists() {
+		return fmt.Errorf("initial-cluster is required for mode %q on a fresh data dir", c.Mode)
 	}
 	return nil
+}
+
+// memberDirExists reports whether the member's data directory has already been
+// initialised (its WAL exists). etcd creates <DataDir>/member on first start and,
+// once present, recovers cluster membership from the WAL and ignores the
+// initial-cluster flag - so the initial-cluster requirement only applies to a
+// fresh member.
+func (c *Config) memberDirExists() bool {
+	if c.DataDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(c.DataDir, "member"))
+	return err == nil
 }

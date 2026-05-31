@@ -41,7 +41,10 @@ func TestClusterJoinReturnsCAKeyPair(t *testing.T) {
 
 	token := mintToken(t, h, adminTok, "cluster")
 
-	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{"token": token})
+	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{
+		"token":    token,
+		"peer_url": "https://127.0.0.1:12380",
+	})
 	if resp.StatusCode != 201 {
 		t.Fatalf("/v1/cluster/join status = %d, want 201", resp.StatusCode)
 	}
@@ -64,7 +67,10 @@ func TestClusterJoinRejectsNodeToken(t *testing.T) {
 
 	// A node-kind token must not redeem at the cluster endpoint.
 	nodeToken := mintToken(t, h, adminTok, "node")
-	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{"token": nodeToken})
+	resp := h.postAgent(t, "/v1/cluster/join", map[string]string{
+		"token":    nodeToken,
+		"peer_url": "https://127.0.0.1:12380",
+	})
 	if resp.StatusCode != 401 {
 		t.Fatalf("node token at /v1/cluster/join status = %d, want 401", resp.StatusCode)
 	}

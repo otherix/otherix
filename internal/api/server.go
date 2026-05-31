@@ -69,7 +69,7 @@ type Server struct {
 // AgentServer.Enabled is false the material may be zero (Source =
 // "skipped") and no listener is constructed; the validation here only
 // activates when AgentServer.Enabled = true.
-func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, log *slog.Logger) (*Server, error) {
+func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, membership ClusterMembership, log *slog.Logger) (*Server, error) {
 	handler := NewRouter(RouterDeps{
 		Store:              s,
 		AuthService:        authSvc,
@@ -85,6 +85,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshan
 		PressureDisk:       cfg.Placement.Pressure.Disk,
 		VMLifecycle:        vmLifecycle,
 		VMConsole:          vmConsole,
+		ClusterMembership:  membership,
 	})
 
 	srv := &Server{
@@ -114,6 +115,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshan
 			PressureMemory:     cfg.Placement.Pressure.Memory,
 			PressureSystemDisk: cfg.Placement.Pressure.SystemDisk,
 			PressureDisk:       cfg.Placement.Pressure.Disk,
+			ClusterMembership:  membership,
 		})
 		srv.agentServer = &http.Server{
 			Addr:              cfg.AgentServer.Listen,

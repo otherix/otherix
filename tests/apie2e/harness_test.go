@@ -30,6 +30,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,11 +97,44 @@ func TestMain(m *testing.M) {
 // exercised; the test server itself is plain HTTP (the route logic is under
 // test, not the transport).
 type harness struct {
-	srv      *httptest.Server
-	agentSrv *httptest.Server
-	store    *etcdstore.Store
-	svc      *auth.Service
+	srv        *httptest.Server
+	agentSrv   *httptest.Server
+	store      *etcdstore.Store
+	svc        *auth.Service
+	membership *fakeClusterMembership
 }
+
+// fakeClusterMembership is the apie2e stand-in for the etcd membership seam. It
+// records the join peer_url and removed ids and returns a stable seeded member,
+// so the cluster routes exercise the handlers without a real reconfiguration.
+type fakeClusterMembership struct {
+	mu        sync.Mutex
+	joinedURL string
+	removed   []uint64
+	members   []etcd.Member
+}
+
+func (f *fakeClusterMembership) RegisterLearner(_ context.Context, peerURL string) ([]etcd.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.joinedURL = peerURL
+	return append(f.members, etcd.Member{PeerURLs: []string{peerURL}, IsLearner: true}), nil
+}
+
+func (f *fakeClusterMembership) ListMembers(context.Context) ([]etcd.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.members, nil
+}
+
+func (f *fakeClusterMembership) RemoveMember(_ context.Context, id uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, id)
+	return nil
+}
+
+func (f *fakeClusterMembership) TryPromoteLearners(context.Context) (int, error) { return 0, nil }
 
 // newE2E wipes the keyspace and builds a fresh router over the shared member.
 func newE2E(t *testing.T) *harness {
@@ -131,29 +165,38 @@ func newE2E(t *testing.T) *harness {
 		t.Fatalf("BootstrapClusterCA: %v", err)
 	}
 
+	membership := &fakeClusterMembership{members: []etcd.Member{{
+		ID:         0x1a2b,
+		Name:       "n0",
+		PeerURLs:   []string{"https://127.0.0.1:2380"},
+		ClientURLs: []string{"http://127.0.0.1:2379"},
+	}}}
+
 	router := api.NewRouter(api.RouterDeps{
 		Store:       s,
 		AuthService: svc,
 		StoragePools: config.StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
 		},
-		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
-		RequestTimeout:  10 * time.Second,
-		HealthCheckName: "etcd",
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RequestTimeout:    10 * time.Second,
+		HealthCheckName:   "etcd",
+		ClusterMembership: membership,
 	})
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
 	agentRouter := api.NewAgentRouter(api.RouterDeps{
-		Store:          s,
-		AuthService:    svc,
-		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		RequestTimeout: 10 * time.Second,
+		Store:             s,
+		AuthService:       svc,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RequestTimeout:    10 * time.Second,
+		ClusterMembership: membership,
 	})
 	agentSrv := httptest.NewServer(agentRouter)
 	t.Cleanup(agentSrv.Close)
 
-	return &harness{srv: srv, agentSrv: agentSrv, store: s, svc: svc}
+	return &harness{srv: srv, agentSrv: agentSrv, store: s, svc: svc, membership: membership}
 }
 
 func (h *harness) do(t *testing.T, method, path string, body any, bearer string, headers map[string]string) *http.Response {

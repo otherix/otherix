@@ -28,13 +28,32 @@ type ClusterJoinFetchParams struct {
 	CPURL         string // base URL of an existing replica's control-plane API
 	Token         string // plaintext kind=cluster join token
 	CAFingerprint string // expected cluster CA cert fingerprint (hex sha256, optional "sha256:" prefix)
+	PeerURL       string // the joiner's etcd Raft peer URL, registered as a learner by the handler
 	Timeout       time.Duration
+}
+
+// ClusterMemberRef is one cluster member as returned by /v1/cluster/join, enough
+// for the joiner to build its etcd initial-cluster.
+type ClusterMemberRef struct {
+	Name    string
+	PeerURL string
+}
+
+// ClusterJoinResult is the joiner-side outcome of /v1/cluster/join: the CA to
+// persist plus the current membership to seed initial-cluster.
+type ClusterJoinResult struct {
+	CA      auth.ClusterCAResult
+	Members []ClusterMemberRef
 }
 
 // clusterJoinResponse mirrors components/schemas/ClusterJoinResponse.
 type clusterJoinResponse struct {
 	CACertPEM string `json:"ca_cert_pem"`
 	CAKeyPEM  string `json:"ca_key_pem"`
+	Members   []struct {
+		Name    string `json:"name"`
+		PeerURL string `json:"peer_url"`
+	} `json:"members"`
 }
 
 // FetchClusterCA performs the joiner's bootstrap round-trip: POST the cluster
@@ -46,30 +65,30 @@ type clusterJoinResponse struct {
 // TLS uses InsecureSkipVerify: the payload is self-verifying via the
 // fingerprint pin (the same TOFU model as agent bootstrap), so transport
 // authentication is not relied upon.
-func FetchClusterCA(ctx context.Context, p ClusterJoinFetchParams, log *slog.Logger) (auth.ClusterCAResult, error) {
+func FetchClusterCA(ctx context.Context, p ClusterJoinFetchParams, log *slog.Logger) (ClusterJoinResult, error) {
 	expected, err := normalizeCAFingerprint(p.CAFingerprint)
 	if err != nil {
-		return auth.ClusterCAResult{}, err
+		return ClusterJoinResult{}, err
 	}
 
 	body, err := postClusterJoin(ctx, p)
 	if err != nil {
-		return auth.ClusterCAResult{}, err
+		return ClusterJoinResult{}, err
 	}
 
 	cert, der, err := auth.ParseClusterCACert([]byte(body.CACertPEM))
 	if err != nil {
-		return auth.ClusterCAResult{}, fmt.Errorf("parse cluster CA cert: %v", err)
+		return ClusterJoinResult{}, fmt.Errorf("parse cluster CA cert: %v", err)
 	}
 	fp := sha256.Sum256(der)
 	computed := hex.EncodeToString(fp[:])
 	if computed != expected {
-		return auth.ClusterCAResult{}, fmt.Errorf(
+		return ClusterJoinResult{}, fmt.Errorf(
 			"cluster CA fingerprint mismatch: server returned %s, operator pinned %s", computed, expected)
 	}
 
 	if err := verifyKeyMatchesCert([]byte(body.CAKeyPEM), cert.PublicKey); err != nil {
-		return auth.ClusterCAResult{}, err
+		return ClusterJoinResult{}, err
 	}
 
 	if log != nil {
@@ -78,19 +97,27 @@ func FetchClusterCA(ctx context.Context, p ClusterJoinFetchParams, log *slog.Log
 			slog.String("fingerprint_sha256", computed))
 	}
 
-	return auth.ClusterCAResult{
-		CertPEM:     []byte(body.CACertPEM),
-		KeyPEM:      []byte(body.CAKeyPEM),
-		Fingerprint: fp[:],
-		NotBefore:   cert.NotBefore,
-		NotAfter:    cert.NotAfter,
+	refs := make([]ClusterMemberRef, 0, len(body.Members))
+	for _, m := range body.Members {
+		refs = append(refs, ClusterMemberRef{Name: m.Name, PeerURL: m.PeerURL})
+	}
+
+	return ClusterJoinResult{
+		CA: auth.ClusterCAResult{
+			CertPEM:     []byte(body.CACertPEM),
+			KeyPEM:      []byte(body.CAKeyPEM),
+			Fingerprint: fp[:],
+			NotBefore:   cert.NotBefore,
+			NotAfter:    cert.NotAfter,
+		},
+		Members: refs,
 	}, nil
 }
 
 // postClusterJoin issues the TOFU POST and decodes the response, mapping a
 // non-201 status to a descriptive error.
 func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams) (clusterJoinResponse, error) {
-	reqBody, err := json.Marshal(map[string]string{"token": p.Token})
+	reqBody, err := json.Marshal(map[string]string{"token": p.Token, "peer_url": p.PeerURL})
 	if err != nil {
 		return clusterJoinResponse{}, fmt.Errorf("marshal request: %v", err)
 	}

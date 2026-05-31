@@ -15,6 +15,7 @@ import (
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
 	clusterjoinhandlers "github.com/otherix/otherix/internal/api/handlers/clusterjoin"
+	clustermembershandlers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
@@ -52,6 +53,7 @@ type RouterDeps struct {
 	PressureDisk       config.PressureConditionConfig
 	VMLifecycle        vmshandlers.LifecycleDeps // sync pause/resume/reset agentclient
 	VMConsole          vmshandlers.ConsoleDeps   // console token issuance + proxy relay
+	ClusterMembership  ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
 }
 
 // NewRouter constructs the api-server's HTTP handler: a chi router with
@@ -158,6 +160,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
 	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.ImageDeleter, deps.StoragePools, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
+	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	templatesH := templateshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
@@ -351,6 +354,12 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-pool", clusterH.GetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-pool", clusterH.SetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-pool", clusterH.ClearDefaultPool)
+
+				// etcd cluster membership admin. cluster:manage gates both
+				// the inspection read and the member eviction - the routes
+				// surface raw etcd topology, an operator-only concern.
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Get("/members", clusterMembersH.List)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/members/{id}", clusterMembersH.Remove)
 			})
 		})
 	})
@@ -403,7 +412,7 @@ func NewAgentRouter(deps RouterDeps) http.Handler {
 	// match before fall-through, and the URLs do not overlap.
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
-	clusterJoinH := clusterjoinhandlers.New(deps.Store, deps.Logger)
+	clusterJoinH := clusterjoinhandlers.New(deps.Store, deps.ClusterMembership, deps.Logger)
 	r.Get("/v1/ca", caH.Get)
 	r.Post("/v1/nodes/join", nodeJoinH.Join)
 	// Cluster-replica join lives on the TLS listener, not the plain-HTTP

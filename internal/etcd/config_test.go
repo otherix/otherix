@@ -6,19 +6,31 @@ package etcd
 import (
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestConfigValidate(t *testing.T) {
+	// freshDir is a data dir with no member subdir, so memberDirExists() is false
+	// and the initial-cluster requirement applies to bootstrap / join.
+	freshDir := t.TempDir()
 	base := func() Config {
 		return Config{
 			Mode:         ModeSingle,
 			Name:         "n1",
-			DataDir:      "/tmp/x",
+			DataDir:      freshDir,
 			PeerURL:      "http://127.0.0.1:12380",
 			ClientURL:    "http://127.0.0.1:12379",
 			ClusterToken: "otherix",
 		}
+	}
+
+	// initializedDir already has its member subdir (a member that has bootstrapped
+	// and recovers membership from its WAL), so initial-cluster is not required.
+	initializedDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(initializedDir, "member"), 0o755); err != nil {
+		t.Fatalf("create member dir: %v", err)
 	}
 	cases := []struct {
 		name    string
@@ -45,12 +57,31 @@ func TestConfigValidate(t *testing.T) {
 		{name: "missing client-url", mutate: func(c *Config) { c.ClientURL = "" }, wantErr: true},
 		{name: "missing cluster-token", mutate: func(c *Config) { c.ClusterToken = "" }, wantErr: true},
 		{name: "bootstrap needs initial-cluster", mutate: func(c *Config) { c.Mode = ModeBootstrap }, wantErr: true},
-		{name: "join needs initial-cluster", mutate: func(c *Config) { c.Mode = ModeJoin }, wantErr: true},
+		{name: "join needs initial-cluster on fresh data dir", mutate: func(c *Config) { c.Mode = ModeJoin }, wantErr: true},
 		{
 			name: "bootstrap with initial-cluster",
 			mutate: func(c *Config) {
 				c.Mode = ModeBootstrap
 				c.InitialCluster = "n1=http://127.0.0.1:12380"
+			},
+			wantErr: false,
+		},
+		{
+			// A self-driven join node restarting: no initial-cluster, but the
+			// member dir exists, so etcd recovers membership from the WAL.
+			name: "join without initial-cluster on initialised member",
+			mutate: func(c *Config) {
+				c.Mode = ModeJoin
+				c.DataDir = initializedDir
+			},
+			wantErr: false,
+		},
+		{
+			// ModeSingle never needs initial-cluster, fresh data dir or not.
+			name: "single unaffected by member dir requirement",
+			mutate: func(c *Config) {
+				c.Mode = ModeSingle
+				c.DataDir = freshDir
 			},
 			wantErr: false,
 		},

@@ -20,6 +20,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api"
 	"github.com/otherix/otherix/internal/api/agentclient"
+	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
@@ -98,9 +99,11 @@ func run() error {
 	// replica before anything else: the peer plane needs the CA pre-start and
 	// a joiner must adopt the cluster's shared CA, not mint its own.
 	if cfg.Etcd.Mode == "join" {
-		if err := ensureClusterCAForJoin(ctx, cfg, log); err != nil {
+		ic, err := ensureClusterCAForJoin(ctx, cfg, log)
+		if err != nil {
 			return fmt.Errorf("fetch cluster CA for join: %v", err)
 		}
+		cfg.Etcd.InitialCluster = ic
 	}
 
 	// Provision the cluster CA on disk before etcd starts: the peer (Raft)
@@ -170,45 +173,77 @@ func run() error {
 }
 
 // ensureClusterCAForJoin fetches the cluster CA from an existing replica and
-// persists it to disk when a join node has no CA yet. On a restart (CA already
-// on disk) it is a no-op, so the fetch happens exactly once per joining replica.
-// The CA cert + key land at the cluster_ca paths, ready for the on-disk
-// provisioning step that follows.
-func ensureClusterCAForJoin(ctx context.Context, cfg *config.APIConfig, log *slog.Logger) error {
+// persists it to disk when a join node has no CA yet, returning the etcd
+// initial-cluster string computed from the membership the join call reports. On
+// a restart (CA already on disk) it is a no-op and returns the configured
+// initial-cluster, so the fetch happens exactly once per joining replica. The CA
+// cert + key land at the cluster_ca paths, ready for the on-disk provisioning
+// step that follows.
+func ensureClusterCAForJoin(ctx context.Context, cfg *config.APIConfig, log *slog.Logger) (string, error) {
 	if fileExists(cfg.ClusterCA.CertFile) && fileExists(cfg.ClusterCA.KeyFile) {
 		log.Info("cluster CA already on disk; skipping join fetch")
-		return nil
+		return cfg.Etcd.InitialCluster, nil
 	}
 
 	jc := cfg.ClusterJoin
 	token, err := resolveClusterJoinToken(jc)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if jc.CPURL == "" || jc.CAFingerprint == "" {
-		return errors.New("cluster_join.cp_url and cluster_join.ca_fingerprint are required to join with no CA on disk")
+		return "", errors.New("cluster_join.cp_url and cluster_join.ca_fingerprint are required to join with no CA on disk")
 	}
 	timeout := jc.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 
-	ca, err := api.FetchClusterCA(ctx, api.ClusterJoinFetchParams{
+	res, err := api.FetchClusterCA(ctx, api.ClusterJoinFetchParams{
 		CPURL:         jc.CPURL,
 		Token:         token,
 		CAFingerprint: jc.CAFingerprint,
+		PeerURL:       cfg.Etcd.PeerURL,
 		Timeout:       timeout,
 	}, log)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := auth.WriteCertCacheAtomic(cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, ca.CertPEM, ca.KeyPEM); err != nil {
-		return fmt.Errorf("persist fetched cluster CA: %v", err)
+	if err := auth.WriteCertCacheAtomic(cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, res.CA.CertPEM, res.CA.KeyPEM); err != nil {
+		return "", fmt.Errorf("persist fetched cluster CA: %v", err)
 	}
 	log.Info("persisted cluster CA fetched on join",
-		"fingerprint_sha256", hex.EncodeToString(ca.Fingerprint),
+		"fingerprint_sha256", hex.EncodeToString(res.CA.Fingerprint),
 		"cert_file", cfg.ClusterCA.CertFile)
-	return nil
+
+	return buildInitialCluster(res.Members, cfg.Etcd.Name, cfg.Etcd.PeerURL), nil
+}
+
+// buildInitialCluster renders the etcd initial-cluster "name=peer,..." from the
+// membership returned by the cluster-join call. The just-registered learner (self)
+// is echoed back in that membership with an empty etcd name (a learner has no name
+// until it starts), so the trailing add() keys self by the configured name, and
+// the peer-URL-keyed order map lists self exactly once instead of twice.
+func buildInitialCluster(members []api.ClusterMemberRef, selfName, selfPeerURL string) string {
+	names := make(map[string]string)
+	order := make([]string, 0, len(members)+1)
+	add := func(peer, name string) {
+		if peer == "" {
+			return
+		}
+		if _, ok := names[peer]; !ok {
+			order = append(order, peer)
+		}
+		names[peer] = name
+	}
+	for _, m := range members {
+		add(m.PeerURL, m.Name)
+	}
+	add(selfPeerURL, selfName)
+	parts := make([]string, 0, len(order))
+	for _, peer := range order {
+		parts = append(parts, names[peer]+"="+peer)
+	}
+	return strings.Join(parts, ",")
 }
 
 // resolveClusterJoinToken reads the cluster join token from the configured
@@ -260,13 +295,29 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 		return err
 	}
 
+	// The loopback membership client drives the cluster-join learner registration,
+	// the admin member routes, and the always-on promote loop. It targets the local
+	// member's client URL, so every replica forwards reconfiguration to the etcd
+	// leader.
+	membership := etcd.NewMembershipClient(cfg.Etcd.ClientURL, log)
+
+	// The promote loop runs on every replica independent of cfg.Workers.Enabled:
+	// membership convergence is a cluster concern, not a job-dispatch one. On a
+	// single-node cluster each tick is a cheap no-op.
+	var promoteWG sync.WaitGroup
+	promoteWG.Add(1)
+	go func() {
+		defer promoteWG.Done()
+		clustermembers.RunPromoteLoop(ctx, membership, 15*time.Second, log)
+	}()
+
 	// The etcd store self-enqueues (EnqueueTask writes the job inline) and
 	// tasks.cancel cancels through the store, so there is no queue client to pass.
 	server, err := api.NewServer(
 		*cfg, st, agentClient,
 		vmshandlers.LifecycleDeps{AgentClient: agentClient},
 		vmshandlers.ConsoleDeps{AgentClient: agentClient, AccessMode: cfg.Console.AccessMode},
-		authSvc, material, log)
+		authSvc, material, membership, log)
 	if err != nil {
 		return fmt.Errorf("server init: %v", err)
 	}
@@ -275,6 +326,7 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 	}
 
 	stopWorkers()
+	promoteWG.Wait()
 
 	log.Info("shutting down")
 	return nil
