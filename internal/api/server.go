@@ -16,9 +16,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
-
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/auth"
@@ -72,16 +69,10 @@ type Server struct {
 // AgentServer.Enabled is false the material may be zero (Source =
 // "skipped") and no listener is constructed; the validation here only
 // activates when AgentServer.Enabled = true.
-//
-// The river client is required because at least one user-facing route
-// (`tasks.cancel`) needs transactional access to river_job. Tests that
-// build the router directly via NewRouter may pass a real client (the
-// JobCancelTx call works on the pool without Start) or a no-op fixture.
-func NewServer(cfg config.APIConfig, s RouterStore, riverClient *river.Client[pgx.Tx], imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, log *slog.Logger) (*Server, error) {
+func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, log *slog.Logger) (*Server, error) {
 	handler := NewRouter(RouterDeps{
 		Store:              s,
 		AuthService:        authSvc,
-		RiverClient:        riverClient,
 		HealthCheckName:    "etcd",
 		ImageDeleter:       imageDeleter,
 		StoragePools:       cfg.StoragePools,
@@ -117,7 +108,6 @@ func NewServer(cfg config.APIConfig, s RouterStore, riverClient *river.Client[pg
 		agentHandler := NewAgentRouter(RouterDeps{
 			Store:              s,
 			AuthService:        authSvc,
-			RiverClient:        riverClient,
 			ImageDeleter:       imageDeleter,
 			Logger:             log,
 			RequestTimeout:     cfg.Server.WriteTimeout,

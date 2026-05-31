@@ -156,12 +156,10 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 		return err
 	}
 
-	// riverClient is nil on the etcd backend: the etcd store self-enqueues
-	// (EnqueueTask writes the job inline) and tasks.cancel cancels through the
-	// store, so no river binder is needed. NewRouter skips SetQueueBinder when
-	// the client is nil.
+	// The etcd store self-enqueues (EnqueueTask writes the job inline) and
+	// tasks.cancel cancels through the store, so there is no queue client to pass.
 	server, err := api.NewServer(
-		*cfg, st, nil, agentClient,
+		*cfg, st, agentClient,
 		vmshandlers.LifecycleDeps{AgentClient: agentClient},
 		vmshandlers.ConsoleDeps{AgentClient: agentClient, AccessMode: cfg.Console.AccessMode},
 		authSvc, material, log)

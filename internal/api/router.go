@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 
 	apitokenshandlers "github.com/otherix/otherix/internal/api/handlers/apitokens"
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
@@ -32,9 +30,7 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
-	"github.com/otherix/otherix/internal/queue/riverqueue"
 	"github.com/otherix/otherix/internal/scheduler"
-	"github.com/otherix/otherix/internal/store"
 )
 
 // RouterDeps bundles the dependencies the router needs. Passed as a
@@ -43,7 +39,6 @@ import (
 type RouterDeps struct {
 	Store              RouterStore
 	AuthService        *auth.Service
-	RiverClient        *river.Client[pgx.Tx]             // pgx-only queue binder; nil on the etcd backend
 	HealthCheckName    string                            // /readyz dependency label; empty falls to "database"
 	ImageDeleter       storagepoolshandlers.ImageDeleter // may be nil when AgentClient.Enabled=false
 	StoragePools       config.StoragePoolsConfig         // path allowlist
@@ -77,18 +72,8 @@ type RouterDeps struct {
 // version-independent infrastructure and must not break when the API
 // rolls forward.
 func NewRouter(deps RouterDeps) http.Handler {
-	// Wire the river queue backend into the store so store.InTxEnqueue can
-	// enqueue jobs atomically with their task rows. Only the pgx store exposes
-	// SetQueueBinder; the etcd store self-enqueues (EnqueueTask writes the job
-	// inline), so it skips this via the type assertion. NewRouter is the common
-	// choke point for production (via NewServer) and the e2e harnesses, both of
-	// which supply the river client here.
-	if binder, ok := deps.Store.(interface {
-		SetQueueBinder(store.QueueBinder)
-	}); ok && deps.RiverClient != nil {
-		binder.SetQueueBinder(riverqueue.New(deps.RiverClient))
-	}
-
+	// The etcd store self-enqueues (EnqueueTask writes the job row inline), so
+	// there is no separate queue binder to wire here.
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
