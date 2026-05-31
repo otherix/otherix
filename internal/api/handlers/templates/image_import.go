@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
@@ -77,7 +76,7 @@ func (h *Handler) ImportImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	template, err := resolver.Template(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	template, err := resolver.Template(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeLoadError(w, r, err)
 		return
@@ -90,7 +89,7 @@ func (h *Handler) ImportImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool, err := resolver.Pool(r.Context(), h.store.Queries(), poolIdentifier)
+	pool, err := resolver.Pool(r.Context(), h.store, poolIdentifier)
 	if err != nil {
 		if resolver.IsNotFound(err) {
 			response.WriteError(w, r, http.StatusNotFound,
@@ -109,7 +108,7 @@ func (h *Handler) ImportImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := h.store.Queries().GetNodeByID(r.Context(), pool.NodeID)
+	node, err := h.store.NodeByID(r.Context(), pool.NodeID)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "load owning node", nil)
@@ -157,11 +156,13 @@ func decodeImageImportBody(w http.ResponseWriter, r *http.Request) (string, bool
 	return body.Pool, true
 }
 
-// enqueueImport runs the atomic three-write enqueue: insert the
-// task row, hand the job to river inside the same tx, then stamp
-// the river job id back. Mirrors the storage_pool.scan handler's
-// enqueueScan exactly — the only differences are the task type and
-// the args payload shape.
+// enqueueImport runs the atomic enqueue through the store's
+// EnqueueTask seam: the task row, its background job,
+// and the job-reference stamp commit together. The queue specifics
+// live behind the store;
+// the handler only supplies the task descriptor and the job args.
+// Mirrors the storage_pool.scan handler - the only differences are the
+// task type and the args payload shape.
 func (h *Handler) enqueueImport(ctx context.Context, templateID, poolID, callerID uuid.UUID) (uuid.UUID, error) {
 	taskID := uuid.New()
 	tid := templateID
@@ -175,38 +176,20 @@ func (h *Handler) enqueueImport(ctx context.Context, templateID, poolID, callerI
 		return uuid.Nil, err
 	}
 
-	err = h.store.InTxWithTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		if _, err := q.CreateTask(ctx, store.CreateTaskParams{
-			ID:           taskID,
-			Type:         "storage_image.import",
-			Status:       store.TaskStatusPending,
-			ResourceType: "template",
-			ResourceID:   &tid,
-			Args:         argsJSON,
-			MaxAttempts:  25,
-			CreatedBy:    &cid,
-		}); err != nil {
-			return err
-		}
-		insertResult, err := h.riverClient.InsertTx(ctx, tx,
-			storagepoolshandlers.StorageImageImportArgs{
-				TaskID:     taskID,
-				TemplateID: templateID,
-				PoolID:     poolID,
-			}, nil)
-		if err != nil {
-			return err
-		}
-		jobID := insertResult.Job.ID
-		return q.UpdateTaskRiverJobID(ctx, store.UpdateTaskRiverJobIDParams{
-			ID:         taskID,
-			RiverJobID: &jobID,
-		})
+	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "storage_image.import",
+		Status:       store.TaskStatusPending,
+		ResourceType: "template",
+		ResourceID:   &tid,
+		Args:         argsJSON,
+		MaxAttempts:  25,
+		CreatedBy:    &cid,
+	}, storagepoolshandlers.StorageImageImportArgs{
+		TaskID:     taskID,
+		TemplateID: templateID,
+		PoolID:     poolID,
 	})
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return taskID, nil
 }
 
 // checkImportAccess enforces the composite ownership rule:

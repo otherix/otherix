@@ -4,7 +4,6 @@
 package templates
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
@@ -15,10 +14,6 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
-
-// errTemplateNotFound is the in-flight signal that the row is missing
-// or invisible. Mapped to 404 by the outer handler.
-var errTemplateNotFound = errors.New("template not found")
 
 // Delete implements DELETE /v1/templates/{id}. Required permission:
 // `template:delete` (admin/operator: any; developer: own). Cross-user
@@ -41,16 +36,26 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := resolver.Template(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	row, err := resolver.Template(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeLoadError(w, r, err)
 		return
 	}
 
-	err = h.store.InTx(r.Context(), func(q *store.Queries) error {
-		return runDelete(r.Context(), q, row, caller)
-	})
-	if err != nil {
+	// Ownership is a policy decision over the already-loaded row - it
+	// does not touch the database - so it stays in the handler. A
+	// cross-user developer attempt collapses to 404 (no existence leak).
+	if err := auth.CheckOwnership(caller, &row.OwnerID, auth.PermTemplateDelete); err != nil {
+		if errors.Is(err, auth.ErrPermissionDenied) {
+			writeNotFound(w, r)
+			return
+		}
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "ownership check", nil)
+		return
+	}
+
+	if err := h.store.DeleteTemplate(r.Context(), row.ID); err != nil {
 		writeDeleteError(w, r, err)
 		return
 	}
@@ -58,62 +63,34 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	response.WriteNoContent(w)
 }
 
-// runDelete is the transactional body of Delete. It returns
-// errTemplateNotFound when the caller may not see the row, a
-// *response.BlockingResourcesError when dependent resources block
-// the delete, or any underlying DB error otherwise. The row is
-// resolved upstream so the transaction body stays focused on
-// authorization + cascade prechecks + soft-delete.
-func runDelete(ctx context.Context, q *store.Queries, row store.Template, caller *auth.User) error {
-	if err := auth.CheckOwnership(caller, &row.OwnerID, auth.PermTemplateDelete); err != nil {
-		if errors.Is(err, auth.ErrPermissionDenied) {
-			return errTemplateNotFound
-		}
-		return err
+// writeDeleteError maps the store domain error to the standard envelope.
+// A *store.ResourceInUseError carries the blocking counts; the handler
+// owns the wire policy of how those counts become a 409 envelope. The
+// storage-image branch carries the endpoint-specific resource_in_use
+// code; the vm-only branch keeps the generic `conflict` to preserve the
+// pre-existing wire contract.
+func writeDeleteError(w http.ResponseWriter, r *http.Request, err error) {
+	var blocking *store.ResourceInUseError
+	if !errors.As(err, &blocking) {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "delete template", nil)
+		return
 	}
-	vmCount, err := q.CountActiveVMsForTemplate(ctx, row.ID)
-	if err != nil {
-		return err
-	}
-	imageCount, err := q.CountStorageImagesByTemplate(ctx, row.ID)
-	if err != nil {
-		return err
-	}
-	// Stacked refusal. Storage images carry the new endpoint-specific
-	// code; the vm-only branch keeps the generic `conflict` to preserve
-	// the pre-existing wire contract.
-	if imageCount > 0 {
+	if imageCount := blocking.Resources["storage_images"]; imageCount > 0 {
 		resources := map[string]int64{"storage_images": imageCount}
-		if vmCount > 0 {
+		if vmCount := blocking.Resources["vms"]; vmCount > 0 {
 			resources["vms"] = vmCount
 		}
-		return &response.BlockingResourcesError{
+		response.WriteBlockingResources(w, r, &response.BlockingResourcesError{
 			Code:      response.CodeResourceInUse,
 			Kind:      "template",
 			Message:   "template still has materialised storage images; delete them first",
 			Resources: resources,
-		}
+		})
+		return
 	}
-	if vmCount > 0 {
-		return &response.BlockingResourcesError{
-			Message:   "template is in use; remove or migrate the dependent virtual machines first",
-			Resources: map[string]int64{"vms": vmCount},
-		}
-	}
-	return q.SoftDeleteTemplate(ctx, row.ID)
-}
-
-// writeDeleteError maps the in-flight error returned by runDelete to
-// the standard envelope.
-func writeDeleteError(w http.ResponseWriter, r *http.Request, err error) {
-	var blocking *response.BlockingResourcesError
-	switch {
-	case errors.Is(err, errTemplateNotFound):
-		writeNotFound(w, r)
-	case errors.As(err, &blocking):
-		response.WriteBlockingResources(w, r, blocking)
-	default:
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "delete template", nil)
-	}
+	response.WriteBlockingResources(w, r, &response.BlockingResourcesError{
+		Message:   "template is in use; remove or migrate the dependent virtual machines first",
+		Resources: map[string]int64{"vms": blocking.Resources["vms"]},
+	})
 }

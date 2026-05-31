@@ -6,12 +6,10 @@ package storagepools
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
@@ -33,10 +31,6 @@ type ImageDeleter interface {
 		idempotencyKey string,
 	) error
 }
-
-// errImageNotFound is the in-flight signal that the image row is
-// missing or in a different pool. Mapped to 404 by the outer handler.
-var errImageNotFound = errors.New("storage image not found")
 
 // errImageDeleteForbidden is the in-flight signal that the composite
 // RBAC check rejected the request after the role-level
@@ -78,7 +72,7 @@ func (h *Handler) DeleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "pool_id"))
+	pool, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "pool_id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return
@@ -90,99 +84,36 @@ func (h *Handler) DeleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var deletedView storageImageView
-	err = h.store.InTx(r.Context(), func(q *store.Queries) error {
-		view, err := h.runImageDelete(r.Context(), q, caller, pool, imageID)
-		if err != nil {
-			return err
-		}
-		deletedView = view
-		return nil
-	})
+	// The store owns the refcount-gated transaction: it loads the image
+	// and template, calls authorize (ownership policy), and on the
+	// last-referent path calls onLastReferent (the agent's synchronous
+	// file delete) inside the same tx so the row removal and the file
+	// removal commit or unwind together. The two closures keep policy
+	// and the external side effect in the handler; the store keeps the
+	// *Queries orchestration.
+	image, template, err := h.store.DeleteStorageImageRefcounted(
+		r.Context(), pool.ID, imageID,
+		func(tmpl store.Template) error { return checkImageDeleteAccess(caller, tmpl) },
+		h.deleteImageOnAgent,
+	)
 	if err != nil {
 		writeImageDeleteError(w, r, err)
 		return
 	}
-	response.WriteJSON(w, r, http.StatusOK, deletedView)
+	response.WriteJSON(w, r, http.StatusOK, toImageView(image, template.Name, pool.Name))
 }
 
-// runImageDelete is the transactional body of DeleteImage. Returns
-// errImageNotFound, errImageDeleteForbidden, errAgentUnreachable,
-// or any underlying DB error.
-func (h *Handler) runImageDelete(
-	ctx context.Context,
-	q *store.Queries,
-	caller *auth.User,
-	pool store.StoragePool,
-	imageID uuid.UUID,
-) (storageImageView, error) {
-	image, err := q.GetStorageImageByID(ctx, imageID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return storageImageView{}, errImageNotFound
-		}
-		return storageImageView{}, fmt.Errorf("get storage image: %w", err)
-	}
-	if image.PoolID != pool.ID {
-		return storageImageView{}, errImageNotFound
-	}
-
-	template, err := q.GetTemplate(ctx, image.TemplateID)
-	if err != nil {
-		// FK-guaranteed; missing here means soft-deleted template.
-		// Surface as 500 since the data model invariant is broken.
-		if errors.Is(err, pgx.ErrNoRows) {
-			return storageImageView{}, fmt.Errorf("template %s missing for image %s", image.TemplateID, imageID)
-		}
-		return storageImageView{}, fmt.Errorf("get template: %w", err)
-	}
-	if err := checkImageDeleteAccess(caller, template); err != nil {
-		return storageImageView{}, err
-	}
-
-	count, err := q.CountStorageImagesBySHA256InPool(ctx, store.CountStorageImagesBySHA256InPoolParams{
-		PoolID:         pool.ID,
-		ChecksumSha256: image.ChecksumSha256,
-		ExcludeID:      imageID,
-	})
-	if err != nil {
-		return storageImageView{}, fmt.Errorf("count siblings: %w", err)
-	}
-
-	if count == 0 {
-		if err := h.invokeAgentDelete(ctx, q, pool.ID, pool.Name, image.ChecksumSha256); err != nil {
-			return storageImageView{}, err
-		}
-	}
-
-	if err := q.DeleteStorageImage(ctx, imageID); err != nil {
-		return storageImageView{}, fmt.Errorf("delete storage image row: %w", err)
-	}
-	return toImageView(image, template.Name, pool.Name), nil
-}
-
-// invokeAgentDelete loads the owning node and calls the agent's
-// synchronous DeleteImage. 5xx / network failures and a missing
-// agent client both map to errAgentUnreachable (502). agentclient's
-// DeleteImage already collapses 204 / 404 to nil (idempotent), so a
-// nil here is unconditional success.
-func (h *Handler) invokeAgentDelete(
-	ctx context.Context,
-	q *store.Queries,
-	poolID uuid.UUID,
-	poolName string,
-	checksum string,
-) error {
+// deleteImageOnAgent is the last-referent callback: it calls the
+// agent's synchronous DeleteImage for the supplied node / pool /
+// checksum. 5xx / network failures and a missing agent client both map
+// to errAgentUnreachable (502, rolls back the store transaction).
+// agentclient's DeleteImage already collapses 204 / 404 to nil
+// (idempotent), so a nil here is unconditional success. The owning node
+// is resolved by the store and handed in, so this callback never
+// touches the database.
+func (h *Handler) deleteImageOnAgent(ctx context.Context, node store.Node, poolName, checksum string) error {
 	if h.imageDeleter == nil {
 		return errAgentUnreachable
-	}
-	pool, err := q.GetStoragePoolByID(ctx, poolID)
-	if err != nil {
-		return fmt.Errorf("get pool for agent delete: %w", err)
-	}
-	node, err := q.GetNodeByID(ctx, pool.NodeID)
-	if err != nil {
-		return fmt.Errorf("get node for agent delete: %w", err)
 	}
 	idempotencyKey := uuid.NewString()
 	if err := h.imageDeleter.DeleteImage(ctx, node.AdvertisedEndpoint, poolName, checksum, idempotencyKey); err != nil {
@@ -194,7 +125,7 @@ func (h *Handler) invokeAgentDelete(
 			// as agent_unreachable so the operator investigates; the
 			// envelope's contents remain useful for audit logs.
 			h.log.WarnContext(ctx, "agent storage_image delete returned non-retryable error",
-				"pool_id", poolID, "pool_name", poolName, "checksum", checksum,
+				"pool_name", poolName, "checksum", checksum,
 				"agent_status", ae.Status, "agent_code", ae.Code)
 		}
 		return errAgentUnreachable
@@ -233,7 +164,7 @@ func checkImageDeleteAccess(caller *auth.User, template store.Template) error {
 // runImageDelete to the standard envelope.
 func writeImageDeleteError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, errImageNotFound):
+	case errors.Is(err, store.ErrNotFound):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeNotFound, "storage image not found", nil)
 	case errors.Is(err, errImageDeleteForbidden):

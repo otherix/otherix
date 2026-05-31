@@ -9,16 +9,13 @@ package store
 // read mutable state and act on it in a separate write (placement is the
 // canonical case — pick a node, then insert a VM pinned to it) must
 // serialize their critical section across replicas, otherwise concurrent
-// decisions can over-allocate. Postgres advisory transaction locks
-// (`pg_advisory_xact_lock`) are the chosen primitive: cluster-scoped,
-// released automatically on commit/rollback, no extra infrastructure.
+// decisions can over-allocate. The key namespace identifies each such
+// critical section; AcquirePlacementLock is a no-op on the single-node
+// default, since an etcd transaction already serializes the write.
 //
 // Contract:
 //
-//   - Every key here is acquired ONLY inside a transaction. Calling
-//     AcquirePlacementLock outside an InTxWithTx callback acquires the
-//     lock and immediately releases it on the same statement (pgx
-//     autocommit), which serializes nothing.
+//   - Every key here is acquired ONLY inside a transaction.
 //   - Keys are bigint, namespaced by reservation in this file. Reserve
 //     before use, never reuse a freed key (the symbol stays, even if
 //     the workflow that minted it goes away — an in-flight transaction
@@ -30,9 +27,9 @@ package store
 //     justify the additional surface.
 const (
 	// LockKeyPlacement gates the VM placement decision window. The
-	// vm.create handler acquires it inside the same InTxWithTx that
+	// vm.create handler acquires it inside the same etcd transaction that
 	// runs SchedulePlacement + CreateVM + CreateVMDisk + CreateTask +
-	// river.InsertTx, so concurrent placements across api-server
+	// the job enqueue, so concurrent placements across api-server
 	// replicas observe each other's pin before they read candidate
 	// availability.
 	LockKeyPlacement int64 = 1

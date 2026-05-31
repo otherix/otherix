@@ -13,9 +13,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // ConsoleStream implements GET /v1/vms/{id}/console-stream — the
@@ -55,9 +55,9 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vm, err := h.store.Queries().GetVMByName(r.Context(), vmName)
+	vm, err := h.store.VMByName(r.Context(), vmName)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
 				response.CodeVMNotFound, "vm not found", nil)
 			return
@@ -76,7 +76,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "resolve node", nil)
 		return
 	}
-	node, err := h.store.Queries().GetNodeByID(r.Context(), nodeID)
+	node, err := h.store.NodeByID(r.Context(), nodeID)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "vms.consoleStream load node",
 			"node_id", nodeID, "error", err.Error())

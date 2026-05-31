@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -161,9 +160,16 @@ const (
 	actionInFlight                   // 409 conflict — concurrent request still running.
 )
 
+// idempotencyNotFound reports whether err is the store's "row absent" sentinel.
+// Begin-conflict and reclaim-no-op both map to store.ErrNotFound, so the
+// middleware treats them uniformly.
+func idempotencyNotFound(err error) bool {
+	return errors.Is(err, store.ErrNotFound)
+}
+
 func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid.UUID, method, path string, hash []byte) (store.IdempotencyKey, idemAction, error) {
 	row, err := s.GetIdempotencyKey(ctx, key)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if idempotencyNotFound(err) {
 		return tryBegin(ctx, s, key, userID, method, path, hash)
 	}
 	if err != nil {
@@ -180,7 +186,7 @@ func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid
 			ExpiresAt:     time.Now().Add(IdempotencyTTL),
 			Key:           key,
 		})
-		if errors.Is(err, pgx.ErrNoRows) {
+		if idempotencyNotFound(err) {
 			row, err = s.GetIdempotencyKey(ctx, key)
 			if err != nil {
 				return store.IdempotencyKey{}, 0, err
@@ -209,7 +215,7 @@ func tryBegin(ctx context.Context, s IdempotencyStore, key string, userID uuid.U
 	if err == nil {
 		return row, actionProceed, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !idempotencyNotFound(err) {
 		return store.IdempotencyKey{}, 0, err
 	}
 	row, err = s.GetIdempotencyKey(ctx, key)

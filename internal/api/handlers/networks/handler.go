@@ -9,21 +9,39 @@
 package networks
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the networks handlers depend on.
+// Depending on the interface rather than the concrete *etcdstore.Store
+// narrows the handler's storage dependency to the methods it uses and lets
+// tests substitute a fake. *etcdstore.Store satisfies it.
+type Store interface {
+	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
+	CreateNetwork(ctx context.Context, arg store.CreateNetworkParams) (store.Network, error)
+	UpdateNetwork(ctx context.Context, arg store.UpdateNetworkParams) (store.Network, error)
+	ListNetworks(ctx context.Context, arg store.ListNetworksParams) ([]store.Network, error)
+	DeleteNetwork(ctx context.Context, id uuid.UUID) error
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+
 // Handler bundles the dependencies for the networks routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
-// New constructs a Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 

@@ -8,8 +8,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
@@ -44,9 +42,9 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().GetUserByID(r.Context(), caller.ID)
+	row, err := h.store.UserByID(r.Context(), caller.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusUnauthorized,
 				response.CodeUnauthenticated, "user no longer exists", nil)
 			return
@@ -60,7 +58,7 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UpdateUser(r.Context(), store.UpdateUserParams{
+	updated, err := h.store.UpdateUser(r.Context(), store.UpdateUserParams{
 		ID:           row.ID,
 		Email:        row.Email,
 		PasswordHash: row.PasswordHash,

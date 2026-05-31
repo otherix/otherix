@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
@@ -29,6 +28,13 @@ const (
 // values so they need not mutate process state.
 type BootstrapAdminEnv func(string) string
 
+// AdminBootstrapStore is the storage surface the admin bootstrap depends on.
+// *etcdstore.Store satisfies it.
+type AdminBootstrapStore interface {
+	CountAdmins(ctx context.Context) (int64, error)
+	CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error)
+}
+
 // BootstrapAdmin seeds the first admin user when both env vars are set
 // and the database has no admin row. The function is idempotent: a
 // repeat call against a database that already contains an admin is a
@@ -36,14 +42,14 @@ type BootstrapAdminEnv func(string) string
 //
 // Call BootstrapAdmin after migrations have been applied and before
 // the HTTP server starts.
-func BootstrapAdmin(ctx context.Context, s *store.Store, log *slog.Logger) error {
+func BootstrapAdmin(ctx context.Context, s AdminBootstrapStore, log *slog.Logger) error {
 	return BootstrapAdminWithEnv(ctx, s, log, getenv)
 }
 
 // BootstrapAdminWithEnv is the env-injectable form of BootstrapAdmin.
 // Production wiring goes through BootstrapAdmin; tests use this entry
 // point with a stub env reader.
-func BootstrapAdminWithEnv(ctx context.Context, s *store.Store, log *slog.Logger, env BootstrapAdminEnv) error {
+func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog.Logger, env BootstrapAdminEnv) error {
 	email := strings.TrimSpace(env(EnvBootstrapAdminEmail))
 	password := env(EnvBootstrapAdminPassword)
 
@@ -65,7 +71,7 @@ func BootstrapAdminWithEnv(ctx context.Context, s *store.Store, log *slog.Logger
 		return fmt.Errorf("bootstrap admin password: %v", err)
 	}
 
-	count, err := s.Queries().CountAdmins(ctx)
+	count, err := s.CountAdmins(ctx)
 	if err != nil {
 		return fmt.Errorf("count admins: %v", err)
 	}
@@ -80,7 +86,7 @@ func BootstrapAdminWithEnv(ctx context.Context, s *store.Store, log *slog.Logger
 		return fmt.Errorf("hash password: %v", err)
 	}
 
-	row, err := s.Queries().CreateUser(ctx, store.CreateUserParams{
+	row, err := s.CreateUser(ctx, store.CreateUserParams{
 		ID:           uuid.New(),
 		Email:        email,
 		PasswordHash: hash,
@@ -90,7 +96,7 @@ func BootstrapAdminWithEnv(ctx context.Context, s *store.Store, log *slog.Logger
 		// A unique violation here means a concurrent process beat us
 		// to the insert. Treat that as success: the requested email is
 		// taken, an admin row exists, the goal is met.
-		if isUniqueViolation(err) {
+		if errors.Is(err, store.ErrUserEmailExists) {
 			log.WarnContext(ctx, "bootstrap admin: email already taken, continuing",
 				slog.String("email", email))
 			return nil
@@ -102,14 +108,4 @@ func BootstrapAdminWithEnv(ctx context.Context, s *store.Store, log *slog.Logger
 		slog.String("email", email),
 		slog.String("user_id", row.ID.String()))
 	return nil
-}
-
-// isUniqueViolation reports whether err is a Postgres unique_violation
-// (SQLSTATE 23505).
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	return pgErr.Code == "23505"
 }

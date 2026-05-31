@@ -11,8 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -59,9 +57,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().GetFirmwareByID(r.Context(), id)
+	row, err := h.store.FirmwareByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
 				response.CodeNotFound, "firmware not found", nil)
 			return
@@ -79,7 +77,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UpdateFirmware(r.Context(), store.UpdateFirmwareParams{
+	updated, err := h.store.UpdateFirmware(r.Context(), store.UpdateFirmwareParams{
 		ID:         row.ID,
 		Name:       row.Name,
 		Version:    row.Version,
@@ -162,11 +160,7 @@ func (h *Handler) checkDefaultPromotion(w http.ResponseWriter, r *http.Request, 
 	if req.IsDefault == nil || !*req.IsDefault {
 		return true
 	}
-	existing, err := h.store.Queries().GetDefaultFirmwareForArchAndType(r.Context(),
-		store.GetDefaultFirmwareForArchAndTypeParams{
-			Architecture: row.Architecture,
-			Type:         row.Type,
-		})
+	existing, err := h.store.DefaultFirmwareForArchType(r.Context(), row.Architecture, row.Type)
 	switch {
 	case err == nil:
 		if existing.ID != row.ID {
@@ -174,7 +168,7 @@ func (h *Handler) checkDefaultPromotion(w http.ResponseWriter, r *http.Request, 
 			return false
 		}
 		return true
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, store.ErrNotFound):
 		return true
 	default:
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -186,25 +180,21 @@ func (h *Handler) checkDefaultPromotion(w http.ResponseWriter, r *http.Request, 
 // writeUpdateError maps the post-UPDATE database error to the standard
 // envelope. Mirrors writeCreateError.
 func writeUpdateError(w http.ResponseWriter, r *http.Request, err error) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		switch pgErr.ConstraintName {
-		case "uq_firmwares_default":
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict,
-				"another default firmware exists for this (architecture, type)",
-				map[string]any{"code": "default_already_set"})
-			return
-		case "uq_firmwares_name_arch":
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict,
-				"firmware name already in use for this architecture",
-				map[string]any{"field": "name"})
-			return
-		}
+	switch {
+	case errors.Is(err, store.ErrFirmwareDefaultExists):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict,
+			"another default firmware exists for this (architecture, type)",
+			map[string]any{"code": "default_already_set"})
+	case errors.Is(err, store.ErrFirmwareNameExists):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict,
+			"firmware name already in use for this architecture",
+			map[string]any{"field": "name"})
+	default:
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "update firmware", nil)
 	}
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "update firmware", nil)
 }
 
 // writeValidation is a thin shorthand around the validation_failed

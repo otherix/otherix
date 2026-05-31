@@ -8,10 +8,10 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // Get implements GET /v1/nodes/{id}. Required permission: node:read.
@@ -27,15 +27,15 @@ import (
 // future iteration could resolve by name directly on the view if
 // the cost matters.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	resolved, err := resolver.Node(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	resolved, err := resolver.Node(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeNodeResolveError(w, r, err)
 		return
 	}
 
-	row, err := h.store.Queries().GetNodeEffectiveByID(r.Context(), resolved.ID)
+	row, err := h.store.NodeEffectiveByID(r.Context(), resolved.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			// Soft-deleted between resolver and view lookup — surface as
 			// 404 same as resolver's not-found path.
 			response.WriteError(w, r, http.StatusNotFound,

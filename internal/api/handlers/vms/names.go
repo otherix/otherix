@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/store"
 )
@@ -32,12 +31,12 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 	names := vmViewNames{}
 
 	if vm.TemplateID != nil {
-		tmpl, err := h.store.Queries().GetTemplate(ctx, *vm.TemplateID)
+		tmpl, err := h.store.TemplateByID(ctx, *vm.TemplateID)
 		switch {
 		case err == nil:
 			n := tmpl.Name
 			names.template = &n
-		case errors.Is(err, pgx.ErrNoRows):
+		case errors.Is(err, store.ErrNotFound):
 			// Template was soft-deleted: keep the wire field nil. The
 			// FK action is SET NULL, but a soft-delete leaves the
 			// non-null id pointing at a row that's invisible to reads.
@@ -46,19 +45,19 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 		}
 	}
 
-	pool, err := h.store.Queries().GetStoragePoolByID(ctx, disk.StoragePoolID)
+	pool, err := h.store.StoragePoolByID(ctx, disk.StoragePoolID)
 	if err != nil {
 		return names, fmt.Errorf("load pool name: %v", err)
 	}
 	names.pool = pool.Name
 
 	if nodeID := observedNodeID(vm, runtime); nodeID != nil {
-		node, err := h.store.Queries().GetNodeByID(ctx, *nodeID)
+		node, err := h.store.NodeByID(ctx, *nodeID)
 		switch {
 		case err == nil:
 			n := node.Name
 			names.node = &n
-		case errors.Is(err, pgx.ErrNoRows):
+		case errors.Is(err, store.ErrNotFound):
 			// Node was soft-deleted (force-delete path orphans
 			// runtime rows but leaves a stale pinned_node_id).
 			// Surface as nil; the row's status will already read

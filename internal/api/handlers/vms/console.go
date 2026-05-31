@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
@@ -82,7 +81,7 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vm, err := resolver.VM(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeResolveError(w, r, err)
 		return
@@ -102,9 +101,9 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 	// bytes. Phase check uses vm_runtime since that's the agent-
 	// reported observed phase; desired_phase=running with no runtime
 	// row means the VM is still booting and returns 409 vm_not_running.
-	runtime, err := h.store.Queries().GetVMRuntime(r.Context(), vm.ID)
+	runtime, err := h.store.VMRuntimeByID(r.Context(), vm.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeVMNotRunning, "vm has not reported runtime state yet", nil)
 			return
@@ -131,7 +130,7 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "resolve node", nil)
 		return
 	}
-	node, err := h.store.Queries().GetNodeByID(r.Context(), nodeID)
+	node, err := h.store.NodeByID(r.Context(), nodeID)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "vms.console load node",
 			"node_id", nodeID, "error", err.Error())

@@ -28,22 +28,6 @@ func (c ServerConfig) Validate() error {
 	return nil
 }
 
-// DatabaseConfig describes how a binary connects to PostgreSQL.
-type DatabaseConfig struct {
-	DSN             string        `koanf:"dsn"`
-	MaxConns        int           `koanf:"max_conns"`
-	MinConns        int           `koanf:"min_conns"`
-	MaxConnLifetime time.Duration `koanf:"max_conn_lifetime"`
-}
-
-// Validate reports an error if DSN is empty.
-func (c DatabaseConfig) Validate() error {
-	if c.DSN == "" {
-		return errors.New("dsn is required")
-	}
-	return nil
-}
-
 // AgentServerConfig describes the optional second HTTPS listener on
 // the api-server, dedicated to mTLS-authenticated agent traffic
 // (currently `POST /v1/nodes/{id}/heartbeat`). It is independent of

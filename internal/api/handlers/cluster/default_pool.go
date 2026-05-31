@@ -5,12 +5,9 @@ package cluster
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 )
@@ -35,7 +32,7 @@ type setDefaultPoolRequest struct {
 // current default pool name when set; 404 default_pool_not_set when
 // unconfigured. Permission: cluster:read.
 func (h *Handler) GetDefaultPool(w http.ResponseWriter, r *http.Request) {
-	settings, err := h.store.Queries().GetClusterSettings(r.Context())
+	settings, err := h.store.ClusterSettings(r.Context())
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "load cluster settings", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -75,7 +72,7 @@ func (h *Handler) SetDefaultPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.store.Queries().ListStoragePoolsByName(r.Context(), name)
+	rows, err := h.store.StoragePoolsByName(r.Context(), name)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "list pools by name", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -94,7 +91,7 @@ func (h *Handler) SetDefaultPool(w http.ResponseWriter, r *http.Request) {
 	// canonical form keeps GET responses stable for operators who
 	// configured the value).
 	canonical := rows[0].Name
-	if err := h.store.Queries().SetDefaultPoolName(r.Context(), &canonical); err != nil {
+	if err := h.store.SetDefaultPoolName(r.Context(), &canonical); err != nil {
 		h.log.ErrorContext(r.Context(), "set cluster default pool", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "persist default pool", nil)
@@ -107,14 +104,11 @@ func (h *Handler) SetDefaultPool(w http.ResponseWriter, r *http.Request) {
 // — clearing an already-null value is a no-op 204. Permission:
 // cluster:manage.
 func (h *Handler) ClearDefaultPool(w http.ResponseWriter, r *http.Request) {
-	if err := h.store.Queries().ClearDefaultPoolName(r.Context()); err != nil {
-		// The singleton row is migration-seeded; ErrNoRows here would
-		// be a deeper schema problem worth surfacing distinctly.
-		if errors.Is(err, pgx.ErrNoRows) {
-			h.log.ErrorContext(r.Context(), "cluster_settings singleton missing", "error", err)
-		} else {
-			h.log.ErrorContext(r.Context(), "clear cluster default pool", "error", err)
-		}
+	// ClearDefaultPoolName is an idempotent UPDATE on the migration-seeded
+	// singleton, so it never reports a missing row; any error here is a
+	// genuine database fault.
+	if err := h.store.ClearDefaultPoolName(r.Context()); err != nil {
+		h.log.ErrorContext(r.Context(), "clear cluster default pool", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "clear default pool", nil)
 		return

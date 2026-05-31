@@ -18,7 +18,8 @@
 #   - `otherix config add cluster --force` revokes prior token, mints fresh;
 #   - `otherix-agent bootstrap` is a no-op when cert material is already
 #     present (use --force to re-bootstrap explicitly);
-#   - storage_pools / cluster_settings INSERT|UPDATE with ON CONFLICT;
+#   - `otherix pool create` / cluster default-pool set are upsert-idempotent
+#     on the CP (409 conflict treated as already-present);
 #   - `otherix template create` falls through on 409 to materialise step;
 #
 # Required env:
@@ -26,7 +27,6 @@
 #   OTHERIX_BOOTSTRAP_ADMIN_PASSWORD — admin password
 #
 # Optional env (with defaults):
-#   OTHERIX_DB_DSN        — psql connection string
 #   OTHERIX_LIMA_INSTANCE — Lima VM name (default: otherix-dev) — only used on macOS
 #   OTHERIX_CP_URL        — CP base URL for CLI auth (default: http://localhost:8080)
 #   OTHERIX_NODE_ARCH     — node architecture (auto from uname)
@@ -42,7 +42,6 @@ if [ ! -x "${CLI}" ]; then
     exit 1
 fi
 
-: "${OTHERIX_DB_DSN:=postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable}"
 : "${OTHERIX_LIMA_INSTANCE:=otherix-dev}"
 : "${OTHERIX_CP_URL:=http://localhost:8080}"
 : "${OTHERIX_NODE_ARCH:=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')}"
@@ -53,15 +52,18 @@ if [ -z "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL:-}" ] || [ -z "${OTHERIX_BOOTSTRAP_ADMI
     exit 1
 fi
 
-# psql wrapper — prefers a local client, else falls back to docker exec.
-if command -v psql >/dev/null 2>&1; then
-    psql_run() { psql "${OTHERIX_DB_DSN}" "$@"; }
-elif docker ps --format '{{.Names}}' | grep -q '^otherix-dev-postgres$'; then
-    psql_run() { docker exec -i otherix-dev-postgres psql -U otherix -d otherix "$@"; }
-else
-    echo "psql not available locally and otherix-dev-postgres container not running — run 'make dev-up' first" >&2
-    exit 1
-fi
+# node_id_by_name reads the node's UUID through the CLI (admin-authed by the
+# time this runs), replacing the old direct Postgres query - the control plane
+# now stores nodes in embedded etcd and the CLI is the only public
+# read path. Prints the id on stdout, or nothing when the node is not yet
+# visible. Extraction is jq-free: the node JSON's "id" is a UUID string.
+node_id_by_name() {
+    local name="$1"
+    "${CLI}" node get "${name}" --output json 2>/dev/null \
+        | grep -oE '"id"[[:space:]]*:[[:space:]]*"[0-9a-fA-F-]{36}"' \
+        | head -1 \
+        | grep -oE '[0-9a-fA-F-]{36}'
+}
 
 # Platform dispatch — Lima (macOS host) vs direct filesystem (Linux native).
 case "$(uname -s)" in
@@ -224,14 +226,12 @@ esac
 # --- Step 6: wait for first heartbeat (node row populated) -------------------
 
 echo ""
-echo ">> Step 6/8 — waiting for bootstrap + first heartbeat (poll nodes.id where name='${NODE_NAME}')"
+echo ">> Step 6/8 — waiting for bootstrap + first heartbeat (poll 'otherix node get ${NODE_NAME}')"
 NODE_ID=""
 for i in $(seq 1 60); do
-    NODE_ID="$(psql_run -tA -c \
-        "SELECT id FROM nodes WHERE name='${NODE_NAME}' AND deleted_at IS NULL;" \
-        | tr -d '[:space:]' || true)"
+    NODE_ID="$(node_id_by_name "${NODE_NAME}" || true)"
     if [ -n "${NODE_ID}" ]; then
-        echo "   ✓ node row present after ${i}s — id=${NODE_ID}"
+        echo "   ✓ node present after ${i}s — id=${NODE_ID}"
         break
     fi
     sleep 1

@@ -47,6 +47,12 @@ type TLSMaterial struct {
 // listener / client check this to skip those steps cleanly.
 func (m TLSMaterial) Skipped() bool { return m.Source == "skipped" }
 
+// CPCertCAStore is the storage surface the CP-cert loader needs: the active
+// cluster CA to chain-check or sign against. *etcdstore.Store satisfies it.
+type CPCertCAStore interface {
+	ActiveCACert(ctx context.Context) (store.CaCert, error)
+}
+
 // LoadOrGenerateCPCert orchestrates the three-mode CP server cert
 // lifecycle. Called by cmd/api/main.go after BootstrapClusterCA,
 // before agent client / server construction. Returns a fully-loaded
@@ -65,7 +71,7 @@ func (m TLSMaterial) Skipped() bool { return m.Source == "skipped" }
 //     enabled, the generated cert is persisted to disk after success
 //     (write failure logged WARN — boot succeeds on in-memory cert
 //     alone).
-func LoadOrGenerateCPCert(ctx context.Context, s *store.Store, cfg config.APIConfig, log *slog.Logger) (TLSMaterial, error) {
+func LoadOrGenerateCPCert(ctx context.Context, s CPCertCAStore, cfg config.APIConfig, log *slog.Logger) (TLSMaterial, error) {
 	if !cfg.AgentServer.Enabled && !cfg.AgentClient.Enabled {
 		log.InfoContext(ctx, "cp_cert.bootstrap.skipped",
 			slog.String("reason", "no_consumer"),
@@ -170,7 +176,7 @@ func LoadOrGenerateCPCert(ctx context.Context, s *store.Store, cfg config.APICon
 // (configured intent + missing files = fatal, not silent fallback).
 // Cluster CA still loaded from DB so the inbound listener's ClientCAs
 // pool has the correct trust anchor for agent client cert validation.
-func loadOperatorFiles(certFile, keyFile string, s *store.Store, ctx context.Context) (TLSMaterial, error) {
+func loadOperatorFiles(certFile, keyFile string, s CPCertCAStore, ctx context.Context) (TLSMaterial, error) {
 	if _, err := os.Stat(certFile); err != nil {
 		return TLSMaterial{}, fmt.Errorf("cp_cert.cert_file %s: %v (Mode A configured but file missing)", certFile, err)
 	}
@@ -219,8 +225,8 @@ func tryLoadLocalCache(certPath, keyPath string, expectedDNS []string, expectedI
 // cert + key into typed forms. The signer interface is required by
 // Mode C's auth.GenerateReplicaCert; Mode A and Mode B chain-check
 // only need caCert.
-func loadClusterCAFromDB(ctx context.Context, s *store.Store) (*x509.Certificate, crypto.Signer, error) {
-	row, err := s.Queries().GetActiveCACert(ctx)
+func loadClusterCAFromDB(ctx context.Context, s CPCertCAStore) (*x509.Certificate, crypto.Signer, error) {
+	row, err := s.ActiveCACert(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query active CA: %v", err)
 	}

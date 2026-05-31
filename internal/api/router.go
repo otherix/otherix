@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 
 	apitokenshandlers "github.com/otherix/otherix/internal/api/handlers/apitokens"
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
+	clusterjoinhandlers "github.com/otherix/otherix/internal/api/handlers/clusterjoin"
+	clustermembershandlers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
@@ -33,16 +33,15 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/scheduler"
-	"github.com/otherix/otherix/internal/store"
 )
 
 // RouterDeps bundles the dependencies the router needs. Passed as a
 // struct rather than positional args because the API surface grows; new
 // fields can land without breaking call sites.
 type RouterDeps struct {
-	Store              *store.Store
+	Store              RouterStore
 	AuthService        *auth.Service
-	RiverClient        *river.Client[pgx.Tx]
+	HealthCheckName    string                            // /readyz dependency label; empty falls to "database"
 	ImageDeleter       storagepoolshandlers.ImageDeleter // may be nil when AgentClient.Enabled=false
 	StoragePools       config.StoragePoolsConfig         // path allowlist
 	Logger             *slog.Logger
@@ -54,6 +53,7 @@ type RouterDeps struct {
 	PressureDisk       config.PressureConditionConfig
 	VMLifecycle        vmshandlers.LifecycleDeps // sync pause/resume/reset agentclient
 	VMConsole          vmshandlers.ConsoleDeps   // console token issuance + proxy relay
+	ClusterMembership  ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
 }
 
 // NewRouter constructs the api-server's HTTP handler: a chi router with
@@ -75,6 +75,8 @@ type RouterDeps struct {
 // version-independent infrastructure and must not break when the API
 // rolls forward.
 func NewRouter(deps RouterDeps) http.Handler {
+	// The etcd store self-enqueues (EnqueueTask writes the job row inline), so
+	// there is no separate queue binder to wire here.
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -102,7 +104,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 	// deadlines are cleared inside each handler so the long-lived
 	// stream is not killed at 30 s.
 	if deps.AuthService != nil && deps.Store != nil {
-		streamingVMs := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger,
+		streamingVMs := vmshandlers.New(deps.Store, deps.Logger,
 			deps.PlacementAlgorithm, deps.PlacementResources,
 			deps.VMLifecycle, deps.VMConsole)
 		r.Get("/v1/vms/{id}/console-stream", streamingVMs.ConsoleStream)
@@ -118,7 +120,11 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(deps.RequestTimeout))
 
-		healthHandler := health.New(deps.Store)
+		checkName := deps.HealthCheckName
+		if checkName == "" {
+			checkName = "database"
+		}
+		healthHandler := health.New(deps.Store, checkName)
 		r.Get("/healthz", healthHandler.Live)
 		r.Get("/readyz", healthHandler.Ready)
 
@@ -152,15 +158,16 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	nodesH := nodeshandlers.New(deps.Store, deps.Logger)
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
-	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.RiverClient, deps.ImageDeleter, deps.StoragePools, deps.Logger)
+	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.ImageDeleter, deps.StoragePools, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
+	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
-	templatesH := templateshandlers.New(deps.Store, deps.RiverClient, deps.Logger)
-	tasksH := taskshandlers.New(deps.Store, deps.RiverClient, deps.Logger)
-	vmsH := vmshandlers.New(deps.Store, deps.RiverClient, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
+	templatesH := templateshandlers.New(deps.Store, deps.Logger)
+	tasksH := taskshandlers.New(deps.Store, deps.Logger)
+	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 
 	authn := middleware.Authn(deps.AuthService)
-	idem := middleware.Idempotency(deps.Store.Queries(), deps.Logger)
+	idem := middleware.Idempotency(deps.Store, deps.Logger)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
@@ -189,6 +196,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 		// audit entry — all under a SELECT FOR UPDATE row lock on the
 		// join_tokens row for race-safe max_uses enforcement.
 		r.Post("/nodes/join", nodeJoinH.Join)
+
+		// NOTE: /v1/cluster/join is intentionally NOT mounted here. It returns
+		// the cluster CA private key and must only be served on the TLS agent
+		// listener (see NewAgentRouter), never on this plain-HTTP listener.
 
 		// Join-token management. Mounted before the main Authn +
 		// Idempotency block so POST (create) can opt out of idem
@@ -343,6 +354,12 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-pool", clusterH.GetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-pool", clusterH.SetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-pool", clusterH.ClearDefaultPool)
+
+				// etcd cluster membership admin. cluster:manage gates both
+				// the inspection read and the member eviction - the routes
+				// surface raw etcd topology, an operator-only concern.
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Get("/members", clusterMembersH.List)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/members/{id}", clusterMembersH.Remove)
 			})
 		})
 	})
@@ -382,7 +399,7 @@ func NewAgentRouter(deps RouterDeps) http.Handler {
 		return r
 	}
 
-	verifier := newAgentVerifier(deps.Store.Queries())
+	verifier := newAgentVerifier(deps.Store)
 	heartbeatH := heartbeathandlers.New(deps.Store, deps.Logger, deps.PressureMemory, deps.PressureSystemDisk)
 
 	// Bootstrap-time endpoints are anonymous — agents have no cert
@@ -395,8 +412,15 @@ func NewAgentRouter(deps RouterDeps) http.Handler {
 	// match before fall-through, and the URLs do not overlap.
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
+	clusterJoinH := clusterjoinhandlers.New(deps.Store, deps.ClusterMembership, deps.Logger)
 	r.Get("/v1/ca", caH.Get)
 	r.Post("/v1/nodes/join", nodeJoinH.Join)
+	// Cluster-replica join lives on the TLS listener, not the plain-HTTP
+	// control-plane listener: the response carries the cluster CA private key,
+	// so it must never traverse a plain-HTTP socket. Anonymous like the other
+	// bootstrap endpoints (token in body is the credential; the joiner TOFU-pins
+	// the CA fingerprint), so it sits outside the AgentMTLS group.
+	r.Post("/v1/cluster/join", clusterJoinH.Join)
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AgentMTLS(verifier))

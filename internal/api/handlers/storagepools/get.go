@@ -34,7 +34,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getByID(w http.ResponseWriter, r *http.Request, identifier string) {
-	row, err := resolver.Pool(r.Context(), h.store.Queries(), identifier)
+	row, err := resolver.Pool(r.Context(), h.store, identifier)
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return
@@ -49,7 +49,7 @@ func (h *Handler) getByID(w http.ResponseWriter, r *http.Request, identifier str
 }
 
 func (h *Handler) getByName(w http.ResponseWriter, r *http.Request, name string) {
-	concept, err := resolver.PoolByName(r.Context(), h.store.Queries(), name)
+	concept, err := resolver.PoolByName(r.Context(), h.store, name)
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return
@@ -58,7 +58,7 @@ func (h *Handler) getByName(w http.ResponseWriter, r *http.Request, name string)
 	// row carries available_bytes_effective. resolver.PoolByName uses
 	// the raw table to stay backwards-compatible with the per-instance
 	// disambiguation logic; the view re-read closes the loop here.
-	rows, err := h.store.Queries().ListPoolsEffectiveByName(r.Context(), name)
+	rows, err := h.store.ListPoolsEffectiveByName(r.Context(), name)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "load storage pool", nil)
@@ -86,7 +86,7 @@ func (h *Handler) getByName(w http.ResponseWriter, r *http.Request, name string)
 // second cluster_settings round-trip — the aggregated view already knows
 // the cluster-default flag.
 func (h *Handler) projectInstanceForConcept(ctx context.Context, p store.PoolEffectiveCapacity, isClusterDefault bool) (storagePoolView, error) {
-	node, err := h.store.Queries().GetNodeByID(ctx, p.NodeID)
+	node, err := h.store.NodeByID(ctx, p.NodeID)
 	if err != nil {
 		// Aligned with projectView: a soft-deleted owning node yields an
 		// empty Node field rather than a hard error, so the operator

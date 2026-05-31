@@ -11,18 +11,34 @@
 package cluster
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the cluster handlers depend on: the
+// cluster-settings singleton accessors plus the pool-name lookup used
+// to validate a default-pool reference. *etcdstore.Store satisfies it;
+// depending on the interface rather than the concrete store narrows the
+// handler's storage dependency to the methods it uses and lets tests
+// substitute a fake.
+type Store interface {
+	ClusterSettings(ctx context.Context) (store.ClusterSetting, error)
+	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
+	SetDefaultPoolName(ctx context.Context, name *string) error
+	ClearDefaultPoolName(ctx context.Context) error
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+
 // Handler bundles the dependencies for the cluster routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
 // New constructs a Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }

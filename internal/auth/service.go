@@ -11,10 +11,32 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/store"
 )
+
+// Store is the storage surface auth.Service depends on. Depending on the
+// interface rather than the concrete *etcdstore.Store narrows the service's
+// storage dependency to just the methods it uses and lets tests substitute a
+// fake. *etcdstore.Store satisfies it; the refresh-token rotation is exposed
+// here as the single named atomic RotateRefreshToken so the service stays
+// transaction-agnostic.
+type Store interface {
+	UserByEmail(ctx context.Context, email string) (store.User, error)
+	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
+	TouchUserLastLogin(ctx context.Context, id uuid.UUID) error
+	RefreshTokenByHash(ctx context.Context, hash []byte) (store.RefreshToken, error)
+	CreateRefreshToken(ctx context.Context, arg store.CreateRefreshTokenParams) (store.RefreshToken, error)
+	RotateRefreshToken(ctx context.Context, parentID uuid.UUID, child store.CreateRefreshTokenParams) (store.RefreshToken, error)
+	RevokeRefreshToken(ctx context.Context, id uuid.UUID) error
+	RevokeRefreshTokenFamily(ctx context.Context, familyID uuid.UUID) error
+	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error
+	TouchRefreshToken(ctx context.Context, id uuid.UUID) error
+	APITokenByHash(ctx context.Context, hash []byte) (store.ApiToken, error)
+	TouchAPIToken(ctx context.Context, id uuid.UUID) error
+}
+
+// Ensure the production SQL store satisfies the auth contract.
 
 // Config configures the auth.Service.
 type Config struct {
@@ -46,12 +68,12 @@ func (c Config) Validate() error {
 // use.
 type Service struct {
 	cfg   Config
-	store *store.Store
+	store Store
 }
 
 // NewService constructs a Service. Caller is expected to have validated
 // cfg via Config.Validate; NewService re-checks defensively.
-func NewService(cfg Config, s *store.Store) (*Service, error) {
+func NewService(cfg Config, s Store) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -85,9 +107,9 @@ type TokenPair struct {
 // for both "no such user" and "wrong password" — the endpoint must not
 // distinguish.
 func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, error) {
-	user, err := s.store.Queries().GetUserByEmail(ctx, creds.Email)
+	user, err := s.store.UserByEmail(ctx, creds.Email)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("lookup user: %v", err)
@@ -103,15 +125,18 @@ func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, err
 		return nil, ErrInvalidCredentials
 	}
 
-	pair, err := s.issueTokenPair(ctx, user.ID, role, uuid.New(), nil, creds.UserAgent, creds.IP)
+	pair, params, err := buildTokenPair(s.cfg, user.ID, role, uuid.New(), nil, creds.UserAgent, creds.IP)
 	if err != nil {
 		return nil, err
+	}
+	if _, err := s.store.CreateRefreshToken(ctx, params); err != nil {
+		return nil, fmt.Errorf("persist refresh token: %v", err)
 	}
 
 	// Best-effort: a TouchUserLastLogin failure should not undo a
 	// successful login. Log nothing here — Service has no logger by
 	// design; the handler will record the request via slog.
-	_ = s.store.Queries().TouchUserLastLogin(ctx, user.ID)
+	_ = s.store.TouchUserLastLogin(ctx, user.ID)
 
 	return pair, nil
 }
@@ -121,9 +146,9 @@ func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, err
 // off the parent. On replay (presenting an already-revoked token in the
 // family), the entire family is revoked and ErrTokenReplay is returned.
 func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Addr) (*TokenPair, error) {
-	row, err := s.store.Queries().GetRefreshTokenByHash(ctx, HashRefreshToken(plaintext))
+	row, err := s.store.RefreshTokenByHash(ctx, HashRefreshToken(plaintext))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrInvalidToken
 		}
 		return nil, fmt.Errorf("lookup refresh token: %v", err)
@@ -133,7 +158,7 @@ func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Ad
 		// Detected theft: a revoked refresh was presented. Burn the
 		// whole family. Surface the family-revoke error only if the
 		// downstream sentinel didn't already carry the meaning.
-		if revErr := s.store.Queries().RevokeRefreshTokenFamily(ctx, row.FamilyID); revErr != nil {
+		if revErr := s.store.RevokeRefreshTokenFamily(ctx, row.FamilyID); revErr != nil {
 			return nil, fmt.Errorf("revoke family on replay: %v", revErr)
 		}
 		return nil, ErrTokenReplay
@@ -143,13 +168,13 @@ func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Ad
 		return nil, ErrTokenExpired
 	}
 
-	user, err := s.store.Queries().GetUserByID(ctx, row.UserID)
+	user, err := s.store.UserByID(ctx, row.UserID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			// User soft-deleted while their refresh token was still
 			// outstanding. Revoke this token so a retry doesn't redo
 			// the same dance, then report invalid.
-			_ = s.store.Queries().RevokeRefreshToken(ctx, row.ID)
+			_ = s.store.RevokeRefreshToken(ctx, row.ID)
 			return nil, ErrInvalidToken
 		}
 		return nil, fmt.Errorf("lookup user: %v", err)
@@ -160,22 +185,18 @@ func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Ad
 		return nil, ErrInvalidToken
 	}
 
-	var pair *TokenPair
-	err = s.store.InTx(ctx, func(q *store.Queries) error {
-		if err := q.RevokeRefreshToken(ctx, row.ID); err != nil {
-			return fmt.Errorf("revoke parent: %v", err)
-		}
-		var issueErr error
-		pair, issueErr = issueTokenPairTx(ctx, q, s.cfg, user.ID, role,
-			row.FamilyID, &row.ID, ua, ip)
-		return issueErr
-	})
+	pair, childParams, err := buildTokenPair(s.cfg, user.ID, role, row.FamilyID, &row.ID, ua, ip)
 	if err != nil {
 		return nil, err
 	}
+	// Atomic rotation: the presented token is revoked and the child is
+	// inserted together, so the family chain never has a gap.
+	if _, err := s.store.RotateRefreshToken(ctx, row.ID, childParams); err != nil {
+		return nil, fmt.Errorf("rotate refresh token: %v", err)
+	}
 
-	// Touch outside the tx — non-critical and reduces tx hold time.
-	_ = s.store.Queries().TouchRefreshToken(ctx, row.ID)
+	// Touch outside the rotation — non-critical.
+	_ = s.store.TouchRefreshToken(ctx, row.ID)
 	return pair, nil
 }
 
@@ -183,19 +204,19 @@ func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Ad
 // already-revoked token returns nil — the user's intent (this token must
 // no longer work) is satisfied either way.
 func (s *Service) Logout(ctx context.Context, plaintext string) error {
-	row, err := s.store.Queries().GetRefreshTokenByHash(ctx, HashRefreshToken(plaintext))
+	row, err := s.store.RefreshTokenByHash(ctx, HashRefreshToken(plaintext))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil
 		}
 		return fmt.Errorf("lookup refresh token: %v", err)
 	}
-	return s.store.Queries().RevokeRefreshToken(ctx, row.ID)
+	return s.store.RevokeRefreshToken(ctx, row.ID)
 }
 
 // LogoutAll revokes every active refresh token for userID.
 func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) error {
-	return s.store.Queries().RevokeAllUserRefreshTokens(ctx, userID)
+	return s.store.RevokeAllUserRefreshTokens(ctx, userID)
 }
 
 // VerifyAccessToken validates a JWT (signature, issuer, expiry) and
@@ -242,23 +263,23 @@ func (s *Service) VerifyAPIToken(ctx context.Context, plaintext string) (*User, 
 		return nil, ErrInvalidToken
 	}
 
-	row, err := s.store.Queries().GetApiTokenByHash(ctx, HashAPIToken(plaintext))
+	row, err := s.store.APITokenByHash(ctx, HashAPIToken(plaintext))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrInvalidToken
 		}
 		return nil, fmt.Errorf("lookup api token: %v", err)
 	}
 
-	user, err := s.store.Queries().GetUserByID(ctx, row.UserID)
+	user, err := s.store.UserByID(ctx, row.UserID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrInvalidToken
 		}
 		return nil, fmt.Errorf("lookup user: %v", err)
 	}
 
-	_ = s.store.Queries().TouchApiToken(ctx, row.ID)
+	_ = s.store.TouchAPIToken(ctx, row.ID)
 
 	return &User{
 		ID:         user.ID,
@@ -268,68 +289,44 @@ func (s *Service) VerifyAPIToken(ctx context.Context, plaintext string) (*User, 
 	}, nil
 }
 
-// issueTokenPair runs issueTokenPairTx inside a fresh transaction.
-func (s *Service) issueTokenPair(
-	ctx context.Context,
-	userID uuid.UUID, role Role,
-	familyID uuid.UUID, parentID *uuid.UUID,
-	ua string, ip netip.Addr,
-) (*TokenPair, error) {
-	var pair *TokenPair
-	err := s.store.InTx(ctx, func(q *store.Queries) error {
-		var issueErr error
-		pair, issueErr = issueTokenPairTx(ctx, q, s.cfg, userID, role, familyID, parentID, ua, ip)
-		return issueErr
-	})
-	if err != nil {
-		return nil, err
-	}
-	return pair, nil
-}
-
-// issueTokenPairTx is the transactional core: sign an access token,
-// generate a refresh token, persist the refresh row. Lives at package
-// level rather than as a method on Service so Refresh can call it
-// inside its own transaction without re-entering InTx.
-func issueTokenPairTx(
-	ctx context.Context,
-	q *store.Queries,
+// buildTokenPair signs an access token, generates a refresh token, and returns
+// the pair alongside the refresh-token row to persist. It performs no storage
+// access - the caller writes the refresh row through the Store interface
+// (CreateRefreshToken on issue, RotateRefreshToken on rotation), so signing +
+// generation stay out of any transaction.
+func buildTokenPair(
 	cfg Config,
 	userID uuid.UUID, role Role,
 	familyID uuid.UUID, parentID *uuid.UUID,
 	ua string, ip netip.Addr,
-) (*TokenPair, error) {
+) (*TokenPair, store.CreateRefreshTokenParams, error) {
 	access, err := IssueAccessToken(cfg.JWTSecret, userID, role, cfg.JWTAccessTTL)
 	if err != nil {
-		return nil, fmt.Errorf("issue access token: %v", err)
+		return nil, store.CreateRefreshTokenParams{}, fmt.Errorf("issue access token: %v", err)
 	}
 
 	plainRefresh, refreshHash, err := GenerateRefreshToken()
 	if err != nil {
-		return nil, err
+		return nil, store.CreateRefreshTokenParams{}, err
 	}
 
-	uaPtr := nullableString(ua)
-	ipPtr := nullableAddr(ip)
-
-	if _, err := q.CreateRefreshToken(ctx, store.CreateRefreshTokenParams{
+	params := store.CreateRefreshTokenParams{
 		ID:        uuid.New(),
 		UserID:    userID,
 		TokenHash: refreshHash,
 		FamilyID:  familyID,
 		ParentID:  parentID,
-		UserAgent: uaPtr,
-		IpAddress: ipPtr,
+		UserAgent: nullableString(ua),
+		IpAddress: nullableAddr(ip),
 		ExpiresAt: time.Now().Add(cfg.RefreshTTL),
-	}); err != nil {
-		return nil, fmt.Errorf("persist refresh token: %v", err)
 	}
 
-	return &TokenPair{
+	pair := &TokenPair{
 		AccessToken:     access,
 		AccessExpiresIn: int(cfg.JWTAccessTTL.Seconds()),
 		RefreshToken:    plainRefresh,
-	}, nil
+	}
+	return pair, params, nil
 }
 
 func nullableString(s string) *string {

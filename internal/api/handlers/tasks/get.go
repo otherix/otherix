@@ -9,10 +9,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // Get implements GET /v1/tasks/{id}. Required permission: `task:read`.
@@ -43,9 +43,9 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.Queries().GetTask(r.Context(), id)
+	row, err := h.store.TaskByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			writeTaskNotFound(w, r)
 			return
 		}

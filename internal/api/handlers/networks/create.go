@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
@@ -43,7 +42,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	cfg := normaliseConfig(req.Config)
 
-	row, err := h.store.Queries().CreateNetwork(r.Context(), store.CreateNetworkParams{
+	row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
 		ID:         uuid.New(),
 		Name:       req.Name,
 		Type:       store.NetworkType(req.Type),
@@ -53,8 +52,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Config:     cfg,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.Is(err, store.ErrNetworkNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "network name already in use", nil)
 			return

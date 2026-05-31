@@ -50,7 +50,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		params.CursorID = &cur.ID
 	}
 
-	rows, err := h.store.Queries().ListFirmwares(r.Context(), params)
+	rows, err := h.store.ListFirmwares(r.Context(), params)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "list firmwares", nil)

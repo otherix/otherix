@@ -7,8 +7,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/otherix/otherix/internal/api/agentclient"
 )
 
@@ -63,17 +61,5 @@ func TestClassifyVMError(t *testing.T) {
 				t.Errorf("classifyVMError = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestClassifyLoadError covers the pgx.ErrNoRows → not_found path
-// and the "anything else" → internal fallback.
-func TestClassifyLoadError(t *testing.T) {
-	t.Parallel()
-	if got := classifyLoadError(pgx.ErrNoRows, errCodeVMNotFound); got != errCodeVMNotFound {
-		t.Errorf("ErrNoRows = %q, want %q", got, errCodeVMNotFound)
-	}
-	if got := classifyLoadError(errors.New("other"), errCodeVMNotFound); got != "internal" {
-		t.Errorf("non-ErrNoRows = %q, want internal", got)
 	}
 }

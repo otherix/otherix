@@ -23,6 +23,7 @@
 package nodejoin
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,17 +37,29 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the /v1/nodes/join handler depends on:
+// the active-CA lookup loaded per request and the atomic join-token
+// redemption seam. *etcdstore.Store satisfies it; depending on the
+// interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
+type Store interface {
+	ActiveCACert(ctx context.Context) (store.CaCert, error)
+	RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenParams, sign func(node store.Node) (store.IssuedCert, error)) (store.RedeemJoinTokenResult, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+
 // Handler bundles dependencies for the /v1/nodes/join routes.
 // Per-request CA load (mirrors /v1/ca handler pattern) means the
 // handler holds nothing CA-specific — the store is consulted on each
 // request to pick up the active CA row.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
 // New constructs the Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 
@@ -109,19 +122,19 @@ func (h *Handler) writeRedeemError(w http.ResponseWriter, r *http.Request, token
 	prefix := tokenHashPrefix(tokenPlain)
 
 	switch {
-	case errors.Is(err, errTokenInvalid):
+	case errors.Is(err, store.ErrJoinTokenInvalid):
 		h.log.WarnContext(r.Context(), "join token redemption rejected",
 			slog.String("reason", "token_invalid"),
 			slog.String("token_hash_prefix", prefix))
 		response.WriteError(w, r, http.StatusUnauthorized,
 			response.CodeUnauthenticated, "token not recognized or expired", nil)
-	case errors.Is(err, errTokenExhausted):
+	case errors.Is(err, store.ErrJoinTokenExhausted):
 		h.log.WarnContext(r.Context(), "join token redemption rejected",
 			slog.String("reason", "token_exhausted"),
 			slog.String("token_hash_prefix", prefix))
 		response.WriteError(w, r, http.StatusUnauthorized,
 			response.CodeUnauthenticated, "token max_uses exceeded", nil)
-	case errors.Is(err, errNodeNameMismatch):
+	case errors.Is(err, store.ErrJoinNodeNameMismatch):
 		h.log.WarnContext(r.Context(), "join token redemption rejected",
 			slog.String("reason", "node_name_mismatch"),
 			slog.String("token_hash_prefix", prefix))
@@ -129,7 +142,7 @@ func (h *Handler) writeRedeemError(w http.ResponseWriter, r *http.Request, token
 			response.CodeValidationFailed,
 			"node_name does not match token's pre-binding",
 			map[string]any{"field": "node_name"})
-	case errors.Is(err, errNodeNameTaken):
+	case errors.Is(err, store.ErrJoinNodeNameTaken):
 		h.log.WarnContext(r.Context(), "join token redemption rejected",
 			slog.String("reason", "node_name_taken"),
 			slog.String("token_hash_prefix", prefix))

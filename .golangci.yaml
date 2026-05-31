@@ -45,6 +45,15 @@ linters:
       - path: internal/agentmock/handlers\.go
         linters:
           - revive
+      # internal/store models.go + *_types.go are the type mirror carried
+      # over from the sqlc cutover (ADR 0030): the row / params / result
+      # structs were mechanically extracted from the former sqlc output and
+      # are maintained as data shapes, not API surface. They previously rode
+      # the "// Code generated ... DO NOT EDIT" exclusion; keep them out of
+      # revive's per-type doc-comment rule for the same reason.
+      - path: internal/store/(models|.*_types)\.go
+        linters:
+          - revive
 
 formatters:
   enable:

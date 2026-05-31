@@ -120,23 +120,17 @@ func Bootstrap(ctx context.Context, cfg *config.BootstrapConfig, log *slog.Logge
 		slog.String("node_id", resp.NodeID),
 		slog.String("cert_fingerprint_pem", hex.EncodeToString(certFP[:])))
 
-	// Ensure the returned CA matches what we initially fetched (sanity
-	// check — the response's ca_cert_pem could differ from /v1/ca if
-	// the CP rotated mid-bootstrap, though that flow is not supported
-	// in this slice). We compare the raw PEM bytes rather than parsing
-	// twice — a post-validation byte mismatch indicates the response
-	// CA differs from what we pinned; verifyResponseChain has already
-	// confirmed the fingerprint, so this branch is mostly defensive.
-	if !strings.EqualFold(strings.TrimSpace(string(caPEM)), strings.TrimSpace(resp.CACertPEM)) {
-		log.WarnContext(ctx, "bootstrap: ca_cert_pem from /v1/nodes/join differs from /v1/ca cert PEM bytes (fingerprint matches — proceeding)",
-			slog.String("node_id", resp.NodeID))
-	}
-
+	// The leaf's signing CA (resp.CACertPEM) was already pinned to the
+	// operator fingerprint by verifyResponseChain, and that fingerprint is
+	// present in the /v1/ca bundle — so the signer is in the trust set we are
+	// about to persist. Persist the whole bundle (every trusted CA), not just
+	// the signer, so a future rotated-in CA is trusted as soon as it reaches
+	// the agent's trust file.
 	return &Result{
 		NodeID:    resp.NodeID,
 		KeyPEM:    keyPEM,
 		CertPEM:   []byte(resp.CertPEM),
-		CACertPEM: []byte(resp.CACertPEM),
+		CACertPEM: caPEM,
 	}, nil
 }
 

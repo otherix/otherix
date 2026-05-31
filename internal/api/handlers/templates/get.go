@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -61,7 +60,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 //     and the caller does not hold `template:read` at scope=any).
 //   - (zero, other) for unexpected DB errors.
 func (h *Handler) resolveVisibleTemplate(ctx context.Context, identifier string, caller *auth.User) (store.Template, error) {
-	row, err := resolver.Template(ctx, h.store.Queries(), identifier)
+	row, err := resolver.Template(ctx, h.store, identifier)
 	if err != nil {
 		return store.Template{}, err
 	}
@@ -87,7 +86,7 @@ func writeLoadError(w http.ResponseWriter, r *http.Request, err error) {
 	case resolver.IsUUIDInName(err):
 		response.WriteUUIDNotAllowedError(w, r, "template", "id")
 	case resolver.IsNotFound(err),
-		errors.Is(err, pgx.ErrNoRows),
+		errors.Is(err, store.ErrNotFound),
 		errors.Is(err, errTemplateInvisible):
 		writeNotFound(w, r)
 	default:

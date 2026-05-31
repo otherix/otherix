@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/pagination"
@@ -30,7 +29,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.store.Queries().ListPoolsEffective(r.Context(), store.ListPoolsEffectiveParams(params))
+	rows, err := h.store.ListPoolsEffective(r.Context(), store.ListPoolsEffectiveParams(params))
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "list storage pools", nil)
@@ -71,7 +70,7 @@ func (h *Handler) buildListParams(w http.ResponseWriter, r *http.Request) (store
 	}
 	params := store.ListStoragePoolsParams{LimitCount: limit + 1}
 	if nodeRaw := q.Get("node"); nodeRaw != "" {
-		node, err := resolver.Node(r.Context(), h.store.Queries(), nodeRaw)
+		node, err := resolver.Node(r.Context(), h.store, nodeRaw)
 		if err != nil {
 			if resolver.IsUUIDInName(err) {
 				response.WriteUUIDNotAllowedError(w, r, "node", "node")
@@ -130,7 +129,7 @@ func (h *Handler) projectListViews(w http.ResponseWriter, r *http.Request, rows 
 }
 
 func (h *Handler) loadDefaultPoolName(w http.ResponseWriter, r *http.Request) (string, bool) {
-	settings, err := h.store.Queries().GetClusterSettings(r.Context())
+	settings, err := h.store.ClusterSettings(r.Context())
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "load cluster settings", nil)
@@ -147,9 +146,9 @@ func (h *Handler) loadDefaultPoolName(w http.ResponseWriter, r *http.Request) (s
 // Name on the wire) so the pool view stays renderable; the operator
 // can dig into the FK inconsistency via /v1/nodes if needed.
 func (h *Handler) loadOwningNode(ctx context.Context, nodeID uuid.UUID) (store.Node, error) {
-	row, err := h.store.Queries().GetNodeByID(ctx, nodeID)
+	row, err := h.store.NodeByID(ctx, nodeID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return store.Node{}, nil
 		}
 		return store.Node{}, err

@@ -49,6 +49,7 @@ package templates
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -56,27 +57,49 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
+	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Handler bundles the dependencies for the templates routes. CRUD
-// only needs the store; the storage_image.import sub-resource
-// additionally needs the river client to enqueue the async task
-// inside the same transaction as the tasks row insert.
-type Handler struct {
-	store       *store.Store
-	riverClient *river.Client[pgx.Tx]
-	log         *slog.Logger
+// Store is the storage surface the templates handlers depend on: the
+// template domain methods, the identifier-resolution contract
+// (resolver.Querier) used to resolve template / pool path parameters,
+// the node read used by the storage-image import precheck, and the
+// EnqueueTask producer seam. *etcdstore.Store satisfies
+// it; depending on the interface rather than the concrete store narrows the
+// handler's storage dependency to the methods it uses, lets tests substitute
+// a fake, and keeps the queue off the handler.
+type Store interface {
+	resolver.Querier
+
+	CreateTemplate(ctx context.Context, arg store.CreateTemplateParams) (store.Template, error)
+	UpdateTemplate(ctx context.Context, arg store.UpdateTemplateParams) (store.Template, error)
+	CloneTemplate(ctx context.Context, arg store.CloneTemplateParams) (store.Template, error)
+	SetTemplateVisibility(ctx context.Context, arg store.SetTemplateVisibilityParams) (store.Template, error)
+	ListTemplates(ctx context.Context, arg store.ListTemplatesParams) ([]store.Template, error)
+	DeleteTemplate(ctx context.Context, id uuid.UUID) error
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
+	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 }
 
-// New constructs a Handler. riverClient is required for ImportImage;
-// the production wiring (cmd/api/main.go) always supplies one.
-func New(s *store.Store, riverClient *river.Client[pgx.Tx], log *slog.Logger) *Handler {
-	return &Handler{store: s, riverClient: riverClient, log: log}
+// Ensure the production store satisfies the handler's storage contract.
+
+// Handler bundles the dependencies for the templates routes. The
+// storage_image.import sub-resource enqueues an async task through the
+// store's EnqueueTask seam, so the handler no longer holds a queue client.
+type Handler struct {
+	store Store
+	log   *slog.Logger
+}
+
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
+func New(s Store, log *slog.Logger) *Handler {
+	return &Handler{store: s, log: log}
 }
 
 // templateView mirrors components/schemas/Template in

@@ -143,7 +143,7 @@ func (h *Handler) runList(
 			params.CursorCreatedAt = &cur.CreatedAt
 			params.CursorID = &cur.ID
 		}
-		return h.store.Queries().ListTasksAny(ctx, params)
+		return h.store.ListTasksAny(ctx, params)
 
 	case auth.ScopeOwn:
 		id := caller.ID
@@ -159,7 +159,7 @@ func (h *Handler) runList(
 			params.CursorCreatedAt = &cur.CreatedAt
 			params.CursorID = &cur.ID
 		}
-		return h.store.Queries().ListTasksOwn(ctx, params)
+		return h.store.ListTasksOwn(ctx, params)
 
 	default:
 		// Defensive: middleware should have rejected the request before

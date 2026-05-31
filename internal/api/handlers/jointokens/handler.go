@@ -27,19 +27,35 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the join-tokens handlers depend on: the
+// join-token domain methods plus the active-CA lookup used to embed the
+// CA fingerprint in the create response. *etcdstore.Store satisfies it;
+// depending on the interface rather than the concrete store narrows the
+// handler's storage dependency to the methods it uses and lets tests
+// substitute a fake.
+type Store interface {
+	ActiveCACert(ctx context.Context) (store.CaCert, error)
+	JoinTokenByID(ctx context.Context, id uuid.UUID) (store.JoinToken, error)
+	CreateJoinToken(ctx context.Context, arg store.CreateJoinTokenParams) (store.JoinToken, error)
+	ListJoinTokens(ctx context.Context, arg store.ListJoinTokensParams) ([]store.ListJoinTokensRow, error)
+	RevokeJoinToken(ctx context.Context, id uuid.UUID) error
+	ListJoinTokenConsumptions(ctx context.Context, arg store.ListJoinTokenConsumptionsParams) ([]store.JoinTokenConsumption, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+
 // Handler holds the dependencies of the join-tokens routes.
 type Handler struct {
-	store *store.Store
+	store Store
 	log   *slog.Logger
 }
 
 // New constructs the Handler.
-func New(s *store.Store, log *slog.Logger) *Handler {
+func New(s Store, log *slog.Logger) *Handler {
 	return &Handler{store: s, log: log}
 }
 
@@ -51,19 +67,21 @@ var (
 	errMaxUsesNotPositive  = errors.New("max_uses must be >= 1 when set")
 	errPreboundMultiUse    = errors.New("pre-bound tokens cannot be reused: set max_uses=1 or omit intended_node_name")
 	errIntendedNameTooLong = errors.New("intended_node_name must be at most 253 characters")
+	errInvalidKind         = errors.New("kind must be \"node\" or \"cluster\"")
+	errClusterNodeBound    = errors.New("cluster tokens cannot carry intended_node_name")
 )
 
 // errTokenNotFound is the sentinel for a token row missing entirely;
 // callers map it to 404.
 var errTokenNotFound = errors.New("join token not found")
 
-// loadToken fetches a join token row by id, lifting pgx.ErrNoRows
+// loadToken fetches a join token row by id, lifting store.ErrNotFound
 // into errTokenNotFound for canonical 404 mapping at the handler
 // layer.
 func (h *Handler) loadToken(ctx context.Context, id uuid.UUID) (store.JoinToken, error) {
-	row, err := h.store.Queries().GetJoinTokenByID(ctx, id)
+	row, err := h.store.JoinTokenByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return store.JoinToken{}, errTokenNotFound
 		}
 		return store.JoinToken{}, err
@@ -75,7 +93,7 @@ func (h *Handler) loadToken(ctx context.Context, id uuid.UUID) (store.JoinToken,
 // returns the lowercase hex fingerprint. Used by Create to embed the
 // "token bundle" CA fingerprint in the response.
 func (h *Handler) activeCAFingerprintHex(ctx context.Context) (string, error) {
-	row, err := h.store.Queries().GetActiveCACert(ctx)
+	row, err := h.store.ActiveCACert(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -87,8 +105,13 @@ func (h *Handler) activeCAFingerprintHex(ctx context.Context) (string, error) {
 // projection — even admin callers cannot recover the plaintext from
 // the wire surface.
 func toView(t store.JoinToken, consumptionCount int64) joinTokenView {
+	kind := t.Kind
+	if kind == "" {
+		kind = store.JoinTokenKindNode
+	}
 	v := joinTokenView{
 		ID:               t.ID.String(),
+		Kind:             kind,
 		ExpiresAt:        t.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		ConsumptionCount: consumptionCount,
 		CreatedAt:        t.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -114,6 +137,7 @@ func toViewFromListRow(row store.ListJoinTokensRow) joinTokenView {
 	jt := store.JoinToken{
 		ID:               row.ID,
 		TokenHash:        row.TokenHash,
+		Kind:             row.Kind,
 		IntendedNodeName: row.IntendedNodeName,
 		CreatedByUserID:  row.CreatedByUserID,
 		ExpiresAt:        row.ExpiresAt,

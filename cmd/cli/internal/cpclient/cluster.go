@@ -75,3 +75,41 @@ func (c *Client) ClearClusterDefaultPool(ctx context.Context) error {
 	_, _, err = c.do(httpReq)
 	return err
 }
+
+// ClusterMember mirrors components/schemas/ClusterMember.
+type ClusterMember struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	PeerURLs   []string `json:"peer_urls"`
+	ClientURLs []string `json:"client_urls"`
+	IsLearner  bool     `json:"is_learner"`
+}
+
+// ListClusterMembers fetches GET /v1/cluster/members.
+func (c *Client) ListClusterMembers(ctx context.Context) ([]ClusterMember, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/cluster/members", nil)
+	if err != nil {
+		return nil, err
+	}
+	_, body, err := c.do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data []ClusterMember `json:"data"`
+	}
+	if err := decodeJSON(body, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// RemoveClusterMember submits DELETE /v1/cluster/members/{id} (id is hex).
+func (c *Client) RemoveClusterMember(ctx context.Context, id string) error {
+	httpReq, err := c.newRequest(ctx, http.MethodDelete, "/v1/cluster/members/"+id, nil)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.do(httpReq)
+	return err
+}

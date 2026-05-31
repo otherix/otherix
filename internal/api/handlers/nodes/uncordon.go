@@ -20,7 +20,7 @@ import (
 // (pending, unreachable, draining, gone). {id} is name-only; UUID
 // literals are rejected with 400 validation_failed at the resolver.
 func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
-	current, err := resolver.Node(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	current, err := resolver.Node(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeNodeResolveError(w, r, err)
 		return
@@ -41,7 +41,7 @@ func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().UncordonNode(r.Context(), current.ID)
+	updated, err := h.store.UncordonNode(r.Context(), current.ID)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "uncordon node", nil)

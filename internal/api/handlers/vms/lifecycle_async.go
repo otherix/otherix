@@ -12,12 +12,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -93,7 +92,7 @@ func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op a
 		return
 	}
 
-	vm, err := resolver.VM(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeResolveError(w, r, err)
 		return
@@ -139,58 +138,36 @@ func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm s
 		return uuid.Nil, err
 	}
 
-	err = h.store.InTxWithTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		if _, err := q.CreateTask(ctx, store.CreateTaskParams{
-			ID:           taskID,
-			Type:         "vm." + op.label(),
-			Status:       store.TaskStatusPending,
-			ResourceType: "vm",
-			ResourceID:   &resID,
-			Args:         argsJSON,
-			MaxAttempts:  25,
-			CreatedBy:    &createdBy,
-		}); err != nil {
-			return err
-		}
-		insertResult, err := h.insertRiverJobForOp(ctx, tx, op, taskID, vm.ID, nodeID)
-		if err != nil {
-			return err
-		}
-		jobID := insertResult.Job.ID
-		return q.UpdateTaskRiverJobID(ctx, store.UpdateTaskRiverJobIDParams{
-			ID:         taskID,
-			RiverJobID: &jobID,
-		})
-	})
+	jobArgs, err := jobArgsForOp(op, taskID, vm.ID, nodeID)
 	if err != nil {
 		return uuid.Nil, err
 	}
-	return taskID, nil
+
+	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "vm." + op.label(),
+		Status:       store.TaskStatusPending,
+		ResourceType: "vm",
+		ResourceID:   &resID,
+		Args:         argsJSON,
+		MaxAttempts:  25,
+		CreatedBy:    &createdBy,
+	}, jobArgs)
 }
 
-// insertRiverJobForOp dispatches to the matching river args type for
-// op. Cannot be done via a map[op]args because each Args is a
-// distinct type — river.InsertTx is generic over the args type.
-func (h *Handler) insertRiverJobForOp(
-	ctx context.Context, tx pgx.Tx, op asyncOp, taskID, vmID, nodeID uuid.UUID,
-) (*rivertype.JobInsertResult, error) {
+// jobArgsForOp returns the matching job args type for op. Cannot be
+// done via a map[op]args because each Args is a distinct type; the
+// store enqueues whatever queue.JobArgs it receives.
+func jobArgsForOp(op asyncOp, taskID, vmID, nodeID uuid.UUID) (queue.JobArgs, error) {
 	switch op {
 	case asyncOpStart:
-		return h.riverClient.InsertTx(ctx, tx, VMStartArgs{
-			TaskID: taskID, VMID: vmID, NodeID: nodeID,
-		}, nil)
+		return VMStartArgs{TaskID: taskID, VMID: vmID, NodeID: nodeID}, nil
 	case asyncOpStop:
-		return h.riverClient.InsertTx(ctx, tx, VMStopArgs{
-			TaskID: taskID, VMID: vmID, NodeID: nodeID,
-		}, nil)
+		return VMStopArgs{TaskID: taskID, VMID: vmID, NodeID: nodeID}, nil
 	case asyncOpPoweroff:
-		return h.riverClient.InsertTx(ctx, tx, VMPoweroffArgs{
-			TaskID: taskID, VMID: vmID, NodeID: nodeID,
-		}, nil)
+		return VMPoweroffArgs{TaskID: taskID, VMID: vmID, NodeID: nodeID}, nil
 	case asyncOpReboot:
-		return h.riverClient.InsertTx(ctx, tx, VMRebootArgs{
-			TaskID: taskID, VMID: vmID, NodeID: nodeID,
-		}, nil)
+		return VMRebootArgs{TaskID: taskID, VMID: vmID, NodeID: nodeID}, nil
 	default:
 		return nil, fmt.Errorf("unknown async op")
 	}
@@ -206,7 +183,7 @@ func writeAsyncLifecycleError(w http.ResponseWriter, r *http.Request, log interf
 }, op asyncOp, err error,
 ) {
 	switch {
-	case errors.Is(err, pgx.ErrNoRows), errors.Is(err, errVMNotVisible):
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, errVMNotVisible):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeVMNotFound, "vm not found", nil)
 	case errors.Is(err, errVMNoNode):

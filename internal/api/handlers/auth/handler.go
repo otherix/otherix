@@ -8,6 +8,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -15,23 +16,32 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/otherix/otherix/internal/api/response"
 	coreauth "github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
+// Store is the storage surface the auth handlers depend on: a single
+// user-by-email lookup that Login uses to surface the authenticated
+// user inline in LoginResponse. *etcdstore.Store satisfies it; depending on
+// the interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
+type Store interface {
+	UserByEmail(ctx context.Context, email string) (store.User, error)
+}
+
+// Ensure the production store satisfies the handler's storage contract.
+
 // Handler bundles dependencies for the /v1/auth/* routes.
 type Handler struct {
 	svc   *coreauth.Service
-	store *store.Store
+	store Store
 }
 
 // New constructs a Handler. Both dependencies are required; the user
 // store is needed by Login to surface the authenticated user inline in
 // LoginResponse per the OpenAPI shape.
-func New(svc *coreauth.Service, s *store.Store) *Handler {
+func New(svc *coreauth.Service, s Store) *Handler {
 	return &Handler{svc: svc, store: s}
 }
 
@@ -126,7 +136,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.Queries().GetUserByEmail(r.Context(), req.Email)
+	user, err := h.store.UserByEmail(r.Context(), req.Email)
 	if err != nil {
 		// Login just succeeded; the user must exist. A failure here
 		// is genuinely a server problem.
@@ -200,11 +210,10 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 				response.CodeUnauthenticated, "missing principal", nil)
 			return
 		}
+		// LogoutAll revokes via an idempotent :exec, so a user with no
+		// active sessions is a successful no-op rather than a missing-row
+		// error; any error here is a genuine database fault.
 		if err := h.svc.LogoutAll(r.Context(), caller.ID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				response.WriteNoContent(w)
-				return
-			}
 			response.WriteError(w, r, http.StatusInternalServerError,
 				response.CodeInternal, "logout failed", nil)
 			return

@@ -26,32 +26,41 @@
 package tasks
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Handler bundles the dependencies for the tasks routes. List and Get
-// only need the store; Cancel additionally needs the river client to
-// cancel the underlying job inside the same transaction as the task
-// status update.
-type Handler struct {
-	store       *store.Store
-	riverClient *river.Client[pgx.Tx]
-	log         *slog.Logger
+// Store is the storage surface the tasks handlers depend on. Cancel's
+// transactional job-cancel is hidden inside store.CancelPendingTask
+// (which uses the queue seam), so the handler no longer holds a queue
+// or river client. Depending on the interface narrows the handler's
+// storage dependency to the methods it uses and lets tests substitute a
+// fake. *etcdstore.Store satisfies it.
+type Store interface {
+	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
+	CancelPendingTask(ctx context.Context, id uuid.UUID, jobRef *int64) (store.Task, error)
+	ListTasksAny(ctx context.Context, arg store.ListTasksAnyParams) ([]store.Task, error)
+	ListTasksOwn(ctx context.Context, arg store.ListTasksOwnParams) ([]store.Task, error)
 }
 
-// New constructs a Handler. riverClient must be non-nil — Cancel relies
-// on it for transactional job cancellation. List and Get tolerate a nil
-// client but the production wiring (cmd/api/main.go) always supplies
-// one, so we keep the constructor's contract uniform.
-func New(s *store.Store, riverClient *river.Client[pgx.Tx], log *slog.Logger) *Handler {
-	return &Handler{store: s, riverClient: riverClient, log: log}
+// Ensure the production store satisfies the handler's storage contract.
+
+// Handler bundles the dependencies for the tasks routes.
+type Handler struct {
+	store Store
+	log   *slog.Logger
+}
+
+// New constructs a Handler. It takes the Store interface so any
+// conforming backend can be wired in; production passes *store.Store.
+func New(s Store, log *slog.Logger) *Handler {
+	return &Handler{store: s, log: log}
 }
 
 // taskView mirrors components/schemas/Task in

@@ -48,7 +48,7 @@ func (h *Handler) SetVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := resolver.Template(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	row, err := resolver.Template(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeLoadError(w, r, err)
 		return
@@ -61,7 +61,7 @@ func (h *Handler) SetVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Queries().SetTemplateVisibility(r.Context(),
+	updated, err := h.store.SetTemplateVisibility(r.Context(),
 		store.SetTemplateVisibilityParams{
 			ID:         row.ID,
 			Visibility: req.Visibility,

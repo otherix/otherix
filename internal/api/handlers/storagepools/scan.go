@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -46,7 +45,7 @@ func (h *Handler) Scan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool, err := resolver.Pool(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	pool, err := resolver.Pool(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writePoolResolveError(w, r, err, "storage pool not found", "load storage pool")
 		return
@@ -78,9 +77,9 @@ func (h *Handler) Scan(w http.ResponseWriter, r *http.Request) {
 // resolver. Writes the 409 response directly on rejection and returns
 // false; returns true to signal "go ahead, atomic enqueue is safe".
 func (h *Handler) preflightScan(w http.ResponseWriter, r *http.Request, pool store.StoragePool) bool {
-	node, err := h.store.Queries().GetNodeByID(r.Context(), pool.NodeID)
+	node, err := h.store.NodeByID(r.Context(), pool.NodeID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			// Pool's owning node was soft-deleted between pool-load and
 			// node-load (extremely rare race). Surface as 409 so the
 			// client doesn't conflate it with the missing-pool 404.
@@ -107,41 +106,24 @@ func (h *Handler) preflightScan(w http.ResponseWriter, r *http.Request, pool sto
 	}
 }
 
-// enqueueScan runs the atomic three-write enqueue: insert the task row,
-// hand the job to river inside the same tx, then stamp the river job
-// id back onto the task. Returns the freshly-minted task id on success.
+// enqueueScan runs the atomic enqueue through the store's
+// EnqueueTask seam: the task row, its background job,
+// and the job-reference stamp commit together. The queue specifics
+// live behind the store;
+// the handler only supplies the task descriptor and the job args.
+// Returns the freshly-minted task id on success.
 func (h *Handler) enqueueScan(ctx context.Context, poolID, callerID uuid.UUID) (uuid.UUID, error) {
 	taskID := uuid.New()
 	pid := poolID
 	cid := callerID
-	err := h.store.InTxWithTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		if _, err := q.CreateTask(ctx, store.CreateTaskParams{
-			ID:           taskID,
-			Type:         "storage_pool.scan",
-			Status:       store.TaskStatusPending,
-			ResourceType: "storage_pool",
-			ResourceID:   &pid,
-			Args:         []byte(`{}`),
-			MaxAttempts:  25,
-			CreatedBy:    &cid,
-		}); err != nil {
-			return err
-		}
-
-		insertResult, err := h.riverClient.InsertTx(ctx, tx,
-			StoragePoolScanArgs{TaskID: taskID, PoolID: poolID}, nil)
-		if err != nil {
-			return err
-		}
-
-		jobID := insertResult.Job.ID
-		return q.UpdateTaskRiverJobID(ctx, store.UpdateTaskRiverJobIDParams{
-			ID:         taskID,
-			RiverJobID: &jobID,
-		})
-	})
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return taskID, nil
+	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "storage_pool.scan",
+		Status:       store.TaskStatusPending,
+		ResourceType: "storage_pool",
+		ResourceID:   &pid,
+		Args:         []byte(`{}`),
+		MaxAttempts:  25,
+		CreatedBy:    &cid,
+	}, StoragePoolScanArgs{TaskID: taskID, PoolID: poolID})
 }

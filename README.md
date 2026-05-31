@@ -11,8 +11,8 @@ KVM/QEMU clusters.
 Otherix runs VMs on a fleet of bare-metal nodes, each controlled by an
 Otherix agent that talks to QEMU directly (no libvirt). The control
 plane (`otherix-api`) — REST API with in-process scheduler and
-reconciliation loops — keeps the cluster's desired state in PostgreSQL;
-agents report observed state through heartbeat. The split mirrors the
+reconciliation loops — keeps the cluster's desired state in an embedded
+etcd member; agents report observed state through heartbeat. The split mirrors the
 Kubernetes pattern: declarative API, generation/observed-generation
 bookkeeping, reconciliation loops.
 
@@ -29,7 +29,8 @@ The control plane ships as standalone binaries that run directly on
 a host - either a dedicated control-plane host, or the same host
 that runs an agent for single-node installations. Agents install on
 each KVM/QEMU host as a single binary alongside qemu-system-*. No
-external dependencies beyond PostgreSQL.
+external dependencies: the api-server runs its own embedded etcd member,
+so there is no separate database, queue, or cache to operate.
 
 ## Status
 
@@ -58,8 +59,9 @@ Otherix ships two daemons and an operator CLI.
 
 - **`otherix-api`** — REST API for users, the CLI, the web UI, and agents.
   Hosts in-process VM placement scheduling, reconciliation loops, and the
-  [river](https://riverqueue.com) worker pool for background jobs. Designed
-  for HA — multiple replicas share work via Postgres advisory locks.
+  in-process worker dispatcher that drains an etcd-backed job queue for
+  background work. Embeds its own etcd member; designed for HA — replicas
+  form a single self-clustering etcd cluster and coordinate through it.
 - **`otherix-agent`** — runs on each KVM/QEMU host; manages local
   virtualization, communicates with the control plane via mTLS.
 
@@ -69,19 +71,19 @@ Otherix ships two daemons and an operator CLI.
   workflows. Not a cluster component; installed wherever an operator
   runs commands.
 
-The control plane runs as standalone binaries against PostgreSQL.
-Agents run on bare-metal hosts. Authoritative architecture records
-live in [`docs/`](docs/).
+The control plane runs as standalone binaries with no external state
+store - etcd is embedded in the api-server. Agents run on bare-metal
+hosts. Authoritative architecture records live in [`docs/`](docs/).
 
 ## Quick start (local development)
 
 The fastest path is the one-shot wrapper that brings up the entire
-dev stack (Postgres + control plane + agent + CLI configuration) in
-a single command:
+dev stack (control plane with embedded etcd + agent + CLI configuration)
+in a single command:
 
 ```bash
 make local-dev-start
-# When done, tear everything down (DESTRUCTIVE - wipes the Postgres bind mount):
+# When done, tear everything down (DESTRUCTIVE - wipes the embedded-etcd data dir):
 make local-dev-stop
 ```
 
@@ -121,42 +123,40 @@ workflow and rationale. Lower-level targets
 ## Linux dev environment
 
 The agent runs natively on Linux as a per-user systemd unit. The
-control plane runs from the same host (PostgreSQL via `make dev-up`).
-Cert material reaches the agent through the join-token bootstrap
-protocol, not manual cert generation — `make seed-mvp`
-orchestrates the full flow end-to-end.
+control plane runs from the same host and embeds its own etcd member,
+so there are no dev dependencies to bring up first. Cert material
+reaches the agent through the join-token bootstrap protocol, not manual
+cert generation — `make seed-mvp` orchestrates the full flow end-to-end.
 
 ```bash
-# 1. Start dev dependencies + apply migrations
-make dev-up
-make migrate-up
-
-# 2. Stage the agent: build, install user systemd unit at
+# 1. Stage the agent: build, install user systemd unit at
 #    ~/.config/systemd/user/otherix-agent.service. The agent is NOT
 #    started — the bootstrap protocol provisions cert material first.
 make bootstrap-dev
 
-# 3. (separate terminal) run the control plane against the dev config.
-#    First-time only: seed the bootstrap admin via env vars before start.
+# 2. (separate terminal) run the control plane against the dev config.
+#    The api-server boots its own embedded etcd member (dev data dir
+#    under .local/etcd). First-time only: seed the bootstrap admin via
+#    env vars before start.
 export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
 make run-api-dev
 
-# 4. Bootstrap the agent end-to-end — mints join token, provisions
+# 3. Bootstrap the agent end-to-end — mints join token, provisions
 #    bootstrap material, starts the agent, waits for the node row to
 #    appear, seeds a pool + default template.
 make seed-mvp
 
-# 5. Verify the node is reachable (heartbeat is the canonical proof).
+# 4. Verify the node is reachable (heartbeat is the canonical proof).
 ./bin/otherix node list
 
-# 6. Daily redeploy after agent code changes
+# 5. Daily redeploy after agent code changes
 make deploy-dev
 
-# 7. Tail agent logs
+# 6. Tail agent logs
 journalctl --user -u otherix-agent -f
 
-# 8. Tear down
+# 7. Tear down (also wipes the embedded-etcd data dir)
 make clean-dev
 ```
 
@@ -183,25 +183,19 @@ make build-linux-amd64      # cross-compile daemons for linux/amd64
 make build-linux-arm64      # cross-compile daemons for linux/arm64
 ```
 
-## Database
+## Storage
 
-Migrations live at `internal/store/migrate/migrations/` and are embedded
-into the `otherix-api` binary at build time. Apply them via the binary
-(or via Make, which wraps the binary):
+State lives in the embedded etcd member the api-server starts in-process.
+There is no schema and no migration step: `internal/etcdstore` enforces
+structure application-side over the etcd key space (primary keys,
+uniqueness guards, secondary indexes, and the job queue). `internal/store`
+is a pgx-free type layer - the row / params / result structs and error
+sentinels shared by the handlers and the store.
 
-    make migrate-up        # Apply all pending migrations
-    make migrate-status    # Show what is and isn't applied
-    make migrate-down      # Roll back (DROPS public schema — see migration Down)
+Integration tests embed an etcd member in-process (no Docker):
 
-To regenerate sqlc-generated Go code after editing
-`internal/store/queries/*.sql`:
-
-    make sqlc-generate     # Pinned to sqlc 1.31.1 via Docker
-
-Integration tests for the data access layer require Docker (testcontainers
-brings up Postgres):
-
-    make test-migrations
+    make test-etcd         # internal/etcdstore + tests/apie2e (build tag: integration)
+    make etcd-reset        # wipe the dev embedded-etcd data dir for a clean slate
 
 ## Layout
 
@@ -211,10 +205,11 @@ internal/                                # private packages
   api/ agent/                            # per-daemon packages
   scheduler/ reconciler/                 # in-process control-plane logic
   auth/ config/ logger/ version/         # shared base packages
+  etcd/ etcdstore/                       # embedded etcd member + the control-plane store
+  worker/                                # job dispatcher + periodic scheduler
 api/openapi/                             # Control Plane + Agent API specs
-internal/store/                          # data access layer (sqlc-generated + queries)
-internal/store/migrate/migrations/       # goose SQL migrations (embedded into api binary)
-deploy/                                  # Dockerfiles, compose, example configs
+internal/store/                          # pgx-free type layer (row / params / result structs)
+deploy/                                  # Dockerfiles, example configs
 docs/                                    # architecture, plans
 ```
 

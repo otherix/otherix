@@ -51,7 +51,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	intendedNodeName, ttl, maxUses, err := normaliseCreateRequest(req)
+	kind, intendedNodeName, ttl, maxUses, err := normaliseCreateRequest(req)
 	if err != nil {
 		writeCreateError(w, r, err)
 		return
@@ -76,9 +76,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().UTC().Add(time.Duration(ttl) * time.Second)
 	callerID := caller.ID
 
-	row, err := h.store.Queries().CreateJoinToken(r.Context(), store.CreateJoinTokenParams{
+	row, err := h.store.CreateJoinToken(r.Context(), store.CreateJoinTokenParams{
 		ID:               uuid.New(),
 		TokenHash:        hash,
+		Kind:             kind,
 		IntendedNodeName: intendedNodeName,
 		CreatedByUserID:  &callerID,
 		ExpiresAt:        expiresAt,
@@ -95,6 +96,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	// the operator-driving fields plus a small projection of the row.
 	h.log.InfoContext(r.Context(), "join token created",
 		slog.String("token_id", row.ID.String()),
+		slog.String("kind", kind),
 		slog.String("created_by_user_id", callerID.String()),
 		slog.Any("intended_node_name", intendedNodeName),
 		slog.Any("max_uses", maxUses),
@@ -126,42 +128,76 @@ func parseCreateRequest(r *http.Request) (createRequest, error) {
 // Note: SQL-level CHECK constraints provide defense-in-depth — this
 // validation surfaces errors as 400 (not 500 on constraint violation
 // at the DB layer).
-func normaliseCreateRequest(req createRequest) (*string, int, *int32, error) {
-	ttl := defaultTTLSeconds
+func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *string, ttl int, maxUses *int32, err error) {
+	kind, err = normaliseKind(req.Kind)
+	if err != nil {
+		return "", nil, 0, nil, err
+	}
+
+	ttl = defaultTTLSeconds
 	if req.TTLSeconds != nil {
 		ttl = *req.TTLSeconds
 	}
 	if ttl < 60 || ttl > 86400 {
-		return nil, 0, nil, errTTLOutOfRange
+		return "", nil, 0, nil, errTTLOutOfRange
 	}
 
-	var maxUses *int32
 	if req.MaxUses != nil {
 		if *req.MaxUses < 1 {
-			return nil, 0, nil, errMaxUsesNotPositive
+			return "", nil, 0, nil, errMaxUsesNotPositive
 		}
 		v := *req.MaxUses
 		maxUses = &v
 	}
 
-	var intendedNodeName *string
+	// A cluster token redeems for the CA private key, so it must never be
+	// unlimited-use: default an omitted max_uses to 1 (the operator can still set
+	// a finite N explicitly for a multi-replica grow). This closes the footgun
+	// where a cluster token with no cap yields the CA key to anyone, repeatedly,
+	// for the whole TTL.
+	if kind == store.JoinTokenKindCluster && maxUses == nil {
+		one := int32(1)
+		maxUses = &one
+	}
+
 	if req.IntendedNodeName != nil {
 		trimmed := strings.TrimSpace(*req.IntendedNodeName)
 		if trimmed != "" {
+			// A cluster token authorizes a CP replica, not a node, so it
+			// carries no node-name binding.
+			if kind == store.JoinTokenKindCluster {
+				return "", nil, 0, nil, errClusterNodeBound
+			}
 			if len(trimmed) > intendedNodeNameMaxLength {
-				return nil, 0, nil, errIntendedNameTooLong
+				return "", nil, 0, nil, errIntendedNameTooLong
 			}
 			// Pre-bound + multi-use combination — defense-in-depth
 			// against the SQL CHECK constraint. Refuses each
 			// max_uses != 1 (including nil meaning unlimited).
 			if maxUses == nil || *maxUses != 1 {
-				return nil, 0, nil, errPreboundMultiUse
+				return "", nil, 0, nil, errPreboundMultiUse
 			}
 			intendedNodeName = &trimmed
 		}
 	}
 
-	return intendedNodeName, ttl, maxUses, nil
+	return kind, intendedNodeName, ttl, maxUses, nil
+}
+
+// normaliseKind resolves the optional kind field to a canonical kind, defaulting
+// to node (also the reading of an empty string) and rejecting anything else.
+func normaliseKind(raw *string) (string, error) {
+	if raw == nil {
+		return store.JoinTokenKindNode, nil
+	}
+	switch trimmed := strings.TrimSpace(*raw); trimmed {
+	case "", store.JoinTokenKindNode:
+		return store.JoinTokenKindNode, nil
+	case store.JoinTokenKindCluster:
+		return store.JoinTokenKindCluster, nil
+	default:
+		return "", errInvalidKind
+	}
 }
 
 // writeCreateError maps validation sentinels to 400 envelopes;
@@ -184,6 +220,12 @@ func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, errIntendedNameTooLong):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "intended_node_name must be at most 253 characters", nil)
+	case errors.Is(err, errInvalidKind):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, `kind must be "node" or "cluster"`, nil)
+	case errors.Is(err, errClusterNodeBound):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "cluster tokens cannot carry intended_node_name", nil)
 	default:
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "invalid request body", nil)

@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -40,7 +39,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vm, err := resolver.VM(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeResolveError(w, r, err)
 		return
@@ -98,37 +97,20 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 		return uuid.Nil, err
 	}
 
-	err = h.store.InTxWithTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		if _, err := q.CreateTask(ctx, store.CreateTaskParams{
-			ID:           taskID,
-			Type:         "vm.delete",
-			Status:       store.TaskStatusPending,
-			ResourceType: "vm",
-			ResourceID:   &resID,
-			Args:         argsJSON,
-			MaxAttempts:  25,
-			CreatedBy:    &createdBy,
-		}); err != nil {
-			return err
-		}
-		insertResult, err := h.riverClient.InsertTx(ctx, tx, VMDeleteArgs{
-			TaskID: taskID,
-			VMID:   vm.ID,
-			NodeID: nodeID,
-		}, nil)
-		if err != nil {
-			return err
-		}
-		jobID := insertResult.Job.ID
-		return q.UpdateTaskRiverJobID(ctx, store.UpdateTaskRiverJobIDParams{
-			ID:         taskID,
-			RiverJobID: &jobID,
-		})
+	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "vm.delete",
+		Status:       store.TaskStatusPending,
+		ResourceType: "vm",
+		ResourceID:   &resID,
+		Args:         argsJSON,
+		MaxAttempts:  25,
+		CreatedBy:    &createdBy,
+	}, VMDeleteArgs{
+		TaskID: taskID,
+		VMID:   vm.ID,
+		NodeID: nodeID,
 	})
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return taskID, nil
 }
 
 // resolveNodeForVM walks vm_disks → storage_pools → nodes to find the
@@ -140,14 +122,14 @@ func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.VM) (uuid.UUID,
 	if vm.PinnedNodeID != nil {
 		return *vm.PinnedNodeID, nil
 	}
-	disks, err := h.store.Queries().ListVMDisksByVM(ctx, vm.ID)
+	disks, err := h.store.ListVMDisksByVM(ctx, vm.ID)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	if len(disks) == 0 {
 		return uuid.Nil, errVMNoNode
 	}
-	pool, err := h.store.Queries().GetStoragePoolByID(ctx, disks[0].StoragePoolID)
+	pool, err := h.store.StoragePoolByID(ctx, disks[0].StoragePoolID)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -161,7 +143,7 @@ func writeDeleteError(w http.ResponseWriter, r *http.Request, log interface {
 }, err error,
 ) {
 	switch {
-	case errors.Is(err, pgx.ErrNoRows), errors.Is(err, errVMNotVisible):
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, errVMNotVisible):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeVMNotFound, "vm not found", nil)
 	case errors.Is(err, errVMNoNode):

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
@@ -56,7 +55,7 @@ func (f *fakeIdempStore) GetIdempotencyKey(_ context.Context, key string) (store
 	}
 	row, ok := f.rows[key]
 	if !ok {
-		return store.IdempotencyKey{}, pgx.ErrNoRows
+		return store.IdempotencyKey{}, store.ErrNotFound
 	}
 	return row, nil
 }
@@ -72,7 +71,7 @@ func (f *fakeIdempStore) BeginIdempotencyKey(_ context.Context, arg store.BeginI
 		return store.IdempotencyKey{}, f.beginErr
 	}
 	if _, exists := f.rows[arg.Key]; exists {
-		return store.IdempotencyKey{}, pgx.ErrNoRows
+		return store.IdempotencyKey{}, store.ErrNotFound
 	}
 	row := store.IdempotencyKey{
 		Key:           arg.Key,
@@ -94,7 +93,7 @@ func (f *fakeIdempStore) ReclaimIdempotencyKey(_ context.Context, arg store.Recl
 	f.calls.reclaim++
 	row, ok := f.rows[arg.Key]
 	if !ok || time.Now().Before(row.ExpiresAt) {
-		return store.IdempotencyKey{}, pgx.ErrNoRows
+		return store.IdempotencyKey{}, store.ErrNotFound
 	}
 	row.UserID = arg.UserID
 	row.RequestMethod = arg.RequestMethod

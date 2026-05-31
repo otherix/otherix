@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -72,7 +71,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	statusFilter := r.URL.Query().Get("status")
 
-	rows, err := h.store.Queries().ListVMs(r.Context(), store.ListVMsParams{
+	rows, err := h.store.ListVMs(r.Context(), store.ListVMsParams{
 		PoolIDFilter:    poolID,
 		NodeIDFilter:    nodeID,
 		CursorCreatedAt: cursor.cursorTs,
@@ -132,7 +131,7 @@ func (h *Handler) resolveListFilter(
 	if raw == "" {
 		return nil, true
 	}
-	id, err := resolve(r.Context(), h.store.Queries(), raw)
+	id, err := resolve(r.Context(), h.store, raw)
 	if err != nil {
 		// Node filter rejects UUID format (name-only); the pool filter
 		// retains UUID acceptance for the multi-instance carve-out, so
@@ -180,7 +179,7 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 		if err != nil {
 			return nil, err
 		}
-		disks, err := h.store.Queries().ListVMDisksByVM(ctx, vm.ID)
+		disks, err := h.store.ListVMDisksByVM(ctx, vm.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -200,14 +199,14 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 	return views, nil
 }
 
-// loadRuntimeOrNil collapses pgx.ErrNoRows to (nil, nil). Used by Get
-// and List so the "creating" state projection stays consistent.
+// loadRuntimeOrNil collapses store.ErrNotFound to (nil, nil). Used by
+// Get and List so the "creating" state projection stays consistent.
 func (h *Handler) loadRuntimeOrNil(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, error) {
-	rt, err := h.store.Queries().GetVMRuntime(ctx, vmID)
+	rt, err := h.store.VMRuntimeByID(ctx, vmID)
 	switch {
 	case err == nil:
 		return &rt, nil
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, store.ErrNotFound):
 		return nil, nil
 	default:
 		return nil, err

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-//go:build integration
-// +build integration
-
 package api_test
 
 import (
@@ -11,82 +8,145 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api"
+	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/store"
 )
 
-// freshStoreNoCA returns a fresh Store and clears the ca_certs
-// table so BootstrapClusterCA exercises the generate path. Tests
-// that simply need an active CA can use the e2eHarness directly
-// (which calls BootstrapClusterCA by construction).
-func freshStoreNoCA(t *testing.T) *e2eHarness {
-	t.Helper()
-	h := newE2E(t)
-	if _, err := h.store.Pool().Exec(context.Background(),
-		"delete from ca_certs"); err != nil {
-		t.Fatalf("reset ca_certs: %v", err)
-	}
-	return h
+// fakeCABootstrapStore is a minimal ClusterCABootstrapStore double. active holds
+// the current row (nil = ErrNotFound). When createErr is set, CreateCACert
+// returns it and adopts raceWinner as the active row, modelling a lost
+// uq_ca_certs_active race.
+type fakeCABootstrapStore struct {
+	active      *store.CaCert
+	createErr   error
+	raceWinner  *store.CaCert
+	createCalls int
 }
 
-// TestBootstrapClusterCA_GeneratesOnFreshDB verifies a fresh ca_certs
-// table results in a single active row after one bootstrap call.
-func TestBootstrapClusterCA_GeneratesOnFreshDB(t *testing.T) {
-	h := freshStoreNoCA(t)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	if err := api.BootstrapClusterCA(context.Background(), h.store, log); err != nil {
-		t.Fatalf("BootstrapClusterCA: %v", err)
+func (f *fakeCABootstrapStore) ActiveCACert(_ context.Context) (store.CaCert, error) {
+	if f.active == nil {
+		return store.CaCert{}, store.ErrNotFound
 	}
-
-	row, err := h.store.Queries().GetActiveCACert(context.Background())
-	if err != nil {
-		t.Fatalf("GetActiveCACert: %v", err)
-	}
-	if !row.Active {
-		t.Error("Active = false on freshly-generated row")
-	}
-	if len(row.CertPem) == 0 {
-		t.Error("CertPem empty")
-	}
-	if len(row.KeyPem) == 0 {
-		t.Error("KeyPem empty")
-	}
-	if len(row.FingerprintSha256) != 32 {
-		t.Errorf("Fingerprint length = %d, want 32", len(row.FingerprintSha256))
-	}
+	return *f.active, nil
 }
 
-// TestBootstrapClusterCA_IdempotentOnExisting verifies a repeat call
-// against a DB that already has an active CA leaves the row
-// untouched and does not produce an error.
-func TestBootstrapClusterCA_IdempotentOnExisting(t *testing.T) {
-	h := freshStoreNoCA(t)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	if err := api.BootstrapClusterCA(context.Background(), h.store, log); err != nil {
-		t.Fatalf("first bootstrap: %v", err)
-	}
-	first, err := h.store.Queries().GetActiveCACert(context.Background())
-	if err != nil {
-		t.Fatalf("first GetActiveCACert: %v", err)
-	}
-
-	for i := 0; i < 3; i++ {
-		if err := api.BootstrapClusterCA(context.Background(), h.store, log); err != nil {
-			t.Fatalf("bootstrap call %d: %v", i+2, err)
+func (f *fakeCABootstrapStore) CreateCACert(_ context.Context, arg store.CreateCACertParams) (store.CaCert, error) {
+	f.createCalls++
+	if f.createErr != nil {
+		if f.raceWinner != nil {
+			f.active = f.raceWinner
 		}
+		return store.CaCert{}, f.createErr
 	}
+	row := store.CaCert{
+		ID:                arg.ID,
+		CertPem:           arg.CertPem,
+		KeyPem:            arg.KeyPem,
+		FingerprintSha256: arg.FingerprintSha256,
+		NotBefore:         arg.NotBefore,
+		NotAfter:          arg.NotAfter,
+		Active:            true,
+	}
+	f.active = &row
+	return row, nil
+}
 
-	second, err := h.store.Queries().GetActiveCACert(context.Background())
+func testCA(t *testing.T) auth.ClusterCAResult {
+	t.Helper()
+	ca, err := auth.GenerateClusterCA(time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
 	if err != nil {
-		t.Fatalf("second GetActiveCACert: %v", err)
+		t.Fatalf("GenerateClusterCA: %v", err)
 	}
-	if first.ID != second.ID {
-		t.Errorf("row replaced: first.ID=%s, second.ID=%s — bootstrap should be idempotent",
-			first.ID, second.ID)
+	return ca
+}
+
+func rowFromCA(ca auth.ClusterCAResult) *store.CaCert {
+	return &store.CaCert{
+		ID:                uuid.New(),
+		CertPem:           ca.CertPEM,
+		KeyPem:            ca.KeyPEM,
+		FingerprintSha256: ca.Fingerprint,
+		NotBefore:         ca.NotBefore,
+		NotAfter:          ca.NotAfter,
+		Active:            true,
 	}
-	if string(first.FingerprintSha256) != string(second.FingerprintSha256) {
-		t.Error("fingerprint changed on idempotent bootstrap")
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestBootstrapClusterCAInsertsWhenEtcdEmpty(t *testing.T) {
+	ca := testCA(t)
+	s := &fakeCABootstrapStore{}
+
+	if err := api.BootstrapClusterCA(context.Background(), s, ca, discardLogger()); err != nil {
+		t.Fatalf("BootstrapClusterCA(empty store): %v", err)
+	}
+	if s.createCalls != 1 {
+		t.Errorf("createCalls = %d, want 1", s.createCalls)
+	}
+	if s.active == nil {
+		t.Fatal("active row not set after insert")
+	}
+	if string(s.active.FingerprintSha256) != string(ca.Fingerprint) {
+		t.Errorf("inserted fingerprint = %x, want %x", s.active.FingerprintSha256, ca.Fingerprint)
+	}
+}
+
+func TestBootstrapClusterCASkipsWhenAlreadySynced(t *testing.T) {
+	ca := testCA(t)
+	s := &fakeCABootstrapStore{active: rowFromCA(ca)}
+
+	if err := api.BootstrapClusterCA(context.Background(), s, ca, discardLogger()); err != nil {
+		t.Fatalf("BootstrapClusterCA(already synced): %v", err)
+	}
+	if s.createCalls != 0 {
+		t.Errorf("createCalls = %d, want 0 - the on-disk CA already matches etcd", s.createCalls)
+	}
+}
+
+func TestBootstrapClusterCADivergenceErrors(t *testing.T) {
+	disk := testCA(t)
+	other := testCA(t) // an independently generated CA: different fingerprint
+	s := &fakeCABootstrapStore{active: rowFromCA(other)}
+
+	err := api.BootstrapClusterCA(context.Background(), s, disk, discardLogger())
+	if err == nil {
+		t.Fatal("expected divergence error when etcd holds a different active CA, got nil")
+	}
+	if s.createCalls != 0 {
+		t.Errorf("createCalls = %d, want 0 on divergence", s.createCalls)
+	}
+}
+
+func TestBootstrapClusterCARaceLostMatchingWinner(t *testing.T) {
+	ca := testCA(t)
+	// Empty at first read, but CreateCACert loses the active-index race; the
+	// winner persisted the same shared CA (joiners fetched it), so fingerprints
+	// match and bootstrap succeeds.
+	s := &fakeCABootstrapStore{
+		createErr:  store.ErrCACertActiveExists,
+		raceWinner: rowFromCA(ca),
+	}
+	if err := api.BootstrapClusterCA(context.Background(), s, ca, discardLogger()); err != nil {
+		t.Fatalf("BootstrapClusterCA(race lost, matching winner): %v", err)
+	}
+}
+
+func TestBootstrapClusterCARaceLostDivergentWinner(t *testing.T) {
+	ca := testCA(t)
+	other := testCA(t)
+	s := &fakeCABootstrapStore{
+		createErr:  store.ErrCACertActiveExists,
+		raceWinner: rowFromCA(other),
+	}
+	if err := api.BootstrapClusterCA(context.Background(), s, ca, discardLogger()); err == nil {
+		t.Fatal("expected error when the race winner persisted a divergent CA, got nil")
 	}
 }

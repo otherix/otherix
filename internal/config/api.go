@@ -17,13 +17,83 @@ type APIConfig struct {
 	AgentServer  AgentServerConfig  `koanf:"agent_server"`
 	AgentClient  AgentClientConfig  `koanf:"agent_client"`
 	CPCert       CPCertConfig       `koanf:"cp_cert"`
-	Database     DatabaseConfig     `koanf:"database"`
+	ClusterCA    ClusterCAConfig    `koanf:"cluster_ca"`
+	ClusterJoin  ClusterJoinConfig  `koanf:"cluster_join"`
 	Logger       logger.Config      `koanf:"logger"`
 	Auth         AuthConfig         `koanf:"auth"`
 	Console      ConsoleConfig      `koanf:"console"`
 	Workers      WorkersConfig      `koanf:"workers"`
 	Placement    PlacementConfig    `koanf:"placement"`
 	StoragePools StoragePoolsConfig `koanf:"storage_pools"`
+	Etcd         EtcdConfig         `koanf:"etcd"`
+}
+
+// EtcdConfig configures the embedded etcd member that backs the
+// control-plane store. The single-node defaults let a
+// standalone api-server boot with no operator input; HA topologies
+// (slice 9) override Mode + InitialCluster + the peer mTLS material.
+//
+// This is plain transport: cmd/api translates it into the leaf
+// internal/etcd.Config, whose Validate is the single source of truth
+// for the invariants (mode enum, required URLs, initial-cluster
+// requirement per mode). It is therefore not re-validated in
+// APIConfig.Validate.
+type EtcdConfig struct {
+	Mode           string `koanf:"mode"`            // single | bootstrap | join
+	Name           string `koanf:"name"`            // unique member name within the cluster
+	DataDir        string `koanf:"data_dir"`        // member data directory (WAL + snapshots)
+	PeerURL        string `koanf:"peer_url"`        // Raft peer advertise/listen URL
+	ClientURL      string `koanf:"client_url"`      // client advertise/listen URL
+	ClusterToken   string `koanf:"cluster_token"`   // initial-cluster token; isolates clusters on shared networks
+	InitialCluster string `koanf:"initial_cluster"` // full member list "n0=peer0,n1=peer1,..." (bootstrap|join)
+	PeerCertFile   string `koanf:"peer_cert_file"`  // operator-provided peer (Raft) mTLS leaf cert (used verbatim when set)
+	PeerKeyFile    string `koanf:"peer_key_file"`   // operator-provided peer (Raft) mTLS leaf key
+	PeerCAFile     string `koanf:"peer_ca_file"`    // operator-provided cluster CA trust anchor for peer mTLS
+	PeerAutoDir    string `koanf:"peer_auto_dir"`   // directory the auto-generated peer cert/key/ca land in when no operator override is set
+
+	CompactionMode      string `koanf:"compaction_mode"`      // periodic | revision (default periodic)
+	CompactionRetention string `koanf:"compaction_retention"` // duration "1h" (periodic) or count "5000" (revision); default "1h"
+}
+
+// ClusterCAConfig pins the on-disk location of the cluster CA (cert +
+// key). Under the HA peer-PKI model the CA is a filesystem artifact: it
+// is provisioned to disk before etcd starts because the peer (Raft) mTLS
+// plane needs a CA-signed cert pre-start, and it lives on every replica
+// so each signs its own peer cert locally.
+//
+// A bootstrap / single node generates the CA here on first boot and
+// reloads it on restart; a join node receives it via the replica-join
+// protocol before its member starts. Defaults to
+// /opt/otherix/ca/cluster-ca.{crt,key}.
+type ClusterCAConfig struct {
+	CertFile string `koanf:"cert_file"`
+	KeyFile  string `koanf:"key_file"`
+}
+
+// Validate enforces that the CA cert and key paths are both set: the
+// on-disk CA provisioning needs both, and an empty path is an operator
+// error rather than a meaningful default (defaultAPIConfig always
+// populates them).
+func (c ClusterCAConfig) Validate() error {
+	if c.CertFile == "" || c.KeyFile == "" {
+		return errors.New("cluster_ca.cert_file and cluster_ca.key_file must both be set")
+	}
+	return nil
+}
+
+// ClusterJoinConfig drives the joiner-side cluster CA fetch, consulted only
+// when etcd.mode is "join" and no cluster CA is yet on disk. The replica
+// redeems a kind=cluster join token at an existing replica's
+// /v1/cluster/join (CPURL) and persists the returned CA cert + key. CAFingerprint
+// pins the expected CA out of band (TOFU). The token is supplied inline
+// (Token) or read from TokenPath (preferred - keeps the secret out of the
+// config file).
+type ClusterJoinConfig struct {
+	CPURL         string        `koanf:"cp_url"`
+	Token         string        `koanf:"token"`
+	TokenPath     string        `koanf:"token_path"`
+	CAFingerprint string        `koanf:"ca_fingerprint"`
+	Timeout       time.Duration `koanf:"timeout"`
 }
 
 // StoragePoolsConfig pins operator-facing knobs for `POST
@@ -375,6 +445,34 @@ type WorkersConfig struct {
 	Tasks           TasksWorkersConfig     `koanf:"tasks"`
 	Heartbeat       HeartbeatWorkersConfig `koanf:"heartbeat"`
 	StoragePoolScan StoragePoolScanConfig  `koanf:"storage_pool_scan"`
+	Backup          BackupConfig           `koanf:"backup"`
+}
+
+// BackupConfig pins the periodic etcd snapshot worker. When Enabled (and Dir is
+// set) the api-server snapshots its member at Interval into Dir, keeping the
+// newest Retention files. Disabled by default: a backup needs an operator-chosen
+// destination, so it is opt-in rather than silently writing somewhere.
+type BackupConfig struct {
+	Enabled   bool          `koanf:"enabled"`
+	Interval  time.Duration `koanf:"interval"`
+	Dir       string        `koanf:"dir"`
+	Retention int           `koanf:"retention"`
+}
+
+// Validate fails fast on a backup config that would silently not back up:
+// enabled with no destination dir is the worst failure mode (operator believes
+// backups run; they do not). Also rejects negative interval / retention.
+func (b BackupConfig) Validate() error {
+	if b.Enabled && b.Dir == "" {
+		return errors.New("workers.backup.dir is required when workers.backup.enabled is true")
+	}
+	if b.Interval < 0 {
+		return errors.New("workers.backup.interval must be >= 0")
+	}
+	if b.Retention < 0 {
+		return errors.New("workers.backup.retention must be >= 0")
+	}
+	return nil
 }
 
 // StoragePoolScanConfig pins the periodic `storage_pool.scan_trigger`
@@ -448,11 +546,6 @@ func defaultAPIConfig() APIConfig {
 			WriteTimeout:  30 * time.Second,
 			ShutdownGrace: 30 * time.Second,
 		},
-		Database: DatabaseConfig{
-			MaxConns:        10,
-			MinConns:        2,
-			MaxConnLifetime: time.Hour,
-		},
 		Logger:  logger.Config{Level: "info", Format: "json"},
 		Auth:    AuthConfig{JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 30 * 24 * time.Hour},
 		Console: ConsoleConfig{AccessMode: "proxy"},
@@ -474,6 +567,10 @@ func defaultAPIConfig() APIConfig {
 				Interval: 15 * time.Minute,
 				Jitter:   30 * time.Second,
 			},
+			Backup: BackupConfig{
+				Interval:  6 * time.Hour,
+				Retention: 7,
+			},
 		},
 		AgentClient: AgentClientConfig{
 			Enabled:         false,
@@ -494,8 +591,21 @@ func defaultAPIConfig() APIConfig {
 			Resources: defaultResourcesConfig(),
 			Pressure:  defaultPressureConfig(),
 		},
+		ClusterCA: ClusterCAConfig{
+			CertFile: "/opt/otherix/ca/cluster-ca.crt",
+			KeyFile:  "/opt/otherix/ca/cluster-ca.key",
+		},
 		StoragePools: StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+		},
+		Etcd: EtcdConfig{
+			Mode:         "single",
+			Name:         "otherix-0",
+			DataDir:      "/opt/otherix/etcd",
+			PeerURL:      "https://127.0.0.1:2380",
+			ClientURL:    "http://127.0.0.1:2379",
+			ClusterToken: "otherix-cluster",
+			PeerAutoDir:  "/opt/otherix/peer",
 		},
 	}
 }
@@ -523,8 +633,8 @@ func (s StoragePoolsConfig) Validate() error {
 	return nil
 }
 
-// Validate checks the server listen address, database DSN, auth
-// config, and console access mode.
+// Validate checks the server listen address, agent server/client and
+// CP cert config, auth config, and console access mode.
 func (c APIConfig) Validate() error {
 	if err := c.Server.Validate(); err != nil {
 		return err
@@ -538,7 +648,7 @@ func (c APIConfig) Validate() error {
 	if err := c.CPCert.Validate(); err != nil {
 		return err
 	}
-	if err := c.Database.Validate(); err != nil {
+	if err := c.ClusterCA.Validate(); err != nil {
 		return err
 	}
 	if err := c.Auth.Validate(); err != nil {
@@ -551,6 +661,9 @@ func (c APIConfig) Validate() error {
 		return err
 	}
 	if err := c.Workers.StoragePoolScan.Validate(); err != nil {
+		return err
+	}
+	if err := c.Workers.Backup.Validate(); err != nil {
 		return err
 	}
 	if err := c.StoragePools.Validate(); err != nil {

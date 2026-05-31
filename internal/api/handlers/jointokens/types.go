@@ -10,6 +10,7 @@ package jointokens
 // MaxUses uses *int32 with the same nil-vs-zero discipline (zero on
 // the wire is a validation error — server rejects 0 explicitly).
 type createRequest struct {
+	Kind             *string `json:"kind"`
 	IntendedNodeName *string `json:"intended_node_name"`
 	TTLSeconds       *int    `json:"ttl_seconds"`
 	MaxUses          *int32  `json:"max_uses"`
@@ -21,6 +22,7 @@ type createRequest struct {
 // CountJoinTokenConsumptions on Get).
 type joinTokenView struct {
 	ID               string  `json:"id"`
+	Kind             string  `json:"kind"`
 	IntendedNodeName *string `json:"intended_node_name"`
 	ExpiresAt        string  `json:"expires_at"`
 	MaxUses          *int64  `json:"max_uses"`

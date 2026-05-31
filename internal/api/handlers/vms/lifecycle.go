@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
@@ -120,7 +119,7 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 		return
 	}
 
-	vm, err := resolver.VM(r.Context(), h.store.Queries(), chi.URLParam(r, "id"))
+	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
 	if err != nil {
 		writeResolveError(w, r, err)
 		return
@@ -136,7 +135,7 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 		writeLifecycleError(w, r, h.log, op, err)
 		return
 	}
-	node, err := h.store.Queries().GetNodeByID(r.Context(), nodeID)
+	node, err := h.store.NodeByID(r.Context(), nodeID)
 	if err != nil {
 		writeLifecycleError(w, r, h.log, op, err)
 		return
@@ -148,7 +147,7 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 		return
 	}
 
-	if err := h.store.Queries().UpdateVMRuntimePhase(r.Context(), store.UpdateVMRuntimePhaseParams{
+	if err := h.store.UpdateVMRuntimePhase(r.Context(), store.UpdateVMRuntimePhaseParams{
 		VmID:  vm.ID,
 		Phase: op.resultPhase(),
 	}); err != nil {
@@ -199,7 +198,7 @@ func writeLifecycleError(w http.ResponseWriter, r *http.Request, log interface {
 }, op syncOp, err error,
 ) {
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, store.ErrNotFound):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeVMNotFound, "vm not found", nil)
 	case errors.Is(err, errVMNoNode):

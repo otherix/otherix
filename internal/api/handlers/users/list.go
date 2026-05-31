@@ -7,8 +7,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/otherix/otherix/internal/api/pagination"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/store"
@@ -37,7 +35,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		params.CursorID = &cur.ID
 	}
 
-	rows, err := h.store.Queries().ListUsers(r.Context(), params)
+	rows, err := h.store.ListUsers(r.Context(), params)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "list users", nil)
@@ -67,9 +65,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 // column is unique among non-deleted rows, so the result is at most
 // one user. A miss returns an empty page rather than 404.
 func (h *Handler) listByEmail(w http.ResponseWriter, r *http.Request, email string) {
-	row, err := h.store.Queries().GetUserByEmail(r.Context(), email)
+	row, err := h.store.UserByEmail(r.Context(), email)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			response.WriteJSON(w, r, http.StatusOK, listResponse{
 				Data: []userView{},
 				Meta: paginationMeta{},

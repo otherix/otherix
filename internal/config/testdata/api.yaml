@@ -1,7 +1,5 @@
 server:
   listen: "127.0.0.1:18080"
-database:
-  dsn: "postgres://test/test"
 auth:
   # 32+ bytes to satisfy AuthConfig.Validate.
   jwt_secret: "from-file-padded-to-32-byte-min!"

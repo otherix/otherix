@@ -8,7 +8,8 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+
+	"github.com/otherix/otherix/internal/store"
 )
 
 // AgentCertQuerier is the narrow store contract AgentVerifier
@@ -62,7 +63,7 @@ func NewAgentVerifier(q AgentCertQuerier) *AgentVerifier {
 func (v *AgentVerifier) VerifyFingerprint(ctx context.Context, fingerprint []byte) (*Agent, error) {
 	row, err := v.q.LookupAgentCertByFingerprint(ctx, fingerprint)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrCertUnknown
 		}
 		return nil, err

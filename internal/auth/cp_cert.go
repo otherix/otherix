@@ -56,6 +56,22 @@ var hostnameFn = os.Hostname
 // PEM encoding mirrors GenerateClusterCA: CERTIFICATE block for cert,
 // PKCS#8 PRIVATE KEY block for key (more portable than SEC1).
 func GenerateReplicaCert(caCert *x509.Certificate, caKey crypto.Signer, dnsNames []string, ips []net.IP, validity time.Duration, now time.Time) (certPEM, keyPEM []byte, err error) {
+	if validity <= 0 {
+		validity = CPCertValidity
+	}
+	return signLeafCert(caCert, caKey, "otherix-cp-replica", dnsNames, ips, validity, now)
+}
+
+// signLeafCert mints an ECDSA P-384 leaf signed by the cluster CA, shared
+// by the CP-replica and peer cert generators. The Subject CN is the only
+// per-caller difference; every leaf is serverAuth+clientAuth (both
+// directions of an mTLS handshake), carries the given SAN set (at least
+// one entry required so the cert has a bindable identity), and uses a
+// 64-bit random serial with a 1m backdated NotBefore for clock skew.
+//
+// PEM encoding mirrors GenerateClusterCA: CERTIFICATE block for cert,
+// PKCS#8 PRIVATE KEY block for key.
+func signLeafCert(caCert *x509.Certificate, caKey crypto.Signer, commonName string, dnsNames []string, ips []net.IP, validity time.Duration, now time.Time) (certPEM, keyPEM []byte, err error) {
 	if caCert == nil {
 		return nil, nil, errors.New("cp_cert: caCert is nil")
 	}
@@ -64,9 +80,6 @@ func GenerateReplicaCert(caCert *x509.Certificate, caKey crypto.Signer, dnsNames
 	}
 	if len(dnsNames) == 0 && len(ips) == 0 {
 		return nil, nil, errors.New("cp_cert: at least one DNS name or IP required for SAN")
-	}
-	if validity <= 0 {
-		validity = CPCertValidity
 	}
 
 	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
@@ -85,7 +98,7 @@ func GenerateReplicaCert(caCert *x509.Certificate, caKey crypto.Signer, dnsNames
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "otherix-cp-replica",
+			CommonName:   commonName,
 			Organization: []string{"Otherix"},
 		},
 		NotBefore: notBefore,
@@ -321,6 +334,23 @@ func WriteCertCacheAtomic(certPath, keyPath string, certPEM, keyPEM []byte) erro
 	}
 	if err := writeFileAtomic(keyPath, keyPEM, 0o600); err != nil {
 		return fmt.Errorf("write key %s: %v", keyPath, err)
+	}
+	return nil
+}
+
+// WriteTrustFileAtomic writes a CA trust bundle (one or more concatenated
+// CERTIFICATE PEM blocks) to path at 0644 via the same tempfile + rename
+// pattern. Used for the etcd peer TrustedCAFile, which holds the cluster
+// CA the peer plane verifies against.
+func WriteTrustFileAtomic(path string, pem []byte) error {
+	if path == "" {
+		return errors.New("trust file path is required")
+	}
+	if len(pem) == 0 {
+		return errors.New("trust bundle must be non-empty")
+	}
+	if err := writeFileAtomic(path, pem, 0o644); err != nil {
+		return fmt.Errorf("write trust file %s: %v", path, err)
 	}
 	return nil
 }
