@@ -74,9 +74,14 @@ func (s *Store) JoinTokenByHash(ctx context.Context, hash []byte) (store.JoinTok
 // CreateJoinToken inserts a join token, stamping created_at and writing the
 // primary + by-hash index atomically.
 func (s *Store) CreateJoinToken(ctx context.Context, arg store.CreateJoinTokenParams) (store.JoinToken, error) {
+	kind := arg.Kind
+	if kind == "" {
+		kind = store.JoinTokenKindNode
+	}
 	jt := store.JoinToken{
 		ID:               arg.ID,
 		TokenHash:        arg.TokenHash,
+		Kind:             kind,
 		IntendedNodeName: arg.IntendedNodeName,
 		CreatedByUserID:  arg.CreatedByUserID,
 		ExpiresAt:        arg.ExpiresAt,
@@ -123,9 +128,14 @@ func (s *Store) ListJoinTokens(ctx context.Context, arg store.ListJoinTokensPara
 		if err != nil {
 			return nil, err
 		}
+		kind := jt.Kind
+		if kind == "" {
+			kind = store.JoinTokenKindNode
+		}
 		out = append(out, store.ListJoinTokensRow{
 			ID:               jt.ID,
 			TokenHash:        jt.TokenHash,
+			Kind:             kind,
 			IntendedNodeName: jt.IntendedNodeName,
 			CreatedByUserID:  jt.CreatedByUserID,
 			ExpiresAt:        jt.ExpiresAt,

@@ -67,6 +67,8 @@ var (
 	errMaxUsesNotPositive  = errors.New("max_uses must be >= 1 when set")
 	errPreboundMultiUse    = errors.New("pre-bound tokens cannot be reused: set max_uses=1 or omit intended_node_name")
 	errIntendedNameTooLong = errors.New("intended_node_name must be at most 253 characters")
+	errInvalidKind         = errors.New("kind must be \"node\" or \"cluster\"")
+	errClusterNodeBound    = errors.New("cluster tokens cannot carry intended_node_name")
 )
 
 // errTokenNotFound is the sentinel for a token row missing entirely;
@@ -103,8 +105,13 @@ func (h *Handler) activeCAFingerprintHex(ctx context.Context) (string, error) {
 // projection — even admin callers cannot recover the plaintext from
 // the wire surface.
 func toView(t store.JoinToken, consumptionCount int64) joinTokenView {
+	kind := t.Kind
+	if kind == "" {
+		kind = store.JoinTokenKindNode
+	}
 	v := joinTokenView{
 		ID:               t.ID.String(),
+		Kind:             kind,
 		ExpiresAt:        t.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		ConsumptionCount: consumptionCount,
 		CreatedAt:        t.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -130,6 +137,7 @@ func toViewFromListRow(row store.ListJoinTokensRow) joinTokenView {
 	jt := store.JoinToken{
 		ID:               row.ID,
 		TokenHash:        row.TokenHash,
+		Kind:             row.Kind,
 		IntendedNodeName: row.IntendedNodeName,
 		CreatedByUserID:  row.CreatedByUserID,
 		ExpiresAt:        row.ExpiresAt,

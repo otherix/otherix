@@ -36,18 +36,8 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		}
 		return store.RedeemJoinTokenResult{}, fmt.Errorf("token lookup: %v", err)
 	}
-	if !token.ExpiresAt.After(time.Now().UTC()) {
-		return store.RedeemJoinTokenResult{}, store.ErrJoinTokenInvalid
-	}
-
-	if token.MaxUses != nil {
-		count, err := s.countPrefix(ctx, joinTokenConsumptionsIndexPrefix(token.ID))
-		if err != nil {
-			return store.RedeemJoinTokenResult{}, fmt.Errorf("count consumptions: %v", err)
-		}
-		if count >= int64(*token.MaxUses) {
-			return store.RedeemJoinTokenResult{}, store.ErrJoinTokenExhausted
-		}
+	if err := s.validateNodeRedeemToken(ctx, token); err != nil {
+		return store.RedeemJoinTokenResult{}, err
 	}
 
 	if token.IntendedNodeName != nil && *token.IntendedNodeName != p.NodeName {
@@ -99,6 +89,29 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 	}
 
 	return store.RedeemJoinTokenResult{NodeID: node.ID, TokenID: token.ID}, nil
+}
+
+// validateNodeRedeemToken enforces the redeemability invariants for a node
+// join: the token is unexpired, is a node-kind token (empty Kind reads as node
+// for back-compat; a cluster token must redeem at /v1/cluster/join instead),
+// and has not exhausted its max_uses cap.
+func (s *Store) validateNodeRedeemToken(ctx context.Context, token store.JoinToken) error {
+	if !token.ExpiresAt.After(time.Now().UTC()) {
+		return store.ErrJoinTokenInvalid
+	}
+	if token.Kind != "" && token.Kind != store.JoinTokenKindNode {
+		return store.ErrJoinTokenInvalid
+	}
+	if token.MaxUses != nil {
+		count, err := s.countPrefix(ctx, joinTokenConsumptionsIndexPrefix(token.ID))
+		if err != nil {
+			return fmt.Errorf("count consumptions: %v", err)
+		}
+		if count >= int64(*token.MaxUses) {
+			return store.ErrJoinTokenExhausted
+		}
+	}
+	return nil
 }
 
 // upsertJoinNode resolves the node row for a redemption: an existing node is

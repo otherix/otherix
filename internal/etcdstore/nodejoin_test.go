@@ -79,6 +79,31 @@ func TestRedeemJoinTokenCreatesNodeAndCert(t *testing.T) {
 	}
 }
 
+func TestRedeemJoinTokenRejectsClusterKind(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	hash := []byte("cluster-kind-hash")
+	row, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
+		ID:        uuid.New(),
+		TokenHash: hash,
+		Kind:      store.JoinTokenKindCluster,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateJoinToken(cluster): %v", err)
+	}
+	// Kind must round-trip through the store.
+	if row.Kind != store.JoinTokenKindCluster {
+		t.Errorf("created Kind = %q, want cluster", row.Kind)
+	}
+	// A cluster token must not redeem for a node leaf at /v1/nodes/join.
+	if _, err := s.RedeemJoinToken(ctx, redeemParams(hash, "agent-x"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	}); !errors.Is(err, store.ErrJoinTokenInvalid) {
+		t.Errorf("RedeemJoinToken(cluster kind) err = %v, want ErrJoinTokenInvalid", err)
+	}
+}
+
 func TestRedeemJoinTokenRejections(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

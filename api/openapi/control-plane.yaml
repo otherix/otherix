@@ -4604,11 +4604,20 @@ components:
 
     JoinToken:
       type: object
-      required: [id, expires_at, max_uses, consumption_count, created_at]
+      required: [id, kind, expires_at, max_uses, consumption_count, created_at]
       properties:
         id:
           type: string
           format: uuid
+        kind:
+          type: string
+          enum: [node, cluster]
+          description: |
+            What the token authorizes. `node` (default) redeems at
+            POST /v1/nodes/join for a node leaf cert; `cluster` redeems
+            at POST /v1/cluster/join for the cluster CA cert + key (a
+            joining control-plane replica). The privilege is fixed at
+            mint, never a request flag.
         intended_node_name:
           type: [string, "null"]
           maxLength: 253
@@ -4642,6 +4651,15 @@ components:
     JoinTokenCreate:
       type: object
       properties:
+        kind:
+          type: string
+          enum: [node, cluster]
+          default: node
+          description: |
+            Token kind. `node` (default) mints a node-join token;
+            `cluster` mints a control-plane replica join token that
+            redeems for the cluster CA cert + key. A cluster token
+            cannot carry `intended_node_name`.
         intended_node_name:
           type: [string, "null"]
           maxLength: 253

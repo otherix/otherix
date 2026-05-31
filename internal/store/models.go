@@ -324,6 +324,7 @@ type IdempotencyKey struct {
 type JoinToken struct {
 	ID               uuid.UUID
 	TokenHash        []byte
+	Kind             string
 	IntendedNodeName *string
 	CreatedByUserID  *uuid.UUID
 	ExpiresAt        time.Time
