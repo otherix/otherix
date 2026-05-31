@@ -16,10 +16,10 @@ import (
 	"github.com/otherix/otherix/internal/queue"
 )
 
-// Background jobs replace river: each enqueued job is a key under /otherix/jobs/
-// keyed by a monotonic sequence (the int64 the queue.JobRef carries, persisted
-// as tasks.river_job_id), so the watch-driven worker runtime can consume them in
-// order. The sequence counter lives at /otherix/seq/jobs and is bumped with a
+// Background jobs: each enqueued job is a key under /otherix/jobs/ keyed by a
+// monotonic sequence (the int64 job ref persisted on the owning task), so the
+// worker runtime can consume them in order. The sequence counter lives at
+// /otherix/seq/jobs and is bumped with a
 // value-compare CAS loop.
 
 // JobState enumerates a job's lifecycle on the etcd queue.
@@ -87,7 +87,7 @@ func (s *Store) nextJobSeq(ctx context.Context) (int64, error) {
 }
 
 // enqueueJobOp allocates a sequence and returns the put op that persists a
-// pending job for args, plus the allocated sequence (the JobRef id). The op is
+// pending job for args, plus the allocated sequence (the job ref). The op is
 // composed into the same transaction as the task row so the task and its job
 // commit together.
 func (s *Store) enqueueJobOp(ctx context.Context, args queue.JobArgs) (int64, clientv3.Op, error) {
