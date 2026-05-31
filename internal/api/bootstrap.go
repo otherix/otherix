@@ -36,22 +36,6 @@ type AdminBootstrapStore interface {
 	CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error)
 }
 
-// emailTaken reports whether err means the requested email is already taken.
-func emailTaken(err error) bool {
-	return errors.Is(err, store.ErrUserEmailExists)
-}
-
-// noActiveCA reports whether err means no active cluster CA exists yet.
-func noActiveCA(err error) bool {
-	return errors.Is(err, store.ErrNotFound)
-}
-
-// caActiveConflict reports whether err means an active CA already exists (lost
-// bootstrap race).
-func caActiveConflict(err error) bool {
-	return errors.Is(err, store.ErrCACertActiveExists)
-}
-
 // BootstrapAdmin seeds the first admin user when both env vars are set
 // and the database has no admin row. The function is idempotent: a
 // repeat call against a database that already contains an admin is a
@@ -113,7 +97,7 @@ func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog
 		// A unique violation here means a concurrent process beat us
 		// to the insert. Treat that as success: the requested email is
 		// taken, an admin row exists, the goal is met.
-		if emailTaken(err) {
+		if errors.Is(err, store.ErrUserEmailExists) {
 			log.WarnContext(ctx, "bootstrap admin: email already taken, continuing",
 				slog.String("email", email))
 			return nil

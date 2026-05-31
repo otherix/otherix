@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -49,7 +50,7 @@ func bootstrapClusterCAWithClock(ctx context.Context, s ClusterCABootstrapStore,
 			slog.Time("not_after", existing.NotAfter))
 		return nil
 	}
-	if !noActiveCA(err) {
+	if !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("lookup active cluster CA: %v", err)
 	}
 
@@ -70,7 +71,7 @@ func bootstrapClusterCAWithClock(ctx context.Context, s ClusterCABootstrapStore,
 		// Concurrent boot lost the race — a sibling api-server inserted
 		// first. Fetch the winner and return success. Any non-conflict
 		// error is fatal.
-		if caActiveConflict(err) {
+		if errors.Is(err, store.ErrCACertActiveExists) {
 			winner, fetchErr := s.ActiveCACert(ctx)
 			if fetchErr != nil {
 				return fmt.Errorf("lost CA bootstrap race; refetch failed: %v", fetchErr)
