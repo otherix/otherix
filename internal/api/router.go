@@ -41,9 +41,10 @@ import (
 // struct rather than positional args because the API surface grows; new
 // fields can land without breaking call sites.
 type RouterDeps struct {
-	Store              *store.Store
+	Store              RouterStore
 	AuthService        *auth.Service
-	RiverClient        *river.Client[pgx.Tx]
+	RiverClient        *river.Client[pgx.Tx]             // pgx-only queue binder; nil on the etcd backend
+	HealthCheckName    string                            // /readyz dependency label; empty falls to "database"
 	ImageDeleter       storagepoolshandlers.ImageDeleter // may be nil when AgentClient.Enabled=false
 	StoragePools       config.StoragePoolsConfig         // path allowlist
 	Logger             *slog.Logger
@@ -76,12 +77,16 @@ type RouterDeps struct {
 // version-independent infrastructure and must not break when the API
 // rolls forward.
 func NewRouter(deps RouterDeps) http.Handler {
-	// Wire the queue backend into the store so store.InTxEnqueue can
-	// enqueue jobs atomically with their task rows. NewRouter is the
-	// common choke point for production (via NewServer) and the e2e
-	// harnesses, both of which supply the river client here.
-	if deps.Store != nil && deps.RiverClient != nil {
-		deps.Store.SetQueueBinder(riverqueue.New(deps.RiverClient))
+	// Wire the river queue backend into the store so store.InTxEnqueue can
+	// enqueue jobs atomically with their task rows. Only the pgx store exposes
+	// SetQueueBinder; the etcd store self-enqueues (EnqueueTask writes the job
+	// inline), so it skips this via the type assertion. NewRouter is the common
+	// choke point for production (via NewServer) and the e2e harnesses, both of
+	// which supply the river client here.
+	if binder, ok := deps.Store.(interface {
+		SetQueueBinder(store.QueueBinder)
+	}); ok && deps.RiverClient != nil {
+		binder.SetQueueBinder(riverqueue.New(deps.RiverClient))
 	}
 
 	r := chi.NewRouter()
@@ -127,7 +132,11 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(deps.RequestTimeout))
 
-		healthHandler := health.New(deps.Store, "database")
+		checkName := deps.HealthCheckName
+		if checkName == "" {
+			checkName = "database"
+		}
+		healthHandler := health.New(deps.Store, checkName)
 		r.Get("/healthz", healthHandler.Live)
 		r.Get("/readyz", healthHandler.Ready)
 
@@ -169,7 +178,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 
 	authn := middleware.Authn(deps.AuthService)
-	idem := middleware.Idempotency(deps.Store.Queries(), deps.Logger)
+	idem := middleware.Idempotency(deps.Store, deps.Logger)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
@@ -391,7 +400,7 @@ func NewAgentRouter(deps RouterDeps) http.Handler {
 		return r
 	}
 
-	verifier := newAgentVerifier(deps.Store.Queries())
+	verifier := newAgentVerifier(deps.Store)
 	heartbeatH := heartbeathandlers.New(deps.Store, deps.Logger, deps.PressureMemory, deps.PressureSystemDisk)
 
 	// Bootstrap-time endpoints are anonymous — agents have no cert

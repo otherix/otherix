@@ -24,7 +24,6 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/scheduler"
-	"github.com/otherix/otherix/internal/store"
 )
 
 // schedulerResourcesFromConfig translates the koanf-bound
@@ -78,7 +77,7 @@ type Server struct {
 // (`tasks.cancel`) needs transactional access to river_job. Tests that
 // build the router directly via NewRouter may pass a real client (the
 // JobCancelTx call works on the pool without Start) or a no-op fixture.
-func NewServer(cfg config.APIConfig, s *store.Store, riverClient *river.Client[pgx.Tx], imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, log *slog.Logger) (*Server, error) {
+func NewServer(cfg config.APIConfig, s RouterStore, riverClient *river.Client[pgx.Tx], imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, log *slog.Logger) (*Server, error) {
 	handler := NewRouter(RouterDeps{
 		Store:              s,
 		AuthService:        authSvc,
