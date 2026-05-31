@@ -92,18 +92,85 @@ func (m *MembershipClient) ListMembers(ctx context.Context) ([]Member, error) {
 	return membersFrom(ctx, cli)
 }
 
-// RemoveMember removes the member with the given id (delegates to the package
-// RemoveMember using m.clientURL + m.log).
+// RemoveMember removes the member with the given id. The caller stops the
+// removed member's process afterward. Settle-gated like RegisterLearner: retries
+// while isTransientReconfigErr(err) is true, until reconfigSettleTimeout, sleeping
+// reconfigRetryInterval between tries.
 func (m *MembershipClient) RemoveMember(ctx context.Context, id uint64) error {
-	return RemoveMember(ctx, m.clientURL, id, m.log)
+	cli, err := dialMember(m.clientURL)
+	if err != nil {
+		return fmt.Errorf("connect member: %v", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	deadline := time.Now().Add(reconfigSettleTimeout)
+	attempt := 0
+	for {
+		attempt++
+		rctx, rcancel := context.WithTimeout(ctx, 3*time.Second)
+		_, rmErr := cli.MemberRemove(rctx, id)
+		rcancel()
+		if rmErr == nil {
+			m.log.InfoContext(ctx, "member removed", slog.String("member_id", fmt.Sprintf("%x", id)))
+			return nil
+		}
+		if !isTransientReconfigErr(rmErr) || time.Now().After(deadline) {
+			return fmt.Errorf("member remove %x after %d attempts: %v", id, attempt, rmErr)
+		}
+		m.log.InfoContext(ctx, "member remove retrying (cluster settling)",
+			slog.Int("attempt", attempt), slog.String("error", rmErr.Error()))
+		time.Sleep(reconfigRetryInterval)
+	}
+}
+
+// VoterCount returns the number of voting (non-learner) members the cluster
+// reports through the bound member. A transition watcher polls this to confirm a
+// learner has been promoted.
+func (m *MembershipClient) VoterCount(ctx context.Context) (int, error) {
+	members, err := m.ListMembers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, mem := range members {
+		if !mem.IsLearner {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// WaitServing polls the bound member until a read succeeds, confirming it has
+// applied its membership change and serves as a voter (a learner or a not-yet-
+// applied voter rejects range requests). It returns an error if the member does
+// not begin serving within memberServingTimeout.
+func (m *MembershipClient) WaitServing(ctx context.Context) error {
+	cli, err := dialMember(m.clientURL)
+	if err != nil {
+		return fmt.Errorf("connect member: %v", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	deadline := time.Now().Add(memberServingTimeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		gctx, gcancel := context.WithTimeout(ctx, 1*time.Second)
+		_, lastErr = cli.Get(gctx, KeyPrefix+"probe/serving")
+		gcancel()
+		if lastErr == nil {
+			return nil
+		}
+		time.Sleep(memberServingPoll)
+	}
+	return fmt.Errorf("member not serving within deadline: %v", lastErr)
 }
 
 // TryPromoteLearners promotes every caught-up learner in one pass: a single
 // MemberPromote attempt per learner, no waiting. etcd rejects a learner that has
 // not caught up, so those are skipped (debug-logged) and retried next call.
 // Best-effort: returns the count promoted and a non-nil error only when the member
-// list cannot be read. This is the periodic-worker counterpart to the blocking
-// PromoteMember in cluster.go.
+// list cannot be read. The single->HA transition watcher calls this in a loop,
+// retrying the single-shot promote until VoterCount reaches the target.
 func (m *MembershipClient) TryPromoteLearners(ctx context.Context) (int, error) {
 	cli, err := dialMember(m.clientURL)
 	if err != nil {

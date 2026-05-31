@@ -47,8 +47,8 @@ func peerMaterial(t *testing.T, dir, prefix string, signer crypto.Signer, ca aut
 // TestSingleToHATransition grows a single-node member to a 2-voter cluster over
 // peer mTLS: start node0 single, add node1 as a learner, start node1 in join
 // mode, promote it, and confirm both serve as voters and replicate. This ties
-// the 9c membership primitives to the 9d peer-PKI and exercises the
-// PromoteMember success path end to end.
+// the 9c membership primitives to the 9d peer-PKI and drives the MembershipClient
+// promote path end to end.
 func TestSingleToHATransition(t *testing.T) {
 	dir := t.TempDir()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -96,14 +96,14 @@ func TestSingleToHATransition(t *testing.T) {
 	}
 	defer r0.Stop(10 * time.Second)
 
-	if n, err := etcd.VoterCount(ctx, client0); err != nil || n != 1 {
+	mc0 := etcd.NewMembershipClient(client0, log)
+	if n, err := mc0.VoterCount(ctx); err != nil || n != 1 {
 		t.Fatalf("VoterCount(single) = (%d, %v), want 1", n, err)
 	}
 
 	// Add node1 as a learner via node0, then start node1 in join mode.
-	learnerID, err := etcd.AddLearner(ctx, client0, peer1, log)
-	if err != nil {
-		t.Fatalf("AddLearner: %v", err)
+	if _, err := mc0.RegisterLearner(ctx, peer1); err != nil {
+		t.Fatalf("RegisterLearner: %v", err)
 	}
 
 	cfg1 := &etcd.Config{
@@ -124,16 +124,34 @@ func TestSingleToHATransition(t *testing.T) {
 	}
 	defer r1.Stop(10 * time.Second)
 
-	// Promote the learner to a voter; PromoteMember retries until it has caught
-	// up, then waits for it to serve.
-	if err := etcd.PromoteMember(ctx, client0, learnerID, log); err != nil {
-		t.Fatalf("PromoteMember: %v", err)
-	}
-	if err := etcd.WaitMemberServing(ctx, client1); err != nil {
-		t.Fatalf("WaitMemberServing(node1): %v", err)
+	// Promote the learner to a voter by retrying the single-shot promote until
+	// the cluster reports 2 voters - etcd rejects promotion until the learner's
+	// raft log has caught up, so the loop is the catch-up wait. This mirrors the
+	// production transition watcher, which polls TryPromoteLearners the same way.
+	promoteDeadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := mc0.TryPromoteLearners(ctx); err != nil {
+			t.Fatalf("TryPromoteLearners: %v", err)
+		}
+		n, err := mc0.VoterCount(ctx)
+		if err != nil {
+			t.Fatalf("VoterCount(during promote): %v", err)
+		}
+		if n == 2 {
+			break
+		}
+		if time.Now().After(promoteDeadline) {
+			t.Fatalf("learner not promoted to voter within deadline: VoterCount = %d, want 2", n)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	if n, err := etcd.VoterCount(ctx, client0); err != nil || n != 2 {
+	mc1 := etcd.NewMembershipClient(client1, log)
+	if err := mc1.WaitServing(ctx); err != nil {
+		t.Fatalf("WaitServing(node1): %v", err)
+	}
+
+	if n, err := mc0.VoterCount(ctx); err != nil || n != 2 {
 		t.Fatalf("VoterCount(after promote) = (%d, %v), want 2", n, err)
 	}
 

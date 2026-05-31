@@ -18,7 +18,9 @@ import (
 
 func TestVoterCountSingleNode(t *testing.T) {
 	clientURL := startMemberWithClientURL(t)
-	n, err := etcd.VoterCount(context.Background(), clientURL)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mc := etcd.NewMembershipClient(clientURL, log)
+	n, err := mc.VoterCount(context.Background())
 	if err != nil {
 		t.Fatalf("VoterCount: %v", err)
 	}
@@ -27,10 +29,12 @@ func TestVoterCountSingleNode(t *testing.T) {
 	}
 }
 
-func TestWaitMemberServing(t *testing.T) {
+func TestWaitServing(t *testing.T) {
 	clientURL := startMemberWithClientURL(t)
-	if err := etcd.WaitMemberServing(context.Background(), clientURL); err != nil {
-		t.Errorf("WaitMemberServing(serving single node): %v", err)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mc := etcd.NewMembershipClient(clientURL, log)
+	if err := mc.WaitServing(context.Background()); err != nil {
+		t.Errorf("WaitServing(serving single node): %v", err)
 	}
 }
 
@@ -42,26 +46,43 @@ func TestWaitMemberServing(t *testing.T) {
 func TestAddLearnerThenRemove(t *testing.T) {
 	clientURL := startMemberWithClientURL(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mc := etcd.NewMembershipClient(clientURL, log)
 	ctx := context.Background()
 
 	phantomPeer := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
-	id, err := etcd.AddLearner(ctx, clientURL, phantomPeer, log)
+	members, err := mc.RegisterLearner(ctx, phantomPeer)
 	if err != nil {
-		t.Fatalf("AddLearner: %v", err)
+		t.Fatalf("RegisterLearner: %v", err)
 	}
-	if id == 0 {
-		t.Fatal("AddLearner returned member id 0")
-	}
+	learnerID := learnerMemberID(t, members, phantomPeer)
 
-	if n, err := etcd.VoterCount(ctx, clientURL); err != nil || n != 1 {
+	if n, err := mc.VoterCount(ctx); err != nil || n != 1 {
 		t.Errorf("VoterCount after add-learner = (%d, %v), want (1, nil) - learner is not a voter", n, err)
 	}
 
-	if err := etcd.RemoveMember(ctx, clientURL, id, log); err != nil {
+	if err := mc.RemoveMember(ctx, learnerID); err != nil {
 		t.Fatalf("RemoveMember: %v", err)
 	}
 
-	if n, err := etcd.VoterCount(ctx, clientURL); err != nil || n != 1 {
+	if n, err := mc.VoterCount(ctx); err != nil || n != 1 {
 		t.Errorf("VoterCount after remove = (%d, %v), want (1, nil)", n, err)
 	}
+}
+
+// learnerMemberID returns the member id of the freshly registered learner: the
+// entry flagged IsLearner whose peer URLs contain peerURL.
+func learnerMemberID(t *testing.T, members []etcd.Member, peerURL string) uint64 {
+	t.Helper()
+	for _, m := range members {
+		if !m.IsLearner {
+			continue
+		}
+		for _, u := range m.PeerURLs {
+			if u == peerURL {
+				return m.ID
+			}
+		}
+	}
+	t.Fatalf("learner with peer URL %q not found in members %+v", peerURL, members)
+	return 0
 }
