@@ -32,5 +32,6 @@ back to when the request omits --pool.`,
 	cmd.AddCommand(newGetDefaultPoolCommand())
 	cmd.AddCommand(newSetDefaultPoolCommand())
 	cmd.AddCommand(newUnsetDefaultPoolCommand())
+	cmd.AddCommand(newMemberCommand())
 	return cmd
 }

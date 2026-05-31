@@ -3633,6 +3633,59 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/cluster/members:
+    get:
+      operationId: cluster.listMembers
+      tags: [cluster]
+      summary: List etcd cluster members (admin only).
+      description: |
+        Returns the control-plane etcd cluster membership: each member's id
+        (hex), name, peer/client URLs, and learner flag. Used to inspect HA
+        topology and to find the id of a dead member to remove.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Cluster membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterMemberList"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/cluster/members/{id}:
+    delete:
+      operationId: cluster.removeMember
+      tags: [cluster]
+      summary: Remove an etcd cluster member by id (admin only).
+      description: |
+        Removes the member with the given etcd member id (hex, as returned by
+        the list endpoint). Intended for decommissioning a dead or replaced
+        replica. etcd rejects a removal that would lose quorum on a healthy
+        cluster; the control plane does no quorum math of its own.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: etcd member id in hex (from the list endpoint).
+      responses:
+        "204": { description: Member removed. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -4922,7 +4975,7 @@ components:
 
     ClusterJoinRequest:
       type: object
-      required: [token]
+      required: [token, peer_url]
       properties:
         token:
           type: string
@@ -4930,6 +4983,11 @@ components:
             Plaintext `kind=cluster` join token (e.g.
             "otx_join_<base64url>"). The bearer credential for the
             cluster-replica redemption.
+        peer_url:
+          type: string
+          description: |
+            The joining replica's etcd Raft peer URL (https). The handler
+            registers it as a learner against the cluster before returning.
 
     ClusterJoinResponse:
       type: object
@@ -4945,6 +5003,35 @@ components:
             payload: the joining replica writes the CA cert + key to disk
             and signs its own peer cert locally. Returned only to a
             kind=cluster token redemption.
+        members:
+          type: array
+          description: |
+            Current cluster membership including the just-added learner. The
+            joiner builds its etcd initial-cluster from these entries.
+          items:
+            type: object
+            required: [name, peer_url]
+            properties:
+              name: { type: string }
+              peer_url: { type: string }
+
+    ClusterMember:
+      type: object
+      required: [id, name, peer_urls, client_urls, is_learner]
+      properties:
+        id: { type: string, description: "etcd member id (hex)" }
+        name: { type: string }
+        peer_urls: { type: array, items: { type: string } }
+        client_urls: { type: array, items: { type: string } }
+        is_learner: { type: boolean }
+
+    ClusterMemberList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ClusterMember" }
 
     Firmware:
       type: object
