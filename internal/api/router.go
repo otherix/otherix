@@ -14,6 +14,7 @@ import (
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
+	clusterjoinhandlers "github.com/otherix/otherix/internal/api/handlers/clusterjoin"
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
@@ -150,6 +151,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	authH := authhandlers.New(deps.AuthService, deps.Store)
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
+	clusterJoinH := clusterjoinhandlers.New(deps.Store, deps.Logger)
 	usersH := usershandlers.New(deps.Store)
 	tokensH := apitokenshandlers.New(deps.Store)
 	nodesH := nodeshandlers.New(deps.Store, deps.Logger)
@@ -192,6 +194,15 @@ func mountV1(r chi.Router, deps RouterDeps) {
 		// audit entry — all under a SELECT FOR UPDATE row lock on the
 		// join_tokens row for race-safe max_uses enforcement.
 		r.Post("/nodes/join", nodeJoinH.Join)
+
+		// Anonymous cluster-replica redemption. A joining control-plane
+		// replica presents a kind=cluster join token and receives the
+		// cluster CA cert + key to provision its peer-mTLS material before
+		// its etcd member starts. Token plaintext in body is the bearer
+		// credential; TLS protects transport (CA fingerprint pinned out of
+		// band). Higher-privilege sibling of /nodes/join - the handler
+		// accepts cluster-kind tokens only.
+		r.Post("/cluster/join", clusterJoinH.Join)
 
 		// Join-token management. Mounted before the main Authn +
 		// Idempotency block so POST (create) can opt out of idem

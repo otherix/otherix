@@ -10,6 +10,7 @@ import (
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
+	clusterjoinhandlers "github.com/otherix/otherix/internal/api/handlers/clusterjoin"
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
@@ -41,6 +42,7 @@ type RouterStore interface {
 	authhandlers.Store
 	cahandlers.Store
 	nodejoinhandlers.Store
+	clusterjoinhandlers.Store
 	usershandlers.Store
 	apitokenshandlers.Store
 	nodeshandlers.Store

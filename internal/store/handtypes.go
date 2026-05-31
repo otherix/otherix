@@ -95,6 +95,22 @@ type RedeemJoinTokenResult struct {
 	TokenID uuid.UUID
 }
 
+// RedeemClusterJoinTokenParams carries a cluster-replica join redemption: a
+// joining control-plane replica presents a kind=cluster token to obtain the
+// cluster CA. No CSR / node identity - the replica receives the CA cert + key
+// and signs its own peer cert locally.
+type RedeemClusterJoinTokenParams struct {
+	TokenHash []byte
+	SourceIP  *netip.Addr
+}
+
+// RedeemClusterJoinResult reports the redeemed cluster token id (for the
+// consumption audit trail); the CA material itself is loaded by the handler
+// from the active CA row.
+type RedeemClusterJoinResult struct {
+	TokenID uuid.UUID
+}
+
 // NodeDeleteOutcome reports the side effects of a force node delete: the VM
 // runtimes orphaned and the migrations cancelled.
 type NodeDeleteOutcome struct {

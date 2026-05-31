@@ -36,7 +36,7 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		}
 		return store.RedeemJoinTokenResult{}, fmt.Errorf("token lookup: %v", err)
 	}
-	if err := s.validateNodeRedeemToken(ctx, token); err != nil {
+	if err := s.validateRedeemToken(ctx, token, store.JoinTokenKindNode); err != nil {
 		return store.RedeemJoinTokenResult{}, err
 	}
 
@@ -91,15 +91,19 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 	return store.RedeemJoinTokenResult{NodeID: node.ID, TokenID: token.ID}, nil
 }
 
-// validateNodeRedeemToken enforces the redeemability invariants for a node
-// join: the token is unexpired, is a node-kind token (empty Kind reads as node
-// for back-compat; a cluster token must redeem at /v1/cluster/join instead),
-// and has not exhausted its max_uses cap.
-func (s *Store) validateNodeRedeemToken(ctx context.Context, token store.JoinToken) error {
+// validateRedeemToken enforces the redeemability invariants shared by node and
+// cluster joins: the token is unexpired, matches the expected kind (empty Kind
+// reads as node for back-compat - so a node token cannot redeem at the cluster
+// endpoint and vice versa), and has not exhausted its max_uses cap.
+func (s *Store) validateRedeemToken(ctx context.Context, token store.JoinToken, wantKind string) error {
 	if !token.ExpiresAt.After(time.Now().UTC()) {
 		return store.ErrJoinTokenInvalid
 	}
-	if token.Kind != "" && token.Kind != store.JoinTokenKindNode {
+	kind := token.Kind
+	if kind == "" {
+		kind = store.JoinTokenKindNode
+	}
+	if kind != wantKind {
 		return store.ErrJoinTokenInvalid
 	}
 	if token.MaxUses != nil {

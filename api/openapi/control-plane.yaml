@@ -1067,6 +1067,49 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/cluster/join:
+    post:
+      operationId: cluster.join
+      tags: [join-tokens]
+      summary: Join a control-plane replica by redeeming a cluster token (anonymous).
+      description: |
+        Anonymous endpoint. A joining control-plane replica submits a
+        plaintext `kind=cluster` join token and receives the cluster CA
+        cert + private key, so it can provision its own peer (Raft) mTLS
+        material before its etcd member starts. Plaintext token is the
+        bearer credential; TLS protects transport (the operator pinned the
+        CA fingerprint out of band).
+
+        Higher-privilege sibling of `/v1/nodes/join`: a node join returns a
+        leaf cert, a cluster join hands over the CA key. The endpoint
+        accepts `kind=cluster` tokens only - a node token is rejected with
+        401 (kind is fixed at mint, never a request flag), so a stolen node
+        token can never yield the CA key.
+
+        Failure mapping (unknown / expired / wrong-kind collapse to a
+        single 401 - no info leak):
+
+        - 400 validation_failed — body missing or token not a join token.
+        - 401 unauthenticated — token unknown / expired / wrong kind /
+          max_uses exceeded.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClusterJoinRequest"
+      responses:
+        "201":
+          description: Cluster CA cert + key issued. The replica persists both to disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterJoinResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/ca:
     get:
       operationId: ca.get
@@ -4872,6 +4915,32 @@ components:
             returned by `GET /v1/ca`. Included so the agent can
             persist the trust anchor + optionally re-verify the
             pinned fingerprint in a single response.
+
+    ClusterJoinRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: |
+            Plaintext `kind=cluster` join token (e.g.
+            "otx_join_<base64url>"). The bearer credential for the
+            cluster-replica redemption.
+
+    ClusterJoinResponse:
+      type: object
+      required: [ca_cert_pem, ca_key_pem]
+      properties:
+        ca_cert_pem:
+          type: string
+          description: PEM-encoded cluster CA certificate.
+        ca_key_pem:
+          type: string
+          description: |
+            PEM-encoded (PKCS#8) cluster CA private key. The sensitive
+            payload: the joining replica writes the CA cert + key to disk
+            and signs its own peer cert locally. Returned only to a
+            kind=cluster token redemption.
 
     Firmware:
       type: object
