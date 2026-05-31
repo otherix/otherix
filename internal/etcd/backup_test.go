@@ -20,9 +20,10 @@ import (
 	"github.com/otherix/otherix/internal/etcd"
 )
 
-// startBackupMember starts a single-node member, seeds one key, and returns its
-// client URL (a network endpoint SnapshotSave can dial).
-func startBackupMember(t *testing.T) string {
+// startMemberWithClientURL starts a single-node member, seeds one key, and
+// returns its client URL (a network endpoint the etcd ops can dial). Shared by
+// the backup and cluster integration tests.
+func startMemberWithClientURL(t *testing.T) string {
 	t.Helper()
 	clientURL := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
 	cfg := &etcd.Config{
@@ -52,7 +53,7 @@ func startBackupMember(t *testing.T) string {
 }
 
 func TestSnapshotSave(t *testing.T) {
-	clientURL := startBackupMember(t)
+	clientURL := startMemberWithClientURL(t)
 
 	out := filepath.Join(t.TempDir(), "snap.db")
 	n, err := etcd.SnapshotSave(context.Background(), clientURL, out)
@@ -76,7 +77,7 @@ func TestSnapshotSave(t *testing.T) {
 }
 
 func TestBackupFuncCreatesSnapshot(t *testing.T) {
-	clientURL := startBackupMember(t)
+	clientURL := startMemberWithClientURL(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	// BackupFunc must create the dir itself (it does not exist yet).
