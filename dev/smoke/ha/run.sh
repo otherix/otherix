@@ -2,14 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# Slice-9 HA multi-process smoke. Runs THREE real otherix-api processes on
-# loopback, grows a single node to a 3-voter etcd cluster using the real
-# slice-9 mechanics (on-disk cluster CA, /v1/cluster/join CA fetch over TLS,
-# always-on peer mTLS), then checks replication and a 1-of-3 partition.
+# HA multi-process smoke. Runs THREE real otherix-api processes on loopback and
+# grows a single node to a 3-voter etcd cluster using ONLY the product's own
+# membership orchestration - no throwaway driver, no manual etcd calls.
 #
-# Membership steps (AddLearner / PromoteMember) are driven by dev/smoke/ha/driver
-# because the product does not yet wire that orchestration (see ROADMAP). The CP
-# is a native binary, so no Lima is involved (Lima is only for the Linux agent).
+# The growth path is the self-driving join: a node started with etcd.mode=join
+# plus a cluster_join block POSTs to /v1/cluster/join on first boot, which
+# returns the cluster CA AND registers it as an etcd learner; the joiner computes
+# its own etcd initial-cluster from the membership in that response (the operator
+# never sets initial_cluster for a join node). Each CP also runs an always-on
+# promote loop that converts caught-up learners to voters automatically. The
+# smoke asserts everything through the product API (curl + jq): voter counts via
+# GET /v1/cluster/members, replication via networks CRUD, then a 1-of-3 partition
+# and a heal/restart. The CP is a native binary, so no Lima is involved (Lima is
+# only for the Linux agent).
 #
 # Usage: bash dev/smoke/ha/run.sh   (run from repo root)
 set -euo pipefail
@@ -18,7 +24,6 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
 WORK="$ROOT/.local/smoke/run"
 API="$ROOT/.local/smoke/otherix-api"
-DRIVER="$ROOT/.local/smoke/driver"
 
 ADMIN_EMAIL="smoke-admin@otherix.test"
 ADMIN_PW="smoke-admin-password-123"
@@ -54,6 +59,13 @@ initial_cluster() { # args: node indices to include
 }
 
 gen_config() { # node, mode, initial_cluster, [cluster_join_block]
+  # A join node passes mode=join + the cluster_join block and gets an EMPTY
+  # initial_cluster: it computes its real initial-cluster from the membership in
+  # the /v1/cluster/join response, never from config. node0 (single/bootstrap)
+  # keeps its self-only initial_cluster. agent_server is on for everyone because
+  # /v1/cluster/join is served on the agent TLS listener. workers is off (the
+  # promote loop is always-on and independent of it). All nodes share jwt_secret
+  # so a node0-issued JWT is accepted everywhere.
   local n="$1" mode="$2" ic="$3" cjoin="${4:-}"
   local dir="$WORK/n$n"
   mkdir -p "$dir/pki"
@@ -103,25 +115,64 @@ wait_ready() { # node, timeout-secs
   fail "node$n not ready in ${t}s; last log:\n$(tail -12 "$WORK/n$n/log")"
 }
 
-grow() { # node, max_uses-token-info via globals TOKEN; adds+promotes node n
-  local n="$1"
-  log "add-learner for node$n ($(peer_url "$n"))"
-  local id; id="$("$DRIVER" add-learner "$(client_url 0)" "$(peer_url "$n")")" || fail "add-learner node$n"
-  echo "otherix-$n token: using cluster join token (fetches CA via /v1/cluster/join)"
+# voter_count returns the number of voting members (is_learner==false) as seen
+# by GET /v1/cluster/members on the given node, using the admin JWT.
+voter_count() { # node_index, jwt
+  curl -fsS "http://127.0.0.1:${API_PORT[$1]}/v1/cluster/members" -H "Authorization: Bearer $2" \
+    | jq '[.data[] | select(.is_learner==false)] | length'
+}
+
+# member_count returns the total number of members (voters + learners).
+member_count() { # node_index, jwt
+  curl -fsS "http://127.0.0.1:${API_PORT[$1]}/v1/cluster/members" -H "Authorization: Bearer $2" \
+    | jq '.data | length'
+}
+
+# wait_voters polls GET /v1/cluster/members on node0 until the voter count
+# reaches $want or the timeout elapses. The self-driving join registers the new
+# learner and the always-on promote loop (15s cadence) converts it to a voter
+# once it has caught up, so this can take a couple of promote ticks.
+wait_voters() { # want, timeout-secs, jwt
+  local want="$1" t="${2:-90}" jwt="$3" i=0 v=""
+  while (( i < t )); do
+    v="$(voter_count 0 "$jwt" 2>/dev/null || echo "?")"
+    if [ "$v" = "$want" ]; then return 0; fi
+    if (( i % 5 == 0 )); then log "waiting for $want voters (have ${v}); ${i}s/${t}s"; fi
+    sleep 1; ((i++))
+  done
+  fail "voters reached ${v}, want ${want} within ${t}s; node2 log tail:\n$(tail -15 "$WORK/n2/log" 2>/dev/null)"
+}
+
+# net_create POSTs a network on the given node and prints the created id.
+net_create() { # node_index, jwt, name, bridge
+  curl -fsS -X POST "http://127.0.0.1:${API_PORT[$1]}/v1/networks" \
+    -H "Authorization: Bearer $2" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$3\",\"type\":\"bridge\",\"bridge_name\":\"$4\"}" | jq -r .id
+}
+
+# net_name reads a network by id on the given node and prints its name (or the
+# raw body on error, so a failed GET surfaces in the assertion message).
+net_name() { # node_index, jwt, id
+  curl -fsS "http://127.0.0.1:${API_PORT[$1]}/v1/networks/$3" -H "Authorization: Bearer $2" \
+    | jq -r '.name // empty'
+}
+
+grow() { # node; writes token, configs (mode join, NO initial_cluster), starts,
+         # waits ready, then waits for the auto-promote loop to make it a voter.
+  local n="$1" want="$2"
+  gen_config "$n" join "" "$(cjoin_block "$n")"
   printf '%s' "$TOKEN" > "$WORK/n$n/token"
   start_node "$n"
-  wait_ready "$n" 40
-  log "promote node$n (member id $id)"
-  "$DRIVER" promote "$(client_url 0)" "$id" || fail "promote node$n"
-  "$DRIVER" wait-serving "$(client_url "$n")" || fail "wait-serving node$n"
-  ok "node$n joined and promoted to voter"
+  wait_ready "$n" 60
+  log "node$n booted via self-driving join; awaiting promotion to voter"
+  wait_voters "$want" 90 "$JWT"
+  ok "node$n joined (self-driving) and auto-promoted to voter ($want voters)"
 }
 
 # ---------------------------------------------------------------------------
 
-log "build api + driver"
+log "build api"
 go build -o "$API" ./cmd/api
-go build -o "$DRIVER" ./dev/smoke/ha/driver
 rm -rf "$WORK"; mkdir -p "$WORK"
 
 # node0: single-node bootstrap.
@@ -129,14 +180,16 @@ gen_config 0 single "$(initial_cluster 0)"
 start_node 0
 wait_ready 0 30
 ok "node0 up (single)"
-[ "$("$DRIVER" voters "$(client_url 0)")" = "1" ] || fail "node0 voters != 1"
 
-# Mint a cluster join token (max_uses=2: node1 + node2 each fetch the CA once).
+# Mint a cluster join token (max_uses=2: node1 + node2 each redeem once).
 log "login admin + mint cluster join token"
 JWT="$(curl -fsS -X POST "http://127.0.0.1:${API_PORT[0]}/v1/auth/login" \
   -H 'Content-Type: application/json' \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" | jq -r .access_token)"
 [ -n "$JWT" ] && [ "$JWT" != "null" ] || fail "admin login failed"
+[ "$(voter_count 0 "$JWT")" = "1" ] || fail "node0 voters != 1"
+ok "node0 reports 1 voter via GET /v1/cluster/members"
+
 MINT="$(curl -fsS -X POST "http://127.0.0.1:${API_PORT[0]}/v1/nodes/join-tokens" \
   -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
   -d '{"kind":"cluster","max_uses":2}')"
@@ -155,35 +208,40 @@ cluster_join:
 YAML
 }
 
-# Grow to 3 voters, one at a time (settle-gated).
-gen_config 1 join "$(initial_cluster 0 1)" "$(cjoin_block 1)"
-grow 1
-gen_config 2 join "$(initial_cluster 0 1 2)" "$(cjoin_block 2)"
-grow 2
+# Grow to 3 voters, one at a time, entirely through the product's self-driving
+# join + always-on auto-promote (no driver, no manual etcd membership calls).
+grow 1 2
+grow 2 3
 
-V="$("$DRIVER" voters "$(client_url 0)")"
-[ "$V" = "3" ] || fail "voters = $V, want 3"
-ok "3-voter cluster formed over peer mTLS"
+[ "$(voter_count 0 "$JWT")" = "3" ] || fail "voters != 3 after growth"
+ok "3-voter cluster formed over peer mTLS via self-driving join"
 
-# Replication: write on node0, read on node2.
-"$DRIVER" put "$(client_url 0)" /otherix/smoke/k1 hello || fail "put k1"
-[ "$("$DRIVER" get "$(client_url 2)" /otherix/smoke/k1)" = "hello" ] || fail "k1 not replicated to node2"
-ok "write on node0 replicated to node2"
+# Replication: create a network on node0, read it back on node2 with the shared
+# admin JWT. The row replicates through etcd.
+log "replication: create network on node0, read on node2"
+NET1="$(net_create 0 "$JWT" smoke-net br-smoke)"
+[ -n "$NET1" ] && [ "$NET1" != "null" ] || fail "create network on node0 failed"
+[ "$(net_name 2 "$JWT" "$NET1")" = "smoke-net" ] || fail "network $NET1 not replicated to node2"
+ok "network created on node0 replicated to node2"
 
 # Partition: kill node2; 2 of 3 remain -> quorum holds, cluster stays writable.
 log "partition: killing node2"
 kill "${PID[2]}"; wait "${PID[2]}" 2>/dev/null || true; unset 'PID[2]'
 sleep 2
-"$DRIVER" put "$(client_url 0)" /otherix/smoke/k2 world || fail "cluster not writable with 2/3 (quorum lost?)"
-[ "$("$DRIVER" get "$(client_url 1)" /otherix/smoke/k2)" = "world" ] || fail "k2 not on node1"
+NET2="$(net_create 0 "$JWT" smoke-net2 br-smoke2)"
+[ -n "$NET2" ] && [ "$NET2" != "null" ] || fail "cluster not writable with 2/3 (quorum lost?)"
+[ "$(net_name 1 "$JWT" "$NET2")" = "smoke-net2" ] || fail "network $NET2 not on node1"
 ok "quorum survived 1-of-3 partition; cluster still writable"
 
-# Heal: restart node2 (data dir intact), it rejoins and catches up.
-log "heal: restarting node2"
+# Heal: restart node2 reusing its existing config (cluster_join block, NO
+# initial_cluster) and data dir. This exercises the restart path where a join
+# node has no initial_cluster in config but a populated WAL - etcd recovers
+# membership from the WAL and the node rejoins.
+log "heal: restarting node2 (WAL-authoritative, no initial_cluster in config)"
 start_node 2
-wait_ready 2 40
-[ "$("$DRIVER" get "$(client_url 2)" /otherix/smoke/k2)" = "world" ] || fail "node2 did not catch up after rejoin"
-[ "$("$DRIVER" voters "$(client_url 0)")" = "3" ] || fail "voters != 3 after heal"
+wait_ready 2 60
+[ "$(net_name 2 "$JWT" "$NET2")" = "smoke-net2" ] || fail "node2 did not catch up after rejoin"
+wait_voters 3 90 "$JWT"
 ok "node2 rejoined and caught up; 3 voters"
 
 echo

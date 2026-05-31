@@ -246,6 +246,10 @@ because the operator-facing context (e.g. "which pool defaults?") is
 not a secret; mutations are admin-only by precedent with other
 cluster-shaping permissions (`storage_pool:manage`, `node:manage`).
 
+`cluster:manage` also governs etcd cluster membership: `GET /v1/cluster/members`
+(inspect the current members) and `DELETE /v1/cluster/members/{id}` (evict a
+stale or failed member) are admin-only under this same permission.
+
 | Permission         | admin | operator | developer | viewer |
 |--------------------|-------|----------|-----------|--------|
 | `cluster:read`     | any   | any      | any       | any    |

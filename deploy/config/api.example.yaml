@@ -15,14 +15,18 @@ server:
 #                      bootstrap — every member of a fresh HA cluster starts
 #                                  together to form quorum (initial_cluster required).
 #                      join      — add this member to an already-running cluster
-#                                  (initial_cluster required, including self).
+#                                  via the cluster_join block below; the joiner
+#                                  computes its own initial_cluster from the
+#                                  /v1/cluster/join response, so the operator
+#                                  does NOT set initial_cluster for a join node.
 #   name             unique member name within the cluster.
 #   data_dir         member data directory (WAL + snapshots). Persist across restarts.
 #   peer_url         Raft peer advertise/listen URL.
 #   client_url       client advertise/listen URL.
 #   cluster_token    isolates clusters that share a network; distinct token per cluster.
 #   initial_cluster  full member list "n0=https://h0:2380,n1=https://h1:2380,..."
-#                    (bootstrap | join only).
+#                    (bootstrap only; a join node derives this from the
+#                    /v1/cluster/join response, never from config).
 #   peer_{cert,key,ca}_file  peer (Raft) mTLS material issued by the cluster CA.
 #                            Set all three to require mutual TLS between members
 #                            (peer URLs must then use https).
@@ -287,7 +291,11 @@ cluster_ca:
 # default :8443) - the response carries the CA private key, so cp_url MUST point
 # at that TLS endpoint, never the plain-HTTP control-plane listener. Mint the
 # token with `kind: cluster` on the running cluster; pin its CA fingerprint out
-# of band. Prefer token_path over an inline token.
+# of band. Prefer token_path over an inline token. The /v1/cluster/join response
+# also carries the cluster membership, from which the joiner computes its own etcd
+# initial-cluster - so for a join node the operator supplies only cp_url + token +
+# ca_fingerprint here plus the node's own etcd name/peer_url/client_url above, and
+# NOT the peer topology (no initial_cluster).
 # cluster_join:
 #   cp_url:         "https://10.0.0.10:8443"
 #   token_path:     "/etc/otherix/cluster-join-token"

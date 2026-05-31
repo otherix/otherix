@@ -42,6 +42,11 @@ etcd:
   peer_auto_dir: ".local/pki/peer"
   client_url:    "http://127.0.0.1:2379"
   cluster_token: "otherix-dev"
+  # Dev is single-node, so there is no initial_cluster here. To grow an HA
+  # cluster, a join node sets mode: join + a cluster_join block (cp_url + token
+  # + ca_fingerprint) and computes its own etcd initial-cluster from the
+  # /v1/cluster/join response - it never sets initial_cluster in config. See
+  # deploy/config/api.example.yaml for the full join-mode documentation.
 
 # Cluster CA on disk (provisioned before etcd starts; the peer plane needs it
 # pre-start). Dev points it at a gitignored, dev-user-writable dir; production
