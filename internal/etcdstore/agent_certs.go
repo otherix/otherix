@@ -81,3 +81,25 @@ func (s *Store) CreateAgentCert(ctx context.Context, arg store.CreateAgentCertPa
 	}
 	return c, nil
 }
+
+// AgentCertByFingerprint returns the agent cert with the given SHA-256
+// fingerprint regardless of revocation state (the caller inspects revoked_at),
+// or store.ErrNotFound. Backs the agent-mTLS fingerprint -> node binding.
+func (s *Store) AgentCertByFingerprint(ctx context.Context, fingerprint []byte) (store.AgentCert, error) {
+	id, found, err := s.resolveGuard(ctx, agentCertFingerprintIndexKey(fingerprint))
+	if err != nil {
+		return store.AgentCert{}, err
+	}
+	if !found {
+		return store.AgentCert{}, store.ErrNotFound
+	}
+	var c store.AgentCert
+	ok, err := s.c.GetJSON(ctx, agentCertKey(id), &c)
+	if err != nil {
+		return store.AgentCert{}, err
+	}
+	if !ok {
+		return store.AgentCert{}, store.ErrNotFound
+	}
+	return c, nil
+}
