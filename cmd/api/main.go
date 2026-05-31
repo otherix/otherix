@@ -34,6 +34,17 @@ import (
 
 const componentName = "api"
 
+// Default auto-generated etcd peer mTLS material paths. Used when the
+// operator leaves etcd.peer_cert_file / peer_key_file / peer_ca_file unset:
+// the api-server signs a fresh peer cert from the on-disk cluster CA on each
+// boot and writes it here. Under /opt/otherix (runtime state) per the
+// filesystem convention.
+const (
+	defaultPeerCertPath = "/opt/otherix/peer/peer.crt"
+	defaultPeerKeyPath  = "/opt/otherix/peer/peer.key"
+	defaultPeerCAPath   = "/opt/otherix/peer/ca.crt"
+)
+
 // workerMaxAttempts is the per-kind retry budget the dispatcher applies to every
 // async task kind. Mirrors the river MaxAttempts (25) set at enqueue time across
 // vm.create / vm.delete / vm.* lifecycle / storage_pool.scan / storage_image.import.
@@ -108,10 +119,30 @@ func run() error {
 		"fingerprint_sha256", hex.EncodeToString(caMaterial.Fingerprint),
 		"cert_file", cfg.ClusterCA.CertFile)
 
+	// Provision the etcd peer (Raft) mTLS material from the on-disk CA before
+	// the member starts. Peer mTLS is always on (uniform across single-node and
+	// HA); with no operator override the peer leaf is auto-generated each boot.
+	peerMat, err := api.ProvisionPeerCert(caMaterial, api.PeerCertParams{
+		PeerURL:          cfg.Etcd.PeerURL,
+		OperatorCertFile: cfg.Etcd.PeerCertFile,
+		OperatorKeyFile:  cfg.Etcd.PeerKeyFile,
+		OperatorCAFile:   cfg.Etcd.PeerCAFile,
+		GenCertPath:      defaultPeerCertPath,
+		GenKeyPath:       defaultPeerKeyPath,
+		GenCAPath:        defaultPeerCAPath,
+	}, time.Now(), log)
+	if err != nil {
+		return fmt.Errorf("provision peer cert: %v", err)
+	}
+
 	// Start the embedded etcd member, then build the KV client and the
 	// etcd-backed store over it. Deferred cleanup runs LIFO: the client closes
 	// before the member stops, both bounded by ShutdownGrace.
-	rt, err := etcd.Start(ctx, etcdConfigFromAPI(cfg.Etcd), log)
+	etcdCfg := etcdConfigFromAPI(cfg.Etcd)
+	etcdCfg.PeerCertFile = peerMat.CertFile
+	etcdCfg.PeerKeyFile = peerMat.KeyFile
+	etcdCfg.PeerCAFile = peerMat.CAFile
+	rt, err := etcd.Start(ctx, etcdCfg, log)
 	if err != nil {
 		return fmt.Errorf("etcd start: %v", err)
 	}
@@ -319,9 +350,9 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 		ClientURL:      c.ClientURL,
 		ClusterToken:   c.ClusterToken,
 		InitialCluster: c.InitialCluster,
-		PeerCertFile:   c.PeerCertFile,
-		PeerKeyFile:    c.PeerKeyFile,
-		PeerCAFile:     c.PeerCAFile,
+
+		// Peer mTLS files are set by the caller from ProvisionPeerCert's
+		// result (operator override or auto-generated), not copied here.
 
 		CompactionMode:      c.CompactionMode,
 		CompactionRetention: c.CompactionRetention,

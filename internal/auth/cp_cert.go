@@ -338,6 +338,23 @@ func WriteCertCacheAtomic(certPath, keyPath string, certPEM, keyPEM []byte) erro
 	return nil
 }
 
+// WriteTrustFileAtomic writes a CA trust bundle (one or more concatenated
+// CERTIFICATE PEM blocks) to path at 0644 via the same tempfile + rename
+// pattern. Used for the etcd peer TrustedCAFile, which holds the cluster
+// CA the peer plane verifies against.
+func WriteTrustFileAtomic(path string, pem []byte) error {
+	if path == "" {
+		return errors.New("trust file path is required")
+	}
+	if len(pem) == 0 {
+		return errors.New("trust bundle must be non-empty")
+	}
+	if err := writeFileAtomic(path, pem, 0o644); err != nil {
+		return fmt.Errorf("write trust file %s: %v", path, err)
+	}
+	return nil
+}
+
 // writeFileAtomic mirrors the bootstrap package's helper — kept
 // private to cp_cert so that mode invariants stay co-located with the
 // caller. Parent dir is created at 0750 if absent.

@@ -569,7 +569,7 @@ func defaultAPIConfig() APIConfig {
 			Mode:         "single",
 			Name:         "otherix-0",
 			DataDir:      "/opt/otherix/etcd",
-			PeerURL:      "http://127.0.0.1:2380",
+			PeerURL:      "https://127.0.0.1:2380",
 			ClientURL:    "http://127.0.0.1:2379",
 			ClusterToken: "otherix-cluster",
 		},

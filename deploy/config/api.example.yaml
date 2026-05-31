@@ -34,12 +34,19 @@ etcd:
   mode:          "single"
   name:          "otherix-0"
   data_dir:      "/opt/otherix/etcd"
-  peer_url:      "http://127.0.0.1:2380"
+  # Peer (Raft) URL is https everywhere: peer mTLS is always on (one code
+  # path across single-node and HA, so a single->HA grow needs no transport
+  # switch). The client URL stays plain http on loopback - the co-located CP
+  # is the only client, so there is no remote client traffic to protect.
+  peer_url:      "https://127.0.0.1:2380"
   client_url:    "http://127.0.0.1:2379"
   cluster_token: "otherix-cluster"
   # compaction_mode:      "periodic"
   # compaction_retention: "1h"
   # initial_cluster: "otherix-0=https://10.0.0.10:2380,otherix-1=https://10.0.0.11:2380,otherix-2=https://10.0.0.12:2380"
+  # Peer mTLS material. Left unset, the api-server auto-generates a peer cert
+  # from the on-disk cluster CA on each boot (default /opt/otherix/peer/...).
+  # Set all three to supply externally-managed peer material instead.
   # peer_cert_file: "/etc/otherix/peer/tls.crt"
   # peer_key_file:  "/etc/otherix/peer/tls.key"
   # peer_ca_file:   "/etc/otherix/peer/ca.crt"
