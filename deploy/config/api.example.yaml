@@ -38,16 +38,6 @@ etcd:
   # peer_key_file:  "/etc/otherix/peer/tls.key"
   # peer_ca_file:   "/etc/otherix/peer/ca.crt"
 
-# DEPRECATED: the control plane no longer uses PostgreSQL — the
-# embedded etcd member above is the only stateful service. This block is kept
-# only so deploy scripts that still set a dsn parse cleanly; it is ignored at
-# boot and removed entirely in the pgx cutover.
-# database:
-#   dsn: "postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable"
-#   max_conns: 10
-#   min_conns: 2
-#   max_conn_lifetime: 1h
-
 logger:
   level: "info"
   format: "json"

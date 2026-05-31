@@ -17,7 +17,6 @@ type APIConfig struct {
 	AgentServer  AgentServerConfig  `koanf:"agent_server"`
 	AgentClient  AgentClientConfig  `koanf:"agent_client"`
 	CPCert       CPCertConfig       `koanf:"cp_cert"`
-	Database     DatabaseConfig     `koanf:"database"`
 	Logger       logger.Config      `koanf:"logger"`
 	Auth         AuthConfig         `koanf:"auth"`
 	Console      ConsoleConfig      `koanf:"console"`
@@ -471,11 +470,6 @@ func defaultAPIConfig() APIConfig {
 			ReadTimeout:   30 * time.Second,
 			WriteTimeout:  30 * time.Second,
 			ShutdownGrace: 30 * time.Second,
-		},
-		Database: DatabaseConfig{
-			MaxConns:        10,
-			MinConns:        2,
-			MaxConnLifetime: time.Hour,
 		},
 		Logger:  logger.Config{Level: "info", Format: "json"},
 		Auth:    AuthConfig{JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 30 * 24 * time.Hour},

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/store"
 )
@@ -313,7 +312,7 @@ func TestIsNotFound(t *testing.T) {
 		want bool
 	}{
 		{name: "nil", err: nil, want: false},
-		{name: "plain pgx", err: pgx.ErrNoRows, want: false},
+		{name: "plain error", err: errors.New("boom"), want: false},
 		{name: "resolver not_found", err: &Error{Code: CodeNotFound}, want: true},
 		{name: "resolver internal", err: &Error{Code: CodeInternal}, want: false},
 		{name: "resolver uuid_in_name", err: &Error{Code: CodeUUIDInName}, want: false},
@@ -334,7 +333,7 @@ func TestIsUUIDInName(t *testing.T) {
 		want bool
 	}{
 		{name: "nil", err: nil, want: false},
-		{name: "plain pgx", err: pgx.ErrNoRows, want: false},
+		{name: "plain error", err: errors.New("boom"), want: false},
 		{name: "resolver uuid_in_name", err: &Error{Code: CodeUUIDInName}, want: true},
 		{name: "resolver not_found", err: &Error{Code: CodeNotFound}, want: false},
 		{name: "resolver internal", err: &Error{Code: CodeInternal}, want: false},

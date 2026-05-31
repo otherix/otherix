@@ -15,15 +15,6 @@ LDFLAGS := -s -w \
   -X github.com/otherix/otherix/internal/version.Commit=$(COMMIT) \
   -X github.com/otherix/otherix/internal/version.Date=$(DATE)
 
-DATABASE_URL ?= postgres://otherix:otherix@127.0.0.1:5432/otherix?sslmode=disable
-
-# sqlc image is pinned. Update both the version and the comment together.
-# 2026-05: sqlc 1.31.1 — supports v2 config (overrides, emit_pointers_for_null_types).
-SQLC_VERSION = 1.31.1
-SQLC_IMAGE   = sqlc/sqlc:$(SQLC_VERSION)
-
-DEV_COMPOSE = docker compose -f deploy/compose/dev.yaml
-
 REDOCLY_VERSION    = 2.31.2
 SWAGGER_UI_VERSION = v5.17.14
 REDOC_VERSION      = v2.2.0
@@ -79,29 +70,16 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 TEST_TAGS := test_fast_argon
 INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
-.PHONY: test test-short test-migrations test-integration coverage
+.PHONY: test test-short test-etcd coverage
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
 test-short: ## Run unit tests in short mode
 	$(GO) test ./... -short -tags=$(TEST_TAGS)
 
-test-migrations: ## Run integration tests (requires Docker)
-	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
-	  ./internal/agent/... \
-	  ./internal/api/... \
-	  ./internal/auth/... \
-	  ./internal/migrationtest/... \
-	  ./internal/store/... \
-	  ./internal/store/migrate/... \
-	  ./tests/migrations/...
-
-test-integration: ## Run CP-↔-agent integration tests (requires Docker)
-	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race ./tests/integration/...
-
 # test-etcd runs the etcd-backed suites: the store layer (internal/etcdstore)
-# and the api-server e2e (tests/apie2e). Both embed etcd in-process, so unlike
-# test-migrations / test-integration they need NO Docker.
+# and the api-server e2e (tests/apie2e). Both embed etcd in-process, so they
+# need NO Docker - this is the integration test path after the pgx cutover.
 test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
 	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
 	  ./internal/etcdstore/... \
@@ -156,34 +134,11 @@ run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd,
 # ========== Dev environment ==========
 
 # etcd-reset wipes the dev member's gitignored data dir for a clean-slate smoke
-# run (the etcd analogue of db-reset). The api-server recreates the
-# dir + bootstraps the admin / cluster CA on next boot. Path mirrors
-# dev/config/api.yaml's etcd.data_dir.
+# run. The api-server recreates the dir + bootstraps the admin / cluster CA on
+# next boot. Path mirrors dev/config/api.yaml's etcd.data_dir.
 .PHONY: etcd-reset
 etcd-reset: ## Wipe the dev embedded-etcd data dir for a clean-slate smoke run
 	rm -rf .local/etcd
-
-# Postgres dev compose is LEGACY: the control plane now boots on
-# embedded etcd and these targets are no longer part of the run-api-dev /
-# local-dev-start path. They survive only for the pgx integration suite
-# (make test-migrations spins its own testcontainer) and are removed entirely
-# at the pgx cutover (slice 8).
-.PHONY: dev-up dev-down dev-logs db-up db-down db-reset
-dev-up: ## (legacy) Start Postgres dev dependency - not needed by the etcd backend
-	$(DEV_COMPOSE) up -d
-
-dev-down: ## (legacy) Stop Postgres dev dependency
-	$(DEV_COMPOSE) down
-
-dev-logs: ## (legacy) Tail Postgres dev compose logs
-	$(DEV_COMPOSE) logs -f
-
-db-up: dev-up ## (legacy) Alias for dev-up
-db-down: dev-down ## (legacy) Alias for dev-down
-db-reset: ## (legacy) Wipe and re-create dev postgres data
-	$(DEV_COMPOSE) down -v
-	rm -rf .docker-data/postgres
-	$(MAKE) dev-up
 
 # ========== Dev environment (agent) ==========
 
@@ -238,7 +193,7 @@ seed-mvp: build-cli ## Run the join-token bootstrap + MVP seed (requires CP runn
 local-dev-start: ## One-shot bring-up: Postgres + CP + Lima + agent + CLI (admin@otherix.local / correct-horse-battery-staple by default)
 	@bash dev/scripts/local-dev-start.sh
 
-local-dev-stop: ## Stop everything + db-reset (DESTRUCTIVE — wipes Postgres bind mount)
+local-dev-stop: ## Stop everything + etcd-reset (DESTRUCTIVE - wipes the embedded-etcd data dir)
 	@bash dev/scripts/local-dev-stop.sh
 
 # ----- Linux -----
@@ -346,22 +301,6 @@ restart-agent-lima: lima-ensure
 	@limactl shell $(LIMA_VM) sudo systemctl restart otherix-agent
 	@sleep 1
 	@limactl shell $(LIMA_VM) sudo systemctl status otherix-agent --no-pager || true
-
-# ========== Migrations ==========
-
-# Migrations are driven through the api binary so dev and prod use one path.
-.PHONY: migrate-up migrate-down migrate-status sqlc-generate
-migrate-up: build-api ## Apply all pending migrations via the api binary
-	./$(BIN_DIR)/otherix-api --config deploy/config/api.example.yaml --migrate-action=up
-
-migrate-down: build-api ## Roll back via the api binary (DROPS public schema — see migration Down)
-	./$(BIN_DIR)/otherix-api --config deploy/config/api.example.yaml --migrate-action=down
-
-migrate-status: build-api ## Show migration status via the api binary
-	./$(BIN_DIR)/otherix-api --config deploy/config/api.example.yaml --migrate-action=status
-
-sqlc-generate: ## Regenerate sqlc Go code from internal/store/queries/*.sql
-	docker run --rm -v $(PWD):/src -w /src $(SQLC_IMAGE) generate
 
 # ========== Docker ==========
 

@@ -11,8 +11,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
@@ -38,22 +36,20 @@ type AdminBootstrapStore interface {
 	CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error)
 }
 
-// emailTaken reports whether err means the requested email is already taken,
-// across both backends (pgx unique violation or store.ErrUserEmailExists).
+// emailTaken reports whether err means the requested email is already taken.
 func emailTaken(err error) bool {
-	return isUniqueViolation(err) || errors.Is(err, store.ErrUserEmailExists)
+	return errors.Is(err, store.ErrUserEmailExists)
 }
 
-// noActiveCA reports whether err means no active cluster CA exists yet, across
-// both backends (pgx.ErrNoRows or store.ErrNotFound).
+// noActiveCA reports whether err means no active cluster CA exists yet.
 func noActiveCA(err error) bool {
-	return errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrNotFound)
+	return errors.Is(err, store.ErrNotFound)
 }
 
 // caActiveConflict reports whether err means an active CA already exists (lost
-// bootstrap race), across both backends.
+// bootstrap race).
 func caActiveConflict(err error) bool {
-	return isUniqueViolation(err) || errors.Is(err, store.ErrCACertActiveExists)
+	return errors.Is(err, store.ErrCACertActiveExists)
 }
 
 // BootstrapAdmin seeds the first admin user when both env vars are set
@@ -129,14 +125,4 @@ func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog
 		slog.String("email", email),
 		slog.String("user_id", row.ID.String()))
 	return nil
-}
-
-// isUniqueViolation reports whether err is a Postgres unique_violation
-// (SQLSTATE 23505).
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	return pgErr.Code == "23505"
 }

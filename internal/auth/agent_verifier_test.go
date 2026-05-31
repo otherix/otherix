@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/store"
 )
 
 type stubCertQuerier struct {
@@ -41,7 +41,7 @@ func TestVerifyFingerprint_Success(t *testing.T) {
 }
 
 func TestVerifyFingerprint_Unknown(t *testing.T) {
-	v := auth.NewAgentVerifier(&stubCertQuerier{err: pgx.ErrNoRows})
+	v := auth.NewAgentVerifier(&stubCertQuerier{err: store.ErrNotFound})
 	_, err := v.VerifyFingerprint(context.Background(), []byte("fp"))
 	if !errors.Is(err, auth.ErrCertUnknown) {
 		t.Errorf("err = %v, want ErrCertUnknown", err)
@@ -49,7 +49,7 @@ func TestVerifyFingerprint_Unknown(t *testing.T) {
 }
 
 func TestVerifyFingerprint_UnknownThroughWrap(t *testing.T) {
-	wrapped := wrap("agent cert lookup", pgx.ErrNoRows)
+	wrapped := wrap("agent cert lookup", store.ErrNotFound)
 	v := auth.NewAgentVerifier(&stubCertQuerier{err: wrapped})
 	_, err := v.VerifyFingerprint(context.Background(), []byte("fp"))
 	if !errors.Is(err, auth.ErrCertUnknown) {

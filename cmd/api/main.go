@@ -49,7 +49,6 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "/etc/otherix/api.yaml", "path to config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	migrateAction := flag.String("migrate-action", "", "legacy no-op on the etcd backend (kept for deploy-script compatibility)")
 	hashPassword := flag.String("hash-password", "", "if set, print an argon2id hash of the given plaintext and exit (for bootstrap)")
 	flag.Parse()
 
@@ -80,15 +79,6 @@ func run() error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	if *migrateAction != "" {
-		// The etcd backend has no SQL migrations - the schema is
-		// enforced application-side in internal/etcdstore. The flag is kept as
-		// a no-op so existing deploy scripts (init containers, Helm hooks)
-		// that still invoke --migrate-action=up do not fail.
-		log.Info("migrate-action is a no-op on the etcd backend; skipping", "action", *migrateAction)
-		return nil
-	}
 
 	log.Info("starting",
 		"binary", "otherix-"+componentName,

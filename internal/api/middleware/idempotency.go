@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -161,12 +160,11 @@ const (
 	actionInFlight                   // 409 conflict — concurrent request still running.
 )
 
-// idempotencyNotFound reports whether err is a backend's "row absent" sentinel.
-// The pgx-backed store returns pgx.ErrNoRows; the etcd-backed store returns
-// store.ErrNotFound. Begin-conflict and reclaim-no-op map to the same sentinel
-// on both backends, so the middleware treats them uniformly.
+// idempotencyNotFound reports whether err is the store's "row absent" sentinel.
+// Begin-conflict and reclaim-no-op both map to store.ErrNotFound, so the
+// middleware treats them uniformly.
 func idempotencyNotFound(err error) bool {
-	return errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrNotFound)
+	return errors.Is(err, store.ErrNotFound)
 }
 
 func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid.UUID, method, path string, hash []byte) (store.IdempotencyKey, idemAction, error) {
