@@ -89,6 +89,10 @@ coverage: test ## Generate HTML coverage report
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "open coverage.html"
 
+.PHONY: smoke-ha
+smoke-ha: ## HA multi-process smoke: 3 real api-server nodes form a cluster over peer mTLS (no Docker, no Lima)
+	bash dev/smoke/ha/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt vet
