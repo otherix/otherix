@@ -45,11 +45,10 @@ header on the first two lines:
 // Copyright 2026 Andrei Taranik
 ```
 
-Generated files (sqlc output in `internal/store/*.sql.go`,
-oapi-codegen output in `internal/agentapi/agent.gen.go`) keep their
-own `// Code generated …` preamble, do not receive the SPDX header,
-and must not be edited by hand. Regenerate via `make sqlc-generate`
-and `make agent-api-generate`.
+Generated files (oapi-codegen output in
+`internal/agentapi/agent.gen.go`) keep their own `// Code generated …`
+preamble, do not receive the SPDX header, and must not be edited by
+hand. Regenerate via `make agent-api-generate`.
 
 ## Development setup
 
@@ -60,7 +59,7 @@ basic local-run flow.
 Key make targets:
 
 - `make build` — build daemons + CLI
-- `make test` / `make test-migrations` — unit / integration tests
+- `make test` / `make test-etcd` — unit / etcd-backed integration tests (no Docker)
 - `make lint` / `make fmt` — code quality
 - `make api-validate` / `make api-preview` — OpenAPI checks
 - `make help` — full grouped target list
@@ -72,7 +71,7 @@ Key make targets:
 - Conventional Commits style for messages
   (`feat(area): summary`, `fix(area): summary`, `refactor: ...`,
   `docs: ...`, `test: ...`, `chore: ...`).
-- All tests pass (`make test && make test-migrations`).
+- All tests pass (`make test && make test-etcd`).
 - Lint clean (`make lint`).
 - OpenAPI specs valid (`make api-validate`) when API surface is
   touched.

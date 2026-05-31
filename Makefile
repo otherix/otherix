@@ -184,13 +184,13 @@ clean-dev: ## Tear down dev environment (per OS)
 seed-mvp: build-cli ## Run the join-token bootstrap + MVP seed (requires CP running + bootstrap-dev staged)
 	@bash dev/scripts/seed-mvp.sh
 
-# local-dev-start / local-dev-stop wrap the full dev stack lifecycle (Postgres
-# + api-server + Lima VM + agent + CLI cluster config) into two commands.
+# local-dev-start / local-dev-stop wrap the full dev stack lifecycle (api-server
+# with embedded etcd + Lima VM + agent + CLI cluster config) into two commands.
 # After `make local-dev-start`, `./bin/otherix` works against a fresh cluster
 # with no further setup. `make local-dev-stop` wipes everything including the
-# Postgres bind mount — pair these two when you need a clean slate.
+# embedded-etcd data dir — pair these two when you need a clean slate.
 .PHONY: local-dev-start local-dev-stop
-local-dev-start: ## One-shot bring-up: Postgres + CP + Lima + agent + CLI (admin@otherix.local / correct-horse-battery-staple by default)
+local-dev-start: ## One-shot bring-up: api-server (embedded etcd) + Lima + agent + CLI (admin@otherix.local / correct-horse-battery-staple by default)
 	@bash dev/scripts/local-dev-start.sh
 
 local-dev-stop: ## Stop everything + etcd-reset (DESTRUCTIVE - wipes the embedded-etcd data dir)

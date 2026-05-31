@@ -174,7 +174,7 @@ workers:
 
 
 # Outbound CP→agent HTTP client. Drives async operations like
-# storage_pool.scan from in-process river workers. mTLS material
+# storage_pool.scan from the in-process worker dispatcher. mTLS material
 # (replica's leaf cert + cluster CA trust anchor) is sourced
 # automatically by LoadOrGenerateCPCert at boot — no cert / key / ca
 # file paths configured here. See the `cp_cert:` block below for
