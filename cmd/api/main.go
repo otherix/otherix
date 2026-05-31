@@ -300,6 +300,9 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 		PeerCertFile:   c.PeerCertFile,
 		PeerKeyFile:    c.PeerKeyFile,
 		PeerCAFile:     c.PeerCAFile,
+
+		CompactionMode:      c.CompactionMode,
+		CompactionRetention: c.CompactionRetention,
 	}
 }
 

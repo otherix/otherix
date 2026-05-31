@@ -47,6 +47,9 @@ type EtcdConfig struct {
 	PeerCertFile   string `koanf:"peer_cert_file"`  // peer (Raft) mTLS leaf cert
 	PeerKeyFile    string `koanf:"peer_key_file"`   // peer (Raft) mTLS leaf key
 	PeerCAFile     string `koanf:"peer_ca_file"`    // cluster CA trust anchor for peer mTLS
+
+	CompactionMode      string `koanf:"compaction_mode"`      // periodic | revision (default periodic)
+	CompactionRetention string `koanf:"compaction_retention"` // duration "1h" (periodic) or count "5000" (revision); default "1h"
 }
 
 // StoragePoolsConfig pins operator-facing knobs for `POST

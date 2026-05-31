@@ -117,6 +117,19 @@ func buildEmbedConfig(cfg *Config, log *slog.Logger) (*embed.Config, error) {
 	ec.InitialCluster = cfg.initialClusterString()
 	ec.InitialClusterToken = cfg.ClusterToken
 	ec.ClusterState = clusterState
+
+	// Bound MVCC history growth. etcd defaults to compaction off (retention
+	// "0"); a non-zero retention keeps a long-running member from accumulating
+	// unbounded key revisions. Default periodic / 1h when unset.
+	ec.AutoCompactionMode = cfg.CompactionMode
+	if ec.AutoCompactionMode == "" {
+		ec.AutoCompactionMode = "periodic"
+	}
+	ec.AutoCompactionRetention = cfg.CompactionRetention
+	if ec.AutoCompactionRetention == "" {
+		ec.AutoCompactionRetention = "1h"
+	}
+
 	ec.LogLevel = "warn"
 	// Route etcd's zap logs into Otherix's slog stream. LogOutputs is left
 	// unset because the bridge owns the destination.

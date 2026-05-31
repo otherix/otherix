@@ -48,6 +48,15 @@ type Config struct {
 	// Name+PeerURL when empty.
 	InitialCluster string
 
+	// CompactionMode and CompactionRetention bound the MVCC history etcd keeps,
+	// so a long-running member does not accumulate unbounded key revisions.
+	// Mode is "periodic" (retention is a duration, e.g. "1h") or "revision"
+	// (retention is a revision count, e.g. "5000"). Empty fields default to
+	// periodic / "1h" in buildEmbedConfig; etcd's own default leaves compaction
+	// off, which is why we set a non-zero retention.
+	CompactionMode      string
+	CompactionRetention string
+
 	// Peer mTLS material. When PeerCAFile is set, inter-member (Raft) traffic
 	// uses mutual TLS: every peer presents a cert chaining to the cluster CA and
 	// rejects peers that do not - the protection for control-plane replicas

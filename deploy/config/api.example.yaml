@@ -26,6 +26,10 @@ server:
 #   peer_{cert,key,ca}_file  peer (Raft) mTLS material issued by the cluster CA.
 #                            Set all three to require mutual TLS between members
 #                            (peer URLs must then use https).
+#   compaction_mode       "periodic" (retention is a duration) or "revision"
+#                         (retention is a revision count). Default periodic.
+#   compaction_retention  history kept before auto-compaction: "1h" (periodic)
+#                         or "5000" (revision). Default "1h"; bounds MVCC growth.
 etcd:
   mode:          "single"
   name:          "otherix-0"
@@ -33,6 +37,8 @@ etcd:
   peer_url:      "http://127.0.0.1:2380"
   client_url:    "http://127.0.0.1:2379"
   cluster_token: "otherix-cluster"
+  # compaction_mode:      "periodic"
+  # compaction_retention: "1h"
   # initial_cluster: "otherix-0=https://10.0.0.10:2380,otherix-1=https://10.0.0.11:2380,otherix-2=https://10.0.0.12:2380"
   # peer_cert_file: "/etc/otherix/peer/tls.crt"
   # peer_key_file:  "/etc/otherix/peer/tls.key"

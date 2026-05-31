@@ -3,7 +3,11 @@
 
 package etcd
 
-import "testing"
+import (
+	"io"
+	"log/slog"
+	"testing"
+)
 
 func TestConfigValidate(t *testing.T) {
 	base := func() Config {
@@ -61,4 +65,45 @@ func TestInitialClusterString(t *testing.T) {
 	if got, want := explicit.initialClusterString(), "n1=a,n2=b"; got != want {
 		t.Errorf("initialClusterString() = %q, want %q (explicit list)", got, want)
 	}
+}
+
+func TestBuildEmbedConfigAutoCompaction(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	base := func() *Config {
+		return &Config{
+			Mode:         ModeSingle,
+			Name:         "n1",
+			DataDir:      t.TempDir(),
+			PeerURL:      "http://127.0.0.1:12380",
+			ClientURL:    "http://127.0.0.1:12379",
+			ClusterToken: "otherix",
+		}
+	}
+
+	t.Run("defaults bound MVCC history when unset", func(t *testing.T) {
+		ec, err := buildEmbedConfig(base(), log)
+		if err != nil {
+			t.Fatalf("buildEmbedConfig: %v", err)
+		}
+		if ec.AutoCompactionMode != "periodic" {
+			t.Errorf("AutoCompactionMode = %q, want periodic", ec.AutoCompactionMode)
+		}
+		if ec.AutoCompactionRetention != "1h" {
+			t.Errorf("AutoCompactionRetention = %q, want 1h (non-zero, so history is bounded)", ec.AutoCompactionRetention)
+		}
+	})
+
+	t.Run("explicit values pass through", func(t *testing.T) {
+		c := base()
+		c.CompactionMode = "revision"
+		c.CompactionRetention = "5000"
+		ec, err := buildEmbedConfig(c, log)
+		if err != nil {
+			t.Fatalf("buildEmbedConfig: %v", err)
+		}
+		if ec.AutoCompactionMode != "revision" || ec.AutoCompactionRetention != "5000" {
+			t.Errorf("auto-compaction = %q/%q, want revision/5000",
+				ec.AutoCompactionMode, ec.AutoCompactionRetention)
+		}
+	})
 }
