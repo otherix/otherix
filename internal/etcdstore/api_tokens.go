@@ -129,3 +129,39 @@ func (s *Store) RevokeAPIToken(ctx context.Context, id uuid.UUID) error {
 	tok.RevokedAt = &now
 	return s.c.PutJSON(ctx, apiTokenKey(id), tok)
 }
+
+// APITokenByHash returns the valid (non-revoked, non-expired) api token with the
+// given hash, or store.ErrNotFound. Backs API-token authentication.
+func (s *Store) APITokenByHash(ctx context.Context, hash []byte) (store.ApiToken, error) {
+	id, found, err := s.resolveGuard(ctx, apiTokenHashIndexKey(hash))
+	if err != nil {
+		return store.ApiToken{}, err
+	}
+	if !found {
+		return store.ApiToken{}, store.ErrNotFound
+	}
+	var tok store.ApiToken
+	ok, err := s.c.GetJSON(ctx, apiTokenKey(id), &tok)
+	if err != nil {
+		return store.ApiToken{}, err
+	}
+	if !ok || tok.RevokedAt != nil || (tok.ExpiresAt != nil && !tok.ExpiresAt.After(time.Now().UTC())) {
+		return store.ApiToken{}, store.ErrNotFound
+	}
+	return tok, nil
+}
+
+// TouchAPIToken stamps last_used_at on an api token. A missing token is a no-op.
+func (s *Store) TouchAPIToken(ctx context.Context, id uuid.UUID) error {
+	var tok store.ApiToken
+	found, err := s.c.GetJSON(ctx, apiTokenKey(id), &tok)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	now := time.Now().UTC()
+	tok.LastUsedAt = &now
+	return s.c.PutJSON(ctx, apiTokenKey(id), tok)
+}

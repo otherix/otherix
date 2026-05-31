@@ -14,7 +14,17 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/middleware"
+	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
+)
+
+// The etcd store satisfies the auth service contract + the cleanup seams.
+var (
+	_ auth.Store                    = (*etcdstore.Store)(nil)
+	_ auth.RefreshTokenCleaner      = (*etcdstore.Store)(nil)
+	_ middleware.IdempotencyCleaner = (*etcdstore.Store)(nil)
 )
 
 func rtParams(hash []byte, user, family uuid.UUID, expires time.Time) store.CreateRefreshTokenParams {

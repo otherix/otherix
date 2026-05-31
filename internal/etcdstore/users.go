@@ -272,3 +272,19 @@ func (s *Store) CountAdmins(ctx context.Context) (int64, error) {
 	}
 	return n, nil
 }
+
+// TouchUserLastLogin stamps last_login_at on a non-deleted user. A missing or
+// soft-deleted user is a no-op (matching the SQL `where deleted_at is null`).
+func (s *Store) TouchUserLastLogin(ctx context.Context, id uuid.UUID) error {
+	var u store.User
+	found, err := s.c.GetJSON(ctx, userKey(id), &u)
+	if err != nil {
+		return err
+	}
+	if !found || u.DeletedAt != nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	u.LastLoginAt = &now
+	return s.c.PutJSON(ctx, userKey(id), u)
+}

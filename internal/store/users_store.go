@@ -92,3 +92,8 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 func (s *Store) CountAdmins(ctx context.Context) (int64, error) {
 	return s.queries.CountAdmins(ctx)
 }
+
+// TouchUserLastLogin stamps last_login_at on a non-deleted user.
+func (s *Store) TouchUserLastLogin(ctx context.Context, id uuid.UUID) error {
+	return s.queries.TouchUserLastLogin(ctx, id)
+}
