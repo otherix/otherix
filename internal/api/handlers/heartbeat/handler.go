@@ -29,14 +29,14 @@ import (
 )
 
 // Store is the storage surface the heartbeat receiver depends on: the
-// out-of-transaction node-name lookup plus the projection transaction
-// seam. *etcdstore.Store satisfies it; depending on the interface rather
-// than the concrete store narrows the handler's storage dependency to the
-// methods it uses and lets tests substitute a fake. The
-// transactional projection drives store.HeartbeatTx inside InHeartbeatTx.
+// node-name lookup plus the projection seam. *etcdstore.Store satisfies
+// it; depending on the interface rather than the concrete store narrows
+// the handler's storage dependency to the methods it uses and lets tests
+// substitute a fake. The reconcile drives store.HeartbeatProjection
+// inside RunHeartbeatProjection.
 type Store interface {
 	NodeByName(ctx context.Context, name string) (store.Node, error)
-	InHeartbeatTx(ctx context.Context, fn func(store.HeartbeatTx) error) error
+	RunHeartbeatProjection(ctx context.Context, fn func(store.HeartbeatProjection) error) error
 }
 
 // Ensure the production store satisfies the handler's storage contract.

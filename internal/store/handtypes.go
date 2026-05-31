@@ -13,15 +13,19 @@ import (
 	"github.com/otherix/otherix/internal/queue"
 )
 
-// This file holds the hand-written domain types and narrow transaction
-// interfaces the store exposes (as opposed to the per-query Params/Row
+// This file holds the hand-written domain types and narrow store
+// interfaces the handlers depend on (as opposed to the per-query Params/Row
 // types in the *_types.go files). The store implementation realises the
 // interfaces and consumes/produces the structs.
 
-// HeartbeatTx is the narrow transaction surface the heartbeat projection drives.
-// A store backend runs the heartbeat reconcile against an implementation of this
-// interface so the projection stays decoupled from the concrete store.
-type HeartbeatTx interface {
+// HeartbeatProjection is the narrow store surface the heartbeat reconcile
+// projects through. The store runs the reconcile against an implementation of
+// this interface so the projection logic stays in the handler, decoupled from
+// the concrete store, and the handler need not import it. The reconcile is not
+// one atomic transaction: each method applies its write directly, which is safe
+// because the projection is idempotent and retried forever (the next heartbeat
+// re-applies and converges).
+type HeartbeatProjection interface {
 	NodeForHeartbeat(ctx context.Context, nodeID uuid.UUID) (GetNodeForHeartbeatRow, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (Node, error)
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) error

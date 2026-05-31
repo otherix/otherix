@@ -17,14 +17,14 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// bumpHeartbeat marks a node's last_heartbeat_at fresh via the heartbeat tx.
+// bumpHeartbeat marks a node's last_heartbeat_at fresh via the heartbeat hp.
 func bumpHeartbeat(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	cores := int32(8)
 	mem := int64(16384)
-	if err := s.InHeartbeatTx(ctx, func(tx store.HeartbeatTx) error {
-		return tx.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
 			ID: nodeID, MigrationHost: "10.0.0.1", MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
 			CPUCoresTotal: &cores, CPUCoresAvailable: &cores, MemoryTotalMib: &mem, MemoryAvailableMib: &mem,
 		})

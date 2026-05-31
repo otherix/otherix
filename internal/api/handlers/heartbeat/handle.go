@@ -188,8 +188,8 @@ type heartbeatOutcome struct {
 // failures (404 / 409); any other error is treated as internal.
 func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestBody) (heartbeatOutcome, error) {
 	var outcome heartbeatOutcome
-	err := h.store.InHeartbeatTx(ctx, func(tx store.HeartbeatTx) error {
-		node, err := tx.NodeForHeartbeat(ctx, agent.NodeID)
+	err := h.store.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		node, err := hp.NodeForHeartbeat(ctx, agent.NodeID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &projectionError{
@@ -218,35 +218,35 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 			}
 		}
 
-		if err := h.applyNodeUpdate(ctx, tx, agent.NodeID, body); err != nil {
+		if err := h.applyNodeUpdate(ctx, hp, agent.NodeID, body); err != nil {
 			return err
 		}
 		now := time.Now().UTC()
-		memKind, err := h.applyMemoryPressure(ctx, tx, agent.NodeID, node, body, now)
+		memKind, err := h.applyMemoryPressure(ctx, hp, agent.NodeID, node, body, now)
 		if err != nil {
 			return err
 		}
 		outcome.memory = memKind
-		sysKind, err := h.applySystemDiskPressure(ctx, tx, agent.NodeID, node, body, now)
+		sysKind, err := h.applySystemDiskPressure(ctx, hp, agent.NodeID, node, body, now)
 		if err != nil {
 			return err
 		}
 		outcome.systemDisk = sysKind
-		if err := h.applyFirmwares(ctx, tx, agent.NodeID, body.Capabilities.Firmwares); err != nil {
+		if err := h.applyFirmwares(ctx, hp, agent.NodeID, body.Capabilities.Firmwares); err != nil {
 			return err
 		}
-		if err := h.applyVMs(ctx, tx, agent.NodeID, body.VMs); err != nil {
+		if err := h.applyVMs(ctx, hp, agent.NodeID, body.VMs); err != nil {
 			return err
 		}
-		if err := h.applyPoolReports(ctx, tx, agent.NodeID, body.Pools); err != nil {
+		if err := h.applyPoolReports(ctx, hp, agent.NodeID, body.Pools); err != nil {
 			return err
 		}
-		declared, err := h.loadDeclaredPools(ctx, tx, agent.NodeID)
+		declared, err := h.loadDeclaredPools(ctx, hp, agent.NodeID)
 		if err != nil {
 			return err
 		}
 		outcome.declaredPools = declared
-		declaredVMs, err := h.loadDeclaredVMs(ctx, tx, agent.NodeID)
+		declaredVMs, err := h.loadDeclaredVMs(ctx, hp, agent.NodeID)
 		if err != nil {
 			return err
 		}
@@ -263,8 +263,8 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 // deterministic. Soft-deleted VMs are filtered out at the SQL layer;
 // VMs whose vm_runtime.phase has reached 'gone' are excluded too (the
 // runtime declared the VM unmaterialised on this node).
-func (h *Handler) loadDeclaredVMs(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID) ([]declaredVM, error) {
-	rows, err := tx.ListVMsForNodeDeclared(ctx, nodeID)
+func (h *Handler) loadDeclaredVMs(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) ([]declaredVM, error) {
+	rows, err := hp.ListVMsForNodeDeclared(ctx, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("list vms for node declared: %v", err)
 	}
@@ -289,7 +289,7 @@ func (h *Handler) loadDeclaredVMs(ctx context.Context, tx store.HeartbeatTx, nod
 // the pool mid-tick) yield zero rows affected — the agent reconciles
 // on its next tick. failure here propagates as a projection error;
 // the transaction rolls back.
-func (h *Handler) applyPoolReports(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, reports []poolReport) error {
+func (h *Handler) applyPoolReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []poolReport) error {
 	for _, p := range reports {
 		params := store.UpdateStoragePoolReconciliationParams{
 			ReconciliationStatus: p.ReconciliationStatus,
@@ -297,7 +297,7 @@ func (h *Handler) applyPoolReports(ctx context.Context, tx store.HeartbeatTx, no
 			NodeID:               nodeID,
 			Name:                 p.Name,
 		}
-		if err := tx.UpdateStoragePoolReconciliation(ctx, params); err != nil {
+		if err := hp.UpdateStoragePoolReconciliation(ctx, params); err != nil {
 			return fmt.Errorf("update pool reconciliation: %v", err)
 		}
 	}
@@ -309,8 +309,8 @@ func (h *Handler) applyPoolReports(ctx context.Context, tx store.HeartbeatTx, no
 // The query is row-ordered (lower(name) asc) so the
 // agent's diff against observed state stays deterministic across
 // heartbeats.
-func (h *Handler) loadDeclaredPools(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID) ([]declaredPool, error) {
-	rows, err := tx.ListStoragePoolsByNode(ctx, nodeID)
+func (h *Handler) loadDeclaredPools(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) ([]declaredPool, error) {
+	rows, err := hp.ListStoragePoolsByNode(ctx, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("list storage pools by node: %v", err)
 	}
@@ -349,7 +349,7 @@ func (h *Handler) loadDeclaredPools(ctx context.Context, tx store.HeartbeatTx, n
 // rest of the projection so pressure state never drifts ahead of the
 // raw metrics that determined it. Returns the transition kind so the
 // caller can log set / clear lines after InTx commits.
-func (h *Handler) applyMemoryPressure(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, node store.GetNodeForHeartbeatRow, body *requestBody, now time.Time) (pressureTransitionKind, error) {
+func (h *Handler) applyMemoryPressure(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, node store.GetNodeForHeartbeatRow, body *requestBody, now time.Time) (pressureTransitionKind, error) {
 	availMib := body.Resources.MemoryAvailableMib
 	totalMib := body.Capabilities.MemoryTotalMib
 	newSince, newCount, kind := computePressureTransition(
@@ -366,7 +366,7 @@ func (h *Handler) applyMemoryPressure(ctx context.Context, tx store.HeartbeatTx,
 		// and triggers quiet during stable heartbeats.
 		return kind, nil
 	}
-	if err := tx.UpdateNodeMemoryPressure(ctx, store.UpdateNodeMemoryPressureParams{
+	if err := hp.UpdateNodeMemoryPressure(ctx, store.UpdateNodeMemoryPressureParams{
 		ID:                  nodeID,
 		MemoryPressureSince: newSince,
 		MemoryPressureCount: newCount,
@@ -381,7 +381,7 @@ func (h *Handler) applyMemoryPressure(ctx context.Context, tx store.HeartbeatTx,
 // pattern; only the raw metrics (bytes vs MiB) and the configured knobs
 // differ. Same no-op write avoidance applies — a heartbeat that does
 // not change the pressure state writes nothing.
-func (h *Handler) applySystemDiskPressure(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, node store.GetNodeForHeartbeatRow, body *requestBody, now time.Time) (pressureTransitionKind, error) {
+func (h *Handler) applySystemDiskPressure(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, node store.GetNodeForHeartbeatRow, body *requestBody, now time.Time) (pressureTransitionKind, error) {
 	newSince, newCount, kind := computePressureTransition(
 		node.SystemDiskPressureSince,
 		node.SystemDiskPressureCount,
@@ -393,7 +393,7 @@ func (h *Handler) applySystemDiskPressure(ctx context.Context, tx store.Heartbea
 	if newSince == node.SystemDiskPressureSince && newCount == node.SystemDiskPressureCount {
 		return kind, nil
 	}
-	if err := tx.UpdateNodeSystemDiskPressure(ctx, store.UpdateNodeSystemDiskPressureParams{
+	if err := hp.UpdateNodeSystemDiskPressure(ctx, store.UpdateNodeSystemDiskPressureParams{
 		ID:                      nodeID,
 		SystemDiskPressureSince: newSince,
 		SystemDiskPressureCount: newCount,
@@ -403,7 +403,7 @@ func (h *Handler) applySystemDiskPressure(ctx context.Context, tx store.Heartbea
 	return kind, nil
 }
 
-func (h *Handler) applyNodeUpdate(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, body *requestBody) error {
+func (h *Handler) applyNodeUpdate(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
 	caps := body.Capabilities
 	capsBlob, err := buildCapabilitiesJSON(caps)
 	if err != nil {
@@ -414,7 +414,7 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, tx store.HeartbeatTx, nod
 		return fmt.Errorf("build numa jsonb: %v", err)
 	}
 
-	migHost, migStart, migEnd, err := resolveMigration(ctx, tx, nodeID, body.Migration)
+	migHost, migStart, migEnd, err := resolveMigration(ctx, hp, nodeID, body.Migration)
 	if err != nil {
 		return err
 	}
@@ -440,7 +440,7 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, tx store.HeartbeatTx, nod
 		SystemDiskTotalBytes:     body.Resources.SystemDiskTotalBytes,
 		SystemDiskAvailableBytes: body.Resources.SystemDiskAvailableBytes,
 	}
-	if err := tx.UpdateNodeHeartbeat(ctx, params); err != nil {
+	if err := hp.UpdateNodeHeartbeat(ctx, params); err != nil {
 		return fmt.Errorf("update node heartbeat: %v", err)
 	}
 	return nil
@@ -451,20 +451,20 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, tx store.HeartbeatTx, nod
 // updated capability — use it. Otherwise reuse the values currently
 // stored on the node so UpdateNodeHeartbeat (which always rewrites
 // the columns) is a no-op for that triple.
-func resolveMigration(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, mig *migrationCapability) (string, int32, int32, error) {
+func resolveMigration(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, mig *migrationCapability) (string, int32, int32, error) {
 	if mig != nil {
 		return mig.Host, mig.PortRangeStart, mig.PortRangeEnd, nil
 	}
-	row, err := tx.NodeByID(ctx, nodeID)
+	row, err := hp.NodeByID(ctx, nodeID)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("reload node migration: %v", err)
 	}
 	return row.MigrationHost, row.MigrationPortRangeStart, row.MigrationPortRangeEnd, nil
 }
 
-func (h *Handler) applyFirmwares(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, reports []firmwareReport) error {
+func (h *Handler) applyFirmwares(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []firmwareReport) error {
 	for _, fr := range reports {
-		fwID, err := tx.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{
+		fwID, err := hp.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{
 			Name:         fr.Name,
 			Architecture: store.CPUArch(fr.Architecture),
 			Type:         store.FirmwareType(fr.Type),
@@ -487,14 +487,14 @@ func (h *Handler) applyFirmwares(ctx context.Context, tx store.HeartbeatTx, node
 			VarsPath:   fr.VarsTemplatePath,
 			Available:  true,
 		}
-		if err := tx.UpsertNodeFirmware(ctx, params); err != nil {
+		if err := hp.UpsertNodeFirmware(ctx, params); err != nil {
 			return fmt.Errorf("upsert node_firmware: %v", err)
 		}
 	}
 	return nil
 }
 
-func (h *Handler) applyVMs(ctx context.Context, tx store.HeartbeatTx, nodeID uuid.UUID, reports []vmReport) error {
+func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []vmReport) error {
 	if len(reports) == 0 {
 		return nil
 	}
@@ -502,7 +502,7 @@ func (h *Handler) applyVMs(ctx context.Context, tx store.HeartbeatTx, nodeID uui
 	for _, r := range reports {
 		ids = append(ids, r.VMUUID)
 	}
-	known, err := tx.FilterExistingVMIDs(ctx, ids)
+	known, err := hp.FilterExistingVMIDs(ctx, ids)
 	if err != nil {
 		return fmt.Errorf("filter vm ids: %v", err)
 	}
@@ -545,7 +545,7 @@ func (h *Handler) applyVMs(ctx context.Context, tx store.HeartbeatTx, nodeID uui
 			LastStartedAt:      lastStarted,
 			LastErrorMessage:   r.LastErrorMessage,
 		}
-		if err := tx.UpsertVMRuntime(ctx, params); err != nil {
+		if err := hp.UpsertVMRuntime(ctx, params); err != nil {
 			return fmt.Errorf("upsert vm_runtime: %v", err)
 		}
 	}

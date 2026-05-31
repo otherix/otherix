@@ -45,37 +45,37 @@ func TestInHeartbeatProjection(t *testing.T) {
 	cores := int32(8)
 	mem := int64(16384)
 	since := store.Node{}.MemoryPressureSince // nil
-	err := s.InHeartbeatTx(ctx, func(tx store.HeartbeatTx) error {
-		pre, err := tx.NodeForHeartbeat(ctx, node.ID)
+	err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		pre, err := hp.NodeForHeartbeat(ctx, node.ID)
 		if err != nil {
 			return err
 		}
 		if pre.ID != node.ID {
 			t.Errorf("NodeForHeartbeat id = %v, want %v", pre.ID, node.ID)
 		}
-		if err := tx.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
+		if err := hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
 			ID: node.ID, MigrationHost: "10.1.1.1", MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
 			CPUCoresTotal: &cores, CPUCoresAvailable: &cores, MemoryTotalMib: &mem, MemoryAvailableMib: &mem,
 		}); err != nil {
 			return err
 		}
 		mc := int32(1)
-		if err := tx.UpdateNodeMemoryPressure(ctx, store.UpdateNodeMemoryPressureParams{ID: node.ID, MemoryPressureSince: since, MemoryPressureCount: mc}); err != nil {
+		if err := hp.UpdateNodeMemoryPressure(ctx, store.UpdateNodeMemoryPressureParams{ID: node.ID, MemoryPressureSince: since, MemoryPressureCount: mc}); err != nil {
 			return err
 		}
 		// Firmware catalogue lookup + node-firmware upsert.
-		fwID, err := tx.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{Name: fw.Name, Architecture: store.CpuArchAmd64, Type: store.FirmwareTypeUefi})
+		fwID, err := hp.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{Name: fw.Name, Architecture: store.CpuArchAmd64, Type: store.FirmwareTypeUefi})
 		if err != nil {
 			return err
 		}
 		if fwID != fw.ID {
 			t.Errorf("LookupFirmwareByCatalog = %v, want %v", fwID, fw.ID)
 		}
-		if err := tx.UpsertNodeFirmware(ctx, store.UpsertNodeFirmwareParams{NodeID: node.ID, FirmwareID: fwID, CodePath: "/fw/code", Available: true}); err != nil {
+		if err := hp.UpsertNodeFirmware(ctx, store.UpsertNodeFirmwareParams{NodeID: node.ID, FirmwareID: fwID, CodePath: "/fw/code", Available: true}); err != nil {
 			return err
 		}
 		// Filter existing VM ids.
-		existing, err := tx.FilterExistingVMIDs(ctx, []uuid.UUID{vm.ID, uuid.New()})
+		existing, err := hp.FilterExistingVMIDs(ctx, []uuid.UUID{vm.ID, uuid.New()})
 		if err != nil {
 			return err
 		}
@@ -83,17 +83,17 @@ func TestInHeartbeatProjection(t *testing.T) {
 			t.Errorf("FilterExistingVMIDs = %v, want [%v]", existing, vm.ID)
 		}
 		// Runtime upsert binds the VM to the node.
-		if err := tx.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{VmID: vm.ID, CurrentNodeID: &node.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1}); err != nil {
+		if err := hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{VmID: vm.ID, CurrentNodeID: &node.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1}); err != nil {
 			return err
 		}
 		// Pool reconciliation report.
-		if err := tx.UpdateStoragePoolReconciliation(ctx, store.UpdateStoragePoolReconciliationParams{NodeID: node.ID, Name: pool.Name, ReconciliationStatus: "ok"}); err != nil {
+		if err := hp.UpdateStoragePoolReconciliation(ctx, store.UpdateStoragePoolReconciliationParams{NodeID: node.ID, Name: pool.Name, ReconciliationStatus: "ok"}); err != nil {
 			return err
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("InHeartbeatTx: %v", err)
+		t.Fatalf("RunHeartbeatProjection: %v", err)
 	}
 
 	// Capability fields landed.
@@ -112,9 +112,9 @@ func TestInHeartbeatProjection(t *testing.T) {
 	// Runtime + node index landed -> ListVMsForNodeDeclared sees the VM, and the
 	// effective-availability/node-delete index is populated.
 	var declared []store.ListVMsForNodeDeclaredRow
-	if err := s.InHeartbeatTx(ctx, func(tx store.HeartbeatTx) error {
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
 		var e error
-		declared, e = tx.ListVMsForNodeDeclared(ctx, node.ID)
+		declared, e = hp.ListVMsForNodeDeclared(ctx, node.ID)
 		return e
 	}); err != nil {
 		t.Fatalf("ListVMsForNodeDeclared: %v", err)
@@ -134,8 +134,8 @@ func TestInHeartbeatProjection(t *testing.T) {
 	}
 
 	// NodeForHeartbeat on an absent node is not-found.
-	if err := s.InHeartbeatTx(ctx, func(tx store.HeartbeatTx) error {
-		_, e := tx.NodeForHeartbeat(ctx, uuid.New())
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		_, e := hp.NodeForHeartbeat(ctx, uuid.New())
 		return e
 	}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("NodeForHeartbeat(absent) = %v, want store.ErrNotFound", err)
