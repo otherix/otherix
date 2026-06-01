@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package cpclient
+
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+)
+
+// TestCreateNetworkParamsBody locks the omitempty assembly: required
+// fields are always present, optional fields appear only when the
+// operator set them so the server applies its defaults otherwise.
+func TestCreateNetworkParamsBody(t *testing.T) {
+	mtu := 9000
+	vlan := 42
+
+	cases := []struct {
+		name   string
+		params CreateNetworkParams
+		want   map[string]any
+	}{
+		{
+			name: "minimal sets only required fields",
+			params: CreateNetworkParams{
+				Name:       "net-mvp",
+				Type:       "bridge",
+				BridgeName: "br0",
+			},
+			want: map[string]any{
+				"name":        "net-mvp",
+				"type":        "bridge",
+				"bridge_name": "br0",
+			},
+		},
+		{
+			name: "managed nat with subnet",
+			params: CreateNetworkParams{
+				Name:       "net-nat",
+				Type:       "bridge",
+				BridgeName: "br-nat",
+				Managed:    true,
+				Egress:     "nat",
+				Subnet:     "10.10.0.0/24",
+				Gateway:    "10.10.0.1",
+			},
+			want: map[string]any{
+				"name":        "net-nat",
+				"type":        "bridge",
+				"bridge_name": "br-nat",
+				"managed":     true,
+				"egress":      "nat",
+				"subnet":      "10.10.0.0/24",
+				"gateway":     "10.10.0.1",
+			},
+		},
+		{
+			name: "explicit mtu and vlan",
+			params: CreateNetworkParams{
+				Name:       "net-tagged",
+				Type:       "bridge",
+				BridgeName: "br1",
+				Mtu:        &mtu,
+				VlanTag:    &vlan,
+			},
+			want: map[string]any{
+				"name":        "net-tagged",
+				"type":        "bridge",
+				"bridge_name": "br1",
+				"mtu":         9000,
+				"vlan_tag":    42,
+			},
+		},
+		{
+			name: "egress none is omitted",
+			params: CreateNetworkParams{
+				Name:       "net-none",
+				Type:       "bridge",
+				BridgeName: "br2",
+				Egress:     "",
+			},
+			want: map[string]any{
+				"name":        "net-none",
+				"type":        "bridge",
+				"bridge_name": "br2",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.params.body()
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("body() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
