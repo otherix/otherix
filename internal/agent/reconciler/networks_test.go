@@ -259,6 +259,156 @@ func TestReconcile_RemovesManagedBridge(t *testing.T) {
 	}
 }
 
+// TestReconcile_BridgeRenameTearsDownOldBridge confirms re-declaring the
+// SAME network id with a different bridge_name tears the OLD managed
+// bridge down entirely (RemoveBridge(old)) and ensures the new one.
+func TestReconcile_BridgeRenameTearsDownOldBridge(t *testing.T) {
+	fab := &netfabric.FakeFabric{}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{ID: "net-1", Name: "flat", Type: "bridge", Managed: true, Egress: "none", BridgeName: "otbr0", Mtu: 1500},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	// Same id, new bridge name.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{ID: "net-1", Name: "flat", Type: "bridge", Managed: true, Egress: "none", BridgeName: "otbr1", Mtu: 1500},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	if got := fab.RemoveBridgeCalls; len(got) != 1 || got[0] != "otbr0" {
+		t.Errorf("RemoveBridge calls = %v, want [otbr0]", got)
+	}
+	wantEnsure := []netfabric.BridgeCall{{Name: "otbr0", MTU: 1500}, {Name: "otbr1", MTU: 1500}}
+	if diff := cmp.Diff(wantEnsure, fab.EnsureBridgeCalls); diff != "" {
+		t.Errorf("EnsureBridge calls mismatch (-want +got):\n%s", diff)
+	}
+	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "ready" {
+		t.Errorf("NetworkReports = %+v, want one ready entry", reports)
+	}
+}
+
+// TestReconcile_NATToNoneTearsDownNAT confirms re-declaring the SAME id
+// (same bridge name) from egress=nat to egress=none tears down the old
+// masquerade + gateway addr but leaves the bridge in place.
+func TestReconcile_NATToNoneTearsDownNAT(t *testing.T) {
+	fab := &netfabric.FakeFabric{}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{
+				ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
+				Egress: "nat", BridgeName: "otnat0", Mtu: 1500,
+				Subnet: strptr("10.20.0.0/24"), Gateway: strptr("10.20.0.1"),
+			},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	// Same id and bridge, egress now none.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true, Egress: "none", BridgeName: "otnat0", Mtu: 1500},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].String() != "10.20.0.0/24" {
+		t.Errorf("RemoveMasquerade calls = %v, want [10.20.0.0/24]", got)
+	}
+	if len(fab.RemoveGatewayCalls) != 1 {
+		t.Errorf("RemoveGatewayAddr calls = %v, want one", fab.RemoveGatewayCalls)
+	}
+	if len(fab.RemoveBridgeCalls) != 0 {
+		t.Errorf("RemoveBridge called on same-bridge nat->none: %v", fab.RemoveBridgeCalls)
+	}
+	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "ready" {
+		t.Errorf("NetworkReports = %+v, want one ready entry", reports)
+	}
+}
+
+// TestReconcile_NATSubnetChangeReplacesMasquerade confirms re-declaring
+// the SAME id (same bridge) with a changed subnet removes the OLD
+// masquerade and asserts the NEW one.
+func TestReconcile_NATSubnetChangeReplacesMasquerade(t *testing.T) {
+	fab := &netfabric.FakeFabric{}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{
+				ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
+				Egress: "nat", BridgeName: "otnat0", Mtu: 1500,
+				Subnet: strptr("10.20.0.0/24"), Gateway: strptr("10.20.0.1"),
+			},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	// Same id and bridge, subnet A -> B.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{
+				ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
+				Egress: "nat", BridgeName: "otnat0", Mtu: 1500,
+				Subnet: strptr("10.30.0.0/24"), Gateway: strptr("10.30.0.1"),
+			},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].String() != "10.20.0.0/24" {
+		t.Errorf("RemoveMasquerade calls = %v, want [10.20.0.0/24]", got)
+	}
+	if len(fab.RemoveBridgeCalls) != 0 {
+		t.Errorf("RemoveBridge called on same-bridge subnet change: %v", fab.RemoveBridgeCalls)
+	}
+	// Two EnsureMasquerade: original A, then B after the change.
+	if got := fab.MasqueradeCalls; len(got) != 2 || got[1].Subnet.String() != "10.30.0.0/24" {
+		t.Errorf("EnsureMasquerade calls = %v, want second call for 10.30.0.0/24", got)
+	}
+	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "ready" {
+		t.Errorf("NetworkReports = %+v, want one ready entry", reports)
+	}
+}
+
+// TestReconcile_SteadyStateNoTeardown confirms re-reconciling an
+// UNCHANGED managed NAT network triggers ZERO Remove* calls — the delta
+// teardown must not fire when nothing changed.
+func TestReconcile_SteadyStateNoTeardown(t *testing.T) {
+	fab := &netfabric.FakeFabric{}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	net := heartbeat.DeclaredNetwork{
+		ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
+		Egress: "nat", BridgeName: "otnat0", Mtu: 1500,
+		Subnet: strptr("10.20.0.0/24"), Gateway: strptr("10.20.0.1"),
+	}
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{net},
+	})
+	rec.reconcile(context.Background())
+	// Reconcile the identical declared set again.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{net},
+	})
+	rec.reconcile(context.Background())
+
+	if len(fab.RemoveBridgeCalls) != 0 || len(fab.RemoveMasqCalls) != 0 || len(fab.RemoveGatewayCalls) != 0 {
+		t.Errorf("steady-state reconcile triggered teardown: removeBridge=%v removeMasq=%v removeGw=%v",
+			fab.RemoveBridgeCalls, fab.RemoveMasqCalls, fab.RemoveGatewayCalls)
+	}
+	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "ready" {
+		t.Errorf("NetworkReports = %+v, want one ready entry", reports)
+	}
+}
+
 // TestReconcile_DoesNotRemoveUnmanagedBridge confirms an unmanaged
 // network that disappears is forgotten without any fabric teardown — an
 // operator bridge is never deleted by the agent.
@@ -307,8 +457,8 @@ func TestNetworkReports_Sorted(t *testing.T) {
 	}
 }
 
-// TestRun_HandlesTriggerAndTick confirms the run loop reconciles on
-// trigger AND on ticker, and exits cleanly on ctx cancellation.
+// TestRun_NetworksHandlesTriggerAndTick confirms the run loop reconciles
+// on trigger AND on ticker, and exits cleanly on ctx cancellation.
 func TestRun_NetworksHandlesTriggerAndTick(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
 	rec, _ := NewNetworks(fab, discardLogger(), 20*time.Millisecond)

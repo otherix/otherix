@@ -28,11 +28,15 @@ import (
 //
 // Unlike the pool reconciler the network reconciler has no agent-side
 // "manager.List()" of observed bridges to diff against, so it tracks
-// what it materialised in its own applied map. That memory is in-process
-// only: a restart loses it, so managed bridges declared once and then
-// removed across a restart are orphaned on the host. Acceptable for this
-// iteration - the next reconcile after re-declaration re-adopts them, and
-// stale-bridge GC is future work.
+// what it materialised in its own applied map. Same-process config
+// changes to an already-applied network (bridge rename, nat->none,
+// subnet change) ARE handled: reconcileDelta tears down the stale host
+// resources before materialising the new state, so nothing leaks while
+// the process is up. That memory is in-process only: a restart loses it,
+// so managed bridges declared once and then removed across a restart are
+// orphaned on the host. Acceptable for this iteration - the next
+// reconcile after re-declaration re-adopts them, and stale-bridge GC is
+// future work.
 type Networks struct {
 	log    *slog.Logger
 	fabric netfabric.Fabric
@@ -188,8 +192,13 @@ func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork
 }
 
 // applyManaged ensures the bridge (and, for egress=nat, the gateway
-// address and masquerade rule) exist for a CP-managed network.
+// address and masquerade rule) exist for a CP-managed network. When the
+// same network id was previously materialised with a now-stale config
+// (renamed bridge, dropped/changed NAT subnet), the stale host resources
+// are torn down first so they do not leak — see reconcileDelta.
 func (r *Networks) applyManaged(ctx context.Context, d heartbeat.DeclaredNetwork, subnet, gateway netip.Prefix) heartbeat.NetworkReport {
+	r.reconcileDelta(ctx, d, subnet)
+
 	if err := r.fabric.EnsureBridge(d.BridgeName, int(d.Mtu)); err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
@@ -237,6 +246,35 @@ func (r *Networks) applyUnmanaged(ctx context.Context, d heartbeat.DeclaredNetwo
 	return ready(d.ID)
 }
 
+// reconcileDelta tears down host resources from a prior materialisation
+// of the SAME network id that the incoming desired state will not
+// re-assert. The CP allows PATCH to mutate bridge_name, egress, subnet
+// and gateway on an existing network; without this the old bridge and/or
+// old NAT masquerade+gateway addr would leak, since removeUndeclared only
+// fires when the id leaves the declared set entirely. Teardown is
+// best-effort (warn and continue): a stale-cleanup hiccup must not block
+// materialising the new state, so the overall report is driven by the
+// NEW assertions, not these removals. Idempotent: it only acts on what
+// changed, so a steady-state reconcile of an unchanged network is a no-op.
+func (r *Networks) reconcileDelta(ctx context.Context, d heartbeat.DeclaredNetwork, newSubnet netip.Prefix) {
+	prev, ok := r.applied[d.ID]
+	if !ok || !prev.Managed {
+		return
+	}
+	newNAT := d.Egress == "nat"
+	switch {
+	case prev.BridgeName != d.BridgeName:
+		// Bridge rename: tear the old bridge down entirely. The new
+		// bridge (and its NAT, if any) is created fresh below.
+		r.teardownManaged(ctx, d.ID, prev)
+	case prev.HasNAT && (!newNAT || prev.Subnet != newSubnet):
+		// Same bridge, but NAT was dropped or its subnet changed: drop
+		// the stale masquerade+gateway. The new NAT state, if any, is
+		// re-asserted with the new subnet/gateway below.
+		r.teardownNAT(ctx, d.ID, prev)
+	}
+}
+
 // removeUndeclared tears down managed bridges no longer in the declared
 // set. Unmanaged (operator) bridges are never touched - they are only
 // forgotten.
@@ -253,31 +291,47 @@ func (r *Networks) removeUndeclared(ctx context.Context, declared map[string]str
 			delete(r.applied, id)
 			continue
 		}
-		if a.HasNAT {
-			if err := r.fabric.RemoveMasquerade(a.Subnet); err != nil {
-				r.log.WarnContext(ctx, "remove masquerade failed during network teardown",
-					slog.String("network_id", id),
-					slog.String("error", err.Error()),
-				)
-			}
-			if err := r.fabric.RemoveGatewayAddr(a.BridgeName, a.Gateway); err != nil {
-				r.log.WarnContext(ctx, "remove gateway addr failed during network teardown",
-					slog.String("network_id", id),
-					slog.String("error", err.Error()),
-				)
-			}
-		}
-		if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
-			r.log.WarnContext(ctx, "remove bridge failed during network teardown",
-				slog.String("network_id", id),
-				slog.String("error", err.Error()),
-			)
-		}
+		r.teardownManaged(ctx, id, a)
 		r.log.InfoContext(ctx, "managed network torn down (CP-side delete reconciled)",
 			slog.String("network_id", id),
 			slog.String("bridge", a.BridgeName),
 		)
 		delete(r.applied, id)
+	}
+}
+
+// teardownManaged removes every host resource a managed network put in
+// place: the NAT masquerade+gateway addr (when it had them) and the
+// bridge itself. Best-effort - each failure is logged and the rest still
+// run, so a partial host state still converges toward fully torn down.
+func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetwork) {
+	r.teardownNAT(ctx, id, a)
+	if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
+		r.log.WarnContext(ctx, "remove bridge failed during network teardown",
+			slog.String("network_id", id),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+// teardownNAT removes the masquerade rule and gateway address a NAT
+// network installed, leaving the bridge intact. A no-op when the network
+// had no NAT. Best-effort: failures are logged, not propagated.
+func (r *Networks) teardownNAT(ctx context.Context, id string, a appliedNetwork) {
+	if !a.HasNAT {
+		return
+	}
+	if err := r.fabric.RemoveMasquerade(a.Subnet); err != nil {
+		r.log.WarnContext(ctx, "remove masquerade failed during network teardown",
+			slog.String("network_id", id),
+			slog.String("error", err.Error()),
+		)
+	}
+	if err := r.fabric.RemoveGatewayAddr(a.BridgeName, a.Gateway); err != nil {
+		r.log.WarnContext(ctx, "remove gateway addr failed during network teardown",
+			slog.String("network_id", id),
+			slog.String("error", err.Error()),
+		)
 	}
 }
 
