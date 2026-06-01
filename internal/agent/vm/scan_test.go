@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/netfabric"
 )
 
 // waitForTaskTerminal polls the in-memory TaskStore until the task
@@ -35,7 +37,7 @@ func waitForTaskTerminal(t *testing.T, m *Manager, id uuid.UUID, budget time.Dur
 
 func TestManager_ScanPool_UnknownPool(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestManager_ScanPool_UnknownPool(t *testing.T) {
 
 func TestManager_ScanPool_StatfsFailure(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

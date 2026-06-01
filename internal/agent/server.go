@@ -24,6 +24,7 @@ import (
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/agent/handlers/vms"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/reconciler"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/middleware"
@@ -94,7 +95,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	}
 	log.Info("agent: resolved node name from cert CN", "node_name", nodeName)
 
-	manager, err := vm.New(cfg, log)
+	manager, err := vm.New(cfg, netfabric.New(), log)
 	if err != nil {
 		return fmt.Errorf("vm manager: %w", err)
 	}

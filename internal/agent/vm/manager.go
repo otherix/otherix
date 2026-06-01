@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/cloudinit"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/state"
@@ -88,6 +89,7 @@ type Manager struct {
 	stateDir        string
 	aarch64Firmware string
 	accelerator     string
+	fabric          netfabric.Fabric
 
 	mu    sync.Mutex
 	vms   map[uuid.UUID]*VM
@@ -159,9 +161,11 @@ type PoolView struct {
 	Root string
 }
 
-// New constructs a Manager. The pool registry starts **empty** — the
-// reconciler populates it from desired-state delivered through
-// heartbeat. The constructor only ensures the state directory and
+// New constructs a Manager. The fabric materialises and tears down the
+// host-side network primitives (taps) for VM NICs; production passes
+// netfabric.New, tests inject a FakeFabric. The pool registry starts
+// **empty** — the reconciler populates it from desired-state delivered
+// through heartbeat. The constructor only ensures the state directory and
 // replays existing meta.json files. VM ops that reference a pool not
 // yet reconciled return ErrPoolUnknown until the reconciler lands the
 // entry; the first heartbeat tick typically closes the window.
@@ -169,7 +173,7 @@ type PoolView struct {
 // Probing live qemu processes happens lazily on Get / List rather
 // than during startup so transient probe failures do not block agent
 // boot.
-func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
+func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*Manager, error) {
 	if cfg.StatePath == "" {
 		return nil, fmt.Errorf("state_path is required")
 	}
@@ -186,6 +190,7 @@ func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
 		pools:           map[string]pool{},
 		aarch64Firmware: cfg.QEMU.AArch64FirmwarePath,
 		accelerator:     accelerator,
+		fabric:          fabric,
 		vms:             map[uuid.UUID]*VM{},
 		tasks:           NewTaskStore(),
 		muxes:           map[string]*serialmux.Multiplexer{},
@@ -211,6 +216,7 @@ func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
 			ConsoleSocket: meta.ConsoleSocket,
 			PIDFile:       meta.PIDFile,
 			CidataPath:    meta.CidataPath,
+			NICs:          metaToNICs(meta.NICs),
 		}
 		m.vms[v.ID] = v
 	}
@@ -421,6 +427,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		QMPSocket:     filepath.Join(m.stateDir, vmID.String(), "qmp.sock"),
 		ConsoleSocket: filepath.Join(m.stateDir, vmID.String(), "console.sock"),
 		PIDFile:       filepath.Join(m.stateDir, vmID.String(), "qemu.pid"),
+		NICs:          spec.NICs,
 	}
 	if len(spec.UserData) > 0 {
 		v.CidataPath = filepath.Join(m.stateDir, vmID.String(), "cidata.iso")
@@ -473,7 +480,17 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 		}
 	}
 
+	// Materialise host taps before qemu launches so the tap netdevs the
+	// command line references already exist. Bridge creation is the
+	// network reconciler's job - the bridge is assumed present here.
+	if err := m.materialiseNICs(v.NICs); err != nil {
+		log.Error("materialise nics", "err", err)
+		m.failTask(taskID, v.ID, "network_setup_failed", err.Error())
+		return
+	}
+
 	if code, err := m.spawnAndVerify(log, v); err != nil {
+		m.teardownNICs(v.NICs)
 		m.failTask(taskID, v.ID, code, err.Error())
 		return
 	}
@@ -485,6 +502,7 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 	if err := m.attachMux(log, v); err != nil {
 		log.Error("attach multiplexer", "err", err)
 		m.killQEMU(v)
+		m.teardownNICs(v.NICs)
 		m.failTask(taskID, v.ID, "multiplexer_failed", err.Error())
 		return
 	}
@@ -526,6 +544,7 @@ func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 		PIDFile:         v.PIDFile,
 		AArch64Firmware: m.aarch64Firmware,
 		CidataPath:      v.CidataPath,
+		NICs:            v.NICs,
 	})
 	if err != nil {
 		log.Error("build qemu args", "err", err)
@@ -1156,6 +1175,11 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	// Poweroff do not remove it but agent restart would).
 	m.detachMux(v.Name)
 
+	// Tear down host taps for each NIC. Best-effort — a failed DeleteTap
+	// is logged and does not abort the delete (the in-memory VM and its
+	// state directory still get removed).
+	m.teardownNICs(v.NICs)
+
 	// Cleanup disk + per-VM dirs. Errors logged but not fatal — operator
 	// can clean stale files manually if needed.
 	if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
@@ -1306,6 +1330,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		Status:        string(v.Status),
 		CreatedAt:     v.CreatedAt,
 		UpdatedAt:     v.UpdatedAt,
+		NICs:          nicsToMeta(v.NICs),
 	}
 	return state.WriteMeta(filepath.Join(m.stateDir, v.ID.String()), meta)
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -47,7 +48,7 @@ func TestManager_New_ValidatesStatePath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, _, _ := newTestConfig(t)
 			tc.mut(cfg)
-			_, err := New(cfg, discardLogger())
+			_, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 			if tc.wantErr && err == nil {
 				t.Fatalf("New(%s) = nil, want error", tc.name)
 			}
@@ -73,7 +74,7 @@ func TestManager_AddPool_Validates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, _, _ := newTestConfig(t)
-			m, err := New(cfg, discardLogger())
+			m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -90,7 +91,7 @@ func TestManager_AddPool_Validates(t *testing.T) {
 
 func TestManager_Create_ValidationErrors(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestManager_Create_ValidationErrors(t *testing.T) {
 
 func TestManager_Create_UnknownPool(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestManager_Create_UnknownPool(t *testing.T) {
 
 func TestManager_Get_NotFound(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestManager_Get_NotFound(t *testing.T) {
 
 func TestManager_List_Empty(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestManager_List_Empty(t *testing.T) {
 
 func TestManager_InFlightGuard_AcquireReleaseAndQuery(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestManager_InFlightGuard_AcquireReleaseAndQuery(t *testing.T) {
 // task surfaces the failure but the VM itself is not in StatusFailed.
 func TestManager_FailTaskOnly_DoesNotMutateVMStatus(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestManager_FailTaskOnly_DoesNotMutateVMStatus(t *testing.T) {
 // poweroff escalation).
 func TestManager_FailTask_MutatesVMStatusToFailed(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestManager_FailTask_MutatesVMStatusToFailed(t *testing.T) {
 
 func TestManager_InFlightGuard_EmptyName_IsNoOp(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

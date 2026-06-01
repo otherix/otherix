@@ -47,6 +47,23 @@ type VMMeta struct {
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// NICs records the VM's materialised network interfaces so the agent
+	// can reconstruct them on startup replay and tear down the host taps
+	// on delete. Omitted entirely for legacy VMs with no declared NICs.
+	NICs []NICMeta `json:"nics,omitempty"`
+}
+
+// NICMeta is the persisted form of one VM network interface. TapName is
+// the resolved host tap name (netfabric.NIC.TapName) recorded at create
+// time so teardown can act on it without re-deriving the convention.
+type NICMeta struct {
+	ID          uuid.UUID `json:"id"`
+	Bridge      string    `json:"bridge"`
+	MAC         string    `json:"mac"`
+	Model       string    `json:"model"`
+	MTU         int       `json:"mtu"`
+	DeviceOrder int       `json:"device_order"`
+	TapName     string    `json:"tap_name"`
 }
 
 // WriteMeta persists m to <vmDir>/meta.json using a temp-file + rename
