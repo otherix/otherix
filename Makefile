@@ -87,11 +87,26 @@ test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
 
 # test-netfabric runs the agent network-fabric netns integration tests
 # (bridge / tap / nft masquerade over real netlink). They are
-# //go:build linux && integration and need root (CAP_NET_ADMIN), so this
-# runs ONLY on Linux as root - inside the Lima dev VM, not on the macOS
-# host and NOT in CI. From macOS: `limactl shell otherix-dev -- sudo make test-netfabric`.
-test-netfabric: ## netfabric netns integration tests (Linux + root only; run inside Lima)
-	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 ./internal/agent/netfabric/
+# //go:build linux && integration and need root (CAP_NET_ADMIN). The Lima
+# dev VM runs only the agent binary - no Go toolchain, no source - so we
+# CROSS-COMPILE the test binary on the macOS host, copy it in, and run it as
+# root, exactly like build-agent-lima / copy-agent-lima. Run this FROM THE
+# macOS HOST (`make test-netfabric`), not from inside Lima. Not in CI (needs
+# CAP_NET_ADMIN). On a native Linux host just run the $(GO) test line directly as root.
+test-netfabric: lima-ensure ## netfabric netns integration tests in Lima (cross-compiled on host, run as root)
+	@mkdir -p $(BIN_DIR)
+	@arch=$$(limactl shell $(LIMA_VM) uname -m); \
+	case "$$arch" in \
+	  aarch64) goarch=arm64 ;; \
+	  x86_64)  goarch=amd64 ;; \
+	  *) echo "unsupported lima arch: $$arch"; exit 1 ;; \
+	esac; \
+	out=$(BIN_DIR)/netfabric.test; \
+	echo ">> cross-compiling netfabric integration test for linux/$$goarch"; \
+	CGO_ENABLED=0 GOOS=linux GOARCH=$$goarch $(GO) test -tags=$(INTEGRATION_TAGS) -c -o $$out ./internal/agent/netfabric/; \
+	limactl cp $$out $(LIMA_VM):/tmp/netfabric.test; \
+	echo ">> running netns integration tests as root in $(LIMA_VM)"; \
+	limactl shell $(LIMA_VM) sudo /tmp/netfabric.test -test.v -test.count=1
 
 coverage: test ## Generate HTML coverage report
 	$(GO) tool cover -html=coverage.out -o coverage.html
