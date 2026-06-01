@@ -223,6 +223,12 @@ func (s *Store) vmDeleteBaseOps(ctx context.Context, vm store.VM, now time.Time,
 			clientv3.OpDelete(etcd.Key("index", "vm_disks", "pool", d.StoragePoolID.String(), d.ID.String())),
 		)
 	}
+	nicOps, err := s.vmNicDeleteOps(ctx, vm.ID, now)
+	if err != nil {
+		return nil, err
+	}
+	ops = append(ops, nicOps...)
+
 	ops = append(ops, clientv3.OpPut(taskKey(taskID), string(taskVal)))
 	return ops, nil
 }

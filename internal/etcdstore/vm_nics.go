@@ -68,6 +68,47 @@ func vmNicCreateOps(n store.VMNic) ([]clientv3.Op, error) {
 	}, nil
 }
 
+// vmNicDeleteOps returns the soft-delete operations for every NIC of the VM:
+// each live NIC row is stamped DeletedAt and BOTH its per-VM and per-network
+// index entries are removed, so the network delete-block (countVMNicsOnNetwork)
+// clears once the owning VM is gone. The caller threads these into the
+// VM-delete transaction. It is the delete-side mirror of vmNicCreateOps.
+func (s *Store) vmNicDeleteOps(ctx context.Context, vmID uuid.UUID, now time.Time) ([]clientv3.Op, error) {
+	items, err := s.c.Range(ctx, vmNicVMIndexPrefix(vmID))
+	if err != nil {
+		return nil, err
+	}
+	var ops []clientv3.Op
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
+		}
+		var n store.VMNic
+		found, gerr := s.c.GetJSON(ctx, vmNicKey(id), &n)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || n.DeletedAt != nil {
+			// Row already gone; still drop any lingering per-VM index entry.
+			ops = append(ops, clientv3.OpDelete(vmNicVMIndexKey(vmID, id)))
+			continue
+		}
+		n.DeletedAt = &now
+		n.UpdatedAt = now
+		val, merr := etcd.Marshal(n)
+		if merr != nil {
+			return nil, merr
+		}
+		ops = append(ops,
+			clientv3.OpPut(vmNicKey(id), string(val)),
+			clientv3.OpDelete(vmNicVMIndexKey(vmID, id)),
+			clientv3.OpDelete(vmNicNetworkIndexKey(n.NetworkID, id)),
+		)
+	}
+	return ops, nil
+}
+
 // ListVMNicsByVM returns the non-deleted NICs attached to the VM, ordered by
 // device_order then id for determinism.
 func (s *Store) ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error) {
