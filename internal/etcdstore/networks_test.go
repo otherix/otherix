@@ -552,3 +552,60 @@ func idsOf(nets []store.Network) []uuid.UUID {
 	}
 	return out
 }
+
+// TestUpsertNetworkNodeStatusNoopIfUnchanged verifies the up-channel write
+// guard: a steady-state heartbeat that re-reports the same (status, error) for a
+// network must not rewrite the per-(node, network) record (updated_at frozen),
+// while a changed report must write. Without the guard every heartbeat re-puts
+// every network's status (N_nodes x N_networks PutJSON per interval).
+func TestUpsertNetworkNodeStatusNoopIfUnchanged(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	node := nodeParams(uniqueNodeName("nnsnoop"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	net := netParams(uniqueNetName("nnsnoop"))
+	if _, err := s.CreateNetwork(ctx, net); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+
+	upsert := func(status string, errMsg *string) {
+		t.Helper()
+		if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+			NetworkID: net.ID, NodeID: node.ID, ReconciliationStatus: status, ReconciliationError: errMsg,
+		}); err != nil {
+			t.Fatalf("UpsertNetworkNodeStatus(%s): %v", status, err)
+		}
+	}
+	updatedAt := func() time.Time {
+		t.Helper()
+		rows, err := s.ListNetworkNodeStatusByNetwork(ctx, net.ID)
+		if err != nil {
+			t.Fatalf("ListNetworkNodeStatusByNetwork: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want 1", len(rows))
+		}
+		return rows[0].UpdatedAt
+	}
+
+	upsert("ready", nil)
+	first := updatedAt()
+
+	// Identical re-report: no-op, updated_at must stay byte-identical.
+	time.Sleep(2 * time.Millisecond)
+	upsert("ready", nil)
+	if second := updatedAt(); !second.Equal(first) {
+		t.Errorf("updated_at after identical re-report = %v, want unchanged %v (steady-state must not rewrite)", second, first)
+	}
+
+	// Changed report: must write, updated_at must advance.
+	time.Sleep(2 * time.Millisecond)
+	errMsg := "bridge create failed"
+	upsert("failed", &errMsg)
+	if third := updatedAt(); !third.After(first) {
+		t.Errorf("updated_at after status change = %v, want after %v (real change must rewrite)", third, first)
+	}
+}

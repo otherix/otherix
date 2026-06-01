@@ -298,20 +298,31 @@ func (s *Store) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNet
 	now := time.Now().UTC()
 	key := networkNodeStatusKey(arg.NetworkID, arg.NodeID)
 
+	var prior store.NetworkNodeStatus
+	found, err := s.c.GetJSON(ctx, key, &prior)
+	if err != nil {
+		return err
+	}
+
+	// No-op-if-unchanged: a steady-state heartbeat re-reports the same status and
+	// error every tick. Skipping the write when neither changed bounds the agent's
+	// per-interval etcd writes to changed networks, not all of them - the up-channel
+	// is otherwise N_nodes x N_networks PutJSON per heartbeat. last_reconciled_at
+	// then marks the transition into the current status, not every re-confirmation;
+	// node liveness is the heartbeat's own signal, not this record's updated_at.
+	if found &&
+		prior.ReconciliationStatus == arg.ReconciliationStatus &&
+		equalStringPtr(prior.ReconciliationError, arg.ReconciliationError) {
+		return nil
+	}
+
 	var lastReconciledAt *time.Time
 	if arg.ReconciliationStatus == "ready" {
 		lastReconciledAt = &now
-	} else {
+	} else if found {
 		// Preserve the prior successful-reconciliation timestamp on a
 		// pending/failed report rather than overwriting it with now.
-		var prior store.NetworkNodeStatus
-		found, err := s.c.GetJSON(ctx, key, &prior)
-		if err != nil {
-			return err
-		}
-		if found {
-			lastReconciledAt = prior.LastReconciledAt
-		}
+		lastReconciledAt = prior.LastReconciledAt
 	}
 
 	st := store.NetworkNodeStatus{
@@ -323,6 +334,15 @@ func (s *Store) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNet
 		UpdatedAt:            now,
 	}
 	return s.c.PutJSON(ctx, key, st)
+}
+
+// equalStringPtr reports whether two optional strings carry the same value,
+// treating two nils as equal and a nil distinct from any non-nil.
+func equalStringPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // ListNetworkNodeStatusByNetwork returns every per-node reconciliation record
