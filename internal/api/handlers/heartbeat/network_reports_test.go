@@ -70,6 +70,34 @@ func TestApplyNetworkReportsTolerance(t *testing.T) {
 	}
 }
 
+// TestApplyNetworkReportsRejectsUnknownStatus verifies a report whose
+// reconciliation_status is outside the [pending,ready,failed] enum is skipped
+// (no upsert, WARN-logged) without failing the heartbeat - a buggy/old agent
+// must not be able to seed an out-of-enum status the CP would later serve.
+func TestApplyNetworkReportsRejectsUnknownStatus(t *testing.T) {
+	nodeID := uuid.New()
+	goodID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	bogusID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+
+	reports := []networkReport{
+		{ID: bogusID.String(), ReconciliationStatus: "bogus"},
+		{ID: goodID.String(), ReconciliationStatus: "ready"},
+	}
+
+	spy := &upsertNetworkStatusSpy{}
+	h := newQuietHandler()
+	if err := h.applyNetworkReports(context.Background(), spy, nodeID, reports); err != nil {
+		t.Fatalf("applyNetworkReports returned error: %v", err)
+	}
+
+	want := []store.UpsertNetworkNodeStatusParams{
+		{NetworkID: goodID, NodeID: nodeID, ReconciliationStatus: "ready"},
+	}
+	if diff := cmp.Diff(want, spy.calls); diff != "" {
+		t.Errorf("UpsertNetworkNodeStatus calls mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestApplyNetworkReportsStoreFailure verifies a genuine store failure
 // propagates (so the projection transaction rolls back), unlike a bad id
 // which is tolerated.

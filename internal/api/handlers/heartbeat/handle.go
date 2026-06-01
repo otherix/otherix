@@ -332,6 +332,13 @@ func (h *Handler) applyNetworkReports(ctx context.Context, hp store.HeartbeatPro
 				slog.String("network_id", r.ID))
 			continue
 		}
+		if !validReconciliationStatus(r.ReconciliationStatus) {
+			h.log.WarnContext(ctx, "heartbeat network reconciliation_status not in enum; skipping",
+				slog.String("node_id", nodeID.String()),
+				slog.String("network_id", r.ID),
+				slog.String("reconciliation_status", r.ReconciliationStatus))
+			continue
+		}
 		params := store.UpsertNetworkNodeStatusParams{
 			NetworkID:            networkID,
 			NodeID:               nodeID,
@@ -343,6 +350,20 @@ func (h *Handler) applyNetworkReports(ctx context.Context, hp store.HeartbeatPro
 		}
 	}
 	return nil
+}
+
+// validReconciliationStatus reports whether s is one of the
+// NetworkNodeStatus.reconciliation_status enum values (pending | ready |
+// failed). The CP serves this value back through the public NetworkNodeStatus
+// schema, so an out-of-enum value reported by a buggy/old agent must be
+// rejected at ingest rather than persisted.
+func validReconciliationStatus(s string) bool {
+	switch s {
+	case "pending", "ready", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 // loadDeclaredPools returns the per-node pool inventory the CP wants
