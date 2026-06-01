@@ -109,3 +109,69 @@ func TestLinuxFabricBridgeLifecycle(t *testing.T) {
 		}
 	})
 }
+
+func TestLinuxFabricTapLifecycle(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const (
+			bridge = "ot-br-tap0"
+			tap    = "ottap0"
+		)
+
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge(%q, 1500) = %v", bridge, err)
+		}
+
+		if err := f.CreateTap(tap, 1500); err != nil {
+			t.Fatalf("CreateTap(%q, 1500) = %v", tap, err)
+		}
+
+		link, err := netlink.LinkByName(tap)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) = %v", tap, err)
+		}
+		if _, ok := link.(*netlink.Tuntap); !ok {
+			t.Errorf("tap %q is %T, want *netlink.Tuntap", tap, link)
+		}
+		if mtu := link.Attrs().MTU; mtu != 1500 {
+			t.Errorf("tap MTU = %d, want 1500", mtu)
+		}
+		if link.Attrs().Flags&1 == 0 { // net.FlagUp == 1
+			t.Errorf("tap not up after CreateTap")
+		}
+
+		if err := f.AttachTap(tap, bridge); err != nil {
+			t.Fatalf("AttachTap(%q, %q) = %v", tap, bridge, err)
+		}
+
+		brLink, err := netlink.LinkByName(bridge)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) = %v", bridge, err)
+		}
+		link, err = netlink.LinkByName(tap)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) = %v", tap, err)
+		}
+		if got, want := link.Attrs().MasterIndex, brLink.Attrs().Index; got != want {
+			t.Errorf("tap MasterIndex = %d, want %d (bridge index)", got, want)
+		}
+
+		// Idempotent: a second CreateTap must succeed too.
+		if err := f.CreateTap(tap, 1500); err != nil {
+			t.Fatalf("CreateTap(%q) second call = %v", tap, err)
+		}
+
+		if err := f.DeleteTap(tap); err != nil {
+			t.Fatalf("DeleteTap(%q) = %v", tap, err)
+		}
+
+		// Idempotent: deleting an absent tap is a no-op.
+		if err := f.DeleteTap(tap); err != nil {
+			t.Fatalf("DeleteTap(%q) on absent = %v", tap, err)
+		}
+
+		if _, err := netlink.LinkByName(tap); err == nil {
+			t.Fatalf("LinkByName(%q) succeeded after delete, want not-found", tap)
+		}
+	})
+}
