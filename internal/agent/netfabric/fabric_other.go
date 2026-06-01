@@ -74,3 +74,12 @@ func (unsupportedFabric) RemoveVXLAN(vni uint32) error { return errUnsupported }
 
 // VXLANExists reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) VXLANExists(vni uint32) (bool, error) { return false, errUnsupported }
+
+// FDBAppend reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) FDBAppend(vni uint32, e FDBEntry) error { return errUnsupported }
+
+// FDBDelete reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) FDBDelete(vni uint32, e FDBEntry) error { return errUnsupported }
+
+// FDBList reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) FDBList(vni uint32) ([]FDBEntry, error) { return nil, errUnsupported }

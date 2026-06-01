@@ -150,6 +150,113 @@ func TestLinuxFabricVXLANLifecycle(t *testing.T) {
 	})
 }
 
+func TestLinuxFabricVXLANFDB(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const vni = 1000
+		bringLoopbackUp(t)
+		if err := f.EnsureVXLAN(vxlanLoopbackConfig()); err != nil {
+			t.Fatalf("EnsureVXLAN = %v", err)
+		}
+
+		mac, err := net.ParseMAC("52:54:00:aa:bb:cc")
+		if err != nil {
+			t.Fatalf("ParseMAC = %v", err)
+		}
+		entry := FDBEntry{MAC: mac, Dst: netip.MustParseAddr("127.0.0.1")}
+
+		list, err := f.FDBList(vni)
+		if err != nil {
+			t.Fatalf("FDBList before append = %v", err)
+		}
+		if len(list) != 0 {
+			t.Fatalf("FDBList before append = %v, want empty", list)
+		}
+
+		if err := f.FDBAppend(vni, entry); err != nil {
+			t.Fatalf("FDBAppend = %v", err)
+		}
+		// Idempotent: a second identical append is a no-op.
+		if err := f.FDBAppend(vni, entry); err != nil {
+			t.Fatalf("FDBAppend second call = %v", err)
+		}
+
+		list, err = f.FDBList(vni)
+		if err != nil {
+			t.Fatalf("FDBList after append = %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("FDBList after append = %v, want exactly 1 entry", list)
+		}
+		if list[0].MAC.String() != mac.String() {
+			t.Errorf("entry MAC = %v, want %v", list[0].MAC, mac)
+		}
+		if list[0].Dst != netip.MustParseAddr("127.0.0.1") {
+			t.Errorf("entry Dst = %v, want 127.0.0.1", list[0].Dst)
+		}
+
+		if err := f.FDBDelete(vni, entry); err != nil {
+			t.Fatalf("FDBDelete = %v", err)
+		}
+		// Idempotent: deleting an absent entry is a no-op.
+		if err := f.FDBDelete(vni, entry); err != nil {
+			t.Fatalf("FDBDelete on absent = %v", err)
+		}
+		list, err = f.FDBList(vni)
+		if err != nil {
+			t.Fatalf("FDBList after delete = %v", err)
+		}
+		if len(list) != 0 {
+			t.Errorf("FDBList after delete = %v, want empty", list)
+		}
+	})
+}
+
+// TestLinuxFabricVXLANNegativePaths covers the error branches: a non-vxlan
+// link squatting the otvx<vni> name must not be adopted by EnsureVXLAN or
+// programmed by FDBAppend, VXLANExists reports false for it, and FDB ops on a
+// fully absent VTEP error rather than panic. Mirrors the bridge/tap side's
+// TestLinuxFabricCreateTapOverBridge negative coverage.
+func TestLinuxFabricVXLANNegativePaths(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		bringLoopbackUp(t)
+
+		const vni = 1000
+		mac, err := net.ParseMAC("52:54:00:de:ad:be")
+		if err != nil {
+			t.Fatalf("ParseMAC = %v", err)
+		}
+		entry := FDBEntry{MAC: mac, Dst: netip.MustParseAddr("127.0.0.1")}
+
+		// A non-vxlan link occupying the otvx<vni> name must not be adopted.
+		if err := f.EnsureBridge("otvx1000", 1500); err != nil {
+			t.Fatalf("EnsureBridge(otvx1000) = %v", err)
+		}
+		if err := f.EnsureVXLAN(vxlanLoopbackConfig()); err == nil {
+			t.Errorf("EnsureVXLAN over a non-vxlan link = nil, want error")
+		}
+		if exists, err := f.VXLANExists(vni); err != nil || exists {
+			t.Errorf("VXLANExists over a non-vxlan link = (%v, %v), want (false, nil)", exists, err)
+		}
+		if err := f.FDBAppend(vni, entry); err == nil {
+			t.Errorf("FDBAppend over a non-vxlan link = nil, want error")
+		}
+
+		// FDB ops on a fully absent VTEP must error, not panic.
+		const absent = 4242
+		if err := f.FDBAppend(absent, entry); err == nil {
+			t.Errorf("FDBAppend on absent vtep = nil, want error")
+		}
+		if _, err := f.FDBList(absent); err == nil {
+			t.Errorf("FDBList on absent vtep = nil, want error")
+		}
+		if err := f.FDBDelete(absent, entry); err == nil {
+			t.Errorf("FDBDelete on absent vtep = nil, want error")
+		}
+	})
+}
+
 func TestLinuxFabricBridgeLifecycle(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
@@ -503,8 +610,10 @@ func TestLinuxFabricConcurrentMutators(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
 		const bridge = "ot-br-conc0"
+		const vni = 1000
 		subnet := netip.MustParsePrefix("10.88.0.0/24")
 		gw := netip.MustParsePrefix("10.88.0.1/24")
+		bringLoopbackUp(t)
 
 		if err := f.EnsureBridge(bridge, 1500); err != nil {
 			t.Fatalf("EnsureBridge(%q) = %v", bridge, err)
@@ -517,14 +626,22 @@ func TestLinuxFabricConcurrentMutators(t *testing.T) {
 			go func(n int) {
 				defer wg.Done()
 				tap := "otconc" + string(rune('a'+n))
-				// Each goroutine drives the full mutator surface. Errors are
-				// intentionally ignored: the point is that the mutex keeps
-				// these from corrupting shared kernel state or deadlocking.
+				mac := net.HardwareAddr{0x52, 0x54, 0x00, 0x00, 0x00, byte(n)}
+				entry := FDBEntry{MAC: mac, Dst: netip.MustParseAddr("127.0.0.1")}
+				// Each goroutine drives the full mutator surface, including the
+				// VXLAN VTEP + FDB mutators that share the same f.mu and that a
+				// concurrent RemoveVXLAN could otherwise race against vxlanIndex.
+				// Errors are intentionally ignored: the point is that the mutex
+				// keeps these from corrupting shared kernel state or deadlocking.
 				_ = f.EnsureBridge(bridge, 1500)
 				_ = f.CreateTap(tap, 1500)
 				_ = f.AttachTap(tap, bridge)
 				_ = f.EnsureGatewayAddr(bridge, gw)
 				_ = f.EnsureMasquerade(subnet, "lo")
+				_ = f.EnsureVXLAN(vxlanLoopbackConfig())
+				_ = f.FDBAppend(vni, entry)
+				_ = f.FDBDelete(vni, entry)
+				_ = f.RemoveVXLAN(vni)
 				_ = f.RemoveMasquerade(subnet)
 				_ = f.RemoveGatewayAddr(bridge, gw)
 				_ = f.DeleteTap(tap)

@@ -5,6 +5,7 @@ package netfabric
 
 import (
 	"errors"
+	"net"
 	"net/netip"
 	"testing"
 
@@ -79,6 +80,38 @@ func TestFakeFabricVXLANLifecycle(t *testing.T) {
 	}
 	if diff := cmp.Diff([]uint32{1000}, f.RemoveVXLANCalls); diff != "" {
 		t.Errorf("RemoveVXLANCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestFakeFabricFDB(t *testing.T) {
+	mac, err := net.ParseMAC("52:54:00:aa:bb:cc")
+	if err != nil {
+		t.Fatalf("ParseMAC = %v", err)
+	}
+	entry := FDBEntry{MAC: mac, Dst: netip.MustParseAddr("127.0.0.1")}
+	f := &FakeFabric{FDBListResult: []FDBEntry{entry}}
+
+	if err := f.FDBAppend(1000, entry); err != nil {
+		t.Fatalf("FDBAppend = %v, want nil", err)
+	}
+	got, err := f.FDBList(1000)
+	if err != nil {
+		t.Fatalf("FDBList = %v, want nil", err)
+	}
+	if diff := cmp.Diff([]FDBEntry{entry}, got, cmpopts.EquateComparable(netip.Addr{})); diff != "" {
+		t.Errorf("FDBList mismatch (-want +got):\n%s", diff)
+	}
+	if err := f.FDBDelete(1000, entry); err != nil {
+		t.Fatalf("FDBDelete = %v, want nil", err)
+	}
+	if diff := cmp.Diff([]FDBCall{{VNI: 1000, Entry: entry}}, f.FDBAppendCalls, cmpopts.EquateComparable(netip.Addr{})); diff != "" {
+		t.Errorf("FDBAppendCalls mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]FDBCall{{VNI: 1000, Entry: entry}}, f.FDBDeleteCalls, cmpopts.EquateComparable(netip.Addr{})); diff != "" {
+		t.Errorf("FDBDeleteCalls mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]uint32{1000}, f.FDBListCalls); diff != "" {
+		t.Errorf("FDBListCalls mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -74,6 +74,15 @@ type Fabric interface {
 	RemoveVXLAN(vni uint32) error
 	// VXLANExists reports whether the otvx<vni> VTEP exists.
 	VXLANExists(vni uint32) (bool, error)
+
+	// FDBAppend installs a MAC -> dst VTEP entry in the otvx<vni> VTEP's
+	// kernel FDB, idempotently.
+	FDBAppend(vni uint32, e FDBEntry) error
+	// FDBDelete removes a MAC -> dst VTEP entry from the otvx<vni> FDB. It
+	// returns nil when the entry is already absent.
+	FDBDelete(vni uint32, e FDBEntry) error
+	// FDBList returns the MAC -> dst VTEP entries in the otvx<vni> FDB.
+	FDBList(vni uint32) ([]FDBEntry, error)
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
@@ -83,6 +92,12 @@ type VXLANConfig struct {
 	Local netip.Addr // local VTEP source IP (loopback for N1b)
 	Port  uint16     // UDP dstport (IANA VXLAN 4789)
 	MTU   int        // inner MTU (1390 for overlay)
+}
+
+// FDBEntry is one MAC -> remote VTEP mapping in a VXLAN VTEP's kernel FDB.
+type FDBEntry struct {
+	MAC net.HardwareAddr
+	Dst netip.Addr // remote VTEP IP (127.0.0.1 for the N1b loopback scaffold)
 }
 
 // NIC is one VM network interface to materialise. It is shared by the

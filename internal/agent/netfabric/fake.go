@@ -42,6 +42,14 @@ type FakeFabric struct {
 	EnsureVXLANCalls []VXLANConfig
 	RemoveVXLANCalls []uint32
 	VXLANExistsCalls []uint32
+
+	// FDBListResult is returned by FDBList alongside Errs["FDBList"]; nil
+	// when the error is set.
+	FDBListResult []FDBEntry
+
+	FDBAppendCalls []FDBCall
+	FDBDeleteCalls []FDBCall
+	FDBListCalls   []uint32
 }
 
 // BridgeCall records one EnsureBridge invocation.
@@ -174,6 +182,34 @@ func (f *FakeFabric) RemoveVXLAN(vni uint32) error {
 func (f *FakeFabric) VXLANExists(vni uint32) (bool, error) {
 	f.VXLANExistsCalls = append(f.VXLANExistsCalls, vni)
 	return f.VXLANExistsResult, f.err("VXLANExists")
+}
+
+// FDBCall records one FDBAppend or FDBDelete invocation.
+type FDBCall struct {
+	VNI   uint32
+	Entry FDBEntry
+}
+
+// FDBAppend records the call and returns Errs["FDBAppend"].
+func (f *FakeFabric) FDBAppend(vni uint32, e FDBEntry) error {
+	f.FDBAppendCalls = append(f.FDBAppendCalls, FDBCall{VNI: vni, Entry: e})
+	return f.err("FDBAppend")
+}
+
+// FDBDelete records the call and returns Errs["FDBDelete"].
+func (f *FakeFabric) FDBDelete(vni uint32, e FDBEntry) error {
+	f.FDBDeleteCalls = append(f.FDBDeleteCalls, FDBCall{VNI: vni, Entry: e})
+	return f.err("FDBDelete")
+}
+
+// FDBList records the call and returns FDBListResult with Errs["FDBList"].
+// When the error is non-nil the result is nil.
+func (f *FakeFabric) FDBList(vni uint32) ([]FDBEntry, error) {
+	f.FDBListCalls = append(f.FDBListCalls, vni)
+	if err := f.err("FDBList"); err != nil {
+		return nil, err
+	}
+	return f.FDBListResult, nil
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.
