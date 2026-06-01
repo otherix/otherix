@@ -135,11 +135,15 @@ func (s *Store) UpdateNetwork(ctx context.Context, arg store.UpdateNetworkParams
 	if err != nil {
 		return store.Network{}, err
 	}
+	egress := arg.Egress
+	if egress == "" {
+		egress = store.NetworkEgressNone
+	}
 	updated := existing
 	updated.Name = arg.Name
 	updated.BridgeName = arg.BridgeName
 	updated.Managed = arg.Managed
-	updated.Egress = arg.Egress
+	updated.Egress = egress
 	updated.Subnet = arg.Subnet
 	updated.Gateway = arg.Gateway
 	updated.VlanTag = arg.VlanTag

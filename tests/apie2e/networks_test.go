@@ -414,3 +414,49 @@ func TestNetworksManageForbiddenForViewer(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+// TestNetworksUpdateEgressEmptyNormalisesToNone verifies that a PATCH carrying
+// egress="" (an out-of-enum empty string) is normalised to "none" rather than
+// persisted verbatim, clearing subnet/gateway per the none-invariant.
+func TestNetworksUpdateEgressEmptyNormalisesToNone(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	// Seed a managed nat network with a subnet/gateway.
+	resp := h.post(t, "/v1/networks", managedNATBody(t), admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+	if created.Egress != "nat" || created.Subnet == nil || created.Gateway == nil {
+		t.Fatalf("seed nat network = %+v, want nat with subnet/gateway", created)
+	}
+
+	resp = h.patch(t, "/v1/networks/"+created.ID, map[string]any{"egress": ""}, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
+	}
+	var patched networkView
+	decodeJSON(t, resp, &patched)
+	if patched.Egress != "none" {
+		t.Errorf("egress = %q, want none", patched.Egress)
+	}
+	if patched.Subnet != nil {
+		t.Errorf("subnet = %v, want nil after egress cleared", patched.Subnet)
+	}
+	if patched.Gateway != nil {
+		t.Errorf("gateway = %v, want nil after egress cleared", patched.Gateway)
+	}
+
+	// GET echoes the normalised egress.
+	resp = h.get(t, "/v1/networks/"+created.ID, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", resp.StatusCode)
+	}
+	var fetched networkView
+	decodeJSON(t, resp, &fetched)
+	if fetched.Egress != "none" {
+		t.Errorf("get egress = %q, want none", fetched.Egress)
+	}
+}

@@ -201,7 +201,14 @@ func applyEgressUpdate(w http.ResponseWriter, r *http.Request, row *store.Networ
 			writeValidation(w, r, err.Error())
 			return false
 		}
-		row.Egress = store.NetworkEgress(*req.Egress)
+		// ValidateNetworkEgress admits "" as a synonym for none; normalise it
+		// here so an empty egress never persists as an out-of-enum value
+		// (mirrors CreateNetwork's defaulting in etcdstore).
+		egress := store.NetworkEgress(*req.Egress)
+		if egress == "" {
+			egress = store.NetworkEgressNone
+		}
+		row.Egress = egress
 	}
 
 	intent, ok := applySubnetGateway(w, r, row, req)

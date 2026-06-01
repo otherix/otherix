@@ -316,6 +316,26 @@ func TestNetworkCreateEgressDefaultsToNone(t *testing.T) {
 	}
 }
 
+func TestNetworkUpdateEgressEmptyDefaultsToNone(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := netParams(uniqueNetName("upd-egress-empty"))
+	if _, err := s.CreateNetwork(ctx, p); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	// Egress left empty on update: store defaults it to "none" defensively so
+	// an out-of-enum value never reaches the wire.
+	updated, err := s.UpdateNetwork(ctx, store.UpdateNetworkParams{
+		ID: p.ID, Name: p.Name, BridgeName: "br0", Mtu: 1500, Config: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("UpdateNetwork: %v", err)
+	}
+	if updated.Egress != store.NetworkEgressNone {
+		t.Errorf("Egress = %q, want %q", updated.Egress, store.NetworkEgressNone)
+	}
+}
+
 func TestNetworkUpdateManagedFieldsRoundTrip(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
