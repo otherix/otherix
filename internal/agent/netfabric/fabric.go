@@ -10,19 +10,12 @@
 package netfabric
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 
 	"github.com/google/uuid"
 )
-
-// errUnsupported is returned by every method on non-Linux builds and by
-// the not-yet-implemented Linux tap/NAT primitives. Callers may
-// errors.Is against it to detect that a platform or task does not
-// support the requested operation.
-var errUnsupported = errors.New("netfabric: unsupported on this platform")
 
 // allowedModels is the set of QEMU NIC models the fabric recognises.
 var allowedModels = map[string]struct{}{

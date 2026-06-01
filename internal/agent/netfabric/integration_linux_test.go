@@ -7,9 +7,12 @@
 package netfabric
 
 import (
+	"bytes"
+	"net/netip"
 	"runtime"
 	"testing"
 
+	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
@@ -172,6 +175,124 @@ func TestLinuxFabricTapLifecycle(t *testing.T) {
 
 		if _, err := netlink.LinkByName(tap); err == nil {
 			t.Fatalf("LinkByName(%q) succeeded after delete, want not-found", tap)
+		}
+	})
+}
+
+// countMasqRules returns how many rules in the otherix-nat postrouting
+// chain carry the marker for subnet.
+func countMasqRules(t *testing.T, subnet netip.Prefix) int {
+	t.Helper()
+	c := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		t.Fatalf("GetRules(%s/%s) = %v", natTableName, natChainName, err)
+	}
+	marker := masqUserData(subnet)
+	n := 0
+	for _, r := range rules {
+		if bytes.Equal(r.UserData, marker) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestLinuxFabricNAT(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-nat0"
+		gw := netip.MustParsePrefix("10.99.0.1/24")
+		subnet := netip.MustParsePrefix("10.99.0.0/24")
+
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge(%q, 1500) = %v", bridge, err)
+		}
+
+		if err := f.EnsureGatewayAddr(bridge, gw); err != nil {
+			t.Fatalf("EnsureGatewayAddr(%q, %s) = %v", bridge, gw, err)
+		}
+
+		link, err := netlink.LinkByName(bridge)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) = %v", bridge, err)
+		}
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("AddrList(%q) = %v", bridge, err)
+		}
+		found := false
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == gw.String() {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("gateway addr %s not present on %q after EnsureGatewayAddr", gw, bridge)
+		}
+
+		// Probe nftables support before asserting on masquerade. A fresh
+		// netns without nft support (older kernels, missing modules) makes
+		// the first masquerade op fail; skip rather than fail there.
+		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
+			t.Skipf("EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
+		}
+
+		if n := countMasqRules(t, subnet); n != 1 {
+			t.Fatalf("masquerade rule count = %d after first ensure, want 1", n)
+		}
+
+		// Idempotent: a second ensure must not add a duplicate rule.
+		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, lo) second call = %v", subnet, err)
+		}
+		if n := countMasqRules(t, subnet); n != 1 {
+			t.Fatalf("masquerade rule count = %d after second ensure, want 1", n)
+		}
+
+		// Only Otherix's own table must exist; the operator ruleset is
+		// never touched.
+		c := &nftables.Conn{}
+		tables, err := c.ListTables()
+		if err != nil {
+			t.Fatalf("ListTables() = %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != natTableName {
+				t.Errorf("unexpected nftables table %q (family %d), want only %q", tbl.Name, tbl.Family, natTableName)
+			}
+		}
+
+		if err := f.RemoveMasquerade(subnet); err != nil {
+			t.Fatalf("RemoveMasquerade(%s) = %v", subnet, err)
+		}
+		if n := countMasqRules(t, subnet); n != 0 {
+			t.Fatalf("masquerade rule count = %d after remove, want 0", n)
+		}
+
+		// Idempotent: removing an absent rule is a no-op.
+		if err := f.RemoveMasquerade(subnet); err != nil {
+			t.Fatalf("RemoveMasquerade(%s) on absent = %v", subnet, err)
+		}
+
+		if err := f.RemoveGatewayAddr(bridge, gw); err != nil {
+			t.Fatalf("RemoveGatewayAddr(%q, %s) = %v", bridge, gw, err)
+		}
+		addrs, err = netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("AddrList(%q) = %v", bridge, err)
+		}
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == gw.String() {
+				t.Fatalf("gateway addr %s still present after RemoveGatewayAddr", gw)
+			}
+		}
+
+		// Idempotent: removing an absent addr is a no-op.
+		if err := f.RemoveGatewayAddr(bridge, gw); err != nil {
+			t.Fatalf("RemoveGatewayAddr(%q, %s) on absent = %v", bridge, gw, err)
 		}
 	})
 }

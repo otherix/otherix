@@ -6,7 +6,15 @@
 
 package netfabric
 
-import "net/netip"
+import (
+	"errors"
+	"net/netip"
+)
+
+// errUnsupported is returned by every method on non-Linux builds.
+// Callers may errors.Is against it to detect that the platform does not
+// support host networking.
+var errUnsupported = errors.New("netfabric: unsupported on this platform")
 
 // unsupportedFabric is the non-Linux Fabric stub. The agent is
 // Linux-only; this implementation exists so the agent cross-compiles and
