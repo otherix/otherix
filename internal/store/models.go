@@ -84,6 +84,13 @@ const (
 	NetworkTypeBridge NetworkType = "bridge"
 )
 
+type NetworkEgress string
+
+const (
+	NetworkEgressNone NetworkEgress = "none"
+	NetworkEgressNAT  NetworkEgress = "nat"
+)
+
 type NicModel string
 
 const (
@@ -371,12 +378,25 @@ type Network struct {
 	Name       string
 	Type       NetworkType
 	BridgeName string
-	VlanTag    *int32
-	Mtu        int32
-	Config     []byte
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	DeletedAt  *time.Time
+	// Managed applies to type=bridge only: true=Otherix creates/owns the
+	// bridge, false=attach-only to an operator-provisioned bridge.
+	Managed bool
+	// Egress is the managed-egress mode: "none" (default) or "nat". nat
+	// requires type=bridge + managed=true (enforced at the API edge).
+	Egress  NetworkEgress
+	VlanTag *int32
+	Mtu     int32
+	// Subnet is the VM IP subnet; set when Egress=nat (and, in later
+	// phases, for overlay). Nil otherwise.
+	Subnet *netip.Prefix
+	// Gateway is the host-side gateway IP assigned on the bridge when
+	// Egress=nat (defaults to the first usable host in Subnet). Nil
+	// otherwise.
+	Gateway   *netip.Addr
+	Config    []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time
 }
 
 type Node struct {

@@ -4,6 +4,7 @@
 package store
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,8 +15,12 @@ type CreateNetworkParams struct {
 	Name       string
 	Type       NetworkType
 	BridgeName string
+	Managed    bool
+	Egress     NetworkEgress
 	VlanTag    *int32
 	Mtu        int32
+	Subnet     *netip.Prefix
+	Gateway    *netip.Addr
 	Config     []byte
 }
 
@@ -29,8 +34,12 @@ type ListNetworksParams struct {
 type UpdateNetworkParams struct {
 	Name       string
 	BridgeName string
+	Managed    bool
+	Egress     NetworkEgress
 	VlanTag    *int32
 	Mtu        int32
+	Subnet     *netip.Prefix
+	Gateway    *netip.Addr
 	Config     []byte
 	ID         uuid.UUID
 }

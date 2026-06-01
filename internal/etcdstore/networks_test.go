@@ -13,11 +13,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
@@ -269,6 +271,194 @@ func TestNetworkDeleteBlockedByNic(t *testing.T) {
 	if blocking.Resources["vm_nics"] != 1 {
 		t.Errorf("blocking vm_nics = %d, want 1", blocking.Resources["vm_nics"])
 	}
+}
+
+func TestNetworkManagedFieldsRoundTrip(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	subnet := netip.MustParsePrefix("10.42.0.0/24")
+	gateway := netip.MustParseAddr("10.42.0.1")
+	p := netParams(uniqueNetName("managed"))
+	p.Managed = true
+	p.Egress = store.NetworkEgressNAT
+	p.Subnet = &subnet
+	p.Gateway = &gateway
+
+	created, err := s.CreateNetwork(ctx, p)
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	want := managedView{Managed: true, Egress: store.NetworkEgressNAT, Subnet: subnet.String(), Gateway: gateway.String()}
+	if diff := cmp.Diff(want, viewOf(created)); diff != "" {
+		t.Errorf("CreateNetwork managed fields mismatch (-want +got):\n%s", diff)
+	}
+	got, err := s.NetworkByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("NetworkByID: %v", err)
+	}
+	if diff := cmp.Diff(want, viewOf(got)); diff != "" {
+		t.Errorf("NetworkByID managed fields mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestNetworkCreateEgressDefaultsToNone(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := netParams(uniqueNetName("egress-default"))
+	// Egress left empty: store defaults it to "none" defensively.
+	created, err := s.CreateNetwork(ctx, p)
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	if created.Egress != store.NetworkEgressNone {
+		t.Errorf("Egress = %q, want %q", created.Egress, store.NetworkEgressNone)
+	}
+}
+
+func TestNetworkUpdateManagedFieldsRoundTrip(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := netParams(uniqueNetName("upd-managed"))
+	if _, err := s.CreateNetwork(ctx, p); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	subnet := netip.MustParsePrefix("192.168.5.0/24")
+	gateway := netip.MustParseAddr("192.168.5.1")
+	updated, err := s.UpdateNetwork(ctx, store.UpdateNetworkParams{
+		ID:         p.ID,
+		Name:       p.Name,
+		BridgeName: "br0",
+		Mtu:        1500,
+		Config:     []byte(`{}`),
+		Managed:    true,
+		Egress:     store.NetworkEgressNAT,
+		Subnet:     &subnet,
+		Gateway:    &gateway,
+	})
+	if err != nil {
+		t.Fatalf("UpdateNetwork: %v", err)
+	}
+	want := managedView{Managed: true, Egress: store.NetworkEgressNAT, Subnet: subnet.String(), Gateway: gateway.String()}
+	if diff := cmp.Diff(want, viewOf(updated)); diff != "" {
+		t.Errorf("UpdateNetwork managed fields mismatch (-want +got):\n%s", diff)
+	}
+	got, err := s.NetworkByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("NetworkByID: %v", err)
+	}
+	if diff := cmp.Diff(want, viewOf(got)); diff != "" {
+		t.Errorf("NetworkByID managed fields mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestNetworkNodeStatusUpsertAndList(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	net := netParams(uniqueNetName("nns"))
+	if _, err := s.CreateNetwork(ctx, net); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	nodeA := uuid.New()
+	nodeB := uuid.New()
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: nodeA, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus A: %v", err)
+	}
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: nodeB, ReconciliationStatus: "pending",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus B: %v", err)
+	}
+
+	byNet, err := s.ListNetworkNodeStatusByNetwork(ctx, net.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork: %v", err)
+	}
+	if len(byNet) != 2 {
+		t.Fatalf("ListNetworkNodeStatusByNetwork len = %d, want 2", len(byNet))
+	}
+	// Sorted by NodeID string.
+	if byNet[0].NodeID.String() > byNet[1].NodeID.String() {
+		t.Errorf("ListNetworkNodeStatusByNetwork not sorted by node id: %v", byNet)
+	}
+	for _, st := range byNet {
+		if st.LastReconciledAt == nil || st.UpdatedAt.IsZero() {
+			t.Errorf("status %+v missing stamps", st)
+		}
+	}
+
+	byNode, err := s.ListNetworkNodeStatusByNode(ctx, nodeA)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNode: %v", err)
+	}
+	if len(byNode) != 1 || byNode[0].NodeID != nodeA || byNode[0].NetworkID != net.ID {
+		t.Errorf("ListNetworkNodeStatusByNode(A) = %+v, want single (net,A)", byNode)
+	}
+
+	// Upsert again for (net, A) with a failed status + error reflects last-writer-wins.
+	failMsg := "boom"
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: nodeA, ReconciliationStatus: "failed", ReconciliationError: &failMsg,
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus re-A: %v", err)
+	}
+	again, err := s.ListNetworkNodeStatusByNode(ctx, nodeA)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNode re-A: %v", err)
+	}
+	if len(again) != 1 || again[0].ReconciliationStatus != "failed" ||
+		again[0].ReconciliationError == nil || *again[0].ReconciliationError != failMsg {
+		t.Errorf("re-upsert (net,A) = %+v, want failed/%q", again, failMsg)
+	}
+}
+
+func TestNetworkDeletePurgesNodeStatus(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	net := netParams(uniqueNetName("nns-del"))
+	if _, err := s.CreateNetwork(ctx, net); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+			NetworkID: net.ID, NodeID: uuid.New(), ReconciliationStatus: "ready",
+		}); err != nil {
+			t.Fatalf("seed status %d: %v", i, err)
+		}
+	}
+	if err := s.DeleteNetwork(ctx, net.ID); err != nil {
+		t.Fatalf("DeleteNetwork: %v", err)
+	}
+	left, err := s.ListNetworkNodeStatusByNetwork(ctx, net.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork after delete: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("status records after delete = %d, want 0", len(left))
+	}
+}
+
+// managedView projects the four managed-egress fields for cmp comparison.
+// Subnet/Gateway are rendered to strings because netip.Prefix/netip.Addr carry
+// unexported fields that go-cmp cannot compare without a custom option.
+type managedView struct {
+	Managed bool
+	Egress  store.NetworkEgress
+	Subnet  string
+	Gateway string
+}
+
+func viewOf(n store.Network) managedView {
+	v := managedView{Managed: n.Managed, Egress: n.Egress}
+	if n.Subnet != nil {
+		v.Subnet = n.Subnet.String()
+	}
+	if n.Gateway != nil {
+		v.Gateway = n.Gateway.String()
+	}
+	return v
 }
 
 func idsOf(nets []store.Network) []uuid.UUID {

@@ -37,6 +37,8 @@ type HeartbeatProjection interface {
 	UpsertVMRuntime(ctx context.Context, arg UpsertVMRuntimeParams) error
 	UpdateStoragePoolReconciliation(ctx context.Context, arg UpdateStoragePoolReconciliationParams) error
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
+	UpsertNetworkNodeStatus(ctx context.Context, arg UpsertNetworkNodeStatusParams) error
+	ListNetworks(ctx context.Context) ([]Network, error)
 	ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]ListVMsForNodeDeclaredRow, error)
 }
 

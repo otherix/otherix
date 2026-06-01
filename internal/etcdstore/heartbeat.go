@@ -242,6 +242,33 @@ func (h heartbeatProjection) ListStoragePoolsByNode(ctx context.Context, nodeID 
 	return out, nil
 }
 
+// UpsertNetworkNodeStatus applies the agent's reconciliation report for a
+// cluster-wide network on this node, keyed by (network_id, node_id).
+func (h heartbeatProjection) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNetworkNodeStatusParams) error {
+	return h.s.UpsertNetworkNodeStatus(ctx, arg)
+}
+
+// ListNetworks returns every non-deleted network. Networks are cluster-wide (not
+// node-scoped), so the projection hands the agent the full set to materialise
+// on its node.
+func (h heartbeatProjection) ListNetworks(ctx context.Context) ([]store.Network, error) {
+	items, err := h.s.c.Range(ctx, networkPrefix())
+	if err != nil {
+		return nil, err
+	}
+	var out []store.Network
+	for _, kv := range items {
+		var n store.Network
+		if err := json.Unmarshal(kv.Value, &n); err != nil {
+			return nil, err
+		}
+		if n.DeletedAt == nil {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
 // ListVMsForNodeDeclared returns the per-node VM desired-state inventory: live
 // vms whose runtime current_node_id is the node and whose phase has not reached
 // 'gone', sorted lower(name) ascending.

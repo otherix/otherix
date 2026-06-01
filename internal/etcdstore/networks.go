@@ -31,6 +31,18 @@ func networkNameGuard(name string) string {
 	return etcd.Key("uniq", "networks", "name", strings.ToLower(name))
 }
 
+// networkNodeStatusPrefix is the root of the per-(network, node)
+// reconciliation status keyspace: /otherix/index/network_node_status/<net>/<node>.
+const networkNodeStatusPrefix = "/otherix/index/network_node_status/"
+
+func networkNodeStatusKey(net, node uuid.UUID) string {
+	return etcd.Key("index", "network_node_status", net.String(), node.String())
+}
+
+func networkNodeStatusByNetworkPrefix(net uuid.UUID) string {
+	return etcd.Key("index", "network_node_status", net.String()) + "/"
+}
+
 // vmNicNetworkIndexPrefix is the prefix under which active vm_nics record their
 // network attachment (written by the vms slice). DeleteNetwork counts the keys
 // here to block deletion of a referenced network.
@@ -57,11 +69,19 @@ func (s *Store) NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, e
 // among non-deleted rows) returns store.ErrNetworkNameExists.
 func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams) (store.Network, error) {
 	now := time.Now().UTC()
+	egress := arg.Egress
+	if egress == "" {
+		egress = store.NetworkEgressNone
+	}
 	n := store.Network{
 		ID:         arg.ID,
 		Name:       arg.Name,
 		Type:       arg.Type,
 		BridgeName: arg.BridgeName,
+		Managed:    arg.Managed,
+		Egress:     egress,
+		Subnet:     arg.Subnet,
+		Gateway:    arg.Gateway,
 		VlanTag:    arg.VlanTag,
 		Mtu:        arg.Mtu,
 		Config:     arg.Config,
@@ -101,6 +121,10 @@ func (s *Store) UpdateNetwork(ctx context.Context, arg store.UpdateNetworkParams
 	updated := existing
 	updated.Name = arg.Name
 	updated.BridgeName = arg.BridgeName
+	updated.Managed = arg.Managed
+	updated.Egress = arg.Egress
+	updated.Subnet = arg.Subnet
+	updated.Gateway = arg.Gateway
 	updated.VlanTag = arg.VlanTag
 	updated.Mtu = arg.Mtu
 	updated.Config = arg.Config
@@ -208,7 +232,29 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 		Commit(); err != nil {
 		return fmt.Errorf("delete network txn: %v", err)
 	}
+	// Best-effort purge of the per-(node, network) status records: they are
+	// garbage once the network is gone. A purge failure must not fail the
+	// delete, which has already committed.
+	s.purgeNetworkNodeStatus(ctx, id)
 	return nil
+}
+
+// purgeNetworkNodeStatus drops every per-(node, network) status record for the
+// network. Best-effort: errors are swallowed because the network's soft-delete
+// has already committed and the records are unreferenced garbage.
+func (s *Store) purgeNetworkNodeStatus(ctx context.Context, networkID uuid.UUID) {
+	items, err := s.c.Range(ctx, networkNodeStatusByNetworkPrefix(networkID))
+	if err != nil {
+		return
+	}
+	ops := make([]clientv3.Op, 0, len(items))
+	for _, kv := range items {
+		ops = append(ops, clientv3.OpDelete(kv.Key))
+	}
+	if len(ops) == 0 {
+		return
+	}
+	_ = s.commitInChunks(ctx, ops)
 }
 
 // countVMNicsOnNetwork counts the active vm_nics referencing the network via
@@ -219,6 +265,63 @@ func (s *Store) countVMNicsOnNetwork(ctx context.Context, id uuid.UUID) (int64, 
 		return 0, err
 	}
 	return int64(len(items)), nil
+}
+
+// UpsertNetworkNodeStatus writes the per-(node, network) reconciliation record,
+// stamping last_reconciled_at and updated_at. Last-writer-wins (one writer per
+// node), so the call is idempotent.
+func (s *Store) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNetworkNodeStatusParams) error {
+	now := time.Now().UTC()
+	st := store.NetworkNodeStatus{
+		NetworkID:            arg.NetworkID,
+		NodeID:               arg.NodeID,
+		ReconciliationStatus: arg.ReconciliationStatus,
+		ReconciliationError:  arg.ReconciliationError,
+		LastReconciledAt:     &now,
+		UpdatedAt:            now,
+	}
+	return s.c.PutJSON(ctx, networkNodeStatusKey(arg.NetworkID, arg.NodeID), st)
+}
+
+// ListNetworkNodeStatusByNetwork returns every per-node reconciliation record
+// for the network, sorted by node id for determinism.
+func (s *Store) ListNetworkNodeStatusByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	items, err := s.c.Range(ctx, networkNodeStatusByNetworkPrefix(networkID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.NetworkNodeStatus, 0, len(items))
+	for _, kv := range items {
+		var st store.NetworkNodeStatus
+		if err := json.Unmarshal(kv.Value, &st); err != nil {
+			return nil, fmt.Errorf("unmarshal network_node_status %q: %v", kv.Key, err)
+		}
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID.String() < out[j].NodeID.String() })
+	return out, nil
+}
+
+// ListNetworkNodeStatusByNode returns every per-network reconciliation record
+// owned by the node, sorted by network id for determinism. It scans the full
+// status keyspace (the records are keyed network-first) and filters by node.
+func (s *Store) ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	items, err := s.c.Range(ctx, networkNodeStatusPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var out []store.NetworkNodeStatus
+	for _, kv := range items {
+		var st store.NetworkNodeStatus
+		if err := json.Unmarshal(kv.Value, &st); err != nil {
+			return nil, fmt.Errorf("unmarshal network_node_status %q: %v", kv.Key, err)
+		}
+		if st.NodeID == nodeID {
+			out = append(out, st)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NetworkID.String() < out[j].NetworkID.String() })
+	return out, nil
 }
 
 // afterCursor reports whether (createdAt, id) sorts strictly after the cursor
