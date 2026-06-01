@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -392,6 +393,54 @@ func TestLinuxFabricListTaps(t *testing.T) {
 		want := []string{"otaaaa0", "otbeef0"}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("ListTaps() mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+// TestLinuxFabricConcurrentMutators hammers the bridge / tap / NAT
+// mutators of one shared fabric from several goroutines at once, the way
+// the reconciler goroutine and the VM-manager handler goroutines share a
+// single instance in production. It is a smoke for the fabric-level mutex
+// (FIX 4): the assertion is that no call deadlocks and the process does
+// not crash on a concurrent netlink / nftables sequence. Individual op
+// errors are tolerated (a tap attach can lose a race with a bridge remove);
+// a hang or panic is the failure this guards against.
+func TestLinuxFabricConcurrentMutators(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-conc0"
+		subnet := netip.MustParsePrefix("10.88.0.0/24")
+		gw := netip.MustParsePrefix("10.88.0.1/24")
+
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge(%q) = %v", bridge, err)
+		}
+
+		const workers = 8
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for i := range workers {
+			go func(n int) {
+				defer wg.Done()
+				tap := "otconc" + string(rune('a'+n))
+				// Each goroutine drives the full mutator surface. Errors are
+				// intentionally ignored: the point is that the mutex keeps
+				// these from corrupting shared kernel state or deadlocking.
+				_ = f.EnsureBridge(bridge, 1500)
+				_ = f.CreateTap(tap, 1500)
+				_ = f.AttachTap(tap, bridge)
+				_ = f.EnsureGatewayAddr(bridge, gw)
+				_ = f.EnsureMasquerade(subnet, "lo")
+				_ = f.RemoveMasquerade(subnet)
+				_ = f.RemoveGatewayAddr(bridge, gw)
+				_ = f.DeleteTap(tap)
+			}(i)
+		}
+		wg.Wait()
+
+		// The shared bridge must still be removable after the storm.
+		if err := f.RemoveBridge(bridge); err != nil {
+			t.Errorf("RemoveBridge(%q) after concurrent storm = %v", bridge, err)
 		}
 	})
 }

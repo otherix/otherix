@@ -18,6 +18,9 @@ import (
 // second call against an existing bridge only reapplies MTU and the up
 // state.
 func (f *linuxFabric) EnsureBridge(name string, mtu int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		var notFound netlink.LinkNotFoundError
@@ -44,6 +47,9 @@ func (f *linuxFabric) EnsureBridge(name string, mtu int) error {
 // RemoveBridge deletes the named bridge. It returns nil if the bridge is
 // already absent.
 func (f *linuxFabric) RemoveBridge(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		var notFound netlink.LinkNotFoundError

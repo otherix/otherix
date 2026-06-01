@@ -27,6 +27,10 @@ func (f *linuxFabric) CreateTap(name string, mtu int) error {
 	if mtu < 0 || mtu > 65535 {
 		return fmt.Errorf("netfabric: create tap %s: mtu %d out of range [0,65535]", name, mtu)
 	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		var notFound netlink.LinkNotFoundError
@@ -62,6 +66,9 @@ func (f *linuxFabric) CreateTap(name string, mtu int) error {
 // AttachTap enslaves the named tap device to the named bridge. It
 // returns an error if either link is absent.
 func (f *linuxFabric) AttachTap(tap, bridge string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	tapLink, err := netlink.LinkByName(tap)
 	if err != nil {
 		return fmt.Errorf("netfabric: attach tap %s to %s: tap: %v", tap, bridge, err)
@@ -79,6 +86,9 @@ func (f *linuxFabric) AttachTap(tap, bridge string) error {
 // DeleteTap removes the named tap device. It returns nil if the device
 // is already absent.
 func (f *linuxFabric) DeleteTap(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		var notFound netlink.LinkNotFoundError

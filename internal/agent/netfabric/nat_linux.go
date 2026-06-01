@@ -37,8 +37,8 @@ const ifnameSize = 16
 // AddrReplace adds the address when absent and is a no-op when it is
 // already present, so a second call against the same bridge succeeds.
 func (f *linuxFabric) EnsureGatewayAddr(bridge string, addr netip.Prefix) error {
-	f.natMu.Lock()
-	defer f.natMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
 	link, err := netlink.LinkByName(bridge)
 	if err != nil {
@@ -58,8 +58,8 @@ func (f *linuxFabric) EnsureGatewayAddr(bridge string, addr netip.Prefix) error 
 // nil when the bridge link is absent and when the address is already
 // gone, so it is safe to call during repeated teardown.
 func (f *linuxFabric) RemoveGatewayAddr(bridge string, addr netip.Prefix) error {
-	f.natMu.Lock()
-	defer f.natMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
 	link, err := netlink.LinkByName(bridge)
 	if err != nil {
@@ -123,8 +123,8 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 		return fmt.Errorf("netfabric: ensure masquerade for %s: egress iface %q exceeds %d-byte limit", subnet, egressIface, ifnameSize-1)
 	}
 
-	f.natMu.Lock()
-	defer f.natMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
 	c := &nftables.Conn{}
 	table, chain := f.natTableChain(c)
@@ -165,8 +165,8 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 // including when the NAT table has never been created; removal never
 // materialises state.
 func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
-	f.natMu.Lock()
-	defer f.natMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
 	c := &nftables.Conn{}
 	// Reference the table and chain without creating them. On a fresh host

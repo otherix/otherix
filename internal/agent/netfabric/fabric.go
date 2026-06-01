@@ -31,8 +31,10 @@ var allowedModels = map[string]struct{}{
 }
 
 // Fabric materialises and tears down host networking primitives for VM
-// interfaces. Implementations are not safe for concurrent use unless
-// documented otherwise; the VM manager serialises calls per node.
+// interfaces. The Linux implementation serialises every mutating method
+// with an internal mutex, so it is safe for concurrent use: one instance
+// is shared between the network reconciler goroutine and the VM-manager
+// handler goroutines.
 type Fabric interface {
 	// EnsureBridge creates the named Linux bridge if absent, sets its MTU
 	// when mtu is positive, and brings it up. It is idempotent.
