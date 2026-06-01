@@ -6550,6 +6550,19 @@ components:
             `user_data` set → VM-level override; `user_data` absent +
             `cloud_init_disabled=false` (default) → template fallback;
             `cloud_init_disabled=true` → no cloud-init at all.
+        network:
+          type: string
+          description: |
+            Live MVP field: a single bridge network to attach one NIC
+            to, given as a network **name or uuid**. When set the VM is
+            created with one NIC on that network's bridge (the CP mints
+            a `52:54:00` QEMU MAC; the guest configures its own IP).
+            Unknown network → 404 `not_found`; a non-bridge network type
+            → 400 `validation_failed` (overlay attach is a later
+            iteration). When omitted the VM has no NIC and the agent
+            falls back to legacy SLIRP networking. This is the live
+            handler shape; the richer `nics` array below is the eventual
+            contract and is acknowledged as drifted.
         meta_data:
           type: [string, "null"]
         network_config:

@@ -38,6 +38,11 @@ type CreateVMRequest struct {
 	Node     *string `json:"node,omitempty"`
 	VCPUs    int     `json:"vcpus"`
 	MemoryMB int     `json:"memory_mb"`
+	// Network is the optional bridge network (name or uuid) to attach a
+	// single NIC to. Omitted leaves the VM with no NIC (the agent falls
+	// back to legacy SLIRP networking). The server rejects non-bridge
+	// types with 400.
+	Network string `json:"network,omitempty"`
 	// UserData is the optional VM-level cloud-init override (L3 /
 	// operator UX iteration). When set, fully replaces the template's
 	// baked cloud_init_user_data in the per-VM resolved blob; agent

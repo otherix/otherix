@@ -106,6 +106,7 @@ type CreateArgs struct {
 	Template      store.Template
 	Pool          store.StoragePool
 	Node          store.Node
+	NICs          []agentclient.VMCreateNIC
 	OnAgentTaskID func(ctx context.Context, agentTaskID uuid.UUID) error
 }
 

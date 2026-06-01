@@ -78,6 +78,8 @@ type Store interface {
 	UpdateVMRuntimePhase(ctx context.Context, arg store.UpdateVMRuntimePhaseParams) error
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
+	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
+	NetworkByName(ctx context.Context, name string) (store.Network, error)
 	CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 }

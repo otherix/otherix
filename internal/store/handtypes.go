@@ -55,11 +55,15 @@ type PlacementReader interface {
 	CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error)
 }
 
-// VMCreateWrites bundles the four rows a vm.create commits atomically: the VM,
-// its boot disk, the task, and the enqueued job args.
+// VMCreateWrites bundles the rows a vm.create commits atomically: the VM, its
+// boot disk, an optional network interface, the task, and the enqueued job
+// args. Nic is nil when the create request named no network (legacy SLIRP
+// fallback on the agent); when set it lands in the same transaction as the VM
+// so the network's delete-block index is consistent the instant the VM exists.
 type VMCreateWrites struct {
 	VM   CreateVMParams
 	Disk CreateVMDiskParams
+	Nic  *CreateVMNicParams
 	Task CreateTaskParams
 	Job  queue.JobArgs
 }

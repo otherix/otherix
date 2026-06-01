@@ -69,6 +69,14 @@ func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.Placement
 	ops = append(ops, vmDiskIndexOps(disk)...)
 	ops = append(ops, taskIndexOps(task)...)
 
+	if writes.Nic != nil {
+		nicOps, err := vmNicCreateOps(vmNicFromCreateParams(*writes.Nic, now))
+		if err != nil {
+			return uuid.Nil, err
+		}
+		ops = append(ops, nicOps...)
+	}
+
 	resp, err := s.c.Raw().Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)).
 		Then(ops...).

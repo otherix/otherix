@@ -5,9 +5,11 @@ package vms
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -48,6 +50,12 @@ type vmCreateRequest struct {
 	Node     *string `json:"node,omitempty"`
 	VCPUs    int     `json:"vcpus"`
 	MemoryMB int     `json:"memory_mb"`
+	// Network is an optional bridge network to attach a single NIC to.
+	// Accepts either a network name or a uuid literal. When omitted the
+	// VM is created with no NIC (the agent falls back to legacy SLIRP
+	// user-mode networking). Non-bridge network types are rejected with
+	// 400 until overlay attach lands (N1b).
+	Network string `json:"network,omitempty"`
 	// UserData is an optional VM-level cloud-init override (L3
 	// Area 3 lock). When provided, fully replaces the template's
 	// baked cloud_init_user_data in the per-VM resolved blob; the
@@ -134,10 +142,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	network, ok := h.resolveNetwork(w, r, req.Network)
+	if !ok {
+		return
+	}
+
 	taskID, err := h.scheduleAndEnqueueCreate(r.Context(), scheduleInputs{
 		Caller:   caller,
 		Template: template,
 		PoolName: poolName,
+		Network:  network,
 		Req:      req,
 	})
 	if err != nil {
@@ -232,6 +246,7 @@ type scheduleInputs struct {
 	Caller   *auth.User
 	Template store.Template
 	PoolName string
+	Network  *store.Network
 	Req      vmCreateRequest
 }
 
@@ -297,6 +312,22 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			return store.VMCreateWrites{}, fmt.Errorf("marshal task args: %v", err)
 		}
 
+		var nic *store.CreateVMNicParams
+		if in.Network != nil {
+			mac, macErr := generateLocalMAC()
+			if macErr != nil {
+				return store.VMCreateWrites{}, fmt.Errorf("generate nic mac: %v", macErr)
+			}
+			nic = &store.CreateVMNicParams{
+				ID:          uuid.New(),
+				VmID:        vmID,
+				NetworkID:   in.Network.ID,
+				DeviceOrder: 0,
+				Model:       store.NicModelVirtio,
+				MacAddress:  mac,
+			}
+		}
+
 		nodeID := decision.Node.ID
 		return store.VMCreateWrites{
 			VM: store.CreateVMParams{
@@ -330,6 +361,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				Discard:          store.DiskDiscardUnmap,
 				BootOrder:        nil,
 			},
+			Nic: nic,
 			Task: store.CreateTaskParams{
 				ID:           taskID,
 				Type:         "vm.create",
@@ -416,6 +448,50 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 		return row.Name, true
 	}
 	return requested, true
+}
+
+// resolveNetwork resolves the optional `network` request field to a network
+// row. It accepts:
+//
+//   - empty: no NIC is attached (nil, true) — legacy SLIRP fallback.
+//   - uuid literal: looked up by id; unknown id → 404 not_found.
+//   - bare string: looked up by name; unknown name → 404 not_found.
+//
+// A resolved network whose type is not `bridge` is rejected with 400 — only
+// bridge attach is supported in this slice (overlay is N1b). The boolean
+// second return mirrors the other resolve* helpers' short-circuit signal.
+func (h *Handler) resolveNetwork(w http.ResponseWriter, r *http.Request, requested string) (*store.Network, bool) {
+	if requested == "" {
+		return nil, true
+	}
+	var (
+		net store.Network
+		err error
+	)
+	if id, perr := uuid.Parse(requested); perr == nil {
+		net, err = h.store.NetworkByID(r.Context(), id)
+	} else {
+		net, err = h.store.NetworkByName(r.Context(), requested)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			response.WriteError(w, r, http.StatusNotFound,
+				response.CodeNotFound, "network not found", nil)
+			return nil, false
+		}
+		h.log.ErrorContext(r.Context(), "load network", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load network", nil)
+		return nil, false
+	}
+	if net.Type != store.NetworkTypeBridge {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"only bridge networks can be attached at vm create",
+			map[string]any{"network_type": string(net.Type)})
+		return nil, false
+	}
+	return &net, true
 }
 
 // writeCreateError dispatches the merged scheduleAndEnqueueCreate
@@ -598,6 +674,19 @@ func extractInsufficient(err error, out **insufficientResourcesView) bool {
 		nodes:                detail.NodeUtilization,
 	}
 	return true
+}
+
+// generateLocalMAC mints a locally-administered unicast MAC in QEMU's
+// 52:54:00 OUI with three random low bytes. The 52:54:00 prefix is the
+// conventional QEMU/KVM range; the random suffix gives ~16M values, so a
+// collision within a cluster is astronomically unlikely and no retry loop is
+// warranted.
+func generateLocalMAC() (net.HardwareAddr, error) {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, err
+	}
+	return net.HardwareAddr{0x52, 0x54, 0x00, b[0], b[1], b[2]}, nil
 }
 
 // ptrUUID returns a non-nil pointer to id. The store params expect

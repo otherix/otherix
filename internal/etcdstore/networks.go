@@ -64,6 +64,23 @@ func (s *Store) NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, e
 	return n, nil
 }
 
+// NetworkByName resolves a non-deleted network through its case-insensitive
+// name guard, returning store.ErrNotFound when no live network owns the name.
+func (s *Store) NetworkByName(ctx context.Context, name string) (store.Network, error) {
+	val, found, err := s.c.Get(ctx, networkNameGuard(name))
+	if err != nil {
+		return store.Network{}, err
+	}
+	if !found {
+		return store.Network{}, store.ErrNotFound
+	}
+	id, err := uuid.Parse(string(val))
+	if err != nil {
+		return store.Network{}, fmt.Errorf("corrupt network name guard %q: %v", name, err)
+	}
+	return s.NetworkByID(ctx, id)
+}
+
 // CreateNetwork inserts a network, stamping created_at/updated_at, and writes
 // the name guard + primary atomically. A name collision (case-insensitive,
 // among non-deleted rows) returns store.ErrNetworkNameExists.

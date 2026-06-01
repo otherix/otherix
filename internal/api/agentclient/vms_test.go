@@ -5,6 +5,7 @@ package agentclient_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -70,6 +71,54 @@ func TestPostVMCreate_HappyPath(t *testing.T) {
 	}
 	if gotTaskID != wantTaskID {
 		t.Errorf("task_id = %s, want %s", gotTaskID, wantTaskID)
+	}
+}
+
+func TestPostVMCreate_EncodesNics(t *testing.T) {
+	t.Parallel()
+
+	nicID := uuid.New()
+	taskID := uuid.New()
+	type wireNIC struct {
+		ID          string `json:"id"`
+		Bridge      string `json:"bridge"`
+		MAC         string `json:"mac"`
+		Model       string `json:"model"`
+		MTU         int    `json:"mtu"`
+		DeviceOrder int    `json:"device_order"`
+	}
+	type wireBody struct {
+		Nics []wireNIC `json:"nics"`
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/vms", func(w http.ResponseWriter, r *http.Request) {
+		var body wireBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if len(body.Nics) != 1 {
+			t.Fatalf("nics = %d, want 1", len(body.Nics))
+		}
+		got := body.Nics[0]
+		want := wireNIC{ID: nicID.String(), Bridge: "br0", MAC: "52:54:00:12:34:56", Model: "virtio", MTU: 1500, DeviceOrder: 0}
+		if got != want {
+			t.Errorf("nic = %+v, want %+v", got, want)
+		}
+		jsonWrite(t, w, http.StatusAccepted, map[string]any{
+			"task_id": taskID,
+			"status":  "pending",
+			"links":   map[string]any{"self": "/v1/tasks/" + taskID.String()},
+		})
+	})
+	_, baseURL := startAgentTLSServer(t, mux)
+
+	req := validVMCreateRequest()
+	req.Nics = []agentclient.VMCreateNIC{{
+		ID: nicID, Bridge: "br0", MAC: "52:54:00:12:34:56", Model: "virtio", MTU: 1500, DeviceOrder: 0,
+	}}
+	if _, err := newClientAutoDir(t).PostVMCreate(context.Background(), baseURL, "", req); err != nil {
+		t.Fatalf("PostVMCreate: %v", err)
 	}
 }
 

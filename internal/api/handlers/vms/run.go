@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -32,6 +33,8 @@ type WorkerStore interface {
 	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
 	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
+	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
+	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
@@ -79,6 +82,10 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
 	}
+	nics, err := resolveCreateNICs(ctx, st, args.VMID)
+	if err != nil {
+		return failRun(ctx, st, log, "vms.create", taskID, "internal", err)
+	}
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("reload task: %v", err)
@@ -92,6 +99,7 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		Template:      tpl,
 		Pool:          pool,
 		Node:          node,
+		NICs:          nics,
 		OnAgentTaskID: onAgentTaskID(st, taskID),
 	})
 	if execErr != nil {
@@ -111,6 +119,38 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		return fmt.Errorf("project create success: %v", err)
 	}
 	return nil
+}
+
+// resolveCreateNICs loads the VM's vm_nics and resolves each against its
+// network, producing the fully-resolved agent-facing NIC list: bridge name +
+// MTU come from the network, MAC / model / device order from the vm_nic. An
+// empty result means the VM has no NICs (the agent falls back to SLIRP). A
+// missing network is an internal inconsistency (the row was created atomically
+// with the NIC) and fails the task.
+func resolveCreateNICs(ctx context.Context, st WorkerStore, vmID uuid.UUID) ([]agentclient.VMCreateNIC, error) {
+	rows, err := st.ListVMNicsByVM(ctx, vmID)
+	if err != nil {
+		return nil, fmt.Errorf("list vm nics: %v", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]agentclient.VMCreateNIC, 0, len(rows))
+	for _, n := range rows {
+		net, err := st.NetworkByID(ctx, n.NetworkID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve network %s for nic %s: %v", n.NetworkID, n.ID, err)
+		}
+		out = append(out, agentclient.VMCreateNIC{
+			ID:          n.ID,
+			Bridge:      net.BridgeName,
+			MAC:         n.MacAddress.String(),
+			Model:       string(n.Model),
+			MTU:         int(net.Mtu),
+			DeviceOrder: int(n.DeviceOrder),
+		})
+	}
+	return out, nil
 }
 
 // DeleteHandler returns the dispatcher handler for vm.delete jobs.
