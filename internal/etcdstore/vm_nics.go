@@ -89,8 +89,21 @@ func (s *Store) vmNicDeleteOps(ctx context.Context, vmID uuid.UUID, now time.Tim
 		if gerr != nil {
 			return nil, gerr
 		}
-		if !found || n.DeletedAt != nil {
-			// Row already gone; still drop any lingering per-VM index entry.
+		if found && n.DeletedAt != nil {
+			// Redelivery: the row is already soft-deleted but its index entries
+			// linger. The network id is still on the row, so drop BOTH indexes -
+			// dropping only the per-VM index would leave the per-network index
+			// behind and wedge DeleteNetwork (countVMNicsOnNetwork) forever.
+			ops = append(ops,
+				clientv3.OpDelete(vmNicVMIndexKey(vmID, id)),
+				clientv3.OpDelete(vmNicNetworkIndexKey(n.NetworkID, id)),
+			)
+			continue
+		}
+		if !found {
+			// Hard-gone: the row no longer exists, so its network id cannot be
+			// reconstructed - drop only the lingering per-VM index entry. A
+			// stale per-network index, if any, is unreachable from here.
 			ops = append(ops, clientv3.OpDelete(vmNicVMIndexKey(vmID, id)))
 			continue
 		}
