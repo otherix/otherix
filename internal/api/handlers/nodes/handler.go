@@ -11,8 +11,10 @@ package nodes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +40,8 @@ type Store interface {
 	UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, error)
 	ListNodesEffective(ctx context.Context, arg store.ListNodesEffectiveParams) ([]store.NodeEffectiveAvailability, error)
 	DeleteNode(ctx context.Context, id uuid.UUID, force bool, callerID uuid.UUID) (store.NodeDeleteOutcome, error)
+	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error)
+	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -72,36 +76,51 @@ func New(s Store, log *slog.Logger) *Handler {
 // state flip are not meaningful (a cordoned node will not receive new
 // placements anyway).
 type nodeView struct {
-	ID                       string            `json:"id"`
-	Name                     string            `json:"name"`
-	Architecture             string            `json:"architecture"`
-	AdvertisedEndpoint       string            `json:"advertised_endpoint"`
-	Migration                migrationCap      `json:"migration"`
-	Status                   string            `json:"status"`
-	CordonedAt               *string           `json:"cordoned_at"`
-	CPUCoresTotal            *int32            `json:"cpu_cores_total"`
-	CPUCoresAvailable        *int32            `json:"cpu_cores_available"`
-	CPUCoresEffective        *int32            `json:"cpu_cores_effective"`
-	CPUModel                 *string           `json:"cpu_model"`
-	CPUFlags                 []string          `json:"cpu_flags"`
-	MemoryTotalMiB           *int64            `json:"memory_total_mib"`
-	MemoryAvailableMiB       *int64            `json:"memory_available_mib"`
-	MemoryEffectiveMiB       *int64            `json:"memory_effective_mib"`
-	Hugepages2MiB            *int32            `json:"hugepages_2mib_total"`
-	Hugepages1GiB            *int32            `json:"hugepages_1gib_total"`
-	KernelVersion            *string           `json:"kernel_version"`
-	QEMUVersion              *string           `json:"qemu_version"`
-	NumaTopology             json.RawMessage   `json:"numa_topology"`
-	Capabilities             json.RawMessage   `json:"capabilities"`
-	LastHeartbeatAt          *string           `json:"last_heartbeat_at"`
-	AgentVersion             *string           `json:"agent_version"`
-	Labels                   map[string]string `json:"labels"`
-	MemoryPressure           *pressureView     `json:"memory_pressure"`
-	SystemDiskTotalBytes     *int64            `json:"system_disk_total_bytes"`
-	SystemDiskAvailableBytes *int64            `json:"system_disk_available_bytes"`
-	SystemDiskPressure       *pressureView     `json:"system_disk_pressure"`
-	CreatedAt                string            `json:"created_at"`
-	UpdatedAt                string            `json:"updated_at"`
+	ID                       string                 `json:"id"`
+	Name                     string                 `json:"name"`
+	Architecture             string                 `json:"architecture"`
+	AdvertisedEndpoint       string                 `json:"advertised_endpoint"`
+	Migration                migrationCap           `json:"migration"`
+	Status                   string                 `json:"status"`
+	CordonedAt               *string                `json:"cordoned_at"`
+	CPUCoresTotal            *int32                 `json:"cpu_cores_total"`
+	CPUCoresAvailable        *int32                 `json:"cpu_cores_available"`
+	CPUCoresEffective        *int32                 `json:"cpu_cores_effective"`
+	CPUModel                 *string                `json:"cpu_model"`
+	CPUFlags                 []string               `json:"cpu_flags"`
+	MemoryTotalMiB           *int64                 `json:"memory_total_mib"`
+	MemoryAvailableMiB       *int64                 `json:"memory_available_mib"`
+	MemoryEffectiveMiB       *int64                 `json:"memory_effective_mib"`
+	Hugepages2MiB            *int32                 `json:"hugepages_2mib_total"`
+	Hugepages1GiB            *int32                 `json:"hugepages_1gib_total"`
+	KernelVersion            *string                `json:"kernel_version"`
+	QEMUVersion              *string                `json:"qemu_version"`
+	NumaTopology             json.RawMessage        `json:"numa_topology"`
+	Capabilities             json.RawMessage        `json:"capabilities"`
+	LastHeartbeatAt          *string                `json:"last_heartbeat_at"`
+	AgentVersion             *string                `json:"agent_version"`
+	Labels                   map[string]string      `json:"labels"`
+	MemoryPressure           *pressureView          `json:"memory_pressure"`
+	SystemDiskTotalBytes     *int64                 `json:"system_disk_total_bytes"`
+	SystemDiskAvailableBytes *int64                 `json:"system_disk_available_bytes"`
+	SystemDiskPressure       *pressureView          `json:"system_disk_pressure"`
+	CreatedAt                string                 `json:"created_at"`
+	UpdatedAt                string                 `json:"updated_at"`
+	NetworkConditions        []networkConditionView `json:"network_conditions"`
+}
+
+// networkConditionView is one per-(node, network) materialisation record
+// projected for the full Node view. A networks row is one cluster-wide
+// definition; materialising the bridge can succeed on some nodes and fail
+// on others, so the per-node outcome surfaces here keyed by network. It is
+// an admin / operator-only, GET-by-id detail: the list path leaves it nil
+// to avoid a per-row fan-out over the status keyspace.
+type networkConditionView struct {
+	NetworkID            string  `json:"network_id"`
+	Name                 string  `json:"name"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error"`
+	LastReconciledAt     *string `json:"last_reconciled_at"`
 }
 
 // pressureView mirrors components/schemas/MemoryPressureCondition
@@ -182,6 +201,10 @@ func toViewEffective(n store.NodeEffectiveAvailability) nodeView {
 	if v.CPUFlags == nil {
 		v.CPUFlags = []string{}
 	}
+	// network_conditions is a GET-by-id detail. The list path leaves it
+	// empty (never populated) to avoid a per-row fan-out over the status
+	// keyspace; GET /v1/nodes/{id} replaces it via networkConditions.
+	v.NetworkConditions = []networkConditionView{}
 	return v
 }
 
@@ -200,6 +223,43 @@ func toPressureView(since *time.Time, count int32) *pressureView {
 		Since:            since.UTC().Format(time.RFC3339Nano),
 		ConsecutiveCount: count,
 	}
+}
+
+// networkConditions resolves the per-(node, network) materialisation
+// records owned by nodeID into the full-view projection, sorted by network
+// name for operator readability. Each record's network id is resolved to a
+// name via NetworkByID; a record whose network has been deleted (or never
+// existed) is silently skipped rather than erroring - a stale status row
+// must not 500 the node read. Returns an empty (non-nil) slice when the
+// node has no records so the wire field is `[]`, never null.
+func networkConditions(ctx context.Context, s Store, nodeID uuid.UUID) ([]networkConditionView, error) {
+	rows, err := s.ListNetworkNodeStatusByNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]networkConditionView, 0, len(rows))
+	for _, st := range rows {
+		net, err := s.NetworkByID(ctx, st.NetworkID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		c := networkConditionView{
+			NetworkID:            st.NetworkID.String(),
+			Name:                 net.Name,
+			ReconciliationStatus: st.ReconciliationStatus,
+			ReconciliationError:  st.ReconciliationError,
+		}
+		if st.LastReconciledAt != nil {
+			ts := st.LastReconciledAt.UTC().Format(time.RFC3339Nano)
+			c.LastReconciledAt = &ts
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // toSummaryViewEffective is the reduced projection counterpart. The
@@ -226,10 +286,20 @@ func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
 // writeNodeResponse. admin / operator get the full effective projection;
 // other roles get the summary, identical to the raw-row path (summary
 // has no resource fields).
-func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, write func(http.ResponseWriter, *http.Request, int, any)) {
+//
+// conditions is the per-(node, network) materialisation list, attached to
+// the full view only. The summary view never carries it, so leaking the
+// per-node network state to developer / viewer is structurally impossible.
+// Callers that do not surface conditions (cordon / uncordon / create use
+// writeNodeResponse on the raw row) pass nil.
+func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, conditions []networkConditionView, write func(http.ResponseWriter, *http.Request, int, any)) {
 	user := auth.UserFromContext(r.Context())
 	if user != nil && (user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
-		write(w, r, status, toViewEffective(n))
+		v := toViewEffective(n)
+		if conditions != nil {
+			v.NetworkConditions = conditions
+		}
+		write(w, r, status, v)
 		return
 	}
 	write(w, r, status, toSummaryViewEffective(n))
@@ -276,6 +346,10 @@ func toView(n store.Node) nodeView {
 	if v.CPUFlags == nil {
 		v.CPUFlags = []string{}
 	}
+	// network_conditions is a GET-by-id detail surfaced only on the
+	// effective view; the raw-row path (create / cordon / uncordon) emits
+	// an empty list rather than null for wire consistency.
+	v.NetworkConditions = []networkConditionView{}
 	return v
 }
 

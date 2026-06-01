@@ -4165,8 +4165,51 @@ components:
             heartbeat. Pairs with `system_disk_total_bytes`.
         system_disk_pressure:
           $ref: "#/components/schemas/SystemDiskPressureCondition"
+        network_conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeNetworkCondition"
+          description: |
+            Per-network materialisation status for the cluster-wide
+            networks as observed on THIS node. A `networks` row is one
+            cluster-wide definition; materialising its bridge can succeed
+            on some nodes and fail on others, so the per-node outcome is
+            surfaced here keyed by network.
+
+            admin / operator only, and populated only on
+            `GET /v1/nodes/{id}` — the list endpoint returns an empty array
+            to avoid a per-row fan-out. An entry is present for every
+            network with a recorded status on this node (ready, pending,
+            or failed); a status whose network has since been deleted is
+            omitted.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    NodeNetworkCondition:
+      type: object
+      description: |
+        One per-(node, network) materialisation record: the outcome of
+        reconciling a cluster-wide network's bridge on a single node.
+      required: [network_id, name, reconciliation_status]
+      properties:
+        network_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Name of the cluster-wide network this record is for.
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Failure detail when `reconciliation_status` is `failed`; null
+            otherwise.
+        last_reconciled_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Timestamp of the last successful reconciliation on this node;
+            null until the network first materialises.
 
     MemoryPressureCondition:
       type: [object, "null"]
