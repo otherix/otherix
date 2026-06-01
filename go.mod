@@ -17,6 +17,8 @@ require (
 	github.com/knadh/koanf/v2 v2.1.2
 	github.com/oapi-codegen/runtime v1.4.0
 	github.com/spf13/cobra v1.10.2
+	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netns v0.0.5
 	go.etcd.io/etcd/api/v3 v3.6.11
 	go.etcd.io/etcd/client/v3 v3.6.11
 	go.etcd.io/etcd/server/v3 v3.6.11
