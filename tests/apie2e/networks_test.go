@@ -8,6 +8,8 @@ package apie2e
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 
@@ -366,6 +368,70 @@ func TestNetworksGetStatusEmptyThenPopulated(t *testing.T) {
 	}
 	if ghost.NodeName != "" {
 		t.Errorf("ghost node_name = %q, want empty", ghost.NodeName)
+	}
+}
+
+// TestNetworksGetStatusDeletedNodeNameNull verifies that a status row for a
+// node that no longer exists serialises node_name as JSON null (the schema's
+// nullable form), not an empty string, while node_id stays present and the
+// read returns 200.
+func TestNetworksGetStatusDeletedNodeNameNull(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	resp := h.post(t, "/v1/networks", newNetworkBody(), admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+
+	netID := uuid.MustParse(created.ID)
+	ctx := context.Background()
+	ghostID := uuid.New()
+	if err := h.store.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: netID, NodeID: ghostID, ReconciliationStatus: "pending",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus (ghost): %v", err)
+	}
+
+	resp = h.get(t, "/v1/networks/"+created.ID, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	// Decode loosely so node_name can be inspected as a raw JSON value
+	// (null vs ""), which the typed view's *string cannot distinguish.
+	var body struct {
+		Status struct {
+			Nodes []struct {
+				NodeID   string          `json:"node_id"`
+				NodeName json.RawMessage `json:"node_name"`
+			} `json:"nodes"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	var ghost *struct {
+		NodeID   string          `json:"node_id"`
+		NodeName json.RawMessage `json:"node_name"`
+	}
+	for i := range body.Status.Nodes {
+		if body.Status.Nodes[i].NodeID == ghostID.String() {
+			ghost = &body.Status.Nodes[i]
+		}
+	}
+	if ghost == nil {
+		t.Fatalf("ghost node %s not found in status.nodes", ghostID)
+	}
+	if string(ghost.NodeName) != "null" {
+		t.Errorf("node_name raw = %q, want null", string(ghost.NodeName))
 	}
 }
 
