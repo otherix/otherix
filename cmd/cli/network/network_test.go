@@ -341,6 +341,46 @@ func TestNetworkGet_NameResolves(t *testing.T) {
 	}
 }
 
+// TestNetworkGet_NameResolvesCaseInsensitively confirms the client-side
+// name resolution matches case-insensitively, mirroring the store's
+// lowercased name guard and the server-side NetworkByName lookup. An
+// operator passing NET-NAMED must resolve a network stored as net-named.
+func TestNetworkGet_NameResolvesCaseInsensitively(t *testing.T) {
+	t.Parallel()
+	id := uuid.NewString()
+	var listed, fetched bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/networks":
+			listed = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[` + string(networkJSON(id, "net-named")) + `],"meta":{"next_cursor":null}}`))
+		case "/v1/networks/" + id:
+			fetched = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(networkJSON(id, "net-named"))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runNetworkCmd(t, srv.URL, []string{"get", "NET-NAMED"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !listed {
+		t.Errorf("name resolution should have listed networks")
+	}
+	if !fetched {
+		t.Errorf("by-id GET should have fired after case-insensitive resolution")
+	}
+	if !strings.Contains(stdout, "net-named") {
+		t.Errorf("output missing network name:\n%s", stdout)
+	}
+}
+
 func TestNetworkDelete_Happy(t *testing.T) {
 	t.Parallel()
 	id := uuid.NewString()

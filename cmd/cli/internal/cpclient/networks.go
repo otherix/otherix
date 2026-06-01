@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -250,9 +251,12 @@ func (c *Client) resolveIdentifier(ctx context.Context, identifier string) (stri
 	return c.resolveNetworkName(ctx, identifier)
 }
 
-// resolveNetworkName pages GET /v1/networks looking for an exact
-// name match and returns its UUID. Networks carry a globally-unique
-// name (uq_networks_name), so at most one row matches. Returns
+// resolveNetworkName pages GET /v1/networks looking for a name match
+// and returns its UUID. Matching is case-insensitive to mirror the
+// store's lowercased name guard and the server-side NetworkByName lookup
+// (used by `vm create --network`), so name resolution stays consistent
+// across CLI verbs. Networks carry a globally-unique name
+// (uq_networks_name), so at most one row matches. Returns
 // ErrNetworkNotFound when no row matches across all pages.
 func (c *Client) resolveNetworkName(ctx context.Context, name string) (string, error) {
 	cursor := ""
@@ -262,7 +266,7 @@ func (c *Client) resolveNetworkName(ctx context.Context, name string) (string, e
 			return "", err
 		}
 		for _, n := range page.Data {
-			if n.Name == name {
+			if strings.EqualFold(n.Name, name) {
 				return n.ID, nil
 			}
 		}
