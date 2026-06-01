@@ -14,9 +14,12 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/netfabric"
 )
 
 // Architecture identifies a guest CPU architecture. The wire and
@@ -92,6 +95,53 @@ type VMSpec struct {
 	// presentation works alongside the OS disk without media-type
 	// gymnastics. Empty value skips attachment entirely.
 	CidataPath string
+	// NICs are the CP-declared network interfaces to attach as tap
+	// netdevs, each bridged on the host by the netfabric package. An
+	// empty slice falls back to a single user-mode SLIRP netdev
+	// (legacy / no-NIC VMs and smoke tests).
+	NICs []netfabric.NIC
+}
+
+// qemuModel maps a netfabric NIC model name to the QEMU -device name.
+// An empty model defaults to virtio. ValidateModel gates the input, so
+// only the recognised set reaches this mapper.
+func qemuModel(model string) string {
+	switch model {
+	case "", "virtio":
+		return "virtio-net-pci"
+	default:
+		return model
+	}
+}
+
+// networkArgs returns the -netdev / -device pairs for the VM's NICs. An
+// empty slice yields the legacy user-mode SLIRP pair on net0 so no-NIC
+// VMs and smoke tests keep working. Otherwise each NIC becomes a tap
+// netdev bridged on the host, indexed net0..netN by ascending
+// DeviceOrder (stable for equal orders).
+func networkArgs(nics []netfabric.NIC) []string {
+	if len(nics) == 0 {
+		return []string{
+			"-netdev", "user,id=net0",
+			"-device", "virtio-net-pci,netdev=net0",
+		}
+	}
+
+	sorted := make([]netfabric.NIC, len(nics))
+	copy(sorted, nics)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].DeviceOrder < sorted[j].DeviceOrder
+	})
+
+	args := make([]string, 0, len(sorted)*4)
+	for i, nic := range sorted {
+		id := "net" + strconv.Itoa(i)
+		args = append(args,
+			"-netdev", fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", id, nic.TapName()),
+			"-device", fmt.Sprintf("%s,netdev=%s,mac=%s", qemuModel(nic.Model), id, nic.MAC),
+		)
+	}
+	return args
 }
 
 // BuildArgs returns the qemu argument vector (excluding the binary
@@ -117,8 +167,6 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		"-m", strconv.Itoa(spec.MemoryMB),
 		"-accel", spec.Accelerator,
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=none", spec.DiskPath),
-		"-netdev", "user,id=net0",
-		"-device", "virtio-net-pci,netdev=net0",
 		"-serial", fmt.Sprintf("unix:%s,server,nowait", spec.ConsoleSocket),
 		"-qmp", fmt.Sprintf("unix:%s,server,nowait", spec.QMPSocket),
 		"-pidfile", spec.PIDFile,
@@ -134,6 +182,8 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 			"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", spec.CidataPath),
 		)
 	}
+
+	args = append(args, networkArgs(spec.NICs)...)
 
 	switch spec.Architecture {
 	case ArchAMD64:
@@ -176,6 +226,18 @@ func validateSpec(spec VMSpec) error {
 	}
 	if spec.Accelerator != "kvm" && spec.Accelerator != "tcg" {
 		return fmt.Errorf("accelerator must be \"kvm\" or \"tcg\" (got %q)", spec.Accelerator)
+	}
+	return validateNICs(spec.NICs)
+}
+
+func validateNICs(nics []netfabric.NIC) error {
+	for i, nic := range nics {
+		if err := netfabric.ValidateMAC(nic.MAC); err != nil {
+			return fmt.Errorf("nic %d: %v", i, err)
+		}
+		if err := netfabric.ValidateModel(nic.Model); err != nil {
+			return fmt.Errorf("nic %d: %v", i, err)
+		}
 	}
 	return nil
 }

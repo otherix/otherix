@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
@@ -69,6 +70,10 @@ type VM struct {
 	// Empty for VMs created without cloud-init (legacy /v1/vms calls
 	// that omit the field; smoke tests that drop the seed).
 	CidataPath string
+	// NICs are the CP-declared network interfaces the manager
+	// materialises (host tap + bridge) and wires into the qemu command
+	// line. Empty means legacy SLIRP user-mode networking.
+	NICs []netfabric.NIC
 }
 
 // CreateSpec is the wire-shape of a POST /v1/vms body, post-validation.
@@ -93,4 +98,8 @@ type CreateSpec struct {
 	// needed. When empty the agent skips cidata generation (legacy
 	// VMs still boot, just without a NoCloud seed).
 	UserData []byte
+	// NICs are the CP-declared network interfaces to materialise. Empty
+	// means legacy SLIRP user-mode networking (curl-driven smoke tests
+	// and pre-networking callers that omit the field).
+	NICs []netfabric.NIC
 }

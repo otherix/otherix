@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/netfabric"
 )
 
 func validSpec() VMSpec {
@@ -126,6 +128,120 @@ func TestBuildArgs_ValidatesSpec(t *testing.T) {
 			spec := validSpec()
 			spec.Architecture = ArchAMD64
 			tc.mut(&spec)
+			if _, err := BuildArgs(spec); err == nil {
+				t.Fatalf("BuildArgs(%s) = nil, want error", tc.name)
+			}
+		})
+	}
+}
+
+func nicWithID(id, mac, model string, order int) netfabric.NIC {
+	return netfabric.NIC{
+		ID:          uuid.MustParse(id),
+		Bridge:      "br0",
+		MAC:         mac,
+		Model:       model,
+		MTU:         1500,
+		DeviceOrder: order,
+	}
+}
+
+func TestBuildArgs_Networking(t *testing.T) {
+	// Tap names are derived from the NIC id via netfabric.NIC.TapName,
+	// so compute them from the same ids the cases use.
+	nic0 := nicWithID("aaaaaaaa-1111-2222-3333-444444444444", "52:54:00:11:22:33", "virtio", 0)
+	nic1 := nicWithID("bbbbbbbb-5555-6666-7777-888888888888", "52:54:00:aa:bb:cc", "virtio", 1)
+	e1000NIC := nicWithID("cccccccc-9999-0000-1111-222222222222", "52:54:00:de:ad:be", "e1000", 0)
+
+	cases := []struct {
+		name        string
+		nics        []netfabric.NIC
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name: "empty nics keeps slirp",
+			nics: nil,
+			wantContain: []string{
+				"-netdev user,id=net0",
+				"-device virtio-net-pci,netdev=net0",
+			},
+		},
+		{
+			name: "single virtio nic",
+			nics: []netfabric.NIC{nic0},
+			wantContain: []string{
+				"-netdev tap,id=net0,ifname=" + nic0.TapName() + ",script=no,downscript=no",
+				"-device virtio-net-pci,netdev=net0,mac=52:54:00:11:22:33",
+			},
+			wantAbsent: []string{"-netdev user,id=net0"},
+		},
+		{
+			name: "two nics sorted by device order",
+			// nic1 (order 1) listed first to prove sort by DeviceOrder.
+			nics: []netfabric.NIC{nic1, nic0},
+			wantContain: []string{
+				"-netdev tap,id=net0,ifname=" + nic0.TapName() + ",script=no,downscript=no",
+				"-device virtio-net-pci,netdev=net0,mac=52:54:00:11:22:33",
+				"-netdev tap,id=net1,ifname=" + nic1.TapName() + ",script=no,downscript=no",
+				"-device virtio-net-pci,netdev=net1,mac=52:54:00:aa:bb:cc",
+			},
+			wantAbsent: []string{"-netdev user,id=net0"},
+		},
+		{
+			name: "e1000 model maps to e1000 device",
+			nics: []netfabric.NIC{e1000NIC},
+			wantContain: []string{
+				"-device e1000,netdev=net0,mac=52:54:00:de:ad:be",
+			},
+			wantAbsent: []string{"-device virtio-net-pci,netdev=net0"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := validSpec()
+			spec.Architecture = ArchAMD64
+			spec.NICs = tc.nics
+
+			args, err := BuildArgs(spec)
+			if err != nil {
+				t.Fatalf("BuildArgs: %v", err)
+			}
+			joined := strings.Join(args, " ")
+			for _, want := range tc.wantContain {
+				if !strings.Contains(joined, want) {
+					t.Errorf("args missing %q: %s", want, joined)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(joined, absent) {
+					t.Errorf("args should not contain %q: %s", absent, joined)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildArgs_RejectsBadNIC(t *testing.T) {
+	cases := []struct {
+		name string
+		nic  netfabric.NIC
+	}{
+		{
+			name: "invalid mac",
+			nic:  nicWithID("aaaaaaaa-1111-2222-3333-444444444444", "not-a-mac", "virtio", 0),
+		},
+		{
+			name: "invalid model",
+			nic:  nicWithID("aaaaaaaa-1111-2222-3333-444444444444", "52:54:00:11:22:33", "bogus", 0),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := validSpec()
+			spec.Architecture = ArchAMD64
+			spec.NICs = []netfabric.NIC{tc.nic}
 			if _, err := BuildArgs(spec); err == nil {
 				t.Fatalf("BuildArgs(%s) = nil, want error", tc.name)
 			}

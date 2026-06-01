@@ -10,9 +10,21 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/response"
 )
+
+// nicReq is one CP-declared network interface in a create request. An
+// empty or absent nics list falls back to legacy SLIRP networking.
+type nicReq struct {
+	ID          string `json:"id"`
+	Bridge      string `json:"bridge"`
+	MAC         string `json:"mac"`
+	Model       string `json:"model"`
+	MTU         int    `json:"mtu"`
+	DeviceOrder int    `json:"device_order"`
+}
 
 type createRequest struct {
 	// UUID is optional. When supplied it is used as the agent-side VM
@@ -35,6 +47,9 @@ type createRequest struct {
 	// template.cloud_init_user_data and injects a top-level `hostname:`
 	// matching the VM name when missing.
 	UserData string `json:"user_data,omitempty"`
+	// Nics are the CP-declared network interfaces to attach. Absent or
+	// empty means legacy SLIRP user-mode networking.
+	Nics []nicReq `json:"nics,omitempty"`
 }
 
 type asyncAccepted struct {
@@ -80,6 +95,24 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	nics := make([]netfabric.NIC, 0, len(req.Nics))
+	for _, n := range req.Nics {
+		nicID, perr := uuid.Parse(n.ID)
+		if perr != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "nic id is not a valid UUID", nil)
+			return
+		}
+		nics = append(nics, netfabric.NIC{
+			ID:          nicID,
+			Bridge:      n.Bridge,
+			MAC:         n.MAC,
+			Model:       n.Model,
+			MTU:         n.MTU,
+			DeviceOrder: n.DeviceOrder,
+		})
+	}
+
 	task, err := h.manager.Create(r.Context(), vm.CreateSpec{
 		UUID:             vmID,
 		Name:             req.Name,
@@ -88,6 +121,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		PoolName:         req.Pool,
 		TemplateChecksum: req.TemplateChecksum,
 		UserData:         []byte(req.UserData),
+		NICs:             nics,
 	})
 	if err != nil {
 		mapCreateError(w, r, err)
