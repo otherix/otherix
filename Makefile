@@ -70,7 +70,7 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 TEST_TAGS := test_fast_argon
 INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
-.PHONY: test test-short test-etcd coverage
+.PHONY: test test-short test-etcd test-netfabric coverage
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
@@ -84,6 +84,14 @@ test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
 	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
 	  ./internal/etcdstore/... \
 	  ./tests/apie2e/...
+
+# test-netfabric runs the agent network-fabric netns integration tests
+# (bridge / tap / nft masquerade over real netlink). They are
+# //go:build linux && integration and need root (CAP_NET_ADMIN), so this
+# runs ONLY on Linux as root - inside the Lima dev VM, not on the macOS
+# host and NOT in CI. From macOS: `limactl shell otherix-dev -- sudo make test-netfabric`.
+test-netfabric: ## netfabric netns integration tests (Linux + root only; run inside Lima)
+	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 ./internal/agent/netfabric/
 
 coverage: test ## Generate HTML coverage report
 	$(GO) tool cover -html=coverage.out -o coverage.html
