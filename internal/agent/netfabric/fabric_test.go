@@ -5,9 +5,11 @@ package netfabric
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
 )
 
@@ -53,6 +55,30 @@ func TestFakeFabricListTapsError(t *testing.T) {
 	}
 	if f.ListTapsCalls != 1 {
 		t.Errorf("ListTapsCalls = %d, want 1", f.ListTapsCalls)
+	}
+}
+
+func TestFakeFabricVXLANLifecycle(t *testing.T) {
+	f := &FakeFabric{VXLANExistsResult: true}
+	cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390}
+
+	if err := f.EnsureVXLAN(cfg); err != nil {
+		t.Fatalf("EnsureVXLAN() = %v, want nil", err)
+	}
+	exists, err := f.VXLANExists(1000)
+	if err != nil || !exists {
+		t.Fatalf("VXLANExists(1000) = (%v, %v), want (true, nil)", exists, err)
+	}
+	if err := f.RemoveVXLAN(1000); err != nil {
+		t.Fatalf("RemoveVXLAN(1000) = %v, want nil", err)
+	}
+	// netip.Addr has unexported fields; compare it by its comparable identity.
+	addrOpt := cmpopts.EquateComparable(netip.Addr{})
+	if diff := cmp.Diff([]VXLANConfig{cfg}, f.EnsureVXLANCalls, addrOpt); diff != "" {
+		t.Errorf("EnsureVXLANCalls mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]uint32{1000}, f.RemoveVXLANCalls); diff != "" {
+		t.Errorf("RemoveVXLANCalls mismatch (-want +got):\n%s", diff)
 	}
 }
 

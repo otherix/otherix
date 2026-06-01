@@ -65,6 +65,24 @@ type Fabric interface {
 	EnsureMasquerade(subnet netip.Prefix, egressIface string) error
 	// RemoveMasquerade removes the masquerade rule for subnet.
 	RemoveMasquerade(subnet netip.Prefix) error
+
+	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
+	// brings it up. Learning is off (the FDB is controller-authoritative);
+	// remotes are supplied only through FDBAppend. It is idempotent.
+	EnsureVXLAN(cfg VXLANConfig) error
+	// RemoveVXLAN deletes the otvx<vni> VTEP. It returns nil if absent.
+	RemoveVXLAN(vni uint32) error
+	// VXLANExists reports whether the otvx<vni> VTEP exists.
+	VXLANExists(vni uint32) (bool, error)
+}
+
+// VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
+// the VTEP binds to loopback (Local 127.0.0.1); N2 rebinds it to otwg0.
+type VXLANConfig struct {
+	VNI   uint32     // device name otvx<vni> per the overlay naming convention
+	Local netip.Addr // local VTEP source IP (loopback for N1b)
+	Port  uint16     // UDP dstport (IANA VXLAN 4789)
+	MTU   int        // inner MTU (1390 for overlay)
 }
 
 // NIC is one VM network interface to materialise. It is shared by the

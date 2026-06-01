@@ -8,6 +8,7 @@ package netfabric
 
 import (
 	"bytes"
+	"net"
 	"net/netip"
 	"runtime"
 	"strings"
@@ -54,6 +55,99 @@ func withNetNS(t *testing.T, fn func()) {
 	}()
 
 	fn()
+}
+
+// bringLoopbackUp configures 127.0.0.1/8 on lo and brings it up. A fresh
+// netns has lo DOWN with no address, and a loopback-bound VTEP needs its
+// source address to exist on an up interface.
+func bringLoopbackUp(t *testing.T) {
+	t.Helper()
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		t.Fatalf("LinkByName(lo) = %v", err)
+	}
+	addr, err := netlink.ParseAddr("127.0.0.1/8")
+	if err != nil {
+		t.Fatalf("ParseAddr(127.0.0.1/8) = %v", err)
+	}
+	if err := netlink.AddrReplace(lo, addr); err != nil {
+		t.Fatalf("AddrReplace(lo, 127.0.0.1/8) = %v", err)
+	}
+	if err := netlink.LinkSetUp(lo); err != nil {
+		t.Fatalf("LinkSetUp(lo) = %v", err)
+	}
+}
+
+// vxlanLoopbackConfig is the shared N1b scaffold VTEP config: VNI 1000 bound
+// to loopback on the IANA VXLAN port with the overlay inner MTU.
+func vxlanLoopbackConfig() VXLANConfig {
+	return VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390}
+}
+
+func TestLinuxFabricVXLANLifecycle(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const vni = 1000
+		bringLoopbackUp(t)
+
+		exists, err := f.VXLANExists(vni)
+		if err != nil {
+			t.Fatalf("VXLANExists(%d) = %v", vni, err)
+		}
+		if exists {
+			t.Fatalf("VXLANExists(%d) = true before create, want false", vni)
+		}
+
+		cfg := vxlanLoopbackConfig()
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN(%+v) = %v", cfg, err)
+		}
+		// Idempotent: a second EnsureVXLAN must succeed.
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN second call = %v", err)
+		}
+
+		exists, err = f.VXLANExists(vni)
+		if err != nil || !exists {
+			t.Fatalf("VXLANExists(%d) after create = (%v, %v), want (true, nil)", vni, exists, err)
+		}
+
+		link, err := netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) = %v", err)
+		}
+		vx, ok := link.(*netlink.Vxlan)
+		if !ok {
+			t.Fatalf("otvx1000 is %T, want *netlink.Vxlan", link)
+		}
+		if vx.VxlanId != 1000 {
+			t.Errorf("VxlanId = %d, want 1000", vx.VxlanId)
+		}
+		if vx.Learning {
+			t.Errorf("Learning = true, want false (controller-authoritative FDB)")
+		}
+		if vx.Port != 4789 {
+			t.Errorf("Port = %d, want 4789", vx.Port)
+		}
+		if !vx.SrcAddr.Equal(net.ParseIP("127.0.0.1")) {
+			t.Errorf("SrcAddr = %v, want 127.0.0.1", vx.SrcAddr)
+		}
+		if mtu := vx.Attrs().MTU; mtu != 1390 {
+			t.Errorf("MTU = %d, want 1390", mtu)
+		}
+
+		if err := f.RemoveVXLAN(vni); err != nil {
+			t.Fatalf("RemoveVXLAN(%d) = %v", vni, err)
+		}
+		// Idempotent: removing an absent VTEP is a no-op.
+		if err := f.RemoveVXLAN(vni); err != nil {
+			t.Fatalf("RemoveVXLAN(%d) on absent = %v", vni, err)
+		}
+		exists, err = f.VXLANExists(vni)
+		if err != nil || exists {
+			t.Fatalf("VXLANExists(%d) after remove = (%v, %v), want (false, nil)", vni, exists, err)
+		}
+	})
 }
 
 func TestLinuxFabricBridgeLifecycle(t *testing.T) {

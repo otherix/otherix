@@ -65,3 +65,12 @@ func (unsupportedFabric) EnsureMasquerade(subnet netip.Prefix, egressIface strin
 
 // RemoveMasquerade reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) RemoveMasquerade(subnet netip.Prefix) error { return errUnsupported }
+
+// EnsureVXLAN reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) EnsureVXLAN(cfg VXLANConfig) error { return errUnsupported }
+
+// RemoveVXLAN reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) RemoveVXLAN(vni uint32) error { return errUnsupported }
+
+// VXLANExists reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) VXLANExists(vni uint32) (bool, error) { return false, errUnsupported }

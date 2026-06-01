@@ -34,6 +34,14 @@ type FakeFabric struct {
 	RemoveGatewayCalls []GatewayCall
 	MasqueradeCalls    []MasqueradeCall
 	RemoveMasqCalls    []netip.Prefix
+
+	// VXLANExistsResult is returned by VXLANExists alongside
+	// Errs["VXLANExists"].
+	VXLANExistsResult bool
+
+	EnsureVXLANCalls []VXLANConfig
+	RemoveVXLANCalls []uint32
+	VXLANExistsCalls []uint32
 }
 
 // BridgeCall records one EnsureBridge invocation.
@@ -147,6 +155,25 @@ func (f *FakeFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) e
 func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	f.RemoveMasqCalls = append(f.RemoveMasqCalls, subnet)
 	return f.err("RemoveMasquerade")
+}
+
+// EnsureVXLAN records the call and returns Errs["EnsureVXLAN"].
+func (f *FakeFabric) EnsureVXLAN(cfg VXLANConfig) error {
+	f.EnsureVXLANCalls = append(f.EnsureVXLANCalls, cfg)
+	return f.err("EnsureVXLAN")
+}
+
+// RemoveVXLAN records the call and returns Errs["RemoveVXLAN"].
+func (f *FakeFabric) RemoveVXLAN(vni uint32) error {
+	f.RemoveVXLANCalls = append(f.RemoveVXLANCalls, vni)
+	return f.err("RemoveVXLAN")
+}
+
+// VXLANExists records the call and returns VXLANExistsResult with
+// Errs["VXLANExists"].
+func (f *FakeFabric) VXLANExists(vni uint32) (bool, error) {
+	f.VXLANExistsCalls = append(f.VXLANExistsCalls, vni)
+	return f.VXLANExistsResult, f.err("VXLANExists")
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.
