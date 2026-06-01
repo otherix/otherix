@@ -90,9 +90,10 @@ type vmReport struct {
 // replaces its desired-state cache from declared_pools every heartbeat.
 // declared_vms follows the same pattern for VMs.
 type responseBody struct {
-	ReceivedAt    string         `json:"received_at"`
-	DeclaredPools []declaredPool `json:"declared_pools"`
-	DeclaredVMs   []declaredVM   `json:"declared_vms"`
+	ReceivedAt       string            `json:"received_at"`
+	DeclaredPools    []declaredPool    `json:"declared_pools"`
+	DeclaredVMs      []declaredVM      `json:"declared_vms"`
+	DeclaredNetworks []declaredNetwork `json:"declared_networks"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the
@@ -114,4 +115,21 @@ type declaredVM struct {
 	Name         string `json:"name"`
 	DesiredPhase string `json:"desired_phase"`
 	Generation   int64  `json:"generation"`
+}
+
+// declaredNetwork mirrors HeartbeatDeclaredNetwork — one network the CP
+// wants materialised on this node. Networks are cluster-wide, so every
+// node receives the same set; order is stable (by id) so the agent's
+// diff stays deterministic across heartbeats. Subnet (canonical CIDR)
+// and Gateway (IP) are non-nil only when Egress="nat".
+type declaredNetwork struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Managed    bool    `json:"managed"`
+	Egress     string  `json:"egress"`
+	BridgeName string  `json:"bridge_name"`
+	Mtu        int32   `json:"mtu"`
+	Subnet     *string `json:"subnet"`
+	Gateway    *string `json:"gateway"`
 }

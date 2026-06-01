@@ -4648,7 +4648,7 @@ components:
         extends to VMs: `declared_vms` carries the per-node VM
         desired-state set; the agent's VM reconciler diffs the live
         Manager.List() observed set against this on every tick.
-      required: [received_at, declared_pools, declared_vms]
+      required: [received_at, declared_pools, declared_vms, declared_networks]
       properties:
         received_at:
           type: string
@@ -4680,6 +4680,17 @@ components:
             existing VM-create RPC.
           items:
             $ref: "#/components/schemas/HeartbeatDeclaredVM"
+        declared_networks:
+          type: array
+          description: |
+            CP-declared network inventory. Unlike pools and VMs,
+            networks are NOT node-scoped: the CP returns every
+            non-deleted network and every node receives the identical
+            set to materialise (cluster-wide bridge definitions). Order
+            is stable across heartbeats (by id) so the agent's diff
+            against observed bridges stays deterministic.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredNetwork"
 
     HeartbeatDeclaredVM:
       type: object
@@ -4746,6 +4757,55 @@ components:
             Pool-type-specific configuration, opaque to the agent in
             the current iteration. Reserved for future backends
             (nfs, iscsi, …).
+
+    HeartbeatDeclaredNetwork:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_networks — desired-state
+        record for a single cluster-wide network the CP wants
+        materialised on the agent. The agent reconciler diffs the
+        declared set against its observed bridges and applies changes
+        autonomously. `subnet` / `gateway` are populated only when
+        `egress` is `nat`.
+      required: [id, name, type, managed, egress, bridge_name, mtu]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 253
+        type:
+          type: string
+          enum: [bridge]
+        managed:
+          type: boolean
+          description: |
+            true = Otherix creates/owns the bridge; false = attach-only
+            to an operator-provisioned bridge.
+        egress:
+          type: string
+          enum: [none, nat]
+          description: Managed-egress mode for the network.
+        bridge_name:
+          type: string
+          minLength: 1
+          maxLength: 15
+        mtu:
+          type: integer
+          minimum: 68
+          maximum: 9216
+        subnet:
+          type: [string, "null"]
+          description: |
+            VM IP subnet in canonical CIDR form. Set when `egress` is
+            `nat`, null otherwise.
+        gateway:
+          type: [string, "null"]
+          description: |
+            Host-side gateway IP assigned on the bridge. Set when
+            `egress` is `nat`, null otherwise.
 
     JoinToken:
       type: object

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -104,9 +105,10 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 	h.logPressureTransition(r.Context(), agent.NodeID, &body, outcome)
 
 	response.WriteJSON(w, r, http.StatusOK, responseBody{
-		ReceivedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-		DeclaredPools: outcome.declaredPools,
-		DeclaredVMs:   outcome.declaredVMs,
+		ReceivedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		DeclaredPools:    outcome.declaredPools,
+		DeclaredVMs:      outcome.declaredVMs,
+		DeclaredNetworks: outcome.declaredNetworks,
 	})
 }
 
@@ -176,10 +178,11 @@ func systemDiskPercent(body *requestBody) float64 {
 // system_disk). One field per pressure dimension; pool disk transitions
 // live entirely on the scan worker side.
 type heartbeatOutcome struct {
-	memory        pressureTransitionKind
-	systemDisk    pressureTransitionKind
-	declaredPools []declaredPool
-	declaredVMs   []declaredVM
+	memory           pressureTransitionKind
+	systemDisk       pressureTransitionKind
+	declaredPools    []declaredPool
+	declaredVMs      []declaredVM
+	declaredNetworks []declaredNetwork
 }
 
 // project runs the full state projection in a single transaction.
@@ -251,6 +254,11 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 			return err
 		}
 		outcome.declaredVMs = declaredVMs
+		declaredNetworks, err := h.loadDeclaredNetworks(ctx, hp)
+		if err != nil {
+			return err
+		}
+		outcome.declaredNetworks = declaredNetworks
 		return nil
 	})
 	return outcome, err
@@ -341,6 +349,52 @@ func (h *Handler) loadDeclaredPools(ctx context.Context, hp store.HeartbeatProje
 		out = append(out, dp)
 	}
 	return out, nil
+}
+
+// loadDeclaredNetworks returns the cluster-wide network inventory the CP
+// wants every node to materialise. Surfaces as
+// `HeartbeatResponse.declared_networks`. Unlike pools and VMs, networks
+// are NOT node-scoped: ListNetworks returns every non-deleted network and
+// the same set is handed to every node. Sorted by id so the agent's diff
+// against observed bridges stays deterministic across heartbeats.
+func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatProjection) ([]declaredNetwork, error) {
+	rows, err := hp.ListNetworks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list networks: %v", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]declaredNetwork, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, networkToDeclared(row))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// networkToDeclared projects a store.Network onto the heartbeat wire
+// shape, rendering the netip Subnet / Gateway pointers to *string
+// (canonical CIDR / IP) and leaving them nil when unset.
+func networkToDeclared(n store.Network) declaredNetwork {
+	dn := declaredNetwork{
+		ID:         n.ID.String(),
+		Name:       n.Name,
+		Type:       string(n.Type),
+		Managed:    n.Managed,
+		Egress:     string(n.Egress),
+		BridgeName: n.BridgeName,
+		Mtu:        n.Mtu,
+	}
+	if n.Subnet != nil {
+		s := n.Subnet.String()
+		dn.Subnet = &s
+	}
+	if n.Gateway != nil {
+		g := n.Gateway.String()
+		dn.Gateway = &g
+	}
+	return dn
 }
 
 // applyMemoryPressure computes the next memory-pressure state via the

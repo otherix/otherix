@@ -44,9 +44,10 @@ type PoolReport struct {
 // desired_phase + generation) so the agent's VM reconciler can diff
 // observed vs declared and apply corrective lifecycle ops.
 type Response struct {
-	ReceivedAt    string         `json:"received_at"`
-	DeclaredPools []DeclaredPool `json:"declared_pools"`
-	DeclaredVMs   []DeclaredVM   `json:"declared_vms"`
+	ReceivedAt       string            `json:"received_at"`
+	DeclaredPools    []DeclaredPool    `json:"declared_pools"`
+	DeclaredVMs      []DeclaredVM      `json:"declared_vms"`
+	DeclaredNetworks []DeclaredNetwork `json:"declared_networks"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants
@@ -69,6 +70,24 @@ type DeclaredVM struct {
 	Name         string `json:"name"`
 	DesiredPhase string `json:"desired_phase"`
 	Generation   int64  `json:"generation"`
+}
+
+// DeclaredNetwork mirrors HeartbeatDeclaredNetwork — one network the CP
+// wants materialised on this node. Networks are cluster-wide, so every
+// node receives the same list. The agent reconciler diffs the declared
+// set against its observed bridges and applies changes autonomously.
+// Subnet (canonical CIDR) and Gateway (IP) are populated when
+// Egress="nat", null otherwise.
+type DeclaredNetwork struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Managed    bool    `json:"managed"`
+	Egress     string  `json:"egress"`
+	BridgeName string  `json:"bridge_name"`
+	Mtu        int32   `json:"mtu"`
+	Subnet     *string `json:"subnet"`
+	Gateway    *string `json:"gateway"`
 }
 
 // MigrationCap advertises the migration ingress configuration. The
