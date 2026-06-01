@@ -22,6 +22,8 @@ var errUnsupported = errors.New("netfabric: unsupported on this platform")
 // none of them runs in a live agent process.
 type unsupportedFabric struct{}
 
+var _ Fabric = unsupportedFabric{}
+
 // New returns a Fabric whose every method reports errUnsupported.
 func New() Fabric { return unsupportedFabric{} }
 
