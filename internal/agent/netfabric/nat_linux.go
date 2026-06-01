@@ -103,6 +103,13 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 
 	c := &nftables.Conn{}
 	table, chain := f.natTableChain(c)
+	// Materialise the table and chain in the kernel before the GetRules
+	// precheck. On a fresh host the table has never existed, and GetRules
+	// issues an immediate kernel dump that would return ENOENT; flushing
+	// the create-or-noop first guarantees the dump finds the table.
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("netfabric: ensure masquerade for %s: %v", subnet, err)
+	}
 
 	marker := masqUserData(subnet)
 	rules, err := c.GetRules(table, chain)
@@ -128,14 +135,23 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 }
 
 // RemoveMasquerade removes every masquerade rule tagged for subnet from
-// Otherix's own NAT chain. It returns nil when no matching rule exists.
+// Otherix's own NAT chain. It returns nil when no matching rule exists,
+// including when the NAT table has never been created; removal never
+// materialises state.
 func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	c := &nftables.Conn{}
-	table, chain := f.natTableChain(c)
+	// Reference the table and chain without creating them. On a fresh host
+	// the GetRules dump returns ENOENT for the absent table; that is "no
+	// rules", not an error, so the removal stays idempotent.
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
 
 	marker := masqUserData(subnet)
 	rules, err := c.GetRules(table, chain)
 	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("netfabric: remove masquerade for %s: list rules: %v", subnet, err)
 	}
 	deleted := false

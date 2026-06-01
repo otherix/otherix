@@ -296,3 +296,37 @@ func TestLinuxFabricNAT(t *testing.T) {
 		}
 	})
 }
+
+// TestLinuxFabricRemoveMasqueradeOnFreshNetns asserts that RemoveMasquerade
+// is idempotent on a fresh host: with no prior EnsureMasquerade the
+// otherix-nat table has never been created, and removal must return nil
+// without materialising the table.
+func TestLinuxFabricRemoveMasqueradeOnFreshNetns(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		subnet := netip.MustParsePrefix("10.99.0.0/24")
+
+		// Probe nftables support: ListTables fails on a netns without nft
+		// support, so skip there rather than fail, consistent with the NAT
+		// test above.
+		c := &nftables.Conn{}
+		if _, err := c.ListTables(); err != nil {
+			t.Skipf("ListTables() = %v (nftables unavailable in netns?)", err)
+		}
+
+		if err := f.RemoveMasquerade(subnet); err != nil {
+			t.Fatalf("RemoveMasquerade(%s) on fresh netns = %v, want nil", subnet, err)
+		}
+
+		// Removal must not have created the otherix-nat table.
+		tables, err := c.ListTables()
+		if err != nil {
+			t.Fatalf("ListTables() = %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name == natTableName {
+				t.Fatalf("RemoveMasquerade created table %q, want absent", natTableName)
+			}
+		}
+	})
+}
