@@ -289,19 +289,40 @@ func (s *Store) countVMNicsOnNetwork(ctx context.Context, id uuid.UUID) (int64, 
 }
 
 // UpsertNetworkNodeStatus writes the per-(node, network) reconciliation record,
-// stamping last_reconciled_at and updated_at. Last-writer-wins (one writer per
-// node), so the call is idempotent.
+// always bumping updated_at. last_reconciled_at tracks the last SUCCESSFUL
+// reconciliation: it is stamped only when the reported status is "ready"; a
+// pending/failed report preserves the prior last_reconciled_at (read from the
+// existing record, if any). Last-writer-wins (one writer per node), so the call
+// is idempotent.
 func (s *Store) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNetworkNodeStatusParams) error {
 	now := time.Now().UTC()
+	key := networkNodeStatusKey(arg.NetworkID, arg.NodeID)
+
+	var lastReconciledAt *time.Time
+	if arg.ReconciliationStatus == "ready" {
+		lastReconciledAt = &now
+	} else {
+		// Preserve the prior successful-reconciliation timestamp on a
+		// pending/failed report rather than overwriting it with now.
+		var prior store.NetworkNodeStatus
+		found, err := s.c.GetJSON(ctx, key, &prior)
+		if err != nil {
+			return err
+		}
+		if found {
+			lastReconciledAt = prior.LastReconciledAt
+		}
+	}
+
 	st := store.NetworkNodeStatus{
 		NetworkID:            arg.NetworkID,
 		NodeID:               arg.NodeID,
 		ReconciliationStatus: arg.ReconciliationStatus,
 		ReconciliationError:  arg.ReconciliationError,
-		LastReconciledAt:     &now,
+		LastReconciledAt:     lastReconciledAt,
 		UpdatedAt:            now,
 	}
-	return s.c.PutJSON(ctx, networkNodeStatusKey(arg.NetworkID, arg.NodeID), st)
+	return s.c.PutJSON(ctx, key, st)
 }
 
 // ListNetworkNodeStatusByNetwork returns every per-node reconciliation record

@@ -404,8 +404,20 @@ func TestNetworkNodeStatusUpsertAndList(t *testing.T) {
 		t.Errorf("ListNetworkNodeStatusByNetwork not sorted by node id: %v", byNet)
 	}
 	for _, st := range byNet {
-		if st.LastReconciledAt == nil || st.UpdatedAt.IsZero() {
-			t.Errorf("status %+v missing stamps", st)
+		if st.UpdatedAt.IsZero() {
+			t.Errorf("status %+v missing updated_at", st)
+		}
+		// last_reconciled_at tracks the last successful reconciliation: set for
+		// the ready node, nil for the pending node (never reconciled).
+		switch st.NodeID {
+		case nodeA:
+			if st.LastReconciledAt == nil {
+				t.Errorf("ready node %v last_reconciled_at = nil, want stamped", nodeA)
+			}
+		case nodeB:
+			if st.LastReconciledAt != nil {
+				t.Errorf("pending node %v last_reconciled_at = %v, want nil", nodeB, st.LastReconciledAt)
+			}
 		}
 	}
 
@@ -431,6 +443,58 @@ func TestNetworkNodeStatusUpsertAndList(t *testing.T) {
 	if len(again) != 1 || again[0].ReconciliationStatus != "failed" ||
 		again[0].ReconciliationError == nil || *again[0].ReconciliationError != failMsg {
 		t.Errorf("re-upsert (net,A) = %+v, want failed/%q", again, failMsg)
+	}
+}
+
+// TestNetworkNodeStatusLastReconciledOnlyOnReady verifies last_reconciled_at
+// tracks the last SUCCESSFUL reconciliation: an upsert with status "ready"
+// stamps it, a subsequent "failed" upsert preserves the prior timestamp
+// (success time, not the failure time) while still advancing updated_at and the
+// status.
+func TestNetworkNodeStatusLastReconciledOnlyOnReady(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	net := netParams(uniqueNetName("lra"))
+	if _, err := s.CreateNetwork(ctx, net); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	nodeID := uuid.New()
+
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: nodeID, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus ready: %v", err)
+	}
+	ready, err := s.ListNetworkNodeStatusByNetwork(ctx, net.ID)
+	if err != nil || len(ready) != 1 {
+		t.Fatalf("list after ready = %v (err %v), want one row", ready, err)
+	}
+	if ready[0].LastReconciledAt == nil {
+		t.Fatalf("ready last_reconciled_at = nil, want stamped")
+	}
+	readyAt := *ready[0].LastReconciledAt
+	readyUpdated := ready[0].UpdatedAt
+
+	time.Sleep(2 * time.Millisecond)
+	failMsg := "bridge gone"
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: nodeID, ReconciliationStatus: "failed", ReconciliationError: &failMsg,
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus failed: %v", err)
+	}
+	failed, err := s.ListNetworkNodeStatusByNetwork(ctx, net.ID)
+	if err != nil || len(failed) != 1 {
+		t.Fatalf("list after failed = %v (err %v), want one row", failed, err)
+	}
+	got := failed[0]
+	if got.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed", got.ReconciliationStatus)
+	}
+	if got.LastReconciledAt == nil || !got.LastReconciledAt.Equal(readyAt) {
+		t.Errorf("last_reconciled_at = %v, want unchanged %v", got.LastReconciledAt, readyAt)
+	}
+	if !got.UpdatedAt.After(readyUpdated) {
+		t.Errorf("updated_at = %v, want advanced past %v", got.UpdatedAt, readyUpdated)
 	}
 }
 
