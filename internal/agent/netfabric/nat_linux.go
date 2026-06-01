@@ -302,8 +302,15 @@ func defaultEgressIface() (string, error) {
 		return "", fmt.Errorf("list ipv4 routes: %v", err)
 	}
 	for _, r := range routes {
+		// A default route has no RTA_DST: depending on the kernel and the
+		// netlink version that surfaces either as a nil Dst or as an
+		// explicit 0.0.0.0/0 (zero-length mask, unspecified address).
+		// Treat both as the default.
 		if r.Dst != nil {
-			continue
+			ones, _ := r.Dst.Mask.Size()
+			if ones != 0 || !r.Dst.IP.IsUnspecified() {
+				continue
+			}
 		}
 		link, err := netlink.LinkByIndex(r.LinkIndex)
 		if err != nil {
