@@ -43,7 +43,14 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	nodes, err := nodeStatusViews(r.Context(), h.store, statuses)
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load network status", nil)
+		return
+	}
+
 	view := toView(row)
-	view.Status = &statusView{Nodes: toNodeStatusViews(statuses)}
+	view.Status = &statusView{Nodes: nodes}
 	response.WriteJSON(w, r, http.StatusOK, view)
 }

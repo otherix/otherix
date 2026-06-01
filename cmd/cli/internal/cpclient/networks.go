@@ -44,9 +44,12 @@ type NetworkStatus struct {
 }
 
 // NetworkNodeStatus mirrors networkNodeStatusView - one node's
-// reconciliation outcome for a network.
+// reconciliation outcome for a network. NodeName is the resolved node
+// name (empty when the node was deleted but a stale status lingers);
+// NodeID is the stable handle to fall back on.
 type NetworkNodeStatus struct {
 	NodeID               string  `json:"node_id"`
+	NodeName             string  `json:"node_name"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error"`
 	LastReconciledAt     *string `json:"last_reconciled_at"`

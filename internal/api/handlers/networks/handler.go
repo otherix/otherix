@@ -11,6 +11,7 @@ package networks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"time"
@@ -31,6 +32,7 @@ type Store interface {
 	ListNetworks(ctx context.Context, arg store.ListNetworksParams) ([]store.Network, error)
 	DeleteNetwork(ctx context.Context, id uuid.UUID) error
 	ListNetworkNodeStatusByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.NetworkNodeStatus, error)
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -79,8 +81,12 @@ type statusView struct {
 }
 
 // networkNodeStatusView mirrors components/schemas/NetworkNodeStatus.
+// NodeID is the stable key; NodeName is the resolved node name surfaced
+// alongside it (per the "references use names, not UUIDs" convention),
+// left empty when the node no longer exists but a stale status lingers.
 type networkNodeStatusView struct {
 	NodeID               string  `json:"node_id"`
+	NodeName             string  `json:"node_name"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error"`
 	LastReconciledAt     *string `json:"last_reconciled_at"`
@@ -126,9 +132,15 @@ func addrString(a *netip.Addr) *string {
 	return &s
 }
 
-// toNodeStatusViews projects per-node reconciliation rows onto their
-// public shape, formatting the nullable timestamp as RFC 3339.
-func toNodeStatusViews(rows []store.NetworkNodeStatus) []networkNodeStatusView {
+// nodeStatusViews projects per-node reconciliation rows onto their public
+// shape, formatting the nullable timestamp as RFC 3339 and resolving each
+// row's node id to its name via NodeByID. Resolution is best-effort: a row
+// whose node has been deleted (or never existed) keeps NodeName empty rather
+// than erroring - a stale status row must not 500 the network read. NodeID is
+// always present as the stable handle. A handful of nodes per network keeps
+// this fan-out cheap (the symmetric node view resolves network names the same
+// way).
+func nodeStatusViews(ctx context.Context, s Store, rows []store.NetworkNodeStatus) ([]networkNodeStatusView, error) {
 	views := make([]networkNodeStatusView, 0, len(rows))
 	for _, st := range rows {
 		v := networkNodeStatusView{
@@ -136,13 +148,23 @@ func toNodeStatusViews(rows []store.NetworkNodeStatus) []networkNodeStatusView {
 			ReconciliationStatus: st.ReconciliationStatus,
 			ReconciliationError:  st.ReconciliationError,
 		}
+		node, err := s.NodeByID(ctx, st.NodeID)
+		switch {
+		case err == nil:
+			v.NodeName = node.Name
+		case errors.Is(err, store.ErrNotFound):
+			// Stale status for a deleted node: leave NodeName empty; the
+			// client falls back to NodeID.
+		default:
+			return nil, err
+		}
 		if st.LastReconciledAt != nil {
-			s := st.LastReconciledAt.UTC().Format(time.RFC3339Nano)
-			v.LastReconciledAt = &s
+			ts := st.LastReconciledAt.UTC().Format(time.RFC3339Nano)
+			v.LastReconciledAt = &ts
 		}
 		views = append(views, v)
 	}
-	return views
+	return views, nil
 }
 
 // rawJSONOrEmpty returns raw if non-empty, otherwise the JSON object

@@ -5804,6 +5804,12 @@ components:
         node_id:
           type: string
           format: uuid
+        node_name:
+          type: [string, "null"]
+          description: |
+            The node's name, resolved server-side from `node_id` (references
+            to resources use names, not UUIDs). Null or absent when the node
+            was deleted but a stale status row lingers; fall back to `node_id`.
         reconciliation_status:
           type: string
           enum: [pending, ready, failed]

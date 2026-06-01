@@ -36,6 +36,7 @@ type networkStatusView struct {
 
 type networkNodeStatusView struct {
 	NodeID               string  `json:"node_id"`
+	NodeName             string  `json:"node_name"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error"`
 	LastReconciledAt     *string `json:"last_reconciled_at"`
@@ -293,11 +294,21 @@ func TestNetworksGetStatusEmptyThenPopulated(t *testing.T) {
 		t.Errorf("status.nodes = %v, want empty", fetched.Status.Nodes)
 	}
 
-	// Inject a per-node reconciliation record directly through the store, then
-	// confirm the GET-by-id view surfaces it.
+	// Seed a real node and inject a per-node reconciliation record for it
+	// directly through the store, then confirm the GET-by-id view surfaces the
+	// row keyed by the node id AND carrying the resolved node name.
 	netID := uuid.MustParse(created.ID)
+	ctx := context.Background()
 	nodeID := uuid.New()
-	if err := h.store.UpsertNetworkNodeStatus(context.Background(), store.UpsertNetworkNodeStatusParams{
+	nodeName := "node-" + uuid.NewString()[:8]
+	if _, err := h.store.CreateNode(ctx, store.CreateNodeParams{
+		ID: nodeID, Name: nodeName, Architecture: store.CpuArchAmd64,
+		AdvertisedEndpoint: "https://node.test:9443", MigrationHost: "10.0.0.1",
+		MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251, Status: store.NodeStatusPending,
+	}); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	if err := h.store.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
 		NetworkID:            netID,
 		NodeID:               nodeID,
 		ReconciliationStatus: "ready",
@@ -318,8 +329,43 @@ func TestNetworksGetStatusEmptyThenPopulated(t *testing.T) {
 	if got.NodeID != nodeID.String() {
 		t.Errorf("node_id = %q, want %q", got.NodeID, nodeID)
 	}
+	if got.NodeName != nodeName {
+		t.Errorf("node_name = %q, want %q", got.NodeName, nodeName)
+	}
 	if got.ReconciliationStatus != "ready" {
 		t.Errorf("reconciliation_status = %q, want ready", got.ReconciliationStatus)
+	}
+
+	// A status row for a node that no longer exists (or never did) must not
+	// 500 the read: node_id stays present, node_name resolves to empty.
+	ghostID := uuid.New()
+	if err := h.store.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID:            netID,
+		NodeID:               ghostID,
+		ReconciliationStatus: "pending",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus (ghost): %v", err)
+	}
+	resp = h.get(t, "/v1/networks/"+created.ID, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", resp.StatusCode)
+	}
+	var withGhost networkView
+	decodeJSON(t, resp, &withGhost)
+	if withGhost.Status == nil || len(withGhost.Status.Nodes) != 2 {
+		t.Fatalf("status.nodes = %+v, want two nodes", withGhost.Status)
+	}
+	var ghost *networkNodeStatusView
+	for i := range withGhost.Status.Nodes {
+		if withGhost.Status.Nodes[i].NodeID == ghostID.String() {
+			ghost = &withGhost.Status.Nodes[i]
+		}
+	}
+	if ghost == nil {
+		t.Fatalf("ghost node %s not found in status.nodes", ghostID)
+	}
+	if ghost.NodeName != "" {
+		t.Errorf("ghost node_name = %q, want empty", ghost.NodeName)
 	}
 }
 

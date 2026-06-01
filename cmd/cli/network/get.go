@@ -93,7 +93,13 @@ func printNetworkStatus(cmd *cobra.Command, status *cpclient.NetworkStatus) {
 		if node.ReconciliationError != nil && *node.ReconciliationError != "" {
 			errMsg = *node.ReconciliationError
 		}
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", node.NodeID, node.ReconciliationStatus, errMsg)
+		// Render the node name; fall back to the uuid when the name is
+		// absent (the node was deleted but a stale status lingers).
+		name := node.NodeName
+		if name == "" {
+			name = node.NodeID
+		}
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", name, node.ReconciliationStatus, errMsg)
 	}
 	_ = tw.Flush()
 }

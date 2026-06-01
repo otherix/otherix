@@ -240,7 +240,7 @@ func TestNetworkGet_TextWithStatus(t *testing.T) {
 			"created_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",
 			"status": map[string]any{
 				"nodes": []map[string]any{
-					{"node_id": nodeID, "reconciliation_status": "ready", "reconciliation_error": nil, "last_reconciled_at": "2026-06-01T10:05:00Z"},
+					{"node_id": nodeID, "node_name": "node-a", "reconciliation_status": "ready", "reconciliation_error": nil, "last_reconciled_at": "2026-06-01T10:05:00Z"},
 				},
 			},
 		}
@@ -255,10 +255,50 @@ func TestNetworkGet_TextWithStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"status:", "NODE", "STATUS", "ERROR", nodeID, "ready"} {
+	// The NODE column renders the resolved node name, not its uuid.
+	for _, want := range []string{"status:", "NODE", "STATUS", "ERROR", "node-a", "ready"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output missing %q:\n%s", want, stdout)
 		}
+	}
+	if strings.Contains(stdout, nodeID) {
+		t.Errorf("output should render node name, not uuid %q:\n%s", nodeID, stdout)
+	}
+}
+
+// TestNetworkGet_StatusEmptyNodeNameFallsBackToUUID confirms that when the
+// server reports a status row with an empty node_name (the node was deleted
+// but a stale status lingers), the NODE column falls back to the node uuid so
+// the operator still has a stable handle.
+func TestNetworkGet_StatusEmptyNodeNameFallsBackToUUID(t *testing.T) {
+	t.Parallel()
+	id := uuid.NewString()
+	nodeID := uuid.NewString()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]any{
+			"id": id, "name": "net-mvp", "type": "bridge", "bridge_name": "br0",
+			"managed": false, "egress": "none", "vlan_tag": nil, "mtu": 1500,
+			"subnet": nil, "gateway": nil, "config": map[string]any{},
+			"created_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",
+			"status": map[string]any{
+				"nodes": []map[string]any{
+					{"node_id": nodeID, "node_name": "", "reconciliation_status": "pending", "reconciliation_error": nil, "last_reconciled_at": nil},
+				},
+			},
+		}
+		raw, _ := json.Marshal(body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runNetworkCmd(t, srv.URL, []string{"get", id})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stdout, nodeID) {
+		t.Errorf("output should fall back to node uuid %q when name empty:\n%s", nodeID, stdout)
 	}
 }
 
