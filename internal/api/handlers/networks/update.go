@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"unicode/utf8"
 
@@ -40,10 +41,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := rejectImmutableKeys(body); err != nil {
+	if forbidden := rejectImmutableKeys(body); forbidden != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, err.Error(),
-			map[string]any{"forbidden_fields": []string{"type"}})
+			response.CodeValidationFailed, "field is immutable",
+			map[string]any{"forbidden_fields": forbidden})
 		return
 	}
 
@@ -74,8 +75,12 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		ID:         row.ID,
 		Name:       row.Name,
 		BridgeName: row.BridgeName,
+		Managed:    row.Managed,
+		Egress:     row.Egress,
 		VlanTag:    row.VlanTag,
 		Mtu:        row.Mtu,
+		Subnet:     row.Subnet,
+		Gateway:    row.Gateway,
 		Config:     row.Config,
 	})
 	if err != nil {
@@ -92,10 +97,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
 }
 
-// rejectImmutableKeys scans the top-level JSON object for keys the
-// API does not allow on PATCH. Today only `type` qualifies; future
-// immutable fields land in this switch.
-func rejectImmutableKeys(body []byte) error {
+// rejectImmutableKeys scans the top-level JSON object for keys the API
+// does not allow on PATCH and returns the offending field names (nil
+// when none are present). `type` is API-immutable; `managed` is fixed at
+// creation time (egress=nat requires managed=true, and flipping managed
+// would silently invalidate that invariant), so both are rejected here
+// before the typed decode.
+func rejectImmutableKeys(body []byte) []string {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil
 	}
@@ -105,10 +113,13 @@ func rejectImmutableKeys(body []byte) error {
 		// the client sees a single, clearer error.
 		return nil
 	}
-	if _, ok := keys["type"]; ok {
-		return errors.New("type is immutable")
+	var forbidden []string
+	for _, k := range []string{"type", "managed"} {
+		if _, ok := keys[k]; ok {
+			forbidden = append(forbidden, k)
+		}
 	}
-	return nil
+	return forbidden
 }
 
 // applyUpdate merges req into row in place. Returns false (after
@@ -161,7 +172,157 @@ func applyUpdate(w http.ResponseWriter, r *http.Request, row *store.Network, req
 		}
 		row.Config = normaliseConfig(req.Config)
 	}
+	if !applyEgressUpdate(w, r, row, req) {
+		return false
+	}
 	return true
+}
+
+// egressIntent captures whether the request set or cleared the subnet
+// and gateway, alongside the parsed gateway when one was supplied. The
+// new subnet is merged onto the row directly; the gateway is held here
+// until the resulting egress is known.
+type egressIntent struct {
+	subnetSet     bool
+	subnetCleared bool
+	gateway       *netip.Addr
+	gatewaySet    bool
+}
+
+// applyEgressUpdate merges the egress / subnet / gateway fields into row
+// and enforces the resulting-row invariants. The order matters: egress
+// and the tri-state subnet/gateway are applied first, then the whole
+// (type, managed, egress) triple is re-validated, then the gateway is
+// derived or checked against the resulting subnet. egress=none clears
+// any subnet/gateway and forbids setting them.
+func applyEgressUpdate(w http.ResponseWriter, r *http.Request, row *store.Network, req *updateRequest) bool {
+	if req.Egress != nil {
+		if err := validation.ValidateNetworkEgress(*req.Egress); err != nil {
+			writeValidation(w, r, err.Error())
+			return false
+		}
+		row.Egress = store.NetworkEgress(*req.Egress)
+	}
+
+	intent, ok := applySubnetGateway(w, r, row, req)
+	if !ok {
+		return false
+	}
+
+	if err := validation.ValidateNetworkInvariants(row.Type, row.Managed, row.Egress); err != nil {
+		writeValidation(w, r, err.Error())
+		return false
+	}
+
+	if row.Egress == store.NetworkEgressNAT {
+		return finalizeNATEgress(w, r, row, intent)
+	}
+	return finalizeNoneEgress(w, r, row, intent)
+}
+
+// applySubnetGateway decodes the tri-state subnet/gateway fields onto
+// row, returning the merge intent. A new subnet is written to row.Subnet
+// immediately; the gateway is parsed but held in the intent so the
+// resulting egress can decide whether to keep, derive, or reject it.
+func applySubnetGateway(w http.ResponseWriter, r *http.Request, row *store.Network, req *updateRequest) (egressIntent, bool) {
+	var intent egressIntent
+	if len(req.Subnet) > 0 {
+		s, cleared, err := decodeNullableString(req.Subnet)
+		if err != nil {
+			writeValidation(w, r, "subnet must be null or a string")
+			return intent, false
+		}
+		if cleared {
+			intent.subnetCleared = true
+			row.Subnet = nil
+		} else {
+			subnet, err := validation.ParseSubnet(s)
+			if err != nil {
+				writeValidation(w, r, err.Error())
+				return intent, false
+			}
+			row.Subnet = &subnet
+			intent.subnetSet = true
+		}
+	}
+	if len(req.Gateway) > 0 {
+		s, cleared, err := decodeNullableString(req.Gateway)
+		if err != nil {
+			writeValidation(w, r, "gateway must be null or a string")
+			return intent, false
+		}
+		if cleared {
+			row.Gateway = nil
+		} else {
+			gw, err := netip.ParseAddr(s)
+			if err != nil {
+				writeValidation(w, r, "gateway must be a valid ip address")
+				return intent, false
+			}
+			intent.gateway = &gw
+			intent.gatewaySet = true
+		}
+	}
+	return intent, true
+}
+
+// finalizeNATEgress resolves the gateway for an egress=nat row: an
+// explicit gateway is validated against the subnet, a changed/missing
+// gateway re-derives the default, and an untouched gateway is re-checked.
+func finalizeNATEgress(w http.ResponseWriter, r *http.Request, row *store.Network, intent egressIntent) bool {
+	if row.Subnet == nil {
+		writeValidation(w, r, "subnet is required when egress=nat")
+		return false
+	}
+	switch {
+	case intent.gatewaySet:
+		if err := validation.ValidateGatewayInSubnet(*intent.gateway, *row.Subnet); err != nil {
+			writeValidation(w, r, err.Error())
+			return false
+		}
+		row.Gateway = intent.gateway
+	case intent.subnetSet || row.Gateway == nil:
+		// A new subnet (or a missing gateway) re-derives the default
+		// gateway so it always sits inside the active subnet.
+		gw := validation.GatewayDefault(*row.Subnet)
+		row.Gateway = &gw
+	default:
+		// Gateway untouched and still valid against an unchanged subnet;
+		// re-check defensively.
+		if err := validation.ValidateGatewayInSubnet(*row.Gateway, *row.Subnet); err != nil {
+			writeValidation(w, r, err.Error())
+			return false
+		}
+	}
+	return true
+}
+
+// finalizeNoneEgress enforces the egress=none invariant: the row carries
+// no subnet/gateway. Setting either (without also clearing it) is
+// rejected; otherwise both are cleared.
+func finalizeNoneEgress(w http.ResponseWriter, r *http.Request, row *store.Network, intent egressIntent) bool {
+	if (intent.subnetSet && !intent.subnetCleared) || intent.gatewaySet {
+		writeValidation(w, r, "subnet and gateway are only allowed when egress=nat")
+		return false
+	}
+	row.Subnet = nil
+	row.Gateway = nil
+	return true
+}
+
+// decodeNullableString unwraps a tri-state RawMessage into a string. The
+// literal `null` returns ("", true, nil); a JSON string returns
+// (value, false, nil); anything else surfaces an error.
+func decodeNullableString(raw json.RawMessage) (value string, cleared bool, err error) {
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return "", true, nil
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return "", false, err
+	}
+	return s, false, nil
 }
 
 // decodeNullableInt32 unwraps a tri-state RawMessage into an

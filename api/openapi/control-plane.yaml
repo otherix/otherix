@@ -5479,7 +5479,7 @@ components:
 
     Network:
       type: object
-      required: [id, name, type, bridge_name, mtu, config, created_at, updated_at]
+      required: [id, name, type, bridge_name, managed, egress, mtu, config, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -5494,6 +5494,33 @@ components:
         bridge_name:
           type: string
           description: Linux bridge interface name on each hosting node.
+        managed:
+          type: boolean
+          description: |
+            Immutable after creation. `true` when Otherix creates and
+            owns the bridge; `false` when attaching to an
+            operator-provisioned bridge. `egress: nat` requires
+            `managed: true`.
+        egress:
+          type: string
+          enum: [none, nat]
+          description: |
+            Managed-egress mode. `none` (default) leaves egress to the
+            attached bridge; `nat` masquerades VM traffic and requires
+            `type: bridge` with `managed: true`.
+        subnet:
+          type: [string, "null"]
+          description: |
+            VM IP subnet in CIDR form, returned in canonical (masked)
+            form. Present only when `egress: nat`; `null` otherwise.
+        gateway:
+          type: [string, "null"]
+          description: |
+            Host-side gateway IP on the bridge. Present only when
+            `egress: nat`; defaults to the first usable host in
+            `subnet` when not supplied. `null` otherwise.
+        status:
+          $ref: "#/components/schemas/NetworkStatus"
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
@@ -5529,6 +5556,31 @@ components:
         bridge_name:
           type: string
           minLength: 1
+        managed:
+          type: boolean
+          default: false
+          description: |
+            Optional on create (defaults to `false`). Set `true` to have
+            Otherix own the bridge; required `true` for `egress: nat`.
+            Immutable once the network exists.
+        egress:
+          type: string
+          enum: [none, nat]
+          default: none
+          description: |
+            Optional on create (defaults to `none`). `nat` requires
+            `type: bridge`, `managed: true`, and a `subnet`.
+        subnet:
+          type: string
+          description: |
+            VM IP subnet in CIDR form. Required when `egress: nat`,
+            forbidden otherwise. Host bits are masked off and the
+            canonical form is stored.
+        gateway:
+          type: string
+          description: |
+            Optional host-side gateway IP. Allowed only with
+            `egress: nat`; defaults to the first usable host in `subnet`.
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
@@ -5549,11 +5601,16 @@ components:
     NetworkUpdate:
       type: object
       description: |
-        `type` is immutable after creation; sending `type` in the
-        body is rejected with `400 validation_failed` carrying
-        `details.forbidden_fields: ["type"]`. `vlan_tag` accepts
-        `null` to clear an existing tag; `mtu` cannot be cleared
-        (the column is `NOT NULL` since migration 00004).
+        `type` and `managed` are immutable after creation; sending
+        either in the body is rejected with `400 validation_failed`
+        carrying `details.forbidden_fields`. `vlan_tag` accepts `null`
+        to clear an existing tag; `mtu` cannot be cleared (the column is
+        `NOT NULL` since migration 00004). `egress`, `subnet`, and
+        `gateway` are mutable: changing `egress` to `nat` requires a
+        `subnet` (gateway is derived when omitted); changing it to
+        `none` clears any `subnet`/`gateway`. `subnet` and `gateway`
+        accept `null` to clear them (only valid when the resulting
+        `egress` is `none`).
       properties:
         name:
           type: string
@@ -5562,6 +5619,13 @@ components:
         bridge_name:
           type: string
           minLength: 1
+        egress:
+          type: string
+          enum: [none, nat]
+        subnet:
+          type: [string, "null"]
+        gateway:
+          type: [string, "null"]
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
@@ -5573,6 +5637,36 @@ components:
         config:
           type: object
           additionalProperties: true
+
+    NetworkStatus:
+      type: object
+      description: |
+        Per-node reconciliation rollup for a cluster-wide network.
+        Returned only by `GET /v1/networks/{id}`; the list endpoint
+        omits it. `nodes` is empty until at least one node reports a
+        materialisation outcome through its heartbeat.
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkNodeStatus"
+
+    NetworkNodeStatus:
+      type: object
+      required: [node_id, reconciliation_status]
+      properties:
+        node_id:
+          type: string
+          format: uuid
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+        reconciliation_error:
+          type: [string, "null"]
+        last_reconciled_at:
+          type: [string, "null"]
+          format: date-time
 
     NetworkList:
       type: object

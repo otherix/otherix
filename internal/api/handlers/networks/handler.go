@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ type Store interface {
 	UpdateNetwork(ctx context.Context, arg store.UpdateNetworkParams) (store.Network, error)
 	ListNetworks(ctx context.Context, arg store.ListNetworksParams) ([]store.Network, error)
 	DeleteNetwork(ctx context.Context, id uuid.UUID) error
+	ListNetworkNodeStatusByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.NetworkNodeStatus, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -48,31 +50,99 @@ func New(s Store, log *slog.Logger) *Handler {
 // networkView mirrors components/schemas/Network in
 // api/openapi/control-plane.yaml. The internal soft-delete
 // timestamp is intentionally absent.
+//
+// Status is populated only on the GET-by-id path (which fans out to
+// ListNetworkNodeStatusByNetwork). The list path leaves it nil so the
+// `omitempty` keeps the cheap list response free of per-node status.
 type networkView struct {
 	ID         string          `json:"id"`
 	Name       string          `json:"name"`
 	Type       string          `json:"type"`
 	BridgeName string          `json:"bridge_name"`
+	Managed    bool            `json:"managed"`
+	Egress     string          `json:"egress"`
 	VlanTag    *int32          `json:"vlan_tag"`
 	MTU        int32           `json:"mtu"`
+	Subnet     *string         `json:"subnet"`
+	Gateway    *string         `json:"gateway"`
 	Config     json.RawMessage `json:"config"`
 	CreatedAt  string          `json:"created_at"`
 	UpdatedAt  string          `json:"updated_at"`
+	Status     *statusView     `json:"status,omitempty"`
 }
 
-// toView projects a store.Network onto its public networkView.
+// statusView is the GET-by-id-only per-node reconciliation rollup
+// (components/schemas/Network.status). Each entry is one node that has
+// reported a materialisation outcome for the network.
+type statusView struct {
+	Nodes []networkNodeStatusView `json:"nodes"`
+}
+
+// networkNodeStatusView mirrors components/schemas/NetworkNodeStatus.
+type networkNodeStatusView struct {
+	NodeID               string  `json:"node_id"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error"`
+	LastReconciledAt     *string `json:"last_reconciled_at"`
+}
+
+// toView projects a store.Network onto its public networkView. Status
+// is left nil; the GET-by-id handler attaches it explicitly.
 func toView(n store.Network) networkView {
 	return networkView{
 		ID:         n.ID.String(),
 		Name:       n.Name,
 		Type:       string(n.Type),
 		BridgeName: n.BridgeName,
+		Managed:    n.Managed,
+		Egress:     string(n.Egress),
 		VlanTag:    n.VlanTag,
 		MTU:        n.Mtu,
+		Subnet:     prefixString(n.Subnet),
+		Gateway:    addrString(n.Gateway),
 		Config:     rawJSONOrEmpty(n.Config),
 		CreatedAt:  n.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:  n.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+// prefixString renders a *netip.Prefix to its canonical CIDR string, or
+// nil when the pointer is nil.
+func prefixString(p *netip.Prefix) *string {
+	if p == nil {
+		return nil
+	}
+	s := p.String()
+	return &s
+}
+
+// addrString renders a *netip.Addr to its string form, or nil when the
+// pointer is nil.
+func addrString(a *netip.Addr) *string {
+	if a == nil {
+		return nil
+	}
+	s := a.String()
+	return &s
+}
+
+// toNodeStatusViews projects per-node reconciliation rows onto their
+// public shape, formatting the nullable timestamp as RFC 3339.
+func toNodeStatusViews(rows []store.NetworkNodeStatus) []networkNodeStatusView {
+	views := make([]networkNodeStatusView, 0, len(rows))
+	for _, st := range rows {
+		v := networkNodeStatusView{
+			NodeID:               st.NodeID.String(),
+			ReconciliationStatus: st.ReconciliationStatus,
+			ReconciliationError:  st.ReconciliationError,
+		}
+		if st.LastReconciledAt != nil {
+			s := st.LastReconciledAt.UTC().Format(time.RFC3339Nano)
+			v.LastReconciledAt = &s
+		}
+		views = append(views, v)
+	}
+	return views
 }
 
 // rawJSONOrEmpty returns raw if non-empty, otherwise the JSON object

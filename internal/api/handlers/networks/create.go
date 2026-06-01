@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"unicode/utf8"
 
@@ -35,6 +36,19 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	managed := req.Managed != nil && *req.Managed
+	egress := store.NetworkEgressNone
+	if req.Egress != nil {
+		egress = store.NetworkEgress(*req.Egress)
+	}
+
+	subnet, gateway, err := resolveCreateEgress(egress, req.Subnet, req.Gateway)
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+
 	mtu := int32(validation.DefaultMTU)
 	if req.MTU != nil {
 		mtu = *req.MTU
@@ -47,8 +61,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Name:       req.Name,
 		Type:       store.NetworkType(req.Type),
 		BridgeName: req.BridgeName,
+		Managed:    managed,
+		Egress:     egress,
 		VlanTag:    req.VlanTag,
 		Mtu:        mtu,
+		Subnet:     subnet,
+		Gateway:    gateway,
 		Config:     cfg,
 	})
 	if err != nil {
@@ -96,11 +114,66 @@ func validateCreate(req *createRequest) error {
 		}
 	}
 
+	egress := store.NetworkEgressNone
+	if req.Egress != nil {
+		if err := validation.ValidateNetworkEgress(*req.Egress); err != nil {
+			return err
+		}
+		egress = store.NetworkEgress(*req.Egress)
+	}
+	managed := req.Managed != nil && *req.Managed
+	if err := validation.ValidateNetworkInvariants(store.NetworkType(req.Type), managed, egress); err != nil {
+		return err
+	}
+
 	if err := validateConfigShape(req.Config); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// resolveCreateEgress turns the optional subnet/gateway request strings
+// into the stored pointers, enforcing the egress-driven invariants:
+//
+//   - egress=nat: subnet is required and parsed to canonical (masked)
+//     form; gateway, if supplied, must be a valid host inside the
+//     subnet, otherwise it defaults to the first usable host.
+//   - egress=none: neither subnet nor gateway may be present, keeping the
+//     stored model free of IP fields the mode does not use.
+func resolveCreateEgress(egress store.NetworkEgress, subnetStr, gatewayStr *string) (*netip.Prefix, *netip.Addr, error) {
+	if egress != store.NetworkEgressNAT {
+		if subnetStr != nil {
+			return nil, nil, errors.New("subnet is only allowed when egress=nat")
+		}
+		if gatewayStr != nil {
+			return nil, nil, errors.New("gateway is only allowed when egress=nat")
+		}
+		return nil, nil, nil
+	}
+
+	if subnetStr == nil {
+		return nil, nil, errors.New("subnet is required when egress=nat")
+	}
+	subnet, err := validation.ParseSubnet(*subnetStr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var gateway netip.Addr
+	if gatewayStr != nil {
+		gateway, err = netip.ParseAddr(*gatewayStr)
+		if err != nil {
+			return nil, nil, errors.New("gateway must be a valid ip address")
+		}
+		if err := validation.ValidateGatewayInSubnet(gateway, subnet); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		gateway = validation.GatewayDefault(subnet)
+	}
+
+	return &subnet, &gateway, nil
 }
 
 // validateConfigShape returns nil when the supplied bytes are either

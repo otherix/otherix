@@ -18,8 +18,12 @@ type createRequest struct {
 	Name       string          `json:"name"`
 	Type       string          `json:"type"`
 	BridgeName string          `json:"bridge_name"`
+	Managed    *bool           `json:"managed,omitempty"`
+	Egress     *string         `json:"egress,omitempty"`
 	VlanTag    *int32          `json:"vlan_tag,omitempty"`
 	MTU        *int32          `json:"mtu,omitempty"`
+	Subnet     *string         `json:"subnet,omitempty"`
+	Gateway    *string         `json:"gateway,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 }
 
@@ -36,15 +40,26 @@ type createRequest struct {
 //     absence and null into a nil pointer.
 //   - Config: same RawMessage shape as VlanTag, but `null` is
 //     rejected as a validation error (the column is jsonb NOT NULL).
+//   - Egress: nil pointer = leave as-is, non-nil = set ("none" or
+//     "nat"). The resulting (type, managed, egress) triple is
+//     re-validated after the merge.
+//   - Subnet / Gateway: tri-state via plain json.RawMessage — length 0
+//     means the key was absent (leave as-is); literal `null` clears the
+//     value; a JSON string sets it. Clearing is only legal when the
+//     resulting egress is none.
 //
-// `type` is intentionally ABSENT from the struct. The handler does a
-// pre-decode key sweep that rejects the field with 400
-// forbidden_fields:["type"] before this struct is decoded.
+// `type` and `managed` are intentionally ABSENT from the struct. The
+// handler does a pre-decode key sweep that rejects both with 400
+// forbidden_fields before this struct is decoded — `type` is
+// API-immutable and `managed` is fixed at creation time.
 type updateRequest struct {
 	Name       *string         `json:"name,omitempty"`
 	BridgeName *string         `json:"bridge_name,omitempty"`
+	Egress     *string         `json:"egress,omitempty"`
 	VlanTag    json.RawMessage `json:"vlan_tag,omitempty"`
 	MTU        *int32          `json:"mtu,omitempty"`
+	Subnet     json.RawMessage `json:"subnet,omitempty"`
+	Gateway    json.RawMessage `json:"gateway,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 }
 
