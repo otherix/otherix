@@ -409,6 +409,89 @@ func TestReconcile_SteadyStateNoTeardown(t *testing.T) {
 	}
 }
 
+// TestReconcile_PartialNATFailureRecordsBridge confirms that when
+// EnsureBridge succeeds but a later NAT step fails, the bridge is still
+// recorded in r.applied so a subsequent undeclare can reclaim it. Without
+// the early record the managed bridge orphans on the host with no GC.
+func TestReconcile_PartialNATFailureRecordsBridge(t *testing.T) {
+	fab := &netfabric.FakeFabric{Errs: map[string]error{"EnsureMasquerade": errors.New("nft: boom")}}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{
+				ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
+				Egress: "nat", BridgeName: "otnat0", Mtu: 1500,
+				Subnet: strptr("10.20.0.0/24"), Gateway: strptr("10.20.0.1"),
+			},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	// The report stays failed: NAT has not converged.
+	reports := rec.NetworkReports()
+	if len(reports) != 1 || reports[0].ReconciliationStatus != "failed" {
+		t.Fatalf("NetworkReports = %+v, want one failed entry", reports)
+	}
+	// The bridge was recorded despite the NAT failure.
+	a, ok := rec.applied["net-nat"]
+	if !ok {
+		t.Fatalf("applied[net-nat] missing; bridge would orphan with no GC")
+	}
+	if a.BridgeName != "otnat0" || !a.Managed {
+		t.Errorf("applied[net-nat] = %+v, want managed bridge otnat0", a)
+	}
+	// HasNAT must stay false so reconcileDelta does not try to tear down a
+	// masquerade that was never installed.
+	if a.HasNAT {
+		t.Errorf("applied[net-nat].HasNAT = true, want false until NAT converges")
+	}
+
+	// Now undeclare everything (still failing). removeUndeclared must reach
+	// the recorded bridge and reclaim it.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{})
+	rec.reconcile(context.Background())
+
+	if got := fab.RemoveBridgeCalls; len(got) != 1 || got[0] != "otnat0" {
+		t.Errorf("RemoveBridge calls = %v, want [otnat0] (orphan reclaimed)", got)
+	}
+	if reports := rec.NetworkReports(); len(reports) != 0 {
+		t.Errorf("NetworkReports after undeclare = %+v, want empty", reports)
+	}
+}
+
+// TestReconcile_PartialNATFailureSteadyStateNoTeardown confirms a network
+// stuck in partial NAT failure, re-recorded with the same bridge on every
+// tick, never triggers a teardown of its own bridge — recording the bridge
+// early must not turn the steady-state no-op into a rename/NAT-drop teardown.
+func TestReconcile_PartialNATFailureSteadyStateNoTeardown(t *testing.T) {
+	fab := &netfabric.FakeFabric{Errs: map[string]error{"EnsureMasquerade": errors.New("nft: boom")}}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	net := heartbeat.DeclaredNetwork{
+		ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
+		Egress: "nat", BridgeName: "otnat0", Mtu: 1500,
+		Subnet: strptr("10.20.0.0/24"), Gateway: strptr("10.20.0.1"),
+	}
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{net},
+	})
+	rec.reconcile(context.Background())
+	// Same still-failing network reconciled again.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{net},
+	})
+	rec.reconcile(context.Background())
+
+	if len(fab.RemoveBridgeCalls) != 0 || len(fab.RemoveMasqCalls) != 0 || len(fab.RemoveGatewayCalls) != 0 {
+		t.Errorf("still-failing steady-state triggered teardown: removeBridge=%v removeMasq=%v removeGw=%v",
+			fab.RemoveBridgeCalls, fab.RemoveMasqCalls, fab.RemoveGatewayCalls)
+	}
+	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "failed" {
+		t.Errorf("NetworkReports = %+v, want one failed entry", reports)
+	}
+}
+
 // TestReconcile_DoesNotRemoveUnmanagedBridge confirms an unmanaged
 // network that disappears is forgotten without any fabric teardown — an
 // operator bridge is never deleted by the agent.

@@ -203,7 +203,14 @@ func (r *Networks) applyManaged(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.failed(ctx, d, err.Error())
 	}
 
-	applied := appliedNetwork{BridgeName: d.BridgeName, Managed: true}
+	// Record the bridge in r.applied the instant it exists on the host,
+	// before the NAT steps that may still fail. Without this an
+	// EnsureBridge-ok-but-NAT-failed network is absent from r.applied, so a
+	// later CP-side delete (while NAT is still failing) makes
+	// removeUndeclared skip it and the bridge orphans with no GC. HasNAT
+	// stays false here so reconcileDelta treats a re-recorded still-failing
+	// network as an unchanged no-op rather than a NAT-drop teardown.
+	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true}
 
 	if d.Egress == "nat" {
 		if !subnet.IsValid() || !gateway.IsValid() {
@@ -218,12 +225,17 @@ func (r *Networks) applyManaged(ctx context.Context, d heartbeat.DeclaredNetwork
 		if err := r.fabric.EnsureMasquerade(subnet, ""); err != nil {
 			return r.failed(ctx, d, err.Error())
 		}
-		applied.HasNAT = true
-		applied.Subnet = subnet
-		applied.Gateway = gatewayAddr
+		// NAT converged: augment the recorded entry so a later teardown
+		// reclaims the masquerade and gateway addr too.
+		r.applied[d.ID] = appliedNetwork{
+			BridgeName: d.BridgeName,
+			Managed:    true,
+			HasNAT:     true,
+			Subnet:     subnet,
+			Gateway:    gatewayAddr,
+		}
 	}
 
-	r.applied[d.ID] = applied
 	return ready(d.ID)
 }
 
