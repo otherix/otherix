@@ -54,6 +54,14 @@ var (
 	// conflict; the reconciler reads HasInFlight before enqueuing
 	// corrective ops to short-circuit without the sentinel round-trip.
 	ErrInFlight = errors.New("vm operation already in flight")
+
+	// ErrCreateInFlight is returned by Create on a duplicate vmID whose
+	// original create task record exists but whose task is no longer
+	// retrievable. It is a defensive fallback for a should-not-happen state
+	// (the task store keeps records for the process lifetime); handlers map
+	// it to 409 conflict so the CP worker resumes on its next poll rather
+	// than the agent clobbering the live VM.
+	ErrCreateInFlight = errors.New("vm create already in flight for this id")
 )
 
 // shutdownGrace bounds how long Delete and Stop wait for system_powerdown
@@ -94,6 +102,15 @@ type Manager struct {
 	mu    sync.Mutex
 	vms   map[uuid.UUID]*VM
 	tasks *TaskStore
+
+	// createTasks maps a VM id to the id of the vm.create task that first
+	// materialised it. Create consults it to re-accept the original task on
+	// a duplicate POST (redelivery before the CP persisted the
+	// agent_task_id) rather than clobbering the in-flight VM. Written under
+	// mu alongside vms; an entry is set when Create spawns runCreate and is
+	// never removed (the task store keeps the record for the process
+	// lifetime, and Delete tears the VM down by name, not via this map).
+	createTasks map[uuid.UUID]uuid.UUID
 
 	poolsMu sync.RWMutex
 	pools   map[string]pool
@@ -193,6 +210,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		fabric:          fabric,
 		vms:             map[uuid.UUID]*VM{},
 		tasks:           NewTaskStore(),
+		createTasks:     map[uuid.UUID]uuid.UUID{},
 		muxes:           map[string]*serialmux.Multiplexer{},
 	}
 
@@ -418,6 +436,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	if vmID == uuid.Nil {
 		vmID = uuid.New()
 	}
+
 	arch := qemu.HostArch()
 
 	v := &VM{
@@ -440,11 +459,30 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		v.CidataPath = filepath.Join(m.stateDir, vmID.String(), "cidata.iso")
 	}
 
+	// Register the VM and mint its create task atomically, re-accepting on a
+	// duplicate vmID. The CP mints a fresh idempotency key per attempt and
+	// the agent has no idempotency middleware, so a job redelivered before
+	// the CP persisted the agent_task_id re-POSTs this create. Overwriting
+	// m.vms[vmID] and spawning a second runCreate would clobber the
+	// in-flight VM and re-materialise its NICs (tap churn). Instead echo
+	// back the ORIGINAL vm.create task so the CP worker resumes against the
+	// same agent_task_id, leaving the live VM and its taps untouched. The
+	// duplicate check and the insert share one critical section so two
+	// concurrent first attempts cannot both materialise the VM.
 	m.mu.Lock()
-	m.vms[vmID] = v
-	m.mu.Unlock()
-
+	if origTaskID, dup := m.createTasks[vmID]; dup {
+		m.mu.Unlock()
+		if existing := m.tasks.Get(origTaskID); existing != nil {
+			return existing, nil
+		}
+		// The record exists but the task is gone (should not happen while
+		// the process is up). Treat it as a conflict the handler maps to 409.
+		return nil, ErrCreateInFlight
+	}
 	task := m.tasks.Create(TaskKindVMCreate, vmID)
+	m.vms[vmID] = v
+	m.createTasks[vmID] = task.ID
+	m.mu.Unlock()
 
 	// #nosec G118 -- async task work intentionally outlives the HTTP request;
 	// the task surface (GET /v1/tasks/{id}) is how clients track progress.

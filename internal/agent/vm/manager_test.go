@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -37,6 +38,20 @@ func newTestConfig(t *testing.T) (*config.AgentConfig, string, string) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// writeTemplate materialises an empty pool template file at the path
+// Manager.Create stats before accepting a create, so a test can drive the
+// happy path without a real qcow2.
+func writeTemplate(t *testing.T, poolRoot, checksum string) {
+	t.Helper()
+	dir := filepath.Join(poolRoot, "templates")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir templates: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, checksum+".qcow2"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
 }
 
 func TestManager_New_ValidatesStatePath(t *testing.T) {
@@ -148,6 +163,82 @@ func TestManager_Create_UnknownPool(t *testing.T) {
 	})
 	if !errors.Is(err, ErrPoolUnknown) {
 		t.Errorf("err = %v, want ErrPoolUnknown", err)
+	}
+}
+
+// TestManager_Create_DuplicateVMID_IsIdempotent confirms that a second
+// Create for a vmID already present does NOT overwrite the in-flight VM
+// entry or re-materialise its NICs. The CP mints a fresh idempotency key
+// per attempt and the agent has no idempotency middleware, so a job
+// redelivered before the CP persisted the agent_task_id re-POSTs and would
+// otherwise clobber the live VM (tap churn / state loss). The duplicate
+// must re-accept the original create task so the CP worker resumes against
+// the same agent_task_id.
+func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	fab := &netfabric.FakeFabric{}
+	m, err := New(cfg, fab, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	checksum := "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+	writeTemplate(t, poolRoot, checksum)
+
+	vmID := uuid.New()
+	nic := sampleNIC()
+
+	// Seed an in-flight VM the way the first Create would, plus its create
+	// task, without racing the async runCreate goroutine.
+	original := &VM{
+		ID:           vmID,
+		Name:         "live-vm",
+		PoolName:     poolName,
+		Architecture: qemu.HostArch(),
+		Status:       StatusCreating,
+		NICs:         []netfabric.NIC{nic},
+	}
+	origTask := m.tasks.Create(TaskKindVMCreate, vmID)
+	m.mu.Lock()
+	m.vms[vmID] = original
+	m.createTasks[vmID] = origTask.ID
+	m.mu.Unlock()
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		UUID:             vmID,
+		Name:             "live-vm",
+		VCPUs:            2,
+		MemoryMB:         1024,
+		PoolName:         poolName,
+		TemplateChecksum: checksum,
+		NICs:             []netfabric.NIC{nic},
+	})
+	if err != nil {
+		t.Fatalf("duplicate Create = %v, want idempotent re-accept", err)
+	}
+
+	// The original create task is re-accepted so the CP worker resumes
+	// against the same agent_task_id.
+	if task.ID != origTask.ID {
+		t.Errorf("duplicate Create task ID = %s, want original %s", task.ID, origTask.ID)
+	}
+
+	// The in-flight VM entry must be the SAME pointer: not overwritten.
+	m.mu.Lock()
+	got := m.vms[vmID]
+	m.mu.Unlock()
+	if got != original {
+		t.Errorf("vms[%s] pointer changed; duplicate Create clobbered the in-flight VM", vmID)
+	}
+
+	// No second materialiseNICs: the duplicate must not spawn a runCreate,
+	// so the fabric saw no tap churn.
+	if len(fab.CreateTapCalls) != 0 || len(fab.AttachTapCalls) != 0 {
+		t.Errorf("duplicate Create touched the fabric: createTap=%v attachTap=%v",
+			fab.CreateTapCalls, fab.AttachTapCalls)
 	}
 }
 

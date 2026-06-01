@@ -206,3 +206,67 @@ func TestCreate_ValidNIC_PassesValidation(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestCreate_DuplicateUUID_ReAcceptsOriginalTask drives a second POST with
+// the same VM uuid (a redelivery before the CP persisted the
+// agent_task_id) and confirms the agent re-accepts with 202 echoing the
+// ORIGINAL task id rather than minting a fresh one or re-materialising the
+// VM. The CP worker then resumes against the same agent_task_id.
+func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
+	fake := &netfabric.FakeFabric{}
+	h, checksum := newCreateHarness(t, fake, true)
+
+	vmID := uuid.NewString()
+	body, _ := json.Marshal(map[string]any{
+		"uuid":              vmID,
+		"name":              "vm1",
+		"vcpus":             2,
+		"memory_mb":         1024,
+		"pool":              "default",
+		"template_checksum": checksum,
+	})
+
+	post := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/vms", bytes.NewReader(body))
+		h.Create(rec, req)
+		return rec
+	}
+
+	first := post()
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first create status = %d, want 202 (body=%s)", first.Code, first.Body.String())
+	}
+	var firstAcc asyncAccepted
+	if err := json.Unmarshal(first.Body.Bytes(), &firstAcc); err != nil {
+		t.Fatalf("decode first accepted: %v", err)
+	}
+
+	// Drain the original create to a terminal state (the stub template is
+	// not a real qcow2 so it fails — fine; the VM and its task record
+	// remain registered, which is exactly the redelivery window).
+	firstTaskID := uuid.MustParse(firstAcc.TaskID)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		task := h.manager.Task(firstTaskID)
+		if task != nil && (task.Status == vm.TaskStatusSuccess || task.Status == vm.TaskStatusFailed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first create task did not reach a terminal state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	second := post()
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("duplicate create status = %d, want 202 re-accept (body=%s)", second.Code, second.Body.String())
+	}
+	var secondAcc asyncAccepted
+	if err := json.Unmarshal(second.Body.Bytes(), &secondAcc); err != nil {
+		t.Fatalf("decode second accepted: %v", err)
+	}
+	if secondAcc.TaskID != firstAcc.TaskID {
+		t.Errorf("duplicate create task_id = %s, want original %s", secondAcc.TaskID, firstAcc.TaskID)
+	}
+}

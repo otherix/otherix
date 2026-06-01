@@ -201,6 +201,9 @@ func mapCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, vm.ErrTemplateMissing):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeNotFound, "template not found on pool", nil)
+	case errors.Is(err, vm.ErrCreateInFlight):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "vm create already in flight for this id", nil)
 	default:
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "internal error", nil)
