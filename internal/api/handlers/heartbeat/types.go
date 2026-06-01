@@ -18,6 +18,7 @@ type requestBody struct {
 	Resources    nodeResourcesReport    `json:"resources"`
 	VMs          []vmReport             `json:"vms"`
 	Pools        []poolReport           `json:"pools,omitempty"`
+	Networks     []networkReport        `json:"networks"`
 }
 
 // poolReport mirrors HeartbeatPoolReport — agent's per-pool
@@ -31,6 +32,18 @@ type poolReport struct {
 	Name                 string  `json:"name"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+}
+
+// networkReport mirrors HeartbeatNetworkReport — the agent's per-network
+// reconciliation outcome. Networks are cluster-wide, so the report keys on
+// the network id (uuid) rather than a node-scoped name; the CP parses ID
+// and upserts the (network_id, node_id) status record. A non-uuid ID is
+// tolerated (logged + skipped) so a stale or garbage report cannot 500 the
+// whole heartbeat.
+type networkReport struct {
+	ID                   string  `json:"id"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error"`
 }
 
 type migrationCapability struct {

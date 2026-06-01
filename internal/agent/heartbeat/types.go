@@ -22,6 +22,7 @@ type Report struct {
 	Resources    NodeResources    `json:"resources"`
 	VMs          []VMReport       `json:"vms"`
 	Pools        []PoolReport     `json:"pools,omitempty"`
+	Networks     []NetworkReport  `json:"networks,omitempty"`
 }
 
 // PoolReport mirrors HeartbeatPoolReport — one entry per pool the
@@ -32,6 +33,17 @@ type Report struct {
 // scan-subsumption iteration lands.
 type PoolReport struct {
 	Name                 string  `json:"name"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+}
+
+// NetworkReport mirrors HeartbeatNetworkReport — one entry per network
+// the agent has observed after a reconciliation pass. Networks are
+// cluster-wide, so the report keys on the network id (uuid), unlike
+// PoolReport which keys on the node-scoped pool name. The CP upserts
+// the (network_id, node_id) status record from each entry.
+type NetworkReport struct {
+	ID                   string  `json:"id"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
 }

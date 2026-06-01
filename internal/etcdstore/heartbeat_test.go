@@ -238,3 +238,59 @@ func TestHeartbeatDeclaredNetworksClusterWide(t *testing.T) {
 		}
 	}
 }
+
+// TestHeartbeatUpsertNetworkNodeStatus drives the up-channel: a node reports
+// per-network reconciliation outcomes through the projection seam
+// (hp.UpsertNetworkNodeStatus, the method applyNetworkReports calls) and the
+// per-(network, node) status record reflects status + error afterward. A
+// second status on a distinct network for the same node is kept independently.
+func TestHeartbeatUpsertNetworkNodeStatus(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	node := nodeParams(uniqueNodeName("hbnetstatus"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	readyNet := netParams(uniqueNetName("hbready"))
+	if _, err := s.CreateNetwork(ctx, readyNet); err != nil {
+		t.Fatalf("CreateNetwork ready: %v", err)
+	}
+	failedNet := netParams(uniqueNetName("hbfailed"))
+	if _, err := s.CreateNetwork(ctx, failedNet); err != nil {
+		t.Fatalf("CreateNetwork failed: %v", err)
+	}
+
+	errMsg := "bridge create failed"
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		if err := hp.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+			NetworkID: readyNet.ID, NodeID: node.ID, ReconciliationStatus: "ready",
+		}); err != nil {
+			return err
+		}
+		return hp.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+			NetworkID: failedNet.ID, NodeID: node.ID, ReconciliationStatus: "failed", ReconciliationError: &errMsg,
+		})
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection: %v", err)
+	}
+
+	readyRows, err := s.ListNetworkNodeStatusByNetwork(ctx, readyNet.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork ready: %v", err)
+	}
+	if len(readyRows) != 1 || readyRows[0].NodeID != node.ID || readyRows[0].ReconciliationStatus != "ready" || readyRows[0].ReconciliationError != nil {
+		t.Errorf("ready status = %+v, want one row node=%v status=ready error=nil", readyRows, node.ID)
+	}
+
+	failedRows, err := s.ListNetworkNodeStatusByNetwork(ctx, failedNet.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork failed: %v", err)
+	}
+	if len(failedRows) != 1 || failedRows[0].NodeID != node.ID || failedRows[0].ReconciliationStatus != "failed" {
+		t.Fatalf("failed status = %+v, want one row node=%v status=failed", failedRows, node.ID)
+	}
+	if failedRows[0].ReconciliationError == nil || *failedRows[0].ReconciliationError != errMsg {
+		t.Errorf("failed status error = %v, want %q", failedRows[0].ReconciliationError, errMsg)
+	}
+}

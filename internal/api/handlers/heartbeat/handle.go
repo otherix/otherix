@@ -244,6 +244,9 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyPoolReports(ctx, hp, agent.NodeID, body.Pools); err != nil {
 			return err
 		}
+		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
+			return err
+		}
 		declared, err := h.loadDeclaredPools(ctx, hp, agent.NodeID)
 		if err != nil {
 			return err
@@ -307,6 +310,36 @@ func (h *Handler) applyPoolReports(ctx context.Context, hp store.HeartbeatProjec
 		}
 		if err := hp.UpdateStoragePoolReconciliation(ctx, params); err != nil {
 			return fmt.Errorf("update pool reconciliation: %v", err)
+		}
+	}
+	return nil
+}
+
+// applyNetworkReports walks each agent-reported network and upserts its
+// reconciliation_status / reconciliation_error onto the per-(network, node)
+// status record. Unlike pools, networks are cluster-wide and the report keys
+// on the network id (uuid). A report whose id does not parse as a uuid is
+// skipped with a WARN log and does not fail the heartbeat — a node reporting a
+// stale or garbage network id must not 500 the whole projection (mirrors the
+// tolerant unknown-pool / unknown-vm paths). A genuine store failure
+// propagates as a projection error and rolls the transaction back.
+func (h *Handler) applyNetworkReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []networkReport) error {
+	for _, r := range reports {
+		networkID, err := uuid.Parse(r.ID)
+		if err != nil {
+			h.log.WarnContext(ctx, "heartbeat network id not a uuid; skipping",
+				slog.String("node_id", nodeID.String()),
+				slog.String("network_id", r.ID))
+			continue
+		}
+		params := store.UpsertNetworkNodeStatusParams{
+			NetworkID:            networkID,
+			NodeID:               nodeID,
+			ReconciliationStatus: r.ReconciliationStatus,
+			ReconciliationError:  r.ReconciliationError,
+		}
+		if err := hp.UpsertNetworkNodeStatus(ctx, params); err != nil {
+			return fmt.Errorf("upsert network_node_status: %v", err)
 		}
 	}
 	return nil

@@ -4589,6 +4589,19 @@ components:
             on next tick).
           items:
             $ref: "#/components/schemas/HeartbeatPoolReport"
+        networks:
+          type: array
+          description: |
+            Agent's observed network inventory after the most recent
+            reconciliation pass. Networks are cluster-wide, so each entry
+            keys on the network `id` (uuid) rather than a node-scoped
+            name. The CP upserts each entry onto the per-(network, node)
+            status record (`reconciliation_status` /
+            `reconciliation_error`); entries whose id does not parse as a
+            uuid are silently skipped (eventually consistent, agent
+            reconciles on next tick) and never fail the heartbeat.
+          items:
+            $ref: "#/components/schemas/HeartbeatNetworkReport"
 
     HeartbeatPoolReport:
       type: object
@@ -4637,6 +4650,35 @@ components:
           type: [string, "null"]
           format: date-time
           description: Forward-compatibility surface; see capacity_bytes.
+
+    HeartbeatNetworkReport:
+      type: object
+      description: |
+        One entry in HeartbeatRequest.networks — per-network
+        reconciliation outcome reported by the agent. Networks are
+        cluster-wide, so the entry keys on the network `id` (uuid)
+        rather than a node-scoped name. The CP upserts the matching
+        per-(network, node) status record.
+      required: [id, reconciliation_status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Network id as declared by the CP.
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: |
+            Outcome of the agent's most recent reconciliation attempt
+            for this network. `pending` is reported during the polling
+            window between heartbeat receipt and reconciliation tick;
+            `ready` after the bridge is materialised; `failed` on a
+            bridge-creation or configuration error.
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Human-readable error message when `reconciliation_status`
+            is `failed`. Must be NULL or absent for other statuses.
 
     HeartbeatResponse:
       type: object
