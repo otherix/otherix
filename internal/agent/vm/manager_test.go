@@ -9,10 +9,14 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/agent/qemu"
+	"github.com/otherix/otherix/internal/agent/state"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -289,6 +293,83 @@ func TestManager_FailTask_MutatesVMStatusToFailed(t *testing.T) {
 	if v.Status != StatusFailed {
 		t.Errorf("VM status = %q, want %q (failTask must mark VM failed)",
 			v.Status, StatusFailed)
+	}
+}
+
+// TestManager_New_SweepsOrphanTaps locks the startup orphan-tap sweep:
+// taps the host reports that do NOT belong to any replayed VM are
+// reclaimed; taps that DO belong to a replayed VM are left alone.
+func TestManager_New_SweepsOrphanTaps(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+
+	// A replayed VM whose single NIC implies a kept tap.
+	vmID := uuid.New()
+	nic := sampleNIC()
+	keepTap := nic.TapName()
+	meta := &state.VMMeta{
+		VMID:         vmID,
+		Name:         "kept-vm",
+		VCPUs:        2,
+		MemoryMB:     1024,
+		PoolName:     "default",
+		Architecture: string(qemu.HostArch()),
+		Status:       string(StatusStopped),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+		NICs:         nicsToMeta([]netfabric.NIC{nic}),
+	}
+	if err := state.WriteMeta(filepath.Join(cfg.StatePath, vmID.String()), meta); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+
+	orphanTap := "otdeadbeef0000"
+	fake := &netfabric.FakeFabric{ListTapsResult: []string{keepTap, orphanTap}}
+
+	if _, err := New(cfg, fake, discardLogger()); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if fake.ListTapsCalls != 1 {
+		t.Errorf("ListTapsCalls = %d, want 1", fake.ListTapsCalls)
+	}
+	want := []string{orphanTap}
+	if diff := cmp.Diff(want, fake.DeleteTapCalls); diff != "" {
+		t.Errorf("DeleteTapCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestManager_New_SweepsOrphanTaps_NoVMs covers the VM-less manager: a
+// host tap with no owning VM is reclaimed.
+func TestManager_New_SweepsOrphanTaps_NoVMs(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	orphanTap := "otcccccccc0000"
+	fake := &netfabric.FakeFabric{ListTapsResult: []string{orphanTap}}
+
+	if _, err := New(cfg, fake, discardLogger()); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	want := []string{orphanTap}
+	if diff := cmp.Diff(want, fake.DeleteTapCalls); diff != "" {
+		t.Errorf("DeleteTapCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestManager_New_OrphanSweep_ToleratesListTapsError ensures a ListTaps
+// failure skips the sweep without failing manager startup.
+func TestManager_New_OrphanSweep_ToleratesListTapsError(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	fake := &netfabric.FakeFabric{Errs: map[string]error{"ListTaps": errors.New("boom")}}
+
+	m, err := New(cfg, fake, discardLogger())
+	if err != nil {
+		t.Fatalf("New must not fail on ListTaps error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("New returned nil manager")
+	}
+	if len(fake.DeleteTapCalls) != 0 {
+		t.Errorf("DeleteTapCalls = %v, want none (sweep skipped on ListTaps error)", fake.DeleteTapCalls)
 	}
 }
 

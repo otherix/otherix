@@ -220,6 +220,13 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		}
 		m.vms[v.ID] = v
 	}
+
+	// Reclaim host taps left behind by VMs that no longer exist (crash
+	// before teardown, or a meta.json skipped during replay). Runs once
+	// here, with the replayed-VM set authoritative; best-effort, never
+	// fails startup.
+	m.sweepOrphanTaps()
+
 	log.Info("vm manager initialized",
 		"state_dir", cfg.StatePath,
 		"recovered_vms", len(m.vms),

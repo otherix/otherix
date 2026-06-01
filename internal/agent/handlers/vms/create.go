@@ -95,6 +95,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if msg, details := validateNICs(req.Nics); msg != "" {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, msg, details)
+		return
+	}
+
 	nics := make([]netfabric.NIC, 0, len(req.Nics))
 	for _, n := range req.Nics {
 		nicID, perr := uuid.Parse(n.ID)
@@ -133,6 +139,55 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Status: string(task.Status),
 		Links:  map[string]any{"self": "/v1/tasks/" + task.ID.String()},
 	})
+}
+
+// maxDeviceOrder bounds the per-VM NIC slot index. The guest exposes a
+// small, bounded set of PCI slots; the wire device_order is the slot
+// the NIC occupies. 0..15 is generous for the supported guest shapes.
+const maxDeviceOrder = 15
+
+// validateNICs runs the agent VM-create API-edge checks over the NIC
+// list, before anything is materialised. Today a bad MAC or model only
+// surfaces deep in qemu.BuildArgs (after taps are created) and a bad
+// bridge only at AttachTap; moving the checks here means no host
+// primitive is created on bad input. It returns ("", nil) when every
+// NIC is valid, or a human-readable message plus optional details for
+// the 400 envelope on the first violation.
+//
+// Checks per NIC: MAC present and a valid 6-octet EUI-48; model empty
+// or one of the supported QEMU models; bridge non-empty (the tap needs
+// a bridge to attach to); device_order in [0, maxDeviceOrder]. Across
+// the list: device_order values are unique and MACs are unique.
+func validateNICs(nics []nicReq) (string, map[string]any) {
+	seenOrder := make(map[int]struct{}, len(nics))
+	seenMAC := make(map[string]struct{}, len(nics))
+	for i, n := range nics {
+		if err := netfabric.ValidateMAC(n.MAC); err != nil {
+			return "nic mac is not a valid 6-octet MAC address",
+				map[string]any{"index": i, "mac": n.MAC}
+		}
+		if err := netfabric.ValidateModel(n.Model); err != nil {
+			return "nic model is not a supported QEMU NIC model",
+				map[string]any{"index": i, "model": n.Model}
+		}
+		if n.Bridge == "" {
+			return "nic bridge is required", map[string]any{"index": i}
+		}
+		if n.DeviceOrder < 0 || n.DeviceOrder > maxDeviceOrder {
+			return "nic device_order is out of range",
+				map[string]any{"index": i, "device_order": n.DeviceOrder, "max": maxDeviceOrder}
+		}
+		if _, dup := seenOrder[n.DeviceOrder]; dup {
+			return "nic device_order is duplicated",
+				map[string]any{"index": i, "device_order": n.DeviceOrder}
+		}
+		seenOrder[n.DeviceOrder] = struct{}{}
+		if _, dup := seenMAC[n.MAC]; dup {
+			return "nic mac is duplicated", map[string]any{"index": i, "mac": n.MAC}
+		}
+		seenMAC[n.MAC] = struct{}{}
+	}
+	return "", nil
 }
 
 func mapCreateError(w http.ResponseWriter, r *http.Request, err error) {
