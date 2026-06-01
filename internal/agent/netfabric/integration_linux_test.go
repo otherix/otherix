@@ -10,8 +10,10 @@ import (
 	"bytes"
 	"net/netip"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -180,7 +182,7 @@ func TestLinuxFabricTapLifecycle(t *testing.T) {
 }
 
 // countMasqRules returns how many rules in the otherix-nat postrouting
-// chain carry the marker for subnet.
+// chain carry a marker for subnet, across every egress iface.
 func countMasqRules(t *testing.T, subnet netip.Prefix) int {
 	t.Helper()
 	c := &nftables.Conn{}
@@ -190,10 +192,10 @@ func countMasqRules(t *testing.T, subnet netip.Prefix) int {
 	if err != nil {
 		t.Fatalf("GetRules(%s/%s) = %v", natTableName, natChainName, err)
 	}
-	marker := masqUserData(subnet)
+	prefix := masqSubnetPrefix(subnet)
 	n := 0
 	for _, r := range rules {
-		if bytes.Equal(r.UserData, marker) {
+		if bytes.HasPrefix(r.UserData, prefix) {
 			n++
 		}
 	}
@@ -327,6 +329,116 @@ func TestLinuxFabricRemoveMasqueradeOnFreshNetns(t *testing.T) {
 			if tbl.Name == natTableName {
 				t.Fatalf("RemoveMasquerade created table %q, want absent", natTableName)
 			}
+		}
+	})
+}
+
+// TestLinuxFabricCreateTapOverBridge asserts that CreateTap refuses to
+// adopt a link of a different type: pointing it at an existing bridge
+// returns the type-assert error and leaves the bridge in place.
+func TestLinuxFabricCreateTapOverBridge(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const name = "otbr0"
+
+		if err := f.EnsureBridge(name, 1500); err != nil {
+			t.Fatalf("EnsureBridge(%q, 1500) = %v", name, err)
+		}
+
+		err := f.CreateTap(name, 1500)
+		if err == nil {
+			t.Fatalf("CreateTap(%q) over a bridge = nil, want type-assert error", name)
+		}
+		if !strings.Contains(err.Error(), "not a tap") {
+			t.Errorf("CreateTap(%q) error = %v, want it to mention \"not a tap\"", name, err)
+		}
+
+		// The bridge must be untouched - CreateTap must not delete or
+		// convert it.
+		link, err := netlink.LinkByName(name)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) after failed CreateTap = %v", name, err)
+		}
+		if _, ok := link.(*netlink.Bridge); !ok {
+			t.Errorf("link %q is %T after failed CreateTap, want *netlink.Bridge", name, link)
+		}
+	})
+}
+
+// TestLinuxFabricListTaps asserts ListTaps returns exactly the
+// ot-prefixed tap devices, sorted, ignoring bridges and non-ot taps.
+func TestLinuxFabricListTaps(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+
+		if err := f.CreateTap("otbeef0", 1500); err != nil {
+			t.Fatalf("CreateTap(otbeef0) = %v", err)
+		}
+		if err := f.CreateTap("otaaaa0", 1500); err != nil {
+			t.Fatalf("CreateTap(otaaaa0) = %v", err)
+		}
+		if err := f.EnsureBridge("otbridge0", 1500); err != nil {
+			t.Fatalf("EnsureBridge(otbridge0) = %v", err)
+		}
+		// A tap without the ot prefix must be ignored.
+		if err := f.CreateTap("xtap0", 1500); err != nil {
+			t.Fatalf("CreateTap(xtap0) = %v", err)
+		}
+
+		got, err := f.ListTaps()
+		if err != nil {
+			t.Fatalf("ListTaps() = %v", err)
+		}
+		want := []string{"otaaaa0", "otbeef0"}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("ListTaps() mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+// TestLinuxFabricMasqueradeMultiIface asserts that masquerade rules are
+// keyed on subnet+iface: ensuring the same subnet via two egress ifaces
+// installs two distinct rules, and a single RemoveMasquerade(subnet)
+// removes both.
+func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		subnet := netip.MustParsePrefix("10.99.0.0/24")
+
+		// A second usable egress iface besides lo: a dummy link.
+		const dummyName = "otdummy0"
+		if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: dummyName}}); err != nil {
+			t.Fatalf("LinkAdd(dummy %q) = %v", dummyName, err)
+		}
+
+		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
+			t.Skipf("EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
+		}
+		if n := countMasqRules(t, subnet); n != 1 {
+			t.Fatalf("masquerade rule count = %d after first iface, want 1", n)
+		}
+
+		if err := f.EnsureMasquerade(subnet, dummyName); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, %s) = %v", subnet, dummyName, err)
+		}
+		if n := countMasqRules(t, subnet); n != 2 {
+			t.Fatalf("masquerade rule count = %d after second iface, want 2", n)
+		}
+
+		// Idempotent per (subnet, iface): re-ensuring lo adds no rule.
+		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, lo) repeat = %v", subnet, err)
+		}
+		if n := countMasqRules(t, subnet); n != 2 {
+			t.Fatalf("masquerade rule count = %d after lo repeat, want 2", n)
+		}
+
+		// A single removal clears every iface's rule for the subnet.
+		if err := f.RemoveMasquerade(subnet); err != nil {
+			t.Fatalf("RemoveMasquerade(%s) = %v", subnet, err)
+		}
+		if n := countMasqRules(t, subnet); n != 0 {
+			t.Fatalf("masquerade rule count = %d after remove, want 0", n)
 		}
 	})
 }

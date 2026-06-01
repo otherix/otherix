@@ -37,6 +37,9 @@ const ifnameSize = 16
 // AddrReplace adds the address when absent and is a no-op when it is
 // already present, so a second call against the same bridge succeeds.
 func (f *linuxFabric) EnsureGatewayAddr(bridge string, addr netip.Prefix) error {
+	f.natMu.Lock()
+	defer f.natMu.Unlock()
+
 	link, err := netlink.LinkByName(bridge)
 	if err != nil {
 		return fmt.Errorf("netfabric: ensure gateway addr on %s: %v", bridge, err)
@@ -55,6 +58,9 @@ func (f *linuxFabric) EnsureGatewayAddr(bridge string, addr netip.Prefix) error 
 // nil when the bridge link is absent and when the address is already
 // gone, so it is safe to call during repeated teardown.
 func (f *linuxFabric) RemoveGatewayAddr(bridge string, addr netip.Prefix) error {
+	f.natMu.Lock()
+	defer f.natMu.Unlock()
+
 	link, err := netlink.LinkByName(bridge)
 	if err != nil {
 		var notFound netlink.LinkNotFoundError
@@ -77,11 +83,20 @@ func (f *linuxFabric) RemoveGatewayAddr(bridge string, addr netip.Prefix) error 
 }
 
 // masqUserData returns the stable UserData marker tagged onto the
-// masquerade rule for subnet. Rules are matched on this marker for
-// idempotent ensure and targeted removal, so it must not depend on the
-// resolved egress interface.
-func masqUserData(subnet netip.Prefix) []byte {
-	return []byte("otherix:" + subnet.String())
+// masquerade rule for subnet egressing via iface. The marker is keyed on
+// both subnet and the resolved egress interface so that changing the
+// egress interface installs a distinct rule rather than silently matching
+// the stale one. masqSubnetPrefix returns the iface-independent prefix of
+// this marker, used by RemoveMasquerade to remove every rule for a subnet
+// regardless of which iface it was installed for.
+func masqUserData(subnet netip.Prefix, iface string) []byte {
+	return append(masqSubnetPrefix(subnet), iface...)
+}
+
+// masqSubnetPrefix returns the leading "otherix:<subnet>:" segment shared
+// by every masquerade marker for subnet, independent of the egress iface.
+func masqSubnetPrefix(subnet netip.Prefix) []byte {
+	return []byte("otherix:" + subnet.String() + ":")
 }
 
 // EnsureMasquerade installs a MASQUERADE rule for source traffic from
@@ -100,18 +115,29 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 		}
 		egressIface = iface
 	}
+	// Guard the resolved iface against the kernel IFNAMSIZ ceiling. An
+	// over-long name would otherwise be silently truncated into the
+	// OIFNAME comparand, producing a rule that matches the wrong (or no)
+	// interface. The terminating NUL leaves ifnameSize-1 usable octets.
+	if len(egressIface) >= ifnameSize {
+		return fmt.Errorf("netfabric: ensure masquerade for %s: egress iface %q exceeds %d-byte limit", subnet, egressIface, ifnameSize-1)
+	}
+
+	f.natMu.Lock()
+	defer f.natMu.Unlock()
 
 	c := &nftables.Conn{}
 	table, chain := f.natTableChain(c)
 	// Materialise the table and chain in the kernel before the GetRules
 	// precheck. On a fresh host the table has never existed, and GetRules
 	// issues an immediate kernel dump that would return ENOENT; flushing
-	// the create-or-noop first guarantees the dump finds the table.
+	// the create-or-noop first guarantees the dump finds the table. This
+	// Flush is load-bearing - see TestLinuxFabricNAT on a fresh netns.
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("netfabric: ensure masquerade for %s: %v", subnet, err)
 	}
 
-	marker := masqUserData(subnet)
+	marker := masqUserData(subnet, egressIface)
 	rules, err := c.GetRules(table, chain)
 	if err != nil {
 		return fmt.Errorf("netfabric: ensure masquerade for %s: list rules: %v", subnet, err)
@@ -139,6 +165,9 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 // including when the NAT table has never been created; removal never
 // materialises state.
 func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
+	f.natMu.Lock()
+	defer f.natMu.Unlock()
+
 	c := &nftables.Conn{}
 	// Reference the table and chain without creating them. On a fresh host
 	// the GetRules dump returns ENOENT for the absent table; that is "no
@@ -146,7 +175,11 @@ func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
 	chain := &nftables.Chain{Name: natChainName, Table: table}
 
-	marker := masqUserData(subnet)
+	// Match on the iface-independent subnet prefix so every rule for the
+	// subnet is removed regardless of which egress iface it was installed
+	// for. The marker is "otherix:<subnet>:<iface>"; the prefix is
+	// "otherix:<subnet>:".
+	prefix := masqSubnetPrefix(subnet)
 	rules, err := c.GetRules(table, chain)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
@@ -156,7 +189,7 @@ func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	}
 	deleted := false
 	for _, r := range rules {
-		if !bytes.Equal(r.UserData, marker) {
+		if !bytes.HasPrefix(r.UserData, prefix) {
 			continue
 		}
 		r.Table = table

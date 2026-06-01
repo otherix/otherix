@@ -19,12 +19,17 @@ type FakeFabric struct {
 	// configured Errs["BridgeExists"].
 	BridgeExistsResult bool
 
+	// ListTapsResult is returned by ListTaps alongside the configured
+	// Errs["ListTaps"]. It is returned as nil when Errs["ListTaps"] is set.
+	ListTapsResult []string
+
 	EnsureBridgeCalls  []BridgeCall
 	RemoveBridgeCalls  []string
 	BridgeExistsCalls  []string
 	CreateTapCalls     []TapCall
 	AttachTapCalls     []AttachCall
 	DeleteTapCalls     []string
+	ListTapsCalls      int
 	GatewayAddrCalls   []GatewayCall
 	RemoveGatewayCalls []GatewayCall
 	MasqueradeCalls    []MasqueradeCall
@@ -104,6 +109,16 @@ func (f *FakeFabric) AttachTap(tap, bridge string) error {
 func (f *FakeFabric) DeleteTap(name string) error {
 	f.DeleteTapCalls = append(f.DeleteTapCalls, name)
 	return f.err("DeleteTap")
+}
+
+// ListTaps records the call and returns ListTapsResult with
+// Errs["ListTaps"]. When the error is non-nil the result is nil.
+func (f *FakeFabric) ListTaps() ([]string, error) {
+	f.ListTapsCalls++
+	if err := f.err("ListTaps"); err != nil {
+		return nil, err
+	}
+	return f.ListTapsResult, nil
 }
 
 // EnsureGatewayAddr records the call and returns

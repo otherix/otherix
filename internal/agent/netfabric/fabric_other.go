@@ -45,6 +45,9 @@ func (unsupportedFabric) AttachTap(tap, bridge string) error { return errUnsuppo
 // DeleteTap reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) DeleteTap(name string) error { return errUnsupported }
 
+// ListTaps reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) ListTaps() ([]string, error) { return nil, errUnsupported }
+
 // EnsureGatewayAddr reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureGatewayAddr(bridge string, addr netip.Prefix) error {
 	return errUnsupported

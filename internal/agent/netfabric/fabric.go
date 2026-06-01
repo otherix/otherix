@@ -17,6 +17,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// tapPrefix is the host interface-name prefix every Otherix-managed tap
+// device carries. NIC.TapName builds names from it, and ListTaps filters
+// host tuntap links by it.
+const tapPrefix = "ot"
+
 // allowedModels is the set of QEMU NIC models the fabric recognises.
 var allowedModels = map[string]struct{}{
 	"virtio":  {},
@@ -44,6 +49,10 @@ type Fabric interface {
 	AttachTap(tap, bridge string) error
 	// DeleteTap removes the named tap device.
 	DeleteTap(name string) error
+	// ListTaps returns the names of every Otherix-managed tap device on
+	// the host, that is every tuntap link whose name carries the "ot"
+	// prefix used by NIC.TapName. The names are returned sorted.
+	ListTaps() ([]string, error)
 
 	// EnsureGatewayAddr assigns addr to the named bridge, idempotently.
 	EnsureGatewayAddr(bridge string, addr netip.Prefix) error
@@ -73,7 +82,7 @@ type NIC struct {
 // total, within the Linux IFNAMSIZ-1 limit of 15).
 func (n NIC) TapName() string {
 	hex := n.ID.String()[:8] + n.ID.String()[9:13]
-	return "ot" + hex
+	return tapPrefix + hex
 }
 
 // ValidateMAC reports whether s is a valid 6-octet (EUI-48) MAC address.

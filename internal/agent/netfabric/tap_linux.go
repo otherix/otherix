@@ -9,6 +9,8 @@ package netfabric
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 )
@@ -19,6 +21,12 @@ import (
 // and the up state. The device is created without packet information
 // (TUNTAP_NO_PI) so QEMU sees raw Ethernet frames.
 func (f *linuxFabric) CreateTap(name string, mtu int) error {
+	// Guard the MTU at the agent edge: the kernel rejects out-of-range
+	// values, and we never want to hand it a bogus one even though the CP
+	// edge already clamps. 0 means "leave the device default".
+	if mtu < 0 || mtu > 65535 {
+		return fmt.Errorf("netfabric: create tap %s: mtu %d out of range [0,65535]", name, mtu)
+	}
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		var notFound netlink.LinkNotFoundError
@@ -34,6 +42,11 @@ func (f *linuxFabric) CreateTap(name string, mtu int) error {
 			return fmt.Errorf("netfabric: create tap %s: %v", name, err)
 		}
 		link = tap
+	} else if _, ok := link.(*netlink.Tuntap); !ok {
+		// A link of this name already exists but is not a tap. Reusing it
+		// would let a name collision silently adopt a leftover bridge or
+		// another VM's device, and a later DeleteTap would destroy it.
+		return fmt.Errorf("netfabric: create tap %s: existing link is type %T, not a tap", name, link)
 	}
 	if mtu > 0 {
 		if err := netlink.LinkSetMTU(link, mtu); err != nil {
@@ -78,4 +91,29 @@ func (f *linuxFabric) DeleteTap(name string) error {
 		return fmt.Errorf("netfabric: delete tap %s: %v", name, err)
 	}
 	return nil
+}
+
+// ListTaps returns the names of every Otherix-managed tap device on the
+// host: each tuntap link whose name carries the tapPrefix that
+// NIC.TapName uses. Non-tap links and taps named outside that prefix are
+// ignored, so an operator's own tuntap devices are never reported. The
+// names are returned sorted.
+func (f *linuxFabric) ListTaps() ([]string, error) {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil, fmt.Errorf("netfabric: list taps: %v", err)
+	}
+	var names []string
+	for _, link := range links {
+		if _, ok := link.(*netlink.Tuntap); !ok {
+			continue
+		}
+		name := link.Attrs().Name
+		if !strings.HasPrefix(name, tapPrefix) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }

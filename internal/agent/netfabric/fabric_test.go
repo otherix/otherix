@@ -4,8 +4,10 @@
 package netfabric
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 )
 
@@ -19,6 +21,38 @@ func TestNICTapName(t *testing.T) {
 	}
 	if len(got) != 14 {
 		t.Errorf("len(TapName()) = %d, want 14", len(got))
+	}
+}
+
+func TestFakeFabricListTaps(t *testing.T) {
+	want := []string{"ot0123456f89ab", "otdeadbeef0000"}
+	f := &FakeFabric{ListTapsResult: want}
+
+	got, err := f.ListTaps()
+	if err != nil {
+		t.Fatalf("ListTaps() error = %v, want nil", err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("ListTaps() mismatch (-want +got):\n%s", diff)
+	}
+	if f.ListTapsCalls != 1 {
+		t.Errorf("ListTapsCalls = %d, want 1", f.ListTapsCalls)
+	}
+}
+
+func TestFakeFabricListTapsError(t *testing.T) {
+	wantErr := errors.New("boom")
+	f := &FakeFabric{Errs: map[string]error{"ListTaps": wantErr}}
+
+	got, err := f.ListTaps()
+	if !errors.Is(err, wantErr) {
+		t.Errorf("ListTaps() error = %v, want %v", err, wantErr)
+	}
+	if got != nil {
+		t.Errorf("ListTaps() result = %v, want nil on error", got)
+	}
+	if f.ListTapsCalls != 1 {
+		t.Errorf("ListTapsCalls = %d, want 1", f.ListTapsCalls)
 	}
 }
 
