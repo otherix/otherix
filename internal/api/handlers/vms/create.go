@@ -285,12 +285,21 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 		// CHECK between 1 and 65536, so the multiplication is well-
 		// defined and cannot overflow int64.
 		diskBytes := int64(in.Template.DefaultDiskGib) * 1073741824
+		// The network-aware filter excludes nodes where a requested
+		// network failed to reconcile (ADR 0034 NL18). One network per
+		// VM today (single vm_nics row from --network); the slice keeps
+		// the contract open for multi-NIC VMs without a signature change.
+		var networkIDs []uuid.UUID
+		if in.Network != nil {
+			networkIDs = []uuid.UUID{in.Network.ID}
+		}
 		decision, err := scheduler.SchedulePlacement(ctx, pr, scheduler.PlacementRequest{
-			PoolName:  in.PoolName,
-			NodeHint:  in.Req.Node,
-			VCPUs:     in.Req.VCPUs,
-			MemoryMiB: in.Req.MemoryMB,
-			DiskBytes: diskBytes,
+			PoolName:   in.PoolName,
+			NodeHint:   in.Req.Node,
+			VCPUs:      in.Req.VCPUs,
+			MemoryMiB:  in.Req.MemoryMB,
+			DiskBytes:  diskBytes,
+			NetworkIDs: networkIDs,
 		}, scheduler.PlacementConfig{
 			Algorithm: h.placementAlgorithm,
 			Resources: h.placementResources,
@@ -623,6 +632,27 @@ func (v *insufficientResourcesView) toDetails() map[string]any {
 // name so the operator can distinguish a node-wide problem from a
 // per-pool exhaustion.
 func buildNoEligibleDetails(err error) map[string]any {
+	if network, ok := scheduler.ExtractNetworkUnreadyDetail(err); ok && network != nil && len(network.Nodes) > 0 {
+		filtered := make([]map[string]any, 0, len(network.Nodes))
+		for _, n := range network.Nodes {
+			networks := make([]map[string]any, 0, len(n.Networks))
+			for _, net := range n.Networks {
+				networks = append(networks, map[string]any{
+					"network_id": net.NetworkID.String(),
+					"status":     net.Status,
+				})
+			}
+			filtered = append(filtered, map[string]any{
+				"node":     n.Node,
+				"networks": networks,
+			})
+		}
+		return map[string]any{
+			"reason":                          "network_not_ready",
+			"filtered_due_to_network_unready": filtered,
+		}
+	}
+
 	pressure, ok := scheduler.ExtractNodePressureDetail(err)
 	if !ok || pressure == nil || len(pressure.Nodes) == 0 {
 		return nil

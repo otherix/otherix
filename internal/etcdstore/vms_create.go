@@ -247,6 +247,12 @@ func (r placementReader) ListDiskPressuredPoolsByName(ctx context.Context, name 
 	return out, nil
 }
 
+// ListNetworkNodeStatusByNode returns the node's per-network reconciliation
+// records for the scheduler's network-aware placement filter (ADR 0034 NL18).
+func (r placementReader) ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	return r.s.ListNetworkNodeStatusByNode(ctx, nodeID)
+}
+
 // CountRunningVMsByNode counts non-deleted VMs pinned to the node (intent),
 // matching the SQL placement tie-break query.
 func (r placementReader) CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error) {

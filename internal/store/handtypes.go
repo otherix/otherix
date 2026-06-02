@@ -57,6 +57,7 @@ type PlacementReader interface {
 	ListDiskPressuredPoolsByName(ctx context.Context, name string) ([]ListDiskPressuredPoolsByNameRow, error)
 	ListStoragePoolsByName(ctx context.Context, name string) ([]StoragePool, error)
 	CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error)
+	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]NetworkNodeStatus, error)
 }
 
 // VMCreateWrites bundles the rows a vm.create commits atomically: the VM, its
