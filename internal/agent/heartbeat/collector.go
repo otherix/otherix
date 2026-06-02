@@ -59,6 +59,13 @@ type NetworkReporter interface {
 	NetworkReports() []NetworkReport
 }
 
+// WireGuardReporter returns the agent's observed WG interface state the
+// collector folds into HeartbeatRequest.wireguard. Implemented by the WG
+// reconciler. Nil is allowed (yields a nil report) for test/legacy paths.
+type WireGuardReporter interface {
+	WireGuardReport() *WireguardReport
+}
+
 // LinuxCollector reads host inventory from /proc, runs qemu-system-*
 // --version best-effort, and asks the supplied VMLister for the live
 // VM list. Designed for Linux (the only supported agent platform);
@@ -69,6 +76,7 @@ type LinuxCollector struct {
 	vmReporter   VMReporter
 	pools        PoolReporter
 	networks     NetworkReporter
+	wireguard    WireGuardReporter
 	migration    config.MigrationConfig
 	qemu         config.QEMUConfig
 	agentVersion string
@@ -89,6 +97,7 @@ type CollectorDeps struct {
 	VMReporter VMReporter
 	Pools      PoolReporter
 	Networks   NetworkReporter
+	WireGuard  WireGuardReporter
 	Migration  config.MigrationConfig
 	QEMU       config.QEMUConfig
 }
@@ -114,6 +123,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		vmReporter:   deps.VMReporter,
 		pools:        deps.Pools,
 		networks:     deps.Networks,
+		wireguard:    deps.WireGuard,
 		migration:    deps.Migration,
 		qemu:         deps.QEMU,
 		agentVersion: version.Current().Version,
@@ -200,6 +210,9 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	}
 	if c.networks != nil {
 		report.Networks = c.networks.NetworkReports()
+	}
+	if c.wireguard != nil {
+		report.Wireguard = c.wireguard.WireGuardReport()
 	}
 	return report, nil
 }

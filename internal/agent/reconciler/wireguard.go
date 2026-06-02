@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package reconciler
+
+import (
+	"context"
+	"log/slog"
+	"math"
+	"net"
+	"net/netip"
+	"sync/atomic"
+	"time"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
+	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/config"
+)
+
+// wgInterfaceName is the single WireGuard interface every agent brings up. All
+// peers share it (matches the netfabric primitive).
+const wgInterfaceName = "otwg0"
+
+// WireGuard is the per-resource reconciler for the agent's WG fabric
+// interface. Single instance per agent process. Implements
+// heartbeat.ResponseHandler (consumes self_overlay_ip + declared_wireguard_peers)
+// and heartbeat.WireGuardReporter (reports observed WG state). Mirrors Pools but
+// holds a single desired snapshot rather than a per-name map.
+type WireGuard struct {
+	log    *slog.Logger
+	fabric netfabric.Fabric
+	key    wgtypes.Key
+	cfg    config.WireGuardConfig
+	tick   time.Duration
+
+	desired atomic.Pointer[wgDesired]
+	trigger chan struct{}
+}
+
+// wgDesired is the latest CP-declared WG intent for this node.
+type wgDesired struct {
+	selfOverlayIP string // CIDR "10.42.0.1/16"; "" until the CP allocates
+	peers         []heartbeat.DeclaredWireGuardPeer
+}
+
+// NewWireGuard builds the WG reconciler. tick==0 falls back to
+// DefaultTickInterval. Returns ErrNilFabric when fabric is nil.
+func NewWireGuard(fabric netfabric.Fabric, key wgtypes.Key, cfg config.WireGuardConfig, log *slog.Logger, tick time.Duration) (*WireGuard, error) {
+	if fabric == nil {
+		return nil, ErrNilFabric
+	}
+	if tick <= 0 {
+		tick = DefaultTickInterval
+	}
+	return &WireGuard{
+		log:     log,
+		fabric:  fabric,
+		key:     key,
+		cfg:     cfg,
+		tick:    tick,
+		trigger: make(chan struct{}, 1),
+	}, nil
+}
+
+// WireGuardReport implements heartbeat.WireGuardReporter. The pubkey is derived
+// from the loaded key (independent of whether otwg0 exists yet), which lets the
+// CP allocate the overlay address before the interface comes up.
+func (r *WireGuard) WireGuardReport() *heartbeat.WireguardReport {
+	return &heartbeat.WireguardReport{
+		PublicKey:  r.key.PublicKey().String(),
+		Endpoint:   r.cfg.AdvertisedEndpoint,
+		ListenPort: wgListenPort(r.cfg.ListenPort),
+	}
+}
+
+// HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies the
+// declared intent and nudges the trigger.
+func (r *WireGuard) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {
+	if resp == nil {
+		return
+	}
+	d := &wgDesired{peers: append([]heartbeat.DeclaredWireGuardPeer(nil), resp.DeclaredWireGuardPeers...)}
+	if resp.SelfOverlayIP != nil {
+		d.selfOverlayIP = *resp.SelfOverlayIP
+	}
+	r.desired.Store(d)
+	select {
+	case r.trigger <- struct{}{}:
+	default:
+		// Earlier nudge already queued — collapse into one reconcile.
+	}
+}
+
+// Run blocks until ctx is cancelled, reconciling on each tick or trigger.
+func (r *WireGuard) Run(ctx context.Context) error {
+	ticker := time.NewTicker(r.tick)
+	defer ticker.Stop()
+	r.reconcile(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			r.reconcile(ctx)
+		case <-r.trigger:
+			r.reconcile(ctx)
+		}
+	}
+}
+
+// reconcile is one pass: bring up otwg0 with the CP-assigned overlay address
+// (carrying the supernet prefix) and replace its peer set. No-op until the
+// overlay IP is known. Errors are logged and retried on the next tick; the
+// observed report is independent of reconcile success.
+func (r *WireGuard) reconcile(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	d := r.desired.Load()
+	if d == nil || d.selfOverlayIP == "" {
+		return
+	}
+	addr, err := netip.ParsePrefix(d.selfOverlayIP)
+	if err != nil {
+		r.log.WarnContext(ctx, "wireguard self_overlay_ip not a prefix; skipping",
+			slog.String("self_overlay_ip", d.selfOverlayIP),
+			slog.String("error", err.Error()))
+		return
+	}
+	if err := r.fabric.EnsureWireGuard(netfabric.WGConfig{
+		Name:       wgInterfaceName,
+		PrivateKey: r.key,
+		ListenPort: r.cfg.ListenPort,
+		Address:    addr,
+		MTU:        0, // kernel default (1420); MTU tuning lands with the VTEP rebind
+	}); err != nil {
+		r.log.WarnContext(ctx, "wireguard ensure interface failed",
+			slog.String("interface", wgInterfaceName),
+			slog.String("error", err.Error()))
+		return
+	}
+	peers := r.toWGPeers(ctx, d.peers)
+	if err := r.fabric.SetWireGuardPeers(wgInterfaceName, peers); err != nil {
+		r.log.WarnContext(ctx, "wireguard set peers failed",
+			slog.String("interface", wgInterfaceName),
+			slog.String("error", err.Error()))
+	}
+}
+
+// toWGPeers translates declared peers into netfabric.WGPeer. A peer that fails
+// to parse is skipped + logged so one bad entry never drops the whole mesh. In
+// this slice the declared list is empty (single agent), so this returns an
+// empty slice.
+func (r *WireGuard) toWGPeers(ctx context.Context, declared []heartbeat.DeclaredWireGuardPeer) []netfabric.WGPeer {
+	out := make([]netfabric.WGPeer, 0, len(declared))
+	for _, p := range declared {
+		pk, err := wgtypes.ParseKey(p.PublicKey)
+		if err != nil {
+			r.log.WarnContext(ctx, "wireguard peer pubkey unparseable; skipping",
+				slog.String("node_id", p.NodeID), slog.String("error", err.Error()))
+			continue
+		}
+		var endpoint *net.UDPAddr
+		if p.Endpoint != "" {
+			endpoint, err = net.ResolveUDPAddr("udp", p.Endpoint)
+			if err != nil {
+				r.log.WarnContext(ctx, "wireguard peer endpoint unresolvable; skipping",
+					slog.String("node_id", p.NodeID), slog.String("error", err.Error()))
+				continue
+			}
+		}
+		allowed := make([]netip.Prefix, 0, len(p.AllowedIPs))
+		for _, a := range p.AllowedIPs {
+			pfx, perr := netip.ParsePrefix(a)
+			if perr != nil {
+				r.log.WarnContext(ctx, "wireguard peer allowed_ip unparseable; skipping prefix",
+					slog.String("node_id", p.NodeID), slog.String("allowed_ip", a))
+				continue
+			}
+			allowed = append(allowed, pfx)
+		}
+		out = append(out, netfabric.WGPeer{
+			PublicKey:           pk,
+			Endpoint:            endpoint,
+			AllowedIPs:          allowed,
+			PersistentKeepalive: r.cfg.PersistentKeepalive,
+		})
+	}
+	return out
+}
+
+// wgListenPort narrows the config listen port to the wire schema's int32,
+// saturating on overflow. Mirrors the heartbeat collector's clampToInt32,
+// which is unexported in that package and so cannot be reused here. Ports are
+// always within [0, 65535], well below math.MaxInt32; the clamp keeps gosec
+// G115 quiet without obscuring intent.
+func wgListenPort(p int) int32 {
+	if p > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if p < 0 {
+		return 0
+	}
+	return int32(p)
+}

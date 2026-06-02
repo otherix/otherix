@@ -27,6 +27,7 @@ import (
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/reconciler"
 	"github.com/otherix/otherix/internal/agent/vm"
+	"github.com/otherix/otherix/internal/agent/wgkey"
 	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/config"
@@ -130,6 +131,21 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("vm reconciler: %w", err)
 	}
 
+	// WireGuard reconciler. The key is generated lazily on first serve and
+	// reused thereafter; its pubkey is reported up the heartbeat
+	// independent of whether otwg0 exists, so the CP can allocate the
+	// overlay address before the interface comes up. Plugs into the sender
+	// as both ResponseHandler (self_overlay_ip + declared peers) and
+	// WireGuardReporter.
+	wgKey, err := wgkey.LoadOrGenerateKey(cfg.WireGuard.PrivateKeyPath)
+	if err != nil {
+		return fmt.Errorf("wireguard key: %w", err)
+	}
+	wgReconciler, err := reconciler.NewWireGuard(fabric, wgKey, cfg.WireGuard, log, 0)
+	if err != nil {
+		return fmt.Errorf("wireguard reconciler: %w", err)
+	}
+
 	// Console token store - in-memory, lifecycle bound to the agent
 	// process; restart drops the tokens alongside the QEMU `-serial`
 	// sockets they reference. The single-session lock that used to
@@ -150,11 +166,12 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	defer stopHeartbeat()
-	heartbeatDone := startHeartbeat(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, netReconciler, log)
+	heartbeatDone := startHeartbeat(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
 
 	reconcilerDone := runReconciler(heartbeatCtx, "pool reconciler", poolReconciler.Run, log)
 	netReconcilerDone := runReconciler(heartbeatCtx, "network reconciler", netReconciler.Run, log)
 	vmReconcilerDone := runReconciler(heartbeatCtx, "vm reconciler", vmReconciler.Run, log)
+	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -175,6 +192,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		<-reconcilerDone
 		<-vmReconcilerDone
 		<-netReconcilerDone
+		<-wgReconcilerDone
 		return err
 	}
 
@@ -183,6 +201,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	<-reconcilerDone
 	<-vmReconcilerDone
 	<-netReconcilerDone
+	<-wgReconcilerDone
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
@@ -216,7 +235,7 @@ func runReconciler(ctx context.Context, name string, run func(context.Context) e
 // fire-and-forget from the agent's perspective; misconfiguration must
 // not block the rest of the agent (vm lifecycle, console, etc.)
 // from running.
-func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, log *slog.Logger) <-chan struct{} {
+func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 
 	if nodeName == "" {
@@ -235,6 +254,7 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 		VMReporter: vmRec,
 		Pools:      poolRec,
 		Networks:   netRec,
+		WireGuard:  wgRec,
 		Migration:  cfg.Migration,
 		QEMU:       cfg.QEMU,
 	})
@@ -258,9 +278,10 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 	// MultiResponseHandler fans the heartbeat response to every
 	// reconciler (L3 D3). Pool reconciler consumes declared_pools; VM
 	// reconciler consumes declared_vms; network reconciler consumes
-	// declared_networks. Each ignores the others' payload without
+	// declared_networks; WireGuard reconciler consumes self_overlay_ip +
+	// declared_wireguard_peers. Each ignores the others' payload without
 	// needing to know about it.
-	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec}
+	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec, wgRec}
 	sender := heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
 		Interval: cfg.ControlPlane.HeartbeatInterval,
 	}, log)

@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package reconciler
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
+	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/config"
+)
+
+func mustKey(t *testing.T) wgtypes.Key {
+	t.Helper()
+	k, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return k
+}
+
+func TestNewWireGuard_RejectsNilFabric(t *testing.T) {
+	_, err := NewWireGuard(nil, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
+	if !errors.Is(err, ErrNilFabric) {
+		t.Errorf("err = %v, want ErrNilFabric", err)
+	}
+}
+
+func TestWireGuardReport_IndependentOfInterface(t *testing.T) {
+	key := mustKey(t)
+	cfg := config.WireGuardConfig{ListenPort: 51820, AdvertisedEndpoint: "1.2.3.4:51820"}
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, key, cfg, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	rep := r.WireGuardReport()
+	if rep == nil {
+		t.Fatal("WireGuardReport() = nil, want report")
+	}
+	if rep.PublicKey != key.PublicKey().String() {
+		t.Errorf("PublicKey = %s, want %s", rep.PublicKey, key.PublicKey())
+	}
+	if rep.Endpoint != "1.2.3.4:51820" || rep.ListenPort != 51820 {
+		t.Errorf("report endpoint/port = %s/%d, want 1.2.3.4:51820/51820", rep.Endpoint, rep.ListenPort)
+	}
+}
+
+func TestWireGuardReconcile_BringsUpInterfaceWhenOverlayKnown(t *testing.T) {
+	key := mustKey(t)
+	f := &netfabric.FakeFabric{}
+	r, err := NewWireGuard(f, key, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	ip := "10.42.0.1/16"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
+	r.reconcile(context.Background())
+
+	if len(f.EnsureWireGuardCalls) != 1 {
+		t.Fatalf("EnsureWireGuardCalls = %d, want 1", len(f.EnsureWireGuardCalls))
+	}
+	got := f.EnsureWireGuardCalls[0]
+	if got.Name != "otwg0" {
+		t.Errorf("Name = %s, want otwg0", got.Name)
+	}
+	if got.Address.String() != "10.42.0.1/16" {
+		t.Errorf("Address = %s, want 10.42.0.1/16", got.Address)
+	}
+	if got.ListenPort != 51820 {
+		t.Errorf("ListenPort = %d, want 51820", got.ListenPort)
+	}
+	if len(f.WGPeerSetCalls) != 1 || len(f.WGPeerSetCalls[0].Peers) != 0 {
+		t.Errorf("WGPeerSetCalls = %+v, want one call with zero peers", f.WGPeerSetCalls)
+	}
+}
+
+func TestWireGuardReconcile_WaitsForOverlayIP(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	r, err := NewWireGuard(f, mustKey(t), config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{}) // no self_overlay_ip
+	r.reconcile(context.Background())
+	if len(f.EnsureWireGuardCalls) != 0 {
+		t.Errorf("EnsureWireGuardCalls = %d, want 0 (interface stays down until overlay IP arrives)", len(f.EnsureWireGuardCalls))
+	}
+}
