@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,12 @@ import (
 // wgInterfaceName is the single WireGuard interface every agent brings up. All
 // peers share it (matches the netfabric primitive).
 const wgInterfaceName = "otwg0"
+
+// wgEstablishedWindow bounds how recent a peer's last handshake must be for the
+// agent to report it as established. WireGuard rekeys at ~120s under traffic and
+// persistent_keepalive (25s) keeps the tunnel warm between 30s heartbeats, so
+// 180s flags a genuinely dead peer without false negatives on a healthy one.
+const wgEstablishedWindow = 180 * time.Second
 
 // WireGuard is the per-resource reconciler for the agent's WG fabric
 // interface. Single instance per agent process. Implements
@@ -37,6 +44,7 @@ type WireGuard struct {
 
 	desired atomic.Pointer[wgDesired]
 	trigger chan struct{}
+	now     func() time.Time
 }
 
 // wgDesired is the latest CP-declared WG intent for this node.
@@ -61,18 +69,60 @@ func NewWireGuard(fabric netfabric.Fabric, key wgtypes.Key, cfg config.WireGuard
 		cfg:     cfg,
 		tick:    tick,
 		trigger: make(chan struct{}, 1),
+		now:     time.Now,
 	}, nil
 }
 
-// WireGuardReport implements heartbeat.WireGuardReporter. The pubkey is derived
-// from the loaded key (independent of whether otwg0 exists yet), which lets the
-// CP allocate the overlay address before the interface comes up.
+// WireGuardReport implements heartbeat.WireGuardReporter. The pubkey/endpoint/
+// listen_port derive from the loaded key + config (independent of whether otwg0
+// exists yet), so the CP can allocate the overlay address before the interface
+// comes up. established_peers is the observed mesh health.
 func (r *WireGuard) WireGuardReport() *heartbeat.WireGuardReport {
 	return &heartbeat.WireGuardReport{
-		PublicKey:  r.key.PublicKey().String(),
-		Endpoint:   r.cfg.AdvertisedEndpoint,
-		ListenPort: wgListenPort(r.cfg.ListenPort),
+		PublicKey:        r.key.PublicKey().String(),
+		Endpoint:         r.cfg.AdvertisedEndpoint,
+		ListenPort:       wgListenPort(r.cfg.ListenPort),
+		EstablishedPeers: r.establishedPeers(),
 	}
+}
+
+// establishedPeers reads observed handshakes from the fabric and maps each peer
+// whose last handshake is recent (wgEstablishedWindow) back to its node id via
+// the declared peer set. Returns nil when otwg0 is absent or the read fails -
+// the report still carries pubkey/endpoint/port so the CP can allocate the
+// overlay IP before the interface exists (the N2c-1 invariant).
+func (r *WireGuard) establishedPeers() []string {
+	handshakes, err := r.fabric.WireGuardPeerHandshakes(wgInterfaceName)
+	if err != nil {
+		r.log.Debug("wireguard peer handshakes unavailable; no established peers",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	d := r.desired.Load()
+	if d == nil || len(d.peers) == 0 {
+		return nil
+	}
+	byPub := make(map[string]string, len(d.peers)) // pubkey -> node_id
+	for _, p := range d.peers {
+		byPub[p.PublicKey] = p.NodeID
+	}
+	now := r.now()
+	out := make([]string, 0, len(handshakes))
+	for _, hs := range handshakes {
+		nodeID, ok := byPub[hs.PublicKey.String()]
+		if !ok {
+			continue
+		}
+		if hs.LastHandshake.IsZero() || now.Sub(hs.LastHandshake) > wgEstablishedWindow {
+			continue
+		}
+		out = append(out, nodeID)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }
 
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies the

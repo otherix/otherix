@@ -92,3 +92,79 @@ func TestWireGuardReconcile_WaitsForOverlayIP(t *testing.T) {
 		t.Errorf("EnsureWireGuardCalls = %d, want 0 (interface stays down until overlay IP arrives)", len(f.EnsureWireGuardCalls))
 	}
 }
+
+func TestWireGuardReportEstablishedPeers(t *testing.T) {
+	key, _ := wgtypes.GeneratePrivateKey()
+	peerKey, _ := wgtypes.GeneratePrivateKey()
+	r, err := NewWireGuard(&netfabric.FakeFabric{
+		WireGuardPeerHandshakesResult: []netfabric.WGPeerHandshake{
+			{PublicKey: peerKey.PublicKey(), LastHandshake: time.Unix(1000, 0)},
+		},
+	}, key, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard() error = %v", err)
+	}
+	r.now = func() time.Time { return time.Unix(1100, 0) } // 100s after handshake, within 180s
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredWireGuardPeers: []heartbeat.DeclaredWireGuardPeer{
+			{NodeID: "node-b", PublicKey: peerKey.PublicKey().String()},
+		},
+	})
+	rep := r.WireGuardReport()
+	if len(rep.EstablishedPeers) != 1 || rep.EstablishedPeers[0] != "node-b" {
+		t.Errorf("EstablishedPeers = %v, want [node-b]", rep.EstablishedPeers)
+	}
+}
+
+func TestWireGuardReportEstablishedStaleAndZero(t *testing.T) {
+	key, _ := wgtypes.GeneratePrivateKey()
+	stalePeer, _ := wgtypes.GeneratePrivateKey()
+	zeroPeer, _ := wgtypes.GeneratePrivateKey()
+	r, _ := NewWireGuard(&netfabric.FakeFabric{
+		WireGuardPeerHandshakesResult: []netfabric.WGPeerHandshake{
+			{PublicKey: stalePeer.PublicKey(), LastHandshake: time.Unix(1000, 0)}, // 200s stale
+			{PublicKey: zeroPeer.PublicKey()},                                     // never handshook
+		},
+	}, key, config.WireGuardConfig{}, discardLogger(), time.Second)
+	r.now = func() time.Time { return time.Unix(1200, 0) }
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredWireGuardPeers: []heartbeat.DeclaredWireGuardPeer{
+			{NodeID: "stale", PublicKey: stalePeer.PublicKey().String()},
+			{NodeID: "zero", PublicKey: zeroPeer.PublicKey().String()},
+		},
+	})
+	if got := r.WireGuardReport().EstablishedPeers; len(got) != 0 {
+		t.Errorf("EstablishedPeers = %v, want none (stale + zero excluded)", got)
+	}
+}
+
+func TestWireGuardReportEstablishedFabricError(t *testing.T) {
+	key, _ := wgtypes.GeneratePrivateKey()
+	r, _ := NewWireGuard(&netfabric.FakeFabric{
+		Errs: map[string]error{"WireGuardPeerHandshakes": errors.New("no device")},
+	}, key, config.WireGuardConfig{}, discardLogger(), time.Second)
+	rep := r.WireGuardReport()
+	if rep.PublicKey == "" {
+		t.Errorf("PublicKey empty; report must survive a fabric read error")
+	}
+	if len(rep.EstablishedPeers) != 0 {
+		t.Errorf("EstablishedPeers = %v, want none on fabric error", rep.EstablishedPeers)
+	}
+}
+
+func TestToWGPeersSkipsUnparseable(t *testing.T) {
+	key, _ := wgtypes.GeneratePrivateKey()
+	good, _ := wgtypes.GeneratePrivateKey()
+	r, _ := NewWireGuard(&netfabric.FakeFabric{}, key, config.WireGuardConfig{}, discardLogger(), time.Second)
+	peers := r.toWGPeers(context.Background(), []heartbeat.DeclaredWireGuardPeer{
+		{NodeID: "bad-key", PublicKey: "not-a-key"},
+		{NodeID: "bad-ep", PublicKey: good.PublicKey().String(), Endpoint: "::::"},
+		{NodeID: "ok", PublicKey: good.PublicKey().String(), AllowedIPs: []string{"10.42.0.2/32"}},
+	})
+	if len(peers) != 1 {
+		t.Fatalf("toWGPeers kept %d peers, want 1 (bad key + bad endpoint skipped)", len(peers))
+	}
+	if got := peers[0].PublicKey; got != good.PublicKey() {
+		t.Errorf("kept peer pubkey = %v, want %v", got, good.PublicKey())
+	}
+}
