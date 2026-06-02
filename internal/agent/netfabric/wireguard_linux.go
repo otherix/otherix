@@ -212,3 +212,27 @@ func (f *linuxFabric) WireGuardPeers(name string) ([]WGPeer, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].PublicKey.String() < out[j].PublicKey.String() })
 	return out, nil
 }
+
+// WireGuardPeerHandshakes returns the observed per-peer handshake state on the
+// named interface, sorted by public key for deterministic reporting. Lock-free
+// (a read, no mutator).
+func (f *linuxFabric) WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, error) {
+	c, err := wgctrl.New()
+	if err != nil {
+		return nil, fmt.Errorf("netfabric: wireguard peer handshakes %s: wgctrl: %v", name, err)
+	}
+	defer c.Close()
+	dev, err := c.Device(name)
+	if err != nil {
+		return nil, fmt.Errorf("netfabric: wireguard peer handshakes %s: %v", name, err)
+	}
+	out := make([]WGPeerHandshake, 0, len(dev.Peers))
+	for _, p := range dev.Peers {
+		out = append(out, WGPeerHandshake{
+			PublicKey:     p.PublicKey,
+			LastHandshake: p.LastHandshakeTime,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PublicKey.String() < out[j].PublicKey.String() })
+	return out, nil
+}

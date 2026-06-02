@@ -63,6 +63,11 @@ type FakeFabric struct {
 	// Errs["WireGuardPeers"]; nil when the error is set.
 	WireGuardPeersResult []WGPeer
 
+	// WireGuardPeerHandshakesResult is returned by WireGuardPeerHandshakes
+	// alongside Errs["WireGuardPeerHandshakes"]; nil when the error is set.
+	WireGuardPeerHandshakesResult []WGPeerHandshake
+	WireGuardPeerHandshakesCalls  []string
+
 	WGPeerSetCalls      []WGPeerSetCall
 	WireGuardPeersCalls []string
 }
@@ -266,6 +271,17 @@ func (f *FakeFabric) WireGuardPeers(name string) ([]WGPeer, error) {
 		return nil, err
 	}
 	return f.WireGuardPeersResult, nil
+}
+
+// WireGuardPeerHandshakes records the call and returns
+// WireGuardPeerHandshakesResult with Errs["WireGuardPeerHandshakes"]. When the
+// error is non-nil the result is nil.
+func (f *FakeFabric) WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, error) {
+	f.WireGuardPeerHandshakesCalls = append(f.WireGuardPeerHandshakesCalls, name)
+	if err := f.err("WireGuardPeerHandshakes"); err != nil {
+		return nil, err
+	}
+	return f.WireGuardPeerHandshakesResult, nil
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.

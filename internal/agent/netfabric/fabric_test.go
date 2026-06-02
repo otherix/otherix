@@ -182,6 +182,26 @@ func TestFakeFabricWireGuardPeers(t *testing.T) {
 	}
 }
 
+func TestFakeFabricWireGuardPeerHandshakes(t *testing.T) {
+	key, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("GeneratePrivateKey() error = %v", err)
+	}
+	want := []WGPeerHandshake{{PublicKey: key.PublicKey()}}
+	f := &FakeFabric{WireGuardPeerHandshakesResult: want}
+
+	got, err := f.WireGuardPeerHandshakes("otwg0")
+	if err != nil {
+		t.Fatalf("WireGuardPeerHandshakes() error = %v", err)
+	}
+	if len(got) != 1 || got[0].PublicKey != key.PublicKey() {
+		t.Errorf("WireGuardPeerHandshakes() = %v, want %v", got, want)
+	}
+	if len(f.WireGuardPeerHandshakesCalls) != 1 || f.WireGuardPeerHandshakesCalls[0] != "otwg0" {
+		t.Errorf("WireGuardPeerHandshakesCalls = %v, want [otwg0]", f.WireGuardPeerHandshakesCalls)
+	}
+}
+
 func TestValidateMAC(t *testing.T) {
 	tests := []struct {
 		name    string

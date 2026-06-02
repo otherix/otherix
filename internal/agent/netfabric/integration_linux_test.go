@@ -441,6 +441,42 @@ func TestLinuxFabricWireGuardPeers(t *testing.T) {
 	})
 }
 
+// TestLinuxFabricWireGuardPeerHandshakes asserts WireGuardPeerHandshakes
+// reports the configured peer with a zero LastHandshake when no handshake has
+// completed. A single-ended netns config never completes a handshake (no
+// reachable peer); the real two-ended handshake is a later cross-host smoke.
+func TestLinuxFabricWireGuardPeerHandshakes(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		cfg := wgTestConfig(t)
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard = %v", err)
+		}
+
+		peerKey, err := wgtypes.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("GeneratePrivateKey(peer) = %v", err)
+		}
+		if err := f.SetWireGuardPeers(cfg.Name, []WGPeer{{
+			PublicKey:  peerKey.PublicKey(),
+			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.42.0.2/32")},
+		}}); err != nil {
+			t.Fatalf("SetWireGuardPeers = %v", err)
+		}
+
+		got, err := f.WireGuardPeerHandshakes(cfg.Name)
+		if err != nil {
+			t.Fatalf("WireGuardPeerHandshakes = %v", err)
+		}
+		if len(got) != 1 || got[0].PublicKey != peerKey.PublicKey() {
+			t.Fatalf("WireGuardPeerHandshakes = %v, want one peer %v", got, peerKey.PublicKey())
+		}
+		if !got[0].LastHandshake.IsZero() {
+			t.Errorf("LastHandshake = %v, want zero (no completed handshake single-ended)", got[0].LastHandshake)
+		}
+	})
+}
+
 func TestLinuxFabricWireGuardNegativePaths(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()

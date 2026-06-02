@@ -104,6 +104,11 @@ type Fabric interface {
 	// WireGuardPeers returns the configured peers on the named interface,
 	// sorted by public key, for observed-state reporting.
 	WireGuardPeers(name string) ([]WGPeer, error)
+	// WireGuardPeerHandshakes returns the observed per-peer handshake state on
+	// the named interface, for observed-state reporting. Peers with no
+	// completed handshake report a zero LastHandshake. Distinct from
+	// WireGuardPeers, which returns the configured peer set (no handshake).
+	WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, error)
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
@@ -139,6 +144,15 @@ type WGPeer struct {
 	Endpoint            *net.UDPAddr   // advertised host:port; nil leaves the endpoint unset (roaming)
 	AllowedIPs          []netip.Prefix // remote overlay IPs routed into the tunnel
 	PersistentKeepalive time.Duration  // keepalive interval (25s); zero leaves it unset
+}
+
+// WGPeerHandshake is one peer's observed handshake state on a WireGuard
+// interface. It is observed output, distinct from the WGPeer config input:
+// LastHandshake is the kernel's last successful handshake time (zero when no
+// handshake has completed yet).
+type WGPeerHandshake struct {
+	PublicKey     wgtypes.Key
+	LastHandshake time.Time
 }
 
 // NIC is one VM network interface to materialise. It is shared by the

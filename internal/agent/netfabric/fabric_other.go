@@ -98,3 +98,8 @@ func (unsupportedFabric) SetWireGuardPeers(name string, peers []WGPeer) error { 
 
 // WireGuardPeers reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) WireGuardPeers(name string) ([]WGPeer, error) { return nil, errUnsupported }
+
+// WireGuardPeerHandshakes reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, error) {
+	return nil, errUnsupported
+}
