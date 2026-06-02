@@ -361,6 +361,85 @@ func TestNodeDeleteEvictsWireguardPeer(t *testing.T) {
 	}
 }
 
+// TestHeartbeatSupernetExhaustionNonFatal guards that an exhausted overlay
+// supernet does NOT wedge a node's heartbeat: the over-capacity agent's WG
+// upsert is skipped this tick, but the rest of the projection (node row,
+// last_heartbeat_at) still commits so the node stays live to the scheduler.
+// Capacity is forced via a tiny /30 supernet (2 usable hosts); the third agent
+// to report WG state exceeds it.
+func TestHeartbeatSupernetExhaustionNonFatal(t *testing.T) {
+	h := newE2E(t)
+
+	// /30 has 2 usable hosts (.1, .2); the third WG allocation must exhaust.
+	if err := h.store.SeedOverlaySupernet(context.Background(), "10.99.0.0/30"); err != nil {
+		t.Fatalf("seed overlay supernet: %v", err)
+	}
+
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+
+	a := wgSeedAgent(t, h, caCert, caKey, "node-a")
+	b := wgSeedAgent(t, h, caCert, caKey, "node-b")
+	c := wgSeedAgent(t, h, caCert, caKey, "node-c")
+
+	// A and B fill the /30 (indices 0 and 1 -> .1 and .2).
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820})
+	wgSendHeartbeat(t, agentSrv.URL, b, &wgHeartbeatReport{PublicKey: "pkB", Endpoint: "b.example:51820", ListenPort: 51820})
+
+	// C heartbeats WITH a WG report; the supernet is exhausted, so the WG upsert
+	// is skipped but the rest of the projection must still commit (status 200).
+	status, _ := wgSendHeartbeatStatus(t, agentSrv.URL, c, &wgHeartbeatReport{
+		PublicKey: "pkC", Endpoint: "c.example:51820", ListenPort: 51820,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("C heartbeat (supernet exhausted) status = %d, want 200 (the rest of the projection must commit)", status)
+	}
+
+	// The node row update committed: C is visible and reports its WG report was
+	// skipped (no fabric identity allocated).
+	adminTok, _ := loginAs(t, h, auth.RoleAdmin)
+	resp := h.get(t, "/v1/nodes/"+c.name, adminTok)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET node-c status = %d, want 200", resp.StatusCode)
+	}
+	var node struct {
+		LastHeartbeatAt *string         `json:"last_heartbeat_at"`
+		WireGuard       json.RawMessage `json:"wireguard"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+		t.Fatalf("decode node-c: %v", err)
+	}
+	if node.LastHeartbeatAt == nil || *node.LastHeartbeatAt == "" {
+		t.Errorf("node-c last_heartbeat_at = %v, want a timestamp (the projection committed)", node.LastHeartbeatAt)
+	}
+	if len(node.WireGuard) != 0 && string(node.WireGuard) != "null" {
+		t.Errorf("node-c wireguard = %s, want absent/null (WG allocation was skipped on exhaustion)", node.WireGuard)
+	}
+}
+
+// TestHeartbeatWireguardPubkeyCollisionFatal guards the other half of the split:
+// a cross-node public-key collision stays fail-hard with a 409, since two nodes
+// claiming one key is a genuine conflict, not a capacity condition.
+func TestHeartbeatWireguardPubkeyCollisionFatal(t *testing.T) {
+	h := newE2E(t)
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+
+	a := wgSeedAgent(t, h, caCert, caKey, "node-a")
+	b := wgSeedAgent(t, h, caCert, caKey, "node-b")
+
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "dup", Endpoint: "a.example:51820", ListenPort: 51820})
+
+	// B claims the same public key A already holds; the heartbeat must 409.
+	status, _ := wgSendHeartbeatStatus(t, agentSrv.URL, b, &wgHeartbeatReport{
+		PublicKey: "dup", Endpoint: "b.example:51820", ListenPort: 51820,
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("B heartbeat (pubkey collision) status = %d, want 409", status)
+	}
+}
+
 // wgAssertPeer compares one declared peer against want, field by field.
 func wgAssertPeer(t *testing.T, label string, got, want wgDeclaredPeer) {
 	t.Helper()
@@ -432,6 +511,54 @@ func wgSendHeartbeat(t *testing.T, baseURL string, ag wgAgent, rep *wgHeartbeatR
 		t.Fatalf("decode heartbeat response: %v", err)
 	}
 	return out
+}
+
+// wgSendHeartbeatStatus posts a heartbeat for ag over mTLS and returns the raw
+// status code plus the response body, without asserting 200. Used by tests that
+// exercise the non-2xx projection outcomes (supernet exhaustion, pubkey
+// collision).
+func wgSendHeartbeatStatus(t *testing.T, baseURL string, ag wgAgent, rep *wgHeartbeatReport) (int, []byte) {
+	t.Helper()
+	body := wgHeartbeatRequest{
+		AgentVersion: "test-0.1.0",
+		Architecture: "amd64",
+		Capabilities: wgHeartbeatCaps{
+			CPUModel:       "test-cpu",
+			CPUFlags:       []string{},
+			CPUCoresTotal:  4,
+			MemoryTotalMib: 8192,
+			KernelVersion:  "test",
+			QEMUVersion:    "test",
+			Firmwares:      []struct{}{},
+		},
+		Resources: wgHeartbeatRes{
+			CPUCoresAvailable:  4,
+			MemoryAvailableMib: 8000,
+		},
+		VMs:       []struct{}{},
+		Networks:  []struct{}{},
+		Wireguard: rep,
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal heartbeat: %v", err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		baseURL+"/v1/nodes/"+ag.name+"/heartbeat", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("new heartbeat request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ag.client.Do(req)
+	if err != nil {
+		t.Fatalf("heartbeat Do: %v", err)
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read heartbeat response: %v", err)
+	}
+	return resp.StatusCode, out
 }
 
 // wgStartAgentTLSServer stands up the agent router behind a TLS listener that

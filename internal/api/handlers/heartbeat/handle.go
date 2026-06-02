@@ -487,12 +487,23 @@ func networkToDeclared(n store.Network) declaredNetwork {
 
 // applyWireguardReport ingests the agent's observed WG state onto its
 // agent_wireguard record (allocating its overlay identity on first report). A
-// nil report or an empty public_key is skipped. Unlike the tolerant
-// log-and-continue paths for unknown VMs / bad network ids, a WG fault is
-// fail-hard: a cross-node pubkey collision (two nodes claiming one key) and an
-// exhausted overlay supernet are genuine operator-facing conflicts, not stale
-// agent data, so they surface as 409 projection errors rather than being
-// swallowed. Any other store failure wraps to an internal error.
+// nil report or an empty public_key is skipped. The two store-level WG faults
+// are handled differently, by design:
+//
+//   - A cross-node pubkey collision (two nodes claiming one key) is a genuine
+//     conflict, possibly a security signal, that the node cannot resolve and an
+//     operator must see. It stays fail-hard: a 409 projection error rolls the
+//     whole heartbeat back so the duplicate never silently sticks.
+//   - An exhausted overlay supernet is a cluster-capacity condition the node
+//     cannot fix on its own. Failing the heartbeat for it would wedge the node:
+//     every tick would 409, no observed state (VM runtime, pools, networks,
+//     pressure, last_heartbeat_at) would land, and the node would look dead to
+//     the scheduler though qemu is healthy. So it is non-fatal: log a WARN, skip
+//     the WG upsert for this node this tick, and let the rest of the projection
+//     commit. The agent retries on its next heartbeat; once the operator grows
+//     the supernet, the allocation succeeds.
+//
+// Any other store failure wraps to an internal error.
 func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, rep *wireGuardReport) error {
 	if rep == nil {
 		return nil
@@ -520,11 +531,9 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 			}
 		}
 		if errors.Is(err, store.ErrOverlaySupernetExhausted) {
-			return &projectionError{
-				status: http.StatusConflict, code: response.CodeConflict,
-				message: "overlay supernet has no free host address for a new agent",
-				details: map[string]any{"reason": "overlay_supernet_exhausted"},
-			}
+			h.log.WarnContext(ctx, "overlay supernet exhausted; skipping wireguard for node this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return nil
 		}
 		return fmt.Errorf("upsert agent_wireguard: %v", err)
 	}
