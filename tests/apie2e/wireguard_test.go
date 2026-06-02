@@ -81,6 +81,7 @@ type wgDeclaredPeer struct {
 // wgHeartbeatResponse decodes the fields under test from the heartbeat response.
 type wgHeartbeatResponse struct {
 	DeclaredWireGuardPeers []wgDeclaredPeer `json:"declared_wireguard_peers"`
+	SelfOverlayIP          *string          `json:"self_overlay_ip"`
 }
 
 // wgAgent bundles a seeded node identity plus the mTLS client that presents its
@@ -118,6 +119,11 @@ func TestWireguardPeerDistribution(t *testing.T) {
 		t.Fatalf("A first heartbeat declared_wireguard_peers = %d, want 0 (%+v)",
 			len(respA.DeclaredWireGuardPeers), respA.DeclaredWireGuardPeers)
 	}
+	// A reports first, so it takes overlay index 0; the CP renders its own
+	// address with the supernet prefix in self_overlay_ip.
+	if respA.SelfOverlayIP == nil || *respA.SelfOverlayIP != "10.42.0.1/16" {
+		t.Errorf("agent A self_overlay_ip = %v, want 10.42.0.1/16", respA.SelfOverlayIP)
+	}
 
 	// B reports second; it must see exactly A (overlay index 0 -> 10.42.0.1).
 	respB := wgSendHeartbeat(t, agentSrv.URL, b, &wgHeartbeatReport{
@@ -128,6 +134,10 @@ func TestWireguardPeerDistribution(t *testing.T) {
 	if len(respB.DeclaredWireGuardPeers) != 1 {
 		t.Fatalf("B heartbeat declared_wireguard_peers = %d, want 1 (%+v)",
 			len(respB.DeclaredWireGuardPeers), respB.DeclaredWireGuardPeers)
+	}
+	// B reports second, so it takes overlay index 1.
+	if respB.SelfOverlayIP == nil || *respB.SelfOverlayIP != "10.42.0.2/16" {
+		t.Errorf("agent B self_overlay_ip = %v, want 10.42.0.2/16", respB.SelfOverlayIP)
 	}
 	wgAssertPeer(t, "B sees A", respB.DeclaredWireGuardPeers[0], wgDeclaredPeer{
 		NodeID:     a.nodeID.String(),
