@@ -51,10 +51,11 @@ func (s *Store) allocateVNI(ctx context.Context) (int32, error) {
 	if err != nil {
 		return 0, err
 	}
-	vni := min + int32(seq-1) //nolint:gosec // seq far below 2^31; the range (<= 16777215) exhausts first
-	if vni > max {
+	offset := seq - 1
+	if offset > int64(max-min) {
 		return 0, store.ErrVNIExhausted
 	}
+	vni := min + int32(offset) //nolint:gosec // offset bounded by the check above; max <= 16777215 keeps the result in int32 range
 	return vni, nil
 }
 
@@ -170,7 +171,10 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 	if !resp.Succeeded {
 		// Name collision (the freshly-allocated, monotonic VNI cannot collide,
 		// so a failed CAS is the name guard). The consumed VNI is leaked - the
-		// accepted no-reclaim trade-off; it never reissues anyway.
+		// accepted no-reclaim trade-off; it never reissues anyway. This mapping
+		// is correct only while nextSeq stays an atomic CAS counter: that is what
+		// guarantees concurrent allocations get distinct VNIs, so a lost CAS here
+		// is never the VNI guard.
 		return store.Network{}, store.ErrNetworkNameExists
 	}
 	return n, nil

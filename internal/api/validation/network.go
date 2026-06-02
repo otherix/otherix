@@ -45,8 +45,9 @@ var linuxBridgeNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,14}$`)
 // reservedDeviceNameRe matches the Otherix-owned device-name namespace
 // (otb<vni> overlay bridge, otvx<vni> VTEP, otwg0 WireGuard). An operator
 // type=bridge network must not claim a name in this space or it would shadow
-// a derived overlay device.
-var reservedDeviceNameRe = regexp.MustCompile(`^(otb|otvx|otwg)`)
+// a derived overlay device. The match is case-insensitive: operators cannot
+// bypass the reservation via case variation (e.g. OTB1000, OtVx5).
+var reservedDeviceNameRe = regexp.MustCompile(`(?i)^(otb|otvx|otwg)`)
 
 // ValidateNetworkType returns nil when t is a recognised
 // store.NetworkType value. The set is anchored to the store enum;

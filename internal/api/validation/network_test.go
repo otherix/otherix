@@ -238,6 +238,9 @@ func TestValidateBridgeNameReservedPrefix(t *testing.T) {
 		{name: "operator bridge", in: "vmbr0", want: false},
 		{name: "plain", in: "br0", want: false},
 		{name: "ot but not reserved", in: "oteth0", want: false},
+		{name: "uppercase reserved", in: "OTB1000", want: true},
+		{name: "mixed case vtep", in: "OtVx5", want: true},
+		{name: "uppercase wireguard", in: "OTWG0", want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

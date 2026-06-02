@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -705,5 +706,36 @@ func TestCreateNetworkOverlayNameCollision(t *testing.T) {
 	})
 	if !errors.Is(err, store.ErrNetworkNameExists) {
 		t.Errorf("dup create err = %v, want ErrNetworkNameExists", err)
+	}
+}
+
+// TestCreateNetworkOverlayStampsOverConflictingInput verifies that the store
+// overwrites client-supplied server-owned fields for overlay networks. The
+// handler rejects them at the API edge; the store is the last line of defense.
+func TestCreateNetworkOverlayStampsOverConflictingInput(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	got, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID:         uuid.New(),
+		Name:       "ov-stamp",
+		Type:       store.NetworkTypeOverlay,
+		Subnet:     &sn,
+		Config:     []byte("{}"),
+		BridgeName: "operator-bogus",       // must be overwritten with otb<vni>
+		Mtu:        1500,                   // must be overwritten with 1390
+		Managed:    false,                  // must be forced true
+		Egress:     store.NetworkEgressNAT, // must be forced none
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	if got.VNI == nil {
+		t.Fatalf("VNI not allocated")
+	}
+	wantBridge := "otb" + strconv.Itoa(int(*got.VNI))
+	if got.BridgeName != wantBridge || got.Mtu != store.OverlayMTU || !got.Managed || got.Egress != store.NetworkEgressNone {
+		t.Errorf("forced fields = (bridge=%q mtu=%d managed=%v egress=%q), want (%q 1390 true none)",
+			got.BridgeName, got.Mtu, got.Managed, got.Egress, wantBridge)
 	}
 }
