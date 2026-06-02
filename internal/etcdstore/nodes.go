@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -261,12 +262,23 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
-	if _, err := s.c.Raw().Txn(ctx).
-		Then(
-			clientv3.OpPut(nodeKey(id), string(val)),
-			clientv3.OpDelete(nodeNameGuard(n.Name)),
-		).
-		Commit(); err != nil {
+	ops := []clientv3.Op{
+		clientv3.OpPut(nodeKey(id), string(val)),
+		clientv3.OpDelete(nodeNameGuard(n.Name)),
+	}
+	// Purge the node's WireGuard fabric record + pubkey guard in the same txn so
+	// the dead node stops appearing in the mesh and its pubkey becomes reusable.
+	wgRec, wgErr := s.AgentWireguardByNodeID(ctx, id)
+	switch {
+	case wgErr == nil:
+		ops = append(ops,
+			clientv3.OpDelete(agentWireguardKey(id)),
+			clientv3.OpDelete(agentWireguardPubkeyGuard(wgRec.PublicKey)),
+		)
+	case !errors.Is(wgErr, store.ErrNotFound):
+		return store.NodeDeleteOutcome{}, fmt.Errorf("load agent_wireguard for node delete: %v", wgErr)
+	}
+	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("soft-delete node txn: %v", err)
 	}
 	return out, nil

@@ -541,6 +541,20 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 		if r.NodeID == selfNodeID {
 			continue
 		}
+		// Defense-in-depth: skip a peer whose node row is gone (soft-deleted) or
+		// in the terminal "gone" status, so a stale WG record never bleeds into a
+		// live agent's mesh. DeleteNode purges the record at the source; this is
+		// the belt to that braces.
+		node, err := hp.NodeByID(ctx, r.NodeID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
+		}
+		if node.Status == store.NodeStatusGone {
+			continue
+		}
 		peerNet := netip.PrefixFrom(r.OverlayIP, 32) // single VTEP host route
 		out = append(out, declaredWireGuardPeer{
 			NodeID:     r.NodeID.String(),

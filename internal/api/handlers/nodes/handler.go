@@ -315,15 +315,23 @@ func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID) (*wireguardVi
 		if rec.NodeID == nodeID {
 			continue
 		}
-		pv := wireguardPeerView{NodeID: rec.NodeID.String(), OverlayIP: rec.OverlayIP.String()}
-		_, pv.Established = established[rec.NodeID.String()]
 		n, nerr := s.NodeByID(ctx, rec.NodeID)
-		if nerr == nil {
-			name := n.Name
-			pv.NodeName = &name
-		} else if !errors.Is(nerr, store.ErrNotFound) {
+		if nerr != nil {
+			// Defense-in-depth: a peer whose node row is gone (soft-deleted) is a
+			// stale WG record that must not surface in the fabric view. DeleteNode
+			// purges the record at the source; this skip is the belt to that braces.
+			if errors.Is(nerr, store.ErrNotFound) {
+				continue
+			}
 			return nil, nerr
 		}
+		if n.Status == store.NodeStatusGone {
+			continue
+		}
+		pv := wireguardPeerView{NodeID: rec.NodeID.String(), OverlayIP: rec.OverlayIP.String()}
+		_, pv.Established = established[rec.NodeID.String()]
+		name := n.Name
+		pv.NodeName = &name
 		peers = append(peers, pv)
 	}
 	sort.Slice(peers, func(i, j int) bool { return peers[i].NodeID < peers[j].NodeID })

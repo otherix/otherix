@@ -134,6 +134,35 @@ func TestListAgentWireguard(t *testing.T) {
 	}
 }
 
+func TestDeleteNodePurgesAgentWireguard(t *testing.T) {
+	ctx := context.Background()
+	s, _ := startStore(t)
+	a, err := s.CreateNode(ctx, nodeParams(uniqueNodeName("wg-a")))
+	if err != nil {
+		t.Fatalf("CreateNode A: %v", err)
+	}
+	b, err := s.CreateNode(ctx, nodeParams(uniqueNodeName("wg-b")))
+	if err != nil {
+		t.Fatalf("CreateNode B: %v", err)
+	}
+	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{NodeID: a.ID, PublicKey: "shared", Endpoint: "a:51820", ListenPort: 51820}); err != nil {
+		t.Fatalf("upsert A: %v", err)
+	}
+	if _, err := s.AgentWireguardByNodeID(ctx, a.ID); err != nil {
+		t.Fatalf("AgentWireguardByNodeID(A) before delete: %v", err)
+	}
+	if _, err := s.DeleteNode(ctx, a.ID, false, uuid.New()); err != nil {
+		t.Fatalf("DeleteNode(A): %v", err)
+	}
+	if _, err := s.AgentWireguardByNodeID(ctx, a.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("AgentWireguardByNodeID(A) after delete = %v, want store.ErrNotFound", err)
+	}
+	// The pubkey guard must be released so node B can reclaim the same key.
+	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{NodeID: b.ID, PublicKey: "shared", Endpoint: "b:51820", ListenPort: 51820}); err != nil {
+		t.Errorf("reclaim pubkey on B = %v, want nil (guard released)", err)
+	}
+}
+
 func TestAgentWireguardByNodeIDNotFound(t *testing.T) {
 	ctx := context.Background()
 	s, _ := startStore(t)

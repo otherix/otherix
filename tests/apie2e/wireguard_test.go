@@ -255,6 +255,65 @@ func TestNodeGetWireguardFabricHiddenFromViewer(t *testing.T) {
 	}
 }
 
+// TestNodeDeleteEvictsWireguardPeer guards the fabric-hygiene property that
+// deleting a node evicts it from every live agent's WireGuard mesh: after A and
+// B have meshed, deleting B must drop it from A's declared_wireguard_peers
+// down-channel and from the GET /v1/nodes/{name} fabric block on A.
+func TestNodeDeleteEvictsWireguardPeer(t *testing.T) {
+	h := newE2E(t)
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+
+	a := wgSeedAgent(t, h, caCert, caKey, "node-a")
+	b := wgSeedAgent(t, h, caCert, caKey, "node-b")
+
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820})
+	wgSendHeartbeat(t, agentSrv.URL, b, &wgHeartbeatReport{PublicKey: "pkB", Endpoint: "b.example:51820", ListenPort: 51820})
+	respA := wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820})
+	if len(respA.DeclaredWireGuardPeers) != 1 {
+		t.Fatalf("A pre-delete declared_wireguard_peers = %d, want 1 (%+v)", len(respA.DeclaredWireGuardPeers), respA.DeclaredWireGuardPeers)
+	}
+
+	adminTok, _ := loginAs(t, h, auth.RoleAdmin)
+	del := h.delete(t, "/v1/nodes/"+b.name, adminTok)
+	del.Body.Close()
+	if del.StatusCode < 200 || del.StatusCode >= 300 {
+		t.Fatalf("DELETE node-b status = %d, want 2xx", del.StatusCode)
+	}
+
+	// A heartbeats again: the dead node B must be gone from the down-channel.
+	respA2 := wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820})
+	for _, p := range respA2.DeclaredWireGuardPeers {
+		if p.NodeID == b.nodeID.String() {
+			t.Errorf("A post-delete declared_wireguard_peers still contains B (%s)", b.nodeID)
+		}
+	}
+
+	// The fabric block on GET node-a must not list B either.
+	resp := h.get(t, "/v1/nodes/"+a.name, adminTok)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET node-a status = %d, want 200", resp.StatusCode)
+	}
+	var node struct {
+		WireGuard *struct {
+			Peers []struct {
+				NodeID string `json:"node_id"`
+			} `json:"peers"`
+		} `json:"wireguard"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+		t.Fatalf("decode node-a: %v", err)
+	}
+	if node.WireGuard != nil {
+		for _, p := range node.WireGuard.Peers {
+			if p.NodeID == b.nodeID.String() {
+				t.Errorf("node-a wireguard.peers still contains B (%s)", b.nodeID)
+			}
+		}
+	}
+}
+
 // wgAssertPeer compares one declared peer against want, field by field.
 func wgAssertPeer(t *testing.T, label string, got, want wgDeclaredPeer) {
 	t.Helper()
