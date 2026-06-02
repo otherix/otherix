@@ -714,7 +714,11 @@ func TestCreateNetworkOverlayNameCollision(t *testing.T) {
 // deleted. The front-door path (DeleteNetwork rejects a soft-deleted row) already
 // proves the guard condition is effective for the common serialised path; this
 // test asserts the invariant-visible property: Y's name resolves to Y even after
-// a stale delete attempt targeting X's id.
+// a stale delete attempt targeting X's id. This guards the end-state invariant;
+// the Else branch itself is exercised directly by the internal-package
+// TestDeleteNetworkElseBranchPreservesForeignGuard (this external test cannot
+// reach the Else branch single-threaded - NetworkByID rejects the soft-deleted
+// row at the front door before the txn runs).
 func TestDeleteNetworkLeavesReusedNameGuardIntact(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
