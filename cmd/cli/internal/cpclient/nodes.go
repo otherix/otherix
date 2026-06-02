@@ -169,19 +169,21 @@ func (c *Client) ListNodes(ctx context.Context, params ListNodesParams) (NodeLis
 // string verbatim. The per-role projection (full vs summary) is
 // surfaced through the Node struct's optional fields — admin / operator
 // callers see Migration / CPUCoresTotal / etc. populated; others see
-// them nil.
-func (c *Client) GetNode(ctx context.Context, identifier string) (Node, error) {
+// them nil. The raw response body is returned alongside the decoded
+// value so `get --output json` can echo the server's projection
+// verbatim (absent-vs-null preserved); decode-only callers pass `_`.
+func (c *Client) GetNode(ctx context.Context, identifier string) (Node, json.RawMessage, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/nodes/"+url.PathEscape(identifier), nil)
 	if err != nil {
-		return Node{}, err
+		return Node{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return Node{}, err
+		return Node{}, nil, err
 	}
 	var out Node
 	if err := decodeJSON(body, &out); err != nil {
-		return Node{}, err
+		return Node{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }

@@ -194,7 +194,7 @@ func waitForReady(cmd *cobra.Command, c *cpclient.Client, initial cpclient.Pool)
 			return current, ctx.Err()
 		case <-time.After(waitPoolPollInterval):
 		}
-		refreshed, err := c.GetPoolByID(ctx, current.ID)
+		refreshed, _, err := c.GetPoolByID(ctx, current.ID)
 		if err != nil {
 			return current, fmt.Errorf("poll pool: %v", err)
 		}

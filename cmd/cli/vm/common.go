@@ -4,7 +4,9 @@
 package vm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +33,19 @@ func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
 // (each command's stdout / stderr is rebindable in tests).
 func printf(cmd *cobra.Command, format string, args ...any) {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), format, args...)
+}
+
+// printJSON writes raw server JSON to the command's stdout, re-indented two
+// spaces. Used by `--output json` so the CLI echoes exactly what the CP
+// returned (absent-vs-null is the server's choice), never a lossy re-marshal
+// of a decoded struct.
+func printJSON(cmd *cobra.Command, raw json.RawMessage) error {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return fmt.Errorf("indent json: %v", err)
+	}
+	printf(cmd, "%s\n", buf.String())
+	return nil
 }
 
 // classifyError maps an err from cpclient to the operator-facing

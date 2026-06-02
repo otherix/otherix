@@ -4,9 +4,6 @@
 package vm
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -39,21 +36,15 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	vm, err := c.VM(cmd.Context(), identifier)
+	vm, raw, err := c.VM(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
 
-	switch format {
-	case "json":
-		raw, err := json.MarshalIndent(vm, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-	default:
-		printVMText(cmd, vm)
+	if format == "json" {
+		return printJSON(cmd, raw)
 	}
+	printVMText(cmd, vm)
 	return nil
 }
 

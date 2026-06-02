@@ -112,42 +112,48 @@ func (c *Client) ListPools(ctx context.Context, params ListPoolsParams) (PoolLis
 // GetPoolByID fetches GET /v1/storage-pools/{id} with a UUID literal and
 // returns the flat per-instance Pool view. Use this when targeting a
 // specific node's pool row (the equivalent of addressing a Kubernetes
-// PersistentVolume by name).
-func (c *Client) GetPoolByID(ctx context.Context, id uuid.UUID) (Pool, error) {
+// PersistentVolume by name). The raw response body is returned alongside
+// the decoded value so `pool get --output json` echoes the server's
+// projection verbatim (absent-vs-null preserved); decode-only callers
+// pass `_`.
+func (c *Client) GetPoolByID(ctx context.Context, id uuid.UUID) (Pool, json.RawMessage, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/storage-pools/"+id.String(), nil)
 	if err != nil {
-		return Pool{}, err
+		return Pool{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return Pool{}, err
+		return Pool{}, nil, err
 	}
 	var out Pool
 	if err := decodeJSON(body, &out); err != nil {
-		return Pool{}, err
+		return Pool{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }
 
 // GetPoolByName fetches GET /v1/storage-pools/{name} and returns the
 // aggregated PoolConceptView. Use this when speaking at the cluster
 // name level (the equivalent of addressing a Kubernetes StorageClass);
 // the response carries every per-node instance plus the cluster
-// default-pool flag.
-func (c *Client) GetPoolByName(ctx context.Context, name string) (PoolConceptView, error) {
+// default-pool flag. The raw response body is returned alongside the
+// decoded value so `pool get --output json` echoes the server's
+// aggregated projection verbatim (absent-vs-null preserved); decode-only
+// callers pass `_`.
+func (c *Client) GetPoolByName(ctx context.Context, name string) (PoolConceptView, json.RawMessage, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/storage-pools/"+url.PathEscape(name), nil)
 	if err != nil {
-		return PoolConceptView{}, err
+		return PoolConceptView{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return PoolConceptView{}, err
+		return PoolConceptView{}, nil, err
 	}
 	var out PoolConceptView
 	if err := decodeJSON(body, &out); err != nil {
-		return PoolConceptView{}, err
+		return PoolConceptView{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }
 
 // CreatePoolRequest mirrors components/schemas/StoragePoolCreate in

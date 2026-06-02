@@ -4,7 +4,6 @@
 package node
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -42,21 +41,15 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	showIDs, _ := cmd.Flags().GetBool(flagShowIDs)
 
-	n, err := c.GetNode(cmd.Context(), identifier)
+	n, raw, err := c.GetNode(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
 
-	switch format {
-	case "json":
-		raw, err := json.MarshalIndent(n, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-	default:
-		printNodeText(cmd, n, showIDs)
+	if format == "json" {
+		return printJSON(cmd, raw)
 	}
+	printNodeText(cmd, n, showIDs)
 	return nil
 }
 

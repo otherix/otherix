@@ -194,7 +194,7 @@ func TestGetTemplate_ByUUID(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetTemplate(context.Background(), tplID)
+	got, _, err := c.GetTemplate(context.Background(), tplID)
 	if err != nil {
 		t.Fatalf("GetTemplate: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestGetTemplate_ByName(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	if _, err := c.GetTemplate(context.Background(), "ubuntu-jammy"); err != nil {
+	if _, _, err := c.GetTemplate(context.Background(), "ubuntu-jammy"); err != nil {
 		t.Fatalf("GetTemplate: %v", err)
 	}
 }
@@ -230,7 +230,7 @@ func TestGetTemplate_404(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.GetTemplate(context.Background(), "missing")
+	_, _, err := c.GetTemplate(context.Background(), "missing")
 	if err == nil {
 		t.Fatal("expected error for 404")
 	}
@@ -252,7 +252,7 @@ func TestGetTemplate_MalformedJSON(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.GetTemplate(context.Background(), "ubuntu-jammy")
+	_, _, err := c.GetTemplate(context.Background(), "ubuntu-jammy")
 	if err == nil {
 		t.Fatal("expected decode error")
 	}

@@ -4,8 +4,6 @@
 package template
 
 import (
-	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -41,21 +39,15 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	showIDs, _ := cmd.Flags().GetBool(flagShowIDs)
 
-	t, err := c.GetTemplate(cmd.Context(), identifier)
+	t, raw, err := c.GetTemplate(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
 
-	switch format {
-	case "json":
-		raw, err := json.MarshalIndent(t, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-	default:
-		printTemplateText(cmd, t, showIDs)
+	if format == "json" {
+		return printJSON(cmd, raw)
 	}
+	printTemplateText(cmd, t, showIDs)
 	return nil
 }
 

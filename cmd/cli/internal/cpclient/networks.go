@@ -191,25 +191,29 @@ func (c *Client) ListNetworks(ctx context.Context, params ListNetworksParams) (N
 // ONLY a UUID literal (it uuid.Parse-es the path param and 400s on any
 // other shape), so a non-UUID identifier is resolved to a UUID
 // client-side via resolveNetworkName (list-then-match on name). The
-// returned Network carries the per-node Status rollup.
-func (c *Client) GetNetwork(ctx context.Context, identifier string) (Network, error) {
+// returned Network carries the per-node Status rollup. The raw response
+// body returned alongside the decoded value is the FINAL by-UUID GET's
+// body (not the list page used for name resolution), so `network get
+// --output json` echoes the server's projection verbatim
+// (absent-vs-null preserved); decode-only callers pass `_`.
+func (c *Client) GetNetwork(ctx context.Context, identifier string) (Network, json.RawMessage, error) {
 	id, err := c.resolveIdentifier(ctx, identifier)
 	if err != nil {
-		return Network{}, err
+		return Network{}, nil, err
 	}
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/networks/"+id, nil)
 	if err != nil {
-		return Network{}, err
+		return Network{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return Network{}, err
+		return Network{}, nil, err
 	}
 	var out Network
 	if err := decodeJSON(body, &out); err != nil {
-		return Network{}, err
+		return Network{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }
 
 // DeleteNetwork submits DELETE /v1/networks/{id}. As with GetNetwork

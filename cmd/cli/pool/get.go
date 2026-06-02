@@ -4,7 +4,6 @@
 package pool
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -45,29 +44,27 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if id, parseErr := uuid.Parse(identifier); parseErr == nil {
-		instance, err := c.GetPoolByID(cmd.Context(), id)
+		instance, raw, err := c.GetPoolByID(cmd.Context(), id)
 		if err != nil {
 			return classifyError(err)
 		}
-		return renderInstance(cmd, instance, format)
+		if format == "json" {
+			return printJSON(cmd, raw)
+		}
+		return renderInstance(cmd, instance)
 	}
 
-	concept, err := c.GetPoolByName(cmd.Context(), identifier)
+	concept, raw, err := c.GetPoolByName(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
-	return renderConcept(cmd, concept, format)
+	if format == "json" {
+		return printJSON(cmd, raw)
+	}
+	return renderConcept(cmd, concept)
 }
 
-func renderInstance(cmd *cobra.Command, p cpclient.Pool, format string) error {
-	if format == "json" {
-		raw, err := json.MarshalIndent(p, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-		return nil
-	}
+func renderInstance(cmd *cobra.Command, p cpclient.Pool) error {
 	printf(cmd, "id: %s\n", p.ID)
 	printf(cmd, "name: %s\n", p.Name)
 	printf(cmd, "node: %s\n", p.Node)
@@ -117,15 +114,7 @@ func formatDiskPressure(p *cpclient.PressureCondition) string {
 		humanAge(p.Since), p.ConsecutiveCount)
 }
 
-func renderConcept(cmd *cobra.Command, v cpclient.PoolConceptView, format string) error {
-	if format == "json" {
-		raw, err := json.MarshalIndent(v, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-		return nil
-	}
+func renderConcept(cmd *cobra.Command, v cpclient.PoolConceptView) error {
 	printf(cmd, "name: %s\n", v.Name)
 	printf(cmd, "type: %s\n", v.Type)
 	printf(cmd, "is_cluster_default: %t\n", v.IsClusterDefault)

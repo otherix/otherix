@@ -4,7 +4,6 @@
 package network
 
 import (
-	"encoding/json"
 	"fmt"
 	"text/tabwriter"
 
@@ -42,22 +41,17 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	net, err := c.GetNetwork(cmd.Context(), identifier)
+	net, raw, err := c.GetNetwork(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
-	return renderGet(cmd, net, format)
+	if format == "json" {
+		return printJSON(cmd, raw)
+	}
+	return renderGet(cmd, net)
 }
 
-func renderGet(cmd *cobra.Command, n cpclient.Network, format string) error {
-	if format == "json" {
-		raw, err := json.MarshalIndent(n, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-		return nil
-	}
+func renderGet(cmd *cobra.Command, n cpclient.Network) error {
 	printf(cmd, "id: %s\n", n.ID)
 	printf(cmd, "name: %s\n", n.Name)
 	printf(cmd, "type: %s\n", n.Type)
