@@ -80,6 +80,7 @@ func printNodeText(cmd *cobra.Command, n cpclient.Node, showIDs bool) {
 	printNodeHardware(cmd, n)
 	printNodePressure(cmd, n)
 	printNodeAgent(cmd, n)
+	printNodeWireguard(cmd, n)
 	printf(cmd, "created_at: %s\n", n.CreatedAt)
 	if n.UpdatedAt != nil {
 		printf(cmd, "updated_at: %s\n", *n.UpdatedAt)
@@ -179,6 +180,39 @@ func printNodePressureLine(cmd *cobra.Command, label string, p *cpclient.Pressur
 	}
 	printf(cmd, "  %s: active since %s ago (consecutive_count=%d)\n",
 		label, humanAge(p.Since), p.ConsecutiveCount)
+}
+
+// printNodeWireguard renders the WG underlay fabric block when present: the
+// node's own overlay identity then a peers table. Omitted cleanly when the
+// server did not populate the block (developer/viewer, or pre-WG-report node).
+func printNodeWireguard(cmd *cobra.Command, n cpclient.Node) {
+	if n.WireGuard == nil {
+		return
+	}
+	wg := n.WireGuard
+	printf(cmd, "wireguard:\n")
+	printf(cmd, "  overlay_ip: %s\n", wg.OverlayIP)
+	printf(cmd, "  public_key: %s\n", wg.PublicKey)
+	printf(cmd, "  listen_port: %d\n", wg.ListenPort)
+	if wg.Endpoint != "" {
+		printf(cmd, "  endpoint: %s\n", wg.Endpoint)
+	}
+	if len(wg.Peers) == 0 {
+		printf(cmd, "  peers: none\n")
+		return
+	}
+	printf(cmd, "  peers:\n")
+	for _, p := range wg.Peers {
+		name := p.NodeID
+		if p.NodeName != nil && *p.NodeName != "" {
+			name = *p.NodeName
+		}
+		state := "down"
+		if p.Established {
+			state = "established"
+		}
+		printf(cmd, "    %s  %s  %s\n", name, p.OverlayIP, state)
+	}
 }
 
 func printNodeAgent(cmd *cobra.Command, n cpclient.Node) {
