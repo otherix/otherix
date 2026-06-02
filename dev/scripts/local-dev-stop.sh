@@ -72,7 +72,7 @@ make --no-print-directory etcd-reset >/dev/null
 echo ""
 echo ">> local-dev-stop complete — system reset"
 echo "   etcd data dir wiped (.local/etcd)"
-echo "   Lima VM destroyed (otherix-dev)"
+echo "   Lima VMs destroyed (otherix-dev-1, otherix-dev-2)"
 echo "   api-server stopped"
 echo ""
 echo "   Run 'make local-dev-start' to bring everything back up."

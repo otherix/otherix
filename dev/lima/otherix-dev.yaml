@@ -29,6 +29,16 @@ portForwards:
     hostIP: "127.0.0.1"
     hostPort: 9443
 
+# user-v2 gives the two dev VMs (otherix-dev-1 / otherix-dev-2) mutual
+# L3 on 192.168.104.0/24 (gateway .1), which the WireGuard underlay
+# tunnel needs - host.lima.internal only routes a VM to the host, not
+# VM-to-VM. Each agent advertises its own user-v2 IP as the WG endpoint
+# (wireguard.advertised_endpoint), and the CP redistributes it verbatim
+# so the peer dials it for the UDP handshake. Zero host setup (no
+# socket_vmnet, no sudoers). See dev/scripts/local-dev-start.sh.
+networks:
+  - lima: user-v2
+
 ssh:
   loadDotSSHPubKeys: true
 

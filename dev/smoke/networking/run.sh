@@ -26,9 +26,13 @@
 set -euo pipefail
 
 # --- configuration -----------------------------------------------------
+# Two-node dev stack: the VM lands on node-1 (otherix-dev-1) because only
+# node-1 carries the pool + template; node-2 is a WG-mesh-only peer with no
+# pool, so the scheduler pins placement here. The tap/bridge assertions run
+# against otherix-dev-1.
 OTX="${OTX:-./bin/otherix}"
-LIMA_VM="${LIMA_VM:-otherix-dev}"
-NODE="${NODE:-node-mvp}"
+LIMA_VM="${LIMA_VM:-otherix-dev-1}"
+NODE="${NODE:-node-1}"
 BRIDGE_NET="demo-bridge"
 BRIDGE_IFACE="otbr0"
 NAT_NET="demo-nat"
