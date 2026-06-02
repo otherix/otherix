@@ -5707,8 +5707,8 @@ components:
           type: [string, "null"]
           description: |
             VM IP subnet in CIDR form, returned in canonical (masked)
-            form. Present only when `egress: nat`; `null` otherwise.
-            Required when `type: overlay`.
+            form. Present when `egress: nat` or `type: overlay`; `null`
+            otherwise.
         gateway:
           type: [string, "null"]
           description: |
@@ -5738,7 +5738,9 @@ components:
             guest interfaces must all match — mismatch silently breaks
             jumbo-frame and overlay traffic. Common values: 1500
             (Ethernet default), 1450 (overlay/VPN with overhead), 9000
-            (jumbo frames; requires switch / NIC support).
+            (jumbo frames; requires switch / NIC support). For
+            `type: overlay` this is server-fixed at 1390 and not
+            client-settable.
         config:
           type: object
           additionalProperties: true
@@ -5771,14 +5773,16 @@ components:
           description: |
             Optional on create (defaults to `false`). Set `true` to have
             Otherix own the bridge; required `true` for `egress: nat`.
-            Immutable once the network exists.
+            Immutable once the network exists. Forbidden for
+            `type: overlay`.
         egress:
           type: string
           enum: [none, nat]
           default: none
           description: |
             Optional on create (defaults to `none`). `nat` requires
-            `type: bridge`, `managed: true`, and a `subnet`.
+            `type: bridge`, `managed: true`, and a `subnet`. Forbidden
+            for `type: overlay`.
         subnet:
           type: string
           description: |
@@ -5790,10 +5794,13 @@ components:
           description: |
             Optional host-side gateway IP. Allowed only with
             `egress: nat`; defaults to the first usable host in `subnet`.
+            Forbidden for `type: overlay`.
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
           maximum: 4094
+          description: |
+            Forbidden for `type: overlay`.
         mtu:
           type: integer
           minimum: 68
@@ -5802,7 +5809,8 @@ components:
           description: |
             Optional on create. Defaults to 1500 (safe Ethernet
             default). Specify 9000 for jumbo frames or ~1450 for
-            overlay/VPN networks; all interfaces must agree.
+            overlay/VPN networks; all interfaces must agree. Forbidden
+            for `type: overlay` (server-fixed at 1390).
         config:
           type: object
           additionalProperties: true
@@ -5819,7 +5827,9 @@ components:
         `subnet` (gateway is derived when omitted); changing it to
         `none` clears any `subnet`/`gateway`. `subnet` and `gateway`
         accept `null` to clear them (only valid when the resulting
-        `egress` is `none`).
+        `egress` is `none`). For `type: overlay` networks only the
+        `name` is patchable; any other field is rejected with
+        `400 validation_failed` and `details.forbidden_fields`.
       properties:
         name:
           type: string
