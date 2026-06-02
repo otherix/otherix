@@ -167,6 +167,32 @@ func printNodePressure(cmd *cobra.Command, n cpclient.Node) {
 	printf(cmd, "pressure:\n")
 	printNodePressureLine(cmd, "memory", n.MemoryPressure)
 	printNodePressureLine(cmd, "system_disk", n.SystemDiskPressure)
+	printNodePressureWireguard(cmd, n.WireGuard)
+}
+
+// printNodePressureWireguard emits the at-a-glance WG underlay health line in
+// the node health block. The WG fabric is per-node infrastructure (one otwg0
+// shared by every overlay), so unlike per-network bridge health (network
+// conditions) it rolls up to a single node-level line here; the detailed fabric
+// block (printNodeWireguard) carries the peers. Omitted when the caller does not
+// receive the fabric block (developer/viewer, or a node that has not reported WG
+// yet) so lower-privilege views render unchanged.
+func printNodePressureWireguard(cmd *cobra.Command, wg *cpclient.NodeWireguard) {
+	if wg == nil {
+		return
+	}
+	switch wg.Status {
+	case "", "ready":
+		printf(cmd, "  wireguard: ok\n")
+	case "failed":
+		if wg.Error != nil && *wg.Error != "" {
+			printf(cmd, "  wireguard: failed (%s)\n", *wg.Error)
+			return
+		}
+		printf(cmd, "  wireguard: failed\n")
+	default:
+		printf(cmd, "  wireguard: %s\n", wg.Status)
+	}
 }
 
 // printNodePressureLine emits one indented `<type>: ...` row. Active

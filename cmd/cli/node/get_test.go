@@ -37,6 +37,32 @@ func TestPrintNodeWireguard(t *testing.T) {
 	}
 }
 
+func TestPrintNodePressureWireguard(t *testing.T) {
+	boom := "otwg0 ensure failed"
+	cases := []struct {
+		name string
+		wg   *cpclient.NodeWireguard
+		want string
+	}{
+		{name: "ready", wg: &cpclient.NodeWireguard{Status: "ready"}, want: "  wireguard: ok\n"},
+		{name: "empty", wg: &cpclient.NodeWireguard{}, want: "  wireguard: ok\n"},
+		{name: "failed", wg: &cpclient.NodeWireguard{Status: "failed", Error: &boom}, want: "  wireguard: failed (otwg0 ensure failed)\n"},
+		{name: "pending", wg: &cpclient.NodeWireguard{Status: "pending"}, want: "  wireguard: pending\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := cpclient.Node{Name: "node-1", Architecture: "arm64", Status: "ready", CreatedAt: "t0", WireGuard: tc.wg}
+			cmd := &cobra.Command{}
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			printNodeText(cmd, n, false)
+			if !strings.Contains(buf.String(), tc.want) {
+				t.Errorf("printNodeText output missing %q\n%s", tc.want, buf.String())
+			}
+		})
+	}
+}
+
 func TestPrintNodeWireguardAbsent(t *testing.T) {
 	n := cpclient.Node{Name: "node-1", Architecture: "arm64", Status: "ready", CreatedAt: "t0"}
 	cmd := &cobra.Command{}
