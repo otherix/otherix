@@ -9,6 +9,9 @@ package netfabric
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
+	"sort"
 
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -114,4 +117,95 @@ func (f *linuxFabric) WireGuardExists(name string) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// prefixToIPNet converts a netip.Prefix to the net.IPNet wgctrl expects for an
+// allowed IP. Unmap guards against an IPv4-in-IPv6 address widening the mask to
+// 128 bits.
+func prefixToIPNet(p netip.Prefix) net.IPNet {
+	a := p.Addr().Unmap()
+	return net.IPNet{IP: a.AsSlice(), Mask: net.CIDRMask(p.Bits(), a.BitLen())}
+}
+
+// ipNetToPrefix converts a net.IPNet read back from wgctrl to a netip.Prefix.
+func ipNetToPrefix(n net.IPNet) (netip.Prefix, bool) {
+	a, ok := netip.AddrFromSlice(n.IP)
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	ones, bits := n.Mask.Size()
+	if bits == 0 {
+		// A non-contiguous mask reports (0, 0); reject it rather than
+		// silently fabricate a /0 so the bool return honestly signals failure.
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(a.Unmap(), ones), true
+}
+
+// SetWireGuardPeers atomically replaces the full peer set on the named
+// interface via wgctrl ReplacePeers. PersistentKeepalive and AllowedIPs are
+// applied per peer.
+func (f *linuxFabric) SetWireGuardPeers(name string, peers []WGPeer) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c, err := wgctrl.New()
+	if err != nil {
+		return fmt.Errorf("netfabric: set wireguard peers %s: wgctrl: %v", name, err)
+	}
+	defer c.Close()
+
+	cfgs := make([]wgtypes.PeerConfig, 0, len(peers))
+	for _, p := range peers {
+		allowed := make([]net.IPNet, 0, len(p.AllowedIPs))
+		for _, a := range p.AllowedIPs {
+			allowed = append(allowed, prefixToIPNet(a))
+		}
+		pc := wgtypes.PeerConfig{
+			PublicKey:         p.PublicKey,
+			Endpoint:          p.Endpoint,
+			ReplaceAllowedIPs: true,
+			AllowedIPs:        allowed,
+		}
+		if p.PersistentKeepalive > 0 {
+			ka := p.PersistentKeepalive
+			pc.PersistentKeepaliveInterval = &ka
+		}
+		cfgs = append(cfgs, pc)
+	}
+	if err := c.ConfigureDevice(name, wgtypes.Config{ReplacePeers: true, Peers: cfgs}); err != nil {
+		return fmt.Errorf("netfabric: set wireguard peers %s: configure: %v", name, err)
+	}
+	return nil
+}
+
+// WireGuardPeers returns the configured peers on the named interface, sorted by
+// public key for deterministic observed-state reporting.
+func (f *linuxFabric) WireGuardPeers(name string) ([]WGPeer, error) {
+	c, err := wgctrl.New()
+	if err != nil {
+		return nil, fmt.Errorf("netfabric: wireguard peers %s: wgctrl: %v", name, err)
+	}
+	defer c.Close()
+	dev, err := c.Device(name)
+	if err != nil {
+		return nil, fmt.Errorf("netfabric: wireguard peers %s: %v", name, err)
+	}
+	out := make([]WGPeer, 0, len(dev.Peers))
+	for _, p := range dev.Peers {
+		allowed := make([]netip.Prefix, 0, len(p.AllowedIPs))
+		for _, a := range p.AllowedIPs {
+			if pfx, ok := ipNetToPrefix(a); ok {
+				allowed = append(allowed, pfx)
+			}
+		}
+		out = append(out, WGPeer{
+			PublicKey:           p.PublicKey,
+			Endpoint:            p.Endpoint,
+			AllowedIPs:          allowed,
+			PersistentKeepalive: p.PersistentKeepaliveInterval,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PublicKey.String() < out[j].PublicKey.String() })
+	return out, nil
 }

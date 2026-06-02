@@ -92,3 +92,9 @@ func (unsupportedFabric) RemoveWireGuard(name string) error { return errUnsuppor
 
 // WireGuardExists reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) WireGuardExists(name string) (bool, error) { return false, errUnsupported }
+
+// SetWireGuardPeers reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) SetWireGuardPeers(name string, peers []WGPeer) error { return errUnsupported }
+
+// WireGuardPeers reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) WireGuardPeers(name string) ([]WGPeer, error) { return nil, errUnsupported }

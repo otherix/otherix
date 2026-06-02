@@ -96,6 +96,14 @@ type Fabric interface {
 	// WireGuardExists reports whether a WireGuard link of the given name
 	// exists. A link of the same name but a different type reports false.
 	WireGuardExists(name string) (bool, error)
+	// SetWireGuardPeers atomically replaces the full peer set on the named
+	// interface (wgctrl ReplacePeers). PersistentKeepalive is applied per peer.
+	// The CP recomputes the whole peer list each heartbeat, so the declarative
+	// replace fits the reconciler better than per-peer add/delete.
+	SetWireGuardPeers(name string, peers []WGPeer) error
+	// WireGuardPeers returns the configured peers on the named interface,
+	// sorted by public key, for observed-state reporting.
+	WireGuardPeers(name string) ([]WGPeer, error)
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold

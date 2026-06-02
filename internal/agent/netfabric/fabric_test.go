@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -146,6 +147,38 @@ func TestFakeFabricWireGuardLifecycle(t *testing.T) {
 	}
 	if diff := cmp.Diff([]string{"otwg0"}, f.RemoveWireGuardCalls); diff != "" {
 		t.Errorf("RemoveWireGuardCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestFakeFabricWireGuardPeers(t *testing.T) {
+	key, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("GeneratePrivateKey = %v", err)
+	}
+	peer := WGPeer{
+		PublicKey:           key.PublicKey(),
+		Endpoint:            &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 51820},
+		AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("10.42.1.0/24")},
+		PersistentKeepalive: 25 * time.Second,
+	}
+	f := &FakeFabric{WireGuardPeersResult: []WGPeer{peer}}
+
+	if err := f.SetWireGuardPeers("otwg0", []WGPeer{peer}); err != nil {
+		t.Fatalf("SetWireGuardPeers = %v, want nil", err)
+	}
+	got, err := f.WireGuardPeers("otwg0")
+	if err != nil {
+		t.Fatalf("WireGuardPeers = %v, want nil", err)
+	}
+	opt := cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{})
+	if diff := cmp.Diff([]WGPeer{peer}, got, opt); diff != "" {
+		t.Errorf("WireGuardPeers mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]WGPeerSetCall{{Name: "otwg0", Peers: []WGPeer{peer}}}, f.WGPeerSetCalls, opt); diff != "" {
+		t.Errorf("WGPeerSetCalls mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"otwg0"}, f.WireGuardPeersCalls); diff != "" {
+		t.Errorf("WireGuardPeersCalls mismatch (-want +got):\n%s", diff)
 	}
 }
 

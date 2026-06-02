@@ -58,6 +58,13 @@ type FakeFabric struct {
 	EnsureWireGuardCalls []WGConfig
 	RemoveWireGuardCalls []string
 	WireGuardExistsCalls []string
+
+	// WireGuardPeersResult is returned by WireGuardPeers alongside
+	// Errs["WireGuardPeers"]; nil when the error is set.
+	WireGuardPeersResult []WGPeer
+
+	WGPeerSetCalls      []WGPeerSetCall
+	WireGuardPeersCalls []string
 }
 
 // BridgeCall records one EnsureBridge invocation.
@@ -237,6 +244,28 @@ func (f *FakeFabric) RemoveWireGuard(name string) error {
 func (f *FakeFabric) WireGuardExists(name string) (bool, error) {
 	f.WireGuardExistsCalls = append(f.WireGuardExistsCalls, name)
 	return f.WireGuardExistsResult, f.err("WireGuardExists")
+}
+
+// WGPeerSetCall records one SetWireGuardPeers invocation.
+type WGPeerSetCall struct {
+	Name  string
+	Peers []WGPeer
+}
+
+// SetWireGuardPeers records the call and returns Errs["SetWireGuardPeers"].
+func (f *FakeFabric) SetWireGuardPeers(name string, peers []WGPeer) error {
+	f.WGPeerSetCalls = append(f.WGPeerSetCalls, WGPeerSetCall{Name: name, Peers: peers})
+	return f.err("SetWireGuardPeers")
+}
+
+// WireGuardPeers records the call and returns WireGuardPeersResult with
+// Errs["WireGuardPeers"]. When the error is non-nil the result is nil.
+func (f *FakeFabric) WireGuardPeers(name string) ([]WGPeer, error) {
+	f.WireGuardPeersCalls = append(f.WireGuardPeersCalls, name)
+	if err := f.err("WireGuardPeers"); err != nil {
+		return nil, err
+	}
+	return f.WireGuardPeersResult, nil
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.

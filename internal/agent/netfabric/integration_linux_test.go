@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/nftables"
@@ -354,6 +355,144 @@ func TestLinuxFabricWireGuardLifecycle(t *testing.T) {
 		exists, err = f.WireGuardExists(cfg.Name)
 		if err != nil || exists {
 			t.Fatalf("WireGuardExists(%s) after remove = (%v, %v), want (false, nil)", cfg.Name, exists, err)
+		}
+	})
+}
+
+func TestLinuxFabricWireGuardPeers(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		cfg := wgTestConfig(t)
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard = %v", err)
+		}
+
+		peerKey, err := wgtypes.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("GeneratePrivateKey(peer) = %v", err)
+		}
+		peer := WGPeer{
+			PublicKey:           peerKey.PublicKey(),
+			Endpoint:            &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 51820},
+			AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("10.42.1.0/24")},
+			PersistentKeepalive: 25 * time.Second,
+		}
+
+		peers, err := f.WireGuardPeers(cfg.Name)
+		if err != nil {
+			t.Fatalf("WireGuardPeers before set = %v", err)
+		}
+		if len(peers) != 0 {
+			t.Fatalf("WireGuardPeers before set = %v, want empty", peers)
+		}
+
+		if err := f.SetWireGuardPeers(cfg.Name, []WGPeer{peer}); err != nil {
+			t.Fatalf("SetWireGuardPeers = %v", err)
+		}
+		peers, err = f.WireGuardPeers(cfg.Name)
+		if err != nil {
+			t.Fatalf("WireGuardPeers after set = %v", err)
+		}
+		if len(peers) != 1 {
+			t.Fatalf("WireGuardPeers = %v, want exactly 1", peers)
+		}
+		if peers[0].PublicKey != peer.PublicKey {
+			t.Errorf("peer pubkey did not round-trip")
+		}
+		if len(peers[0].AllowedIPs) != 1 || peers[0].AllowedIPs[0] != netip.MustParsePrefix("10.42.1.0/24") {
+			t.Errorf("AllowedIPs = %v, want [10.42.1.0/24]", peers[0].AllowedIPs)
+		}
+		if peers[0].Endpoint == nil || peers[0].Endpoint.String() != "203.0.113.5:51820" {
+			t.Errorf("Endpoint = %v, want 203.0.113.5:51820", peers[0].Endpoint)
+		}
+		if peers[0].PersistentKeepalive != 25*time.Second {
+			t.Errorf("PersistentKeepalive = %v, want 25s", peers[0].PersistentKeepalive)
+		}
+
+		key2, err := wgtypes.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("GeneratePrivateKey(peer2) = %v", err)
+		}
+		peer2 := WGPeer{
+			PublicKey:  key2.PublicKey(),
+			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.42.2.0/24")},
+		}
+		if err := f.SetWireGuardPeers(cfg.Name, []WGPeer{peer2}); err != nil {
+			t.Fatalf("SetWireGuardPeers replace = %v", err)
+		}
+		peers, err = f.WireGuardPeers(cfg.Name)
+		if err != nil {
+			t.Fatalf("WireGuardPeers after replace = %v", err)
+		}
+		if len(peers) != 1 || peers[0].PublicKey != peer2.PublicKey {
+			t.Fatalf("after replace = %v, want only peer2", peers)
+		}
+
+		if err := f.SetWireGuardPeers(cfg.Name, nil); err != nil {
+			t.Fatalf("SetWireGuardPeers(nil) = %v", err)
+		}
+		peers, err = f.WireGuardPeers(cfg.Name)
+		if err != nil {
+			t.Fatalf("WireGuardPeers after clear = %v", err)
+		}
+		if len(peers) != 0 {
+			t.Errorf("after clear = %v, want empty", peers)
+		}
+	})
+}
+
+func TestLinuxFabricWireGuardNegativePaths(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+
+		dummy := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "otwg0"}}
+		if err := netlink.LinkAdd(dummy); err != nil {
+			t.Fatalf("LinkAdd(dummy otwg0) = %v", err)
+		}
+		exists, err := f.WireGuardExists("otwg0")
+		if err != nil {
+			t.Fatalf("WireGuardExists(dummy otwg0) = %v", err)
+		}
+		if exists {
+			t.Errorf("WireGuardExists on a dummy link = true, want false")
+		}
+		if err := f.EnsureWireGuard(wgTestConfig(t)); err == nil {
+			t.Errorf("EnsureWireGuard over a dummy link = nil, want type-collision error")
+		}
+		if err := netlink.LinkDel(dummy); err != nil {
+			t.Fatalf("LinkDel(dummy) = %v", err)
+		}
+
+		if err := f.SetWireGuardPeers("otwg0", nil); err == nil {
+			t.Errorf("SetWireGuardPeers on absent device = nil, want error")
+		}
+		if _, err := f.WireGuardPeers("otwg0"); err == nil {
+			t.Errorf("WireGuardPeers on absent device = nil, want error")
+		}
+	})
+}
+
+func TestLinuxFabricWireGuardConcurrent(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		cfg := wgTestConfig(t)
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard = %v", err)
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = f.EnsureWireGuard(cfg)
+				_ = f.SetWireGuardPeers(cfg.Name, nil)
+				_, _ = f.WireGuardPeers(cfg.Name)
+			}()
+		}
+		wg.Wait()
+		exists, err := f.WireGuardExists(cfg.Name)
+		if err != nil || !exists {
+			t.Fatalf("WireGuardExists after contention = (%v, %v), want (true, nil)", exists, err)
 		}
 	})
 }
