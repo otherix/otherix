@@ -119,9 +119,11 @@ func TestOverlayNetworkPatchOnlyName(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
 
+	suffix := uuid.NewString()[:8]
+
 	// Create an overlay network.
 	createBody := map[string]any{
-		"name":   "ov-patch-" + uuid.NewString()[:8],
+		"name":   "ov-patch-" + suffix,
 		"type":   "overlay",
 		"subnet": "10.53.0.0/24",
 	}
@@ -132,12 +134,33 @@ func TestOverlayNetworkPatchOnlyName(t *testing.T) {
 	var created overlayNetworkView
 	decodeJSON(t, createResp, &created)
 
-	// PATCH with only name -> expect 200.
-	patchResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"name": "ov-renamed"}, admin)
+	if created.VNI == nil {
+		t.Fatalf("created overlay has nil VNI")
+	}
+	origVNI := *created.VNI
+	origBridge := created.BridgeName
+
+	// PATCH with only name -> expect 200; verify VNI/bridge/type survive the rename.
+	newName := "ov-renamed-" + suffix
+	patchResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"name": newName}, admin)
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("patch name status = %d, want 200", patchResp.StatusCode)
 	}
-	patchResp.Body.Close()
+	var patched overlayNetworkView
+	decodeJSON(t, patchResp, &patched)
+
+	if patched.Type != "overlay" {
+		t.Errorf("type after rename = %q, want overlay", patched.Type)
+	}
+	if patched.Name != newName {
+		t.Errorf("name after rename = %q, want %q", patched.Name, newName)
+	}
+	if patched.VNI == nil || *patched.VNI != origVNI {
+		t.Errorf("vni after rename = %v, want %d (must not change on rename)", patched.VNI, origVNI)
+	}
+	if patched.BridgeName != origBridge {
+		t.Errorf("bridge_name after rename = %q, want %q (must not change on rename)", patched.BridgeName, origBridge)
+	}
 
 	// PATCH with subnet -> expect 400 validation_failed.
 	subnetResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"subnet": "10.60.0.0/24"}, admin)
