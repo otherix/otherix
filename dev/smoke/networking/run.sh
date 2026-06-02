@@ -89,11 +89,13 @@ node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' 
 [[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-mvp"
 pass "CP up, $NODE ready"
 
-# --- step 0: WireGuard fabric (N2c-1) ---------------------------------
-# By the time the node is `ready` the agent has reached State B and run at
+# --- step 0: WireGuard fabric (N2c) -----------------------------------
+# By the time node-1 is `ready` the agent has reached State B and run at
 # least one heartbeat round, so the WG reconciler has brought up otwg0 from
-# the CP-assigned overlay address. Single agent => zero peers.
-echo "=== step 0: WireGuard fabric (otwg0, single-agent) ==="
+# the CP-assigned overlay address. In the two-node dev stack node-1 has one
+# peer (node-2); the deep mesh assertions live in the wireguard-mesh smoke,
+# here this is a node-1-up sanity check.
+echo "=== step 0: WireGuard fabric (otwg0 on $NODE) ==="
 WG_IFACE="otwg0"
 WG_OVERLAY="10.42.0.1/16"
 WG_KEY_PATH="/opt/otherix/wg/private.key"
@@ -103,14 +105,15 @@ invm sudo wg show "$WG_IFACE" | grep -q "public key:" \
   || fail "$WG_IFACE has no public key"
 invm ip -4 addr show "$WG_IFACE" | grep -q "inet $WG_OVERLAY" \
   || fail "$WG_IFACE missing overlay address $WG_OVERLAY"
-[[ "$(invm sudo wg show "$WG_IFACE" peers | wc -l | tr -d ' ')" == "0" ]] \
-  || fail "$WG_IFACE should have zero peers in single-agent smoke"
+peer_count="$(invm sudo wg show "$WG_IFACE" peers | grep -c . || true)"
+[[ "$peer_count" -ge 1 ]] \
+  || fail "$WG_IFACE should have >= 1 peer in the two-node stack (got $peer_count)"
 # cross-check the reported public key against the agent's private key on disk.
 reported_pub="$(invm sudo wg show "$WG_IFACE" public-key | tr -d '[:space:]')"
 derived_pub="$(invm sudo sh -c "wg pubkey < $WG_KEY_PATH" | tr -d '[:space:]')"
 [[ -n "$reported_pub" && "$reported_pub" == "$derived_pub" ]] \
   || fail "$WG_IFACE public key mismatch (reported '$reported_pub' != derived '$derived_pub')"
-pass "$WG_IFACE up: overlay $WG_OVERLAY, port 51820, zero peers, key matches $WG_KEY_PATH"
+pass "$WG_IFACE up: overlay $WG_OVERLAY, port 51820, $peer_count peer(s), key matches $WG_KEY_PATH"
 
 # --- step 1: managed bridge -------------------------------------------
 echo "=== step 1: managed bridge ($BRIDGE_NET -> $BRIDGE_IFACE) ==="
