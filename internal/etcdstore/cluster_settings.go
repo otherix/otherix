@@ -123,3 +123,60 @@ func (s *Store) OverlaySupernet(ctx context.Context) (netip.Prefix, error) {
 	}
 	return p.Masked(), nil
 }
+
+// defaultVNIMin / defaultVNIMax bound the overlay VNI range when the operator
+// configured none at bootstrap. The 1000 floor avoids the reserved low VNI
+// range; 65535 is the conservative phase-1 ceiling (the 24-bit VXLAN max is
+// 16777215, allowed if an operator widens the range).
+const (
+	defaultVNIMin = 1000
+	defaultVNIMax = 65535
+)
+
+// SeedVNIRange writes the overlay VNI range on the singleton first-writer-wins,
+// mirroring SeedOverlaySupernet: it validates 1000<=min<max<=16777215, sets the
+// bounds only when none exist, and is immutable thereafter (no public mutator).
+// Zero/zero falls back to the defaults.
+func (s *Store) SeedVNIRange(ctx context.Context, min, max int) error {
+	if min == 0 && max == 0 {
+		min, max = defaultVNIMin, defaultVNIMax
+	}
+	if min < 1000 || max > 16777215 || min >= max {
+		return fmt.Errorf("invalid vni range [%d,%d]: require 1000<=min<max<=16777215", min, max)
+	}
+	cur, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if cur.VniMin != nil && cur.VniMax != nil {
+		return nil
+	}
+	cur.ID = 1
+	mn := int32(min) //nolint:gosec // bounded by the validation above
+	mx := int32(max) //nolint:gosec // bounded by the validation above
+	cur.VniMin = &mn
+	cur.VniMax = &mx
+	if cur.CreatedAt.IsZero() {
+		cur.CreatedAt = time.Now().UTC()
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	return s.c.PutJSON(ctx, clusterSettingsKey(), cur)
+}
+
+// VNIRange returns the overlay VNI range as (min, max), falling back to the
+// defaults when the singleton has no value.
+func (s *Store) VNIRange(ctx context.Context) (int32, int32, error) {
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	min := int32(defaultVNIMin)
+	max := int32(defaultVNIMax)
+	if cs.VniMin != nil {
+		min = *cs.VniMin
+	}
+	if cs.VniMax != nil {
+		max = *cs.VniMax
+	}
+	return min, max, nil
+}

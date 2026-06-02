@@ -58,3 +58,67 @@ func TestClusterSettingsSetAndClearDefaultPool(t *testing.T) {
 		t.Errorf("DefaultPoolName after clear = %v, want nil", *cleared.DefaultPoolName)
 	}
 }
+
+func TestSeedVNIRangeFirstWriterWins(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SeedVNIRange(ctx, 2000, 3000); err != nil {
+		t.Fatalf("SeedVNIRange first call: %v", err)
+	}
+	if err := s.SeedVNIRange(ctx, 4000, 5000); err != nil {
+		t.Fatalf("SeedVNIRange second call: %v", err)
+	}
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 2000 || max != 3000 {
+		t.Errorf("VNIRange() = (%d,%d), want (2000,3000)", min, max)
+	}
+}
+
+func TestVNIRangeDefaultWhenUnset(t *testing.T) {
+	s, _ := startStore(t)
+	min, max, err := s.VNIRange(context.Background())
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 1000 || max != 65535 {
+		t.Errorf("VNIRange() default = (%d,%d), want (1000,65535)", min, max)
+	}
+}
+
+func TestSeedVNIRangeRejectsBadBounds(t *testing.T) {
+	cases := []struct {
+		name     string
+		min, max int
+	}{
+		{"min below floor", 500, 600},
+		{"min equals max", 2000, 2000},
+		{"max above vxlan ceiling", 1000, 16777216},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := startStore(t)
+			if err := s.SeedVNIRange(context.Background(), tc.min, tc.max); err == nil {
+				t.Errorf("SeedVNIRange(%d,%d) = nil, want error", tc.min, tc.max)
+			}
+		})
+	}
+}
+
+func TestSeedVNIRangeZeroDefaults(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedVNIRange(ctx, 0, 0); err != nil {
+		t.Fatalf("SeedVNIRange(0,0): %v", err)
+	}
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 1000 || max != 65535 {
+		t.Errorf("VNIRange() after zero seed = (%d,%d), want (1000,65535)", min, max)
+	}
+}

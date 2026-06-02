@@ -322,6 +322,8 @@ type ClusterSetting struct {
 	ID              int32
 	DefaultPoolName *string
 	OverlaySupernet *string // cluster overlay supernet CIDR; seeded once at boot, immutable
+	VniMin          *int32  // overlay VNI range floor; seeded once at boot, immutable
+	VniMax          *int32  // overlay VNI range ceiling; seeded once at boot, immutable
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
