@@ -31,6 +31,7 @@ type Network struct {
 	MTU        int             `json:"mtu"`
 	Subnet     *string         `json:"subnet"`
 	Gateway    *string         `json:"gateway"`
+	VNI        *int            `json:"vni"`
 	Config     json.RawMessage `json:"config"`
 	CreatedAt  string          `json:"created_at"`
 	UpdatedAt  string          `json:"updated_at"`
@@ -87,9 +88,11 @@ type CreateNetworkParams struct {
 // the omitempty assembly is unit-testable without a live server.
 func (p CreateNetworkParams) body() map[string]any {
 	out := map[string]any{
-		"name":        p.Name,
-		"type":        p.Type,
-		"bridge_name": p.BridgeName,
+		"name": p.Name,
+		"type": p.Type,
+	}
+	if p.BridgeName != "" {
+		out["bridge_name"] = p.BridgeName
 	}
 	if p.Managed {
 		out["managed"] = true

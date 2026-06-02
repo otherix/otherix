@@ -86,6 +86,19 @@ func TestCreateNetworkParamsBody(t *testing.T) {
 				"bridge_name": "br2",
 			},
 		},
+		{
+			name: "overlay omits bridge_name",
+			params: CreateNetworkParams{
+				Name:   "net-overlay",
+				Type:   "overlay",
+				Subnet: "10.50.0.0/24",
+			},
+			want: map[string]any{
+				"name":   "net-overlay",
+				"type":   "overlay",
+				"subnet": "10.50.0.0/24",
+			},
+		},
 	}
 
 	for _, tc := range cases {

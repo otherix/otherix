@@ -55,7 +55,12 @@ func renderGet(cmd *cobra.Command, n cpclient.Network) error {
 	printf(cmd, "id: %s\n", n.ID)
 	printf(cmd, "name: %s\n", n.Name)
 	printf(cmd, "type: %s\n", n.Type)
-	printf(cmd, "bridge_name: %s\n", n.BridgeName)
+	if n.BridgeName != "" {
+		printf(cmd, "bridge_name: %s\n", n.BridgeName)
+	}
+	if n.VNI != nil {
+		printf(cmd, "vni: %d\n", *n.VNI)
+	}
 	printf(cmd, "managed: %t\n", n.Managed)
 	printf(cmd, "egress: %s\n", n.Egress)
 	printf(cmd, "subnet: %s\n", orDash(n.Subnet))

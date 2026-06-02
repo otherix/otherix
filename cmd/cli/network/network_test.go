@@ -201,6 +201,103 @@ func TestNetworkCreate_400Validation(t *testing.T) {
 	}
 }
 
+func TestNetworkCreate_OverlayMissingSubnet(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when validation fails client-side")
+	}))
+	defer srv.Close()
+
+	_, _, err := runNetworkCmd(t, srv.URL, []string{
+		"create", "net-overlay", "--type", "overlay",
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing --subnet")
+	}
+	if !strings.Contains(err.Error(), "--subnet") {
+		t.Errorf("err = %v, want mention of --subnet", err)
+	}
+}
+
+func TestNetworkCreate_OverlayForbidsBridgeName(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when validation fails client-side")
+	}))
+	defer srv.Close()
+
+	_, _, err := runNetworkCmd(t, srv.URL, []string{
+		"create", "net-overlay", "--type", "overlay",
+		"--subnet", "10.50.0.0/24",
+		"--bridge-name", "br0",
+	})
+	if err == nil {
+		t.Fatalf("expected error for --bridge-name with --type overlay")
+	}
+	if !strings.Contains(err.Error(), "--bridge-name") {
+		t.Errorf("err = %v, want mention of --bridge-name", err)
+	}
+}
+
+func TestNetworkCreate_OverlayHappy(t *testing.T) {
+	t.Parallel()
+	vni := 10050
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["type"] != "overlay" {
+			t.Errorf("type = %v, want overlay", body["type"])
+		}
+		if body["subnet"] != "10.50.0.0/24" {
+			t.Errorf("subnet = %v, want 10.50.0.0/24", body["subnet"])
+		}
+		if _, present := body["bridge_name"]; present {
+			t.Errorf("bridge_name must be absent for overlay, got %v", body["bridge_name"])
+		}
+		resp := map[string]any{
+			"id":          uuid.NewString(),
+			"name":        "net-overlay",
+			"type":        "overlay",
+			"bridge_name": "",
+			"managed":     false,
+			"egress":      "none",
+			"vlan_tag":    nil,
+			"mtu":         1500,
+			"subnet":      "10.50.0.0/24",
+			"gateway":     nil,
+			"vni":         vni,
+			"config":      map[string]any{},
+			"created_at":  "2026-06-01T10:00:00Z",
+			"updated_at":  "2026-06-01T10:00:00Z",
+		}
+		raw, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(raw)
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runNetworkCmd(t, srv.URL, []string{
+		"create", "net-overlay", "--type", "overlay", "--subnet", "10.50.0.0/24",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1", posts)
+	}
+	if !strings.Contains(stdout, "net-overlay") {
+		t.Errorf("stdout missing network name:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "10050") {
+		t.Errorf("stdout missing vni value:\n%s", stdout)
+	}
+}
+
 func TestNetworkList_Table(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -428,5 +525,52 @@ func TestNetworkDelete_409Blocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("err = %v, want mention of blocked", err)
+	}
+}
+
+// TestNetworkGet_OverlayRendersVNI confirms that renderGet emits a vni line
+// for an overlay network and does not emit a blank bridge_name line when
+// bridge_name is empty.
+func TestNetworkGet_OverlayRendersVNI(t *testing.T) {
+	t.Parallel()
+	id := uuid.NewString()
+	vni := 10050
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/networks/"+id {
+			t.Errorf("path = %s, want /v1/networks/%s", r.URL.Path, id)
+		}
+		body := map[string]any{
+			"id":          id,
+			"name":        "net-overlay",
+			"type":        "overlay",
+			"bridge_name": "",
+			"managed":     false,
+			"egress":      "none",
+			"vlan_tag":    nil,
+			"mtu":         1500,
+			"subnet":      "10.50.0.0/24",
+			"gateway":     nil,
+			"vni":         vni,
+			"config":      map[string]any{},
+			"created_at":  "2026-06-01T10:00:00Z",
+			"updated_at":  "2026-06-01T10:00:00Z",
+		}
+		raw, _ := json.Marshal(body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runNetworkCmd(t, srv.URL, []string{"get", id})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stdout, "vni: 10050") {
+		t.Errorf("stdout missing vni line:\n%s", stdout)
+	}
+	// bridge_name must not appear at all when it is empty - no blank line.
+	if strings.Contains(stdout, "bridge_name:") {
+		t.Errorf("stdout must not contain bridge_name line for overlay network:\n%s", stdout)
 	}
 }

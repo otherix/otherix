@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -44,6 +45,10 @@ default) forbids --subnet/--gateway. The server re-validates the
 (type, managed, egress) triple and surfaces a 400 validation_failed
 when the combination is invalid.
 
+--type overlay requires --subnet and forbids --bridge-name/--mtu/--vlan/
+--egress/--managed/--gateway (the server derives the bridge name from
+the allocated VNI).
+
 Example:
   otherix network create net-mvp --bridge-name br0
 
@@ -52,12 +57,15 @@ Example:
     --bridge-name br-nat \
     --managed \
     --egress nat \
-    --subnet 10.10.0.0/24`,
+    --subnet 10.10.0.0/24
+
+  # Overlay (VXLAN) network:
+  otherix network create my-overlay --type overlay --subnet 10.50.0.0/24`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCreate,
 	}
-	cmd.Flags().String(flagCreateType, defaultNetworkType, "network type (bridge)")
-	cmd.Flags().String(flagCreateBridgeName, "", "host bridge interface name - required")
+	cmd.Flags().String(flagCreateType, defaultNetworkType, "network type (bridge|overlay)")
+	cmd.Flags().String(flagCreateBridgeName, "", "host bridge interface name (required for --type bridge)")
 	cmd.Flags().Bool(flagCreateManaged, false, "control plane manages the bridge lifecycle")
 	cmd.Flags().String(flagCreateEgress, defaultNetworkEgress, "managed egress mode: none|nat")
 	cmd.Flags().String(flagCreateSubnet, "", "egress subnet in CIDR form (required for --egress nat)")
@@ -67,7 +75,6 @@ Example:
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the network UUID in the text output")
 
-	_ = cmd.MarkFlagRequired(flagCreateBridgeName)
 	return cmd
 }
 
@@ -104,10 +111,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 }
 
 // createParamsFromFlags reads the create flags and assembles the
-// CreateNetworkParams. Optional integer flags are translated to
-// pointers only when the operator changed them, so an omitted flag
-// lands as nil and the server applies its default. Split from runCreate
-// to keep cyclomatic complexity in check.
+// CreateNetworkParams. It branches on --type to enforce type-specific
+// requirements: overlay requires --subnet and forbids bridge-only flags
+// (bridge-name, mtu, vlan, egress, managed, gateway); bridge requires
+// --bridge-name. Optional integer flags are translated to pointers only
+// when the operator changed them, so an omitted flag lands as nil and
+// the server applies its default. Split from runCreate to keep
+// cyclomatic complexity in check.
 func createParamsFromFlags(cmd *cobra.Command, name string) (cpclient.CreateNetworkParams, error) {
 	netType, err := cmd.Flags().GetString(flagCreateType)
 	if err != nil {
@@ -116,10 +126,75 @@ func createParamsFromFlags(cmd *cobra.Command, name string) (cpclient.CreateNetw
 	if netType == "" {
 		netType = defaultNetworkType
 	}
+
+	switch netType {
+	case "overlay":
+		return createOverlayParams(cmd, name)
+	default:
+		return createBridgeParams(cmd, name, netType)
+	}
+}
+
+// createOverlayParams assembles CreateNetworkParams for --type overlay.
+// Overlay networks require --subnet and reject bridge-only flags
+// (bridge-name, mtu, vlan, egress, managed, gateway) because those are
+// server-derived for overlay.
+func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetworkParams, error) {
+	subnet, err := cmd.Flags().GetString(flagCreateSubnet)
+	if err != nil {
+		return cpclient.CreateNetworkParams{}, err
+	}
+	if subnet == "" {
+		return cpclient.CreateNetworkParams{}, fmt.Errorf("--type overlay requires --subnet")
+	}
+
+	// Reject flags that are bridge-only / server-derived for overlay.
+	var forbidden []string
+	if cmd.Flags().Changed(flagCreateBridgeName) {
+		forbidden = append(forbidden, "--bridge-name")
+	}
+	if cmd.Flags().Changed(flagCreateMTU) {
+		forbidden = append(forbidden, "--mtu")
+	}
+	if cmd.Flags().Changed(flagCreateVLAN) {
+		forbidden = append(forbidden, "--vlan")
+	}
+	egress, _ := cmd.Flags().GetString(flagCreateEgress)
+	if egress != "" && egress != defaultNetworkEgress {
+		forbidden = append(forbidden, "--egress")
+	}
+	if cmd.Flags().Changed(flagCreateManaged) {
+		forbidden = append(forbidden, "--managed")
+	}
+	if cmd.Flags().Changed(flagCreateGateway) {
+		forbidden = append(forbidden, "--gateway")
+	}
+	if len(forbidden) > 0 {
+		return cpclient.CreateNetworkParams{}, fmt.Errorf(
+			"--type overlay forbids %s (server-derived)",
+			strings.Join(forbidden, "/"),
+		)
+	}
+
+	return cpclient.CreateNetworkParams{
+		Name:   name,
+		Type:   "overlay",
+		Subnet: subnet,
+	}, nil
+}
+
+// createBridgeParams assembles CreateNetworkParams for --type bridge
+// (and any future non-overlay types that share the bridge flag set).
+// --bridge-name is required for bridge.
+func createBridgeParams(cmd *cobra.Command, name, netType string) (cpclient.CreateNetworkParams, error) {
 	bridgeName, err := cmd.Flags().GetString(flagCreateBridgeName)
 	if err != nil {
 		return cpclient.CreateNetworkParams{}, err
 	}
+	if bridgeName == "" {
+		return cpclient.CreateNetworkParams{}, fmt.Errorf("--bridge-name is required for --type %s", netType)
+	}
+
 	managed, _ := cmd.Flags().GetBool(flagCreateManaged)
 	egress, _ := cmd.Flags().GetString(flagCreateEgress)
 	subnet, _ := cmd.Flags().GetString(flagCreateSubnet)
@@ -168,7 +243,12 @@ func renderCreateOutput(cmd *cobra.Command, n cpclient.Network, format string, s
 		printf(cmd, "id: %s\n", n.ID)
 	}
 	printf(cmd, "type: %s\n", n.Type)
-	printf(cmd, "bridge_name: %s\n", n.BridgeName)
+	if n.BridgeName != "" {
+		printf(cmd, "bridge_name: %s\n", n.BridgeName)
+	}
+	if n.VNI != nil {
+		printf(cmd, "vni: %d\n", *n.VNI)
+	}
 	printf(cmd, "managed: %t\n", n.Managed)
 	printf(cmd, "egress: %s\n", n.Egress)
 	printf(cmd, "subnet: %s\n", orDash(n.Subnet))
