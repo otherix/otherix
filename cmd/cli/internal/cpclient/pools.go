@@ -33,7 +33,7 @@ type Pool struct {
 	ReportedAt              *string            `json:"reported_at"`
 	IsClusterDefault        bool               `json:"is_cluster_default"`
 	Config                  json.RawMessage    `json:"config"`
-	DiskPressure            *PressureCondition `json:"disk_pressure,omitempty"`
+	DiskPressure            *PressureCondition `json:"disk_pressure"`
 	ReconciliationStatus    string             `json:"reconciliation_status"`
 	LastReconciledAt        *string            `json:"last_reconciled_at"`
 	ReconciliationError     *string            `json:"reconciliation_error"`

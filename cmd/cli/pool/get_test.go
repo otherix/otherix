@@ -46,3 +46,23 @@ func TestRenderConceptDiskPressure(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderConceptJSONIncludesDiskPressure guards against the cpclient
+// omitempty that previously dropped a nil disk_pressure from --output json,
+// hiding a scheduler eligibility gate. A clear pool must render the field as
+// null, consistent with reconciliation_error and the server response.
+func TestRenderConceptJSONIncludesDiskPressure(t *testing.T) {
+	v := cpclient.PoolConceptView{
+		Name: "pool-mvp", Type: "local_dir",
+		Instances: []cpclient.Pool{{ID: uuid.New(), Node: "node-1", DiskPressure: nil}},
+	}
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := renderConcept(cmd, v, "json"); err != nil {
+		t.Fatalf("renderConcept(json) error = %v", err)
+	}
+	if !strings.Contains(buf.String(), `"disk_pressure": null`) {
+		t.Errorf("--output json missing \"disk_pressure\": null\n%s", buf.String())
+	}
+}
