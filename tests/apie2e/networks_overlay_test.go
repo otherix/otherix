@@ -115,6 +115,45 @@ func TestOverlayNetworkCreateRequiresSubnet(t *testing.T) {
 // one overlay network, drives a synthetic agent heartbeat over the mTLS agent
 // router (same pattern as wireguard_test.go), and asserts that no entry with
 // type="overlay" appears in declared_networks.
+func TestOverlayNetworkPatchOnlyName(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	// Create an overlay network.
+	createBody := map[string]any{
+		"name":   "ov-patch-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"subnet": "10.53.0.0/24",
+	}
+	createResp := h.post(t, "/v1/networks", createBody, admin)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create overlay status = %d, want 201", createResp.StatusCode)
+	}
+	var created overlayNetworkView
+	decodeJSON(t, createResp, &created)
+
+	// PATCH with only name -> expect 200.
+	patchResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"name": "ov-renamed"}, admin)
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch name status = %d, want 200", patchResp.StatusCode)
+	}
+	patchResp.Body.Close()
+
+	// PATCH with subnet -> expect 400 validation_failed.
+	subnetResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"subnet": "10.60.0.0/24"}, admin)
+	if subnetResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch subnet on overlay status = %d, want 400", subnetResp.StatusCode)
+	}
+	assertErrorCode(t, subnetResp, "validation_failed")
+
+	// PATCH with mtu -> expect 400 validation_failed (mtu is fixed at 1390 for overlay).
+	mtuResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"mtu": 1500}, admin)
+	if mtuResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch mtu on overlay status = %d, want 400", mtuResp.StatusCode)
+	}
+	assertErrorCode(t, mtuResp, "validation_failed")
+}
+
 func TestOverlayNetworkNotDeclaredToAgents(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)

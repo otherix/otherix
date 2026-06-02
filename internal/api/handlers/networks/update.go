@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -22,10 +23,12 @@ import (
 )
 
 // Update implements PATCH /v1/networks/{id}. Required permission:
-// network:manage (admin only). The handler does a two-step decode:
-// it first inspects the raw JSON keys to reject the API-immutable
-// `type` field with a 400 forbidden_fields response, then merges
-// the typed updateRequest into the existing row.
+// network:manage (admin only). The handler runs three passes: it first
+// rejects the API-immutable `type` and `managed` keys before loading
+// the row (pre-load), then loads the row and - for overlay networks -
+// rejects every key other than `name` (post-load, because the row's
+// type is needed to apply this rule), and finally merges the typed
+// updateRequest into the existing row.
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -65,6 +68,15 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "load network", nil)
 		return
+	}
+
+	if row.Type == store.NetworkTypeOverlay {
+		if forbidden := rejectNonNameKeys(body); forbidden != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "field is not patchable on an overlay network",
+				map[string]any{"forbidden_fields": forbidden})
+			return
+		}
 	}
 
 	if !applyUpdate(w, r, &row, &req) {
@@ -119,6 +131,27 @@ func rejectImmutableKeys(body []byte) []string {
 			forbidden = append(forbidden, k)
 		}
 	}
+	return forbidden
+}
+
+// rejectNonNameKeys returns every top-level JSON key other than "name". On
+// overlay networks VNI, subnet, bridge name, and MTU are server-owned and
+// immutable; only the human-readable name may be patched.
+func rejectNonNameKeys(body []byte) []string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(body, &keys); err != nil {
+		return nil // malformed body -> let the strict decode issue the 400
+	}
+	var forbidden []string
+	for k := range keys {
+		if k != "name" {
+			forbidden = append(forbidden, k)
+		}
+	}
+	sort.Strings(forbidden)
 	return forbidden
 }
 
