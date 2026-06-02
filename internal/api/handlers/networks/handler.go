@@ -67,6 +67,7 @@ type networkView struct {
 	MTU        int32           `json:"mtu"`
 	Subnet     *string         `json:"subnet"`
 	Gateway    *string         `json:"gateway"`
+	VNI        *int32          `json:"vni"`
 	Config     json.RawMessage `json:"config"`
 	CreatedAt  string          `json:"created_at"`
 	UpdatedAt  string          `json:"updated_at"`
@@ -108,6 +109,7 @@ func toView(n store.Network) networkView {
 		MTU:        n.Mtu,
 		Subnet:     prefixString(n.Subnet),
 		Gateway:    addrString(n.Gateway),
+		VNI:        n.VNI,
 		Config:     rawJSONOrEmpty(n.Config),
 		CreatedAt:  n.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:  n.UpdatedAt.UTC().Format(time.RFC3339Nano),
