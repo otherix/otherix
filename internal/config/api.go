@@ -34,7 +34,15 @@ type APIConfig struct {
 // first-writer-wins; thereafter every replica reads the etcd value and ignores
 // this field. Default 10.42.0.0/16.
 type NetworkConfig struct {
-	OverlaySupernet string `koanf:"overlay_supernet"`
+	OverlaySupernet string         `koanf:"overlay_supernet"`
+	VniRange        VNIRangeConfig `koanf:"vni_range"`
+}
+
+// VNIRangeConfig bounds the overlay VXLAN VNI allocation range. Seeded into
+// cluster_settings first-writer-wins at bootstrap; immutable thereafter.
+type VNIRangeConfig struct {
+	Min int `koanf:"min"`
+	Max int `koanf:"max"`
 }
 
 // EtcdConfig configures the embedded etcd member that backs the
@@ -607,7 +615,10 @@ func defaultAPIConfig() APIConfig {
 		StoragePools: StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
 		},
-		Network: NetworkConfig{OverlaySupernet: "10.42.0.0/16"},
+		Network: NetworkConfig{
+			OverlaySupernet: "10.42.0.0/16",
+			VniRange:        VNIRangeConfig{Min: 1000, Max: 65535},
+		},
 		Etcd: EtcdConfig{
 			Mode:         "single",
 			Name:         "otherix-0",

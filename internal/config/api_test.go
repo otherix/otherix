@@ -367,6 +367,13 @@ func TestBackupConfigValidate(t *testing.T) {
 	}
 }
 
+func TestAPIConfigDefaultsVNIRange(t *testing.T) {
+	cfg := defaultAPIConfig()
+	if cfg.Network.VniRange.Min != 1000 || cfg.Network.VniRange.Max != 65535 {
+		t.Errorf("default VniRange = (%d,%d), want (1000,65535)", cfg.Network.VniRange.Min, cfg.Network.VniRange.Max)
+	}
+}
+
 func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
 	got := defaultAPIConfig().Etcd
 	want := EtcdConfig{
