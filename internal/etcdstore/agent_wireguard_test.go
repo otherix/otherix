@@ -41,8 +41,8 @@ func TestAgentWireguardAllocation(t *testing.T) {
 	if a.OverlayIP.String() != "10.42.0.1" {
 		t.Errorf("A OverlayIP = %s, want 10.42.0.1", a.OverlayIP)
 	}
-	if b.OverlayIP.String() != "10.42.1.1" {
-		t.Errorf("B OverlayIP = %s, want 10.42.1.1", b.OverlayIP)
+	if b.OverlayIP.String() != "10.42.0.2" {
+		t.Errorf("B OverlayIP = %s, want 10.42.0.2", b.OverlayIP)
 	}
 }
 
@@ -101,13 +101,17 @@ func TestAgentWireguardPubkeyCollisionRejected(t *testing.T) {
 func TestAgentWireguardSupernetExhausted(t *testing.T) {
 	ctx := context.Background()
 	s, _ := startStore(t)
-	if err := s.SeedOverlaySupernet(ctx, "10.99.0.0/24"); err != nil {
+	if err := s.SeedOverlaySupernet(ctx, "10.99.0.0/30"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// /30 has 2 usable hosts (.1, .2); the third allocation must exhaust.
 	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{NodeID: uuid.New(), PublicKey: "p0", Endpoint: "a:51820"}); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{NodeID: uuid.New(), PublicKey: "p1", Endpoint: "b:51820"})
+	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{NodeID: uuid.New(), PublicKey: "p1", Endpoint: "b:51820"}); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{NodeID: uuid.New(), PublicKey: "p2", Endpoint: "c:51820"})
 	if !errors.Is(err, store.ErrOverlaySupernetExhausted) {
 		t.Errorf("overflow err = %v, want ErrOverlaySupernetExhausted", err)
 	}

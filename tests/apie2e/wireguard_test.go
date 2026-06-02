@@ -94,7 +94,7 @@ type wgAgent struct {
 // TestWireguardPeerDistribution drives the CP-side WireGuard peer-distribution
 // contract end to end: two agents report observed WG state up the heartbeat
 // channel, and the CP redistributes every OTHER agent's CP-assigned fabric
-// identity (overlay_ip + allowed_ips /24) down the declared_wireguard_peers
+// identity (overlay_ip + allowed_ips /32) down the declared_wireguard_peers
 // channel, excluding self.
 func TestWireguardPeerDistribution(t *testing.T) {
 	h := newE2E(t)
@@ -134,10 +134,10 @@ func TestWireguardPeerDistribution(t *testing.T) {
 		PublicKey:  "pkA",
 		Endpoint:   "a.example:51820",
 		OverlayIP:  "10.42.0.1",
-		AllowedIPs: []string{"10.42.0.0/24"},
+		AllowedIPs: []string{"10.42.0.1/32"},
 	})
 
-	// A reports again; now it must see exactly B (overlay index 1 -> 10.42.1.1).
+	// A reports again; now it must see exactly B (overlay index 1 -> 10.42.0.2).
 	respA2 := wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{
 		PublicKey:  "pkA",
 		Endpoint:   "a.example:51820",
@@ -151,8 +151,8 @@ func TestWireguardPeerDistribution(t *testing.T) {
 		NodeID:     b.nodeID.String(),
 		PublicKey:  "pkB",
 		Endpoint:   "b.example:51820",
-		OverlayIP:  "10.42.1.1",
-		AllowedIPs: []string{"10.42.1.0/24"},
+		OverlayIP:  "10.42.0.2",
+		AllowedIPs: []string{"10.42.0.2/32"},
 	})
 }
 

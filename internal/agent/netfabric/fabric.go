@@ -129,7 +129,7 @@ type WGConfig struct {
 	Name       string       // "otwg0" - the single WireGuard interface, all peers
 	PrivateKey wgtypes.Key  // agent's Curve25519 private key
 	ListenPort int          // UDP listen port (51820)
-	Address    netip.Prefix // agent overlay IP on the link (e.g. 10.42.<idx>.1/24)
+	Address    netip.Prefix // agent overlay IP on the link (e.g. 10.42.0.<n>/16)
 	MTU        int          // link MTU (final value settled in N2c on the VTEP rebind)
 }
 

@@ -69,7 +69,7 @@ func (s *Store) writeClusterSettings(ctx context.Context, name *string) error {
 const defaultOverlaySupernet = "10.42.0.0/16"
 
 // SeedOverlaySupernet writes the cluster overlay supernet on the singleton
-// first-writer-wins: it validates the CIDR (IPv4, /24 or larger) and only sets
+// first-writer-wins: it validates the CIDR (IPv4, prefix in [8,30]) and only sets
 // it when none exists, so a re-boot or a second replica observing an existing
 // value no-ops. Empty cidr falls back to the default. The value is immutable
 // after this seed - there is no public mutator; a renumber is a documented
@@ -86,8 +86,8 @@ func (s *Store) SeedOverlaySupernet(ctx context.Context, cidr string) error {
 	if !p.Addr().Is4() {
 		return fmt.Errorf("overlay supernet %q must be ipv4", cidr)
 	}
-	if p.Bits() > 24 {
-		return fmt.Errorf("overlay supernet %q is smaller than /24", cidr)
+	if p.Bits() < 8 || p.Bits() > 30 {
+		return fmt.Errorf("overlay supernet %q prefix must be in [8,30]", cidr)
 	}
 	cur, err := s.ClusterSettings(ctx)
 	if err != nil {

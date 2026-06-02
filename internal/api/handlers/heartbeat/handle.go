@@ -504,7 +504,7 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 		if errors.Is(err, store.ErrOverlaySupernetExhausted) {
 			return &projectionError{
 				status: http.StatusConflict, code: response.CodeConflict,
-				message: "overlay supernet has no free /24 for a new agent",
+				message: "overlay supernet has no free host address for a new agent",
 				details: map[string]any{"reason": "overlay_supernet_exhausted"},
 			}
 		}
@@ -514,7 +514,7 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 }
 
 // loadDeclaredWireGuardPeers returns every OTHER agent's WG fabric identity for
-// this node's mesh, sorted by node_id. allowed_ips is the peer's overlay /24.
+// this node's mesh, sorted by node_id. allowed_ips is the peer's overlay /32.
 func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredWireGuardPeer, error) {
 	recs, err := hp.ListAgentWireguard(ctx)
 	if err != nil {
@@ -525,7 +525,7 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 		if r.NodeID == selfNodeID {
 			continue
 		}
-		peerNet := netip.PrefixFrom(r.OverlayIP, 24).Masked()
+		peerNet := netip.PrefixFrom(r.OverlayIP, 32) // single VTEP host route
 		out = append(out, declaredWireGuardPeer{
 			NodeID:     r.NodeID.String(),
 			PublicKey:  r.PublicKey,

@@ -24,7 +24,8 @@ import (
 // /otherix/agent_wireguard/<node_id>, with a pubkey uniqueness guard at
 // /otherix/uniq/agent_wireguard/pubkey/<sha256(pubkey)> -> node_id and a
 // monotonic overlay-index counter at /otherix/seq/wireguard_index. The CP
-// assigns the index (hence the /24 + VTEP .1) on first report and freezes it.
+// assigns a flat /32 overlay address per node (supernet base + index + 1) on
+// first report and freezes it.
 
 func agentWireguardKey(nodeID uuid.UUID) string {
 	return etcd.Key("agent_wireguard", nodeID.String())
@@ -42,25 +43,27 @@ func agentWireguardPubkeyGuard(pubkey string) string {
 
 func wireguardIndexSeqKey() string { return etcd.Key("seq", "wireguard_index") }
 
-// overlayIPForIndex computes the VTEP source IP for an agent index within an
-// IPv4 supernet: subnet base = supernet + (index << 8), VTEP source = base + 1.
-// It rejects an index past the supernet's /24 capacity.
+// overlayIPForIndex computes an agent's flat /32 overlay address within the
+// IPv4 supernet: address = supernet base + index + 1 (index 0 -> first host).
+// It rejects an index past the supernet's host capacity (network + broadcast
+// addresses excluded).
 func overlayIPForIndex(supernet netip.Prefix, idx int32) (netip.Addr, error) {
 	if !supernet.Addr().Is4() {
 		return netip.Addr{}, fmt.Errorf("overlay supernet %s is not ipv4", supernet)
 	}
 	bits := supernet.Bits()
-	if bits > 24 {
-		return netip.Addr{}, fmt.Errorf("overlay supernet %s is smaller than /24", supernet)
+	if bits < 8 || bits > 30 {
+		return netip.Addr{}, fmt.Errorf("overlay supernet %s prefix out of range [8,30]", supernet)
 	}
-	capacity := int64(1) << (24 - bits)
+	capacity := int64(1)<<(32-bits) - 2 // exclude network + broadcast
 	if int64(idx) >= capacity {
 		return netip.Addr{}, store.ErrOverlaySupernetExhausted
 	}
-	base := supernet.Masked().Addr().As4()
-	// idx is bounded to [0, capacity) above and capacity <= 1<<24, so the
-	// uint32 conversion and the <<8 shift cannot overflow.
-	v := binary.BigEndian.Uint32(base[:]) + uint32(idx)<<8 + 1 //nolint:gosec // idx bounded by the capacity check above
+	base4 := supernet.Masked().Addr().As4()
+	base := binary.BigEndian.Uint32(base4[:])
+	// idx is bounded by capacity (< 2^24 for bits >= 8), so base + idx + 1
+	// cannot overflow uint32.
+	v := base + uint32(idx) + 1 //nolint:gosec // idx bounded by the capacity check above
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], v)
 	return netip.AddrFrom4(b), nil
@@ -71,7 +74,7 @@ func overlayIPForIndex(supernet netip.Prefix, idx int32) (netip.Addr, error) {
 // a re-report keeps the index/IP and refreshes endpoint/port/peers; a changed
 // pubkey swaps the guard. Returns store.ErrAgentWireguardPubkeyInUse when the
 // reported pubkey is held by a different node, store.ErrOverlaySupernetExhausted
-// when the supernet has no free /24.
+// when the supernet has no free host address.
 //
 // Precondition: calls for a given node_id are serialized (the heartbeat
 // projection applies one agent's report at a time, like the rest of the
@@ -116,7 +119,7 @@ func (s *Store) createAgentWireguard(ctx context.Context, arg store.UpsertAgentW
 	}
 	// seq is a monotonic etcd counter starting at 1. The narrowing here precedes
 	// the capacity check, so its safety rests on the enrollment count never
-	// approaching 2^31 - the supernet's /24 capacity (at most 2^16 for a
+	// approaching 2^31 - the supernet's host capacity (at most ~2^24 for a
 	// realistic /8..16, enforced next by overlayIPForIndex) exhausts far sooner.
 	idx := int32(seq - 1) //nolint:gosec // seq is far below 2^31; supernet capacity exhausts first
 	overlayIP, err := overlayIPForIndex(supernet, idx)
