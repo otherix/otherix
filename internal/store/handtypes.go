@@ -41,6 +41,8 @@ type HeartbeatProjection interface {
 	ListNetworks(ctx context.Context) ([]Network, error)
 	UpsertAgentWireguard(ctx context.Context, arg UpsertAgentWireguardParams) error
 	ListAgentWireguard(ctx context.Context) ([]AgentWireguard, error)
+	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (AgentWireguard, error)
+	OverlaySupernet(ctx context.Context) (netip.Prefix, error)
 	ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]ListVMsForNodeDeclaredRow, error)
 }
 

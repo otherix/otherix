@@ -130,6 +130,7 @@ type responseBody struct {
 	DeclaredVMs            []declaredVM            `json:"declared_vms"`
 	DeclaredNetworks       []declaredNetwork       `json:"declared_networks"`
 	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
+	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the

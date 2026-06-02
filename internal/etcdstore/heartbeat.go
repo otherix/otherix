@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -257,6 +258,18 @@ func (h heartbeatProjection) UpsertAgentWireguard(ctx context.Context, arg store
 // ListAgentWireguard returns every agent WG fabric record for the down-channel.
 func (h heartbeatProjection) ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error) {
 	return h.s.ListAgentWireguard(ctx)
+}
+
+// AgentWireguardByNodeID returns the node's WG fabric record (or ErrNotFound)
+// for the self-overlay-ip down-channel field.
+func (h heartbeatProjection) AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (store.AgentWireguard, error) {
+	return h.s.AgentWireguardByNodeID(ctx, nodeID)
+}
+
+// OverlaySupernet returns the cluster overlay supernet so the handler can
+// render self_overlay_ip with the supernet prefix length.
+func (h heartbeatProjection) OverlaySupernet(ctx context.Context) (netip.Prefix, error) {
+	return h.s.OverlaySupernet(ctx)
 }
 
 // ListNetworks returns every non-deleted network. Networks are cluster-wide (not

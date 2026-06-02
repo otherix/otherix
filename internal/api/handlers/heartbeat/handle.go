@@ -111,6 +111,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		DeclaredVMs:            outcome.declaredVMs,
 		DeclaredNetworks:       outcome.declaredNetworks,
 		DeclaredWireGuardPeers: outcome.declaredWireGuardPeers,
+		SelfOverlayIP:          outcome.selfOverlayIP,
 	})
 }
 
@@ -186,6 +187,7 @@ type heartbeatOutcome struct {
 	declaredVMs            []declaredVM
 	declaredNetworks       []declaredNetwork
 	declaredWireGuardPeers []declaredWireGuardPeer
+	selfOverlayIP          *string
 }
 
 // project runs the full state projection in a single transaction.
@@ -282,6 +284,20 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 		return err
 	}
 	outcome.declaredWireGuardPeers = declaredWG
+	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
+	switch {
+	case err == nil:
+		supernet, serr := hp.OverlaySupernet(ctx)
+		if serr != nil {
+			return fmt.Errorf("load overlay supernet: %v", serr)
+		}
+		cidr := netip.PrefixFrom(self.OverlayIP, supernet.Bits()).String()
+		outcome.selfOverlayIP = &cidr
+	case errors.Is(err, store.ErrNotFound):
+		// No WG report yet for this agent -> leave self_overlay_ip nil.
+	default:
+		return fmt.Errorf("load self agent_wireguard: %v", err)
+	}
 	return nil
 }
 

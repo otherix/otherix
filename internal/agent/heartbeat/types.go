@@ -82,6 +82,7 @@ type Response struct {
 	DeclaredVMs            []DeclaredVM            `json:"declared_vms"`
 	DeclaredNetworks       []DeclaredNetwork       `json:"declared_networks"`
 	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
+	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants
