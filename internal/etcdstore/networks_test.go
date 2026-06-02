@@ -709,6 +709,55 @@ func TestCreateNetworkOverlayNameCollision(t *testing.T) {
 	}
 }
 
+// TestDeleteNetworkLeavesReusedNameGuardIntact verifies that deleting network X
+// does not clobber a name guard that was re-taken by a new network Y after X was
+// deleted. The front-door path (DeleteNetwork rejects a soft-deleted row) already
+// proves the guard condition is effective for the common serialised path; this
+// test asserts the invariant-visible property: Y's name resolves to Y even after
+// a stale delete attempt targeting X's id.
+func TestDeleteNetworkLeavesReusedNameGuardIntact(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	// Create X named "foo", capture its id.
+	x, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "foo", Type: store.NetworkTypeBridge, BridgeName: "br0", Mtu: 1500, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create X: %v", err)
+	}
+
+	// Normal delete of X: guard "foo" still points to X -> Then branch -> full cleanup.
+	if err := s.DeleteNetwork(ctx, x.ID); err != nil {
+		t.Fatalf("delete X: %v", err)
+	}
+	if _, err := s.NetworkByName(ctx, "foo"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("after delete X, NetworkByName(foo) err = %v, want ErrNotFound", err)
+	}
+
+	// Re-create Y reusing the freed name "foo".
+	y, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "foo", Type: store.NetworkTypeBridge, BridgeName: "br1", Mtu: 1500, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create Y: %v", err)
+	}
+
+	// A stale delete targeting X.ID returns ErrNotFound at the front door (X is
+	// already soft-deleted) - which itself proves the front-door guard. The
+	// Else-branch protection is the belt for the genuinely-concurrent path.
+	_ = s.DeleteNetwork(ctx, x.ID) // ErrNotFound expected; ignore
+
+	// Y's name must still resolve to Y - the guard must not have been clobbered.
+	got, err := s.NetworkByName(ctx, "foo")
+	if err != nil {
+		t.Fatalf("NetworkByName(foo) after stale delete attempt: %v", err)
+	}
+	if got.ID != y.ID {
+		t.Errorf("name foo resolves to %s, want Y %s (guard clobbered)", got.ID, y.ID)
+	}
+}
+
 // TestCreateNetworkOverlayStampsOverConflictingInput verifies that the store
 // overwrites client-supplied server-owned fields for overlay networks. The
 // handler rejects them at the API edge; the store is the last line of defense.

@@ -299,14 +299,22 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	ops := []clientv3.Op{
-		clientv3.OpPut(networkKey(id), string(val)),
-		clientv3.OpDelete(networkNameGuard(existing.Name)),
-	}
+	guard := networkNameGuard(existing.Name)
+	baseOps := []clientv3.Op{clientv3.OpPut(networkKey(id), string(val))}
 	if existing.Type == store.NetworkTypeOverlay && existing.VNI != nil {
-		ops = append(ops, clientv3.OpDelete(networkVNIGuard(*existing.VNI)))
+		baseOps = append(baseOps, clientv3.OpDelete(networkVNIGuard(*existing.VNI)))
 	}
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+	// Delete the name guard ONLY if it still points at this network. A concurrent
+	// delete of the same network may have already freed the name and a new
+	// network re-taken it; deleting that guard would orphan the new network's
+	// name. Gate on the guard value; the row soft-delete + VNI-guard drop run in
+	// both branches (id/VNI-keyed, no cross-network race).
+	thenOps := append(append([]clientv3.Op{}, baseOps...), clientv3.OpDelete(guard))
+	if _, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.Value(guard), "=", id.String())).
+		Then(thenOps...).
+		Else(baseOps...).
+		Commit(); err != nil {
 		return fmt.Errorf("delete network txn: %v", err)
 	}
 	// Best-effort purge of the per-(node, network) status records: they are
