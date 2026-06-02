@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sort"
 	"time"
 
@@ -105,10 +106,11 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 	h.logPressureTransition(r.Context(), agent.NodeID, &body, outcome)
 
 	response.WriteJSON(w, r, http.StatusOK, responseBody{
-		ReceivedAt:       time.Now().UTC().Format(time.RFC3339Nano),
-		DeclaredPools:    outcome.declaredPools,
-		DeclaredVMs:      outcome.declaredVMs,
-		DeclaredNetworks: outcome.declaredNetworks,
+		ReceivedAt:             time.Now().UTC().Format(time.RFC3339Nano),
+		DeclaredPools:          outcome.declaredPools,
+		DeclaredVMs:            outcome.declaredVMs,
+		DeclaredNetworks:       outcome.declaredNetworks,
+		DeclaredWireGuardPeers: outcome.declaredWireGuardPeers,
 	})
 }
 
@@ -178,11 +180,12 @@ func systemDiskPercent(body *requestBody) float64 {
 // system_disk). One field per pressure dimension; pool disk transitions
 // live entirely on the scan worker side.
 type heartbeatOutcome struct {
-	memory           pressureTransitionKind
-	systemDisk       pressureTransitionKind
-	declaredPools    []declaredPool
-	declaredVMs      []declaredVM
-	declaredNetworks []declaredNetwork
+	memory                 pressureTransitionKind
+	systemDisk             pressureTransitionKind
+	declaredPools          []declaredPool
+	declaredVMs            []declaredVM
+	declaredNetworks       []declaredNetwork
+	declaredWireGuardPeers []declaredWireGuardPeer
 }
 
 // project runs the full state projection in a single transaction.
@@ -247,24 +250,39 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
 			return err
 		}
-		declared, err := h.loadDeclaredPools(ctx, hp, agent.NodeID)
-		if err != nil {
+		if err := h.applyWireguardReport(ctx, hp, agent.NodeID, body.Wireguard); err != nil {
 			return err
 		}
-		outcome.declaredPools = declared
-		declaredVMs, err := h.loadDeclaredVMs(ctx, hp, agent.NodeID)
-		if err != nil {
-			return err
-		}
-		outcome.declaredVMs = declaredVMs
-		declaredNetworks, err := h.loadDeclaredNetworks(ctx, hp)
-		if err != nil {
-			return err
-		}
-		outcome.declaredNetworks = declaredNetworks
-		return nil
+		return h.loadDeclared(ctx, hp, agent.NodeID, &outcome)
 	})
 	return outcome, err
+}
+
+// loadDeclared fetches every down-channel desired-state inventory (pools, VMs,
+// networks, WG peers) into outcome after the apply phase. Split out of project
+// to keep that function's branching under the gocyclo ceiling.
+func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, outcome *heartbeatOutcome) error {
+	declaredPools, err := h.loadDeclaredPools(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredPools = declaredPools
+	declaredVMs, err := h.loadDeclaredVMs(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredVMs = declaredVMs
+	declaredNetworks, err := h.loadDeclaredNetworks(ctx, hp)
+	if err != nil {
+		return err
+	}
+	outcome.declaredNetworks = declaredNetworks
+	declaredWG, err := h.loadDeclaredWireGuardPeers(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredWireGuardPeers = declaredWG
+	return nil
 }
 
 // loadDeclaredVMs returns the per-node VM desired-state inventory the CP
@@ -449,6 +467,78 @@ func networkToDeclared(n store.Network) declaredNetwork {
 		dn.Gateway = &g
 	}
 	return dn
+}
+
+// applyWireguardReport ingests the agent's observed WG state onto its
+// agent_wireguard record (allocating its overlay identity on first report). A
+// nil report or an empty public_key is skipped. Unlike the tolerant
+// log-and-continue paths for unknown VMs / bad network ids, a WG fault is
+// fail-hard: a cross-node pubkey collision (two nodes claiming one key) and an
+// exhausted overlay supernet are genuine operator-facing conflicts, not stale
+// agent data, so they surface as 409 projection errors rather than being
+// swallowed. Any other store failure wraps to an internal error.
+func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, rep *wireguardReport) error {
+	if rep == nil {
+		return nil
+	}
+	if rep.PublicKey == "" {
+		h.log.WarnContext(ctx, "heartbeat wireguard report missing public_key; skipping",
+			slog.String("node_id", nodeID.String()))
+		return nil
+	}
+	err := hp.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
+		NodeID:           nodeID,
+		PublicKey:        rep.PublicKey,
+		Endpoint:         rep.Endpoint,
+		ListenPort:       rep.ListenPort,
+		EstablishedPeers: rep.EstablishedPeers,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrAgentWireguardPubkeyInUse) {
+			return &projectionError{
+				status: http.StatusConflict, code: response.CodeConflict,
+				message: "wireguard public key already in use by another node",
+				details: map[string]any{"reason": "wireguard_pubkey_in_use"},
+			}
+		}
+		if errors.Is(err, store.ErrOverlaySupernetExhausted) {
+			return &projectionError{
+				status: http.StatusConflict, code: response.CodeConflict,
+				message: "overlay supernet has no free /24 for a new agent",
+				details: map[string]any{"reason": "overlay_supernet_exhausted"},
+			}
+		}
+		return fmt.Errorf("upsert agent_wireguard: %v", err)
+	}
+	return nil
+}
+
+// loadDeclaredWireGuardPeers returns every OTHER agent's WG fabric identity for
+// this node's mesh, sorted by node_id. allowed_ips is the peer's overlay /24.
+func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredWireGuardPeer, error) {
+	recs, err := hp.ListAgentWireguard(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list agent_wireguard: %v", err)
+	}
+	out := make([]declaredWireGuardPeer, 0, len(recs))
+	for _, r := range recs {
+		if r.NodeID == selfNodeID {
+			continue
+		}
+		peerNet := netip.PrefixFrom(r.OverlayIP, 24).Masked()
+		out = append(out, declaredWireGuardPeer{
+			NodeID:     r.NodeID.String(),
+			PublicKey:  r.PublicKey,
+			Endpoint:   r.Endpoint,
+			OverlayIP:  r.OverlayIP.String(),
+			AllowedIPs: []string{peerNet.String()},
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // applyMemoryPressure computes the next memory-pressure state via the

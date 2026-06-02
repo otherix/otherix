@@ -19,6 +19,28 @@ type requestBody struct {
 	VMs          []vmReport             `json:"vms"`
 	Pools        []poolReport           `json:"pools,omitempty"`
 	Networks     []networkReport        `json:"networks"`
+	Wireguard    *wireguardReport       `json:"wireguard,omitempty"`
+}
+
+// wireguardReport mirrors the agent's observed WG state. public_key + endpoint
+// are authoritative for redistribution; listen_port + established_peers are
+// observability. A nil report (agent without WG state) is skipped at ingest.
+type wireguardReport struct {
+	PublicKey        string   `json:"public_key"`
+	Endpoint         string   `json:"endpoint"`
+	ListenPort       int32    `json:"listen_port"`
+	EstablishedPeers []string `json:"established_peers,omitempty"`
+}
+
+// declaredWireGuardPeer is one peer in the fabric down-channel: another agent's
+// CP-assigned identity (node_id, pubkey, endpoint, overlay_ip) plus the peer's
+// overlay /24 as allowed_ips.
+type declaredWireGuardPeer struct {
+	NodeID     string   `json:"node_id"`
+	PublicKey  string   `json:"public_key"`
+	Endpoint   string   `json:"endpoint"`
+	OverlayIP  string   `json:"overlay_ip"`
+	AllowedIPs []string `json:"allowed_ips"`
 }
 
 // poolReport mirrors HeartbeatPoolReport — agent's per-pool
@@ -103,10 +125,11 @@ type vmReport struct {
 // replaces its desired-state cache from declared_pools every heartbeat.
 // declared_vms follows the same pattern for VMs.
 type responseBody struct {
-	ReceivedAt       string            `json:"received_at"`
-	DeclaredPools    []declaredPool    `json:"declared_pools"`
-	DeclaredVMs      []declaredVM      `json:"declared_vms"`
-	DeclaredNetworks []declaredNetwork `json:"declared_networks"`
+	ReceivedAt             string                  `json:"received_at"`
+	DeclaredPools          []declaredPool          `json:"declared_pools"`
+	DeclaredVMs            []declaredVM            `json:"declared_vms"`
+	DeclaredNetworks       []declaredNetwork       `json:"declared_networks"`
+	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the

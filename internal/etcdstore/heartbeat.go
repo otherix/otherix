@@ -248,6 +248,17 @@ func (h heartbeatProjection) UpsertNetworkNodeStatus(ctx context.Context, arg st
 	return h.s.UpsertNetworkNodeStatus(ctx, arg)
 }
 
+// UpsertAgentWireguard ingests the agent's observed WG state, allocating its
+// overlay identity on first report.
+func (h heartbeatProjection) UpsertAgentWireguard(ctx context.Context, arg store.UpsertAgentWireguardParams) error {
+	return h.s.UpsertAgentWireguard(ctx, arg)
+}
+
+// ListAgentWireguard returns every agent WG fabric record for the down-channel.
+func (h heartbeatProjection) ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error) {
+	return h.s.ListAgentWireguard(ctx)
+}
+
 // ListNetworks returns every non-deleted network. Networks are cluster-wide (not
 // node-scoped), so the projection hands the agent the full set to materialise
 // on its node.

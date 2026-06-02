@@ -298,7 +298,7 @@ func fileExists(path string) bool {
 // hooks → CP cert load → agent client → worker runtime → HTTP server. Each
 // step's failure path returns after wrapping the error.
 func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, authSvc *auth.Service, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
-	if err := runBootstrapHooks(ctx, st, caMaterial, log); err != nil {
+	if err := runBootstrapHooks(ctx, st, caMaterial, cfg.Network.OverlaySupernet, log); err != nil {
 		return err
 	}
 
@@ -357,14 +357,19 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 // runBootstrapHooks runs the post-start / pre-serve bootstrap hooks in the
 // canonical order: BootstrapAdmin first (seeds the first admin user), then
 // BootstrapClusterCA (syncs the on-disk cluster CA into etcd so the /v1/ca
-// endpoint and the Step 2 CSR signer have an active row). Both hooks are
+// endpoint and the Step 2 CSR signer have an active row), then
+// SeedOverlaySupernet (writes the cluster overlay supernet first-writer-wins so
+// agent WG overlay allocation has a supernet to carve /24s from). All hooks are
 // idempotent - repeat boots observe existing rows and no-op.
-func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
+func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, overlaySupernet string, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap admin: %v", err)
 	}
 	if err := api.BootstrapClusterCA(ctx, st, caMaterial, log); err != nil {
 		return fmt.Errorf("bootstrap cluster CA: %v", err)
+	}
+	if err := st.SeedOverlaySupernet(ctx, overlaySupernet); err != nil {
+		return fmt.Errorf("seed overlay supernet: %v", err)
 	}
 	return nil
 }

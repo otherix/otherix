@@ -58,7 +58,9 @@ func overlayIPForIndex(supernet netip.Prefix, idx int32) (netip.Addr, error) {
 		return netip.Addr{}, store.ErrOverlaySupernetExhausted
 	}
 	base := supernet.Masked().Addr().As4()
-	v := binary.BigEndian.Uint32(base[:]) + uint32(idx)<<8 + 1
+	// idx is bounded to [0, capacity) above and capacity <= 1<<24, so the
+	// uint32 conversion and the <<8 shift cannot overflow.
+	v := binary.BigEndian.Uint32(base[:]) + uint32(idx)<<8 + 1 //nolint:gosec // idx bounded by the capacity check above
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], v)
 	return netip.AddrFrom4(b), nil
@@ -112,7 +114,11 @@ func (s *Store) createAgentWireguard(ctx context.Context, arg store.UpsertAgentW
 	if err != nil {
 		return err
 	}
-	idx := int32(seq - 1)
+	// seq is a monotonic etcd counter starting at 1. The narrowing here precedes
+	// the capacity check, so its safety rests on the enrollment count never
+	// approaching 2^31 - the supernet's /24 capacity (at most 2^16 for a
+	// realistic /8..16, enforced next by overlayIPForIndex) exhausts far sooner.
+	idx := int32(seq - 1) //nolint:gosec // seq is far below 2^31; supernet capacity exhausts first
 	overlayIP, err := overlayIPForIndex(supernet, idx)
 	if err != nil {
 		return err

@@ -23,6 +23,27 @@ type Report struct {
 	VMs          []VMReport       `json:"vms"`
 	Pools        []PoolReport     `json:"pools,omitempty"`
 	Networks     []NetworkReport  `json:"networks,omitempty"`
+	Wireguard    *WireguardReport `json:"wireguard,omitempty"`
+}
+
+// WireguardReport is the agent's observed WG interface state (the heartbeat
+// up-channel). PublicKey + Endpoint are authoritative for CP redistribution;
+// ListenPort + EstablishedPeers are observability.
+type WireguardReport struct {
+	PublicKey        string   `json:"public_key"`
+	Endpoint         string   `json:"endpoint"`
+	ListenPort       int32    `json:"listen_port"`
+	EstablishedPeers []string `json:"established_peers,omitempty"`
+}
+
+// DeclaredWireGuardPeer is one other agent the CP wants in this agent's WG mesh
+// (the heartbeat down-channel). AllowedIPs carries the peer's overlay /24.
+type DeclaredWireGuardPeer struct {
+	NodeID     string   `json:"node_id"`
+	PublicKey  string   `json:"public_key"`
+	Endpoint   string   `json:"endpoint"`
+	OverlayIP  string   `json:"overlay_ip"`
+	AllowedIPs []string `json:"allowed_ips"`
 }
 
 // PoolReport mirrors HeartbeatPoolReport — one entry per pool the
@@ -56,10 +77,11 @@ type NetworkReport struct {
 // desired_phase + generation) so the agent's VM reconciler can diff
 // observed vs declared and apply corrective lifecycle ops.
 type Response struct {
-	ReceivedAt       string            `json:"received_at"`
-	DeclaredPools    []DeclaredPool    `json:"declared_pools"`
-	DeclaredVMs      []DeclaredVM      `json:"declared_vms"`
-	DeclaredNetworks []DeclaredNetwork `json:"declared_networks"`
+	ReceivedAt             string                  `json:"received_at"`
+	DeclaredPools          []DeclaredPool          `json:"declared_pools"`
+	DeclaredVMs            []DeclaredVM            `json:"declared_vms"`
+	DeclaredNetworks       []DeclaredNetwork       `json:"declared_networks"`
+	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants
