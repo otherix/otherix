@@ -327,8 +327,8 @@ type ClusterSetting struct {
 	ID              int32
 	DefaultPoolName *string
 	OverlaySupernet *string // cluster overlay supernet CIDR; seeded once at boot, immutable
-	VniMin          *int32  // overlay VNI range floor; seeded once at boot, immutable
-	VniMax          *int32  // overlay VNI range ceiling; seeded once at boot, immutable
+	VNIMin          *int32  // overlay VNI range floor; seeded once at boot, immutable
+	VNIMax          *int32  // overlay VNI range ceiling; seeded once at boot, immutable
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -425,9 +425,9 @@ type Network struct {
 	// Egress=nat (defaults to the first usable host in Subnet). Nil
 	// otherwise.
 	Gateway *netip.Addr
-	// Vni is the CP-allocated VXLAN Network Identifier, unique and
+	// VNI is the CP-allocated VXLAN Network Identifier, unique and
 	// immutable, present only for type=overlay. Nil for bridge.
-	Vni       *int32
+	VNI       *int32
 	Config    []byte
 	CreatedAt time.Time
 	UpdatedAt time.Time

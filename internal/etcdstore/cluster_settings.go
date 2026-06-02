@@ -148,14 +148,14 @@ func (s *Store) SeedVNIRange(ctx context.Context, min, max int) error {
 	if err != nil {
 		return err
 	}
-	if cur.VniMin != nil && cur.VniMax != nil {
+	if cur.VNIMin != nil && cur.VNIMax != nil {
 		return nil
 	}
 	cur.ID = 1
 	mn := int32(min) //nolint:gosec // bounded by the validation above
 	mx := int32(max) //nolint:gosec // bounded by the validation above
-	cur.VniMin = &mn
-	cur.VniMax = &mx
+	cur.VNIMin = &mn
+	cur.VNIMax = &mx
 	if cur.CreatedAt.IsZero() {
 		cur.CreatedAt = time.Now().UTC()
 	}
@@ -172,11 +172,11 @@ func (s *Store) VNIRange(ctx context.Context) (int32, int32, error) {
 	}
 	min := int32(defaultVNIMin)
 	max := int32(defaultVNIMax)
-	if cs.VniMin != nil {
-		min = *cs.VniMin
+	if cs.VNIMin != nil {
+		min = *cs.VNIMin
 	}
-	if cs.VniMax != nil {
-		max = *cs.VniMax
+	if cs.VNIMax != nil {
+		max = *cs.VNIMax
 	}
 	return min, max, nil
 }

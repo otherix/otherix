@@ -29,13 +29,14 @@ type APIConfig struct {
 	Etcd         EtcdConfig         `koanf:"etcd"`
 }
 
-// NetworkConfig holds cluster overlay-network settings. OverlaySupernet is
-// SEED-ONLY: it is read once at first boot to seed cluster_settings
-// first-writer-wins; thereafter every replica reads the etcd value and ignores
-// this field. Default 10.42.0.0/16.
+// NetworkConfig holds cluster overlay-network settings. Both fields are
+// SEED-ONLY: read once at first boot to seed cluster_settings
+// first-writer-wins; thereafter every replica reads the etcd value and
+// ignores this field. Defaults: OverlaySupernet 10.42.0.0/16,
+// VNIRange 1000-65535.
 type NetworkConfig struct {
 	OverlaySupernet string         `koanf:"overlay_supernet"`
-	VniRange        VNIRangeConfig `koanf:"vni_range"`
+	VNIRange        VNIRangeConfig `koanf:"vni_range"`
 }
 
 // VNIRangeConfig bounds the overlay VXLAN VNI allocation range. Seeded into
@@ -617,7 +618,7 @@ func defaultAPIConfig() APIConfig {
 		},
 		Network: NetworkConfig{
 			OverlaySupernet: "10.42.0.0/16",
-			VniRange:        VNIRangeConfig{Min: 1000, Max: 65535},
+			VNIRange:        VNIRangeConfig{Min: 1000, Max: 65535},
 		},
 		Etcd: EtcdConfig{
 			Mode:         "single",

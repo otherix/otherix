@@ -145,7 +145,7 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		if err != nil {
 			return store.Network{}, err
 		}
-		n.Vni = &vni
+		n.VNI = &vni
 		n.BridgeName = fmt.Sprintf("otb%d", vni)
 		n.Managed = true
 		n.Egress = store.NetworkEgressNone
@@ -299,8 +299,8 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 		clientv3.OpPut(networkKey(id), string(val)),
 		clientv3.OpDelete(networkNameGuard(existing.Name)),
 	}
-	if existing.Type == store.NetworkTypeOverlay && existing.Vni != nil {
-		ops = append(ops, clientv3.OpDelete(networkVNIGuard(*existing.Vni)))
+	if existing.Type == store.NetworkTypeOverlay && existing.VNI != nil {
+		ops = append(ops, clientv3.OpDelete(networkVNIGuard(*existing.VNI)))
 	}
 	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return fmt.Errorf("delete network txn: %v", err)

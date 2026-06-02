@@ -622,8 +622,8 @@ func TestCreateNetworkOverlayAllocatesVNI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNetwork ov-a: %v", err)
 	}
-	if n1.Vni == nil || *n1.Vni != 1000 {
-		t.Errorf("ov-a Vni = %v, want 1000", n1.Vni)
+	if n1.VNI == nil || *n1.VNI != 1000 {
+		t.Errorf("ov-a VNI = %v, want 1000", n1.VNI)
 	}
 	if n1.BridgeName != "otb1000" {
 		t.Errorf("ov-a BridgeName = %q, want otb1000", n1.BridgeName)
@@ -639,8 +639,8 @@ func TestCreateNetworkOverlayAllocatesVNI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNetwork ov-b: %v", err)
 	}
-	if n2.Vni == nil || *n2.Vni != 1001 {
-		t.Errorf("ov-b Vni = %v, want 1001", n2.Vni)
+	if n2.VNI == nil || *n2.VNI != 1001 {
+		t.Errorf("ov-b VNI = %v, want 1001", n2.VNI)
 	}
 }
 
@@ -664,8 +664,8 @@ func TestCreateNetworkOverlayVNINoReclaimOnDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create ov-c: %v", err)
 	}
-	if n2.Vni == nil || *n2.Vni != 1001 {
-		t.Errorf("ov-c Vni = %v, want 1001 (no reclaim of 1000)", n2.Vni)
+	if n2.VNI == nil || *n2.VNI != 1001 {
+		t.Errorf("ov-c VNI = %v, want 1001 (no reclaim of 1000)", n2.VNI)
 	}
 }
 

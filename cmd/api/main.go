@@ -372,7 +372,7 @@ func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth
 	if err := st.SeedOverlaySupernet(ctx, netCfg.OverlaySupernet); err != nil {
 		return fmt.Errorf("seed overlay supernet: %v", err)
 	}
-	if err := st.SeedVNIRange(ctx, netCfg.VniRange.Min, netCfg.VniRange.Max); err != nil {
+	if err := st.SeedVNIRange(ctx, netCfg.VNIRange.Min, netCfg.VNIRange.Max); err != nil {
 		return fmt.Errorf("seed vni range: %v", err)
 	}
 	return nil
