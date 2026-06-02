@@ -19,13 +19,13 @@ type requestBody struct {
 	VMs          []vmReport             `json:"vms"`
 	Pools        []poolReport           `json:"pools,omitempty"`
 	Networks     []networkReport        `json:"networks"`
-	Wireguard    *wireguardReport       `json:"wireguard,omitempty"`
+	WireGuard    *wireGuardReport       `json:"wireguard,omitempty"`
 }
 
-// wireguardReport mirrors the agent's observed WG state. public_key + endpoint
+// wireGuardReport mirrors the agent's observed WG state. public_key + endpoint
 // are authoritative for redistribution; listen_port + established_peers are
 // observability. A nil report (agent without WG state) is skipped at ingest.
-type wireguardReport struct {
+type wireGuardReport struct {
 	PublicKey        string   `json:"public_key"`
 	Endpoint         string   `json:"endpoint"`
 	ListenPort       int32    `json:"listen_port"`

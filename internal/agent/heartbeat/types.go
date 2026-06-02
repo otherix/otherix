@@ -23,13 +23,13 @@ type Report struct {
 	VMs          []VMReport       `json:"vms"`
 	Pools        []PoolReport     `json:"pools,omitempty"`
 	Networks     []NetworkReport  `json:"networks,omitempty"`
-	Wireguard    *WireguardReport `json:"wireguard,omitempty"`
+	WireGuard    *WireGuardReport `json:"wireguard,omitempty"`
 }
 
-// WireguardReport is the agent's observed WG interface state (the heartbeat
+// WireGuardReport is the agent's observed WG interface state (the heartbeat
 // up-channel). PublicKey + Endpoint are authoritative for CP redistribution;
 // ListenPort + EstablishedPeers are observability.
-type WireguardReport struct {
+type WireGuardReport struct {
 	PublicKey        string   `json:"public_key"`
 	Endpoint         string   `json:"endpoint"`
 	ListenPort       int32    `json:"listen_port"`

@@ -63,7 +63,7 @@ type NetworkReporter interface {
 // collector folds into HeartbeatRequest.wireguard. Implemented by the WG
 // reconciler. Nil is allowed (yields a nil report) for test/legacy paths.
 type WireGuardReporter interface {
-	WireGuardReport() *WireguardReport
+	WireGuardReport() *WireGuardReport
 }
 
 // LinuxCollector reads host inventory from /proc, runs qemu-system-*
@@ -212,7 +212,7 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 		report.Networks = c.networks.NetworkReports()
 	}
 	if c.wireguard != nil {
-		report.Wireguard = c.wireguard.WireGuardReport()
+		report.WireGuard = c.wireguard.WireGuardReport()
 	}
 	return report, nil
 }

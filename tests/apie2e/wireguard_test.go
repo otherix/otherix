@@ -34,7 +34,7 @@ import (
 )
 
 // wgHeartbeatReport is the test-side observed WG state posted up the heartbeat
-// channel. Mirrors the agent-side WireguardReport JSON contract.
+// channel. Mirrors the agent-side WireGuardReport JSON contract.
 type wgHeartbeatReport struct {
 	PublicKey  string `json:"public_key"`
 	Endpoint   string `json:"endpoint"`

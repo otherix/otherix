@@ -252,7 +252,7 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
 			return err
 		}
-		if err := h.applyWireguardReport(ctx, hp, agent.NodeID, body.Wireguard); err != nil {
+		if err := h.applyWireguardReport(ctx, hp, agent.NodeID, body.WireGuard); err != nil {
 			return err
 		}
 		return h.loadDeclared(ctx, hp, agent.NodeID, &outcome)
@@ -493,7 +493,7 @@ func networkToDeclared(n store.Network) declaredNetwork {
 // exhausted overlay supernet are genuine operator-facing conflicts, not stale
 // agent data, so they surface as 409 projection errors rather than being
 // swallowed. Any other store failure wraps to an internal error.
-func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, rep *wireguardReport) error {
+func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, rep *wireGuardReport) error {
 	if rep == nil {
 		return nil
 	}

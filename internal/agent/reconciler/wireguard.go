@@ -67,8 +67,8 @@ func NewWireGuard(fabric netfabric.Fabric, key wgtypes.Key, cfg config.WireGuard
 // WireGuardReport implements heartbeat.WireGuardReporter. The pubkey is derived
 // from the loaded key (independent of whether otwg0 exists yet), which lets the
 // CP allocate the overlay address before the interface comes up.
-func (r *WireGuard) WireGuardReport() *heartbeat.WireguardReport {
-	return &heartbeat.WireguardReport{
+func (r *WireGuard) WireGuardReport() *heartbeat.WireGuardReport {
+	return &heartbeat.WireGuardReport{
 		PublicKey:  r.key.PublicKey().String(),
 		Endpoint:   r.cfg.AdvertisedEndpoint,
 		ListenPort: wgListenPort(r.cfg.ListenPort),
