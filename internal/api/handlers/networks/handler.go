@@ -33,6 +33,7 @@ type Store interface {
 	DeleteNetwork(ctx context.Context, id uuid.UUID) error
 	ListNetworkNodeStatusByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.NetworkNodeStatus, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
+	VNIRange(ctx context.Context) (int32, int32, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.

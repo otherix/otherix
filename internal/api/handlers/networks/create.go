@@ -54,6 +54,15 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			h.writeCreateNetworkError(w, r, err)
 			return
 		}
+		if row.VNI != nil {
+			if _, max, rangeErr := h.store.VNIRange(r.Context()); rangeErr == nil {
+				const vniHighWaterRemaining = 256
+				if remaining := max - *row.VNI; remaining < vniHighWaterRemaining {
+					h.log.Warn("overlay VNI range nearing exhaustion",
+						"allocated_vni", *row.VNI, "max_vni", max, "remaining", remaining)
+				}
+			}
+		}
 		response.WriteJSON(w, r, http.StatusCreated, toView(row))
 		return
 	}
