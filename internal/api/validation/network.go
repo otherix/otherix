@@ -42,15 +42,22 @@ const (
 // [A-Za-z0-9_-]. The 15-char ceiling is IFNAMSIZ-1 (kernel limit).
 var linuxBridgeNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,14}$`)
 
+// reservedDeviceNameRe matches the Otherix-owned device-name namespace
+// (otb<vni> overlay bridge, otvx<vni> VTEP, otwg0 WireGuard). An operator
+// type=bridge network must not claim a name in this space or it would shadow
+// a derived overlay device.
+var reservedDeviceNameRe = regexp.MustCompile(`^(otb|otvx|otwg)`)
+
 // ValidateNetworkType returns nil when t is a recognised
-// store.NetworkType value. The set is anchored to the SQL enum;
-// adding a new type means extending both the migration and this
-// branch.
+// store.NetworkType value. The set is anchored to the store enum;
+// adding a new type means extending both the enum and this branch.
 func ValidateNetworkType(t string) error {
-	if store.NetworkType(t) == store.NetworkTypeBridge {
+	switch store.NetworkType(t) {
+	case store.NetworkTypeBridge, store.NetworkTypeOverlay:
 		return nil
+	default:
+		return fmt.Errorf("invalid network type %q (must be one of: bridge, overlay)", t)
 	}
-	return fmt.Errorf("invalid network type %q (must be one of: bridge)", t)
 }
 
 // ValidateBridgeName returns nil when s is a syntactically valid
@@ -62,6 +69,9 @@ func ValidateBridgeName(s string) error {
 	}
 	if !linuxBridgeNameRe.MatchString(s) {
 		return fmt.Errorf("invalid bridge_name %q (1..15 chars, [A-Za-z][A-Za-z0-9_-]*)", s)
+	}
+	if reservedDeviceNameRe.MatchString(s) {
+		return fmt.Errorf("invalid bridge_name %q (otb*/otvx*/otwg* are reserved for Otherix-owned devices)", s)
 	}
 	return nil
 }

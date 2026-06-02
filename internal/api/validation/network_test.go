@@ -17,8 +17,10 @@ func TestValidateNetworkType(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "bridge", input: "bridge", wantErr: false},
+		{name: "overlay", input: "overlay", wantErr: false},
 		{name: "empty", input: "", wantErr: true},
 		{name: "unknown", input: "nat", wantErr: true},
+		{name: "mesh", input: "mesh", wantErr: true},
 		{name: "uppercase", input: "Bridge", wantErr: true},
 	}
 	for _, tc := range cases {
@@ -219,6 +221,29 @@ func TestValidateGatewayInSubnet(t *testing.T) {
 			err := ValidateGatewayInSubnet(tc.gw, tc.subnet)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("ValidateGatewayInSubnet(%v, %v) err = %v, wantErr = %v", tc.gw, tc.subnet, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateBridgeNameReservedPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool // true = expect error
+	}{
+		{name: "overlay bridge", in: "otb1000", want: true},
+		{name: "vtep", in: "otvx5", want: true},
+		{name: "wireguard", in: "otwg0", want: true},
+		{name: "operator bridge", in: "vmbr0", want: false},
+		{name: "plain", in: "br0", want: false},
+		{name: "ot but not reserved", in: "oteth0", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBridgeName(tc.in)
+			if (err != nil) != tc.want {
+				t.Errorf("ValidateBridgeName(%q) err=%v, wantErr=%v", tc.in, err, tc.want)
 			}
 		})
 	}
