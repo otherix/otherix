@@ -23,3 +23,9 @@ migration:
   host: "10.0.10.5"   # dedicated migration network/VLAN
   port_range_start: 49152
   port_range_end: 49251
+
+wireguard:
+  listen_port: 51820
+  persistent_keepalive: 25s
+  private_key_path: /opt/otherix/wg/private.key
+  advertised_endpoint: ""   # host:port peers dial; empty for single-node fabric

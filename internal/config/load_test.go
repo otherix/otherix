@@ -81,6 +81,15 @@ func TestLoadAgent(t *testing.T) {
 	if got, want := cfg.ControlPlane.HeartbeatInterval, 30*time.Second; got != want {
 		t.Errorf("ControlPlane.HeartbeatInterval = %v, want %v (default preserved)", got, want)
 	}
+	if got, want := cfg.WireGuard.ListenPort, 51820; got != want {
+		t.Errorf("WireGuard.ListenPort = %d, want %d", got, want)
+	}
+	if got, want := cfg.WireGuard.PersistentKeepalive, 25*time.Second; got != want {
+		t.Errorf("WireGuard.PersistentKeepalive = %v, want %v", got, want)
+	}
+	if got, want := cfg.WireGuard.PrivateKeyPath, "/opt/otherix/wg/private.key"; got != want {
+		t.Errorf("WireGuard.PrivateKeyPath = %q, want %q", got, want)
+	}
 }
 
 func TestLoadAgentBadPortRange(t *testing.T) {

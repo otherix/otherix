@@ -29,6 +29,7 @@ type AgentConfig struct {
 	TLS          TLSConfig          `koanf:"tls"`
 	Migration    MigrationConfig    `koanf:"migration"`
 	QEMU         QEMUConfig         `koanf:"qemu"`
+	WireGuard    WireGuardConfig    `koanf:"wireguard"`
 }
 
 // QEMUConfig holds qemu-process tunables that vary per host.
@@ -39,6 +40,22 @@ type QEMUConfig struct {
 	// BIOS — without firmware no aarch64 guest can boot. Ignored on
 	// amd64 hosts.
 	AArch64FirmwarePath string `koanf:"aarch64_firmware_path"`
+}
+
+// WireGuardConfig holds the agent's WG fabric tunables. The keypair is
+// generated lazily at serve (see internal/agent/wgkey); only the key path and
+// the link/endpoint tunables live here.
+type WireGuardConfig struct {
+	// ListenPort is the UDP port the WG interface listens on.
+	ListenPort int `koanf:"listen_port"`
+	// PersistentKeepalive is the per-peer keepalive interval. Plumbed now;
+	// consumed once peers exist (a later slice).
+	PersistentKeepalive time.Duration `koanf:"persistent_keepalive"`
+	// PrivateKeyPath is where the lazily-generated private key is persisted.
+	PrivateKeyPath string `koanf:"private_key_path"`
+	// AdvertisedEndpoint is the host:port the agent reports for peers to dial.
+	// Empty is valid for a single-node fabric; required for mesh reachability.
+	AdvertisedEndpoint string `koanf:"advertised_endpoint"`
 }
 
 // ControlPlaneConfig holds connection parameters for reaching the Otherix
@@ -210,6 +227,11 @@ func defaultAgentConfig() AgentConfig {
 		},
 		QEMU: QEMUConfig{
 			AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd",
+		},
+		WireGuard: WireGuardConfig{
+			ListenPort:          51820,
+			PersistentKeepalive: 25 * time.Second,
+			PrivateKeyPath:      "/opt/otherix/wg/private.key",
 		},
 	}
 }
