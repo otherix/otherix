@@ -19,9 +19,9 @@ type linuxFabric struct {
 	// GetRules-precheck-then-AddRule sequence against the shared kernel
 	// table, and an AttachTap racing a RemoveBridge can fail recoverably.
 	// The single mutex makes the fabric safe for concurrent use. Read-only
-	// methods (BridgeExists, VXLANExists, ListTaps, FDBList) do not lock;
-	// none of them calls a mutator, so locking the mutators alone cannot
-	// self-deadlock.
+	// methods (BridgeExists, VXLANExists, WireGuardExists, ListTaps, FDBList,
+	// WireGuardPeers) do not lock; none of them calls a mutator, so locking the
+	// mutators alone cannot self-deadlock.
 	mu sync.Mutex
 }
 

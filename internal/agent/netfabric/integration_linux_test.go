@@ -19,6 +19,8 @@ import (
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.zx2c4.com/wireguard/wgctrl"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // withNetNS runs fn inside a fresh, throwaway network namespace so the
@@ -253,6 +255,105 @@ func TestLinuxFabricVXLANNegativePaths(t *testing.T) {
 		}
 		if err := f.FDBDelete(absent, entry); err == nil {
 			t.Errorf("FDBDelete on absent vtep = nil, want error")
+		}
+	})
+}
+
+// wgTestConfig is the shared N2a scaffold WireGuard config: otwg0 with a fresh
+// private key, the default listen port, an overlay /24 address, and the WG MTU.
+func wgTestConfig(t *testing.T) WGConfig {
+	t.Helper()
+	key, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("GeneratePrivateKey = %v", err)
+	}
+	return WGConfig{
+		Name:       "otwg0",
+		PrivateKey: key,
+		ListenPort: 51820,
+		Address:    netip.MustParsePrefix("10.42.0.1/24"),
+		MTU:        1420,
+	}
+}
+
+func TestLinuxFabricWireGuardLifecycle(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		cfg := wgTestConfig(t)
+
+		exists, err := f.WireGuardExists(cfg.Name)
+		if err != nil {
+			t.Fatalf("WireGuardExists(%s) = %v", cfg.Name, err)
+		}
+		if exists {
+			t.Fatalf("WireGuardExists(%s) = true before create, want false", cfg.Name)
+		}
+
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard(%+v) = %v", cfg, err)
+		}
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard second call = %v", err)
+		}
+
+		exists, err = f.WireGuardExists(cfg.Name)
+		if err != nil || !exists {
+			t.Fatalf("WireGuardExists(%s) after create = (%v, %v), want (true, nil)", cfg.Name, exists, err)
+		}
+
+		link, err := netlink.LinkByName(cfg.Name)
+		if err != nil {
+			t.Fatalf("LinkByName(%s) = %v", cfg.Name, err)
+		}
+		if _, ok := link.(*netlink.Wireguard); !ok {
+			t.Fatalf("%s is %T, want *netlink.Wireguard", cfg.Name, link)
+		}
+		if mtu := link.Attrs().MTU; mtu != 1420 {
+			t.Errorf("MTU = %d, want 1420", mtu)
+		}
+		if link.Attrs().Flags&net.FlagUp == 0 {
+			t.Errorf("%s is not up", cfg.Name)
+		}
+
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("AddrList(%s) = %v", cfg.Name, err)
+		}
+		foundAddr := false
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == "10.42.0.1/24" {
+				foundAddr = true
+			}
+		}
+		if !foundAddr {
+			t.Errorf("address 10.42.0.1/24 not found on %s, got %v", cfg.Name, addrs)
+		}
+
+		c, err := wgctrl.New()
+		if err != nil {
+			t.Fatalf("wgctrl.New = %v", err)
+		}
+		defer c.Close()
+		dev, err := c.Device(cfg.Name)
+		if err != nil {
+			t.Fatalf("Device(%s) = %v", cfg.Name, err)
+		}
+		if dev.PrivateKey != cfg.PrivateKey {
+			t.Errorf("PrivateKey did not round-trip")
+		}
+		if dev.ListenPort != cfg.ListenPort {
+			t.Errorf("ListenPort = %d, want %d", dev.ListenPort, cfg.ListenPort)
+		}
+
+		if err := f.RemoveWireGuard(cfg.Name); err != nil {
+			t.Fatalf("RemoveWireGuard(%s) = %v", cfg.Name, err)
+		}
+		if err := f.RemoveWireGuard(cfg.Name); err != nil {
+			t.Fatalf("RemoveWireGuard(%s) on absent = %v", cfg.Name, err)
+		}
+		exists, err = f.WireGuardExists(cfg.Name)
+		if err != nil || exists {
+			t.Fatalf("WireGuardExists(%s) after remove = (%v, %v), want (false, nil)", cfg.Name, exists, err)
 		}
 	})
 }

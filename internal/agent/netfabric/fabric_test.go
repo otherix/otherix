@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func TestNICTapName(t *testing.T) {
@@ -112,6 +113,39 @@ func TestFakeFabricFDB(t *testing.T) {
 	}
 	if diff := cmp.Diff([]uint32{1000}, f.FDBListCalls); diff != "" {
 		t.Errorf("FDBListCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestFakeFabricWireGuardLifecycle(t *testing.T) {
+	key, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("GeneratePrivateKey = %v", err)
+	}
+	cfg := WGConfig{
+		Name:       "otwg0",
+		PrivateKey: key,
+		ListenPort: 51820,
+		Address:    netip.MustParsePrefix("10.42.0.1/24"),
+		MTU:        1420,
+	}
+	f := &FakeFabric{WireGuardExistsResult: true}
+
+	if err := f.EnsureWireGuard(cfg); err != nil {
+		t.Fatalf("EnsureWireGuard() = %v, want nil", err)
+	}
+	exists, err := f.WireGuardExists("otwg0")
+	if err != nil || !exists {
+		t.Fatalf("WireGuardExists(otwg0) = (%v, %v), want (true, nil)", exists, err)
+	}
+	if err := f.RemoveWireGuard("otwg0"); err != nil {
+		t.Fatalf("RemoveWireGuard(otwg0) = %v, want nil", err)
+	}
+	opt := cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{})
+	if diff := cmp.Diff([]WGConfig{cfg}, f.EnsureWireGuardCalls, opt); diff != "" {
+		t.Errorf("EnsureWireGuardCalls mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"otwg0"}, f.RemoveWireGuardCalls); diff != "" {
+		t.Errorf("RemoveWireGuardCalls mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -50,6 +50,14 @@ type FakeFabric struct {
 	FDBAppendCalls []FDBCall
 	FDBDeleteCalls []FDBCall
 	FDBListCalls   []uint32
+
+	// WireGuardExistsResult is returned by WireGuardExists alongside
+	// Errs["WireGuardExists"].
+	WireGuardExistsResult bool
+
+	EnsureWireGuardCalls []WGConfig
+	RemoveWireGuardCalls []string
+	WireGuardExistsCalls []string
 }
 
 // BridgeCall records one EnsureBridge invocation.
@@ -210,6 +218,25 @@ func (f *FakeFabric) FDBList(vni uint32) ([]FDBEntry, error) {
 		return nil, err
 	}
 	return f.FDBListResult, nil
+}
+
+// EnsureWireGuard records the call and returns Errs["EnsureWireGuard"].
+func (f *FakeFabric) EnsureWireGuard(cfg WGConfig) error {
+	f.EnsureWireGuardCalls = append(f.EnsureWireGuardCalls, cfg)
+	return f.err("EnsureWireGuard")
+}
+
+// RemoveWireGuard records the call and returns Errs["RemoveWireGuard"].
+func (f *FakeFabric) RemoveWireGuard(name string) error {
+	f.RemoveWireGuardCalls = append(f.RemoveWireGuardCalls, name)
+	return f.err("RemoveWireGuard")
+}
+
+// WireGuardExists records the call and returns WireGuardExistsResult with
+// Errs["WireGuardExists"].
+func (f *FakeFabric) WireGuardExists(name string) (bool, error) {
+	f.WireGuardExistsCalls = append(f.WireGuardExistsCalls, name)
+	return f.WireGuardExistsResult, f.err("WireGuardExists")
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.

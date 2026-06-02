@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/google/uuid"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // tapPrefix is the host interface-name prefix every Otherix-managed tap
@@ -83,6 +85,17 @@ type Fabric interface {
 	FDBDelete(vni uint32, e FDBEntry) error
 	// FDBList returns the MAC -> dst VTEP entries in the otvx<vni> FDB.
 	FDBList(vni uint32) ([]FDBEntry, error)
+
+	// EnsureWireGuard creates the named WireGuard link if absent, configures
+	// its private key and listen port, assigns Address, sets MTU and brings it
+	// up. It is idempotent. Peers are managed separately via SetWireGuardPeers.
+	EnsureWireGuard(cfg WGConfig) error
+	// RemoveWireGuard deletes the named WireGuard link. It returns nil if the
+	// link is already absent.
+	RemoveWireGuard(name string) error
+	// WireGuardExists reports whether a WireGuard link of the given name
+	// exists. A link of the same name but a different type reports false.
+	WireGuardExists(name string) (bool, error)
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
@@ -98,6 +111,26 @@ type VXLANConfig struct {
 type FDBEntry struct {
 	MAC net.HardwareAddr
 	Dst netip.Addr // remote VTEP IP (127.0.0.1 for the N1b loopback scaffold)
+}
+
+// WGConfig parametrises the otwg0 WireGuard interface. netfabric is a pure
+// applier: PrivateKey is generated at bootstrap (N2c) and supplied here - the
+// fabric never generates keys. Address is assigned to the link and becomes the
+// VXLAN VTEP source address when the VTEP rebinds onto otwg0 in N2c.
+type WGConfig struct {
+	Name       string       // "otwg0" - the single WireGuard interface, all peers
+	PrivateKey wgtypes.Key  // agent's Curve25519 private key
+	ListenPort int          // UDP listen port (51820)
+	Address    netip.Prefix // agent overlay IP on the link (e.g. 10.42.<idx>.1/24)
+	MTU        int          // link MTU (final value settled in N2c on the VTEP rebind)
+}
+
+// WGPeer is one remote agent in the WireGuard mesh.
+type WGPeer struct {
+	PublicKey           wgtypes.Key
+	Endpoint            *net.UDPAddr   // advertised host:port; nil leaves the endpoint unset (roaming)
+	AllowedIPs          []netip.Prefix // remote overlay IPs routed into the tunnel
+	PersistentKeepalive time.Duration  // keepalive interval (25s); zero leaves it unset
 }
 
 // NIC is one VM network interface to materialise. It is shared by the
