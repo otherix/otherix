@@ -82,6 +82,17 @@ type RedeemJoinTokenParams struct {
 	SourceIP                *netip.Addr
 }
 
+// UpsertAgentWireguardParams carries an agent's observed WG state for the
+// heartbeat up-channel ingest. AgentIndex / OverlayIP are CP-assigned, not part
+// of the agent's report, so they are absent here.
+type UpsertAgentWireguardParams struct {
+	NodeID           uuid.UUID
+	PublicKey        string
+	Endpoint         string
+	ListenPort       int32
+	EstablishedPeers []string
+}
+
 // IssuedCert is the metadata the redemption persists for a freshly signed agent
 // cert. The signing itself (x509 / crypto) lives in the caller's sign callback
 // so the store stays driver-and-crypto-agnostic; only the resulting metadata

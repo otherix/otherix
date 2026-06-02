@@ -294,9 +294,28 @@ type CaCert struct {
 	RetiredAt *time.Time
 }
 
+// AgentWireguard is the per-node WireGuard fabric identity - node-level
+// infrastructure, NOT a user-facing resource - keyed 1:1 to nodes.id. The CP
+// assigns AgentIndex and OverlayIP on the first report and freezes them; the
+// agent-reported PublicKey / Endpoint / ListenPort refresh on every heartbeat.
+type AgentWireguard struct {
+	NodeID     uuid.UUID
+	PublicKey  string
+	Endpoint   string
+	OverlayIP  netip.Addr
+	AgentIndex int32
+	ListenPort int32
+	// EstablishedPeers are the agent-reported node-id strings with a live
+	// handshake (observability only; populated meaningfully by the N2c
+	// reconciler - the CP stores them verbatim in N2b and does not act on them).
+	EstablishedPeers []string
+	UpdatedAt        time.Time
+}
+
 type ClusterSetting struct {
 	ID              int32
 	DefaultPoolName *string
+	OverlaySupernet *string // cluster overlay supernet CIDR; seeded once at boot, immutable
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
