@@ -1666,7 +1666,7 @@ paths:
         - name: type
           in: query
           required: false
-          schema: { type: string, enum: [bridge] }
+          schema: { type: string, enum: [bridge, overlay] }
       responses:
         "200":
           description: List of networks.
@@ -5682,10 +5682,10 @@ components:
           maxLength: 255
         type:
           type: string
-          enum: [bridge]
+          enum: [bridge, overlay]
           description: |
-            Immutable after creation. Currently only `bridge` is
-            supported; the column is open to future enum extensions.
+            Immutable after creation. `bridge` attaches VMs to a Linux
+            bridge; `overlay` creates a VXLAN-backed tenant network.
         bridge_name:
           type: string
           description: Linux bridge interface name on each hosting node.
@@ -5708,12 +5708,20 @@ components:
           description: |
             VM IP subnet in CIDR form, returned in canonical (masked)
             form. Present only when `egress: nat`; `null` otherwise.
+            Required when `type: overlay`.
         gateway:
           type: [string, "null"]
           description: |
             Host-side gateway IP on the bridge. Present only when
             `egress: nat`; defaults to the first usable host in
             `subnet` when not supplied. `null` otherwise.
+        vni:
+          type: [integer, "null"]
+          readOnly: true
+          description: |
+            VXLAN Network Identifier, CP-allocated and immutable. Present
+            only for type=overlay; null for bridge. Not accepted on create
+            or patch (the server allocates it).
         status:
           $ref: "#/components/schemas/NetworkStatus"
         vlan_tag:
@@ -5739,7 +5747,7 @@ components:
 
     NetworkCreate:
       type: object
-      required: [name, type, bridge_name]
+      required: [name, type]
       properties:
         name:
           type: string
@@ -5747,10 +5755,16 @@ components:
           maxLength: 255
         type:
           type: string
-          enum: [bridge]
+          enum: [bridge, overlay]
+          description: |
+            Immutable after creation. `bridge` or `overlay`. Not accepted
+            on patch.
         bridge_name:
           type: string
           minLength: 1
+          description: |
+            Required for `type: bridge`; forbidden for `type: overlay`
+            (the server derives `otb<vni>`).
         managed:
           type: boolean
           default: false
@@ -5768,9 +5782,9 @@ components:
         subnet:
           type: string
           description: |
-            VM IP subnet in CIDR form. Required when `egress: nat`,
-            forbidden otherwise. Host bits are masked off and the
-            canonical form is stored.
+            VM IP subnet in CIDR form. Required when `egress: nat` or
+            `type: overlay`; forbidden otherwise. Host bits are masked
+            off and the canonical form is stored.
         gateway:
           type: string
           description: |
