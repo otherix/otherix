@@ -228,6 +228,33 @@ func TestNodeGetWireguardFabric(t *testing.T) {
 	}
 }
 
+// TestNodeGetWireguardFabricHiddenFromViewer guards the security property that
+// the admin/operator-only WireGuard fabric block on GET /v1/nodes/{name} never
+// leaks to a lower-privilege caller: a viewer gets the reduced node summary,
+// which carries no wireguard key.
+func TestNodeGetWireguardFabricHiddenFromViewer(t *testing.T) {
+	h := newE2E(t)
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+
+	a := wgSeedAgent(t, h, caCert, caKey, "node-a")
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820})
+
+	viewerTok, _ := loginAs(t, h, auth.RoleViewer)
+	resp := h.get(t, "/v1/nodes/"+a.name, viewerTok)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("viewer GET node-a status = %d, want 200", resp.StatusCode)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode node-a: %v", err)
+	}
+	if _, present := raw["wireguard"]; present {
+		t.Errorf("viewer node get response contains a wireguard block; the fabric is admin/operator-only")
+	}
+}
+
 // wgAssertPeer compares one declared peer against want, field by field.
 func wgAssertPeer(t *testing.T, label string, got, want wgDeclaredPeer) {
 	t.Helper()
