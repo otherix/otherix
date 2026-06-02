@@ -31,6 +31,9 @@ func (f *linuxFabric) EnsureWireGuard(cfg WGConfig) error {
 	if cfg.MTU < 0 || cfg.MTU > 65535 {
 		return fmt.Errorf("netfabric: ensure wireguard %s: mtu %d out of range [0,65535]", cfg.Name, cfg.MTU)
 	}
+	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 {
+		return fmt.Errorf("netfabric: ensure wireguard %s: listen port %d out of range [0,65535]", cfg.Name, cfg.ListenPort)
+	}
 	if !cfg.Address.IsValid() {
 		return fmt.Errorf("netfabric: ensure wireguard %s: invalid address", cfg.Name)
 	}

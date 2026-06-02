@@ -291,7 +291,7 @@ func TestLinuxFabricWireGuardLifecycle(t *testing.T) {
 		}
 
 		if err := f.EnsureWireGuard(cfg); err != nil {
-			t.Fatalf("EnsureWireGuard(%+v) = %v", cfg, err)
+			t.Fatalf("EnsureWireGuard(%s) = %v", cfg.Name, err)
 		}
 		if err := f.EnsureWireGuard(cfg); err != nil {
 			t.Fatalf("EnsureWireGuard second call = %v", err)
