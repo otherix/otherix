@@ -79,11 +79,15 @@ pass "$WG_IFACE up: $NODE1=$OVL1_CIDR, $NODE2=$OVL2_CIDR"
 # Each node's WG block must list the OTHER node as an established peer. Poll
 # until both directions converge (handshake + heartbeat round-trip).
 echo "=== step 2: operator CLI - each node sees the other established ==="
+# peer_established SELF PEER -> prints "true" when SELF's WG block lists PEER as
+# established. Inlines jq with --arg (wg_field takes a single jq path only).
+peer_established() {
+  otx node get "$1" --output json 2>/dev/null \
+    | jq -r --arg n "$2" '.wireguard.peers[]? | select(.node_name==$n) | .established'
+}
 established_both() {
-  local e1 e2
-  e1="$(wg_field "$NODE1" --arg n "$NODE2" '.wireguard.peers[]? | select(.node_name==$n) | .established' 2>/dev/null || true)"
-  e2="$(wg_field "$NODE2" --arg n "$NODE1" '.wireguard.peers[]? | select(.node_name==$n) | .established' 2>/dev/null || true)"
-  [[ "$e1" == "true" && "$e2" == "true" ]]
+  [[ "$(peer_established "$NODE1" "$NODE2")" == "true" \
+     && "$(peer_established "$NODE2" "$NODE1")" == "true" ]]
 }
 info "waiting for the mesh to establish both directions (<= ${MESH_TIMEOUT}s)"
 deadline=$(( SECONDS + MESH_TIMEOUT ))
