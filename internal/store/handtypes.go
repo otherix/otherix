@@ -90,11 +90,13 @@ type RedeemJoinTokenParams struct {
 // heartbeat up-channel ingest. AgentIndex / OverlayIP are CP-assigned, not part
 // of the agent's report, so they are absent here.
 type UpsertAgentWireguardParams struct {
-	NodeID           uuid.UUID
-	PublicKey        string
-	Endpoint         string
-	ListenPort       int32
-	EstablishedPeers []string
+	NodeID               uuid.UUID
+	PublicKey            string
+	Endpoint             string
+	ListenPort           int32
+	EstablishedPeers     []string
+	ReconciliationStatus string
+	ReconciliationError  *string
 }
 
 // IssuedCert is the metadata the redemption persists for a freshly signed agent

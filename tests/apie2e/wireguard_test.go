@@ -37,10 +37,12 @@ import (
 // wgHeartbeatReport is the test-side observed WG state posted up the heartbeat
 // channel. Mirrors the agent-side WireGuardReport JSON contract.
 type wgHeartbeatReport struct {
-	PublicKey        string   `json:"public_key"`
-	Endpoint         string   `json:"endpoint"`
-	ListenPort       int32    `json:"listen_port"`
-	EstablishedPeers []string `json:"established_peers,omitempty"`
+	PublicKey            string   `json:"public_key"`
+	Endpoint             string   `json:"endpoint"`
+	ListenPort           int32    `json:"listen_port"`
+	EstablishedPeers     []string `json:"established_peers,omitempty"`
+	ReconciliationStatus string   `json:"reconciliation_status"`
+	ReconciliationError  *string  `json:"reconciliation_error"`
 }
 
 // wgHeartbeatRequest is the minimal heartbeat body the test posts: just enough
@@ -225,6 +227,51 @@ func TestNodeGetWireguardFabric(t *testing.T) {
 	}
 	if p.NodeName == nil || *p.NodeName != b.name {
 		t.Errorf("peer node_name = %v, want %s", p.NodeName, b.name)
+	}
+}
+
+// TestNodeGetWireguardReconciliationStatus drives the WG fabric reconciliation
+// status up the heartbeat channel: an agent reporting reconciliation_status
+// failed plus an error must surface both on GET /v1/nodes/{name}.wireguard so an
+// otwg0 failure is operator-visible like a bridge failure.
+func TestNodeGetWireguardReconciliationStatus(t *testing.T) {
+	h := newE2E(t)
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+
+	a := wgSeedAgent(t, h, caCert, caKey, "node-a")
+	wantErr := "ensure otwg0: link down"
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{
+		PublicKey:            "pkA",
+		Endpoint:             "a.example:51820",
+		ListenPort:           51820,
+		ReconciliationStatus: "failed",
+		ReconciliationError:  &wantErr,
+	})
+
+	adminTok, _ := loginAs(t, h, auth.RoleAdmin)
+	resp := h.get(t, "/v1/nodes/"+a.name, adminTok)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET node-a status = %d, want 200", resp.StatusCode)
+	}
+	var node struct {
+		WireGuard *struct {
+			ReconciliationStatus string  `json:"reconciliation_status"`
+			ReconciliationError  *string `json:"reconciliation_error"`
+		} `json:"wireguard"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+		t.Fatalf("decode node-a: %v", err)
+	}
+	if node.WireGuard == nil {
+		t.Fatal("node get: wireguard block nil, want fabric identity")
+	}
+	if node.WireGuard.ReconciliationStatus != "failed" {
+		t.Errorf("reconciliation_status = %q, want failed", node.WireGuard.ReconciliationStatus)
+	}
+	if node.WireGuard.ReconciliationError == nil || *node.WireGuard.ReconciliationError != wantErr {
+		t.Errorf("reconciliation_error = %v, want %q", node.WireGuard.ReconciliationError, wantErr)
 	}
 }
 

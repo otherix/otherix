@@ -5,6 +5,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -43,6 +44,7 @@ type WireGuard struct {
 	tick   time.Duration
 
 	desired atomic.Pointer[wgDesired]
+	status  atomic.Pointer[wgStatus]
 	trigger chan struct{}
 	now     func() time.Time
 }
@@ -51,6 +53,14 @@ type WireGuard struct {
 type wgDesired struct {
 	selfOverlayIP string // CIDR "10.42.0.1/16"; "" until the CP allocates
 	peers         []heartbeat.DeclaredWireGuardPeer
+}
+
+// wgStatus is the outcome of the WG reconciler's most recent pass, surfaced up
+// the heartbeat so an otwg0 failure is operator-visible. state is one of
+// pending / ready / failed; errMsg carries the failure detail when failed.
+type wgStatus struct {
+	state  string
+	errMsg string
 }
 
 // NewWireGuard builds the WG reconciler. tick==0 falls back to
@@ -78,12 +88,21 @@ func NewWireGuard(fabric netfabric.Fabric, key wgtypes.Key, cfg config.WireGuard
 // exists yet), so the CP can allocate the overlay address before the interface
 // comes up. established_peers is the observed mesh health.
 func (r *WireGuard) WireGuardReport() *heartbeat.WireGuardReport {
-	return &heartbeat.WireGuardReport{
-		PublicKey:        r.key.PublicKey().String(),
-		Endpoint:         r.cfg.AdvertisedEndpoint,
-		ListenPort:       wgListenPort(r.cfg.ListenPort),
-		EstablishedPeers: r.establishedPeers(),
+	rep := &heartbeat.WireGuardReport{
+		PublicKey:            r.key.PublicKey().String(),
+		Endpoint:             r.cfg.AdvertisedEndpoint,
+		ListenPort:           wgListenPort(r.cfg.ListenPort),
+		EstablishedPeers:     r.establishedPeers(),
+		ReconciliationStatus: "pending",
 	}
+	if st := r.status.Load(); st != nil {
+		rep.ReconciliationStatus = st.state
+		if st.state == "failed" && st.errMsg != "" {
+			msg := st.errMsg
+			rep.ReconciliationError = &msg
+		}
+	}
+	return rep
 }
 
 // establishedPeers reads observed handshakes from the fabric and maps each peer
@@ -170,6 +189,7 @@ func (r *WireGuard) reconcile(ctx context.Context) {
 	}
 	d := r.desired.Load()
 	if d == nil || d.selfOverlayIP == "" {
+		r.setStatus("pending", "")
 		return
 	}
 	addr, err := netip.ParsePrefix(d.selfOverlayIP)
@@ -177,6 +197,7 @@ func (r *WireGuard) reconcile(ctx context.Context) {
 		r.log.WarnContext(ctx, "wireguard self_overlay_ip not a prefix; skipping",
 			slog.String("self_overlay_ip", d.selfOverlayIP),
 			slog.String("error", err.Error()))
+		r.setStatus("failed", fmt.Sprintf("self_overlay_ip %q not a prefix: %v", d.selfOverlayIP, err))
 		return
 	}
 	if err := r.fabric.EnsureWireGuard(netfabric.WGConfig{
@@ -189,6 +210,7 @@ func (r *WireGuard) reconcile(ctx context.Context) {
 		r.log.WarnContext(ctx, "wireguard ensure interface failed",
 			slog.String("interface", wgInterfaceName),
 			slog.String("error", err.Error()))
+		r.setStatus("failed", fmt.Sprintf("ensure %s: %v", wgInterfaceName, err))
 		return
 	}
 	peers := r.toWGPeers(ctx, d.peers)
@@ -196,7 +218,16 @@ func (r *WireGuard) reconcile(ctx context.Context) {
 		r.log.WarnContext(ctx, "wireguard set peers failed",
 			slog.String("interface", wgInterfaceName),
 			slog.String("error", err.Error()))
+		r.setStatus("failed", fmt.Sprintf("set peers on %s: %v", wgInterfaceName, err))
+		return
 	}
+	r.setStatus("ready", "")
+}
+
+// setStatus records the outcome of the latest reconcile pass for the next
+// WireGuardReport.
+func (r *WireGuard) setStatus(state, errMsg string) {
+	r.status.Store(&wgStatus{state: state, errMsg: errMsg})
 }
 
 // toWGPeers translates declared peers into netfabric.WGPeer. A peer that fails

@@ -99,6 +99,8 @@ func (s *Store) UpsertAgentWireguard(ctx context.Context, arg store.UpsertAgentW
 	rec.Endpoint = arg.Endpoint
 	rec.ListenPort = arg.ListenPort
 	rec.EstablishedPeers = arg.EstablishedPeers
+	rec.ReconciliationStatus = arg.ReconciliationStatus
+	rec.ReconciliationError = arg.ReconciliationError
 	rec.UpdatedAt = now
 	if existing.PublicKey == arg.PublicKey {
 		return s.c.PutJSON(ctx, agentWireguardKey(arg.NodeID), rec)
@@ -127,14 +129,16 @@ func (s *Store) createAgentWireguard(ctx context.Context, arg store.UpsertAgentW
 		return err
 	}
 	rec := store.AgentWireguard{
-		NodeID:           arg.NodeID,
-		PublicKey:        arg.PublicKey,
-		Endpoint:         arg.Endpoint,
-		OverlayIP:        overlayIP,
-		AgentIndex:       idx,
-		ListenPort:       arg.ListenPort,
-		EstablishedPeers: arg.EstablishedPeers,
-		UpdatedAt:        now,
+		NodeID:               arg.NodeID,
+		PublicKey:            arg.PublicKey,
+		Endpoint:             arg.Endpoint,
+		OverlayIP:            overlayIP,
+		AgentIndex:           idx,
+		ListenPort:           arg.ListenPort,
+		EstablishedPeers:     arg.EstablishedPeers,
+		ReconciliationStatus: arg.ReconciliationStatus,
+		ReconciliationError:  arg.ReconciliationError,
+		UpdatedAt:            now,
 	}
 	val, err := etcd.Marshal(rec)
 	if err != nil {

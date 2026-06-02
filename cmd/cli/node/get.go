@@ -197,6 +197,12 @@ func printNodeWireguard(cmd *cobra.Command, n cpclient.Node) {
 	if wg.Endpoint != "" {
 		printf(cmd, "  endpoint: %s\n", wg.Endpoint)
 	}
+	if wg.Status != "" {
+		printf(cmd, "  reconciliation_status: %s\n", wg.Status)
+	}
+	if wg.Status == "failed" && wg.Error != nil {
+		printf(cmd, "  reconciliation_error: %s\n", *wg.Error)
+	}
 	if len(wg.Peers) == 0 {
 		printf(cmd, "  peers: none\n")
 		return

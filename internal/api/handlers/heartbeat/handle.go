@@ -503,11 +503,13 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 		return nil
 	}
 	err := hp.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
-		NodeID:           nodeID,
-		PublicKey:        rep.PublicKey,
-		Endpoint:         rep.Endpoint,
-		ListenPort:       rep.ListenPort,
-		EstablishedPeers: rep.EstablishedPeers,
+		NodeID:               nodeID,
+		PublicKey:            rep.PublicKey,
+		Endpoint:             rep.Endpoint,
+		ListenPort:           rep.ListenPort,
+		EstablishedPeers:     rep.EstablishedPeers,
+		ReconciliationStatus: rep.ReconciliationStatus,
+		ReconciliationError:  rep.ReconciliationError,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrAgentWireguardPubkeyInUse) {

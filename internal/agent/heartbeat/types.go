@@ -28,12 +28,16 @@ type Report struct {
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat
 // up-channel). PublicKey + Endpoint are authoritative for CP redistribution;
-// ListenPort + EstablishedPeers are observability.
+// ListenPort + EstablishedPeers are observability. ReconciliationStatus
+// (pending/ready/failed) + ReconciliationError surface the outcome of the WG
+// reconciler's last pass so an otwg0 failure is visible like a bridge failure.
 type WireGuardReport struct {
-	PublicKey        string   `json:"public_key"`
-	Endpoint         string   `json:"endpoint"`
-	ListenPort       int32    `json:"listen_port"`
-	EstablishedPeers []string `json:"established_peers,omitempty"`
+	PublicKey            string   `json:"public_key"`
+	Endpoint             string   `json:"endpoint"`
+	ListenPort           int32    `json:"listen_port"`
+	EstablishedPeers     []string `json:"established_peers,omitempty"`
+	ReconciliationStatus string   `json:"reconciliation_status"`
+	ReconciliationError  *string  `json:"reconciliation_error"`
 }
 
 // DeclaredWireGuardPeer is one other agent the CP wants in this agent's WG mesh

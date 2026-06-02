@@ -132,11 +132,13 @@ type networkConditionView struct {
 // per-peer established flag. admin/operator GET-by-id only (omitted on the list
 // path and the summary view); nil when the agent has not reported WG state yet.
 type wireguardView struct {
-	OverlayIP  string              `json:"overlay_ip"`
-	PublicKey  string              `json:"public_key"`
-	ListenPort int32               `json:"listen_port"`
-	Endpoint   string              `json:"endpoint"`
-	Peers      []wireguardPeerView `json:"peers"`
+	OverlayIP            string              `json:"overlay_ip"`
+	PublicKey            string              `json:"public_key"`
+	ListenPort           int32               `json:"listen_port"`
+	Endpoint             string              `json:"endpoint"`
+	ReconciliationStatus string              `json:"reconciliation_status"`
+	ReconciliationError  *string             `json:"reconciliation_error"`
+	Peers                []wireguardPeerView `json:"peers"`
 }
 
 // wireguardPeerView is one other agent in this node's mesh. NodeName is
@@ -288,13 +290,33 @@ func networkConditions(ctx context.Context, s Store, nodeID uuid.UUID) ([]networ
 	return out, nil
 }
 
+// wgStaleWindow bounds how recent the reporting node's heartbeat must be for
+// its established_peers to be trusted; past it, the fabric view reports the
+// mesh as not-established (the agent may be dead, its last set is stale).
+const wgStaleWindow = 90 * time.Second
+
+// peerEstablished gates a raw established flag on the reporting node's heartbeat
+// freshness: an established_peers set from a node that has stopped heartbeating
+// is stale and must not claim a live tunnel.
+func peerEstablished(rawEstablished bool, selfLastHeartbeat *time.Time, now time.Time) bool {
+	if !rawEstablished {
+		return false
+	}
+	if selfLastHeartbeat == nil {
+		return false
+	}
+	return now.Sub(*selfLastHeartbeat) <= wgStaleWindow
+}
+
 // nodeWireguard builds the WG underlay fabric block for a node's full view: the
 // node's own agent_wireguard identity plus every other agent as a peer with an
-// established flag from this node's EstablishedPeers set. Returns nil (block
+// established flag from this node's EstablishedPeers set. The flag is gated by
+// the reporting node's heartbeat freshness (selfLastHeartbeat / now) so a dead
+// agent's stale handshake set does not claim a live mesh. Returns nil (block
 // omitted) when the node has not reported WG yet. Peer node ids resolve to
 // names best-effort; a deleted node leaves NodeName nil so the wire never 500s
 // on a stale reference.
-func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID) (*wireguardView, error) {
+func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID, selfLastHeartbeat *time.Time, now time.Time) (*wireguardView, error) {
 	self, err := s.AgentWireguardByNodeID(ctx, nodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -329,18 +351,21 @@ func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID) (*wireguardVi
 			continue
 		}
 		pv := wireguardPeerView{NodeID: rec.NodeID.String(), OverlayIP: rec.OverlayIP.String()}
-		_, pv.Established = established[rec.NodeID.String()]
+		_, raw := established[rec.NodeID.String()]
+		pv.Established = peerEstablished(raw, selfLastHeartbeat, now)
 		name := n.Name
 		pv.NodeName = &name
 		peers = append(peers, pv)
 	}
 	sort.Slice(peers, func(i, j int) bool { return peers[i].NodeID < peers[j].NodeID })
 	return &wireguardView{
-		OverlayIP:  self.OverlayIP.String(),
-		PublicKey:  self.PublicKey,
-		ListenPort: self.ListenPort,
-		Endpoint:   self.Endpoint,
-		Peers:      peers,
+		OverlayIP:            self.OverlayIP.String(),
+		PublicKey:            self.PublicKey,
+		ListenPort:           self.ListenPort,
+		Endpoint:             self.Endpoint,
+		ReconciliationStatus: self.ReconciliationStatus,
+		ReconciliationError:  self.ReconciliationError,
+		Peers:                peers,
 	}, nil
 }
 

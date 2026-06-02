@@ -6,6 +6,7 @@ package nodes
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -63,7 +64,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 				response.CodeInternal, "load node network conditions", nil)
 			return
 		}
-		wg, err = nodeWireguard(r.Context(), h.store, resolved.ID)
+		wg, err = nodeWireguard(r.Context(), h.store, resolved.ID, row.LastHeartbeatAt, time.Now().UTC())
 		if err != nil {
 			response.WriteError(w, r, http.StatusInternalServerError,
 				response.CodeInternal, "load node wireguard fabric", nil)

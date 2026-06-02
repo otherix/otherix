@@ -309,7 +309,13 @@ type AgentWireguard struct {
 	// handshake (observability only; populated meaningfully by the N2c
 	// reconciler - the CP stores them verbatim in N2b and does not act on them).
 	EstablishedPeers []string
-	UpdatedAt        time.Time
+	// ReconciliationStatus / ReconciliationError carry the WG reconciler's last
+	// pass outcome (pending/ready/failed), surfaced on the node's wireguard view
+	// so an otwg0 failure is operator-visible. Pure observed state - they never
+	// affect index / overlay IP / pubkey-guard allocation.
+	ReconciliationStatus string
+	ReconciliationError  *string
+	UpdatedAt            time.Time
 }
 
 type ClusterSetting struct {

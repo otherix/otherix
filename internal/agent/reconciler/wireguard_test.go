@@ -152,6 +152,77 @@ func TestWireGuardReportEstablishedFabricError(t *testing.T) {
 	}
 }
 
+func TestWireGuardReport_ReconciliationStatusFailed(t *testing.T) {
+	key := mustKey(t)
+	f := &netfabric.FakeFabric{Errs: map[string]error{"EnsureWireGuard": errors.New("link down")}}
+	r, err := NewWireGuard(f, key, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	ip := "10.42.0.1/16"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
+	r.reconcile(context.Background())
+
+	rep := r.WireGuardReport()
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("ReconciliationStatus = %q, want failed", rep.ReconciliationStatus)
+	}
+	if rep.ReconciliationError == nil || *rep.ReconciliationError == "" {
+		t.Errorf("ReconciliationError = %v, want non-empty failure message", rep.ReconciliationError)
+	}
+}
+
+func TestWireGuardReport_ReconciliationStatusReady(t *testing.T) {
+	key := mustKey(t)
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, key, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	ip := "10.42.0.1/16"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
+	r.reconcile(context.Background())
+
+	rep := r.WireGuardReport()
+	if rep.ReconciliationStatus != "ready" {
+		t.Errorf("ReconciliationStatus = %q, want ready", rep.ReconciliationStatus)
+	}
+	if rep.ReconciliationError != nil {
+		t.Errorf("ReconciliationError = %v, want nil on ready", rep.ReconciliationError)
+	}
+}
+
+func TestWireGuardReport_ReconciliationStatusPending(t *testing.T) {
+	key := mustKey(t)
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, key, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	// No overlay IP yet: the interface stays down and the status is pending.
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{})
+	r.reconcile(context.Background())
+
+	rep := r.WireGuardReport()
+	if rep.ReconciliationStatus != "pending" {
+		t.Errorf("ReconciliationStatus = %q, want pending", rep.ReconciliationStatus)
+	}
+	if rep.ReconciliationError != nil {
+		t.Errorf("ReconciliationError = %v, want nil on pending", rep.ReconciliationError)
+	}
+}
+
+func TestWireGuardReport_ReconciliationStatusDefaultsPending(t *testing.T) {
+	key := mustKey(t)
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, key, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	// Before the first reconcile pass the status defaults to pending.
+	rep := r.WireGuardReport()
+	if rep.ReconciliationStatus != "pending" {
+		t.Errorf("ReconciliationStatus = %q, want pending before first reconcile", rep.ReconciliationStatus)
+	}
+}
+
 func TestToWGPeersSkipsUnparseable(t *testing.T) {
 	key, _ := wgtypes.GeneratePrivateKey()
 	good, _ := wgtypes.GeneratePrivateKey()

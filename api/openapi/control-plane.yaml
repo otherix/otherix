@@ -4233,6 +4233,21 @@ components:
         public_key: { type: string }
         listen_port: { type: integer, format: int32 }
         endpoint: { type: string }
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: |
+            Outcome of the agent's most recent WireGuard reconciliation
+            pass for its `otwg0` fabric interface. `pending` until the
+            CP allocates the overlay address and the first pass runs;
+            `ready` once the interface and peer set are applied;
+            `failed` on an interface-bring-up or set-peers error. Makes
+            an `otwg0` failure operator-visible like a bridge failure.
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Failure detail when `reconciliation_status` is `failed`; null
+            otherwise.
         peers:
           type: array
           items: { $ref: "#/components/schemas/NodeWireguardPeer" }

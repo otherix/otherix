@@ -69,6 +69,8 @@ type NodeWireguard struct {
 	PublicKey  string              `json:"public_key"`
 	ListenPort int32               `json:"listen_port"`
 	Endpoint   string              `json:"endpoint"`
+	Status     string              `json:"reconciliation_status"`
+	Error      *string             `json:"reconciliation_error"`
 	Peers      []NodeWireguardPeer `json:"peers"`
 }
 
