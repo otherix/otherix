@@ -42,6 +42,9 @@ type Store interface {
 	DeleteNode(ctx context.Context, id uuid.UUID, force bool, callerID uuid.UUID) (store.NodeDeleteOutcome, error)
 	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
+	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (store.AgentWireguard, error)
+	ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error)
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -107,6 +110,7 @@ type nodeView struct {
 	CreatedAt                string                 `json:"created_at"`
 	UpdatedAt                string                 `json:"updated_at"`
 	NetworkConditions        []networkConditionView `json:"network_conditions"`
+	WireGuard                *wireguardView         `json:"wireguard"`
 }
 
 // networkConditionView is one per-(node, network) materialisation record
@@ -121,6 +125,28 @@ type networkConditionView struct {
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error"`
 	LastReconciledAt     *string `json:"last_reconciled_at"`
+}
+
+// wireguardView is the node's WG underlay fabric block in the full Node view:
+// the node's own agent_wireguard identity plus the mesh peer set with a
+// per-peer established flag. admin/operator GET-by-id only (omitted on the list
+// path and the summary view); nil when the agent has not reported WG state yet.
+type wireguardView struct {
+	OverlayIP  string              `json:"overlay_ip"`
+	PublicKey  string              `json:"public_key"`
+	ListenPort int32               `json:"listen_port"`
+	Endpoint   string              `json:"endpoint"`
+	Peers      []wireguardPeerView `json:"peers"`
+}
+
+// wireguardPeerView is one other agent in this node's mesh. NodeName is
+// best-effort (nil when the peer's node row was deleted; the CLI falls back to
+// node_id). Established reflects this node's last observed handshake set.
+type wireguardPeerView struct {
+	NodeID      string  `json:"node_id"`
+	NodeName    *string `json:"node_name"`
+	OverlayIP   string  `json:"overlay_ip"`
+	Established bool    `json:"established"`
 }
 
 // pressureView mirrors components/schemas/MemoryPressureCondition
@@ -262,6 +288,54 @@ func networkConditions(ctx context.Context, s Store, nodeID uuid.UUID) ([]networ
 	return out, nil
 }
 
+// nodeWireguard builds the WG underlay fabric block for a node's full view: the
+// node's own agent_wireguard identity plus every other agent as a peer with an
+// established flag from this node's EstablishedPeers set. Returns nil (block
+// omitted) when the node has not reported WG yet. Peer node ids resolve to
+// names best-effort; a deleted node leaves NodeName nil so the wire never 500s
+// on a stale reference.
+func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID) (*wireguardView, error) {
+	self, err := s.AgentWireguardByNodeID(ctx, nodeID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	all, err := s.ListAgentWireguard(ctx)
+	if err != nil {
+		return nil, err
+	}
+	established := make(map[string]struct{}, len(self.EstablishedPeers))
+	for _, id := range self.EstablishedPeers {
+		established[id] = struct{}{}
+	}
+	peers := make([]wireguardPeerView, 0, len(all))
+	for _, rec := range all {
+		if rec.NodeID == nodeID {
+			continue
+		}
+		pv := wireguardPeerView{NodeID: rec.NodeID.String(), OverlayIP: rec.OverlayIP.String()}
+		_, pv.Established = established[rec.NodeID.String()]
+		n, nerr := s.NodeByID(ctx, rec.NodeID)
+		if nerr == nil {
+			name := n.Name
+			pv.NodeName = &name
+		} else if !errors.Is(nerr, store.ErrNotFound) {
+			return nil, nerr
+		}
+		peers = append(peers, pv)
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].NodeID < peers[j].NodeID })
+	return &wireguardView{
+		OverlayIP:  self.OverlayIP.String(),
+		PublicKey:  self.PublicKey,
+		ListenPort: self.ListenPort,
+		Endpoint:   self.Endpoint,
+		Peers:      peers,
+	}, nil
+}
+
 // toSummaryViewEffective is the reduced projection counterpart. The
 // summary shape excludes resource fields by design (developer / viewer
 // roles see only identity and status), so the only "effective" leak is
@@ -292,13 +366,17 @@ func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
 // per-node network state to developer / viewer is structurally impossible.
 // Callers that do not surface conditions (cordon / uncordon / create use
 // writeNodeResponse on the raw row) pass nil.
-func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, conditions []networkConditionView, write func(http.ResponseWriter, *http.Request, int, any)) {
+//
+// wg is the WG underlay fabric block, likewise full-view only and nil when the
+// caller does not surface it (or the node has not reported WG yet).
+func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, conditions []networkConditionView, wg *wireguardView, write func(http.ResponseWriter, *http.Request, int, any)) {
 	user := auth.UserFromContext(r.Context())
 	if user != nil && (user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
 		v := toViewEffective(n)
 		if conditions != nil {
 			v.NetworkConditions = conditions
 		}
+		v.WireGuard = wg
 		write(w, r, status, v)
 		return
 	}

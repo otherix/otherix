@@ -30,15 +30,17 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // wgHeartbeatReport is the test-side observed WG state posted up the heartbeat
 // channel. Mirrors the agent-side WireGuardReport JSON contract.
 type wgHeartbeatReport struct {
-	PublicKey  string `json:"public_key"`
-	Endpoint   string `json:"endpoint"`
-	ListenPort int32  `json:"listen_port"`
+	PublicKey        string   `json:"public_key"`
+	Endpoint         string   `json:"endpoint"`
+	ListenPort       int32    `json:"listen_port"`
+	EstablishedPeers []string `json:"established_peers,omitempty"`
 }
 
 // wgHeartbeatRequest is the minimal heartbeat body the test posts: just enough
@@ -164,6 +166,66 @@ func TestWireguardPeerDistribution(t *testing.T) {
 		OverlayIP:  "10.42.0.2",
 		AllowedIPs: []string{"10.42.0.2/32"},
 	})
+}
+
+// TestNodeGetWireguardFabric drives the admin/operator-only WG fabric block on
+// GET /v1/nodes/{name}: the node's own underlay identity plus every other agent
+// as a mesh peer with an established flag sourced from this node's reported
+// EstablishedPeers set.
+func TestNodeGetWireguardFabric(t *testing.T) {
+	h := newE2E(t)
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+
+	a := wgSeedAgent(t, h, caCert, caKey, "node-a")
+	b := wgSeedAgent(t, h, caCert, caKey, "node-b")
+
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820})
+	wgSendHeartbeat(t, agentSrv.URL, b, &wgHeartbeatReport{PublicKey: "pkB", Endpoint: "b.example:51820", ListenPort: 51820})
+	wgSendHeartbeat(t, agentSrv.URL, a, &wgHeartbeatReport{
+		PublicKey: "pkA", Endpoint: "a.example:51820", ListenPort: 51820,
+		EstablishedPeers: []string{b.nodeID.String()},
+	})
+
+	adminTok, _ := loginAs(t, h, auth.RoleAdmin)
+	resp := h.get(t, "/v1/nodes/"+a.name, adminTok)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET node-a status = %d, want 200", resp.StatusCode)
+	}
+	var node struct {
+		WireGuard *struct {
+			OverlayIP  string `json:"overlay_ip"`
+			PublicKey  string `json:"public_key"`
+			ListenPort int32  `json:"listen_port"`
+			Endpoint   string `json:"endpoint"`
+			Peers      []struct {
+				NodeID      string  `json:"node_id"`
+				NodeName    *string `json:"node_name"`
+				OverlayIP   string  `json:"overlay_ip"`
+				Established bool    `json:"established"`
+			} `json:"peers"`
+		} `json:"wireguard"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+		t.Fatalf("decode node-a: %v", err)
+	}
+	if node.WireGuard == nil {
+		t.Fatal("node get: wireguard block nil, want fabric identity")
+	}
+	if node.WireGuard.OverlayIP != "10.42.0.1" {
+		t.Errorf("overlay_ip = %q, want 10.42.0.1", node.WireGuard.OverlayIP)
+	}
+	if len(node.WireGuard.Peers) != 1 {
+		t.Fatalf("peers = %d, want 1 (%+v)", len(node.WireGuard.Peers), node.WireGuard.Peers)
+	}
+	p := node.WireGuard.Peers[0]
+	if p.OverlayIP != "10.42.0.2" || !p.Established {
+		t.Errorf("peer = {overlay %s established %v}, want {10.42.0.2 true}", p.OverlayIP, p.Established)
+	}
+	if p.NodeName == nil || *p.NodeName != b.name {
+		t.Errorf("peer node_name = %v, want %s", p.NodeName, b.name)
+	}
 }
 
 // wgAssertPeer compares one declared peer against want, field by field.

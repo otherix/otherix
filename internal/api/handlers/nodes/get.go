@@ -54,6 +54,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	// summary view drops it regardless). NetworkByID skips stale rows
 	// whose network was deleted, so a lingering status never 500s the read.
 	var conditions []networkConditionView
+	var wg *wireguardView
 	if user := auth.UserFromContext(r.Context()); user != nil &&
 		(user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
 		conditions, err = networkConditions(r.Context(), h.store, resolved.ID)
@@ -62,7 +63,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 				response.CodeInternal, "load node network conditions", nil)
 			return
 		}
+		wg, err = nodeWireguard(r.Context(), h.store, resolved.ID)
+		if err != nil {
+			response.WriteError(w, r, http.StatusInternalServerError,
+				response.CodeInternal, "load node wireguard fabric", nil)
+			return
+		}
 	}
 
-	writeNodeResponseEffective(w, r, http.StatusOK, row, conditions, response.WriteJSON)
+	writeNodeResponseEffective(w, r, http.StatusOK, row, conditions, wg, response.WriteJSON)
 }

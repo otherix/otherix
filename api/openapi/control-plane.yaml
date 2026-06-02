@@ -4182,6 +4182,19 @@ components:
             network with a recorded status on this node (ready, pending,
             or failed); a status whose network has since been deleted is
             omitted.
+        wireguard:
+          oneOf:
+            - $ref: "#/components/schemas/NodeWireguard"
+            - type: "null"
+          description: |
+            WireGuard underlay fabric block for this node: its own
+            CP-assigned identity (overlay_ip, public_key, listen_port,
+            endpoint) plus the mesh peer set, each peer flagged
+            `established` per this node's last reported handshake set.
+
+            admin / operator only, populated only on
+            `GET /v1/nodes/{id}`. Null when the node has not reported
+            WireGuard state yet.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -4210,6 +4223,28 @@ components:
           description: |
             Timestamp of the last successful reconciliation on this node;
             null until the network first materialises.
+
+    NodeWireguard:
+      type: object
+      description: WireGuard underlay fabric block for a node (admin/operator GET-by-id only).
+      required: [overlay_ip, public_key, listen_port, endpoint, peers]
+      properties:
+        overlay_ip: { type: string }
+        public_key: { type: string }
+        listen_port: { type: integer, format: int32 }
+        endpoint: { type: string }
+        peers:
+          type: array
+          items: { $ref: "#/components/schemas/NodeWireguardPeer" }
+
+    NodeWireguardPeer:
+      type: object
+      required: [node_id, overlay_ip, established]
+      properties:
+        node_id: { type: string, format: uuid }
+        node_name: { type: [string, "null"] }
+        overlay_ip: { type: string }
+        established: { type: boolean }
 
     MemoryPressureCondition:
       type: [object, "null"]
