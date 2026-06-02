@@ -37,7 +37,7 @@ type WireguardReport struct {
 }
 
 // DeclaredWireGuardPeer is one other agent the CP wants in this agent's WG mesh
-// (the heartbeat down-channel). AllowedIPs carries the peer's overlay /24.
+// (the heartbeat down-channel). AllowedIPs carries the peer's overlay /32.
 type DeclaredWireGuardPeer struct {
 	NodeID     string   `json:"node_id"`
 	PublicKey  string   `json:"public_key"`

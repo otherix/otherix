@@ -37,7 +37,7 @@ var (
 	ErrJoinNodeNameTaken        = errors.New("store: node already has an active cert")
 
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
-	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free /24 for a new agent")
+	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 )
 
 // ResourceInUseError reports that a resource cannot be deleted because other

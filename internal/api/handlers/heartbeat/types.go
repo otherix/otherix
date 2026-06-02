@@ -34,7 +34,7 @@ type wireguardReport struct {
 
 // declaredWireGuardPeer is one peer in the fabric down-channel: another agent's
 // CP-assigned identity (node_id, pubkey, endpoint, overlay_ip) plus the peer's
-// overlay /24 as allowed_ips.
+// overlay /32 as allowed_ips.
 type declaredWireGuardPeer struct {
 	NodeID     string   `json:"node_id"`
 	PublicKey  string   `json:"public_key"`
