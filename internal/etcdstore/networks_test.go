@@ -609,3 +609,101 @@ func TestUpsertNetworkNodeStatusNoopIfUnchanged(t *testing.T) {
 		t.Errorf("updated_at after status change = %v, want after %v (real change must rewrite)", third, first)
 	}
 }
+
+func TestCreateNetworkOverlayAllocatesVNI(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	n1, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-a", Type: store.NetworkTypeOverlay,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork ov-a: %v", err)
+	}
+	if n1.Vni == nil || *n1.Vni != 1000 {
+		t.Errorf("ov-a Vni = %v, want 1000", n1.Vni)
+	}
+	if n1.BridgeName != "otb1000" {
+		t.Errorf("ov-a BridgeName = %q, want otb1000", n1.BridgeName)
+	}
+	if !n1.Managed || n1.Egress != store.NetworkEgressNone || n1.Mtu != store.OverlayMTU {
+		t.Errorf("ov-a forced fields = (managed=%v egress=%q mtu=%d), want (true none 1390)", n1.Managed, n1.Egress, n1.Mtu)
+	}
+
+	n2, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-b", Type: store.NetworkTypeOverlay,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork ov-b: %v", err)
+	}
+	if n2.Vni == nil || *n2.Vni != 1001 {
+		t.Errorf("ov-b Vni = %v, want 1001", n2.Vni)
+	}
+}
+
+func TestCreateNetworkOverlayVNINoReclaimOnDelete(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+
+	n1, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-a", Type: store.NetworkTypeOverlay, Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create ov-a: %v", err)
+	}
+	if err := s.DeleteNetwork(ctx, n1.ID); err != nil {
+		t.Fatalf("delete ov-a: %v", err)
+	}
+	n2, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-c", Type: store.NetworkTypeOverlay, Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create ov-c: %v", err)
+	}
+	if n2.Vni == nil || *n2.Vni != 1001 {
+		t.Errorf("ov-c Vni = %v, want 1001 (no reclaim of 1000)", n2.Vni)
+	}
+}
+
+func TestCreateNetworkOverlayVNIExhausted(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedVNIRange(ctx, 1000, 1001); err != nil {
+		t.Fatalf("seed range: %v", err)
+	}
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	for i, name := range []string{"a", "b"} {
+		if _, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+			ID: uuid.New(), Name: "ov-" + name, Type: store.NetworkTypeOverlay, Subnet: &sn, Config: []byte("{}"),
+		}); err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+	}
+	_, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-c", Type: store.NetworkTypeOverlay, Subnet: &sn, Config: []byte("{}"),
+	})
+	if !errors.Is(err, store.ErrVNIExhausted) {
+		t.Errorf("third overlay create err = %v, want ErrVNIExhausted", err)
+	}
+}
+
+func TestCreateNetworkOverlayNameCollision(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	if _, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "dup", Type: store.NetworkTypeOverlay, Subnet: &sn, Config: []byte("{}"),
+	}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	_, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "DUP", Type: store.NetworkTypeOverlay, Subnet: &sn, Config: []byte("{}"),
+	})
+	if !errors.Is(err, store.ErrNetworkNameExists) {
+		t.Errorf("dup create err = %v, want ErrNetworkNameExists", err)
+	}
+}

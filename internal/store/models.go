@@ -81,8 +81,13 @@ const (
 type NetworkType string
 
 const (
-	NetworkTypeBridge NetworkType = "bridge"
+	NetworkTypeBridge  NetworkType = "bridge"
+	NetworkTypeOverlay NetworkType = "overlay"
 )
+
+// OverlayMTU is the fixed inner MTU for type=overlay networks phase 1
+// (1500 - 60 WireGuard - 50 VXLAN). Operator override is a future feature.
+const OverlayMTU int32 = 1390
 
 type NetworkEgress string
 
@@ -419,7 +424,10 @@ type Network struct {
 	// Gateway is the host-side gateway IP assigned on the bridge when
 	// Egress=nat (defaults to the first usable host in Subnet). Nil
 	// otherwise.
-	Gateway   *netip.Addr
+	Gateway *netip.Addr
+	// Vni is the CP-allocated VXLAN Network Identifier, unique and
+	// immutable, present only for type=overlay. Nil for bridge.
+	Vni       *int32
 	Config    []byte
 	CreatedAt time.Time
 	UpdatedAt time.Time

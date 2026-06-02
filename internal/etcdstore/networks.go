@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,32 @@ func networkPrefix() string { return etcd.Key("networks") + "/" }
 
 func networkNameGuard(name string) string {
 	return etcd.Key("uniq", "networks", "name", strings.ToLower(name))
+}
+
+func networkVNIGuard(vni int32) string {
+	return etcd.Key("uniq", "networks", "vni", strconv.Itoa(int(vni)))
+}
+
+func networkVNISeqKey() string { return etcd.Key("seq", "network_vni") }
+
+// allocateVNI hands out the next VXLAN VNI from the cluster range via the
+// monotonic network_vni counter (value = min + seq-1). VNIs are never reclaimed
+// (a deleted overlay's VNI is not reissued); the range is wide enough that the
+// leak is negligible at SMB scale. Returns store.ErrVNIExhausted past the range.
+func (s *Store) allocateVNI(ctx context.Context) (int32, error) {
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		return 0, err
+	}
+	seq, err := s.nextSeq(ctx, networkVNISeqKey())
+	if err != nil {
+		return 0, err
+	}
+	vni := min + int32(seq-1) //nolint:gosec // seq far below 2^31; the range (<= 16777215) exhausts first
+	if vni > max {
+		return 0, store.ErrVNIExhausted
+	}
+	return vni, nil
 }
 
 // networkNodeStatusPrefix is the root of the per-(network, node)
@@ -83,7 +110,10 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (store.Network, 
 
 // CreateNetwork inserts a network, stamping created_at/updated_at, and writes
 // the name guard + primary atomically. A name collision (case-insensitive,
-// among non-deleted rows) returns store.ErrNetworkNameExists.
+// among non-deleted rows) returns store.ErrNetworkNameExists. For type=overlay,
+// a VNI is allocated from the cluster range and forced fields (BridgeName,
+// Managed, Egress, Mtu) are stamped by the store regardless of what the caller
+// supplied.
 func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams) (store.Network, error) {
 	now := time.Now().UTC()
 	egress := arg.Egress
@@ -105,22 +135,42 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
+
+	guard := networkNameGuard(n.Name)
+	conds := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)}
+	var ops []clientv3.Op
+
+	if n.Type == store.NetworkTypeOverlay {
+		vni, err := s.allocateVNI(ctx)
+		if err != nil {
+			return store.Network{}, err
+		}
+		n.Vni = &vni
+		n.BridgeName = fmt.Sprintf("otb%d", vni)
+		n.Managed = true
+		n.Egress = store.NetworkEgressNone
+		n.Mtu = store.OverlayMTU
+		vg := networkVNIGuard(vni)
+		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vg), "=", 0))
+		ops = append(ops, clientv3.OpPut(vg, n.ID.String()))
+	}
+
 	val, err := etcd.Marshal(n)
 	if err != nil {
 		return store.Network{}, err
 	}
-	guard := networkNameGuard(n.Name)
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)).
-		Then(
-			clientv3.OpPut(guard, n.ID.String()),
-			clientv3.OpPut(networkKey(n.ID), string(val)),
-		).
-		Commit()
+	ops = append(ops,
+		clientv3.OpPut(guard, n.ID.String()),
+		clientv3.OpPut(networkKey(n.ID), string(val)),
+	)
+	resp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
 	if err != nil {
 		return store.Network{}, fmt.Errorf("create network txn: %v", err)
 	}
 	if !resp.Succeeded {
+		// Name collision (the freshly-allocated, monotonic VNI cannot collide,
+		// so a failed CAS is the name guard). The consumed VNI is leaked - the
+		// accepted no-reclaim trade-off; it never reissues anyway.
 		return store.Network{}, store.ErrNetworkNameExists
 	}
 	return n, nil
@@ -245,12 +295,14 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.c.Raw().Txn(ctx).
-		Then(
-			clientv3.OpPut(networkKey(id), string(val)),
-			clientv3.OpDelete(networkNameGuard(existing.Name)),
-		).
-		Commit(); err != nil {
+	ops := []clientv3.Op{
+		clientv3.OpPut(networkKey(id), string(val)),
+		clientv3.OpDelete(networkNameGuard(existing.Name)),
+	}
+	if existing.Type == store.NetworkTypeOverlay && existing.Vni != nil {
+		ops = append(ops, clientv3.OpDelete(networkVNIGuard(*existing.Vni)))
+	}
+	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return fmt.Errorf("delete network txn: %v", err)
 	}
 	// Best-effort purge of the per-(node, network) status records: they are
