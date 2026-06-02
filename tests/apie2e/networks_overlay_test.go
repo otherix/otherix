@@ -246,3 +246,154 @@ func TestOverlayNetworkNotDeclaredToAgents(t *testing.T) {
 		t.Errorf("declared_networks does not contain the seeded bridge network id=%q; bridge networks must be declared to agents", bridgeID)
 	}
 }
+
+// TestOverlayNetworkListFilterAndDistinctVNIs creates two overlay networks and
+// one bridge network, then verifies that GET /v1/networks?type=overlay returns
+// exactly the two overlay entries, each with a non-nil VNI, and that the two
+// VNIs are distinct.
+func TestOverlayNetworkListFilterAndDistinctVNIs(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	suffix := uuid.NewString()[:8]
+
+	// Create two overlay networks with distinct subnets.
+	ov1Resp := h.post(t, "/v1/networks", map[string]any{
+		"name":   "ov-filter-a-" + suffix,
+		"type":   "overlay",
+		"subnet": "10.54.0.0/24",
+	}, admin)
+	if ov1Resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create overlay-a status = %d, want 201", ov1Resp.StatusCode)
+	}
+	var ov1 overlayNetworkView
+	decodeJSON(t, ov1Resp, &ov1)
+
+	ov2Resp := h.post(t, "/v1/networks", map[string]any{
+		"name":   "ov-filter-b-" + suffix,
+		"type":   "overlay",
+		"subnet": "10.55.0.0/24",
+	}, admin)
+	if ov2Resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create overlay-b status = %d, want 201", ov2Resp.StatusCode)
+	}
+	var ov2 overlayNetworkView
+	decodeJSON(t, ov2Resp, &ov2)
+
+	// Create a bridge network to confirm it does not appear in the filtered list.
+	bridgeSuffix := suffix[:6]
+	brResp := h.post(t, "/v1/networks", map[string]any{
+		"name":        "br-filter-" + suffix,
+		"type":        "bridge",
+		"bridge_name": "br" + bridgeSuffix,
+	}, admin)
+	if brResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create bridge status = %d, want 201", brResp.StatusCode)
+	}
+	brResp.Body.Close()
+
+	// GET /v1/networks?type=overlay - must return exactly the two overlays.
+	listResp := h.get(t, "/v1/networks?type=overlay", admin)
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list overlay status = %d, want 200", listResp.StatusCode)
+	}
+	var listed struct {
+		Data []overlayNetworkView `json:"data"`
+	}
+	decodeJSON(t, listResp, &listed)
+
+	if len(listed.Data) != 2 {
+		t.Fatalf("list overlay count = %d, want 2", len(listed.Data))
+	}
+	for _, n := range listed.Data {
+		if n.Type != "overlay" {
+			t.Errorf("listed item %q has type %q, want overlay", n.ID, n.Type)
+		}
+		if n.VNI == nil {
+			t.Errorf("listed overlay %q has nil vni, want allocated VNI", n.ID)
+		}
+	}
+
+	// Both VNIs must be present and distinct.
+	if ov1.VNI == nil || ov2.VNI == nil {
+		t.Fatalf("one or both VNIs are nil: ov1.vni=%v ov2.vni=%v", ov1.VNI, ov2.VNI)
+	}
+	if *ov1.VNI == *ov2.VNI {
+		t.Errorf("VNIs are not distinct: ov1.vni=%d ov2.vni=%d", *ov1.VNI, *ov2.VNI)
+	}
+
+	// Also confirm bridge type filter does not include overlays.
+	bridgeListResp := h.get(t, "/v1/networks?type=bridge", admin)
+	if bridgeListResp.StatusCode != http.StatusOK {
+		t.Fatalf("list bridge status = %d, want 200", bridgeListResp.StatusCode)
+	}
+	var bridgeListed struct {
+		Data []overlayNetworkView `json:"data"`
+	}
+	decodeJSON(t, bridgeListResp, &bridgeListed)
+	for _, n := range bridgeListed.Data {
+		if n.Type == "overlay" {
+			t.Errorf("list ?type=bridge returned overlay entry %q", n.ID)
+		}
+	}
+}
+
+// TestOverlayNetworkRBACDeveloperCannotCreate verifies that a developer-role
+// principal receives 403 permission_denied when attempting to create a network.
+// network:manage is admin/operator-only; developer holds only network:read.
+func TestOverlayNetworkRBACDeveloperCannotCreate(t *testing.T) {
+	h := newE2E(t)
+	dev, _ := loginAs(t, h, auth.RoleDeveloper)
+
+	resp := h.post(t, "/v1/networks", map[string]any{
+		"name":   "ov-dev-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"subnet": "10.56.0.0/24",
+	}, dev)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("developer create overlay status = %d, want 403", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "permission_denied")
+}
+
+// TestOverlayVMAttachStillRejected is the N3a/N3c slice-boundary guard: an
+// overlay network exists in the store (created via the real API) but attaching
+// a VM NIC to it must still be refused with 400 until N3c explicitly enables
+// it. If this test ever starts returning 202, N3c work landed early.
+func TestOverlayVMAttachStillRejected(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+
+	// Create an overlay network via the API (not injected through the store).
+	ovResp := h.post(t, "/v1/networks", map[string]any{
+		"name":   "ov-vmattach-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"subnet": "10.57.0.0/24",
+	}, admin)
+	if ovResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create overlay status = %d, want 201", ovResp.StatusCode)
+	}
+	var ov overlayNetworkView
+	decodeJSON(t, ovResp, &ov)
+
+	// Seed a schedulable fixture (node + pool + template) so the pool resolver
+	// succeeds and execution reaches the network-type guard. In Handler.Create
+	// resolvePoolName runs before resolveNetwork, so without the fixture the
+	// request would 404 on the pool before the overlay guard is ever hit.
+	poolName, templateName := schedulableFixture(t, h, adminID)
+
+	resp := h.post(t, "/v1/vms", map[string]any{
+		"name":      "vm-ovattach-" + uuid.NewString()[:8],
+		"template":  templateName,
+		"pool":      poolName,
+		"vcpus":     2,
+		"memory_mb": 2048,
+		"network":   ov.Name,
+	}, admin)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("attach VM to overlay status = %d, want 400 (overlay attach not yet enabled)", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}
