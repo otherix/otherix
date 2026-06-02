@@ -54,7 +54,8 @@ provision:
         qemu-system-x86 qemu-system-arm qemu-utils \
         qemu-efi-aarch64 ovmf \
         genisoimage cloud-image-utils \
-        curl jq socat
+        curl jq socat \
+        wireguard-tools
 
       if [ -e /dev/kvm ]; then
         echo "✓ KVM available, nested virtualization OK"
