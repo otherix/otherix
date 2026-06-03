@@ -284,6 +284,36 @@ corrected set.
 
 ---
 
+## Operations: orphaned qemu after a partitioned delete
+
+Deleting a VM whose owning node is `unreachable` (a network
+partition) can leak a qemu process on that node if the node later
+returns. The delete worker (`runDelete` in
+`internal/api/handlers/vms/run.go`) attempts a best-effort agent
+teardown first and only projects the delete directly when that agent
+call fails, so the common case (the node is reachable at delete time)
+reaps qemu cleanly. The leak window is narrow: the node is
+`unreachable` at delete time, the agent teardown does not land, and the
+node later heals with the qemu still running. The agent's VM reconciler
+does not prune VMs the CP has stopped declaring (it reports them and
+waits), so the returned node keeps the orphaned qemu alive.
+
+The leak is detectable. The returned node heartbeats the orphaned VM,
+and the CP logs `heartbeat references unknown vm; skipping` (in
+`applyVMs`, `internal/api/handlers/heartbeat/handle.go`) for a VM it no
+longer knows. An operator who sees that log can identify the node and
+manually reap the qemu process.
+
+Authoritative agent-side teardown (the agent destroying a VM it
+infers the CP no longer wants) was deliberately NOT adopted. Acting on
+inferred absence risks destroying a VM that is still wanted - for
+example during a CP-side projection lag or a transient store read - a
+strictly worse outcome than a recoverable, detectable leak. The leak is
+accepted as a known limitation; the teardown is left to the operator,
+who can confirm the VM is genuinely deleted before reaping.
+
+---
+
 ## What's next
 
 The schema, api-server, agent, and CLI are wired end-to-end.
