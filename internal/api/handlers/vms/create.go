@@ -50,11 +50,11 @@ type vmCreateRequest struct {
 	Node     *string `json:"node,omitempty"`
 	VCPUs    int     `json:"vcpus"`
 	MemoryMB int     `json:"memory_mb"`
-	// Network is an optional bridge network to attach a single NIC to.
-	// Accepts either a network name or a uuid literal. When omitted the
-	// VM is created with no NIC (the agent falls back to legacy SLIRP
-	// user-mode networking). Non-bridge network types are rejected with
-	// 400 until overlay attach lands (N1b).
+	// Network is an optional network to attach a single NIC to. Accepts
+	// either a network name or a uuid literal, of type bridge or overlay.
+	// When omitted the VM is created with no NIC (the agent falls back to
+	// legacy SLIRP user-mode networking). Other network types are rejected
+	// with 400.
 	Network string `json:"network,omitempty"`
 	// UserData is an optional VM-level cloud-init override (L3
 	// Area 3 lock). When provided, fully replaces the template's
@@ -466,9 +466,9 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 //   - uuid literal: looked up by id; unknown id → 404 not_found.
 //   - bare string: looked up by name; unknown name → 404 not_found.
 //
-// A resolved network whose type is not `bridge` is rejected with 400 — only
-// bridge attach is supported in this slice (overlay is N1b). The boolean
-// second return mirrors the other resolve* helpers' short-circuit signal.
+// Both `bridge` and `overlay` networks are attachable; any other type is
+// rejected with 400. The boolean second return mirrors the other resolve*
+// helpers' short-circuit signal.
 func (h *Handler) resolveNetwork(w http.ResponseWriter, r *http.Request, requested string) (*store.Network, bool) {
 	if requested == "" {
 		return nil, true
@@ -493,10 +493,13 @@ func (h *Handler) resolveNetwork(w http.ResponseWriter, r *http.Request, request
 			response.CodeInternal, "load network", nil)
 		return nil, false
 	}
-	if net.Type != store.NetworkTypeBridge {
+	switch net.Type {
+	case store.NetworkTypeBridge, store.NetworkTypeOverlay:
+		// attachable
+	default:
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed,
-			"only bridge networks can be attached at vm create",
+			"network type cannot be attached at vm create",
 			map[string]any{"network_type": string(net.Type)})
 		return nil, false
 	}

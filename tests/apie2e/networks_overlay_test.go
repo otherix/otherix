@@ -11,12 +11,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // overlayNetworkView is the minimal decode shape for overlay-specific fields
@@ -394,11 +396,12 @@ func TestOverlayNetworkRBACDeveloperCannotCreate(t *testing.T) {
 	assertErrorCode(t, resp, "permission_denied")
 }
 
-// TestOverlayVMAttachStillRejected is the N3a/N3c slice-boundary guard: an
-// overlay network exists in the store (created via the real API) but attaching
-// a VM NIC to it must still be refused with 400 until N3c explicitly enables
-// it. If this test ever starts returning 202, N3c work landed early.
-func TestOverlayVMAttachStillRejected(t *testing.T) {
+// TestOverlayVMAttachAllowed is the N3c gate-lift assertion: an overlay network
+// created via the real API can be attached to a VM at create time, reaching
+// 202 Accepted. It seeds the overlay reconciled-ready on the fixture node so the
+// network-aware placement filter admits the candidate (mirroring the
+// bridge-attach eligibility seed in TestVMCreateAttachesNicToNetwork).
+func TestOverlayVMAttachAllowed(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
 
@@ -415,10 +418,15 @@ func TestOverlayVMAttachStillRejected(t *testing.T) {
 	decodeJSON(t, ovResp, &ov)
 
 	// Seed a schedulable fixture (node + pool + template) so the pool resolver
-	// succeeds and execution reaches the network-type guard. In Handler.Create
-	// resolvePoolName runs before resolveNetwork, so without the fixture the
-	// request would 404 on the pool before the overlay guard is ever hit.
-	poolName, templateName := schedulableFixture(t, h, adminID)
+	// succeeds and placement has a candidate.
+	nodeID, poolName, templateName := schedulableFixtureWithNode(t, h, adminID)
+	// The network-aware filter requires the requested network to be ready on
+	// the candidate node before placement admits it.
+	if err := h.store.UpsertNetworkNodeStatus(context.Background(), store.UpsertNetworkNodeStatusParams{
+		NetworkID: uuid.MustParse(ov.ID), NodeID: nodeID, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
+	}
 
 	resp := h.post(t, "/v1/vms", map[string]any{
 		"name":      "vm-ovattach-" + uuid.NewString()[:8],
@@ -429,8 +437,8 @@ func TestOverlayVMAttachStillRejected(t *testing.T) {
 		"network":   ov.Name,
 	}, admin)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("attach VM to overlay status = %d, want 400 (overlay attach not yet enabled)", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("attach VM to overlay status = %d, want 202; body=%s", resp.StatusCode, body)
 	}
-	assertErrorCode(t, resp, "validation_failed")
 }

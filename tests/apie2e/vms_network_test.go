@@ -255,30 +255,3 @@ func TestVMCreateNetworkFailedNoEligibleNode(t *testing.T) {
 		t.Errorf("details.reason = %q, want network_not_ready (details=%v)", reason, env.Error.Details)
 	}
 }
-
-func TestVMCreateNonBridgeNetworkRejected(t *testing.T) {
-	h := newE2E(t)
-	admin, adminID := loginAs(t, h, auth.RoleAdmin)
-	poolName, templateName := schedulableFixture(t, h, adminID)
-
-	// Seed a non-bridge network directly (the API only admits bridge today,
-	// so the store is used to construct the overlay-style row under test).
-	ctx := context.Background()
-	netID := uuid.New()
-	overlay := store.CreateNetworkParams{
-		ID: netID, Name: "overlay-" + uuid.NewString()[:8], Type: store.NetworkType("overlay"),
-		BridgeName: "br-ovl", Mtu: 1500, Config: []byte(`{}`),
-	}
-	if _, err := h.store.CreateNetwork(ctx, overlay); err != nil {
-		t.Fatalf("CreateNetwork: %v", err)
-	}
-
-	resp := h.post(t, "/v1/vms", map[string]any{
-		"name": "vm-" + uuid.NewString()[:8], "template": templateName, "pool": poolName,
-		"vcpus": 2, "memory_mb": 2048, "network": overlay.Name,
-	}, admin)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("create vm status = %d, want 400 (non-bridge network)", resp.StatusCode)
-	}
-	resp.Body.Close()
-}
