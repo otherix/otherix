@@ -205,7 +205,7 @@ func (r *WireGuard) reconcile(ctx context.Context) {
 		PrivateKey: r.key,
 		ListenPort: r.cfg.ListenPort,
 		Address:    addr,
-		MTU:        0, // kernel default (1420); MTU tuning lands with the VTEP rebind
+		MTU:        netfabric.WireGuardMTU, // otwg0 carries VXLAN; reapplied each pass (drift-heal)
 	}); err != nil {
 		r.log.WarnContext(ctx, "wireguard ensure interface failed",
 			slog.String("interface", wgInterfaceName),

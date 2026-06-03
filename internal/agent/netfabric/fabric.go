@@ -24,6 +24,12 @@ import (
 // host tuntap links by it.
 const tapPrefix = "ot"
 
+// WireGuardMTU is the otwg0 link MTU. The physical underlay is 1500; WireGuard's
+// own encapsulation costs 60 bytes (20 IP + 8 UDP + 32 WG), leaving 1440. The
+// overlay inner MTU (store.OverlayMTU, 1390) is in turn 1440 minus the 50-byte
+// VXLAN encap, so a VM frame fits end to end without fragmentation.
+const WireGuardMTU = 1440
+
 // allowedModels is the set of QEMU NIC models the fabric recognises.
 var allowedModels = map[string]struct{}{
 	"virtio":  {},
