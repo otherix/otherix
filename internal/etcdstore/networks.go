@@ -150,7 +150,11 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		n.BridgeName = fmt.Sprintf("otb%d", vni)
 		n.Managed = true
 		n.Egress = store.NetworkEgressNone
-		n.Mtu = store.OverlayMTU
+		underlay, err := s.UnderlayMTU(ctx)
+		if err != nil {
+			return store.Network{}, fmt.Errorf("read underlay mtu: %v", err)
+		}
+		n.Mtu = underlay - store.OverlayEncapOverhead
 		vg := networkVNIGuard(vni)
 		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vg), "=", 0))
 		ops = append(ops, clientv3.OpPut(vg, n.ID.String()))

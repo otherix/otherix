@@ -183,3 +183,52 @@ func (s *Store) VNIRange(ctx context.Context) (int32, int32, error) {
 	}
 	return min, max, nil
 }
+
+// defaultUnderlayMTU is the physical underlay MTU assumed when the operator
+// configured none at bootstrap (the classic 1500-byte Ethernet underlay).
+const defaultUnderlayMTU = 1500
+
+// SeedUnderlayMTU writes the physical underlay MTU on the singleton
+// first-writer-wins: it reads the singleton and no-ops when a value already
+// exists (immutable thereafter - no public mutator), before validating this
+// replica's local config. The short-circuit precedes validation so a
+// non-first-writer replica booting with a typo'd or stale local config does not
+// fail - the immutable seeded value already governs. Zero falls back to the
+// default. The overlay inner MTU (underlay - OverlayEncapOverhead) and otwg0 MTU
+// derive from it. A FIRST seed with an out-of-range value still errors.
+func (s *Store) SeedUnderlayMTU(ctx context.Context, mtu int) error {
+	cur, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if cur.UnderlayMTU != nil {
+		return nil // already seeded, immutable - ignore this replica's local config
+	}
+	if mtu == 0 {
+		mtu = defaultUnderlayMTU
+	}
+	if mtu < 1280 || mtu > 65535 {
+		return fmt.Errorf("invalid underlay mtu %d: require 1280<=mtu<=65535", mtu)
+	}
+	cur.ID = 1
+	m := int32(mtu) //nolint:gosec // bounded by the validation above
+	cur.UnderlayMTU = &m
+	if cur.CreatedAt.IsZero() {
+		cur.CreatedAt = time.Now().UTC()
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	return s.c.PutJSON(ctx, clusterSettingsKey(), cur)
+}
+
+// UnderlayMTU returns the seeded underlay MTU, falling back to the default when
+// the singleton has no value.
+func (s *Store) UnderlayMTU(ctx context.Context) (int32, error) {
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if cs.UnderlayMTU != nil {
+		return *cs.UnderlayMTU, nil
+	}
+	return defaultUnderlayMTU, nil
+}

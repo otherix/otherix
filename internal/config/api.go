@@ -29,14 +29,16 @@ type APIConfig struct {
 	Etcd         EtcdConfig         `koanf:"etcd"`
 }
 
-// NetworkConfig holds cluster overlay-network settings. Both fields are
+// NetworkConfig holds cluster overlay-network settings. All fields are
 // SEED-ONLY: read once at first boot to seed cluster_settings
 // first-writer-wins; thereafter every replica reads the etcd value and
 // ignores this field. Defaults: OverlaySupernet 10.42.0.0/16,
-// VNIRange 1000-65535.
+// VNIRange 1000-65535, UnderlayMTU 1500. UnderlayMTU is the physical underlay
+// MTU; the overlay inner MTU and otwg0 MTU derive from it.
 type NetworkConfig struct {
 	OverlaySupernet string         `koanf:"overlay_supernet"`
 	VNIRange        VNIRangeConfig `koanf:"vni_range"`
+	UnderlayMTU     int            `koanf:"underlay_mtu"`
 }
 
 // VNIRangeConfig bounds the overlay VXLAN VNI allocation range. Seeded into
@@ -624,6 +626,7 @@ func defaultAPIConfig() APIConfig {
 		Network: NetworkConfig{
 			OverlaySupernet: "10.42.0.0/16",
 			VNIRange:        VNIRangeConfig{Min: 1000, Max: 65535},
+			UnderlayMTU:     1500,
 		},
 		Etcd: EtcdConfig{
 			Mode:         "single",

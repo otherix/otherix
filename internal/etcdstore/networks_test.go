@@ -645,6 +645,26 @@ func TestCreateNetworkOverlayAllocatesVNI(t *testing.T) {
 	}
 }
 
+func TestCreateOverlayStampsMtuFromUnderlay(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SeedUnderlayMTU(ctx, 9000); err != nil {
+		t.Fatalf("seed underlay: %v", err)
+	}
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	n, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-jumbo", Type: store.NetworkTypeOverlay,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create overlay: %v", err)
+	}
+	if n.Mtu != 9000-store.OverlayEncapOverhead {
+		t.Errorf("overlay Mtu = %d, want underlay(9000) - 110 = 8890", n.Mtu)
+	}
+}
+
 func TestCreateNetworkOverlayVNINoReclaimOnDelete(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

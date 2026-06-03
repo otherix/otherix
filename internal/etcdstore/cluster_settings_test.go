@@ -143,3 +143,69 @@ func TestSeedVNIRangeZeroDefaults(t *testing.T) {
 		t.Errorf("VNIRange() after zero seed = (%d,%d), want (1000,65535)", min, max)
 	}
 }
+
+func TestSeedAndReadUnderlayMTU(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedUnderlayMTU(ctx, 9000); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	mtu, err := s.UnderlayMTU(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if mtu != 9000 {
+		t.Errorf("underlay mtu = %d, want 9000", mtu)
+	}
+	if err := s.SeedUnderlayMTU(ctx, 1400); err != nil { // immutable: no-op
+		t.Fatalf("second seed: %v", err)
+	}
+	mtu, _ = s.UnderlayMTU(ctx)
+	if mtu != 9000 {
+		t.Errorf("underlay mtu = %d after second seed, want immutable 9000", mtu)
+	}
+}
+
+func TestUnderlayMTUDefaultWhenUnset(t *testing.T) {
+	s, _ := startStore(t)
+	mtu, err := s.UnderlayMTU(context.Background())
+	if err != nil {
+		t.Fatalf("UnderlayMTU: %v", err)
+	}
+	if mtu != 1500 {
+		t.Errorf("UnderlayMTU() default = %d, want 1500", mtu)
+	}
+}
+
+func TestSeedUnderlayMTURejectsBadBounds(t *testing.T) {
+	cases := []struct {
+		name string
+		mtu  int
+	}{
+		{"below floor", 1279},
+		{"above ceiling", 65536},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := startStore(t)
+			if err := s.SeedUnderlayMTU(context.Background(), tc.mtu); err == nil {
+				t.Errorf("SeedUnderlayMTU(%d) = nil, want error", tc.mtu)
+			}
+		})
+	}
+}
+
+func TestSeedUnderlayMTUZeroDefaults(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedUnderlayMTU(ctx, 0); err != nil {
+		t.Fatalf("SeedUnderlayMTU(0): %v", err)
+	}
+	mtu, err := s.UnderlayMTU(ctx)
+	if err != nil {
+		t.Fatalf("UnderlayMTU: %v", err)
+	}
+	if mtu != 1500 {
+		t.Errorf("UnderlayMTU() after zero seed = %d, want 1500", mtu)
+	}
+}

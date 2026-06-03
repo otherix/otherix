@@ -360,8 +360,10 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 // endpoint and the Step 2 CSR signer have an active row), then
 // SeedOverlaySupernet (writes the cluster overlay supernet first-writer-wins so
 // agent WG overlay allocation has a supernet to carve /24s from), then
-// SeedVNIRange (writes the VXLAN VNI allocation bounds first-writer-wins).
-// All hooks are idempotent - repeat boots observe existing rows and no-op.
+// SeedVNIRange (writes the VXLAN VNI allocation bounds first-writer-wins), then
+// SeedUnderlayMTU (writes the physical underlay MTU first-writer-wins; the
+// overlay inner MTU and otwg0 MTU derive from it). All hooks are idempotent -
+// repeat boots observe existing rows and no-op.
 func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, netCfg config.NetworkConfig, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap admin: %v", err)
@@ -374,6 +376,9 @@ func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth
 	}
 	if err := st.SeedVNIRange(ctx, netCfg.VNIRange.Min, netCfg.VNIRange.Max); err != nil {
 		return fmt.Errorf("seed vni range: %v", err)
+	}
+	if err := st.SeedUnderlayMTU(ctx, netCfg.UnderlayMTU); err != nil {
+		return fmt.Errorf("seed underlay mtu: %v", err)
 	}
 	return nil
 }

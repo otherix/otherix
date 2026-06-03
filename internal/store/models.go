@@ -85,9 +85,15 @@ const (
 	NetworkTypeOverlay NetworkType = "overlay"
 )
 
-// OverlayMTU is the fixed inner MTU for type=overlay networks phase 1
-// (1500 - 60 WireGuard - 50 VXLAN). Operator override is a future feature.
+// OverlayMTU is the overlay inner MTU at the default 1500-byte underlay
+// (defaultUnderlayMTU - OverlayEncapOverhead = 1500 - 110). On a sub-1500
+// underlay the overlay MTU derives from the seeded underlay_mtu instead; this
+// constant is the documented default-underlay value (tests reference it).
 const OverlayMTU int32 = 1390
+
+// OverlayEncapOverhead is the per-frame overhead an overlay VM frame pays:
+// 60 bytes WireGuard + 50 bytes VXLAN. The overlay inner MTU is underlay - this.
+const OverlayEncapOverhead int32 = 110
 
 type NetworkEgress string
 
@@ -329,6 +335,7 @@ type ClusterSetting struct {
 	OverlaySupernet *string // cluster overlay supernet CIDR; seeded once at boot, immutable
 	VNIMin          *int32  // overlay VNI range floor; seeded once at boot, immutable
 	VNIMax          *int32  // overlay VNI range ceiling; seeded once at boot, immutable
+	UnderlayMTU     *int32  // physical underlay MTU; seeded once at boot, immutable (overlay/otwg0 MTUs derive from it)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
