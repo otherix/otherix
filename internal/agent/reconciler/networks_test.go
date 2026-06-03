@@ -17,6 +17,32 @@ import (
 
 func strptr(s string) *string { return &s }
 
+// TestNetworksHandleResponseStoresSelfOverlayIP confirms the snapshot the
+// reconciler stores carries both the declared networks and the node's own
+// overlay IP (self_overlay_ip), which the overlay path needs as the VTEP
+// source address.
+func TestNetworksHandleResponseStoresSelfOverlayIP(t *testing.T) {
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.3/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{{ID: "n1", Type: "bridge", Managed: true, BridgeName: "br0", Mtu: 1500}},
+		SelfOverlayIP:    &ip,
+	})
+	d := rec.desired.Load()
+	if d == nil {
+		t.Fatal("desired not stored")
+	}
+	if d.selfOverlayIP != ip {
+		t.Errorf("selfOverlayIP = %q, want %q", d.selfOverlayIP, ip)
+	}
+	if len(d.networks) != 1 || d.networks[0].ID != "n1" {
+		t.Errorf("networks = %+v, want one entry id n1", d.networks)
+	}
+}
+
 // TestNewNetworks_RejectsNilFabric confirms boot-time misconfiguration
 // surfaces at construction, not at the first reconcile.
 func TestNewNetworks_RejectsNilFabric(t *testing.T) {

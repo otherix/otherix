@@ -42,7 +42,7 @@ type Networks struct {
 	fabric netfabric.Fabric
 	tick   time.Duration
 
-	desired atomic.Pointer[[]heartbeat.DeclaredNetwork]
+	desired atomic.Pointer[networksDesired]
 	trigger chan struct{}
 
 	mu      sync.Mutex
@@ -64,6 +64,14 @@ type appliedNetwork struct {
 	HasNAT     bool
 	Subnet     netip.Prefix
 	Gateway    netip.Prefix
+}
+
+// networksDesired is the latest CP-declared network intent for this node: the
+// declared set plus the node's own overlay IP (self_overlay_ip), which the
+// overlay path needs as the VTEP source. Bridge networks ignore the IP.
+type networksDesired struct {
+	networks      []heartbeat.DeclaredNetwork
+	selfOverlayIP string // CIDR "10.42.0.1/16"; "" until the CP allocates
 }
 
 // NewNetworks builds the network reconciler. tick==0 falls back to
@@ -95,8 +103,13 @@ func (r *Networks) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Re
 	if resp == nil {
 		return
 	}
-	networks := append([]heartbeat.DeclaredNetwork(nil), resp.DeclaredNetworks...)
-	r.desired.Store(&networks)
+	d := &networksDesired{
+		networks: append([]heartbeat.DeclaredNetwork(nil), resp.DeclaredNetworks...),
+	}
+	if resp.SelfOverlayIP != nil {
+		d.selfOverlayIP = *resp.SelfOverlayIP
+	}
+	r.desired.Store(d)
 	select {
 	case r.trigger <- struct{}{}:
 	default:
@@ -151,17 +164,19 @@ func (r *Networks) reconcile(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	desiredPtr := r.desired.Load()
+	d := r.desired.Load()
 	var desired []heartbeat.DeclaredNetwork
-	if desiredPtr != nil {
-		desired = *desiredPtr
+	var selfOverlayIP string
+	if d != nil {
+		desired = d.networks
+		selfOverlayIP = d.selfOverlayIP
 	}
 
 	declared := make(map[string]struct{}, len(desired))
 	nextReports := make(map[string]heartbeat.NetworkReport, len(desired))
-	for _, d := range desired {
-		declared[d.ID] = struct{}{}
-		nextReports[d.ID] = r.applyNetwork(ctx, d)
+	for _, dn := range desired {
+		declared[dn.ID] = struct{}{}
+		nextReports[dn.ID] = r.applyNetwork(ctx, dn, selfOverlayIP)
 	}
 
 	r.removeUndeclared(ctx, declared)
@@ -174,7 +189,7 @@ func (r *Networks) reconcile(ctx context.Context) {
 // applyNetwork materialises one declared network and returns its report.
 // It also updates r.applied on success so a later removal knows what to
 // tear down.
-func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork) heartbeat.NetworkReport {
+func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork, selfOverlayIP string) heartbeat.NetworkReport {
 	if d.Type != "bridge" {
 		// Overlay and other types land in N1b; do not touch the fabric.
 		return r.failed(ctx, d, fmt.Sprintf("unsupported network type %q (overlay lands in N1b)", d.Type))
