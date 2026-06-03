@@ -48,7 +48,25 @@ type VMs struct {
 
 	mu      sync.Mutex
 	reports map[string]heartbeat.VMReport
+	// absence counts consecutive successful reconcile passes in which a
+	// locally-observed VM was absent from a fresh declared set, keyed by
+	// VM name. Reset to 0 the moment the VM reappears in the declared
+	// set; the VM is pruned once the count reaches pruneThreshold. Guards
+	// authoritative teardown against a single transient/partial
+	// heartbeat, CP-restart blips, and supernet-exhausted skips. In
+	// memory only — a process restart resets it, which is safe because
+	// boot starts from a nil declared set and the count rebuilds solely
+	// on successful heartbeats.
+	absence map[string]int
 }
+
+// pruneThreshold is the number of consecutive successful reconcile passes
+// a locally-observed VM must stay absent from the declared set before the
+// reconciler authoritatively tears it down. At DefaultTickInterval (10s)
+// K=3 means roughly 30s of consistent absence, enough to ride out a
+// single partial heartbeat, a CP restart, or a one-pass declared-set skip
+// before destroying a VM the control plane no longer wants.
+const pruneThreshold = 3
 
 // ErrNilVMManager guards nil-injection at construction time.
 var ErrNilVMManager = errors.New("reconciler: VMManager is required")
@@ -68,6 +86,7 @@ func NewVMs(manager VMManager, log *slog.Logger, tick time.Duration) (*VMs, erro
 		tick:    tick,
 		trigger: make(chan struct{}, 1),
 		reports: map[string]heartbeat.VMReport{},
+		absence: map[string]int{},
 	}, nil
 }
 
@@ -140,6 +159,8 @@ func (r *VMs) Run(ctx context.Context) error {
 //     (manual intervention)
 //   - observed transitional (pending /
 //     creating / stopping / deleting / paused) → skip; next tick re-checks
+//   - observed but undeclared in a fresh declared set → debounced
+//     authoritative teardown (see pruneUndeclared)
 //
 // All dispatch errors are logged but not propagated — the reconciler
 // is retry-forever and eventually consistent.
@@ -156,6 +177,12 @@ func (r *VMs) reconcile(ctx context.Context) {
 	for _, d := range desired {
 		desiredByName[d.Name] = d
 	}
+	// A nil pointer means no successful heartbeat has landed yet (boot,
+	// or every heartbeat so far failed — a failed heartbeat never calls
+	// HandleHeartbeatResponse). The declared set is not authoritative in
+	// that state, so prune accounting is suspended entirely: nothing is
+	// torn down and no absence counters move.
+	freshDeclared := desiredPtr != nil
 
 	observed := r.manager.List()
 	nextReports := make(map[string]heartbeat.VMReport, len(observed))
@@ -166,19 +193,90 @@ func (r *VMs) reconcile(ctx context.Context) {
 	for _, v := range observed {
 		decl, declared := desiredByName[v.Name]
 		if !declared {
-			// VM observed locally but CP does not declare it on this
-			// node. Could be: 1) CP-side delete tasks lost; 2) VM
-			// migrated away and CP forgot to declare elsewhere. Per L3
-			// D4 lock, CP orphan-detects via omission; agent simply
-			// reports the VM in heartbeat and waits. No corrective op.
+			if freshDeclared {
+				// VM observed locally but the control plane's fresh
+				// declared set omits it on this node — a CP-side delete
+				// the agent missed while partitioned. Debounced
+				// authoritative teardown closes the residual where the
+				// node returns after the delete.
+				r.pruneUndeclared(ctx, v)
+			}
 			continue
 		}
+		r.absenceReset(v.Name)
 		r.dispatch(ctx, v, decl)
+	}
+
+	if freshDeclared {
+		r.absenceForget(observed)
 	}
 
 	r.mu.Lock()
 	r.reports = nextReports
 	r.mu.Unlock()
+}
+
+// pruneUndeclared advances the debounce counter for a locally-observed VM
+// the fresh declared set omits and tears it down once the counter reaches
+// pruneThreshold. Mid-apply VMs (HasInFlight) and VMs already tearing down
+// (StatusDeleting) are exempt — their counter does not advance, so a
+// transient in-flight window never accelerates a prune. Teardown reuses
+// the graceful DeleteByName path (the same op a desired_phase=deleted
+// declaration drives), never a raw kill.
+func (r *VMs) pruneUndeclared(ctx context.Context, v *vm.VM) {
+	if r.manager.HasInFlight(v.Name) || v.Status == vm.StatusDeleting {
+		return
+	}
+
+	r.mu.Lock()
+	r.absence[v.Name]++
+	count := r.absence[v.Name]
+	r.mu.Unlock()
+
+	if count < pruneThreshold {
+		r.log.InfoContext(ctx, "vm reconcile: undeclared, debouncing teardown",
+			slog.String("vm", v.Name),
+			slog.Int("consecutive_absences", count),
+			slog.Int("threshold", pruneThreshold))
+		return
+	}
+
+	r.log.WarnContext(ctx, "vm reconcile: tearing down vm no longer declared by control plane",
+		slog.String("vm", v.Name),
+		slog.Int("consecutive_absences", count))
+	if _, err := r.manager.DeleteByName(ctx, v.Name); err != nil {
+		r.log.WarnContext(ctx, "vm reconcile: prune delete dispatch failed",
+			slog.String("vm", v.Name), slog.String("err", err.Error()))
+		return
+	}
+	r.absenceReset(v.Name)
+}
+
+// absenceReset clears a VM's debounce counter (it reappeared in the
+// declared set, or its teardown was successfully dispatched).
+func (r *VMs) absenceReset(name string) {
+	r.mu.Lock()
+	delete(r.absence, name)
+	r.mu.Unlock()
+}
+
+// absenceForget drops debounce counters for VMs no longer observed
+// locally so the map cannot grow without bound across reconcile passes.
+func (r *VMs) absenceForget(observed []*vm.VM) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.absence) == 0 {
+		return
+	}
+	live := make(map[string]struct{}, len(observed))
+	for _, v := range observed {
+		live[v.Name] = struct{}{}
+	}
+	for name := range r.absence {
+		if _, ok := live[name]; !ok {
+			delete(r.absence, name)
+		}
+	}
 }
 
 // dispatch handles one observed-vs-declared pair. Side-effect: may
