@@ -57,6 +57,11 @@ type FakeFabric struct {
 	FDBDeleteCalls []FDBCall
 	FDBListCalls   []uint32
 
+	// FDBOpLog records "append" / "delete" in the exact order the methods were
+	// called across both, so a test can assert their relative ordering (which the
+	// separate FDBAppendCalls / FDBDeleteCalls slices cannot express).
+	FDBOpLog []string
+
 	// WireGuardExistsResult is returned by WireGuardExists alongside
 	// Errs["WireGuardExists"].
 	WireGuardExistsResult bool
@@ -230,12 +235,14 @@ type FDBCall struct {
 // FDBAppend records the call and returns Errs["FDBAppend"].
 func (f *FakeFabric) FDBAppend(vni uint32, e FDBEntry) error {
 	f.FDBAppendCalls = append(f.FDBAppendCalls, FDBCall{VNI: vni, Entry: e})
+	f.FDBOpLog = append(f.FDBOpLog, "append")
 	return f.err("FDBAppend")
 }
 
 // FDBDelete records the call and returns Errs["FDBDelete"].
 func (f *FakeFabric) FDBDelete(vni uint32, e FDBEntry) error {
 	f.FDBDeleteCalls = append(f.FDBDeleteCalls, FDBCall{VNI: vni, Entry: e})
+	f.FDBOpLog = append(f.FDBOpLog, "delete")
 	return f.err("FDBDelete")
 }
 

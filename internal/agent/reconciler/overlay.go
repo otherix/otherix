@@ -80,7 +80,7 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 }
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for
-// this VNI: list-diff-apply (append missing, delete stale). It reports whether
+// this VNI: list-diff-apply (prune stale first, then append missing). It reports whether
 // the FDB fully converged this pass and how many declared entries it could not
 // parse. converged is false when the FDB could not be listed or when any
 // append/delete failed; unparseable counts declared entries dropped for a bad MAC
@@ -103,17 +103,13 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 	}
 
 	converged = true
-	for k, e := range desired {
-		if _, ok := currentSet[k]; ok {
-			continue
-		}
-		if err := r.fabric.FDBAppend(vni, e); err != nil {
-			converged = false
-			r.log.WarnContext(ctx, "overlay fdb append failed",
-				slog.Int("vni", int(vni)), slog.String("mac", e.MAC.String()),
-				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
-		}
-	}
+	// Prune BEFORE appending. When a MAC moves VTEPs (re-placement) the (mac,dst)
+	// set-diff is a delete-old + add-new; pruning first guarantees the kernel FDB
+	// never transiently holds both (mac,vtepA) and (mac,vtepB), which under VXLAN
+	// nolearning would replicate the unicast to both dsts (duplicate delivery +
+	// blackhole on the old node). The worst case of delete-first is a brief
+	// single-pass window where the entry is absent (a recoverable drop) - strictly
+	// less harmful than dual-dst delivery, and it reconverges in this same pass.
 	for k, e := range currentSet {
 		if _, ok := desired[k]; ok {
 			continue
@@ -121,6 +117,17 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 		if err := r.fabric.FDBDelete(vni, e); err != nil {
 			converged = false
 			r.log.WarnContext(ctx, "overlay fdb delete (prune) failed",
+				slog.Int("vni", int(vni)), slog.String("mac", e.MAC.String()),
+				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
+		}
+	}
+	for k, e := range desired {
+		if _, ok := currentSet[k]; ok {
+			continue
+		}
+		if err := r.fabric.FDBAppend(vni, e); err != nil {
+			converged = false
+			r.log.WarnContext(ctx, "overlay fdb append failed",
 				slog.Int("vni", int(vni)), slog.String("mac", e.MAC.String()),
 				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
 		}

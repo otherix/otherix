@@ -235,6 +235,35 @@ func TestApplyOverlayPrunesStaleFDB(t *testing.T) {
 	}
 }
 
+// TestApplyOverlayMovedMACPrunesBeforeAppending is the dual-homing guarantee:
+// a remote VM's MAC moves from vtepA to vtepB (re-placement). Keyed on (mac,dst)
+// this is a delete-old + add-new, and the prune MUST run before the append so the
+// kernel FDB never transiently holds both (mac,vtepA) and (mac,vtepB) - under
+// VXLAN nolearning the driver would replicate the unicast to both dsts (duplicate
+// delivery + blackhole on the old node). A brief no-entry window (a recoverable
+// drop) is strictly less harmful than dual-dst delivery and reconverges same pass.
+func TestApplyOverlayMovedMACPrunesBeforeAppending(t *testing.T) {
+	const mac = "52:54:00:00:00:0b"
+	// Current FDB has the MAC pointing at the OLD vtep (10.42.0.9).
+	old := netfabric.FDBEntry{MAC: mustMAC(mac), Dst: netip.MustParseAddr("10.42.0.9")}
+	f := readyFabricWithFDB([]netfabric.FDBEntry{old})
+	// Declared moves the same MAC to the NEW vtep (10.42.0.2).
+	driveFDB(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: mac, VtepIP: "10.42.0.2"}})
+
+	if len(f.FDBDeleteCalls) != 1 || f.FDBDeleteCalls[0].Entry.Dst != netip.MustParseAddr("10.42.0.9") {
+		t.Errorf("FDBDeleteCalls = %+v, want one delete of dst 10.42.0.9", f.FDBDeleteCalls)
+	}
+	if len(f.FDBAppendCalls) != 1 || f.FDBAppendCalls[0].Entry.Dst != netip.MustParseAddr("10.42.0.2") {
+		t.Errorf("FDBAppendCalls = %+v, want one append of dst 10.42.0.2", f.FDBAppendCalls)
+	}
+	// The delete (prune of the old dst) must come before the append (the new dst):
+	// at no point may both entries coexist in the kernel FDB.
+	want := []string{"delete", "append"}
+	if len(f.FDBOpLog) != 2 || f.FDBOpLog[0] != want[0] || f.FDBOpLog[1] != want[1] {
+		t.Errorf("FDBOpLog = %v, want %v (prune must precede append for a moved mac)", f.FDBOpLog, want)
+	}
+}
+
 func TestApplyOverlayFDBIdempotentSteadyState(t *testing.T) {
 	entry := netfabric.FDBEntry{MAC: mustMAC("52:54:00:00:00:0b"), Dst: netip.MustParseAddr("10.42.0.2")}
 	f := readyFabricWithFDB([]netfabric.FDBEntry{entry})
