@@ -610,9 +610,6 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 	for _, r := range recs {
 		vtepIP[r.NodeID] = r.OverlayIP.String()
 	}
-	// No gone-node filter here (unlike loadDeclaredWireGuardPeers): the placement
-	// projection only includes NICs whose VM has a current_node, and DeleteNode
-	// clears current_node_id on orphan, so gone/deleted nodes drop out at source.
 	// Overlays this node participates in locally.
 	localVNI := make(map[int32]struct{})
 	for _, p := range placements {
@@ -620,25 +617,13 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 			localVNI[p.VNI] = struct{}{}
 		}
 	}
-	var out []declaredFDBEntry
-	flood := make(map[string]struct{}) // dedup key "vni|vtep"
-	for _, p := range placements {
-		if p.NodeID == selfNodeID {
-			continue
-		}
-		if _, ok := localVNI[p.VNI]; !ok {
-			continue
-		}
-		ip, ok := vtepIP[p.NodeID]
-		if !ok {
-			continue // owning node has no overlay IP yet
-		}
-		out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: p.Mac.String(), VtepIP: ip})
-		fkey := fmt.Sprintf("%d|%s", p.VNI, ip)
-		if _, seen := flood[fkey]; !seen {
-			flood[fkey] = struct{}{}
-			out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: "00:00:00:00:00:00", VtepIP: ip})
-		}
+	out, skippedNoIP, err := h.buildRemoteFDBEntries(ctx, hp, placements, localVNI, vtepIP, selfNodeID)
+	if err != nil {
+		return nil, err
+	}
+	if skippedNoIP > 0 {
+		h.log.WarnContext(ctx, "declared_fdb incomplete: owning nodes have no overlay IP yet",
+			slog.Int("skipped_placements", skippedNoIP), slog.String("node_id", selfNodeID.String()))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].VNI != out[j].VNI {
@@ -653,6 +638,74 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 		return nil, nil
 	}
 	return out, nil
+}
+
+// buildRemoteFDBEntries walks placements and emits, for every overlay this node
+// participates in locally, a per-remote-VM unicast entry plus one all-zeros
+// BUM/flood entry per distinct remote VTEP. It returns the (unsorted) entries
+// and the count of placements skipped because the owning node has no overlay IP
+// yet (surfaced as one aggregated WARN by the caller). Gone/soft-deleted owning
+// nodes are pruned via the memoised liveness guard, symmetric with
+// loadDeclaredWireGuardPeers: the reaper advances a long-unreachable node to
+// 'gone' WITHOUT orphaning its vm_runtime, so its placements still surface here
+// and must not keep an entry pointing at a dead VTEP.
+func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, int, error) {
+	isGone := newGoneResolver(hp)
+	var out []declaredFDBEntry
+	flood := make(map[string]struct{}) // dedup key "vni|vtep"
+	skippedNoIP := 0
+	for _, p := range placements {
+		if p.NodeID == selfNodeID {
+			continue
+		}
+		if _, ok := localVNI[p.VNI]; !ok {
+			continue
+		}
+		gone, err := isGone(ctx, p.NodeID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if gone {
+			continue
+		}
+		ip, ok := vtepIP[p.NodeID]
+		if !ok {
+			skippedNoIP++
+			continue // owning node has no overlay IP yet
+		}
+		out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: p.Mac.String(), VtepIP: ip})
+		fkey := fmt.Sprintf("%d|%s", p.VNI, ip)
+		if _, seen := flood[fkey]; !seen {
+			flood[fkey] = struct{}{}
+			out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: "00:00:00:00:00:00", VtepIP: ip})
+		}
+	}
+	return out, skippedNoIP, nil
+}
+
+// newGoneResolver returns a memoised predicate reporting whether a remote node
+// is no longer a valid overlay peer: either its row is gone (soft-deleted ->
+// ErrNotFound) or it has reached the terminal "gone" status. Results are cached
+// per node id so a placement list with many NICs on one node hits the store
+// once. Mirrors the gone-skip in loadDeclaredWireGuardPeers.
+func newGoneResolver(hp store.HeartbeatProjection) func(context.Context, uuid.UUID) (bool, error) {
+	cache := make(map[uuid.UUID]bool)
+	return func(ctx context.Context, id uuid.UUID) (bool, error) {
+		if v, ok := cache[id]; ok {
+			return v, nil
+		}
+		node, err := hp.NodeByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				cache[id] = true
+				return true, nil
+			}
+			return false, fmt.Errorf("load node %s for fdb: %v", id, err)
+		}
+		g := node.Status == store.NodeStatusGone
+		cache[id] = g
+		return g, nil
+	}
 }
 
 // applyMemoryPressure computes the next memory-pressure state via the
