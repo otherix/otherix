@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -91,5 +92,94 @@ func TestDeleteNetworkElseBranchPreservesForeignGuard(t *testing.T) {
 	// The Else branch still drops X's own VNI guard (id/VNI-keyed cleanup).
 	if _, found, err := s.c.Get(ctx, networkVNIGuard(*x.VNI)); err != nil || found {
 		t.Errorf("VNI guard still present after delete (found=%v err=%v), want dropped", found, err)
+	}
+}
+
+// TestDeleteNetworkIgnoresStaleNicIndexWithoutRow reproduces the hard-gone NIC
+// wedge: a per-network vm_nic index entry survives while its NIC row is gone
+// (the hard-gone branch of vmNicDeleteOps can only drop the per-VM index, never
+// the per-network one, because it cannot reconstruct NetworkID from a missing
+// row). The stale index entry must NOT block DeleteNetwork - countVMNicsOnNetwork
+// reconciles against live NIC rows. Against the old len-of-index code this test
+// fails (the delete is wedged with a phantom vm_nics blocker).
+func TestDeleteNetworkIgnoresStaleNicIndexWithoutRow(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	netID := uuid.New()
+	if _, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: netID, Name: "stale", Type: store.NetworkTypeBridge,
+		BridgeName: "br0", Mtu: 1500, Config: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+
+	// Seed a per-network index entry whose NIC row does not exist (hard-gone).
+	staleNicID := uuid.New()
+	if err := s.c.Put(ctx, vmNicNetworkIndexKey(netID, staleNicID), []byte(staleNicID.String())); err != nil {
+		t.Fatalf("seed stale network index: %v", err)
+	}
+	if _, found, err := s.c.Get(ctx, vmNicKey(staleNicID)); err != nil || found {
+		t.Fatalf("stale NIC row unexpectedly present (found=%v err=%v)", found, err)
+	}
+
+	// The blocking count must skip the stale entry: zero live referents.
+	n, err := s.countVMNicsOnNetwork(ctx, netID)
+	if err != nil {
+		t.Fatalf("countVMNicsOnNetwork: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("countVMNicsOnNetwork = %d, want 0 (stale index entry must not count)", n)
+	}
+
+	// DeleteNetwork must succeed rather than wedge on the phantom blocker.
+	if err := s.DeleteNetwork(ctx, netID); err != nil {
+		t.Fatalf("DeleteNetwork wedged by stale nic index = %v, want nil", err)
+	}
+}
+
+// TestDeleteNetworkBlocksOnLiveNicRow is the discriminating counterpart: a
+// per-network index entry whose NIC row IS live and not soft-deleted must still
+// block DeleteNetwork. Guards against the reconcile over-counting toward zero.
+func TestDeleteNetworkBlocksOnLiveNicRow(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	netID := uuid.New()
+	if _, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: netID, Name: "live", Type: store.NetworkTypeBridge,
+		BridgeName: "br0", Mtu: 1500, Config: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+
+	now := time.Now().UTC()
+	nicID := uuid.New()
+	nic := store.VMNic{
+		ID: nicID, VmID: uuid.New(), NetworkID: netID, DeviceOrder: 0,
+		Model: store.NicModelVirtio, Generation: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.c.PutJSON(ctx, vmNicKey(nicID), nic); err != nil {
+		t.Fatalf("seed live nic row: %v", err)
+	}
+	if err := s.c.Put(ctx, vmNicNetworkIndexKey(netID, nicID), []byte(nicID.String())); err != nil {
+		t.Fatalf("seed network index: %v", err)
+	}
+
+	n, err := s.countVMNicsOnNetwork(ctx, netID)
+	if err != nil {
+		t.Fatalf("countVMNicsOnNetwork: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("countVMNicsOnNetwork = %d, want 1 (live referent)", n)
+	}
+
+	err = s.DeleteNetwork(ctx, netID)
+	var blocking *store.ResourceInUseError
+	if !errors.As(err, &blocking) {
+		t.Fatalf("DeleteNetwork err = %v, want *store.ResourceInUseError", err)
+	}
+	if blocking.Resources["vm_nics"] != 1 {
+		t.Errorf("blocking vm_nics = %d, want 1", blocking.Resources["vm_nics"])
 	}
 }

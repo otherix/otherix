@@ -346,14 +346,34 @@ func (s *Store) purgeNetworkNodeStatus(ctx context.Context, networkID uuid.UUID)
 	_ = s.commitInChunks(ctx, ops)
 }
 
-// countVMNicsOnNetwork counts the active vm_nics referencing the network via
-// the maintained index prefix.
+// countVMNicsOnNetwork counts the active vm_nics referencing the network,
+// reconciling the per-network index against live NIC rows: an index entry whose
+// NIC row is gone or soft-deleted is skipped rather than counted. The hard-gone
+// branch of vmNicDeleteOps can drop only the per-VM index (it cannot reconstruct
+// NetworkID from a missing row), so a stale per-network index entry can linger;
+// counting it would wedge DeleteNetwork forever on a phantom vm_nics blocker.
 func (s *Store) countVMNicsOnNetwork(ctx context.Context, id uuid.UUID) (int64, error) {
 	items, err := s.c.Range(ctx, vmNicNetworkIndexPrefix(id))
 	if err != nil {
 		return 0, err
 	}
-	return int64(len(items)), nil
+	var count int64
+	for _, kv := range items {
+		nicID, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
+		}
+		var n store.VMNic
+		found, gerr := s.c.GetJSON(ctx, vmNicKey(nicID), &n)
+		if gerr != nil {
+			return 0, gerr
+		}
+		if !found || n.DeletedAt != nil {
+			continue
+		}
+		count++
+	}
+	return count, nil
 }
 
 // UpsertNetworkNodeStatus writes the per-(node, network) reconciliation record,

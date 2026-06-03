@@ -258,9 +258,20 @@ func TestNetworkDeleteBlockedByNic(t *testing.T) {
 	if _, err := s.CreateNetwork(ctx, p); err != nil {
 		t.Fatalf("CreateNetwork: %v", err)
 	}
-	// Seed an active vm_nic index entry referencing the network.
-	nicKey := etcd.Key("index", "vm_nics", "network", p.ID.String(), uuid.NewString())
-	if err := cli.Put(ctx, nicKey, []byte("nic")); err != nil {
+	// Seed an active vm_nic referencing the network: the per-network index entry
+	// plus a live NIC row it resolves to (countVMNicsOnNetwork reconciles the
+	// index against live rows, so a row-less entry would not block).
+	nicID := uuid.New()
+	nicRow := store.VMNic{
+		ID: nicID, VmID: uuid.New(), NetworkID: p.ID, DeviceOrder: 0,
+		Model: store.NicModelVirtio, Generation: 1,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_nics", nicID.String()), nicRow); err != nil {
+		t.Fatalf("seed nic row: %v", err)
+	}
+	nicKey := etcd.Key("index", "vm_nics", "network", p.ID.String(), nicID.String())
+	if err := cli.Put(ctx, nicKey, []byte(nicID.String())); err != nil {
 		t.Fatalf("seed nic index: %v", err)
 	}
 
