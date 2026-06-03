@@ -213,3 +213,66 @@ func TestListPoolsNeedingScan(t *testing.T) {
 		t.Errorf("with in-flight scan, rows = %d, want 0", len(rows))
 	}
 }
+
+// TestDeleteOrphanedNetworkNodeStatus seeds a network_node_status row for a live
+// network and another for a deleted (non-resolving) network, then runs the
+// sweep: the orphan must be deleted and the live-network row must survive.
+func TestDeleteOrphanedNetworkNodeStatus(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	liveNet, err := s.CreateNetwork(ctx, netParams(uniqueNetName("nns-live")))
+	if err != nil {
+		t.Fatalf("CreateNetwork(live): %v", err)
+	}
+	liveNode := uuid.New()
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: liveNet.ID, NodeID: liveNode, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus(live): %v", err)
+	}
+
+	// Orphan: a status row whose network never existed (no live network resolves).
+	orphanNet := uuid.New()
+	orphanNode := uuid.New()
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: orphanNet, NodeID: orphanNode, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus(orphan): %v", err)
+	}
+
+	deleted, err := s.DeleteOrphanedNetworkNodeStatus(ctx)
+	if err != nil {
+		t.Fatalf("DeleteOrphanedNetworkNodeStatus: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1 (the orphan only)", deleted)
+	}
+
+	// The live-network row survives.
+	live, err := s.ListNetworkNodeStatusByNetwork(ctx, liveNet.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork(live): %v", err)
+	}
+	if len(live) != 1 {
+		t.Errorf("live network status rows = %d, want 1 (must survive)", len(live))
+	}
+
+	// The orphan is gone.
+	orphan, err := s.ListNetworkNodeStatusByNetwork(ctx, orphanNet)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork(orphan): %v", err)
+	}
+	if len(orphan) != 0 {
+		t.Errorf("orphan network status rows = %d, want 0 (must be swept)", len(orphan))
+	}
+
+	// Idempotent: a second sweep deletes nothing.
+	deleted, err = s.DeleteOrphanedNetworkNodeStatus(ctx)
+	if err != nil {
+		t.Fatalf("DeleteOrphanedNetworkNodeStatus(second): %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("second sweep deleted = %d, want 0", deleted)
+	}
+}

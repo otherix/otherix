@@ -88,6 +88,51 @@ func (s *Store) commitInChunks(ctx context.Context, ops []clientv3.Op) error {
 	return nil
 }
 
+// DeleteOrphanedNetworkNodeStatus removes every network_node_status record whose
+// network id no longer resolves to a live (non-deleted) network, returning the
+// number of records deleted. It backstops purgeNetworkNodeStatus, which runs
+// best-effort after a network soft-delete (DeleteNetwork) and can leave records
+// behind on a partial commit - nothing else re-drives that cleanup. The deletes
+// commit in chunks under etcd's per-transaction op limit.
+func (s *Store) DeleteOrphanedNetworkNodeStatus(ctx context.Context) (int64, error) {
+	items, err := s.c.Range(ctx, networkNodeStatusPrefix)
+	if err != nil {
+		return 0, err
+	}
+	live := make(map[uuid.UUID]bool)
+	var (
+		ops     []clientv3.Op
+		deleted int64
+	)
+	for _, kv := range items {
+		var st store.NetworkNodeStatus
+		if err := json.Unmarshal(kv.Value, &st); err != nil {
+			return 0, fmt.Errorf("unmarshal network_node_status %q: %v", kv.Key, err)
+		}
+		ok, seen := live[st.NetworkID]
+		if !seen {
+			if _, nerr := s.NetworkByID(ctx, st.NetworkID); nerr != nil {
+				if !errors.Is(nerr, store.ErrNotFound) {
+					return 0, nerr
+				}
+				ok = false
+			} else {
+				ok = true
+			}
+			live[st.NetworkID] = ok
+		}
+		if ok {
+			continue
+		}
+		ops = append(ops, clientv3.OpDelete(kv.Key))
+		deleted++
+	}
+	if err := s.commitInChunks(ctx, ops); err != nil {
+		return 0, fmt.Errorf("delete orphaned network_node_status: %v", err)
+	}
+	return deleted, nil
+}
+
 // PromoteHealthyNodes flips nodes in 'pending' or 'unreachable' with a heartbeat
 // at or after freshAfter to 'ready', returning the affected rows. 'cordoned' and
 // 'draining' are operator-pinned and untouched.

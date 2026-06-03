@@ -23,6 +23,7 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
+	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
@@ -468,6 +469,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 
 	s.Register("idempotency.cleanup", time.Hour, false,
 		middleware.IdempotencyCleanupFunc(st, log))
+
+	s.Register("networks.cleanup", time.Hour, false,
+		networkshandlers.CleanupFunc(st, log))
 
 	if cfg.Workers.StoragePoolScan.Enabled {
 		s.Register("storage_pool.scan_trigger", positiveOr(cfg.Workers.StoragePoolScan.Interval, 15*time.Minute), false,
