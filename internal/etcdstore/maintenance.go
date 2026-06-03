@@ -142,6 +142,38 @@ func (s *Store) MarkNodesUnreachable(ctx context.Context, staleBefore time.Time)
 	return rows, nil
 }
 
+// MarkNodesGone advances nodes already in 'unreachable' whose heartbeat is
+// missing or older than goneBefore to the terminal 'gone' status, returning the
+// affected rows. It deliberately does NOT orphan the node's vm_runtime: the
+// datapath (per-VM FDB + the WireGuard mesh) converges via the gone-liveness
+// guards, while leaving current_node_id intact avoids a split-brain if a long
+// network partition heals (the node's qemu may still be running). 'gone' is
+// terminal - recovery is an explicit operator action. 'ready'/'pending'/
+// 'cordoned'/'draining' are untouched.
+func (s *Store) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]store.MarkNodesGoneRow, error) {
+	nodes, err := s.liveNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var rows []store.MarkNodesGoneRow
+	now := time.Now().UTC()
+	for _, n := range nodes {
+		if n.Status != store.NodeStatusUnreachable {
+			continue
+		}
+		if n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(goneBefore) {
+			continue
+		}
+		n.Status = store.NodeStatusGone
+		n.UpdatedAt = now
+		if err := s.c.PutJSON(ctx, nodeKey(n.ID), n); err != nil {
+			return nil, err
+		}
+		rows = append(rows, store.MarkNodesGoneRow{ID: n.ID, Name: n.Name})
+	}
+	return rows, nil
+}
+
 // liveNodes loads every non-deleted node row.
 func (s *Store) liveNodes(ctx context.Context) ([]store.Node, error) {
 	items, err := s.c.Range(ctx, nodePrefix())

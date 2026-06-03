@@ -17,6 +17,7 @@ import (
 type ReconcileStore interface {
 	PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) ([]store.PromoteHealthyNodesRow, error)
 	MarkNodesUnreachable(ctx context.Context, staleBefore time.Time) ([]store.MarkNodesUnreachableRow, error)
+	MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]store.MarkNodesGoneRow, error)
 }
 
 // ReconcileFunc returns the periodic function that flips nodes between 'ready'
@@ -39,6 +40,14 @@ func ReconcileFunc(st ReconcileStore, cfg ReconcileConfig, log *slog.Logger) fun
 		}
 		for _, row := range demoted {
 			log.WarnContext(ctx, "node marked unreachable", slog.String("node_id", row.ID.String()), slog.String("node_name", row.Name))
+		}
+		goneBefore := time.Now().Add(-c.GoneGrace)
+		gone, err := st.MarkNodesGone(ctx, goneBefore)
+		if err != nil {
+			return fmt.Errorf("mark nodes gone: %v", err)
+		}
+		for _, row := range gone {
+			log.WarnContext(ctx, "node marked gone", slog.String("node_id", row.ID.String()), slog.String("node_name", row.Name))
 		}
 		return nil
 	}

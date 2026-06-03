@@ -532,9 +532,13 @@ func (s StoragePoolScanConfig) Validate() error {
 // knobs. The reconciler fires on a fixed cadence (Interval) and flips
 // nodes between 'ready' and 'unreachable' based on whether their
 // last_heartbeat_at falls inside or outside the StaleThreshold window.
-// Both fields fall back to package defaults when zero.
+// A node in 'unreachable' whose last heartbeat is older than the
+// GoneGrace window (which must exceed StaleThreshold) is then advanced
+// to the terminal 'gone' status. All fields fall back to package
+// defaults when zero.
 type HeartbeatWorkersConfig struct {
 	StaleThreshold time.Duration `koanf:"stale_threshold"`
+	GoneGrace      time.Duration `koanf:"gone_grace"`
 	Interval       time.Duration `koanf:"interval"`
 }
 
@@ -578,6 +582,7 @@ func defaultAPIConfig() APIConfig {
 			},
 			Heartbeat: HeartbeatWorkersConfig{
 				StaleThreshold: 90 * time.Second,
+				GoneGrace:      5 * time.Minute,
 				Interval:       30 * time.Second,
 			},
 			StoragePoolScan: StoragePoolScanConfig{

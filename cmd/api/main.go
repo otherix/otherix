@@ -454,6 +454,7 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("heartbeat.reconcile", positiveOr(cfg.Workers.Heartbeat.Interval, 30*time.Second), true,
 		heartbeathandlers.ReconcileFunc(st, heartbeathandlers.ReconcileConfig{
 			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,
+			GoneGrace:      cfg.Workers.Heartbeat.GoneGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
 		}, log))
 

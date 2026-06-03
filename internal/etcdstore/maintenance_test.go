@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -123,6 +124,59 @@ func TestMarkNodesUnreachable(t *testing.T) {
 	n, _ := s.NodeByID(ctx, np.ID)
 	if n.Status != store.NodeStatusUnreachable {
 		t.Errorf("node status = %v, want unreachable", n.Status)
+	}
+}
+
+func TestMarkNodesGone(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	// seedNode writes a node row directly so the test controls status and
+	// last_heartbeat_at precisely.
+	seedNode := func(name string, status store.NodeStatus, hb *time.Time) uuid.UUID {
+		id := uuid.New()
+		n := store.Node{
+			ID:                 id,
+			Name:               uniqueNodeName(name),
+			Architecture:       store.CpuArchAmd64,
+			AdvertisedEndpoint: "https://node.example:9443",
+			MigrationHost:      "10.0.0.1",
+			Status:             status,
+			LastHeartbeatAt:    hb,
+			CreatedAt:          time.Now().UTC(),
+			UpdatedAt:          time.Now().UTC(),
+		}
+		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
+			t.Fatalf("seed node %q: %v", name, err)
+		}
+		return id
+	}
+
+	old := time.Now().Add(-10 * time.Minute)
+	recent := time.Now().Add(-30 * time.Second)
+	// unreachable + stale-past-grace -> gone
+	gone := seedNode("n-gone", store.NodeStatusUnreachable, &old)
+	// unreachable but heartbeat newer than the grace cutoff -> stays
+	staysUnreachable := seedNode("n-stay", store.NodeStatusUnreachable, &recent)
+	// ready -> never touched by MarkNodesGone
+	staysReady := seedNode("n-ready", store.NodeStatusReady, &old)
+
+	goneBefore := time.Now().Add(-5 * time.Minute)
+	rows, err := s.MarkNodesGone(ctx, goneBefore)
+	if err != nil {
+		t.Fatalf("MarkNodesGone: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != gone {
+		t.Fatalf("rows = %+v, want exactly the gone node %s", rows, gone)
+	}
+	if n, _ := s.NodeByID(ctx, gone); n.Status != store.NodeStatusGone {
+		t.Errorf("gone node status = %v, want gone", n.Status)
+	}
+	if n, _ := s.NodeByID(ctx, staysUnreachable); n.Status != store.NodeStatusUnreachable {
+		t.Errorf("stay node status = %v, want unreachable", n.Status)
+	}
+	if n, _ := s.NodeByID(ctx, staysReady); n.Status != store.NodeStatusReady {
+		t.Errorf("ready node status = %v, want ready", n.Status)
 	}
 }
 
