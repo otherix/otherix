@@ -239,6 +239,20 @@ func (s *Store) vmDeleteBaseOps(ctx context.Context, vm store.VM, now time.Time,
 	}
 	ops = append(ops, vmIndexDeleteOps(vm)...)
 
+	// Release the vm_runtime-by-node secondary index the heartbeat wrote
+	// (reindexRuntimeNode). It keys off the runtime's current_node_id, which the
+	// vm row does not carry, so source the node from the runtime row before the
+	// primary delete above takes effect. A missing runtime row means the VM was
+	// never placed, so there is no index entry to drop.
+	rt, err := s.VMRuntimeByID(ctx, vm.ID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return nil, err
+	case rt.CurrentNodeID != nil:
+		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vm_runtime", "node", rt.CurrentNodeID.String(), vm.ID.String())))
+	}
+
 	disks, err := s.disksOfVM(ctx, vm.ID)
 	if err != nil {
 		return nil, err
