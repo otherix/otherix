@@ -8,6 +8,8 @@ package etcdstore_test
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -177,21 +179,94 @@ func TestUnderlayMTUDefaultWhenUnset(t *testing.T) {
 	}
 }
 
-func TestSeedUnderlayMTURejectsBadBounds(t *testing.T) {
+func TestSeedUnderlayMTUFloor(t *testing.T) {
 	cases := []struct {
-		name string
-		mtu  int
+		name    string
+		mtu     int
+		wantErr bool
+		want    int32 // expected UnderlayMTU when accepted
 	}{
-		{"below floor", 1279},
-		{"above ceiling", 65536},
+		{name: "just below floor", mtu: 1389, wantErr: true},
+		{name: "at floor", mtu: 1390, want: 1390},
+		{name: "classic ethernet", mtu: 1500, want: 1500},
+		{name: "at ceiling", mtu: 65535, want: 65535},
+		{name: "above ceiling", mtu: 65536, wantErr: true},
+		{name: "zero defaults", mtu: 0, want: 1500},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := startStore(t)
-			if err := s.SeedUnderlayMTU(context.Background(), tc.mtu); err == nil {
-				t.Errorf("SeedUnderlayMTU(%d) = nil, want error", tc.mtu)
+			ctx := context.Background()
+			err := s.SeedUnderlayMTU(ctx, tc.mtu)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("SeedUnderlayMTU(%d) = nil, want error", tc.mtu)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SeedUnderlayMTU(%d) = %v, want nil", tc.mtu, err)
+			}
+			got, err := s.UnderlayMTU(ctx)
+			if err != nil {
+				t.Fatalf("UnderlayMTU: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("UnderlayMTU() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSeedUnderlayMTUFloorErrorMentionsFloor(t *testing.T) {
+	s, _ := startStore(t)
+	err := s.SeedUnderlayMTU(context.Background(), 1389)
+	if err == nil {
+		t.Fatalf("SeedUnderlayMTU(1389) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "1390") {
+		t.Errorf("SeedUnderlayMTU(1389) error = %q, want it to mention the 1390 floor", err)
+	}
+}
+
+// TestSeedClusterSettingsConcurrentFieldsDoNotClobber boots two seeders against
+// the same fresh singleton, each setting a DIFFERENT field. Under a blind
+// read-modify-Put both read the same all-nil object and the last Put wins on the
+// whole document, erasing the other writer's field. The CAS path serialises the
+// two writers so both fields survive. Run under -race.
+func TestSeedClusterSettingsConcurrentFieldsDoNotClobber(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var mtuErr, vniErr error
+	go func() {
+		defer wg.Done()
+		mtuErr = s.SeedUnderlayMTU(ctx, 9000)
+	}()
+	go func() {
+		defer wg.Done()
+		vniErr = s.SeedVNIRange(ctx, 2000, 3000)
+	}()
+	wg.Wait()
+
+	if mtuErr != nil {
+		t.Fatalf("SeedUnderlayMTU: %v", mtuErr)
+	}
+	if vniErr != nil {
+		t.Fatalf("SeedVNIRange: %v", vniErr)
+	}
+
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		t.Fatalf("ClusterSettings: %v", err)
+	}
+	if cs.UnderlayMTU == nil || *cs.UnderlayMTU != 9000 {
+		t.Errorf("UnderlayMTU = %v, want 9000 (clobbered by concurrent VNI seed)", cs.UnderlayMTU)
+	}
+	if cs.VNIMin == nil || *cs.VNIMin != 2000 {
+		t.Errorf("VNIMin = %v, want 2000 (clobbered by concurrent MTU seed)", cs.VNIMin)
 	}
 }
 
