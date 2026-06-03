@@ -128,6 +128,10 @@ smoke-wireguard-mesh: ## Cross-agent WireGuard mesh smoke: real cross-host hands
 smoke-overlay: ## Overlay (VXLAN) smoke: VTEP+bridge attrs on both nodes + manual-FDB cross-node datapath (run after local-dev-start)
 	bash dev/smoke/overlay/run.sh
 
+.PHONY: smoke-overlay-vm
+smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over the overlay via CP-distributed FDB (run after local-dev-start)
+	bash dev/smoke/overlay-vm/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt vet
