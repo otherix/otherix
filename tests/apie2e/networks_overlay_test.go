@@ -112,11 +112,9 @@ func TestOverlayNetworkCreateRequiresSubnet(t *testing.T) {
 	assertErrorCode(t, resp, "validation_failed")
 }
 
-// TestOverlayNetworkNotDeclaredToAgents verifies that overlay networks are
-// filtered out of the declared_networks down-channel. It seeds one bridge and
-// one overlay network, drives a synthetic agent heartbeat over the mTLS agent
-// router (same pattern as wireguard_test.go), and asserts that no entry with
-// type="overlay" appears in declared_networks.
+// TestOverlayNetworkPatchOnlyName verifies that PATCH on an overlay network
+// accepts only the name and leaves the server-owned fields (vni, subnet,
+// bridge_name) intact across the rename.
 func TestOverlayNetworkPatchOnlyName(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
