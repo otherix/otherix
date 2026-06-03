@@ -258,6 +258,19 @@ snapshotted at create time and does not follow a later reseed.
 
 ---
 
+## Operations: recovering a gone node
+
+A node that has transitioned to `gone` cannot be recovered by simply
+re-bootstrapping the agent under the same name. The node-name guard and
+the WireGuard public-key guard persist as long as the old node row
+exists, so a re-bootstrap under the same name fails with a name
+conflict. To reuse the name, the operator must first delete the old row
+with `DELETE /v1/nodes/{id}` (which clears both guards), then run the
+agent bootstrap again. Picking a fresh node name avoids the conflict
+entirely but leaves the dead row behind for later cleanup.
+
+---
+
 ## What's next
 
 The schema, api-server, agent, and CLI are wired end-to-end.
