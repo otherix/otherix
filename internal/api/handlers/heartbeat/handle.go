@@ -478,6 +478,7 @@ func networkToDeclared(n store.Network) declaredNetwork {
 		Egress:     string(n.Egress),
 		BridgeName: n.BridgeName,
 		Mtu:        n.Mtu,
+		VNI:        n.VNI,
 	}
 	if n.Subnet != nil {
 		s := n.Subnet.String()

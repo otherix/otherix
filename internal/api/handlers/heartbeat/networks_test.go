@@ -84,3 +84,29 @@ func TestNetworkToDeclared(t *testing.T) {
 		})
 	}
 }
+
+func TestNetworkToDeclaredCarriesVNI(t *testing.T) {
+	vni := int32(1000)
+	row := store.Network{
+		ID:         uuid.New(),
+		Name:       "ov",
+		Type:       store.NetworkTypeOverlay,
+		Managed:    true,
+		Egress:     store.NetworkEgressNone,
+		BridgeName: "otb1000",
+		Mtu:        store.OverlayMTU,
+		VNI:        &vni,
+	}
+	dn := networkToDeclared(row)
+	if dn.VNI == nil || *dn.VNI != 1000 {
+		t.Errorf("declared VNI = %v, want 1000", dn.VNI)
+	}
+	if dn.Type != "overlay" {
+		t.Errorf("declared Type = %q, want overlay", dn.Type)
+	}
+	// A bridge row carries no VNI.
+	bridge := store.Network{ID: uuid.New(), Name: "br", Type: store.NetworkTypeBridge, BridgeName: "br0", Mtu: 1500}
+	if got := networkToDeclared(bridge); got.VNI != nil {
+		t.Errorf("bridge declared VNI = %v, want nil", got.VNI)
+	}
+}

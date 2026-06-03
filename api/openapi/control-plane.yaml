@@ -4870,7 +4870,7 @@ components:
           maxLength: 253
         type:
           type: string
-          enum: [bridge]
+          enum: [bridge, overlay]
         managed:
           type: boolean
           description: |
@@ -4888,6 +4888,11 @@ components:
           type: integer
           minimum: 68
           maximum: 9216
+        vni:
+          type: [integer, "null"]
+          description: |
+            VXLAN Network Identifier. Present (non-null) only when `type`
+            is `overlay`; null for bridge networks.
         subnet:
           type: [string, "null"]
           description: |

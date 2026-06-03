@@ -160,7 +160,8 @@ type declaredVM struct {
 // wants materialised on this node. Networks are cluster-wide, so every
 // node receives the same set; order is stable (by id) so the agent's
 // diff stays deterministic across heartbeats. Subnet (canonical CIDR)
-// and Gateway (IP) are non-nil only when Egress="nat".
+// and Gateway (IP) are non-nil only when Egress="nat". VNI is non-nil
+// only for type=overlay.
 type declaredNetwork struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
@@ -169,6 +170,7 @@ type declaredNetwork struct {
 	Egress     string  `json:"egress"`
 	BridgeName string  `json:"bridge_name"`
 	Mtu        int32   `json:"mtu"`
+	VNI        *int32  `json:"vni"`
 	Subnet     *string `json:"subnet"`
 	Gateway    *string `json:"gateway"`
 }

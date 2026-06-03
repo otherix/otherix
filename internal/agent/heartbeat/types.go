@@ -116,7 +116,7 @@ type DeclaredVM struct {
 // node receives the same list. The agent reconciler diffs the declared
 // set against its observed bridges and applies changes autonomously.
 // Subnet (canonical CIDR) and Gateway (IP) are populated when
-// Egress="nat", null otherwise.
+// Egress="nat", null otherwise. VNI is non-nil only for type=overlay.
 type DeclaredNetwork struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
@@ -125,6 +125,7 @@ type DeclaredNetwork struct {
 	Egress     string  `json:"egress"`
 	BridgeName string  `json:"bridge_name"`
 	Mtu        int32   `json:"mtu"`
+	VNI        *int32  `json:"vni"`
 	Subnet     *string `json:"subnet"`
 	Gateway    *string `json:"gateway"`
 }
