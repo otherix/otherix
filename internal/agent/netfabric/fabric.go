@@ -159,7 +159,7 @@ type WGConfig struct {
 	PrivateKey wgtypes.Key  // agent's Curve25519 private key
 	ListenPort int          // UDP listen port (51820)
 	Address    netip.Prefix // agent overlay IP on the link (e.g. 10.42.0.<n>/16)
-	MTU        int          // link MTU (final value settled in N2c on the VTEP rebind)
+	MTU        int          // link MTU (1440 for otwg0; see WireGuardMTU)
 }
 
 // WGPeer is one remote agent in the WireGuard mesh.
