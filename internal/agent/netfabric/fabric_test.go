@@ -202,6 +202,34 @@ func TestFakeFabricWireGuardPeerHandshakes(t *testing.T) {
 	}
 }
 
+func TestFakeFabricLinkState(t *testing.T) {
+	f := &FakeFabric{
+		LinkStateResult: map[string]LinkState{
+			"otwg0": {Up: true, MTU: 1440, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.1/16")}},
+		},
+	}
+	got, err := f.LinkState("otwg0")
+	if err != nil {
+		t.Fatalf("LinkState(otwg0) = %v", err)
+	}
+	want := LinkState{Up: true, MTU: 1440, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.1/16")}}
+	if diff := cmp.Diff(want, got, cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{})); diff != "" {
+		t.Errorf("LinkState mismatch (-want +got):\n%s", diff)
+	}
+	// Absent name -> zero LinkState, nil error.
+	if got, err := f.LinkState("missing"); err != nil || got.Up {
+		t.Errorf("LinkState(missing) = (%+v, %v), want (zero, nil)", got, err)
+	}
+	// Errs takes precedence.
+	f.Errs = map[string]error{"LinkState": errors.New("boom")}
+	if _, err := f.LinkState("otwg0"); err == nil {
+		t.Errorf("LinkState with Errs set returned nil error")
+	}
+	if want := []string{"otwg0", "missing", "otwg0"}; !cmp.Equal(want, f.LinkStateCalls) {
+		t.Errorf("LinkStateCalls = %v, want %v", f.LinkStateCalls, want)
+	}
+}
+
 func TestValidateMAC(t *testing.T) {
 	tests := []struct {
 		name    string

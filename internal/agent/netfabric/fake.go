@@ -43,6 +43,12 @@ type FakeFabric struct {
 	RemoveVXLANCalls []uint32
 	VXLANExistsCalls []uint32
 
+	// LinkStateResult maps an interface name to the LinkState that LinkState
+	// returns; an absent name yields a zero LinkState. Errs["LinkState"] takes
+	// precedence over the map.
+	LinkStateResult map[string]LinkState
+	LinkStateCalls  []string
+
 	// FDBListResult is returned by FDBList alongside Errs["FDBList"]; nil
 	// when the error is set.
 	FDBListResult []FDBEntry
@@ -202,6 +208,17 @@ func (f *FakeFabric) RemoveVXLAN(vni uint32) error {
 func (f *FakeFabric) VXLANExists(vni uint32) (bool, error) {
 	f.VXLANExistsCalls = append(f.VXLANExistsCalls, vni)
 	return f.VXLANExistsResult, f.err("VXLANExists")
+}
+
+// LinkState records the call and returns LinkStateResult[name] with
+// Errs["LinkState"]. When the error is non-nil the result is the zero
+// LinkState.
+func (f *FakeFabric) LinkState(name string) (LinkState, error) {
+	f.LinkStateCalls = append(f.LinkStateCalls, name)
+	if err := f.err("LinkState"); err != nil {
+		return LinkState{}, err
+	}
+	return f.LinkStateResult[name], nil
 }
 
 // FDBCall records one FDBAppend or FDBDelete invocation.

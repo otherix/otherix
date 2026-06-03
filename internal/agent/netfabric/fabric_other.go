@@ -84,6 +84,11 @@ func (unsupportedFabric) FDBDelete(vni uint32, e FDBEntry) error { return errUns
 // FDBList reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) FDBList(vni uint32) ([]FDBEntry, error) { return nil, errUnsupported }
 
+// LinkState reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) LinkState(name string) (LinkState, error) {
+	return LinkState{}, errUnsupported
+}
+
 // EnsureWireGuard reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureWireGuard(cfg WGConfig) error { return errUnsupported }
 

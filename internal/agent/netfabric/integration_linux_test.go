@@ -978,3 +978,40 @@ func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
 		}
 	})
 }
+
+func TestLinuxFabricLinkState(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		// Absent link -> zero LinkState, nil error.
+		st, err := f.LinkState("otb1000")
+		if err != nil || st.Up {
+			t.Fatalf("LinkState(absent) = (%+v, %v), want (zero, nil)", st, err)
+		}
+		// Create a bridge with a known MTU + address and read it back.
+		if err := f.EnsureBridge("otb1000", 1390); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureGatewayAddr("otb1000", netip.MustParsePrefix("10.52.0.1/24")); err != nil {
+			t.Fatalf("EnsureGatewayAddr = %v", err)
+		}
+		st, err = f.LinkState("otb1000")
+		if err != nil {
+			t.Fatalf("LinkState(otb1000) = %v", err)
+		}
+		if !st.Up {
+			t.Errorf("Up = false, want true")
+		}
+		if st.MTU != 1390 {
+			t.Errorf("MTU = %d, want 1390", st.MTU)
+		}
+		found := false
+		for _, p := range st.Addrs {
+			if p == netip.MustParsePrefix("10.52.0.1/24") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Addrs = %v, want to contain 10.52.0.1/24", st.Addrs)
+		}
+	})
+}

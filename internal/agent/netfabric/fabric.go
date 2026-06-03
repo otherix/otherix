@@ -86,6 +86,13 @@ type Fabric interface {
 	// FDBList returns the MAC -> dst VTEP entries in the otvx<vni> FDB.
 	FDBList(vni uint32) ([]FDBEntry, error)
 
+	// LinkState returns the observed kernel state of the named link: whether it
+	// is administratively up, its MTU, and the unicast addresses assigned to it.
+	// An absent link reports a zero LinkState (Up=false) with a nil error,
+	// mirroring BridgeExists / VXLANExists, so callers gate on Up rather than
+	// distinguishing "absent" from "down".
+	LinkState(name string) (LinkState, error)
+
 	// EnsureWireGuard creates the named WireGuard link if absent, configures
 	// its private key and listen port, assigns Address, sets MTU and brings it
 	// up. It is idempotent. Peers are managed separately via SetWireGuardPeers.
@@ -118,6 +125,16 @@ type VXLANConfig struct {
 	Local netip.Addr // local VTEP source IP (loopback for N1b)
 	Port  uint16     // UDP dstport (IANA VXLAN 4789)
 	MTU   int        // inner MTU (1390 for overlay)
+}
+
+// LinkState is the observed kernel state of a network link, returned by
+// Fabric.LinkState. It is observed output: the reconciler compares it against
+// desired state (e.g. otwg0 up and carrying the node's overlay IP) rather than
+// the fabric encoding any readiness policy.
+type LinkState struct {
+	Up    bool           // link is administratively up (IFF_UP)
+	MTU   int            // link MTU
+	Addrs []netip.Prefix // unicast addresses assigned to the link
 }
 
 // FDBEntry is one MAC -> remote VTEP mapping in a VXLAN VTEP's kernel FDB.
