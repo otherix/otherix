@@ -455,11 +455,6 @@ func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatPr
 	}
 	out := make([]declaredNetwork, 0, len(rows))
 	for _, row := range rows {
-		if row.Type != store.NetworkTypeBridge {
-			// Overlay networks are not declared until the agent can materialise
-			// them (N3b); declaring one now only yields a spurious "failed".
-			continue
-		}
 		out = append(out, networkToDeclared(row))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

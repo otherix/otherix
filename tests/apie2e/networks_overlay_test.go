@@ -34,8 +34,10 @@ type overlayNetworkView struct {
 // heartbeatDeclaredNetworkEntry is the minimal shape for one entry in the
 // declared_networks slice of a heartbeat response.
 type heartbeatDeclaredNetworkEntry struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	VNI        *int32 `json:"vni"`
+	BridgeName string `json:"bridge_name"`
 }
 
 // heartbeatDeclaredNetworksResponse decodes only declared_networks from the
@@ -177,7 +179,12 @@ func TestOverlayNetworkPatchOnlyName(t *testing.T) {
 	assertErrorCode(t, mtuResp, "validation_failed")
 }
 
-func TestOverlayNetworkNotDeclaredToAgents(t *testing.T) {
+// TestOverlayNetworkDeclaredToAgents verifies that overlay networks ARE now
+// declared in the declared_networks down-channel (the N3b D1 flip). It seeds one
+// bridge and one overlay network, drives a synthetic agent heartbeat over the
+// mTLS agent router, and asserts that the overlay entry appears carrying its vni
+// and otb<vni> bridge name, alongside the bridge.
+func TestOverlayNetworkDeclaredToAgents(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
 
@@ -257,16 +264,25 @@ func TestOverlayNetworkNotDeclaredToAgents(t *testing.T) {
 	}
 
 	bridgeSeen := false
+	overlaySeen := false
 	for _, n := range decoded.DeclaredNetworks {
-		if n.Type == "overlay" {
-			t.Errorf("declared_networks contains overlay entry id=%q; overlay must be filtered out until N3b", n.ID)
-		}
 		if n.ID == bridgeID {
 			bridgeSeen = true
 		}
+		if n.Type == "overlay" {
+			overlaySeen = true
+			if n.VNI == nil {
+				t.Errorf("declared overlay id=%q has nil vni", n.ID)
+			} else if want := fmt.Sprintf("otb%d", *n.VNI); n.BridgeName != want {
+				t.Errorf("declared overlay bridge_name = %q, want %q", n.BridgeName, want)
+			}
+		}
 	}
 	if !bridgeSeen {
-		t.Errorf("declared_networks does not contain the seeded bridge network id=%q; bridge networks must be declared to agents", bridgeID)
+		t.Errorf("declared_networks missing the seeded bridge id=%q", bridgeID)
+	}
+	if !overlaySeen {
+		t.Errorf("declared_networks missing the overlay network; N3b must declare overlay to agents")
 	}
 }
 
