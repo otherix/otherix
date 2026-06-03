@@ -112,6 +112,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		DeclaredNetworks:       outcome.declaredNetworks,
 		DeclaredWireGuardPeers: outcome.declaredWireGuardPeers,
 		SelfOverlayIP:          outcome.selfOverlayIP,
+		DeclaredFDB:            outcome.declaredFDB,
 	})
 }
 
@@ -187,6 +188,7 @@ type heartbeatOutcome struct {
 	declaredVMs            []declaredVM
 	declaredNetworks       []declaredNetwork
 	declaredWireGuardPeers []declaredWireGuardPeer
+	declaredFDB            []declaredFDBEntry
 	selfOverlayIP          *string
 }
 
@@ -284,6 +286,11 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 		return err
 	}
 	outcome.declaredWireGuardPeers = declaredWG
+	declaredFDB, err := h.loadDeclaredFDB(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredFDB = declaredFDB
 	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
 	switch {
 	case err == nil:
@@ -577,6 +584,71 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// loadDeclaredFDB computes the controller-authoritative VXLAN FDB this node must
+// program, scoped to overlays it has a local VM on. For each such overlay it
+// emits a per-remote-VM unicast entry (mac -> remote node's VTEP IP) and one
+// all-zeros BUM/flood entry per distinct remote VTEP (head-end replication).
+// Remote = a VM on another node; the node never needs FDB for its own local VMs
+// (their MACs live on the otb<vni> bridge). Sorted (vni, mac, vtep) for stable
+// heartbeats.
+func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, error) {
+	placements, err := hp.ListOverlayNICPlacements(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list overlay nic placements: %v", err)
+	}
+	recs, err := hp.ListAgentWireguard(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list agent_wireguard: %v", err)
+	}
+	vtepIP := make(map[uuid.UUID]string, len(recs)) // node -> overlay IP
+	for _, r := range recs {
+		vtepIP[r.NodeID] = r.OverlayIP.String()
+	}
+	// No gone-node filter here (unlike loadDeclaredWireGuardPeers): the placement
+	// projection only includes NICs whose VM has a current_node, and DeleteNode
+	// clears current_node_id on orphan, so gone/deleted nodes drop out at source.
+	// Overlays this node participates in locally.
+	localVNI := make(map[int32]struct{})
+	for _, p := range placements {
+		if p.NodeID == selfNodeID {
+			localVNI[p.VNI] = struct{}{}
+		}
+	}
+	var out []declaredFDBEntry
+	flood := make(map[string]struct{}) // dedup key "vni|vtep"
+	for _, p := range placements {
+		if p.NodeID == selfNodeID {
+			continue
+		}
+		if _, ok := localVNI[p.VNI]; !ok {
+			continue
+		}
+		ip, ok := vtepIP[p.NodeID]
+		if !ok {
+			continue // owning node has no overlay IP yet
+		}
+		out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: p.Mac.String(), VtepIP: ip})
+		fkey := fmt.Sprintf("%d|%s", p.VNI, ip)
+		if _, seen := flood[fkey]; !seen {
+			flood[fkey] = struct{}{}
+			out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: "00:00:00:00:00:00", VtepIP: ip})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].VNI != out[j].VNI {
+			return out[i].VNI < out[j].VNI
+		}
+		if out[i].MAC != out[j].MAC {
+			return out[i].MAC < out[j].MAC
+		}
+		return out[i].VtepIP < out[j].VtepIP
+	})
 	if len(out) == 0 {
 		return nil, nil
 	}
