@@ -246,13 +246,27 @@ func TestApplyOverlayFDBIdempotentSteadyState(t *testing.T) {
 
 func TestApplyOverlaySkipsUnparseableFDB(t *testing.T) {
 	f := readyFabricWithFDB(nil)
-	driveFDB(t, f, []heartbeat.DeclaredFDBEntry{
+	rep := driveFDBReport(t, f, []heartbeat.DeclaredFDBEntry{
 		{VNI: 1000, MAC: "not-a-mac", VtepIP: "10.42.0.2"},
 		{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "bogus-ip"},
 		{VNI: 1000, MAC: "52:54:00:00:00:0c", VtepIP: "10.42.0.3"},
 	})
+	// The good entry is still programmed: one bad entry never drops the rest.
 	if len(f.FDBAppendCalls) != 1 || f.FDBAppendCalls[0].Entry.MAC.String() != "52:54:00:00:00:0c" {
 		t.Errorf("want only the valid entry appended, got %+v", f.FDBAppendCalls)
+	}
+	// Two declared entries could not be parsed; the overlay must hold pending
+	// with a reason naming the unparseable count, not falsely report ready over a
+	// per-VM unicast blackhole.
+	if rep.ReconciliationStatus != "pending" {
+		t.Errorf("status = %q, want pending (unparseable fdb entries)", rep.ReconciliationStatus)
+	}
+	if rep.ReconciliationError == nil || *rep.ReconciliationError != "fdb_unparseable_entries=2" {
+		got := "<nil>"
+		if rep.ReconciliationError != nil {
+			got = *rep.ReconciliationError
+		}
+		t.Errorf("reason = %q, want %q", got, "fdb_unparseable_entries=2")
 	}
 }
 

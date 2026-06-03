@@ -65,8 +65,14 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}); err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
-	converged := r.reconcileFDB(ctx, vniVal, fdb)
+	converged, unparseable := r.reconcileFDB(ctx, vniVal, fdb)
 	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}
+	// Unparseable declared entries take precedence in the reason: they are a
+	// distinct, stable divergence (a corrupt declared entry can never be
+	// programmed), unlike fdb_not_converged which covers transient apply failures.
+	if unparseable > 0 {
+		return r.pending(ctx, d, fmt.Sprintf("fdb_unparseable_entries=%d", unparseable))
+	}
 	if !converged {
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
@@ -75,28 +81,28 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for
 // this VNI: list-diff-apply (append missing, delete stale). It reports whether
-// the FDB fully converged this pass: it returns false when the FDB could not be
-// listed or when any append/delete failed, so the caller can hold the overlay at
-// pending rather than report a green status over a half-programmed FDB. Per-entry
-// failures are logged and the rest still proceed; the VTEP stays up and the FDB
-// reconverges next tick. An unparseable entry is skipped + logged (it cannot be
-// programmed, so it does not block convergence) so one bad entry never drops the
-// rest.
-func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat.DeclaredFDBEntry) bool {
-	desired := r.parseDesiredFDB(ctx, vni, fdb)
+// the FDB fully converged this pass and how many declared entries it could not
+// parse. converged is false when the FDB could not be listed or when any
+// append/delete failed; unparseable counts declared entries dropped for a bad MAC
+// or VTEP IP. Either signal holds the overlay at pending so the caller never
+// reports a green status over a half-programmed or blackholed FDB. Per-entry
+// failures are logged and the parseable entries still proceed; the VTEP stays up
+// and the FDB reconverges next tick, so one bad entry never drops the rest.
+func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat.DeclaredFDBEntry) (converged bool, unparseable int) {
+	desired, unparseable := r.parseDesiredFDB(ctx, vni, fdb)
 
 	current, err := r.fabric.FDBList(vni)
 	if err != nil {
 		r.log.WarnContext(ctx, "overlay fdb list failed; skipping fdb reconcile this pass",
 			slog.Int("vni", int(vni)), slog.String("error", err.Error()))
-		return false
+		return false, unparseable
 	}
 	currentSet := make(map[string]netfabric.FDBEntry, len(current))
 	for _, e := range current {
 		currentSet[fdbKey(e)] = e
 	}
 
-	converged := true
+	converged = true
 	for k, e := range desired {
 		if _, ok := currentSet[k]; ok {
 			continue
@@ -119,27 +125,33 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
 		}
 	}
-	return converged
+	return converged, unparseable
 }
 
 // parseDesiredFDB turns the declared entries for this VNI into the set of
-// well-formed netfabric.FDBEntry values keyed by fdbKey. Entries for other VNIs
-// are ignored; entries with an unparseable MAC or VTEP IP are skipped and logged
-// so one bad entry never drops the rest.
-func (r *Networks) parseDesiredFDB(ctx context.Context, vni uint32, fdb []heartbeat.DeclaredFDBEntry) map[string]netfabric.FDBEntry {
-	desired := make(map[string]netfabric.FDBEntry)
+// well-formed netfabric.FDBEntry values keyed by fdbKey, plus the number of
+// entries it had to skip. Entries for other VNIs are ignored (not counted);
+// entries with an unparseable MAC or VTEP IP are skipped, logged, and counted as
+// unparseable so the caller can hold the overlay at pending - a corrupt declared
+// entry can never be programmed, which is a real desired-vs-observed divergence,
+// not a no-op. The parseable entries are still returned so one bad entry never
+// drops the rest.
+func (r *Networks) parseDesiredFDB(ctx context.Context, vni uint32, fdb []heartbeat.DeclaredFDBEntry) (desired map[string]netfabric.FDBEntry, unparseable int) {
+	desired = make(map[string]netfabric.FDBEntry)
 	for _, e := range fdb {
 		if e.VNI != int32(vni) { //nolint:gosec // vni is a 24-bit VXLAN id (<= 16777215); fits int32
 			continue
 		}
 		mac, err := net.ParseMAC(e.MAC)
 		if err != nil {
+			unparseable++
 			r.log.WarnContext(ctx, "overlay fdb entry has unparseable mac; skipping",
 				slog.Int("vni", int(vni)), slog.String("mac", e.MAC), slog.String("error", err.Error()))
 			continue
 		}
 		dst, err := netip.ParseAddr(e.VtepIP)
 		if err != nil {
+			unparseable++
 			r.log.WarnContext(ctx, "overlay fdb entry has unparseable vtep_ip; skipping",
 				slog.Int("vni", int(vni)), slog.String("vtep_ip", e.VtepIP), slog.String("error", err.Error()))
 			continue
@@ -147,7 +159,7 @@ func (r *Networks) parseDesiredFDB(ctx context.Context, vni uint32, fdb []heartb
 		ent := netfabric.FDBEntry{MAC: mac, Dst: dst}
 		desired[fdbKey(ent)] = ent
 	}
-	return desired
+	return desired, unparseable
 }
 
 // fdbKey is the (mac, dst) identity of an FDB entry for set comparison.
