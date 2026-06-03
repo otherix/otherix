@@ -142,6 +142,10 @@ type responseBody struct {
 	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 	DeclaredFDB            []declaredFDBEntry      `json:"declared_fdb"`
+	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead),
+	// mirrored to the agent so it brings otwg0 up at the right size on a
+	// sub-1500 underlay.
+	Otwg0MTU *int32 `json:"otwg0_mtu"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the

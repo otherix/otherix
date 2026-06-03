@@ -272,6 +272,12 @@ func (h heartbeatProjection) OverlaySupernet(ctx context.Context) (netip.Prefix,
 	return h.s.OverlaySupernet(ctx)
 }
 
+// UnderlayMTU returns the seeded physical underlay MTU so the handler can derive
+// the otwg0 link MTU (underlay - store.WGEncapOverhead) for the down-channel.
+func (h heartbeatProjection) UnderlayMTU(ctx context.Context) (int32, error) {
+	return h.s.UnderlayMTU(ctx)
+}
+
 // ListNetworks returns every non-deleted network. Networks are cluster-wide (not
 // node-scoped), so the projection hands the agent the full set to materialise
 // on its node.

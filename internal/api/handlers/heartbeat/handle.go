@@ -113,6 +113,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		DeclaredWireGuardPeers: outcome.declaredWireGuardPeers,
 		SelfOverlayIP:          outcome.selfOverlayIP,
 		DeclaredFDB:            outcome.declaredFDB,
+		Otwg0MTU:               outcome.otwg0MTU,
 	})
 }
 
@@ -190,6 +191,7 @@ type heartbeatOutcome struct {
 	declaredWireGuardPeers []declaredWireGuardPeer
 	declaredFDB            []declaredFDBEntry
 	selfOverlayIP          *string
+	otwg0MTU               *int32
 }
 
 // project runs the full state projection in a single transaction.
@@ -266,6 +268,15 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 // networks, WG peers) into outcome after the apply phase. Split out of project
 // to keep that function's branching under the gocyclo ceiling.
 func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, outcome *heartbeatOutcome) error {
+	// The otwg0 link MTU is independent of whether this agent has a WG record
+	// yet: the agent must bring otwg0 up at the right size before its first WG
+	// report, so compute it unconditionally from the underlay MTU.
+	underlay, err := hp.UnderlayMTU(ctx)
+	if err != nil {
+		return fmt.Errorf("load underlay mtu: %v", err)
+	}
+	otwgMTU := underlay - store.WGEncapOverhead
+	outcome.otwg0MTU = &otwgMTU
 	declaredPools, err := h.loadDeclaredPools(ctx, hp, nodeID)
 	if err != nil {
 		return err

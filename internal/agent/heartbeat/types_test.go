@@ -98,3 +98,15 @@ func TestResponseDecodeDeclaredFDB(t *testing.T) {
 		t.Errorf("DeclaredFDB mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestResponseDecodeOtwg0MTU(t *testing.T) {
+	raw := `{"received_at":"t","declared_pools":[],"declared_vms":[],"declared_networks":[],
+	         "declared_wireguard_peers":[],"self_overlay_ip":null,"declared_fdb":[],"otwg0_mtu":1440}`
+	var got Response
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Otwg0MTU == nil || *got.Otwg0MTU != 1440 {
+		t.Errorf("Otwg0MTU = %v, want 1440", got.Otwg0MTU)
+	}
+}

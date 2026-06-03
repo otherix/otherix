@@ -98,6 +98,27 @@ func TestWireGuardReconcileSetsOverlayMTU(t *testing.T) {
 	}
 }
 
+func TestWireGuardUsesDeclaredMTU(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	rec, err := NewWireGuard(f, wgtypes.Key{}, config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	ip := "10.42.0.7/16"
+	mtu := int32(1380)
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		SelfOverlayIP: &ip,
+		Otwg0MTU:      &mtu,
+	})
+	rec.reconcile(context.Background())
+	if len(f.EnsureWireGuardCalls) == 0 {
+		t.Fatal("EnsureWireGuard not called")
+	}
+	if f.EnsureWireGuardCalls[0].MTU != 1380 {
+		t.Errorf("otwg0 MTU = %d, want the declared 1380", f.EnsureWireGuardCalls[0].MTU)
+	}
+}
+
 func TestWireGuardReconcile_WaitsForOverlayIP(t *testing.T) {
 	f := &netfabric.FakeFabric{}
 	r, err := NewWireGuard(f, mustKey(t), config.WireGuardConfig{ListenPort: 51820}, discardLogger(), time.Second)

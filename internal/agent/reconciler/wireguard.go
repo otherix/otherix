@@ -53,6 +53,7 @@ type WireGuard struct {
 type wgDesired struct {
 	selfOverlayIP string // CIDR "10.42.0.1/16"; "" until the CP allocates
 	peers         []heartbeat.DeclaredWireGuardPeer
+	otwg0MTU      *int32 // CP-declared otwg0 link MTU; nil falls back to WireGuardMTU
 }
 
 // wgStatus is the outcome of the WG reconciler's most recent pass, surfaced up
@@ -150,7 +151,10 @@ func (r *WireGuard) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.R
 	if resp == nil {
 		return
 	}
-	d := &wgDesired{peers: append([]heartbeat.DeclaredWireGuardPeer(nil), resp.DeclaredWireGuardPeers...)}
+	d := &wgDesired{
+		peers:    append([]heartbeat.DeclaredWireGuardPeer(nil), resp.DeclaredWireGuardPeers...),
+		otwg0MTU: resp.Otwg0MTU,
+	}
 	if resp.SelfOverlayIP != nil {
 		d.selfOverlayIP = *resp.SelfOverlayIP
 	}
@@ -200,12 +204,16 @@ func (r *WireGuard) reconcile(ctx context.Context) {
 		r.setStatus("failed", fmt.Sprintf("self_overlay_ip %q not a prefix: %v", d.selfOverlayIP, err))
 		return
 	}
+	mtu := netfabric.WireGuardMTU // fallback: older CP / underlay MTU not yet known
+	if d.otwg0MTU != nil {
+		mtu = int(*d.otwg0MTU)
+	}
 	if err := r.fabric.EnsureWireGuard(netfabric.WGConfig{
 		Name:       wgInterfaceName,
 		PrivateKey: r.key,
 		ListenPort: r.cfg.ListenPort,
 		Address:    addr,
-		MTU:        netfabric.WireGuardMTU, // otwg0 carries VXLAN; reapplied each pass (drift-heal)
+		MTU:        mtu, // otwg0 carries VXLAN; reapplied each pass (drift-heal)
 	}); err != nil {
 		r.log.WarnContext(ctx, "wireguard ensure interface failed",
 			slog.String("interface", wgInterfaceName),

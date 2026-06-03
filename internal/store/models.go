@@ -95,6 +95,11 @@ const OverlayMTU int32 = 1390
 // 60 bytes WireGuard + 50 bytes VXLAN. The overlay inner MTU is underlay - this.
 const OverlayEncapOverhead int32 = 110
 
+// WGEncapOverhead is the per-frame overhead an otwg0 (WireGuard) frame pays:
+// 20 bytes IP + 8 bytes UDP + 32 bytes WireGuard. The otwg0 link MTU is
+// underlay - this.
+const WGEncapOverhead int32 = 60
+
 type NetworkEgress string
 
 const (

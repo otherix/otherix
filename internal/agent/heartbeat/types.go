@@ -99,6 +99,10 @@ type Response struct {
 	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 	DeclaredFDB            []DeclaredFDBEntry      `json:"declared_fdb"`
+	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead).
+	// Nil from an older CP or before the underlay MTU is known; the WG
+	// reconciler falls back to netfabric.WireGuardMTU when absent.
+	Otwg0MTU *int32 `json:"otwg0_mtu"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants
