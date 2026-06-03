@@ -250,6 +250,25 @@ const defaultUnderlayMTU = 1500
 // 1280-byte IPv6 minimum link MTU (RFC 8200).
 const minUnderlayMTU = int(store.OverlayEncapOverhead) + 1280 // 1390
 
+// MinUnderlayMTU is the exported form of the underlay MTU floor (1390) so the
+// boot path can WARN on a seeded value below it. The floor was 1280 before it was
+// raised; a cluster seeded under an older binary can carry a value in [1280,1389]
+// that derives a sub-1280 overlay MTU, below the RFC 8200 IPv6 minimum link MTU.
+const MinUnderlayMTU = int32(minUnderlayMTU)
+
+// UnderlayMTUBelowFloor reports whether a seeded underlay MTU is strictly below
+// the MinUnderlayMTU floor. It backs the boot-time WARN: UnderlayMTU returns a
+// legacy seed verbatim (the seed is immutable and must not be silently clamped up,
+// which would push the derived overlay MTU too high and fragment), so a
+// below-floor seed is surfaced as visibility, not corrected. The default 1500 and
+// the floor itself return false.
+func UnderlayMTUBelowFloor(mtu int32) bool { return mtu < MinUnderlayMTU }
+
+// DerivedOverlayMTU is the overlay inner MTU that derives from a given underlay
+// MTU (underlay - OverlayEncapOverhead). It lets the boot WARN name the actual
+// derived overlay MTU a below-floor seed produces.
+func DerivedOverlayMTU(underlay int32) int32 { return underlay - store.OverlayEncapOverhead }
+
 // SeedUnderlayMTU writes the physical underlay MTU on the singleton
 // first-writer-wins: it reads the singleton and no-ops when a value already
 // exists (immutable thereafter - no public mutator), before validating this

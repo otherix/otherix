@@ -4,10 +4,58 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/otherix/otherix/internal/api"
+	"github.com/otherix/otherix/internal/etcdstore"
 )
+
+// TestWarnIfUnderlayMTUBelowFloor is the fail-toward-visibility guarantee for a
+// legacy sub-1390 underlay seed: UnderlayMTU returns the immutable seed verbatim
+// (clamping it up would push the derived overlay MTU too high and fragment), so
+// the boot path must WARN - naming the seed, the derived overlay MTU, and the
+// floor - rather than correct it. The default 1500, the floor itself, and any
+// valid seed must NOT warn.
+func TestWarnIfUnderlayMTUBelowFloor(t *testing.T) {
+	cases := []struct {
+		name     string
+		mtu      int32
+		wantWarn bool
+	}{
+		{name: "legacy 1280 seed warns", mtu: 1280, wantWarn: true},
+		{name: "one below the floor warns", mtu: etcdstore.MinUnderlayMTU - 1, wantWarn: true},
+		{name: "exactly the floor is silent", mtu: etcdstore.MinUnderlayMTU, wantWarn: false},
+		{name: "default 1500 is silent", mtu: 1500, wantWarn: false},
+		{name: "jumbo 9000 is silent", mtu: 9000, wantWarn: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			got := warnIfUnderlayMTUBelowFloor(tc.mtu, log)
+			if got != tc.wantWarn {
+				t.Errorf("warnIfUnderlayMTUBelowFloor(%d) = %v, want %v", tc.mtu, got, tc.wantWarn)
+			}
+			loggedWarn := strings.Contains(buf.String(), "level=WARN")
+			if loggedWarn != tc.wantWarn {
+				t.Errorf("WARN logged = %v, want %v (log: %q)", loggedWarn, tc.wantWarn, buf.String())
+			}
+			if tc.wantWarn {
+				// The WARN must name the seed and the derived overlay MTU so the
+				// operator can act without reading source.
+				out := buf.String()
+				for _, sub := range []string{"underlay_mtu", "overlay_mtu", "floor"} {
+					if !strings.Contains(out, sub) {
+						t.Errorf("WARN missing %q: %q", sub, out)
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestBuildInitialCluster(t *testing.T) {
 	cases := []struct {

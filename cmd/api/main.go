@@ -381,7 +381,35 @@ func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth
 	if err := st.SeedUnderlayMTU(ctx, netCfg.UnderlayMTU); err != nil {
 		return fmt.Errorf("seed underlay mtu: %v", err)
 	}
+	// A cluster seeded under an older binary (the floor was 1280 before it was
+	// raised to 1390) can carry an underlay MTU in [1280,1389] that derives a
+	// sub-1280 overlay MTU - below the RFC 8200 IPv6 minimum. UnderlayMTU returns
+	// such a seed verbatim (it is immutable, and silently clamping it up would push
+	// the overlay MTU too high and fragment), so surface it loudly at boot instead.
+	underlay, err := st.UnderlayMTU(ctx)
+	if err != nil {
+		return fmt.Errorf("read underlay mtu: %v", err)
+	}
+	warnIfUnderlayMTUBelowFloor(underlay, log)
 	return nil
+}
+
+// warnIfUnderlayMTUBelowFloor logs a loud WARN when the seeded underlay MTU is
+// strictly below the etcdstore.MinUnderlayMTU floor (1390), naming the seed, the
+// derived overlay MTU, the floor, and the renumber procedure. It returns whether
+// it warned. It does NOT mutate the seed - the seed is immutable and clamping it
+// up would push the derived overlay MTU too high and fragment; the fix is the
+// operator-driven renumber documented in docs/architecture.md ("Operations:
+// overlay MTU and VNI range"). The default 1500 and the floor itself are silent.
+func warnIfUnderlayMTUBelowFloor(underlay int32, log *slog.Logger) bool {
+	if !etcdstore.UnderlayMTUBelowFloor(underlay) {
+		return false
+	}
+	log.Warn("seeded underlay_mtu is below the 1390 floor; the derived overlay_mtu falls under the 1280-byte ipv6 minimum link mtu (rfc 8200). the seed is immutable and is not corrected on read; renumber per docs/architecture.md \"Operations: overlay MTU and VNI range\"",
+		slog.Int("underlay_mtu", int(underlay)),
+		slog.Int("overlay_mtu", int(etcdstore.DerivedOverlayMTU(underlay))),
+		slog.Int("floor", int(etcdstore.MinUnderlayMTU)))
+	return true
 }
 
 // startWorkers launches the etcd job dispatcher and the periodic scheduler when
