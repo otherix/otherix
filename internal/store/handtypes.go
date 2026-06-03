@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"time"
 
@@ -44,6 +45,16 @@ type HeartbeatProjection interface {
 	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (AgentWireguard, error)
 	OverlaySupernet(ctx context.Context) (netip.Prefix, error)
 	ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]ListVMsForNodeDeclaredRow, error)
+	ListOverlayNICPlacements(ctx context.Context) ([]OverlayNICPlacement, error)
+}
+
+// OverlayNICPlacement is one NIC attached to a type=overlay network whose owning
+// VM has a current node. The heartbeat FDB projection joins these (MAC + owning
+// node) to each node's VTEP overlay IP to build declared_fdb.
+type OverlayNICPlacement struct {
+	VNI    int32
+	Mac    net.HardwareAddr
+	NodeID uuid.UUID
 }
 
 // PlacementReader is the read surface SchedulePlacement consumes, plus the

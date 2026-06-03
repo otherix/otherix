@@ -5,6 +5,8 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"sort"
 	"time"
 
@@ -151,5 +153,76 @@ func (s *Store) ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMN
 		}
 		return out[i].ID.String() < out[j].ID.String()
 	})
+	return out, nil
+}
+
+// ListOverlayNICPlacements returns one OverlayNICPlacement per NIC on a
+// type=overlay network whose owning VM has a current node. NICs whose VM has no
+// runtime row yet (not placed) are skipped - the FDB entry appears once the VM
+// is placed and reports. Deleted networks and deleted NICs are skipped. It scans
+// every network, then the per-network NIC index of each overlay, joining each
+// NIC to its VM's runtime (vmNicNetworkIndexPrefix lives in networks.go).
+func (s *Store) ListOverlayNICPlacements(ctx context.Context) ([]store.OverlayNICPlacement, error) {
+	netItems, err := s.c.Range(ctx, networkPrefix())
+	if err != nil {
+		return nil, err
+	}
+	var out []store.OverlayNICPlacement
+	for _, nkv := range netItems {
+		var n store.Network
+		if err := json.Unmarshal(nkv.Value, &n); err != nil {
+			// Skip a corrupt network row rather than failing the whole FDB projection.
+			continue
+		}
+		if n.DeletedAt != nil || n.Type != store.NetworkTypeOverlay || n.VNI == nil {
+			continue
+		}
+		placements, err := s.overlayPlacementsForNetwork(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, placements...)
+	}
+	return out, nil
+}
+
+// overlayPlacementsForNetwork resolves the placed NICs of a single overlay
+// network into FDB placements, skipping deleted NICs and NICs whose owning VM
+// has no current node.
+func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network) ([]store.OverlayNICPlacement, error) {
+	nicItems, err := s.c.Range(ctx, vmNicNetworkIndexPrefix(n.ID))
+	if err != nil {
+		return nil, err
+	}
+	var out []store.OverlayNICPlacement
+	for _, ikv := range nicItems {
+		nicID, perr := uuid.Parse(string(ikv.Value))
+		if perr != nil {
+			continue
+		}
+		var nic store.VMNic
+		found, gerr := s.c.GetJSON(ctx, vmNicKey(nicID), &nic)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || nic.DeletedAt != nil {
+			continue
+		}
+		rt, rerr := s.VMRuntimeByID(ctx, nic.VmID)
+		if rerr != nil {
+			if errors.Is(rerr, store.ErrNotFound) {
+				continue
+			}
+			return nil, rerr
+		}
+		if rt.CurrentNodeID == nil {
+			continue
+		}
+		out = append(out, store.OverlayNICPlacement{
+			VNI:    *n.VNI,
+			Mac:    nic.MacAddress,
+			NodeID: *rt.CurrentNodeID,
+		})
+	}
 	return out, nil
 }

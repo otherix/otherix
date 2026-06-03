@@ -328,3 +328,10 @@ func (h heartbeatProjection) ListVMsForNodeDeclared(ctx context.Context, nodeID 
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	return out, nil
 }
+
+// ListOverlayNICPlacements returns the cluster-wide overlay NIC placements
+// (MAC + owning node per overlay VNI) the FDB down-channel projection joins to
+// each node's VTEP overlay IP.
+func (h heartbeatProjection) ListOverlayNICPlacements(ctx context.Context) ([]store.OverlayNICPlacement, error) {
+	return h.s.ListOverlayNICPlacements(ctx)
+}
