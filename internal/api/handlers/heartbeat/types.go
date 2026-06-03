@@ -45,6 +45,14 @@ type declaredWireGuardPeer struct {
 	AllowedIPs []string `json:"allowed_ips"`
 }
 
+// declaredFDBEntry mirrors DeclaredFDBEntry on the agent side (the manual-sync
+// contract). The all-zeros MAC is the BUM/flood entry.
+type declaredFDBEntry struct {
+	VNI    int32  `json:"vni"`
+	MAC    string `json:"mac"`
+	VtepIP string `json:"vtep_ip"`
+}
+
 // poolReport mirrors HeartbeatPoolReport — agent's per-pool
 // reconciliation outcome. The CP joins each entry against
 // `storage_pools` by (node_id, lower(name)) and applies
@@ -133,6 +141,7 @@ type responseBody struct {
 	DeclaredNetworks       []declaredNetwork       `json:"declared_networks"`
 	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
+	DeclaredFDB            []declaredFDBEntry      `json:"declared_fdb"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the

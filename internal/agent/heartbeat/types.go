@@ -50,6 +50,17 @@ type DeclaredWireGuardPeer struct {
 	AllowedIPs []string `json:"allowed_ips"`
 }
 
+// DeclaredFDBEntry is one controller-programmed VXLAN FDB entry the CP wants in
+// this node's otvx<vni> kernel FDB (the heartbeat down-channel). A normal MAC is
+// a per-VM unicast entry (mac -> the remote VM's owning-node VTEP); the all-zeros
+// MAC "00:00:00:00:00:00" is a BUM/flood entry (head-end replication to that
+// remote VTEP). VtepIP is the remote node's otwg0 overlay host IP.
+type DeclaredFDBEntry struct {
+	VNI    int32  `json:"vni"`
+	MAC    string `json:"mac"`
+	VtepIP string `json:"vtep_ip"`
+}
+
 // PoolReport mirrors HeartbeatPoolReport — one entry per pool the
 // agent has observed after a reconciliation pass. Forward-compatibility
 // capacity fields (capacity_bytes / available_bytes / reported_at) are
@@ -87,6 +98,7 @@ type Response struct {
 	DeclaredNetworks       []DeclaredNetwork       `json:"declared_networks"`
 	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
+	DeclaredFDB            []DeclaredFDBEntry      `json:"declared_fdb"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants
