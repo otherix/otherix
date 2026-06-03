@@ -73,7 +73,8 @@ type appliedNetwork struct {
 // overlay path needs as the VTEP source. Bridge networks ignore the IP.
 type networksDesired struct {
 	networks      []heartbeat.DeclaredNetwork
-	selfOverlayIP string // CIDR "10.42.0.1/16"; "" until the CP allocates
+	selfOverlayIP string                       // CIDR "10.42.0.1/16"; "" until the CP allocates
+	fdb           []heartbeat.DeclaredFDBEntry // CP-declared VXLAN FDB entries, programmed per-VNI
 }
 
 // NewNetworks builds the network reconciler. tick==0 falls back to
@@ -107,6 +108,7 @@ func (r *Networks) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Re
 	}
 	d := &networksDesired{
 		networks: append([]heartbeat.DeclaredNetwork(nil), resp.DeclaredNetworks...),
+		fdb:      append([]heartbeat.DeclaredFDBEntry(nil), resp.DeclaredFDB...),
 	}
 	if resp.SelfOverlayIP != nil {
 		d.selfOverlayIP = *resp.SelfOverlayIP
@@ -169,16 +171,18 @@ func (r *Networks) reconcile(ctx context.Context) {
 	d := r.desired.Load()
 	var desired []heartbeat.DeclaredNetwork
 	var selfOverlayIP string
+	var fdb []heartbeat.DeclaredFDBEntry
 	if d != nil {
 		desired = d.networks
 		selfOverlayIP = d.selfOverlayIP
+		fdb = d.fdb
 	}
 
 	declared := make(map[string]struct{}, len(desired))
 	nextReports := make(map[string]heartbeat.NetworkReport, len(desired))
 	for _, dn := range desired {
 		declared[dn.ID] = struct{}{}
-		nextReports[dn.ID] = r.applyNetwork(ctx, dn, selfOverlayIP)
+		nextReports[dn.ID] = r.applyNetwork(ctx, dn, selfOverlayIP, fdb)
 	}
 
 	r.removeUndeclared(ctx, declared)
@@ -191,7 +195,7 @@ func (r *Networks) reconcile(ctx context.Context) {
 // applyNetwork materialises one declared network and returns its report.
 // It also updates r.applied on success so a later removal knows what to
 // tear down.
-func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork, selfOverlayIP string) heartbeat.NetworkReport {
+func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork, selfOverlayIP string, fdb []heartbeat.DeclaredFDBEntry) heartbeat.NetworkReport {
 	switch d.Type {
 	case "bridge":
 		subnet, gateway, err := parseSubnetGateway(d)
@@ -203,7 +207,7 @@ func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork
 		}
 		return r.applyManaged(ctx, d, subnet, gateway)
 	case "overlay":
-		return r.applyOverlay(ctx, d, selfOverlayIP)
+		return r.applyOverlay(ctx, d, selfOverlayIP, fdb)
 	default:
 		return r.failed(ctx, d, fmt.Sprintf("unsupported network type %q", d.Type))
 	}

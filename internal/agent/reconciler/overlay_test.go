@@ -6,6 +6,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -177,4 +178,88 @@ func TestApplyOverlayFailedOnFabricError(t *testing.T) {
 	if len(f.EnsureVXLANCalls) != 0 {
 		t.Errorf("VTEP created after EnsureBridge failed")
 	}
+}
+
+func readyFabricWithFDB(current []netfabric.FDBEntry) *netfabric.FakeFabric {
+	return &netfabric.FakeFabric{
+		LinkStateResult: map[string]netfabric.LinkState{
+			"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+		},
+		FDBListResult: current,
+	}
+}
+
+func driveFDB(t *testing.T, f *netfabric.FakeFabric, fdb []heartbeat.DeclaredFDBEntry) {
+	t.Helper()
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayNet()},
+		SelfOverlayIP:    &ip,
+		DeclaredFDB:      fdb,
+	})
+	rec.reconcile(context.Background())
+}
+
+func TestApplyOverlayProgramsFDB(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	driveFDB(t, f, []heartbeat.DeclaredFDBEntry{
+		{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"},
+		{VNI: 1000, MAC: "00:00:00:00:00:00", VtepIP: "10.42.0.2"},
+	})
+	if len(f.FDBAppendCalls) != 2 {
+		t.Fatalf("FDBAppendCalls = %d, want 2: %+v", len(f.FDBAppendCalls), f.FDBAppendCalls)
+	}
+	for _, c := range f.FDBAppendCalls {
+		if c.VNI != 1000 {
+			t.Errorf("append VNI = %d, want 1000", c.VNI)
+		}
+		if c.Entry.Dst != netip.MustParseAddr("10.42.0.2") {
+			t.Errorf("append dst = %v, want 10.42.0.2", c.Entry.Dst)
+		}
+	}
+}
+
+func TestApplyOverlayPrunesStaleFDB(t *testing.T) {
+	stale := netfabric.FDBEntry{MAC: mustMAC("52:54:00:00:00:ff"), Dst: netip.MustParseAddr("10.42.0.9")}
+	f := readyFabricWithFDB([]netfabric.FDBEntry{stale})
+	driveFDB(t, f, nil)
+	if len(f.FDBDeleteCalls) != 1 || f.FDBDeleteCalls[0].Entry.MAC.String() != "52:54:00:00:00:ff" {
+		t.Errorf("FDBDeleteCalls = %+v, want one delete of 52:54:00:00:00:ff", f.FDBDeleteCalls)
+	}
+	if len(f.FDBAppendCalls) != 0 {
+		t.Errorf("unexpected appends: %+v", f.FDBAppendCalls)
+	}
+}
+
+func TestApplyOverlayFDBIdempotentSteadyState(t *testing.T) {
+	entry := netfabric.FDBEntry{MAC: mustMAC("52:54:00:00:00:0b"), Dst: netip.MustParseAddr("10.42.0.2")}
+	f := readyFabricWithFDB([]netfabric.FDBEntry{entry})
+	driveFDB(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"}})
+	if len(f.FDBAppendCalls) != 0 || len(f.FDBDeleteCalls) != 0 {
+		t.Errorf("steady state mutated FDB: appends=%+v deletes=%+v", f.FDBAppendCalls, f.FDBDeleteCalls)
+	}
+}
+
+func TestApplyOverlaySkipsUnparseableFDB(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	driveFDB(t, f, []heartbeat.DeclaredFDBEntry{
+		{VNI: 1000, MAC: "not-a-mac", VtepIP: "10.42.0.2"},
+		{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "bogus-ip"},
+		{VNI: 1000, MAC: "52:54:00:00:00:0c", VtepIP: "10.42.0.3"},
+	})
+	if len(f.FDBAppendCalls) != 1 || f.FDBAppendCalls[0].Entry.MAC.String() != "52:54:00:00:00:0c" {
+		t.Errorf("want only the valid entry appended, got %+v", f.FDBAppendCalls)
+	}
+}
+
+func mustMAC(s string) net.HardwareAddr {
+	m, err := net.ParseMAC(s)
+	if err != nil {
+		panic(err)
+	}
+	return m
 }
