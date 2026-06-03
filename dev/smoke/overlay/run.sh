@@ -104,6 +104,8 @@ echo "=== step 3: manual-FDB cross-node VXLAN datapath ==="
 MAC1="$(invm1 cat /sys/class/net/"$BR"/address)"
 MAC2="$(invm2 cat /sys/class/net/"$BR"/address)"
 cleanup() {
+  invm1 sudo ip neigh del "$TEST_IP2" dev "$BR" 2>/dev/null || true
+  invm2 sudo ip neigh del "$TEST_IP1" dev "$BR" 2>/dev/null || true
   invm1 sudo ip addr del "$TEST_IP1/24" dev "$BR" 2>/dev/null || true
   invm2 sudo ip addr del "$TEST_IP2/24" dev "$BR" 2>/dev/null || true
   invm1 sudo bridge fdb del "$MAC2" dev "$VTEP" dst "$OVL2" 2>/dev/null || true
@@ -112,8 +114,13 @@ cleanup() {
 trap cleanup EXIT
 invm1 sudo ip addr add "$TEST_IP1/24" dev "$BR"
 invm2 sudo ip addr add "$TEST_IP2/24" dev "$BR"
+# Unicast-only datapath proof: a controller-authoritative FDB entry (peer bridge
+# MAC -> peer otwg0 IP) plus a static ARP/neigh entry, so the ping needs no
+# broadcast (VXLAN learning is off and there is no BUM/flood entry until N3c).
 invm1 sudo bridge fdb append "$MAC2" dev "$VTEP" dst "$OVL2"
 invm2 sudo bridge fdb append "$MAC1" dev "$VTEP" dst "$OVL1"
+invm1 sudo ip neigh replace "$TEST_IP2" lladdr "$MAC2" dev "$BR" nud permanent
+invm2 sudo ip neigh replace "$TEST_IP1" lladdr "$MAC1" dev "$BR" nud permanent
 invm1 ping -c 3 -W 2 "$TEST_IP2" >/dev/null 2>&1 \
   || fail "$NODE1 cannot ping $NODE2 across the overlay ($TEST_IP1 -> $TEST_IP2)"
 pass "cross-node VXLAN datapath: $TEST_IP1 -> $TEST_IP2 over otwg0"
