@@ -6,8 +6,6 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"log/slog"
 	"net/netip"
 	"sort"
 	"strings"
@@ -319,12 +317,7 @@ func (h heartbeatProjection) ListNetworks(ctx context.Context) ([]store.Network,
 // vms whose runtime current_node_id is the node and whose phase has not reached
 // 'gone', sorted lower(name) ascending.
 func (h heartbeatProjection) ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]store.ListVMsForNodeDeclaredRow, error) {
-	// Revision-pin the whole join: capture the snapshot revision from the index
-	// range and read every per-VM row (runtime + primary) at it, mirroring
-	// ListOverlayNICPlacementsPinned. The index range and the per-VM reads then
-	// form one consistent MVCC snapshot, so an index/primary race cannot
-	// manufacture a phantom omission of a still-wanted, still-running VM.
-	items, rev, err := h.s.c.RangeRev(ctx, vmRuntimeNodeIndexPrefix(nodeID), 0)
+	items, err := h.s.c.Range(ctx, vmRuntimeNodeIndexPrefix(nodeID))
 	if err != nil {
 		return nil, err
 	}
@@ -332,44 +325,19 @@ func (h heartbeatProjection) ListVMsForNodeDeclared(ctx context.Context, nodeID 
 	for _, kv := range items {
 		id, perr := uuid.Parse(string(kv.Value))
 		if perr != nil {
-			// A malformed index VALUE is corruption (a phantom index entry). Log
-			// it loudly and skip it: there is no real VM behind an unparseable id,
-			// so it cannot correspond to a live VM that could be wrongly pruned,
-			// and a single corrupt entry must not brick a node's heartbeat
-			// forever. This is the ONLY safe silent-skip here - unlike a transient
-			// primary-read error below, which CAN hide a live VM and so fails
-			// closed.
-			slog.ErrorContext(ctx, "corrupt vm_runtime-by-node index value, skipping",
-				"node_id", nodeID, "raw_value", string(kv.Value), "parse_error", perr)
 			continue
 		}
-		rt, rerr := h.s.vmRuntimeByIDAtRev(ctx, id, rev)
-		if rerr != nil {
-			if errors.Is(rerr, store.ErrNotFound) {
-				// No runtime row at this snapshot - nothing to declare.
-				continue
-			}
-			// Transient read failure: fail closed (see the primary-read note below).
-			return nil, rerr
+		var rt store.VMRuntime
+		found, gerr := h.s.c.GetJSON(ctx, vmRuntimeKey(id), &rt)
+		if gerr != nil {
+			return nil, gerr
 		}
-		if rt.Phase == store.VmPhaseGone {
+		if !found || rt.Phase == store.VmPhaseGone {
 			continue
 		}
-		vm, verr := h.s.vmByIDAtRev(ctx, id, rev)
-		if verr != nil {
-			// Fail CLOSED on a transient primary-read failure. Only a genuine
-			// ErrNotFound is a safe omission: the runtime-node index entry is
-			// deleted atomically with the vms soft-delete, so at this pinned
-			// revision an index entry present with the vms row absent means the VM
-			// is genuinely gone (or a pre-A2 orphaned entry, also genuinely gone).
-			// Any OTHER error (a transient etcd read blip) must abort the whole
-			// declared-set load: a partial set is decoded by the agent as an
-			// authoritative desired set and could drive the absence-debounce to
-			// prune a VM the CP still wants and that is still running.
-			if errors.Is(verr, store.ErrNotFound) {
-				continue
-			}
-			return nil, verr
+		vm, err := h.s.VMByID(ctx, id)
+		if err != nil {
+			continue
 		}
 		out = append(out, store.ListVMsForNodeDeclaredRow{
 			Name:         vm.Name,
