@@ -271,6 +271,19 @@ entirely but leaves the dead row behind for later cleanup.
 
 ---
 
+## Operations: overlay FDB freshness during a gone window
+
+Overlay forwarding-database (FDB) freshness is gated on CP liveness.
+The VTEPs run with `nolearning`, so there is no agent-side TTL or aging
+fallback to expire entries on their own. While the CP is down across a
+node's `gone` transition, a stale unicast FDB entry pointing at the
+dead VTEP persists on peer nodes and is not aged out locally. This is
+accepted and bounded by CP recovery: on its next heartbeat round the CP
+re-projects the FDB without the gone node, and peers converge to the
+corrected set.
+
+---
+
 ## What's next
 
 The schema, api-server, agent, and CLI are wired end-to-end.
