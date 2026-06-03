@@ -133,23 +133,26 @@ const (
 	defaultVNIMax = 65535
 )
 
-// SeedVNIRange writes the overlay VNI range on the singleton first-writer-wins,
-// mirroring SeedOverlaySupernet: it validates 1000<=min<max<=16777215, sets the
-// bounds only when none exist, and is immutable thereafter (no public mutator).
-// Zero/zero falls back to the defaults.
+// SeedVNIRange writes the overlay VNI range on the singleton first-writer-wins:
+// it reads the singleton and no-ops when the bounds already exist (the value is
+// immutable thereafter - no public mutator), before validating this replica's
+// local config (1000<=min<max<=16777215). The short-circuit precedes validation
+// so a non-first-writer replica booting with a typo'd or stale local config does
+// not fail - the immutable seeded value already governs. Zero/zero falls back to
+// the defaults. A FIRST seed with an invalid range still errors.
 func (s *Store) SeedVNIRange(ctx context.Context, min, max int) error {
-	if min == 0 && max == 0 {
-		min, max = defaultVNIMin, defaultVNIMax
-	}
-	if min < 1000 || max > 16777215 || min >= max {
-		return fmt.Errorf("invalid vni range [%d,%d]: require 1000<=min<max<=16777215", min, max)
-	}
 	cur, err := s.ClusterSettings(ctx)
 	if err != nil {
 		return err
 	}
 	if cur.VNIMin != nil && cur.VNIMax != nil {
-		return nil
+		return nil // already seeded, immutable - ignore this replica's local config
+	}
+	if min == 0 && max == 0 {
+		min, max = defaultVNIMin, defaultVNIMax
+	}
+	if min < 1000 || max > 16777215 || min >= max {
+		return fmt.Errorf("invalid vni range [%d,%d]: require 1000<=min<max<=16777215", min, max)
 	}
 	cur.ID = 1
 	mn := int32(min) //nolint:gosec // bounded by the validation above

@@ -78,6 +78,27 @@ func TestSeedVNIRangeFirstWriterWins(t *testing.T) {
 	}
 }
 
+func TestSeedVNIRangeSecondCallWithBadConfigShortCircuits(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SeedVNIRange(ctx, 1000, 2000); err != nil {
+		t.Fatalf("first seed: %v", err)
+	}
+	// A replica booting with an INVALID local config must NOT fail - the value is
+	// already seeded and immutable.
+	if err := s.SeedVNIRange(ctx, 5000, 100); err != nil { // min>max: invalid local config
+		t.Fatalf("second seed with bad local config = %v, want nil (already seeded)", err)
+	}
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 1000 || max != 2000 {
+		t.Errorf("range = [%d,%d], want the originally seeded [1000,2000]", min, max)
+	}
+}
+
 func TestVNIRangeDefaultWhenUnset(t *testing.T) {
 	s, _ := startStore(t)
 	min, max, err := s.VNIRange(context.Background())
