@@ -48,6 +48,22 @@ func (s *Store) VMByID(ctx context.Context, id uuid.UUID) (store.VM, error) {
 	return v, nil
 }
 
+// vmByIDAtRev is VMByID pinned to an MVCC revision (rev==0 reads latest). A
+// multi-read join (e.g. the heartbeat declared-set) captures one revision from
+// its first range and reads every primary row here so a concurrent vms-row
+// mutation cannot tear the join or manufacture a phantom omission.
+func (s *Store) vmByIDAtRev(ctx context.Context, id uuid.UUID, rev int64) (store.VM, error) {
+	var v store.VM
+	found, err := s.c.GetJSONAtRev(ctx, vmKey(id), rev, &v)
+	if err != nil {
+		return store.VM{}, err
+	}
+	if !found || v.DeletedAt != nil {
+		return store.VM{}, store.ErrNotFound
+	}
+	return v, nil
+}
+
 // VMByName returns the non-deleted vms row with the given name
 // (case-insensitive) via the name guard, or store.ErrNotFound.
 func (s *Store) VMByName(ctx context.Context, name string) (store.VM, error) {
