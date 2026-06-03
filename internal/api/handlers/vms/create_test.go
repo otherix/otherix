@@ -4,6 +4,7 @@
 package vms
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -426,5 +427,74 @@ func TestGenerateLocalMAC(t *testing.T) {
 	}
 	if mac.String() == other.String() {
 		t.Errorf("two generated MACs collided: %s", mac)
+	}
+}
+
+// createScheduledVMStub satisfies the handler's Store interface for the
+// createWithMACRetry unit tests. It embeds Store (nil) so only the one
+// method exercised here needs a body; calling any other method panics,
+// which is the intended guard for an unexpected dependency.
+type createScheduledVMStub struct {
+	Store
+	createScheduledVM func(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
+}
+
+func (s *createScheduledVMStub) CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+	return s.createScheduledVM(ctx, plan)
+}
+
+// TestCreateWithMACRetry asserts a transient ErrVMNicMACConflict is
+// re-minted: the helper re-invokes CreateScheduledVM (which re-rolls the
+// MAC) until the store stops reporting a collision.
+func TestCreateWithMACRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	fake := &createScheduledVMStub{
+		createScheduledVM: func(_ context.Context, _ func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+			calls++
+			if calls < 3 {
+				return uuid.Nil, store.ErrVMNicMACConflict
+			}
+			return uuid.New(), nil
+		},
+	}
+
+	id, err := createWithMACRetry(context.Background(), fake, func(store.PlacementReader) (store.VMCreateWrites, error) {
+		return store.VMCreateWrites{}, nil
+	})
+	if err != nil {
+		t.Fatalf("createWithMACRetry: %v", err)
+	}
+	if id == uuid.Nil {
+		t.Errorf("got nil id, want a created id")
+	}
+	if calls != 3 {
+		t.Errorf("CreateScheduledVM calls = %d, want 3 (2 conflicts then success)", calls)
+	}
+}
+
+// TestCreateWithMACRetryGivesUp asserts a persistent collision is bounded:
+// after maxMACRetries attempts the helper returns the last
+// ErrVMNicMACConflict rather than looping forever.
+func TestCreateWithMACRetryGivesUp(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	fake := &createScheduledVMStub{
+		createScheduledVM: func(_ context.Context, _ func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+			calls++
+			return uuid.Nil, store.ErrVMNicMACConflict
+		},
+	}
+
+	_, err := createWithMACRetry(context.Background(), fake, func(store.PlacementReader) (store.VMCreateWrites, error) {
+		return store.VMCreateWrites{}, nil
+	})
+	if !errors.Is(err, store.ErrVMNicMACConflict) {
+		t.Errorf("err = %v, want ErrVMNicMACConflict after exhausting retries", err)
+	}
+	if calls != 8 {
+		t.Errorf("calls = %d, want 8 (maxMACRetries)", calls)
 	}
 }

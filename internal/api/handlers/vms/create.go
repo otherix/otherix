@@ -274,7 +274,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 	// the scheduler (the reader is assignable to scheduler.Querier), and
 	// builds the rows + job args from the chosen instance. A uq_vms_name
 	// violation is translated to store.ErrVMNameInUse by the store.
-	return h.store.CreateScheduledVM(ctx, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
+	return createWithMACRetry(ctx, h.store, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
 		if err := pr.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
 			return store.VMCreateWrites{}, fmt.Errorf("acquire placement lock: %v", err)
 		}
@@ -390,6 +390,28 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			},
 		}, nil
 	})
+}
+
+// createWithMACRetry calls CreateScheduledVM, re-minting a colliding NIC
+// MAC up to maxMACRetries times. A locally-administered MAC collision on a
+// network is astronomically rare; re-minting makes it transparent instead
+// of a 5xx. plan mints a fresh MAC each call, so a retry re-rolls the MAC.
+// The loop breaks on any non-conflict outcome (success or a different
+// error). A persistent conflict after maxMACRetries attempts returns the
+// last ErrVMNicMACConflict, which the handler maps to 500.
+func createWithMACRetry(ctx context.Context, st Store, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+	const maxMACRetries = 8
+	var (
+		id  uuid.UUID
+		err error
+	)
+	for attempt := 0; attempt < maxMACRetries; attempt++ {
+		id, err = st.CreateScheduledVM(ctx, plan)
+		if !errors.Is(err, store.ErrVMNicMACConflict) {
+			return id, err
+		}
+	}
+	return id, err
 }
 
 // writeTemplateLoadError maps a resolver.Template error to a wire
@@ -513,6 +535,7 @@ func (h *Handler) resolveNetwork(w http.ResponseWriter, r *http.Request, request
 //   - Other scheduler sentinels                     → 400 / 404 / 409
 //   - poolNotWritableError                          → 400 pool_not_writable
 //   - errVMNameInUse                                → 409 vm_name_in_use
+//   - ErrVMNicMACConflict (retries exhausted)       → 500 internal
 //   - any other error                               → 500 internal
 //
 // The insufficient-resources path wins over the bare no_eligible_nodes
@@ -562,6 +585,17 @@ func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err e
 	if errors.Is(err, store.ErrVMNameInUse) {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeVMNameInUse, "vm name already in use", nil)
+		return
+	}
+
+	// A NIC MAC conflict that survives createWithMACRetry's bounded
+	// re-mint loop is not a client error - it signals a sustained
+	// collision storm (effectively impossible with a 24-bit random
+	// suffix). Surface it as 500, not a 4xx the caller could "fix".
+	if errors.Is(err, store.ErrVMNicMACConflict) {
+		h.log.ErrorContext(r.Context(), "vms.create exhausted nic mac retries", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "enqueue vm task", nil)
 		return
 	}
 
