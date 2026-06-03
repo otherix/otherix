@@ -290,6 +290,109 @@ func TestIdempotency_FreshKeyProceedsAndCachesResponse(t *testing.T) {
 	}
 }
 
+// observingWriter wraps an httptest.ResponseRecorder and runs a callback
+// the moment any byte (header or body) reaches the underlying writer. It
+// lets a test assert *when* the client first observes a response relative
+// to other events (e.g. CompleteIdempotencyKey).
+type observingWriter struct {
+	*httptest.ResponseRecorder
+	onFirstWrite func()
+	wrote        bool
+}
+
+func (o *observingWriter) note() {
+	if !o.wrote {
+		o.wrote = true
+		if o.onFirstWrite != nil {
+			o.onFirstWrite()
+		}
+	}
+}
+
+func (o *observingWriter) WriteHeader(status int) {
+	o.note()
+	o.ResponseRecorder.WriteHeader(status)
+}
+
+func (o *observingWriter) Write(b []byte) (int, error) {
+	o.note()
+	return o.ResponseRecorder.Write(b)
+}
+
+// completeSpyStore records, at the instant CompleteIdempotencyKey is
+// invoked, whether the client has already seen any response bytes.
+type completeSpyStore struct {
+	*fakeIdempStore
+	clientWroteAtComplete bool
+	clientWrote           func() bool
+}
+
+func (c *completeSpyStore) CompleteIdempotencyKey(ctx context.Context, arg store.CompleteIdempotencyKeyParams) error {
+	if c.clientWrote != nil {
+		c.clientWroteAtComplete = c.clientWrote()
+	}
+	return c.fakeIdempStore.CompleteIdempotencyKey(ctx, arg)
+}
+
+func TestIdempotencyDoesNotFlushBeforeCommit(t *testing.T) {
+	spy := &completeSpyStore{fakeIdempStore: newFakeStore()}
+	mw := Idempotency(spy, discardLog())
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+
+	rr := &observingWriter{ResponseRecorder: httptest.NewRecorder()}
+	spy.clientWrote = func() bool { return rr.wrote }
+	rr.onFirstWrite = func() {
+		if spy.calls.complete == 0 {
+			t.Errorf("client observed response bytes before CompleteIdempotencyKey ran")
+		}
+	}
+
+	h.ServeHTTP(rr, authedRequest(http.MethodPost, "/v1/users", []byte(`{}`), uuid.New(), "k1"))
+
+	if spy.clientWroteAtComplete {
+		t.Errorf("client had already seen response bytes when Complete was invoked")
+	}
+	if !rr.wrote {
+		t.Errorf("client never received the buffered response")
+	}
+}
+
+func TestIdempotencyFlushesAfterCommit(t *testing.T) {
+	fake := newFakeStore()
+	mw := Idempotency(fake, discardLog())
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Custom", "v")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, authedRequest(http.MethodPost, "/v1/users", []byte(`{}`), uuid.New(), "k1"))
+
+	if fake.calls.complete != 1 {
+		t.Fatalf("Complete calls = %d, want 1", fake.calls.complete)
+	}
+	if rr.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201", rr.Code)
+	}
+	if rr.Body.String() != `{"ok":true}` {
+		t.Errorf("body = %q, want %q", rr.Body.String(), `{"ok":true}`)
+	}
+	if rr.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", rr.Header().Get("Content-Type"))
+	}
+	if rr.Header().Get("X-Custom") != "v" {
+		t.Errorf("X-Custom = %q, want v", rr.Header().Get("X-Custom"))
+	}
+}
+
 func TestIdempotency_DifferentBodyMismatch(t *testing.T) {
 	fake := newFakeStore()
 	mw := Idempotency(fake, discardLog())
