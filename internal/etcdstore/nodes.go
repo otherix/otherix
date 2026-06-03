@@ -68,8 +68,15 @@ func migrationsNodeIndexPrefix(nodeID uuid.UUID) string {
 // NodeByID returns the bare node row, or store.ErrNotFound (soft-deleted rows
 // are invisible).
 func (s *Store) NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error) {
+	return s.nodeByIDAtRev(ctx, id, 0)
+}
+
+// nodeByIDAtRev is NodeByID pinned to an MVCC revision (rev==0 reads latest).
+// The FDB projection's gone-resolver reads it at the projection's snapshot
+// revision so a node soft-delete or status flip mid-join cannot tear the read.
+func (s *Store) nodeByIDAtRev(ctx context.Context, id uuid.UUID, rev int64) (store.Node, error) {
 	var n store.Node
-	found, err := s.c.GetJSON(ctx, nodeKey(id), &n)
+	found, err := s.c.GetJSONAtRev(ctx, nodeKey(id), rev, &n)
 	if err != nil {
 		return store.Node{}, err
 	}

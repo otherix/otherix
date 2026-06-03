@@ -29,6 +29,7 @@ import (
 type HeartbeatProjection interface {
 	NodeForHeartbeat(ctx context.Context, nodeID uuid.UUID) (GetNodeForHeartbeatRow, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (Node, error)
+	NodeByIDAtRev(ctx context.Context, id uuid.UUID, rev int64) (Node, error)
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) error
 	UpdateNodeMemoryPressure(ctx context.Context, arg UpdateNodeMemoryPressureParams) error
 	UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error
@@ -42,11 +43,17 @@ type HeartbeatProjection interface {
 	ListNetworks(ctx context.Context) ([]Network, error)
 	UpsertAgentWireguard(ctx context.Context, arg UpsertAgentWireguardParams) error
 	ListAgentWireguard(ctx context.Context) ([]AgentWireguard, error)
+	ListAgentWireguardAtRev(ctx context.Context, rev int64) ([]AgentWireguard, error)
 	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (AgentWireguard, error)
 	OverlaySupernet(ctx context.Context) (netip.Prefix, error)
 	UnderlayMTU(ctx context.Context) (int32, error)
 	ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]ListVMsForNodeDeclaredRow, error)
 	ListOverlayNICPlacements(ctx context.Context) ([]OverlayNICPlacement, error)
+	// ListOverlayNICPlacementsPinned returns the overlay NIC placements together
+	// with the MVCC revision the read is pinned to (its first range's revision).
+	// The FDB projection threads that revision into ListAgentWireguardAtRev and
+	// NodeByIDAtRev so the whole join sees one consistent etcd snapshot.
+	ListOverlayNICPlacementsPinned(ctx context.Context) ([]OverlayNICPlacement, int64, error)
 }
 
 // OverlayNICPlacement is one NIC attached to a type=overlay network whose owning

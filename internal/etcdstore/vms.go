@@ -64,8 +64,15 @@ func (s *Store) VMByName(ctx context.Context, name string) (store.VM, error) {
 // VMRuntimeByID returns the observed runtime row for a VM, or store.ErrNotFound
 // when the worker has not upserted one yet.
 func (s *Store) VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error) {
+	return s.vmRuntimeByIDAtRev(ctx, vmID, 0)
+}
+
+// vmRuntimeByIDAtRev is VMRuntimeByID pinned to an MVCC revision (rev==0 reads
+// latest). The FDB projection reads it at its snapshot revision so a concurrent
+// UpsertVMRuntime flipping current_node_id cannot tear the placement join.
+func (s *Store) vmRuntimeByIDAtRev(ctx context.Context, vmID uuid.UUID, rev int64) (store.VMRuntime, error) {
 	var rt store.VMRuntime
-	found, err := s.c.GetJSON(ctx, vmRuntimeKey(vmID), &rt)
+	found, err := s.c.GetJSONAtRev(ctx, vmRuntimeKey(vmID), rev, &rt)
 	if err != nil {
 		return store.VMRuntime{}, err
 	}

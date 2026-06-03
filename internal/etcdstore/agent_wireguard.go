@@ -219,7 +219,14 @@ func (s *Store) AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (s
 // ListAgentWireguard returns every agent WG fabric record. The caller (heartbeat
 // down-channel) filters out self and derives allowed_ips.
 func (s *Store) ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error) {
-	items, err := s.c.Range(ctx, agentWireguardPrefix())
+	return s.listAgentWireguardAtRev(ctx, 0)
+}
+
+// listAgentWireguardAtRev is ListAgentWireguard pinned to an MVCC revision
+// (rev==0 reads latest). The FDB projection reads it at its snapshot revision so
+// the VTEP-IP map it builds matches the placement list's snapshot.
+func (s *Store) listAgentWireguardAtRev(ctx context.Context, rev int64) ([]store.AgentWireguard, error) {
+	items, _, err := s.c.RangeRev(ctx, agentWireguardPrefix(), rev)
 	if err != nil {
 		return nil, err
 	}

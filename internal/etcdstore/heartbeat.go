@@ -57,6 +57,13 @@ func (h heartbeatProjection) NodeByID(ctx context.Context, id uuid.UUID) (store.
 	return h.s.NodeByID(ctx, id)
 }
 
+// NodeByIDAtRev returns the bare node row pinned to an MVCC revision (rev==0
+// reads latest). The FDB gone-resolver reads at the projection's snapshot
+// revision so the join stays internally consistent.
+func (h heartbeatProjection) NodeByIDAtRev(ctx context.Context, id uuid.UUID, rev int64) (store.Node, error) {
+	return h.s.nodeByIDAtRev(ctx, id, rev)
+}
+
 // UpdateNodeHeartbeat refreshes the agent-reported capability + migration
 // fields, bumping updated_at. Architecture, labels, and status are left
 // untouched (the handler/reconciler own them).
@@ -260,6 +267,13 @@ func (h heartbeatProjection) ListAgentWireguard(ctx context.Context) ([]store.Ag
 	return h.s.ListAgentWireguard(ctx)
 }
 
+// ListAgentWireguardAtRev returns every agent WG fabric record pinned to an MVCC
+// revision (rev==0 reads latest). The FDB projection reads at its snapshot
+// revision so the VTEP-IP map matches the placement list.
+func (h heartbeatProjection) ListAgentWireguardAtRev(ctx context.Context, rev int64) ([]store.AgentWireguard, error) {
+	return h.s.listAgentWireguardAtRev(ctx, rev)
+}
+
 // AgentWireguardByNodeID returns the node's WG fabric record (or ErrNotFound)
 // for the self-overlay-ip down-channel field.
 func (h heartbeatProjection) AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (store.AgentWireguard, error) {
@@ -340,4 +354,11 @@ func (h heartbeatProjection) ListVMsForNodeDeclared(ctx context.Context, nodeID 
 // each node's VTEP overlay IP.
 func (h heartbeatProjection) ListOverlayNICPlacements(ctx context.Context) ([]store.OverlayNICPlacement, error) {
 	return h.s.ListOverlayNICPlacements(ctx)
+}
+
+// ListOverlayNICPlacementsPinned returns the overlay NIC placements together
+// with the MVCC revision the join is pinned to, so the FDB down-channel
+// projection can read the WG list and the gone-resolver at the same snapshot.
+func (h heartbeatProjection) ListOverlayNICPlacementsPinned(ctx context.Context) ([]store.OverlayNICPlacement, int64, error) {
+	return h.s.ListOverlayNICPlacementsPinned(ctx)
 }

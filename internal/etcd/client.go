@@ -121,7 +121,15 @@ func (c *Client) Get(ctx context.Context, key string) (value []byte, found bool,
 // error) when the key is absent, so callers map absence to their own
 // not-found sentinel.
 func (c *Client) GetJSON(ctx context.Context, key string, v any) (found bool, err error) {
-	resp, err := c.c.Get(ctx, key)
+	return c.GetJSONAtRev(ctx, key, 0, v)
+}
+
+// GetJSONAtRev is GetJSON pinned to a specific MVCC revision: rev==0 reads at
+// the latest revision (identical to GetJSON), rev>0 reads the value as of that
+// revision. A multi-read join captures one revision from its first range and
+// passes it here so every read sees one consistent snapshot.
+func (c *Client) GetJSONAtRev(ctx context.Context, key string, rev int64, v any) (found bool, err error) {
+	resp, err := c.c.Get(ctx, key, revOpts(rev)...)
 	if err != nil {
 		return false, fmt.Errorf("get %q: %v", key, err)
 	}
@@ -132,6 +140,16 @@ func (c *Client) GetJSON(ctx context.Context, key string, v any) (found bool, er
 		return false, fmt.Errorf("unmarshal value for %q: %v", key, err)
 	}
 	return true, nil
+}
+
+// revOpts returns the read options for an MVCC-pinned Get/Range: WithRev when
+// rev>0, nothing when rev==0 (latest). Centralises the rev==0-means-latest
+// convention shared by the *AtRev helpers.
+func revOpts(rev int64) []clientv3.OpOption {
+	if rev > 0 {
+		return []clientv3.OpOption{clientv3.WithRev(rev)}
+	}
+	return nil
 }
 
 // Delete removes key. deleted reports whether a key was actually present.
@@ -171,13 +189,27 @@ type KV struct {
 // for bounded collections; hot-path filtered lists use secondary-index prefixes
 // plus RangePaged, never an ad-hoc scan.
 func (c *Client) Range(ctx context.Context, prefix string) ([]KV, error) {
-	resp, err := c.c.Get(ctx, prefix,
+	kvs, _, err := c.RangeRev(ctx, prefix, 0)
+	return kvs, err
+}
+
+// RangeRev is Range that also reports the MVCC revision the range observed
+// (resp.Header.Revision) and can pin the read to a prior revision. Pass rev==0
+// to read at the latest revision and capture the returned snapshot revision;
+// pass that revision back (here or to the *AtRev helpers) so every subsequent
+// read in the same join sees one consistent snapshot. The first range in a join
+// establishes the revision; reads after it are pinned to it.
+func (c *Client) RangeRev(ctx context.Context, prefix string, rev int64) (items []KV, revision int64, err error) {
+	opts := []clientv3.OpOption{
 		clientv3.WithPrefix(),
-		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
-	if err != nil {
-		return nil, fmt.Errorf("range %q: %v", prefix, err)
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	}
-	return toKVs(resp), nil
+	opts = append(opts, revOpts(rev)...)
+	resp, err := c.c.Get(ctx, prefix, opts...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("range %q: %v", prefix, err)
+	}
+	return toKVs(resp), resp.Header.Revision, nil
 }
 
 // RangePaged returns up to limit key/value pairs under prefix whose key sorts

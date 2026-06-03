@@ -176,9 +176,22 @@ func (s *Store) ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMN
 // every network, then the per-network NIC index of each overlay, joining each
 // NIC to its VM's runtime (vmNicNetworkIndexPrefix lives in networks.go).
 func (s *Store) ListOverlayNICPlacements(ctx context.Context) ([]store.OverlayNICPlacement, error) {
-	netItems, err := s.c.Range(ctx, networkPrefix())
+	out, _, err := s.ListOverlayNICPlacementsPinned(ctx)
+	return out, err
+}
+
+// ListOverlayNICPlacementsPinned is ListOverlayNICPlacements that also returns
+// the MVCC revision the projection is pinned to: the revision of its FIRST range
+// (the network prefix scan). Every subsequent read in the join - the per-network
+// NIC index, the per-NIC row, and the per-VM runtime - is pinned to that same
+// revision, so the placement list is a consistent snapshot rather than a torn
+// read across a concurrent VM create/delete/migrate. The FDB down-channel
+// projection threads the returned revision into its remaining reads (the WG
+// list and the per-node gone-resolver) so the whole join shares one snapshot.
+func (s *Store) ListOverlayNICPlacementsPinned(ctx context.Context) ([]store.OverlayNICPlacement, int64, error) {
+	netItems, rev, err := s.c.RangeRev(ctx, networkPrefix(), 0)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out []store.OverlayNICPlacement
 	for _, nkv := range netItems {
@@ -190,20 +203,22 @@ func (s *Store) ListOverlayNICPlacements(ctx context.Context) ([]store.OverlayNI
 		if n.DeletedAt != nil || n.Type != store.NetworkTypeOverlay || n.VNI == nil {
 			continue
 		}
-		placements, err := s.overlayPlacementsForNetwork(ctx, n)
+		placements, err := s.overlayPlacementsForNetwork(ctx, n, rev)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, placements...)
 	}
-	return out, nil
+	return out, rev, nil
 }
 
 // overlayPlacementsForNetwork resolves the placed NICs of a single overlay
 // network into FDB placements, skipping deleted NICs and NICs whose owning VM
-// has no current node.
-func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network) ([]store.OverlayNICPlacement, error) {
-	nicItems, err := s.c.Range(ctx, vmNicNetworkIndexPrefix(n.ID))
+// has no current node. Every read is pinned to rev (the projection's snapshot
+// revision) so a concurrent NIC soft-delete or runtime node flip cannot tear
+// the placement list mid-join.
+func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network, rev int64) ([]store.OverlayNICPlacement, error) {
+	nicItems, _, err := s.c.RangeRev(ctx, vmNicNetworkIndexPrefix(n.ID), rev)
 	if err != nil {
 		return nil, err
 	}
@@ -214,14 +229,14 @@ func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network
 			continue
 		}
 		var nic store.VMNic
-		found, gerr := s.c.GetJSON(ctx, vmNicKey(nicID), &nic)
+		found, gerr := s.c.GetJSONAtRev(ctx, vmNicKey(nicID), rev, &nic)
 		if gerr != nil {
 			return nil, gerr
 		}
 		if !found || nic.DeletedAt != nil {
 			continue
 		}
-		rt, rerr := s.VMRuntimeByID(ctx, nic.VmID)
+		rt, rerr := s.vmRuntimeByIDAtRev(ctx, nic.VmID, rev)
 		if rerr != nil {
 			if errors.Is(rerr, store.ErrNotFound) {
 				continue

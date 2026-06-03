@@ -609,11 +609,16 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 // (their MACs live on the otb<vni> bridge). Sorted (vni, mac, vtep) for stable
 // heartbeats.
 func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, error) {
-	placements, err := hp.ListOverlayNICPlacements(ctx)
+	// The placement scan is the FIRST read of the join; it establishes the MVCC
+	// revision every other read in this projection pins to (the WG list and the
+	// per-node gone-resolver). Pinning the whole join to one snapshot stops a
+	// concurrent VM create/delete/migrate from yielding a torn declared_fdb that
+	// the agent's authoritative reconciler would prune live entries against.
+	placements, rev, err := hp.ListOverlayNICPlacementsPinned(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list overlay nic placements: %v", err)
 	}
-	recs, err := hp.ListAgentWireguard(ctx)
+	recs, err := hp.ListAgentWireguardAtRev(ctx, rev)
 	if err != nil {
 		return nil, fmt.Errorf("list agent_wireguard: %v", err)
 	}
@@ -628,7 +633,7 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 			localVNI[p.VNI] = struct{}{}
 		}
 	}
-	out, skippedNoIP, err := h.buildRemoteFDBEntries(ctx, hp, placements, localVNI, vtepIP, selfNodeID)
+	out, skippedNoIP, err := h.buildRemoteFDBEntries(ctx, hp, rev, placements, localVNI, vtepIP, selfNodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -660,8 +665,8 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 // loadDeclaredWireGuardPeers: the reaper advances a long-unreachable node to
 // 'gone' WITHOUT orphaning its vm_runtime, so its placements still surface here
 // and must not keep an entry pointing at a dead VTEP.
-func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, int, error) {
-	isGone := newGoneResolver(hp)
+func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, int, error) {
+	isGone := newGoneResolver(hp, rev)
 	var out []declaredFDBEntry
 	flood := make(map[string]struct{}) // dedup key "vni|vtep"
 	skippedNoIP := 0
@@ -699,13 +704,13 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 // ErrNotFound) or it has reached the terminal "gone" status. Results are cached
 // per node id so a placement list with many NICs on one node hits the store
 // once. Mirrors the gone-skip in loadDeclaredWireGuardPeers.
-func newGoneResolver(hp store.HeartbeatProjection) func(context.Context, uuid.UUID) (bool, error) {
+func newGoneResolver(hp store.HeartbeatProjection, rev int64) func(context.Context, uuid.UUID) (bool, error) {
 	cache := make(map[uuid.UUID]bool)
 	return func(ctx context.Context, id uuid.UUID) (bool, error) {
 		if v, ok := cache[id]; ok {
 			return v, nil
 		}
-		node, err := hp.NodeByID(ctx, id)
+		node, err := hp.NodeByIDAtRev(ctx, id, rev)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				cache[id] = true

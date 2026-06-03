@@ -112,7 +112,19 @@ func (f *fakeFDBProjection) ListOverlayNICPlacements(context.Context) ([]store.O
 	return f.placements, nil
 }
 
+// ListOverlayNICPlacementsPinned reports a fixed snapshot revision (1) so the
+// projection threads a non-zero rev through the rest of the join; the fake's
+// reads ignore it (in-memory data has no MVCC dimension), but the wiring is
+// exercised - the projection must call the pinned variants.
+func (f *fakeFDBProjection) ListOverlayNICPlacementsPinned(context.Context) ([]store.OverlayNICPlacement, int64, error) {
+	return f.placements, 1, nil
+}
+
 func (f *fakeFDBProjection) ListAgentWireguard(context.Context) ([]store.AgentWireguard, error) {
+	return f.wg, nil
+}
+
+func (f *fakeFDBProjection) ListAgentWireguardAtRev(_ context.Context, _ int64) ([]store.AgentWireguard, error) {
 	return f.wg, nil
 }
 
@@ -125,4 +137,8 @@ func (f *fakeFDBProjection) NodeByID(_ context.Context, id uuid.UUID) (store.Nod
 		st = store.NodeStatusGone
 	}
 	return store.Node{ID: id, Status: st}, nil
+}
+
+func (f *fakeFDBProjection) NodeByIDAtRev(ctx context.Context, id uuid.UUID, _ int64) (store.Node, error) {
+	return f.NodeByID(ctx, id)
 }
