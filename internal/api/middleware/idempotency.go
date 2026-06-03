@@ -33,6 +33,12 @@ const IdempotencyKeyMaxLength = 255
 // value is 24 hours.
 const IdempotencyTTL = 24 * time.Hour
 
+// IdempotencyInFlightLease bounds how long an in_flight record blocks a retry.
+// It must exceed the maximum real request duration (the server WriteTimeout, 30s
+// default) so a live request is never reclaimed, while a crashed in_flight is
+// reclaimable far sooner than the 24h completed-record TTL (IdempotencyTTL).
+const IdempotencyInFlightLease = 2 * time.Minute
+
 // IdempotencyStore is the narrow contract Idempotency requires from the
 // data layer. *store.Queries implements it; tests substitute an
 // in-memory stub.
@@ -183,7 +189,7 @@ func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid
 			RequestMethod: method,
 			RequestPath:   path,
 			RequestHash:   hash,
-			ExpiresAt:     time.Now().Add(IdempotencyTTL),
+			ExpiresAt:     time.Now().Add(IdempotencyInFlightLease),
 			Key:           key,
 		})
 		if idempotencyNotFound(err) {
@@ -210,7 +216,7 @@ func tryBegin(ctx context.Context, s IdempotencyStore, key string, userID uuid.U
 		RequestMethod: method,
 		RequestPath:   path,
 		RequestHash:   hash,
-		ExpiresAt:     time.Now().Add(IdempotencyTTL),
+		ExpiresAt:     time.Now().Add(IdempotencyInFlightLease),
 	})
 	if err == nil {
 		return row, actionProceed, nil
@@ -259,6 +265,7 @@ func finalizeKey(ctx context.Context, s IdempotencyStore, key string, rec *recor
 			ResponseStatus:  &status,
 			ResponseHeaders: hdr,
 			ResponseBody:    rec.body.Bytes(),
+			ExpiresAt:       time.Now().Add(IdempotencyTTL),
 			Key:             key,
 		}); err != nil {
 			log.ErrorContext(ctx, "idempotency complete failed",

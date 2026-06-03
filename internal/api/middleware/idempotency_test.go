@@ -122,6 +122,7 @@ func (f *fakeIdempStore) CompleteIdempotencyKey(_ context.Context, arg store.Com
 	row.ResponseStatus = arg.ResponseStatus
 	row.ResponseHeaders = arg.ResponseHeaders
 	row.ResponseBody = arg.ResponseBody
+	row.ExpiresAt = arg.ExpiresAt
 	now := time.Now()
 	row.CompletedAt = &now
 	f.rows[arg.Key] = row
@@ -396,6 +397,86 @@ func TestIdempotency_NonSuccessResponseNotCached(t *testing.T) {
 	}
 	if fake.calls.delete < 2 {
 		t.Errorf("delete calls = %d, want >= 2", fake.calls.delete)
+	}
+}
+
+func TestBeginUsesShortLease(t *testing.T) {
+	fake := newFakeStore()
+	row, action, err := tryBegin(context.Background(), fake, "k2", uuid.New(), "POST", "/v1/vms", []byte("b"))
+	if err != nil || action != actionProceed {
+		t.Fatalf("tryBegin = %v, %v", action, err)
+	}
+	lease := time.Until(row.ExpiresAt)
+	if lease > IdempotencyInFlightLease+time.Second || lease < time.Second {
+		t.Errorf("in_flight lease = %s, want ~%s (not the 24h TTL)", lease, IdempotencyInFlightLease)
+	}
+}
+
+func TestAcquireReclaimsStaleInFlight(t *testing.T) {
+	key := "k1"
+	past := time.Now().Add(-time.Minute)
+	fake := newFakeStore()
+	fake.rows[key] = store.IdempotencyKey{Key: key, State: "in_flight", ExpiresAt: past}
+
+	_, action, err := acquireKey(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	if err != nil {
+		t.Fatalf("acquireKey: %v", err)
+	}
+	if action != actionProceed {
+		t.Errorf("action = %v, want actionProceed (stale in_flight reclaimed)", action)
+	}
+}
+
+func TestReclaimUsesShortLease(t *testing.T) {
+	key := "k-reclaim"
+	past := time.Now().Add(-time.Minute)
+	fake := newFakeStore()
+	fake.rows[key] = store.IdempotencyKey{Key: key, State: "in_flight", ExpiresAt: past}
+
+	row, action, err := acquireKey(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	if err != nil {
+		t.Fatalf("acquireKey: %v", err)
+	}
+	if action != actionProceed {
+		t.Fatalf("action = %v, want actionProceed (reclaimed)", action)
+	}
+	lease := time.Until(row.ExpiresAt)
+	if lease > IdempotencyInFlightLease+time.Second || lease < time.Second {
+		t.Errorf("reclaimed in_flight lease = %s, want ~%s (the short lease, not 24h)", lease, IdempotencyInFlightLease)
+	}
+}
+
+func TestCompleteExtendsLease(t *testing.T) {
+	key := "k-complete"
+	fake := newFakeStore()
+
+	// Begin stamps the short in_flight lease.
+	begun, action, err := tryBegin(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	if err != nil || action != actionProceed {
+		t.Fatalf("tryBegin = %v, %v", action, err)
+	}
+	if lease := time.Until(begun.ExpiresAt); lease > IdempotencyInFlightLease+time.Second {
+		t.Fatalf("begin lease = %s, want short ~%s", lease, IdempotencyInFlightLease)
+	}
+
+	// Completing the row extends the lease to the full 24h TTL, exactly as
+	// finalizeKey does on a 2xx outcome.
+	status := int32(http.StatusCreated)
+	if err := fake.CompleteIdempotencyKey(context.Background(), store.CompleteIdempotencyKeyParams{
+		ResponseStatus: &status,
+		ExpiresAt:      time.Now().Add(IdempotencyTTL),
+		Key:            key,
+	}); err != nil {
+		t.Fatalf("CompleteIdempotencyKey: %v", err)
+	}
+
+	completed, err := fake.GetIdempotencyKey(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey: %v", err)
+	}
+	lease := time.Until(completed.ExpiresAt)
+	if lease < IdempotencyTTL-time.Minute || lease > IdempotencyTTL+time.Second {
+		t.Errorf("completed lease = %s, want ~%s (the full 24h TTL)", lease, IdempotencyTTL)
 	}
 }
 
