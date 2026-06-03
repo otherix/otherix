@@ -256,6 +256,59 @@ func TestApplyOverlaySkipsUnparseableFDB(t *testing.T) {
 	}
 }
 
+// driveFDBReport runs one reconcile pass with the given declared FDB over a
+// VTEP-ready fabric and returns the report for id "ov1" (overlayNet()'s id).
+func driveFDBReport(t *testing.T, f *netfabric.FakeFabric, fdb []heartbeat.DeclaredFDBEntry) heartbeat.NetworkReport {
+	t.Helper()
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayNet()},
+		SelfOverlayIP:    &ip,
+		DeclaredFDB:      fdb,
+	})
+	rec.reconcile(context.Background())
+	for _, rep := range rec.NetworkReports() {
+		if rep.ID == "ov1" {
+			return rep
+		}
+	}
+	t.Fatalf("no report for ov1")
+	return heartbeat.NetworkReport{}
+}
+
+func TestApplyOverlayPendingWhenFDBListFails(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	f.Errs = map[string]error{"FDBList": errors.New("netlink busy")}
+	rep := driveFDBReport(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"}})
+	if rep.ReconciliationStatus != "pending" {
+		t.Errorf("status = %q, want pending (fdb not converged)", rep.ReconciliationStatus)
+	}
+	if len(f.EnsureVXLANCalls) != 1 {
+		t.Errorf("EnsureVXLAN calls = %d, want 1 (VTEP still materialised)", len(f.EnsureVXLANCalls))
+	}
+}
+
+func TestApplyOverlayPendingWhenFDBAppendFails(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	f.Errs = map[string]error{"FDBAppend": errors.New("append boom")}
+	rep := driveFDBReport(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"}})
+	if rep.ReconciliationStatus != "pending" {
+		t.Errorf("status = %q, want pending (fdb append failed)", rep.ReconciliationStatus)
+	}
+}
+
+func TestApplyOverlayReadyWhenFDBConverges(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	rep := driveFDBReport(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"}})
+	if rep.ReconciliationStatus != "ready" {
+		t.Errorf("status = %q, want ready", rep.ReconciliationStatus)
+	}
+}
+
 func mustMAC(s string) net.HardwareAddr {
 	m, err := net.ParseMAC(s)
 	if err != nil {

@@ -62,35 +62,44 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}); err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
-	r.reconcileFDB(ctx, vniVal, fdb)
+	converged := r.reconcileFDB(ctx, vniVal, fdb)
 	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}
+	if !converged {
+		return r.pending(ctx, d, "fdb_not_converged")
+	}
 	return ready(d.ID)
 }
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for
-// this VNI: list-diff-apply (append missing, delete stale). Best-effort - each
-// failure is logged and the rest proceed; the overlay stays ready (the VTEP is
-// up) and the FDB reconverges next tick. An unparseable entry is skipped + logged
-// so one bad entry never drops the rest.
-func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat.DeclaredFDBEntry) {
+// this VNI: list-diff-apply (append missing, delete stale). It reports whether
+// the FDB fully converged this pass: it returns false when the FDB could not be
+// listed or when any append/delete failed, so the caller can hold the overlay at
+// pending rather than report a green status over a half-programmed FDB. Per-entry
+// failures are logged and the rest still proceed; the VTEP stays up and the FDB
+// reconverges next tick. An unparseable entry is skipped + logged (it cannot be
+// programmed, so it does not block convergence) so one bad entry never drops the
+// rest.
+func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat.DeclaredFDBEntry) bool {
 	desired := r.parseDesiredFDB(ctx, vni, fdb)
 
 	current, err := r.fabric.FDBList(vni)
 	if err != nil {
 		r.log.WarnContext(ctx, "overlay fdb list failed; skipping fdb reconcile this pass",
 			slog.Int("vni", int(vni)), slog.String("error", err.Error()))
-		return
+		return false
 	}
 	currentSet := make(map[string]netfabric.FDBEntry, len(current))
 	for _, e := range current {
 		currentSet[fdbKey(e)] = e
 	}
 
+	converged := true
 	for k, e := range desired {
 		if _, ok := currentSet[k]; ok {
 			continue
 		}
 		if err := r.fabric.FDBAppend(vni, e); err != nil {
+			converged = false
 			r.log.WarnContext(ctx, "overlay fdb append failed",
 				slog.Int("vni", int(vni)), slog.String("mac", e.MAC.String()),
 				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
@@ -101,11 +110,13 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 			continue
 		}
 		if err := r.fabric.FDBDelete(vni, e); err != nil {
+			converged = false
 			r.log.WarnContext(ctx, "overlay fdb delete (prune) failed",
 				slog.Int("vni", int(vni)), slog.String("mac", e.MAC.String()),
 				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
 		}
 	}
+	return converged
 }
 
 // parseDesiredFDB turns the declared entries for this VNI into the set of
