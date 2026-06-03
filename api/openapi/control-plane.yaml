@@ -4890,9 +4890,10 @@ components:
           maximum: 9216
         vni:
           type: [integer, "null"]
+          maximum: 16777215
           description: |
-            VXLAN Network Identifier. Present (non-null) only when `type`
-            is `overlay`; null for bridge networks.
+            VXLAN Network Identifier (24-bit). Present (non-null) only when
+            `type` is `overlay`; null for bridge networks.
         subnet:
           type: [string, "null"]
           description: |
