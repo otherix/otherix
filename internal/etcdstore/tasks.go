@@ -130,8 +130,20 @@ func (s *Store) updateTask(ctx context.Context, id uuid.UUID, mutate func(*store
 // UpdateTaskRunning transitions a task pending -> running: it stamps started_at
 // on the first transition (coalesced across retries) and increments the attempt
 // counter. Worker entry point.
+//
+// A worker redelivery calls this at the top of every delivery, including
+// deliveries of an already-finalized task (the agent ACK was lost, the job is
+// redelivered after the projection committed). A terminal task must NEVER
+// regress to running, since that would defeat the projections' terminal-task
+// short-circuit and double-apply their non-idempotent writes (the template
+// derived_vm_count bump). So a terminal task is left untouched - no status
+// regression, no Attempts bump. A genuinely failed-and-requeued job still has a
+// non-terminal task (running/pending) and transitions normally.
 func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
 	return s.updateTask(ctx, id, func(t *store.Task) {
+		if isTerminalTaskStatus(t.Status) {
+			return
+		}
 		t.Status = store.TaskStatusRunning
 		if t.StartedAt == nil {
 			now := time.Now().UTC()

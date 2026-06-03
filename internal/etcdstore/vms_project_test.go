@@ -102,6 +102,94 @@ func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
 	}
 }
 
+func TestProjectVMCreateSuccessIdempotentOnWorkerRedelivery(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, taskID := seedCreatedVM(t, s)
+
+	rt := store.UpsertVMRuntimeParams{
+		VmID:               vmID,
+		CurrentNodeID:      &nodeID,
+		Phase:              store.VmPhaseRunning,
+		ObservedGeneration: 1,
+	}
+	fin := store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)}
+
+	// First delivery: the worker stamps the task running before projecting.
+	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning (first delivery): %v", err)
+	}
+	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess (first delivery): %v", err)
+	}
+	// Worker redelivery: the dispatcher calls UpdateTaskRunning AGAIN at the
+	// top of the second delivery, exactly as runCreate does. This must not
+	// demote the terminal task back to running, or the projection's
+	// terminal-task short-circuit will not fire and derived_vm_count is
+	// double-applied.
+	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning (redelivery): %v", err)
+	}
+	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess (redelivery): %v", err)
+	}
+
+	tpl, err := s.TemplateByID(ctx, templateID)
+	if err != nil || tpl.DerivedVmCount != 1 {
+		t.Errorf("derived_vm_count after worker redelivery = (%d, %v), want 1", tpl.DerivedVmCount, err)
+	}
+	task, _ := s.TaskByID(ctx, taskID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task status after worker redelivery = %v, want success (not demoted to running)", task.Status)
+	}
+}
+
+func TestProjectVMDeleteSuccessIdempotentOnWorkerRedelivery(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID,
+		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed create projection: %v", err)
+	}
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask(delete): %v", err)
+	}
+	fin := store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess}
+
+	// First delivery: the worker stamps the task running before projecting.
+	if err := s.UpdateTaskRunning(ctx, delTask.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning (first delivery): %v", err)
+	}
+	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess (first delivery): %v", err)
+	}
+	// Worker redelivery with the per-delivery UpdateTaskRunning, mirroring
+	// runDelete. The terminal task must not regress to running or the
+	// decrement is applied twice (negative drift).
+	if err := s.UpdateTaskRunning(ctx, delTask.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning (redelivery): %v", err)
+	}
+	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess (redelivery): %v", err)
+	}
+
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 0 {
+		t.Errorf("derived_vm_count after worker redelivery = %d, want 0 (no negative drift)", tpl.DerivedVmCount)
+	}
+}
+
 func TestProjectVMDeleteSuccessIdempotentOnRedelivery(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

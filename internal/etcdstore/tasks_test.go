@@ -201,6 +201,41 @@ func TestUpdateTaskRunningStampsAndIncrements(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskRunningRefusesToDemoteTerminalTask(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	// Drive the task to a terminal state (one delivery + finalize).
+	if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
+		ID:     p.ID,
+		Status: store.TaskStatusSuccess,
+	}); err != nil {
+		t.Fatalf("UpdateTaskFinalized: %v", err)
+	}
+	before, _ := s.TaskByID(ctx, p.ID)
+
+	// A worker redelivery calls UpdateTaskRunning again at the top of the
+	// delivery. A terminal task must NOT regress to running, and Attempts must
+	// not bump.
+	if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning (terminal redelivery) = %v, want nil", err)
+	}
+	after, _ := s.TaskByID(ctx, p.ID)
+	if after.Status != store.TaskStatusSuccess {
+		t.Errorf("status after terminal redelivery = %v, want success (not demoted)", after.Status)
+	}
+	if after.Attempts != before.Attempts {
+		t.Errorf("attempts after terminal redelivery = %d, want unchanged %d", after.Attempts, before.Attempts)
+	}
+}
+
 func TestUpdateTaskFinalizedWritesTerminal(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
