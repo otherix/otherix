@@ -36,7 +36,7 @@ func TestLoadDeclaredFDB(t *testing.T) {
 		},
 	}
 	h := &Handler{log: discardLogger()} // loadDeclaredFDB now logs; provide a logger
-	got, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
+	got, reach, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
 	if err != nil {
 		t.Fatalf("loadDeclaredFDB: %v", err)
 	}
@@ -47,6 +47,51 @@ func TestLoadDeclaredFDB(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("declared_fdb mismatch (-want +got):\n%s", diff)
+	}
+	// Every placement had an overlay IP, so no reachability shortfall is surfaced.
+	if len(reach) != 0 {
+		t.Errorf("overlay reachability = %+v, want none (no skipped placements)", reach)
+	}
+}
+
+// TestLoadDeclaredFDBSurfacesSkippedNoIP exercises the non-blocking observability
+// signal: a remote placement whose owning node has not yet been assigned an
+// overlay IP is omitted from declared_fdb (it can't be programmed), but its
+// absence is surfaced per-VNI as skipped_no_ip so the false-ready-blackhole risk
+// is visible. It must NOT change which entries are programmed for reachable peers.
+func TestLoadDeclaredFDBSurfacesSkippedNoIP(t *testing.T) {
+	nodeA, nodeB, nodeC := uuid.New(), uuid.New(), uuid.New()
+	macB, _ := net.ParseMAC("52:54:00:00:00:0b")
+	macC, _ := net.ParseMAC("52:54:00:00:00:0c")
+	macA, _ := net.ParseMAC("52:54:00:00:00:0a")
+	hp := &fakeFDBProjection{
+		placements: []store.OverlayNICPlacement{
+			{VNI: 1000, Mac: macA, NodeID: nodeA},
+			{VNI: 1000, Mac: macB, NodeID: nodeB},
+			{VNI: 1000, Mac: macC, NodeID: nodeC},
+		},
+		wg: []store.AgentWireguard{
+			{NodeID: nodeA, OverlayIP: netip.MustParseAddr("10.42.0.1")},
+			{NodeID: nodeB, OverlayIP: netip.MustParseAddr("10.42.0.2")},
+			// nodeC has no agent_wireguard record yet: no overlay IP.
+		},
+	}
+	h := &Handler{log: discardLogger()}
+	got, reach, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
+	if err != nil {
+		t.Fatalf("loadDeclaredFDB: %v", err)
+	}
+	// The reachable peer (nodeB) is still programmed; nodeC is omitted.
+	want := []declaredFDBEntry{
+		{VNI: 1000, MAC: "00:00:00:00:00:00", VtepIP: "10.42.0.2"},
+		{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("declared_fdb mismatch (-want +got):\n%s", diff)
+	}
+	wantReach := []overlayReachability{{VNI: 1000, SkippedNoIP: 1}}
+	if diff := cmp.Diff(wantReach, reach); diff != "" {
+		t.Errorf("overlay reachability mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -66,12 +111,16 @@ func TestLoadDeclaredFDBSkipsGoneNode(t *testing.T) {
 		gone: map[uuid.UUID]bool{nodeB: true},
 	}
 	h := &Handler{log: discardLogger()}
-	got, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
+	got, reach, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
 	if err != nil {
 		t.Fatalf("loadDeclaredFDB: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("got %+v, want no entries (gone node pruned)", got)
+	}
+	// A gone node is pruned, not skipped-for-no-IP: no reachability signal.
+	if len(reach) != 0 {
+		t.Errorf("overlay reachability = %+v, want none (gone node, not no-IP)", reach)
 	}
 }
 
@@ -91,12 +140,16 @@ func TestLoadDeclaredFDBSkipsNotFoundNode(t *testing.T) {
 		notFound: map[uuid.UUID]bool{nodeB: true},
 	}
 	h := &Handler{log: discardLogger()}
-	got, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
+	got, reach, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
 	if err != nil {
 		t.Fatalf("loadDeclaredFDB: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("got %+v, want no entries (soft-deleted node pruned)", got)
+	}
+	// A soft-deleted node is pruned, not skipped-for-no-IP: no reachability signal.
+	if len(reach) != 0 {
+		t.Errorf("overlay reachability = %+v, want none (pruned node, not no-IP)", reach)
 	}
 }
 

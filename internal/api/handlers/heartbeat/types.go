@@ -146,6 +146,21 @@ type responseBody struct {
 	// mirrored to the agent so it brings otwg0 up at the right size on a
 	// sub-1500 underlay.
 	Otwg0MTU *int32 `json:"otwg0_mtu"`
+	// OverlayReachability carries the per-VNI non-blocking reachability signal:
+	// how many remote placements the CP had to omit from declared_fdb because
+	// their owning node has no overlay IP yet. It is observability only and
+	// never gates readiness — the agent converges on the (smaller) programmable
+	// FDB set regardless.
+	OverlayReachability []overlayReachability `json:"overlay_reachability,omitempty"`
+}
+
+// overlayReachability mirrors OverlayReachability on the agent side — the per-VNI
+// shortfall in CP-declared FDB. SkippedNoIP is the count of remote placements
+// dropped from declared_fdb for that VNI because the owning node lacks an overlay
+// IP. A blackhole-risk signal surfaced without ever holding the overlay pending.
+type overlayReachability struct {
+	VNI         int32 `json:"vni"`
+	SkippedNoIP int32 `json:"skipped_no_ip"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the

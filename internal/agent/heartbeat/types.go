@@ -103,6 +103,22 @@ type Response struct {
 	// Nil from an older CP or before the underlay MTU is known; the WG
 	// reconciler falls back to netfabric.WireGuardMTU when absent.
 	Otwg0MTU *int32 `json:"otwg0_mtu"`
+	// OverlayReachability is the per-VNI non-blocking reachability signal: how
+	// many remote placements the CP omitted from DeclaredFDB because the owning
+	// node has no overlay IP yet. Observability only; the agent never gates the
+	// overlay on it, converging on the (smaller) programmable FDB set it does
+	// receive.
+	OverlayReachability []OverlayReachability `json:"overlay_reachability,omitempty"`
+}
+
+// OverlayReachability is the per-VNI FDB shortfall the CP reports down-channel.
+// SkippedNoIP counts remote placements dropped from DeclaredFDB for that VNI
+// because the owning node lacks an overlay IP. The agent surfaces it as a signal
+// (a remote VM unreachable until its node gets an overlay IP) without ever
+// holding the overlay at pending — per-peer reachability is non-blocking.
+type OverlayReachability struct {
+	VNI         int32 `json:"vni"`
+	SkippedNoIP int32 `json:"skipped_no_ip"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants

@@ -114,6 +114,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		SelfOverlayIP:          outcome.selfOverlayIP,
 		DeclaredFDB:            outcome.declaredFDB,
 		Otwg0MTU:               outcome.otwg0MTU,
+		OverlayReachability:    outcome.overlayReachability,
 	})
 }
 
@@ -190,6 +191,7 @@ type heartbeatOutcome struct {
 	declaredNetworks       []declaredNetwork
 	declaredWireGuardPeers []declaredWireGuardPeer
 	declaredFDB            []declaredFDBEntry
+	overlayReachability    []overlayReachability
 	selfOverlayIP          *string
 	otwg0MTU               *int32
 }
@@ -297,11 +299,12 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 		return err
 	}
 	outcome.declaredWireGuardPeers = declaredWG
-	declaredFDB, err := h.loadDeclaredFDB(ctx, hp, nodeID)
+	declaredFDB, reachability, err := h.loadDeclaredFDB(ctx, hp, nodeID)
 	if err != nil {
 		return err
 	}
 	outcome.declaredFDB = declaredFDB
+	outcome.overlayReachability = reachability
 	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
 	switch {
 	case err == nil:
@@ -608,7 +611,7 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 // Remote = a VM on another node; the node never needs FDB for its own local VMs
 // (their MACs live on the otb<vni> bridge). Sorted (vni, mac, vtep) for stable
 // heartbeats.
-func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, error) {
+func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, []overlayReachability, error) {
 	// The placement scan is the FIRST read of the join; it establishes the MVCC
 	// revision every other read in this projection pins to (the WG list and the
 	// per-node gone-resolver). Pinning the whole join to one snapshot stops a
@@ -616,11 +619,11 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 	// the agent's authoritative reconciler would prune live entries against.
 	placements, rev, err := hp.ListOverlayNICPlacementsPinned(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list overlay nic placements: %v", err)
+		return nil, nil, fmt.Errorf("list overlay nic placements: %v", err)
 	}
 	recs, err := hp.ListAgentWireguardAtRev(ctx, rev)
 	if err != nil {
-		return nil, fmt.Errorf("list agent_wireguard: %v", err)
+		return nil, nil, fmt.Errorf("list agent_wireguard: %v", err)
 	}
 	vtepIP := make(map[uuid.UUID]string, len(recs)) // node -> overlay IP
 	for _, r := range recs {
@@ -633,13 +636,14 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 			localVNI[p.VNI] = struct{}{}
 		}
 	}
-	out, skippedNoIP, err := h.buildRemoteFDBEntries(ctx, hp, rev, placements, localVNI, vtepIP, selfNodeID)
+	out, skippedPerVNI, err := h.buildRemoteFDBEntries(ctx, hp, rev, placements, localVNI, vtepIP, selfNodeID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if skippedNoIP > 0 {
+	reachability := summarizeReachability(skippedPerVNI)
+	if total := totalSkipped(skippedPerVNI); total > 0 {
 		h.log.WarnContext(ctx, "declared_fdb incomplete: owning nodes have no overlay IP yet",
-			slog.Int("skipped_placements", skippedNoIP), slog.String("node_id", selfNodeID.String()))
+			slog.Int("skipped_placements", total), slog.String("node_id", selfNodeID.String()))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].VNI != out[j].VNI {
@@ -651,25 +655,50 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 		return out[i].VtepIP < out[j].VtepIP
 	})
 	if len(out) == 0 {
-		return nil, nil
+		out = nil
 	}
-	return out, nil
+	return out, reachability, nil
+}
+
+// summarizeReachability projects the per-VNI skipped-no-IP map into the sorted
+// wire slice the heartbeat surfaces. Empty when nothing was skipped, so a fully
+// reachable overlay carries no signal at all (omitempty drops the field).
+func summarizeReachability(skippedPerVNI map[int32]int) []overlayReachability {
+	if len(skippedPerVNI) == 0 {
+		return nil
+	}
+	out := make([]overlayReachability, 0, len(skippedPerVNI))
+	for vni, n := range skippedPerVNI {
+		out = append(out, overlayReachability{VNI: vni, SkippedNoIP: int32(n)}) //nolint:gosec // per-VNI placement count, bounded by cluster size
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].VNI < out[j].VNI })
+	return out
+}
+
+// totalSkipped sums the per-VNI skip counts for the single aggregated WARN.
+func totalSkipped(skippedPerVNI map[int32]int) int {
+	total := 0
+	for _, n := range skippedPerVNI {
+		total += n
+	}
+	return total
 }
 
 // buildRemoteFDBEntries walks placements and emits, for every overlay this node
 // participates in locally, a per-remote-VM unicast entry plus one all-zeros
 // BUM/flood entry per distinct remote VTEP. It returns the (unsorted) entries
-// and the count of placements skipped because the owning node has no overlay IP
-// yet (surfaced as one aggregated WARN by the caller). Gone/soft-deleted owning
-// nodes are pruned via the memoised liveness guard, symmetric with
-// loadDeclaredWireGuardPeers: the reaper advances a long-unreachable node to
-// 'gone' WITHOUT orphaning its vm_runtime, so its placements still surface here
-// and must not keep an entry pointing at a dead VTEP.
-func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, int, error) {
+// and a per-VNI count of placements skipped because the owning node has no
+// overlay IP yet (surfaced as the non-blocking overlay_reachability signal plus
+// one aggregated WARN by the caller). Gone/soft-deleted owning nodes are pruned
+// via the memoised liveness guard, symmetric with loadDeclaredWireGuardPeers: the
+// reaper advances a long-unreachable node to 'gone' WITHOUT orphaning its
+// vm_runtime, so its placements still surface here and must not keep an entry
+// pointing at a dead VTEP.
+func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, map[int32]int, error) {
 	isGone := newGoneResolver(hp, rev)
 	var out []declaredFDBEntry
 	flood := make(map[string]struct{}) // dedup key "vni|vtep"
-	skippedNoIP := 0
+	skippedPerVNI := make(map[int32]int)
 	for _, p := range placements {
 		if p.NodeID == selfNodeID {
 			continue
@@ -679,14 +708,14 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 		}
 		gone, err := isGone(ctx, p.NodeID)
 		if err != nil {
-			return nil, 0, err
+			return nil, nil, err
 		}
 		if gone {
 			continue
 		}
 		ip, ok := vtepIP[p.NodeID]
 		if !ok {
-			skippedNoIP++
+			skippedPerVNI[p.VNI]++
 			continue // owning node has no overlay IP yet
 		}
 		out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: p.Mac.String(), VtepIP: ip})
@@ -696,7 +725,7 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 			out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: "00:00:00:00:00:00", VtepIP: ip})
 		}
 	}
-	return out, skippedNoIP, nil
+	return out, skippedPerVNI, nil
 }
 
 // newGoneResolver returns a memoised predicate reporting whether a remote node

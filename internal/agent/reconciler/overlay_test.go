@@ -323,6 +323,40 @@ func TestApplyOverlayReadyWhenFDBConverges(t *testing.T) {
 	}
 }
 
+// TestApplyOverlayReadyDespiteSkippedNoIP is the non-blocking-signal guarantee:
+// the CP omitted an unreachable remote peer's FDB entry (its node has no overlay
+// IP yet) and surfaced that as overlay_reachability. The agent converges on the
+// smaller programmable set it actually received and reports ready - a dead/IP-less
+// peer must NEVER wedge the local overlay at pending. The reachability signal is
+// observability only and does not feed the ready/pending decision.
+func TestApplyOverlayReadyDespiteSkippedNoIP(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayNet()},
+		SelfOverlayIP:    &ip,
+		// Only the reachable peer is in declared_fdb; an unreachable peer was
+		// dropped CP-side and surfaced here as a reachability shortfall.
+		DeclaredFDB:         []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"}},
+		OverlayReachability: []heartbeat.OverlayReachability{{VNI: 1000, SkippedNoIP: 1}},
+	})
+	rec.reconcile(context.Background())
+
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "ready" {
+		t.Errorf("status = %q, want ready (per-peer skip is non-blocking)", rep.ReconciliationStatus)
+	}
+}
+
 func TestApplyOverlayFailsOnOversizeVNI(t *testing.T) {
 	f := readyFabricWithFDB(nil)
 	rec, err := NewNetworks(f, discardLogger(), time.Minute)
