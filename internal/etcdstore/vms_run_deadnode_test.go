@@ -23,25 +23,43 @@ import (
 )
 
 // panicDeleteExecutor is a DeleteExecutor that fails the test if invoked. It
-// proves runDelete never reaches the agent POST when the owning node is dead.
+// proves runDelete never reaches the agent POST for a terminally-dead owning
+// node (force-deleted or gone).
 type panicDeleteExecutor struct{ t *testing.T }
 
 func (p *panicDeleteExecutor) Execute(_ context.Context, _ vmshandlers.DeleteArgs) (vmshandlers.DeleteResult, error) {
 	p.t.Helper()
-	p.t.Fatal("agent Execute must not be called when the owning node is not serviceable")
+	p.t.Fatal("agent Execute must not be called when the owning node is terminally dead")
 	return vmshandlers.DeleteResult{}, nil
 }
 
-// TestVMDeleteRunHandlerDeadNodeSkipsAgent proves that for a force-deleted
-// (ErrNotFound), gone, or unreachable owning node the delete handler skips the
-// agent POST and projects the delete directly - reclaiming the VM and its NIC
-// index entry so the referenced network unblocks (N3 R2).
-func TestVMDeleteRunHandlerDeadNodeSkipsAgent(t *testing.T) {
+// failDeleteExecutor is a DeleteExecutor that records it was called and returns
+// an error - modelling a genuinely-down agent. It proves runDelete attempts a
+// best-effort agent teardown for an unreachable node, then falls back to a
+// direct projection when that teardown fails.
+type failDeleteExecutor struct{ called bool }
+
+func (e *failDeleteExecutor) Execute(_ context.Context, _ vmshandlers.DeleteArgs) (vmshandlers.DeleteResult, error) {
+	e.called = true
+	return vmshandlers.DeleteResult{}, errors.New("dial agent: connection refused")
+}
+
+// TestVMDeleteRunHandlerDeadNodeReclaims proves that for a force-deleted
+// (ErrNotFound), gone, or unreachable owning node the delete handler still
+// reclaims the VM and its NIC index entry so the referenced network unblocks
+// (N3 R2). A terminally-dead node (force-deleted / gone) skips the agent
+// outright; an unreachable node is given a best-effort agent teardown first
+// (so qemu is reaped if the partition has healed) and only falls back to a
+// direct projection when that teardown fails.
+func TestVMDeleteRunHandlerDeadNodeReclaims(t *testing.T) {
 	cases := []struct {
 		name string
 		// kill mutates the node so NodeByID returns ErrNotFound (force-delete)
 		// or a live row in a non-serviceable status.
 		kill func(t *testing.T, s *etcdstore.Store, cli *etcd.Client, nodeID uuid.UUID)
+		// wantAgentAttempt is true when runDelete must attempt the agent
+		// teardown before projecting the delete directly.
+		wantAgentAttempt bool
 	}{
 		{
 			name: "force-deleted node (ErrNotFound)",
@@ -60,11 +78,12 @@ func TestVMDeleteRunHandlerDeadNodeSkipsAgent(t *testing.T) {
 			},
 		},
 		{
-			name: "unreachable node",
+			name: "unreachable node falls back after best-effort agent teardown",
 			kill: func(t *testing.T, s *etcdstore.Store, cli *etcd.Client, nodeID uuid.UUID) {
 				t.Helper()
 				setNodeStatus(t, s, cli, nodeID, store.NodeStatusUnreachable)
 			},
+			wantAgentAttempt: true,
 		},
 	}
 
@@ -78,9 +97,19 @@ func TestVMDeleteRunHandlerDeadNodeSkipsAgent(t *testing.T) {
 			tc.kill(t, s, cli, nodeID)
 
 			raw, _ := json.Marshal(vmshandlers.VMDeleteArgs{TaskID: delTaskID, VMID: vmID, NodeID: nodeID})
-			h := vmshandlers.DeleteHandler(s, &panicDeleteExecutor{t: t}, log)
+			var exec vmshandlers.DeleteExecutor
+			fail := &failDeleteExecutor{}
+			if tc.wantAgentAttempt {
+				exec = fail
+			} else {
+				exec = &panicDeleteExecutor{t: t}
+			}
+			h := vmshandlers.DeleteHandler(s, exec, log)
 			if err := h(ctx, raw); err != nil {
 				t.Fatalf("delete handler = %v, want nil (direct projection)", err)
+			}
+			if tc.wantAgentAttempt && !fail.called {
+				t.Errorf("agent teardown not attempted for unreachable node, want best-effort attempt")
 			}
 
 			task, err := s.TaskByID(ctx, delTaskID)
