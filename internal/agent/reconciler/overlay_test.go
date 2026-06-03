@@ -5,6 +5,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -127,5 +128,53 @@ func TestApplyOverlayTeardownOnUndeclare(t *testing.T) {
 	}
 	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otb1000" {
 		t.Errorf("RemoveBridgeCalls = %v, want [otb1000]", f.RemoveBridgeCalls)
+	}
+}
+
+func TestApplyOverlayFailedOnInvalidVNI(t *testing.T) {
+	f := &netfabric.FakeFabric{LinkStateResult: map[string]netfabric.LinkState{
+		"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+	}}
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	bad := overlayNet()
+	bad.VNI = vni(0) // invalid: VNI must be > 0
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{bad},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed (invalid vni)", rep.ReconciliationStatus)
+	}
+	if len(f.EnsureBridgeCalls) != 0 || len(f.EnsureVXLANCalls) != 0 {
+		t.Errorf("fabric mutated on invalid vni: bridge=%d vxlan=%d", len(f.EnsureBridgeCalls), len(f.EnsureVXLANCalls))
+	}
+}
+
+func TestApplyOverlayFailedOnFabricError(t *testing.T) {
+	f := &netfabric.FakeFabric{
+		LinkStateResult: map[string]netfabric.LinkState{
+			"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+		},
+		Errs: map[string]error{"EnsureBridge": errors.New("bridge boom")},
+	}
+	rep := drive(t, f, "10.42.0.5/16")
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed (EnsureBridge error)", rep.ReconciliationStatus)
+	}
+	// The bridge was attempted; the VTEP must NOT be, since EnsureBridge failed first.
+	if len(f.EnsureVXLANCalls) != 0 {
+		t.Errorf("VTEP created after EnsureBridge failed")
 	}
 }
