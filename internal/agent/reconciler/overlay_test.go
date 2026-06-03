@@ -338,6 +338,37 @@ func TestApplyOverlayFailsOnOversizeVNI(t *testing.T) {
 	}
 }
 
+func TestApplyOverlayFailedOnLinkStateError(t *testing.T) {
+	f := &netfabric.FakeFabric{
+		LinkStateResult: map[string]netfabric.LinkState{
+			"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+		},
+		Errs: map[string]error{"LinkState": errors.New("netlink down")},
+	}
+	rep := drive(t, f, "10.42.0.5/16")
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed (LinkState error)", rep.ReconciliationStatus)
+	}
+	if len(f.EnsureBridgeCalls) != 0 || len(f.EnsureVXLANCalls) != 0 {
+		t.Errorf("fabric mutated after LinkState error: bridge=%d vxlan=%d", len(f.EnsureBridgeCalls), len(f.EnsureVXLANCalls))
+	}
+}
+
+func TestApplyOverlayFailedOnUnparseableSelfIP(t *testing.T) {
+	f := &netfabric.FakeFabric{
+		LinkStateResult: map[string]netfabric.LinkState{
+			"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+		},
+	}
+	rep := drive(t, f, "not-a-prefix")
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed (unparseable self_overlay_ip)", rep.ReconciliationStatus)
+	}
+	if len(f.EnsureVXLANCalls) != 0 {
+		t.Errorf("VTEP created for an unparseable self ip")
+	}
+}
+
 func mustMAC(s string) net.HardwareAddr {
 	m, err := net.ParseMAC(s)
 	if err != nil {
