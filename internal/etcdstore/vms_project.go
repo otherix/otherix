@@ -44,14 +44,14 @@ func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRun
 	}
 
 	for range projectTemplateCASRetries {
-		task, taskRev, taskFound, err := s.taskWithRev(ctx, fin.ID)
+		task, err := s.TaskByID(ctx, fin.ID)
 		if err != nil {
 			return err
 		}
-		// Worker redelivery: the task is already terminal, so the
+		// Worker redelivery: the task is already committed-terminal, so the
 		// non-idempotent derived_vm_count bump has already been committed.
 		// Skip re-projecting; the worker will CompleteJob.
-		if taskFound && isTerminalTaskStatus(task.Status) {
+		if isCommittedTerminal(task.Status) {
 			return nil
 		}
 		tmpl, modRev, found, err := s.templateWithRev(ctx, templateID)
@@ -69,7 +69,6 @@ func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRun
 		resp, err := s.c.Raw().Txn(ctx).
 			If(
 				clientv3.Compare(clientv3.ModRevision(templateKey(templateID)), "=", modRev),
-				clientv3.Compare(clientv3.ModRevision(taskKey(fin.ID)), "=", taskRev),
 			).
 			Then(
 				clientv3.OpPut(vmRuntimeKey(rt.VmID), string(runtimeVal)),
@@ -163,20 +162,19 @@ func (s *Store) ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin sto
 	}
 
 	for range projectTemplateCASRetries {
-		task, taskRev, taskFound, err := s.taskWithRev(ctx, fin.ID)
+		task, err := s.TaskByID(ctx, fin.ID)
 		if err != nil {
 			return err
 		}
-		// Worker redelivery: the task is already terminal, so the
+		// Worker redelivery: the task is already committed-terminal, so the
 		// non-idempotent derived_vm_count decrement has already been committed.
 		// Skip re-projecting; the worker will CompleteJob.
-		if taskFound && isTerminalTaskStatus(task.Status) {
+		if isCommittedTerminal(task.Status) {
 			return nil
 		}
-		taskGuard := clientv3.Compare(clientv3.ModRevision(taskKey(fin.ID)), "=", taskRev)
 
 		if vm.TemplateID == nil {
-			resp, err := s.c.Raw().Txn(ctx).If(taskGuard).Then(base...).Commit()
+			resp, err := s.c.Raw().Txn(ctx).Then(base...).Commit()
 			if err != nil {
 				return fmt.Errorf("project vm delete txn: %v", err)
 			}
@@ -193,7 +191,7 @@ func (s *Store) ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin sto
 		if !found {
 			// Template hard-gone (should not happen - templates soft-delete):
 			// commit the rest without a decrement rather than wedge the delete.
-			resp, err := s.c.Raw().Txn(ctx).If(taskGuard).Then(base...).Commit()
+			resp, err := s.c.Raw().Txn(ctx).Then(base...).Commit()
 			if err != nil {
 				return fmt.Errorf("project vm delete txn: %v", err)
 			}
@@ -211,7 +209,6 @@ func (s *Store) ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin sto
 		resp, err := s.c.Raw().Txn(ctx).
 			If(
 				clientv3.Compare(clientv3.ModRevision(templateKey(*vm.TemplateID)), "=", modRev),
-				taskGuard,
 			).
 			Then(ops...).
 			Commit()
@@ -320,34 +317,12 @@ func (s *Store) finalizedTaskValue(ctx context.Context, fin store.UpdateTaskFina
 	return etcd.Marshal(t)
 }
 
-// taskWithRev reads a task row and its current mod-revision, the compare target
-// that pins the projection's finalize against worker redelivery. found is false
-// when the key is absent.
-func (s *Store) taskWithRev(ctx context.Context, id uuid.UUID) (store.Task, int64, bool, error) {
-	resp, err := s.c.Raw().Get(ctx, taskKey(id))
-	if err != nil {
-		return store.Task{}, 0, false, err
-	}
-	if len(resp.Kvs) == 0 {
-		return store.Task{}, 0, false, nil
-	}
-	var t store.Task
-	if err := json.Unmarshal(resp.Kvs[0].Value, &t); err != nil {
-		return store.Task{}, 0, false, fmt.Errorf("unmarshal task %q: %v", id, err)
-	}
-	return t, resp.Kvs[0].ModRevision, true, nil
-}
-
-// isTerminalTaskStatus reports whether a task has reached a terminal state
-// (success / failed / cancelled), meaning a projection has already committed and
-// a re-execution must be skipped.
-func isTerminalTaskStatus(s store.TaskStatus) bool {
-	switch s {
-	case store.TaskStatusSuccess, store.TaskStatusFailed, store.TaskStatusCancelled:
-		return true
-	default:
-		return false
-	}
+// isCommittedTerminal reports whether the projection's non-idempotent write has
+// already committed. Only success and cancelled qualify; failed is retryable
+// (failRun finalizes failed but the dispatcher requeues the job), so a failed
+// task must still re-run.
+func isCommittedTerminal(s store.TaskStatus) bool {
+	return s == store.TaskStatusSuccess || s == store.TaskStatusCancelled
 }
 
 // templateWithRev reads a template row and its current mod-revision, the compare

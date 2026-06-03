@@ -69,6 +69,96 @@ func TestVMCreateRunHandlerExecutorErrorFinalizesFailed(t *testing.T) {
 	}
 }
 
+func TestVMCreateRunHandlerFailThenSucceedProjects(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+
+	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
+
+	// Delivery 1: the executor errors, failRun finalizes the task to failed (a
+	// retryable terminal), and the dispatcher would requeue the job.
+	h1 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log)
+	if err := h1(ctx, raw); err == nil {
+		t.Fatalf("create handler (delivery 1) = nil, want the executor error for requeue")
+	}
+	task, _ := s.TaskByID(ctx, taskID)
+	if task.Status != store.TaskStatusFailed {
+		t.Fatalf("task after delivery 1 = %v, want failed", task.Status)
+	}
+
+	// Delivery 2 (job redelivered): the executor now succeeds. A failed task is
+	// retryable, so the projection MUST run: runtime row present, count==1, task
+	// ends success.
+	h2 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log)
+	if err := h2(ctx, raw); err != nil {
+		t.Fatalf("create handler (delivery 2) = %v, want nil", err)
+	}
+
+	rt, err := s.VMRuntimeByID(ctx, vmID)
+	if err != nil || rt.Phase != store.VmPhaseRunning {
+		t.Errorf("runtime after fail-then-succeed = (%+v, %v), want running", rt, err)
+	}
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 1 {
+		t.Errorf("derived_vm_count after fail-then-succeed = %d, want 1", tpl.DerivedVmCount)
+	}
+	task, _ = s.TaskByID(ctx, taskID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task after fail-then-succeed = %v, want success", task.Status)
+	}
+}
+
+func TestVMDeleteRunHandlerFailThenSucceedProjects(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID, store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed running: %v", err)
+	}
+
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("enqueue delete: %v", err)
+	}
+	raw, _ := json.Marshal(vmshandlers.VMDeleteArgs{TaskID: delTask.ID, VMID: vmID, NodeID: nodeID})
+
+	// Delivery 1: the executor errors, failRun finalizes the task failed.
+	h1 := vmshandlers.DeleteHandler(s, &vmshandlers.StubVMDeleteExecutor{Err: errors.New("agent boom")}, log)
+	if err := h1(ctx, raw); err == nil {
+		t.Fatalf("delete handler (delivery 1) = nil, want the executor error for requeue")
+	}
+	task, _ := s.TaskByID(ctx, delTask.ID)
+	if task.Status != store.TaskStatusFailed {
+		t.Fatalf("task after delivery 1 = %v, want failed", task.Status)
+	}
+
+	// Delivery 2 (job redelivered): the executor now succeeds. The delete
+	// projection MUST run: VM gone, count decremented to 0, task ends success.
+	h2 := vmshandlers.DeleteHandler(s, &vmshandlers.StubVMDeleteExecutor{Result: vmshandlers.DeleteResult{VMID: vmID.String()}}, log)
+	if err := h2(ctx, raw); err != nil {
+		t.Fatalf("delete handler (delivery 2) = %v, want nil", err)
+	}
+
+	if _, err := s.VMByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("vm after fail-then-succeed = %v, want ErrNotFound", err)
+	}
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 0 {
+		t.Errorf("derived_vm_count after fail-then-succeed = %d, want 0", tpl.DerivedVmCount)
+	}
+	task, _ = s.TaskByID(ctx, delTask.ID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task after fail-then-succeed = %v, want success", task.Status)
+	}
+}
+
 func TestVMDeleteRunHandlerSuccess(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
