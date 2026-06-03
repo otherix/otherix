@@ -48,8 +48,12 @@ func fdbNeigh(linkIndex int, e FDBEntry) *netlink.Neigh {
 }
 
 // FDBAppend installs a MAC -> dst VTEP entry in the otvx<vni> VTEP's kernel
-// FDB. It is idempotent: an identical entry already present is a no-op,
-// mirroring EnsureMasquerade's list-then-add discipline.
+// FDB. It is idempotent: NeighAppend with NUD_PERMANENT is EEXIST-idempotent
+// at the kernel level, so an identical entry already present surfaces as
+// EEXIST and is treated as success. The reconciler set-diffs against FDBList
+// and only calls FDBAppend for genuinely-missing entries, so the steady-state
+// path never reaches the kernel; this guard is a cheap belt-and-suspenders for
+// the redelivery / racing-pass case without the per-call O(n) list scan.
 func (f *linuxFabric) FDBAppend(vni uint32, e FDBEntry) error {
 	if len(e.MAC) != 6 {
 		return fmt.Errorf("netfabric: fdb append on vxlan %d: mac %q is not a 6-octet address", vni, e.MAC)
@@ -65,17 +69,10 @@ func (f *linuxFabric) FDBAppend(vni uint32, e FDBEntry) error {
 	if err != nil {
 		return err
 	}
-	existing, err := netlink.NeighList(idx, unix.AF_BRIDGE)
-	if err != nil {
-		return fmt.Errorf("netfabric: fdb append on vxlan %d: list: %v", vni, err)
-	}
-	dst := net.IP(e.Dst.Unmap().AsSlice())
-	for _, n := range existing {
-		if n.HardwareAddr.String() == e.MAC.String() && n.IP.Equal(dst) {
+	if err := netlink.NeighAppend(fdbNeigh(idx, e)); err != nil {
+		if errors.Is(err, unix.EEXIST) || errors.Is(err, os.ErrExist) {
 			return nil
 		}
-	}
-	if err := netlink.NeighAppend(fdbNeigh(idx, e)); err != nil {
 		return fmt.Errorf("netfabric: fdb append on vxlan %d: %v", vni, err)
 	}
 	return nil
