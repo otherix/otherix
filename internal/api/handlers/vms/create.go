@@ -406,6 +406,7 @@ func createWithMACRetry(ctx context.Context, st Store, plan func(store.Placement
 		err error
 	)
 	for attempt := 0; attempt < maxMACRetries; attempt++ {
+		// Each MAC-conflict retry burns a job-sequence number via enqueueJobOp/nextJobSeq (the seq counter advances immediately), so retries leave benign gaps in the sequence - not lost jobs: the job OpPut rides in the failed txn's Then and never commits, so no orphan job row is written.
 		id, err = st.CreateScheduledVM(ctx, plan)
 		if !errors.Is(err, store.ErrVMNicMACConflict) {
 			return id, err
