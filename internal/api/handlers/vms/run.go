@@ -173,10 +173,35 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.delete", taskID, classifyLoadErr(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
-	node, err := st.NodeByID(ctx, args.NodeID)
-	if err != nil {
-		return failRun(ctx, st, log, "vms.delete", taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
+	node, nodeErr := st.NodeByID(ctx, args.NodeID)
+	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
+		return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
 	}
+	deadNode := errors.Is(nodeErr, store.ErrNotFound) ||
+		node.Status == store.NodeStatusGone ||
+		node.Status == store.NodeStatusUnreachable
+	if deadNode {
+		// The owning node is force-deleted, gone, or unreachable: there is no
+		// agent to tear the VM down. Project the delete directly so the VM (and
+		// its NIC index entries) are reclaimed and DeleteNetwork unblocks.
+		resultJSON, merr := json.Marshal(struct {
+			VMID         string `json:"vm_id"`
+			SkippedAgent bool   `json:"skipped_agent"`
+			Reason       string `json:"reason"`
+		}{VMID: args.VMID.String(), SkippedAgent: true, Reason: "owning node not serviceable"})
+		if merr != nil {
+			return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("marshal delete result: %v", merr))
+		}
+		if err := st.ProjectVMDeleteSuccess(ctx, vm,
+			store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
+		); err != nil {
+			return fmt.Errorf("project delete success: %v", err)
+		}
+		log.InfoContext(ctx, "vm deleted without agent teardown (owning node not serviceable)",
+			slog.String("vm_id", args.VMID.String()), slog.String("node_id", args.NodeID.String()))
+		return nil
+	}
+
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("reload task: %v", err)
