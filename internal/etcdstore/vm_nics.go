@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"sort"
 	"time"
 
@@ -34,6 +35,14 @@ func vmNicVMIndexPrefix(vmID uuid.UUID) string {
 
 func vmNicNetworkIndexKey(networkID, nicID uuid.UUID) string {
 	return etcd.Key("index", "vm_nics", "network", networkID.String(), nicID.String())
+}
+
+// vmNicMACGuard is the per-network MAC uniqueness guard: a (network_id, mac)
+// key whose CreateRevision==0 compare in the VM-create transaction rejects a
+// duplicate MAC on the same L2 domain. Same MAC on a different network is fine
+// (distinct key), so the guard scope is the network, not the cluster.
+func vmNicMACGuard(networkID uuid.UUID, mac net.HardwareAddr) string {
+	return etcd.Key("uniq", "vm_nics", "mac", networkID.String(), mac.String())
 }
 
 // vmNicFromCreateParams projects CreateVMNicParams onto a store.VMNic, stamping
@@ -67,6 +76,7 @@ func vmNicCreateOps(n store.VMNic) ([]clientv3.Op, error) {
 		clientv3.OpPut(vmNicKey(n.ID), string(val)),
 		clientv3.OpPut(vmNicVMIndexKey(n.VmID, n.ID), n.ID.String()),
 		clientv3.OpPut(vmNicNetworkIndexKey(n.NetworkID, n.ID), n.ID.String()),
+		clientv3.OpPut(vmNicMACGuard(n.NetworkID, n.MacAddress), n.ID.String()),
 	}, nil
 }
 
@@ -99,13 +109,15 @@ func (s *Store) vmNicDeleteOps(ctx context.Context, vmID uuid.UUID, now time.Tim
 			ops = append(ops,
 				clientv3.OpDelete(vmNicVMIndexKey(vmID, id)),
 				clientv3.OpDelete(vmNicNetworkIndexKey(n.NetworkID, id)),
+				clientv3.OpDelete(vmNicMACGuard(n.NetworkID, n.MacAddress)),
 			)
 			continue
 		}
 		if !found {
-			// Hard-gone: the row no longer exists, so its network id cannot be
-			// reconstructed - drop only the lingering per-VM index entry. A
-			// stale per-network index, if any, is unreachable from here.
+			// Hard-gone: the row no longer exists, so its network id and MAC
+			// cannot be reconstructed - drop only the lingering per-VM index
+			// entry. A stale per-network index or MAC guard, if any, is
+			// unreachable from here.
 			ops = append(ops, clientv3.OpDelete(vmNicVMIndexKey(vmID, id)))
 			continue
 		}
@@ -119,6 +131,7 @@ func (s *Store) vmNicDeleteOps(ctx context.Context, vmID uuid.UUID, now time.Tim
 			clientv3.OpPut(vmNicKey(id), string(val)),
 			clientv3.OpDelete(vmNicVMIndexKey(vmID, id)),
 			clientv3.OpDelete(vmNicNetworkIndexKey(n.NetworkID, id)),
+			clientv3.OpDelete(vmNicMACGuard(n.NetworkID, n.MacAddress)),
 		)
 	}
 	return ops, nil

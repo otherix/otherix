@@ -27,6 +27,7 @@ var (
 	ErrStoragePoolNameExists    = errors.New("store: storage pool name already in use on node")
 	ErrTaskNotCancellable       = errors.New("store: task not cancellable")
 	ErrVMNameInUse              = errors.New("store: vm name already in use")
+	ErrVMNicMACConflict         = errors.New("store: vm nic mac already in use on network")
 	ErrFirmwareNameExists       = errors.New("store: firmware name already in use for architecture")
 	ErrFirmwareDefaultExists    = errors.New("store: default firmware already exists for architecture and type")
 	ErrTemplateNameExists       = errors.New("store: template name already in use")
