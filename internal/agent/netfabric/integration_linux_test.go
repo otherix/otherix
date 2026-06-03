@@ -215,6 +215,12 @@ func TestLinuxFabricVXLANEnslave(t *testing.T) {
 		if got, want := vtep.Attrs().MasterIndex, br.Attrs().Index; got != want {
 			t.Errorf("VTEP MasterIndex = %d, want %d (bridge index)", got, want)
 		}
+		// The VTEP must be admin-up AFTER enslavement: EnsureVXLAN sets it up
+		// last so the enslave-time carrier/operstate reset cannot leave an
+		// enslaved-but-down port (regression guard for the up-before-enslave bug).
+		if vtep.Attrs().Flags&net.FlagUp == 0 {
+			t.Errorf("enslaved VTEP flags = %v, want admin-up", vtep.Attrs().Flags)
+		}
 	})
 }
 

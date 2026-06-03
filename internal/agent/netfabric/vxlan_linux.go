@@ -23,8 +23,9 @@ func vxlanName(vni uint32) string {
 
 // EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, repairs it by
 // delete-recreate when an immutable attribute (VNI, source address, UDP port,
-// or learning) has drifted, reapplies MTU + up state, and - when cfg.Master is
-// set - enslaves it into that bridge. It is idempotent and self-healing.
+// or learning) has drifted, reapplies MTU, enslaves it into cfg.Master when
+// set, and then brings it up (up is asserted last so an enslave-time carrier
+// reset cannot leave the port admin-down). It is idempotent and self-healing.
 // Learning is off (the FDB is controller-authoritative); remotes are added
 // exclusively through FDBAppend.
 func (f *linuxFabric) EnsureVXLAN(cfg VXLANConfig) error {
@@ -80,9 +81,6 @@ func (f *linuxFabric) EnsureVXLAN(cfg VXLANConfig) error {
 			return fmt.Errorf("netfabric: ensure vxlan %s: set mtu: %v", name, err)
 		}
 	}
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("netfabric: ensure vxlan %s: set up: %v", name, err)
-	}
 	if cfg.Master != "" {
 		br, err := netlink.LinkByName(cfg.Master)
 		if err != nil {
@@ -91,6 +89,15 @@ func (f *linuxFabric) EnsureVXLAN(cfg VXLANConfig) error {
 		if err := netlink.LinkSetMaster(link, br); err != nil {
 			return fmt.Errorf("netfabric: ensure vxlan %s: enslave to %s: %v", name, cfg.Master, err)
 		}
+	}
+	// Bring the VTEP up AFTER the enslave: some kernels reset the port's
+	// carrier/operstate when a link becomes a bridge port, so asserting up
+	// before LinkSetMaster would leave the enslaved port admin-down. Setting
+	// it up last (and unconditionally, including the drift delete-recreate
+	// path that lands here with a fresh down link) guarantees an up + enslaved
+	// VTEP on every pass.
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("netfabric: ensure vxlan %s: set up: %v", name, err)
 	}
 	return nil
 }
