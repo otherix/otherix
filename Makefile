@@ -124,6 +124,10 @@ smoke-networking: ## Networking operator smoke: drives `otherix network`/`vm cre
 smoke-wireguard-mesh: ## Cross-agent WireGuard mesh smoke: real cross-host handshake between the two Lima nodes (run after local-dev-start)
 	bash dev/smoke/wireguard-mesh/run.sh
 
+.PHONY: smoke-overlay
+smoke-overlay: ## Overlay (VXLAN) smoke: VTEP+bridge attrs on both nodes + manual-FDB cross-node datapath (run after local-dev-start)
+	bash dev/smoke/overlay/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt vet
