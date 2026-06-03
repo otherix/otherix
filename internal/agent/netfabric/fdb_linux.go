@@ -47,17 +47,6 @@ func fdbNeigh(linkIndex int, e FDBEntry) *netlink.Neigh {
 	}
 }
 
-// isZeroMAC reports whether mac is all zeros - the kernel's default/BUM FDB
-// placeholder, which FDBList omits.
-func isZeroMAC(mac net.HardwareAddr) bool {
-	for _, b := range mac {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
-}
-
 // FDBAppend installs a MAC -> dst VTEP entry in the otvx<vni> VTEP's kernel
 // FDB. It is idempotent: an identical entry already present is a no-op,
 // mirroring EnsureMasquerade's list-then-add discipline.
@@ -119,11 +108,13 @@ func (f *linuxFabric) FDBDelete(vni uint32, e FDBEntry) error {
 }
 
 // FDBList returns the MAC -> dst VTEP entries in the otvx<vni> VTEP's FDB,
-// sorted by MAC. The kernel's all-zeros default entry (the BUM / head-end
-// placeholder) is skipped, so only real MAC -> dst mappings are returned.
-// Learning is off on every VTEP we create, so every remaining entry is one we
-// programmed; if N2/N3 ever enables learning, this must additionally filter on
-// State&NUD_PERMANENT before the result is treated as the authoritative set.
+// sorted by MAC. It returns every controller-programmed entry, including the
+// all-zeros flood entries (00:00:00:00:00:00) that the controller installs as
+// head-end replication targets, so the reconciler can prune stale ones. The
+// VTEP is created with no group/remote and learning off, so the kernel never
+// auto-creates entries and every entry present is one we programmed; if N2/N3
+// ever enables learning, this must additionally filter on State&NUD_PERMANENT
+// before the result is treated as the authoritative set.
 func (f *linuxFabric) FDBList(vni uint32) ([]FDBEntry, error) {
 	idx, err := f.vxlanIndex(vni)
 	if err != nil {
@@ -135,7 +126,7 @@ func (f *linuxFabric) FDBList(vni uint32) ([]FDBEntry, error) {
 	}
 	var out []FDBEntry
 	for _, n := range neighs {
-		if len(n.HardwareAddr) != 6 || isZeroMAC(n.HardwareAddr) {
+		if len(n.HardwareAddr) != 6 {
 			continue
 		}
 		dst, ok := netip.AddrFromSlice(n.IP)

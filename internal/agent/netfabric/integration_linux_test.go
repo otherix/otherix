@@ -280,6 +280,57 @@ func TestLinuxFabricVXLANFDB(t *testing.T) {
 	})
 }
 
+func TestLinuxFabricFDBListIncludesZeroMAC(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const vni = 1000
+		bringLoopbackUp(t)
+		if err := f.EnsureVXLAN(vxlanLoopbackConfig()); err != nil {
+			t.Fatalf("EnsureVXLAN = %v", err)
+		}
+		zero := FDBEntry{MAC: net.HardwareAddr{0, 0, 0, 0, 0, 0}, Dst: netip.MustParseAddr("127.0.0.1")}
+		unicast := FDBEntry{MAC: net.HardwareAddr{0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc}, Dst: netip.MustParseAddr("127.0.0.1")}
+		if err := f.FDBAppend(vni, zero); err != nil {
+			t.Fatalf("FDBAppend(zero) = %v", err)
+		}
+		if err := f.FDBAppend(vni, unicast); err != nil {
+			t.Fatalf("FDBAppend(unicast) = %v", err)
+		}
+		list, err := f.FDBList(vni)
+		if err != nil {
+			t.Fatalf("FDBList = %v", err)
+		}
+		var sawZero, sawUnicast bool
+		for _, e := range list {
+			if e.MAC.String() == zero.MAC.String() {
+				sawZero = true
+			}
+			if e.MAC.String() == unicast.MAC.String() {
+				sawUnicast = true
+			}
+		}
+		if !sawZero {
+			t.Errorf("FDBList omitted the zero-MAC flood entry; want it present for prune")
+		}
+		if !sawUnicast {
+			t.Errorf("FDBList missing the unicast entry")
+		}
+		// Prune the zero-MAC entry and confirm it is gone.
+		if err := f.FDBDelete(vni, zero); err != nil {
+			t.Fatalf("FDBDelete(zero) = %v", err)
+		}
+		list, err = f.FDBList(vni)
+		if err != nil {
+			t.Fatalf("FDBList after delete = %v", err)
+		}
+		for _, e := range list {
+			if e.MAC.String() == zero.MAC.String() {
+				t.Errorf("zero-MAC entry still present after FDBDelete")
+			}
+		}
+	})
+}
+
 // TestLinuxFabricVXLANNegativePaths covers the error branches: a non-vxlan
 // link squatting the otvx<vni> name must not be adopted by EnsureVXLAN or
 // programmed by FDBAppend, VXLANExists reports false for it, and FDB ops on a
