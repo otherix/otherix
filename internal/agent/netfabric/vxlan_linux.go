@@ -34,6 +34,12 @@ func (f *linuxFabric) EnsureVXLAN(cfg VXLANConfig) error {
 	if !cfg.Local.IsValid() {
 		return fmt.Errorf("netfabric: ensure vxlan %d: invalid local addr", cfg.VNI)
 	}
+	if cfg.VNI == 0 {
+		return fmt.Errorf("netfabric: ensure vxlan: vni must be non-zero")
+	}
+	if cfg.Port == 0 {
+		return fmt.Errorf("netfabric: ensure vxlan %d: port must be non-zero", cfg.VNI)
+	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

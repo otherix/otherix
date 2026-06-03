@@ -177,6 +177,19 @@ func TestLinuxFabricVXLANSelfHeal(t *testing.T) {
 		if !vx.SrcAddr.Equal(net.ParseIP("127.0.0.2")) {
 			t.Errorf("SrcAddr = %v, want 127.0.0.2 (VTEP not recreated on drift)", vx.SrcAddr)
 		}
+
+		// Port drift also forces a recreate (immutable on a live link).
+		portDrift := VXLANConfig{VNI: vni, Local: netip.MustParseAddr("127.0.0.2"), Port: 4790, MTU: 1390}
+		if err := f.EnsureVXLAN(portDrift); err != nil {
+			t.Fatalf("EnsureVXLAN(port drift) = %v", err)
+		}
+		link, err = netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName after port drift = %v", err)
+		}
+		if vx := link.(*netlink.Vxlan); vx.Port != 4790 {
+			t.Errorf("Port = %d, want 4790 (VTEP not recreated on port drift)", vx.Port)
+		}
 	})
 }
 
