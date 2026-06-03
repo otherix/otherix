@@ -64,6 +64,8 @@ type appliedNetwork struct {
 	HasNAT     bool
 	Subnet     netip.Prefix
 	Gateway    netip.Prefix
+	Overlay    bool   // true for a type=overlay network: teardown removes the VTEP too
+	VNI        uint32 // VXLAN id, for RemoveVXLAN on teardown (Overlay only)
 }
 
 // networksDesired is the latest CP-declared network intent for this node: the
@@ -190,20 +192,21 @@ func (r *Networks) reconcile(ctx context.Context) {
 // It also updates r.applied on success so a later removal knows what to
 // tear down.
 func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork, selfOverlayIP string) heartbeat.NetworkReport {
-	if d.Type != "bridge" {
-		// Overlay and other types land in N1b; do not touch the fabric.
-		return r.failed(ctx, d, fmt.Sprintf("unsupported network type %q (overlay lands in N1b)", d.Type))
+	switch d.Type {
+	case "bridge":
+		subnet, gateway, err := parseSubnetGateway(d)
+		if err != nil {
+			return r.failed(ctx, d, err.Error())
+		}
+		if !d.Managed {
+			return r.applyUnmanaged(ctx, d)
+		}
+		return r.applyManaged(ctx, d, subnet, gateway)
+	case "overlay":
+		return r.applyOverlay(ctx, d, selfOverlayIP)
+	default:
+		return r.failed(ctx, d, fmt.Sprintf("unsupported network type %q", d.Type))
 	}
-
-	subnet, gateway, err := parseSubnetGateway(d)
-	if err != nil {
-		return r.failed(ctx, d, err.Error())
-	}
-
-	if !d.Managed {
-		return r.applyUnmanaged(ctx, d)
-	}
-	return r.applyManaged(ctx, d, subnet, gateway)
 }
 
 // applyManaged ensures the bridge (and, for egress=nat, the gateway
@@ -332,6 +335,21 @@ func (r *Networks) removeUndeclared(ctx context.Context, declared map[string]str
 // bridge itself. Best-effort - each failure is logged and the rest still
 // run, so a partial host state still converges toward fully torn down.
 func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetwork) {
+	if a.Overlay {
+		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
+			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+		}
+		if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "remove bridge failed during overlay teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+		}
+		return
+	}
 	r.teardownNAT(ctx, id, a)
 	if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
 		r.log.WarnContext(ctx, "remove bridge failed during network teardown",
@@ -394,6 +412,24 @@ func (r *Networks) failed(ctx context.Context, d heartbeat.DeclaredNetwork, msg 
 	return heartbeat.NetworkReport{
 		ID:                   d.ID,
 		ReconciliationStatus: "failed",
+		ReconciliationError:  &m,
+	}
+}
+
+// pending builds a pending NetworkReport: the network cannot be materialised yet
+// (e.g. otwg0 not ready) but this is a transient wait, not a failure. The reason
+// is surfaced in ReconciliationError for operator visibility. Logged at debug so
+// a healthy fail-closed wait does not spam warnings.
+func (r *Networks) pending(ctx context.Context, d heartbeat.DeclaredNetwork, msg string) heartbeat.NetworkReport {
+	r.log.DebugContext(ctx, "network reconcile pending",
+		slog.String("network_id", d.ID),
+		slog.String("network", d.Name),
+		slog.String("reason", msg),
+	)
+	m := msg
+	return heartbeat.NetworkReport{
+		ID:                   d.ID,
+		ReconciliationStatus: "pending",
 		ReconciliationError:  &m,
 	}
 }
