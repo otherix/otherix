@@ -153,6 +153,58 @@ func TestLinuxFabricVXLANLifecycle(t *testing.T) {
 	})
 }
 
+func TestLinuxFabricVXLANSelfHeal(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const vni = 1000
+		bringLoopbackUp(t)
+
+		// Create the N1b loopback-bound VTEP (SrcAddr 127.0.0.1).
+		if err := f.EnsureVXLAN(vxlanLoopbackConfig()); err != nil {
+			t.Fatalf("EnsureVXLAN(loopback) = %v", err)
+		}
+		// Re-ensure with a different source address: an immutable-attr drift the
+		// fabric must repair by delete-recreate (the N1b->otwg0 rebind shape).
+		rebind := VXLANConfig{VNI: vni, Local: netip.MustParseAddr("127.0.0.2"), Port: 4789, MTU: 1390}
+		if err := f.EnsureVXLAN(rebind); err != nil {
+			t.Fatalf("EnsureVXLAN(rebind) = %v", err)
+		}
+		link, err := netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) = %v", err)
+		}
+		vx := link.(*netlink.Vxlan)
+		if !vx.SrcAddr.Equal(net.ParseIP("127.0.0.2")) {
+			t.Errorf("SrcAddr = %v, want 127.0.0.2 (VTEP not recreated on drift)", vx.SrcAddr)
+		}
+	})
+}
+
+func TestLinuxFabricVXLANEnslave(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		bringLoopbackUp(t)
+		if err := f.EnsureBridge("otb1000", 1390); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390, Master: "otb1000"}
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN(master) = %v", err)
+		}
+		br, err := netlink.LinkByName("otb1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otb1000) = %v", err)
+		}
+		vtep, err := netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) = %v", err)
+		}
+		if got, want := vtep.Attrs().MasterIndex, br.Attrs().Index; got != want {
+			t.Errorf("VTEP MasterIndex = %d, want %d (bridge index)", got, want)
+		}
+	})
+}
+
 func TestLinuxFabricVXLANFDB(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()

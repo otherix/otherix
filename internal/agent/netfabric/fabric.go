@@ -121,10 +121,11 @@ type Fabric interface {
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
 // the VTEP binds to loopback (Local 127.0.0.1); N2 rebinds it to otwg0.
 type VXLANConfig struct {
-	VNI   uint32     // device name otvx<vni> per the overlay naming convention
-	Local netip.Addr // local VTEP source IP (loopback for N1b)
-	Port  uint16     // UDP dstport (IANA VXLAN 4789)
-	MTU   int        // inner MTU (1390 for overlay)
+	VNI    uint32     // device name otvx<vni> per the overlay naming convention
+	Local  netip.Addr // local VTEP source IP (otwg0 overlay IP once rebound)
+	Port   uint16     // UDP dstport (IANA VXLAN 4789)
+	MTU    int        // inner MTU (1390 for overlay)
+	Master string     // bridge to enslave the VTEP into ("" leaves it unenslaved)
 }
 
 // LinkState is the observed kernel state of a network link, returned by
