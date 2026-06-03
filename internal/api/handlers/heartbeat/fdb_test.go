@@ -48,9 +48,12 @@ func TestLoadDeclaredFDB(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("declared_fdb mismatch (-want +got):\n%s", diff)
 	}
-	// Every placement had an overlay IP, so no reachability shortfall is surfaced.
-	if len(reach) != 0 {
-		t.Errorf("overlay reachability = %+v, want none (no skipped placements)", reach)
+	// Every placement had an overlay IP, so no skipped shortfall. nodeA reported
+	// no established_peers, so the single flood target (nodeB) is unestablished:
+	// established_peers=0 of total_peers=1, surfaced as the non-blocking signal.
+	wantReach := []overlayReachability{{VNI: 1000, SkippedNoIP: 0, EstablishedPeers: 0, TotalPeers: 1}}
+	if diff := cmp.Diff(wantReach, reach); diff != "" {
+		t.Errorf("overlay reachability mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -89,7 +92,86 @@ func TestLoadDeclaredFDBSurfacesSkippedNoIP(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("declared_fdb mismatch (-want +got):\n%s", diff)
 	}
-	wantReach := []overlayReachability{{VNI: 1000, SkippedNoIP: 1}}
+	// nodeC is skipped (no overlay IP) so it is not a flood target; nodeB is the
+	// sole flood target and nodeA reported no established_peers, so established=0
+	// of total=1 rides alongside the skipped count.
+	wantReach := []overlayReachability{{VNI: 1000, SkippedNoIP: 1, EstablishedPeers: 0, TotalPeers: 1}}
+	if diff := cmp.Diff(wantReach, reach); diff != "" {
+		t.Errorf("overlay reachability mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestLoadDeclaredFDBSurfacesUnestablishedFloodTarget is the C1-full guarantee: a
+// flood-target VTEP that HAS an overlay IP but whose WireGuard tunnel has no
+// established handshake (the self node did not report it in established_peers) is
+// surfaced per-VNI as established_peers < total_peers, WITHOUT changing which FDB
+// entries are programmed and WITHOUT gating readiness. It is the established-peer
+// blackhole signal C1/C4 deferred.
+func TestLoadDeclaredFDBSurfacesUnestablishedFloodTarget(t *testing.T) {
+	nodeA, nodeB, nodeC := uuid.New(), uuid.New(), uuid.New()
+	macA, _ := net.ParseMAC("52:54:00:00:00:0a")
+	macB, _ := net.ParseMAC("52:54:00:00:00:0b")
+	macC, _ := net.ParseMAC("52:54:00:00:00:0c")
+	hp := &fakeFDBProjection{
+		placements: []store.OverlayNICPlacement{
+			{VNI: 1000, Mac: macA, NodeID: nodeA},
+			{VNI: 1000, Mac: macB, NodeID: nodeB},
+			{VNI: 1000, Mac: macC, NodeID: nodeC},
+		},
+		wg: []store.AgentWireguard{
+			// Self (nodeA) reports a live handshake only with nodeB, not nodeC,
+			// even though both have overlay IPs and are flood targets.
+			{NodeID: nodeA, OverlayIP: netip.MustParseAddr("10.42.0.1"), EstablishedPeers: []string{nodeB.String()}},
+			{NodeID: nodeB, OverlayIP: netip.MustParseAddr("10.42.0.2")},
+			{NodeID: nodeC, OverlayIP: netip.MustParseAddr("10.42.0.3")},
+		},
+	}
+	h := &Handler{log: discardLogger()}
+	got, reach, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
+	if err != nil {
+		t.Fatalf("loadDeclaredFDB: %v", err)
+	}
+	// Both peers have overlay IPs, so both are programmed (established-peer state
+	// never changes the FDB set - only the observability signal).
+	want := []declaredFDBEntry{
+		{VNI: 1000, MAC: "00:00:00:00:00:00", VtepIP: "10.42.0.2"},
+		{VNI: 1000, MAC: "00:00:00:00:00:00", VtepIP: "10.42.0.3"},
+		{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"},
+		{VNI: 1000, MAC: "52:54:00:00:00:0c", VtepIP: "10.42.0.3"},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("declared_fdb mismatch (-want +got):\n%s", diff)
+	}
+	// Two distinct flood targets (nodeB, nodeC), one established (nodeB).
+	wantReach := []overlayReachability{{VNI: 1000, SkippedNoIP: 0, EstablishedPeers: 1, TotalPeers: 2}}
+	if diff := cmp.Diff(wantReach, reach); diff != "" {
+		t.Errorf("overlay reachability mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestLoadDeclaredFDBAllFloodTargetsEstablished asserts the converged case:
+// established_peers == total_peers when every flood-target VTEP is an established
+// WireGuard peer.
+func TestLoadDeclaredFDBAllFloodTargetsEstablished(t *testing.T) {
+	nodeA, nodeB := uuid.New(), uuid.New()
+	macA, _ := net.ParseMAC("52:54:00:00:00:0a")
+	macB, _ := net.ParseMAC("52:54:00:00:00:0b")
+	hp := &fakeFDBProjection{
+		placements: []store.OverlayNICPlacement{
+			{VNI: 1000, Mac: macA, NodeID: nodeA},
+			{VNI: 1000, Mac: macB, NodeID: nodeB},
+		},
+		wg: []store.AgentWireguard{
+			{NodeID: nodeA, OverlayIP: netip.MustParseAddr("10.42.0.1"), EstablishedPeers: []string{nodeB.String()}},
+			{NodeID: nodeB, OverlayIP: netip.MustParseAddr("10.42.0.2")},
+		},
+	}
+	h := &Handler{log: discardLogger()}
+	_, reach, err := h.loadDeclaredFDB(context.Background(), hp, nodeA)
+	if err != nil {
+		t.Fatalf("loadDeclaredFDB: %v", err)
+	}
+	wantReach := []overlayReachability{{VNI: 1000, SkippedNoIP: 0, EstablishedPeers: 1, TotalPeers: 1}}
 	if diff := cmp.Diff(wantReach, reach); diff != "" {
 		t.Errorf("overlay reachability mismatch (-want +got):\n%s", diff)
 	}

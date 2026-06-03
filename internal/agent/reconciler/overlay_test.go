@@ -357,6 +357,47 @@ func TestApplyOverlayReadyDespiteSkippedNoIP(t *testing.T) {
 	}
 }
 
+// TestApplyOverlayReadyDespiteUnestablishedFloodTargets is the C1-full
+// readiness-unchanged guarantee: the CP surfaced that this VNI's flood targets
+// have overlay IPs (so their FDB entries ARE programmed) but 0 of them have an
+// established WireGuard handshake (established_peers=0 of total_peers=N). That is a
+// blackhole-risk signal, but it must NEVER hold the local overlay at pending -
+// gating on it would reintroduce the C4 wedge and flap on every WG rekey. The
+// overlay converges on the FDB it received and reports ready; the established/total
+// counts ride on the response as observability only.
+func TestApplyOverlayReadyDespiteUnestablishedFloodTargets(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayNet()},
+		SelfOverlayIP:    &ip,
+		// Two flood targets, both programmed in the FDB, but neither has an
+		// established tunnel: established_peers=0 of total_peers=2.
+		DeclaredFDB: []heartbeat.DeclaredFDBEntry{
+			{VNI: 1000, MAC: "52:54:00:00:00:0b", VtepIP: "10.42.0.2"},
+			{VNI: 1000, MAC: "52:54:00:00:00:0c", VtepIP: "10.42.0.3"},
+		},
+		OverlayReachability: []heartbeat.OverlayReachability{
+			{VNI: 1000, SkippedNoIP: 0, EstablishedPeers: 0, TotalPeers: 2},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "ready" {
+		t.Errorf("status = %q, want ready (unestablished flood targets are non-blocking)", rep.ReconciliationStatus)
+	}
+}
+
 func TestApplyOverlayFailsOnOversizeVNI(t *testing.T) {
 	f := readyFabricWithFDB(nil)
 	rec, err := NewNetworks(f, discardLogger(), time.Minute)

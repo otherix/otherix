@@ -155,12 +155,20 @@ type responseBody struct {
 }
 
 // overlayReachability mirrors OverlayReachability on the agent side — the per-VNI
-// shortfall in CP-declared FDB. SkippedNoIP is the count of remote placements
-// dropped from declared_fdb for that VNI because the owning node lacks an overlay
-// IP. A blackhole-risk signal surfaced without ever holding the overlay pending.
+// non-blocking reachability signal for CP-declared FDB. SkippedNoIP is the count
+// of remote placements dropped from declared_fdb for that VNI because the owning
+// node lacks an overlay IP. EstablishedPeers/TotalPeers report how many of the
+// VNI's distinct flood-target VTEPs (each a remote node with an overlay IP) the
+// reporting node currently has an established WireGuard handshake with: a flood
+// target that is up in the FDB but has no live tunnel still blackholes BUM
+// traffic, so established_peers < total_peers is a false-ready signal. Both are
+// observability only and never hold the overlay pending — gating on them would
+// reintroduce the C4 wedge and flap on every WireGuard rekey.
 type overlayReachability struct {
-	VNI         int32 `json:"vni"`
-	SkippedNoIP int32 `json:"skipped_no_ip"`
+	VNI              int32 `json:"vni"`
+	SkippedNoIP      int32 `json:"skipped_no_ip"`
+	EstablishedPeers int32 `json:"established_peers"`
+	TotalPeers       int32 `json:"total_peers"`
 }
 
 // declaredPool mirrors HeartbeatDeclaredPool — one entry per pool the

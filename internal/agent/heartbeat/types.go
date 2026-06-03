@@ -111,14 +111,20 @@ type Response struct {
 	OverlayReachability []OverlayReachability `json:"overlay_reachability,omitempty"`
 }
 
-// OverlayReachability is the per-VNI FDB shortfall the CP reports down-channel.
-// SkippedNoIP counts remote placements dropped from DeclaredFDB for that VNI
-// because the owning node lacks an overlay IP. The agent surfaces it as a signal
-// (a remote VM unreachable until its node gets an overlay IP) without ever
-// holding the overlay at pending — per-peer reachability is non-blocking.
+// OverlayReachability is the per-VNI non-blocking reachability signal the CP
+// reports down-channel. SkippedNoIP counts remote placements dropped from
+// DeclaredFDB for that VNI because the owning node lacks an overlay IP.
+// EstablishedPeers/TotalPeers report how many of the VNI's distinct flood-target
+// VTEPs the reporting node currently has an established WireGuard handshake with —
+// a flood target up in the FDB but with no live tunnel still blackholes BUM
+// traffic. The agent surfaces these as signals (a remote VM unreachable until its
+// node gets an overlay IP, or until its tunnel establishes) without ever holding
+// the overlay at pending — per-peer reachability is non-blocking.
 type OverlayReachability struct {
-	VNI         int32 `json:"vni"`
-	SkippedNoIP int32 `json:"skipped_no_ip"`
+	VNI              int32 `json:"vni"`
+	SkippedNoIP      int32 `json:"skipped_no_ip"`
+	EstablishedPeers int32 `json:"established_peers"`
+	TotalPeers       int32 `json:"total_peers"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants

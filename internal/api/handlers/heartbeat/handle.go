@@ -636,14 +636,27 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 			localVNI[p.VNI] = struct{}{}
 		}
 	}
-	out, skippedPerVNI, err := h.buildRemoteFDBEntries(ctx, hp, rev, placements, localVNI, vtepIP, selfNodeID)
+	out, skippedPerVNI, floodPerVNI, err := h.buildRemoteFDBEntries(ctx, hp, rev, placements, localVNI, vtepIP, selfNodeID)
 	if err != nil {
 		return nil, nil, err
 	}
-	reachability := summarizeReachability(skippedPerVNI)
+	// The self node's agent_wireguard record (already in recs) carries the set of
+	// remote node ids it currently has an established WireGuard handshake with.
+	// Correlating it with each VNI's distinct flood-target node ids yields the
+	// established/total reachability signal. Absent self record -> empty set ->
+	// established_peers=0, which is the correct "no live tunnels reported" state.
+	established := selfEstablishedSet(recs, selfNodeID)
+	reachability := summarizeReachability(skippedPerVNI, floodPerVNI, established)
 	if total := totalSkipped(skippedPerVNI); total > 0 {
 		h.log.WarnContext(ctx, "declared_fdb incomplete: owning nodes have no overlay IP yet",
 			slog.Int("skipped_placements", total), slog.String("node_id", selfNodeID.String()))
+	}
+	if unest := totalUnestablished(reachability); unest > 0 {
+		// Non-blocking: a flood target up in the FDB with no live tunnel still
+		// blackholes BUM traffic until the tunnel establishes. Surfaced for
+		// operators; never gates the overlay (rekey would flap it otherwise).
+		h.log.WarnContext(ctx, "overlay flood targets have no established wireguard tunnel",
+			slog.Int("unestablished_flood_targets", unest), slog.String("node_id", selfNodeID.String()))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].VNI != out[j].VNI {
@@ -660,19 +673,61 @@ func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProject
 	return out, reachability, nil
 }
 
-// summarizeReachability projects the per-VNI skipped-no-IP map into the sorted
-// wire slice the heartbeat surfaces. Empty when nothing was skipped, so a fully
-// reachable overlay carries no signal at all (omitempty drops the field).
-func summarizeReachability(skippedPerVNI map[int32]int) []overlayReachability {
-	if len(skippedPerVNI) == 0 {
+// summarizeReachability projects the per-VNI skipped-no-IP count and the per-VNI
+// flood-target node-id sets into the sorted wire slice the heartbeat surfaces. For
+// each VNI total_peers is the number of distinct flood-target VTEPs (remote nodes
+// with an overlay IP) and established_peers is how many of those the reporting node
+// has a live WireGuard handshake with (from its agent_wireguard.established_peers).
+// A VNI is surfaced when it has any flood target OR any skipped placement; a VNI
+// with neither carries no signal at all (omitempty drops the field). The signal is
+// observability only — it never feeds the overlay ready/pending decision.
+func summarizeReachability(skippedPerVNI map[int32]int, floodPerVNI map[int32]map[uuid.UUID]struct{}, established map[string]struct{}) []overlayReachability {
+	vnis := make(map[int32]struct{}, len(skippedPerVNI)+len(floodPerVNI))
+	for vni := range skippedPerVNI {
+		vnis[vni] = struct{}{}
+	}
+	for vni := range floodPerVNI {
+		vnis[vni] = struct{}{}
+	}
+	if len(vnis) == 0 {
 		return nil
 	}
-	out := make([]overlayReachability, 0, len(skippedPerVNI))
-	for vni, n := range skippedPerVNI {
-		out = append(out, overlayReachability{VNI: vni, SkippedNoIP: int32(n)}) //nolint:gosec // per-VNI placement count, bounded by cluster size
+	out := make([]overlayReachability, 0, len(vnis))
+	for vni := range vnis {
+		targets := floodPerVNI[vni]
+		var establishedCount int
+		for nodeID := range targets {
+			if _, ok := established[nodeID.String()]; ok {
+				establishedCount++
+			}
+		}
+		out = append(out, overlayReachability{
+			VNI:              vni,
+			SkippedNoIP:      int32(skippedPerVNI[vni]), //nolint:gosec // per-VNI placement count, bounded by cluster size
+			EstablishedPeers: int32(establishedCount),   //nolint:gosec // per-VNI flood-target count, bounded by cluster size
+			TotalPeers:       int32(len(targets)),       //nolint:gosec // per-VNI flood-target count, bounded by cluster size
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].VNI < out[j].VNI })
 	return out
+}
+
+// selfEstablishedSet returns the set of remote node-id strings the reporting node
+// (selfNodeID) currently has an established WireGuard handshake with, read from its
+// own agent_wireguard record in recs. Empty when the self node has no record yet —
+// the correct "no live tunnels reported" state, not an error.
+func selfEstablishedSet(recs []store.AgentWireguard, selfNodeID uuid.UUID) map[string]struct{} {
+	for _, r := range recs {
+		if r.NodeID != selfNodeID {
+			continue
+		}
+		set := make(map[string]struct{}, len(r.EstablishedPeers))
+		for _, p := range r.EstablishedPeers {
+			set[p] = struct{}{}
+		}
+		return set
+	}
+	return map[string]struct{}{}
 }
 
 // totalSkipped sums the per-VNI skip counts for the single aggregated WARN.
@@ -680,6 +735,17 @@ func totalSkipped(skippedPerVNI map[int32]int) int {
 	total := 0
 	for _, n := range skippedPerVNI {
 		total += n
+	}
+	return total
+}
+
+// totalUnestablished sums, across VNIs, the flood targets that are programmed but
+// lack an established WireGuard tunnel (total_peers - established_peers) for the
+// single aggregated WARN. Observability only; it gates nothing.
+func totalUnestablished(reach []overlayReachability) int {
+	total := 0
+	for _, r := range reach {
+		total += int(r.TotalPeers - r.EstablishedPeers)
 	}
 	return total
 }
@@ -694,11 +760,15 @@ func totalSkipped(skippedPerVNI map[int32]int) int {
 // reaper advances a long-unreachable node to 'gone' WITHOUT orphaning its
 // vm_runtime, so its placements still surface here and must not keep an entry
 // pointing at a dead VTEP.
-func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, map[int32]int, error) {
+func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, map[int32]int, map[int32]map[uuid.UUID]struct{}, error) {
 	isGone := newGoneResolver(hp, rev)
 	var out []declaredFDBEntry
 	flood := make(map[string]struct{}) // dedup key "vni|vtep"
 	skippedPerVNI := make(map[int32]int)
+	// floodPerVNI records the distinct flood-target node ids per VNI (a node maps
+	// 1:1 to its VTEP IP). It is the total_peers denominator the reachability
+	// signal correlates against the self node's established-peer set.
+	floodPerVNI := make(map[int32]map[uuid.UUID]struct{})
 	for _, p := range placements {
 		if p.NodeID == selfNodeID {
 			continue
@@ -708,7 +778,7 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 		}
 		gone, err := isGone(ctx, p.NodeID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if gone {
 			continue
@@ -723,9 +793,15 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 		if _, seen := flood[fkey]; !seen {
 			flood[fkey] = struct{}{}
 			out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: "00:00:00:00:00:00", VtepIP: ip})
+			targets := floodPerVNI[p.VNI]
+			if targets == nil {
+				targets = make(map[uuid.UUID]struct{})
+				floodPerVNI[p.VNI] = targets
+			}
+			targets[p.NodeID] = struct{}{}
 		}
 	}
-	return out, skippedPerVNI, nil
+	return out, skippedPerVNI, floodPerVNI, nil
 }
 
 // newGoneResolver returns a memoised predicate reporting whether a remote node
