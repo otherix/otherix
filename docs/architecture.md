@@ -236,6 +236,28 @@ parallel CI jobs.
 
 ---
 
+## Operations: overlay MTU and VNI range
+
+The cluster overlay's `underlay_mtu` and `vni_range` are
+bootstrap-immutable. Each is seeded into the `cluster_settings`
+singleton first-writer-wins from the api-server's local config; there
+is no runtime mutator. Subsequent replicas read the seeded etcd value
+and ignore their own local config, so the first api-server to boot wins.
+
+- `underlay_mtu` is the physical underlay MTU. The derived overlay
+  inner MTU is `underlay_mtu - 110` (the WireGuard + VXLAN encapsulation
+  overhead), and it must stay at or above 1280, the IPv6 minimum link
+  MTU (RFC 8200). That floor is why the smallest seedable underlay is
+  1390 (110 + 1280); the api-server validates this at config load.
+- `vni_range` bounds VNI allocation and is likewise bootstrap-immutable.
+
+To renumber the underlay MTU (or the VNI range): delete the
+`cluster_settings` singleton key in etcd and re-seed, then recreate the
+overlay networks. Existing overlay rows keep their stamped MTU - it is
+snapshotted at create time and does not follow a later reseed.
+
+---
+
 ## What's next
 
 The schema, api-server, agent, and CLI are wired end-to-end.
