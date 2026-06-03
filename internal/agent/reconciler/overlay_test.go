@@ -309,6 +309,35 @@ func TestApplyOverlayReadyWhenFDBConverges(t *testing.T) {
 	}
 }
 
+func TestApplyOverlayFailsOnOversizeVNI(t *testing.T) {
+	f := readyFabricWithFDB(nil)
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := overlayNet()
+	big := int32(0xFFFFFF + 1) // 16777216, one past the 24-bit ceiling
+	d.VNI = &big
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == d.ID {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed (VNI over 24-bit ceiling)", rep.ReconciliationStatus)
+	}
+	if len(f.EnsureVXLANCalls) != 0 {
+		t.Errorf("VTEP created for an out-of-range VNI")
+	}
+}
+
 func mustMAC(s string) net.HardwareAddr {
 	m, err := net.ParseMAC(s)
 	if err != nil {

@@ -28,6 +28,9 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	if d.VNI == nil || *d.VNI <= 0 {
 		return r.failed(ctx, d, "overlay network missing a valid vni")
 	}
+	if *d.VNI > 0xFFFFFF {
+		return r.failed(ctx, d, fmt.Sprintf("overlay vni %d exceeds the 24-bit VXLAN ceiling", *d.VNI))
+	}
 	if selfOverlayIP == "" {
 		return r.pending(ctx, d, "overlay IP not yet assigned by the control plane")
 	}
