@@ -50,9 +50,10 @@ func EnsureDefaultPoolsFunc(st DefaultPoolStore, pathPrefix string, log *slog.Lo
 		// Defence-in-depth: the derived path must stay inside the allowlist
 		// prefix. A name carrying a path separator ("a/b") or a traversal
 		// segment (".", "..") would escape the prefix, so reject it before any
-		// create. ValidateStoragePoolName at the config edge already forbids a
-		// separator, but the seed is read from etcd here and may predate that
-		// check, and neither edge rejects "." / ".." (filepath.Clean does).
+		// create. ValidateStoragePoolName at the config edge does NOT catch
+		// these (it only checks non-empty / no surrounding whitespace / length),
+		// and the name is read from etcd here where it may bypass that edge
+		// entirely, so this guard (filepath.Clean + prefix check) is the real one.
 		cleanPrefix := filepath.Clean(pathPrefix) + "/"
 		if strings.ContainsRune(name, '/') || name == "." || name == ".." ||
 			!strings.HasPrefix(filepath.Clean(path)+"/", cleanPrefix) {
