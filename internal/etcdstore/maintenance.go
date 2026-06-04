@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -121,6 +122,22 @@ func (s *Store) DeleteFailedJobs(ctx context.Context, olderThan time.Time) (int6
 		return 0, fmt.Errorf("delete failed jobs: %v", err)
 	}
 	return deleted, nil
+}
+
+// JobsCleanupFunc returns a periodic function that sweeps failed job rows older
+// than FailedJobRetention. The scheduler logs any returned error, so this only
+// logs the swept count.
+func JobsCleanupFunc(st *Store, log *slog.Logger) func(context.Context) error {
+	return func(ctx context.Context) error {
+		n, err := st.DeleteFailedJobs(ctx, time.Now().UTC().Add(-FailedJobRetention))
+		if err != nil {
+			return fmt.Errorf("delete failed jobs: %v", err)
+		}
+		if n > 0 {
+			log.InfoContext(ctx, "jobs.cleanup", "deleted", n)
+		}
+		return nil
+	}
 }
 
 // DeleteOrphanedNetworkNodeStatus removes every network_node_status record whose
