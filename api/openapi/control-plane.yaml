@@ -4658,6 +4658,59 @@ components:
             reconciles on next tick) and never fail the heartbeat.
           items:
             $ref: "#/components/schemas/HeartbeatNetworkReport"
+        wireguard:
+          $ref: "#/components/schemas/HeartbeatWireGuardReport"
+          description: |
+            Optional. The agent's observed WireGuard (`otwg0`) interface
+            state for the overlay fabric. Carried only when the agent has
+            WG state to report; a nil report is skipped at ingest.
+            `public_key` + `endpoint` are authoritative for CP-side peer
+            redistribution; `listen_port` + `established_peers` are
+            observability. `reconciliation_status` /
+            `reconciliation_error` surface the outcome of the WG
+            reconciler's last pass.
+
+    HeartbeatWireGuardReport:
+      type: object
+      description: |
+        One report in HeartbeatRequest.wireguard — the agent's observed
+        WireGuard (`otwg0`) interface state (the overlay up-channel).
+        `public_key` + `endpoint` are authoritative for CP redistribution
+        to peers; `listen_port` + `established_peers` are observability.
+      required: [public_key, endpoint, listen_port, reconciliation_status]
+      properties:
+        public_key:
+          type: string
+          description: |
+            The agent's WireGuard public key (base64). Redistributed by
+            the CP to peer agents as a declared peer.
+        endpoint:
+          type: string
+          description: |
+            The agent's reachable WireGuard endpoint (`host:port`).
+            Redistributed by the CP to peer agents.
+        listen_port:
+          type: integer
+          description: Observed WireGuard listen port (observability).
+        established_peers:
+          type: array
+          description: |
+            Public keys of peers with which the agent currently has an
+            established WireGuard handshake (observability).
+          items:
+            type: string
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: |
+            Outcome of the agent's most recent WireGuard reconciliation
+            attempt. `pending` during the polling window; `ready` once
+            `otwg0` is up; `failed` on an interface-configuration error.
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Human-readable error message when `reconciliation_status`
+            is `failed`. Must be NULL or absent for other statuses.
 
     HeartbeatPoolReport:
       type: object
@@ -4746,7 +4799,17 @@ components:
         extends to VMs: `declared_vms` carries the per-node VM
         desired-state set; the agent's VM reconciler diffs the live
         Manager.List() observed set against this on every tick.
-      required: [received_at, declared_pools, declared_vms, declared_networks]
+      required:
+        [
+          received_at,
+          declared_pools,
+          declared_vms,
+          declared_networks,
+          declared_wireguard_peers,
+          self_overlay_ip,
+          declared_fdb,
+          otwg0_mtu,
+        ]
       properties:
         received_at:
           type: string
@@ -4789,6 +4852,145 @@ components:
             against observed bridges stays deterministic.
           items:
             $ref: "#/components/schemas/HeartbeatDeclaredNetwork"
+        declared_wireguard_peers:
+          type: array
+          description: |
+            CP-declared WireGuard peer set for this node's overlay fabric
+            (the fabric down-channel). Each entry is another agent's
+            CP-assigned identity (node_id, public_key, endpoint,
+            overlay_ip) plus that peer's overlay /32 as `allowed_ips`.
+            Full snapshot semantics: peers absent from this list are
+            removed from the agent's WG mesh.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredWireGuardPeer"
+        self_overlay_ip:
+          type: [string, "null"]
+          description: |
+            This node's CP-assigned overlay host IP (the `otwg0` address).
+            Null until the CP has allocated an overlay IP for the node.
+        declared_fdb:
+          type: array
+          description: |
+            CP-declared VXLAN FDB entries the agent must program into its
+            `otvx<vni>` kernel FDB (the fabric down-channel). A normal MAC
+            is a per-VM unicast entry (`mac` -> the remote VM's owning-node
+            VTEP); the all-zeros MAC `00:00:00:00:00:00` is a BUM/flood
+            entry. Full snapshot semantics for deterministic agent-side
+            diffing.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredFDBEntry"
+        otwg0_mtu:
+          type: [integer, "null"]
+          description: |
+            CP-declared `otwg0` link MTU (underlay MTU minus WireGuard
+            encapsulation overhead), so the agent brings `otwg0` up at the
+            right size on a sub-1500 underlay. Null from an older CP or
+            before the underlay MTU is known; the agent falls back to its
+            built-in WireGuard MTU default when absent.
+        overlay_reachability:
+          type: array
+          description: |
+            Per-VNI non-blocking reachability signal: how many remote
+            placements the CP omitted from `declared_fdb` because the
+            owning node has no overlay IP yet, plus per-VNI flood-target
+            tunnel-establishment counts. Observability only — the agent
+            never gates the overlay on it, converging on the (smaller)
+            programmable FDB set it does receive. Omitted when empty.
+          items:
+            $ref: "#/components/schemas/OverlayReachability"
+
+    HeartbeatDeclaredWireGuardPeer:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_wireguard_peers — another
+        agent the CP wants in this agent's WireGuard mesh (the fabric
+        down-channel). `allowed_ips` carries the peer's overlay /32.
+      required: [node_id, public_key, endpoint, overlay_ip, allowed_ips]
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          description: The peer node's id.
+        public_key:
+          type: string
+          description: The peer's WireGuard public key (base64).
+        endpoint:
+          type: string
+          description: The peer's reachable WireGuard endpoint (`host:port`).
+        overlay_ip:
+          type: string
+          description: The peer's CP-assigned overlay host IP.
+        allowed_ips:
+          type: array
+          description: |
+            The peer's allowed IP ranges (typically the peer's overlay
+            /32). Routed to this peer over the WireGuard tunnel.
+          items:
+            type: string
+
+    HeartbeatDeclaredFDBEntry:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_fdb — a single
+        controller-programmed VXLAN FDB entry the CP wants in this node's
+        `otvx<vni>` kernel FDB. A normal MAC is a per-VM unicast entry
+        (`mac` -> the remote VM's owning-node VTEP); the all-zeros MAC
+        `00:00:00:00:00:00` is a BUM/flood entry. `vtep_ip` is the remote
+        node's `otwg0` overlay host IP.
+      required: [vni, mac, vtep_ip]
+      properties:
+        vni:
+          type: integer
+          maximum: 16777215
+          description: VXLAN Network Identifier (24-bit) of the target overlay.
+        mac:
+          type: string
+          description: |
+            Target MAC address. The all-zeros MAC `00:00:00:00:00:00` is a
+            BUM/flood entry (head-end replication to `vtep_ip`); any other
+            value is a per-VM unicast entry.
+        vtep_ip:
+          type: string
+          description: |
+            The remote node's `otwg0` overlay host IP (the VTEP this entry
+            points at).
+
+    OverlayReachability:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.overlay_reachability — the per-VNI
+        non-blocking reachability signal the CP reports down-channel.
+        `skipped_no_ip` counts remote placements dropped from
+        `declared_fdb` for that VNI because the owning node lacks an
+        overlay IP. `established_peers` / `total_peers` report how many of
+        the VNI's distinct flood-target VTEPs the reporting node currently
+        has an established WireGuard handshake with. All observability
+        only; the agent never holds the overlay at pending on them.
+      required: [vni, skipped_no_ip, established_peers, total_peers]
+      properties:
+        vni:
+          type: integer
+          maximum: 16777215
+          description: VXLAN Network Identifier (24-bit) the signal is scoped to.
+        skipped_no_ip:
+          type: integer
+          minimum: 0
+          description: |
+            Count of remote placements dropped from `declared_fdb` for
+            this VNI because the owning node lacks an overlay IP.
+        established_peers:
+          type: integer
+          minimum: 0
+          description: |
+            Number of the VNI's distinct flood-target VTEPs the reporting
+            node currently has an established WireGuard handshake with.
+        total_peers:
+          type: integer
+          minimum: 0
+          description: |
+            Total number of the VNI's distinct flood-target VTEPs (remote
+            nodes with an overlay IP). `established_peers < total_peers`
+            signals a flood target up in the FDB but with no live tunnel.
 
     HeartbeatDeclaredVM:
       type: object
