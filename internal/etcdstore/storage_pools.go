@@ -326,6 +326,17 @@ func (s *Store) StorageImageByID(ctx context.Context, id uuid.UUID) (store.Stora
 	return im, nil
 }
 
+// StorageImageExists reports whether a storage_images row exists for the
+// (template, pool) pair. It reads the UNIQUE(template_id, pool_id) guard: a
+// present guard means a row is materialized for that pair.
+func (s *Store) StorageImageExists(ctx context.Context, templateID, poolID uuid.UUID) (bool, error) {
+	_, found, err := s.resolveGuard(ctx, storageImageTemplatePoolGuard(templateID, poolID))
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
 // ListStorageImagesByPool returns the images in a pool ordered by (imported_at,
 // id) descending (newest first), after the cursor, capped at LimitCount.
 func (s *Store) ListStorageImagesByPool(ctx context.Context, arg store.ListStorageImagesByPoolParams) ([]store.StorageImage, error) {

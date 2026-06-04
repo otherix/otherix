@@ -26,11 +26,30 @@ import (
 // derived_vm_count change) plus, on the insert path, a create-revision compare
 // on the guard (so a concurrent insert loses and retries onto the upsert path).
 func (s *Store) ProjectStorageImageImport(ctx context.Context, img store.CreateStorageImageParams, tmplChecksum store.UpdateTemplateImageChecksumIfNullParams, fin store.UpdateTaskFinalizedParams) error {
-	now := time.Now().UTC()
 	taskVal, err := s.finalizedTaskValue(ctx, fin)
 	if err != nil {
 		return err
 	}
+	return s.projectStorageImageImport(ctx, img, tmplChecksum, clientv3.OpPut(taskKey(fin.ID), string(taskVal)))
+}
+
+// EnsureStorageImageProjected runs the same storage_images upsert and
+// compute-mode template checksum back-propagation as ProjectStorageImageImport
+// but finalizes no task. The inline VM-create path that materializes an image on
+// demand calls this: there is no separate import task to finalize, so the shared
+// CAS body commits with no extra ops.
+func (s *Store) EnsureStorageImageProjected(ctx context.Context, img store.CreateStorageImageParams, tmplChecksum store.UpdateTemplateImageChecksumIfNullParams) error {
+	return s.projectStorageImageImport(ctx, img, tmplChecksum)
+}
+
+// projectStorageImageImport is the shared CAS body behind
+// ProjectStorageImageImport and EnsureStorageImageProjected. It upserts the
+// storage_images row on the (template_id, pool_id) guard, back-propagates the
+// checksum onto a compute-mode template, and appends extraOps (e.g. a finalized
+// task put) to the committed transaction. See ProjectStorageImageImport for the
+// compare semantics.
+func (s *Store) projectStorageImageImport(ctx context.Context, img store.CreateStorageImageParams, tmplChecksum store.UpdateTemplateImageChecksumIfNullParams, extraOps ...clientv3.Op) error {
+	now := time.Now().UTC()
 	guard := storageImageTemplatePoolGuard(img.TemplateID, img.PoolID)
 
 	for range projectTemplateCASRetries {
@@ -96,7 +115,7 @@ func (s *Store) ProjectStorageImageImport(ctx context.Context, img store.CreateS
 			)
 		}
 		ops = append(ops, tmplOps...)
-		ops = append(ops, clientv3.OpPut(taskKey(fin.ID), string(taskVal)))
+		ops = append(ops, extraOps...)
 
 		resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
 		if err != nil {
