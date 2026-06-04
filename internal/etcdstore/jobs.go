@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -34,11 +35,12 @@ const (
 
 // Job is the persisted unit of background work consumed by the worker runtime.
 type Job struct {
-	ID       int64    `json:"id"`
-	Kind     string   `json:"kind"`
-	Args     []byte   `json:"args"`
-	State    JobState `json:"state"`
-	Attempts int32    `json:"attempts"`
+	ID       int64      `json:"id"`
+	Kind     string     `json:"kind"`
+	Args     []byte     `json:"args"`
+	State    JobState   `json:"state"`
+	Attempts int32      `json:"attempts"`
+	FailedAt *time.Time `json:"failed_at,omitempty"`
 }
 
 func jobSeqKey() string { return etcd.Key("seq", "jobs") }

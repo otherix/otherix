@@ -8,6 +8,7 @@ package etcdstore_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -74,6 +75,54 @@ func TestDeleteExpiredTasks(t *testing.T) {
 	own, _ := s.ListTasksOwn(ctx, store.ListTasksOwnParams{CreatedBy: &creator, LimitCount: 50})
 	if len(own) != 0 {
 		t.Errorf("own tasks after retention = %d, want 0 (index dropped)", len(own))
+	}
+}
+
+// TestDeleteFailedJobsRespectsStateAndAge seeds four job rows directly and runs
+// the sweep with a 7-day cutoff: only the failed job older than the cutoff is
+// deleted; recent-failed, running, and pending rows survive.
+func TestDeleteFailedJobsRespectsStateAndAge(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	jobKey := func(id int64) string { return etcd.Key("jobs", fmt.Sprintf("%020d", id)) }
+	seedJob := func(id int64, state etcdstore.JobState, failedAt *time.Time) {
+		j := etcdstore.Job{ID: id, Kind: "test.job", State: state, FailedAt: failedAt}
+		if err := cli.PutJSON(ctx, jobKey(id), j); err != nil {
+			t.Fatalf("seed job %d: %v", id, err)
+		}
+	}
+	exists := func(id int64) bool {
+		var j etcdstore.Job
+		found, err := cli.GetJSON(ctx, jobKey(id), &j)
+		if err != nil {
+			t.Fatalf("get job %d: %v", id, err)
+		}
+		return found
+	}
+
+	now := time.Now().UTC()
+	old := now.Add(-8 * 24 * time.Hour)
+	recent := now.Add(-time.Hour)
+	seedJob(1, etcdstore.JobStateFailed, &old)    // deleted
+	seedJob(2, etcdstore.JobStateFailed, &recent) // retained (too recent)
+	seedJob(3, etcdstore.JobStateRunning, nil)    // retained (never touch running)
+	seedJob(4, etcdstore.JobStatePending, nil)    // retained (pending)
+
+	deleted, err := s.DeleteFailedJobs(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteFailedJobs: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1", deleted)
+	}
+	if exists(1) {
+		t.Errorf("job 1 (old failed) survived, want swept")
+	}
+	for _, id := range []int64{2, 3, 4} {
+		if !exists(id) {
+			t.Errorf("job %d wrongly swept, want retained", id)
+		}
 	}
 }
 

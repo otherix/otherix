@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -93,6 +94,8 @@ func (s *Store) RetryJob(ctx context.Context, id int64, maxAttempts int32) (bool
 		job.State = JobStatePending
 	} else {
 		job.State = JobStateFailed
+		now := time.Now().UTC()
+		job.FailedAt = &now
 	}
 	if err := s.c.PutJSON(ctx, jobKey(id), job); err != nil {
 		return false, fmt.Errorf("retry job %d: %v", id, err)

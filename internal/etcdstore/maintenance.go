@@ -88,6 +88,41 @@ func (s *Store) commitInChunks(ctx context.Context, ops []clientv3.Op) error {
 	return nil
 }
 
+// FailedJobRetention is how long a failed job row is kept for debugging before
+// jobs.cleanup sweeps it. The job's task row already carries the terminal
+// status, so the job row is debug-only past this window.
+const FailedJobRetention = 7 * 24 * time.Hour
+
+// DeleteFailedJobs removes failed job rows whose FailedAt is older than
+// olderThan. It never touches running jobs: redelivery of a crash-orphaned
+// running job is a separate concern, and deleting one would abandon in-flight
+// work. Returns the number of rows deleted.
+func (s *Store) DeleteFailedJobs(ctx context.Context, olderThan time.Time) (int64, error) {
+	items, err := s.c.Range(ctx, jobsPrefix())
+	if err != nil {
+		return 0, err
+	}
+	var (
+		ops     []clientv3.Op
+		deleted int64
+	)
+	for _, kv := range items {
+		var j Job
+		if err := json.Unmarshal(kv.Value, &j); err != nil {
+			return 0, fmt.Errorf("unmarshal job %q: %v", kv.Key, err)
+		}
+		if j.State != JobStateFailed || j.FailedAt == nil || !j.FailedAt.Before(olderThan) {
+			continue
+		}
+		ops = append(ops, clientv3.OpDelete(jobKey(j.ID)))
+		deleted++
+	}
+	if err := s.commitInChunks(ctx, ops); err != nil {
+		return 0, fmt.Errorf("delete failed jobs: %v", err)
+	}
+	return deleted, nil
+}
+
 // DeleteOrphanedNetworkNodeStatus removes every network_node_status record whose
 // network id no longer resolves to a live (non-deleted) network, returning the
 // number of records deleted. It backstops purgeNetworkNodeStatus, which runs

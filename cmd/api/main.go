@@ -501,6 +501,18 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("networks.cleanup", time.Hour, false,
 		networkshandlers.CleanupFunc(st, log))
 
+	s.Register("jobs.cleanup", time.Hour, false, func(ctx context.Context) error {
+		n, err := st.DeleteFailedJobs(ctx, time.Now().UTC().Add(-etcdstore.FailedJobRetention))
+		if err != nil {
+			log.Error("jobs.cleanup failed", slog.String("error", err.Error()))
+			return err
+		}
+		if n > 0 {
+			log.Info("swept failed jobs", slog.Int64("deleted", n))
+		}
+		return nil
+	})
+
 	if cfg.Workers.StoragePoolScan.Enabled {
 		s.Register("storage_pool.scan_trigger", positiveOr(cfg.Workers.StoragePoolScan.Interval, 15*time.Minute), false,
 			storagepoolshandlers.ScanTriggerFunc(st, log))
