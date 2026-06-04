@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -153,18 +154,23 @@ func resolveCreateNICs(ctx context.Context, st WorkerStore, vmID uuid.UUID) ([]a
 	return out, nil
 }
 
-// DeleteHandler returns the dispatcher handler for vm.delete jobs.
-func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger) func(context.Context, []byte) error {
+// DeleteHandler returns the dispatcher handler for vm.delete jobs. staleGrace is
+// the heartbeat-staleness window past which an owning node is treated as
+// terminally dead regardless of status; it defaults to 5 minutes when <= 0.
+func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+	if staleGrace <= 0 {
+		staleGrace = 5 * time.Minute
+	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMDeleteArgs
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.delete args: %v", err)
 		}
-		return runDelete(ctx, st, exec, log, args)
+		return runDelete(ctx, st, exec, log, staleGrace, args)
 	}
 }
 
-func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *slog.Logger, args VMDeleteArgs) error {
+func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration, args VMDeleteArgs) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
@@ -187,7 +193,15 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 	// first; only when that fails (the node is genuinely down) do we fall back
 	// to a direct projection so the VM and its NIC index entries are reclaimed
 	// and DeleteNetwork unblocks.
-	terminallyDead := errors.Is(nodeErr, store.ErrNotFound) || node.Status == store.NodeStatusGone
+	//
+	// A node unseen for longer than staleGrace is also terminally dead: a
+	// cordoned/draining node that dies never advances to 'gone' (the reaper only
+	// flips ready/pending), so without the staleness arm its VM delete would
+	// failRun forever. The worst case of the staleness arm is skipping the agent
+	// teardown for a node that healed within the window, leaking one qemu (the
+	// accepted leak scale) - it keys on a durable timestamp, not inferred state.
+	nodeStale := node.LastHeartbeatAt == nil || node.LastHeartbeatAt.Before(time.Now().Add(-staleGrace))
+	terminallyDead := errors.Is(nodeErr, store.ErrNotFound) || node.Status == store.NodeStatusGone || nodeStale
 
 	if !terminallyDead {
 		task, err := st.TaskByID(ctx, taskID)

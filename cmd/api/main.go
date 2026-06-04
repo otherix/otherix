@@ -456,7 +456,7 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	d.Register("vm.create", workerMaxAttempts,
 		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log))
 	d.Register("vm.delete", workerMaxAttempts,
-		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log))
+		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 
 	lifecycleExec := vmshandlers.NewAgentVMLifecycleExecutor(agentClient)
 	for _, lk := range vmshandlers.LifecycleKinds() {

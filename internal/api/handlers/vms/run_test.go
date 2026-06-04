@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -134,7 +135,10 @@ func TestRunDelete_AgentTeardownByNodeState(t *testing.T) {
 	nodeID := uuid.New()
 	vmID := uuid.New()
 	baseVM := store.VM{ID: vmID, Name: "vm-x"}
-	baseNode := store.Node{ID: nodeID, Name: "node-x", AdvertisedEndpoint: "https://node-x:8443"}
+	// recentHeartbeat keeps the existing live-node cases out of the
+	// staleness arm: only node status drives terminal-deadness here.
+	recentHeartbeat := time.Now().Add(-5 * time.Second)
+	baseNode := store.Node{ID: nodeID, Name: "node-x", AdvertisedEndpoint: "https://node-x:8443", LastHeartbeatAt: &recentHeartbeat}
 
 	tests := []struct {
 		name       string
@@ -178,11 +182,71 @@ func TestRunDelete_AgentTeardownByNodeState(t *testing.T) {
 			st := &deleteWorkerStoreStub{vm: baseVM, node: node, nodeErr: tc.nodeErr}
 			exec := &spyDeleteExecutor{err: tc.execErr}
 
-			err := runDelete(context.Background(), st, exec, discardLog(),
+			err := runDelete(context.Background(), st, exec, discardLog(), 5*time.Minute,
 				VMDeleteArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID})
 
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("runDelete err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if exec.called != tc.wantCalled {
+				t.Errorf("agent teardown attempted = %v, want %v", exec.called, tc.wantCalled)
+			}
+			if !st.projectedDelete {
+				t.Errorf("ProjectVMDeleteSuccess not called; the delete must always converge to projected success")
+			}
+		})
+	}
+}
+
+// TestRunDeleteCordonedStaleNode pins the heartbeat-staleness arm: a
+// cordoned (or draining) node that dies never advances to 'gone' (the
+// reaper only flips ready/pending). Without the staleness arm such a
+// VM delete would failRun forever and its network would stay
+// undeletable. A node unseen for longer than staleGrace is therefore
+// terminally dead regardless of status: the delete projects directly
+// with no agent call. The revert-to-confirm case proves the gate has
+// teeth - a cordoned node with a RECENT heartbeat still takes the
+// live-node branch and calls the agent once.
+func TestRunDeleteCordonedStaleNode(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	baseVM := store.VM{ID: vmID, Name: "vm-x"}
+
+	staleGrace := 5 * time.Minute
+
+	tests := []struct {
+		name          string
+		lastHeartbeat time.Time
+		wantCalled    bool // agent teardown attempted
+	}{
+		{
+			name:          "cordoned node stale beyond grace projects directly",
+			lastHeartbeat: time.Now().Add(-10 * time.Minute),
+			wantCalled:    false,
+		},
+		{
+			name:          "cordoned node with recent heartbeat still goes through the agent",
+			lastHeartbeat: time.Now().Add(-5 * time.Second),
+			wantCalled:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lastHeartbeat := tc.lastHeartbeat
+			node := store.Node{
+				ID:                 nodeID,
+				Name:               "node-x",
+				AdvertisedEndpoint: "https://node-x:8443",
+				Status:             store.NodeStatusCordoned,
+				LastHeartbeatAt:    &lastHeartbeat,
+			}
+			st := &deleteWorkerStoreStub{vm: baseVM, node: node}
+			exec := &spyDeleteExecutor{}
+
+			err := runDelete(context.Background(), st, exec, discardLog(), staleGrace,
+				VMDeleteArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID})
+			if err != nil {
+				t.Fatalf("runDelete err = %v, want nil", err)
 			}
 			if exec.called != tc.wantCalled {
 				t.Errorf("agent teardown attempted = %v, want %v", exec.called, tc.wantCalled)
