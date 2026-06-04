@@ -183,25 +183,31 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		errc <- nil
 	}()
 
+	// Drain set waited on at shutdown. The heartbeat sender respects
+	// ctx and returns promptly; the reconcilers' Run loops only return
+	// BETWEEN reconcile passes and call blocking netfabric (netlink /
+	// nftables / wgctrl) ops that take no context and cannot be
+	// interrupted. A wedged fabric op would otherwise make shutdown hang
+	// until SIGKILL - see awaitDone for the bound.
+	dones := []namedDone{
+		{name: "heartbeat sender", done: heartbeatDone},
+		{name: "pool reconciler", done: reconcilerDone},
+		{name: "vm reconciler", done: vmReconcilerDone},
+		{name: "network reconciler", done: netReconcilerDone},
+		{name: "wireguard reconciler", done: wgReconcilerDone},
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
 	case err := <-errc:
 		stopHeartbeat()
-		<-heartbeatDone
-		<-reconcilerDone
-		<-vmReconcilerDone
-		<-netReconcilerDone
-		<-wgReconcilerDone
+		drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
 		return err
 	}
 
 	stopHeartbeat()
-	<-heartbeatDone
-	<-reconcilerDone
-	<-vmReconcilerDone
-	<-netReconcilerDone
-	<-wgReconcilerDone
+	drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
@@ -209,6 +215,58 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// namedDone pairs a reconciler/sender done-channel with its name so a
+// drain timeout can report exactly which goroutine failed to exit.
+type namedDone struct {
+	name string
+	done <-chan struct{}
+}
+
+// drainReconcilers waits up to timeout for every done channel to close,
+// logging a WARN naming any that did not drain in time. It never blocks
+// past the bound: a reconciler goroutine stuck in an uninterruptible
+// netfabric syscall is abandoned rather than waited on indefinitely. The
+// process is terminating, so abandoning the wait is equivalent to the
+// SIGKILL-mid-op state the reconcilers already recover from (retry-
+// forever / eventually-consistent); it adds no destructive action.
+func drainReconcilers(dones []namedDone, timeout time.Duration, log *slog.Logger) {
+	timedOut, stuck := awaitDone(dones, timeout)
+	if timedOut {
+		log.Warn("reconciler drain timed out; proceeding with shutdown",
+			"timeout", timeout,
+			"stuck", stuck,
+		)
+	}
+}
+
+// awaitDone waits up to timeout for every channel in dones to close. It
+// returns timedOut=false with no stuck names when all closed in time;
+// otherwise timedOut=true and stuck lists the names whose channels had
+// not closed when the bound elapsed.
+func awaitDone(dones []namedDone, timeout time.Duration) (timedOut bool, stuck []string) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for i, d := range dones {
+		select {
+		case <-d.done:
+			// Drained.
+		case <-timer.C:
+			// Budget exhausted. Collect this channel and every
+			// later one that has not already closed.
+			for _, rem := range dones[i:] {
+				select {
+				case <-rem.done:
+				default:
+					stuck = append(stuck, rem.name)
+				}
+			}
+			return true, stuck
+		}
+	}
+	return false, nil
 }
 
 // runReconciler launches one reconciler's Run loop in a goroutine and
