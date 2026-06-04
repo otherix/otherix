@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -440,5 +441,75 @@ func TestOverlayVMAttachAllowed(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("attach VM to overlay status = %d, want 202; body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestOverlayNetworkCreateBelowUnderlayFloor409 is the C1 contract assertion:
+// when the cluster underlay MTU sits below the 1390 floor (a legacy cluster
+// seeded under the old 1280 floor), an overlay network create must refuse with
+// 409 conflict carrying the underlay_mtu / min_underlay_mtu / derived_overlay_mtu
+// detail keys rather than falling to a generic 500. The sub-floor underlay is
+// seeded directly onto the cluster_settings singleton because SeedUnderlayMTU
+// rejects below-floor values; this mirrors the store-layer
+// TestCreateNetworkOverlayRefusesSubFloorUnderlay over the real HTTP edge.
+func TestOverlayNetworkCreateBelowUnderlayFloor409(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	// Seed a sub-floor underlay MTU straight onto the singleton. SeedUnderlayMTU
+	// would reject 1300 (< 1390 floor), so write the cluster_settings JSON via the
+	// shared client the store wraps, exactly as the etcdstore internal test does
+	// through casClusterSettings.
+	subFloor := int32(1300)
+	cs := store.ClusterSetting{ID: 1, UnderlayMTU: &subFloor}
+	if err := sharedEtcdClient.PutJSON(context.Background(),
+		etcd.Key("cluster_settings", "singleton"), &cs); err != nil {
+		t.Fatalf("seed sub-floor underlay: %v", err)
+	}
+
+	resp := h.post(t, "/v1/networks", map[string]any{
+		"name":   "ov-subfloor-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"subnet": "10.58.0.0/24",
+	}, admin)
+	if resp.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create overlay on sub-floor underlay status = %d, want 409; body=%s", resp.StatusCode, body)
+	}
+
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &env)
+
+	if env.Error.Code != "conflict" {
+		t.Errorf("error.code = %q, want conflict", env.Error.Code)
+	}
+
+	// All three detail keys must be present with the derived numeric values.
+	// JSON numbers decode into any as float64.
+	wantDetails := map[string]float64{
+		"underlay_mtu":        float64(subFloor),
+		"min_underlay_mtu":    1390,
+		"derived_overlay_mtu": float64(subFloor - store.OverlayEncapOverhead),
+	}
+	for key, want := range wantDetails {
+		raw, ok := env.Error.Details[key]
+		if !ok {
+			t.Errorf("details missing key %q (details=%v)", key, env.Error.Details)
+			continue
+		}
+		got, ok := raw.(float64)
+		if !ok {
+			t.Errorf("details[%q] = %v (%T), want a number", key, raw, raw)
+			continue
+		}
+		if got != want {
+			t.Errorf("details[%q] = %v, want %v", key, got, want)
+		}
 	}
 }

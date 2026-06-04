@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/auth"
@@ -135,12 +136,27 @@ func TestVMCreateAttachesNicToNetwork(t *testing.T) {
 		t.Errorf("nic mac = %q, want 52:54:00:xx:xx:xx", mac)
 	}
 
-	// The network now has an active referent: delete must be blocked.
+	// The network now has an active referent (the single NIC asserted above):
+	// delete must be blocked with 409 conflict + blocking_resources={vm_nics:1}.
 	resp = h.delete(t, "/v1/networks/"+net.ID, admin)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("delete network status = %d, want 409 (blocked by nic)", resp.StatusCode)
 	}
-	resp.Body.Close()
+	var delEnv struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				BlockingResources map[string]int64 `json:"blocking_resources"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &delEnv)
+	if delEnv.Error.Code != "conflict" {
+		t.Errorf("delete error code = %q, want conflict", delEnv.Error.Code)
+	}
+	if diff := cmp.Diff(map[string]int64{"vm_nics": 1}, delEnv.Error.Details.BlockingResources); diff != "" {
+		t.Errorf("blocking_resources mismatch (-want +got):\n%s", diff)
+	}
 }
 
 func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {

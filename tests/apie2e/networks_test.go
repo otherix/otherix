@@ -87,12 +87,26 @@ func TestNetworksCRUDAsAdmin(t *testing.T) {
 		t.Errorf("patched mtu = %d, want 9000", patched.MTU)
 	}
 
-	// type is immutable.
+	// type is immutable: 400 validation_failed with forbidden_fields: ["type"].
 	resp = h.patch(t, "/v1/networks/"+created.ID, map[string]any{"type": "vlan"}, admin)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("patch type status = %d, want 400", resp.StatusCode)
+		t.Fatalf("patch type status = %d, want 400", resp.StatusCode)
 	}
-	resp.Body.Close()
+	var typeEnv struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				ForbiddenFields []string `json:"forbidden_fields"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &typeEnv)
+	if typeEnv.Error.Code != "validation_failed" {
+		t.Errorf("patch type error code = %q, want validation_failed", typeEnv.Error.Code)
+	}
+	if len(typeEnv.Error.Details.ForbiddenFields) != 1 || typeEnv.Error.Details.ForbiddenFields[0] != "type" {
+		t.Errorf("patch type forbidden_fields = %v, want [type]", typeEnv.Error.Details.ForbiddenFields)
+	}
 
 	resp = h.delete(t, "/v1/networks/"+created.ID, admin)
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
