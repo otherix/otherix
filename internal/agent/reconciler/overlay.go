@@ -56,6 +56,14 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.failed(ctx, d, err.Error())
 	}
 	vniVal := uint32(*d.VNI) //nolint:gosec // *d.VNI is guarded > 0 above; VNI range <= 16777215 fits uint32
+	// Record the bridge in r.applied the instant it exists on the host, before
+	// the VTEP step that may still fail. Without this an EnsureBridge-ok-but-
+	// EnsureVXLAN-failed overlay is absent from r.applied, so a later CP-side
+	// delete (while EnsureVXLAN is still failing) makes removeUndeclared skip it
+	// and the otb<vni> bridge orphans with no GC (r.applied is in-process only).
+	// Recording the VNI now is safe: teardownManaged's RemoveVXLAN is idempotent
+	// (nil on an absent VTEP), so it no-ops while the bridge is still removed.
+	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}
 	if err := r.fabric.EnsureVXLAN(netfabric.VXLANConfig{
 		VNI:    vniVal,
 		Local:  wantAddr,
@@ -66,7 +74,6 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.failed(ctx, d, err.Error())
 	}
 	converged, unparseable := r.reconcileFDB(ctx, vniVal, fdb)
-	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}
 	// Unparseable declared entries take precedence in the reason: they are a
 	// distinct, stable divergence (a corrupt declared entry can never be
 	// programmed), unlike fdb_not_converged which covers transient apply failures.

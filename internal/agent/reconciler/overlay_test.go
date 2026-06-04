@@ -134,6 +134,69 @@ func TestApplyOverlayTeardownOnUndeclare(t *testing.T) {
 	}
 }
 
+// TestApplyOverlayTeardownAfterEnsureVXLANFailed is the bridge-leak-asymmetry
+// guarantee, mirroring applyManaged's EnsureBridge-ok-but-NAT-failed case: when
+// EnsureBridge SUCCEEDS but EnsureVXLAN persistently FAILS, the network must still
+// be recorded in r.applied so a later CP-side delete (while the VTEP is still
+// failing) tears the orphaned otb<vni> bridge down. Without the early record the
+// bridge orphans on the host with no GC (r.applied is in-process only).
+func TestApplyOverlayTeardownAfterEnsureVXLANFailed(t *testing.T) {
+	f := &netfabric.FakeFabric{
+		LinkStateResult: map[string]netfabric.LinkState{
+			"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+		},
+		Errs: map[string]error{"EnsureVXLAN": errors.New("vxlan boom")},
+	}
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayNet()},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	// EnsureBridge ran, EnsureVXLAN was attempted and failed: report is failed.
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "failed" {
+		t.Errorf("status = %q, want failed (EnsureVXLAN error)", rep.ReconciliationStatus)
+	}
+	if len(f.EnsureBridgeCalls) != 1 {
+		t.Errorf("EnsureBridgeCalls = %d, want 1", len(f.EnsureBridgeCalls))
+	}
+	// The network must be recorded despite the VXLAN failure, with the fields a
+	// teardown needs (bridge name + VNI).
+	a, ok := rec.applied["ov1"]
+	if !ok {
+		t.Fatalf("ov1 absent from r.applied after EnsureBridge-ok/EnsureVXLAN-failed; bridge would orphan on a later CP delete")
+	}
+	if a.BridgeName != "otb1000" || !a.Overlay || a.VNI != 1000 {
+		t.Errorf("applied[ov1] = %+v, want {BridgeName:otb1000 Overlay:true VNI:1000}", a)
+	}
+
+	// Now undeclare the network (VXLAN still failing). teardownManaged must run
+	// for it: RemoveVXLAN + RemoveBridge, and the id leaves r.applied.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
+	rec.reconcile(context.Background())
+
+	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otb1000" {
+		t.Errorf("RemoveBridgeCalls = %v, want [otb1000] (orphaned bridge torn down on undeclare)", f.RemoveBridgeCalls)
+	}
+	if len(f.RemoveVXLANCalls) != 1 || f.RemoveVXLANCalls[0] != 1000 {
+		t.Errorf("RemoveVXLANCalls = %v, want [1000]", f.RemoveVXLANCalls)
+	}
+	if _, ok := rec.applied["ov1"]; ok {
+		t.Errorf("ov1 still in r.applied after a clean teardown")
+	}
+}
+
 func TestApplyOverlayFailedOnInvalidVNI(t *testing.T) {
 	f := &netfabric.FakeFabric{LinkStateResult: map[string]netfabric.LinkState{
 		"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
