@@ -460,6 +460,12 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 	return wg.Wait, nil
 }
 
+// The storage-pool ImageEnsurer is the production vm.create image-materialization
+// seam. This is the wiring site that imports both packages, so the compile-time
+// satisfaction assertion lives here: it guards against signature drift between
+// the vms.ImageEnsurer interface and the storagepools.ImageEnsurer impl.
+var _ vmshandlers.ImageEnsurer = (*storagepoolshandlers.ImageEnsurer)(nil)
+
 // buildDispatcher registers the six async task-kind handlers on a dispatcher
 // polling the etcd job queue. Each handler reuses the production agent executor
 // and the Run-form worker in its owning handler package.
@@ -467,7 +473,7 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 
 	d.Register("vm.create", workerMaxAttempts,
-		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), storagepoolshandlers.NewImageEnsurer(agentClient, st), log, cfg.Workers.Heartbeat.GoneGrace))
 	d.Register("vm.delete", workerMaxAttempts,
 		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 

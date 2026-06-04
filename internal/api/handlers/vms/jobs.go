@@ -181,14 +181,15 @@ type LifecycleExecutor interface {
 // codes (`qemu_spawn_failed`, `template_not_found`, `pool_full`, ...) are
 // preserved verbatim by classifyVMError.
 const (
-	errCodeVMNotFound        = "vm_not_found"
-	errCodeVMTemplateMissing = "template_not_found"
-	errCodeVMPoolMissing     = "pool_not_found"
-	errCodeVMNodeMissing     = "node_not_found"
-	errCodeVMAgentUnreachabl = "agent_unreachable"
-	errCodeVMTimeout         = "request_timeout"
-	errCodeVMCreateFailed    = "vm_create_failed"
-	errCodeVMDeleteFailed    = "vm_delete_failed"
+	errCodeVMNotFound         = "vm_not_found"
+	errCodeVMTemplateMissing  = "template_not_found"
+	errCodeVMPoolMissing      = "pool_not_found"
+	errCodeVMNodeMissing      = "node_not_found"
+	errCodeVMAgentUnreachabl  = "agent_unreachable"
+	errCodeVMTimeout          = "request_timeout"
+	errCodeVMCreateFailed     = "vm_create_failed"
+	errCodeVMDeleteFailed     = "vm_delete_failed"
+	errCodeVMImageUnavailable = "vm_image_unavailable"
 )
 
 // Failure codes specific to the L2 async lifecycle surface. Pass-through agent

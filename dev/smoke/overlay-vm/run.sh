@@ -20,10 +20,11 @@
 #     thing making the frame leave the node (VXLAN learning is off). The guest
 #     probe is a TCP connect to the peer's sshd (the minimal cloudimg has no ping).
 #
-# Unlike seed-mvp (which provisions a pool + template ONLY on node-1), this smoke
-# provisions a second pool on node-2 and materialises the shared template into it
-# so a VM can actually be placed on node-2. Both pool + the node-2 materialisation
-# are torn down at the end.
+# No pool staging: the CP auto-provisions the cluster default pool ("default") on
+# every node as it reaches ready (PR #15), so a VM can be placed on either node
+# without a manual pool. Both VMs are created WITHOUT --pool (resolving to that
+# default) and WITHOUT a pre-staged image - each create auto-imports the template
+# image inline on first use (B1 lazy materialization).
 #
 # PREREQUISITES: a seeded two-node dev stack built from the CURRENT tree:
 #   make local-dev-start
@@ -41,8 +42,6 @@ VM2="${VM2:-otherix-dev-2}"           # Lima instance backing node-2
 NODE1="${NODE1:-node-1}"
 NODE2="${NODE2:-node-2}"
 TEMPLATE="${TEMPLATE:-ubuntu-noble-arm64-mvp}"   # seed-mvp arm64 template
-POOL2="${POOL2:-pool-mvp-2}"          # smoke-provisioned pool on node-2
-POOL2_PATH="${POOL2_PATH:-/opt/otherix/pools/default}"
 SUBNET="${SUBNET:-10.71.0.0/24}"
 IP1="${IP1:-10.71.0.10}"
 IP2="${IP2:-10.71.0.11}"
@@ -182,35 +181,31 @@ OVL1="$(overlay_ip "$NODE1")"; OVL2="$(overlay_ip "$NODE2")"
 [[ "$OVL1" == 10.42.* && "$OVL2" == 10.42.* ]] || fail "otwg0 overlay IPs not in 10.42/16 ($OVL1, $OVL2)"
 pass "CP up (${CP_VERSION}); $NODE1=$OVL1, $NODE2=$OVL2 ready"
 
-# --- step 0: stage a pool + template on node-2 -------------------------
-# seed-mvp only provisions a pool + materialises the template on node-1; a VM
-# pinned to node-2 needs both there too. Idempotent: pool create upserts, and
-# template create re-materialises into a new pool when the template row exists.
-echo "=== step 0: stage pool + template on $NODE2 (seed-mvp leaves it bare) ==="
-# pool create is not idempotent (errors on a duplicate name); tolerate a pool
-# left behind by a prior run so the smoke is re-runnable.
-if otx pool get "$POOL2" --output json >/dev/null 2>&1; then
-  info "pool $POOL2 already present on $NODE2 (reusing)"
-else
-  otx pool create "$POOL2" --node "$NODE2" --path "$POOL2_PATH" --wait \
-    || fail "pool create $POOL2 on $NODE2 failed"
-fi
-# `pool get <name>` returns the aggregated concept view; per-instance state lives
-# under .instances[]. Assert the node-2 instance reconciled ready.
-[[ "$(otx pool get "$POOL2" --output json \
-    | jq -r --arg n "$NODE2" '.instances[]? | select(.node==$n) | .reconciliation_status')" == "ready" ]] \
-  || fail "pool $POOL2 not ready on $NODE2"
-pass "pool $POOL2 ready on $NODE2"
-arch="$(otx node get "$NODE2" --output json | jq -r '.architecture')"
-img_url="$(otx template get "$TEMPLATE" --output json | jq -r '.image_url')"
-[[ -n "$img_url" && "$img_url" != "null" ]] || fail "could not read image_url for template $TEMPLATE"
-info "materialising $TEMPLATE into $POOL2 on $NODE2 (<= ${VM_WAIT}s)"
-otx template create "$TEMPLATE" \
-  --arch "$arch" --os-family linux --os-variant ubuntu-24.04 \
-  --image-url "$img_url" --pool "$POOL2" \
-  --wait --wait-timeout "${VM_WAIT}s" \
-  || fail "template $TEMPLATE materialise into $POOL2 failed"
-pass "$TEMPLATE materialised into $POOL2 on $NODE2"
+# --- step 0: cluster default pool ready on both nodes ------------------
+# No pool is created here. The CP auto-provisions the cluster default pool
+# ("default") on every node as it reaches ready (PR #15), and the VMs below are
+# created WITHOUT --pool, resolving to that default. Assert it reconciled on
+# both nodes so a VM create fails fast with a clear cause if auto-provision is
+# broken. `pool get <name>` returns the aggregated view; per-instance state lives
+# under .instances[].
+echo "=== step 0: cluster default pool ready on $NODE1 and $NODE2 ==="
+# The pool auto-provisions a reconcile tick after a node reaches ready, so poll
+# rather than assert once (mirrors the old `pool create --wait`).
+pool_ready_both() {
+  local n
+  for n in "$NODE1" "$NODE2"; do
+    [[ "$(otx pool get default --output json 2>/dev/null \
+        | jq -r --arg n "$n" '.instances[]? | select(.node==$n) | .reconciliation_status')" == "ready" ]] || return 1
+  done
+  return 0
+}
+deadline=$(( SECONDS + 60 )); pool_ok=0
+while (( SECONDS < deadline )); do
+  if pool_ready_both; then pool_ok=1; break; fi
+  sleep 3
+done
+(( pool_ok == 1 )) || fail "default pool not ready on both nodes within 60s (CP auto-provision)"
+pass "default pool ready on $NODE1 and $NODE2"
 
 # --- step 1: overlay + two VMs (one per node) --------------------------
 echo "=== step 1: create overlay + a VM on each node ==="
@@ -237,14 +232,19 @@ UD1="$(mktemp)"; UD2="$(mktemp)"
 gen_userdata "$IP1" "$IP2" yes > "$UD1"   # VM-A pings VM-B and emits the sentinel
 gen_userdata "$IP2" "$IP1" no  > "$UD2"   # VM-B is passive
 
-info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (<= ${VM_WAIT}s each)"
+# Both VMs are created WITHOUT --pool: they resolve to the cluster default pool
+# ("default"), pinned per node by --node. Neither node pre-materialised the
+# template, so each create auto-imports the image inline (B1); budget both for
+# import + create.
+COLD_VM_WAIT=$(( VM_WAIT * 2 ))
+info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (default pool, <= ${COLD_VM_WAIT}s each incl. inline image import)"
 otx vm create --name "${NET}-a" --node "$NODE1" --network "$NET" --template "$TEMPLATE" \
-  --pool "pool-mvp" --vcpus 2 --memory-mb 2048 --cloud-init "$UD1" \
-  --wait --wait-timeout "${VM_WAIT}s" \
+  --vcpus 2 --memory-mb 2048 --cloud-init "$UD1" \
+  --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create A on $NODE1 did not reach success"
 otx vm create --name "${NET}-b" --node "$NODE2" --network "$NET" --template "$TEMPLATE" \
-  --pool "$POOL2" --vcpus 2 --memory-mb 2048 --cloud-init "$UD2" \
-  --wait --wait-timeout "${VM_WAIT}s" \
+  --vcpus 2 --memory-mb 2048 --cloud-init "$UD2" \
+  --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create B on $NODE2 did not reach success"
 pass "overlay $NET + both VMs created (one per node)"
 
@@ -302,13 +302,12 @@ fi
 pass "cross-node VM-to-VM reachability over the overlay succeeded (CP-distributed FDB, no manual neigh)"
 
 # --- step 4: teardown --------------------------------------------------
-echo "=== step 4: teardown VMs + overlay + node-2 staging ==="
+echo "=== step 4: teardown VMs + overlay ==="
 otx vm delete "${NET}-a" --wait --force >/dev/null 2>&1 || true
 otx vm delete "${NET}-b" --wait --force >/dev/null 2>&1 || true
 otx network delete "$NET" --force >/dev/null 2>&1 || true
 NET=""   # disarm the trap's network delete (already done)
-otx pool delete "$POOL2" --force >/dev/null 2>&1 || true
-pass "VMs + overlay deleted; node-2 staging cleaned up"
+pass "VMs + overlay deleted"
 
 trap - EXIT
 rm -f "$UD1" "$UD2"

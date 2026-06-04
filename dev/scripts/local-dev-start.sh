@@ -13,7 +13,8 @@
 #    4. lima readiness  — macOS only: verify VM shell responsive + agent binary staged
 #    5. start api-server — background, PID + log in .local/run/ (boots embedded etcd)
 #    6. wait /healthz   — 60s budget
-#    7. seed-mvp        — bootstrap protocol + seed pool + template + CLI cluster
+#    7. seed-mvp        - bootstrap protocol + register template + CLI cluster
+#                         (the cluster default pool is CP-auto-provisioned)
 #    8. node list       — final sanity check
 #
 # Fail-fast on existing state per locked decision (2a): if otherix-api is

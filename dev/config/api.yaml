@@ -112,6 +112,14 @@ placement:
       threshold_percent: 15
       consecutive_required: 1
 
+# No storage_pools block: the CP uses its code defaults (default_pool_name
+# "default", allowed_path_prefixes ["/opt/otherix/pools/"]). On boot it seeds
+# default_pool_name into cluster_settings and auto-provisions a pool named
+# "default" at /opt/otherix/pools/default on every node as it reaches ready
+# (the Lima/Makefile dev provisioning already pre-creates that path). That is
+# what makes `vm create` work without `--pool`; seed-mvp no longer creates a
+# pool or sets the cluster default.
+
 workers:
   enabled: true
   max_workers: 10

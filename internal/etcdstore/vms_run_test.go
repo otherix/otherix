@@ -24,6 +24,17 @@ import (
 // seam the Run-form workers drive.
 var _ vmshandlers.WorkerStore = (*etcdstore.Store)(nil)
 
+// noopImageEnsurer is the no-op vms.ImageEnsurer these create tests pass: they
+// exercise the agent-create / projection seam, not image materialization, so
+// the ensurer reports the image already present (a nil return). The dedicated
+// real-store materialization coverage is
+// TestImageEnsurerSeamRealStoreRedeliverySkip.
+type noopImageEnsurer struct{}
+
+func (noopImageEnsurer) EnsureImageOnPool(context.Context, store.Template, store.StoragePool, store.Node) error {
+	return nil
+}
+
 func TestVMCreateRunHandlerSuccess(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -34,7 +45,7 @@ func TestVMCreateRunHandlerSuccess(t *testing.T) {
 	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
-	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log, 5*time.Minute)
+	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, noopImageEnsurer{}, log, 5*time.Minute)
 	if err := h(ctx, raw); err != nil {
 		t.Fatalf("create handler: %v", err)
 	}
@@ -63,7 +74,7 @@ func TestVMCreateRunHandlerExecutorErrorFinalizesFailed(t *testing.T) {
 	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
-	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
+	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, noopImageEnsurer{}, log, 5*time.Minute)
 	if err := h(ctx, raw); err == nil {
 		t.Fatalf("create handler = nil, want the executor error returned for requeue")
 	}
@@ -89,7 +100,7 @@ func TestVMCreateRunHandlerFailThenSucceedProjects(t *testing.T) {
 
 	// Delivery 1: the executor errors, failRun finalizes the task to failed (a
 	// retryable terminal), and the dispatcher would requeue the job.
-	h1 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
+	h1 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, noopImageEnsurer{}, log, 5*time.Minute)
 	if err := h1(ctx, raw); err == nil {
 		t.Fatalf("create handler (delivery 1) = nil, want the executor error for requeue")
 	}
@@ -101,7 +112,7 @@ func TestVMCreateRunHandlerFailThenSucceedProjects(t *testing.T) {
 	// Delivery 2 (job redelivered): the executor now succeeds. A failed task is
 	// retryable, so the projection MUST run: runtime row present, count==1, task
 	// ends success.
-	h2 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log, 5*time.Minute)
+	h2 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, noopImageEnsurer{}, log, 5*time.Minute)
 	if err := h2(ctx, raw); err != nil {
 		t.Fatalf("create handler (delivery 2) = %v, want nil", err)
 	}

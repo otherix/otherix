@@ -675,14 +675,16 @@ bootstrap flow end-to-end:
    `systemctl --user start otherix-agent` (Linux native).
 5. Polls for `nodes.id WHERE name='node-mvp'` for up to 60s. The row
    appears once the CSR redemption commits at the CP side.
-6. Inserts the `storage_pools` row directly via psql (no public
-   registration API yet). FK to the bootstrapped `nodes.id`.
-7. Calls `otherix cluster set-default-pool pool-mvp` so subsequent
-   `vm create` invocations resolve without `--pool`.
-8. Calls `otherix template create ubuntu-noble-<arch>-mvp --pool
-   pool-mvp --wait` which both registers the template and triggers
-   the agent-side image import (compute-mode SHA — no pre-computed
-   checksum required from the operator).
+6. Does NOT create a storage pool: the CP auto-provisions the cluster
+   default pool (`default`, from `default_pool_name` in code defaults) at
+   `/opt/otherix/pools/default` on every node as it reaches `ready`, and
+   that is the cluster default. So `vm create` resolves without `--pool`,
+   and seed-mvp no longer runs `pool create` or `cluster set-default-pool`.
+7. Calls `otherix template create ubuntu-noble-<arch>-mvp` (no `--pool`)
+   which registers the template (compute-mode SHA - no pre-computed
+   checksum required from the operator). As of B1 no `--pool` warm-up is
+   needed: `vm create` auto-materialises the image onto its target pool
+   inline on first use, so the first create just pays the one-time import.
 
 The node row arrives in `pending` status and flips to `ready` once the
 first heartbeat lands. The dev heartbeat cadence (15s interval / 45s
@@ -693,8 +695,8 @@ Sample output:
 ```
 >> seed-mvp complete
    node     : node-mvp (id=<uuid>)
-   pool     : pool-mvp (id=00000000-…-000000000001, default=yes)
-   template : ubuntu-noble-arm64-mvp
+   pool     : default (cluster default, CP-auto-provisioned on ready nodes)
+   template : ubuntu-noble-arm64-mvp (image auto-imports on first vm create)
 ```
 
 ### Step 2 — create a VM
@@ -706,9 +708,9 @@ surface as `400 validation_failed` with an actionable hint pointing to
 `otherix <resource> list`. Storage pool addressing retains a UUID
 escape hatch for multi-instance per-node row addressing. Phase 1.5
 made `--pool` optional — when omitted, the server resolves the cluster
-default-pool reference held in `cluster_settings`. The dev seed
-configures `pool-mvp` as the cluster default, so the command below
-works without `--pool`:
+default-pool reference held in `cluster_settings`. The CP auto-provisions
+`default` as the cluster default pool on every ready node, so the command
+below works without `--pool`:
 
 ```bash
 ./bin/otherix vm create \
@@ -726,7 +728,7 @@ To target a specific node explicitly:
 ./bin/otherix vm create \
     --name demo-vm \
     --template ubuntu-jammy-arm64-mvp \
-    --pool pool-mvp \
+    --pool default \
     --node node-mvp \
     --vcpus 2 --memory-mb 2048 --wait
 ```
@@ -747,14 +749,14 @@ projects vm_runtime row with phase=running.
 ```bash
 ./bin/otherix vm list
 # NAME      STATUS   POOL       TEMPLATE
-# demo-vm   running  pool-mvp   ubuntu-jammy-arm64-mvp
+# demo-vm   running  default    ubuntu-jammy-arm64-mvp
 
 ./bin/otherix vm get demo-vm
 # id: <vm-uuid>
 # name: demo-vm
 # owner_id: <user-uuid>
 # template: ubuntu-jammy-arm64-mvp
-# pool: pool-mvp
+# pool: default
 # node: node-mvp
 # architecture: arm64
 # vcpus: 2
@@ -800,7 +802,9 @@ limactl shell otherix-dev ls /opt/otherix/vms/    # empty
 
 Phase 1.5 introduced a cluster-wide default-pool reference held in the
 `cluster_settings` singleton — VM create requests without `--pool` resolve
-through it. The seed script wires `pool-mvp` as the default; the
+through it. The CP seeds it from `default_pool_name` on boot (code default
+`default`) and auto-provisions that pool on every node, so the dev cluster's
+default is `default` (the seed script no longer sets it). The
 `otherix cluster` subcommand group exposes inspect / set / unset
 verbs (Phase 2 added these — see "Cluster configuration" above for the
 broader walkthrough).
@@ -808,7 +812,7 @@ broader walkthrough).
 ```bash
 # Inspect current default
 ./bin/otherix cluster get-default-pool
-# default-pool: pool-mvp
+# default-pool: default
 
 # Promote a different pool (admin only)
 ./bin/otherix cluster set-default-pool fast-ssd
@@ -830,7 +834,8 @@ desired identifier.
 | ------- | ------------ |
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the Iteration 1 agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
-| `task.error.code = template_not_found` | the `seed-mvp.sh` SHA does not match the file on disk; rerun the seed step or `limactl shell otherix-dev ls /opt/otherix/pools/default/templates/` |
+| `task.error.code = template_not_found` | the template row referenced by the create does not exist (deleted or never created); create it with `otherix template create` |
+| `task.error.code = vm_image_unavailable` | the inline image materialization on the chosen pool failed during `vm create` for a non-agent reason (the CP could not project the image row or decode the import result); as of B1 `vm create` auto-imports the template image onto a cold pool, so this replaces the old "stage the pool first" step. Agent-side import failures surface under their own code instead (e.g. `checksum_mismatch`, `download_failed`, or `agent_unreachable`). Read the task error message for the cause, then retry |
 | `task.error.code = node_not_ready` | a fresh `make clean-dev` flipped the node row to pending; rerun `seed-mvp.sh` |
 | `api_error: unauthenticated` from the CLI | `OTHERIX_API_TOKEN` expired (JWTs are 15-min by default); re-login or use a long-lived `otx_*` API token |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; configure via `PUT /v1/cluster/default-pool` or pass `--pool` explicitly |
@@ -927,7 +932,8 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-mvp`.
 | ------- | ------------ |
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
-| `task.error.code = template_not_found` | `seed-mvp` did not finish materialising the template image (`otherix template create --wait` aborted); re-run `make seed-mvp` |
+| `task.error.code = template_not_found` | the template row the create references is missing (deleted or never created); create it with `otherix template create` |
+| `task.error.code = vm_image_unavailable` | `vm create` could not auto-materialise the template image onto the chosen pool (B1 inline import) for a non-agent reason (image-row projection or result-decode failure). No pre-staging is required anymore; agent-side import failures appear under their own code (`checksum_mismatch`, `download_failed`, `agent_unreachable`). Read the task error and retry |
 | `task.error.code = node_not_ready` | a fresh `make clean-dev` removed the agent; re-run `make bootstrap-dev` + `make seed-mvp` |
 | `api_error: unauthenticated` from the CLI | stored API token revoked OR cluster CA rotated; re-run `make seed-mvp` to refresh the cluster credential |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; `otherix cluster set-default-pool <name>` or pass `--pool` explicitly |
