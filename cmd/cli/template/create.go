@@ -269,7 +269,7 @@ func createTemplateIdempotent(ctx context.Context, c *cpclient.Client, f createF
 	if !errors.Is(err, cpclient.ErrTemplateExists) {
 		return cpclient.Template{}, false, err
 	}
-	existing, getErr := c.GetTemplate(ctx, f.name)
+	existing, _, getErr := c.GetTemplate(ctx, f.name)
 	if getErr != nil {
 		return cpclient.Template{}, false, getErr
 	}

@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/etcdstore"
@@ -28,9 +29,12 @@ func TestVMCreateRunHandlerSuccess(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+	// The create handler now treats a nil-heartbeat node as terminally dead;
+	// bump the node fresh so this test exercises the live agent path.
+	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
-	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log)
+	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log, 5*time.Minute)
 	if err := h(ctx, raw); err != nil {
 		t.Fatalf("create handler: %v", err)
 	}
@@ -54,9 +58,12 @@ func TestVMCreateRunHandlerExecutorErrorFinalizesFailed(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+	// Fresh heartbeat so the create reaches the executor (live path); the
+	// executor then errors, finalizing the task failed and returning the cause.
+	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
-	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log)
+	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
 	if err := h(ctx, raw); err == nil {
 		t.Fatalf("create handler = nil, want the executor error returned for requeue")
 	}
@@ -69,11 +76,112 @@ func TestVMCreateRunHandlerExecutorErrorFinalizesFailed(t *testing.T) {
 	}
 }
 
+func TestVMCreateRunHandlerFailThenSucceedProjects(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+	// Fresh heartbeat so both deliveries take the live agent path rather than the
+	// terminally-dead short-circuit.
+	bumpHeartbeat(t, s, nodeID)
+
+	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
+
+	// Delivery 1: the executor errors, failRun finalizes the task to failed (a
+	// retryable terminal), and the dispatcher would requeue the job.
+	h1 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
+	if err := h1(ctx, raw); err == nil {
+		t.Fatalf("create handler (delivery 1) = nil, want the executor error for requeue")
+	}
+	task, _ := s.TaskByID(ctx, taskID)
+	if task.Status != store.TaskStatusFailed {
+		t.Fatalf("task after delivery 1 = %v, want failed", task.Status)
+	}
+
+	// Delivery 2 (job redelivered): the executor now succeeds. A failed task is
+	// retryable, so the projection MUST run: runtime row present, count==1, task
+	// ends success.
+	h2 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log, 5*time.Minute)
+	if err := h2(ctx, raw); err != nil {
+		t.Fatalf("create handler (delivery 2) = %v, want nil", err)
+	}
+
+	rt, err := s.VMRuntimeByID(ctx, vmID)
+	if err != nil || rt.Phase != store.VmPhaseRunning {
+		t.Errorf("runtime after fail-then-succeed = (%+v, %v), want running", rt, err)
+	}
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 1 {
+		t.Errorf("derived_vm_count after fail-then-succeed = %d, want 1", tpl.DerivedVmCount)
+	}
+	task, _ = s.TaskByID(ctx, taskID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task after fail-then-succeed = %v, want success", task.Status)
+	}
+}
+
+func TestVMDeleteRunHandlerFailThenSucceedProjects(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// A node hosting a running VM has heartbeated recently: bump it fresh so the
+	// delete handler exercises the agent path rather than the staleness
+	// terminal-death arm.
+	bumpHeartbeat(t, s, nodeID)
+	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID, store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed running: %v", err)
+	}
+
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("enqueue delete: %v", err)
+	}
+	raw, _ := json.Marshal(vmshandlers.VMDeleteArgs{TaskID: delTask.ID, VMID: vmID, NodeID: nodeID})
+
+	// Delivery 1: the executor errors, failRun finalizes the task failed.
+	h1 := vmshandlers.DeleteHandler(s, &vmshandlers.StubVMDeleteExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
+	if err := h1(ctx, raw); err == nil {
+		t.Fatalf("delete handler (delivery 1) = nil, want the executor error for requeue")
+	}
+	task, _ := s.TaskByID(ctx, delTask.ID)
+	if task.Status != store.TaskStatusFailed {
+		t.Fatalf("task after delivery 1 = %v, want failed", task.Status)
+	}
+
+	// Delivery 2 (job redelivered): the executor now succeeds. The delete
+	// projection MUST run: VM gone, count decremented to 0, task ends success.
+	h2 := vmshandlers.DeleteHandler(s, &vmshandlers.StubVMDeleteExecutor{Result: vmshandlers.DeleteResult{VMID: vmID.String()}}, log, 5*time.Minute)
+	if err := h2(ctx, raw); err != nil {
+		t.Fatalf("delete handler (delivery 2) = %v, want nil", err)
+	}
+
+	if _, err := s.VMByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("vm after fail-then-succeed = %v, want ErrNotFound", err)
+	}
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 0 {
+		t.Errorf("derived_vm_count after fail-then-succeed = %d, want 0", tpl.DerivedVmCount)
+	}
+	task, _ = s.TaskByID(ctx, delTask.ID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task after fail-then-succeed = %v, want success", task.Status)
+	}
+}
+
 func TestVMDeleteRunHandlerSuccess(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// A node hosting a running VM has heartbeated recently: bump it fresh so the
+	// delete handler exercises the agent path rather than the staleness
+	// terminal-death arm.
+	bumpHeartbeat(t, s, nodeID)
 	// Bring it to running first.
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
@@ -87,7 +195,7 @@ func TestVMDeleteRunHandlerSuccess(t *testing.T) {
 		t.Fatalf("enqueue delete: %v", err)
 	}
 	raw, _ := json.Marshal(vmshandlers.VMDeleteArgs{TaskID: delTask.ID, VMID: vmID, NodeID: nodeID})
-	h := vmshandlers.DeleteHandler(s, &vmshandlers.StubVMDeleteExecutor{Result: vmshandlers.DeleteResult{VMID: vmID.String()}}, log)
+	h := vmshandlers.DeleteHandler(s, &vmshandlers.StubVMDeleteExecutor{Result: vmshandlers.DeleteResult{VMID: vmID.String()}}, log, 5*time.Minute)
 	if err := h(ctx, raw); err != nil {
 		t.Fatalf("delete handler: %v", err)
 	}
@@ -105,6 +213,10 @@ func TestVMLifecycleRunHandlerStop(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// A node hosting a running VM has heartbeated recently: bump it fresh so the
+	// lifecycle handler exercises the agent path rather than the terminally-dead
+	// short-circuit.
+	bumpHeartbeat(t, s, nodeID)
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		templateID, store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
@@ -118,7 +230,7 @@ func TestVMLifecycleRunHandlerStop(t *testing.T) {
 	}
 	raw, _ := json.Marshal(vmshandlers.VMStopArgs{TaskID: stopTask.ID, VMID: vmID, NodeID: nodeID})
 	h := vmshandlers.LifecycleHandler(s, &vmshandlers.StubVMLifecycleExecutor{Result: vmshandlers.LifecycleResult{VMID: vmID.String()}},
-		log, "stop", store.VmDesiredPhaseStopped, store.VmPhaseStopped, "vm_stop_failed")
+		log, "stop", store.VmDesiredPhaseStopped, store.VmPhaseStopped, "vm_stop_failed", 5*time.Minute)
 	if err := h(ctx, raw); err != nil {
 		t.Fatalf("stop handler: %v", err)
 	}

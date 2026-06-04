@@ -19,6 +19,7 @@ const (
 	flagTemplate         = "template"
 	flagPool             = "pool"
 	flagNode             = "node"
+	flagNetwork          = "network"
 	flagVCPUs            = "vcpus"
 	flagMemoryMB         = "memory-mb"
 	flagCloudInitPath    = "cloud-init"
@@ -49,7 +50,13 @@ Multi-instance pools + scheduler:
     default_pool_not_set.
   - --node is an optional placement hint: when set, the scheduler
     pins the VM to exactly that node; mismatch (pool not present on
-    the requested node) returns 409 pool_not_on_node.`,
+    the requested node) returns 409 pool_not_on_node.
+
+--network is optional: a bridge network name or uuid. When set the VM
+gets one NIC attached to that network's bridge (the CP mints a
+52:54:00 QEMU MAC; the guest configures its own IP). Non-bridge
+network types are rejected with 400. When omitted the VM has no NIC
+and the agent falls back to legacy SLIRP networking.`,
 		RunE: runCreate,
 	}
 
@@ -57,6 +64,7 @@ Multi-instance pools + scheduler:
 	cmd.Flags().String(flagTemplate, "", "template name or uuid (required)")
 	cmd.Flags().String(flagPool, "", "storage pool name or uuid (optional; cluster default used when empty)")
 	cmd.Flags().String(flagNode, "", "explicit placement hint — node name or uuid (optional)")
+	cmd.Flags().String(flagNetwork, "", "bridge network to attach one NIC to — network name or uuid (optional)")
 	cmd.Flags().Int(flagVCPUs, defaultVCPUs, "vCPU count (1..128)")
 	cmd.Flags().Int(flagMemoryMB, defaultMemoryMB, "memory in MiB (128..524288)")
 	cmd.Flags().String(flagCloudInitPath, "",
@@ -77,6 +85,7 @@ type createFlags struct {
 	template          string
 	pool              string
 	node              string
+	network           string
 	vcpus             int
 	memoryMB          int
 	cloudInitUserData *string
@@ -101,6 +110,9 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 		return f, err
 	}
 	if f.node, err = cmd.Flags().GetString(flagNode); err != nil {
+		return f, err
+	}
+	if f.network, err = cmd.Flags().GetString(flagNetwork); err != nil {
 		return f, err
 	}
 	if f.vcpus, err = cmd.Flags().GetInt(flagVCPUs); err != nil {
@@ -174,6 +186,7 @@ func runCreate(cmd *cobra.Command, _ []string) error {
 		Name:              f.name,
 		Template:          f.template,
 		Pool:              f.pool,
+		Network:           f.network,
 		VCPUs:             f.vcpus,
 		MemoryMB:          f.memoryMB,
 		UserData:          f.cloudInitUserData,

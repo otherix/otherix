@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/config"
 )
@@ -44,7 +45,7 @@ func newTestManager(t *testing.T) (*vm.Manager, string) {
 		QEMU:      config.QEMUConfig{AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd"},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m, err := vm.New(cfg, logger)
+	m, err := vm.New(cfg, &netfabric.FakeFabric{}, logger)
 	if err != nil {
 		t.Fatalf("vm.New: %v", err)
 	}

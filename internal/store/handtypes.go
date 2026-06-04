@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 type HeartbeatProjection interface {
 	NodeForHeartbeat(ctx context.Context, nodeID uuid.UUID) (GetNodeForHeartbeatRow, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (Node, error)
+	NodeByIDAtRev(ctx context.Context, id uuid.UUID, rev int64) (Node, error)
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) error
 	UpdateNodeMemoryPressure(ctx context.Context, arg UpdateNodeMemoryPressureParams) error
 	UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error
@@ -37,7 +39,30 @@ type HeartbeatProjection interface {
 	UpsertVMRuntime(ctx context.Context, arg UpsertVMRuntimeParams) error
 	UpdateStoragePoolReconciliation(ctx context.Context, arg UpdateStoragePoolReconciliationParams) error
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
+	UpsertNetworkNodeStatus(ctx context.Context, arg UpsertNetworkNodeStatusParams) error
+	ListNetworks(ctx context.Context) ([]Network, error)
+	UpsertAgentWireguard(ctx context.Context, arg UpsertAgentWireguardParams) error
+	ListAgentWireguard(ctx context.Context) ([]AgentWireguard, error)
+	ListAgentWireguardAtRev(ctx context.Context, rev int64) ([]AgentWireguard, error)
+	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (AgentWireguard, error)
+	OverlaySupernet(ctx context.Context) (netip.Prefix, error)
+	UnderlayMTU(ctx context.Context) (int32, error)
 	ListVMsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]ListVMsForNodeDeclaredRow, error)
+	ListOverlayNICPlacements(ctx context.Context) ([]OverlayNICPlacement, error)
+	// ListOverlayNICPlacementsPinned returns the overlay NIC placements together
+	// with the MVCC revision the read is pinned to (its first range's revision).
+	// The FDB projection threads that revision into ListAgentWireguardAtRev and
+	// NodeByIDAtRev so the whole join sees one consistent etcd snapshot.
+	ListOverlayNICPlacementsPinned(ctx context.Context) ([]OverlayNICPlacement, int64, error)
+}
+
+// OverlayNICPlacement is one NIC attached to a type=overlay network whose owning
+// VM has a current node. The heartbeat FDB projection joins these (MAC + owning
+// node) to each node's VTEP overlay IP to build declared_fdb.
+type OverlayNICPlacement struct {
+	VNI    int32
+	Mac    net.HardwareAddr
+	NodeID uuid.UUID
 }
 
 // PlacementReader is the read surface SchedulePlacement consumes, plus the
@@ -51,13 +76,18 @@ type PlacementReader interface {
 	ListDiskPressuredPoolsByName(ctx context.Context, name string) ([]ListDiskPressuredPoolsByNameRow, error)
 	ListStoragePoolsByName(ctx context.Context, name string) ([]StoragePool, error)
 	CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error)
+	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]NetworkNodeStatus, error)
 }
 
-// VMCreateWrites bundles the four rows a vm.create commits atomically: the VM,
-// its boot disk, the task, and the enqueued job args.
+// VMCreateWrites bundles the rows a vm.create commits atomically: the VM, its
+// boot disk, an optional network interface, the task, and the enqueued job
+// args. Nic is nil when the create request named no network (legacy SLIRP
+// fallback on the agent); when set it lands in the same transaction as the VM
+// so the network's delete-block index is consistent the instant the VM exists.
 type VMCreateWrites struct {
 	VM   CreateVMParams
 	Disk CreateVMDiskParams
+	Nic  *CreateVMNicParams
 	Task CreateTaskParams
 	Job  queue.JobArgs
 }
@@ -74,6 +104,19 @@ type RedeemJoinTokenParams struct {
 	MigrationPortRangeStart int32
 	MigrationPortRangeEnd   int32
 	SourceIP                *netip.Addr
+}
+
+// UpsertAgentWireguardParams carries an agent's observed WG state for the
+// heartbeat up-channel ingest. AgentIndex / OverlayIP are CP-assigned, not part
+// of the agent's report, so they are absent here.
+type UpsertAgentWireguardParams struct {
+	NodeID               uuid.UUID
+	PublicKey            string
+	Endpoint             string
+	ListenPort           int32
+	EstablishedPeers     []string
+	ReconciliationStatus string
+	ReconciliationError  *string
 }
 
 // IssuedCert is the metadata the redemption persists for a freshly signed agent

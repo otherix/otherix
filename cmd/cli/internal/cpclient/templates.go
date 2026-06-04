@@ -126,21 +126,24 @@ func (c *Client) ListTemplates(ctx context.Context, params ListTemplatesParams) 
 // GetTemplate fetches GET /v1/templates/{identifier}. The server
 // resolves either a UUID literal or a template name; the CLI forwards
 // the raw string verbatim. Cross-user private templates surface as
-// 404 *APIError (no existence leak).
-func (c *Client) GetTemplate(ctx context.Context, identifier string) (Template, error) {
+// 404 *APIError (no existence leak). The raw response body is returned
+// alongside the decoded value so `template get --output json` echoes the
+// server's projection verbatim (absent-vs-null preserved); decode-only
+// callers pass `_`.
+func (c *Client) GetTemplate(ctx context.Context, identifier string) (Template, json.RawMessage, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/templates/"+url.PathEscape(identifier), nil)
 	if err != nil {
-		return Template{}, err
+		return Template{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return Template{}, err
+		return Template{}, nil, err
 	}
 	var out Template
 	if err := decodeJSON(body, &out); err != nil {
-		return Template{}, err
+		return Template{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }
 
 // CreateTemplateRequest mirrors components/schemas/TemplateCreate in

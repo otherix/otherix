@@ -94,13 +94,14 @@ echo ">> Step 1/8 — Pre-flight port availability"
 # member we start in Step 5, not pre-flighted here (a stale dev member on
 # those ports surfaces as an "etcd start" failure in the api log).
 port_fails=0
-check_port_free 8080 "CP main listener"   || port_fails=$((port_fails+1))
-check_port_free 8443 "CP agent listener"  || port_fails=$((port_fails+1))
-check_port_free 9443 "agent (Lima fwd)"   || port_fails=$((port_fails+1))
+check_port_free 8080 "CP main listener"    || port_fails=$((port_fails+1))
+check_port_free 8443 "CP agent listener"   || port_fails=$((port_fails+1))
+check_port_free 9443 "agent-1 (Lima fwd)"  || port_fails=$((port_fails+1))
+check_port_free 9444 "agent-2 (Lima fwd)"  || port_fails=$((port_fails+1))
 if [ "${port_fails}" -gt 0 ]; then
     exit 1
 fi
-echo "   ✓ 8080 / 8443 / 9443 all free"
+echo "   ✓ 8080 / 8443 / 9443 / 9444 all free"
 
 echo ">> Step 2/8 — Build api + agent + cli"
 make --no-print-directory build >/dev/null
@@ -115,43 +116,44 @@ make --no-print-directory bootstrap-dev
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
 # landed yet. Linux native skips entirely — bootstrap-dev-linux is
 # synchronous (build + systemd unit install).
-echo ">> Step 4/8 — Lima VM readiness (macOS only)"
+echo ">> Step 4/8 — Lima VM readiness (macOS only, both VMs)"
 if [ "$(uname -s)" = "Darwin" ]; then
-    # Shell responsive — bounds Lima 'Started' to actual usability.
-    # 60s budget (30 iterations × 2s) — first-start cloud-init occasionally
-    # delays SSH availability past Lima's own readiness signal.
-    lima_ready=0
-    for _ in $(seq 1 30); do
-        if limactl shell otherix-dev -- true >/dev/null 2>&1; then
-            lima_ready=1
-            break
+    for vm in otherix-dev-1 otherix-dev-2; do
+        # Shell responsive — bounds Lima 'Started' to actual usability.
+        # 60s budget (30 iterations × 2s) — first-start cloud-init occasionally
+        # delays SSH availability past Lima's own readiness signal.
+        lima_ready=0
+        for _ in $(seq 1 30); do
+            if limactl shell "${vm}" -- true >/dev/null 2>&1; then
+                lima_ready=1
+                break
+            fi
+            sleep 2
+        done
+        if [ "${lima_ready}" -ne 1 ]; then
+            echo "✗ Lima VM ${vm} not responsive after 60s" >&2
+            limactl list "${vm}" >&2 || true
+            exit 1
         fi
-        sleep 2
-    done
-    if [ "${lima_ready}" -ne 1 ]; then
-        echo "✗ Lima VM otherix-dev not responsive after 60s" >&2
-        echo "  limactl list otherix-dev:" >&2
-        limactl list otherix-dev >&2 || true
-        exit 1
-    fi
 
-    # Agent binary present — bounds cloud-init / `copy-agent-lima`
-    # completion. 60s budget separate from shell readiness because the
-    # binary copy can land after SSH becomes usable.
-    agent_ready=0
-    for _ in $(seq 1 30); do
-        if limactl shell otherix-dev -- test -x /usr/local/bin/otherix-agent 2>/dev/null; then
-            agent_ready=1
-            break
+        # Agent binary present — bounds cloud-init / `copy-agent-lima`
+        # completion. 60s budget separate from shell readiness because the
+        # binary copy can land after SSH becomes usable.
+        agent_ready=0
+        for _ in $(seq 1 30); do
+            if limactl shell "${vm}" -- test -x /usr/local/bin/otherix-agent 2>/dev/null; then
+                agent_ready=1
+                break
+            fi
+            sleep 2
+        done
+        if [ "${agent_ready}" -ne 1 ]; then
+            echo "✗ otherix-agent binary not staged in ${vm} after 60s" >&2
+            echo "  inspect: limactl shell ${vm} sudo journalctl --no-pager | tail -50" >&2
+            exit 1
         fi
-        sleep 2
+        echo "   ✓ ${vm} responsive, agent binary staged"
     done
-    if [ "${agent_ready}" -ne 1 ]; then
-        echo "✗ otherix-agent binary not staged in Lima after 60s" >&2
-        echo "  inspect: limactl shell otherix-dev sudo journalctl --no-pager | tail -50" >&2
-        exit 1
-    fi
-    echo "   ✓ Lima VM responsive, agent binary staged"
 else
     echo "   (Linux native — bootstrap-dev is synchronous, no readiness gate needed)"
 fi
@@ -199,13 +201,13 @@ cat <<EOF
    etcd data  : ${REPO_ROOT}/.local/etcd (embedded member)
    api-server : http://localhost:8080 (PID $(cat "${PID_FILE}"))
    api log    : ${LOG_FILE}
-   Lima VM    : otherix-dev (limactl shell otherix-dev)
+   Lima VMs   : otherix-dev-1 (node-1) / otherix-dev-2 (node-2)
    CLI        : ${REPO_ROOT}/bin/otherix (cluster: dev)
 
 Try:
    ./bin/otherix node list
-   ./bin/otherix pool list
-   ./bin/otherix template list
+   ./bin/otherix node get node-1            # WireGuard fabric block + peers
+   make smoke-wireguard-mesh                # cross-host WG handshake
    ./bin/otherix vm create --name demo --template ubuntu-noble-arm64-mvp --vcpus 2 --memory-mb 2048 --wait
 
 Stop + wipe:

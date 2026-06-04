@@ -6,6 +6,7 @@ package validation
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 
 	"github.com/otherix/otherix/internal/store"
@@ -41,15 +42,23 @@ const (
 // [A-Za-z0-9_-]. The 15-char ceiling is IFNAMSIZ-1 (kernel limit).
 var linuxBridgeNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,14}$`)
 
+// reservedDeviceNameRe matches the Otherix-owned device-name namespace
+// (otb<vni> overlay bridge, otvx<vni> VTEP, otwg0 WireGuard). An operator
+// type=bridge network must not claim a name in this space or it would shadow
+// a derived overlay device. The match is case-insensitive: operators cannot
+// bypass the reservation via case variation (e.g. OTB1000, OtVx5).
+var reservedDeviceNameRe = regexp.MustCompile(`(?i)^(otb|otvx|otwg)`)
+
 // ValidateNetworkType returns nil when t is a recognised
-// store.NetworkType value. The set is anchored to the SQL enum;
-// adding a new type means extending both the migration and this
-// branch.
+// store.NetworkType value. The set is anchored to the store enum;
+// adding a new type means extending both the enum and this branch.
 func ValidateNetworkType(t string) error {
-	if store.NetworkType(t) == store.NetworkTypeBridge {
+	switch store.NetworkType(t) {
+	case store.NetworkTypeBridge, store.NetworkTypeOverlay:
 		return nil
+	default:
+		return fmt.Errorf("invalid network type %q (must be one of: bridge, overlay)", t)
 	}
-	return fmt.Errorf("invalid network type %q (must be one of: bridge)", t)
 }
 
 // ValidateBridgeName returns nil when s is a syntactically valid
@@ -61,6 +70,9 @@ func ValidateBridgeName(s string) error {
 	}
 	if !linuxBridgeNameRe.MatchString(s) {
 		return fmt.Errorf("invalid bridge_name %q (1..15 chars, [A-Za-z][A-Za-z0-9_-]*)", s)
+	}
+	if reservedDeviceNameRe.MatchString(s) {
+		return fmt.Errorf("invalid bridge_name %q (otb*/otvx*/otwg* are reserved for Otherix-owned devices)", s)
 	}
 	return nil
 }
@@ -83,4 +95,99 @@ func ValidateMTU(v int) error {
 		return fmt.Errorf("invalid mtu %d (must be between %d and %d)", v, MinMTU, MaxMTU)
 	}
 	return nil
+}
+
+// Subnet prefix-length bounds. A managed VM subnet must hold a gateway
+// plus at least one usable host, so /31 and /32 (no usable host range)
+// are rejected, as is anything wider than /8.
+const (
+	MinSubnetPrefixLen = 8
+	MaxSubnetPrefixLen = 30
+)
+
+// ValidateNetworkEgress returns nil when s names a recognised egress
+// mode. The empty string is treated as "none". The set is anchored to
+// the store.NetworkEgress enum; adding a mode means extending both the
+// enum and this branch.
+func ValidateNetworkEgress(s string) error {
+	switch store.NetworkEgress(s) {
+	case "", store.NetworkEgressNone, store.NetworkEgressNAT:
+		return nil
+	default:
+		return fmt.Errorf("invalid egress %q (must be one of: none, nat)", s)
+	}
+}
+
+// ValidateNetworkInvariants enforces cross-field constraints that no
+// single-field validator can express. egress=nat requires a managed
+// bridge: NAT masquerading is only meaningful when Otherix owns the
+// bridge (managed) and the network is a Layer-2 bridge. An empty egress
+// is treated as none and imposes no constraint. The egress value is
+// assumed already validated by ValidateNetworkEgress; only nat triggers
+// the constraint here.
+func ValidateNetworkInvariants(typ store.NetworkType, managed bool, egress store.NetworkEgress) error {
+	if egress != store.NetworkEgressNAT {
+		return nil
+	}
+	if typ != store.NetworkTypeBridge || !managed {
+		return errors.New("egress=nat requires type=bridge and managed=true")
+	}
+	return nil
+}
+
+// ParseSubnet parses s as an IPv4 CIDR prefix and returns it in
+// canonical (masked) form, so host bits in the input are dropped. It
+// rejects non-IPv4 prefixes and prefix lengths outside
+// [MinSubnetPrefixLen, MaxSubnetPrefixLen].
+func ParseSubnet(s string) (netip.Prefix, error) {
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("invalid subnet %q: %v", s, err)
+	}
+	if !p.Addr().Is4() {
+		return netip.Prefix{}, fmt.Errorf("invalid subnet %q: must be ipv4", s)
+	}
+	if p.Bits() < MinSubnetPrefixLen || p.Bits() > MaxSubnetPrefixLen {
+		return netip.Prefix{}, fmt.Errorf("invalid subnet %q: prefix length must be between %d and %d", s, MinSubnetPrefixLen, MaxSubnetPrefixLen)
+	}
+	return p.Masked(), nil
+}
+
+// GatewayDefault returns the conventional default gateway for subnet:
+// the first usable host, i.e. the network address plus one.
+func GatewayDefault(subnet netip.Prefix) netip.Addr {
+	return subnet.Masked().Addr().Next()
+}
+
+// ValidateGatewayInSubnet returns nil when gw is a valid gateway for
+// subnet. The checks: gw is IPv4, gw is contained in subnet, gw is not
+// the network address, and gw is not the broadcast address. The network
+// and broadcast addresses are not assignable to a host.
+func ValidateGatewayInSubnet(gw netip.Addr, subnet netip.Prefix) error {
+	if !gw.Is4() {
+		return fmt.Errorf("invalid gateway %v: must be ipv4", gw)
+	}
+	if !subnet.Contains(gw) {
+		return fmt.Errorf("gateway %v is not within subnet %v", gw, subnet)
+	}
+	network := subnet.Masked().Addr()
+	if gw == network {
+		return fmt.Errorf("gateway %v is the network address of %v", gw, subnet)
+	}
+	if gw == broadcastAddr(subnet) {
+		return fmt.Errorf("gateway %v is the broadcast address of %v", gw, subnet)
+	}
+	return nil
+}
+
+// broadcastAddr returns the broadcast address of an IPv4 prefix: the
+// network address with all host bits set.
+func broadcastAddr(subnet netip.Prefix) netip.Addr {
+	network := subnet.Masked()
+	b := network.Addr().As4()
+	hostBits := 32 - network.Bits()
+	for i := 0; i < hostBits; i++ {
+		b[3-i/8] |= 1 << (i % 8)
+	}
+	return netip.AddrFrom4(b)
 }

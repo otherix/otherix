@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/cloudinit"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/state"
@@ -53,6 +54,14 @@ var (
 	// conflict; the reconciler reads HasInFlight before enqueuing
 	// corrective ops to short-circuit without the sentinel round-trip.
 	ErrInFlight = errors.New("vm operation already in flight")
+
+	// ErrCreateInFlight is returned by Create on a duplicate vmID whose
+	// original create task record exists but whose task is no longer
+	// retrievable. It is a defensive fallback for a should-not-happen state
+	// (the task store keeps records for the process lifetime); handlers map
+	// it to 409 conflict so the CP worker resumes on its next poll rather
+	// than the agent clobbering the live VM.
+	ErrCreateInFlight = errors.New("vm create already in flight for this id")
 )
 
 // shutdownGrace bounds how long Delete and Stop wait for system_powerdown
@@ -88,10 +97,20 @@ type Manager struct {
 	stateDir        string
 	aarch64Firmware string
 	accelerator     string
+	fabric          netfabric.Fabric
 
 	mu    sync.Mutex
 	vms   map[uuid.UUID]*VM
 	tasks *TaskStore
+
+	// createTasks maps a VM id to the id of the vm.create task that first
+	// materialised it. Create consults it to re-accept the original task on
+	// a duplicate POST (redelivery before the CP persisted the
+	// agent_task_id) rather than clobbering the in-flight VM. Written under
+	// mu alongside vms; an entry is set when Create spawns runCreate and is
+	// never removed (the task store keeps the record for the process
+	// lifetime, and Delete tears the VM down by name, not via this map).
+	createTasks map[uuid.UUID]uuid.UUID
 
 	poolsMu sync.RWMutex
 	pools   map[string]pool
@@ -159,9 +178,11 @@ type PoolView struct {
 	Root string
 }
 
-// New constructs a Manager. The pool registry starts **empty** — the
-// reconciler populates it from desired-state delivered through
-// heartbeat. The constructor only ensures the state directory and
+// New constructs a Manager. The fabric materialises and tears down the
+// host-side network primitives (taps) for VM NICs; production passes
+// netfabric.New, tests inject a FakeFabric. The pool registry starts
+// **empty** — the reconciler populates it from desired-state delivered
+// through heartbeat. The constructor only ensures the state directory and
 // replays existing meta.json files. VM ops that reference a pool not
 // yet reconciled return ErrPoolUnknown until the reconciler lands the
 // entry; the first heartbeat tick typically closes the window.
@@ -169,7 +190,7 @@ type PoolView struct {
 // Probing live qemu processes happens lazily on Get / List rather
 // than during startup so transient probe failures do not block agent
 // boot.
-func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
+func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*Manager, error) {
 	if cfg.StatePath == "" {
 		return nil, fmt.Errorf("state_path is required")
 	}
@@ -186,8 +207,10 @@ func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
 		pools:           map[string]pool{},
 		aarch64Firmware: cfg.QEMU.AArch64FirmwarePath,
 		accelerator:     accelerator,
+		fabric:          fabric,
 		vms:             map[uuid.UUID]*VM{},
 		tasks:           NewTaskStore(),
+		createTasks:     map[uuid.UUID]uuid.UUID{},
 		muxes:           map[string]*serialmux.Multiplexer{},
 	}
 
@@ -211,9 +234,17 @@ func New(cfg *config.AgentConfig, log *slog.Logger) (*Manager, error) {
 			ConsoleSocket: meta.ConsoleSocket,
 			PIDFile:       meta.PIDFile,
 			CidataPath:    meta.CidataPath,
+			NICs:          metaToNICs(meta.NICs),
 		}
 		m.vms[v.ID] = v
 	}
+
+	// Reclaim host taps left behind by VMs that no longer exist (crash
+	// before teardown, or a meta.json skipped during replay). Runs once
+	// here, with the replayed-VM set authoritative; best-effort, never
+	// fails startup.
+	m.sweepOrphanTaps()
+
 	log.Info("vm manager initialized",
 		"state_dir", cfg.StatePath,
 		"recovered_vms", len(m.vms),
@@ -405,6 +436,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	if vmID == uuid.Nil {
 		vmID = uuid.New()
 	}
+
 	arch := qemu.HostArch()
 
 	v := &VM{
@@ -421,16 +453,36 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		QMPSocket:     filepath.Join(m.stateDir, vmID.String(), "qmp.sock"),
 		ConsoleSocket: filepath.Join(m.stateDir, vmID.String(), "console.sock"),
 		PIDFile:       filepath.Join(m.stateDir, vmID.String(), "qemu.pid"),
+		NICs:          spec.NICs,
 	}
 	if len(spec.UserData) > 0 {
 		v.CidataPath = filepath.Join(m.stateDir, vmID.String(), "cidata.iso")
 	}
 
+	// Register the VM and mint its create task atomically, re-accepting on a
+	// duplicate vmID. The CP mints a fresh idempotency key per attempt and
+	// the agent has no idempotency middleware, so a job redelivered before
+	// the CP persisted the agent_task_id re-POSTs this create. Overwriting
+	// m.vms[vmID] and spawning a second runCreate would clobber the
+	// in-flight VM and re-materialise its NICs (tap churn). Instead echo
+	// back the ORIGINAL vm.create task so the CP worker resumes against the
+	// same agent_task_id, leaving the live VM and its taps untouched. The
+	// duplicate check and the insert share one critical section so two
+	// concurrent first attempts cannot both materialise the VM.
 	m.mu.Lock()
-	m.vms[vmID] = v
-	m.mu.Unlock()
-
+	if origTaskID, dup := m.createTasks[vmID]; dup {
+		m.mu.Unlock()
+		if existing := m.tasks.Get(origTaskID); existing != nil {
+			return existing, nil
+		}
+		// The record exists but the task is gone (should not happen while
+		// the process is up). Treat it as a conflict the handler maps to 409.
+		return nil, ErrCreateInFlight
+	}
 	task := m.tasks.Create(TaskKindVMCreate, vmID)
+	m.vms[vmID] = v
+	m.createTasks[vmID] = task.ID
+	m.mu.Unlock()
 
 	// #nosec G118 -- async task work intentionally outlives the HTTP request;
 	// the task surface (GET /v1/tasks/{id}) is how clients track progress.
@@ -473,7 +525,17 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 		}
 	}
 
+	// Materialise host taps before qemu launches so the tap netdevs the
+	// command line references already exist. Bridge creation is the
+	// network reconciler's job - the bridge is assumed present here.
+	if err := m.materialiseNICs(v.NICs); err != nil {
+		log.Error("materialise nics", "err", err)
+		m.failTask(taskID, v.ID, "network_setup_failed", err.Error())
+		return
+	}
+
 	if code, err := m.spawnAndVerify(log, v); err != nil {
+		m.teardownNICs(v.NICs)
 		m.failTask(taskID, v.ID, code, err.Error())
 		return
 	}
@@ -485,6 +547,7 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 	if err := m.attachMux(log, v); err != nil {
 		log.Error("attach multiplexer", "err", err)
 		m.killQEMU(v)
+		m.teardownNICs(v.NICs)
 		m.failTask(taskID, v.ID, "multiplexer_failed", err.Error())
 		return
 	}
@@ -526,6 +589,7 @@ func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 		PIDFile:         v.PIDFile,
 		AArch64Firmware: m.aarch64Firmware,
 		CidataPath:      v.CidataPath,
+		NICs:            v.NICs,
 	})
 	if err != nil {
 		log.Error("build qemu args", "err", err)
@@ -1156,6 +1220,11 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	// Poweroff do not remove it but agent restart would).
 	m.detachMux(v.Name)
 
+	// Tear down host taps for each NIC. Best-effort — a failed DeleteTap
+	// is logged and does not abort the delete (the in-memory VM and its
+	// state directory still get removed).
+	m.teardownNICs(v.NICs)
+
 	// Cleanup disk + per-VM dirs. Errors logged but not fatal — operator
 	// can clean stale files manually if needed.
 	if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
@@ -1306,6 +1375,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		Status:        string(v.Status),
 		CreatedAt:     v.CreatedAt,
 		UpdatedAt:     v.UpdatedAt,
+		NICs:          nicsToMeta(v.NICs),
 	}
 	return state.WriteMeta(filepath.Join(m.stateDir, v.ID.String()), meta)
 }

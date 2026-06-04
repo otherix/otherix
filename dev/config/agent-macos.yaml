@@ -41,5 +41,16 @@ migration:
   port_range_start: 49152
   port_range_end: 49251
 
+# WireGuard underlay fabric (N2c). advertised_endpoint is the host:port
+# peers dial for the UDP handshake; in the two-VM dev stack it is this
+# VM's own user-v2 IP (192.168.104.x), substituted per VM by
+# `copy-config-lima` (placeholder __WG_ADVERTISED_ENDPOINT__). The CP
+# redistributes it verbatim to every other agent.
+wireguard:
+  listen_port: 51820
+  persistent_keepalive: 25s
+  private_key_path: "/opt/otherix/wg/private.key"
+  advertised_endpoint: "__WG_ADVERTISED_ENDPOINT__"
+
 qemu:
   aarch64_firmware_path: "/usr/share/AAVMF/AAVMF_CODE.fd"

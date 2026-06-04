@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -32,6 +34,8 @@ type WorkerStore interface {
 	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
 	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
+	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
+	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
@@ -40,18 +44,29 @@ type WorkerStore interface {
 	ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error
 }
 
-// CreateHandler returns the dispatcher handler for vm.create jobs.
-func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger) func(context.Context, []byte) error {
+// defaultStaleGrace is the fallback heartbeat-staleness window used by the
+// create/lifecycle/delete handlers when their staleGrace is unset (<= 0): past
+// it an owning node is treated as terminally dead.
+const defaultStaleGrace = 5 * time.Minute
+
+// CreateHandler returns the dispatcher handler for vm.create jobs. staleGrace is
+// the heartbeat-staleness window past which an owning node is treated as
+// terminally dead (the create then fails fast and terminally rather than burning
+// the retry budget); it defaults to 5 minutes when <= 0.
+func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+	if staleGrace <= 0 {
+		staleGrace = defaultStaleGrace
+	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMCreateArgs
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.create args: %v", err)
 		}
-		return runCreate(ctx, st, exec, log, args)
+		return runCreate(ctx, st, exec, log, args, staleGrace)
 	}
 }
 
-func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs) error {
+func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
@@ -75,9 +90,22 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMPoolMissing), fmt.Errorf("load pool: %v", err))
 	}
-	node, err := st.NodeByID(ctx, args.NodeID)
+	node, nodeErr := st.NodeByID(ctx, args.NodeID)
+	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
+		// Transient store error: retryable.
+		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
+	}
+	if nodeTerminallyDead(node, nodeErr, staleGrace) {
+		// No agent will ever service a create on a gone/unreachable node; fail
+		// terminally rather than burning the retry budget on a doomed op. This
+		// does NOT project success - the VM was not created, so the task is
+		// failed.
+		return failTerminal(ctx, st, log, "vms.create", taskID, errCodeVMNodeMissing,
+			fmt.Errorf("owning node %s is gone or unreachable; cannot create vm", args.NodeID))
+	}
+	nics, err := resolveCreateNICs(ctx, st, args.VMID)
 	if err != nil {
-		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
+		return failRun(ctx, st, log, "vms.create", taskID, "internal", err)
 	}
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
@@ -92,6 +120,7 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		Template:      tpl,
 		Pool:          pool,
 		Node:          node,
+		NICs:          nics,
 		OnAgentTaskID: onAgentTaskID(st, taskID),
 	})
 	if execErr != nil {
@@ -113,18 +142,79 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	return nil
 }
 
-// DeleteHandler returns the dispatcher handler for vm.delete jobs.
-func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger) func(context.Context, []byte) error {
+// resolveCreateNICs loads the VM's vm_nics and resolves each against its
+// network, producing the fully-resolved agent-facing NIC list: bridge name +
+// MTU come from the network, MAC / model / device order from the vm_nic. An
+// empty result means the VM has no NICs (the agent falls back to SLIRP). A
+// missing network is an internal inconsistency (the row was created atomically
+// with the NIC) and fails the task.
+func resolveCreateNICs(ctx context.Context, st WorkerStore, vmID uuid.UUID) ([]agentclient.VMCreateNIC, error) {
+	rows, err := st.ListVMNicsByVM(ctx, vmID)
+	if err != nil {
+		return nil, fmt.Errorf("list vm nics: %v", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]agentclient.VMCreateNIC, 0, len(rows))
+	for _, n := range rows {
+		net, err := st.NetworkByID(ctx, n.NetworkID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve network %s for nic %s: %v", n.NetworkID, n.ID, err)
+		}
+		out = append(out, agentclient.VMCreateNIC{
+			ID:          n.ID,
+			Bridge:      net.BridgeName,
+			MAC:         n.MacAddress.String(),
+			Model:       string(n.Model),
+			MTU:         int(net.Mtu),
+			DeviceOrder: int(n.DeviceOrder),
+		})
+	}
+	return out, nil
+}
+
+// DeleteHandler returns the dispatcher handler for vm.delete jobs. staleGrace is
+// the heartbeat-staleness window past which an owning node is treated as
+// terminally dead regardless of status; it defaults to 5 minutes when <= 0.
+func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+	if staleGrace <= 0 {
+		staleGrace = defaultStaleGrace
+	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMDeleteArgs
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.delete args: %v", err)
 		}
-		return runDelete(ctx, st, exec, log, args)
+		return runDelete(ctx, st, exec, log, staleGrace, args)
 	}
 }
 
-func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *slog.Logger, args VMDeleteArgs) error {
+// nodeTerminallyDead reports whether the VM's owning node is beyond any agent
+// teardown, so the delete must be projected directly rather than dispatched to
+// an agent. True when the node row is gone or force-deleted (ErrNotFound), or
+// when the node has been unseen for longer than staleGrace.
+//
+// 'unreachable' with a fresh heartbeat is NOT terminal - the node may merely be
+// partitioned with qemu still running, and the agent's VM reconciler does not
+// prune VMs the CP stops declaring (it reports them and waits), so skipping the
+// agent for a node that later heals would leak that qemu forever. Such a node
+// gets a best-effort agent teardown first, falling back to a direct projection
+// only when that fails.
+//
+// The staleness arm covers a cordoned/draining node that dies: it never
+// advances to 'gone' (the reaper only flips ready/pending), so without it the
+// VM delete would failRun forever. Its worst case is skipping the agent for a
+// node that healed within the window, leaking one qemu (the accepted leak
+// scale) - it keys on a durable timestamp, not inferred state.
+func nodeTerminallyDead(node store.Node, nodeErr error, staleGrace time.Duration) bool {
+	if errors.Is(nodeErr, store.ErrNotFound) || node.Status == store.NodeStatusGone {
+		return true
+	}
+	return node.LastHeartbeatAt == nil || node.LastHeartbeatAt.Before(time.Now().Add(-staleGrace))
+}
+
+func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration, args VMDeleteArgs) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
@@ -133,36 +223,62 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.delete", taskID, classifyLoadErr(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
-	node, err := st.NodeByID(ctx, args.NodeID)
-	if err != nil {
-		return failRun(ctx, st, log, "vms.delete", taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
+	node, nodeErr := st.NodeByID(ctx, args.NodeID)
+	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
+		return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
 	}
-	task, err := st.TaskByID(ctx, taskID)
-	if err != nil {
-		return fmt.Errorf("reload task: %v", err)
+	if !nodeTerminallyDead(node, nodeErr, staleGrace) {
+		task, err := st.TaskByID(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("reload task: %v", err)
+		}
+		result, execErr := exec.Execute(ctx, DeleteArgs{
+			TaskID:        taskID,
+			AgentTaskID:   task.AgentTaskID,
+			VMID:          args.VMID,
+			VMName:        vm.Name,
+			Node:          node,
+			OnAgentTaskID: onAgentTaskID(st, taskID),
+		})
+		if execErr != nil {
+			if node.Status != store.NodeStatusUnreachable {
+				return failRun(ctx, st, log, "vms.delete", taskID, classifyVMError(execErr, errCodeVMDeleteFailed), execErr)
+			}
+			// Unreachable node, agent teardown failed: the node is genuinely
+			// down. Fall through to the direct projection below so cleanup is
+			// not blocked on a node that cannot answer.
+			log.WarnContext(ctx, "agent teardown failed for unreachable node; projecting delete directly",
+				slog.String("vm_id", args.VMID.String()), slog.String("node_id", args.NodeID.String()),
+				slog.String("err", execErr.Error()))
+		} else {
+			resultJSON, err := json.Marshal(result)
+			if err != nil {
+				return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("marshal delete result: %v", err))
+			}
+			if err := st.ProjectVMDeleteSuccess(ctx, vm,
+				store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
+			); err != nil {
+				return fmt.Errorf("project delete success: %v", err)
+			}
+			return nil
+		}
 	}
 
-	result, execErr := exec.Execute(ctx, DeleteArgs{
-		TaskID:        taskID,
-		AgentTaskID:   task.AgentTaskID,
-		VMID:          args.VMID,
-		VMName:        vm.Name,
-		Node:          node,
-		OnAgentTaskID: onAgentTaskID(st, taskID),
-	})
-	if execErr != nil {
-		return failRun(ctx, st, log, "vms.delete", taskID, classifyVMError(execErr, errCodeVMDeleteFailed), execErr)
-	}
-
-	resultJSON, err := json.Marshal(result)
-	if err != nil {
-		return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("marshal delete result: %v", err))
+	resultJSON, merr := json.Marshal(struct {
+		VMID         string `json:"vm_id"`
+		SkippedAgent bool   `json:"skipped_agent"`
+		Reason       string `json:"reason"`
+	}{VMID: args.VMID.String(), SkippedAgent: true, Reason: "owning node not serviceable"})
+	if merr != nil {
+		return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("marshal delete result: %v", merr))
 	}
 	if err := st.ProjectVMDeleteSuccess(ctx, vm,
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
 	); err != nil {
 		return fmt.Errorf("project delete success: %v", err)
 	}
+	log.InfoContext(ctx, "vm deleted without agent teardown (owning node not serviceable)",
+		slog.String("vm_id", args.VMID.String()), slog.String("node_id", args.NodeID.String()))
 	return nil
 }
 
@@ -170,17 +286,23 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 // kinds (vm.start / vm.stop / vm.poweroff / vm.reboot). op is the agent-side
 // action segment; desiredPhase is written on success (empty = unchanged, e.g.
 // reboot); runtimePhase is the observed phase projected through.
-func LifecycleHandler(st WorkerStore, exec LifecycleExecutor, log *slog.Logger, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string) func(context.Context, []byte) error {
+// staleGrace is the heartbeat-staleness window past which an owning node is
+// treated as terminally dead (the op then fails fast and terminally rather than
+// burning the retry budget); it defaults to 5 minutes when <= 0.
+func LifecycleHandler(st WorkerStore, exec LifecycleExecutor, log *slog.Logger, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string, staleGrace time.Duration) func(context.Context, []byte) error {
+	if staleGrace <= 0 {
+		staleGrace = defaultStaleGrace
+	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMStartArgs // every lifecycle Args shares {task_id, vm_id, node_id}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.%s args: %v", op, err)
 		}
-		return runLifecycle(ctx, st, exec, log, args.TaskID, args.VMID, args.NodeID, op, desiredPhase, runtimePhase, failureCode)
+		return runLifecycle(ctx, st, exec, log, args.TaskID, args.VMID, args.NodeID, op, desiredPhase, runtimePhase, failureCode, staleGrace)
 	}
 }
 
-func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string) error {
+func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string, staleGrace time.Duration) error {
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
 	}
@@ -188,9 +310,18 @@ func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, l
 	if err != nil {
 		return failRun(ctx, st, log, "vms."+op, taskID, classifyLoadErr(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
-	node, err := st.NodeByID(ctx, nodeID)
-	if err != nil {
-		return failRun(ctx, st, log, "vms."+op, taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
+	node, nodeErr := st.NodeByID(ctx, nodeID)
+	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
+		// Transient store error: retryable.
+		return failRun(ctx, st, log, "vms."+op, taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
+	}
+	if nodeTerminallyDead(node, nodeErr, staleGrace) {
+		// No agent will ever service a lifecycle op on a gone/unreachable node;
+		// fail terminally rather than burning the retry budget on a doomed op.
+		// This does NOT project success - the op did not happen, so projecting
+		// success would lie about runtime state.
+		return failTerminal(ctx, st, log, "vms."+op, taskID, errCodeVMNodeMissing,
+			fmt.Errorf("owning node %s is gone or unreachable; cannot %s vm", nodeID, op))
 	}
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
@@ -263,10 +394,11 @@ func classifyLoadErr(err error, notFoundCode string) string {
 	return "internal"
 }
 
-// failRun writes the terminal failed envelope and returns cause so the
-// dispatcher decides requeue vs fail against the kind's attempt budget. Mirrors
-// the river workers' fail() against the WorkerStore mutator.
-func failRun(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
+// finalizeFailed writes the terminal failed envelope for taskID. It returns nil
+// on a successful write, or a wrapped error if the finalize write itself failed
+// (the caller should retry so the envelope eventually persists). Mirrors the
+// river workers' fail() against the WorkerStore mutator.
+func finalizeFailed(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
 	envelope, marshalErr := marshalTaskError(code, cause.Error())
 	if marshalErr != nil {
 		envelope = []byte(`{"code":"internal","message":"marshal error envelope failed"}`)
@@ -276,5 +408,24 @@ func failRun(ctx context.Context, st WorkerStore, log *slog.Logger, op string, t
 		log.ErrorContext(ctx, op+" finalize-failed write failed", "task_id", taskID, "code", code, "error", err)
 		return fmt.Errorf("finalize failed: %v (cause: %v)", err, cause)
 	}
+	return nil
+}
+
+// failRun writes the failed envelope and returns cause, so the dispatcher
+// RETRIES (the failure may be transient) against the kind's attempt budget. A
+// finalize-write error preempts cause and is returned so the envelope persists.
+func failRun(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
+	if err := finalizeFailed(ctx, st, log, op, taskID, code, cause); err != nil {
+		return err
+	}
 	return cause
+}
+
+// failTerminal writes the failed envelope and returns nil, so the dispatcher
+// COMPLETES (deletes) the job instead of retrying. Use it for conditions that
+// cannot become satisfiable on retry (the owning node is gone/unreachable),
+// avoiding a doomed op burning its whole attempt budget. A finalize-write error
+// is still returned (retry so the envelope persists).
+func failTerminal(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
+	return finalizeFailed(ctx, st, log, op, taskID, code, cause)
 }

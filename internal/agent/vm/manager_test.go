@@ -7,11 +7,17 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/agent/qemu"
+	"github.com/otherix/otherix/internal/agent/state"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -34,6 +40,20 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// writeTemplate materialises an empty pool template file at the path
+// Manager.Create stats before accepting a create, so a test can drive the
+// happy path without a real qcow2.
+func writeTemplate(t *testing.T, poolRoot, checksum string) {
+	t.Helper()
+	dir := filepath.Join(poolRoot, "templates")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir templates: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, checksum+".qcow2"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+}
+
 func TestManager_New_ValidatesStatePath(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -47,7 +67,7 @@ func TestManager_New_ValidatesStatePath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, _, _ := newTestConfig(t)
 			tc.mut(cfg)
-			_, err := New(cfg, discardLogger())
+			_, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 			if tc.wantErr && err == nil {
 				t.Fatalf("New(%s) = nil, want error", tc.name)
 			}
@@ -73,7 +93,7 @@ func TestManager_AddPool_Validates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, _, _ := newTestConfig(t)
-			m, err := New(cfg, discardLogger())
+			m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -90,7 +110,7 @@ func TestManager_AddPool_Validates(t *testing.T) {
 
 func TestManager_Create_ValidationErrors(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -126,7 +146,7 @@ func TestManager_Create_ValidationErrors(t *testing.T) {
 
 func TestManager_Create_UnknownPool(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -146,9 +166,85 @@ func TestManager_Create_UnknownPool(t *testing.T) {
 	}
 }
 
+// TestManager_Create_DuplicateVMID_IsIdempotent confirms that a second
+// Create for a vmID already present does NOT overwrite the in-flight VM
+// entry or re-materialise its NICs. The CP mints a fresh idempotency key
+// per attempt and the agent has no idempotency middleware, so a job
+// redelivered before the CP persisted the agent_task_id re-POSTs and would
+// otherwise clobber the live VM (tap churn / state loss). The duplicate
+// must re-accept the original create task so the CP worker resumes against
+// the same agent_task_id.
+func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	fab := &netfabric.FakeFabric{}
+	m, err := New(cfg, fab, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	checksum := "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+	writeTemplate(t, poolRoot, checksum)
+
+	vmID := uuid.New()
+	nic := sampleNIC()
+
+	// Seed an in-flight VM the way the first Create would, plus its create
+	// task, without racing the async runCreate goroutine.
+	original := &VM{
+		ID:           vmID,
+		Name:         "live-vm",
+		PoolName:     poolName,
+		Architecture: qemu.HostArch(),
+		Status:       StatusCreating,
+		NICs:         []netfabric.NIC{nic},
+	}
+	origTask := m.tasks.Create(TaskKindVMCreate, vmID)
+	m.mu.Lock()
+	m.vms[vmID] = original
+	m.createTasks[vmID] = origTask.ID
+	m.mu.Unlock()
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		UUID:             vmID,
+		Name:             "live-vm",
+		VCPUs:            2,
+		MemoryMB:         1024,
+		PoolName:         poolName,
+		TemplateChecksum: checksum,
+		NICs:             []netfabric.NIC{nic},
+	})
+	if err != nil {
+		t.Fatalf("duplicate Create = %v, want idempotent re-accept", err)
+	}
+
+	// The original create task is re-accepted so the CP worker resumes
+	// against the same agent_task_id.
+	if task.ID != origTask.ID {
+		t.Errorf("duplicate Create task ID = %s, want original %s", task.ID, origTask.ID)
+	}
+
+	// The in-flight VM entry must be the SAME pointer: not overwritten.
+	m.mu.Lock()
+	got := m.vms[vmID]
+	m.mu.Unlock()
+	if got != original {
+		t.Errorf("vms[%s] pointer changed; duplicate Create clobbered the in-flight VM", vmID)
+	}
+
+	// No second materialiseNICs: the duplicate must not spawn a runCreate,
+	// so the fabric saw no tap churn.
+	if len(fab.CreateTapCalls) != 0 || len(fab.AttachTapCalls) != 0 {
+		t.Errorf("duplicate Create touched the fabric: createTap=%v attachTap=%v",
+			fab.CreateTapCalls, fab.AttachTapCalls)
+	}
+}
+
 func TestManager_Get_NotFound(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -159,7 +255,7 @@ func TestManager_Get_NotFound(t *testing.T) {
 
 func TestManager_List_Empty(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -170,7 +266,7 @@ func TestManager_List_Empty(t *testing.T) {
 
 func TestManager_InFlightGuard_AcquireReleaseAndQuery(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -207,7 +303,7 @@ func TestManager_InFlightGuard_AcquireReleaseAndQuery(t *testing.T) {
 // task surfaces the failure but the VM itself is not in StatusFailed.
 func TestManager_FailTaskOnly_DoesNotMutateVMStatus(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -256,7 +352,7 @@ func TestManager_FailTaskOnly_DoesNotMutateVMStatus(t *testing.T) {
 // poweroff escalation).
 func TestManager_FailTask_MutatesVMStatusToFailed(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -291,9 +387,86 @@ func TestManager_FailTask_MutatesVMStatusToFailed(t *testing.T) {
 	}
 }
 
+// TestManager_New_SweepsOrphanTaps locks the startup orphan-tap sweep:
+// taps the host reports that do NOT belong to any replayed VM are
+// reclaimed; taps that DO belong to a replayed VM are left alone.
+func TestManager_New_SweepsOrphanTaps(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+
+	// A replayed VM whose single NIC implies a kept tap.
+	vmID := uuid.New()
+	nic := sampleNIC()
+	keepTap := nic.TapName()
+	meta := &state.VMMeta{
+		VMID:         vmID,
+		Name:         "kept-vm",
+		VCPUs:        2,
+		MemoryMB:     1024,
+		PoolName:     "default",
+		Architecture: string(qemu.HostArch()),
+		Status:       string(StatusStopped),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+		NICs:         nicsToMeta([]netfabric.NIC{nic}),
+	}
+	if err := state.WriteMeta(filepath.Join(cfg.StatePath, vmID.String()), meta); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+
+	orphanTap := "otdeadbeef0000"
+	fake := &netfabric.FakeFabric{ListTapsResult: []string{keepTap, orphanTap}}
+
+	if _, err := New(cfg, fake, discardLogger()); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if fake.ListTapsCalls != 1 {
+		t.Errorf("ListTapsCalls = %d, want 1", fake.ListTapsCalls)
+	}
+	want := []string{orphanTap}
+	if diff := cmp.Diff(want, fake.DeleteTapCalls); diff != "" {
+		t.Errorf("DeleteTapCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestManager_New_SweepsOrphanTaps_NoVMs covers the VM-less manager: a
+// host tap with no owning VM is reclaimed.
+func TestManager_New_SweepsOrphanTaps_NoVMs(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	orphanTap := "otcccccccc0000"
+	fake := &netfabric.FakeFabric{ListTapsResult: []string{orphanTap}}
+
+	if _, err := New(cfg, fake, discardLogger()); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	want := []string{orphanTap}
+	if diff := cmp.Diff(want, fake.DeleteTapCalls); diff != "" {
+		t.Errorf("DeleteTapCalls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestManager_New_OrphanSweep_ToleratesListTapsError ensures a ListTaps
+// failure skips the sweep without failing manager startup.
+func TestManager_New_OrphanSweep_ToleratesListTapsError(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	fake := &netfabric.FakeFabric{Errs: map[string]error{"ListTaps": errors.New("boom")}}
+
+	m, err := New(cfg, fake, discardLogger())
+	if err != nil {
+		t.Fatalf("New must not fail on ListTaps error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("New returned nil manager")
+	}
+	if len(fake.DeleteTapCalls) != 0 {
+		t.Errorf("DeleteTapCalls = %v, want none (sweep skipped on ListTaps error)", fake.DeleteTapCalls)
+	}
+}
+
 func TestManager_InFlightGuard_EmptyName_IsNoOp(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

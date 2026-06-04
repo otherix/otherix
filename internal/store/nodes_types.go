@@ -57,6 +57,11 @@ type MarkNodesUnreachableRow struct {
 	LastHeartbeatAt *time.Time
 }
 
+type MarkNodesGoneRow struct {
+	ID   uuid.UUID
+	Name string
+}
+
 type PromoteHealthyNodesRow struct {
 	ID     uuid.UUID
 	Name   string

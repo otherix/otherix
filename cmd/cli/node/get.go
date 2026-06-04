@@ -4,7 +4,6 @@
 package node
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -42,21 +41,15 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	showIDs, _ := cmd.Flags().GetBool(flagShowIDs)
 
-	n, err := c.GetNode(cmd.Context(), identifier)
+	n, raw, err := c.GetNode(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
 
-	switch format {
-	case "json":
-		raw, err := json.MarshalIndent(n, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-	default:
-		printNodeText(cmd, n, showIDs)
+	if format == "json" {
+		return printJSON(cmd, raw)
 	}
+	printNodeText(cmd, n, showIDs)
 	return nil
 }
 
@@ -80,6 +73,7 @@ func printNodeText(cmd *cobra.Command, n cpclient.Node, showIDs bool) {
 	printNodeHardware(cmd, n)
 	printNodePressure(cmd, n)
 	printNodeAgent(cmd, n)
+	printNodeWireguard(cmd, n)
 	printf(cmd, "created_at: %s\n", n.CreatedAt)
 	if n.UpdatedAt != nil {
 		printf(cmd, "updated_at: %s\n", *n.UpdatedAt)
@@ -166,6 +160,32 @@ func printNodePressure(cmd *cobra.Command, n cpclient.Node) {
 	printf(cmd, "pressure:\n")
 	printNodePressureLine(cmd, "memory", n.MemoryPressure)
 	printNodePressureLine(cmd, "system_disk", n.SystemDiskPressure)
+	printNodePressureWireguard(cmd, n.WireGuard)
+}
+
+// printNodePressureWireguard emits the at-a-glance WG underlay health line in
+// the node health block. The WG fabric is per-node infrastructure (one otwg0
+// shared by every overlay), so unlike per-network bridge health (network
+// conditions) it rolls up to a single node-level line here; the detailed fabric
+// block (printNodeWireguard) carries the peers. Omitted when the caller does not
+// receive the fabric block (developer/viewer, or a node that has not reported WG
+// yet) so lower-privilege views render unchanged.
+func printNodePressureWireguard(cmd *cobra.Command, wg *cpclient.NodeWireguard) {
+	if wg == nil {
+		return
+	}
+	switch wg.Status {
+	case "", "ready":
+		printf(cmd, "  wireguard: ok\n")
+	case "failed":
+		if wg.Error != nil && *wg.Error != "" {
+			printf(cmd, "  wireguard: failed (%s)\n", *wg.Error)
+			return
+		}
+		printf(cmd, "  wireguard: failed\n")
+	default:
+		printf(cmd, "  wireguard: %s\n", wg.Status)
+	}
 }
 
 // printNodePressureLine emits one indented `<type>: ...` row. Active
@@ -179,6 +199,45 @@ func printNodePressureLine(cmd *cobra.Command, label string, p *cpclient.Pressur
 	}
 	printf(cmd, "  %s: active since %s ago (consecutive_count=%d)\n",
 		label, humanAge(p.Since), p.ConsecutiveCount)
+}
+
+// printNodeWireguard renders the WG underlay fabric block when present: the
+// node's own overlay identity then a peers table. Omitted cleanly when the
+// server did not populate the block (developer/viewer, or pre-WG-report node).
+func printNodeWireguard(cmd *cobra.Command, n cpclient.Node) {
+	if n.WireGuard == nil {
+		return
+	}
+	wg := n.WireGuard
+	printf(cmd, "wireguard:\n")
+	printf(cmd, "  overlay_ip: %s\n", wg.OverlayIP)
+	printf(cmd, "  public_key: %s\n", wg.PublicKey)
+	printf(cmd, "  listen_port: %d\n", wg.ListenPort)
+	if wg.Endpoint != "" {
+		printf(cmd, "  endpoint: %s\n", wg.Endpoint)
+	}
+	if wg.Status != "" {
+		printf(cmd, "  reconciliation_status: %s\n", wg.Status)
+	}
+	if wg.Status == "failed" && wg.Error != nil {
+		printf(cmd, "  reconciliation_error: %s\n", *wg.Error)
+	}
+	if len(wg.Peers) == 0 {
+		printf(cmd, "  peers: none\n")
+		return
+	}
+	printf(cmd, "  peers:\n")
+	for _, p := range wg.Peers {
+		name := p.NodeID
+		if p.NodeName != nil && *p.NodeName != "" {
+			name = *p.NodeName
+		}
+		state := "down"
+		if p.Established {
+			state = "established"
+		}
+		printf(cmd, "    %s  %s  %s\n", name, p.OverlayIP, state)
+	}
 }
 
 func printNodeAgent(cmd *cobra.Command, n cpclient.Node) {

@@ -126,6 +126,7 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 		Pool:             args.Pool.Name,
 		TemplateChecksum: templateChecksumHex(args.Template),
 		UserData:         resolveCloudInitUserData(args.VM, args.Template),
+		Nics:             args.NICs,
 	}
 	agentTaskID, err := e.client.PostVMCreate(ctx, args.Node.AdvertisedEndpoint, idemKey, body)
 	if err != nil {

@@ -250,3 +250,61 @@ func TestNodeDeleteBlockingAndForceCascade(t *testing.T) {
 		t.Errorf("node name not reusable after delete: %v", err)
 	}
 }
+
+// TestNodeForceDeleteRetryConvergence drives the real DeleteNode force path twice
+// to prove the chunked cascade converges on retry: the first call cancels +
+// orphans + soft-deletes; the second sees the soft-deleted node row and returns
+// store.ErrNotFound without double-cancel/double-orphan corruption.
+func TestNodeForceDeleteRetryConvergence(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	p := nodeParams(uniqueNodeName("conv"))
+	if _, err := s.CreateNode(ctx, p); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	vmID := uuid.New()
+	rt := store.VMRuntime{VmID: vmID, CurrentNodeID: &p.ID, Phase: store.VmPhaseRunning}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_runtime", vmID.String()), rt); err != nil {
+		t.Fatalf("seed vm_runtime: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vm_runtime", "node", p.ID.String(), vmID.String()), []byte(vmID.String())); err != nil {
+		t.Fatalf("seed vm_runtime index: %v", err)
+	}
+	migID := uuid.New()
+	mig := store.Migration{ID: migID, VmID: vmID, SourceNodeID: &p.ID, Phase: store.MigrationPhaseActive}
+	if err := cli.PutJSON(ctx, etcd.Key("migrations", migID.String()), mig); err != nil {
+		t.Fatalf("seed migration: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "migrations", "node", p.ID.String(), migID.String()), []byte(migID.String())); err != nil {
+		t.Fatalf("seed migration index: %v", err)
+	}
+
+	out, err := s.DeleteNode(ctx, p.ID, true, uuid.New())
+	if err != nil {
+		t.Fatalf("DeleteNode(force) first call: %v", err)
+	}
+	if out.VMsOrphaned != 1 || out.MigrationsCancelled != 1 {
+		t.Errorf("outcome = %+v, want VMsOrphaned=1 MigrationsCancelled=1", out)
+	}
+
+	var gotRT store.VMRuntime
+	if _, err := cli.GetJSON(ctx, etcd.Key("vm_runtime", vmID.String()), &gotRT); err != nil {
+		t.Fatalf("read vm_runtime: %v", err)
+	}
+	if gotRT.Phase != store.VmPhaseOrphaned || gotRT.CurrentNodeID != nil {
+		t.Errorf("vm_runtime = %+v, want orphaned + nil node", gotRT)
+	}
+	var gotMig store.Migration
+	if _, err := cli.GetJSON(ctx, etcd.Key("migrations", migID.String()), &gotMig); err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if gotMig.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("migration phase = %v, want cancelled", gotMig.Phase)
+	}
+
+	// Retry: node row is already soft-deleted, so NodeByID at the top returns
+	// ErrNotFound - convergence with no double-cancel/double-orphan.
+	if _, err := s.DeleteNode(ctx, p.ID, true, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteNode(force) retry = %v, want store.ErrNotFound", err)
+	}
+}

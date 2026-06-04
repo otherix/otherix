@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -68,6 +69,163 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 	task, err := s.TaskByID(ctx, taskID)
 	if err != nil || task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
 		t.Errorf("task = (%+v, %v), want success + finished", task, err)
+	}
+}
+
+func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, taskID := seedCreatedVM(t, s)
+
+	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	rt := store.UpsertVMRuntimeParams{
+		VmID:               vmID,
+		CurrentNodeID:      &nodeID,
+		Phase:              store.VmPhaseRunning,
+		ObservedGeneration: 1,
+	}
+	fin := store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)}
+
+	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess (first): %v", err)
+	}
+	// Worker redelivery: the task is already terminal, so re-running the
+	// projection must not bump derived_vm_count a second time.
+	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess (redelivery): %v", err)
+	}
+
+	tpl, err := s.TemplateByID(ctx, templateID)
+	if err != nil || tpl.DerivedVmCount != 1 {
+		t.Errorf("derived_vm_count after redelivery = (%d, %v), want 1", tpl.DerivedVmCount, err)
+	}
+}
+
+func TestProjectVMCreateSuccessIdempotentOnWorkerRedelivery(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, taskID := seedCreatedVM(t, s)
+
+	rt := store.UpsertVMRuntimeParams{
+		VmID:               vmID,
+		CurrentNodeID:      &nodeID,
+		Phase:              store.VmPhaseRunning,
+		ObservedGeneration: 1,
+	}
+	fin := store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)}
+
+	// First delivery: the worker stamps the task running before projecting.
+	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning (first delivery): %v", err)
+	}
+	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess (first delivery): %v", err)
+	}
+	// Worker redelivery: the dispatcher calls UpdateTaskRunning AGAIN at the
+	// top of the second delivery, exactly as runCreate does. This must not
+	// demote the terminal task back to running, or the projection's
+	// terminal-task short-circuit will not fire and derived_vm_count is
+	// double-applied.
+	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning (redelivery): %v", err)
+	}
+	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess (redelivery): %v", err)
+	}
+
+	tpl, err := s.TemplateByID(ctx, templateID)
+	if err != nil || tpl.DerivedVmCount != 1 {
+		t.Errorf("derived_vm_count after worker redelivery = (%d, %v), want 1", tpl.DerivedVmCount, err)
+	}
+	task, _ := s.TaskByID(ctx, taskID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task status after worker redelivery = %v, want success (not demoted to running)", task.Status)
+	}
+}
+
+func TestProjectVMDeleteSuccessIdempotentOnWorkerRedelivery(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID,
+		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed create projection: %v", err)
+	}
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask(delete): %v", err)
+	}
+	fin := store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess}
+
+	// First delivery: the worker stamps the task running before projecting.
+	if err := s.UpdateTaskRunning(ctx, delTask.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning (first delivery): %v", err)
+	}
+	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess (first delivery): %v", err)
+	}
+	// Worker redelivery with the per-delivery UpdateTaskRunning, mirroring
+	// runDelete. The terminal task must not regress to running or the
+	// decrement is applied twice (negative drift).
+	if err := s.UpdateTaskRunning(ctx, delTask.ID); err != nil {
+		t.Fatalf("UpdateTaskRunning (redelivery): %v", err)
+	}
+	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess (redelivery): %v", err)
+	}
+
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 0 {
+		t.Errorf("derived_vm_count after worker redelivery = %d, want 0 (no negative drift)", tpl.DerivedVmCount)
+	}
+}
+
+func TestProjectVMDeleteSuccessIdempotentOnRedelivery(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID,
+		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed create projection: %v", err)
+	}
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask(delete): %v", err)
+	}
+	fin := store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess}
+
+	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess (first): %v", err)
+	}
+	// Worker redelivery: the task is already terminal, so re-running the
+	// projection must not decrement derived_vm_count again (no negative drift).
+	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess (redelivery): %v", err)
+	}
+
+	tpl, _ := s.TemplateByID(ctx, templateID)
+	if tpl.DerivedVmCount != 0 {
+		t.Errorf("derived_vm_count after redelivery = %d, want 0", tpl.DerivedVmCount)
 	}
 }
 
@@ -127,6 +285,67 @@ func TestProjectVMDeleteSuccess(t *testing.T) {
 	if task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
 		t.Errorf("delete task = %+v, want success + finished", task)
 	}
+}
+
+// TestProjectVMDeleteReleasesRuntimeNodeIndex verifies the delete projection
+// drops the vm_runtime-by-node secondary index entry the agent heartbeat wrote,
+// so a later DeleteNode does not see a phantom vms blocker. The index entry is
+// maintained only by the heartbeat path (reindexRuntimeNode), so the test seeds
+// it through UpsertVMRuntime, the real flow that binds a VM to a node.
+func TestProjectVMDeleteReleasesRuntimeNodeIndex(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		templateID,
+		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("seed create projection: %v", err)
+	}
+	// The agent heartbeat is what writes the vm_runtime-by-node index entry
+	// (reindexRuntimeNode). Seed it the way the heartbeat does on first bind.
+	idxKey := etcd.Key("index", "vm_runtime", "node", nodeID.String(), vmID.String())
+	if err := cli.Put(ctx, idxKey, []byte(vmID.String())); err != nil {
+		t.Fatalf("seed runtime node index: %v", err)
+	}
+
+	idxPrefix := etcd.Key("index", "vm_runtime", "node", nodeID.String()) + "/"
+	if got := countIndex(t, cli, idxPrefix); got != 1 {
+		t.Fatalf("vm_runtime node index before delete = %d, want 1", got)
+	}
+
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask(delete): %v", err)
+	}
+	if err := s.ProjectVMDeleteSuccess(ctx, vm,
+		store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess: %v", err)
+	}
+
+	if got := countIndex(t, cli, idxPrefix); got != 0 {
+		t.Errorf("vm_runtime node index after delete = %d, want 0 (released)", got)
+	}
+	// Consequence: the node is now deletable without force - no phantom vms blocker.
+	if _, err := s.DeleteNode(ctx, nodeID, false, uuid.New()); err != nil {
+		t.Errorf("DeleteNode(non-force) after vm delete = %v, want nil (no phantom blocker)", err)
+	}
+}
+
+// countIndex returns the number of keys under the given etcd prefix.
+func countIndex(t *testing.T, cli *etcd.Client, prefix string) int {
+	t.Helper()
+	items, err := cli.Range(context.Background(), prefix)
+	if err != nil {
+		t.Fatalf("Range(%q): %v", prefix, err)
+	}
+	return len(items)
 }
 
 func TestProjectVMLifecycleSuccess(t *testing.T) {

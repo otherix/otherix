@@ -26,12 +26,18 @@ import (
 // VCPUs, MemoryMiB and DiskBytes drive the resource-aware fit check +
 // scoring; DiskBytes is derived from the template's default_disk_gib in
 // the single-root-disk model.
+// NetworkIDs lists the cluster-wide networks the VM attaches to. When
+// non-empty, the network-aware filter (ADR 0034 NL18) excludes any
+// candidate node where a requested network's per-(node, network)
+// reconciliation_status is not "ready" (or has no status record at all).
+// Empty NetworkIDs makes the filter a no-op.
 type PlacementRequest struct {
-	PoolName  string
-	NodeHint  *string
-	VCPUs     int
-	MemoryMiB int
-	DiskBytes int64
+	PoolName   string
+	NodeHint   *string
+	VCPUs      int
+	MemoryMiB  int
+	DiskBytes  int64
+	NetworkIDs []uuid.UUID
 }
 
 // PlacementDecision is the scheduler's verdict: the chosen node row
@@ -270,6 +276,65 @@ func ExtractNodePressureDetail(err error) (*NodePressureDetail, bool) {
 	return nil, false
 }
 
+// UnreadyNetwork names one requested network that excluded a node, with
+// the per-(node, network) reconciliation status that disqualified it.
+// Status is "failed", "pending", or "missing" (no status record at all —
+// the agent has not yet reported the network on this node). The
+// network is referenced by id; the handler edge resolves names for the
+// envelope when it has them.
+type UnreadyNetwork struct {
+	NetworkID uuid.UUID `json:"network_id"`
+	Status    string    `json:"status"`
+}
+
+// NetworkUnreadyNode is a single entry in the network-unready payload:
+// one excluded node plus every requested network that was not ready on
+// it. Nodes are referenced by name, consistent with the other detail
+// shapes.
+type NetworkUnreadyNode struct {
+	Node     string           `json:"node"`
+	Networks []UnreadyNetwork `json:"networks"`
+}
+
+// NetworkUnreadyDetail is the structured payload attached to
+// ErrNoEligibleNodes when at least one candidate that otherwise fit the
+// request was excluded specifically because a requested network had not
+// reconciled to "ready" on it (ADR 0034 NL18). Distinct from
+// NodePressureDetail and InsufficientResourcesDetail because the
+// operator action differs: a failed network reconciliation calls for
+// inspecting the agent's network materialisation, not capacity or
+// pressure.
+type NetworkUnreadyDetail struct {
+	Nodes []NetworkUnreadyNode
+}
+
+// networkUnreadyError wraps ErrNoEligibleNodes with a structured
+// network-unready payload. Surfaced by the handler edge via
+// ExtractNetworkUnreadyDetail.
+type networkUnreadyError struct {
+	Detail NetworkUnreadyDetail
+}
+
+func (e *networkUnreadyError) Error() string {
+	return fmt.Sprintf("scheduler: %s: %d node(s) with an unready requested network",
+		ErrNoEligibleNodes.Error(), len(e.Detail.Nodes))
+}
+
+func (e *networkUnreadyError) Unwrap() error { return ErrNoEligibleNodes }
+
+// ExtractNetworkUnreadyDetail walks the error chain looking for a
+// network-unready payload. Returns (detail, true) when the chain carries
+// one. Returns (nil, false) otherwise so the caller can fall through to
+// the other ErrNoEligibleNodes detail shapes.
+func ExtractNetworkUnreadyDetail(err error) (*NetworkUnreadyDetail, bool) {
+	var wrap *networkUnreadyError
+	if errors.As(err, &wrap) && wrap != nil {
+		d := wrap.Detail
+		return &d, true
+	}
+	return nil, false
+}
+
 // Querier is the subset of store.Querier SchedulePlacement reads from.
 // Keeping the surface narrow lets unit tests pass an in-memory fake.
 //
@@ -286,6 +351,10 @@ type Querier interface {
 	ListDiskPressuredPoolsByName(ctx context.Context, name string) ([]store.ListDiskPressuredPoolsByNameRow, error)
 	ListStoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error)
+	// ListNetworkNodeStatusByNode returns every per-network reconciliation
+	// record owned by the node. The network-aware filter reads it once per
+	// surviving candidate when the request names at least one network.
+	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error)
 }
 
 // SchedulePlacement picks a node + pool instance for a VM create.
@@ -328,40 +397,7 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 	}
 
 	if len(eligible) == 0 {
-		// Distinguish "pool name not in cluster at all" from "pool
-		// exists but every host is cordoned/unreachable/pressured". A
-		// separate ListStoragePoolsByName lookup is cheap and the
-		// diagnostic is worth it; the handler maps the two to different
-		// envelope codes (404 vs 409).
-		any, listErr := q.ListStoragePoolsByName(ctx, req.PoolName)
-		if listErr != nil {
-			return PlacementDecision{}, fmt.Errorf("scheduler: list any pools: %w", listErr)
-		}
-		if len(any) == 0 {
-			return PlacementDecision{}, fmt.Errorf("scheduler: pool %q: %w", req.PoolName, ErrPoolNotFound)
-		}
-		// Pool exists somewhere but nothing was eligible. Run the three
-		// diagnostic queries (one per pressure type) and combine into a
-		// single per-(node, pool) detail. Even when only one type fires,
-		// the structured payload gives the operator something actionable
-		// to look at.
-		mem, mErr := q.ListMemoryPressuredCandidatesByName(ctx, req.PoolName)
-		if mErr != nil {
-			return PlacementDecision{}, fmt.Errorf("scheduler: list memory-pressured candidates: %w", mErr)
-		}
-		sysDisk, sErr := q.ListSystemDiskPressuredCandidatesByName(ctx, req.PoolName)
-		if sErr != nil {
-			return PlacementDecision{}, fmt.Errorf("scheduler: list system-disk-pressured candidates: %w", sErr)
-		}
-		poolDisk, dErr := q.ListDiskPressuredPoolsByName(ctx, req.PoolName)
-		if dErr != nil {
-			return PlacementDecision{}, fmt.Errorf("scheduler: list disk-pressured pools: %w", dErr)
-		}
-		if len(mem)+len(sysDisk)+len(poolDisk) > 0 {
-			detail := buildNodePressureDetail(mem, sysDisk, poolDisk)
-			return PlacementDecision{}, fmt.Errorf("scheduler: pool %q has no eligible nodes (pressure): %w", req.PoolName, &nodePressureError{Detail: detail})
-		}
-		return PlacementDecision{}, fmt.Errorf("scheduler: pool %q has no eligible nodes: %w", req.PoolName, ErrNoEligibleNodes)
+		return PlacementDecision{}, diagnoseEmptyEligible(ctx, q, req.PoolName)
 	}
 
 	if req.NodeHint != nil {
@@ -390,6 +426,11 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 		return PlacementDecision{}, fmt.Errorf("scheduler: pool %q: %w", req.PoolName, &insufficientResourcesError{Detail: detail})
 	}
 
+	fits, err = applyNetworkFilter(ctx, q, fits, req)
+	if err != nil {
+		return PlacementDecision{}, err
+	}
+
 	scored, err := scoreCandidates(ctx, q, fits, req, cfg, algorithm)
 	if err != nil {
 		return PlacementDecision{}, fmt.Errorf("scheduler: score candidates: %w", err)
@@ -399,6 +440,41 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 		Node:         winner.row.NodeEffectiveAvailability,
 		PoolInstance: winner.row.PoolEffectiveCapacity,
 	}, nil
+}
+
+// diagnoseEmptyEligible runs when the eligibility query returned nothing.
+// It distinguishes "pool name not in cluster at all" (ErrPoolNotFound,
+// 404) from "pool exists but every host is cordoned / unreachable /
+// pressured" (ErrNoEligibleNodes, 409). A separate ListStoragePoolsByName
+// lookup is cheap and the diagnostic is worth it. When the pool exists
+// somewhere it runs the three pressure-diagnostic queries and combines
+// their hits into a single NodePressureDetail so the operator has
+// something actionable even when only one pressure type fired.
+func diagnoseEmptyEligible(ctx context.Context, q Querier, poolName string) error {
+	any, listErr := q.ListStoragePoolsByName(ctx, poolName)
+	if listErr != nil {
+		return fmt.Errorf("scheduler: list any pools: %w", listErr)
+	}
+	if len(any) == 0 {
+		return fmt.Errorf("scheduler: pool %q: %w", poolName, ErrPoolNotFound)
+	}
+	mem, mErr := q.ListMemoryPressuredCandidatesByName(ctx, poolName)
+	if mErr != nil {
+		return fmt.Errorf("scheduler: list memory-pressured candidates: %w", mErr)
+	}
+	sysDisk, sErr := q.ListSystemDiskPressuredCandidatesByName(ctx, poolName)
+	if sErr != nil {
+		return fmt.Errorf("scheduler: list system-disk-pressured candidates: %w", sErr)
+	}
+	poolDisk, dErr := q.ListDiskPressuredPoolsByName(ctx, poolName)
+	if dErr != nil {
+		return fmt.Errorf("scheduler: list disk-pressured pools: %w", dErr)
+	}
+	if len(mem)+len(sysDisk)+len(poolDisk) > 0 {
+		detail := buildNodePressureDetail(mem, sysDisk, poolDisk)
+		return fmt.Errorf("scheduler: pool %q has no eligible nodes (pressure): %w", poolName, &nodePressureError{Detail: detail})
+	}
+	return fmt.Errorf("scheduler: pool %q has no eligible nodes: %w", poolName, ErrNoEligibleNodes)
 }
 
 // filterByNodeHint narrows the candidate list to the row whose node
@@ -463,6 +539,76 @@ func filterByResources(rows []store.ListEligiblePoolsByNameRow, req PlacementReq
 	}
 	return fits, rejected
 }
+
+// applyNetworkFilter runs the network-aware placement gate when the
+// request names at least one network and returns the surviving
+// candidates. An empty NetworkIDs makes it a pass-through (the network-
+// status query is never consulted). When every candidate is excluded it
+// returns an ErrNoEligibleNodes chain carrying the NetworkUnreadyDetail;
+// a Querier failure is wrapped verbatim. Keeping the branching here
+// keeps SchedulePlacement's cyclomatic complexity in check.
+func applyNetworkFilter(ctx context.Context, q Querier, fits []candidate, req PlacementRequest) ([]candidate, error) {
+	if len(req.NetworkIDs) == 0 {
+		return fits, nil
+	}
+	survivors, detail, err := filterByNetworkReadiness(ctx, q, fits, req.NetworkIDs)
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: filter by network readiness: %w", err)
+	}
+	if len(survivors) == 0 {
+		return nil, fmt.Errorf("scheduler: pool %q has no node with every requested network ready: %w", req.PoolName, &networkUnreadyError{Detail: detail})
+	}
+	return survivors, nil
+}
+
+// filterByNetworkReadiness applies the network-aware placement filter
+// (ADR 0034 NL18). For each candidate that already passed the resource
+// fit, it loads the node's per-(node, network) reconciliation records and
+// keeps the candidate only when every requested network id is present
+// with status "ready". A network that is missing, "pending", or "failed"
+// excludes the node; the rejected node and its offending networks are
+// accumulated into a NetworkUnreadyDetail so the no-eligible error can
+// explain which node failed on which network. Candidate order is
+// preserved in both the survivor and rejected lists. Caller guarantees
+// len(networkIDs) > 0.
+func filterByNetworkReadiness(ctx context.Context, q Querier, fits []candidate, networkIDs []uuid.UUID) (survivors []candidate, detail NetworkUnreadyDetail, err error) {
+	for _, c := range fits {
+		nodeID := c.row.NodeEffectiveAvailability.ID
+		statuses, listErr := q.ListNetworkNodeStatusByNode(ctx, nodeID)
+		if listErr != nil {
+			return nil, NetworkUnreadyDetail{}, fmt.Errorf("list network status for node %s: %w", nodeID, listErr)
+		}
+		byNetwork := make(map[uuid.UUID]string, len(statuses))
+		for _, st := range statuses {
+			byNetwork[st.NetworkID] = st.ReconciliationStatus
+		}
+		var unready []UnreadyNetwork
+		for _, netID := range networkIDs {
+			status, ok := byNetwork[netID]
+			if !ok {
+				unready = append(unready, UnreadyNetwork{NetworkID: netID, Status: "missing"})
+				continue
+			}
+			if status != networkStatusReady {
+				unready = append(unready, UnreadyNetwork{NetworkID: netID, Status: status})
+			}
+		}
+		if len(unready) > 0 {
+			detail.Nodes = append(detail.Nodes, NetworkUnreadyNode{
+				Node:     c.row.NodeEffectiveAvailability.Name,
+				Networks: unready,
+			})
+			continue
+		}
+		survivors = append(survivors, c)
+	}
+	return survivors, detail, nil
+}
+
+// networkStatusReady is the per-(node, network) reconciliation_status a
+// candidate must report for every requested network before the
+// network-aware filter admits it.
+const networkStatusReady = "ready"
 
 // fitsAllResources walks the per-resource gate. Effective columns are
 // guaranteed non-nil by candidateHasMetrics for every enabled resource,

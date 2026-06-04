@@ -22,6 +22,43 @@ type Report struct {
 	Resources    NodeResources    `json:"resources"`
 	VMs          []VMReport       `json:"vms"`
 	Pools        []PoolReport     `json:"pools,omitempty"`
+	Networks     []NetworkReport  `json:"networks,omitempty"`
+	WireGuard    *WireGuardReport `json:"wireguard,omitempty"`
+}
+
+// WireGuardReport is the agent's observed WG interface state (the heartbeat
+// up-channel). PublicKey + Endpoint are authoritative for CP redistribution;
+// ListenPort + EstablishedPeers are observability. ReconciliationStatus
+// (pending/ready/failed) + ReconciliationError surface the outcome of the WG
+// reconciler's last pass so an otwg0 failure is visible like a bridge failure.
+type WireGuardReport struct {
+	PublicKey            string   `json:"public_key"`
+	Endpoint             string   `json:"endpoint"`
+	ListenPort           int32    `json:"listen_port"`
+	EstablishedPeers     []string `json:"established_peers,omitempty"`
+	ReconciliationStatus string   `json:"reconciliation_status"`
+	ReconciliationError  *string  `json:"reconciliation_error"`
+}
+
+// DeclaredWireGuardPeer is one other agent the CP wants in this agent's WG mesh
+// (the heartbeat down-channel). AllowedIPs carries the peer's overlay /32.
+type DeclaredWireGuardPeer struct {
+	NodeID     string   `json:"node_id"`
+	PublicKey  string   `json:"public_key"`
+	Endpoint   string   `json:"endpoint"`
+	OverlayIP  string   `json:"overlay_ip"`
+	AllowedIPs []string `json:"allowed_ips"`
+}
+
+// DeclaredFDBEntry is one controller-programmed VXLAN FDB entry the CP wants in
+// this node's otvx<vni> kernel FDB (the heartbeat down-channel). A normal MAC is
+// a per-VM unicast entry (mac -> the remote VM's owning-node VTEP); the all-zeros
+// MAC "00:00:00:00:00:00" is a BUM/flood entry (head-end replication to that
+// remote VTEP). VtepIP is the remote node's otwg0 overlay host IP.
+type DeclaredFDBEntry struct {
+	VNI    int32  `json:"vni"`
+	MAC    string `json:"mac"`
+	VtepIP string `json:"vtep_ip"`
 }
 
 // PoolReport mirrors HeartbeatPoolReport — one entry per pool the
@@ -36,6 +73,17 @@ type PoolReport struct {
 	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
 }
 
+// NetworkReport mirrors HeartbeatNetworkReport — one entry per network
+// the agent has observed after a reconciliation pass. Networks are
+// cluster-wide, so the report keys on the network id (uuid), unlike
+// PoolReport which keys on the node-scoped pool name. The CP upserts
+// the (network_id, node_id) status record from each entry.
+type NetworkReport struct {
+	ID                   string  `json:"id"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+}
+
 // Response mirrors HeartbeatResponse. The CP returns the desired
 // pool inventory (declared_pools) on every heartbeat so the agent
 // reconciler keeps its desired-state cache fresh without requiring a
@@ -44,9 +92,39 @@ type PoolReport struct {
 // desired_phase + generation) so the agent's VM reconciler can diff
 // observed vs declared and apply corrective lifecycle ops.
 type Response struct {
-	ReceivedAt    string         `json:"received_at"`
-	DeclaredPools []DeclaredPool `json:"declared_pools"`
-	DeclaredVMs   []DeclaredVM   `json:"declared_vms"`
+	ReceivedAt             string                  `json:"received_at"`
+	DeclaredPools          []DeclaredPool          `json:"declared_pools"`
+	DeclaredVMs            []DeclaredVM            `json:"declared_vms"`
+	DeclaredNetworks       []DeclaredNetwork       `json:"declared_networks"`
+	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
+	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
+	DeclaredFDB            []DeclaredFDBEntry      `json:"declared_fdb"`
+	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead).
+	// Nil from an older CP or before the underlay MTU is known; the WG
+	// reconciler falls back to netfabric.WireGuardMTU when absent.
+	Otwg0MTU *int32 `json:"otwg0_mtu"`
+	// OverlayReachability is the per-VNI non-blocking reachability signal: how
+	// many remote placements the CP omitted from DeclaredFDB because the owning
+	// node has no overlay IP yet. Observability only; the agent never gates the
+	// overlay on it, converging on the (smaller) programmable FDB set it does
+	// receive.
+	OverlayReachability []OverlayReachability `json:"overlay_reachability,omitempty"`
+}
+
+// OverlayReachability is the per-VNI non-blocking reachability signal the CP
+// reports down-channel. SkippedNoIP counts remote placements dropped from
+// DeclaredFDB for that VNI because the owning node lacks an overlay IP.
+// EstablishedPeers/TotalPeers report how many of the VNI's distinct flood-target
+// VTEPs the reporting node currently has an established WireGuard handshake with —
+// a flood target up in the FDB but with no live tunnel still blackholes BUM
+// traffic. The agent surfaces these as signals (a remote VM unreachable until its
+// node gets an overlay IP, or until its tunnel establishes) without ever holding
+// the overlay at pending — per-peer reachability is non-blocking.
+type OverlayReachability struct {
+	VNI              int32 `json:"vni"`
+	SkippedNoIP      int32 `json:"skipped_no_ip"`
+	EstablishedPeers int32 `json:"established_peers"`
+	TotalPeers       int32 `json:"total_peers"`
 }
 
 // DeclaredPool mirrors HeartbeatDeclaredPool — one pool the CP wants
@@ -69,6 +147,25 @@ type DeclaredVM struct {
 	Name         string `json:"name"`
 	DesiredPhase string `json:"desired_phase"`
 	Generation   int64  `json:"generation"`
+}
+
+// DeclaredNetwork mirrors HeartbeatDeclaredNetwork — one network the CP
+// wants materialised on this node. Networks are cluster-wide, so every
+// node receives the same list. The agent reconciler diffs the declared
+// set against its observed bridges and applies changes autonomously.
+// Subnet (canonical CIDR) and Gateway (IP) are populated when
+// Egress="nat", null otherwise. VNI is non-nil only for type=overlay.
+type DeclaredNetwork struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Managed    bool    `json:"managed"`
+	Egress     string  `json:"egress"`
+	BridgeName string  `json:"bridge_name"`
+	Mtu        int32   `json:"mtu"`
+	VNI        *int32  `json:"vni"`
+	Subnet     *string `json:"subnet"`
+	Gateway    *string `json:"gateway"`
 }
 
 // MigrationCap advertises the migration ingress configuration. The

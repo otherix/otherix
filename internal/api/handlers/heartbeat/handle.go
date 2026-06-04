@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -104,9 +106,15 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 	h.logPressureTransition(r.Context(), agent.NodeID, &body, outcome)
 
 	response.WriteJSON(w, r, http.StatusOK, responseBody{
-		ReceivedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-		DeclaredPools: outcome.declaredPools,
-		DeclaredVMs:   outcome.declaredVMs,
+		ReceivedAt:             time.Now().UTC().Format(time.RFC3339Nano),
+		DeclaredPools:          outcome.declaredPools,
+		DeclaredVMs:            outcome.declaredVMs,
+		DeclaredNetworks:       outcome.declaredNetworks,
+		DeclaredWireGuardPeers: outcome.declaredWireGuardPeers,
+		SelfOverlayIP:          outcome.selfOverlayIP,
+		DeclaredFDB:            outcome.declaredFDB,
+		Otwg0MTU:               outcome.otwg0MTU,
+		OverlayReachability:    outcome.overlayReachability,
 	})
 }
 
@@ -176,10 +184,16 @@ func systemDiskPercent(body *requestBody) float64 {
 // system_disk). One field per pressure dimension; pool disk transitions
 // live entirely on the scan worker side.
 type heartbeatOutcome struct {
-	memory        pressureTransitionKind
-	systemDisk    pressureTransitionKind
-	declaredPools []declaredPool
-	declaredVMs   []declaredVM
+	memory                 pressureTransitionKind
+	systemDisk             pressureTransitionKind
+	declaredPools          []declaredPool
+	declaredVMs            []declaredVM
+	declaredNetworks       []declaredNetwork
+	declaredWireGuardPeers []declaredWireGuardPeer
+	declaredFDB            []declaredFDBEntry
+	overlayReachability    []overlayReachability
+	selfOverlayIP          *string
+	otwg0MTU               *int32
 }
 
 // project runs the full state projection in a single transaction.
@@ -241,19 +255,71 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyPoolReports(ctx, hp, agent.NodeID, body.Pools); err != nil {
 			return err
 		}
-		declared, err := h.loadDeclaredPools(ctx, hp, agent.NodeID)
-		if err != nil {
+		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
 			return err
 		}
-		outcome.declaredPools = declared
-		declaredVMs, err := h.loadDeclaredVMs(ctx, hp, agent.NodeID)
-		if err != nil {
+		if err := h.applyWireguardReport(ctx, hp, agent.NodeID, body.WireGuard); err != nil {
 			return err
 		}
-		outcome.declaredVMs = declaredVMs
-		return nil
+		return h.loadDeclared(ctx, hp, agent.NodeID, &outcome)
 	})
 	return outcome, err
+}
+
+// loadDeclared fetches every down-channel desired-state inventory (pools, VMs,
+// networks, WG peers) into outcome after the apply phase. Split out of project
+// to keep that function's branching under the gocyclo ceiling.
+func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, outcome *heartbeatOutcome) error {
+	// The otwg0 link MTU is independent of whether this agent has a WG record
+	// yet: the agent must bring otwg0 up at the right size before its first WG
+	// report, so compute it unconditionally from the underlay MTU.
+	underlay, err := hp.UnderlayMTU(ctx)
+	if err != nil {
+		return fmt.Errorf("load underlay mtu: %v", err)
+	}
+	otwgMTU := underlay - store.WGEncapOverhead
+	outcome.otwg0MTU = &otwgMTU
+	declaredPools, err := h.loadDeclaredPools(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredPools = declaredPools
+	declaredVMs, err := h.loadDeclaredVMs(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredVMs = declaredVMs
+	declaredNetworks, err := h.loadDeclaredNetworks(ctx, hp)
+	if err != nil {
+		return err
+	}
+	outcome.declaredNetworks = declaredNetworks
+	declaredWG, err := h.loadDeclaredWireGuardPeers(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredWireGuardPeers = declaredWG
+	declaredFDB, reachability, err := h.loadDeclaredFDB(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredFDB = declaredFDB
+	outcome.overlayReachability = reachability
+	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
+	switch {
+	case err == nil:
+		supernet, serr := hp.OverlaySupernet(ctx)
+		if serr != nil {
+			return fmt.Errorf("load overlay supernet: %v", serr)
+		}
+		cidr := netip.PrefixFrom(self.OverlayIP, supernet.Bits()).String()
+		outcome.selfOverlayIP = &cidr
+	case errors.Is(err, store.ErrNotFound):
+		// No WG report yet for this agent -> leave self_overlay_ip nil.
+	default:
+		return fmt.Errorf("load self agent_wireguard: %v", err)
+	}
+	return nil
 }
 
 // loadDeclaredVMs returns the per-node VM desired-state inventory the CP
@@ -304,6 +370,57 @@ func (h *Handler) applyPoolReports(ctx context.Context, hp store.HeartbeatProjec
 	return nil
 }
 
+// applyNetworkReports walks each agent-reported network and upserts its
+// reconciliation_status / reconciliation_error onto the per-(network, node)
+// status record. Unlike pools, networks are cluster-wide and the report keys
+// on the network id (uuid). A report whose id does not parse as a uuid is
+// skipped with a WARN log and does not fail the heartbeat — a node reporting a
+// stale or garbage network id must not 500 the whole projection (mirrors the
+// tolerant unknown-pool / unknown-vm paths). A genuine store failure
+// propagates as a projection error and rolls the transaction back.
+func (h *Handler) applyNetworkReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []networkReport) error {
+	for _, r := range reports {
+		networkID, err := uuid.Parse(r.ID)
+		if err != nil {
+			h.log.WarnContext(ctx, "heartbeat network id not a uuid; skipping",
+				slog.String("node_id", nodeID.String()),
+				slog.String("network_id", r.ID))
+			continue
+		}
+		if !validReconciliationStatus(r.ReconciliationStatus) {
+			h.log.WarnContext(ctx, "heartbeat network reconciliation_status not in enum; skipping",
+				slog.String("node_id", nodeID.String()),
+				slog.String("network_id", r.ID),
+				slog.String("reconciliation_status", r.ReconciliationStatus))
+			continue
+		}
+		params := store.UpsertNetworkNodeStatusParams{
+			NetworkID:            networkID,
+			NodeID:               nodeID,
+			ReconciliationStatus: r.ReconciliationStatus,
+			ReconciliationError:  r.ReconciliationError,
+		}
+		if err := hp.UpsertNetworkNodeStatus(ctx, params); err != nil {
+			return fmt.Errorf("upsert network_node_status: %v", err)
+		}
+	}
+	return nil
+}
+
+// validReconciliationStatus reports whether s is one of the
+// NetworkNodeStatus.reconciliation_status enum values (pending | ready |
+// failed). The CP serves this value back through the public NetworkNodeStatus
+// schema, so an out-of-enum value reported by a buggy/old agent must be
+// rejected at ingest rather than persisted.
+func validReconciliationStatus(s string) bool {
+	switch s {
+	case "pending", "ready", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // loadDeclaredPools returns the per-node pool inventory the CP wants
 // the agent to materialise. Surfaces as `HeartbeatResponse.declared_pools`.
 // The query is row-ordered (lower(name) asc) so the
@@ -341,6 +458,375 @@ func (h *Handler) loadDeclaredPools(ctx context.Context, hp store.HeartbeatProje
 		out = append(out, dp)
 	}
 	return out, nil
+}
+
+// loadDeclaredNetworks returns the cluster-wide network inventory the CP
+// wants every node to materialise. Surfaces as
+// `HeartbeatResponse.declared_networks`. Unlike pools and VMs, networks
+// are NOT node-scoped: ListNetworks returns every non-deleted network and
+// the same set is handed to every node. Sorted by id so the agent's diff
+// against observed bridges stays deterministic across heartbeats.
+func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatProjection) ([]declaredNetwork, error) {
+	rows, err := hp.ListNetworks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list networks: %v", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]declaredNetwork, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, networkToDeclared(row))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// networkToDeclared projects a store.Network onto the heartbeat wire
+// shape, rendering the netip Subnet / Gateway pointers to *string
+// (canonical CIDR / IP) and leaving them nil when unset.
+func networkToDeclared(n store.Network) declaredNetwork {
+	dn := declaredNetwork{
+		ID:         n.ID.String(),
+		Name:       n.Name,
+		Type:       string(n.Type),
+		Managed:    n.Managed,
+		Egress:     string(n.Egress),
+		BridgeName: n.BridgeName,
+		Mtu:        n.Mtu,
+		VNI:        n.VNI,
+	}
+	if n.Subnet != nil {
+		s := n.Subnet.String()
+		dn.Subnet = &s
+	}
+	if n.Gateway != nil {
+		g := n.Gateway.String()
+		dn.Gateway = &g
+	}
+	return dn
+}
+
+// applyWireguardReport ingests the agent's observed WG state onto its
+// agent_wireguard record (allocating its overlay identity on first report). A
+// nil report or an empty public_key is skipped. The two store-level WG faults
+// are handled differently, by design:
+//
+//   - A cross-node pubkey collision (two nodes claiming one key) is a genuine
+//     conflict, possibly a security signal, that the node cannot resolve and an
+//     operator must see. It stays fail-hard: a 409 projection error rolls the
+//     whole heartbeat back so the duplicate never silently sticks.
+//   - An exhausted overlay supernet is a cluster-capacity condition the node
+//     cannot fix on its own. Failing the heartbeat for it would wedge the node:
+//     every tick would 409, no observed state (VM runtime, pools, networks,
+//     pressure, last_heartbeat_at) would land, and the node would look dead to
+//     the scheduler though qemu is healthy. So it is non-fatal: log a WARN, skip
+//     the WG upsert for this node this tick, and let the rest of the projection
+//     commit. The agent retries on its next heartbeat; once the operator grows
+//     the supernet, the allocation succeeds.
+//
+// Any other store failure wraps to an internal error.
+func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, rep *wireGuardReport) error {
+	if rep == nil {
+		return nil
+	}
+	if rep.PublicKey == "" {
+		h.log.WarnContext(ctx, "heartbeat wireguard report missing public_key; skipping",
+			slog.String("node_id", nodeID.String()))
+		return nil
+	}
+	err := hp.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
+		NodeID:               nodeID,
+		PublicKey:            rep.PublicKey,
+		Endpoint:             rep.Endpoint,
+		ListenPort:           rep.ListenPort,
+		EstablishedPeers:     rep.EstablishedPeers,
+		ReconciliationStatus: rep.ReconciliationStatus,
+		ReconciliationError:  rep.ReconciliationError,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrAgentWireguardPubkeyInUse) {
+			return &projectionError{
+				status: http.StatusConflict, code: response.CodeConflict,
+				message: "wireguard public key already in use by another node",
+				details: map[string]any{"reason": "wireguard_pubkey_in_use"},
+			}
+		}
+		if errors.Is(err, store.ErrOverlaySupernetExhausted) {
+			h.log.WarnContext(ctx, "overlay supernet exhausted; skipping wireguard for node this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return nil
+		}
+		return fmt.Errorf("upsert agent_wireguard: %v", err)
+	}
+	return nil
+}
+
+// loadDeclaredWireGuardPeers returns every OTHER agent's WG fabric identity for
+// this node's mesh, sorted by node_id. allowed_ips is the peer's overlay /32.
+func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredWireGuardPeer, error) {
+	recs, err := hp.ListAgentWireguard(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list agent_wireguard: %v", err)
+	}
+	out := make([]declaredWireGuardPeer, 0, len(recs))
+	for _, r := range recs {
+		if r.NodeID == selfNodeID {
+			continue
+		}
+		// Defense-in-depth: skip a peer whose node row is gone (soft-deleted) or
+		// in the terminal "gone" status, so a stale WG record never bleeds into a
+		// live agent's mesh. DeleteNode purges the record at the source; this is
+		// the belt to that braces.
+		node, err := hp.NodeByID(ctx, r.NodeID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
+		}
+		if node.Status == store.NodeStatusGone {
+			continue
+		}
+		peerNet := netip.PrefixFrom(r.OverlayIP, 32) // single VTEP host route
+		out = append(out, declaredWireGuardPeer{
+			NodeID:     r.NodeID.String(),
+			PublicKey:  r.PublicKey,
+			Endpoint:   r.Endpoint,
+			OverlayIP:  r.OverlayIP.String(),
+			AllowedIPs: []string{peerNet.String()},
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// loadDeclaredFDB computes the controller-authoritative VXLAN FDB this node must
+// program, scoped to overlays it has a local VM on. For each such overlay it
+// emits a per-remote-VM unicast entry (mac -> remote node's VTEP IP) and one
+// all-zeros BUM/flood entry per distinct remote VTEP (head-end replication).
+// Remote = a VM on another node; the node never needs FDB for its own local VMs
+// (their MACs live on the otb<vni> bridge). Sorted (vni, mac, vtep) for stable
+// heartbeats.
+func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, []overlayReachability, error) {
+	// The placement scan is the FIRST read of the join; it establishes the MVCC
+	// revision every other read in this projection pins to (the WG list and the
+	// per-node gone-resolver). Pinning the whole join to one snapshot stops a
+	// concurrent VM create/delete/migrate from yielding a torn declared_fdb that
+	// the agent's authoritative reconciler would prune live entries against.
+	placements, rev, err := hp.ListOverlayNICPlacementsPinned(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list overlay nic placements: %v", err)
+	}
+	recs, err := hp.ListAgentWireguardAtRev(ctx, rev)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list agent_wireguard: %v", err)
+	}
+	vtepIP := make(map[uuid.UUID]string, len(recs)) // node -> overlay IP
+	for _, r := range recs {
+		vtepIP[r.NodeID] = r.OverlayIP.String()
+	}
+	// Overlays this node participates in locally.
+	localVNI := make(map[int32]struct{})
+	for _, p := range placements {
+		if p.NodeID == selfNodeID {
+			localVNI[p.VNI] = struct{}{}
+		}
+	}
+	out, skippedPerVNI, floodPerVNI, err := h.buildRemoteFDBEntries(ctx, hp, rev, placements, localVNI, vtepIP, selfNodeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The self node's agent_wireguard record (already in recs) carries the set of
+	// remote node ids it currently has an established WireGuard handshake with.
+	// Correlating it with each VNI's distinct flood-target node ids yields the
+	// established/total reachability signal. Absent self record -> empty set ->
+	// established_peers=0, which is the correct "no live tunnels reported" state.
+	established := selfEstablishedSet(recs, selfNodeID)
+	reachability := summarizeReachability(skippedPerVNI, floodPerVNI, established)
+	if total := totalSkipped(skippedPerVNI); total > 0 {
+		h.log.WarnContext(ctx, "declared_fdb incomplete: owning nodes have no overlay IP yet",
+			slog.Int("skipped_placements", total), slog.String("node_id", selfNodeID.String()))
+	}
+	if unest := totalUnestablished(reachability); unest > 0 {
+		// Non-blocking: a flood target up in the FDB with no live tunnel still
+		// blackholes BUM traffic until the tunnel establishes. Surfaced for
+		// operators; never gates the overlay (rekey would flap it otherwise).
+		h.log.WarnContext(ctx, "overlay flood targets have no established wireguard tunnel",
+			slog.Int("unestablished_flood_targets", unest), slog.String("node_id", selfNodeID.String()))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].VNI != out[j].VNI {
+			return out[i].VNI < out[j].VNI
+		}
+		if out[i].MAC != out[j].MAC {
+			return out[i].MAC < out[j].MAC
+		}
+		return out[i].VtepIP < out[j].VtepIP
+	})
+	if len(out) == 0 {
+		out = nil
+	}
+	return out, reachability, nil
+}
+
+// summarizeReachability projects the per-VNI skipped-no-IP count and the per-VNI
+// flood-target node-id sets into the sorted wire slice the heartbeat surfaces. For
+// each VNI total_peers is the number of distinct flood-target VTEPs (remote nodes
+// with an overlay IP) and established_peers is how many of those the reporting node
+// has a live WireGuard handshake with (from its agent_wireguard.established_peers).
+// A VNI is surfaced when it has any flood target OR any skipped placement; a VNI
+// with neither carries no signal at all (omitempty drops the field). The signal is
+// observability only — it never feeds the overlay ready/pending decision.
+func summarizeReachability(skippedPerVNI map[int32]int, floodPerVNI map[int32]map[uuid.UUID]struct{}, established map[string]struct{}) []overlayReachability {
+	vnis := make(map[int32]struct{}, len(skippedPerVNI)+len(floodPerVNI))
+	for vni := range skippedPerVNI {
+		vnis[vni] = struct{}{}
+	}
+	for vni := range floodPerVNI {
+		vnis[vni] = struct{}{}
+	}
+	if len(vnis) == 0 {
+		return nil
+	}
+	out := make([]overlayReachability, 0, len(vnis))
+	for vni := range vnis {
+		targets := floodPerVNI[vni]
+		var establishedCount int
+		for nodeID := range targets {
+			if _, ok := established[nodeID.String()]; ok {
+				establishedCount++
+			}
+		}
+		out = append(out, overlayReachability{
+			VNI:              vni,
+			SkippedNoIP:      int32(skippedPerVNI[vni]), //nolint:gosec // per-VNI placement count, bounded by cluster size
+			EstablishedPeers: int32(establishedCount),   //nolint:gosec // per-VNI flood-target count, bounded by cluster size
+			TotalPeers:       int32(len(targets)),       //nolint:gosec // per-VNI flood-target count, bounded by cluster size
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].VNI < out[j].VNI })
+	return out
+}
+
+// selfEstablishedSet returns the set of remote node-id strings the reporting node
+// (selfNodeID) currently has an established WireGuard handshake with, read from its
+// own agent_wireguard record in recs. Empty when the self node has no record yet —
+// the correct "no live tunnels reported" state, not an error.
+func selfEstablishedSet(recs []store.AgentWireguard, selfNodeID uuid.UUID) map[string]struct{} {
+	for _, r := range recs {
+		if r.NodeID != selfNodeID {
+			continue
+		}
+		set := make(map[string]struct{}, len(r.EstablishedPeers))
+		for _, p := range r.EstablishedPeers {
+			set[p] = struct{}{}
+		}
+		return set
+	}
+	return map[string]struct{}{}
+}
+
+// totalSkipped sums the per-VNI skip counts for the single aggregated WARN.
+func totalSkipped(skippedPerVNI map[int32]int) int {
+	total := 0
+	for _, n := range skippedPerVNI {
+		total += n
+	}
+	return total
+}
+
+// totalUnestablished sums, across VNIs, the flood targets that are programmed but
+// lack an established WireGuard tunnel (total_peers - established_peers) for the
+// single aggregated WARN. Observability only; it gates nothing.
+func totalUnestablished(reach []overlayReachability) int {
+	total := 0
+	for _, r := range reach {
+		total += int(r.TotalPeers - r.EstablishedPeers)
+	}
+	return total
+}
+
+// buildRemoteFDBEntries walks placements and emits, for every overlay this node
+// participates in locally, a per-remote-VM unicast entry plus one all-zeros
+// BUM/flood entry per distinct remote VTEP. It returns the (unsorted) entries
+// and a per-VNI count of placements skipped because the owning node has no
+// overlay IP yet (surfaced as the non-blocking overlay_reachability signal plus
+// one aggregated WARN by the caller). Gone/soft-deleted owning nodes are pruned
+// via the memoised liveness guard, symmetric with loadDeclaredWireGuardPeers: the
+// reaper advances a long-unreachable node to 'gone' WITHOUT orphaning its
+// vm_runtime, so its placements still surface here and must not keep an entry
+// pointing at a dead VTEP.
+func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, map[int32]int, map[int32]map[uuid.UUID]struct{}, error) {
+	isGone := newGoneResolver(hp, rev)
+	var out []declaredFDBEntry
+	flood := make(map[string]struct{}) // dedup key "vni|vtep"
+	skippedPerVNI := make(map[int32]int)
+	// floodPerVNI records the distinct flood-target node ids per VNI (a node maps
+	// 1:1 to its VTEP IP). It is the total_peers denominator the reachability
+	// signal correlates against the self node's established-peer set.
+	floodPerVNI := make(map[int32]map[uuid.UUID]struct{})
+	for _, p := range placements {
+		if p.NodeID == selfNodeID {
+			continue
+		}
+		if _, ok := localVNI[p.VNI]; !ok {
+			continue
+		}
+		gone, err := isGone(ctx, p.NodeID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if gone {
+			continue
+		}
+		ip, ok := vtepIP[p.NodeID]
+		if !ok {
+			skippedPerVNI[p.VNI]++
+			continue // owning node has no overlay IP yet
+		}
+		out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: p.Mac.String(), VtepIP: ip})
+		fkey := fmt.Sprintf("%d|%s", p.VNI, ip)
+		if _, seen := flood[fkey]; !seen {
+			flood[fkey] = struct{}{}
+			out = append(out, declaredFDBEntry{VNI: p.VNI, MAC: "00:00:00:00:00:00", VtepIP: ip})
+			targets := floodPerVNI[p.VNI]
+			if targets == nil {
+				targets = make(map[uuid.UUID]struct{})
+				floodPerVNI[p.VNI] = targets
+			}
+			targets[p.NodeID] = struct{}{}
+		}
+	}
+	return out, skippedPerVNI, floodPerVNI, nil
+}
+
+// newGoneResolver returns a memoised predicate reporting whether a remote node
+// is no longer a valid overlay peer: either its row is gone (soft-deleted ->
+// ErrNotFound) or it has reached the terminal "gone" status. Results are cached
+// per node id so a placement list with many NICs on one node hits the store
+// once. Mirrors the gone-skip in loadDeclaredWireGuardPeers.
+func newGoneResolver(hp store.HeartbeatProjection, rev int64) func(context.Context, uuid.UUID) (bool, error) {
+	cache := make(map[uuid.UUID]bool)
+	return func(ctx context.Context, id uuid.UUID) (bool, error) {
+		if v, ok := cache[id]; ok {
+			return v, nil
+		}
+		node, err := hp.NodeByIDAtRev(ctx, id, rev)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				cache[id] = true
+				return true, nil
+			}
+			return false, fmt.Errorf("load node %s for fdb: %v", id, err)
+		}
+		g := node.Status == store.NodeStatusGone
+		cache[id] = g
+		return g, nil
+	}
 }
 
 // applyMemoryPressure computes the next memory-pressure state via the

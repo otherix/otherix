@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -54,6 +55,13 @@ func (h heartbeatProjection) NodeForHeartbeat(ctx context.Context, nodeID uuid.U
 // NodeByID returns the bare node row.
 func (h heartbeatProjection) NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error) {
 	return h.s.NodeByID(ctx, id)
+}
+
+// NodeByIDAtRev returns the bare node row pinned to an MVCC revision (rev==0
+// reads latest). The FDB gone-resolver reads at the projection's snapshot
+// revision so the join stays internally consistent.
+func (h heartbeatProjection) NodeByIDAtRev(ctx context.Context, id uuid.UUID, rev int64) (store.Node, error) {
+	return h.s.nodeByIDAtRev(ctx, id, rev)
 }
 
 // UpdateNodeHeartbeat refreshes the agent-reported capability + migration
@@ -242,6 +250,69 @@ func (h heartbeatProjection) ListStoragePoolsByNode(ctx context.Context, nodeID 
 	return out, nil
 }
 
+// UpsertNetworkNodeStatus applies the agent's reconciliation report for a
+// cluster-wide network on this node, keyed by (network_id, node_id).
+func (h heartbeatProjection) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNetworkNodeStatusParams) error {
+	return h.s.UpsertNetworkNodeStatus(ctx, arg)
+}
+
+// UpsertAgentWireguard ingests the agent's observed WG state, allocating its
+// overlay identity on first report.
+func (h heartbeatProjection) UpsertAgentWireguard(ctx context.Context, arg store.UpsertAgentWireguardParams) error {
+	return h.s.UpsertAgentWireguard(ctx, arg)
+}
+
+// ListAgentWireguard returns every agent WG fabric record for the down-channel.
+func (h heartbeatProjection) ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error) {
+	return h.s.ListAgentWireguard(ctx)
+}
+
+// ListAgentWireguardAtRev returns every agent WG fabric record pinned to an MVCC
+// revision (rev==0 reads latest). The FDB projection reads at its snapshot
+// revision so the VTEP-IP map matches the placement list.
+func (h heartbeatProjection) ListAgentWireguardAtRev(ctx context.Context, rev int64) ([]store.AgentWireguard, error) {
+	return h.s.listAgentWireguardAtRev(ctx, rev)
+}
+
+// AgentWireguardByNodeID returns the node's WG fabric record (or ErrNotFound)
+// for the self-overlay-ip down-channel field.
+func (h heartbeatProjection) AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (store.AgentWireguard, error) {
+	return h.s.AgentWireguardByNodeID(ctx, nodeID)
+}
+
+// OverlaySupernet returns the cluster overlay supernet so the handler can
+// render self_overlay_ip with the supernet prefix length.
+func (h heartbeatProjection) OverlaySupernet(ctx context.Context) (netip.Prefix, error) {
+	return h.s.OverlaySupernet(ctx)
+}
+
+// UnderlayMTU returns the seeded physical underlay MTU so the handler can derive
+// the otwg0 link MTU (underlay - store.WGEncapOverhead) for the down-channel.
+func (h heartbeatProjection) UnderlayMTU(ctx context.Context) (int32, error) {
+	return h.s.UnderlayMTU(ctx)
+}
+
+// ListNetworks returns every non-deleted network. Networks are cluster-wide (not
+// node-scoped), so the projection hands the agent the full set to materialise
+// on its node.
+func (h heartbeatProjection) ListNetworks(ctx context.Context) ([]store.Network, error) {
+	items, err := h.s.c.Range(ctx, networkPrefix())
+	if err != nil {
+		return nil, err
+	}
+	var out []store.Network
+	for _, kv := range items {
+		var n store.Network
+		if err := json.Unmarshal(kv.Value, &n); err != nil {
+			return nil, err
+		}
+		if n.DeletedAt == nil {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
 // ListVMsForNodeDeclared returns the per-node VM desired-state inventory: live
 // vms whose runtime current_node_id is the node and whose phase has not reached
 // 'gone', sorted lower(name) ascending.
@@ -276,4 +347,18 @@ func (h heartbeatProjection) ListVMsForNodeDeclared(ctx context.Context, nodeID 
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	return out, nil
+}
+
+// ListOverlayNICPlacements returns the cluster-wide overlay NIC placements
+// (MAC + owning node per overlay VNI) the FDB down-channel projection joins to
+// each node's VTEP overlay IP.
+func (h heartbeatProjection) ListOverlayNICPlacements(ctx context.Context) ([]store.OverlayNICPlacement, error) {
+	return h.s.ListOverlayNICPlacements(ctx)
+}
+
+// ListOverlayNICPlacementsPinned returns the overlay NIC placements together
+// with the MVCC revision the join is pinned to, so the FDB down-channel
+// projection can read the WG list and the gone-resolver at the same snapshot.
+func (h heartbeatProjection) ListOverlayNICPlacementsPinned(ctx context.Context) ([]store.OverlayNICPlacement, int64, error) {
+	return h.s.ListOverlayNICPlacementsPinned(ctx)
 }

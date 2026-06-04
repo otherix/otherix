@@ -3,7 +3,12 @@
 
 package validation
 
-import "testing"
+import (
+	"net/netip"
+	"testing"
+
+	"github.com/otherix/otherix/internal/store"
+)
 
 func TestValidateNetworkType(t *testing.T) {
 	cases := []struct {
@@ -12,8 +17,10 @@ func TestValidateNetworkType(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "bridge", input: "bridge", wantErr: false},
+		{name: "overlay", input: "overlay", wantErr: false},
 		{name: "empty", input: "", wantErr: true},
 		{name: "unknown", input: "nat", wantErr: true},
+		{name: "mesh", input: "mesh", wantErr: true},
 		{name: "uppercase", input: "Bridge", wantErr: true},
 	}
 	for _, tc := range cases {
@@ -98,6 +105,148 @@ func TestValidateMTU(t *testing.T) {
 			err := ValidateMTU(tc.input)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("ValidateMTU(%d) err = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateNetworkEgress(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "empty is none", input: "", wantErr: false},
+		{name: "none", input: "none", wantErr: false},
+		{name: "nat", input: "nat", wantErr: false},
+		{name: "bridge not egress", input: "bridge", wantErr: true},
+		{name: "garbage", input: "foo", wantErr: true},
+		{name: "uppercase", input: "NAT", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateNetworkEgress(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateNetworkEgress(%q) err = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateNetworkInvariants(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     store.NetworkType
+		managed bool
+		egress  store.NetworkEgress
+		wantErr bool
+	}{
+		{name: "nat bridge managed ok", typ: store.NetworkTypeBridge, managed: true, egress: store.NetworkEgressNAT, wantErr: false},
+		{name: "nat bridge unmanaged rejected", typ: store.NetworkTypeBridge, managed: false, egress: store.NetworkEgressNAT, wantErr: true},
+		{name: "nat non-bridge rejected", typ: store.NetworkType("overlay"), managed: true, egress: store.NetworkEgressNAT, wantErr: true},
+		{name: "none bridge managed ok", typ: store.NetworkTypeBridge, managed: true, egress: store.NetworkEgressNone, wantErr: false},
+		{name: "none bridge unmanaged ok", typ: store.NetworkTypeBridge, managed: false, egress: store.NetworkEgressNone, wantErr: false},
+		{name: "empty egress no constraint", typ: store.NetworkType("overlay"), managed: false, egress: store.NetworkEgress(""), wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateNetworkInvariants(tc.typ, tc.managed, tc.egress)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateNetworkInvariants(%q, %v, %q) err = %v, wantErr = %v", tc.typ, tc.managed, tc.egress, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseSubnet(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "canonical /24", input: "10.0.0.0/24", want: "10.0.0.0/24", wantErr: false},
+		{name: "host bits dropped", input: "10.0.0.5/24", want: "10.0.0.0/24", wantErr: false},
+		{name: "min prefix /8", input: "10.0.0.0/8", want: "10.0.0.0/8", wantErr: false},
+		{name: "max prefix /30", input: "10.0.0.0/30", want: "10.0.0.0/30", wantErr: false},
+		{name: "ipv6 rejected", input: "fd00::/64", wantErr: true},
+		{name: "prefix too long /32", input: "10.0.0.0/32", wantErr: true},
+		{name: "prefix too short /7", input: "10.0.0.0/7", wantErr: true},
+		{name: "garbage", input: "not-a-subnet", wantErr: true},
+		{name: "empty", input: "", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseSubnet(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ParseSubnet(%q) err = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if got.String() != tc.want {
+				t.Errorf("ParseSubnet(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGatewayDefault(t *testing.T) {
+	subnet := netip.MustParsePrefix("10.0.0.0/24")
+	got := GatewayDefault(subnet)
+	want := netip.MustParseAddr("10.0.0.1")
+	if got != want {
+		t.Errorf("GatewayDefault(%v) = %v, want %v", subnet, got, want)
+	}
+}
+
+func TestValidateGatewayInSubnet(t *testing.T) {
+	cases := []struct {
+		name    string
+		subnet  netip.Prefix
+		gw      netip.Addr
+		wantErr bool
+	}{
+		{name: "first host ok", subnet: netip.MustParsePrefix("10.0.0.0/24"), gw: netip.MustParseAddr("10.0.0.1"), wantErr: false},
+		{name: "mid host ok", subnet: netip.MustParsePrefix("10.0.0.0/24"), gw: netip.MustParseAddr("10.0.0.42"), wantErr: false},
+		{name: "network address rejected", subnet: netip.MustParsePrefix("10.0.0.0/24"), gw: netip.MustParseAddr("10.0.0.0"), wantErr: true},
+		{name: "broadcast /24 rejected", subnet: netip.MustParsePrefix("10.0.0.0/24"), gw: netip.MustParseAddr("10.0.0.255"), wantErr: true},
+		{name: "broadcast /30 rejected", subnet: netip.MustParsePrefix("10.0.0.0/30"), gw: netip.MustParseAddr("10.0.0.3"), wantErr: true},
+		{name: "host in /30 ok", subnet: netip.MustParsePrefix("10.0.0.0/30"), gw: netip.MustParseAddr("10.0.0.1"), wantErr: false},
+		{name: "outside subnet rejected", subnet: netip.MustParsePrefix("10.0.0.0/24"), gw: netip.MustParseAddr("10.1.0.1"), wantErr: true},
+		{name: "ipv6 rejected", subnet: netip.MustParsePrefix("10.0.0.0/24"), gw: netip.MustParseAddr("fd00::1"), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateGatewayInSubnet(tc.gw, tc.subnet)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateGatewayInSubnet(%v, %v) err = %v, wantErr = %v", tc.gw, tc.subnet, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateBridgeNameReservedPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool // true = expect error
+	}{
+		{name: "overlay bridge", in: "otb1000", want: true},
+		{name: "vtep", in: "otvx5", want: true},
+		{name: "wireguard", in: "otwg0", want: true},
+		{name: "operator bridge", in: "vmbr0", want: false},
+		{name: "plain", in: "br0", want: false},
+		{name: "ot but not reserved", in: "oteth0", want: false},
+		{name: "uppercase reserved", in: "OTB1000", want: true},
+		{name: "mixed case vtep", in: "OtVx5", want: true},
+		{name: "uppercase wireguard", in: "OTWG0", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBridgeName(tc.in)
+			if (err != nil) != tc.want {
+				t.Errorf("ValidateBridgeName(%q) err=%v, wantErr=%v", tc.in, err, tc.want)
 			}
 		})
 	}

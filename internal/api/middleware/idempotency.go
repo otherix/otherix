@@ -33,6 +33,12 @@ const IdempotencyKeyMaxLength = 255
 // value is 24 hours.
 const IdempotencyTTL = 24 * time.Hour
 
+// IdempotencyInFlightLease bounds how long an in_flight record blocks a retry.
+// It must exceed the maximum real request duration (the server WriteTimeout, 30s
+// default) so a live request is never reclaimed, while a crashed in_flight is
+// reclaimable far sooner than the 24h completed-record TTL (IdempotencyTTL).
+const IdempotencyInFlightLease = 2 * time.Minute
+
 // IdempotencyStore is the narrow contract Idempotency requires from the
 // data layer. *store.Queries implements it; tests substitute an
 // in-memory stub.
@@ -140,9 +146,15 @@ func Idempotency(s IdempotencyStore, log *slog.Logger) func(http.Handler) http.H
 					map[string]any{"retry_after_seconds": 1})
 				return
 			case actionProceed:
-				rec := newRecorder(w)
+				rec := newRecorder()
 				next.ServeHTTP(rec, r)
+				// Settle the durable idempotency row (Complete on 2xx,
+				// Delete on non-2xx) BEFORE the client sees any bytes. If
+				// the process crashes between here and the flush, the
+				// client never received a 2xx, so its retry replays as a
+				// first attempt against the reclaimable in_flight row.
 				finalizeKey(r.Context(), s, key, rec, log)
+				rec.flush(w)
 			}
 		})
 	}
@@ -183,7 +195,7 @@ func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid
 			RequestMethod: method,
 			RequestPath:   path,
 			RequestHash:   hash,
-			ExpiresAt:     time.Now().Add(IdempotencyTTL),
+			ExpiresAt:     time.Now().Add(IdempotencyInFlightLease),
 			Key:           key,
 		})
 		if idempotencyNotFound(err) {
@@ -210,7 +222,7 @@ func tryBegin(ctx context.Context, s IdempotencyStore, key string, userID uuid.U
 		RequestMethod: method,
 		RequestPath:   path,
 		RequestHash:   hash,
-		ExpiresAt:     time.Now().Add(IdempotencyTTL),
+		ExpiresAt:     time.Now().Add(IdempotencyInFlightLease),
 	})
 	if err == nil {
 		return row, actionProceed, nil
@@ -259,6 +271,7 @@ func finalizeKey(ctx context.Context, s IdempotencyStore, key string, rec *recor
 			ResponseStatus:  &status,
 			ResponseHeaders: hdr,
 			ResponseBody:    rec.body.Bytes(),
+			ExpiresAt:       time.Now().Add(IdempotencyTTL),
 			Key:             key,
 		}); err != nil {
 			log.ErrorContext(ctx, "idempotency complete failed",
@@ -327,56 +340,67 @@ func userIDPtr(id uuid.UUID) *uuid.UUID {
 	return &v
 }
 
-// recorder buffers the response written by a downstream handler so the
-// middleware can store the bytes for later replay.
+// recorder fully buffers the response written by a downstream handler.
+// It never touches a real ResponseWriter while the handler runs: the
+// status, headers, and body are captured in memory so the middleware can
+// persist the durable idempotency row before any byte reaches the client.
+// The buffered response is emitted later via flush.
 type recorder struct {
-	http.ResponseWriter
 	statusCode  int
 	body        *bytes.Buffer
 	headers     http.Header
 	wroteHeader bool
 }
 
-func newRecorder(w http.ResponseWriter) *recorder {
+func newRecorder() *recorder {
 	return &recorder{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
-		body:           &bytes.Buffer{},
-		headers:        http.Header{},
+		statusCode: http.StatusOK,
+		body:       &bytes.Buffer{},
+		headers:    http.Header{},
 	}
 }
 
 // Header returns the recorder's own header map. The downstream handler
-// writes into it; on flush the recorder copies entries to the underlying
-// ResponseWriter and snapshots them for the cache.
+// writes into it; flush copies entries onto the real ResponseWriter and
+// finalizeKey snapshots them for the cache.
 func (r *recorder) Header() http.Header {
 	return r.headers
 }
 
-// WriteHeader captures the status code and copies the recorder's header
-// map onto the underlying ResponseWriter before flushing.
+// WriteHeader captures the status code only. Nothing is forwarded to a
+// real writer here — the response stays buffered until flush.
 func (r *recorder) WriteHeader(status int) {
 	if r.wroteHeader {
 		return
 	}
 	r.wroteHeader = true
 	r.statusCode = status
-	dst := r.ResponseWriter.Header()
-	for k, vs := range r.headers {
-		for _, v := range vs {
-			dst.Add(k, v)
-		}
-	}
-	r.ResponseWriter.WriteHeader(status)
 }
 
-// Write buffers the body and forwards it to the underlying writer. An
-// implicit 200 status is materialised on the first Write call to mirror
-// net/http's default.
+// Write buffers the body. An implicit 200 status is materialised on the
+// first Write call to mirror net/http's default. Nothing is forwarded to
+// a real writer here — the response stays buffered until flush.
 func (r *recorder) Write(b []byte) (int, error) {
 	if !r.wroteHeader {
 		r.WriteHeader(http.StatusOK)
 	}
-	r.body.Write(b)
-	return r.ResponseWriter.Write(b)
+	return r.body.Write(b)
+}
+
+// flush emits the buffered status, headers, and body to w. It runs only
+// after the durable idempotency row is settled, so the client never sees
+// bytes before the state is committed. Hop-by-hop headers are filtered
+// for parity with replayCachedResponse.
+func (r *recorder) flush(w http.ResponseWriter) {
+	dst := w.Header()
+	for k, vs := range r.headers {
+		if _, skip := hopByHopHeaders[http.CanonicalHeaderKey(k)]; skip {
+			continue
+		}
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
+	w.WriteHeader(r.statusCode)
+	_, _ = w.Write(r.body.Bytes())
 }

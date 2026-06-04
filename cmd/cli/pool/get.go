@@ -4,7 +4,6 @@
 package pool
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -45,29 +44,27 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if id, parseErr := uuid.Parse(identifier); parseErr == nil {
-		instance, err := c.GetPoolByID(cmd.Context(), id)
+		instance, raw, err := c.GetPoolByID(cmd.Context(), id)
 		if err != nil {
 			return classifyError(err)
 		}
-		return renderInstance(cmd, instance, format)
+		if format == "json" {
+			return printJSON(cmd, raw)
+		}
+		return renderInstance(cmd, instance)
 	}
 
-	concept, err := c.GetPoolByName(cmd.Context(), identifier)
+	concept, raw, err := c.GetPoolByName(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
 	}
-	return renderConcept(cmd, concept, format)
+	if format == "json" {
+		return printJSON(cmd, raw)
+	}
+	return renderConcept(cmd, concept)
 }
 
-func renderInstance(cmd *cobra.Command, p cpclient.Pool, format string) error {
-	if format == "json" {
-		raw, err := json.MarshalIndent(p, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-		return nil
-	}
+func renderInstance(cmd *cobra.Command, p cpclient.Pool) error {
 	printf(cmd, "id: %s\n", p.ID)
 	printf(cmd, "name: %s\n", p.Name)
 	printf(cmd, "node: %s\n", p.Node)
@@ -100,23 +97,24 @@ func renderInstance(cmd *cobra.Command, p cpclient.Pool, format string) error {
 // active since 30m ago" parallel to node-level pressure rendering.
 func printPoolPressure(cmd *cobra.Command, p cpclient.Pool) {
 	printf(cmd, "pressure:\n")
-	if p.DiskPressure != nil {
-		printf(cmd, "  disk: active since %s ago (consecutive_count=%d)\n",
-			humanAge(p.DiskPressure.Since), p.DiskPressure.ConsecutiveCount)
-	} else {
-		printf(cmd, "  disk: ok\n")
-	}
+	printf(cmd, "  disk: %s\n", formatDiskPressure(p.DiskPressure))
 }
 
-func renderConcept(cmd *cobra.Command, v cpclient.PoolConceptView, format string) error {
-	if format == "json" {
-		raw, err := json.MarshalIndent(v, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %v", err)
-		}
-		printf(cmd, "%s\n", raw)
-		return nil
+// formatDiskPressure renders a pool instance's disk-pressure condition as a
+// one-line status: "ok" when clear, or "active since <age> ago
+// (consecutive_count=N)" when firing. Shared by the flat per-instance view and
+// the concept view's per-instance lines so both surface the scheduler's
+// disk-pressure eligibility gate (a pressured pool instance is excluded from
+// placement); the data already rides on every instance over the wire.
+func formatDiskPressure(p *cpclient.PressureCondition) string {
+	if p == nil {
+		return "ok"
 	}
+	return fmt.Sprintf("active since %s ago (consecutive_count=%d)",
+		humanAge(p.Since), p.ConsecutiveCount)
+}
+
+func renderConcept(cmd *cobra.Command, v cpclient.PoolConceptView) error {
 	printf(cmd, "name: %s\n", v.Name)
 	printf(cmd, "type: %s\n", v.Type)
 	printf(cmd, "is_cluster_default: %t\n", v.IsClusterDefault)
@@ -130,6 +128,7 @@ func renderConcept(cmd *cobra.Command, v cpclient.PoolConceptView, format string
 		printf(cmd, "    id: %s\n", inst.ID)
 		printf(cmd, "    path: %s\n", inst.Path)
 		printf(cmd, "    available: %s\n", formatPoolAvailable(inst.AvailableBytes, inst.AvailableBytesEffective))
+		printf(cmd, "    disk_pressure: %s\n", formatDiskPressure(inst.DiskPressure))
 		if inst.ReconciliationStatus != "" {
 			printf(cmd, "    reconciliation_status: %s\n", inst.ReconciliationStatus)
 		}

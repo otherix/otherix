@@ -126,6 +126,7 @@ func (s *Store) CompleteIdempotencyKey(ctx context.Context, arg store.CompleteId
 	row.ResponseStatus = arg.ResponseStatus
 	row.ResponseHeaders = arg.ResponseHeaders
 	row.ResponseBody = arg.ResponseBody
+	row.ExpiresAt = arg.ExpiresAt
 	now := time.Now().UTC()
 	row.CompletedAt = &now
 	return s.c.PutJSON(ctx, idempotencyKeyKey(arg.Key), row)

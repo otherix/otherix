@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"unicode/utf8"
 
@@ -35,6 +36,50 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if store.NetworkType(req.Type) == store.NetworkTypeOverlay {
+		subnet, err := validation.ParseSubnet(*req.Subnet)
+		if err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, err.Error(), nil)
+			return
+		}
+		row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
+			ID:     uuid.New(),
+			Name:   req.Name,
+			Type:   store.NetworkTypeOverlay,
+			Subnet: &subnet,
+			Config: normaliseConfig(req.Config),
+		})
+		if err != nil {
+			h.writeCreateNetworkError(w, r, err)
+			return
+		}
+		if row.VNI != nil {
+			if _, max, rangeErr := h.store.VNIRange(r.Context()); rangeErr == nil {
+				const vniHighWaterRemaining = 256
+				if remaining := max - *row.VNI; remaining < vniHighWaterRemaining {
+					h.log.Warn("overlay VNI range nearing exhaustion",
+						"allocated_vni", *row.VNI, "max_vni", max, "remaining", remaining)
+				}
+			}
+		}
+		response.WriteJSON(w, r, http.StatusCreated, toView(row))
+		return
+	}
+
+	managed := req.Managed != nil && *req.Managed
+	egress := store.NetworkEgressNone
+	if req.Egress != nil {
+		egress = store.NetworkEgress(*req.Egress)
+	}
+
+	subnet, gateway, err := resolveCreateEgress(egress, req.Subnet, req.Gateway)
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+
 	mtu := int32(validation.DefaultMTU)
 	if req.MTU != nil {
 		mtu = *req.MTU
@@ -47,22 +92,48 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Name:       req.Name,
 		Type:       store.NetworkType(req.Type),
 		BridgeName: req.BridgeName,
+		Managed:    managed,
+		Egress:     egress,
 		VlanTag:    req.VlanTag,
 		Mtu:        mtu,
+		Subnet:     subnet,
+		Gateway:    gateway,
 		Config:     cfg,
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrNetworkNameExists) {
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict, "network name already in use", nil)
-			return
-		}
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "persist network", nil)
+		h.writeCreateNetworkError(w, r, err)
 		return
 	}
 
 	response.WriteJSON(w, r, http.StatusCreated, toView(row))
+}
+
+// writeCreateNetworkError maps a CreateNetwork failure to its HTTP response:
+// a name-uniqueness, VNI-exhaustion, or sub-floor underlay MTU conflict to 409,
+// anything else to 500.
+func (h *Handler) writeCreateNetworkError(w http.ResponseWriter, r *http.Request, err error) {
+	var floorErr *store.UnderlayBelowFloorError
+	if errors.As(err, &floorErr) {
+		response.WriteError(w, r, http.StatusConflict, response.CodeConflict,
+			"overlay networks require an underlay mtu at or above the floor",
+			map[string]any{
+				"underlay_mtu":        floorErr.UnderlayMTU,
+				"min_underlay_mtu":    floorErr.MinUnderlayMTU,
+				"derived_overlay_mtu": floorErr.DerivedOverlayMTU,
+			})
+		return
+	}
+	switch {
+	case errors.Is(err, store.ErrNetworkNameExists):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "network name already in use", nil)
+	case errors.Is(err, store.ErrVNIExhausted):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "overlay VNI range exhausted", nil)
+	default:
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "persist network", nil)
+	}
 }
 
 // validateCreate enforces the API-edge invariants on the create
@@ -78,6 +149,10 @@ func validateCreate(req *createRequest) error {
 
 	if err := validation.ValidateNetworkType(req.Type); err != nil {
 		return err
+	}
+
+	if store.NetworkType(req.Type) == store.NetworkTypeOverlay {
+		return validateOverlayCreate(req)
 	}
 
 	if err := validation.ValidateBridgeName(req.BridgeName); err != nil {
@@ -96,11 +171,95 @@ func validateCreate(req *createRequest) error {
 		}
 	}
 
+	egress := store.NetworkEgressNone
+	if req.Egress != nil {
+		if err := validation.ValidateNetworkEgress(*req.Egress); err != nil {
+			return err
+		}
+		egress = store.NetworkEgress(*req.Egress)
+	}
+	managed := req.Managed != nil && *req.Managed
+	if err := validation.ValidateNetworkInvariants(store.NetworkType(req.Type), managed, egress); err != nil {
+		return err
+	}
+
 	if err := validateConfigShape(req.Config); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// validateOverlayCreate enforces the type=overlay create invariants: subnet
+// required; bridge_name / mtu / vlan_tag / gateway forbidden (server-derived or
+// fixed); egress must be none; managed must be true (default). The VNI, bridge
+// name, mtu, and managed flag are stamped by the store, not the client.
+func validateOverlayCreate(req *createRequest) error {
+	if req.Subnet == nil {
+		return errors.New("subnet is required for type=overlay")
+	}
+	if req.BridgeName != "" {
+		return errors.New("bridge_name is forbidden for type=overlay (the server derives otb<vni>)")
+	}
+	if req.MTU != nil {
+		return errors.New("mtu is forbidden for type=overlay (fixed at 1390)")
+	}
+	if req.VlanTag != nil {
+		return errors.New("vlan_tag is forbidden for type=overlay")
+	}
+	if req.Gateway != nil {
+		return errors.New("gateway is forbidden for type=overlay")
+	}
+	if req.Egress != nil && store.NetworkEgress(*req.Egress) != store.NetworkEgressNone {
+		return errors.New("egress=nat is forbidden for type=overlay")
+	}
+	if req.Managed != nil && !*req.Managed {
+		return errors.New("managed=false is forbidden for type=overlay (always Otherix-managed)")
+	}
+	return validateConfigShape(req.Config)
+}
+
+// resolveCreateEgress turns the optional subnet/gateway request strings
+// into the stored pointers, enforcing the egress-driven invariants:
+//
+//   - egress=nat: subnet is required and parsed to canonical (masked)
+//     form; gateway, if supplied, must be a valid host inside the
+//     subnet, otherwise it defaults to the first usable host.
+//   - egress=none: neither subnet nor gateway may be present, keeping the
+//     stored model free of IP fields the mode does not use.
+func resolveCreateEgress(egress store.NetworkEgress, subnetStr, gatewayStr *string) (*netip.Prefix, *netip.Addr, error) {
+	if egress != store.NetworkEgressNAT {
+		if subnetStr != nil {
+			return nil, nil, errors.New("subnet is only allowed when egress=nat")
+		}
+		if gatewayStr != nil {
+			return nil, nil, errors.New("gateway is only allowed when egress=nat")
+		}
+		return nil, nil, nil
+	}
+
+	if subnetStr == nil {
+		return nil, nil, errors.New("subnet is required when egress=nat")
+	}
+	subnet, err := validation.ParseSubnet(*subnetStr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var gateway netip.Addr
+	if gatewayStr != nil {
+		gateway, err = netip.ParseAddr(*gatewayStr)
+		if err != nil {
+			return nil, nil, errors.New("gateway must be a valid ip address")
+		}
+		if err := validation.ValidateGatewayInSubnet(gateway, subnet); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		gateway = validation.GatewayDefault(subnet)
+	}
+
+	return &subnet, &gateway, nil
 }
 
 // validateConfigShape returns nil when the supplied bytes are either

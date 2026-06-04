@@ -8,11 +8,13 @@ package etcdstore_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -76,6 +78,54 @@ func TestDeleteExpiredTasks(t *testing.T) {
 	}
 }
 
+// TestDeleteFailedJobsRespectsStateAndAge seeds four job rows directly and runs
+// the sweep with a 7-day cutoff: only the failed job older than the cutoff is
+// deleted; recent-failed, running, and pending rows survive.
+func TestDeleteFailedJobsRespectsStateAndAge(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	jobKey := func(id int64) string { return etcd.Key("jobs", fmt.Sprintf("%020d", id)) }
+	seedJob := func(id int64, state etcdstore.JobState, failedAt *time.Time) {
+		j := etcdstore.Job{ID: id, Kind: "test.job", State: state, FailedAt: failedAt}
+		if err := cli.PutJSON(ctx, jobKey(id), j); err != nil {
+			t.Fatalf("seed job %d: %v", id, err)
+		}
+	}
+	exists := func(id int64) bool {
+		var j etcdstore.Job
+		found, err := cli.GetJSON(ctx, jobKey(id), &j)
+		if err != nil {
+			t.Fatalf("get job %d: %v", id, err)
+		}
+		return found
+	}
+
+	now := time.Now().UTC()
+	old := now.Add(-8 * 24 * time.Hour)
+	recent := now.Add(-time.Hour)
+	seedJob(1, etcdstore.JobStateFailed, &old)    // deleted
+	seedJob(2, etcdstore.JobStateFailed, &recent) // retained (too recent)
+	seedJob(3, etcdstore.JobStateRunning, nil)    // retained (never touch running)
+	seedJob(4, etcdstore.JobStatePending, nil)    // retained (pending)
+
+	deleted, err := s.DeleteFailedJobs(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteFailedJobs: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1", deleted)
+	}
+	if exists(1) {
+		t.Errorf("job 1 (old failed) survived, want swept")
+	}
+	for _, id := range []int64{2, 3, 4} {
+		if !exists(id) {
+			t.Errorf("job %d wrongly swept, want retained", id)
+		}
+	}
+}
+
 func TestPromoteHealthyNodes(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -126,6 +176,59 @@ func TestMarkNodesUnreachable(t *testing.T) {
 	}
 }
 
+func TestMarkNodesGone(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	// seedNode writes a node row directly so the test controls status and
+	// last_heartbeat_at precisely.
+	seedNode := func(name string, status store.NodeStatus, hb *time.Time) uuid.UUID {
+		id := uuid.New()
+		n := store.Node{
+			ID:                 id,
+			Name:               uniqueNodeName(name),
+			Architecture:       store.CpuArchAmd64,
+			AdvertisedEndpoint: "https://node.example:9443",
+			MigrationHost:      "10.0.0.1",
+			Status:             status,
+			LastHeartbeatAt:    hb,
+			CreatedAt:          time.Now().UTC(),
+			UpdatedAt:          time.Now().UTC(),
+		}
+		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
+			t.Fatalf("seed node %q: %v", name, err)
+		}
+		return id
+	}
+
+	old := time.Now().Add(-10 * time.Minute)
+	recent := time.Now().Add(-30 * time.Second)
+	// unreachable + stale-past-grace -> gone
+	gone := seedNode("n-gone", store.NodeStatusUnreachable, &old)
+	// unreachable but heartbeat newer than the grace cutoff -> stays
+	staysUnreachable := seedNode("n-stay", store.NodeStatusUnreachable, &recent)
+	// ready -> never touched by MarkNodesGone
+	staysReady := seedNode("n-ready", store.NodeStatusReady, &old)
+
+	goneBefore := time.Now().Add(-5 * time.Minute)
+	rows, err := s.MarkNodesGone(ctx, goneBefore)
+	if err != nil {
+		t.Fatalf("MarkNodesGone: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != gone {
+		t.Fatalf("rows = %+v, want exactly the gone node %s", rows, gone)
+	}
+	if n, _ := s.NodeByID(ctx, gone); n.Status != store.NodeStatusGone {
+		t.Errorf("gone node status = %v, want gone", n.Status)
+	}
+	if n, _ := s.NodeByID(ctx, staysUnreachable); n.Status != store.NodeStatusUnreachable {
+		t.Errorf("stay node status = %v, want unreachable", n.Status)
+	}
+	if n, _ := s.NodeByID(ctx, staysReady); n.Status != store.NodeStatusReady {
+		t.Errorf("ready node status = %v, want ready", n.Status)
+	}
+}
+
 func TestListPoolsNeedingScan(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -157,5 +260,68 @@ func TestListPoolsNeedingScan(t *testing.T) {
 	rows, _ = s.ListPoolsNeedingScan(ctx)
 	if len(rows) != 0 {
 		t.Errorf("with in-flight scan, rows = %d, want 0", len(rows))
+	}
+}
+
+// TestDeleteOrphanedNetworkNodeStatus seeds a network_node_status row for a live
+// network and another for a deleted (non-resolving) network, then runs the
+// sweep: the orphan must be deleted and the live-network row must survive.
+func TestDeleteOrphanedNetworkNodeStatus(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	liveNet, err := s.CreateNetwork(ctx, netParams(uniqueNetName("nns-live")))
+	if err != nil {
+		t.Fatalf("CreateNetwork(live): %v", err)
+	}
+	liveNode := uuid.New()
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: liveNet.ID, NodeID: liveNode, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus(live): %v", err)
+	}
+
+	// Orphan: a status row whose network never existed (no live network resolves).
+	orphanNet := uuid.New()
+	orphanNode := uuid.New()
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: orphanNet, NodeID: orphanNode, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus(orphan): %v", err)
+	}
+
+	deleted, err := s.DeleteOrphanedNetworkNodeStatus(ctx)
+	if err != nil {
+		t.Fatalf("DeleteOrphanedNetworkNodeStatus: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1 (the orphan only)", deleted)
+	}
+
+	// The live-network row survives.
+	live, err := s.ListNetworkNodeStatusByNetwork(ctx, liveNet.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork(live): %v", err)
+	}
+	if len(live) != 1 {
+		t.Errorf("live network status rows = %d, want 1 (must survive)", len(live))
+	}
+
+	// The orphan is gone.
+	orphan, err := s.ListNetworkNodeStatusByNetwork(ctx, orphanNet)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork(orphan): %v", err)
+	}
+	if len(orphan) != 0 {
+		t.Errorf("orphan network status rows = %d, want 0 (must be swept)", len(orphan))
+	}
+
+	// Idempotent: a second sweep deletes nothing.
+	deleted, err = s.DeleteOrphanedNetworkNodeStatus(ctx)
+	if err != nil {
+		t.Fatalf("DeleteOrphanedNetworkNodeStatus(second): %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("second sweep deleted = %d, want 0", deleted)
 	}
 }

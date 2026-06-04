@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/otherix/otherix/internal/agent/netfabric"
 )
 
 // validQcow2Bytes returns a synthetic blob whose first 4 bytes match
@@ -84,7 +86,7 @@ func serveStatus(t *testing.T, status int) string {
 
 func TestManager_ImportImage_UnknownPool(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -100,7 +102,7 @@ func TestManager_ImportImage_UnknownPool(t *testing.T) {
 
 func TestManager_ImportImage_ValidationErrors(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -184,7 +186,7 @@ func TestManager_ImportImage_ValidationErrors(t *testing.T) {
 
 func TestManager_ImportImage_HappyPath(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -251,7 +253,7 @@ func TestManager_ImportImage_HappyPath(t *testing.T) {
 
 func TestManager_ImportImage_PreExistence(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -303,7 +305,7 @@ func TestManager_ImportImage_PreExistence(t *testing.T) {
 // computed checksum so the CP-side worker can back-propagate it.
 func TestManager_ImportImage_ComputeMode_HappyPath(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -356,7 +358,7 @@ func TestManager_ImportImage_ComputeMode_HappyPath(t *testing.T) {
 // back-propagation turns the template into verify mode for next time.
 func TestManager_ImportImage_ComputeMode_NoPreExistenceFastPath(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -399,7 +401,7 @@ func TestManager_ImportImage_ComputeMode_NoPreExistenceFastPath(t *testing.T) {
 
 func TestManager_ImportImage_ChecksumMismatch(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -438,7 +440,7 @@ func TestManager_ImportImage_ChecksumMismatch(t *testing.T) {
 
 func TestManager_ImportImage_Qcow2HeaderInvalid(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -473,7 +475,7 @@ func TestManager_ImportImage_Qcow2HeaderInvalid(t *testing.T) {
 
 func TestManager_ImportImage_DownloadFailedHTTPStatus(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -512,7 +514,7 @@ func TestManager_ImportImage_DownloadFailedHTTPStatus(t *testing.T) {
 
 func TestManager_DeleteImage_HappyPath(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -536,7 +538,7 @@ func TestManager_DeleteImage_HappyPath(t *testing.T) {
 
 func TestManager_DeleteImage_Idempotent(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -552,7 +554,7 @@ func TestManager_DeleteImage_Idempotent(t *testing.T) {
 
 func TestManager_DeleteImage_UnknownPool(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -563,7 +565,7 @@ func TestManager_DeleteImage_UnknownPool(t *testing.T) {
 
 func TestManager_DeleteImage_InvalidChecksum(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -577,7 +579,7 @@ func TestManager_DeleteImage_InvalidChecksum(t *testing.T) {
 
 func TestManager_ListImages_Empty(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -595,7 +597,7 @@ func TestManager_ListImages_Empty(t *testing.T) {
 
 func TestManager_ListImages_Populated(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -655,7 +657,7 @@ func TestManager_ListImages_Populated(t *testing.T) {
 
 func TestManager_ListImages_UnknownPool(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

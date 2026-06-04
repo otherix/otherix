@@ -6,11 +6,13 @@ package nodes
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -47,5 +49,28 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeNodeResponseEffective(w, r, http.StatusOK, row, response.WriteJSON)
+	// network_conditions is the per-(node, network) materialisation list,
+	// an admin / operator-only detail. Resolve it only for those roles so
+	// developer / viewer reads do not pay the extra fan-out (and the
+	// summary view drops it regardless). NetworkByID skips stale rows
+	// whose network was deleted, so a lingering status never 500s the read.
+	var conditions []networkConditionView
+	var wg *wireguardView
+	if user := auth.UserFromContext(r.Context()); user != nil &&
+		(user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
+		conditions, err = networkConditions(r.Context(), h.store, resolved.ID)
+		if err != nil {
+			response.WriteError(w, r, http.StatusInternalServerError,
+				response.CodeInternal, "load node network conditions", nil)
+			return
+		}
+		wg, err = nodeWireguard(r.Context(), h.store, resolved.ID, row.LastHeartbeatAt, time.Now().UTC())
+		if err != nil {
+			response.WriteError(w, r, http.StatusInternalServerError,
+				response.CodeInternal, "load node wireguard fabric", nil)
+			return
+		}
+	}
+
+	writeNodeResponseEffective(w, r, http.StatusOK, row, conditions, wg, response.WriteJSON)
 }

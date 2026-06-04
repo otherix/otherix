@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/netfabric"
 )
 
 // TestManager_ScanPool_HappyPath exercises ScanPool end-to-end against
@@ -22,7 +24,7 @@ import (
 // any Linux host.
 func TestManager_ScanPool_HappyPath(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
-	m, err := New(cfg, discardLogger())
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -183,12 +184,15 @@ func TestGetNode_ByName(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetNode(context.Background(), "node-a")
+	got, raw, err := c.GetNode(context.Background(), "node-a")
 	if err != nil {
 		t.Fatalf("GetNode: %v", err)
 	}
 	if got.Name != "node-a" {
 		t.Errorf("Name = %s, want node-a", got.Name)
+	}
+	if !strings.Contains(string(raw), `"name":"node-a"`) {
+		t.Errorf("raw body = %s, want it to carry the server JSON verbatim", raw)
 	}
 }
 
@@ -202,7 +206,7 @@ func TestGetNode_404(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.GetNode(context.Background(), "missing")
+	_, _, err := c.GetNode(context.Background(), "missing")
 	if err == nil {
 		t.Fatal("expected error for 404")
 	}
@@ -224,7 +228,7 @@ func TestGetNode_Cordoned(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetNode(context.Background(), "node-a")
+	got, _, err := c.GetNode(context.Background(), "node-a")
 	if err != nil {
 		t.Fatalf("GetNode: %v", err)
 	}
@@ -245,7 +249,7 @@ func TestGetNode_MalformedJSON(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.GetNode(context.Background(), "node-a")
+	_, _, err := c.GetNode(context.Background(), "node-a")
 	if err == nil {
 		t.Fatal("expected decode error")
 	}

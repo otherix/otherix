@@ -45,10 +45,25 @@ type PoolReporter interface {
 // VMReporter returns the per-VM observed-state slice the collector
 // folds into HeartbeatRequest.vms. Implemented by the VM reconciler
 // per L3 D3 — single ownership of observed VM state mirrors the
-// pool reconciler precedent. Nil disables the seam and the collector
+// pool reporter precedent. Nil disables the seam and the collector
 // falls back to Manager.List() directly (legacy / test paths).
 type VMReporter interface {
 	VMReports() []VMReport
+}
+
+// NetworkReporter returns the per-network observed-state slice the
+// collector folds into HeartbeatRequest.networks. Implemented by the
+// network reconciler; nil is allowed (yields zero network reports) for
+// test paths that don't need network reconciliation wiring.
+type NetworkReporter interface {
+	NetworkReports() []NetworkReport
+}
+
+// WireGuardReporter returns the agent's observed WG interface state the
+// collector folds into HeartbeatRequest.wireguard. Implemented by the WG
+// reconciler. Nil is allowed (yields a nil report) for test/legacy paths.
+type WireGuardReporter interface {
+	WireGuardReport() *WireGuardReport
 }
 
 // LinuxCollector reads host inventory from /proc, runs qemu-system-*
@@ -60,6 +75,8 @@ type LinuxCollector struct {
 	vms          VMLister
 	vmReporter   VMReporter
 	pools        PoolReporter
+	networks     NetworkReporter
+	wireguard    WireGuardReporter
 	migration    config.MigrationConfig
 	qemu         config.QEMUConfig
 	agentVersion string
@@ -79,6 +96,8 @@ type CollectorDeps struct {
 	VMs        VMLister
 	VMReporter VMReporter
 	Pools      PoolReporter
+	Networks   NetworkReporter
+	WireGuard  WireGuardReporter
 	Migration  config.MigrationConfig
 	QEMU       config.QEMUConfig
 }
@@ -103,6 +122,8 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		vms:          deps.VMs,
 		vmReporter:   deps.VMReporter,
 		pools:        deps.Pools,
+		networks:     deps.Networks,
+		wireguard:    deps.WireGuard,
 		migration:    deps.Migration,
 		qemu:         deps.QEMU,
 		agentVersion: version.Current().Version,
@@ -186,6 +207,12 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	}
 	if c.pools != nil {
 		report.Pools = c.pools.PoolReports()
+	}
+	if c.networks != nil {
+		report.Networks = c.networks.NetworkReports()
+	}
+	if c.wireguard != nil {
+		report.WireGuard = c.wireguard.WireGuardReport()
 	}
 	return report, nil
 }

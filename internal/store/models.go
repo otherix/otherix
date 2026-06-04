@@ -81,7 +81,30 @@ const (
 type NetworkType string
 
 const (
-	NetworkTypeBridge NetworkType = "bridge"
+	NetworkTypeBridge  NetworkType = "bridge"
+	NetworkTypeOverlay NetworkType = "overlay"
+)
+
+// OverlayMTU is the overlay inner MTU at the default 1500-byte underlay
+// (defaultUnderlayMTU - OverlayEncapOverhead = 1500 - 110). On a sub-1500
+// underlay the overlay MTU derives from the seeded underlay_mtu instead; this
+// constant is the documented default-underlay value (tests reference it).
+const OverlayMTU int32 = 1390
+
+// OverlayEncapOverhead is the per-frame overhead an overlay VM frame pays:
+// 60 bytes WireGuard + 50 bytes VXLAN. The overlay inner MTU is underlay - this.
+const OverlayEncapOverhead int32 = 110
+
+// WGEncapOverhead is the per-frame overhead an otwg0 (WireGuard) frame pays:
+// 20 bytes IP + 8 bytes UDP + 32 bytes WireGuard. The otwg0 link MTU is
+// underlay - this.
+const WGEncapOverhead int32 = 60
+
+type NetworkEgress string
+
+const (
+	NetworkEgressNone NetworkEgress = "none"
+	NetworkEgressNAT  NetworkEgress = "nat"
 )
 
 type NicModel string
@@ -287,9 +310,37 @@ type CaCert struct {
 	RetiredAt *time.Time
 }
 
+// AgentWireguard is the per-node WireGuard fabric identity - node-level
+// infrastructure, NOT a user-facing resource - keyed 1:1 to nodes.id. The CP
+// assigns AgentIndex and OverlayIP on the first report and freezes them; the
+// agent-reported PublicKey / Endpoint / ListenPort refresh on every heartbeat.
+type AgentWireguard struct {
+	NodeID     uuid.UUID
+	PublicKey  string
+	Endpoint   string
+	OverlayIP  netip.Addr
+	AgentIndex int32
+	ListenPort int32
+	// EstablishedPeers are the agent-reported node-id strings with a live
+	// handshake (observability only; populated meaningfully by the N2c
+	// reconciler - the CP stores them verbatim in N2b and does not act on them).
+	EstablishedPeers []string
+	// ReconciliationStatus / ReconciliationError carry the WG reconciler's last
+	// pass outcome (pending/ready/failed), surfaced on the node's wireguard view
+	// so an otwg0 failure is operator-visible. Pure observed state - they never
+	// affect index / overlay IP / pubkey-guard allocation.
+	ReconciliationStatus string
+	ReconciliationError  *string
+	UpdatedAt            time.Time
+}
+
 type ClusterSetting struct {
 	ID              int32
 	DefaultPoolName *string
+	OverlaySupernet *string // cluster overlay supernet CIDR; seeded once at boot, immutable
+	VNIMin          *int32  // overlay VNI range floor; seeded once at boot, immutable
+	VNIMax          *int32  // overlay VNI range ceiling; seeded once at boot, immutable
+	UnderlayMTU     *int32  // physical underlay MTU; seeded once at boot, immutable (overlay/otwg0 MTUs derive from it)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -371,12 +422,28 @@ type Network struct {
 	Name       string
 	Type       NetworkType
 	BridgeName string
-	VlanTag    *int32
-	Mtu        int32
-	Config     []byte
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	DeletedAt  *time.Time
+	// Managed applies to type=bridge only: true=Otherix creates/owns the
+	// bridge, false=attach-only to an operator-provisioned bridge.
+	Managed bool
+	// Egress is the managed-egress mode: "none" (default) or "nat". nat
+	// requires type=bridge + managed=true (enforced at the API edge).
+	Egress  NetworkEgress
+	VlanTag *int32
+	Mtu     int32
+	// Subnet is the VM IP subnet; set when Egress=nat (and, in later
+	// phases, for overlay). Nil otherwise.
+	Subnet *netip.Prefix
+	// Gateway is the host-side gateway IP assigned on the bridge when
+	// Egress=nat (defaults to the first usable host in Subnet). Nil
+	// otherwise.
+	Gateway *netip.Addr
+	// VNI is the CP-allocated VXLAN Network Identifier, unique and
+	// immutable, present only for type=overlay. Nil for bridge.
+	VNI       *int32
+	Config    []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time
 }
 
 type Node struct {

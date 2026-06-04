@@ -122,6 +122,7 @@ func (f *fakeIdempStore) CompleteIdempotencyKey(_ context.Context, arg store.Com
 	row.ResponseStatus = arg.ResponseStatus
 	row.ResponseHeaders = arg.ResponseHeaders
 	row.ResponseBody = arg.ResponseBody
+	row.ExpiresAt = arg.ExpiresAt
 	now := time.Now()
 	row.CompletedAt = &now
 	f.rows[arg.Key] = row
@@ -289,6 +290,109 @@ func TestIdempotency_FreshKeyProceedsAndCachesResponse(t *testing.T) {
 	}
 }
 
+// observingWriter wraps an httptest.ResponseRecorder and runs a callback
+// the moment any byte (header or body) reaches the underlying writer. It
+// lets a test assert *when* the client first observes a response relative
+// to other events (e.g. CompleteIdempotencyKey).
+type observingWriter struct {
+	*httptest.ResponseRecorder
+	onFirstWrite func()
+	wrote        bool
+}
+
+func (o *observingWriter) note() {
+	if !o.wrote {
+		o.wrote = true
+		if o.onFirstWrite != nil {
+			o.onFirstWrite()
+		}
+	}
+}
+
+func (o *observingWriter) WriteHeader(status int) {
+	o.note()
+	o.ResponseRecorder.WriteHeader(status)
+}
+
+func (o *observingWriter) Write(b []byte) (int, error) {
+	o.note()
+	return o.ResponseRecorder.Write(b)
+}
+
+// completeSpyStore records, at the instant CompleteIdempotencyKey is
+// invoked, whether the client has already seen any response bytes.
+type completeSpyStore struct {
+	*fakeIdempStore
+	clientWroteAtComplete bool
+	clientWrote           func() bool
+}
+
+func (c *completeSpyStore) CompleteIdempotencyKey(ctx context.Context, arg store.CompleteIdempotencyKeyParams) error {
+	if c.clientWrote != nil {
+		c.clientWroteAtComplete = c.clientWrote()
+	}
+	return c.fakeIdempStore.CompleteIdempotencyKey(ctx, arg)
+}
+
+func TestIdempotencyDoesNotFlushBeforeCommit(t *testing.T) {
+	spy := &completeSpyStore{fakeIdempStore: newFakeStore()}
+	mw := Idempotency(spy, discardLog())
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+
+	rr := &observingWriter{ResponseRecorder: httptest.NewRecorder()}
+	spy.clientWrote = func() bool { return rr.wrote }
+	rr.onFirstWrite = func() {
+		if spy.calls.complete == 0 {
+			t.Errorf("client observed response bytes before CompleteIdempotencyKey ran")
+		}
+	}
+
+	h.ServeHTTP(rr, authedRequest(http.MethodPost, "/v1/users", []byte(`{}`), uuid.New(), "k1"))
+
+	if spy.clientWroteAtComplete {
+		t.Errorf("client had already seen response bytes when Complete was invoked")
+	}
+	if !rr.wrote {
+		t.Errorf("client never received the buffered response")
+	}
+}
+
+func TestIdempotencyFlushesAfterCommit(t *testing.T) {
+	fake := newFakeStore()
+	mw := Idempotency(fake, discardLog())
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Custom", "v")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, authedRequest(http.MethodPost, "/v1/users", []byte(`{}`), uuid.New(), "k1"))
+
+	if fake.calls.complete != 1 {
+		t.Fatalf("Complete calls = %d, want 1", fake.calls.complete)
+	}
+	if rr.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201", rr.Code)
+	}
+	if rr.Body.String() != `{"ok":true}` {
+		t.Errorf("body = %q, want %q", rr.Body.String(), `{"ok":true}`)
+	}
+	if rr.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", rr.Header().Get("Content-Type"))
+	}
+	if rr.Header().Get("X-Custom") != "v" {
+		t.Errorf("X-Custom = %q, want v", rr.Header().Get("X-Custom"))
+	}
+}
+
 func TestIdempotency_DifferentBodyMismatch(t *testing.T) {
 	fake := newFakeStore()
 	mw := Idempotency(fake, discardLog())
@@ -396,6 +500,86 @@ func TestIdempotency_NonSuccessResponseNotCached(t *testing.T) {
 	}
 	if fake.calls.delete < 2 {
 		t.Errorf("delete calls = %d, want >= 2", fake.calls.delete)
+	}
+}
+
+func TestBeginUsesShortLease(t *testing.T) {
+	fake := newFakeStore()
+	row, action, err := tryBegin(context.Background(), fake, "k2", uuid.New(), "POST", "/v1/vms", []byte("b"))
+	if err != nil || action != actionProceed {
+		t.Fatalf("tryBegin = %v, %v", action, err)
+	}
+	lease := time.Until(row.ExpiresAt)
+	if lease > IdempotencyInFlightLease+time.Second || lease < time.Second {
+		t.Errorf("in_flight lease = %s, want ~%s (not the 24h TTL)", lease, IdempotencyInFlightLease)
+	}
+}
+
+func TestAcquireReclaimsStaleInFlight(t *testing.T) {
+	key := "k1"
+	past := time.Now().Add(-time.Minute)
+	fake := newFakeStore()
+	fake.rows[key] = store.IdempotencyKey{Key: key, State: "in_flight", ExpiresAt: past}
+
+	_, action, err := acquireKey(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	if err != nil {
+		t.Fatalf("acquireKey: %v", err)
+	}
+	if action != actionProceed {
+		t.Errorf("action = %v, want actionProceed (stale in_flight reclaimed)", action)
+	}
+}
+
+func TestReclaimUsesShortLease(t *testing.T) {
+	key := "k-reclaim"
+	past := time.Now().Add(-time.Minute)
+	fake := newFakeStore()
+	fake.rows[key] = store.IdempotencyKey{Key: key, State: "in_flight", ExpiresAt: past}
+
+	row, action, err := acquireKey(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	if err != nil {
+		t.Fatalf("acquireKey: %v", err)
+	}
+	if action != actionProceed {
+		t.Fatalf("action = %v, want actionProceed (reclaimed)", action)
+	}
+	lease := time.Until(row.ExpiresAt)
+	if lease > IdempotencyInFlightLease+time.Second || lease < time.Second {
+		t.Errorf("reclaimed in_flight lease = %s, want ~%s (the short lease, not 24h)", lease, IdempotencyInFlightLease)
+	}
+}
+
+func TestCompleteExtendsLease(t *testing.T) {
+	key := "k-complete"
+	fake := newFakeStore()
+
+	// Begin stamps the short in_flight lease.
+	begun, action, err := tryBegin(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	if err != nil || action != actionProceed {
+		t.Fatalf("tryBegin = %v, %v", action, err)
+	}
+	if lease := time.Until(begun.ExpiresAt); lease > IdempotencyInFlightLease+time.Second {
+		t.Fatalf("begin lease = %s, want short ~%s", lease, IdempotencyInFlightLease)
+	}
+
+	// Completing the row extends the lease to the full 24h TTL, exactly as
+	// finalizeKey does on a 2xx outcome.
+	status := int32(http.StatusCreated)
+	if err := fake.CompleteIdempotencyKey(context.Background(), store.CompleteIdempotencyKeyParams{
+		ResponseStatus: &status,
+		ExpiresAt:      time.Now().Add(IdempotencyTTL),
+		Key:            key,
+	}); err != nil {
+		t.Fatalf("CompleteIdempotencyKey: %v", err)
+	}
+
+	completed, err := fake.GetIdempotencyKey(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey: %v", err)
+	}
+	lease := time.Until(completed.ExpiresAt)
+	if lease < IdempotencyTTL-time.Minute || lease > IdempotencyTTL+time.Second {
+		t.Errorf("completed lease = %s, want ~%s (the full 24h TTL)", lease, IdempotencyTTL)
 	}
 }
 

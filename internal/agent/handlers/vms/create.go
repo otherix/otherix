@@ -10,9 +10,21 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/response"
 )
+
+// nicReq is one CP-declared network interface in a create request. An
+// empty or absent nics list falls back to legacy SLIRP networking.
+type nicReq struct {
+	ID          string `json:"id"`
+	Bridge      string `json:"bridge"`
+	MAC         string `json:"mac"`
+	Model       string `json:"model"`
+	MTU         int    `json:"mtu"`
+	DeviceOrder int    `json:"device_order"`
+}
 
 type createRequest struct {
 	// UUID is optional. When supplied it is used as the agent-side VM
@@ -35,6 +47,9 @@ type createRequest struct {
 	// template.cloud_init_user_data and injects a top-level `hostname:`
 	// matching the VM name when missing.
 	UserData string `json:"user_data,omitempty"`
+	// Nics are the CP-declared network interfaces to attach. Absent or
+	// empty means legacy SLIRP user-mode networking.
+	Nics []nicReq `json:"nics,omitempty"`
 }
 
 type asyncAccepted struct {
@@ -80,6 +95,30 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if msg, details := validateNICs(req.Nics); msg != "" {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, msg, details)
+		return
+	}
+
+	nics := make([]netfabric.NIC, 0, len(req.Nics))
+	for _, n := range req.Nics {
+		nicID, perr := uuid.Parse(n.ID)
+		if perr != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "nic id is not a valid UUID", nil)
+			return
+		}
+		nics = append(nics, netfabric.NIC{
+			ID:          nicID,
+			Bridge:      n.Bridge,
+			MAC:         n.MAC,
+			Model:       n.Model,
+			MTU:         n.MTU,
+			DeviceOrder: n.DeviceOrder,
+		})
+	}
+
 	task, err := h.manager.Create(r.Context(), vm.CreateSpec{
 		UUID:             vmID,
 		Name:             req.Name,
@@ -88,6 +127,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		PoolName:         req.Pool,
 		TemplateChecksum: req.TemplateChecksum,
 		UserData:         []byte(req.UserData),
+		NICs:             nics,
 	})
 	if err != nil {
 		mapCreateError(w, r, err)
@@ -101,6 +141,55 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxDeviceOrder bounds the per-VM NIC slot index. The guest exposes a
+// small, bounded set of PCI slots; the wire device_order is the slot
+// the NIC occupies. 0..15 is generous for the supported guest shapes.
+const maxDeviceOrder = 15
+
+// validateNICs runs the agent VM-create API-edge checks over the NIC
+// list, before anything is materialised. Today a bad MAC or model only
+// surfaces deep in qemu.BuildArgs (after taps are created) and a bad
+// bridge only at AttachTap; moving the checks here means no host
+// primitive is created on bad input. It returns ("", nil) when every
+// NIC is valid, or a human-readable message plus optional details for
+// the 400 envelope on the first violation.
+//
+// Checks per NIC: MAC present and a valid 6-octet EUI-48; model empty
+// or one of the supported QEMU models; bridge non-empty (the tap needs
+// a bridge to attach to); device_order in [0, maxDeviceOrder]. Across
+// the list: device_order values are unique and MACs are unique.
+func validateNICs(nics []nicReq) (string, map[string]any) {
+	seenOrder := make(map[int]struct{}, len(nics))
+	seenMAC := make(map[string]struct{}, len(nics))
+	for i, n := range nics {
+		if err := netfabric.ValidateMAC(n.MAC); err != nil {
+			return "nic mac is not a valid 6-octet MAC address",
+				map[string]any{"index": i, "mac": n.MAC}
+		}
+		if err := netfabric.ValidateModel(n.Model); err != nil {
+			return "nic model is not a supported QEMU NIC model",
+				map[string]any{"index": i, "model": n.Model}
+		}
+		if n.Bridge == "" {
+			return "nic bridge is required", map[string]any{"index": i}
+		}
+		if n.DeviceOrder < 0 || n.DeviceOrder > maxDeviceOrder {
+			return "nic device_order is out of range",
+				map[string]any{"index": i, "device_order": n.DeviceOrder, "max": maxDeviceOrder}
+		}
+		if _, dup := seenOrder[n.DeviceOrder]; dup {
+			return "nic device_order is duplicated",
+				map[string]any{"index": i, "device_order": n.DeviceOrder}
+		}
+		seenOrder[n.DeviceOrder] = struct{}{}
+		if _, dup := seenMAC[n.MAC]; dup {
+			return "nic mac is duplicated", map[string]any{"index": i, "mac": n.MAC}
+		}
+		seenMAC[n.MAC] = struct{}{}
+	}
+	return "", nil
+}
+
 func mapCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, vm.ErrInvalidSpec):
@@ -112,6 +201,9 @@ func mapCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, vm.ErrTemplateMissing):
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeNotFound, "template not found on pool", nil)
+	case errors.Is(err, vm.ErrCreateInFlight):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "vm create already in flight for this id", nil)
 	default:
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "internal error", nil)

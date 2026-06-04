@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/otherix/otherix/internal/logger"
+	"github.com/otherix/otherix/internal/store"
 )
 
 // APIConfig is the configuration for the otherix-api binary.
@@ -25,7 +26,52 @@ type APIConfig struct {
 	Workers      WorkersConfig      `koanf:"workers"`
 	Placement    PlacementConfig    `koanf:"placement"`
 	StoragePools StoragePoolsConfig `koanf:"storage_pools"`
+	Network      NetworkConfig      `koanf:"network"`
 	Etcd         EtcdConfig         `koanf:"etcd"`
+}
+
+// NetworkConfig holds cluster overlay-network settings. All fields are
+// SEED-ONLY: read once at first boot to seed cluster_settings
+// first-writer-wins; thereafter every replica reads the etcd value and
+// ignores this field. Defaults: OverlaySupernet 10.42.0.0/16,
+// VNIRange 1000-65535, UnderlayMTU 1500. UnderlayMTU is the physical underlay
+// MTU; the overlay inner MTU and otwg0 MTU derive from it.
+type NetworkConfig struct {
+	OverlaySupernet string         `koanf:"overlay_supernet"`
+	VNIRange        VNIRangeConfig `koanf:"vni_range"`
+	UnderlayMTU     int            `koanf:"underlay_mtu"`
+}
+
+// VNIRangeConfig bounds the overlay VXLAN VNI allocation range. Seeded into
+// cluster_settings first-writer-wins at bootstrap; immutable thereafter.
+type VNIRangeConfig struct {
+	Min int `koanf:"min"`
+	Max int `koanf:"max"`
+}
+
+// minUnderlayMTU floors the seedable underlay MTU. The overlay inner MTU derives
+// as underlay - store.OverlayEncapOverhead; flooring the underlay at
+// OverlayEncapOverhead + 1280 keeps that derived overlay MTU at or above the
+// 1280-byte IPv6 minimum link MTU (RFC 8200). Derived from the store constant so
+// the two bounds cannot drift; mirrors etcdstore.SeedUnderlayMTU.
+const minUnderlayMTU = int(store.OverlayEncapOverhead) + 1280 // 1390
+
+// Validate enforces the bootstrap-immutable overlay bounds on the local config
+// before it is seeded into cluster_settings, so a first-boot typo fails fast at
+// load time rather than deep in the store seed. The bounds mirror
+// etcdstore.SeedUnderlayMTU / SeedVNIRange: underlay_mtu is 0 (default 1500) or
+// minUnderlayMTU..65535; vni_range is 0/0 (defaults) or 1000<=min<max<=16777215.
+func (n NetworkConfig) Validate() error {
+	if n.UnderlayMTU != 0 && (n.UnderlayMTU < minUnderlayMTU || n.UnderlayMTU > 65535) {
+		return fmt.Errorf("network.underlay_mtu must be 0 (default) or in [%d, 65535] (got %d)", minUnderlayMTU, n.UnderlayMTU)
+	}
+	if n.VNIRange.Min == 0 && n.VNIRange.Max == 0 {
+		return nil
+	}
+	if n.VNIRange.Min < 1000 || n.VNIRange.Max > 16777215 || n.VNIRange.Min >= n.VNIRange.Max {
+		return fmt.Errorf("network.vni_range requires 1000 <= min < max <= 16777215 (got min=%d max=%d)", n.VNIRange.Min, n.VNIRange.Max)
+	}
+	return nil
 }
 
 // EtcdConfig configures the embedded etcd member that backs the
@@ -514,9 +560,13 @@ func (s StoragePoolScanConfig) Validate() error {
 // knobs. The reconciler fires on a fixed cadence (Interval) and flips
 // nodes between 'ready' and 'unreachable' based on whether their
 // last_heartbeat_at falls inside or outside the StaleThreshold window.
-// Both fields fall back to package defaults when zero.
+// A node in 'unreachable' whose last heartbeat is older than the
+// GoneGrace window (which must exceed StaleThreshold) is then advanced
+// to the terminal 'gone' status. All fields fall back to package
+// defaults when zero.
 type HeartbeatWorkersConfig struct {
 	StaleThreshold time.Duration `koanf:"stale_threshold"`
+	GoneGrace      time.Duration `koanf:"gone_grace"`
 	Interval       time.Duration `koanf:"interval"`
 }
 
@@ -560,6 +610,7 @@ func defaultAPIConfig() APIConfig {
 			},
 			Heartbeat: HeartbeatWorkersConfig{
 				StaleThreshold: 90 * time.Second,
+				GoneGrace:      5 * time.Minute,
 				Interval:       30 * time.Second,
 			},
 			StoragePoolScan: StoragePoolScanConfig{
@@ -598,6 +649,11 @@ func defaultAPIConfig() APIConfig {
 		StoragePools: StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
 		},
+		Network: NetworkConfig{
+			OverlaySupernet: "10.42.0.0/16",
+			VNIRange:        VNIRangeConfig{Min: 1000, Max: 65535},
+			UnderlayMTU:     1500,
+		},
 		Etcd: EtcdConfig{
 			Mode:         "single",
 			Name:         "otherix-0",
@@ -634,7 +690,8 @@ func (s StoragePoolsConfig) Validate() error {
 }
 
 // Validate checks the server listen address, agent server/client and
-// CP cert config, auth config, and console access mode.
+// CP cert config, auth config, console access mode, and the overlay
+// network bounds (underlay_mtu / vni_range).
 func (c APIConfig) Validate() error {
 	if err := c.Server.Validate(); err != nil {
 		return err
@@ -667,6 +724,9 @@ func (c APIConfig) Validate() error {
 		return err
 	}
 	if err := c.StoragePools.Validate(); err != nil {
+		return err
+	}
+	if err := c.Network.Validate(); err != nil {
 		return err
 	}
 	return nil

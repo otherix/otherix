@@ -9,6 +9,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/google/uuid"
@@ -140,6 +141,46 @@ func TestCreateScheduledVMDuplicateNameAndPlanError(t *testing.T) {
 		return store.VMCreateWrites{}, sentinel
 	}); !errors.Is(err, sentinel) {
 		t.Errorf("plan error = %v, want propagated sentinel", err)
+	}
+}
+
+// fixedMACPlan returns a CreateScheduledVM plan that attaches a single NIC with
+// a pinned MAC to networkID, so two plans sharing a MAC on the same network
+// collide on the per-network MAC guard rather than the VM-name guard.
+func fixedMACPlan(t *testing.T, name string, owner, nodeID, poolID, templateID, networkID uuid.UUID, mac net.HardwareAddr) func(store.PlacementReader) (store.VMCreateWrites, error) {
+	t.Helper()
+	return func(store.PlacementReader) (store.VMCreateWrites, error) {
+		w := vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+		w.Nic = &store.CreateVMNicParams{
+			ID:          uuid.New(),
+			VmID:        w.VM.ID,
+			NetworkID:   networkID,
+			DeviceOrder: 0,
+			Model:       store.NicModelVirtio,
+			MacAddress:  mac,
+		}
+		return w, nil
+	}
+}
+
+func TestCreateScheduledVMRejectsDuplicateMAC(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	owner := uuid.New()
+	netID := seedBridgeNetwork(t, s).ID
+	mac, err := net.ParseMAC("52:54:00:ab:cd:ef")
+	if err != nil {
+		t.Fatalf("ParseMAC: %v", err)
+	}
+
+	nameA := "vm-a-" + uuid.NewString()[:8]
+	nameB := "vm-b-" + uuid.NewString()[:8]
+	if _, err := s.CreateScheduledVM(ctx, fixedMACPlan(t, nameA, owner, nodeID, poolID, templateID, netID, mac)); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if _, err := s.CreateScheduledVM(ctx, fixedMACPlan(t, nameB, owner, nodeID, poolID, templateID, netID, mac)); !errors.Is(err, store.ErrVMNicMACConflict) {
+		t.Fatalf("second create err = %v, want store.ErrVMNicMACConflict", err)
 	}
 }
 

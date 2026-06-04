@@ -118,7 +118,7 @@ func TestGetPoolByID_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetPoolByID(context.Background(), id)
+	got, _, err := c.GetPoolByID(context.Background(), id)
 	if err != nil {
 		t.Fatalf("GetPoolByID: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestGetPoolByID_404(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.GetPoolByID(context.Background(), uuid.New())
+	_, _, err := c.GetPoolByID(context.Background(), uuid.New())
 	if err == nil {
 		t.Fatalf("expected error for 404")
 	}
@@ -190,7 +190,7 @@ func TestGetPoolByName_AggregatedView(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.GetPoolByName(context.Background(), "default")
+	got, _, err := c.GetPoolByName(context.Background(), "default")
 	if err != nil {
 		t.Fatalf("GetPoolByName: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestGetPoolByName_PathEscapesSpecialChars(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	if _, err := c.GetPoolByName(context.Background(), "pool with space"); err != nil {
+	if _, _, err := c.GetPoolByName(context.Background(), "pool with space"); err != nil {
 		t.Fatalf("GetPoolByName: %v", err)
 	}
 }

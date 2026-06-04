@@ -69,14 +69,40 @@ func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.Placement
 	ops = append(ops, vmDiskIndexOps(disk)...)
 	ops = append(ops, taskIndexOps(task)...)
 
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)).
-		Then(ops...).
-		Commit()
+	if writes.Nic != nil {
+		nicOps, err := vmNicCreateOps(vmNicFromCreateParams(*writes.Nic, now))
+		if err != nil {
+			return uuid.Nil, err
+		}
+		ops = append(ops, nicOps...)
+	}
+
+	conds := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)}
+	var macGuard string
+	if writes.Nic != nil {
+		macGuard = vmNicMACGuard(writes.Nic.NetworkID, writes.Nic.MacAddress)
+		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0))
+	}
+
+	resp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
 	if err != nil {
 		return uuid.Nil, err
 	}
 	if !resp.Succeeded {
+		// Two compares can fail: the VM-name guard and (with a NIC) the
+		// per-network MAC guard. Disambiguate by re-issuing the MAC-guard
+		// compare alone - if it also fails the MAC key already exists, so the
+		// collision was the MAC (which the handler re-mints); otherwise the
+		// name guard fired.
+		if macGuard != "" {
+			// Best-effort: a concurrent delete of the MAC key could skew this to ErrVMNameInUse; both are 409 conflicts and the guard's atomicity already prevents any uniqueness violation.
+			chk, cerr := s.c.Raw().Txn(ctx).
+				If(clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0)).
+				Commit()
+			if cerr == nil && chk != nil && !chk.Succeeded {
+				return uuid.Nil, store.ErrVMNicMACConflict
+			}
+		}
 		return uuid.Nil, store.ErrVMNameInUse
 	}
 	return task.ID, nil
@@ -237,6 +263,12 @@ func (r placementReader) ListDiskPressuredPoolsByName(ctx context.Context, name 
 		out = append(out, store.ListDiskPressuredPoolsByNameRow{PoolEffectiveCapacity: pr.pool, NodeEffectiveAvailability: pr.node})
 	}
 	return out, nil
+}
+
+// ListNetworkNodeStatusByNode returns the node's per-network reconciliation
+// records for the scheduler's network-aware placement filter (ADR 0034 NL18).
+func (r placementReader) ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	return r.s.ListNetworkNodeStatusByNode(ctx, nodeID)
 }
 
 // CountRunningVMsByNode counts non-deleted VMs pinned to the node (intent),

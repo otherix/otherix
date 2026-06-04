@@ -130,15 +130,32 @@ func (s *Store) updateTask(ctx context.Context, id uuid.UUID, mutate func(*store
 // UpdateTaskRunning transitions a task pending -> running: it stamps started_at
 // on the first transition (coalesced across retries) and increments the attempt
 // counter. Worker entry point.
+//
+// A worker redelivery calls this at the top of every delivery, including
+// deliveries of an already-committed task (the agent ACK was lost, the job is
+// redelivered after the projection committed). A committed-terminal task
+// (success / cancelled) must NEVER regress to running: that would defeat the
+// projections' committed-terminal short-circuit and double-apply their
+// non-idempotent writes (the template derived_vm_count bump). So a
+// committed-terminal task is skipped entirely - no write, no status regression,
+// no Attempts bump. A failed task is retryable (failRun finalizes failed but the
+// dispatcher requeues the job), so it still transitions to running and bumps
+// Attempts on redelivery - this is what makes the fail-then-succeed retry work.
 func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
-	return s.updateTask(ctx, id, func(t *store.Task) {
-		t.Status = store.TaskStatusRunning
-		if t.StartedAt == nil {
-			now := time.Now().UTC()
-			t.StartedAt = &now
-		}
-		t.Attempts++
-	})
+	t, err := s.TaskByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if isCommittedTerminal(t.Status) {
+		return nil
+	}
+	t.Status = store.TaskStatusRunning
+	if t.StartedAt == nil {
+		now := time.Now().UTC()
+		t.StartedAt = &now
+	}
+	t.Attempts++
+	return s.c.PutJSON(ctx, taskKey(id), t)
 }
 
 // UpdateTaskFinalized writes a task's terminal status (success / failed /

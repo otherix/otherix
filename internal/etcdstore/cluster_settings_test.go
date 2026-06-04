@@ -8,6 +8,8 @@ package etcdstore_test
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -56,5 +58,229 @@ func TestClusterSettingsSetAndClearDefaultPool(t *testing.T) {
 	}
 	if cleared.DefaultPoolName != nil {
 		t.Errorf("DefaultPoolName after clear = %v, want nil", *cleared.DefaultPoolName)
+	}
+}
+
+func TestSeedVNIRangeFirstWriterWins(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SeedVNIRange(ctx, 2000, 3000); err != nil {
+		t.Fatalf("SeedVNIRange first call: %v", err)
+	}
+	if err := s.SeedVNIRange(ctx, 4000, 5000); err != nil {
+		t.Fatalf("SeedVNIRange second call: %v", err)
+	}
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 2000 || max != 3000 {
+		t.Errorf("VNIRange() = (%d,%d), want (2000,3000)", min, max)
+	}
+}
+
+func TestSeedVNIRangeSecondCallWithBadConfigShortCircuits(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SeedVNIRange(ctx, 1000, 2000); err != nil {
+		t.Fatalf("first seed: %v", err)
+	}
+	// A replica booting with an INVALID local config must NOT fail - the value is
+	// already seeded and immutable.
+	if err := s.SeedVNIRange(ctx, 5000, 100); err != nil { // min>max: invalid local config
+		t.Fatalf("second seed with bad local config = %v, want nil (already seeded)", err)
+	}
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 1000 || max != 2000 {
+		t.Errorf("range = [%d,%d], want the originally seeded [1000,2000]", min, max)
+	}
+}
+
+func TestVNIRangeDefaultWhenUnset(t *testing.T) {
+	s, _ := startStore(t)
+	min, max, err := s.VNIRange(context.Background())
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 1000 || max != 65535 {
+		t.Errorf("VNIRange() default = (%d,%d), want (1000,65535)", min, max)
+	}
+}
+
+func TestSeedVNIRangeRejectsBadBounds(t *testing.T) {
+	cases := []struct {
+		name     string
+		min, max int
+	}{
+		{"min below floor", 500, 600},
+		{"min equals max", 2000, 2000},
+		{"max above vxlan ceiling", 1000, 16777216},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := startStore(t)
+			if err := s.SeedVNIRange(context.Background(), tc.min, tc.max); err == nil {
+				t.Errorf("SeedVNIRange(%d,%d) = nil, want error", tc.min, tc.max)
+			}
+		})
+	}
+}
+
+func TestSeedVNIRangeZeroDefaults(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedVNIRange(ctx, 0, 0); err != nil {
+		t.Fatalf("SeedVNIRange(0,0): %v", err)
+	}
+	min, max, err := s.VNIRange(ctx)
+	if err != nil {
+		t.Fatalf("VNIRange: %v", err)
+	}
+	if min != 1000 || max != 65535 {
+		t.Errorf("VNIRange() after zero seed = (%d,%d), want (1000,65535)", min, max)
+	}
+}
+
+func TestSeedAndReadUnderlayMTU(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedUnderlayMTU(ctx, 9000); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	mtu, err := s.UnderlayMTU(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if mtu != 9000 {
+		t.Errorf("underlay mtu = %d, want 9000", mtu)
+	}
+	if err := s.SeedUnderlayMTU(ctx, 1400); err != nil { // immutable: no-op
+		t.Fatalf("second seed: %v", err)
+	}
+	mtu, _ = s.UnderlayMTU(ctx)
+	if mtu != 9000 {
+		t.Errorf("underlay mtu = %d after second seed, want immutable 9000", mtu)
+	}
+}
+
+func TestUnderlayMTUDefaultWhenUnset(t *testing.T) {
+	s, _ := startStore(t)
+	mtu, err := s.UnderlayMTU(context.Background())
+	if err != nil {
+		t.Fatalf("UnderlayMTU: %v", err)
+	}
+	if mtu != 1500 {
+		t.Errorf("UnderlayMTU() default = %d, want 1500", mtu)
+	}
+}
+
+func TestSeedUnderlayMTUFloor(t *testing.T) {
+	cases := []struct {
+		name    string
+		mtu     int
+		wantErr bool
+		want    int32 // expected UnderlayMTU when accepted
+	}{
+		{name: "just below floor", mtu: 1389, wantErr: true},
+		{name: "at floor", mtu: 1390, want: 1390},
+		{name: "classic ethernet", mtu: 1500, want: 1500},
+		{name: "at ceiling", mtu: 65535, want: 65535},
+		{name: "above ceiling", mtu: 65536, wantErr: true},
+		{name: "zero defaults", mtu: 0, want: 1500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := startStore(t)
+			ctx := context.Background()
+			err := s.SeedUnderlayMTU(ctx, tc.mtu)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("SeedUnderlayMTU(%d) = nil, want error", tc.mtu)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SeedUnderlayMTU(%d) = %v, want nil", tc.mtu, err)
+			}
+			got, err := s.UnderlayMTU(ctx)
+			if err != nil {
+				t.Fatalf("UnderlayMTU: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("UnderlayMTU() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSeedUnderlayMTUFloorErrorMentionsFloor(t *testing.T) {
+	s, _ := startStore(t)
+	err := s.SeedUnderlayMTU(context.Background(), 1389)
+	if err == nil {
+		t.Fatalf("SeedUnderlayMTU(1389) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "1390") {
+		t.Errorf("SeedUnderlayMTU(1389) error = %q, want it to mention the 1390 floor", err)
+	}
+}
+
+// TestSeedClusterSettingsConcurrentFieldsDoNotClobber boots two seeders against
+// the same fresh singleton, each setting a DIFFERENT field. Under a blind
+// read-modify-Put both read the same all-nil object and the last Put wins on the
+// whole document, erasing the other writer's field. The CAS path serialises the
+// two writers so both fields survive. Run under -race.
+func TestSeedClusterSettingsConcurrentFieldsDoNotClobber(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var mtuErr, vniErr error
+	go func() {
+		defer wg.Done()
+		mtuErr = s.SeedUnderlayMTU(ctx, 9000)
+	}()
+	go func() {
+		defer wg.Done()
+		vniErr = s.SeedVNIRange(ctx, 2000, 3000)
+	}()
+	wg.Wait()
+
+	if mtuErr != nil {
+		t.Fatalf("SeedUnderlayMTU: %v", mtuErr)
+	}
+	if vniErr != nil {
+		t.Fatalf("SeedVNIRange: %v", vniErr)
+	}
+
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		t.Fatalf("ClusterSettings: %v", err)
+	}
+	if cs.UnderlayMTU == nil || *cs.UnderlayMTU != 9000 {
+		t.Errorf("UnderlayMTU = %v, want 9000 (clobbered by concurrent VNI seed)", cs.UnderlayMTU)
+	}
+	if cs.VNIMin == nil || *cs.VNIMin != 2000 {
+		t.Errorf("VNIMin = %v, want 2000 (clobbered by concurrent MTU seed)", cs.VNIMin)
+	}
+}
+
+func TestSeedUnderlayMTUZeroDefaults(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if err := s.SeedUnderlayMTU(ctx, 0); err != nil {
+		t.Fatalf("SeedUnderlayMTU(0): %v", err)
+	}
+	mtu, err := s.UnderlayMTU(ctx)
+	if err != nil {
+		t.Fatalf("UnderlayMTU: %v", err)
+	}
+	if mtu != 1500 {
+		t.Errorf("UnderlayMTU() after zero seed = %d, want 1500", mtu)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
+	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
@@ -298,7 +299,7 @@ func fileExists(path string) bool {
 // hooks → CP cert load → agent client → worker runtime → HTTP server. Each
 // step's failure path returns after wrapping the error.
 func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, authSvc *auth.Service, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
-	if err := runBootstrapHooks(ctx, st, caMaterial, log); err != nil {
+	if err := runBootstrapHooks(ctx, st, caMaterial, cfg.Network, log); err != nil {
 		return err
 	}
 
@@ -357,16 +358,58 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 // runBootstrapHooks runs the post-start / pre-serve bootstrap hooks in the
 // canonical order: BootstrapAdmin first (seeds the first admin user), then
 // BootstrapClusterCA (syncs the on-disk cluster CA into etcd so the /v1/ca
-// endpoint and the Step 2 CSR signer have an active row). Both hooks are
-// idempotent - repeat boots observe existing rows and no-op.
-func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
+// endpoint and the Step 2 CSR signer have an active row), then
+// SeedOverlaySupernet (writes the cluster overlay supernet first-writer-wins so
+// agent WG overlay allocation has a supernet to carve /24s from), then
+// SeedVNIRange (writes the VXLAN VNI allocation bounds first-writer-wins), then
+// SeedUnderlayMTU (writes the physical underlay MTU first-writer-wins; the
+// overlay inner MTU and otwg0 MTU derive from it). All hooks are idempotent -
+// repeat boots observe existing rows and no-op.
+func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, netCfg config.NetworkConfig, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap admin: %v", err)
 	}
 	if err := api.BootstrapClusterCA(ctx, st, caMaterial, log); err != nil {
 		return fmt.Errorf("bootstrap cluster CA: %v", err)
 	}
+	if err := st.SeedOverlaySupernet(ctx, netCfg.OverlaySupernet); err != nil {
+		return fmt.Errorf("seed overlay supernet: %v", err)
+	}
+	if err := st.SeedVNIRange(ctx, netCfg.VNIRange.Min, netCfg.VNIRange.Max); err != nil {
+		return fmt.Errorf("seed vni range: %v", err)
+	}
+	if err := st.SeedUnderlayMTU(ctx, netCfg.UnderlayMTU); err != nil {
+		return fmt.Errorf("seed underlay mtu: %v", err)
+	}
+	// A cluster seeded under an older binary (the floor was 1280 before it was
+	// raised to 1390) can carry an underlay MTU in [1280,1389] that derives a
+	// sub-1280 overlay MTU - below the RFC 8200 IPv6 minimum. UnderlayMTU returns
+	// such a seed verbatim (it is immutable, and silently clamping it up would push
+	// the overlay MTU too high and fragment), so surface it loudly at boot instead.
+	underlay, err := st.UnderlayMTU(ctx)
+	if err != nil {
+		return fmt.Errorf("read underlay mtu: %v", err)
+	}
+	warnIfUnderlayMTUBelowFloor(underlay, log)
 	return nil
+}
+
+// warnIfUnderlayMTUBelowFloor logs a loud WARN when the seeded underlay MTU is
+// strictly below the etcdstore.MinUnderlayMTU floor (1390), naming the seed, the
+// derived overlay MTU, the floor, and the renumber procedure. It returns whether
+// it warned. It does NOT mutate the seed - the seed is immutable and clamping it
+// up would push the derived overlay MTU too high and fragment; the fix is the
+// operator-driven renumber documented in docs/architecture.md ("Operations:
+// overlay MTU and VNI range"). The default 1500 and the floor itself are silent.
+func warnIfUnderlayMTUBelowFloor(underlay int32, log *slog.Logger) bool {
+	if !etcdstore.UnderlayMTUBelowFloor(underlay) {
+		return false
+	}
+	log.Warn("seeded underlay_mtu is below the 1390 floor; the derived overlay_mtu falls under the 1280-byte ipv6 minimum link mtu (rfc 8200). the seed is immutable and is not corrected on read; renumber per docs/architecture.md \"Operations: overlay MTU and VNI range\"",
+		slog.Int("underlay_mtu", int(underlay)),
+		slog.Int("overlay_mtu", int(etcdstore.DerivedOverlayMTU(underlay))),
+		slog.Int("floor", int(etcdstore.MinUnderlayMTU)))
+	return true
 }
 
 // startWorkers launches the etcd job dispatcher and the periodic scheduler when
@@ -411,14 +454,14 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 
 	d.Register("vm.create", workerMaxAttempts,
-		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log))
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 	d.Register("vm.delete", workerMaxAttempts,
-		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log))
+		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 
 	lifecycleExec := vmshandlers.NewAgentVMLifecycleExecutor(agentClient)
 	for _, lk := range vmshandlers.LifecycleKinds() {
 		d.Register(lk.Kind, workerMaxAttempts,
-			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode))
+			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode, cfg.Workers.Heartbeat.GoneGrace))
 	}
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
@@ -445,6 +488,7 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("heartbeat.reconcile", positiveOr(cfg.Workers.Heartbeat.Interval, 30*time.Second), true,
 		heartbeathandlers.ReconcileFunc(st, heartbeathandlers.ReconcileConfig{
 			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,
+			GoneGrace:      cfg.Workers.Heartbeat.GoneGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
 		}, log))
 
@@ -453,6 +497,11 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 
 	s.Register("idempotency.cleanup", time.Hour, false,
 		middleware.IdempotencyCleanupFunc(st, log))
+
+	s.Register("networks.cleanup", time.Hour, false,
+		networkshandlers.CleanupFunc(st, log))
+
+	s.Register("jobs.cleanup", time.Hour, false, etcdstore.JobsCleanupFunc(st, log))
 
 	if cfg.Workers.StoragePoolScan.Enabled {
 		s.Register("storage_pool.scan_trigger", positiveOr(cfg.Workers.StoragePoolScan.Interval, 15*time.Minute), false,

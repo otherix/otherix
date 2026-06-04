@@ -70,7 +70,7 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 TEST_TAGS := test_fast_argon
 INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
-.PHONY: test test-short test-etcd coverage
+.PHONY: test test-short test-etcd test-netfabric coverage
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
@@ -85,6 +85,29 @@ test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
 	  ./internal/etcdstore/... \
 	  ./tests/apie2e/...
 
+# test-netfabric runs the agent network-fabric netns integration tests
+# (bridge / tap / nft masquerade over real netlink). They are
+# //go:build linux && integration and need root (CAP_NET_ADMIN). The Lima
+# dev VM runs only the agent binary - no Go toolchain, no source - so we
+# CROSS-COMPILE the test binary on the macOS host, copy it in, and run it as
+# root, exactly like build-agent-lima / copy-agent-lima. Run this FROM THE
+# macOS HOST (`make test-netfabric`), not from inside Lima. Not in CI (needs
+# CAP_NET_ADMIN). On a native Linux host just run the $(GO) test line directly as root.
+test-netfabric: lima-ensure ## netfabric netns integration tests in Lima (cross-compiled on host, run as root)
+	@mkdir -p $(BIN_DIR)
+	@arch=$$(limactl shell $(LIMA_VM) uname -m); \
+	case "$$arch" in \
+	  aarch64) goarch=arm64 ;; \
+	  x86_64)  goarch=amd64 ;; \
+	  *) echo "unsupported lima arch: $$arch"; exit 1 ;; \
+	esac; \
+	out=$(BIN_DIR)/netfabric.test; \
+	echo ">> cross-compiling netfabric integration test for linux/$$goarch"; \
+	CGO_ENABLED=0 GOOS=linux GOARCH=$$goarch $(GO) test -tags=$(INTEGRATION_TAGS) -c -o $$out ./internal/agent/netfabric/; \
+	limactl cp $$out $(LIMA_VM):/tmp/netfabric.test; \
+	echo ">> running netns integration tests as root in $(LIMA_VM)"; \
+	limactl shell $(LIMA_VM) sudo /tmp/netfabric.test -test.v -test.count=1
+
 coverage: test ## Generate HTML coverage report
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "open coverage.html"
@@ -93,16 +116,42 @@ coverage: test ## Generate HTML coverage report
 smoke-ha: ## HA multi-process smoke: 3 real api-server nodes form a cluster over peer mTLS (no Docker, no Lima)
 	bash dev/scripts/smoke-ha.sh
 
+.PHONY: smoke-networking
+smoke-networking: ## Networking operator smoke: drives `otherix network`/`vm create --network` against the real Lima agent (run after local-dev-start)
+	bash dev/smoke/networking/run.sh
+
+.PHONY: smoke-wireguard-mesh
+smoke-wireguard-mesh: ## Cross-agent WireGuard mesh smoke: real cross-host handshake between the two Lima nodes (run after local-dev-start)
+	bash dev/smoke/wireguard-mesh/run.sh
+
+.PHONY: smoke-overlay
+smoke-overlay: ## Overlay (VXLAN) smoke: VTEP+bridge attrs on both nodes + manual-FDB cross-node datapath (run after local-dev-start)
+	bash dev/smoke/overlay/run.sh
+
+.PHONY: smoke-overlay-vm
+smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over the overlay via CP-distributed FDB (run after local-dev-start)
+	bash dev/smoke/overlay-vm/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt vet
-lint: ## Run golangci-lint (local binary if installed, otherwise pinned docker image)
+lint: ## Run golangci-lint for the host platform AND GOOS=linux (a macOS host build excludes *_linux.go, which CI on ubuntu lints; this matches CI)
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 	  echo ">> using local golangci-lint ($$(golangci-lint version 2>/dev/null | head -n1))"; \
-	  golangci-lint run --timeout 5m; \
+	  rc=0; \
+	  for goos in "$$(go env GOHOSTOS)" linux; do \
+	    echo ">> golangci-lint run (GOOS=$$goos)"; \
+	    GOOS=$$goos golangci-lint run --timeout 5m || rc=1; \
+	  done; \
+	  exit $$rc; \
 	else \
 	  echo ">> golangci-lint not found locally, using docker $(GOLANGCI_IMAGE)"; \
-	  docker run --rm -v $(PWD):/app -w /app $(GOLANGCI_IMAGE) golangci-lint run --timeout 5m; \
+	  rc=0; \
+	  for goos in linux "$$(go env GOHOSTOS)"; do \
+	    echo ">> golangci-lint run (GOOS=$$goos) in docker"; \
+	    docker run --rm -e GOOS=$$goos -v $(PWD):/app -w /app $(GOLANGCI_IMAGE) golangci-lint run --timeout 5m || rc=1; \
+	  done; \
+	  exit $$rc; \
 	fi
 
 fmt: ## Format with gofumpt + goimports (installed locally on demand)
@@ -152,13 +201,20 @@ etcd-reset: ## Wipe the dev embedded-etcd data dir + PKI for a clean-slate smoke
 # (user-mode systemd unit). macOS runs the agent inside a Lima VM
 # (Ubuntu 24.04, system unit) and reaches the CP via host.lima.internal.
 # See docs/macos-development.md for the macOS path.
-LIMA_VM     := otherix-dev
+# The macOS dev stack runs TWO Lima VMs so the WireGuard underlay has a real
+# cross-host mesh: otherix-dev-1 (node-1) and otherix-dev-2 (node-2). Both join
+# the user-v2 network for VM-to-VM L3; VM2's CP->agent forward maps guest 9443
+# to host 9444 (VM1 keeps 9443). LIMA_VM is the primary VM (node-1), used by the
+# single-host operations: the netns netfabric tests and the networking smoke.
+LIMA_VM_1   := otherix-dev-1
+LIMA_VM_2   := otherix-dev-2
+LIMA_VM     := $(LIMA_VM_1)
 
 .PHONY: bootstrap-dev deploy-dev clean-dev seed-mvp \
         bootstrap-dev-linux deploy-dev-linux clean-dev-linux \
         bootstrap-dev-macos deploy-dev-macos clean-dev-macos \
         install-agent-systemd-user \
-        lima-check lima-ensure \
+        lima-check lima-ensure lima-ensure-one \
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
 
@@ -251,8 +307,10 @@ deploy-dev-macos: build-agent-lima copy-agent-lima restart-agent-lima
 	@echo ">> deploy-dev-macos done"
 
 clean-dev-macos:
-	-limactl stop $(LIMA_VM) 2>/dev/null || true
-	-limactl delete $(LIMA_VM) 2>/dev/null || true
+	-limactl stop $(LIMA_VM_1) 2>/dev/null || true
+	-limactl delete $(LIMA_VM_1) 2>/dev/null || true
+	-limactl stop $(LIMA_VM_2) 2>/dev/null || true
+	-limactl delete $(LIMA_VM_2) 2>/dev/null || true
 	@echo ">> clean-dev-macos done"
 
 lima-check:
@@ -260,15 +318,23 @@ lima-check:
 	  echo "limactl not found. Install with: brew install lima"; exit 1; \
 	}
 
+# lima-ensure brings up BOTH dev VMs. VM2's CP->agent forward maps guest 9443
+# to host 9444 (VM1 keeps the yaml default 9443) so the CP reaches each agent at
+# a distinct advertised_endpoint. lima-ensure-one is the per-VM helper, invoked
+# recursively with VM + HOSTPORT so the create path can override the forward.
 lima-ensure: lima-check
-	@if ! limactl list -q 2>/dev/null | grep -q '^$(LIMA_VM)$$'; then \
-	  echo ">> creating + starting Lima VM $(LIMA_VM)"; \
-	  limactl start --tty=false --name=$(LIMA_VM) dev/lima/otherix-dev.yaml; \
-	elif [ "$$(limactl list $(LIMA_VM) --format '{{.Status}}' 2>/dev/null)" != "Running" ]; then \
-	  echo ">> starting Lima VM $(LIMA_VM)"; \
-	  limactl start $(LIMA_VM); \
+	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_1) HOSTPORT=9443
+	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_2) HOSTPORT=9444
+
+lima-ensure-one:
+	@if ! limactl list -q 2>/dev/null | grep -q "^$(VM)$$"; then \
+	  echo ">> creating + starting Lima VM $(VM) (cp->agent host port $(HOSTPORT))"; \
+	  limactl start --tty=false --name=$(VM) --set ".portForwards[0].hostPort = $(HOSTPORT)" dev/lima/otherix-dev.yaml; \
+	elif [ "$$(limactl list $(VM) --format '{{.Status}}' 2>/dev/null)" != "Running" ]; then \
+	  echo ">> starting Lima VM $(VM)"; \
+	  limactl start $(VM); \
 	else \
-	  echo ">> Lima VM $(LIMA_VM) already running"; \
+	  echo ">> Lima VM $(VM) already running"; \
 	fi
 
 # Cross-build agent for Lima VM's arch via the existing build-linux-{amd64,arm64}
@@ -284,29 +350,44 @@ build-agent-lima: lima-ensure
 	esac
 
 copy-agent-lima: lima-ensure
-	@arch=$$(limactl shell $(LIMA_VM) uname -m); \
+	@arch=$$(limactl shell $(LIMA_VM_1) uname -m); \
 	case "$$arch" in \
 	  aarch64) goarch=arm64 ;; \
 	  x86_64)  goarch=amd64 ;; \
 	  *) echo "unsupported lima arch: $$arch"; exit 1 ;; \
 	esac; \
-	limactl cp $(BIN_DIR)/linux-$$goarch/otherix-agent $(LIMA_VM):/tmp/otherix-agent; \
-	limactl shell $(LIMA_VM) sudo mv /tmp/otherix-agent /usr/local/bin/otherix-agent; \
-	limactl shell $(LIMA_VM) sudo chmod +x /usr/local/bin/otherix-agent
+	for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	  echo ">> staging otherix-agent into $$vm"; \
+	  limactl cp $(BIN_DIR)/linux-$$goarch/otherix-agent $$vm:/tmp/otherix-agent; \
+	  limactl shell $$vm sudo mv /tmp/otherix-agent /usr/local/bin/otherix-agent; \
+	  limactl shell $$vm sudo chmod +x /usr/local/bin/otherix-agent; \
+	done
 
-# The Lima VM's primary user differs from the macOS host's $USER in
-# subtle ways (Lima may suffix .guest, and reuses the host UID 501 which
-# is outside the typical Linux user range). Determine the user/group at
-# runtime by running `id -un` / `id -gn` inside the VM shell, which is
-# always logged in as the Lima-created user.
+# Stage the agent config into both VMs. The WireGuard advertised_endpoint
+# placeholder is substituted per VM with that VM's own user-v2 IP
+# (192.168.104.x) so each agent advertises a peer-reachable UDP endpoint.
+# The Lima VM's primary user differs from the macOS host's $USER (Lima may
+# suffix .guest, reuses host UID 501), so the chown determines user/group at
+# runtime via `id -un`/`id -gn` inside the VM shell.
 copy-config-lima: lima-ensure
-	@limactl cp dev/config/agent-macos.yaml $(LIMA_VM):/tmp/agent.yaml
-	@limactl shell $(LIMA_VM) sh -c 'sudo mv /tmp/agent.yaml /etc/otherix/agent.yaml && sudo chown "$$(id -un):$$(id -gn)" /etc/otherix/agent.yaml'
+	@for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	  wgip=$$(limactl shell $$vm -- ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.104\.[0-9]+' | head -1); \
+	  if [ -z "$$wgip" ]; then echo "no user-v2 (192.168.104.x) IP on $$vm yet — is the user-v2 network up?"; exit 1; fi; \
+	  echo ">> $$vm WireGuard advertised endpoint: $$wgip:51820"; \
+	  sed "s|__WG_ADVERTISED_ENDPOINT__|$$wgip:51820|" dev/config/agent-macos.yaml > /tmp/agent-$$vm.yaml; \
+	  limactl cp /tmp/agent-$$vm.yaml $$vm:/tmp/agent.yaml; \
+	  limactl shell $$vm -- sh -c 'sudo mv /tmp/agent.yaml /etc/otherix/agent.yaml && sudo chown "$$(id -un):$$(id -gn)" /etc/otherix/agent.yaml'; \
+	done
 
 restart-agent-lima: lima-ensure
-	@limactl shell $(LIMA_VM) sudo systemctl restart otherix-agent
+	@for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	  limactl shell $$vm sudo systemctl restart otherix-agent; \
+	done
 	@sleep 1
-	@limactl shell $(LIMA_VM) sudo systemctl status otherix-agent --no-pager || true
+	@for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	  echo "== $$vm =="; \
+	  limactl shell $$vm sudo systemctl status otherix-agent --no-pager || true; \
+	done
 
 # ========== Docker ==========
 

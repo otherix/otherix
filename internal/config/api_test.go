@@ -367,6 +367,42 @@ func TestBackupConfigValidate(t *testing.T) {
 	}
 }
 
+func TestNetworkConfig_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     NetworkConfig
+		wantErr bool
+	}{
+		{name: "underlay_mtu 0 (default)", cfg: NetworkConfig{UnderlayMTU: 0, VNIRange: VNIRangeConfig{Min: 1000, Max: 65535}}, wantErr: false},
+		{name: "underlay_mtu 128 (too low)", cfg: NetworkConfig{UnderlayMTU: 128, VNIRange: VNIRangeConfig{Min: 1000, Max: 65535}}, wantErr: true},
+		{name: "underlay_mtu 1389 (just below floor)", cfg: NetworkConfig{UnderlayMTU: 1389, VNIRange: VNIRangeConfig{Min: 1000, Max: 65535}}, wantErr: true},
+		{name: "underlay_mtu 1390 (floor)", cfg: NetworkConfig{UnderlayMTU: 1390, VNIRange: VNIRangeConfig{Min: 1000, Max: 65535}}, wantErr: false},
+		{name: "underlay_mtu 65536 (too high)", cfg: NetworkConfig{UnderlayMTU: 65536, VNIRange: VNIRangeConfig{Min: 1000, Max: 65535}}, wantErr: true},
+		{name: "vni_range 0/0 (default)", cfg: NetworkConfig{UnderlayMTU: 1500, VNIRange: VNIRangeConfig{Min: 0, Max: 0}}, wantErr: false},
+		{name: "vni_range min >= max", cfg: NetworkConfig{UnderlayMTU: 1500, VNIRange: VNIRangeConfig{Min: 2000, Max: 2000}}, wantErr: true},
+		{name: "vni_range min < 1000", cfg: NetworkConfig{UnderlayMTU: 1500, VNIRange: VNIRangeConfig{Min: 999, Max: 2000}}, wantErr: true},
+		{name: "vni_range max > 16777215", cfg: NetworkConfig{UnderlayMTU: 1500, VNIRange: VNIRangeConfig{Min: 1000, Max: 16777216}}, wantErr: true},
+		{name: "vni_range valid widened", cfg: NetworkConfig{UnderlayMTU: 1500, VNIRange: VNIRangeConfig{Min: 1000, Max: 16777215}}, wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if gotErr := tc.cfg.Validate() != nil; gotErr != tc.wantErr {
+				t.Errorf("Validate() err present = %v, want %v", gotErr, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDefaultAPIConfig_VNIRange(t *testing.T) {
+	cfg := defaultAPIConfig()
+	if cfg.Network.VNIRange.Min != 1000 {
+		t.Errorf("default VNIRange.Min = %d, want 1000", cfg.Network.VNIRange.Min)
+	}
+	if cfg.Network.VNIRange.Max != 65535 {
+		t.Errorf("default VNIRange.Max = %d, want 65535", cfg.Network.VNIRange.Max)
+	}
+}
+
 func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
 	got := defaultAPIConfig().Etcd
 	want := EtcdConfig{

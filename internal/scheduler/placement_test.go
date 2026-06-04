@@ -26,11 +26,13 @@ type fakeQuerier struct {
 	pressuredPoolDisk  []store.ListDiskPressuredPoolsByNameRow
 	allPools           []store.StoragePool
 	vmCounts           map[uuid.UUID]int64
+	networkStatus      map[uuid.UUID][]store.NetworkNodeStatus
 	listErr            error
 	listAllErr         error
 	listMemPressureErr error
 	listSysPressureErr error
 	listDiskPoolErr    error
+	listNetStatusErr   error
 	countErr           error
 	countErrFor        *uuid.UUID
 }
@@ -68,6 +70,13 @@ func (f *fakeQuerier) ListStoragePoolsByName(_ context.Context, _ string) ([]sto
 		return nil, f.listAllErr
 	}
 	return f.allPools, nil
+}
+
+func (f *fakeQuerier) ListNetworkNodeStatusByNode(_ context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	if f.listNetStatusErr != nil {
+		return nil, f.listNetStatusErr
+	}
+	return f.networkStatus[nodeID], nil
 }
 
 func (f *fakeQuerier) CountRunningVMsByNode(_ context.Context, nodeID *uuid.UUID) (int64, error) {
@@ -1229,5 +1238,161 @@ func TestSchedulePlacement_PoolWithoutMetrics_FallsBackToCount(t *testing.T) {
 	// score sits at 1.0+0 = 1.0, so A (small disk util) outranks.
 	if got.Node.ID != a.NodeEffectiveAvailability.ID {
 		t.Errorf("winner = %s, want node-a (metric-bearing outranks fallback)", got.Node.Name)
+	}
+}
+
+// ----- Pre-N3 networking hardening: network-aware placement (ADR 0034 NL18) -----
+
+// TestSchedulePlacement_NetworkFailedExcludesNode confirms the network
+// filter excludes a node where a requested network failed to reconcile.
+// Two ready nodes both fit the request and host the pool; the requested
+// network reconciled `ready` on node-a and `failed` on node-b. Placement
+// must pick node-a and never node-b.
+func TestSchedulePlacement_NetworkFailedExcludesNode(t *testing.T) {
+	netX := uuid.MustParse("00000000-0000-0000-0000-0000000000a0")
+
+	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
+	a := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "node-a", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	b := makeRow(nodeFixture{
+		uuidSuffix: 2, name: "node-b", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	q := &fakeQuerier{
+		eligible: []store.ListEligiblePoolsByNameRow{a, b},
+		networkStatus: map[uuid.UUID][]store.NetworkNodeStatus{
+			a.NodeEffectiveAvailability.ID: {{NetworkID: netX, NodeID: a.NodeEffectiveAvailability.ID, ReconciliationStatus: "ready"}},
+			b.NodeEffectiveAvailability.ID: {{NetworkID: netX, NodeID: b.NodeEffectiveAvailability.ID, ReconciliationStatus: "failed"}},
+		},
+	}
+
+	got, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512, NetworkIDs: []uuid.UUID{netX}},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if err != nil {
+		t.Fatalf("SchedulePlacement err = %v, want nil", err)
+	}
+	if got.Node.ID != a.NodeEffectiveAvailability.ID {
+		t.Errorf("winner = %s, want node-a (network ready); node-b had network failed", got.Node.Name)
+	}
+}
+
+// TestSchedulePlacement_NetworkFailedEverywhere confirms that when the
+// requested network failed to reconcile on every candidate node,
+// placement returns ErrNoEligibleNodes and the structured detail names
+// the network and the failed reason.
+func TestSchedulePlacement_NetworkFailedEverywhere(t *testing.T) {
+	netX := uuid.MustParse("00000000-0000-0000-0000-0000000000a0")
+
+	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
+	a := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "node-a", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	b := makeRow(nodeFixture{
+		uuidSuffix: 2, name: "node-b", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	q := &fakeQuerier{
+		eligible: []store.ListEligiblePoolsByNameRow{a, b},
+		networkStatus: map[uuid.UUID][]store.NetworkNodeStatus{
+			a.NodeEffectiveAvailability.ID: {{NetworkID: netX, NodeID: a.NodeEffectiveAvailability.ID, ReconciliationStatus: "failed"}},
+			b.NodeEffectiveAvailability.ID: {{NetworkID: netX, NodeID: b.NodeEffectiveAvailability.ID, ReconciliationStatus: "failed"}},
+		},
+	}
+
+	_, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512, NetworkIDs: []uuid.UUID{netX}},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if !errors.Is(err, ErrNoEligibleNodes) {
+		t.Fatalf("err = %v, want errors.Is ErrNoEligibleNodes", err)
+	}
+	detail, ok := ExtractNetworkUnreadyDetail(err)
+	if !ok || detail == nil {
+		t.Fatalf("ExtractNetworkUnreadyDetail = ok=%v detail=%v, want network-unready detail", ok, detail)
+	}
+	if len(detail.Nodes) != 2 {
+		t.Fatalf("len(Nodes) = %d, want 2 (%v)", len(detail.Nodes), detail.Nodes)
+	}
+	first := detail.Nodes[0]
+	if first.Node != "node-a" {
+		t.Errorf("Nodes[0].Node = %q, want node-a", first.Node)
+	}
+	if len(first.Networks) != 1 || first.Networks[0].NetworkID != netX {
+		t.Errorf("Nodes[0].Networks = %v, want [%s]", first.Networks, netX)
+	}
+	if first.Networks[0].Status != "failed" {
+		t.Errorf("Nodes[0].Networks[0].Status = %q, want failed", first.Networks[0].Status)
+	}
+}
+
+// TestSchedulePlacement_NetworkMissingExcludesNode confirms a node with
+// no per-(node, network) status record for the requested network (the
+// agent never reported the network at all) is excluded — absence is
+// treated as not-ready, never as a silent pass.
+func TestSchedulePlacement_NetworkMissingExcludesNode(t *testing.T) {
+	netX := uuid.MustParse("00000000-0000-0000-0000-0000000000a0")
+
+	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
+	a := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "node-a", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	b := makeRow(nodeFixture{
+		uuidSuffix: 2, name: "node-b", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	q := &fakeQuerier{
+		eligible: []store.ListEligiblePoolsByNameRow{a, b},
+		networkStatus: map[uuid.UUID][]store.NetworkNodeStatus{
+			// node-a has the network ready; node-b reports nothing.
+			a.NodeEffectiveAvailability.ID: {{NetworkID: netX, NodeID: a.NodeEffectiveAvailability.ID, ReconciliationStatus: "ready"}},
+		},
+	}
+
+	got, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512, NetworkIDs: []uuid.UUID{netX}},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if err != nil {
+		t.Fatalf("SchedulePlacement err = %v, want nil", err)
+	}
+	if got.Node.ID != a.NodeEffectiveAvailability.ID {
+		t.Errorf("winner = %s, want node-a (node-b missing network status)", got.Node.Name)
+	}
+}
+
+// TestSchedulePlacement_NoNetworkRequested confirms the filter is a
+// no-op when the request names no networks — the network-status query is
+// never consulted and placement behaves exactly as before.
+func TestSchedulePlacement_NoNetworkRequested(t *testing.T) {
+	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 16384, 16384)
+	a := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "node-a", nameOverride: true,
+		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
+		memTotalMib: memTotal, memAvailMib: memAvail,
+	})
+	// listNetStatusErr would surface if the filter consulted the query;
+	// a no-op filter must never reach it.
+	q := &fakeQuerier{
+		eligible:         []store.ListEligiblePoolsByNameRow{a},
+		listNetStatusErr: errors.New("network status query must not run"),
+	}
+
+	got, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if err != nil {
+		t.Fatalf("SchedulePlacement err = %v, want nil", err)
+	}
+	if got.Node.ID != a.NodeEffectiveAvailability.ID {
+		t.Errorf("winner = %s, want node-a", got.Node.Name)
 	}
 }

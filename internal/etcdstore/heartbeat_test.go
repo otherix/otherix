@@ -9,6 +9,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/google/uuid"
@@ -139,5 +140,157 @@ func TestInHeartbeatProjection(t *testing.T) {
 		return e
 	}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("NodeForHeartbeat(absent) = %v, want store.ErrNotFound", err)
+	}
+}
+
+// TestHeartbeatDeclaredNetworksClusterWide verifies the projection hands the
+// FULL set of non-deleted networks to every node (networks are cluster-wide,
+// not node-scoped). Two distinct nodes both observe the same network set,
+// soft-deleted networks are excluded.
+func TestHeartbeatDeclaredNetworksClusterWide(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("hbnetA"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode A: %v", err)
+	}
+	nodeB := nodeParams(uniqueNodeName("hbnetB"))
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode B: %v", err)
+	}
+
+	// A nat network with subnet/gateway and a plain managed bridge.
+	prefix := netip.MustParsePrefix("10.20.0.0/24")
+	gw := netip.MustParseAddr("10.20.0.1")
+	natNet := netParams(uniqueNetName("hbnat"))
+	natNet.Managed = true
+	natNet.Egress = store.NetworkEgressNAT
+	natNet.Subnet = &prefix
+	natNet.Gateway = &gw
+	if _, err := s.CreateNetwork(ctx, natNet); err != nil {
+		t.Fatalf("CreateNetwork nat: %v", err)
+	}
+	plainNet := netParams(uniqueNetName("hbplain"))
+	plainNet.Managed = true
+	if _, err := s.CreateNetwork(ctx, plainNet); err != nil {
+		t.Fatalf("CreateNetwork plain: %v", err)
+	}
+	// A soft-deleted network must NOT surface.
+	goneNet := netParams(uniqueNetName("hbgone"))
+	if _, err := s.CreateNetwork(ctx, goneNet); err != nil {
+		t.Fatalf("CreateNetwork gone: %v", err)
+	}
+	if err := s.DeleteNetwork(ctx, goneNet.ID); err != nil {
+		t.Fatalf("DeleteNetwork gone: %v", err)
+	}
+
+	listVia := func(nodeID uuid.UUID) map[uuid.UUID]store.Network {
+		t.Helper()
+		var got []store.Network
+		if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+			// NodeForHeartbeat exercises the per-node path; ListNetworks takes
+			// NO node argument, proving it is not node-filtered.
+			if _, e := hp.NodeForHeartbeat(ctx, nodeID); e != nil {
+				return e
+			}
+			var e error
+			got, e = hp.ListNetworks(ctx)
+			return e
+		}); err != nil {
+			t.Fatalf("ListNetworks via node %v: %v", nodeID, err)
+		}
+		out := make(map[uuid.UUID]store.Network, len(got))
+		for _, n := range got {
+			out[n.ID] = n
+		}
+		return out
+	}
+
+	a := listVia(nodeA.ID)
+	b := listVia(nodeB.ID)
+
+	for _, want := range []uuid.UUID{natNet.ID, plainNet.ID} {
+		if _, ok := a[want]; !ok {
+			t.Errorf("node A declared networks missing %v", want)
+		}
+		if _, ok := b[want]; !ok {
+			t.Errorf("node B declared networks missing %v", want)
+		}
+	}
+	if _, ok := a[goneNet.ID]; ok {
+		t.Errorf("soft-deleted network %v leaked into declared set", goneNet.ID)
+	}
+	// Cluster-wide: both nodes see the identical set of network ids.
+	if len(a) != len(b) {
+		t.Errorf("node A saw %d networks, node B saw %d; want equal cluster-wide sets", len(a), len(b))
+	}
+	// nat network carries subnet + gateway through the projection.
+	if n, ok := a[natNet.ID]; ok {
+		if n.Subnet == nil || n.Subnet.String() != "10.20.0.0/24" {
+			t.Errorf("nat network subnet = %v, want 10.20.0.0/24", n.Subnet)
+		}
+		if n.Gateway == nil || n.Gateway.String() != "10.20.0.1" {
+			t.Errorf("nat network gateway = %v, want 10.20.0.1", n.Gateway)
+		}
+		if n.Egress != store.NetworkEgressNAT {
+			t.Errorf("nat network egress = %v, want nat", n.Egress)
+		}
+	}
+}
+
+// TestHeartbeatUpsertNetworkNodeStatus drives the up-channel: a node reports
+// per-network reconciliation outcomes through the projection seam
+// (hp.UpsertNetworkNodeStatus, the method applyNetworkReports calls) and the
+// per-(network, node) status record reflects status + error afterward. A
+// second status on a distinct network for the same node is kept independently.
+func TestHeartbeatUpsertNetworkNodeStatus(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	node := nodeParams(uniqueNodeName("hbnetstatus"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	readyNet := netParams(uniqueNetName("hbready"))
+	if _, err := s.CreateNetwork(ctx, readyNet); err != nil {
+		t.Fatalf("CreateNetwork ready: %v", err)
+	}
+	failedNet := netParams(uniqueNetName("hbfailed"))
+	if _, err := s.CreateNetwork(ctx, failedNet); err != nil {
+		t.Fatalf("CreateNetwork failed: %v", err)
+	}
+
+	errMsg := "bridge create failed"
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		if err := hp.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+			NetworkID: readyNet.ID, NodeID: node.ID, ReconciliationStatus: "ready",
+		}); err != nil {
+			return err
+		}
+		return hp.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+			NetworkID: failedNet.ID, NodeID: node.ID, ReconciliationStatus: "failed", ReconciliationError: &errMsg,
+		})
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection: %v", err)
+	}
+
+	readyRows, err := s.ListNetworkNodeStatusByNetwork(ctx, readyNet.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork ready: %v", err)
+	}
+	if len(readyRows) != 1 || readyRows[0].NodeID != node.ID || readyRows[0].ReconciliationStatus != "ready" || readyRows[0].ReconciliationError != nil {
+		t.Errorf("ready status = %+v, want one row node=%v status=ready error=nil", readyRows, node.ID)
+	}
+
+	failedRows, err := s.ListNetworkNodeStatusByNetwork(ctx, failedNet.ID)
+	if err != nil {
+		t.Fatalf("ListNetworkNodeStatusByNetwork failed: %v", err)
+	}
+	if len(failedRows) != 1 || failedRows[0].NodeID != node.ID || failedRows[0].ReconciliationStatus != "failed" {
+		t.Fatalf("failed status = %+v, want one row node=%v status=failed", failedRows, node.ID)
+	}
+	if failedRows[0].ReconciliationError == nil || *failedRows[0].ReconciliationError != errMsg {
+		t.Errorf("failed status error = %v, want %q", failedRows[0].ReconciliationError, errMsg)
 	}
 }

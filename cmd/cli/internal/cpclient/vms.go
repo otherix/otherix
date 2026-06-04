@@ -5,6 +5,7 @@ package cpclient
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +39,11 @@ type CreateVMRequest struct {
 	Node     *string `json:"node,omitempty"`
 	VCPUs    int     `json:"vcpus"`
 	MemoryMB int     `json:"memory_mb"`
+	// Network is the optional bridge network (name or uuid) to attach a
+	// single NIC to. Omitted leaves the VM with no NIC (the agent falls
+	// back to legacy SLIRP networking). The server rejects non-bridge
+	// types with 400.
+	Network string `json:"network,omitempty"`
 	// UserData is the optional VM-level cloud-init override (L3 /
 	// operator UX iteration). When set, fully replaces the template's
 	// baked cloud_init_user_data in the per-VM resolved blob; agent
@@ -134,21 +140,24 @@ func (c *Client) CreateVM(ctx context.Context, req CreateVMRequest) (TaskAccepte
 
 // VM fetches /v1/vms/{identifier}. The parameter is a VM name;
 // UUID literals are rejected by the server with 400 validation_failed.
-// 200 returns the parsed VM; 404 / 5xx surface as *APIError.
-func (c *Client) VM(ctx context.Context, identifier string) (VM, error) {
+// 200 returns the parsed VM; 404 / 5xx surface as *APIError. The raw
+// response body is returned alongside the decoded value so `vm get
+// --output json` echoes the server's projection verbatim
+// (absent-vs-null preserved); decode-only callers pass `_`.
+func (c *Client) VM(ctx context.Context, identifier string) (VM, json.RawMessage, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/vms/"+url.PathEscape(identifier), nil)
 	if err != nil {
-		return VM{}, err
+		return VM{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return VM{}, err
+		return VM{}, nil, err
 	}
 	var out VM
 	if err := decodeJSON(body, &out); err != nil {
-		return VM{}, err
+		return VM{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }
 
 // ListVMs fetches /v1/vms with the supplied query filters. Returns the

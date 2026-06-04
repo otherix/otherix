@@ -45,6 +45,25 @@ type VMCreateRequest struct {
 	// string on the wire means "no cidata"; the agent skips
 	// ISO generation when absent.
 	UserData string `json:"user_data,omitempty"`
+	// Nics are the fully-resolved network interfaces to attach. The
+	// CP-side worker resolves each vm_nic row against its network
+	// (bridge_name + mtu come from the network; mac/model/order from
+	// the vm_nic). Absent or empty means legacy SLIRP user-mode
+	// networking on the agent.
+	Nics []VMCreateNIC `json:"nics,omitempty"`
+}
+
+// VMCreateNIC is one resolved network interface in a VMCreateRequest. The
+// wire shape mirrors the agent's nicReq (internal/agent/handlers/vms): the
+// agent reads `id` as the per-NIC identity, `bridge`/`mtu` to materialise the
+// tap, and `mac`/`model`/`device_order` to build the QEMU device.
+type VMCreateNIC struct {
+	ID          uuid.UUID `json:"id"`
+	Bridge      string    `json:"bridge"`
+	MAC         string    `json:"mac"`
+	Model       string    `json:"model"`
+	MTU         int       `json:"mtu"`
+	DeviceOrder int       `json:"device_order"`
 }
 
 // AgentVM mirrors the agent's vmView wire shape (handler.go). Internal

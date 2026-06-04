@@ -27,6 +27,7 @@ var (
 	ErrStoragePoolNameExists    = errors.New("store: storage pool name already in use on node")
 	ErrTaskNotCancellable       = errors.New("store: task not cancellable")
 	ErrVMNameInUse              = errors.New("store: vm name already in use")
+	ErrVMNicMACConflict         = errors.New("store: vm nic mac already in use on network")
 	ErrFirmwareNameExists       = errors.New("store: firmware name already in use for architecture")
 	ErrFirmwareDefaultExists    = errors.New("store: default firmware already exists for architecture and type")
 	ErrTemplateNameExists       = errors.New("store: template name already in use")
@@ -35,6 +36,10 @@ var (
 	ErrJoinTokenExhausted       = errors.New("store: join token max_uses exceeded")
 	ErrJoinNodeNameMismatch     = errors.New("store: node name does not match token binding")
 	ErrJoinNodeNameTaken        = errors.New("store: node already has an active cert")
+
+	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
+	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
+	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
 )
 
 // ResourceInUseError reports that a resource cannot be deleted because other
@@ -48,4 +53,18 @@ type ResourceInUseError struct {
 
 func (e *ResourceInUseError) Error() string {
 	return fmt.Sprintf("resource in use: %v", e.Resources)
+}
+
+// UnderlayBelowFloorError reports that the cluster underlay MTU is below the
+// floor needed to derive a valid (>= 1280) overlay MTU, so an overlay network
+// cannot be created until the operator renumbers the underlay.
+type UnderlayBelowFloorError struct {
+	UnderlayMTU       int32
+	MinUnderlayMTU    int32
+	DerivedOverlayMTU int32
+}
+
+func (e *UnderlayBelowFloorError) Error() string {
+	return fmt.Sprintf("underlay mtu %d is below the floor %d (derived overlay mtu %d < 1280)",
+		e.UnderlayMTU, e.MinUnderlayMTU, e.DerivedOverlayMTU)
 }

@@ -201,6 +201,67 @@ func TestUpdateTaskRunningStampsAndIncrements(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskRunningSkipsCommittedTerminalButPromotesFailed(t *testing.T) {
+	// Committed-terminal statuses (success / cancelled) prove a non-idempotent
+	// projection already committed: UpdateTaskRunning must leave them untouched.
+	// failed is retryable (failRun finalizes failed but the dispatcher requeues
+	// the job), so a failed task must still transition to running and bump
+	// Attempts on redelivery.
+	for _, tc := range []struct {
+		name    string
+		status  store.TaskStatus
+		promote bool // does a redelivery transition it to running + bump attempts?
+	}{
+		{"success", store.TaskStatusSuccess, false},
+		{"cancelled", store.TaskStatusCancelled, false},
+		{"failed", store.TaskStatusFailed, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := startStore(t)
+			ctx := context.Background()
+			p := taskParams(store.TaskStatusPending, nil)
+			if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+				t.Fatalf("EnqueueTask: %v", err)
+			}
+
+			// Drive the task to its terminal state (one delivery + finalize).
+			if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+				t.Fatalf("UpdateTaskRunning: %v", err)
+			}
+			if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
+				ID:     p.ID,
+				Status: tc.status,
+			}); err != nil {
+				t.Fatalf("UpdateTaskFinalized: %v", err)
+			}
+			before, _ := s.TaskByID(ctx, p.ID)
+
+			// A worker redelivery calls UpdateTaskRunning again at the top of the
+			// delivery.
+			if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+				t.Fatalf("UpdateTaskRunning (redelivery) = %v, want nil", err)
+			}
+			after, _ := s.TaskByID(ctx, p.ID)
+
+			if tc.promote {
+				if after.Status != store.TaskStatusRunning {
+					t.Errorf("status after %s redelivery = %v, want running (retryable)", tc.name, after.Status)
+				}
+				if after.Attempts != before.Attempts+1 {
+					t.Errorf("attempts after %s redelivery = %d, want %d (bumped)", tc.name, after.Attempts, before.Attempts+1)
+				}
+			} else {
+				if after.Status != tc.status {
+					t.Errorf("status after %s redelivery = %v, want %v (not demoted)", tc.name, after.Status, tc.status)
+				}
+				if after.Attempts != before.Attempts {
+					t.Errorf("attempts after %s redelivery = %d, want unchanged %d", tc.name, after.Attempts, before.Attempts)
+				}
+			}
+		})
+	}
+}
+
 func TestUpdateTaskFinalizedWritesTerminal(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

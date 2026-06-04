@@ -6,9 +6,8 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strconv"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -36,11 +35,12 @@ const (
 
 // Job is the persisted unit of background work consumed by the worker runtime.
 type Job struct {
-	ID       int64    `json:"id"`
-	Kind     string   `json:"kind"`
-	Args     []byte   `json:"args"`
-	State    JobState `json:"state"`
-	Attempts int32    `json:"attempts"`
+	ID       int64      `json:"id"`
+	Kind     string     `json:"kind"`
+	Args     []byte     `json:"args"`
+	State    JobState   `json:"state"`
+	Attempts int32      `json:"attempts"`
+	FailedAt *time.Time `json:"failed_at,omitempty"`
 }
 
 func jobSeqKey() string { return etcd.Key("seq", "jobs") }
@@ -52,38 +52,7 @@ func jobKey(seq int64) string { return etcd.Key("jobs", fmt.Sprintf("%020d", seq
 // nextJobSeq atomically allocates the next job sequence via a value-compare CAS
 // loop on the counter key.
 func (s *Store) nextJobSeq(ctx context.Context) (int64, error) {
-	key := jobSeqKey()
-	for range 64 {
-		cur, found, err := s.c.Get(ctx, key)
-		if err != nil {
-			return 0, err
-		}
-		var n int64
-		if found {
-			n, err = strconv.ParseInt(string(cur), 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("corrupt job sequence: %v", err)
-			}
-		}
-		next := n + 1
-		var cmp clientv3.Cmp
-		if found {
-			cmp = clientv3.Compare(clientv3.Value(key), "=", string(cur))
-		} else {
-			cmp = clientv3.Compare(clientv3.CreateRevision(key), "=", 0)
-		}
-		resp, err := s.c.Raw().Txn(ctx).
-			If(cmp).
-			Then(clientv3.OpPut(key, strconv.FormatInt(next, 10))).
-			Commit()
-		if err != nil {
-			return 0, fmt.Errorf("allocate job sequence: %v", err)
-		}
-		if resp.Succeeded {
-			return next, nil
-		}
-	}
-	return 0, errors.New("etcdstore: job sequence contention exceeded retry budget")
+	return s.nextSeq(ctx, jobSeqKey())
 }
 
 // enqueueJobOp allocates a sequence and returns the put op that persists a

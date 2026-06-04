@@ -26,6 +26,8 @@ type fakeVMClient struct {
 	pollCalls       atomic.Int32
 	lastPollID      atomic.Value
 
+	lastCreateReq atomic.Value
+
 	postCreateID  uuid.UUID
 	postCreateErr error
 
@@ -37,9 +39,10 @@ type fakeVMClient struct {
 }
 
 func (f *fakeVMClient) PostVMCreate(
-	_ context.Context, _ string, _ string, _ agentclient.VMCreateRequest,
+	_ context.Context, _ string, _ string, req agentclient.VMCreateRequest,
 ) (uuid.UUID, error) {
 	f.postCreateCalls.Add(1)
+	f.lastCreateReq.Store(req)
 	return f.postCreateID, f.postCreateErr
 }
 
@@ -116,6 +119,32 @@ func TestAgentVMCreateExecutor_FirstRunPostsAndPersists(t *testing.T) {
 	}
 	if got, _ := fc.lastPollID.Load().(uuid.UUID); got != wantAgentID {
 		t.Errorf("poll task id = %s, want %s", got, wantAgentID)
+	}
+}
+
+func TestAgentVMCreateExecutor_ForwardsNics(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeVMClient{
+		postCreateID: uuid.New(),
+		pollResult:   agentclient.TaskTerminal{Status: "success"},
+	}
+	args, _, _ := fixtureCreateArgs()
+	nic := agentclient.VMCreateNIC{
+		ID: uuid.New(), Bridge: "br0", MAC: "52:54:00:ab:cd:ef", Model: "virtio", MTU: 1500, DeviceOrder: 0,
+	}
+	args.NICs = []agentclient.VMCreateNIC{nic}
+
+	exec := NewAgentVMCreateExecutor(fc)
+	if _, err := exec.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	req, _ := fc.lastCreateReq.Load().(agentclient.VMCreateRequest)
+	if len(req.Nics) != 1 {
+		t.Fatalf("req.Nics = %d, want 1", len(req.Nics))
+	}
+	if req.Nics[0] != nic {
+		t.Errorf("req.Nics[0] = %+v, want %+v", req.Nics[0], nic)
 	}
 }
 

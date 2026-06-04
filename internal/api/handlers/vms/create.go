@@ -5,9 +5,11 @@ package vms
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -48,6 +50,12 @@ type vmCreateRequest struct {
 	Node     *string `json:"node,omitempty"`
 	VCPUs    int     `json:"vcpus"`
 	MemoryMB int     `json:"memory_mb"`
+	// Network is an optional network to attach a single NIC to. Accepts
+	// either a network name or a uuid literal, of type bridge or overlay.
+	// When omitted the VM is created with no NIC (the agent falls back to
+	// legacy SLIRP user-mode networking). Other network types are rejected
+	// with 400.
+	Network string `json:"network,omitempty"`
 	// UserData is an optional VM-level cloud-init override (L3
 	// Area 3 lock). When provided, fully replaces the template's
 	// baked cloud_init_user_data in the per-VM resolved blob; the
@@ -134,10 +142,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	network, ok := h.resolveNetwork(w, r, req.Network)
+	if !ok {
+		return
+	}
+
 	taskID, err := h.scheduleAndEnqueueCreate(r.Context(), scheduleInputs{
 		Caller:   caller,
 		Template: template,
 		PoolName: poolName,
+		Network:  network,
 		Req:      req,
 	})
 	if err != nil {
@@ -232,6 +246,7 @@ type scheduleInputs struct {
 	Caller   *auth.User
 	Template store.Template
 	PoolName string
+	Network  *store.Network
 	Req      vmCreateRequest
 }
 
@@ -259,7 +274,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 	// the scheduler (the reader is assignable to scheduler.Querier), and
 	// builds the rows + job args from the chosen instance. A uq_vms_name
 	// violation is translated to store.ErrVMNameInUse by the store.
-	return h.store.CreateScheduledVM(ctx, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
+	return createWithMACRetry(ctx, h.store, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
 		if err := pr.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
 			return store.VMCreateWrites{}, fmt.Errorf("acquire placement lock: %v", err)
 		}
@@ -270,12 +285,21 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 		// CHECK between 1 and 65536, so the multiplication is well-
 		// defined and cannot overflow int64.
 		diskBytes := int64(in.Template.DefaultDiskGib) * 1073741824
+		// The network-aware filter excludes nodes where a requested
+		// network failed to reconcile (ADR 0034 NL18). One network per
+		// VM today (single vm_nics row from --network); the slice keeps
+		// the contract open for multi-NIC VMs without a signature change.
+		var networkIDs []uuid.UUID
+		if in.Network != nil {
+			networkIDs = []uuid.UUID{in.Network.ID}
+		}
 		decision, err := scheduler.SchedulePlacement(ctx, pr, scheduler.PlacementRequest{
-			PoolName:  in.PoolName,
-			NodeHint:  in.Req.Node,
-			VCPUs:     in.Req.VCPUs,
-			MemoryMiB: in.Req.MemoryMB,
-			DiskBytes: diskBytes,
+			PoolName:   in.PoolName,
+			NodeHint:   in.Req.Node,
+			VCPUs:      in.Req.VCPUs,
+			MemoryMiB:  in.Req.MemoryMB,
+			DiskBytes:  diskBytes,
+			NetworkIDs: networkIDs,
 		}, scheduler.PlacementConfig{
 			Algorithm: h.placementAlgorithm,
 			Resources: h.placementResources,
@@ -295,6 +319,22 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 		})
 		if err != nil {
 			return store.VMCreateWrites{}, fmt.Errorf("marshal task args: %v", err)
+		}
+
+		var nic *store.CreateVMNicParams
+		if in.Network != nil {
+			mac, macErr := generateLocalMAC()
+			if macErr != nil {
+				return store.VMCreateWrites{}, fmt.Errorf("generate nic mac: %v", macErr)
+			}
+			nic = &store.CreateVMNicParams{
+				ID:          uuid.New(),
+				VmID:        vmID,
+				NetworkID:   in.Network.ID,
+				DeviceOrder: 0,
+				Model:       store.NicModelVirtio,
+				MacAddress:  mac,
+			}
 		}
 
 		nodeID := decision.Node.ID
@@ -330,6 +370,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				Discard:          store.DiskDiscardUnmap,
 				BootOrder:        nil,
 			},
+			Nic: nic,
 			Task: store.CreateTaskParams{
 				ID:           taskID,
 				Type:         "vm.create",
@@ -349,6 +390,29 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			},
 		}, nil
 	})
+}
+
+// createWithMACRetry calls CreateScheduledVM, re-minting a colliding NIC
+// MAC up to maxMACRetries times. A locally-administered MAC collision on a
+// network is astronomically rare; re-minting makes it transparent instead
+// of a 5xx. plan mints a fresh MAC each call, so a retry re-rolls the MAC.
+// The loop breaks on any non-conflict outcome (success or a different
+// error). A persistent conflict after maxMACRetries attempts returns the
+// last ErrVMNicMACConflict, which the handler maps to 500.
+func createWithMACRetry(ctx context.Context, st Store, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+	const maxMACRetries = 8
+	var (
+		id  uuid.UUID
+		err error
+	)
+	for attempt := 0; attempt < maxMACRetries; attempt++ {
+		// Each MAC-conflict retry burns a job-sequence number via enqueueJobOp/nextJobSeq (the seq counter advances immediately), so retries leave benign gaps in the sequence - not lost jobs: the job OpPut rides in the failed txn's Then and never commits, so no orphan job row is written.
+		id, err = st.CreateScheduledVM(ctx, plan)
+		if !errors.Is(err, store.ErrVMNicMACConflict) {
+			return id, err
+		}
+	}
+	return id, err
 }
 
 // writeTemplateLoadError maps a resolver.Template error to a wire
@@ -418,6 +482,53 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 	return requested, true
 }
 
+// resolveNetwork resolves the optional `network` request field to a network
+// row. It accepts:
+//
+//   - empty: no NIC is attached (nil, true) — legacy SLIRP fallback.
+//   - uuid literal: looked up by id; unknown id → 404 not_found.
+//   - bare string: looked up by name; unknown name → 404 not_found.
+//
+// Both `bridge` and `overlay` networks are attachable; any other type is
+// rejected with 400. The boolean second return mirrors the other resolve*
+// helpers' short-circuit signal.
+func (h *Handler) resolveNetwork(w http.ResponseWriter, r *http.Request, requested string) (*store.Network, bool) {
+	if requested == "" {
+		return nil, true
+	}
+	var (
+		net store.Network
+		err error
+	)
+	if id, perr := uuid.Parse(requested); perr == nil {
+		net, err = h.store.NetworkByID(r.Context(), id)
+	} else {
+		net, err = h.store.NetworkByName(r.Context(), requested)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			response.WriteError(w, r, http.StatusNotFound,
+				response.CodeNotFound, "network not found", nil)
+			return nil, false
+		}
+		h.log.ErrorContext(r.Context(), "load network", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load network", nil)
+		return nil, false
+	}
+	switch net.Type {
+	case store.NetworkTypeBridge, store.NetworkTypeOverlay:
+		// attachable
+	default:
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"network type cannot be attached at vm create",
+			map[string]any{"network_type": string(net.Type)})
+		return nil, false
+	}
+	return &net, true
+}
+
 // writeCreateError dispatches the merged scheduleAndEnqueueCreate
 // error to a wire envelope. Categories, in priority order:
 //
@@ -425,6 +536,7 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 //   - Other scheduler sentinels                     → 400 / 404 / 409
 //   - poolNotWritableError                          → 400 pool_not_writable
 //   - errVMNameInUse                                → 409 vm_name_in_use
+//   - ErrVMNicMACConflict (retries exhausted)       → 500 internal
 //   - any other error                               → 500 internal
 //
 // The insufficient-resources path wins over the bare no_eligible_nodes
@@ -474,6 +586,17 @@ func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err e
 	if errors.Is(err, store.ErrVMNameInUse) {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeVMNameInUse, "vm name already in use", nil)
+		return
+	}
+
+	// A NIC MAC conflict that survives createWithMACRetry's bounded
+	// re-mint loop is not a client error - it signals a sustained
+	// collision storm (effectively impossible with a 24-bit random
+	// suffix). Surface it as 500, not a 4xx the caller could "fix".
+	if errors.Is(err, store.ErrVMNicMACConflict) {
+		h.log.ErrorContext(r.Context(), "vms.create exhausted nic mac retries", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "enqueue vm task", nil)
 		return
 	}
 
@@ -547,6 +670,27 @@ func (v *insufficientResourcesView) toDetails() map[string]any {
 // name so the operator can distinguish a node-wide problem from a
 // per-pool exhaustion.
 func buildNoEligibleDetails(err error) map[string]any {
+	if network, ok := scheduler.ExtractNetworkUnreadyDetail(err); ok && network != nil && len(network.Nodes) > 0 {
+		filtered := make([]map[string]any, 0, len(network.Nodes))
+		for _, n := range network.Nodes {
+			networks := make([]map[string]any, 0, len(n.Networks))
+			for _, net := range n.Networks {
+				networks = append(networks, map[string]any{
+					"network_id": net.NetworkID.String(),
+					"status":     net.Status,
+				})
+			}
+			filtered = append(filtered, map[string]any{
+				"node":     n.Node,
+				"networks": networks,
+			})
+		}
+		return map[string]any{
+			"reason":                          "network_not_ready",
+			"filtered_due_to_network_unready": filtered,
+		}
+	}
+
 	pressure, ok := scheduler.ExtractNodePressureDetail(err)
 	if !ok || pressure == nil || len(pressure.Nodes) == 0 {
 		return nil
@@ -598,6 +742,19 @@ func extractInsufficient(err error, out **insufficientResourcesView) bool {
 		nodes:                detail.NodeUtilization,
 	}
 	return true
+}
+
+// generateLocalMAC mints a locally-administered unicast MAC in QEMU's
+// 52:54:00 OUI with three random low bytes. The 52:54:00 prefix is the
+// conventional QEMU/KVM range; the random suffix gives ~16M values, so a
+// collision within a cluster is astronomically unlikely and no retry loop is
+// warranted.
+func generateLocalMAC() (net.HardwareAddr, error) {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, err
+	}
+	return net.HardwareAddr{0x52, 0x54, 0x00, b[0], b[1], b[2]}, nil
 }
 
 // ptrUUID returns a non-nil pointer to id. The store params expect

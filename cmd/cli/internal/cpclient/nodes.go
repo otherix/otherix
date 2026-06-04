@@ -58,6 +58,29 @@ type Node struct {
 	SystemDiskTotalBytes     *int64             `json:"system_disk_total_bytes,omitempty"`
 	SystemDiskAvailableBytes *int64             `json:"system_disk_available_bytes,omitempty"`
 	SystemDiskPressure       *PressureCondition `json:"system_disk_pressure,omitempty"`
+	WireGuard                *NodeWireguard     `json:"wireguard,omitempty"`
+}
+
+// NodeWireguard mirrors the server's NodeWireguard schema: the node's WG
+// underlay fabric identity plus its mesh peers. nil for callers/roles that do
+// not receive it (developer/viewer, or a node that has not reported WG yet).
+type NodeWireguard struct {
+	OverlayIP  string              `json:"overlay_ip"`
+	PublicKey  string              `json:"public_key"`
+	ListenPort int32               `json:"listen_port"`
+	Endpoint   string              `json:"endpoint"`
+	Status     string              `json:"reconciliation_status"`
+	Error      *string             `json:"reconciliation_error"`
+	Peers      []NodeWireguardPeer `json:"peers"`
+}
+
+// NodeWireguardPeer is one other agent in the node's mesh. NodeName is nil when
+// the peer's node row was deleted; render falls back to NodeID.
+type NodeWireguardPeer struct {
+	NodeID      string  `json:"node_id"`
+	NodeName    *string `json:"node_name"`
+	OverlayIP   string  `json:"overlay_ip"`
+	Established bool    `json:"established"`
 }
 
 // PressureCondition mirrors the wire schema's MemoryPressureCondition
@@ -146,19 +169,21 @@ func (c *Client) ListNodes(ctx context.Context, params ListNodesParams) (NodeLis
 // string verbatim. The per-role projection (full vs summary) is
 // surfaced through the Node struct's optional fields — admin / operator
 // callers see Migration / CPUCoresTotal / etc. populated; others see
-// them nil.
-func (c *Client) GetNode(ctx context.Context, identifier string) (Node, error) {
+// them nil. The raw response body is returned alongside the decoded
+// value so `get --output json` can echo the server's projection
+// verbatim (absent-vs-null preserved); decode-only callers pass `_`.
+func (c *Client) GetNode(ctx context.Context, identifier string) (Node, json.RawMessage, error) {
 	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/nodes/"+url.PathEscape(identifier), nil)
 	if err != nil {
-		return Node{}, err
+		return Node{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return Node{}, err
+		return Node{}, nil, err
 	}
 	var out Node
 	if err := decodeJSON(body, &out); err != nil {
-		return Node{}, err
+		return Node{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }

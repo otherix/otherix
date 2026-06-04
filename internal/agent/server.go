@@ -24,8 +24,10 @@ import (
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/agent/handlers/vms"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/reconciler"
 	"github.com/otherix/otherix/internal/agent/vm"
+	"github.com/otherix/otherix/internal/agent/wgkey"
 	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/config"
@@ -94,7 +96,12 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	}
 	log.Info("agent: resolved node name from cert CN", "node_name", nodeName)
 
-	manager, err := vm.New(cfg, log)
+	// Single fabric shared by the VM manager (tap create/attach) and the
+	// network reconciler (bridge/NAT materialisation). Linux-only impl;
+	// an unsupported stub on other platforms keeps the agent compiling.
+	fabric := netfabric.New()
+
+	manager, err := vm.New(cfg, fabric, log)
 	if err != nil {
 		return fmt.Errorf("vm manager: %w", err)
 	}
@@ -107,12 +114,36 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("pool reconciler: %w", err)
 	}
 
+	// Network reconciler. Consumes declared_networks from heartbeat
+	// responses and materialises node-local bridges + NAT via the same
+	// fabric the VM manager uses. Plugs into the sender as both
+	// ResponseHandler and NetworkReporter.
+	netReconciler, err := reconciler.NewNetworks(fabric, log, 0)
+	if err != nil {
+		return fmt.Errorf("network reconciler: %w", err)
+	}
+
 	// VM reconciler. Mirrors the pool reconciler shape - single
 	// ownership of observed VM state (heartbeat.VMReporter) and
 	// desired-vs-observed convergence (heartbeat.ResponseHandler).
 	vmReconciler, err := reconciler.NewVMs(manager, log, 0)
 	if err != nil {
 		return fmt.Errorf("vm reconciler: %w", err)
+	}
+
+	// WireGuard reconciler. The key is generated lazily on first serve and
+	// reused thereafter; its pubkey is reported up the heartbeat
+	// independent of whether otwg0 exists, so the CP can allocate the
+	// overlay address before the interface comes up. Plugs into the sender
+	// as both ResponseHandler (self_overlay_ip + declared peers) and
+	// WireGuardReporter.
+	wgKey, err := wgkey.LoadOrGenerateKey(cfg.WireGuard.PrivateKeyPath)
+	if err != nil {
+		return fmt.Errorf("wireguard key: %w", err)
+	}
+	wgReconciler, err := reconciler.NewWireGuard(fabric, wgKey, cfg.WireGuard, log, 0)
+	if err != nil {
+		return fmt.Errorf("wireguard reconciler: %w", err)
 	}
 
 	// Console token store - in-memory, lifecycle bound to the agent
@@ -135,27 +166,12 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	defer stopHeartbeat()
-	heartbeatDone := startHeartbeat(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, log)
+	heartbeatDone := startHeartbeat(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
 
-	reconcilerDone := make(chan struct{})
-	go func() {
-		defer close(reconcilerDone)
-		log.Info("pool reconciler starting")
-		if err := poolReconciler.Run(heartbeatCtx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("pool reconciler stopped with error", "error", err.Error())
-		}
-		log.Info("pool reconciler stopped")
-	}()
-
-	vmReconcilerDone := make(chan struct{})
-	go func() {
-		defer close(vmReconcilerDone)
-		log.Info("vm reconciler starting")
-		if err := vmReconciler.Run(heartbeatCtx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("vm reconciler stopped with error", "error", err.Error())
-		}
-		log.Info("vm reconciler stopped")
-	}()
+	reconcilerDone := runReconciler(heartbeatCtx, "pool reconciler", poolReconciler.Run, log)
+	netReconcilerDone := runReconciler(heartbeatCtx, "network reconciler", netReconciler.Run, log)
+	vmReconcilerDone := runReconciler(heartbeatCtx, "vm reconciler", vmReconciler.Run, log)
+	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -167,21 +183,31 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		errc <- nil
 	}()
 
+	// Drain set waited on at shutdown. The heartbeat sender respects
+	// ctx and returns promptly; the reconcilers' Run loops only return
+	// BETWEEN reconcile passes and call blocking netfabric (netlink /
+	// nftables / wgctrl) ops that take no context and cannot be
+	// interrupted. A wedged fabric op would otherwise make shutdown hang
+	// until SIGKILL - see awaitDone for the bound.
+	dones := []namedDone{
+		{name: "heartbeat sender", done: heartbeatDone},
+		{name: "pool reconciler", done: reconcilerDone},
+		{name: "vm reconciler", done: vmReconcilerDone},
+		{name: "network reconciler", done: netReconcilerDone},
+		{name: "wireguard reconciler", done: wgReconcilerDone},
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
 	case err := <-errc:
 		stopHeartbeat()
-		<-heartbeatDone
-		<-reconcilerDone
-		<-vmReconcilerDone
+		drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
 		return err
 	}
 
 	stopHeartbeat()
-	<-heartbeatDone
-	<-reconcilerDone
-	<-vmReconcilerDone
+	drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
@@ -189,6 +215,74 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// namedDone pairs a reconciler/sender done-channel with its name so a
+// drain timeout can report exactly which goroutine failed to exit.
+type namedDone struct {
+	name string
+	done <-chan struct{}
+}
+
+// drainReconcilers waits up to timeout for every done channel to close,
+// logging a WARN naming any that did not drain in time. It never blocks
+// past the bound: a reconciler goroutine stuck in an uninterruptible
+// netfabric syscall is abandoned rather than waited on indefinitely. The
+// process is terminating, so abandoning the wait is equivalent to the
+// SIGKILL-mid-op state the reconcilers already recover from (retry-
+// forever / eventually-consistent); it adds no destructive action.
+func drainReconcilers(dones []namedDone, timeout time.Duration, log *slog.Logger) {
+	timedOut, stuck := awaitDone(dones, timeout)
+	if timedOut {
+		log.Warn("reconciler drain timed out; proceeding with shutdown",
+			"timeout", timeout,
+			"stuck", stuck,
+		)
+	}
+}
+
+// awaitDone waits up to timeout for every channel in dones to close. It
+// returns timedOut=false with no stuck names when all closed in time;
+// otherwise timedOut=true and stuck lists the names whose channels had
+// not closed when the bound elapsed.
+func awaitDone(dones []namedDone, timeout time.Duration) (timedOut bool, stuck []string) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for i, d := range dones {
+		select {
+		case <-d.done:
+			// Drained.
+		case <-timer.C:
+			// Budget exhausted. Collect this channel and every
+			// later one that has not already closed.
+			for _, rem := range dones[i:] {
+				select {
+				case <-rem.done:
+				default:
+					stuck = append(stuck, rem.name)
+				}
+			}
+			return true, stuck
+		}
+	}
+	return false, nil
+}
+
+// runReconciler launches one reconciler's Run loop in a goroutine and
+// returns a channel closed when it exits. context.Canceled is the
+// expected shutdown signal and is logged at info, not error.
+func runReconciler(ctx context.Context, name string, run func(context.Context) error, log *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		log.Info(name + " starting")
+		if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error(name+" stopped with error", "error", err.Error())
+		}
+		log.Info(name + " stopped")
+	}()
+	return done
 }
 
 // startHeartbeat wires up the agent → CP heartbeat sender alongside
@@ -199,7 +293,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 // fire-and-forget from the agent's perspective; misconfiguration must
 // not block the rest of the agent (vm lifecycle, console, etc.)
 // from running.
-func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, log *slog.Logger) <-chan struct{} {
+func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 
 	if nodeName == "" {
@@ -217,6 +311,8 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 		VMs:        manager,
 		VMReporter: vmRec,
 		Pools:      poolRec,
+		Networks:   netRec,
+		WireGuard:  wgRec,
 		Migration:  cfg.Migration,
 		QEMU:       cfg.QEMU,
 	})
@@ -237,11 +333,13 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 		return done
 	}
 
-	// MultiResponseHandler fans the heartbeat response to both
-	// reconcilers (L3 D3). Pool reconciler consumes declared_pools;
-	// VM reconciler consumes declared_vms. Each ignores the other's
-	// payload without needing to know about it.
-	handler := heartbeat.MultiResponseHandler{poolRec, vmRec}
+	// MultiResponseHandler fans the heartbeat response to every
+	// reconciler (L3 D3). Pool reconciler consumes declared_pools; VM
+	// reconciler consumes declared_vms; network reconciler consumes
+	// declared_networks; WireGuard reconciler consumes self_overlay_ip +
+	// declared_wireguard_peers. Each ignores the others' payload without
+	// needing to know about it.
+	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec, wgRec}
 	sender := heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
 		Interval: cfg.ControlPlane.HeartbeatInterval,
 	}, log)

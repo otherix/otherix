@@ -22,6 +22,7 @@ type CompleteIdempotencyKeyParams struct {
 	ResponseStatus  *int32
 	ResponseHeaders []byte
 	ResponseBody    []byte
+	ExpiresAt       time.Time
 	Key             string
 }
 

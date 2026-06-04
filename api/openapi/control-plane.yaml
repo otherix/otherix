@@ -1666,7 +1666,7 @@ paths:
         - name: type
           in: query
           required: false
-          schema: { type: string, enum: [bridge] }
+          schema: { type: string, enum: [bridge, overlay] }
       responses:
         "200":
           description: List of networks.
@@ -1682,6 +1682,12 @@ paths:
       summary: Create a cluster-wide network (admin only).
       description: |
         **Required permission:** `network:manage` (admin).
+
+        `409 conflict` covers name collision and overlay VNI exhaustion. It is
+        also returned when creating a `type=overlay` network while the cluster
+        underlay MTU is below the floor (the derived overlay MTU would fall below
+        1280); `details` carries `underlay_mtu`, `min_underlay_mtu`, and
+        `derived_overlay_mtu`.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -4165,8 +4171,101 @@ components:
             heartbeat. Pairs with `system_disk_total_bytes`.
         system_disk_pressure:
           $ref: "#/components/schemas/SystemDiskPressureCondition"
+        network_conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeNetworkCondition"
+          description: |
+            Per-network materialisation status for the cluster-wide
+            networks as observed on THIS node. A `networks` row is one
+            cluster-wide definition; materialising its bridge can succeed
+            on some nodes and fail on others, so the per-node outcome is
+            surfaced here keyed by network.
+
+            admin / operator only, and populated only on
+            `GET /v1/nodes/{id}` — the list endpoint returns an empty array
+            to avoid a per-row fan-out. An entry is present for every
+            network with a recorded status on this node (ready, pending,
+            or failed); a status whose network has since been deleted is
+            omitted.
+        wireguard:
+          oneOf:
+            - $ref: "#/components/schemas/NodeWireguard"
+            - type: "null"
+          description: |
+            WireGuard underlay fabric block for this node: its own
+            CP-assigned identity (overlay_ip, public_key, listen_port,
+            endpoint) plus the mesh peer set, each peer flagged
+            `established` per this node's last reported handshake set.
+
+            admin / operator only, populated only on
+            `GET /v1/nodes/{id}`. Null when the node has not reported
+            WireGuard state yet.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    NodeNetworkCondition:
+      type: object
+      description: |
+        One per-(node, network) materialisation record: the outcome of
+        reconciling a cluster-wide network's bridge on a single node.
+      required: [network_id, name, reconciliation_status]
+      properties:
+        network_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Name of the cluster-wide network this record is for.
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Failure detail when `reconciliation_status` is `failed`; null
+            otherwise.
+        last_reconciled_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Timestamp of the last successful reconciliation on this node;
+            null until the network first materialises.
+
+    NodeWireguard:
+      type: object
+      description: WireGuard underlay fabric block for a node (admin/operator GET-by-id only).
+      required: [overlay_ip, public_key, listen_port, endpoint, peers]
+      properties:
+        overlay_ip: { type: string }
+        public_key: { type: string }
+        listen_port: { type: integer, format: int32 }
+        endpoint: { type: string }
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: |
+            Outcome of the agent's most recent WireGuard reconciliation
+            pass for its `otwg0` fabric interface. `pending` until the
+            CP allocates the overlay address and the first pass runs;
+            `ready` once the interface and peer set are applied;
+            `failed` on an interface-bring-up or set-peers error. Makes
+            an `otwg0` failure operator-visible like a bridge failure.
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Failure detail when `reconciliation_status` is `failed`; null
+            otherwise.
+        peers:
+          type: array
+          items: { $ref: "#/components/schemas/NodeWireguardPeer" }
+
+    NodeWireguardPeer:
+      type: object
+      required: [node_id, overlay_ip, established]
+      properties:
+        node_id: { type: string, format: uuid }
+        node_name: { type: [string, "null"] }
+        overlay_ip: { type: string }
+        established: { type: boolean }
 
     MemoryPressureCondition:
       type: [object, "null"]
@@ -4546,6 +4645,72 @@ components:
             on next tick).
           items:
             $ref: "#/components/schemas/HeartbeatPoolReport"
+        networks:
+          type: array
+          description: |
+            Agent's observed network inventory after the most recent
+            reconciliation pass. Networks are cluster-wide, so each entry
+            keys on the network `id` (uuid) rather than a node-scoped
+            name. The CP upserts each entry onto the per-(network, node)
+            status record (`reconciliation_status` /
+            `reconciliation_error`); entries whose id does not parse as a
+            uuid are silently skipped (eventually consistent, agent
+            reconciles on next tick) and never fail the heartbeat.
+          items:
+            $ref: "#/components/schemas/HeartbeatNetworkReport"
+        wireguard:
+          $ref: "#/components/schemas/HeartbeatWireGuardReport"
+          description: |
+            Optional. The agent's observed WireGuard (`otwg0`) interface
+            state for the overlay fabric. Carried only when the agent has
+            WG state to report; a nil report is skipped at ingest.
+            `public_key` + `endpoint` are authoritative for CP-side peer
+            redistribution; `listen_port` + `established_peers` are
+            observability. `reconciliation_status` /
+            `reconciliation_error` surface the outcome of the WG
+            reconciler's last pass.
+
+    HeartbeatWireGuardReport:
+      type: object
+      description: |
+        One report in HeartbeatRequest.wireguard — the agent's observed
+        WireGuard (`otwg0`) interface state (the overlay up-channel).
+        `public_key` + `endpoint` are authoritative for CP redistribution
+        to peers; `listen_port` + `established_peers` are observability.
+      required: [public_key, endpoint, listen_port, reconciliation_status]
+      properties:
+        public_key:
+          type: string
+          description: |
+            The agent's WireGuard public key (base64). Redistributed by
+            the CP to peer agents as a declared peer.
+        endpoint:
+          type: string
+          description: |
+            The agent's reachable WireGuard endpoint (`host:port`).
+            Redistributed by the CP to peer agents.
+        listen_port:
+          type: integer
+          description: Observed WireGuard listen port (observability).
+        established_peers:
+          type: array
+          description: |
+            Public keys of peers with which the agent currently has an
+            established WireGuard handshake (observability).
+          items:
+            type: string
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: |
+            Outcome of the agent's most recent WireGuard reconciliation
+            attempt. `pending` during the polling window; `ready` once
+            `otwg0` is up; `failed` on an interface-configuration error.
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Human-readable error message when `reconciliation_status`
+            is `failed`. Must be NULL or absent for other statuses.
 
     HeartbeatPoolReport:
       type: object
@@ -4595,6 +4760,35 @@ components:
           format: date-time
           description: Forward-compatibility surface; see capacity_bytes.
 
+    HeartbeatNetworkReport:
+      type: object
+      description: |
+        One entry in HeartbeatRequest.networks — per-network
+        reconciliation outcome reported by the agent. Networks are
+        cluster-wide, so the entry keys on the network `id` (uuid)
+        rather than a node-scoped name. The CP upserts the matching
+        per-(network, node) status record.
+      required: [id, reconciliation_status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Network id as declared by the CP.
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+          description: |
+            Outcome of the agent's most recent reconciliation attempt
+            for this network. `pending` is reported during the polling
+            window between heartbeat receipt and reconciliation tick;
+            `ready` after the bridge is materialised; `failed` on a
+            bridge-creation or configuration error.
+        reconciliation_error:
+          type: [string, "null"]
+          description: |
+            Human-readable error message when `reconciliation_status`
+            is `failed`. Must be NULL or absent for other statuses.
+
     HeartbeatResponse:
       type: object
       description: |
@@ -4605,7 +4799,17 @@ components:
         extends to VMs: `declared_vms` carries the per-node VM
         desired-state set; the agent's VM reconciler diffs the live
         Manager.List() observed set against this on every tick.
-      required: [received_at, declared_pools, declared_vms]
+      required:
+        [
+          received_at,
+          declared_pools,
+          declared_vms,
+          declared_networks,
+          declared_wireguard_peers,
+          self_overlay_ip,
+          declared_fdb,
+          otwg0_mtu,
+        ]
       properties:
         received_at:
           type: string
@@ -4637,6 +4841,156 @@ components:
             existing VM-create RPC.
           items:
             $ref: "#/components/schemas/HeartbeatDeclaredVM"
+        declared_networks:
+          type: array
+          description: |
+            CP-declared network inventory. Unlike pools and VMs,
+            networks are NOT node-scoped: the CP returns every
+            non-deleted network and every node receives the identical
+            set to materialise (cluster-wide bridge definitions). Order
+            is stable across heartbeats (by id) so the agent's diff
+            against observed bridges stays deterministic.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredNetwork"
+        declared_wireguard_peers:
+          type: array
+          description: |
+            CP-declared WireGuard peer set for this node's overlay fabric
+            (the fabric down-channel). Each entry is another agent's
+            CP-assigned identity (node_id, public_key, endpoint,
+            overlay_ip) plus that peer's overlay /32 as `allowed_ips`.
+            Full snapshot semantics: peers absent from this list are
+            removed from the agent's WG mesh.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredWireGuardPeer"
+        self_overlay_ip:
+          type: [string, "null"]
+          description: |
+            This node's CP-assigned overlay host IP (the `otwg0` address).
+            Null until the CP has allocated an overlay IP for the node.
+        declared_fdb:
+          type: array
+          description: |
+            CP-declared VXLAN FDB entries the agent must program into its
+            `otvx<vni>` kernel FDB (the fabric down-channel). A normal MAC
+            is a per-VM unicast entry (`mac` -> the remote VM's owning-node
+            VTEP); the all-zeros MAC `00:00:00:00:00:00` is a BUM/flood
+            entry. Full snapshot semantics for deterministic agent-side
+            diffing.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredFDBEntry"
+        otwg0_mtu:
+          type: [integer, "null"]
+          description: |
+            CP-declared `otwg0` link MTU (underlay MTU minus WireGuard
+            encapsulation overhead), so the agent brings `otwg0` up at the
+            right size on a sub-1500 underlay. Null from an older CP or
+            before the underlay MTU is known; the agent falls back to its
+            built-in WireGuard MTU default when absent.
+        overlay_reachability:
+          type: array
+          description: |
+            Per-VNI non-blocking reachability signal: how many remote
+            placements the CP omitted from `declared_fdb` because the
+            owning node has no overlay IP yet, plus per-VNI flood-target
+            tunnel-establishment counts. Observability only — the agent
+            never gates the overlay on it, converging on the (smaller)
+            programmable FDB set it does receive. Omitted when empty.
+          items:
+            $ref: "#/components/schemas/OverlayReachability"
+
+    HeartbeatDeclaredWireGuardPeer:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_wireguard_peers — another
+        agent the CP wants in this agent's WireGuard mesh (the fabric
+        down-channel). `allowed_ips` carries the peer's overlay /32.
+      required: [node_id, public_key, endpoint, overlay_ip, allowed_ips]
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          description: The peer node's id.
+        public_key:
+          type: string
+          description: The peer's WireGuard public key (base64).
+        endpoint:
+          type: string
+          description: The peer's reachable WireGuard endpoint (`host:port`).
+        overlay_ip:
+          type: string
+          description: The peer's CP-assigned overlay host IP.
+        allowed_ips:
+          type: array
+          description: |
+            The peer's allowed IP ranges (typically the peer's overlay
+            /32). Routed to this peer over the WireGuard tunnel.
+          items:
+            type: string
+
+    HeartbeatDeclaredFDBEntry:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_fdb — a single
+        controller-programmed VXLAN FDB entry the CP wants in this node's
+        `otvx<vni>` kernel FDB. A normal MAC is a per-VM unicast entry
+        (`mac` -> the remote VM's owning-node VTEP); the all-zeros MAC
+        `00:00:00:00:00:00` is a BUM/flood entry. `vtep_ip` is the remote
+        node's `otwg0` overlay host IP.
+      required: [vni, mac, vtep_ip]
+      properties:
+        vni:
+          type: integer
+          maximum: 16777215
+          description: VXLAN Network Identifier (24-bit) of the target overlay.
+        mac:
+          type: string
+          description: |
+            Target MAC address. The all-zeros MAC `00:00:00:00:00:00` is a
+            BUM/flood entry (head-end replication to `vtep_ip`); any other
+            value is a per-VM unicast entry.
+        vtep_ip:
+          type: string
+          description: |
+            The remote node's `otwg0` overlay host IP (the VTEP this entry
+            points at).
+
+    OverlayReachability:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.overlay_reachability — the per-VNI
+        non-blocking reachability signal the CP reports down-channel.
+        `skipped_no_ip` counts remote placements dropped from
+        `declared_fdb` for that VNI because the owning node lacks an
+        overlay IP. `established_peers` / `total_peers` report how many of
+        the VNI's distinct flood-target VTEPs the reporting node currently
+        has an established WireGuard handshake with. All observability
+        only; the agent never holds the overlay at pending on them.
+      required: [vni, skipped_no_ip, established_peers, total_peers]
+      properties:
+        vni:
+          type: integer
+          maximum: 16777215
+          description: VXLAN Network Identifier (24-bit) the signal is scoped to.
+        skipped_no_ip:
+          type: integer
+          minimum: 0
+          description: |
+            Count of remote placements dropped from `declared_fdb` for
+            this VNI because the owning node lacks an overlay IP.
+        established_peers:
+          type: integer
+          minimum: 0
+          description: |
+            Number of the VNI's distinct flood-target VTEPs the reporting
+            node currently has an established WireGuard handshake with.
+        total_peers:
+          type: integer
+          minimum: 0
+          description: |
+            Total number of the VNI's distinct flood-target VTEPs (remote
+            nodes with an overlay IP). `established_peers < total_peers`
+            signals a flood target up in the FDB but with no live tunnel.
 
     HeartbeatDeclaredVM:
       type: object
@@ -4703,6 +5057,61 @@ components:
             Pool-type-specific configuration, opaque to the agent in
             the current iteration. Reserved for future backends
             (nfs, iscsi, …).
+
+    HeartbeatDeclaredNetwork:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_networks — desired-state
+        record for a single cluster-wide network the CP wants
+        materialised on the agent. The agent reconciler diffs the
+        declared set against its observed bridges and applies changes
+        autonomously. `subnet` / `gateway` are populated only when
+        `egress` is `nat`.
+      required: [id, name, type, managed, egress, bridge_name, mtu]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 253
+        type:
+          type: string
+          enum: [bridge, overlay]
+        managed:
+          type: boolean
+          description: |
+            true = Otherix creates/owns the bridge; false = attach-only
+            to an operator-provisioned bridge.
+        egress:
+          type: string
+          enum: [none, nat]
+          description: Managed-egress mode for the network.
+        bridge_name:
+          type: string
+          minLength: 1
+          maxLength: 15
+        mtu:
+          type: integer
+          minimum: 68
+          maximum: 9216
+        vni:
+          type: [integer, "null"]
+          maximum: 16777215
+          description: |
+            VXLAN Network Identifier (24-bit). Present (non-null) only when
+            `type` is `overlay`; null for bridge networks.
+        subnet:
+          type: [string, "null"]
+          description: |
+            VM IP subnet in canonical CIDR form. Set when `egress` is
+            `nat`, null otherwise.
+        gateway:
+          type: [string, "null"]
+          description: |
+            Host-side gateway IP assigned on the bridge. Set when
+            `egress` is `nat`, null otherwise.
 
     JoinToken:
       type: object
@@ -5479,7 +5888,7 @@ components:
 
     Network:
       type: object
-      required: [id, name, type, bridge_name, mtu, config, created_at, updated_at]
+      required: [id, name, type, bridge_name, managed, egress, mtu, config, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -5487,13 +5896,48 @@ components:
           maxLength: 255
         type:
           type: string
-          enum: [bridge]
+          enum: [bridge, overlay]
           description: |
-            Immutable after creation. Currently only `bridge` is
-            supported; the column is open to future enum extensions.
+            Immutable after creation. `bridge` attaches VMs to a Linux
+            bridge; `overlay` creates a VXLAN-backed tenant network.
         bridge_name:
           type: string
           description: Linux bridge interface name on each hosting node.
+        managed:
+          type: boolean
+          description: |
+            Immutable after creation. `true` when Otherix creates and
+            owns the bridge; `false` when attaching to an
+            operator-provisioned bridge. `egress: nat` requires
+            `managed: true`.
+        egress:
+          type: string
+          enum: [none, nat]
+          description: |
+            Managed-egress mode. `none` (default) leaves egress to the
+            attached bridge; `nat` masquerades VM traffic and requires
+            `type: bridge` with `managed: true`.
+        subnet:
+          type: [string, "null"]
+          description: |
+            VM IP subnet in CIDR form, returned in canonical (masked)
+            form. Present when `egress: nat` or `type: overlay`; `null`
+            otherwise.
+        gateway:
+          type: [string, "null"]
+          description: |
+            Host-side gateway IP on the bridge. Present only when
+            `egress: nat`; defaults to the first usable host in
+            `subnet` when not supplied. `null` otherwise.
+        vni:
+          type: [integer, "null"]
+          readOnly: true
+          description: |
+            VXLAN Network Identifier, CP-allocated and immutable. Present
+            only for type=overlay; null for bridge. Not accepted on create
+            or patch (the server allocates it).
+        status:
+          $ref: "#/components/schemas/NetworkStatus"
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
@@ -5508,7 +5952,9 @@ components:
             guest interfaces must all match — mismatch silently breaks
             jumbo-frame and overlay traffic. Common values: 1500
             (Ethernet default), 1450 (overlay/VPN with overhead), 9000
-            (jumbo frames; requires switch / NIC support).
+            (jumbo frames; requires switch / NIC support). For
+            `type: overlay` this is server-fixed at 1390 and not
+            client-settable.
         config:
           type: object
           additionalProperties: true
@@ -5517,7 +5963,7 @@ components:
 
     NetworkCreate:
       type: object
-      required: [name, type, bridge_name]
+      required: [name, type]
       properties:
         name:
           type: string
@@ -5525,14 +5971,50 @@ components:
           maxLength: 255
         type:
           type: string
-          enum: [bridge]
+          enum: [bridge, overlay]
+          description: |
+            Immutable after creation. `bridge` or `overlay`. Not accepted
+            on patch.
         bridge_name:
           type: string
           minLength: 1
+          description: |
+            Required for `type: bridge`; forbidden for `type: overlay`
+            (the server derives `otb<vni>`).
+        managed:
+          type: boolean
+          default: false
+          description: |
+            Optional on create (defaults to `false`). Set `true` to have
+            Otherix own the bridge; required `true` for `egress: nat`.
+            Immutable once the network exists. Forbidden for
+            `type: overlay`.
+        egress:
+          type: string
+          enum: [none, nat]
+          default: none
+          description: |
+            Optional on create (defaults to `none`). `nat` requires
+            `type: bridge`, `managed: true`, and a `subnet`. Forbidden
+            for `type: overlay`.
+        subnet:
+          type: string
+          description: |
+            VM IP subnet in CIDR form. Required when `egress: nat` or
+            `type: overlay`; forbidden otherwise. Host bits are masked
+            off and the canonical form is stored.
+        gateway:
+          type: string
+          description: |
+            Optional host-side gateway IP. Allowed only with
+            `egress: nat`; defaults to the first usable host in `subnet`.
+            Forbidden for `type: overlay`.
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
           maximum: 4094
+          description: |
+            Forbidden for `type: overlay`.
         mtu:
           type: integer
           minimum: 68
@@ -5541,7 +6023,8 @@ components:
           description: |
             Optional on create. Defaults to 1500 (safe Ethernet
             default). Specify 9000 for jumbo frames or ~1450 for
-            overlay/VPN networks; all interfaces must agree.
+            overlay/VPN networks; all interfaces must agree. Forbidden
+            for `type: overlay` (server-fixed at 1390).
         config:
           type: object
           additionalProperties: true
@@ -5549,11 +6032,18 @@ components:
     NetworkUpdate:
       type: object
       description: |
-        `type` is immutable after creation; sending `type` in the
-        body is rejected with `400 validation_failed` carrying
-        `details.forbidden_fields: ["type"]`. `vlan_tag` accepts
-        `null` to clear an existing tag; `mtu` cannot be cleared
-        (the column is `NOT NULL` since migration 00004).
+        `type` and `managed` are immutable after creation; sending
+        either in the body is rejected with `400 validation_failed`
+        carrying `details.forbidden_fields`. `vlan_tag` accepts `null`
+        to clear an existing tag; `mtu` cannot be cleared (the column is
+        `NOT NULL` since migration 00004). `egress`, `subnet`, and
+        `gateway` are mutable: changing `egress` to `nat` requires a
+        `subnet` (gateway is derived when omitted); changing it to
+        `none` clears any `subnet`/`gateway`. `subnet` and `gateway`
+        accept `null` to clear them (only valid when the resulting
+        `egress` is `none`). For `type: overlay` networks only the
+        `name` is patchable; any other field is rejected with
+        `400 validation_failed` and `details.forbidden_fields`.
       properties:
         name:
           type: string
@@ -5562,6 +6052,13 @@ components:
         bridge_name:
           type: string
           minLength: 1
+        egress:
+          type: string
+          enum: [none, nat]
+        subnet:
+          type: [string, "null"]
+        gateway:
+          type: [string, "null"]
         vlan_tag:
           type: [integer, "null"]
           minimum: 1
@@ -5573,6 +6070,42 @@ components:
         config:
           type: object
           additionalProperties: true
+
+    NetworkStatus:
+      type: object
+      description: |
+        Per-node reconciliation rollup for a cluster-wide network.
+        Returned only by `GET /v1/networks/{id}`; the list endpoint
+        omits it. `nodes` is empty until at least one node reports a
+        materialisation outcome through its heartbeat.
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkNodeStatus"
+
+    NetworkNodeStatus:
+      type: object
+      required: [node_id, reconciliation_status]
+      properties:
+        node_id:
+          type: string
+          format: uuid
+        node_name:
+          type: [string, "null"]
+          description: |
+            The node's name, resolved server-side from `node_id` (references
+            to resources use names, not UUIDs). Null or absent when the node
+            was deleted but a stale status row lingers; fall back to `node_id`.
+        reconciliation_status:
+          type: string
+          enum: [pending, ready, failed]
+        reconciliation_error:
+          type: [string, "null"]
+        last_reconciled_at:
+          type: [string, "null"]
+          format: date-time
 
     NetworkList:
       type: object
@@ -6311,6 +6844,19 @@ components:
             `user_data` set → VM-level override; `user_data` absent +
             `cloud_init_disabled=false` (default) → template fallback;
             `cloud_init_disabled=true` → no cloud-init at all.
+        network:
+          type: string
+          description: |
+            Live MVP field: a single bridge network to attach one NIC
+            to, given as a network **name or uuid**. When set the VM is
+            created with one NIC on that network's bridge (the CP mints
+            a `52:54:00` QEMU MAC; the guest configures its own IP).
+            Unknown network → 404 `not_found`; a non-bridge network type
+            → 400 `validation_failed` (overlay attach is a later
+            iteration). When omitted the VM has no NIC and the agent
+            falls back to legacy SLIRP networking. This is the live
+            handler shape; the richer `nics` array below is the eventual
+            contract and is acknowledged as drifted.
         meta_data:
           type: [string, "null"]
         network_config:

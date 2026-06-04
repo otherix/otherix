@@ -4,6 +4,7 @@
 package vms
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -397,5 +398,103 @@ func TestBuildNoEligibleDetails_DoesNotPanicOnNilTimestamps(t *testing.T) {
 	// the helper's wrap pattern changes the extractor breaks silently).
 	if !errors.Is(err, scheduler.ErrNoEligibleNodes) {
 		t.Errorf("test helper error chain does not unwrap to ErrNoEligibleNodes")
+	}
+}
+
+// TestGenerateLocalMAC asserts the minted MAC carries the QEMU 52:54:00 OUI,
+// is locally administered + unicast, and varies across calls.
+func TestGenerateLocalMAC(t *testing.T) {
+	mac, err := generateLocalMAC()
+	if err != nil {
+		t.Fatalf("generateLocalMAC: %v", err)
+	}
+	if len(mac) != 6 {
+		t.Fatalf("len(mac) = %d, want 6", len(mac))
+	}
+	if mac[0] != 0x52 || mac[1] != 0x54 || mac[2] != 0x00 {
+		t.Errorf("mac OUI = %02x:%02x:%02x, want 52:54:00", mac[0], mac[1], mac[2])
+	}
+	// Locally administered (bit 1 set) + unicast (bit 0 clear) in the first octet.
+	if mac[0]&0x02 == 0 {
+		t.Errorf("mac first octet %02x is not locally administered", mac[0])
+	}
+	if mac[0]&0x01 != 0 {
+		t.Errorf("mac first octet %02x is not unicast", mac[0])
+	}
+	other, err := generateLocalMAC()
+	if err != nil {
+		t.Fatalf("generateLocalMAC (2nd): %v", err)
+	}
+	if mac.String() == other.String() {
+		t.Errorf("two generated MACs collided: %s", mac)
+	}
+}
+
+// createScheduledVMStub satisfies the handler's Store interface for the
+// createWithMACRetry unit tests. It embeds Store (nil) so only the one
+// method exercised here needs a body; calling any other method panics,
+// which is the intended guard for an unexpected dependency.
+type createScheduledVMStub struct {
+	Store
+	createScheduledVM func(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
+}
+
+func (s *createScheduledVMStub) CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+	return s.createScheduledVM(ctx, plan)
+}
+
+// TestCreateWithMACRetry asserts a transient ErrVMNicMACConflict is
+// re-minted: the helper re-invokes CreateScheduledVM (which re-rolls the
+// MAC) until the store stops reporting a collision.
+func TestCreateWithMACRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	fake := &createScheduledVMStub{
+		createScheduledVM: func(_ context.Context, _ func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+			calls++
+			if calls < 3 {
+				return uuid.Nil, store.ErrVMNicMACConflict
+			}
+			return uuid.New(), nil
+		},
+	}
+
+	id, err := createWithMACRetry(context.Background(), fake, func(store.PlacementReader) (store.VMCreateWrites, error) {
+		return store.VMCreateWrites{}, nil
+	})
+	if err != nil {
+		t.Fatalf("createWithMACRetry: %v", err)
+	}
+	if id == uuid.Nil {
+		t.Errorf("got nil id, want a created id")
+	}
+	if calls != 3 {
+		t.Errorf("CreateScheduledVM calls = %d, want 3 (2 conflicts then success)", calls)
+	}
+}
+
+// TestCreateWithMACRetryGivesUp asserts a persistent collision is bounded:
+// after maxMACRetries attempts the helper returns the last
+// ErrVMNicMACConflict rather than looping forever.
+func TestCreateWithMACRetryGivesUp(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	fake := &createScheduledVMStub{
+		createScheduledVM: func(_ context.Context, _ func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+			calls++
+			return uuid.Nil, store.ErrVMNicMACConflict
+		},
+	}
+
+	_, err := createWithMACRetry(context.Background(), fake, func(store.PlacementReader) (store.VMCreateWrites, error) {
+		return store.VMCreateWrites{}, nil
+	})
+	if !errors.Is(err, store.ErrVMNicMACConflict) {
+		t.Errorf("err = %v, want ErrVMNicMACConflict after exhausting retries", err)
+	}
+	if calls != 8 {
+		t.Errorf("calls = %d, want 8 (maxMACRetries)", calls)
 	}
 }
