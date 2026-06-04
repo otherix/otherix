@@ -278,14 +278,43 @@ func (s *createLifecycleWorkerStoreStub) ProjectVMLifecycleSuccess(context.Conte
 	return nil
 }
 
-// spyCreateExecutor records whether the agent create was attempted.
-type spyCreateExecutor struct {
+// spyImageEnsurer records whether (and in what order) EnsureImageOnPool was
+// called and returns a canned error. order is a shared monotonic counter so a
+// paired spyCreateExecutor can assert the ensure ran strictly before the agent
+// create.
+type spyImageEnsurer struct {
+	order *int
+	at    int
+	err   error
+
 	called bool
-	err    error
+}
+
+func (e *spyImageEnsurer) EnsureImageOnPool(context.Context, store.Template, store.StoragePool, store.Node) error {
+	e.called = true
+	if e.order != nil {
+		*e.order++
+		e.at = *e.order
+	}
+	return e.err
+}
+
+// spyCreateExecutor records whether the agent create was attempted, and at
+// which order marker (so a test can assert the ensurer ran first).
+type spyCreateExecutor struct {
+	order *int
+	at    int
+	err   error
+
+	called bool
 }
 
 func (e *spyCreateExecutor) Execute(context.Context, CreateArgs) (CreateResult, error) {
 	e.called = true
+	if e.order != nil {
+		*e.order++
+		e.at = *e.order
+	}
 	return CreateResult{}, e.err
 }
 
@@ -358,8 +387,9 @@ func TestRunCreateTerminallyDeadNode(t *testing.T) {
 			node := store.Node{ID: nodeID, Name: "node-x", Status: tc.nodeStatus, LastHeartbeatAt: tc.lastHeartbeat}
 			st := &createLifecycleWorkerStoreStub{vm: baseVM, node: node, disk: disk, nodeErr: tc.nodeErr}
 			exec := &spyCreateExecutor{}
+			ensurer := &spyImageEnsurer{}
 
-			err := runCreate(context.Background(), st, exec, discardLog(),
+			err := runCreate(context.Background(), st, exec, ensurer, discardLog(),
 				VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, staleGrace)
 
 			if (err != nil) != tc.wantErr {
@@ -369,6 +399,11 @@ func TestRunCreateTerminallyDeadNode(t *testing.T) {
 				t.Errorf("agent create attempted = %v, want %v", exec.called, tc.wantCalled)
 			}
 			if !tc.wantCalled {
+				// Terminally dead: the ensure pre-phase is after the dead
+				// check, so neither the ensurer nor the executor runs.
+				if ensurer.called {
+					t.Errorf("EnsureImageOnPool called on dead node; the ensure pre-phase must come after the dead-node check")
+				}
 				// Terminally dead: must be a clean terminal failure, no success.
 				if !st.finalizedFailed {
 					t.Errorf("task not finalized failed on dead node")
@@ -393,13 +428,81 @@ func TestRunCreateExecErrorRetryable(t *testing.T) {
 	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
 	exec := &spyCreateExecutor{err: errors.New("agent boom")}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, &spyImageEnsurer{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err == nil {
 		t.Fatalf("runCreate = nil, want non-nil (retryable exec error)")
 	}
 	if !exec.called {
 		t.Errorf("agent create not attempted on live node")
+	}
+}
+
+// TestRunCreateEnsuresImageBeforeAgent pins the B1 ordering invariant: on a
+// live ready node, runCreate materializes the template image on the pool
+// (EnsureImageOnPool) strictly BEFORE dispatching the agent create, then
+// projects success. A vm-create on a cold pool no longer hard-fails
+// ErrTemplateMissing - the image is imported inline first.
+func TestRunCreateEnsuresImageBeforeAgent(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
+
+	var seq int
+	ensurer := &spyImageEnsurer{order: &seq}
+	exec := &spyCreateExecutor{order: &seq}
+
+	err := runCreate(context.Background(), st, exec, ensurer, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil", err)
+	}
+	if !ensurer.called {
+		t.Fatalf("EnsureImageOnPool not called on live node")
+	}
+	if !exec.called {
+		t.Fatalf("agent create not attempted on live node")
+	}
+	if ensurer.at == 0 || exec.at == 0 || ensurer.at >= exec.at {
+		t.Errorf("ensure/create order = (%d, %d), want ensure strictly before create", ensurer.at, exec.at)
+	}
+	if !st.projectedCreate {
+		t.Errorf("ProjectVMCreateSuccess not called; a successful ensure+create must project success")
+	}
+}
+
+// TestRunCreateEnsurerErrorRetryable pins the ensure-failure contract: when
+// EnsureImageOnPool fails (a transient import failure - bad URL, checksum
+// mismatch, disk full), runCreate finalizes the task FAILED, returns a non-nil
+// (retryable) cause so the dispatcher retries the inline import, NEVER calls
+// the agent create, and NEVER projects success.
+func TestRunCreateEnsurerErrorRetryable(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
+	ensurer := &spyImageEnsurer{err: errors.New("disk full")}
+	exec := &spyCreateExecutor{}
+
+	err := runCreate(context.Background(), st, exec, ensurer, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err == nil {
+		t.Fatalf("runCreate = nil, want non-nil (retryable ensure error)")
+	}
+	if !ensurer.called {
+		t.Errorf("EnsureImageOnPool not attempted on live node")
+	}
+	if exec.called {
+		t.Errorf("agent create attempted after ensure failure; the create must short-circuit")
+	}
+	if !st.finalizedFailed {
+		t.Errorf("task not finalized failed after ensure failure")
+	}
+	if st.projectedCreate {
+		t.Errorf("ProjectVMCreateSuccess called after ensure failure; a create that did not happen must NOT project success")
 	}
 }
 

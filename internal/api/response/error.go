@@ -70,6 +70,11 @@ const (
 	CodeVMCreateFailed        ErrorCode = "vm_create_failed"
 	CodeVMDeleteFailed        ErrorCode = "vm_delete_failed"
 	CodeQemuSpawnFailed       ErrorCode = "qemu_spawn_failed"
+	// CodeVMImageUnavailable is the vm.create fall-through code when the
+	// inline template-image materialization on the target pool fails
+	// (bad source URL, checksum mismatch, disk full). It is RETRYABLE:
+	// the inline import may succeed on a later attempt.
+	CodeVMImageUnavailable ErrorCode = "vm_image_unavailable"
 
 	// Placement / cluster-default error codes. Emitted by VM create
 	// handler when the scheduler returns its sentinel errors or the

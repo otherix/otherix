@@ -49,11 +49,14 @@ type WorkerStore interface {
 // it an owning node is treated as terminally dead.
 const defaultStaleGrace = 5 * time.Minute
 
-// CreateHandler returns the dispatcher handler for vm.create jobs. staleGrace is
-// the heartbeat-staleness window past which an owning node is treated as
-// terminally dead (the create then fails fast and terminally rather than burning
-// the retry budget); it defaults to 5 minutes when <= 0.
-func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+// CreateHandler returns the dispatcher handler for vm.create jobs. ensurer
+// materializes the template image on the target pool inline before the agent
+// create, so a create on a cold pool imports the image first rather than
+// hard-failing template_not_found. staleGrace is the heartbeat-staleness window
+// past which an owning node is treated as terminally dead (the create then fails
+// fast and terminally rather than burning the retry budget); it defaults to 5
+// minutes when <= 0.
+func CreateHandler(st WorkerStore, exec CreateExecutor, ensurer ImageEnsurer, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
 	if staleGrace <= 0 {
 		staleGrace = defaultStaleGrace
 	}
@@ -62,11 +65,11 @@ func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleG
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.create args: %v", err)
 		}
-		return runCreate(ctx, st, exec, log, args, staleGrace)
+		return runCreate(ctx, st, exec, ensurer, log, args, staleGrace)
 	}
 }
 
-func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
+func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer ImageEnsurer, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
@@ -75,12 +78,9 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
-	disks, err := st.ListVMDisksByVM(ctx, args.VMID)
+	disk, err := loadCreateDisk(ctx, st, log, taskID, args.VMID)
 	if err != nil {
-		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("list vm disks: %v", err))
-	}
-	if len(disks) == 0 {
-		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("vm %s has no disks", args.VMID))
+		return err
 	}
 	tpl, err := st.TemplateByID(ctx, args.TemplateID)
 	if err != nil {
@@ -103,6 +103,9 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		return failTerminal(ctx, st, log, "vms.create", taskID, errCodeVMNodeMissing,
 			fmt.Errorf("owning node %s is gone or unreachable; cannot create vm", args.NodeID))
 	}
+	if err := ensureCreateImage(ctx, st, ensurer, log, taskID, tpl, pool, node); err != nil {
+		return err
+	}
 	nics, err := resolveCreateNICs(ctx, st, args.VMID)
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, "internal", err)
@@ -116,7 +119,7 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		TaskID:        taskID,
 		AgentTaskID:   task.AgentTaskID,
 		VM:            vm,
-		Disk:          disks[0],
+		Disk:          disk,
 		Template:      tpl,
 		Pool:          pool,
 		Node:          node,
@@ -138,6 +141,40 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
 	); err != nil {
 		return fmt.Errorf("project create success: %v", err)
+	}
+	return nil
+}
+
+// loadCreateDisk loads the VM's disks and returns the boot disk (device order
+// 0, the first row). A read error or a VM with no disks is an internal
+// inconsistency (the disk row is created atomically with the VM): the task is
+// finalized failed and the non-nil error is propagated for requeue.
+func loadCreateDisk(ctx context.Context, st WorkerStore, log *slog.Logger, taskID, vmID uuid.UUID) (store.VMDisk, error) {
+	disks, err := st.ListVMDisksByVM(ctx, vmID)
+	if err != nil {
+		return store.VMDisk{}, failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("list vm disks: %v", err))
+	}
+	if len(disks) == 0 {
+		return store.VMDisk{}, failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("vm %s has no disks", vmID))
+	}
+	return disks[0], nil
+}
+
+// ensureCreateImage materializes the template image on the target pool before
+// the agent create. EnsureImageOnPool is the IfNotPresent pull policy: a fast
+// no-op when the image is already projected, otherwise an inline import drive
+// against the owning agent. The worker holds its slot during a cold-pool import;
+// the INFO log makes a slow first materialization observable. A transient
+// failure (bad URL, checksum mismatch, disk full) is RETRYABLE via failRun - the
+// wrapped cause carries the real reason into the task error envelope. On
+// failure the task is finalized failed and the returned error is non-nil (the
+// caller propagates it for requeue); on success it returns nil.
+func ensureCreateImage(ctx context.Context, st WorkerStore, ensurer ImageEnsurer, log *slog.Logger, taskID uuid.UUID, tpl store.Template, pool store.StoragePool, node store.Node) error {
+	log.InfoContext(ctx, "ensuring template image on pool before vm create",
+		slog.String("task_id", taskID.String()), slog.String("template_id", tpl.ID.String()),
+		slog.String("pool_id", pool.ID.String()), slog.String("node_id", node.ID.String()))
+	if err := ensurer.EnsureImageOnPool(ctx, tpl, pool, node); err != nil {
+		return failRun(ctx, st, log, "vms.create", taskID, classifyVMError(err, errCodeVMImageUnavailable), fmt.Errorf("ensure image on pool: %v", err))
 	}
 	return nil
 }

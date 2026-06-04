@@ -3766,6 +3766,7 @@ components:
         - vm_create_failed
         - vm_delete_failed
         - qemu_spawn_failed
+        - vm_image_unavailable
         - pool_not_found
         - pool_not_on_node
         - no_eligible_nodes
