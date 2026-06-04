@@ -418,3 +418,39 @@ func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
 		t.Errorf("defaultAPIConfig().Etcd = %+v, want %+v", got, want)
 	}
 }
+
+func TestDefaultAPIConfig_StoragePoolsDefaultPoolName(t *testing.T) {
+	got := defaultAPIConfig().StoragePools.DefaultPoolName
+	if got != "default" {
+		t.Errorf("defaultAPIConfig().StoragePools.DefaultPoolName = %q, want %q", got, "default")
+	}
+}
+
+func TestStoragePoolsConfig_ValidateDefaultPoolName(t *testing.T) {
+	tests := []struct {
+		name    string
+		pool    string
+		wantErr bool
+	}{
+		{name: "valid name", pool: "default"},
+		{name: "valid hyphenated name", pool: "team-pool-1"},
+		{name: "empty opts out", pool: ""},
+		{name: "leading whitespace rejected", pool: " bad", wantErr: true},
+		{name: "trailing whitespace rejected", pool: "bad ", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := StoragePoolsConfig{
+				AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+				DefaultPoolName:     tc.pool,
+			}
+			err := cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with DefaultPoolName=%q = nil, want error", tc.pool)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with DefaultPoolName=%q = %v, want nil", tc.pool, err)
+			}
+		})
+	}
+}
