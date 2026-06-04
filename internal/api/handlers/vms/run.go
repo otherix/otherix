@@ -170,6 +170,30 @@ func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleG
 	}
 }
 
+// nodeTerminallyDead reports whether the VM's owning node is beyond any agent
+// teardown, so the delete must be projected directly rather than dispatched to
+// an agent. True when the node row is gone or force-deleted (ErrNotFound), or
+// when the node has been unseen for longer than staleGrace.
+//
+// 'unreachable' with a fresh heartbeat is NOT terminal - the node may merely be
+// partitioned with qemu still running, and the agent's VM reconciler does not
+// prune VMs the CP stops declaring (it reports them and waits), so skipping the
+// agent for a node that later heals would leak that qemu forever. Such a node
+// gets a best-effort agent teardown first, falling back to a direct projection
+// only when that fails.
+//
+// The staleness arm covers a cordoned/draining node that dies: it never
+// advances to 'gone' (the reaper only flips ready/pending), so without it the
+// VM delete would failRun forever. Its worst case is skipping the agent for a
+// node that healed within the window, leaking one qemu (the accepted leak
+// scale) - it keys on a durable timestamp, not inferred state.
+func nodeTerminallyDead(node store.Node, nodeErr error, staleGrace time.Duration) bool {
+	if errors.Is(nodeErr, store.ErrNotFound) || node.Status == store.NodeStatusGone {
+		return true
+	}
+	return node.LastHeartbeatAt == nil || node.LastHeartbeatAt.Before(time.Now().Add(-staleGrace))
+}
+
 func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration, args VMDeleteArgs) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
@@ -183,27 +207,7 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
 		return failRun(ctx, st, log, "vms.delete", taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
 	}
-	// A 'gone' or force-deleted (missing) owning node is terminally dead: no
-	// agent will ever return to tear the VM down, so project the delete
-	// directly. 'unreachable' is NOT terminal - the node may merely be
-	// partitioned with qemu still running, and the agent's VM reconciler does
-	// not prune VMs the CP stops declaring (it reports them and waits). Skipping
-	// the agent for an unreachable node that later heals would leak that qemu
-	// process forever. So an unreachable node gets a best-effort agent teardown
-	// first; only when that fails (the node is genuinely down) do we fall back
-	// to a direct projection so the VM and its NIC index entries are reclaimed
-	// and DeleteNetwork unblocks.
-	//
-	// A node unseen for longer than staleGrace is also terminally dead: a
-	// cordoned/draining node that dies never advances to 'gone' (the reaper only
-	// flips ready/pending), so without the staleness arm its VM delete would
-	// failRun forever. The worst case of the staleness arm is skipping the agent
-	// teardown for a node that healed within the window, leaking one qemu (the
-	// accepted leak scale) - it keys on a durable timestamp, not inferred state.
-	nodeStale := node.LastHeartbeatAt == nil || node.LastHeartbeatAt.Before(time.Now().Add(-staleGrace))
-	terminallyDead := errors.Is(nodeErr, store.ErrNotFound) || node.Status == store.NodeStatusGone || nodeStale
-
-	if !terminallyDead {
+	if !nodeTerminallyDead(node, nodeErr, staleGrace) {
 		task, err := st.TaskByID(ctx, taskID)
 		if err != nil {
 			return fmt.Errorf("reload task: %v", err)
