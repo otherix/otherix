@@ -136,6 +136,12 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 		// one-pass reachability delay is the lesser, recoverable harm; the next
 		// pass retries the delete first. converged is already false, holding the
 		// overlay pending.
+		//
+		// Keyed on MAC, not mac+dst: for the all-zeros flood MAC (many dsts, one
+		// per flood target) one failed prune broadens the skip to every flood
+		// append this pass. That is intentional - it still fails toward inaction
+		// and reconverges next pass; do NOT narrow this to fdbKey or the move
+		// dual-homing window reopens.
 		if _, blocked := failedPruneMACs[e.MAC.String()]; blocked {
 			continue
 		}
