@@ -675,18 +675,16 @@ bootstrap flow end-to-end:
    `systemctl --user start otherix-agent` (Linux native).
 5. Polls for `nodes.id WHERE name='node-mvp'` for up to 60s. The row
    appears once the CSR redemption commits at the CP side.
-6. Inserts the `storage_pools` row directly via psql (no public
-   registration API yet). FK to the bootstrapped `nodes.id`.
-7. Calls `otherix cluster set-default-pool pool-mvp` so subsequent
-   `vm create` invocations resolve without `--pool`.
-8. Calls `otherix template create ubuntu-noble-<arch>-mvp --pool
-   pool-mvp --wait` which both registers the template and triggers
-   the agent-side image import (compute-mode SHA — no pre-computed
-   checksum required from the operator). As of B1 the `--pool` import
-   here is only a warm-up: `vm create` auto-materialises a template's
-   image onto its target pool on first use, so a template registered
-   without `--pool` (or a VM placed on a different pool) still works
-   (the first create just pays the one-time inline import).
+6. Does NOT create a storage pool: the CP auto-provisions the cluster
+   default pool (`default`, from `default_pool_name` in code defaults) at
+   `/opt/otherix/pools/default` on every node as it reaches `ready`, and
+   that is the cluster default. So `vm create` resolves without `--pool`,
+   and seed-mvp no longer runs `pool create` or `cluster set-default-pool`.
+7. Calls `otherix template create ubuntu-noble-<arch>-mvp` (no `--pool`)
+   which registers the template (compute-mode SHA - no pre-computed
+   checksum required from the operator). As of B1 no `--pool` warm-up is
+   needed: `vm create` auto-materialises the image onto its target pool
+   inline on first use, so the first create just pays the one-time import.
 
 The node row arrives in `pending` status and flips to `ready` once the
 first heartbeat lands. The dev heartbeat cadence (15s interval / 45s
@@ -697,8 +695,8 @@ Sample output:
 ```
 >> seed-mvp complete
    node     : node-mvp (id=<uuid>)
-   pool     : pool-mvp (id=00000000-…-000000000001, default=yes)
-   template : ubuntu-noble-arm64-mvp
+   pool     : default (cluster default, CP-auto-provisioned on ready nodes)
+   template : ubuntu-noble-arm64-mvp (image auto-imports on first vm create)
 ```
 
 ### Step 2 — create a VM
@@ -710,9 +708,9 @@ surface as `400 validation_failed` with an actionable hint pointing to
 `otherix <resource> list`. Storage pool addressing retains a UUID
 escape hatch for multi-instance per-node row addressing. Phase 1.5
 made `--pool` optional — when omitted, the server resolves the cluster
-default-pool reference held in `cluster_settings`. The dev seed
-configures `pool-mvp` as the cluster default, so the command below
-works without `--pool`:
+default-pool reference held in `cluster_settings`. The CP auto-provisions
+`default` as the cluster default pool on every ready node, so the command
+below works without `--pool`:
 
 ```bash
 ./bin/otherix vm create \
@@ -730,7 +728,7 @@ To target a specific node explicitly:
 ./bin/otherix vm create \
     --name demo-vm \
     --template ubuntu-jammy-arm64-mvp \
-    --pool pool-mvp \
+    --pool default \
     --node node-mvp \
     --vcpus 2 --memory-mb 2048 --wait
 ```
@@ -751,14 +749,14 @@ projects vm_runtime row with phase=running.
 ```bash
 ./bin/otherix vm list
 # NAME      STATUS   POOL       TEMPLATE
-# demo-vm   running  pool-mvp   ubuntu-jammy-arm64-mvp
+# demo-vm   running  default    ubuntu-jammy-arm64-mvp
 
 ./bin/otherix vm get demo-vm
 # id: <vm-uuid>
 # name: demo-vm
 # owner_id: <user-uuid>
 # template: ubuntu-jammy-arm64-mvp
-# pool: pool-mvp
+# pool: default
 # node: node-mvp
 # architecture: arm64
 # vcpus: 2
@@ -804,7 +802,9 @@ limactl shell otherix-dev ls /opt/otherix/vms/    # empty
 
 Phase 1.5 introduced a cluster-wide default-pool reference held in the
 `cluster_settings` singleton — VM create requests without `--pool` resolve
-through it. The seed script wires `pool-mvp` as the default; the
+through it. The CP seeds it from `default_pool_name` on boot (code default
+`default`) and auto-provisions that pool on every node, so the dev cluster's
+default is `default` (the seed script no longer sets it). The
 `otherix cluster` subcommand group exposes inspect / set / unset
 verbs (Phase 2 added these — see "Cluster configuration" above for the
 broader walkthrough).
@@ -812,7 +812,7 @@ broader walkthrough).
 ```bash
 # Inspect current default
 ./bin/otherix cluster get-default-pool
-# default-pool: pool-mvp
+# default-pool: default
 
 # Promote a different pool (admin only)
 ./bin/otherix cluster set-default-pool fast-ssd
