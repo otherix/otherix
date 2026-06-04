@@ -1,14 +1,15 @@
 # Otherix — Architecture
 
-**Status:** Initial schema landed 2026-05-02; api-server, agent, and
-CLI are built and exercised end-to-end through the
-`tests/integration/` suite. Scheduler and reconciler loops run
-in-process inside `otherix-api`. The control plane is wired through
-the join-token bootstrap protocol against a single Postgres.
+**Status:** api-server, agent, and CLI are built and exercised
+end-to-end through the `tests/apie2e/` suite. Scheduler and reconciler
+loops run in-process inside `otherix-api`, alongside the embedded etcd
+member and the worker job runtime. The control plane is wired through
+the join-token bootstrap protocol against the embedded etcd store.
 
-This document is the high-level orientation. The canonical schema
-lives in `internal/store/migrate/migrations/`; SQL queries live in
-`internal/store/queries/`.
+This document is the high-level orientation. The control-plane store
+lives in `internal/etcdstore/`; the embedded etcd member is started by
+`internal/etcd/`; the pgx-free row / params / result types shared by
+handlers and the store live in `internal/store/`.
 
 ---
 
@@ -27,15 +28,15 @@ A self-hosted VM orchestration control plane that manages QEMU virtual machines 
 │                  Control Plane (otherix-api)             │
 │                                                          │
 │  ┌──────────┐  ┌───────────┐  ┌────────────┐  ┌───────┐  │
-│  │ REST API │  │ scheduler │  │ reconciler │  │ river │  │
+│  │ REST API │  │ scheduler │  │ reconciler │  │worker │  │
 │  │ + mTLS   │  │ (in-proc) │  │  loops     │  │ jobs  │  │
 │  └────┬─────┘  └─────┬─────┘  └─────┬──────┘  └───┬───┘  │
 │       │              │              │             │      │
 │       └──────────────┴──────┬───────┴─────────────┘      │
 │                             │                            │
 │                    ┌────────┴────────┐                   │
-│                    │   PostgreSQL    │                   │
-│                    │   (single DB)   │                   │
+│                    │  embedded etcd  │                   │
+│                    │   (in-process)  │                   │
 │                    └─────────────────┘                   │
 └──────────────────────────┬───────────────────────────────┘
                            │  REST + mTLS
@@ -50,16 +51,17 @@ A self-hosted VM orchestration control plane that manages QEMU virtual machines 
         └──── peer-to-peer QMP migrate ───────┘
 ```
 
-**`otherix-api`** — the public REST API. Hosts the scheduler,
-reconciliation loops, and `riverqueue/river` workers in-process (no
-separate worker / scheduler / reconciler tiers). Reads/writes
-desired state. Designed for HA — multiple replicas share work via
-Postgres advisory locks.
+**`otherix-api`** - the public REST API. Embeds the etcd member and
+hosts the scheduler, reconciliation loops, and the worker job runtime
+in-process (no separate worker / scheduler / reconciler tiers, no
+external DB). Reads/writes desired state through `internal/etcdstore`.
+Designed for HA - replicas self-cluster as a single etcd cluster and
+share work by claiming jobs off the etcd-backed queue.
 
 **Scheduler (in-process)** — picks a node for each new VM and decides
 when to evacuate/rebalance. Reads node capacity, template
-architecture, and labels. Writes nothing user-facing; emits work via
-river jobs.
+architecture, and labels. Writes nothing user-facing; emits work by
+enqueuing jobs on the etcd queue.
 
 **Reconciler (in-process)** — closes the loop between desired state
 (`vms`, `vm_disks`, `vm_nics`, storage pools, …) and observed state
@@ -79,8 +81,9 @@ a bearer token (JWT or `otx_*` API token).
 
 **Deployment:** standalone binaries. The control plane runs on a
 dedicated host or alongside an agent for single-node installations;
-agents install on each KVM/QEMU host alongside `qemu-system-*`. No
-external dependencies beyond PostgreSQL.
+agents install on each KVM/QEMU host alongside `qemu-system-*`. The
+control plane embeds etcd in-process, so it has no external stateful
+dependency to bring up.
 
 ---
 
@@ -89,150 +92,164 @@ external dependencies beyond PostgreSQL.
 ### Desired → Observed (reconciliation)
 
 User issues `PATCH /v1/vms/X { cpu_cores: 4 }` to api-server. The handler:
-1. Updates `vms.cpu_cores`. The `trg_bump_generation` trigger increments `vms.generation` (because `cpu_cores` is whitelisted).
+1. Updates the VM row and increments `vms.generation` in the same etcd `Txn` (because `cpu_cores` is a whitelisted, generation-bumping field). The bump is applied application-side in `internal/etcdstore`, not by a DB trigger.
 2. Returns 200 to the user.
 
-Asynchronously, reconciler observes `vms.generation > vm_runtime.observed_generation` for VM X. It queues a "reconcile VM" river job. A worker:
+Asynchronously, reconciler observes `vms.generation > vm_runtime.observed_generation` for VM X. It enqueues a "reconcile VM" job on the etcd queue. A worker:
 1. Reads desired state, computes the diff vs observed.
 2. Issues an agent RPC ("resize VM X cpu to 4").
 3. Agent applies via QMP, reports back.
 4. Worker updates `vm_runtime.observed_generation = vms.generation`.
 
-If the user changes `description` instead, `generation` does NOT bump (cosmetic-only fields are excluded from the trigger whitelist) and reconciler does no work.
+If the user changes `description` instead, `generation` does NOT bump (cosmetic-only fields are excluded from the bump whitelist) and reconciler does no work.
 
 ### Live migration
 
+Live migration is a planned first-class resource. What exists today is the migration row model, active-migration tracking (`activeMigrationsOnNode`, consumed by node force-delete), and cancellation of active migrations when a node is force-deleted; the create endpoint and the phase-driving worker are not yet implemented. The intended flow:
+
 User issues `POST /v1/vms/X/migrate { target_node: Y }`. The handler:
-1. Inserts a row into `migrations` with `phase='pending'`. The partial unique index `uq_migrations_active_vm` rejects this insert if VM X already has an active migration — DB-level race protection.
+1. Writes the migration row with `phase='pending'` plus a per-VM active-migration guard key, committed together in a single etcd `Txn` whose compare-and-set on the guard's `CreateRevision` rejects a second active migration for VM X - the etcd analogue of the former partial unique index.
 2. Returns 202 with the migration ID.
 
-A river worker drives the migration through `preparing → running → completing → succeeded|failed|cancelled`. The agents on source and target talk QMP `migrate` directly to each other (peer-to-peer); the worker just polls progress and updates `migrations.bytes_transferred`, `progress_percent`, etc.
+A worker then drives the migration through `preparing -> running -> completing -> succeeded|failed|cancelled`. The agents on source and target talk QMP `migrate` directly to each other (peer-to-peer); the worker just polls progress and updates the migration's `bytes_transferred`, `progress_percent`, etc.
 
 ### Audit
 
-Every state-changing API call inserts into `audit_log` from application code (not via DB triggers — the trigger doesn't know the actor's user_id, request_id, IP). Audit rows have NO foreign keys, so they survive the deletion of the entities they reference. The table is RANGE-partitioned by month so old data can be detached/archived independently.
+A dedicated audit-log subsystem is backlog and not yet shipped. The audit
+records that do exist today are written inline alongside the operation that
+produces them: token-redemption consumption rows (`join_token_consumptions`
+and the cluster-join equivalent) are committed in the same etcd `Txn` as the
+cert issuance / node upsert they record, so the audit and its operation
+land together or not at all. There is no partitioned audit table; retention
+of finalized records is handled by the periodic Scheduler sweeps (see
+"Background jobs and maintenance" below), not by detaching monthly partitions.
 
 ---
 
-## Database design — the big picture
+## Store design - the big picture
 
-PostgreSQL 16 is the **only** stateful service. No Redis, no Kafka, no separate queue. River runs job storage on the same DB.
+Embedded etcd is the **only** stateful service. No Postgres, no Redis, no
+Kafka, no separate queue process. The async job queue lives in the same etcd
+keyspace, drained by the in-process worker runtime. There is no SQL and no
+migrations: the store (`internal/etcdstore`) enforces all structure
+application-side over an etcd key-schema, and `internal/store` is a pgx-free
+type layer (row / params / result structs + sentinels) shared by handlers and
+the store.
 
-### Table families
+### Key-schema and resource families
 
-| Family | Tables | Soft-delete? |
+Each resource is a JSON value under a primary key `/otherix/<resource>/<id>`.
+Uniqueness constraints are guard keys (an extra key whose presence blocks a
+conflicting write); lookups by a non-primary attribute go through secondary
+index keys (e.g. `/otherix/index/vm_runtime/node/<node_id>/<vm_id>`). Jobs are
+sequence-keyed under `/otherix/jobs/<seq>`. The resource families:
+
+| Family | Resources | Soft-delete? |
 |---|---|---|
-| Identity | `users`, `api_tokens`, `agent_certs`, `join_tokens` | partial |
-| Infrastructure | `nodes`, `firmwares`, `node_firmwares`, `storage_pools`, `networks` | partial |
-| Templates | `templates`, `node_image_cache` | templates only |
+| Identity | `users`, `api_tokens`, `agent_certs`, `join_tokens`, `refresh_tokens`, `ca_certs` | partial |
+| Infrastructure | `nodes`, `firmwares`, `storage_pools`, `networks` | partial |
+| Templates | `templates` | yes |
 | VM domain (desired) | `vms`, `vm_disks`, `vm_nics`, `snapshots` | yes |
-| VM domain (runtime) | `vm_runtime`, `vm_disk_runtime`, `vm_nic_runtime` | hard delete |
-| Operations | `migrations` (live), `idempotency_keys`, `audit_log` | hard delete |
-| River queue | `river_migration`, `river_job`, `river_leader`, `river_queue`, `river_client`, `river_client_queue` | hard delete |
-
-21 own tables + 6 river tables + 4 audit_log partitions (3 monthly + 1 default).
+| VM domain (runtime) | `vm_runtime` | hard delete |
+| Operations | `migrations` (live), `idempotency_keys`, `tasks` | hard delete |
+| Queue | jobs under `/otherix/jobs/<seq>`, sequence counter `/otherix/seq/jobs` | hard delete |
 
 ### Conventions enforced everywhere
 
-- **PKs:** `uuid primary key default uuid_generate_v7()` — sortable by creation time, no extension required (pure-SQL function lives in the migration).
-- **Timestamps:** always `timestamptz`. Standard triplet `created_at`, `updated_at`, `deleted_at` on soft-deletable tables; `trg_set_updated_at` trigger advances `updated_at` automatically.
-- **Soft delete:** `deleted_at timestamptz`. Application-level cascade (DB FK actions only fire on hard delete). Partial unique indexes use `WHERE deleted_at IS NULL` so values become reusable after soft-delete.
-- **FK ON DELETE:** explicit on every FK. `cascade` for owned children, `restrict` for cross-domain links, `set null` where the reference is advisory.
-- **Resource ownership:** user-owned tables (`vms`, `templates`, `snapshots`) carry `owner_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT`. Infrastructure tables (`nodes`, `firmwares`, `storage_pools`, `networks`) have no owner column — they're administered for the whole installation. Multi-tenancy was removed in 2026-05-03.
+- **IDs:** UUIDv7 - sortable by creation time, generated application-side.
+- **Timestamps:** RFC 3339 UTC. Standard triplet `created_at`, `updated_at`, `deleted_at` on soft-deletable resources; `updated_at` is stamped by the store on each mutation.
+- **Soft delete:** `deleted_at` set on the row. Application-level cascade. Uniqueness guard keys are released on soft-delete so the value (e.g. an email, a node name) becomes reusable immediately.
+- **Atomicity:** multi-key writes (primary row + guards + secondary indexes + any related rows) commit through a single etcd `Txn` with compare-and-set on `ModRevision`/`CreateRevision`. Sweeps that exceed etcd's default 128-op/txn limit are split into chunks by `commitInChunks`.
+- **Resource ownership:** user-owned resources (`vms`, `templates`, `snapshots`) carry `owner_id` referencing a user; deleting a user that still owns resources is refused. Infrastructure resources (`nodes`, `firmwares`, `storage_pools`, `networks`) have no owner - they're administered for the whole installation. Multi-tenancy was removed in 2026-05-03.
 
 ### Reconciler pattern (Kubernetes-style)
 
-Every desired-state table has `generation bigint` bumped via `trg_bump_generation` on a whitelist of fields. The matching runtime table carries `observed_generation`. Reconciler scans for `generation > observed_generation` and converges. Cosmetic-only field changes don't bump `generation` and don't trigger reconciler work.
+Every desired-state resource has a `generation` bumped by the store on a whitelist of fields. The matching runtime resource carries `observed_generation`. Reconciler scans for `generation > observed_generation` and converges. Cosmetic-only field changes don't bump `generation` and don't trigger reconciler work.
 
-`vm_runtime.conditions jsonb` carries Kubernetes-style condition arrays (`{type, status, reason, message, last_transition_time}`) so UI can show rich state without a combinatorial enum explosion.
+`vm_runtime.conditions` carries Kubernetes-style condition arrays (`{type, status, reason, message, last_transition_time}`) so UI can show rich state without a combinatorial enum explosion.
 
-### Key invariants enforced at the DB level
+### Key invariants enforced by the store
 
-- One active live-migration per VM (`uq_migrations_active_vm` partial unique on non-terminal phases).
-- Live-migration source and target are different (`chk_migrations_distinct_nodes`).
-- VM disk source kind is consistent (`chk_vm_disks_template_required`: `template` ↔ non-null `source_template_id`, `blank` ↔ null).
-- Template hard-delete is RESTRICTed by referencing vm_disks (FK action), forcing operators to detach before deleting.
-- Globally unique MAC address among non-deleted NICs.
-- Exactly one default firmware per `(architecture, type)` (partial unique).
-- Exactly one default storage pool per node (partial unique).
-- Network VLAN tag in 1..4094 or NULL (CHECK).
+The store enforces these application-side, each through a guard key compared
+inside the mutating `Txn` (the etcd analogue of a partial unique index or
+CHECK constraint), rather than by the database:
 
-### Audit log specifics
-
-`audit_log` is RANGE-partitioned by `created_at` (monthly). The init migration seeds 3 monthly partitions plus an `audit_log_default` DEFAULT partition. The DEFAULT prevents writes from failing if the auto-partition job (a recurring river job, not yet shipped) hasn't pre-created the next month's partition. No foreign keys — audit must outlive the entities it logs.
+- One active live-migration per VM (per-VM active-migration guard key, released on terminal phase) - planned, with the live-migration create path.
+- Live-migration source and target are different.
+- VM disk source kind is consistent (`template` ↔ non-null `source_template_id`, `blank` ↔ null).
+- Template delete is blocked by referencing vm_disks, forcing operators to detach before deleting.
+- Globally unique MAC address among non-deleted NICs (MAC guard key).
+- Exactly one default firmware per `(architecture, type)` (default-firmware guard key).
+- Exactly one default storage pool per node (default-pool guard key).
+- Network VLAN tag in 1..4094 or NULL (validated at the API edge).
 
 ---
 
-## Migration tooling
+## Structure and schema
 
-`pressly/goose v3` used as a library (not the CLI) - migrations are
-embedded into the `otherix-api` binary via `go:embed` from
-`internal/store/migrate/migrations/` and applied via
-`otherix-api --migrate-action=up|down|status`, wrapped by
-`make migrate-up` / `migrate-down` / `migrate-status`.
+There is no schema and no migration tooling: etcd carries opaque keys and
+values, and the store (`internal/etcdstore`) is the single authority for
+structure. It owns the key-schema described above (primary
+`/otherix/<resource>/<id>` JSON values, uniqueness guard keys, secondary
+indexes, and the `/otherix/jobs/<seq>` queue), and every constraint that a
+relational schema would have expressed as a unique index, CHECK, or FK action
+is instead enforced by a compare-and-set inside the relevant store method's
+`Txn`. There is no goose, no `--migrate-action`, no sqlc, and no `pgx`.
+`internal/store` carries only the row / params / result types and sentinel
+errors shared by handlers and the store.
 
-The init migration `00001_init.sql` carries the full v1 schema with
-`-- +goose Up` / `-- +goose Down` markers. Function bodies wrap
-with `-- +goose StatementBegin` / `StatementEnd`. The file uses
-`-- +goose NO TRANSACTION` because river migration 4's
-`ALTER TYPE ADD VALUE` is referenced by migration 6's function
-(PostgreSQL forbids that within one transaction).
+### Background jobs and maintenance
 
-Subsequent migrations land as new files (`00002_*.sql` or
-`00002_*.go` for Go-bridge migrations). Goose computes deltas;
-`00001_init.sql` is never modified after launch.
+The async queue replaces what was previously an in-database job table. Jobs
+are written under `/otherix/jobs/<seq>` (a monotonic sequence allocated by a
+value-compare CAS loop on `/otherix/seq/jobs`, zero-padded so lexical key
+order matches numeric order). Two in-process components consume them:
 
-### River queue sync
-
-River's own SQL migrations are embedded **verbatim** from upstream
-(`riverqueue/river v0.35.1`) into `00001_init.sql` between
-clearly-marked delimiters. Following that block, an
-`INSERT INTO river_migration (line, version) SELECT 'main', v FROM generate_series(1, 6)`
-records all bundled versions as applied so `rivermigrate.Migrator`
-doesn't try to re-run them.
-
-Subsequent river upgrades ship as goose Go-bridge migrations
-(`00002_river_v6.go` is the current pattern). The
-`TestRiverHasNoPendingMigrations` test verifies the embedded schema
-agrees with the rivermigrate API on every run.
+- **`internal/worker.Dispatcher`** - polls the queue oldest-first, claims a
+  pending job (a CAS that loses cleanly if another replica won), routes it to
+  the handler registered for its `Kind`, and governs the job's queue lifecycle
+  (`pending → running → completed`, or requeue/fail under the kind's attempt
+  budget). A bounded-concurrency pool caps in-flight work. This is the
+  replacement for the former in-process worker pool.
+- **`internal/worker.Scheduler`** - runs registered periodic functions on
+  independent tickers (the replacement for the former periodic-job scheduler).
+  It drives node-health reconciliation, the storage-pool scan trigger, and the
+  retention sweeps. Per-state task retention (7d completed / 30d
+  failed-or-cancelled) and failed-job retention (7d) are swept here;
+  because the default `--max-txn-ops` is 128, retention sweeps commit in chunks
+  below that limit.
 
 ---
 
 ## Testing strategy
 
-Three test tiers, all build-tag gated.
+Two test tiers, the integration tier build-tag gated. Neither needs Docker -
+both embed etcd in-process.
 
 **Unit tests** (`make test`) - plain `go test ./...` with the
 `test_fast_argon` tag swapping OWASP Argon defaults for RFC 9106
-minimums in the test binary. No Docker.
+minimums in the test binary. The `integration`-gated suites are skipped.
 
-**Migration / store / API integration** (`make test-migrations`) -
-runs against a fresh PostgreSQL 16 container started by
-testcontainers-go. One container per `go test` invocation
-(initialised via `TestMain`); all tests share it via unique keys.
-Covers `tests/migrations/`, `internal/store/...`,
-`internal/api/...`, `internal/auth/...`, `internal/agent/...`.
+**Store / API integration** (`make test-etcd`, build tag `-tags=integration`)
+- covers `internal/etcdstore` (the full store surface over an embedded etcd
+member started per test) and `tests/apie2e` (the api-server e2e suite: the
+real chi router over etcdstore + `httptest`, driving auth rotation /
+theft-detection, user + infra CRUD, RBAC, idempotency, and health). Real-agent
+CP↔agent coverage is the Lima smoke (`make local-dev-start`), not a mock tier.
 
-**CP↔agent integration** (`make test-integration`) - exercises the
-control plane against an in-process mock agent through the OpenAPI
-contract. Covers VM lifecycle, console + logs, storage pool scan,
-template + storage-image reconciliation, RBAC and idempotency
-end-to-end.
+Coverage targets for the store suite specifically:
+1. **Guards fire on synthetic violations** - uniqueness guard keys (node name,
+   email, MAC, default firmware / pool) reject conflicting writes; the
+   active-migration guard rejects a second active migration.
+2. **Generation bump behaves** - `updated_at` advances on mutation;
+   `generation` bumps on whitelisted fields, no-ops on cosmetic, handles
+   NULL transitions.
+3. **Atomicity holds** - multi-key writes (row + guards + indexes) land or roll
+   back together; delete projections stay under the 128-op txn budget.
+4. **Queue lifecycle** - claim/complete/retry transitions and at-least-once
+   redelivery resumption behave as specified.
 
-Coverage targets for `tests/migrations/` specifically:
-1. **Constraints fire on synthetic violations** — partial unique
-   indexes, CHECKs, FK actions.
-2. **Triggers behave** — `set_updated_at` advances on UPDATE;
-   `bump_generation` fires on whitelisted fields, no-ops on
-   cosmetic, handles NULL transitions, warns on unknown field
-   names.
-3. **River sync stays in lockstep with upstream** —
-   `rivermigrate.Migrator` dry-run reports zero pending.
-4. **Down→Up is idempotent** — separate isolated container exercises
-   the full goose cycle.
-
-All three tiers require Docker for the integration tiers and run in
-parallel CI jobs.
+Both tiers run in CI without Docker.
 
 ---
 
@@ -364,23 +381,23 @@ duplicate).
 
 ## What's next
 
-The schema, api-server, agent, and CLI are wired end-to-end.
+The store, api-server, agent, and CLI are wired end-to-end.
 Larger upcoming themes:
 
-- **Live migration** — schema lands, agent-side QMP plumbing is the
+- **Live migration** - store shape lands, agent-side QMP plumbing is the
   next concrete deliverable.
-- **VM snapshots** — wired through the schema and reconciliation
+- **VM snapshots** - wired through the store and reconciliation
   framework; CLI / API surface to follow.
-- **Auto-partition job** — recurring river job creating next-month
-  `audit_log` partitions ahead of time.
+- **Audit-log subsystem** - a first-class audit record store with its own
+  retention sweep; backlog.
 - **Cert rotation** — cluster CA, per-replica CP certs, and per-node
   agent certs land via the bootstrap protocol but the rotation
   loops are still backlog.
 - **Observability** — Prometheus metrics, structured logging
   conventions, tracing.
 
-Schema additions deferred until they're actually needed:
-- `node_networks` link table (when bridge homogeneity assumption breaks)
+Store additions deferred until they're actually needed:
+- `node_networks` link resource (when bridge homogeneity assumption breaks)
 - Shared storage pools (NFS)
 - Multi-tenancy (removed 2026-05-03; revisit if a SaaS use case appears)
 - Per-user / per-team resource quotas
@@ -394,9 +411,10 @@ Schema additions deferred until they're actually needed:
 
 ## Pointers
 
-- **Schema source of truth:** `internal/store/migrate/migrations/`
-- **SQL queries (sqlc input):** `internal/store/queries/`
-- **Test harness:** `internal/migrationtest/harness.go`
-- **Local dev stack:** `make local-dev-start` (one-shot Postgres +
-  CP + agent + CLI config); `make dev-up` for just Postgres
-- **Run tests:** `make test-migrations` (Docker required)
+- **Store source of truth:** `internal/etcdstore/`
+- **Shared row / params / result types:** `internal/store/`
+- **Embedded etcd runtime:** `internal/etcd/`
+- **API e2e harness:** `tests/apie2e/harness_test.go`
+- **Local dev stack:** `make local-dev-start` (one-shot api-server with
+  embedded etcd + Lima + agent + CLI config)
+- **Run tests:** `make test-etcd` (no Docker; embeds etcd in-process)
