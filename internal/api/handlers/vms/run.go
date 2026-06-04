@@ -44,18 +44,29 @@ type WorkerStore interface {
 	ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error
 }
 
-// CreateHandler returns the dispatcher handler for vm.create jobs.
-func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger) func(context.Context, []byte) error {
+// defaultStaleGrace is the fallback heartbeat-staleness window used by the
+// create/lifecycle/delete handlers when their staleGrace is unset (<= 0): past
+// it an owning node is treated as terminally dead.
+const defaultStaleGrace = 5 * time.Minute
+
+// CreateHandler returns the dispatcher handler for vm.create jobs. staleGrace is
+// the heartbeat-staleness window past which an owning node is treated as
+// terminally dead (the create then fails fast and terminally rather than burning
+// the retry budget); it defaults to 5 minutes when <= 0.
+func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+	if staleGrace <= 0 {
+		staleGrace = defaultStaleGrace
+	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMCreateArgs
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.create args: %v", err)
 		}
-		return runCreate(ctx, st, exec, log, args)
+		return runCreate(ctx, st, exec, log, args, staleGrace)
 	}
 }
 
-func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs) error {
+func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
@@ -79,9 +90,18 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMPoolMissing), fmt.Errorf("load pool: %v", err))
 	}
-	node, err := st.NodeByID(ctx, args.NodeID)
-	if err != nil {
-		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
+	node, nodeErr := st.NodeByID(ctx, args.NodeID)
+	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
+		// Transient store error: retryable.
+		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
+	}
+	if nodeTerminallyDead(node, nodeErr, staleGrace) {
+		// No agent will ever service a create on a gone/unreachable node; fail
+		// terminally rather than burning the retry budget on a doomed op. This
+		// does NOT project success - the VM was not created, so the task is
+		// failed.
+		return failTerminal(ctx, st, log, "vms.create", taskID, errCodeVMNodeMissing,
+			fmt.Errorf("owning node %s is gone or unreachable; cannot create vm", args.NodeID))
 	}
 	nics, err := resolveCreateNICs(ctx, st, args.VMID)
 	if err != nil {
@@ -159,7 +179,7 @@ func resolveCreateNICs(ctx context.Context, st WorkerStore, vmID uuid.UUID) ([]a
 // terminally dead regardless of status; it defaults to 5 minutes when <= 0.
 func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
 	if staleGrace <= 0 {
-		staleGrace = 5 * time.Minute
+		staleGrace = defaultStaleGrace
 	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMDeleteArgs
@@ -266,17 +286,23 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 // kinds (vm.start / vm.stop / vm.poweroff / vm.reboot). op is the agent-side
 // action segment; desiredPhase is written on success (empty = unchanged, e.g.
 // reboot); runtimePhase is the observed phase projected through.
-func LifecycleHandler(st WorkerStore, exec LifecycleExecutor, log *slog.Logger, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string) func(context.Context, []byte) error {
+// staleGrace is the heartbeat-staleness window past which an owning node is
+// treated as terminally dead (the op then fails fast and terminally rather than
+// burning the retry budget); it defaults to 5 minutes when <= 0.
+func LifecycleHandler(st WorkerStore, exec LifecycleExecutor, log *slog.Logger, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string, staleGrace time.Duration) func(context.Context, []byte) error {
+	if staleGrace <= 0 {
+		staleGrace = defaultStaleGrace
+	}
 	return func(ctx context.Context, raw []byte) error {
 		var args VMStartArgs // every lifecycle Args shares {task_id, vm_id, node_id}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.%s args: %v", op, err)
 		}
-		return runLifecycle(ctx, st, exec, log, args.TaskID, args.VMID, args.NodeID, op, desiredPhase, runtimePhase, failureCode)
+		return runLifecycle(ctx, st, exec, log, args.TaskID, args.VMID, args.NodeID, op, desiredPhase, runtimePhase, failureCode, staleGrace)
 	}
 }
 
-func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string) error {
+func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string, staleGrace time.Duration) error {
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
 	}
@@ -284,9 +310,18 @@ func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, l
 	if err != nil {
 		return failRun(ctx, st, log, "vms."+op, taskID, classifyLoadErr(err, errCodeVMNotFound), fmt.Errorf("load vm: %v", err))
 	}
-	node, err := st.NodeByID(ctx, nodeID)
-	if err != nil {
-		return failRun(ctx, st, log, "vms."+op, taskID, classifyLoadErr(err, errCodeVMNodeMissing), fmt.Errorf("load node: %v", err))
+	node, nodeErr := st.NodeByID(ctx, nodeID)
+	if nodeErr != nil && !errors.Is(nodeErr, store.ErrNotFound) {
+		// Transient store error: retryable.
+		return failRun(ctx, st, log, "vms."+op, taskID, "internal", fmt.Errorf("load node: %v", nodeErr))
+	}
+	if nodeTerminallyDead(node, nodeErr, staleGrace) {
+		// No agent will ever service a lifecycle op on a gone/unreachable node;
+		// fail terminally rather than burning the retry budget on a doomed op.
+		// This does NOT project success - the op did not happen, so projecting
+		// success would lie about runtime state.
+		return failTerminal(ctx, st, log, "vms."+op, taskID, errCodeVMNodeMissing,
+			fmt.Errorf("owning node %s is gone or unreachable; cannot %s vm", nodeID, op))
 	}
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
@@ -359,10 +394,11 @@ func classifyLoadErr(err error, notFoundCode string) string {
 	return "internal"
 }
 
-// failRun writes the terminal failed envelope and returns cause so the
-// dispatcher decides requeue vs fail against the kind's attempt budget. Mirrors
-// the river workers' fail() against the WorkerStore mutator.
-func failRun(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
+// finalizeFailed writes the terminal failed envelope for taskID. It returns nil
+// on a successful write, or a wrapped error if the finalize write itself failed
+// (the caller should retry so the envelope eventually persists). Mirrors the
+// river workers' fail() against the WorkerStore mutator.
+func finalizeFailed(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
 	envelope, marshalErr := marshalTaskError(code, cause.Error())
 	if marshalErr != nil {
 		envelope = []byte(`{"code":"internal","message":"marshal error envelope failed"}`)
@@ -372,5 +408,24 @@ func failRun(ctx context.Context, st WorkerStore, log *slog.Logger, op string, t
 		log.ErrorContext(ctx, op+" finalize-failed write failed", "task_id", taskID, "code", code, "error", err)
 		return fmt.Errorf("finalize failed: %v (cause: %v)", err, cause)
 	}
+	return nil
+}
+
+// failRun writes the failed envelope and returns cause, so the dispatcher
+// RETRIES (the failure may be transient) against the kind's attempt budget. A
+// finalize-write error preempts cause and is returned so the envelope persists.
+func failRun(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
+	if err := finalizeFailed(ctx, st, log, op, taskID, code, cause); err != nil {
+		return err
+	}
 	return cause
+}
+
+// failTerminal writes the failed envelope and returns nil, so the dispatcher
+// COMPLETES (deletes) the job instead of retrying. Use it for conditions that
+// cannot become satisfiable on retry (the owning node is gone/unreachable),
+// avoiding a doomed op burning its whole attempt budget. A finalize-write error
+// is still returned (retry so the envelope persists).
+func failTerminal(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
+	return finalizeFailed(ctx, st, log, op, taskID, code, cause)
 }

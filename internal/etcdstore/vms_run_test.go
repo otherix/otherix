@@ -29,9 +29,12 @@ func TestVMCreateRunHandlerSuccess(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+	// The create handler now treats a nil-heartbeat node as terminally dead;
+	// bump the node fresh so this test exercises the live agent path.
+	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
-	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log)
+	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log, 5*time.Minute)
 	if err := h(ctx, raw); err != nil {
 		t.Fatalf("create handler: %v", err)
 	}
@@ -55,9 +58,12 @@ func TestVMCreateRunHandlerExecutorErrorFinalizesFailed(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+	// Fresh heartbeat so the create reaches the executor (live path); the
+	// executor then errors, finalizing the task failed and returning the cause.
+	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
-	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log)
+	h := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
 	if err := h(ctx, raw); err == nil {
 		t.Fatalf("create handler = nil, want the executor error returned for requeue")
 	}
@@ -75,12 +81,15 @@ func TestVMCreateRunHandlerFailThenSucceedProjects(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, poolID, templateID, taskID := seedCreatedVM(t, s)
+	// Fresh heartbeat so both deliveries take the live agent path rather than the
+	// terminally-dead short-circuit.
+	bumpHeartbeat(t, s, nodeID)
 
 	raw, _ := json.Marshal(vmshandlers.VMCreateArgs{TaskID: taskID, VMID: vmID, TemplateID: templateID, PoolID: poolID, NodeID: nodeID})
 
 	// Delivery 1: the executor errors, failRun finalizes the task to failed (a
 	// retryable terminal), and the dispatcher would requeue the job.
-	h1 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log)
+	h1 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Err: errors.New("agent boom")}, log, 5*time.Minute)
 	if err := h1(ctx, raw); err == nil {
 		t.Fatalf("create handler (delivery 1) = nil, want the executor error for requeue")
 	}
@@ -92,7 +101,7 @@ func TestVMCreateRunHandlerFailThenSucceedProjects(t *testing.T) {
 	// Delivery 2 (job redelivered): the executor now succeeds. A failed task is
 	// retryable, so the projection MUST run: runtime row present, count==1, task
 	// ends success.
-	h2 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log)
+	h2 := vmshandlers.CreateHandler(s, &vmshandlers.StubVMCreateExecutor{Result: vmshandlers.CreateResult{VMID: vmID.String()}}, log, 5*time.Minute)
 	if err := h2(ctx, raw); err != nil {
 		t.Fatalf("create handler (delivery 2) = %v, want nil", err)
 	}
@@ -204,6 +213,10 @@ func TestVMLifecycleRunHandlerStop(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	// A node hosting a running VM has heartbeated recently: bump it fresh so the
+	// lifecycle handler exercises the agent path rather than the terminally-dead
+	// short-circuit.
+	bumpHeartbeat(t, s, nodeID)
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		templateID, store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
@@ -217,7 +230,7 @@ func TestVMLifecycleRunHandlerStop(t *testing.T) {
 	}
 	raw, _ := json.Marshal(vmshandlers.VMStopArgs{TaskID: stopTask.ID, VMID: vmID, NodeID: nodeID})
 	h := vmshandlers.LifecycleHandler(s, &vmshandlers.StubVMLifecycleExecutor{Result: vmshandlers.LifecycleResult{VMID: vmID.String()}},
-		log, "stop", store.VmDesiredPhaseStopped, store.VmPhaseStopped, "vm_stop_failed")
+		log, "stop", store.VmDesiredPhaseStopped, store.VmPhaseStopped, "vm_stop_failed", 5*time.Minute)
 	if err := h(ctx, raw); err != nil {
 		t.Fatalf("stop handler: %v", err)
 	}

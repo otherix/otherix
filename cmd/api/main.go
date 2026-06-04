@@ -454,14 +454,14 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 
 	d.Register("vm.create", workerMaxAttempts,
-		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log))
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 	d.Register("vm.delete", workerMaxAttempts,
 		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 
 	lifecycleExec := vmshandlers.NewAgentVMLifecycleExecutor(agentClient)
 	for _, lk := range vmshandlers.LifecycleKinds() {
 		d.Register(lk.Kind, workerMaxAttempts,
-			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode))
+			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode, cfg.Workers.Heartbeat.GoneGrace))
 	}
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
