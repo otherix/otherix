@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/logger"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -151,6 +152,13 @@ type ClusterJoinConfig struct {
 // override at deploy time.
 type StoragePoolsConfig struct {
 	AllowedPathPrefixes []string `koanf:"allowed_path_prefixes"`
+
+	// DefaultPoolName names the cluster default storage pool that the CP
+	// auto-provisions on boot. A non-empty value turns auto-provisioning
+	// ON (the wiring lives CP-side, elsewhere); the derived pool path is
+	// AllowedPathPrefixes[0] + DefaultPoolName. An EMPTY string opts OUT,
+	// for operators who provision pools manually. Default "default".
+	DefaultPoolName string `koanf:"default_pool_name"`
 }
 
 // CPCertConfig configures the per-replica CP server cert lifecycle.
@@ -648,6 +656,7 @@ func defaultAPIConfig() APIConfig {
 		},
 		StoragePools: StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+			DefaultPoolName:     "default",
 		},
 		Network: NetworkConfig{
 			OverlaySupernet: "10.42.0.0/16",
@@ -684,6 +693,14 @@ func (s StoragePoolsConfig) Validate() error {
 		}
 		if p[len(p)-1] != '/' {
 			return fmt.Errorf("storage_pools.allowed_path_prefixes: %q must end with '/'", p)
+		}
+	}
+	// Empty DefaultPoolName is the documented opt-out and is accepted as
+	// is. A non-empty value must be a syntactically valid pool name so the
+	// derived pool path (AllowedPathPrefixes[0] + DefaultPoolName) is sane.
+	if s.DefaultPoolName != "" {
+		if err := validation.ValidateStoragePoolName(s.DefaultPoolName); err != nil {
+			return fmt.Errorf("storage_pools.default_pool_name: %w", err)
 		}
 	}
 	return nil

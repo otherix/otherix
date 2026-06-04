@@ -161,6 +161,33 @@ placement:
       threshold_percent: 15      # flag when free pool bytes < 15% of capacity
       consecutive_required: 1    # single scan sets pressure (scans are 15 min apart)
 
+# Storage pools: where VM disks and template images live on each node.
+storage_pools:
+  # Filesystem prefixes a pool's `path` may target - defence in depth
+  # against a typo / hostile create pointing at /etc. Each entry must be
+  # absolute and end with '/'. A pool whose path is not under one of
+  # these is rejected at create time.
+  allowed_path_prefixes:
+    - "/opt/otherix/pools/"
+
+  # Cluster default pool name. When non-empty, the control plane
+  # AUTO-PROVISIONS an instance of this pool on every node as it is
+  # promoted to `ready` (path = allowed_path_prefixes[0] + name), so a
+  # freshly joined node is immediately schedulable for `vm create`
+  # without --pool. Seeded first-writer-wins: a value set by an operator
+  # (PUT /v1/cluster/default-pool) or by an earlier boot is never
+  # overwritten by this config.
+  #
+  # Set to "" to OPT OUT of auto-provisioning and manage pools manually
+  # (the pre-existing behaviour: run `pool create` + set the default via
+  # the API per cluster).
+  #
+  # Note: provisioning fires on the pending/unreachable -> ready
+  # promotion, so a node that flaps (unreachable -> ready) re-acquires the
+  # default pool even if an operator deleted it; to keep a ready node out
+  # of default placement, `cordon` it instead.
+  default_pool_name: "default"
+
 workers:
   enabled: true
   max_workers: 10

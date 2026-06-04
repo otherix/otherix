@@ -299,7 +299,7 @@ func fileExists(path string) bool {
 // hooks → CP cert load → agent client → worker runtime → HTTP server. Each
 // step's failure path returns after wrapping the error.
 func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, authSvc *auth.Service, caMaterial auth.ClusterCAResult, log *slog.Logger) error {
-	if err := runBootstrapHooks(ctx, st, caMaterial, cfg.Network, log); err != nil {
+	if err := runBootstrapHooks(ctx, st, caMaterial, cfg.Network, cfg.StoragePools, log); err != nil {
 		return err
 	}
 
@@ -365,7 +365,7 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 // SeedUnderlayMTU (writes the physical underlay MTU first-writer-wins; the
 // overlay inner MTU and otwg0 MTU derive from it). All hooks are idempotent -
 // repeat boots observe existing rows and no-op.
-func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, netCfg config.NetworkConfig, log *slog.Logger) error {
+func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth.ClusterCAResult, netCfg config.NetworkConfig, poolCfg config.StoragePoolsConfig, log *slog.Logger) error {
 	if err := api.BootstrapAdmin(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap admin: %v", err)
 	}
@@ -380,6 +380,19 @@ func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth
 	}
 	if err := st.SeedUnderlayMTU(ctx, netCfg.UnderlayMTU); err != nil {
 		return fmt.Errorf("seed underlay mtu: %v", err)
+	}
+	// SeedDefaultPoolName writes the cluster default pool name first-writer-wins.
+	// An empty DefaultPoolName is the documented opt-out and is seeded as nothing
+	// (the ensurer then no-ops). Idempotent across boots.
+	if err := st.SeedDefaultPoolName(ctx, poolCfg.DefaultPoolName); err != nil {
+		return fmt.Errorf("seed default pool name: %v", err)
+	}
+	// Log the EFFECTIVE default pool name, not the configured one: the seed is
+	// first-writer-wins, so this replica's config value is a no-op against a
+	// pre-existing operator-set or older-boot value. Logging poolCfg.DefaultPoolName
+	// would misreport the cluster default after a no-op seed.
+	if cs, err := st.ClusterSettings(ctx); err == nil && cs.DefaultPoolName != nil {
+		log.InfoContext(ctx, "cluster default pool name in effect", slog.String("default_pool_name", *cs.DefaultPoolName))
 	}
 	// A cluster seeded under an older binary (the floor was 1280 before it was
 	// raised to 1390) can carry an underlay MTU in [1280,1389] that derives a
@@ -490,7 +503,8 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,
 			GoneGrace:      cfg.Workers.Heartbeat.GoneGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
-		}, log))
+		}, log,
+			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log)))
 
 	s.Register("auth.refresh_token_cleanup", time.Hour, false,
 		auth.RefreshTokenCleanupFunc(st, log))
