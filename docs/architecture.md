@@ -314,6 +314,26 @@ who can confirm the VM is genuinely deleted before reaping.
 
 ---
 
+## Operations: delete projection op budget (forward constraint)
+
+`ProjectVMDeleteSuccess` (`internal/etcdstore/vms_project.go`) commits the
+VM soft-delete, its disks, NICs, secondary indexes, the runtime row and its
+by-node index, and the task finalize in a single etcd transaction. etcd's
+default `--max-txn-ops` is 128. The current create model is single-root-disk
++ single-NIC, so a delete is ~17 ops, far under the limit. If multi-disk or
+multi-NIC VMs are introduced (for example by wiring the already-specified
+`vmDisks.create` / `vmNics.create` hotplug-attach endpoints), the attach path
+MUST enforce a per-VM disk+NIC budget that keeps the delete projection under
+128 ops, or `ProjectVMDeleteSuccess` must chunk the delete. Chunking trades
+atomicity for a partial-delete failure mode (orphaned indexes), so a per-VM
+cap at the attach edge is preferred. The regression test
+`TestVMDeleteProjectionStaysUnderTxnBudget`
+(`internal/etcdstore/vms_project_optest_test.go`) guards the current bound:
+it fails if a single VM's delete projection ever exceeds 100 ops without a
+guard.
+
+---
+
 ## Operations: idempotency is at-least-once, not exactly-once
 
 The idempotency middleware buffers a mutating response and flushes it to
