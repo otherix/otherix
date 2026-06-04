@@ -113,14 +113,32 @@ func TestCreateNetworkOverlayRefusesSubFloorUnderlay(t *testing.T) {
 		t.Fatalf("seed sub-floor underlay: %v", err)
 	}
 
+	// Capture the VNI sequence counter before the refused create. The floor
+	// check must run BEFORE allocateVNI -> nextSeq, so a refused create must
+	// leave this counter untouched (no VNI burned from the 24-bit space).
+	vniSeqBefore, _, err := s.c.Get(ctx, networkVNISeqKey())
+	if err != nil {
+		t.Fatalf("read VNI seq before: %v", err)
+	}
+
 	sn := netip.MustParsePrefix("10.50.0.0/24")
-	_, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+	_, err = s.CreateNetwork(ctx, store.CreateNetworkParams{
 		ID: uuid.New(), Name: "ov-subfloor", Type: store.NetworkTypeOverlay,
 		Subnet: &sn, Config: []byte("{}"),
 	})
 	var floorErr *store.UnderlayBelowFloorError
 	if !errors.As(err, &floorErr) {
 		t.Fatalf("CreateNetwork err = %v, want *store.UnderlayBelowFloorError", err)
+	}
+
+	// The refused create must NOT have advanced the VNI sequence counter:
+	// the floor check is hoisted above allocateVNI, so no VNI is burned.
+	vniSeqAfter, _, err := s.c.Get(ctx, networkVNISeqKey())
+	if err != nil {
+		t.Fatalf("read VNI seq after: %v", err)
+	}
+	if got, want := string(vniSeqAfter), string(vniSeqBefore); got != want {
+		t.Errorf("VNI seq counter = %q after refused create, want %q (unchanged); a refused sub-floor overlay create must burn no VNI", got, want)
 	}
 	if floorErr.UnderlayMTU != subFloor {
 		t.Errorf("UnderlayMTU = %d, want %d", floorErr.UnderlayMTU, subFloor)

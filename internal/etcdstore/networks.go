@@ -142,14 +142,11 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 	var ops []clientv3.Op
 
 	if n.Type == store.NetworkTypeOverlay {
-		vni, err := s.allocateVNI(ctx)
-		if err != nil {
-			return store.Network{}, err
-		}
-		n.VNI = &vni
-		n.BridgeName = fmt.Sprintf("otb%d", vni)
-		n.Managed = true
-		n.Egress = store.NetworkEgressNone
+		// Check the underlay-MTU floor BEFORE allocating a VNI: allocateVNI ->
+		// nextSeq durably advances the network_vni counter independent of the
+		// final create txn, so a refused sub-floor create would otherwise burn
+		// one VNI with no reclaim. The floor check reads only the underlay MTU,
+		// which does not depend on the allocated VNI, so it hoists cleanly.
 		underlay, err := s.UnderlayMTU(ctx)
 		if err != nil {
 			return store.Network{}, fmt.Errorf("read underlay mtu: %v", err)
@@ -161,6 +158,14 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 				DerivedOverlayMTU: DerivedOverlayMTU(underlay),
 			}
 		}
+		vni, err := s.allocateVNI(ctx)
+		if err != nil {
+			return store.Network{}, err
+		}
+		n.VNI = &vni
+		n.BridgeName = fmt.Sprintf("otb%d", vni)
+		n.Managed = true
+		n.Egress = store.NetworkEgressNone
 		n.Mtu = underlay - store.OverlayEncapOverhead
 		vg := networkVNIGuard(vni)
 		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vg), "=", 0))
