@@ -247,29 +247,32 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		}}
 	}
 
-	// The whole force cascade routes through commitInChunks: each <=120-op chunk
-	// commits atomically, so a crash leaves a clean PREFIX of cancel/orphan ops.
-	// The node-soft-delete ops are appended LAST, so the node row disappears only
-	// after the cancel + orphan ops, and a retry re-derives the remaining work
-	// (NodeByID at the top returns ErrNotFound once the node row is gone).
 	var (
-		out     store.NodeDeleteOutcome
-		cascade []clientv3.Op
+		out                  store.NodeDeleteOutcome
+		cancelOps, orphanOps []clientv3.Op
 	)
 	if force {
 		reason := fmt.Sprintf("source/target node %s force-deleted by user %s", id, callerID)
-		cancelOps, cancelled, err := cancelMigrationOps(activeMigs, reason)
+		cancelOps, out.MigrationsCancelled, err = cancelMigrationOps(activeMigs, reason)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
-		cascade = append(cascade, cancelOps...)
-		out.MigrationsCancelled = cancelled
-		orphanOps, orphaned, err := s.orphanVMRuntimeOps(ctx, id)
+		orphanOps, out.VMsOrphaned, err = s.orphanVMRuntimeOps(ctx, id)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
-		cascade = append(cascade, orphanOps...)
-		out.VMsOrphaned = orphaned
+	}
+
+	// Load the node's WireGuard fabric record so its purge ops can be ordered
+	// ahead of the node soft-delete (see nodeDeleteCascade). ErrNotFound means
+	// the node never joined the mesh - nothing to purge; any other error aborts.
+	var wgRec *store.AgentWireguard
+	rec, wgErr := s.AgentWireguardByNodeID(ctx, id)
+	switch {
+	case wgErr == nil:
+		wgRec = &rec
+	case !errors.Is(wgErr, store.ErrNotFound):
+		return store.NodeDeleteOutcome{}, fmt.Errorf("load agent_wireguard for node delete: %v", wgErr)
 	}
 
 	now := time.Now().UTC()
@@ -279,26 +282,53 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
-	cascade = append(cascade,
-		clientv3.OpPut(nodeKey(id), string(val)),
-		clientv3.OpDelete(nodeNameGuard(n.Name)),
-	)
-	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
-	// stops appearing in the mesh and its pubkey becomes reusable.
-	wgRec, wgErr := s.AgentWireguardByNodeID(ctx, id)
-	switch {
-	case wgErr == nil:
-		cascade = append(cascade,
-			clientv3.OpDelete(agentWireguardKey(id)),
-			clientv3.OpDelete(agentWireguardPubkeyGuard(wgRec.PublicKey)),
-		)
-	case !errors.Is(wgErr, store.ErrNotFound):
-		return store.NodeDeleteOutcome{}, fmt.Errorf("load agent_wireguard for node delete: %v", wgErr)
-	}
+
+	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, wgRec)
 	if err := s.commitInChunks(ctx, cascade); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
 	return out, nil
+}
+
+// nodeDeleteCascade assembles the ordered force-delete op slice. The whole
+// cascade routes through commitInChunks: each <=120-op chunk commits atomically,
+// so a crash leaves a clean PREFIX of cancel/orphan/wg-purge ops. The
+// node-soft-delete ops (name-guard delete + nodePut) are appended LAST, the
+// nodePut genuinely last, so the node row disappears only after every other op,
+// and a retry re-derives the
+// remaining work (NodeByID at the top returns ErrNotFound once the node row is
+// gone). Every preceding op is an idempotent put/delete, so re-running the whole
+// cascade on retry is safe.
+//
+// Ordering is load-bearing: the WireGuard fabric purge (record + pubkey guard)
+// MUST precede the node-soft-delete. Were it to trail, a chunk boundary falling
+// between the node-delete and the wg-purge plus a crash would soft-delete the
+// node while leaking the agent_wireguard record + pubkey guard, which the retry
+// can never re-run (the gone node short-circuits at NodeByID). There is no
+// backstop reaper for agent_wireguard, so the leaked pubkey guard would later
+// fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
+func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
+	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+4)
+	cascade = append(cascade, cancelOps...)
+	cascade = append(cascade, orphanOps...)
+	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
+	// stops appearing in the mesh and its pubkey becomes reusable - before the
+	// node soft-delete so a retry can re-run it.
+	if wgRec != nil {
+		cascade = append(cascade,
+			clientv3.OpDelete(agentWireguardKey(nodeID)),
+			clientv3.OpDelete(agentWireguardPubkeyGuard(wgRec.PublicKey)),
+		)
+	}
+	// The name-guard delete precedes the nodePut so the nodePut (which flips the
+	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
+	// op: a crash before it leaves the node row present and a retry re-runs the
+	// whole idempotent cascade.
+	cascade = append(cascade,
+		clientv3.OpDelete(nodeNameGuard(nodeName)),
+		clientv3.OpPut(nodeKey(nodeID), nodeVal),
+	)
+	return cascade
 }
 
 // nodeEffective projects a node onto the effective-availability view, computing
