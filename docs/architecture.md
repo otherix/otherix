@@ -314,6 +314,34 @@ who can confirm the VM is genuinely deleted before reaping.
 
 ---
 
+## Operations: idempotency is at-least-once, not exactly-once
+
+The idempotency middleware buffers a mutating response and flushes it to
+the client only after `CompleteIdempotencyKey` commits. This closes the
+duplicate-execution window for a control-plane CRASH between a committed
+side effect and the completion write: the client never sees a 2xx, so its
+retry replays as a first attempt.
+
+It does NOT make mutating requests exactly-once. A handler's side effect
+(for example writing a task or VM row) and the idempotency completion are
+two separate etcd writes, not one transaction. If the side effect commits
+but `CompleteIdempotencyKey` then returns a transient error, the response
+is still flushed and the idempotency row stays `in_flight`; after the
+2-minute lease the row is reclaimable, so a client retry with the same key
+re-runs the handler and can produce a duplicate side effect (a second
+task, a second VM). Treat every mutating endpoint as at-least-once: design
+side effects to tolerate a rare duplicate, or check current state before
+acting on a retry.
+
+True exactly-once requires committing the handler's side effect and the
+idempotency completion in a single etcd transaction. That is a deliberate
+redesign, tracked as backlog, not a band-aid: returning a 5xx when the
+completion write fails would not close the window (it only changes which
+signal the client receives, and a 5xx invites the retry that produces the
+duplicate).
+
+---
+
 ## What's next
 
 The schema, api-server, agent, and CLI are wired end-to-end.
