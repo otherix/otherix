@@ -62,6 +62,11 @@ type FakeFabric struct {
 	// separate FDBAppendCalls / FDBDeleteCalls slices cannot express).
 	FDBOpLog []string
 
+	// FDBOpLogMAC records "append:<mac>" / "delete:<mac>" in the same call order
+	// as FDBOpLog but tagged with the entry's MAC, so a test can assert WHICH MAC
+	// was appended or deleted (FDBOpLog alone cannot distinguish entries).
+	FDBOpLogMAC []string
+
 	// WireGuardExistsResult is returned by WireGuardExists alongside
 	// Errs["WireGuardExists"].
 	WireGuardExistsResult bool
@@ -236,6 +241,7 @@ type FDBCall struct {
 func (f *FakeFabric) FDBAppend(vni uint32, e FDBEntry) error {
 	f.FDBAppendCalls = append(f.FDBAppendCalls, FDBCall{VNI: vni, Entry: e})
 	f.FDBOpLog = append(f.FDBOpLog, "append")
+	f.FDBOpLogMAC = append(f.FDBOpLogMAC, "append:"+e.MAC.String())
 	return f.err("FDBAppend")
 }
 
@@ -243,6 +249,7 @@ func (f *FakeFabric) FDBAppend(vni uint32, e FDBEntry) error {
 func (f *FakeFabric) FDBDelete(vni uint32, e FDBEntry) error {
 	f.FDBDeleteCalls = append(f.FDBDeleteCalls, FDBCall{VNI: vni, Entry: e})
 	f.FDBOpLog = append(f.FDBOpLog, "delete")
+	f.FDBOpLogMAC = append(f.FDBOpLogMAC, "delete:"+e.MAC.String())
 	return f.err("FDBDelete")
 }
 

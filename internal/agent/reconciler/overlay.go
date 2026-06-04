@@ -103,6 +103,10 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 	}
 
 	converged = true
+	// failedPruneMACs collects the MAC of every stale entry whose prune-delete
+	// failed this pass, so the append loop below can skip programming a new dst
+	// for that same MAC (see the dual-homing rationale there).
+	failedPruneMACs := make(map[string]struct{})
 	// Prune BEFORE appending. When a MAC moves VTEPs (re-placement) the (mac,dst)
 	// set-diff is a delete-old + add-new; pruning first guarantees the kernel FDB
 	// never transiently holds both (mac,vtepA) and (mac,vtepB), which under VXLAN
@@ -116,6 +120,7 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 		}
 		if err := r.fabric.FDBDelete(vni, e); err != nil {
 			converged = false
+			failedPruneMACs[e.MAC.String()] = struct{}{}
 			r.log.WarnContext(ctx, "overlay fdb delete (prune) failed",
 				slog.Int("vni", int(vni)), slog.String("mac", e.MAC.String()),
 				slog.String("dst", e.Dst.String()), slog.String("error", err.Error()))
@@ -123,6 +128,15 @@ func (r *Networks) reconcileFDB(ctx context.Context, vni uint32, fdb []heartbeat
 	}
 	for k, e := range desired {
 		if _, ok := currentSet[k]; ok {
+			continue
+		}
+		// If a stale entry for this MAC could not be pruned this pass, skip its
+		// append: under nolearning, programming the new dst while the old one
+		// lingers dual-homes the MAC (duplicate delivery + wrong-node flood). A
+		// one-pass reachability delay is the lesser, recoverable harm; the next
+		// pass retries the delete first. converged is already false, holding the
+		// overlay pending.
+		if _, blocked := failedPruneMACs[e.MAC.String()]; blocked {
 			continue
 		}
 		if err := r.fabric.FDBAppend(vni, e); err != nil {

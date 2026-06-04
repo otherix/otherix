@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
@@ -261,6 +263,62 @@ func TestApplyOverlayMovedMACPrunesBeforeAppending(t *testing.T) {
 	want := []string{"delete", "append"}
 	if len(f.FDBOpLog) != 2 || f.FDBOpLog[0] != want[0] || f.FDBOpLog[1] != want[1] {
 		t.Errorf("FDBOpLog = %v, want %v (prune must precede append for a moved mac)", f.FDBOpLog, want)
+	}
+}
+
+// TestApplyOverlayFDBSkipsAppendWhenPruneDeleteFails is the F1 fail-closed
+// guarantee: a MAC moves vtepA -> vtepB, so the diff is delete (mac,vtepA) +
+// append (mac,vtepB). If the prune-delete transiently FAILS, the append MUST be
+// skipped this pass - otherwise, under nolearning, the kernel FDB transiently
+// holds the MAC on BOTH next-hops (duplicate delivery + wrong-node flood). The
+// next pass retries the delete first; the overlay stays pending meanwhile.
+func TestApplyOverlayFDBSkipsAppendWhenPruneDeleteFails(t *testing.T) {
+	const mac = "52:54:00:00:00:0b"
+	old := netfabric.FDBEntry{MAC: mustMAC(mac), Dst: netip.MustParseAddr("10.42.0.9")}
+	f := readyFabricWithFDB([]netfabric.FDBEntry{old})
+	f.Errs = map[string]error{"FDBDelete": errors.New("delete boom")}
+	rep := driveFDBReport(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: mac, VtepIP: "10.42.0.2"}})
+
+	// The prune-delete was attempted (and failed).
+	if len(f.FDBDeleteCalls) != 1 || f.FDBDeleteCalls[0].Entry.Dst != netip.MustParseAddr("10.42.0.9") {
+		t.Errorf("FDBDeleteCalls = %+v, want one delete of dst 10.42.0.9", f.FDBDeleteCalls)
+	}
+	// The new dst was NOT programmed: appending it while the stale entry lingers
+	// would dual-home the MAC.
+	if len(f.FDBAppendCalls) != 0 {
+		t.Errorf("FDBAppendCalls = %+v, want none (append skipped because prune-delete failed)", f.FDBAppendCalls)
+	}
+	// No append op for this MAC appears in the op log.
+	for _, op := range f.FDBOpLogMAC {
+		if op == "append:"+mac {
+			t.Errorf("FDBOpLogMAC = %v, contains an append for the moved mac despite the failed prune", f.FDBOpLogMAC)
+		}
+	}
+	// The overlay holds pending; the FDB did not converge.
+	if rep.ReconciliationStatus != "pending" {
+		t.Errorf("status = %q, want pending (fdb not converged after failed prune)", rep.ReconciliationStatus)
+	}
+}
+
+// TestApplyOverlayFDBAppendsAfterSuccessfulPrune is the revert-to-confirm twin of
+// the F1 guard: the SAME move, but the prune-delete SUCCEEDS, so the new dst IS
+// programmed - op order delete(mac) THEN append(mac). This proves the append skip
+// is conditional on the delete FAILING, not an unconditional suppression.
+func TestApplyOverlayFDBAppendsAfterSuccessfulPrune(t *testing.T) {
+	const mac = "52:54:00:00:00:0b"
+	old := netfabric.FDBEntry{MAC: mustMAC(mac), Dst: netip.MustParseAddr("10.42.0.9")}
+	f := readyFabricWithFDB([]netfabric.FDBEntry{old})
+	driveFDB(t, f, []heartbeat.DeclaredFDBEntry{{VNI: 1000, MAC: mac, VtepIP: "10.42.0.2"}})
+
+	if len(f.FDBDeleteCalls) != 1 || f.FDBDeleteCalls[0].Entry.Dst != netip.MustParseAddr("10.42.0.9") {
+		t.Errorf("FDBDeleteCalls = %+v, want one delete of dst 10.42.0.9", f.FDBDeleteCalls)
+	}
+	if len(f.FDBAppendCalls) != 1 || f.FDBAppendCalls[0].Entry.Dst != netip.MustParseAddr("10.42.0.2") {
+		t.Errorf("FDBAppendCalls = %+v, want one append of dst 10.42.0.2", f.FDBAppendCalls)
+	}
+	want := []string{"delete:" + mac, "append:" + mac}
+	if diff := cmp.Diff(want, f.FDBOpLogMAC); diff != "" {
+		t.Errorf("FDBOpLogMAC mismatch (-want +got):\n%s", diff)
 	}
 }
 
