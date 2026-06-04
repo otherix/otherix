@@ -25,17 +25,8 @@ import (
 // than adopted, so a name collision never lets RemoveWireGuard later destroy a
 // foreign device (mirrors the EnsureVXLAN / CreateTap type-check discipline).
 func (f *linuxFabric) EnsureWireGuard(cfg WGConfig) error {
-	if cfg.Name == "" {
-		return fmt.Errorf("netfabric: ensure wireguard: empty interface name")
-	}
-	if cfg.MTU < 0 || cfg.MTU > 65535 {
-		return fmt.Errorf("netfabric: ensure wireguard %s: mtu %d out of range [0,65535]", cfg.Name, cfg.MTU)
-	}
-	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 {
-		return fmt.Errorf("netfabric: ensure wireguard %s: listen port %d out of range [0,65535]", cfg.Name, cfg.ListenPort)
-	}
-	if !cfg.Address.IsValid() {
-		return fmt.Errorf("netfabric: ensure wireguard %s: invalid address", cfg.Name)
+	if err := validateWGConfig(cfg); err != nil {
+		return err
 	}
 
 	f.mu.Lock()
@@ -60,7 +51,7 @@ func (f *linuxFabric) EnsureWireGuard(cfg WGConfig) error {
 	if err != nil {
 		return fmt.Errorf("netfabric: ensure wireguard %s: wgctrl: %v", cfg.Name, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	key := cfg.PrivateKey
 	port := cfg.ListenPort
 	if err := c.ConfigureDevice(cfg.Name, wgtypes.Config{PrivateKey: &key, ListenPort: &port}); err != nil {
@@ -81,6 +72,24 @@ func (f *linuxFabric) EnsureWireGuard(cfg WGConfig) error {
 	}
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("netfabric: ensure wireguard %s: set up: %v", cfg.Name, err)
+	}
+	return nil
+}
+
+// validateWGConfig rejects an out-of-range or incomplete WGConfig before any
+// netlink mutation, so EnsureWireGuard fails closed on bad input.
+func validateWGConfig(cfg WGConfig) error {
+	if cfg.Name == "" {
+		return fmt.Errorf("netfabric: ensure wireguard: empty interface name")
+	}
+	if cfg.MTU < 0 || cfg.MTU > 65535 {
+		return fmt.Errorf("netfabric: ensure wireguard %s: mtu %d out of range [0,65535]", cfg.Name, cfg.MTU)
+	}
+	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 {
+		return fmt.Errorf("netfabric: ensure wireguard %s: listen port %d out of range [0,65535]", cfg.Name, cfg.ListenPort)
+	}
+	if !cfg.Address.IsValid() {
+		return fmt.Errorf("netfabric: ensure wireguard %s: invalid address", cfg.Name)
 	}
 	return nil
 }
@@ -156,7 +165,7 @@ func (f *linuxFabric) SetWireGuardPeers(name string, peers []WGPeer) error {
 	if err != nil {
 		return fmt.Errorf("netfabric: set wireguard peers %s: wgctrl: %v", name, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	cfgs := make([]wgtypes.PeerConfig, 0, len(peers))
 	for _, p := range peers {
@@ -189,7 +198,7 @@ func (f *linuxFabric) WireGuardPeers(name string) ([]WGPeer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("netfabric: wireguard peers %s: wgctrl: %v", name, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	dev, err := c.Device(name)
 	if err != nil {
 		return nil, fmt.Errorf("netfabric: wireguard peers %s: %v", name, err)
@@ -221,7 +230,7 @@ func (f *linuxFabric) WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, e
 	if err != nil {
 		return nil, fmt.Errorf("netfabric: wireguard peer handshakes %s: wgctrl: %v", name, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	dev, err := c.Device(name)
 	if err != nil {
 		return nil, fmt.Errorf("netfabric: wireguard peer handshakes %s: %v", name, err)

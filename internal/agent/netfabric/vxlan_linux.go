@@ -47,34 +47,9 @@ func (f *linuxFabric) EnsureVXLAN(cfg VXLANConfig) error {
 
 	name := vxlanName(cfg.VNI)
 	local := net.IP(cfg.Local.Unmap().AsSlice())
-	link, err := netlink.LinkByName(name)
+	link, err := f.ensureVXLANLink(name, cfg, local)
 	if err != nil {
-		var notFound netlink.LinkNotFoundError
-		if !errors.As(err, &notFound) {
-			return fmt.Errorf("netfabric: ensure vxlan %s: %v", name, err)
-		}
-		if link, err = addVXLAN(name, cfg, local); err != nil {
-			return err
-		}
-	} else {
-		vx, ok := link.(*netlink.Vxlan)
-		if !ok {
-			// A link of this name exists but is not a VXLAN. Reusing it would let
-			// a name collision silently adopt a foreign device that RemoveVXLAN
-			// would later destroy (mirrors CreateTap's type-check, review I3).
-			return fmt.Errorf("netfabric: ensure vxlan %s: existing link is type %T, not a vxlan", name, link)
-		}
-		// Immutable VXLAN attributes cannot be changed on a live link; a drift
-		// (the N1b loopback SrcAddr vs the otwg0 rebind, a foreign Port, or
-		// learning flipped on) is repaired by delete-recreate.
-		if vx.VxlanId != int(cfg.VNI) || !vx.SrcAddr.Equal(local) || vx.Port != int(cfg.Port) || vx.Learning {
-			if err := netlink.LinkDel(link); err != nil {
-				return fmt.Errorf("netfabric: ensure vxlan %s: recreate (delete): %v", name, err)
-			}
-			if link, err = addVXLAN(name, cfg, local); err != nil {
-				return err
-			}
-		}
+		return err
 	}
 	if cfg.MTU > 0 {
 		if err := netlink.LinkSetMTU(link, cfg.MTU); err != nil {
@@ -100,6 +75,37 @@ func (f *linuxFabric) EnsureVXLAN(cfg VXLANConfig) error {
 		return fmt.Errorf("netfabric: ensure vxlan %s: set up: %v", name, err)
 	}
 	return nil
+}
+
+// ensureVXLANLink returns the otvx<vni> link, creating it when absent and
+// delete-recreating it when an immutable attribute has drifted. A same-named
+// non-vxlan link is rejected rather than adopted. The caller must hold f.mu.
+func (f *linuxFabric) ensureVXLANLink(name string, cfg VXLANConfig, local net.IP) (netlink.Link, error) {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if !errors.As(err, &notFound) {
+			return nil, fmt.Errorf("netfabric: ensure vxlan %s: %v", name, err)
+		}
+		return addVXLAN(name, cfg, local)
+	}
+	vx, ok := link.(*netlink.Vxlan)
+	if !ok {
+		// A link of this name exists but is not a VXLAN. Reusing it would let
+		// a name collision silently adopt a foreign device that RemoveVXLAN
+		// would later destroy (mirrors CreateTap's type-check, review I3).
+		return nil, fmt.Errorf("netfabric: ensure vxlan %s: existing link is type %T, not a vxlan", name, link)
+	}
+	// Immutable VXLAN attributes cannot be changed on a live link; a drift
+	// (the N1b loopback SrcAddr vs the otwg0 rebind, a foreign Port, or
+	// learning flipped on) is repaired by delete-recreate.
+	if vx.VxlanId != int(cfg.VNI) || !vx.SrcAddr.Equal(local) || vx.Port != int(cfg.Port) || vx.Learning {
+		if err := netlink.LinkDel(link); err != nil {
+			return nil, fmt.Errorf("netfabric: ensure vxlan %s: recreate (delete): %v", name, err)
+		}
+		return addVXLAN(name, cfg, local)
+	}
+	return link, nil
 }
 
 // addVXLAN builds and adds a fresh otvx<vni> VTEP with learning off.
