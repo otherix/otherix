@@ -135,13 +135,23 @@ smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over t
 # ========== Lint ==========
 
 .PHONY: lint fmt vet
-lint: ## Run golangci-lint (local binary if installed, otherwise pinned docker image)
+lint: ## Run golangci-lint for the host platform AND GOOS=linux (a macOS host build excludes *_linux.go, which CI on ubuntu lints; this matches CI)
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 	  echo ">> using local golangci-lint ($$(golangci-lint version 2>/dev/null | head -n1))"; \
-	  golangci-lint run --timeout 5m; \
+	  rc=0; \
+	  for goos in "$$(go env GOHOSTOS)" linux; do \
+	    echo ">> golangci-lint run (GOOS=$$goos)"; \
+	    GOOS=$$goos golangci-lint run --timeout 5m || rc=1; \
+	  done; \
+	  exit $$rc; \
 	else \
 	  echo ">> golangci-lint not found locally, using docker $(GOLANGCI_IMAGE)"; \
-	  docker run --rm -v $(PWD):/app -w /app $(GOLANGCI_IMAGE) golangci-lint run --timeout 5m; \
+	  rc=0; \
+	  for goos in linux "$$(go env GOHOSTOS)"; do \
+	    echo ">> golangci-lint run (GOOS=$$goos) in docker"; \
+	    docker run --rm -e GOOS=$$goos -v $(PWD):/app -w /app $(GOLANGCI_IMAGE) golangci-lint run --timeout 5m || rc=1; \
+	  done; \
+	  exit $$rc; \
 	fi
 
 fmt: ## Format with gofumpt + goimports (installed locally on demand)
