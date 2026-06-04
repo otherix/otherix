@@ -247,18 +247,28 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		}}
 	}
 
-	var out store.NodeDeleteOutcome
+	// The whole force cascade routes through commitInChunks: each <=120-op chunk
+	// commits atomically, so a crash leaves a clean PREFIX of cancel/orphan ops.
+	// The node-soft-delete ops are appended LAST, so the node row disappears only
+	// after the cancel + orphan ops, and a retry re-derives the remaining work
+	// (NodeByID at the top returns ErrNotFound once the node row is gone).
+	var (
+		out     store.NodeDeleteOutcome
+		cascade []clientv3.Op
+	)
 	if force {
 		reason := fmt.Sprintf("source/target node %s force-deleted by user %s", id, callerID)
-		cancelled, err := s.cancelMigrations(ctx, activeMigs, reason)
+		cancelOps, cancelled, err := cancelMigrationOps(activeMigs, reason)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
+		cascade = append(cascade, cancelOps...)
 		out.MigrationsCancelled = cancelled
-		orphaned, err := s.orphanVMRuntimeOnNode(ctx, id)
+		orphanOps, orphaned, err := s.orphanVMRuntimeOps(ctx, id)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
+		cascade = append(cascade, orphanOps...)
 		out.VMsOrphaned = orphaned
 	}
 
@@ -269,24 +279,24 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
-	ops := []clientv3.Op{
+	cascade = append(cascade,
 		clientv3.OpPut(nodeKey(id), string(val)),
 		clientv3.OpDelete(nodeNameGuard(n.Name)),
-	}
-	// Purge the node's WireGuard fabric record + pubkey guard in the same txn so
-	// the dead node stops appearing in the mesh and its pubkey becomes reusable.
+	)
+	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
+	// stops appearing in the mesh and its pubkey becomes reusable.
 	wgRec, wgErr := s.AgentWireguardByNodeID(ctx, id)
 	switch {
 	case wgErr == nil:
-		ops = append(ops,
+		cascade = append(cascade,
 			clientv3.OpDelete(agentWireguardKey(id)),
 			clientv3.OpDelete(agentWireguardPubkeyGuard(wgRec.PublicKey)),
 		)
 	case !errors.Is(wgErr, store.ErrNotFound):
 		return store.NodeDeleteOutcome{}, fmt.Errorf("load agent_wireguard for node delete: %v", wgErr)
 	}
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
-		return store.NodeDeleteOutcome{}, fmt.Errorf("soft-delete node txn: %v", err)
+	if err := s.commitInChunks(ctx, cascade); err != nil {
+		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
 	return out, nil
 }
@@ -400,56 +410,67 @@ func (s *Store) activeMigrationsOnNode(ctx context.Context, nodeID uuid.UUID) ([
 	return active, nil
 }
 
-// cancelMigrations marks each migration cancelled with the audit reason and
-// stamps completed_at, returning the count.
-func (s *Store) cancelMigrations(ctx context.Context, migs []store.Migration, reason string) (int64, error) {
+// cancelMigrationOps builds the put-ops that mark each migration cancelled with
+// the audit reason and stamp completed_at, returning the ops + count. It does
+// not commit - the caller appends the ops to the force-delete cascade so they
+// commit atomically with the rest.
+func cancelMigrationOps(migs []store.Migration, reason string) ([]clientv3.Op, int64, error) {
 	now := time.Now().UTC()
+	ops := make([]clientv3.Op, 0, len(migs))
 	var n int64
 	for _, m := range migs {
 		m.Phase = store.MigrationPhaseCancelled
 		r := reason
 		m.ErrorMessage = &r
 		m.CompletedAt = &now
-		if err := s.c.PutJSON(ctx, migrationKey(m.ID), m); err != nil {
-			return n, err
+		val, err := etcd.Marshal(m)
+		if err != nil {
+			return nil, 0, err
 		}
+		ops = append(ops, clientv3.OpPut(migrationKey(m.ID), string(val)))
 		n++
 	}
-	return n, nil
+	return ops, n, nil
 }
 
-// orphanVMRuntimeOnNode marks every vm_runtime row on the node orphaned, clears
-// current_node_id, and removes the node index entry, returning the count.
-func (s *Store) orphanVMRuntimeOnNode(ctx context.Context, nodeID uuid.UUID) (int64, error) {
+// orphanVMRuntimeOps builds the ops that mark every vm_runtime row on the node
+// orphaned, clear current_node_id, and remove the node index entry, returning
+// the ops + count. It reads each runtime primary inline (a missing row is
+// skipped) but does not commit - the caller appends the ops to the force-delete
+// cascade so they commit atomically with the rest.
+func (s *Store) orphanVMRuntimeOps(ctx context.Context, nodeID uuid.UUID) ([]clientv3.Op, int64, error) {
 	items, err := s.c.Range(ctx, vmRuntimeNodeIndexPrefix(nodeID))
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
+	ops := make([]clientv3.Op, 0, len(items)*2)
 	var n int64
 	for _, kv := range items {
 		id, perr := uuid.Parse(string(kv.Value))
 		if perr != nil {
-			return 0, fmt.Errorf("corrupt vm_runtime node index %q: %v", kv.Key, perr)
+			return nil, 0, fmt.Errorf("corrupt vm_runtime node index %q: %v", kv.Key, perr)
 		}
 		var rt store.VMRuntime
 		found, gerr := s.c.GetJSON(ctx, vmRuntimeKey(id), &rt)
 		if gerr != nil {
-			return 0, gerr
+			return nil, 0, gerr
 		}
 		if !found {
 			continue
 		}
 		rt.Phase = store.VmPhaseOrphaned
 		rt.CurrentNodeID = nil
-		if err := s.c.PutJSON(ctx, vmRuntimeKey(id), rt); err != nil {
-			return 0, err
+		val, merr := etcd.Marshal(rt)
+		if merr != nil {
+			return nil, 0, merr
 		}
-		if _, err := s.c.Delete(ctx, kv.Key); err != nil {
-			return 0, err
-		}
+		ops = append(ops,
+			clientv3.OpPut(vmRuntimeKey(id), string(val)),
+			clientv3.OpDelete(kv.Key),
+		)
 		n++
 	}
-	return n, nil
+	return ops, n, nil
 }
 
 // isTerminalMigration reports whether a migration phase is terminal (matches the
