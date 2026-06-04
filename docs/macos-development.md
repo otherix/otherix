@@ -835,7 +835,7 @@ desired identifier.
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the Iteration 1 agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
 | `task.error.code = template_not_found` | the template row referenced by the create does not exist (deleted or never created); create it with `otherix template create` |
-| `task.error.code = vm_image_unavailable` | the inline image materialization on the chosen pool failed during `vm create` (bad `image_url`, checksum mismatch, or no disk space on the pool); as of B1 `vm create` auto-imports the template image onto a cold pool, so this replaces the old "stage the pool first" step. Check the source URL and pool free space, then retry |
+| `task.error.code = vm_image_unavailable` | the inline image materialization on the chosen pool failed during `vm create` for a non-agent reason (the CP could not project the image row or decode the import result); as of B1 `vm create` auto-imports the template image onto a cold pool, so this replaces the old "stage the pool first" step. Agent-side import failures surface under their own code instead (e.g. `checksum_mismatch`, `download_failed`, or `agent_unreachable`). Read the task error message for the cause, then retry |
 | `task.error.code = node_not_ready` | a fresh `make clean-dev` flipped the node row to pending; rerun `seed-mvp.sh` |
 | `api_error: unauthenticated` from the CLI | `OTHERIX_API_TOKEN` expired (JWTs are 15-min by default); re-login or use a long-lived `otx_*` API token |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; configure via `PUT /v1/cluster/default-pool` or pass `--pool` explicitly |
@@ -933,7 +933,7 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-mvp`.
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
 | `task.error.code = template_not_found` | the template row the create references is missing (deleted or never created); create it with `otherix template create` |
-| `task.error.code = vm_image_unavailable` | `vm create` could not auto-materialise the template image onto the chosen pool (B1 inline import): bad `image_url`, checksum mismatch, or no free disk on the pool. No pre-staging is required anymore; fix the source/space and retry |
+| `task.error.code = vm_image_unavailable` | `vm create` could not auto-materialise the template image onto the chosen pool (B1 inline import) for a non-agent reason (image-row projection or result-decode failure). No pre-staging is required anymore; agent-side import failures appear under their own code (`checksum_mismatch`, `download_failed`, `agent_unreachable`). Read the task error and retry |
 | `task.error.code = node_not_ready` | a fresh `make clean-dev` removed the agent; re-run `make bootstrap-dev` + `make seed-mvp` |
 | `api_error: unauthenticated` from the CLI | stored API token revoked OR cluster CA rotated; re-run `make seed-mvp` to refresh the cluster credential |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; `otherix cluster set-default-pool <name>` or pass `--pool` explicitly |

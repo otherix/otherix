@@ -103,7 +103,8 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer
 		return failTerminal(ctx, st, log, "vms.create", taskID, errCodeVMNodeMissing,
 			fmt.Errorf("owning node %s is gone or unreachable; cannot create vm", args.NodeID))
 	}
-	if err := ensureCreateImage(ctx, st, ensurer, log, taskID, tpl, pool, node); err != nil {
+	tpl, err = ensureCreateImage(ctx, st, ensurer, log, taskID, tpl, pool, node)
+	if err != nil {
 		return err
 	}
 	nics, err := resolveCreateNICs(ctx, st, args.VMID)
@@ -168,15 +169,28 @@ func loadCreateDisk(ctx context.Context, st WorkerStore, log *slog.Logger, taskI
 // failure (bad URL, checksum mismatch, disk full) is RETRYABLE via failRun - the
 // wrapped cause carries the real reason into the task error envelope. On
 // failure the task is finalized failed and the returned error is non-nil (the
-// caller propagates it for requeue); on success it returns nil.
-func ensureCreateImage(ctx context.Context, st WorkerStore, ensurer ImageEnsurer, log *slog.Logger, taskID uuid.UUID, tpl store.Template, pool store.StoragePool, node store.Node) error {
+// caller propagates it for requeue).
+//
+// On success it returns the RELOADED template: EnsureImageOnPool may have
+// back-propagated the agent-computed checksum onto a compute-mode template (the
+// inline import projects it onto the template row in the same transaction), so
+// the caller must use this fresh copy. The copy captured before the import
+// carries an empty checksum, which the agent rejects with invalid_spec /
+// template_not_found - the exact cold-pool failure B1 exists to prevent. On the
+// warm path the reload is a no-op (a present image implies the checksum was
+// already set when it materialised).
+func ensureCreateImage(ctx context.Context, st WorkerStore, ensurer ImageEnsurer, log *slog.Logger, taskID uuid.UUID, tpl store.Template, pool store.StoragePool, node store.Node) (store.Template, error) {
 	log.InfoContext(ctx, "ensuring template image on pool before vm create",
 		slog.String("task_id", taskID.String()), slog.String("template_id", tpl.ID.String()),
 		slog.String("pool_id", pool.ID.String()), slog.String("node_id", node.ID.String()))
 	if err := ensurer.EnsureImageOnPool(ctx, tpl, pool, node); err != nil {
-		return failRun(ctx, st, log, "vms.create", taskID, classifyVMError(err, errCodeVMImageUnavailable), fmt.Errorf("ensure image on pool: %v", err))
+		return store.Template{}, failRun(ctx, st, log, "vms.create", taskID, classifyVMError(err, errCodeVMImageUnavailable), fmt.Errorf("ensure image on pool: %v", err))
 	}
-	return nil
+	fresh, err := st.TemplateByID(ctx, tpl.ID)
+	if err != nil {
+		return store.Template{}, failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMTemplateMissing), fmt.Errorf("reload template after image ensure: %v", err))
+	}
+	return fresh, nil
 }
 
 // resolveCreateNICs loads the VM's vm_nics and resolves each against its

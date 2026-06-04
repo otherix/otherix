@@ -4,7 +4,10 @@
 package vms
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -208,8 +211,13 @@ type createLifecycleWorkerStoreStub struct {
 	node    store.Node
 	disk    store.VMDisk
 	nodeErr error
+	// templateChecksum is the binary checksum TemplateByID reports; nil models a
+	// compute-mode template (empty checksum). A back-prop-modelling ensurer sets
+	// it during EnsureImageOnPool so the reload picks it up.
+	templateChecksum []byte
 
 	finalizedFailed    bool
+	finalizedError     []byte // the error envelope of the last failed finalize
 	projectedCreate    bool
 	projectedLifecycle bool
 }
@@ -221,6 +229,7 @@ func (s *createLifecycleWorkerStoreStub) UpdateTaskRunning(context.Context, uuid
 func (s *createLifecycleWorkerStoreStub) UpdateTaskFinalized(_ context.Context, arg store.UpdateTaskFinalizedParams) error {
 	if arg.Status == store.TaskStatusFailed {
 		s.finalizedFailed = true
+		s.finalizedError = arg.Error
 	}
 	return nil
 }
@@ -256,8 +265,8 @@ func (s *createLifecycleWorkerStoreStub) NetworkByID(context.Context, uuid.UUID)
 	panic("unexpected NetworkByID")
 }
 
-func (s *createLifecycleWorkerStoreStub) TemplateByID(context.Context, uuid.UUID) (store.Template, error) {
-	return store.Template{}, nil
+func (s *createLifecycleWorkerStoreStub) TemplateByID(_ context.Context, id uuid.UUID) (store.Template, error) {
+	return store.Template{ID: id, ImageChecksumSha256: s.templateChecksum}, nil
 }
 
 func (s *createLifecycleWorkerStoreStub) StoragePoolByID(context.Context, uuid.UUID) (store.StoragePool, error) {
@@ -306,16 +315,35 @@ type spyCreateExecutor struct {
 	at    int
 	err   error
 
-	called bool
+	called      bool
+	gotTemplate store.Template // the template the worker handed the executor
 }
 
-func (e *spyCreateExecutor) Execute(context.Context, CreateArgs) (CreateResult, error) {
+func (e *spyCreateExecutor) Execute(_ context.Context, args CreateArgs) (CreateResult, error) {
 	e.called = true
+	e.gotTemplate = args.Template
 	if e.order != nil {
 		*e.order++
 		e.at = *e.order
 	}
 	return CreateResult{}, e.err
+}
+
+// backpropImageEnsurer models the inline-import path that back-propagates the
+// agent-computed checksum onto a compute-mode template: onEnsure runs during
+// EnsureImageOnPool (e.g. to set the store stub's templateChecksum), so a
+// subsequent template reload observes the populated checksum.
+type backpropImageEnsurer struct {
+	called   bool
+	onEnsure func()
+}
+
+func (e *backpropImageEnsurer) EnsureImageOnPool(context.Context, store.Template, store.StoragePool, store.Node) error {
+	e.called = true
+	if e.onEnsure != nil {
+		e.onEnsure()
+	}
+	return nil
 }
 
 // spyLifecycleExecutor records whether the agent lifecycle op was attempted.
@@ -503,6 +531,61 @@ func TestRunCreateEnsurerErrorRetryable(t *testing.T) {
 	}
 	if st.projectedCreate {
 		t.Errorf("ProjectVMCreateSuccess called after ensure failure; a create that did not happen must NOT project success")
+	}
+	// A non-agent ensure failure (disk full at projection, decode error) carries
+	// the fallback code: classifyVMError passes agent envelope codes through, but
+	// a plain error falls through to errCodeVMImageUnavailable.
+	if got := finalizedErrorCode(t, st.finalizedError); got != errCodeVMImageUnavailable {
+		t.Errorf("ensure-failure task error code = %q, want %q", got, errCodeVMImageUnavailable)
+	}
+}
+
+// finalizedErrorCode decodes the {code,message} envelope a failed finalize wrote.
+func finalizedErrorCode(t *testing.T, envelope []byte) string {
+	t.Helper()
+	if len(envelope) == 0 {
+		t.Fatalf("no error envelope recorded")
+	}
+	var e struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(envelope, &e); err != nil {
+		t.Fatalf("decode error envelope %q: %v", envelope, err)
+	}
+	return e.Code
+}
+
+// TestRunCreateReloadsTemplateChecksumAfterEnsure pins the B1 seam fix: a cold
+// create on a compute-mode template (empty checksum) must reload the template
+// AFTER the inline import back-propagates the agent-computed checksum, so the
+// agent create carries the 64-char template_checksum it requires. Without the
+// reload the worker hands the executor the stale empty-checksum template and the
+// agent rejects the create with invalid_spec on the exact cold-pool path B1
+// exists to make seamless.
+func TestRunCreateReloadsTemplateChecksumAfterEnsure(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	templateID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	// templateChecksum starts nil: a compute-mode template the import will fill.
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
+	computed := bytes.Repeat([]byte{0xAB}, 32) // 32 bytes -> 64 hex chars
+	ensurer := &backpropImageEnsurer{onEnsure: func() { st.templateChecksum = computed }}
+	exec := &spyCreateExecutor{}
+
+	err := runCreate(context.Background(), st, exec, ensurer, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID, TemplateID: templateID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil", err)
+	}
+	if !ensurer.called || !exec.called {
+		t.Fatalf("ensurer.called=%v exec.called=%v, want both true", ensurer.called, exec.called)
+	}
+	got := hex.EncodeToString(exec.gotTemplate.ImageChecksumSha256)
+	want := hex.EncodeToString(computed)
+	if got != want {
+		t.Errorf("create executor template checksum = %q, want %q (runCreate must reload the template after the inline import back-propagates the checksum)", got, want)
 	}
 }
 
