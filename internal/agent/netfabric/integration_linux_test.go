@@ -193,6 +193,86 @@ func TestLinuxFabricVXLANSelfHeal(t *testing.T) {
 	})
 }
 
+// TestLinuxFabricVXLANRecoverFromDownAfterEnslave reconstructs the exact crash
+// window the d0f8f15 fix heals: a VTEP enslaved into a bridge but left
+// admin-down (a crash between LinkSetMaster and LinkSetUp). The reconciler is
+// retry-forever, so the next EnsureVXLAN tick must bring the port back up while
+// keeping it enslaved. The partial state is forged out of band with
+// LinkSetDown after a clean ensure.
+func TestLinuxFabricVXLANRecoverFromDownAfterEnslave(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		bringLoopbackUp(t)
+		if err := f.EnsureBridge("otb1000", 1390); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390, Master: "otb1000"}
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN(master) = %v", err)
+		}
+
+		// Forge the partial crash state: enslaved but admin-down.
+		link, err := netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) = %v", err)
+		}
+		if err := netlink.LinkSetDown(link); err != nil {
+			t.Fatalf("LinkSetDown(otvx1000) = %v", err)
+		}
+
+		// The next reconciler tick must self-heal: up again, still enslaved.
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN re-ensure after down = %v", err)
+		}
+		link, err = netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) after re-ensure = %v", err)
+		}
+		if link.Attrs().Flags&net.FlagUp == 0 {
+			t.Errorf("VTEP flags = %v after re-ensure, want admin-up", link.Attrs().Flags)
+		}
+		if link.Attrs().MasterIndex == 0 {
+			t.Errorf("VTEP MasterIndex = 0 after re-ensure, want it still enslaved")
+		}
+	})
+}
+
+// TestLinuxFabricVXLANRecoverFromMTUDrift forges an out-of-band MTU change on a
+// live VTEP and asserts the next EnsureVXLAN reapplies the configured MTU in
+// place (no delete-recreate: MTU is mutable, so SrcAddr/Port/VNI are
+// untouched).
+func TestLinuxFabricVXLANRecoverFromMTUDrift(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		bringLoopbackUp(t)
+		cfg := vxlanLoopbackConfig() // MTU 1390
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN = %v", err)
+		}
+
+		// Drift the MTU out of band.
+		link, err := netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) = %v", err)
+		}
+		if err := netlink.LinkSetMTU(link, 9000); err != nil {
+			t.Fatalf("LinkSetMTU(otvx1000, 9000) = %v", err)
+		}
+
+		// The next tick must correct it back to 1390.
+		if err := f.EnsureVXLAN(cfg); err != nil {
+			t.Fatalf("EnsureVXLAN re-ensure after mtu drift = %v", err)
+		}
+		link, err = netlink.LinkByName("otvx1000")
+		if err != nil {
+			t.Fatalf("LinkByName(otvx1000) after re-ensure = %v", err)
+		}
+		if mtu := link.Attrs().MTU; mtu != 1390 {
+			t.Errorf("MTU = %d after re-ensure, want 1390 (drift corrected in place)", mtu)
+		}
+	})
+}
+
 func TestLinuxFabricVXLANEnslave(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
@@ -481,6 +561,54 @@ func TestLinuxFabricWireGuardLifecycle(t *testing.T) {
 	})
 }
 
+// TestLinuxFabricWireGuardRecoverFromDown forges an admin-down WireGuard link
+// out of band (a crash after LinkAdd/configure but before LinkSetUp) and
+// asserts the next EnsureWireGuard tick brings it back up with the overlay
+// address still present. The reconciler is retry-forever, so a half-built
+// device must self-heal.
+func TestLinuxFabricWireGuardRecoverFromDown(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		cfg := wgTestConfig(t)
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard = %v", err)
+		}
+
+		link, err := netlink.LinkByName(cfg.Name)
+		if err != nil {
+			t.Fatalf("LinkByName(%s) = %v", cfg.Name, err)
+		}
+		if err := netlink.LinkSetDown(link); err != nil {
+			t.Fatalf("LinkSetDown(%s) = %v", cfg.Name, err)
+		}
+
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard re-ensure after down = %v", err)
+		}
+		link, err = netlink.LinkByName(cfg.Name)
+		if err != nil {
+			t.Fatalf("LinkByName(%s) after re-ensure = %v", cfg.Name, err)
+		}
+		if link.Attrs().Flags&net.FlagUp == 0 {
+			t.Errorf("%s flags = %v after re-ensure, want admin-up", cfg.Name, link.Attrs().Flags)
+		}
+
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("AddrList(%s) = %v", cfg.Name, err)
+		}
+		foundAddr := false
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == "10.42.0.1/24" {
+				foundAddr = true
+			}
+		}
+		if !foundAddr {
+			t.Errorf("address 10.42.0.1/24 not found on %s after re-ensure, got %v", cfg.Name, addrs)
+		}
+	})
+}
+
 func TestLinuxFabricWireGuardPeers(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
@@ -711,6 +839,39 @@ func TestLinuxFabricBridgeLifecycle(t *testing.T) {
 		}
 		if exists {
 			t.Fatalf("BridgeExists(%q) = true after remove, want false", name)
+		}
+	})
+}
+
+// TestLinuxFabricBridgeRecoverFromDown forges an admin-down bridge out of band
+// (a crash after LinkAdd but before LinkSetUp) and asserts the next
+// EnsureBridge tick brings it back up. The reconciler is retry-forever, so a
+// half-built bridge must self-heal.
+func TestLinuxFabricBridgeRecoverFromDown(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const name = "ot-br-down0"
+		if err := f.EnsureBridge(name, 1450); err != nil {
+			t.Fatalf("EnsureBridge(%q, 1450) = %v", name, err)
+		}
+
+		link, err := netlink.LinkByName(name)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) = %v", name, err)
+		}
+		if err := netlink.LinkSetDown(link); err != nil {
+			t.Fatalf("LinkSetDown(%q) = %v", name, err)
+		}
+
+		if err := f.EnsureBridge(name, 1450); err != nil {
+			t.Fatalf("EnsureBridge(%q) re-ensure after down = %v", name, err)
+		}
+		link, err = netlink.LinkByName(name)
+		if err != nil {
+			t.Fatalf("LinkByName(%q) after re-ensure = %v", name, err)
+		}
+		if link.Attrs().Flags&net.FlagUp == 0 {
+			t.Errorf("bridge %q flags = %v after re-ensure, want admin-up", name, link.Attrs().Flags)
 		}
 	})
 }
