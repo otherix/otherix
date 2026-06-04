@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -104,7 +105,7 @@ func TestVMDeleteRunHandlerDeadNodeReclaims(t *testing.T) {
 			} else {
 				exec = &panicDeleteExecutor{t: t}
 			}
-			h := vmshandlers.DeleteHandler(s, exec, log)
+			h := vmshandlers.DeleteHandler(s, exec, log, 5*time.Minute)
 			if err := h(ctx, raw); err != nil {
 				t.Fatalf("delete handler = %v, want nil (direct projection)", err)
 			}
@@ -169,6 +170,11 @@ func seedRunningVMWithNic(t *testing.T, s *etcdstore.Store) (vmID, nodeID, netID
 	); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess: %v", err)
 	}
+	// A node hosting a running VM has heartbeated recently. Bump it fresh BEFORE
+	// the test's kill runs: the unreachable kill preserves last_heartbeat_at, so
+	// the node stays non-stale and the agent-attempt branch survives; the gone /
+	// force-deleted kills stay terminal via their own arms regardless.
+	bumpHeartbeat(t, s, nodeID)
 
 	delTask := taskParams(store.TaskStatusPending, nil)
 	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
