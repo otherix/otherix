@@ -183,10 +183,14 @@ OVL1="$(overlay_ip "$NODE1")"; OVL2="$(overlay_ip "$NODE2")"
 pass "CP up (${CP_VERSION}); $NODE1=$OVL1, $NODE2=$OVL2 ready"
 
 # --- step 0: stage a pool + template on node-2 -------------------------
-# seed-mvp only provisions a pool + materialises the template on node-1; a VM
-# pinned to node-2 needs both there too. Idempotent: pool create upserts, and
-# template create re-materialises into a new pool when the template row exists.
-echo "=== step 0: stage pool + template on $NODE2 (seed-mvp leaves it bare) ==="
+# seed-mvp only provisions a pool on node-1; a VM pinned to node-2 needs a pool
+# there too. The template image is NOT pre-staged on node-2: as of B1 (lazy image
+# materialization), vm.create auto-imports the template image inline onto the
+# chosen pool on first create, so the explicit `template create --pool` warm-up
+# that used to live here is no longer a prerequisite. Leaving it out is the point:
+# this smoke now exercises the auto-import path (the node-2 VM lands on a cold
+# $POOL2 and the create task must materialise the image itself).
+echo "=== step 0: stage pool on $NODE2 (image auto-materialises on first create) ==="
 # pool create is not idempotent (errors on a duplicate name); tolerate a pool
 # left behind by a prior run so the smoke is re-runnable.
 if otx pool get "$POOL2" --output json >/dev/null 2>&1; then
@@ -200,17 +204,7 @@ fi
 [[ "$(otx pool get "$POOL2" --output json \
     | jq -r --arg n "$NODE2" '.instances[]? | select(.node==$n) | .reconciliation_status')" == "ready" ]] \
   || fail "pool $POOL2 not ready on $NODE2"
-pass "pool $POOL2 ready on $NODE2"
-arch="$(otx node get "$NODE2" --output json | jq -r '.architecture')"
-img_url="$(otx template get "$TEMPLATE" --output json | jq -r '.image_url')"
-[[ -n "$img_url" && "$img_url" != "null" ]] || fail "could not read image_url for template $TEMPLATE"
-info "materialising $TEMPLATE into $POOL2 on $NODE2 (<= ${VM_WAIT}s)"
-otx template create "$TEMPLATE" \
-  --arch "$arch" --os-family linux --os-variant ubuntu-24.04 \
-  --image-url "$img_url" --pool "$POOL2" \
-  --wait --wait-timeout "${VM_WAIT}s" \
-  || fail "template $TEMPLATE materialise into $POOL2 failed"
-pass "$TEMPLATE materialised into $POOL2 on $NODE2"
+pass "pool $POOL2 ready on $NODE2 (cold; image will auto-materialise on first vm create)"
 
 # --- step 1: overlay + two VMs (one per node) --------------------------
 echo "=== step 1: create overlay + a VM on each node ==="
@@ -237,14 +231,19 @@ UD1="$(mktemp)"; UD2="$(mktemp)"
 gen_userdata "$IP1" "$IP2" yes > "$UD1"   # VM-A pings VM-B and emits the sentinel
 gen_userdata "$IP2" "$IP1" no  > "$UD2"   # VM-B is passive
 
-info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (<= ${VM_WAIT}s each)"
+# VM-A lands on the warm pool-mvp (seed-mvp already materialised the image on
+# node-1), so VM_WAIT covers just the create. VM-B lands on the COLD $POOL2, so
+# its create task also auto-materialises the image inline (B1): budget it for
+# import + create.
+COLD_VM_WAIT=$(( VM_WAIT * 2 ))
+info "creating ${NET}-a on $NODE1 ($IP1, warm pool, <= ${VM_WAIT}s) and ${NET}-b on $NODE2 ($IP2, cold pool, <= ${COLD_VM_WAIT}s incl. inline image import)"
 otx vm create --name "${NET}-a" --node "$NODE1" --network "$NET" --template "$TEMPLATE" \
   --pool "pool-mvp" --vcpus 2 --memory-mb 2048 --cloud-init "$UD1" \
   --wait --wait-timeout "${VM_WAIT}s" \
   || fail "vm create A on $NODE1 did not reach success"
 otx vm create --name "${NET}-b" --node "$NODE2" --network "$NET" --template "$TEMPLATE" \
   --pool "$POOL2" --vcpus 2 --memory-mb 2048 --cloud-init "$UD2" \
-  --wait --wait-timeout "${VM_WAIT}s" \
+  --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create B on $NODE2 did not reach success"
 pass "overlay $NET + both VMs created (one per node)"
 
