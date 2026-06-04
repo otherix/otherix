@@ -299,13 +299,18 @@ func (r *Networks) reconcileDelta(ctx context.Context, d heartbeat.DeclaredNetwo
 	switch {
 	case prev.BridgeName != d.BridgeName:
 		// Bridge rename: tear the old bridge down entirely. The new
-		// bridge (and its NAT, if any) is created fresh below.
-		r.teardownManaged(ctx, d.ID, prev)
+		// bridge (and its NAT, if any) is created fresh below. Ignore a
+		// teardown failure (already logged inside teardownManaged): the id
+		// stays declared, so the next reconcile pass retries the stale
+		// cleanup; a hiccup here must not block materialising the new state.
+		_ = r.teardownManaged(ctx, d.ID, prev)
 	case prev.HasNAT && (!newNAT || prev.Subnet != newSubnet):
 		// Same bridge, but NAT was dropped or its subnet changed: drop
 		// the stale masquerade+gateway. The new NAT state, if any, is
-		// re-asserted with the new subnet/gateway below.
-		r.teardownNAT(ctx, d.ID, prev)
+		// re-asserted with the new subnet/gateway below. Ignore a teardown
+		// failure (already logged inside teardownNAT) for the same reason as
+		// the rename case: the id stays declared and the next pass retries.
+		_ = r.teardownNAT(ctx, d.ID, prev)
 	}
 }
 
@@ -325,7 +330,17 @@ func (r *Networks) removeUndeclared(ctx context.Context, declared map[string]str
 			delete(r.applied, id)
 			continue
 		}
-		r.teardownManaged(ctx, id, a)
+		if err := r.teardownManaged(ctx, id, a); err != nil {
+			// Teardown left host state partially in place (per-step causes
+			// already logged inside teardownManaged). Keep the id in
+			// r.applied so the next reconcile tick retries; do not forget it
+			// yet, or the residual bridge/VTEP/NAT would orphan with no GC.
+			r.log.WarnContext(ctx, "managed network teardown incomplete, will retry next reconcile",
+				slog.String("network_id", id),
+				slog.String("bridge", a.BridgeName),
+			)
+			continue
+		}
 		r.log.InfoContext(ctx, "managed network torn down (CP-side delete reconciled)",
 			slog.String("network_id", id),
 			slog.String("bridge", a.BridgeName),
@@ -336,52 +351,73 @@ func (r *Networks) removeUndeclared(ctx context.Context, declared map[string]str
 
 // teardownManaged removes every host resource a managed network put in
 // place: the NAT masquerade+gateway addr (when it had them) and the
-// bridge itself. Best-effort - each failure is logged and the rest still
-// run, so a partial host state still converges toward fully torn down.
-func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetwork) {
+// bridge itself. Best-effort - it attempts every step even when an earlier
+// one fails, so a partial host state still converges as far as possible.
+// Each failure is logged here (single owner) and the failures are joined
+// into the returned error so the caller can gate forgetting the network on
+// a clean teardown; callers MUST NOT re-log the returned error. Returns nil
+// when every step succeeded. Every step is idempotent (nil on an
+// already-absent resource), so retrying a partially-completed teardown is
+// safe.
+func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetwork) error {
 	if a.Overlay {
+		var errs []error
 		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
 			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
 				slog.String("network_id", id),
 				slog.String("error", err.Error()),
 			)
+			errs = append(errs, err)
 		}
 		if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
 			r.log.WarnContext(ctx, "remove bridge failed during overlay teardown",
 				slog.String("network_id", id),
 				slog.String("error", err.Error()),
 			)
+			errs = append(errs, err)
 		}
-		return
+		return errors.Join(errs...)
 	}
-	r.teardownNAT(ctx, id, a)
+	var errs []error
+	if err := r.teardownNAT(ctx, id, a); err != nil {
+		errs = append(errs, err)
+	}
 	if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
 		r.log.WarnContext(ctx, "remove bridge failed during network teardown",
 			slog.String("network_id", id),
 			slog.String("error", err.Error()),
 		)
+		errs = append(errs, err)
 	}
+	return errors.Join(errs...)
 }
 
 // teardownNAT removes the masquerade rule and gateway address a NAT
-// network installed, leaving the bridge intact. A no-op when the network
-// had no NAT. Best-effort: failures are logged, not propagated.
-func (r *Networks) teardownNAT(ctx context.Context, id string, a appliedNetwork) {
+// network installed, leaving the bridge intact. A no-op (nil) when the
+// network had no NAT. Best-effort: it attempts both steps even when the
+// first fails, logs each failure here (single owner), and joins them into
+// the returned error; callers MUST NOT re-log it. Returns nil when every
+// step succeeded.
+func (r *Networks) teardownNAT(ctx context.Context, id string, a appliedNetwork) error {
 	if !a.HasNAT {
-		return
+		return nil
 	}
+	var errs []error
 	if err := r.fabric.RemoveMasquerade(a.Subnet); err != nil {
 		r.log.WarnContext(ctx, "remove masquerade failed during network teardown",
 			slog.String("network_id", id),
 			slog.String("error", err.Error()),
 		)
+		errs = append(errs, err)
 	}
 	if err := r.fabric.RemoveGatewayAddr(a.BridgeName, a.Gateway); err != nil {
 		r.log.WarnContext(ctx, "remove gateway addr failed during network teardown",
 			slog.String("network_id", id),
 			slog.String("error", err.Error()),
 		)
+		errs = append(errs, err)
 	}
+	return errors.Join(errs...)
 }
 
 // parseSubnetGateway parses the optional Subnet (CIDR) and Gateway (IP)

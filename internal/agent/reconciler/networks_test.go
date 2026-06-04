@@ -285,6 +285,42 @@ func TestReconcile_RemovesManagedBridge(t *testing.T) {
 	}
 }
 
+// TestReconcile_TeardownFailureRetainsAppliedForRetry confirms a managed
+// network whose teardown op fails transiently stays in r.applied so the
+// next reconcile tick retries the removal (no orphaned bridge leak). Once
+// the injected error clears, the next undeclared pass tears it down and
+// forgets it. Revert-to-confirm: with the old unconditional
+// delete(r.applied, id) the first (failed) pass would forget the id, so
+// the "still applied" assertion below fails on the unfixed code.
+func TestReconcile_TeardownFailureRetainsAppliedForRetry(t *testing.T) {
+	fab := &netfabric.FakeFabric{Errs: map[string]error{"RemoveBridge": errors.New("ebusy")}}
+	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{ID: "net-1", Name: "flat", Type: "bridge", Managed: true, Egress: "none", BridgeName: "otbr0", Mtu: 1500},
+		},
+	})
+	rec.reconcile(context.Background())
+	if _, ok := rec.applied["net-1"]; !ok {
+		t.Fatalf("applied[net-1] missing after apply; setup failed")
+	}
+
+	// Undeclare everything; teardown fails (RemoveBridge -> ebusy).
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{})
+	rec.reconcile(context.Background())
+	if _, ok := rec.applied["net-1"]; !ok {
+		t.Fatalf("applied[net-1] forgotten after FAILED teardown; bridge would orphan with no retry")
+	}
+
+	// Clear the error; the next undeclared pass retries and succeeds.
+	fab.Errs = nil
+	rec.reconcile(context.Background())
+	if _, ok := rec.applied["net-1"]; ok {
+		t.Errorf("applied[net-1] still present after successful teardown, want forgotten")
+	}
+}
+
 // TestReconcile_BridgeRenameTearsDownOldBridge confirms re-declaring the
 // SAME network id with a different bridge_name tears the OLD managed
 // bridge down entirely (RemoveBridge(old)) and ensures the new one.
