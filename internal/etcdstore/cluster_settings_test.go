@@ -61,6 +61,75 @@ func TestClusterSettingsSetAndClearDefaultPool(t *testing.T) {
 	}
 }
 
+func TestSeedDefaultPoolName(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("seed on fresh store sets the name", func(t *testing.T) {
+		s, _ := startStore(t)
+		if err := s.SeedDefaultPoolName(ctx, "default"); err != nil {
+			t.Fatalf("SeedDefaultPoolName: %v", err)
+		}
+		got, err := s.ClusterSettings(ctx)
+		if err != nil {
+			t.Fatalf("ClusterSettings: %v", err)
+		}
+		if got.DefaultPoolName == nil || *got.DefaultPoolName != "default" {
+			t.Errorf("DefaultPoolName = %v, want %q", got.DefaultPoolName, "default")
+		}
+	})
+
+	t.Run("second seed with a different name is a no-op", func(t *testing.T) {
+		// Revert-to-confirm: with writeClusterSettings (overwrite) the second
+		// "other" value would win and this assertion would fail.
+		s, _ := startStore(t)
+		if err := s.SeedDefaultPoolName(ctx, "first"); err != nil {
+			t.Fatalf("first seed: %v", err)
+		}
+		if err := s.SeedDefaultPoolName(ctx, "other"); err != nil {
+			t.Fatalf("second seed: %v", err)
+		}
+		got, err := s.ClusterSettings(ctx)
+		if err != nil {
+			t.Fatalf("ClusterSettings: %v", err)
+		}
+		if got.DefaultPoolName == nil || *got.DefaultPoolName != "first" {
+			t.Errorf("DefaultPoolName = %v, want immutable %q", got.DefaultPoolName, "first")
+		}
+	})
+
+	t.Run("empty name is a no-op", func(t *testing.T) {
+		s, _ := startStore(t)
+		if err := s.SeedDefaultPoolName(ctx, ""); err != nil {
+			t.Fatalf("SeedDefaultPoolName(\"\"): %v", err)
+		}
+		got, err := s.ClusterSettings(ctx)
+		if err != nil {
+			t.Fatalf("ClusterSettings: %v", err)
+		}
+		if got.DefaultPoolName != nil {
+			t.Errorf("DefaultPoolName = %v, want nil (operator opted out)", *got.DefaultPoolName)
+		}
+	})
+
+	t.Run("seed does not clobber an operator-set value", func(t *testing.T) {
+		s, _ := startStore(t)
+		manual := "manual"
+		if err := s.SetDefaultPoolName(ctx, &manual); err != nil {
+			t.Fatalf("SetDefaultPoolName: %v", err)
+		}
+		if err := s.SeedDefaultPoolName(ctx, "default"); err != nil {
+			t.Fatalf("SeedDefaultPoolName: %v", err)
+		}
+		got, err := s.ClusterSettings(ctx)
+		if err != nil {
+			t.Fatalf("ClusterSettings: %v", err)
+		}
+		if got.DefaultPoolName == nil || *got.DefaultPoolName != "manual" {
+			t.Errorf("DefaultPoolName = %v, want operator-set %q", got.DefaultPoolName, "manual")
+		}
+	})
+}
+
 func TestSeedVNIRangeFirstWriterWins(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

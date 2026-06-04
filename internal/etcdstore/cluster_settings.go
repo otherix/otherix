@@ -123,6 +123,32 @@ func (s *Store) writeClusterSettings(ctx context.Context, name *string) error {
 	})
 }
 
+// SeedDefaultPoolName writes the cluster-wide default pool name on the singleton
+// first-writer-wins: it sets the name only when none exists, so a re-boot or a
+// second replica observing an existing value (or an operator-set default) no-ops.
+// An empty name is a no-op (the operator opted out of an auto-provisioned default
+// pool). Unlike SetDefaultPoolName (a mutator) this never overwrites an existing
+// value. The write goes through the mod-revision CAS in casClusterSettings, and
+// the inner nil-recheck collapses a same-field race to a clean no-op.
+func (s *Store) SeedDefaultPoolName(ctx context.Context, name string) error {
+	if name == "" {
+		return nil
+	}
+	cur, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if cur.DefaultPoolName != nil {
+		return nil // already set (seed or operator) - immutable from the seed's view
+	}
+	n := name
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		if cs.DefaultPoolName == nil {
+			cs.DefaultPoolName = &n
+		}
+	})
+}
+
 // defaultOverlaySupernet is the cluster overlay supernet used when the operator
 // configured none at bootstrap.
 const defaultOverlaySupernet = "10.42.0.0/16"
