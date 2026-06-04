@@ -154,6 +154,13 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		if err != nil {
 			return store.Network{}, fmt.Errorf("read underlay mtu: %v", err)
 		}
+		if UnderlayMTUBelowFloor(underlay) {
+			return store.Network{}, &store.UnderlayBelowFloorError{
+				UnderlayMTU:       underlay,
+				MinUnderlayMTU:    MinUnderlayMTU,
+				DerivedOverlayMTU: DerivedOverlayMTU(underlay),
+			}
+		}
 		n.Mtu = underlay - store.OverlayEncapOverhead
 		vg := networkVNIGuard(vni)
 		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vg), "=", 0))

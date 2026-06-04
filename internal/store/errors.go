@@ -54,3 +54,17 @@ type ResourceInUseError struct {
 func (e *ResourceInUseError) Error() string {
 	return fmt.Sprintf("resource in use: %v", e.Resources)
 }
+
+// UnderlayBelowFloorError reports that the cluster underlay MTU is below the
+// floor needed to derive a valid (>= 1280) overlay MTU, so an overlay network
+// cannot be created until the operator renumbers the underlay.
+type UnderlayBelowFloorError struct {
+	UnderlayMTU       int32
+	MinUnderlayMTU    int32
+	DerivedOverlayMTU int32
+}
+
+func (e *UnderlayBelowFloorError) Error() string {
+	return fmt.Sprintf("underlay mtu %d is below the floor %d (derived overlay mtu %d < 1280)",
+		e.UnderlayMTU, e.MinUnderlayMTU, e.DerivedOverlayMTU)
+}

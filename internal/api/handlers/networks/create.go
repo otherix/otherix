@@ -109,8 +109,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeCreateNetworkError maps a CreateNetwork failure to its HTTP response:
-// a name-uniqueness or VNI-exhaustion conflict to 409, anything else to 500.
+// a name-uniqueness, VNI-exhaustion, or sub-floor underlay MTU conflict to 409,
+// anything else to 500.
 func (h *Handler) writeCreateNetworkError(w http.ResponseWriter, r *http.Request, err error) {
+	var floorErr *store.UnderlayBelowFloorError
+	if errors.As(err, &floorErr) {
+		response.WriteError(w, r, http.StatusConflict, response.CodeConflict,
+			"overlay networks require an underlay mtu at or above the floor",
+			map[string]any{
+				"underlay_mtu":        floorErr.UnderlayMTU,
+				"min_underlay_mtu":    floorErr.MinUnderlayMTU,
+				"derived_overlay_mtu": floorErr.DerivedOverlayMTU,
+			})
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrNetworkNameExists):
 		response.WriteError(w, r, http.StatusConflict,

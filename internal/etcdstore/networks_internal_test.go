@@ -95,6 +95,67 @@ func TestDeleteNetworkElseBranchPreservesForeignGuard(t *testing.T) {
 	}
 }
 
+// TestCreateNetworkOverlayRefusesSubFloorUnderlay seeds a sub-floor underlay MTU
+// directly on the singleton (bypassing SeedUnderlayMTU, which rejects below-floor
+// values) to model a legacy cluster seeded under the old 1280 floor. Creating a
+// type=overlay network must refuse with *store.UnderlayBelowFloorError rather than
+// stamp a derived overlay MTU below the 1280-byte IPv6 minimum link MTU.
+func TestCreateNetworkOverlayRefusesSubFloorUnderlay(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	// Seed underlay MTU = 1300 directly (sub-floor; SeedUnderlayMTU would reject it).
+	const subFloor int32 = 1300
+	if err := s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		v := subFloor
+		cs.UnderlayMTU = &v
+	}); err != nil {
+		t.Fatalf("seed sub-floor underlay: %v", err)
+	}
+
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	_, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-subfloor", Type: store.NetworkTypeOverlay,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	var floorErr *store.UnderlayBelowFloorError
+	if !errors.As(err, &floorErr) {
+		t.Fatalf("CreateNetwork err = %v, want *store.UnderlayBelowFloorError", err)
+	}
+	if floorErr.UnderlayMTU != subFloor {
+		t.Errorf("UnderlayMTU = %d, want %d", floorErr.UnderlayMTU, subFloor)
+	}
+	if want := subFloor - store.OverlayEncapOverhead; floorErr.DerivedOverlayMTU != want {
+		t.Errorf("DerivedOverlayMTU = %d, want %d", floorErr.DerivedOverlayMTU, want)
+	}
+	if floorErr.MinUnderlayMTU != MinUnderlayMTU {
+		t.Errorf("MinUnderlayMTU = %d, want %d", floorErr.MinUnderlayMTU, MinUnderlayMTU)
+	}
+}
+
+// TestCreateNetworkOverlayAllowsAtFloorUnderlay confirms the guard admits an
+// underlay MTU exactly at the floor (1390), which derives an overlay MTU of 1280
+// (the IPv6 minimum).
+func TestCreateNetworkOverlayAllowsAtFloorUnderlay(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	if err := s.SeedUnderlayMTU(ctx, int(MinUnderlayMTU)); err != nil {
+		t.Fatalf("seed at-floor underlay: %v", err)
+	}
+	sn := netip.MustParsePrefix("10.50.0.0/24")
+	n, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: uuid.New(), Name: "ov-atfloor", Type: store.NetworkTypeOverlay,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork at floor = %v, want success", err)
+	}
+	if want := MinUnderlayMTU - store.OverlayEncapOverhead; n.Mtu != want {
+		t.Errorf("overlay Mtu = %d, want %d", n.Mtu, want)
+	}
+}
+
 // TestDeleteNetworkIgnoresStaleNicIndexWithoutRow reproduces the hard-gone NIC
 // wedge: a per-network vm_nic index entry survives while its NIC row is gone
 // (the hard-gone branch of vmNicDeleteOps can only drop the per-VM index, never

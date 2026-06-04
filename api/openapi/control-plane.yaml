@@ -1682,6 +1682,12 @@ paths:
       summary: Create a cluster-wide network (admin only).
       description: |
         **Required permission:** `network:manage` (admin).
+
+        `409 conflict` covers name collision and overlay VNI exhaustion. It is
+        also returned when creating a `type=overlay` network while the cluster
+        underlay MTU is below the floor (the derived overlay MTU would fall below
+        1280); `details` carries `underlay_mtu`, `min_underlay_mtu`, and
+        `derived_overlay_mtu`.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
