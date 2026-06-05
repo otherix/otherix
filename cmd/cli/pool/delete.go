@@ -55,7 +55,7 @@ stdin is a TTY and --force is absent (non-TTY automation runs through
 without prompt).
 
 Example:
-  otherix pool delete pool-mvp --force
+  otherix pool delete pool-dev --force
   otherix pool delete default --node node-1
   otherix pool delete <pool-uuid>`,
 		Args: cobra.ExactArgs(1),

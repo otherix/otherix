@@ -24,12 +24,12 @@ func TestCreateNetworkParamsBody(t *testing.T) {
 		{
 			name: "minimal sets only required fields",
 			params: CreateNetworkParams{
-				Name:       "net-mvp",
+				Name:       "net-dev",
 				Type:       "bridge",
 				BridgeName: "br0",
 			},
 			want: map[string]any{
-				"name":        "net-mvp",
+				"name":        "net-dev",
 				"type":        "bridge",
 				"bridge_name": "br0",
 			},

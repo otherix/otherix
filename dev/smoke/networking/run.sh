@@ -14,9 +14,9 @@
 #   - delete-blocking (vm_nics) + managed-bridge teardown on delete
 #
 # PREREQUISITES: a seeded dev environment, i.e. run AFTER
-#   make local-dev-start      (or: make run-api-dev + make seed-mvp)
+#   make local-dev-start      (or: make run-api-dev + make seed-dev)
 # so that: the CP is up on http://localhost:8080, the `dev` CLI cluster
-# is configured, node-mvp is `ready`, and a default pool exists. The CP
+# is configured, node-dev is `ready`, and a default pool exists. The CP
 # and agent binaries MUST be built from the current tree (the networks
 # fields + reconciler are N1a-2). This script creates its own networks +
 # VM and cleans them up; it does NOT tear down the dev env.
@@ -87,7 +87,7 @@ command -v jq >/dev/null || fail "jq is required"
 command -v limactl >/dev/null || fail "limactl is required (Lima dev agent)"
 curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
 node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' || true)"
-[[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-mvp"
+[[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-dev"
 pass "CP up, $NODE ready"
 
 # --- step 0: WireGuard fabric (N2c) -----------------------------------

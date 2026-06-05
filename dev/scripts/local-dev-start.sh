@@ -13,7 +13,7 @@
 #    4. lima readiness  — macOS only: verify VM shell responsive + agent binary staged
 #    5. start api-server — background, PID + log in .local/run/ (boots embedded etcd)
 #    6. wait /healthz   — 60s budget
-#    7. seed-mvp        - bootstrap protocol + CLI cluster (no template; VMs are created from an image URL)
+#    7. seed-dev        - bootstrap protocol + CLI cluster (no template; VMs are created from an image URL)
 #                         (the cluster default pool is CP-auto-provisioned)
 #    8. node list       — final sanity check
 #
@@ -113,7 +113,7 @@ make --no-print-directory bootstrap-dev
 # Step 4 closes the "Lima says Started, but not usable" gap. `limactl start`
 # returns once the VM boots, but cloud-init + provisioning (apt install,
 # agent binary stage) run async and can take 30-60s longer on first start.
-# Without this gate, seed-mvp Step 4 (`limactl shell ... otherix-agent
+# Without this gate, seed-dev Step 4 (`limactl shell ... otherix-agent
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
 # landed yet. Linux native skips entirely — bootstrap-dev-linux is
 # synchronous (build + systemd unit install).
@@ -189,8 +189,8 @@ if [ "${ready}" -ne 1 ]; then
 fi
 echo "   ✓ CP reachable at http://localhost:8080"
 
-echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-mvp)"
-make --no-print-directory seed-mvp
+echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-dev)"
+make --no-print-directory seed-dev
 
 echo ">> Step 8/8 — Final sanity (otherix node list)"
 "${REPO_ROOT}/bin/otherix" node list

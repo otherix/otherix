@@ -43,7 +43,7 @@ stdin is a TTY and --force is absent (non-TTY automation runs through
 without prompt).
 
 Example:
-  otherix network delete net-mvp --force
+  otherix network delete net-dev --force
   otherix network delete <network-uuid>`,
 		Args: cobra.ExactArgs(1),
 		RunE: runDelete,

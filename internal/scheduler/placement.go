@@ -823,7 +823,7 @@ func computeUtil(total, effective, need int64, ratio float64) float64 {
 
 // scoreLeastVMCount implements the count-based algorithm: minimum
 // pinned-VM count wins. CountRunningVMsByNode runs once per candidate
-// — fine for fleet sizes anticipated in MVP (< 100 nodes); a future
+// — fine for the anticipated fleet sizes (< 100 nodes); a future
 // revision may batch this into a single query when nodes climb past
 // that range.
 func scoreLeastVMCount(ctx context.Context, q Querier, fits []candidate) ([]scoredCandidate, error) {

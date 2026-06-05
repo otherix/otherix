@@ -14,12 +14,12 @@ import (
 
 const deleteManifest = `apiVersion: otherix/v1
 kind: Network
-metadata: { name: net-mvp }
+metadata: { name: net-dev }
 spec: { type: bridge, bridgeName: br0 }
 ---
 apiVersion: otherix/v1
 kind: StoragePool
-metadata: { name: pool-mvp }
+metadata: { name: pool-dev }
 spec: { path: /opt/p, node: node-1 }
 ---
 apiVersion: otherix/v1
@@ -36,14 +36,14 @@ func TestDeleteReverseOrderResolvesPool(t *testing.T) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/storage-pools/pool-mvp":
-			_, _ = w.Write([]byte(`{"name":"pool-mvp","instances":[{"id":"` + instID + `","name":"pool-mvp","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/storage-pools/pool-dev":
+			_, _ = w.Write([]byte(`{"name":"pool-dev","instances":[{"id":"` + instID + `","name":"pool-dev","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/storage-pools/"+instID:
 			w.WriteHeader(http.StatusNoContent)
 		// DeleteNetwork resolves the name to a UUID via the list endpoint
 		// before issuing the UUID-keyed DELETE.
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/networks":
-			_, _ = w.Write([]byte(`{"data":[{"id":"` + netID + `","name":"net-mvp","type":"bridge","bridge_name":"br0"}],"meta":{"next_cursor":null}}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"` + netID + `","name":"net-dev","type":"bridge","bridge_name":"br0"}],"meta":{"next_cursor":null}}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/networks/"+netID:
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/vms/web-1":
@@ -76,7 +76,7 @@ func TestDeleteDryRunIssuesNoCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run error = %v", err)
 	}
-	if !strings.Contains(stdout, "web-1") || !strings.Contains(stdout, "pool-mvp") {
+	if !strings.Contains(stdout, "web-1") || !strings.Contains(stdout, "pool-dev") {
 		t.Errorf("dry-run plan = %q, want it to list the targets", stdout)
 	}
 }
@@ -88,7 +88,7 @@ func TestDeleteReportsBlockerNonZeroExit(t *testing.T) {
 		// DeleteNetwork resolves the name to a UUID first, then the
 		// UUID-keyed DELETE returns the 409 blocker.
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/networks" {
-			_, _ = w.Write([]byte(`{"data":[{"id":"` + netID + `","name":"net-mvp","type":"bridge","bridge_name":"br0"}],"meta":{"next_cursor":null}}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"` + netID + `","name":"net-dev","type":"bridge","bridge_name":"br0"}],"meta":{"next_cursor":null}}`))
 			return
 		}
 		if r.Method == http.MethodDelete && r.URL.Path == "/v1/networks/"+netID {
@@ -97,7 +97,7 @@ func TestDeleteReportsBlockerNonZeroExit(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"name":"pool-mvp","instances":[{"id":"` + uuid.NewString() + `","name":"pool-mvp","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
+			_, _ = w.Write([]byte(`{"name":"pool-dev","instances":[{"id":"` + uuid.NewString() + `","name":"pool-dev","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
 			return
 		}
 		if r.URL.Path == "/v1/vms/web-1" {
@@ -140,15 +140,15 @@ func TestDeleteEmptyManifestErrors(t *testing.T) {
 func TestDeletePoolNoInstanceOnNodeFailsClosed(t *testing.T) {
 	const poolOnlyManifest = `apiVersion: otherix/v1
 kind: StoragePool
-metadata: { name: pool-mvp }
+metadata: { name: pool-dev }
 spec: { path: /opt/p, node: node-9 }
 `
 	var deleteHit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// The manifest targets node-9, but the only instance is on node-1.
-		if r.Method == http.MethodGet && r.URL.Path == "/v1/storage-pools/pool-mvp" {
-			_, _ = w.Write([]byte(`{"name":"pool-mvp","instances":[{"id":"` + uuid.NewString() + `","name":"pool-mvp","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/storage-pools/pool-dev" {
+			_, _ = w.Write([]byte(`{"name":"pool-dev","instances":[{"id":"` + uuid.NewString() + `","name":"pool-dev","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
 			return
 		}
 		if r.Method == http.MethodDelete {

@@ -100,7 +100,7 @@ curl http://localhost:8080/healthz
 
 ./bin/otherix node list
 # NAME      ARCHITECTURE  STATUS  CORDONED  AGE
-# node-mvp  <arch>        ready   no        20s
+# node-dev  <arch>        ready   no        20s
 ```
 
 Browse the API in a browser:
@@ -117,7 +117,7 @@ agent runs inside a [Lima](https://lima-vm.io) VM (the agent itself
 is Linux-only, the control plane runs natively on macOS). See
 [docs/macos-development.md](docs/macos-development.md) for the macOS
 workflow and rationale. Lower-level targets
-(`bootstrap-dev` / `run-api-dev` / `seed-mvp` / `deploy-dev` /
+(`bootstrap-dev` / `run-api-dev` / `seed-dev` / `deploy-dev` /
 `clean-dev`) are documented below.
 
 ## Linux dev environment
@@ -126,7 +126,7 @@ The agent runs natively on Linux as a per-user systemd unit. The
 control plane runs from the same host and embeds its own etcd member,
 so there are no dev dependencies to bring up first. Cert material
 reaches the agent through the join-token bootstrap protocol, not manual
-cert generation — `make seed-mvp` orchestrates the full flow end-to-end.
+cert generation — `make seed-dev` orchestrates the full flow end-to-end.
 
 ```bash
 # 1. Stage the agent: build, install user systemd unit at
@@ -146,7 +146,7 @@ make run-api-dev
 #    bootstrap material, starts the agent, waits for the node row to
 #    appear, seeds the default pool. VMs are created directly from
 #    an image URL (otherix vm create --image-url ... --arch ...).
-make seed-mvp
+make seed-dev
 
 # 4. Verify the node is reachable (heartbeat is the canonical proof).
 ./bin/otherix node list

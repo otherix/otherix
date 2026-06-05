@@ -32,18 +32,18 @@ func TestPoolDelete_Happy(t *testing.T) {
 		if r.Method != http.MethodDelete {
 			t.Errorf("method = %s, want DELETE", r.Method)
 		}
-		if r.URL.Path != "/v1/storage-pools/pool-mvp" {
-			t.Errorf("path = %s, want /v1/storage-pools/pool-mvp", r.URL.Path)
+		if r.URL.Path != "/v1/storage-pools/pool-dev" {
+			t.Errorf("path = %s, want /v1/storage-pools/pool-dev", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
-	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-mvp", "--force"})
+	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-dev", "--force"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(stdout, "pool pool-mvp deleted") {
+	if !strings.Contains(stdout, "pool pool-dev deleted") {
 		t.Errorf("stdout missing success message: %q", stdout)
 	}
 }
@@ -74,14 +74,14 @@ func TestPoolDelete_BlockedTextOutput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-mvp", "--force"})
+	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-dev", "--force"})
 	if err == nil {
 		t.Fatalf("expected error for blocked delete")
 	}
 	if !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("err missing 'blocked': %v", err)
 	}
-	if !strings.Contains(stdout, "cannot delete pool pool-mvp") {
+	if !strings.Contains(stdout, "cannot delete pool pool-dev") {
 		t.Errorf("stdout missing header: %q", stdout)
 	}
 	if !strings.Contains(stdout, "vm_disks: 3") {
@@ -98,7 +98,7 @@ func TestPoolDelete_BlockedJSONOutput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-mvp", "--force", "--output", "json"})
+	stdout, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-dev", "--force", "--output", "json"})
 	if err == nil {
 		t.Fatalf("expected error for blocked delete")
 	}
@@ -281,7 +281,7 @@ func TestPoolDelete_NoForceOnPipedStdin(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-mvp"})
+	_, _, err := runPoolCmd(t, srv.URL, []string{"delete", "pool-dev"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

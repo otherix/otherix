@@ -14,10 +14,10 @@ import (
 
 func TestNetworkGetOutputYAML(t *testing.T) {
 	id := uuid.NewString()
-	obj := `{"id":"` + id + `","name":"net-mvp","type":"bridge","bridge_name":"br0","managed":false,"egress":"none","mtu":1500}`
+	obj := `{"id":"` + id + `","name":"net-dev","type":"bridge","bridge_name":"br0","managed":false,"egress":"none","mtu":1500}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// `get net-mvp` resolves the name via the list route, then fetches by id.
+		// `get net-dev` resolves the name via the list route, then fetches by id.
 		if r.URL.Path == "/v1/networks" {
 			_, _ = w.Write([]byte(`{"data":[` + obj + `],"meta":{"next_cursor":null}}`))
 			return
@@ -26,11 +26,11 @@ func TestNetworkGetOutputYAML(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	stdout, _, err := runNetworkCmd(t, srv.URL, []string{"get", "net-mvp", "-o", "yaml"})
+	stdout, _, err := runNetworkCmd(t, srv.URL, []string{"get", "net-dev", "-o", "yaml"})
 	if err != nil {
 		t.Fatalf("get -o yaml error = %v", err)
 	}
-	for _, want := range []string{"apiVersion: otherix/v1", "kind: Network", "name: net-mvp", "bridgeName: br0"} {
+	for _, want := range []string{"apiVersion: otherix/v1", "kind: Network", "name: net-dev", "bridgeName: br0"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("yaml output missing %q:\n%s", want, stdout)
 		}

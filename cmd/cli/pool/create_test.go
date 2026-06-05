@@ -97,24 +97,24 @@ func TestPoolCreate_Happy(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body["name"] != "pool-mvp" {
-			t.Errorf("name = %v, want pool-mvp", body["name"])
+		if body["name"] != "pool-dev" {
+			t.Errorf("name = %v, want pool-dev", body["name"])
 		}
-		if body["node"] != "node-mvp" {
-			t.Errorf("node = %v, want node-mvp", body["node"])
+		if body["node"] != "node-dev" {
+			t.Errorf("node = %v, want node-dev", body["node"])
 		}
 		if body["type"] != "local_dir" {
 			t.Errorf("type = %v, want local_dir (default)", body["type"])
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write(poolJSON("pool-mvp", "node-mvp"))
+		_, _ = w.Write(poolJSON("pool-dev", "node-dev"))
 	}))
 	defer srv.Close()
 
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
-		"--node", "node-mvp",
+		"create", "pool-dev",
+		"--node", "node-dev",
 		"--path", "/opt/otherix/pools/default",
 	})
 	if err != nil {
@@ -123,7 +123,7 @@ func TestPoolCreate_Happy(t *testing.T) {
 	if posts != 1 {
 		t.Errorf("posts = %d, want 1", posts)
 	}
-	if !strings.Contains(stdout, "pool pool-mvp created on node node-mvp") {
+	if !strings.Contains(stdout, "pool pool-dev created on node node-dev") {
 		t.Errorf("stdout missing creation message: %q", stdout)
 	}
 }
@@ -140,13 +140,13 @@ func TestPoolCreate_ExplicitType(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write(poolJSON("pool-mvp", "node-mvp"))
+		_, _ = w.Write(poolJSON("pool-dev", "node-dev"))
 	}))
 	defer srv.Close()
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
-		"--node", "node-mvp",
+		"create", "pool-dev",
+		"--node", "node-dev",
 		"--type", "local_dir",
 		"--path", "/opt/otherix/pools/default",
 	})
@@ -163,7 +163,7 @@ func TestPoolCreate_MissingNode(t *testing.T) {
 	defer srv.Close()
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
+		"create", "pool-dev",
 		"--path", "/opt/otherix/pools/default",
 	})
 	if err == nil {
@@ -182,8 +182,8 @@ func TestPoolCreate_MissingPath(t *testing.T) {
 	defer srv.Close()
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
-		"--node", "node-mvp",
+		"create", "pool-dev",
+		"--node", "node-dev",
 	})
 	if err == nil {
 		t.Fatalf("expected error for missing --path")
@@ -203,8 +203,8 @@ func TestPoolCreate_409Conflict(t *testing.T) {
 	defer srv.Close()
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
-		"--node", "node-mvp",
+		"create", "pool-dev",
+		"--node", "node-dev",
 		"--path", "/opt/otherix/pools/default",
 	})
 	if err == nil {
@@ -213,7 +213,7 @@ func TestPoolCreate_409Conflict(t *testing.T) {
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("err = %v, want mention of already exists", err)
 	}
-	if !strings.Contains(err.Error(), "pool-mvp") {
+	if !strings.Contains(err.Error(), "pool-dev") {
 		t.Errorf("err = %v, want mention of pool name", err)
 	}
 }
@@ -228,7 +228,7 @@ func TestPoolCreate_404NodeMissing(t *testing.T) {
 	defer srv.Close()
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
+		"create", "pool-dev",
 		"--node", "missing",
 		"--path", "/opt/otherix/pools/default",
 	})
@@ -245,13 +245,13 @@ func TestPoolCreate_OutputJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write(poolJSON("pool-mvp", "node-mvp"))
+		_, _ = w.Write(poolJSON("pool-dev", "node-dev"))
 	}))
 	defer srv.Close()
 
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
-		"--node", "node-mvp",
+		"create", "pool-dev",
+		"--node", "node-dev",
 		"--path", "/opt/otherix/pools/default",
 		"--output", "json",
 	})
@@ -262,8 +262,8 @@ func TestPoolCreate_OutputJSON(t *testing.T) {
 	if jerr := json.Unmarshal([]byte(stdout), &obj); jerr != nil {
 		t.Fatalf("json decode: %v\nstdout=%q", jerr, stdout)
 	}
-	if obj["name"] != "pool-mvp" {
-		t.Errorf("name = %v, want pool-mvp", obj["name"])
+	if obj["name"] != "pool-dev" {
+		t.Errorf("name = %v, want pool-dev", obj["name"])
 	}
 }
 
@@ -272,13 +272,13 @@ func TestPoolCreate_ShowIDs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write(poolJSON("pool-mvp", "node-mvp"))
+		_, _ = w.Write(poolJSON("pool-dev", "node-dev"))
 	}))
 	defer srv.Close()
 
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{
-		"create", "pool-mvp",
-		"--node", "node-mvp",
+		"create", "pool-dev",
+		"--node", "node-dev",
 		"--path", "/opt/otherix/pools/default",
 		"--show-ids",
 	})

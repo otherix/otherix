@@ -54,7 +54,7 @@ func TestOverlayNetworkCreateAllocatesVNI(t *testing.T) {
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
 
 	body := map[string]any{
-		"name":   "ov-mvp-" + uuid.NewString()[:8],
+		"name":   "ov-dev-" + uuid.NewString()[:8],
 		"type":   "overlay",
 		"subnet": "10.50.0.0/24",
 	}

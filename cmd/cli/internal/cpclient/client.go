@@ -7,7 +7,7 @@
 // stay thin.
 //
 // **Wire-shape note:** the wire types here mirror the actual
-// internal/api/handlers/vms shape (MVP simplified), NOT the richer
+// internal/api/handlers/vms shape (simplified), NOT the richer
 // design declared in api/openapi/control-plane.yaml. Reconciliation
 // deferred to a future iteration; the package doc on
 // internal/api/handlers/vms documents the truth on the server side.

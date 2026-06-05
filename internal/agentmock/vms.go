@@ -30,7 +30,7 @@ func syntheticImageSHA(imageURL string) string {
 // Decoding into this struct rather than agentapi.VMSpec is
 // intentional: the richer VMSpec is a future design target; the wire
 // on the test bench today is the simplified set. Drift is documented
-// in the mvp-direct-qemu-agent sketch.
+// in the direct-qemu-agent sketch.
 type vmCreateRequestBody struct {
 	UUID     string `json:"uuid"`
 	Name     string `json:"name"`

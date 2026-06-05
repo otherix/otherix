@@ -115,7 +115,7 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 
 // resolveNodeForVM walks vm_disks → storage_pools → nodes to find the
 // node currently owning this vm's storage. Prefers vms.pinned_node_id
-// when set (the create handler always pins for MVP); falls back to
+// when set (the create handler always pins); falls back to
 // the pool's node otherwise. Returns errVMNoNode when neither path
 // yields a node.
 func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.VM) (uuid.UUID, error) {

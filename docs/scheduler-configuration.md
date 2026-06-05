@@ -176,8 +176,8 @@ When to disable:
 Independent of the capacity / overcommit knobs above, the scheduler
 honours pressure conditions surfaced under `placement.pressure.*`.
 Pressure detection excludes stressed nodes (or pools, for disk
-pressure) from placement — a hard constraint, no operator override
-in MVP. Three pressure types land together with Sub-iteration B:
+pressure) from placement — a hard constraint, no operator override.
+Three pressure types land together with Sub-iteration B:
 
 - **memory** — per-node, heartbeat-driven. Free memory below
   threshold. OOM-kill risk.

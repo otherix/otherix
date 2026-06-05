@@ -56,13 +56,13 @@ func writeManifest(t *testing.T, body string) string {
 
 const createManifest = `apiVersion: otherix/v1
 kind: Network
-metadata: { name: net-mvp }
+metadata: { name: net-dev }
 spec: { type: bridge, bridgeName: br0 }
 ---
 apiVersion: otherix/v1
 kind: VM
 metadata: { name: web-1 }
-spec: { imageURL: https://x/u.qcow2, arch: arm64, network: net-mvp }
+spec: { imageURL: https://x/u.qcow2, arch: arm64, network: net-dev }
 `
 
 func TestCreateFanOutOrder(t *testing.T) {
@@ -73,7 +73,7 @@ func TestCreateFanOutOrder(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/networks":
 			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"net-mvp","type":"bridge","bridge_name":"br0"}`))
+			_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"net-dev","type":"bridge","bridge_name":"br0"}`))
 		case "/v1/vms":
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"task_id":"` + uuid.NewString() + `","status":"pending","links":{"self":"/v1/tasks/x"}}`))
@@ -105,8 +105,8 @@ func TestCreateDryRunIssuesNoCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run error = %v", err)
 	}
-	if !bytes.Contains([]byte(stdout), []byte("net-mvp")) || !bytes.Contains([]byte(stdout), []byte("web-1")) {
-		t.Errorf("dry-run plan = %q, want it to list net-mvp and web-1", stdout)
+	if !bytes.Contains([]byte(stdout), []byte("net-dev")) || !bytes.Contains([]byte(stdout), []byte("web-1")) {
+		t.Errorf("dry-run plan = %q, want it to list net-dev and web-1", stdout)
 	}
 }
 
@@ -165,8 +165,8 @@ func TestCreateStdinDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create -f - error = %v", err)
 	}
-	if !strings.Contains(stdout, "net-mvp") || !strings.Contains(stdout, "web-1") {
-		t.Errorf("stdin plan = %q, want net-mvp and web-1", stdout)
+	if !strings.Contains(stdout, "net-dev") || !strings.Contains(stdout, "web-1") {
+		t.Errorf("stdin plan = %q, want net-dev and web-1", stdout)
 	}
 }
 
@@ -175,15 +175,15 @@ func TestCreateMultipleFilesOrderedDryRun(t *testing.T) {
 		t.Errorf("dry-run must not call HTTP")
 	}))
 	defer srv.Close()
-	netFile := writeManifest(t, "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: net-mvp }\nspec: { type: bridge, bridgeName: br0 }\n")
-	vmFile := writeManifest(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: web-1 }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, network: net-mvp }\n")
+	netFile := writeManifest(t, "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: net-dev }\nspec: { type: bridge, bridgeName: br0 }\n")
+	vmFile := writeManifest(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: web-1 }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, network: net-dev }\n")
 	// Pass VM file FIRST to prove ordering comes from BuildCreatePlan, not file order.
 	stdout, _, err := runRootStdin(t, srv.URL, "", "create", "-f", vmFile, "-f", netFile, "--dry-run")
 	if err != nil {
 		t.Fatalf("create -f -f error = %v", err)
 	}
 	// Network must appear before VM in the dry-run plan regardless of -f order.
-	ni := strings.Index(stdout, "net-mvp")
+	ni := strings.Index(stdout, "net-dev")
 	vi := strings.Index(stdout, "web-1")
 	if ni < 0 || vi < 0 || ni > vi {
 		t.Errorf("plan order wrong (network must precede VM):\n%s", stdout)

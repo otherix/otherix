@@ -241,11 +241,11 @@ func TestCreatePool_HappyPath(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body["node"] != "node-mvp" {
-			t.Errorf("node = %v, want node-mvp", body["node"])
+		if body["node"] != "node-dev" {
+			t.Errorf("node = %v, want node-dev", body["node"])
 		}
-		if body["name"] != "pool-mvp" {
-			t.Errorf("name = %v, want pool-mvp", body["name"])
+		if body["name"] != "pool-dev" {
+			t.Errorf("name = %v, want pool-dev", body["name"])
 		}
 		if body["type"] != "local_dir" {
 			t.Errorf("type = %v, want local_dir", body["type"])
@@ -260,8 +260,8 @@ func TestCreatePool_HappyPath(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":                 poolID,
-			"node":               "node-mvp",
-			"name":               "pool-mvp",
+			"node":               "node-dev",
+			"name":               "pool-dev",
 			"type":               "local_dir",
 			"path":               "/opt/otherix/pools/default",
 			"is_cluster_default": false,
@@ -274,19 +274,19 @@ func TestCreatePool_HappyPath(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	got, err := c.CreatePool(context.Background(), cpclient.CreatePoolRequest{
-		Node: "node-mvp",
-		Name: "pool-mvp",
+		Node: "node-dev",
+		Name: "pool-dev",
 		Type: "local_dir",
 		Path: "/opt/otherix/pools/default",
 	})
 	if err != nil {
 		t.Fatalf("CreatePool: %v", err)
 	}
-	if got.Name != "pool-mvp" {
-		t.Errorf("Name = %s, want pool-mvp", got.Name)
+	if got.Name != "pool-dev" {
+		t.Errorf("Name = %s, want pool-dev", got.Name)
 	}
-	if got.Node != "node-mvp" {
-		t.Errorf("Node = %s, want node-mvp", got.Node)
+	if got.Node != "node-dev" {
+		t.Errorf("Node = %s, want node-dev", got.Node)
 	}
 }
 
@@ -334,7 +334,7 @@ func TestCreatePool_409ReturnsSentinel(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	_, err := c.CreatePool(context.Background(), cpclient.CreatePoolRequest{
-		Node: "node-mvp", Name: "pool-mvp", Type: "local_dir", Path: "/opt/otherix/pools/default",
+		Node: "node-dev", Name: "pool-dev", Type: "local_dir", Path: "/opt/otherix/pools/default",
 	})
 	if !errors.Is(err, cpclient.ErrPoolExists) {
 		t.Fatalf("err = %v, want errors.Is(err, ErrPoolExists)", err)
@@ -374,7 +374,7 @@ func TestCreatePool_400Validation(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	_, err := c.CreatePool(context.Background(), cpclient.CreatePoolRequest{
-		Node: "node-mvp", Name: "p", Type: "local_dir",
+		Node: "node-dev", Name: "p", Type: "local_dir",
 	})
 	var apiErr *cpclient.APIError
 	if !errors.As(err, &apiErr) {
@@ -391,15 +391,15 @@ func TestDeletePool_HappyByName(t *testing.T) {
 		if r.Method != http.MethodDelete {
 			t.Errorf("method = %s, want DELETE", r.Method)
 		}
-		if r.URL.Path != "/v1/storage-pools/pool-mvp" {
-			t.Errorf("path = %s, want /v1/storage-pools/pool-mvp", r.URL.Path)
+		if r.URL.Path != "/v1/storage-pools/pool-dev" {
+			t.Errorf("path = %s, want /v1/storage-pools/pool-dev", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	if err := c.DeletePool(context.Background(), "pool-mvp"); err != nil {
+	if err := c.DeletePool(context.Background(), "pool-dev"); err != nil {
 		t.Fatalf("DeletePool: %v", err)
 	}
 }
@@ -431,7 +431,7 @@ func TestDeletePool_BlockedByVMDisksOnly(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	err := c.DeletePool(context.Background(), "pool-mvp")
+	err := c.DeletePool(context.Background(), "pool-dev")
 	var blocked *cpclient.ErrPoolBlocked
 	if !errors.As(err, &blocked) {
 		t.Fatalf("err = %v, want *ErrPoolBlocked", err)

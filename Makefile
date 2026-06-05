@@ -231,7 +231,7 @@ LIMA_VM_1   := otherix-dev-1
 LIMA_VM_2   := otherix-dev-2
 LIMA_VM     := $(LIMA_VM_1)
 
-.PHONY: bootstrap-dev deploy-dev clean-dev seed-mvp \
+.PHONY: bootstrap-dev deploy-dev clean-dev seed-dev \
         bootstrap-dev-linux deploy-dev-linux clean-dev-linux \
         bootstrap-dev-macos deploy-dev-macos clean-dev-macos \
         install-agent-systemd-user \
@@ -239,7 +239,7 @@ LIMA_VM     := $(LIMA_VM_1)
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
 
-bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise with 'make seed-mvp')
+bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise with 'make seed-dev')
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) bootstrap-dev-linux ;; \
 	  Darwin) $(MAKE) bootstrap-dev-macos ;; \
@@ -260,12 +260,12 @@ clean-dev: ## Tear down dev environment (per OS)
 	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
 	esac
 
-# seed-mvp orchestrates the join-token bootstrap end-to-end:
+# seed-dev orchestrates the join-token bootstrap end-to-end:
 # mints token, provisions bootstrap.env + token to agent host, starts agent,
 # waits for cert-material commit, seeds the default pool; VMs are created from an image URL via
 # CLI. Run AFTER `make bootstrap-dev` + `make run-api-dev`.
-seed-mvp: build-cli ## Run the join-token bootstrap + MVP seed (requires CP running + bootstrap-dev staged)
-	@bash dev/scripts/seed-mvp.sh
+seed-dev: build-cli ## Run the join-token bootstrap + cluster seed (requires CP running + bootstrap-dev staged)
+	@bash dev/scripts/seed-dev.sh
 
 # local-dev-start / local-dev-stop wrap the full dev stack lifecycle (api-server
 # with embedded etcd + Lima VM + agent + CLI cluster config) into two commands.
@@ -281,11 +281,11 @@ local-dev-stop: ## Stop everything + etcd-reset (DESTRUCTIVE - wipes the embedde
 
 # ----- Linux -----
 
-# Stage user-mode systemd unit + binary. seed-mvp.sh starts the unit
+# Stage user-mode systemd unit + binary. seed-dev.sh starts the unit
 # after provisioning bootstrap material (token + bootstrap.env);
 # auto-start would race with the provisioning.
 bootstrap-dev-linux: build-agent install-agent-systemd-user
-	@echo ">> bootstrap-dev-linux done; agent staged. Finalise with 'make seed-mvp' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-linux done; agent staged. Finalise with 'make seed-dev' after 'make run-api-dev'"
 
 deploy-dev-linux: build-agent
 	@cp $(BIN_DIR)/otherix-agent $(HOME)/.local/bin/otherix-agent
@@ -319,10 +319,10 @@ clean-dev-linux:
 
 # ----- macOS (Lima) -----
 
-# Stage Lima VM + agent binary + config. Agent NOT started — seed-mvp.sh
+# Stage Lima VM + agent binary + config. Agent NOT started — seed-dev.sh
 # provisions bootstrap material and starts it.
 bootstrap-dev-macos: lima-ensure copy-config-lima build-agent-lima copy-agent-lima
-	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise with 'make seed-mvp' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise with 'make seed-dev' after 'make run-api-dev'"
 
 deploy-dev-macos: build-agent-lima copy-agent-lima restart-agent-lima
 	@echo ">> deploy-dev-macos done"

@@ -12,7 +12,7 @@ import (
 )
 
 func TestProjectNetworkRoundTrips(t *testing.T) {
-	n := cpclient.Network{Name: "net-mvp", Type: "bridge", BridgeName: "br0"}
+	n := cpclient.Network{Name: "net-dev", Type: "bridge", BridgeName: "br0"}
 	out, err := manifest.ProjectNetwork(n)
 	if err != nil {
 		t.Fatalf("ProjectNetwork() error = %v", err)
@@ -34,7 +34,7 @@ func TestProjectNetworkRoundTrips(t *testing.T) {
 
 func TestProjectNetworkRoundTripsMTUAndVLAN(t *testing.T) {
 	vlan := 42
-	n := cpclient.Network{Name: "net-mvp", Type: "bridge", BridgeName: "br0", MTU: 9000, VlanTag: &vlan}
+	n := cpclient.Network{Name: "net-dev", Type: "bridge", BridgeName: "br0", MTU: 9000, VlanTag: &vlan}
 	out, err := manifest.ProjectNetwork(n)
 	if err != nil {
 		t.Fatalf("ProjectNetwork() error = %v", err)

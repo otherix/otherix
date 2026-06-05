@@ -23,8 +23,8 @@ import (
 )
 
 // Status enumerates the lifecycle states of an agent-managed VM. The
-// MVP omits start/stop/pause/resume - running ↔ stopped transitions
-// arrive in a post-MVP iteration. `paused` lands ahead of the rest
+// The agent currently omits start/stop/pause/resume - running ↔ stopped
+// transitions arrive in a later iteration. `paused` lands ahead of the rest
 // of the runtime-state surface because Pre-L1 wiring needs it before
 // L1 introduces pause/resume handlers.
 type Status string
@@ -77,7 +77,7 @@ type VM struct {
 }
 
 // CreateSpec is the wire-shape of a POST /v1/vms body, post-validation.
-// Architecture is derived from the agent's host arch (MVP supports
+// Architecture is derived from the agent's host arch (currently supports
 // same-arch only).
 //
 // UUID is optional: when uuid.Nil the manager generates a fresh id

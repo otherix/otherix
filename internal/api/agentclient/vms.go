@@ -19,7 +19,7 @@ import (
 
 // VMCreateRequest is the body the CP-side worker sends to the agent's
 // POST /v1/vms. Wire-shape matches the Iteration 1 agent's actual
-// surface (internal/agent/handlers/vms/create.go) — minimal MVP fields
+// surface (internal/agent/handlers/vms/create.go) — minimal fields
 // only. The richer agent.yaml VMSpec is a future design target;
 // reconciliation between the two is tracked as future iteration work.
 //
