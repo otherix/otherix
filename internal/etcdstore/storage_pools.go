@@ -276,6 +276,9 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 			clientv3.OpPut(storagePoolKey(id), string(val)),
 			clientv3.OpDelete(storagePoolNodeNameGuard(p.NodeID, p.Name)),
 			clientv3.OpDelete(storagePoolNameIndexKey(p.Name, id)),
+			// Drop the agent-reported image inventory (observed state); a
+			// deleted pool reports none, and nothing reads it post-delete.
+			clientv3.OpDelete(poolImageInventoryKey(id)),
 		).
 		Commit(); err != nil {
 		return fmt.Errorf("delete storage pool txn: %v", err)

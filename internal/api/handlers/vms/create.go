@@ -185,10 +185,16 @@ func decodeCreateBody(w http.ResponseWriter, r *http.Request) (vmCreateRequest, 
 	return req, true
 }
 
+// maxDiskGiB caps the requested root-disk size; it matches the vm_disks
+// size_gib ceiling in the OpenAPI contract and keeps the int32 disk column and
+// the bytes multiplication (disk_gib * 1 GiB) free of overflow.
+const maxDiskGiB = 65536
+
 // validateCreateImageFields enforces the image-source field invariants:
 // image_url present, arch in {amd64, arm64}, image_sha256 (when set) a 64-char
-// lowercase hex digest, format (when set) in {qcow2, raw}, and disk_gib >= 0.
-// Returns false (after writing the 400 envelope) on the first violation.
+// lowercase hex digest, format (when set) in {qcow2, raw}, and disk_gib in
+// [0, maxDiskGiB]. Returns false (after writing the 400 envelope) on the first
+// violation.
 func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
 	if req.ImageURL == "" {
 		response.WriteError(w, r, http.StatusBadRequest,
@@ -214,9 +220,11 @@ func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCre
 			return false
 		}
 	}
-	if req.DiskGiB < 0 {
+	// 0 means "default to the image virtual size"; the upper bound matches the
+	// vm_disks size_gib ceiling and keeps the int32 column / bytes math safe.
+	if req.DiskGiB < 0 || req.DiskGiB > maxDiskGiB {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "disk_gib must be >= 0", nil)
+			response.CodeValidationFailed, "disk_gib must be between 0 and 65536", nil)
 		return false
 	}
 	return true
@@ -489,14 +497,10 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				CreatedBy:    &createdBy,
 			},
 			Job: VMCreateArgs{
-				TaskID:      taskID,
-				VMID:        vmID,
-				PoolID:      decision.PoolInstance.ID,
-				NodeID:      decision.Node.ID,
-				ImageURL:    in.Req.ImageURL,
-				ImageSHA256: in.Req.ImageSHA256,
-				Format:      string(format),
-				DiskGiB:     in.Req.DiskGiB,
+				TaskID: taskID,
+				VMID:   vmID,
+				PoolID: decision.PoolInstance.ID,
+				NodeID: decision.Node.ID,
 			},
 		}, nil
 	})

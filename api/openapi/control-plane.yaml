@@ -3312,14 +3312,14 @@ components:
         - download_failed
         - vm_not_found
         - vm_name_in_use
-        - template_not_accessible
         - pool_not_writable
         - node_not_ready
         - node_not_found
         - vm_create_failed
         - vm_delete_failed
         - qemu_spawn_failed
-        - vm_image_unavailable
+        - image_unavailable
+        - disk_too_small
         - pool_not_found
         - pool_not_on_node
         - no_eligible_nodes

@@ -22,7 +22,7 @@ var allPermissions = []auth.Permission{
 
 	auth.PermNetworkRead, auth.PermNetworkManage,
 	auth.PermStoragePoolRead, auth.PermStoragePoolManage, auth.PermStoragePoolScan,
-	auth.PermFirmwareRead, auth.PermFirmwareManage, auth.PermImageCacheRead,
+	auth.PermFirmwareRead, auth.PermFirmwareManage,
 
 	auth.PermNodeRead, auth.PermNodeMaintenance, auth.PermNodeManage,
 

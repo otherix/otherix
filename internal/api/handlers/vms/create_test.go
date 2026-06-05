@@ -312,12 +312,17 @@ func TestScheduleAndEnqueueCreateBuildsImageWrites(t *testing.T) {
 	if captured.Disk.SizeGib != 20 {
 		t.Errorf("Disk.SizeGib = %d, want 20", captured.Disk.SizeGib)
 	}
+	// The image source lives on the VM/disk rows (asserted above); the job
+	// payload carries only the row identifiers.
+	if captured.VM.ImageURL != "https://example.test/img.qcow2" {
+		t.Errorf("VM.ImageURL = %q, want https://example.test/img.qcow2", captured.VM.ImageURL)
+	}
+	if captured.VM.ImageFormat != "qcow2" {
+		t.Errorf("VM.ImageFormat = %q, want qcow2", captured.VM.ImageFormat)
+	}
 	job, ok := captured.Job.(VMCreateArgs)
 	if !ok {
 		t.Fatalf("Job is %T, want VMCreateArgs", captured.Job)
-	}
-	if job.ImageURL != "https://example.test/img.qcow2" || job.ImageSHA256 != sha || job.Format != "qcow2" || job.DiskGiB != 20 {
-		t.Errorf("VMCreateArgs image fields = %+v, want url/sha/qcow2/20", job)
 	}
 	if job.NodeID != nodeID || job.PoolID != poolID {
 		t.Errorf("VMCreateArgs placement = node %s pool %s, want %s / %s", job.NodeID, job.PoolID, nodeID, poolID)

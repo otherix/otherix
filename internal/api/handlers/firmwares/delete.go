@@ -16,9 +16,9 @@ import (
 
 // Delete implements DELETE /v1/firmwares/{id}. Required permission:
 // firmware:manage (admin only). Refuses with 409 + blocking_resources
-// when the firmware is still referenced by active vms or templates;
-// firmwares have no force-delete counterpart by design (the operator
-// must remove or migrate the dependent resources first).
+// when the firmware is still referenced by active vms; firmwares have no
+// force-delete counterpart by design (the operator must remove or migrate
+// the dependent VMs first).
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

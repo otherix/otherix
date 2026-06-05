@@ -63,8 +63,8 @@ import (
 
 // Store is the storage surface the vms handlers depend on: the VM
 // domain methods, the identifier-resolution contract (resolver.Querier)
-// used to resolve vm / template / pool / node parameters, the node and
-// template reads used by the view projectors, the placement-locked
+// used to resolve vm / pool / node parameters, the node and firmware
+// reads used by the view projectors and firmware resolution, the placement-locked
 // CreateScheduledVM seam, and the EnqueueTask producer
 // seam used by delete and the async lifecycle ops. *etcdstore.Store
 // satisfies it; depending on the interface rather than the concrete

@@ -39,8 +39,9 @@ There is no template entity and no per-image authorization. A VM is
 created directly from an image URL the caller supplies; the agent
 fetches it. `vm:create` is the single gate for materializing an image
 into a VM — any role that holds `vm:create` may create a VM from any
-image URL. Read access to the node-side image cache is gated separately
-by `image_cache:read`.
+image URL. The node-side image cache is observed state surfaced on the
+storage-pool view (gated by `storage_pool:read`); it has no dedicated
+permission.
 
 ## Permissions matrix
 
@@ -125,11 +126,10 @@ is tightly coupled to host filesystem layout and capacity planning.
 |--------------------|-------|----------|-----------|--------|
 | `firmware:read`    | yes   | yes      | yes       | yes    |
 | `firmware:manage`  | yes   | —        | —         | —      |
-| `image_cache:read` | yes   | yes      | yes       | yes    |
 
-`image_cache:read` covers the node-side image-cache read endpoints
-(per-pool image cache state). It is the only image-related permission:
-materializing an image into a VM is gated by `vm:create` (no per-image
+There is no image-cache permission: the per-pool image cache is observed
+state surfaced on the storage-pool view (gated by `storage_pool:read`).
+Materializing an image into a VM is gated by `vm:create` (no per-image
 authorization), and there is no template entity.
 
 ### Nodes

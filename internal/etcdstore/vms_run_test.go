@@ -27,12 +27,12 @@ import (
 var _ vmshandlers.WorkerStore = (*etcdstore.Store)(nil)
 
 // createArgs builds the image-model vm.create job-args for the worker seam: the
-// VM is self-describing (image url + format), so the worker no longer threads a
-// template id.
+// VM is self-describing (the worker reads the image source off the VM/disk rows),
+// so the job payload carries only the row identifiers - no template id, no image
+// fields.
 func createArgs(taskID, vmID, poolID, nodeID uuid.UUID) vmshandlers.VMCreateArgs {
 	return vmshandlers.VMCreateArgs{
 		TaskID: taskID, VMID: vmID, PoolID: poolID, NodeID: nodeID,
-		ImageURL: "https://example.test/img.qcow2", Format: "qcow2",
 	}
 }
 

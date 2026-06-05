@@ -48,13 +48,11 @@ const (
 	PermStoragePoolManage Permission = "storage_pool:manage"
 	PermStoragePoolScan   Permission = "storage_pool:scan"
 
-	// Firmwares and node-side image cache. `image_cache:read` gates the
-	// node-side image-cache read endpoints; there is no per-image
-	// authorization for VM creation (vm:create is the single gate — any
-	// image URL the caller supplies is fetched by the agent).
+	// Firmwares. There is no per-image authorization for VM creation
+	// (vm:create is the single gate — any image URL the caller supplies is
+	// fetched by the agent into the node-owned cache).
 	PermFirmwareRead   Permission = "firmware:read"
 	PermFirmwareManage Permission = "firmware:manage"
-	PermImageCacheRead Permission = "image_cache:read"
 
 	// Nodes. The (full) vs (summary) response variant is response-shape,
 	// not a separate permission — every role holds `node:read`.
@@ -138,7 +136,6 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermStoragePoolScan:   ScopeAny,
 		PermFirmwareRead:      ScopeAny,
 		PermFirmwareManage:    ScopeAny,
-		PermImageCacheRead:    ScopeAny,
 
 		// Nodes.
 		PermNodeRead:        ScopeAny,
@@ -189,7 +186,6 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermStoragePoolRead: ScopeAny,
 		PermStoragePoolScan: ScopeAny,
 		PermFirmwareRead:    ScopeAny,
-		PermImageCacheRead:  ScopeAny,
 
 		// Nodes — read and operational maintenance, but not lifecycle.
 		PermNodeRead:        ScopeAny,
@@ -230,7 +226,6 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermNetworkRead:     ScopeAny,
 		PermStoragePoolRead: ScopeAny,
 		PermFirmwareRead:    ScopeAny,
-		PermImageCacheRead:  ScopeAny,
 
 		// Nodes — summary read.
 		PermNodeRead: ScopeAny,
@@ -259,7 +254,6 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermNetworkRead:     ScopeAny,
 		PermStoragePoolRead: ScopeAny,
 		PermFirmwareRead:    ScopeAny,
-		PermImageCacheRead:  ScopeAny,
 
 		// Nodes — summary read.
 		PermNodeRead: ScopeAny,

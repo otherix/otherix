@@ -24,21 +24,14 @@ import (
 // VMCreateArgs is the queue job-args payload for a `vm.create` task. The
 // atomic-enqueue handler (Create) inserts the task row, mints a fresh task id,
 // and enqueues this payload; the worker resolves vm / pool / node before
-// dispatching to the executor.
-//
-// The image source (ImageURL / ImageSHA256 / Format / DiskGiB) is carried so the
-// worker can hand it straight to the agent without consulting a template - the
-// VM row is self-describing. ImageSHA256 is the hex-encoded digest (empty when
-// the caller did not pin a checksum).
+// dispatching to the executor. The image source lives on the self-describing
+// VM / disk rows, so the worker reads it from there rather than from the job
+// payload - only the row identifiers are carried here.
 type VMCreateArgs struct {
-	TaskID      uuid.UUID `json:"task_id"`
-	VMID        uuid.UUID `json:"vm_id"`
-	PoolID      uuid.UUID `json:"pool_id"`
-	NodeID      uuid.UUID `json:"node_id"`
-	ImageURL    string    `json:"image_url"`
-	ImageSHA256 string    `json:"image_sha256"`
-	Format      string    `json:"format"`
-	DiskGiB     int       `json:"disk_gib"`
+	TaskID uuid.UUID `json:"task_id"`
+	VMID   uuid.UUID `json:"vm_id"`
+	PoolID uuid.UUID `json:"pool_id"`
+	NodeID uuid.UUID `json:"node_id"`
 }
 
 // Kind names the job kind. Mirrors the OpenAPI Task.type value surfaced through
