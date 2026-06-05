@@ -174,22 +174,26 @@ func TestResolveFirmware(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveFirmware err = %v, want nil", err)
 			}
-			if got != tc.wantID {
-				t.Errorf("resolveFirmware id = %s, want %s", got, tc.wantID)
+			if got == nil || *got != tc.wantID {
+				t.Errorf("resolveFirmware id = %v, want %s", got, tc.wantID)
 			}
 		})
 	}
 }
 
-// TestResolveFirmwareNoDefault pins the no-default-for-arch/type path to
-// errFirmwareNotFound (caller maps it to 404).
+// TestResolveFirmwareNoDefault pins the no-default-for-arch/type path: firmware
+// is optional, so with no seeded default the resolver returns (nil, nil) and the
+// VM is created without a firmware row (boots with the agent/qemu default).
 func TestResolveFirmwareNoDefault(t *testing.T) {
 	t.Parallel()
 	st := &firmwareStoreStub{byArch: map[store.FirmwareType]store.Firmware{}}
 	h := &Handler{store: st, log: discardLog()}
-	_, err := h.resolveFirmware(context.Background(), store.CpuArchArm64, "", "")
-	if !errors.Is(err, errFirmwareNotFound) {
-		t.Errorf("resolveFirmware err = %v, want errFirmwareNotFound", err)
+	got, err := h.resolveFirmware(context.Background(), store.CpuArchArm64, "", "")
+	if err != nil {
+		t.Errorf("resolveFirmware err = %v, want nil", err)
+	}
+	if got != nil {
+		t.Errorf("resolveFirmware id = %v, want nil (no firmware)", got)
 	}
 }
 
@@ -269,7 +273,7 @@ func TestScheduleAndEnqueueCreateBuildsImageWrites(t *testing.T) {
 	sha := "ab" + strings.Repeat("cd", 31) // 64 chars lowercase hex
 	_, err := h.scheduleAndEnqueueCreate(context.Background(), scheduleInputs{
 		Caller:     &auth.User{ID: uuid.New(), Role: auth.RoleDeveloper},
-		FirmwareID: firmwareID,
+		FirmwareID: &firmwareID,
 		PoolName:   "default",
 		Req: vmCreateRequest{
 			Name:         "demo",

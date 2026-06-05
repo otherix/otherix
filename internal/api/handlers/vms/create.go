@@ -266,7 +266,7 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 // short-circuit Create). An unparseable firmware_id is 400 validation_failed; a
 // missing firmware row (explicit id or no default for arch/type) is 404
 // not_found; a bad `firmware` type string is 400 validation_failed.
-func (h *Handler) resolveFirmwareForRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) (uuid.UUID, bool) {
+func (h *Handler) resolveFirmwareForRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) (*uuid.UUID, bool) {
 	id, err := h.resolveFirmware(r.Context(), store.CPUArch(req.Architecture), req.Firmware, req.FirmwareID)
 	switch {
 	case err == nil:
@@ -285,27 +285,27 @@ func (h *Handler) resolveFirmwareForRequest(w http.ResponseWriter, r *http.Reque
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "resolve firmware", nil)
 	}
-	return uuid.Nil, false
+	return nil, false
 }
 
 // resolveFirmware resolves the firmware id for a VM create: an explicit
 // firmware_id wins; otherwise the default firmware for (arch, type) where type
 // is "uefi" unless firmware=="bios". Returns a sentinel (errFirmwareBadID /
 // errFirmwareBadType / errFirmwareNotFound) the caller maps to a wire envelope.
-func (h *Handler) resolveFirmware(ctx context.Context, arch store.CPUArch, firmware, firmwareID string) (uuid.UUID, error) {
+func (h *Handler) resolveFirmware(ctx context.Context, arch store.CPUArch, firmware, firmwareID string) (*uuid.UUID, error) {
 	if firmwareID != "" {
 		id, err := uuid.Parse(firmwareID)
 		if err != nil {
-			return uuid.Nil, errFirmwareBadID
+			return nil, errFirmwareBadID
 		}
 		fw, err := h.store.FirmwareByID(ctx, id)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return uuid.Nil, errFirmwareNotFound
+				return nil, errFirmwareNotFound
 			}
-			return uuid.Nil, fmt.Errorf("load firmware by id: %v", err)
+			return nil, fmt.Errorf("load firmware by id: %v", err)
 		}
-		return fw.ID, nil
+		return &fw.ID, nil
 	}
 
 	var ftype store.FirmwareType
@@ -315,16 +315,20 @@ func (h *Handler) resolveFirmware(ctx context.Context, arch store.CPUArch, firmw
 	case string(store.FirmwareTypeBios):
 		ftype = store.FirmwareTypeBios
 	default:
-		return uuid.Nil, errFirmwareBadType
+		return nil, errFirmwareBadType
 	}
 	fw, err := h.store.DefaultFirmwareForArchType(ctx, arch, ftype)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return uuid.Nil, errFirmwareNotFound
+			// Firmware is optional (the VM row's firmware_id is nullable). When
+			// no default firmware is seeded for this arch/type, the VM boots
+			// with the agent/qemu built-in default rather than failing create.
+			// An explicit firmware_id that misses still 404s above.
+			return nil, nil
 		}
-		return uuid.Nil, fmt.Errorf("load default firmware: %v", err)
+		return nil, fmt.Errorf("load default firmware: %v", err)
 	}
-	return fw.ID, nil
+	return &fw.ID, nil
 }
 
 // scheduleInputs bundles the resolved entities scheduleAndEnqueueCreate
@@ -332,7 +336,7 @@ func (h *Handler) resolveFirmware(ctx context.Context, arch store.CPUArch, firmw
 // handler signature.
 type scheduleInputs struct {
 	Caller     *auth.User
-	FirmwareID uuid.UUID
+	FirmwareID *uuid.UUID
 	PoolName   string
 	Network    *store.Network
 	Req        vmCreateRequest
@@ -438,7 +442,6 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				return store.VMCreateWrites{}, fmt.Errorf("decode image_sha256: %v", err)
 			}
 		}
-		firmwareID := in.FirmwareID
 
 		nodeID := decision.Node.ID
 		return store.VMCreateWrites{
@@ -455,7 +458,7 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded to 128..524288 by validateCreateRequest
 				CPUModel:          "host",
 				MachineType:       machineTypeFor(arch),
-				FirmwareID:        &firmwareID,
+				FirmwareID:        in.FirmwareID,
 				PinnedNodeID:      &nodeID,
 				UserData:          in.Req.UserData,
 				CloudInitDisabled: in.Req.CloudInitDisabled,
