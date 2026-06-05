@@ -205,6 +205,8 @@ func readCachedImage(imgPath, sidecarPath string) (sha string, size int64, prese
 	if err != nil || info.IsDir() || info.Size() == 0 {
 		return "", 0, false
 	}
+	// #nosec G304 -- sidecarPath is {pool.root}/images/{basename}.sha256, an
+	// agent-owned path under a validated basename, not caller-supplied input.
 	raw, err := os.ReadFile(sidecarPath)
 	if err != nil {
 		return "", 0, false

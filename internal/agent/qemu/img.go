@@ -34,7 +34,7 @@ func parseImgInfo(raw []byte) (ImgInfo, error) {
 	if j.VirtualSize <= 0 {
 		return ImgInfo{}, fmt.Errorf("qemu-img info reported non-positive virtual-size %d", j.VirtualSize)
 	}
-	return ImgInfo{VirtualSize: j.VirtualSize, Format: j.Format}, nil
+	return ImgInfo(j), nil
 }
 
 // ImgInfoOf runs `qemu-img info --output=json` against path and returns the

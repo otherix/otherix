@@ -481,6 +481,34 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	return task, nil
 }
 
+// sizeCreatedDisk sizes the freshly-cloned per-VM disk at diskPath (never the
+// shared cache file). qemu-img info reports the image virtual size; a positive
+// diskGiB below it is rejected (shrink is not allowed) and a larger diskGiB
+// grows the clone via qemu-img resize. It returns the image virtual size, the
+// resulting disk size, and a (failCode, failMsg) pair - failCode is "" on
+// success, otherwise it carries the task-failure code the caller surfaces.
+func (m *Manager) sizeCreatedDisk(ctx context.Context, diskPath string, diskGiB int) (virtualSize, diskSize int64, failCode, failMsg string) {
+	info, err := qemu.ImgInfoOf(ctx, diskPath)
+	if err != nil {
+		return 0, 0, "internal", fmt.Sprintf("qemu-img info: %v", err)
+	}
+	diskSize = info.VirtualSize
+	if diskGiB > 0 {
+		want := int64(diskGiB) * 1073741824
+		if want < info.VirtualSize {
+			return 0, 0, "disk_too_small",
+				fmt.Sprintf("requested disk %d bytes is below image virtual size %d", want, info.VirtualSize)
+		}
+		if want > info.VirtualSize {
+			if err := qemu.ResizeImg(ctx, diskPath, want); err != nil {
+				return 0, 0, "internal", fmt.Sprintf("resize disk: %v", err)
+			}
+			diskSize = want
+		}
+	}
+	return info.VirtualSize, diskSize, "", ""
+}
+
 func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 	// The create work outlives the HTTP request that spawned it (the task
 	// surface is how clients track progress), so it runs on a fresh
@@ -522,32 +550,11 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	// Size the freshly-cloned per-VM disk (v.DiskPath), never the shared
-	// cache file: qemu-img info reports the image virtual size, a DiskGiB
-	// below it is rejected (shrink not allowed), and a larger DiskGiB grows
-	// the clone via qemu-img resize.
-	info, err := qemu.ImgInfoOf(ctx, v.DiskPath)
-	if err != nil {
-		log.Error("qemu-img info", "err", err)
-		m.failTask(taskID, v.ID, "internal", fmt.Sprintf("qemu-img info: %v", err))
+	virtualSize, diskSize, failCode, failMsg := m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
+	if failCode != "" {
+		log.Error("size disk", "code", failCode, "err", failMsg)
+		m.failTask(taskID, v.ID, failCode, failMsg)
 		return
-	}
-	diskSize := info.VirtualSize
-	if spec.DiskGiB > 0 {
-		want := int64(spec.DiskGiB) * 1073741824
-		if want < info.VirtualSize {
-			m.failTask(taskID, v.ID, "disk_too_small",
-				fmt.Sprintf("requested disk %d bytes is below image virtual size %d", want, info.VirtualSize))
-			return
-		}
-		if want > info.VirtualSize {
-			if err := qemu.ResizeImg(ctx, v.DiskPath, want); err != nil {
-				log.Error("resize disk", "err", err)
-				m.failTask(taskID, v.ID, "internal", fmt.Sprintf("resize disk: %v", err))
-				return
-			}
-			diskSize = want
-		}
 	}
 
 	if v.CidataPath != "" {
@@ -596,7 +603,7 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 	result, _ := json.Marshal(map[string]any{
 		"vm_id":              v.ID.String(),
 		"image_sha256":       ensured.SHA256,
-		"virtual_size_bytes": info.VirtualSize,
+		"virtual_size_bytes": virtualSize,
 		"disk_size_bytes":    diskSize,
 	})
 	m.tasks.Update(taskID, func(t *AgentTask) {
