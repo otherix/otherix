@@ -86,9 +86,30 @@ func renderInstance(cmd *cobra.Command, p cpclient.Pool) error {
 	if p.ReconciliationError != nil && *p.ReconciliationError != "" {
 		printf(cmd, "reconciliation_error: %s\n", *p.ReconciliationError)
 	}
+	printPoolImages(cmd, p.Images)
 	printf(cmd, "created_at: %s\n", p.CreatedAt)
 	printf(cmd, "updated_at: %s\n", p.UpdatedAt)
 	return nil
+}
+
+// printPoolImages renders the cached source images a pool holds. Images
+// are an agent-owned cache (observed runtime state); the section is
+// omitted entirely when the pool carries none so clear pools stay
+// noise-free. Each line shows the image name, a short sha prefix, and
+// the human-readable on-disk size.
+func printPoolImages(cmd *cobra.Command, images []cpclient.PoolImage) {
+	if len(images) == 0 {
+		return
+	}
+	printf(cmd, "images:\n")
+	for _, im := range images {
+		short := im.SHA256
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		size := im.SizeBytes
+		printf(cmd, "  - %s (sha %s, %s)\n", im.Name, short, humanBytes(&size))
+	}
 }
 
 // printPoolPressure renders the pool's disk_pressure condition.
@@ -134,6 +155,14 @@ func renderConcept(cmd *cobra.Command, v cpclient.PoolConceptView) error {
 		}
 		if inst.ReconciliationError != nil && *inst.ReconciliationError != "" {
 			printf(cmd, "    reconciliation_error: %s\n", *inst.ReconciliationError)
+		}
+		for _, im := range inst.Images {
+			short := im.SHA256
+			if len(short) > 12 {
+				short = short[:12]
+			}
+			size := im.SizeBytes
+			printf(cmd, "    image: %s (sha %s, %s)\n", im.Name, short, humanBytes(&size))
 		}
 	}
 	return nil

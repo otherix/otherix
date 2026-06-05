@@ -48,6 +48,34 @@ func TestRenderConceptDiskPressure(t *testing.T) {
 	}
 }
 
+// TestRenderInstanceImages asserts the flat per-instance view renders an
+// `images:` section listing each cached image's name, short sha, and
+// human-readable size when the pool carries images[].
+func TestRenderInstanceImages(t *testing.T) {
+	p := cpclient.Pool{
+		ID: uuid.New(), Node: "node-1", Name: "pool-mvp",
+		Type: "local_dir", Path: "/opt/otherix/pools/default",
+		Images: []cpclient.PoolImage{{
+			Name:      "ubuntu-noble.qcow2",
+			SHA256:    "abcdef0123456789aaaa",
+			SizeBytes: 2 * 1024 * 1024 * 1024,
+			Format:    "qcow2",
+		}},
+	}
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := renderInstance(cmd, p); err != nil {
+		t.Fatalf("renderInstance() error = %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"images:\n", "ubuntu-noble.qcow2", "sha abcdef012345", "2.0GiB"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderInstance output missing %q\n%s", want, out)
+		}
+	}
+}
+
 // TestPrintJSONPassthrough guards the fidelity contract: printJSON echoes the
 // raw server body verbatim (re-indented) rather than re-marshaling a decoded
 // struct. A clear pool's null disk_pressure (a scheduler eligibility gate)

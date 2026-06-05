@@ -37,8 +37,22 @@ type Pool struct {
 	ReconciliationStatus    string             `json:"reconciliation_status"`
 	LastReconciledAt        *string            `json:"last_reconciled_at"`
 	ReconciliationError     *string            `json:"reconciliation_error"`
+	Images                  []PoolImage        `json:"images"`
 	CreatedAt               string             `json:"created_at"`
 	UpdatedAt               string             `json:"updated_at"`
+}
+
+// PoolImage is one cached source image the server has downloaded into a
+// storage pool. It replaces the old template-cache view: VMs now boot
+// directly from an image URL, and the cached copies surface here so
+// operators can see what is already local to a pool.
+type PoolImage struct {
+	Name             string `json:"name"`
+	SHA256           string `json:"sha256"`
+	SizeBytes        int64  `json:"size_bytes"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
+	Format           string `json:"format"`
+	ImportedAt       string `json:"imported_at"`
 }
 
 // PoolList is the cursor-paginated payload of GET /v1/storage-pools.
