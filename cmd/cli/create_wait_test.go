@@ -122,6 +122,40 @@ func TestCreateWaitPoolReconcilePending(t *testing.T) {
 	}
 }
 
+// TestCreateWaitPoolReconcileFailed pins the no-false-success property for
+// the pool waiter's terminal-failure arm: a pool whose reconciliation
+// reaches "failed" must surface a non-zero exit and never a readiness
+// line. Without the case "failed" arm the waiter would poll a terminally
+// failed pool until the timeout instead of reporting promptly.
+func TestCreateWaitPoolReconcileFailed(t *testing.T) {
+	fastPoolPoll(t)
+	poolID := uuid.NewString()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/storage-pools" {
+			_, _ = w.Write([]byte(`{"id":"` + poolID + `","name":"p1","node":"node-1","type":"local_dir","path":"/opt/p","reconciliation_status":"pending"}`))
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/storage-pools/"+poolID {
+			_, _ = w.Write([]byte(`{"id":"` + poolID + `","name":"p1","node":"node-1","type":"local_dir","path":"/opt/p","reconciliation_status":"failed"}`))
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	const m = "apiVersion: otherix/v1\nkind: StoragePool\nmetadata: { name: p1 }\nspec: { path: /opt/p, node: node-1 }\n"
+	stdout, stderr, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, m), "--wait", "--wait-timeout", "10s")
+	if err == nil {
+		t.Fatalf("expected error when pool reconciliation fails")
+	}
+	if strings.Contains(stdout, "ready") {
+		t.Errorf("a failed pool must not print a readiness line; stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "reconciliation failed") {
+		t.Errorf("stderr = %q, want the reconciliation-failed message", stderr)
+	}
+}
+
 // TestCreateWaitPoolTimeoutCapped proves Fix #5: a never-ready pool with
 // a poll interval far larger than the wait timeout must still return
 // quickly, because the per-iteration sleep is capped at the remaining
