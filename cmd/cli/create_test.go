@@ -30,6 +30,21 @@ func runRoot(t *testing.T, endpoint string, args ...string) (stdout, stderr stri
 	return out.String(), errBuf.String(), err
 }
 
+// runRootStdin mirrors runRoot but feeds stdin so `create -f -` has a
+// deterministic, non-blocking source via cmd.InOrStdin().
+func runRootStdin(t *testing.T, endpoint, stdin string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	root := newRootCmd()
+	root.SetArgs(append([]string{"--endpoint", endpoint, "--token", "test-token"}, args...))
+	root.SetIn(strings.NewReader(stdin))
+	var out, errBuf bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errBuf)
+	root.SetContext(context.Background())
+	err = root.Execute()
+	return out.String(), errBuf.String(), err
+}
+
 func writeManifest(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "m.yaml")
@@ -138,6 +153,40 @@ func TestCreateFailureGoesToStderrAndClassified(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "connection_refused") {
 		t.Errorf("stderr = %q, want a classified connection_refused: line", stderr)
+	}
+}
+
+func TestCreateStdinDryRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("dry-run must not call HTTP")
+	}))
+	defer srv.Close()
+	stdout, _, err := runRootStdin(t, srv.URL, createManifest, "create", "-f", "-", "--dry-run")
+	if err != nil {
+		t.Fatalf("create -f - error = %v", err)
+	}
+	if !strings.Contains(stdout, "net-mvp") || !strings.Contains(stdout, "web-1") {
+		t.Errorf("stdin plan = %q, want net-mvp and web-1", stdout)
+	}
+}
+
+func TestCreateMultipleFilesOrderedDryRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("dry-run must not call HTTP")
+	}))
+	defer srv.Close()
+	netFile := writeManifest(t, "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: net-mvp }\nspec: { type: bridge, bridgeName: br0 }\n")
+	vmFile := writeManifest(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: web-1 }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, network: net-mvp }\n")
+	// Pass VM file FIRST to prove ordering comes from BuildCreatePlan, not file order.
+	stdout, _, err := runRootStdin(t, srv.URL, "", "create", "-f", vmFile, "-f", netFile, "--dry-run")
+	if err != nil {
+		t.Fatalf("create -f -f error = %v", err)
+	}
+	// Network must appear before VM in the dry-run plan regardless of -f order.
+	ni := strings.Index(stdout, "net-mvp")
+	vi := strings.Index(stdout, "web-1")
+	if ni < 0 || vi < 0 || ni > vi {
+		t.Errorf("plan order wrong (network must precede VM):\n%s", stdout)
 	}
 }
 
