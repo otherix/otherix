@@ -1,0 +1,23 @@
+# Rendered by run.sh: ONLY @@IMAGE_URL@@ / @@ARCH@@ are substituted. Resource
+# names are fixed and must match the script's assertion constants (SMOKE_NET /
+# SMOKE_BRIDGE / VM_NAME).
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: smoke-mf-net
+spec:
+  type: bridge
+  managed: true
+  bridgeName: otmf0
+  mtu: 1500
+---
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: smoke-mf
+spec:
+  imageURL: "@@IMAGE_URL@@"
+  arch: "@@ARCH@@"
+  network: smoke-mf-net
+  vcpus: 2
+  memoryMB: 2048

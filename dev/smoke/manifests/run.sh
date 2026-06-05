@@ -27,6 +27,7 @@
 set -euo pipefail
 
 # --- configuration -----------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
 NODE="${NODE:-node-1}"
 IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
@@ -61,32 +62,17 @@ node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' 
 [[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-mvp"
 pass "CP up, $NODE ready"
 
-# --- step 1: write the multi-doc manifest ------------------------------
-echo "=== step 1: write manifest ==="
+# --- step 1: render the multi-doc manifest from the committed template --
+# The manifest lives in stack.yaml.tmpl (a real file, not an inline heredoc);
+# the script only substitutes its @@...@@ tokens so the manifest and the grep
+# assertions below stay a single source of truth.
+echo "=== step 1: render manifest ==="
 MANIFEST="$(mktemp -t otherix-manifest-smoke.XXXXXX.yaml)"
-cat >"$MANIFEST" <<EOF
-apiVersion: otherix/v1
-kind: Network
-metadata:
-  name: ${SMOKE_NET}
-spec:
-  type: bridge
-  managed: true
-  bridgeName: ${SMOKE_BRIDGE}
-  mtu: 1500
----
-apiVersion: otherix/v1
-kind: VM
-metadata:
-  name: ${VM_NAME}
-spec:
-  imageURL: ${IMAGE_URL}
-  arch: ${ARCH}
-  network: ${SMOKE_NET}
-  vcpus: 2
-  memoryMB: 2048
-EOF
-pass "wrote manifest to $MANIFEST"
+sed \
+  -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" \
+  -e "s|@@ARCH@@|${ARCH}|g" \
+  "${SCRIPT_DIR}/stack.yaml.tmpl" >"$MANIFEST"
+pass "rendered manifest to $MANIFEST"
 
 # --- step 2: create -f (wait for VM ready) -----------------------------
 echo "=== step 2: create -f ==="

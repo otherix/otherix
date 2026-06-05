@@ -1,0 +1,13 @@
+# Rendered by run.sh: @@IMAGE_URL@@ / @@ARCH@@ are substituted from the
+# script's env-overridable defaults. The VM is not node-pinned; the
+# scheduler places it on the node that carries demo-bridge.
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: demo-vm
+spec:
+  imageURL: "@@IMAGE_URL@@"
+  arch: "@@ARCH@@"
+  network: demo-bridge
+  vcpus: 2
+  memoryMB: 2048

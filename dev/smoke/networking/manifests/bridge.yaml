@@ -1,0 +1,9 @@
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: demo-bridge
+spec:
+  type: bridge
+  managed: true
+  bridgeName: otbr0
+  mtu: 1500

@@ -1,0 +1,11 @@
+# Overlay network for the overlay-vm smoke. Fixed name; the smoke does a
+# best-effort delete-first so a stale leftover from a prior run is cleared.
+# The create API derives the bridge/mtu/vlan and allocates the VNI, so only
+# type + subnet appear here.
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: ovvm-smoke
+spec:
+  type: overlay
+  subnet: 10.71.0.0/24
