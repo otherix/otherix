@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 func newGetCommand() *cobra.Command {
@@ -26,7 +27,7 @@ ERROR), so operators can see how the network materialised per node.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json|yaml")
 	return cmd
 }
 
@@ -44,6 +45,14 @@ func runGet(cmd *cobra.Command, args []string) error {
 	net, raw, err := c.GetNetwork(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
+	}
+	if format == "yaml" {
+		out, err := manifest.ProjectNetwork(net)
+		if err != nil {
+			return err
+		}
+		printf(cmd, "%s", out)
+		return nil
 	}
 	if format == "json" {
 		return printJSON(cmd, raw)
