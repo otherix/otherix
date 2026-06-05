@@ -111,22 +111,23 @@ func runList(cmd *cobra.Command, _ []string) error {
 // includes meta.next_cursor when populated so operators can chain
 // the next page without digging in JSON. The ID column is hidden by
 // default — referenced-resource fields are names, and the VM's own
-// UUID is operator-noise unless --show-ids opts back in.
+// UUID is operator-noise unless --show-ids opts back in. The IMAGE
+// column carries the image source URL (the template entity is gone).
 func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if showIDs {
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tPOOL\tTEMPLATE")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tPOOL\tIMAGE")
 	} else {
-		_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tPOOL\tTEMPLATE")
+		_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tPOOL\tIMAGE")
 	}
 	for _, vm := range vms.Data {
-		tmpl := strOrUnset(vm.Template)
+		img := vm.ImageURL
 		if showIDs {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-				vm.ID, vm.Name, vm.Status, vm.Pool, tmpl)
+				vm.ID, vm.Name, vm.Status, vm.Pool, img)
 		} else {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-				vm.Name, vm.Status, vm.Pool, tmpl)
+				vm.Name, vm.Status, vm.Pool, img)
 		}
 	}
 	_ = tw.Flush()

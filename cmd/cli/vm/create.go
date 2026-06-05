@@ -16,7 +16,13 @@ import (
 
 const (
 	flagName             = "name"
-	flagTemplate         = "template"
+	flagImageURL         = "image-url"
+	flagImageSHA256      = "image-sha256"
+	flagArch             = "arch"
+	flagFirmware         = "firmware"
+	flagFirmwareID       = "firmware-id"
+	flagFormat           = "format"
+	flagDiskGiB          = "disk-gib"
 	flagPool             = "pool"
 	flagNode             = "node"
 	flagNetwork          = "network"
@@ -38,10 +44,19 @@ func newCreateCommand() *cobra.Command {
 to block until the task reaches its terminal state. The VM uuid is
 minted on the CP and reused by the agent.
 
---template is a template name (UUID literals rejected by the server
-with 400 validation_failed). --pool accepts either a pool name or a
-per-instance UUID literal (multi-instance carve-out). The CLI
-forwards the raw string; the server resolves it.
+The VM is created directly from an image source — there is no template
+entity. --image-url and --arch are required; the server downloads and
+caches the image into the target pool. --image-sha256 pins the expected
+digest, --firmware / --firmware-id select firmware (name or uuid),
+--format and --disk-gib size the root disk.
+
+Example:
+  otherix vm create --name web-1 --image-url https://example.com/ubuntu.qcow2 \
+    --arch arm64 --vcpus 2 --memory-mb 2048
+
+--pool accepts either a pool name or a per-instance UUID literal
+(multi-instance carve-out). The CLI forwards the raw string; the server
+resolves it.
 
 Multi-instance pools + scheduler:
   - --pool is optional. When omitted, the server uses the cluster
@@ -61,16 +76,22 @@ and the agent falls back to legacy SLIRP networking.`,
 	}
 
 	cmd.Flags().String(flagName, "", "VM name (required, globally unique)")
-	cmd.Flags().String(flagTemplate, "", "template name or uuid (required)")
+	cmd.Flags().String(flagImageURL, "", "source image URL to download and boot from (required)")
+	cmd.Flags().String(flagImageSHA256, "", "expected sha256 of the image (optional; verified after download)")
+	cmd.Flags().String(flagArch, "", "VM architecture: amd64 or arm64 (required)")
+	cmd.Flags().String(flagFirmware, "", "firmware name (optional; mutually exclusive with --firmware-id)")
+	cmd.Flags().String(flagFirmwareID, "", "firmware uuid (optional; mutually exclusive with --firmware)")
+	cmd.Flags().String(flagFormat, "", "image disk format, e.g. qcow2 or raw (optional; server default applies)")
+	cmd.Flags().Int(flagDiskGiB, 0, "root disk size in GiB (optional; defaults to the image's virtual size)")
 	cmd.Flags().String(flagPool, "", "storage pool name or uuid (optional; cluster default used when empty)")
 	cmd.Flags().String(flagNode, "", "explicit placement hint — node name or uuid (optional)")
 	cmd.Flags().String(flagNetwork, "", "bridge network to attach one NIC to — network name or uuid (optional)")
 	cmd.Flags().Int(flagVCPUs, defaultVCPUs, "vCPU count (1..128)")
 	cmd.Flags().Int(flagMemoryMB, defaultMemoryMB, "memory in MiB (128..524288)")
 	cmd.Flags().String(flagCloudInitPath, "",
-		"path to a `#cloud-config` YAML override; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
+		"path to a `#cloud-config` YAML; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
 	cmd.Flags().Bool(flagCloudInitDisable, false,
-		"explicitly disable cloud-init, ignoring any template pre-bake. Mutually exclusive with --cloud-init.")
+		"explicitly disable cloud-init for this VM. Mutually exclusive with --cloud-init.")
 	cmd.Flags().Bool(flagWait, false, "block until the task reaches terminal status")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
@@ -82,7 +103,13 @@ and the agent falls back to legacy SLIRP networking.`,
 // inside the linter cap.
 type createFlags struct {
 	name              string
-	template          string
+	imageURL          string
+	imageSHA256       string
+	arch              string
+	firmware          string
+	firmwareID        string
+	format            string
+	diskGiB           int
 	pool              string
 	node              string
 	network           string
@@ -103,7 +130,7 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 	if f.name == "" {
 		return f, fmt.Errorf("--%s is required", flagName)
 	}
-	if f.template, err = requireStringFlag(cmd, flagTemplate); err != nil {
+	if err = parseImageFlags(cmd, &f); err != nil {
 		return f, err
 	}
 	if f.pool, err = cmd.Flags().GetString(flagPool); err != nil {
@@ -121,14 +148,8 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 	if f.memoryMB, err = cmd.Flags().GetInt(flagMemoryMB); err != nil {
 		return f, err
 	}
-	if f.cloudInitDisabled, err = cmd.Flags().GetBool(flagCloudInitDisable); err != nil {
+	if err = parseCloudInitFlags(cmd, &f); err != nil {
 		return f, err
-	}
-	if f.cloudInitUserData, err = readCloudInitFlag(cmd, flagCloudInitPath); err != nil {
-		return f, err
-	}
-	if f.cloudInitUserData != nil && f.cloudInitDisabled {
-		return f, fmt.Errorf("--%s and --%s are mutually exclusive", flagCloudInitPath, flagCloudInitDisable)
 	}
 	if f.wait, err = cmd.Flags().GetBool(flagWait); err != nil {
 		return f, err
@@ -139,10 +160,59 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 	return f, nil
 }
 
+// parseImageFlags reads the image-source flags onto f. --image-url and
+// --arch are required; --firmware / --firmware-id are mutually
+// exclusive. Extracted from parseCreateFlags to keep that orchestrator
+// inside the gocyclo cap.
+func parseImageFlags(cmd *cobra.Command, f *createFlags) error {
+	var err error
+	if f.imageURL, err = requireStringFlag(cmd, flagImageURL); err != nil {
+		return err
+	}
+	if f.arch, err = requireStringFlag(cmd, flagArch); err != nil {
+		return err
+	}
+	if f.imageSHA256, err = cmd.Flags().GetString(flagImageSHA256); err != nil {
+		return err
+	}
+	if f.firmware, err = cmd.Flags().GetString(flagFirmware); err != nil {
+		return err
+	}
+	if f.firmwareID, err = cmd.Flags().GetString(flagFirmwareID); err != nil {
+		return err
+	}
+	if f.firmware != "" && f.firmwareID != "" {
+		return fmt.Errorf("--%s and --%s are mutually exclusive", flagFirmware, flagFirmwareID)
+	}
+	if f.format, err = cmd.Flags().GetString(flagFormat); err != nil {
+		return err
+	}
+	if f.diskGiB, err = cmd.Flags().GetInt(flagDiskGiB); err != nil {
+		return err
+	}
+	return nil
+}
+
+// parseCloudInitFlags reads --no-cloud-init and --cloud-init onto f and
+// enforces their mutual exclusion. Extracted from parseCreateFlags to
+// keep that orchestrator inside the gocyclo cap.
+func parseCloudInitFlags(cmd *cobra.Command, f *createFlags) error {
+	var err error
+	if f.cloudInitDisabled, err = cmd.Flags().GetBool(flagCloudInitDisable); err != nil {
+		return err
+	}
+	if f.cloudInitUserData, err = readCloudInitFlag(cmd, flagCloudInitPath); err != nil {
+		return err
+	}
+	if f.cloudInitUserData != nil && f.cloudInitDisabled {
+		return fmt.Errorf("--%s and --%s are mutually exclusive", flagCloudInitPath, flagCloudInitDisable)
+	}
+	return nil
+}
+
 // readCloudInitFlag turns the `--cloud-init=<path|->` flag into the
 // resolved YAML content. Empty flag returns nil; non-empty reads
-// (file or stdin) and validates (best-effort). Mirrors the template
-// CLI helper of the same name; both surfaces consume the shared
+// (file or stdin) and validates (best-effort) through the shared
 // cloudinit package so the contract (warnings to stderr, parse errors
 // bubble up) stays uniform across resources.
 func readCloudInitFlag(cmd *cobra.Command, name string) (*string, error) {
@@ -184,7 +254,13 @@ func runCreate(cmd *cobra.Command, _ []string) error {
 
 	req := cpclient.CreateVMRequest{
 		Name:              f.name,
-		Template:          f.template,
+		ImageURL:          f.imageURL,
+		ImageSHA256:       f.imageSHA256,
+		Arch:              f.arch,
+		Firmware:          f.firmware,
+		FirmwareID:        f.firmwareID,
+		Format:            f.format,
+		DiskGiB:           f.diskGiB,
 		Pool:              f.pool,
 		Network:           f.network,
 		VCPUs:             f.vcpus,

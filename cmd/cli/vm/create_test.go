@@ -20,8 +20,8 @@ import (
 	"github.com/otherix/otherix/cmd/cli/vm"
 )
 
-// runVMCmd mirrors runTemplateCmd in template/create_test.go: mounts
-// the `vm` subcommand tree on a throwaway parent with the persistent
+// runVMCmd mounts the `vm` subcommand tree on a throwaway parent with
+// the persistent
 // flags the real root provides, then executes args. Returns captured
 // stdout / stderr and the cobra error.
 func runVMCmd(t *testing.T, endpoint string, args []string) (stdout, stderr string, err error) {
@@ -77,7 +77,8 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
 		"--name", "vm-ci-file",
-		"--template", "ubuntu-jammy",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
 		"--pool", "pool-mvp",
 		"--vcpus", "2",
 		"--memory-mb", "512",
@@ -91,6 +92,113 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 	}
 	if disabled, _ := captured["cloud_init_disabled"].(bool); disabled {
 		t.Errorf("cloud_init_disabled = true, want false when --no-cloud-init not set")
+	}
+	if got := captured["image_url"]; got != "https://example.com/ubuntu.qcow2" {
+		t.Errorf("image_url = %v, want the --image-url value", got)
+	}
+	if got := captured["arch"]; got != "amd64" {
+		t.Errorf("arch = %v, want amd64", got)
+	}
+}
+
+// TestVMCreate_ImageFields drives create with the explicit image-source
+// flags and asserts the CP request body carries every image field
+// (image_url / image_sha256 / arch / firmware / format / disk_gib).
+// Locks in the template-removal reshape: a VM is created directly from
+// an image source, no template reference on the wire.
+func TestVMCreate_ImageFields(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	taskID := uuid.NewString()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write(taskAcceptedJSON(taskID))
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"--name", "vm-img",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--image-sha256", "deadbeef",
+		"--arch", "arm64",
+		"--firmware", "uefi",
+		"--format", "qcow2",
+		"--disk-gib", "20",
+		"--vcpus", "2",
+		"--memory-mb", "2048",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	wants := map[string]any{
+		"image_url":    "https://example.com/ubuntu.qcow2",
+		"image_sha256": "deadbeef",
+		"arch":         "arm64",
+		"firmware":     "uefi",
+		"format":       "qcow2",
+		"disk_gib":     float64(20),
+	}
+	for k, want := range wants {
+		if got := captured[k]; got != want {
+			t.Errorf("%s = %v, want %v", k, got, want)
+		}
+	}
+	if _, present := captured["template"]; present {
+		t.Errorf("template unexpectedly present in body: %v", captured["template"])
+	}
+}
+
+// TestVMCreate_MissingImageURL asserts create fails before any HTTP
+// call when --image-url is omitted.
+func TestVMCreate_MissingImageURL(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when --image-url is missing")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"--name", "vm-no-image",
+		"--arch", "amd64",
+		"--vcpus", "1",
+		"--memory-mb", "128",
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing --image-url")
+	}
+	if !strings.Contains(err.Error(), "image-url") {
+		t.Errorf("err = %v, want mention of 'image-url'", err)
+	}
+}
+
+// TestVMCreate_MissingArch asserts create fails before any HTTP call
+// when --arch is omitted.
+func TestVMCreate_MissingArch(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when --arch is missing")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"--name", "vm-no-arch",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--vcpus", "1",
+		"--memory-mb", "128",
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing --arch")
+	}
+	if !strings.Contains(err.Error(), "arch") {
+		t.Errorf("err = %v, want mention of 'arch'", err)
 	}
 }
 
@@ -127,7 +235,8 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
 		"--name", "vm-ci-stdin",
-		"--template", "ubuntu-jammy",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
 		"--pool", "pool-mvp",
 		"--vcpus", "1",
 		"--memory-mb", "128",
@@ -154,7 +263,8 @@ func TestVMCreate_NoCloudInit(t *testing.T) {
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
 		"--name", "vm-ci-disabled",
-		"--template", "ubuntu-jammy",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
 		"--pool", "pool-mvp",
 		"--vcpus", "2",
 		"--memory-mb", "512",
@@ -191,7 +301,8 @@ func TestVMCreate_CloudInitMutualExclusion(t *testing.T) {
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
 		"--name", "vm-conflict",
-		"--template", "ubuntu-jammy",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
 		"--pool", "pool-mvp",
 		"--vcpus", "1",
 		"--memory-mb", "128",
@@ -224,7 +335,8 @@ func TestVMCreate_CloudInitMalformedYAML(t *testing.T) {
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
 		"--name", "vm-bad-yaml",
-		"--template", "ubuntu-jammy",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
 		"--pool", "pool-mvp",
 		"--vcpus", "1",
 		"--memory-mb", "128",
