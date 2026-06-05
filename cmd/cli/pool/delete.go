@@ -107,7 +107,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 // renderBlockedDelete prints the blocking-resources envelope in the
 // requested format and returns a non-zero-exit error. The text mode
 // formats each resource type → count pair so operators can scan the
-// list and decide what to clean up first. Mirror template delete's
+// list and decide what to clean up first. Mirrors the network delete
 // rendering — the wire shape is identical so the operator sees
 // consistent output across resource types.
 func renderBlockedDelete(cmd *cobra.Command, identifier string, blocked *cpclient.ErrPoolBlocked, format string) error {

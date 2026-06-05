@@ -107,7 +107,7 @@ func TestCreateVM_APIError404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"template not found"}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"vm not found"}}`))
 	}))
 	defer srv.Close()
 
@@ -167,7 +167,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 			"id":            vmID.String(),
 			"name":          "demo",
 			"owner_id":      uuid.NewString(),
-			"template_id":   uuid.NewString(),
+			"image_url":     "https://example.test/img.qcow2",
 			"pool_id":       uuid.NewString(),
 			"node_id":       uuid.NewString(),
 			"architecture":  "amd64",

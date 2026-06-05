@@ -322,8 +322,8 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			})
 
 			// /v1/cluster surface. Default-pool reference is the only
-			// setting today; the route group anchors the future
-			// default-template / default-network knobs to the same
+			// setting today; the route group anchors future
+			// default-network and similar knobs to the same
 			// singleton table without re-opening URL design.
 			r.Route("/cluster", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-pool", clusterH.GetDefaultPool)

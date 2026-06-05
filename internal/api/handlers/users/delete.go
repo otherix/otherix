@@ -18,7 +18,7 @@ import (
 // Delete implements DELETE /v1/users/{id}. Required permission:
 // user:manage (admin only). Soft-deletes the user, revokes every
 // active API token they own, and fails with 409 conflict when the
-// user still owns vms / templates / snapshots — those FKs use ON
+// user still owns vms / snapshots — those FKs use ON
 // DELETE RESTRICT and would block the delete anyway, so
 // the handler returns a typed 409 with per-resource counts before
 // hitting the database.

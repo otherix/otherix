@@ -57,7 +57,7 @@ func TestPoolDelete_BlockedTextOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":{"code":"resource_in_use","message":"storage pool still has materialised storage images; delete them first","details":{"blocking_resources":{"storage_images":3,"vm_disks":1},"kind":"pool"}}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"resource_in_use","message":"storage pool is in use by virtual machine disks; remove or migrate them first","details":{"blocking_resources":{"vm_disks":3},"kind":"pool"}}}`))
 	}))
 	defer srv.Close()
 
@@ -71,17 +71,8 @@ func TestPoolDelete_BlockedTextOutput(t *testing.T) {
 	if !strings.Contains(stdout, "cannot delete pool pool-mvp") {
 		t.Errorf("stdout missing header: %q", stdout)
 	}
-	if !strings.Contains(stdout, "storage_images: 3") {
-		t.Errorf("stdout missing storage_images count: %q", stdout)
-	}
-	if !strings.Contains(stdout, "vm_disks: 1") {
+	if !strings.Contains(stdout, "vm_disks: 3") {
 		t.Errorf("stdout missing vm_disks count: %q", stdout)
-	}
-	// Lexicographic ordering: storage_images < vm_disks — should appear first.
-	siIdx := strings.Index(stdout, "storage_images")
-	vmIdx := strings.Index(stdout, "vm_disks")
-	if siIdx == -1 || vmIdx == -1 || siIdx >= vmIdx {
-		t.Errorf("resource listing not sorted lexicographically: %q", stdout)
 	}
 }
 

@@ -25,14 +25,14 @@ import (
 type BlockingResourcesError struct {
 	// Code overrides the wire `error.code`. Zero value falls back to
 	// CodeConflict so existing callers (networks, firmwares, the
-	// vm-only branch of templates / storage_pools) keep emitting the
+	// vm-only branch of storage_pools) keep emitting the
 	// generic `conflict` code unchanged. Endpoint-specific overrides
-	// (e.g. `resource_in_use` for the storage_images refusal) set
+	// (e.g. `resource_in_use` for the vm_disks refusal) set
 	// this field explicitly.
 	Code ErrorCode
 
 	// Kind, when non-empty, surfaces the blocked resource's category
-	// in `details.kind` (e.g. "template", "pool"). Paired with
+	// in `details.kind` (e.g. "pool", "network"). Paired with
 	// CodeResourceInUse so callers can disambiguate a single error
 	// code across resource families without parsing the message.
 	Kind string

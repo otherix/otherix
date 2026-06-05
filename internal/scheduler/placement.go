@@ -24,7 +24,7 @@ import (
 // VM-create endpoint as `node`; when set, the scheduler restricts the
 // candidate list to exactly that node (UUID or case-insensitive name).
 // VCPUs, MemoryMiB and DiskBytes drive the resource-aware fit check +
-// scoring; DiskBytes is derived from the template's default_disk_gib in
+// scoring; DiskBytes is derived from the requested disk_gib in
 // the single-root-disk model.
 // NetworkIDs lists the cluster-wide networks the VM attaches to. When
 // non-empty, the network-aware filter (ADR 0034 NL18) excludes any

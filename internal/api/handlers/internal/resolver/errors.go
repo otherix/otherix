@@ -39,7 +39,7 @@ const (
 
 	// CodeUUIDInName — a UUID literal was supplied to a parameter that
 	// accepts resource names only. Emitted by the strict resolver
-	// helpers (Template, Node, VM) before any DB roundtrip. The Pool
+	// helpers (Node, Pool, VM) before any DB roundtrip. The Pool
 	// resolver retains UUID acceptance for the multi-instance carve-out
 	// and never returns this code.
 	CodeUUIDInName ErrorCode = "uuid_in_name"

@@ -10,7 +10,7 @@
 // terminal status.
 //
 // The storage_pool.scan vertical slice ships PostScan + PollTask.
-// Future task types (template.import, vm.*, snapshot operations)
+// Future task types (vm.*, snapshot operations)
 // extend this package with their own initiator methods, sharing the
 // same Client / mTLS material / poll loop.
 //

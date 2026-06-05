@@ -48,8 +48,8 @@ type VMCreateRequest struct {
 	Format         string `json:"format,omitempty"`
 	DiskGiB        int    `json:"disk_gib,omitempty"`
 	// UserData carries the CP-resolved cloud-init `#cloud-config`
-	// blob (L3 Area 3 lock — already-merged vm.user_data ?:
-	// template.cloud_init_user_data, hostname-injected). Empty
+	// blob (L3 Area 3 lock — already-resolved vm.user_data,
+	// hostname-injected (no template fallback)). Empty
 	// string on the wire means "no cidata"; the agent skips
 	// ISO generation when absent.
 	UserData string `json:"user_data,omitempty"`

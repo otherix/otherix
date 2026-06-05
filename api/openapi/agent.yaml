@@ -188,9 +188,10 @@ paths:
       summary: Create a VM on this node (asynchronous).
       description: |
         The Control Plane has already chosen this node for the VM and
-        resolved every CP-only identifier (`template_id`, `firmware_id`,
+        resolved every CP-only identifier (`firmware_id`,
         `storage_pool_id`, `network_id`) into agent-consumable values
-        (`image_url`+`checksum_sha256`, `code_path`, `storage_pool_path`,
+        (the VM is self-describing for its image: `image_url`+optional
+        `checksum_sha256`; plus `code_path`, `storage_pool_path`,
         `bridge_name`+`vlan_tag`+`mtu`). The agent has no way to
         re-resolve those itself.
 
@@ -1729,33 +1730,33 @@ components:
     VMSpecDiskSource:
       type: object
       description: |
-        Disk image origin. The `kind` discriminates: when `template`,
+        Disk image origin. The `kind` discriminates: when `image`,
         `image_url`, `checksum_sha256` and `image_format` are
-        required (the Control Plane resolved them from the CP-side
-        `Template` row). When `blank`, all three must be absent —
-        the agent allocates an empty image of `size_gib` instead.
+        required (the VM is self-describing; the agent materializes the
+        image into the destination pool's cache on first use). When
+        `blank`, all three must be absent - the agent allocates an
+        empty image of `size_gib` instead.
       required: [kind]
       properties:
         kind:
           type: string
-          enum: [template, blank]
+          enum: [image, blank]
         image_url:
           type: [string, "null"]
           format: uri
           description: |
-            Required when `kind = "template"`. Where to fetch the
-            image if it is not already cached in the destination
-            pool.
+            Required when `kind = "image"`. Where to fetch the image
+            if it is not already cached in the destination pool.
         checksum_sha256:
           type: [string, "null"]
           pattern: "^[0-9a-f]{64}$"
           description: |
-            Required when `kind = "template"`. Lowercase hex sha256
-            of the source image; verified after fetch.
+            Optional when `kind = "image"`. Lowercase hex sha256 of the
+            source image; verified after fetch when set.
         image_format:
           type: [string, "null"]
           enum: [qcow2, raw, null]
-          description: Required when `kind = "template"`.
+          description: Required when `kind = "image"`.
 
     VMSpecDisk:
       type: object
@@ -1873,7 +1874,7 @@ components:
       description: |
         Full VM specification handed to the agent at create time. The
         Control Plane has already resolved every CP-only key
-        (template, firmware, storage pool, network) into
+        (image source, firmware, storage pool, network) into
         agent-consumable values; the agent treats this as the
         complete description of what to bring up.
       required:

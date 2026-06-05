@@ -122,7 +122,7 @@ func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, ta
 
 // requireStringFlag fetches a string flag and rejects empty values as
 // usage errors. The CLI forwards the raw string and the server
-// resolves it (name-only for VM/Template/Node; polymorphic for
+// resolves it (name-only for VM/Node; polymorphic for
 // storage pools). Format validation happens at the resolver layer,
 // not the CLI edge.
 func requireStringFlag(cmd *cobra.Command, name string) (string, error) {

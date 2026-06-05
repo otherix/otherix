@@ -36,9 +36,8 @@ const (
 	CodeRequestTimeout      ErrorCode = "request_timeout"
 	CodeAgentUnreachable    ErrorCode = "agent_unreachable"
 
-	// storage_image.import error codes. Most are passthrough from
-	// the agent's task.error envelope; a few are CP-side
-	// classifications driven by the worker's classifyImportError.
+	// Agent-passthrough vm.create error codes. The agent surfaces
+	// these in the task error envelope; the CP relays them verbatim.
 	CodeAgentTaskLost             ErrorCode = "agent_task_lost"
 	CodeImportTimeout             ErrorCode = "import_timeout"
 	CodeQcow2HeaderInvalid        ErrorCode = "qcow2_header_invalid"

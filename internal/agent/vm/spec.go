@@ -102,8 +102,8 @@ type CreateSpec struct {
 	// grows the disk via qemu-img resize after the copy.
 	DiskGiB int
 	// UserData carries already-resolved raw `#cloud-config` YAML
-	// per L3 Area 3 lock — CP-side has merged vm.user_data ?:
-	// template.cloud_init_user_data and injected hostname when
+	// per L3 Area 3 lock — CP-side has resolved vm.user_data and
+	// injected hostname (there is no template fallback) when
 	// needed. When empty the agent skips cidata generation (legacy
 	// VMs still boot, just without a NoCloud seed).
 	UserData []byte

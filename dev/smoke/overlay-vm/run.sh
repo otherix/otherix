@@ -87,7 +87,7 @@ net_ready_both() {
 # so systemd-networkd-wait-online does not block boot for ~3min waiting on a DHCP
 # lease that never comes (there is no DHCP server on the overlay). A runcmd
 # `ip addr replace` is a belt-and-suspenders fallback in case the netplan rewrite
-# is masked by the template's baked 50-cloud-init.yaml.
+# is masked by the image's baked 50-cloud-init.yaml.
 #
 # The reachability probe is a TCP connect to the peer's sshd (:22) via bash
 # /dev/tcp - NOT ping. The Ubuntu *minimal* cloudimg ships no iputils-ping (and

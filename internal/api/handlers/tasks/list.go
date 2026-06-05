@@ -169,7 +169,7 @@ func (h *Handler) runList(
 }
 
 // first returns the first value of key in the query map, or "" when
-// absent. Mirrors templates/list.go convention.
+// absent. Mirrors the cursor-pagination convention used by the other list handlers.
 func first(q map[string][]string, key string) string {
 	if vs, ok := q[key]; ok && len(vs) > 0 {
 		return vs[0]

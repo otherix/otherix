@@ -21,21 +21,19 @@ var ErrCACertActiveExists = errors.New("store: active CA cert already exists")
 // to a uniqueness or precondition guard the backend enforces; handlers match
 // them with errors.Is to produce the 409 conflict envelopes.
 var (
-	ErrUserEmailExists          = errors.New("store: user email already in use")
-	ErrNetworkNameExists        = errors.New("store: network name already in use")
-	ErrNodeNameExists           = errors.New("store: node name already in use")
-	ErrStoragePoolNameExists    = errors.New("store: storage pool name already in use on node")
-	ErrTaskNotCancellable       = errors.New("store: task not cancellable")
-	ErrVMNameInUse              = errors.New("store: vm name already in use")
-	ErrVMNicMACConflict         = errors.New("store: vm nic mac already in use on network")
-	ErrFirmwareNameExists       = errors.New("store: firmware name already in use for architecture")
-	ErrFirmwareDefaultExists    = errors.New("store: default firmware already exists for architecture and type")
-	ErrTemplateNameExists       = errors.New("store: template name already in use")
-	ErrTemplateFirmwareNotFound = errors.New("store: template firmware does not exist")
-	ErrJoinTokenInvalid         = errors.New("store: join token unknown or expired")
-	ErrJoinTokenExhausted       = errors.New("store: join token max_uses exceeded")
-	ErrJoinNodeNameMismatch     = errors.New("store: node name does not match token binding")
-	ErrJoinNodeNameTaken        = errors.New("store: node already has an active cert")
+	ErrUserEmailExists       = errors.New("store: user email already in use")
+	ErrNetworkNameExists     = errors.New("store: network name already in use")
+	ErrNodeNameExists        = errors.New("store: node name already in use")
+	ErrStoragePoolNameExists = errors.New("store: storage pool name already in use on node")
+	ErrTaskNotCancellable    = errors.New("store: task not cancellable")
+	ErrVMNameInUse           = errors.New("store: vm name already in use")
+	ErrVMNicMACConflict      = errors.New("store: vm nic mac already in use on network")
+	ErrFirmwareNameExists    = errors.New("store: firmware name already in use for architecture")
+	ErrFirmwareDefaultExists = errors.New("store: default firmware already exists for architecture and type")
+	ErrJoinTokenInvalid      = errors.New("store: join token unknown or expired")
+	ErrJoinTokenExhausted    = errors.New("store: join token max_uses exceeded")
+	ErrJoinNodeNameMismatch  = errors.New("store: node name does not match token binding")
+	ErrJoinNodeNameTaken     = errors.New("store: node already has an active cert")
 
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
@@ -44,7 +42,7 @@ var (
 
 // ResourceInUseError reports that a resource cannot be deleted because other
 // rows still reference it. Resources maps each blocking kind (e.g. "vms",
-// "templates") to its count and is non-empty. Handlers project it onto the API
+// "vm_disks") to its count and is non-empty. Handlers project it onto the API
 // blocking_resources envelope. Shared across every resource whose delete is
 // gated on dependants so the carrier stays uniform.
 type ResourceInUseError struct {

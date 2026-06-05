@@ -11,7 +11,7 @@ info:
 
     Coverage so far:
       - Part 1 — auth, users, nodes, join-tokens.
-      - Part 2 — firmwares, storage-pools, networks, templates, tasks.
+      - Part 2 — firmwares, storage-pools, networks, vms, tasks.
 
     User-owned resources carry an `owner_id` (multi-tenancy is not
     modelled).
@@ -67,8 +67,8 @@ tags:
       Cluster-level configuration knobs held in the cluster_settings
       singleton. Today only the default-pool reference (used by VM
       create when the request omits `pool`); the route group anchors
-      future cluster-shaping settings (default-template,
-      default-network) at the same path.
+      future cluster-shaping settings (e.g. default-network) at the
+      same path.
   - name: ca
     description: |
       Cluster Certificate Authority introspection. Today serves a
@@ -5019,7 +5019,7 @@ components:
           type: boolean
           description: |
             At most one firmware per `(architecture, type)` pair may be
-            marked default; selected when a template/VM does not pin a
+            marked default; selected when a VM does not pin a
             specific firmware.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -6513,8 +6513,8 @@ components:
         resource_type:
           type: string
           description: |
-            The resource the task acts on, e.g. `storage_pool`, `template`,
-            `vm`.
+            The resource the task acts on, e.g. `storage_pool`, `vm`,
+            `migration`.
         resource_id:
           type: [string, "null"]
           format: uuid

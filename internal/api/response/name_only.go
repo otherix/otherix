@@ -11,7 +11,7 @@ import "net/http"
 // CLI scripts can branch on the rejection reason without parsing the
 // human-readable message.
 //
-// resource — operator-facing kind (e.g. "vm", "template", "node");
+// resource — operator-facing kind (e.g. "vm", "pool", "node");
 // field — wire location of the offending value (path param name,
 // body field name, query param name); kept identical to the user's
 // input so error renderers can echo back.

@@ -1,7 +1,7 @@
 #cloud-config
-# Dev cloud-init for the local-dev-start environment. Baked into the
-# default `ubuntu-noble-*-mvp` template by seed-mvp.sh so `otherix vm
-# console <name>` lands an operator at a login prompt with working
+# Dev cloud-init for the local-dev-start environment. Passed via
+# `--cloud-init` on `otherix vm create` so `otherix vm console <name>`
+# lands an operator at a login prompt with working
 # credentials (`otherix` / `otherix`, passwordless sudo).
 #
 # WARNING: plain-text password is acceptable for DEV ONLY. Production

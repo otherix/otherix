@@ -219,11 +219,10 @@ func (c *Client) CreatePool(ctx context.Context, req CreatePoolRequest) (Pool, e
 // refuses the delete because the pool still has dependents. Mirrors
 // response.BlockingResourcesError on the wire side:
 //
-//   - Code is the server-set `error.code` — `resource_in_use` when
-//     storage_images are present, generic `conflict` for the
-//     vm_disks-only branch.
+//   - Code is the server-set `error.code` — generic `conflict` for the
+//     vm_disks blocking branch.
 //   - Resources maps dependent-resource-type → reference count. Known
-//     keys: "storage_images", "vm_disks".
+//     key: "vm_disks".
 type ErrPoolBlocked struct {
 	Code      string
 	Resources map[string]int64
@@ -263,8 +262,7 @@ func (c *Client) DeletePool(ctx context.Context, identifier string) error {
 // map off an APIError into the typed ErrPoolBlocked shape. Returns nil
 // when the details payload is absent or malformed — the caller falls
 // back to the raw *APIError so the operator at least sees the status
-// code. Parallel of decodeBlockingResources in templates.go; the two
-// remain separate to keep the typed-error shape per-domain.
+// code. The typed-error shape is kept per-domain rather than shared.
 func decodePoolBlockingResources(apiErr *APIError) *ErrPoolBlocked {
 	if apiErr.Details == nil {
 		return nil

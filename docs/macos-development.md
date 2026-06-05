@@ -157,9 +157,10 @@ over HTTP with a bearer token.
    The bootstrap path seeds an admin when
    `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` +
    `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD` are set on first start.
-2. A node is registered, has a storage pool, and a template with a
-   matching storage_image has been imported. (Phase D will document
-   the manual seed sequence end-to-end.)
+2. A node is registered and has the auto-provisioned `default` storage
+   pool. No image pre-staging is needed - the agent fetches the image
+   URL on first `vm create`. (Phase D documents the seed sequence
+   end-to-end.)
 3. An access token in hand. Two options:
 
 ```bash
@@ -187,8 +188,8 @@ export OTHERIX_API_TOKEN="$TOKEN"
 # Create a VM (async; returns task id).
 ./bin/otherix vm create \
   --name demo-vm \
-  --template-id <template-uuid> \
-  --pool-id <pool-uuid> \
+  --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+  --arch arm64 \
   --vcpus 2 --memory-mb 2048 \
   --wait
 # created task=<task-uuid> status=pending
@@ -197,8 +198,8 @@ export OTHERIX_API_TOKEN="$TOKEN"
 
 # List VMs.
 ./bin/otherix vm list
-# ID                                    NAME      STATUS   POOL                                  TEMPLATE
-# <vm-uuid>                             demo-vm   running  <pool-uuid>                           <template-uuid>
+# ID                                    NAME      STATUS   POOL                                  IMAGE
+# <vm-uuid>                             demo-vm   running  <pool-uuid>                           ubuntu-24.04-minimal-cloudimg-arm64.img
 
 # Get a single VM.
 ./bin/otherix vm get <vm-uuid>
@@ -227,8 +228,8 @@ on disk so subsequent invocations need neither `--token` nor
 `OTHERIX_API_TOKEN`.
 
 **Error classification (parseable from shell):** `api_error: <code>:
-<message>` for CP-side failures (vm_not_found, template_not_accessible,
-node_not_ready, qemu_spawn_failed, …), `request_timeout`,
+<message>` for CP-side failures (vm_not_found, node_not_ready,
+pool_not_found, qemu_spawn_failed, …), `request_timeout`,
 `connection_refused`, `request_failed` for transport failures.
 
 ## CLI configuration
@@ -260,7 +261,7 @@ or env var (`OTHERIX_SERVER`, `OTHERIX_LOGIN`, `OTHERIX_PASSWORD`).
 ```bash
 # Uses the current cluster automatically.
 $ otherix vm list
-ID                                    NAME     STATUS   POOL                                  TEMPLATE
+ID                                    NAME     STATUS   POOL                                  IMAGE
 …
 
 # Override per-invocation (no persistent state change).
@@ -337,27 +338,15 @@ discovery commands so operators can resolve names before submitting
 vary), cursor pagination via `--limit` / `--cursor`, and `--show-ids`
 to surface the UUIDs the table normally hides.
 
-### Templates
+### Images
 
-```bash
-$ otherix template list
-NAME            ARCHITECTURE  OS_FAMILY  VISIBILITY  AGE
-ubuntu-jammy    arm64         linux      public      2d
-ubuntu-noble    arm64         linux      public      1d
-
-$ otherix template list --visibility public --arch arm64
-
-$ otherix template get ubuntu-jammy
-name: ubuntu-jammy
-visibility: public
-architecture: arm64
-os_family: linux
-image_url: https://cloud-images.ubuntu.com/jammy/current/jammy-arm64.img
-image_checksum_sha256: <hex>
-default_cpu_cores: 2
-default_memory_mib: 2048
-...
-```
+There is no template entity and no `otherix template` command group. A VM
+is created directly from an image URL (`otherix vm create --image-url <url>
+--arch <arch> ...`). The image bytes are not a control-plane resource: the
+agent owns a per-pool, basename-keyed image cache that materializes the URL
+on first use. Inspect the cache for a pool through `otherix pool get <name>`,
+which surfaces an `images:` list (name, sha, size) reported by the agent
+through heartbeat.
 
 ### Storage pools
 
@@ -407,7 +396,7 @@ pool fast-ssd created on node node-a
 type: local_dir
 path: /opt/otherix/pools/fast
 
-# Delete a pool (refuses when vm_disks or storage_images reference it)
+# Delete a pool (refuses when vm_disks reference it)
 $ otherix pool delete fast-ssd --force
 pool fast-ssd deleted
 ```
@@ -415,14 +404,16 @@ pool fast-ssd deleted
 One `pool create` invocation registers one (name, node) row — re-run
 the command per node to fan a pool name out across the cluster.
 Deletion has no `--force-cascade`; the operator must remove
-dependent disks/images first.
+dependent VM disks first. The agent-owned image cache is not a delete
+blocker.
 
 **Note:** `seed-mvp.sh` registers the initial pool through `otherix pool
 create` (no direct store access - the control plane is the sole writer,
 now backed by embedded etcd). The agent's pool registry is
 name-keyed and populated through reconciliation from CP (the `pools:`
 block in `agent.yaml` is eliminated), so CLI-created pools work
-end-to-end including agent-side image import + vm-disk allocation.
+end-to-end including agent-side image cache materialization + vm-disk
+allocation.
 
 ### Nodes
 
@@ -486,14 +477,16 @@ literals are rejected by the server with 400 validation_failed.
 # Create — uses cluster default pool, scheduler picks node
 $ otherix vm create \
     --name demo-vm \
-    --template ubuntu-jammy \
+    --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+    --arch arm64 \
     --vcpus 2 --memory-mb 2048 \
     --wait
 
 # Create — explicit pool + node placement hint
 $ otherix vm create \
     --name pinned-vm \
-    --template ubuntu-jammy \
+    --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+    --arch arm64 \
     --pool fast-ssd \
     --node node-a \
     --vcpus 4 --memory-mb 4096
@@ -503,15 +496,15 @@ $ otherix vm get demo-vm
 
 # List — UUIDs hidden by default
 $ otherix vm list
-NAME       STATUS   POOL      TEMPLATE
-demo-vm    running  default   ubuntu-jammy
-pinned-vm  running  fast-ssd  ubuntu-jammy
+NAME       STATUS   POOL      IMAGE
+demo-vm    running  default   ubuntu-24.04-minimal-cloudimg-arm64.img
+pinned-vm  running  fast-ssd  ubuntu-24.04-minimal-cloudimg-arm64.img
 
 # List with UUIDs (--show-ids)
 $ otherix vm list --show-ids
-ID                                    NAME       STATUS   POOL      TEMPLATE
-<uuid>                                demo-vm    running  default   ubuntu-jammy
-<uuid>                                pinned-vm  running  fast-ssd  ubuntu-jammy
+ID                                    NAME       STATUS   POOL      IMAGE
+<uuid>                                demo-vm    running  default   ubuntu-24.04-minimal-cloudimg-arm64.img
+<uuid>                                pinned-vm  running  fast-ssd  ubuntu-24.04-minimal-cloudimg-arm64.img
 
 # Delete by name (interactive prompt without --force)
 $ otherix vm delete demo-vm --wait --force
@@ -641,7 +634,7 @@ through the full sequence.
    make run-api-dev
    ```
    `run-api-dev` uses `dev/config/api.yaml` — the workers (vm.create
-   / vm.delete / storage_pool.scan / storage_image.import) dispatch
+   / vm.delete / storage_pool.scan) dispatch
    end-to-end against the real agent (mTLS material auto-managed via
    the api config's `cp_cert` block). The production `make run-api` target keeps
    `agent_client.enabled: false` by default and refuses to start with
@@ -680,11 +673,12 @@ bootstrap flow end-to-end:
    `/opt/otherix/pools/default` on every node as it reaches `ready`, and
    that is the cluster default. So `vm create` resolves without `--pool`,
    and seed-mvp no longer runs `pool create` or `cluster set-default-pool`.
-7. Calls `otherix template create ubuntu-noble-<arch>-mvp` (no `--pool`)
-   which registers the template (compute-mode SHA - no pre-computed
-   checksum required from the operator). As of B1 no `--pool` warm-up is
-   needed: `vm create` auto-materialises the image onto its target pool
-   inline on first use, so the first create just pays the one-time import.
+After seed-mvp finishes, the dev cluster has the nodes registered, the
+CLI cluster configured, and the `default` pool auto-provisioned. There is
+no template to register: operators create VMs directly from an image URL
+with `otherix vm create --image-url <url> --arch <arch>`. The agent
+materializes the image onto its target pool inline on first use, so the
+first create just pays the one-time download.
 
 The node row arrives in `pending` status and flips to `ready` once the
 first heartbeat lands. The dev heartbeat cadence (15s interval / 45s
@@ -696,26 +690,22 @@ Sample output:
 >> seed-mvp complete
    node     : node-mvp (id=<uuid>)
    pool     : default (cluster default, CP-auto-provisioned on ready nodes)
-   template : ubuntu-noble-arm64-mvp (image auto-imports on first vm create)
+   images   : none staged (vm create fetches the image URL on first use)
 ```
 
 ### Step 2 — create a VM
 
-The CLI flags are `--template` / `--pool` (renamed from
-`--template-id` / `--pool-id` by the name-based references series).
-After Phase 3 the values accept resource names only — UUID literals
-surface as `400 validation_failed` with an actionable hint pointing to
-`otherix <resource> list`. Storage pool addressing retains a UUID
-escape hatch for multi-instance per-node row addressing. Phase 1.5
-made `--pool` optional — when omitted, the server resolves the cluster
-default-pool reference held in `cluster_settings`. The CP auto-provisions
-`default` as the cluster default pool on every ready node, so the command
-below works without `--pool`:
+A VM is created directly from an image URL: `--image-url` and `--arch`
+are required, the rest optional. `--pool` is optional - when omitted, the
+server resolves the cluster default-pool reference held in
+`cluster_settings`. The CP auto-provisions `default` as the cluster default
+pool on every ready node, so the command below works without `--pool`:
 
 ```bash
 ./bin/otherix vm create \
     --name demo-vm \
-    --template ubuntu-noble-arm64-mvp \
+    --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+    --arch arm64 \
     --vcpus 2 --memory-mb 2048 --wait
 # created task=<task-uuid> status=pending
 # .....
@@ -727,7 +717,8 @@ To target a specific node explicitly:
 ```bash
 ./bin/otherix vm create \
     --name demo-vm \
-    --template ubuntu-jammy-arm64-mvp \
+    --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+    --arch arm64 \
     --pool default \
     --node node-mvp \
     --vcpus 2 --memory-mb 2048 --wait
@@ -738,24 +729,26 @@ name and uses Least-VM-count tie-breaking. A `--node` hint pins
 placement to exactly that node; mismatch (pool not on hinted node)
 surfaces as 409 `pool_not_on_node`.
 
-Behind the scenes: handler enqueues `vm.create` task → river worker
-loads the template/pool/node → `agentclient.PostVMCreate` over mTLS
-→ agent validates the template file is on disk → agent spawns qemu →
-agent's task surface flips to terminal-success → CP polls → CP
-projects vm_runtime row with phase=running.
+Behind the scenes: handler enqueues `vm.create` task → worker
+loads the VM (image URL + pool + node) → `agentclient.PostVMCreate` over
+mTLS → agent materializes the image into its per-pool cache (download on
+first use) → agent spawns qemu → agent's task surface flips to
+terminal-success → CP polls → CP projects vm_runtime row with
+phase=running.
 
 ### Step 4 — observe the VM
 
 ```bash
 ./bin/otherix vm list
-# NAME      STATUS   POOL       TEMPLATE
-# demo-vm   running  default    ubuntu-jammy-arm64-mvp
+# NAME      STATUS   POOL       IMAGE
+# demo-vm   running  default    ubuntu-24.04-minimal-cloudimg-arm64.img
 
 ./bin/otherix vm get demo-vm
 # id: <vm-uuid>
 # name: demo-vm
 # owner_id: <user-uuid>
-# template: ubuntu-jammy-arm64-mvp
+# image_url: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+# image_format: qcow2
 # pool: default
 # node: node-mvp
 # architecture: arm64
@@ -834,8 +827,7 @@ desired identifier.
 | ------- | ------------ |
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the Iteration 1 agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
-| `task.error.code = template_not_found` | the template row referenced by the create does not exist (deleted or never created); create it with `otherix template create` |
-| `task.error.code = vm_image_unavailable` | the inline image materialization on the chosen pool failed during `vm create` for a non-agent reason (the CP could not project the image row or decode the import result); as of B1 `vm create` auto-imports the template image onto a cold pool, so this replaces the old "stage the pool first" step. Agent-side import failures surface under their own code instead (e.g. `checksum_mismatch`, `download_failed`, or `agent_unreachable`). Read the task error message for the cause, then retry |
+| `task.error.code = image_unavailable` | the agent could not materialize the image URL onto the chosen pool during `vm create` (download or cache write failed). Agent-side fetch failures surface under their own code (e.g. `checksum_mismatch`, `download_failed`, or `agent_unreachable`). Read the task error message for the cause, then retry |
 | `task.error.code = node_not_ready` | a fresh `make clean-dev` flipped the node row to pending; rerun `seed-mvp.sh` |
 | `api_error: unauthenticated` from the CLI | `OTHERIX_API_TOKEN` expired (JWTs are 15-min by default); re-login or use a long-lived `otx_*` API token |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; configure via `PUT /v1/cluster/default-pool` or pass `--pool` explicitly |
@@ -853,8 +845,6 @@ human-facing UX and the real-hardware surfaces the integration tests
 cannot reach (real qemu, real KVM/TCG fallback, real serial console).
 
 Post-MVP iterations layer in:
-- agent storage_image.import endpoints (eliminates the manual
-  image-copy step);
 - cloud-init with NoCloud ISO (Iteration 5);
 - VM lifecycle ops beyond create/delete;
 - live migration, snapshots, multi-disk;
@@ -932,8 +922,7 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-mvp`.
 | ------- | ------------ |
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
-| `task.error.code = template_not_found` | the template row the create references is missing (deleted or never created); create it with `otherix template create` |
-| `task.error.code = vm_image_unavailable` | `vm create` could not auto-materialise the template image onto the chosen pool (B1 inline import) for a non-agent reason (image-row projection or result-decode failure). No pre-staging is required anymore; agent-side import failures appear under their own code (`checksum_mismatch`, `download_failed`, `agent_unreachable`). Read the task error and retry |
+| `task.error.code = image_unavailable` | the agent could not materialize the image URL onto the chosen pool during `vm create` (download or cache write failed). No pre-staging is required; agent-side fetch failures appear under their own code (`checksum_mismatch`, `download_failed`, `agent_unreachable`). Read the task error and retry |
 | `task.error.code = node_not_ready` | a fresh `make clean-dev` removed the agent; re-run `make bootstrap-dev` + `make seed-mvp` |
 | `api_error: unauthenticated` from the CLI | stored API token revoked OR cluster CA rotated; re-run `make seed-mvp` to refresh the cluster credential |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; `otherix cluster set-default-pool <name>` or pass `--pool` explicitly |

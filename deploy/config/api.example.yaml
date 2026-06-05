@@ -161,7 +161,7 @@ placement:
       threshold_percent: 15      # flag when free pool bytes < 15% of capacity
       consecutive_required: 1    # single scan sets pressure (scans are 15 min apart)
 
-# Storage pools: where VM disks and template images live on each node.
+# Storage pools: where VM disks and cached images live on each node.
 storage_pools:
   # Filesystem prefixes a pool's `path` may target - defence in depth
   # against a typo / hostile create pointing at /etc. Each entry must be

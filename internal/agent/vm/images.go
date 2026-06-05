@@ -396,8 +396,8 @@ func (m *Manager) DeleteImage(ctx context.Context, poolName, basename string) er
 // and should not surface as cached images. Returns ErrPoolUnknown for
 // unknown pools, nil error and empty slice when images/ is absent.
 //
-// First-cut pagination: returns the entire inventory. ROADMAP entry
-// "agent storage_images list — cursor pagination" tracks the deferred
+// First-cut pagination: returns the entire inventory. The agent
+// image-cache list - cursor pagination tracks the deferred
 // cursor implementation.
 func (m *Manager) ListImages(ctx context.Context, poolName string) ([]CachedImage, error) {
 	m.poolsMu.RLock()

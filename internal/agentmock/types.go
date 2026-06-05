@@ -93,7 +93,7 @@ type AgentVM struct {
 	Status       string
 	// UserData (L3) records the cloud-init blob the CP-side resolver
 	// shipped with the create request. Empty when the operator left
-	// both vm.user_data and template.cloud_init_user_data unset.
+	// vm.user_data unset.
 	// Surfaced through StoredVM so integration tests can
 	// assert L3 resolution end-to-end.
 	UserData  string

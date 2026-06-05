@@ -442,8 +442,8 @@ func TestDeletePool_BlockedByVMDisksOnly(t *testing.T) {
 	if blocked.Resources["vm_disks"] != 2 {
 		t.Errorf("vm_disks = %d, want 2", blocked.Resources["vm_disks"])
 	}
-	if _, present := blocked.Resources["storage_images"]; present {
-		t.Errorf("storage_images key should not appear when only vm_disks block")
+	if len(blocked.Resources) != 1 {
+		t.Errorf("Resources = %v, want only vm_disks", blocked.Resources)
 	}
 }
 

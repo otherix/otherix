@@ -188,7 +188,7 @@ func TestCreate_ValidNIC_PassesValidation(t *testing.T) {
 
 	// Drain the async create goroutine to a terminal task state so its
 	// filesystem writes finish before t.TempDir cleanup runs (the stub
-	// template is not a real qcow2, so the task fails - that is fine; we
+	// image is not a real qcow2, so the task fails - that is fine; we
 	// only assert NIC validation passed, evidenced by the 202).
 	var acc asyncAccepted
 	if err := json.Unmarshal(rec.Body.Bytes(), &acc); err != nil {
@@ -243,7 +243,7 @@ func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
 		t.Fatalf("decode first accepted: %v", err)
 	}
 
-	// Drain the original create to a terminal state (the stub template is
+	// Drain the original create to a terminal state (the stub image is
 	// not a real qcow2 so it fails — fine; the VM and its task record
 	// remain registered, which is exactly the redelivery window).
 	firstTaskID := uuid.MustParse(firstAcc.TaskID)

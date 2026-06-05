@@ -260,7 +260,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 // existing files on disk (operator responsibility).
 //
 // Filesystem-side: ensures root and the conventional pool subdirs
-// (templates/, scratch/import/) exist and are writable. Errors here
+// (images/, scratch/import/) exist and are writable. Errors here
 // propagate up to the reconciler, which records a `failed` outcome on
 // the next heartbeat.
 func (m *Manager) AddPool(name, root string) error {

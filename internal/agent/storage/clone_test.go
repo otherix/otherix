@@ -12,7 +12,7 @@ import (
 
 func TestCloneImage_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	src := filepath.Join(dir, "template.qcow2")
+	src := filepath.Join(dir, "image.qcow2")
 	dst := filepath.Join(dir, "vms", "abc", "disk.qcow2")
 
 	want := []byte("pretend this is a qcow2 header and body")
@@ -52,7 +52,7 @@ func TestCloneImage_OverwriteExistingFinalIsAtomic(t *testing.T) {
 	// so the final file is replaced atomically. Verify that a pre-existing
 	// dst is replaced (not corrupted by interleaved writes).
 	dir := t.TempDir()
-	src := filepath.Join(dir, "template.qcow2")
+	src := filepath.Join(dir, "image.qcow2")
 	dst := filepath.Join(dir, "disk.qcow2")
 	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
 		t.Fatalf("seed source: %v", err)
