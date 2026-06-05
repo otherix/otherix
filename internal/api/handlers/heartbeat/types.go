@@ -61,9 +61,24 @@ type declaredFDBEntry struct {
 // forward-compatibility but are not deserialised
 // here yet — scan-driven capacity reporting remains canonical.
 type poolReport struct {
-	Name                 string  `json:"name"`
-	ReconciliationStatus string  `json:"reconciliation_status"`
-	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+	Name                 string            `json:"name"`
+	ReconciliationStatus string            `json:"reconciliation_status"`
+	ReconciliationError  *string           `json:"reconciliation_error,omitempty"`
+	Images               []poolImageReport `json:"images,omitempty"`
+}
+
+// poolImageReport mirrors one entry of HeartbeatPoolReport.images — the agent's
+// observed per-pool image cache. The CP keys the inventory on the pool's UUID
+// (resolved from (node_id, lower(name))) and persists it as observed state.
+// ImportedAt is an agent-supplied RFC3339 string; a parse failure degrades to
+// zero time rather than dropping the image (identity is basename+sha256).
+type poolImageReport struct {
+	Basename         string `json:"basename"`
+	SHA256           string `json:"sha256"`
+	SizeBytes        int64  `json:"size_bytes"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
+	Format           string `json:"format"`
+	ImportedAt       string `json:"imported_at"`
 }
 
 // networkReport mirrors HeartbeatNetworkReport — the agent's per-network

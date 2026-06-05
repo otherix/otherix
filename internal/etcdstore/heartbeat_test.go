@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
@@ -91,6 +92,25 @@ func TestInHeartbeatProjection(t *testing.T) {
 		if err := hp.UpdateStoragePoolReconciliation(ctx, store.UpdateStoragePoolReconciliationParams{NodeID: node.ID, Name: pool.Name, ReconciliationStatus: "ok"}); err != nil {
 			return err
 		}
+		// Pool image inventory: resolve the pool id via the same (node_id,
+		// name) key the reconciliation write uses, then persist observed images.
+		poolID, found, err := hp.StoragePoolIDByNodeName(ctx, node.ID, pool.Name)
+		if err != nil {
+			return err
+		}
+		if !found || poolID != pool.ID {
+			t.Errorf("StoragePoolIDByNodeName = (%v, %v), want (%v, true)", poolID, found, pool.ID)
+		}
+		if err := hp.UpsertPoolImageInventory(ctx, poolID, []store.PoolImage{{
+			Basename: "noble.qcow2", ChecksumSha256: "abc123", SizeBytes: 100, VirtualSizeBytes: 200, Format: "qcow2",
+		}}); err != nil {
+			return err
+		}
+		// A pool the CP no longer has resolves to not-found, so the inventory
+		// write is skipped by the caller (seam: unknown pool is a safe no-op).
+		if _, found, err := hp.StoragePoolIDByNodeName(ctx, node.ID, "ghost-pool"); err != nil || found {
+			t.Errorf("StoragePoolIDByNodeName(ghost) = (found=%v, %v), want (false, nil)", found, err)
+		}
 		return nil
 	})
 	if err != nil {
@@ -132,6 +152,15 @@ func TestInHeartbeatProjection(t *testing.T) {
 	pools, err := s.StoragePoolsByName(ctx, pool.Name)
 	if err != nil || len(pools) != 1 || pools[0].ReconciliationStatus != "ok" {
 		t.Errorf("pool reconciliation = (%+v, %v), want status ok", pools, err)
+	}
+	// Pool image inventory landed as observed state, keyed by the pool UUID.
+	inv, err := s.PoolImageInventory(ctx, pool.ID)
+	if err != nil {
+		t.Fatalf("PoolImageInventory: %v", err)
+	}
+	want := []store.PoolImage{{Basename: "noble.qcow2", ChecksumSha256: "abc123", SizeBytes: 100, VirtualSizeBytes: 200, Format: "qcow2"}}
+	if diff := cmp.Diff(want, inv); diff != "" {
+		t.Errorf("PoolImageInventory mismatch (-want +got):\n%s", diff)
 	}
 
 	// NodeForHeartbeat on an absent node is not-found.
