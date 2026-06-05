@@ -108,5 +108,8 @@ func DecodeVMSpec(d Document) (VMSpec, error) {
 	if s.CloudInit != "" && s.CloudInitDisabled {
 		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.cloudInit and spec.cloudInitDisabled are mutually exclusive", d.Index, d.Name)
 	}
+	if s.DesiredPhase != "" && s.DesiredPhase != "running" {
+		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.desiredPhase %q is not supported at create in v1 (a created VM boots to running; use the lifecycle commands to stop or start it afterward)", d.Index, d.Name, s.DesiredPhase)
+	}
 	return s, nil
 }

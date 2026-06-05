@@ -87,7 +87,25 @@ func TestVMSpecToRequestMapsCloudInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCreatePlan() error = %v", err)
 	}
+	if len(plan) != 1 {
+		t.Fatalf("plan has %d ops, want 1", len(plan))
+	}
 	if plan[0].VM.UserData == nil || !strings.HasPrefix(*plan[0].VM.UserData, "#cloud-config") {
 		t.Errorf("VM.UserData = %v, want inline cloud-config", plan[0].VM.UserData)
+	}
+}
+
+func TestBuildCreatePlanVMNodePointer(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, node: node-9 }\n"
+	docs, _ := manifest.Parse(strings.NewReader(src))
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("BuildCreatePlan() error = %v", err)
+	}
+	if len(plan) != 1 {
+		t.Fatalf("plan has %d ops, want 1", len(plan))
+	}
+	if plan[0].VM.Node == nil || *plan[0].VM.Node != "node-9" {
+		t.Errorf("VM.Node = %v, want pointer to node-9", plan[0].VM.Node)
 	}
 }

@@ -44,6 +44,8 @@ var kindOrder = map[string]int{
 func BuildCreatePlan(docs []Document) ([]CreateOp, error) {
 	var ops []CreateOp
 	for _, d := range docs {
+		// Kinds are gated by decodeHeader (parse.go); an unknown kind
+		// cannot reach here, so the switch needs no default.
 		switch d.Kind {
 		case KindNetwork:
 			op, err := networkCreateOp(d)
@@ -77,6 +79,8 @@ func BuildCreatePlan(docs []Document) ([]CreateOp, error) {
 func BuildDeletePlan(docs []Document) ([]DeleteTarget, error) {
 	var targets []DeleteTarget
 	for _, d := range docs {
+		// Kinds are gated by decodeHeader (parse.go); an unknown kind
+		// cannot reach here, so the switch needs no default.
 		switch d.Kind {
 		case KindNetwork:
 			if _, err := DecodeNetworkSpec(d); err != nil {
@@ -155,6 +159,9 @@ func vmCreateOp(d Document) (CreateOp, error) {
 	if err != nil {
 		return CreateOp{}, err
 	}
+	// desiredPhase is intentionally not mapped: the create API always
+	// boots the VM to running. DecodeVMSpec rejects any other value, so
+	// a desiredPhase here is either empty or "running" - a no-op at create.
 	req := cpclient.CreateVMRequest{
 		Name:              d.Name,
 		ImageURL:          s.ImageURL,
