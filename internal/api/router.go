@@ -40,9 +40,8 @@ import (
 type RouterDeps struct {
 	Store              RouterStore
 	AuthService        *auth.Service
-	HealthCheckName    string                            // /readyz dependency label; empty falls to "database"
-	ImageDeleter       storagepoolshandlers.ImageDeleter // may be nil when AgentClient.Enabled=false
-	StoragePools       config.StoragePoolsConfig         // path allowlist
+	HealthCheckName    string                    // /readyz dependency label; empty falls to "database"
+	StoragePools       config.StoragePoolsConfig // path allowlist
 	Logger             *slog.Logger
 	RequestTimeout     time.Duration
 	PlacementAlgorithm string                    // empty falls to scheduler default
@@ -157,7 +156,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	nodesH := nodeshandlers.New(deps.Store, deps.Logger)
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
-	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.ImageDeleter, deps.StoragePools, deps.Logger)
+	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.StoragePools, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
@@ -281,11 +280,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			})
 
 			// /v1/vms surface. RequirePermission gates on role-level
-			// capability; the create handler runs the composite
-			// template-usability check inside the body (matching the
-			// storage_image:import pattern). Delete runs
-			// auth.CheckOwnership after the row loads — cross-user
-			// developer attempts surface as 404 (no leak).
+			// capability; ownership scope checks run inside the handler
+			// bodies. Delete runs auth.CheckOwnership after the row
+			// loads — cross-user developer attempts surface as 404 (no
+			// leak).
 			r.Route("/vms", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/", vmsH.List)
 				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/{id}", vmsH.Get)
@@ -315,18 +313,12 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// the executor is the production agentScanExecutor.
 				r.With(middleware.RequirePermission(auth.PermStoragePoolScan, deps.Logger)).Post("/{id}/scan", storagePoolsH.Scan)
 
-				// storage_images read endpoints. image_cache:read is
-				// held by every authenticated role, so the gate is the
-				// only authorization layer; storage images are an
-				// infrastructure projection without per-owner scope.
-				r.With(middleware.RequirePermission(auth.PermImageCacheRead, deps.Logger)).Get("/{pool_id}/images", storagePoolsH.ListImages)
-				r.With(middleware.RequirePermission(auth.PermImageCacheRead, deps.Logger)).Get("/{pool_id}/images/{image_id}", storagePoolsH.GetImage)
-
-				// storage_image.delete sync handler.
-				// RequirePermission gates on role-level capability;
-				// composite ownership / public-bypass enforcement
-				// happens inside the handler.
-				r.With(middleware.RequirePermission(auth.PermStorageImageManage, deps.Logger)).Delete("/{pool_id}/images/{image_id}", storagePoolsH.DeleteImage)
+				// The per-pool cached-image inventory is no longer a
+				// dedicated sub-resource: it is agent-reported observed
+				// state embedded under `images[]` on the pool-get
+				// response (storage_pool:read). The former
+				// GET/DELETE `/{pool_id}/images[/{image_id}]` endpoints
+				// were removed with the template entity.
 			})
 
 			// /v1/cluster surface. Default-pool reference is the only

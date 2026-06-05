@@ -46,15 +46,16 @@ import (
 )
 
 // Store is the storage surface the storage-pools handlers depend on:
-// the pool / storage-image domain methods, the identifier-resolution
-// contract (resolver.Querier) used to resolve pool and node parameters,
-// the node read used by the view projectors, and the EnqueueTask
-// producer seam used by Scan.
+// the pool domain methods, the identifier-resolution contract
+// (resolver.Querier) used to resolve pool and node parameters, the node
+// read used by the view projectors, the per-pool image inventory read
+// (agent-reported observed state surfaced on pool-get), and the
+// EnqueueTask producer seam used by Scan.
 // *etcdstore.Store satisfies it; depending on the interface rather than the
 // concrete store narrows the handler's storage dependency to the methods it
 // uses, lets tests substitute a fake, and keeps the queue off the request
-// handlers. The scan/import workers (jobs.go, import_jobs.go,
-// scan_trigger.go) are consumer-side and hold the concrete store.
+// handlers. The scan worker (jobs.go, scan_trigger.go) is consumer-side and
+// holds the concrete store.
 type Store interface {
 	resolver.Querier
 
@@ -65,44 +66,27 @@ type Store interface {
 	ListPoolsEffectiveByName(ctx context.Context, name string) ([]store.PoolEffectiveCapacity, error)
 	DeleteStoragePool(ctx context.Context, id uuid.UUID) error
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-	StorageImageByID(ctx context.Context, id uuid.UUID) (store.StorageImage, error)
-	ListStorageImagesByPool(ctx context.Context, arg store.ListStorageImagesByPoolParams) ([]store.StorageImage, error)
-	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
-	DeleteStorageImageRefcounted(
-		ctx context.Context,
-		poolID, imageID uuid.UUID,
-		authorize func(store.Template) error,
-		onLastReferent func(ctx context.Context, node store.Node, poolName, checksum string) error,
-	) (store.StorageImage, store.Template, error)
+	PoolImageInventory(ctx context.Context, poolID uuid.UUID) ([]store.PoolImage, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 }
 
-// Ensure the production store satisfies the handler's storage contract.
-
 // Handler bundles the dependencies for the storage-pools routes. Scan
-// enqueues through the store's EnqueueTask seam, so the handler no longer
-// holds a queue client; DeleteImage additionally
-// needs an ImageDeleter to drive the agent's synchronous delete on the
-// last-referent path.
+// enqueues through the store's EnqueueTask seam, so the handler holds no
+// queue client.
 type Handler struct {
-	store        Store
-	imageDeleter ImageDeleter
-	cfg          config.StoragePoolsConfig
-	log          *slog.Logger
+	store Store
+	cfg   config.StoragePoolsConfig
+	log   *slog.Logger
 }
 
 // New constructs a Handler. It takes the Store interface so any
-// conforming backend can be wired in; production passes *store.Store.
-// imageDeleter may be nil — when AgentClient.Enabled is false the
-// DeleteImage handler responds 502 agent_unreachable on the
-// count==0 path rather than panicking. cfg pins the operator-facing
-// pool knobs (allowlist prefixes).
-func New(s Store, imageDeleter ImageDeleter, cfg config.StoragePoolsConfig, log *slog.Logger) *Handler {
+// conforming backend can be wired in; production passes *etcdstore.Store.
+// cfg pins the operator-facing pool knobs (allowlist prefixes).
+func New(s Store, cfg config.StoragePoolsConfig, log *slog.Logger) *Handler {
 	return &Handler{
-		store:        s,
-		imageDeleter: imageDeleter,
-		cfg:          cfg,
-		log:          log,
+		store: s,
+		cfg:   cfg,
+		log:   log,
 	}
 }
 
@@ -136,6 +120,7 @@ type storagePoolView struct {
 	ReconciliationError     *string           `json:"reconciliation_error"`
 	CreatedAt               string            `json:"created_at"`
 	UpdatedAt               string            `json:"updated_at"`
+	Images                  []poolImageView   `json:"images"`
 }
 
 // diskPressureView mirrors components/schemas/DiskPressureCondition.
@@ -164,8 +149,14 @@ type poolConceptView struct {
 // Update routed through projectView) consume view rows so callers
 // always see `available_bytes_effective` alongside raw — operators
 // can spot a divergence (pending-VM-disk pressure) at a glance.
+// The Images slice is initialised empty (non-nil) so the wire field
+// renders `[]` rather than null on the read paths that do not embed the
+// agent-reported inventory (list, create/update echo). The pool-get paths
+// (projectView, projectInstanceForConcept) overwrite it with the live
+// PoolImageInventory read.
 func toViewEffective(p store.PoolEffectiveCapacity, nodeName string, nodeStatus store.NodeStatus, isClusterDefault bool) storagePoolView {
 	view := storagePoolView{
+		Images:                  []poolImageView{},
 		ID:                      p.ID.String(),
 		Node:                    nodeName,
 		NodeStatus:              nodeStatusOrNil(nodeStatus),
@@ -250,7 +241,37 @@ func (h *Handler) projectView(ctx context.Context, p store.StoragePool) (storage
 	}
 	isDefault := settings.DefaultPoolName != nil &&
 		strings.EqualFold(*settings.DefaultPoolName, row.Name)
-	return toViewEffective(row, node.Name, node.Status, isDefault), nil
+	view := toViewEffective(row, node.Name, node.Status, isDefault)
+	images, err := h.poolImages(ctx, p.ID)
+	if err != nil {
+		return storagePoolView{}, err
+	}
+	view.Images = images
+	return view, nil
+}
+
+// poolImages reads the agent-reported image inventory for a pool and maps
+// it onto the public wire shape. Images are an agent-owned cache (observed
+// state reported through heartbeat) with no CP-side row; the slice is
+// always non-nil so the wire field renders `[]` rather than null when the
+// pool has no cached images.
+func (h *Handler) poolImages(ctx context.Context, poolID uuid.UUID) ([]poolImageView, error) {
+	inventory, err := h.store.PoolImageInventory(ctx, poolID)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]poolImageView, 0, len(inventory))
+	for _, im := range inventory {
+		views = append(views, poolImageView{
+			Name:             im.Basename,
+			SHA256:           im.ChecksumSha256,
+			SizeBytes:        im.SizeBytes,
+			VirtualSizeBytes: im.VirtualSizeBytes,
+			Format:           im.Format,
+			ImportedAt:       im.ImportedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return views, nil
 }
 
 // rawJSONOrEmpty returns raw if non-empty, otherwise the JSON object

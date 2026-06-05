@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"time"
 
-	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
@@ -69,12 +68,11 @@ type Server struct {
 // AgentServer.Enabled is false the material may be zero (Source =
 // "skipped") and no listener is constructed; the validation here only
 // activates when AgentServer.Enabled = true.
-func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshandlers.ImageDeleter, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, membership ClusterMembership, log *slog.Logger) (*Server, error) {
+func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, membership ClusterMembership, log *slog.Logger) (*Server, error) {
 	handler := NewRouter(RouterDeps{
 		Store:              s,
 		AuthService:        authSvc,
 		HealthCheckName:    "etcd",
-		ImageDeleter:       imageDeleter,
 		StoragePools:       cfg.StoragePools,
 		Logger:             log,
 		RequestTimeout:     cfg.Server.WriteTimeout,
@@ -109,7 +107,6 @@ func NewServer(cfg config.APIConfig, s RouterStore, imageDeleter storagepoolshan
 		agentHandler := NewAgentRouter(RouterDeps{
 			Store:              s,
 			AuthService:        authSvc,
-			ImageDeleter:       imageDeleter,
 			Logger:             log,
 			RequestTimeout:     cfg.Server.WriteTimeout,
 			PressureMemory:     cfg.Placement.Pressure.Memory,

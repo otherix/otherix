@@ -5,9 +5,7 @@ package storagepools
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -34,13 +32,9 @@ import (
 type WorkerStore interface {
 	UpdateTaskRunning(ctx context.Context, id uuid.UUID) error
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
-	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
-	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
 	ProjectStoragePoolScan(ctx context.Context, usage store.UpsertStoragePoolUsageParams, pressure store.UpdatePoolDiskPressureParams, fin store.UpdateTaskFinalizedParams) error
-	ProjectStorageImageImport(ctx context.Context, img store.CreateStorageImageParams, tmplChecksum store.UpdateTemplateImageChecksumIfNullParams, fin store.UpdateTaskFinalizedParams) error
 }
 
 // ScanHandler returns the dispatcher handler for storage_pool.scan jobs.
@@ -95,88 +89,6 @@ func runScan(ctx context.Context, st WorkerStore, exec ScanExecutor, pressureDis
 		return fmt.Errorf("project scan success: %v", err)
 	}
 	return nil
-}
-
-// ImportHandler returns the dispatcher handler for storage_image.import jobs.
-func ImportHandler(st WorkerStore, exec ImportExecutor, log *slog.Logger) func(context.Context, []byte) error {
-	return func(ctx context.Context, raw []byte) error {
-		var args StorageImageImportArgs
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return fmt.Errorf("unmarshal storage_image.import args: %v", err)
-		}
-		return runImport(ctx, st, exec, log, args)
-	}
-}
-
-func runImport(ctx context.Context, st WorkerStore, exec ImportExecutor, log *slog.Logger, args StorageImageImportArgs) error {
-	taskID := args.TaskID
-	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
-		return fmt.Errorf("update task running: %v", err)
-	}
-	tpl, err := st.TemplateByID(ctx, args.TemplateID)
-	if err != nil {
-		return failTask(ctx, st, log, "storagepools.import", taskID, classifyImportLoad(err, errCodeImportTemplateNotFound), fmt.Errorf("load template: %v", err))
-	}
-	pool, err := st.StoragePoolByID(ctx, args.PoolID)
-	if err != nil {
-		return failTask(ctx, st, log, "storagepools.import", taskID, classifyImportLoad(err, errCodeImportPoolNotFound), fmt.Errorf("load pool: %v", err))
-	}
-	node, err := st.NodeByID(ctx, pool.NodeID)
-	if err != nil {
-		return failTask(ctx, st, log, "storagepools.import", taskID, classifyImportLoad(err, errCodeImportNodeNotFound), fmt.Errorf("load node: %v", err))
-	}
-	task, err := st.TaskByID(ctx, taskID)
-	if err != nil {
-		return fmt.Errorf("reload task: %v", err)
-	}
-
-	result, execErr := exec.Execute(ctx, ImportArgs{
-		TaskID:        taskID,
-		AgentTaskID:   task.AgentTaskID,
-		Pool:          pool,
-		Node:          node,
-		Template:      tpl,
-		OnAgentTaskID: onAgentTaskID(st, taskID),
-	})
-	if execErr != nil {
-		return failTask(ctx, st, log, "storagepools.import", taskID, classifyImportError(execErr), execErr)
-	}
-
-	resultJSON, err := marshalImportResult(result)
-	if err != nil {
-		return failTask(ctx, st, log, "storagepools.import", taskID, errCodeImportInternal, fmt.Errorf("marshal import result: %v", err))
-	}
-	checksumBytes, err := hex.DecodeString(result.ChecksumSHA256)
-	if err != nil {
-		return failTask(ctx, st, log, "storagepools.import", taskID, errCodeImportInternal, fmt.Errorf("decode result checksum: %v", err))
-	}
-	if err := st.ProjectStorageImageImport(ctx,
-		store.CreateStorageImageParams{
-			ID: uuid.New(), TemplateID: args.TemplateID, PoolID: args.PoolID,
-			ChecksumSha256: result.ChecksumSHA256, SizeBytes: result.SizeBytes, Format: result.Format,
-		},
-		store.UpdateTemplateImageChecksumIfNullParams{ID: args.TemplateID, ImageChecksumSha256: checksumBytes},
-		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
-	); err != nil {
-		return fmt.Errorf("project import success: %v", err)
-	}
-	return nil
-}
-
-// onAgentTaskID returns the resumption callback persisting the agent task id.
-func onAgentTaskID(st WorkerStore, taskID uuid.UUID) func(context.Context, uuid.UUID) error {
-	return func(ctx context.Context, agentTaskID uuid.UUID) error {
-		return st.UpdateTaskAgentTaskID(ctx, store.UpdateTaskAgentTaskIDParams{ID: taskID, AgentTaskID: &agentTaskID})
-	}
-}
-
-// classifyImportLoad maps an entity-read error to a *_not_found code (absent
-// row) or the import internal code otherwise.
-func classifyImportLoad(err error, notFoundCode string) string {
-	if errors.Is(err, store.ErrNotFound) {
-		return notFoundCode
-	}
-	return errCodeImportInternal
 }
 
 // failTask writes the terminal failed envelope and returns cause so the

@@ -337,7 +337,7 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 	// The etcd store self-enqueues (EnqueueTask writes the job inline) and
 	// tasks.cancel cancels through the store, so there is no queue client to pass.
 	server, err := api.NewServer(
-		*cfg, st, agentClient,
+		*cfg, st,
 		vmshandlers.LifecycleDeps{AgentClient: agentClient},
 		vmshandlers.ConsoleDeps{AgentClient: agentClient, AccessMode: cfg.Console.AccessMode},
 		authSvc, material, membership, log)
@@ -560,11 +560,10 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 	}
 }
 
-// buildAgentClient constructs the *agentclient.Client used by both the scan /
-// import / vm executors and the storage_image.delete handler. Returns (nil, nil)
-// when AgentClient.Enabled is false - the api binary still boots so HTTP-only
-// smoke testing stays available; the consumer paths each emit their own
-// degradation envelope.
+// buildAgentClient constructs the *agentclient.Client used by the scan and vm
+// executors. Returns (nil, nil) when AgentClient.Enabled is false - the api
+// binary still boots so HTTP-only smoke testing stays available; the consumer
+// paths each emit their own degradation envelope.
 //
 // mTLS material (replica's leaf cert + cluster CA trust anchor) flows in via
 // material - produced upstream per LoadOrGenerateCPCert. Construction errors at
@@ -573,7 +572,7 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 // agent client.
 func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog.Logger) (*agentclient.Client, error) {
 	if !cfg.AgentClient.Enabled {
-		log.Info("agent client disabled; storage_image.delete and scan workers will surface degraded responses")
+		log.Info("agent client disabled; scan workers will surface degraded responses")
 		return nil, nil
 	}
 	if material.Skipped() || len(material.Cert.Certificate) == 0 || material.ClusterCA == nil {
