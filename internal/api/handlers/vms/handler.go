@@ -7,17 +7,20 @@
 // **Spec drift note:** api/openapi/control-plane.yaml declares a rich
 // design (`VMCreate` / `VMSpec` shapes with multi-disk, network
 // policy, cloud-init metadata, etc.). The current implementation
-// ships the simplified `{name, template_id, pool_id, vcpus,
-// memory_mb}` shape - same drift policy as the agent.yaml vs the
-// initial agent's hand-written wire shape. Reconciling the spec to
-// the implementation is future work; the current path is documented
-// in code (this comment + create.go's request shape) so operators
-// reading either source land at the truth.
+// ships the simplified `{name, image_url, image_sha256?, arch,
+// firmware?, format?, disk_gib?, pool, vcpus, memory_mb}` shape - same
+// drift policy as the agent.yaml vs the initial agent's hand-written
+// wire shape. Reconciling the spec to the implementation is future
+// work; the current path is documented in code (this comment +
+// create.go's request shape) so operators reading either source land
+// at the truth.
 //
 // Wire-shape translation: the API request carries the simplified
-// `{name, template_id, pool_id, vcpus, memory_mb}` shape; the schema
-// stores `cpu_cores`, `memory_mib`, no top-level pool / node columns.
-// The handler boundary owns the translation:
+// image-source shape above; the schema stores `cpu_cores`,
+// `memory_mib`, the image fields (`image_url`, `image_sha256`,
+// `image_format`, `architecture`, `firmware_id`) on the vms row, and
+// no top-level pool / node columns. The handler boundary owns the
+// translation:
 //
 //   - vcpus    ↔ vms.cpu_cores
 //   - memory_mb ↔ vms.memory_mib
@@ -32,11 +35,10 @@
 // RBAC composition:
 //
 //   - vm:create gate (RequirePermission middleware) admits admin /
-//     operator / developer; viewer is 403 at the route. Handler-side
-//     composite check is template-usability, mirroring
-//     templates.image_import.checkImportAccess: ScopeAny → ok;
-//     ScopeOwn + caller==template.owner → ok; public template +
-//     template:read:public → ok; else 404 (no existence leak).
+//     operator / developer; viewer is 403 at the route. There is no
+//     handler-side composite check: any image URL the caller supplies
+//     is materialized by the agent on create (the former
+//     template-usability check went away with the template entity).
 //   - vm:read gate is held at scope=any by every authenticated role;
 //     no ownership check. ListVMsByOwner stays inactive.
 //   - vm:delete gate admits admin (any) / operator (any) / developer
