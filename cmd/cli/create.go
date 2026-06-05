@@ -45,7 +45,7 @@ Example:
 			}
 			if dryRun {
 				for _, op := range plan {
-					fmt.Fprintf(cmd.OutOrStdout(), "would create %s/%s\n", op.Kind, op.Name)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "would create %s/%s\n", op.Kind, op.Name)
 				}
 				return nil
 			}

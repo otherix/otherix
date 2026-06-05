@@ -38,7 +38,7 @@ func readOneSource(cmd *cobra.Command, f string) ([]byte, error) {
 	if f == "-" {
 		return io.ReadAll(cmd.InOrStdin())
 	}
-	data, err := os.ReadFile(f)
+	data, err := os.ReadFile(f) //nolint:gosec // operator-supplied manifest path is the entire point of the flag
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %v", f, err)
 	}
@@ -65,10 +65,10 @@ func renderSummary(cmd *cobra.Command, verb string, results []docResult) error {
 		}
 		if r.err != nil {
 			failed++
-			fmt.Fprintf(cmd.OutOrStdout(), "%s failed: %s: %v\n", verb, label, r.err)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s failed: %s: %v\n", verb, label, r.err)
 			continue
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", verb, label)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", verb, label)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%s -f: %d of %d documents failed", verb, failed, len(results))
