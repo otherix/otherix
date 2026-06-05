@@ -6030,10 +6030,7 @@ components:
           maximum: 65536
         source_kind:
           type: string
-          enum: [template, blank]
-        source_template_id:
-          type: [string, "null"]
-          format: uuid
+          enum: [image, blank]
         format:
           type: string
           enum: [qcow2, raw]
@@ -6096,10 +6093,7 @@ components:
           maximum: 65536
         source_kind:
           type: string
-          enum: [template, blank]
-        source_template_id:
-          type: [string, "null"]
-          format: uuid
+          enum: [image, blank]
         format:
           type: string
           enum: [qcow2, raw]
@@ -6122,8 +6116,8 @@ components:
     VmDiskUpdate:
       type: object
       description: |
-        Patches a disk. `bus`, `format`, `source_kind`,
-        `source_template_id` are immutable. `size_gib` may only
+        Patches a disk. `bus`, `format`, and `source_kind` are
+        immutable. `size_gib` may only
         increase (online or offline grow); shrinking returns 409
         (`details.reason = "shrink_not_supported"`).
       properties:
@@ -6505,7 +6499,7 @@ components:
           type: string
           description: |
             Task type identifier in `<resource>.<action>` form, e.g.
-            `storage_pool.scan`, `template.import`, `vm.migrate`.
+            `storage_pool.scan`, `vm.create`, `vm.migrate`.
         status:
           type: string
           enum: [pending, running, success, failed, cancelled]
