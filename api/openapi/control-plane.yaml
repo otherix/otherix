@@ -5681,8 +5681,9 @@ components:
         owner:
           type: [string, "null"]
           description: |
-            Display name of the owning user. Resolved only for callers
-            holding `user:read` (admin / operator); `null` for
+            Human-readable label for the owning user - the display_name,
+            or the email when no display name is set. Resolved only for
+            callers holding `user:read` (admin / operator); `null` for
             developer / viewer so the VM surface cannot be used to
             enumerate the user directory those roles cannot read.
         image_url:

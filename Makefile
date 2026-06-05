@@ -184,6 +184,10 @@ $(addprefix run-,$(BINARIES)): run-%: build-% ## Build and run a binary against 
 run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd, no Postgres)
 	./$(BIN_DIR)/otherix-api --config dev/config/api.yaml
 
+.PHONY: restart-api-dev
+restart-api-dev: build-api ## Rebuild + restart the dev api-server in background (preserves embedded-etcd state)
+	@bash dev/scripts/restart-api-dev.sh
+
 # ========== Dev environment ==========
 
 # etcd-reset wipes the dev member's gitignored data dir AND the dev PKI for a

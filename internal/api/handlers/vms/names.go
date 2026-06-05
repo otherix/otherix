@@ -42,8 +42,8 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 		owner, err := h.store.UserByID(ctx, vm.OwnerID)
 		switch {
 		case err == nil:
-			dn := owner.DisplayName
-			names.owner = &dn
+			label := ownerLabel(owner)
+			names.owner = &label
 		case errors.Is(err, store.ErrNotFound):
 			// Owner soft-deleted (ON DELETE RESTRICT blocks this in
 			// practice); leave nil so owner_id still carries the UUID.
@@ -103,6 +103,19 @@ func (h *Handler) resolveNetworkNames(ctx context.Context, vmID uuid.UUID) ([]st
 		}
 	}
 	return names, nil
+}
+
+// ownerLabel picks the best human-readable identifier for a VM owner:
+// the display_name when set, falling back to the email (a NOT NULL
+// column) so the resolved owner field is never an empty string - a
+// bootstrap-seeded admin, for instance, has no display_name. Both
+// fields sit behind the user:read gate, so the email fallback widens
+// what an already-privileged caller sees, not who can see it.
+func ownerLabel(u store.User) string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Email
 }
 
 // callerCanReadUsers reports whether the request principal holds

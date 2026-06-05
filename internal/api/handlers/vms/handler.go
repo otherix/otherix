@@ -151,8 +151,9 @@ func New(
 // The image source is surfaced directly (image_url + format); the VM row is
 // self-describing, there is no template entity. status is projected (not
 // stored) - see projection.go. owner_id always carries the UUID (stable,
-// round-trippable); owner carries the owner's display_name but only for
-// callers holding user:read (admin / operator) - it stays null for
+// round-trippable); owner carries the owner's display_name (or email when
+// unset) but only for callers holding user:read (admin / operator) - it
+// stays null for
 // developer / viewer so the VM surface cannot be used to enumerate the user
 // directory those roles cannot otherwise read.
 type vmView struct {
@@ -183,8 +184,9 @@ type vmView struct {
 type vmViewNames struct {
 	pool string
 	node *string
-	// owner is the owner's display_name, resolved only when the caller
-	// holds user:read; nil otherwise (or when the owner row was deleted).
+	// owner is the owner's display_name (or email when unset), resolved
+	// only when the caller holds user:read; nil otherwise (or when the
+	// owner row was deleted).
 	owner *string
 	// networks holds the VM's attached network names ordered by NIC
 	// device_order (primary first). Empty when the VM has no NIC.
