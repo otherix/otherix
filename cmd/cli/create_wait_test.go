@@ -154,6 +154,13 @@ func TestCreateWaitPoolReconcileFailed(t *testing.T) {
 	if !strings.Contains(stderr, "reconciliation failed") {
 		t.Errorf("stderr = %q, want the reconciliation-failed message", stderr)
 	}
+	// committed=true path: the pool WAS created, only reconciliation did not
+	// converge, so the summary must use the distinct "but not ready" wording
+	// rather than the "failed:" wording reserved for a create that never
+	// happened server-side.
+	if !strings.Contains(stderr, "but not ready") {
+		t.Errorf("stderr = %q, want the committed-but-not-ready wording", stderr)
+	}
 }
 
 // TestCreateWaitPoolTimeoutCapped proves Fix #5: a never-ready pool with

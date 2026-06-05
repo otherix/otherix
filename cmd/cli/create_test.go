@@ -203,8 +203,17 @@ func TestCreatePartialFailureNonZeroExit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, createManifest))
+	_, stderr, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, createManifest))
 	if err == nil {
 		t.Fatalf("expected non-nil error when a document fails")
+	}
+	// The 409 on /v1/networks collapses to ErrNetworkExists, which the
+	// fan-out surfaces verbatim as a clean domain message - never wrapped
+	// with a transport prefix the way a generic transport error would be.
+	if !strings.Contains(stderr, "network name already in use") {
+		t.Errorf("stderr = %q, want the verbatim already-exists domain message", stderr)
+	}
+	if strings.Contains(stderr, "request_failed:") {
+		t.Errorf("stderr = %q, a typed conflict must not carry a transport prefix", stderr)
 	}
 }
