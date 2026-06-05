@@ -26,19 +26,38 @@ type vmCreateAcceptedView struct {
 	Status string `json:"status"`
 }
 
-// schedulableFixture seeds a ready node, a local_dir pool on it, and a template
-// owned by the given user, returning the names the create body references.
-// Mirrors the etcdstore schedulingFixture; placement passes on the count-based
-// fallback path (no heartbeat metrics required).
-func schedulableFixture(t *testing.T, h *harness, owner uuid.UUID) (poolName, templateName string) {
-	_, poolName, templateName = schedulableFixtureWithNode(t, h, owner)
-	return poolName, templateName
+// imageURL is the canonical image source the apie2e VM-create bodies reference.
+// Placement does not fetch it; only the self-describing VM row records it.
+const imageURL = "https://example.test/img.qcow2"
+
+// vmCreateBody builds the image-model VM-create request body the create handler
+// expects: name + image_url + arch (no template field). Callers merge in pool /
+// network / vcpus / memory_mb as needed.
+func vmCreateBody(extra map[string]any) map[string]any {
+	body := map[string]any{
+		"name": "vm-" + uuid.NewString()[:8], "image_url": imageURL, "arch": "amd64",
+		"vcpus": 2, "memory_mb": 2048,
+	}
+	for k, v := range extra {
+		body[k] = v
+	}
+	return body
+}
+
+// schedulableFixture seeds a ready node, a local_dir pool on it, and a default
+// uefi firmware (so the image-model create resolves firmware), returning the
+// pool name the create body references. Mirrors the etcdstore schedulingFixture;
+// placement passes on the count-based fallback path (no heartbeat metrics
+// required).
+func schedulableFixture(t *testing.T, h *harness, owner uuid.UUID) (poolName string) {
+	_, poolName = schedulableFixtureWithNode(t, h, owner)
+	return poolName
 }
 
 // schedulableFixtureWithNode is schedulableFixture exposing the node id so
 // callers can seed per-(node, network) reconciliation status for the
 // network-aware placement filter (ADR 0034 NL18).
-func schedulableFixtureWithNode(t *testing.T, h *harness, owner uuid.UUID) (nodeID uuid.UUID, poolName, templateName string) {
+func schedulableFixtureWithNode(t *testing.T, h *harness, owner uuid.UUID) (nodeID uuid.UUID, poolName string) {
 	t.Helper()
 	ctx := context.Background()
 	s := h.store
@@ -63,16 +82,25 @@ func schedulableFixtureWithNode(t *testing.T, h *harness, owner uuid.UUID) (node
 		t.Fatalf("CreateStoragePool: %v", err)
 	}
 
-	templateName = "tpl-" + uuid.NewString()[:8]
-	if _, err := s.CreateTemplate(ctx, store.CreateTemplateParams{
-		ID: uuid.New(), OwnerID: owner, Name: templateName, Description: "e2e",
-		Architecture: store.CpuArchAmd64, OsFamily: store.OsFamilyLinux, OsVariant: "noble",
-		ImageUrl: "https://example.test/img.qcow2", ImageFormat: store.ImageFormatQcow2,
-		FirmwareType: store.FirmwareTypeUefi, DefaultCpuCores: 2, DefaultMemoryMib: 2048, DefaultDiskGib: 20,
-	}); err != nil {
-		t.Fatalf("CreateTemplate: %v", err)
+	seedDefaultFirmware(t, h)
+	return nodeID, poolName
+}
+
+// seedDefaultFirmware seeds a default uefi firmware for amd64 so the image-model
+// VM create resolves firmware via DefaultFirmwareForArchType. Idempotent across
+// the unique-default guard: a pre-existing default makes the second call a
+// no-op (the e2e harness is single-node per test, so the first call wins).
+func seedDefaultFirmware(t *testing.T, h *harness) {
+	t.Helper()
+	if _, err := h.store.DefaultFirmwareForArchType(context.Background(), store.CpuArchAmd64, store.FirmwareTypeUefi); err == nil {
+		return
 	}
-	return nodeID, poolName, templateName
+	if _, err := h.store.CreateFirmware(context.Background(), store.CreateFirmwareParams{
+		ID: uuid.New(), Name: "fw-" + uuid.NewString()[:8], Architecture: store.CpuArchAmd64,
+		Type: store.FirmwareTypeUefi, IsDefault: true,
+	}); err != nil {
+		t.Fatalf("CreateFirmware: %v", err)
+	}
 }
 
 func bridgeNetwork(t *testing.T, h *harness, admin string) networkView {
@@ -89,7 +117,7 @@ func bridgeNetwork(t *testing.T, h *harness, admin string) networkView {
 func TestVMCreateAttachesNicToNetwork(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
-	nodeID, poolName, templateName := schedulableFixtureWithNode(t, h, adminID)
+	nodeID, poolName := schedulableFixtureWithNode(t, h, adminID)
 	net := bridgeNetwork(t, h, admin)
 	// The network-aware filter requires the requested network to be ready
 	// on the candidate node before placement admits it.
@@ -99,10 +127,9 @@ func TestVMCreateAttachesNicToNetwork(t *testing.T) {
 		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
 	}
 
-	resp := h.post(t, "/v1/vms", map[string]any{
-		"name": "vm-" + uuid.NewString()[:8], "template": templateName, "pool": poolName,
-		"vcpus": 2, "memory_mb": 2048, "network": net.Name,
-	}, admin)
+	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
+		"pool": poolName, "network": net.Name,
+	}), admin)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
 	}
@@ -162,12 +189,11 @@ func TestVMCreateAttachesNicToNetwork(t *testing.T) {
 func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
-	poolName, templateName := schedulableFixture(t, h, adminID)
+	poolName := schedulableFixture(t, h, adminID)
 
-	resp := h.post(t, "/v1/vms", map[string]any{
-		"name": "vm-" + uuid.NewString()[:8], "template": templateName, "pool": poolName,
-		"vcpus": 2, "memory_mb": 2048,
-	}, admin)
+	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
+		"pool": poolName,
+	}), admin)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
 	}
@@ -189,12 +215,11 @@ func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {
 func TestVMCreateUnknownNetworkRejected(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
-	poolName, templateName := schedulableFixture(t, h, adminID)
+	poolName := schedulableFixture(t, h, adminID)
 
-	resp := h.post(t, "/v1/vms", map[string]any{
-		"name": "vm-" + uuid.NewString()[:8], "template": templateName, "pool": poolName,
-		"vcpus": 2, "memory_mb": 2048, "network": "does-not-exist",
-	}, admin)
+	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
+		"pool": poolName, "network": "does-not-exist",
+	}), admin)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("create vm status = %d, want 404 (unknown network)", resp.StatusCode)
 	}
@@ -208,11 +233,11 @@ func TestVMCreateUnknownNetworkRejected(t *testing.T) {
 // network_not_ready reason rather than scheduling onto the bad node.
 func TestVMCreateNetworkFailedNoEligibleNode(t *testing.T) {
 	h := newE2E(t)
-	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
 	ctx := context.Background()
 	s := h.store
 
-	// Single ready node + pool + template, built inline so the test owns
+	// Single ready node + pool + default firmware, built inline so the test owns
 	// the node id for the per-(node, network) status upsert.
 	nodeID := uuid.New()
 	if _, err := s.CreateNode(ctx, store.CreateNodeParams{
@@ -232,15 +257,7 @@ func TestVMCreateNetworkFailedNoEligibleNode(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStoragePool: %v", err)
 	}
-	templateName := "tpl-" + uuid.NewString()[:8]
-	if _, err := s.CreateTemplate(ctx, store.CreateTemplateParams{
-		ID: uuid.New(), OwnerID: adminID, Name: templateName, Description: "e2e",
-		Architecture: store.CpuArchAmd64, OsFamily: store.OsFamilyLinux, OsVariant: "noble",
-		ImageUrl: "https://example.test/img.qcow2", ImageFormat: store.ImageFormatQcow2,
-		FirmwareType: store.FirmwareTypeUefi, DefaultCpuCores: 2, DefaultMemoryMib: 2048, DefaultDiskGib: 20,
-	}); err != nil {
-		t.Fatalf("CreateTemplate: %v", err)
-	}
+	seedDefaultFirmware(t, h)
 
 	net := bridgeNetwork(t, h, admin)
 	// Mark the network failed-to-reconcile on the only candidate node.
@@ -250,10 +267,9 @@ func TestVMCreateNetworkFailedNoEligibleNode(t *testing.T) {
 		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
 	}
 
-	resp := h.post(t, "/v1/vms", map[string]any{
-		"name": "vm-" + uuid.NewString()[:8], "template": templateName, "pool": poolName,
-		"vcpus": 2, "memory_mb": 2048, "network": net.Name,
-	}, admin)
+	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
+		"pool": poolName, "network": net.Name,
+	}), admin)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("create vm status = %d, want 409 (network failed on only node)", resp.StatusCode)
 	}
