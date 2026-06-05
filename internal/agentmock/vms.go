@@ -4,6 +4,8 @@
 package agentmock
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -13,6 +15,15 @@ import (
 	"github.com/otherix/otherix/internal/agentapi"
 )
 
+// syntheticImageSHA derives a deterministic 64-char lowercase-hex
+// digest from the image URL, used as the mock's compute-mode result
+// when the request leaves expected_sha256 empty. Stable per URL so
+// repeated creates against the same image surface the same digest.
+func syntheticImageSHA(imageURL string) string {
+	sum := sha256.Sum256([]byte("agentmock:image:" + imageURL))
+	return hex.EncodeToString(sum[:])
+}
+
 // vmCreateRequestBody mirrors the Iteration 1 agent's hand-written
 // createRequest (internal/agent/handlers/vms/create.go) — the
 // simplified shape the CP worker sends through agentclient.
@@ -21,17 +32,24 @@ import (
 // on the test bench today is the simplified set. Drift is documented
 // in the mvp-direct-qemu-agent sketch.
 type vmCreateRequestBody struct {
-	UUID             string `json:"uuid"`
-	Name             string `json:"name"`
-	VCPUs            int    `json:"vcpus"`
-	MemoryMB         int    `json:"memory_mb"`
-	Pool             string `json:"pool"`
-	TemplateChecksum string `json:"template_checksum"`
+	UUID     string `json:"uuid"`
+	Name     string `json:"name"`
+	VCPUs    int    `json:"vcpus"`
+	MemoryMB int    `json:"memory_mb"`
+	Pool     string `json:"pool"`
+	// Image-based create wire fields (agentclient.VMCreateRequest):
+	// ImageURL is the HTTPS source the agent ensures into the pool
+	// cache, ExpectedSHA256 the optional content pin, Format the
+	// image format ("qcow2" default), DiskGiB the requested root-disk
+	// size (0 = default to the image's virtual size).
+	ImageURL       string `json:"image_url"`
+	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
+	Format         string `json:"format,omitempty"`
+	DiskGiB        int    `json:"disk_gib,omitempty"`
 	// UserData (L3) carries the CP-resolved cloud-init blob. Mock
 	// stores it on the AgentVM record so integration tests can
-	// assert the resolver picked the right source (vm.user_data ?:
-	// template.cloud_init_user_data) and the agent wire shape
-	// propagates the field.
+	// assert the resolver picked the right source and the agent wire
+	// shape propagates the field.
 	UserData string `json:"user_data,omitempty"`
 }
 
@@ -160,15 +178,34 @@ func (m *Mock) vmCreate(w http.ResponseWriter, r *http.Request, opID string) {
 		blueprint.Status = outcome.VMStatus
 	}
 
+	// Compute the terminal vm.create result correlation fields the CP
+	// worker decodes via createResultFromTerminal. ExpectedSHA256, when
+	// pinned, is echoed verbatim (the mock never re-hashes the synthetic
+	// bytes); compute-mode requests get a deterministic synthetic hash
+	// derived from the image URL so the resulting VM row carries a valid
+	// 64-char lowercase-hex digest. Sizes are deterministic non-zero
+	// values keyed on DiskGiB (default 2 GiB).
+	imageSHA := body.ExpectedSHA256
+	if imageSHA == "" {
+		imageSHA = syntheticImageSHA(body.ImageURL)
+	}
+	diskSize := int64(body.DiskGiB) << 30
+	if diskSize <= 0 {
+		diskSize = 2 << 30
+	}
+
 	m.state.tasks[agentTaskID] = &agentTask{
-		id:             agentTaskID,
-		taskType:       "vm.create",
-		resourceType:   "vm",
-		resourceID:     vmID,
-		createdAt:      now,
-		delay:          outcome.Delay,
-		vmCreateResult: &outcome,
-		vmBlueprint:    &blueprint,
+		id:                 agentTaskID,
+		taskType:           "vm.create",
+		resourceType:       "vm",
+		resourceID:         vmID,
+		createdAt:          now,
+		delay:              outcome.Delay,
+		vmCreateResult:     &outcome,
+		vmBlueprint:        &blueprint,
+		vmImageSHA256:      imageSHA,
+		vmVirtualSizeBytes: diskSize,
+		vmDiskSizeBytes:    diskSize,
 	}
 	m.state.mu.Unlock()
 

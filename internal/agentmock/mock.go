@@ -253,15 +253,14 @@ func newState(opts Options) *state {
 		// Capability fields start zero-valued; tests preload what they
 		// need through SetCapability / AddFirmware / AddStoragePool /
 		// etc.
-		qemuBinaries:       map[string]string{},
-		migration:          defaultMigrationCapability,
-		pools:              map[string]storagePool{},
-		images:             map[string]map[string]CachedImage{},
-		tasks:              map[uuid.UUID]*agentTask{},
-		poolScanResults:    map[string][]PoolScanResult{},
-		imageImportResults: map[imageImportKey][]ImageImportResult{},
-		storedVMs:          map[string]AgentVM{},
-		vmCreateResults:    map[string][]VMCreateResult{},
-		vmDeleteResults:    map[string][]VMDeleteResult{},
+		qemuBinaries:    map[string]string{},
+		migration:       defaultMigrationCapability,
+		pools:           map[string]storagePool{},
+		images:          map[string]map[string]CachedImage{},
+		tasks:           map[uuid.UUID]*agentTask{},
+		poolScanResults: map[string][]PoolScanResult{},
+		storedVMs:       map[string]AgentVM{},
+		vmCreateResults: map[string][]VMCreateResult{},
+		vmDeleteResults: map[string][]VMDeleteResult{},
 	}
 }
