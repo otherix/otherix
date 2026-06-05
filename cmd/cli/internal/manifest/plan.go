@@ -108,13 +108,24 @@ func BuildDeletePlan(docs []Document) ([]DeleteTarget, error) {
 	return targets, nil
 }
 
-// poolNodes returns the node list for a pool spec (single node or the
-// explicit nodeList).
+// poolNodes returns the deduplicated node list for a pool spec (single
+// node or the explicit nodeList). Duplicates are dropped preserving
+// first-seen order so a copy-paste typo in nodeList cannot turn one
+// declared instance into a duplicate create that 409s mid-apply.
 func poolNodes(s StoragePoolSpec) []string {
-	if len(s.NodeList) > 0 {
-		return s.NodeList
+	if len(s.NodeList) == 0 {
+		return []string{s.Node}
 	}
-	return []string{s.Node}
+	seen := make(map[string]bool, len(s.NodeList))
+	var out []string
+	for _, n := range s.NodeList {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
 }
 
 func networkCreateOp(d Document) (CreateOp, error) {

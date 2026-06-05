@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -79,7 +80,7 @@ func decodeHeader(node *yaml.Node, index int) (Document, error) {
 	default:
 		return Document{}, fmt.Errorf("manifest: document %d: unknown kind %q (want Network, StoragePool, or VM)", index, raw.Kind)
 	}
-	if raw.Metadata.Name == "" {
+	if strings.TrimSpace(raw.Metadata.Name) == "" {
 		return Document{}, fmt.Errorf("manifest: document %d (%s): metadata.name is required", index, raw.Kind)
 	}
 	return Document{

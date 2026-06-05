@@ -78,6 +78,11 @@ func DecodeStoragePoolSpec(d Document) (StoragePoolSpec, error) {
 	case !hasNode && !hasList:
 		return StoragePoolSpec{}, fmt.Errorf("manifest: document %d (StoragePool/%s): one of spec.node or spec.nodeList is required", d.Index, d.Name)
 	}
+	for _, n := range s.NodeList {
+		if n == "" {
+			return StoragePoolSpec{}, fmt.Errorf("manifest: document %d (StoragePool/%s): spec.nodeList contains an empty node name", d.Index, d.Name)
+		}
+	}
 	return s, nil
 }
 

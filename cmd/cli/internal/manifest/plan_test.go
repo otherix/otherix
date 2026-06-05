@@ -95,6 +95,21 @@ func TestVMSpecToRequestMapsCloudInit(t *testing.T) {
 	}
 }
 
+func TestBuildCreatePlanDedupesNodeList(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: StoragePool\nmetadata: { name: p }\nspec: { path: /x, nodeList: [n1, n1, n2] }\n"
+	docs, _ := manifest.Parse(strings.NewReader(src))
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("BuildCreatePlan() error = %v", err)
+	}
+	if len(plan) != 2 {
+		t.Fatalf("plan has %d ops, want 2 (n1 deduped)", len(plan))
+	}
+	if plan[0].Pool.Node != "n1" || plan[1].Pool.Node != "n2" {
+		t.Errorf("nodes = %s,%s, want n1,n2", plan[0].Pool.Node, plan[1].Pool.Node)
+	}
+}
+
 func TestBuildCreatePlanVMNodePointer(t *testing.T) {
 	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, node: node-9 }\n"
 	docs, _ := manifest.Parse(strings.NewReader(src))

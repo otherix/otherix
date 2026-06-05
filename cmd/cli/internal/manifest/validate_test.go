@@ -55,6 +55,20 @@ func TestDecodeStoragePoolSpecNodeXorNodeList(t *testing.T) {
 	}
 }
 
+func TestDecodeStoragePoolSpecRejectsEmptyNodeListElement(t *testing.T) {
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: StoragePool\nmetadata: { name: p }\nspec: { path: /x, nodeList: [\"\", n2] }\n")
+	if _, err := manifest.DecodeStoragePoolSpec(d); err == nil || !strings.Contains(err.Error(), "empty node") {
+		t.Errorf("error = %v, want rejection of empty node name", err)
+	}
+}
+
+func TestParseRejectsWhitespaceName(t *testing.T) {
+	_, err := manifest.Parse(strings.NewReader("apiVersion: otherix/v1\nkind: VM\nmetadata: { name: \"   \" }\nspec: {}\n"))
+	if err == nil || !strings.Contains(err.Error(), "metadata.name") {
+		t.Errorf("error = %v, want metadata.name required for whitespace-only name", err)
+	}
+}
+
 func TestDecodeVMSpecRequiresImageAndArch(t *testing.T) {
 	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { arch: arm64 }\n")
 	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "imageURL") {

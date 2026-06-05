@@ -44,7 +44,10 @@ func JoinDocuments(docs [][]byte) []byte {
 	return bytes.Join(docs, []byte("---\n"))
 }
 
-// ProjectNetwork renders a live Network as an apply-ready manifest.
+// ProjectNetwork renders a live Network as an apply-ready manifest. It
+// carries mtu (always, since the column is NOT NULL) and vlan (only when
+// a tag is set) so a `network get -o yaml | create -f` round-trip does
+// not silently reset a non-default MTU or drop the VLAN tag.
 func ProjectNetwork(n cpclient.Network) ([]byte, error) {
 	spec := map[string]any{
 		"type":       n.Type,
@@ -61,6 +64,12 @@ func ProjectNetwork(n cpclient.Network) ([]byte, error) {
 	}
 	if n.Gateway != nil && *n.Gateway != "" {
 		spec["gateway"] = *n.Gateway
+	}
+	// MTU is NOT NULL / always populated, so emitting it (even 1500) is
+	// lossless. VlanTag is nullable: a nil pointer means untagged.
+	spec["mtu"] = n.MTU
+	if n.VlanTag != nil {
+		spec["vlan"] = *n.VlanTag
 	}
 	return encodeDoc(outDoc{
 		APIVersion: APIVersionV1,

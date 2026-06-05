@@ -32,6 +32,33 @@ func TestProjectNetworkRoundTrips(t *testing.T) {
 	}
 }
 
+func TestProjectNetworkRoundTripsMTUAndVLAN(t *testing.T) {
+	vlan := 42
+	n := cpclient.Network{Name: "net-mvp", Type: "bridge", BridgeName: "br0", MTU: 9000, VlanTag: &vlan}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse projected network: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("projected network is not apply-ready: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Network == nil {
+		t.Fatalf("plan = %+v, want 1 network op", plan)
+	}
+	got := plan[0].Network
+	if got.Mtu == nil || *got.Mtu != 9000 {
+		t.Errorf("Network.Mtu = %v, want 9000", got.Mtu)
+	}
+	if got.VlanTag == nil || *got.VlanTag != 42 {
+		t.Errorf("Network.VlanTag = %v, want 42", got.VlanTag)
+	}
+}
+
 func TestProjectMultiDocSeparator(t *testing.T) {
 	a := cpclient.Network{Name: "a", Type: "bridge", BridgeName: "br0"}
 	b := cpclient.Network{Name: "b", Type: "bridge", BridgeName: "br1"}
