@@ -73,7 +73,6 @@ type VMSpec struct {
 	Pool              string `yaml:"pool"`
 	Network           string `yaml:"network"`
 	Node              string `yaml:"node"`
-	DesiredPhase      string `yaml:"desiredPhase"`
 	CloudInit         string `yaml:"cloudInit"`
 	CloudInitDisabled bool   `yaml:"cloudInitDisabled"`
 }

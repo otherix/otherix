@@ -159,9 +159,6 @@ func vmCreateOp(d Document) (CreateOp, error) {
 	if err != nil {
 		return CreateOp{}, err
 	}
-	// desiredPhase is intentionally not mapped: the create API always
-	// boots the VM to running. DecodeVMSpec rejects any other value, so
-	// a desiredPhase here is either empty or "running" - a no-op at create.
 	req := cpclient.CreateVMRequest{
 		Name:              d.Name,
 		ImageURL:          s.ImageURL,

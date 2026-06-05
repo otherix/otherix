@@ -69,16 +69,9 @@ func TestDecodeVMSpecCloudInitMutualExclusion(t *testing.T) {
 	}
 }
 
-func TestDecodeVMSpecRejectsNonRunningDesiredPhase(t *testing.T) {
-	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, desiredPhase: stopped }\n")
-	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "desiredPhase") {
-		t.Errorf("DecodeVMSpec(desiredPhase=stopped) error = %v, want rejection mentioning desiredPhase", err)
-	}
-}
-
-func TestDecodeVMSpecAcceptsRunningDesiredPhase(t *testing.T) {
+func TestDecodeVMSpecRejectsDesiredPhaseUnsupported(t *testing.T) {
 	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, desiredPhase: running }\n")
-	if _, err := manifest.DecodeVMSpec(d); err != nil {
-		t.Errorf("DecodeVMSpec(desiredPhase=running) error = %v, want nil", err)
+	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "desiredPhase") {
+		t.Errorf("DecodeVMSpec(desiredPhase set) error = %v, want rejection mentioning desiredPhase", err)
 	}
 }
