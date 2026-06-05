@@ -333,7 +333,7 @@ paths:
         Soft-deletes the user and revokes all their API tokens. A user
         cannot delete themselves through this endpoint.
 
-        The user must not own any VMs, templates, or VM snapshots — those
+        The user must not own any VMs or VM snapshots — those
         resources have `ON DELETE RESTRICT` against `users(id)` in the
         schema, so the delete is rejected with 409 `user_has_resources`
         if any owned resources still exist. Reassigning ownership is not
@@ -355,7 +355,7 @@ paths:
           description: |
             Cannot delete: user owns one or more user-resources. The error
             payload's `details.blocking_resources` enumerates per-type
-            counts (`vms`, `templates`, `vm_snapshots`).
+            counts (`vms`, `vm_snapshots`).
           content:
             application/json:
               schema:
@@ -1268,10 +1268,10 @@ paths:
       tags: [firmwares]
       summary: Delete a firmware (admin only).
       description: |
-        Refuses with `409 conflict` while any active VM or template
-        still references the firmware. The error payload's
+        Refuses with `409 conflict` while any active VM still
+        references the firmware. The error payload's
         `details.blocking_resources` carries the per-type counts (only
-        non-zero keys are present), e.g. `{"vms": 3, "templates": 1}`.
+        non-zero keys are present), e.g. `{"vms": 3}`.
         Firmwares have no force-delete counterpart — the operator must
         remove or repoint the dependent resources first.
 
@@ -1289,10 +1289,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            Cannot delete: firmware is still referenced by active VMs
-            and/or templates. The error payload's
+            Cannot delete: firmware is still referenced by active VMs.
+            The error payload's
             `details.blocking_resources` carries the per-type counts;
-            only non-zero keys appear, e.g. `{"vms": 3, "templates": 1}`.
+            only non-zero keys appear, e.g. `{"vms": 3}`.
           content:
             application/json:
               schema:
