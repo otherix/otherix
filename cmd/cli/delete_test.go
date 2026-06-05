@@ -114,3 +114,33 @@ func TestDeleteReportsBlockerNonZeroExit(t *testing.T) {
 		t.Fatalf("expected non-nil error when a delete is blocked")
 	}
 }
+
+func TestDeletePoolNoInstanceOnNodeFailsClosed(t *testing.T) {
+	const poolOnlyManifest = `apiVersion: otherix/v1
+kind: StoragePool
+metadata: { name: pool-mvp }
+spec: { path: /opt/p, node: node-9 }
+`
+	var deleteHit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The manifest targets node-9, but the only instance is on node-1.
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/storage-pools/pool-mvp" {
+			_, _ = w.Write([]byte(`{"name":"pool-mvp","instances":[{"id":"` + uuid.NewString() + `","name":"pool-mvp","node":"node-1","type":"local_dir","path":"/opt/p"}]}`))
+			return
+		}
+		if r.Method == http.MethodDelete {
+			deleteHit = true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	_, _, err := runRoot(t, srv.URL, "delete", "-f", writeManifest(t, poolOnlyManifest), "--force")
+	if err == nil {
+		t.Fatalf("expected non-nil error when no pool instance matches the node")
+	}
+	if deleteHit {
+		t.Errorf("a DELETE was issued despite no matching instance; must fail closed (no delete)")
+	}
+}

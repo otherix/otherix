@@ -57,9 +57,9 @@ Example:
 				return nil
 			}
 			if !force && stdinIsTTY() {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "delete %d resource(s) from the manifest? [y/N]: ", len(targets))
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "delete %d resource(s) from the manifest? [y/N]: ", len(targets))
 				if !readYes(cmd) {
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "aborted")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 					return nil
 				}
 			}
