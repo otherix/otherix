@@ -21,7 +21,7 @@ import (
 // runPoolCmd executes the `pool` cobra subcommand tree against args,
 // mounting it on a throwaway parent that exposes the same persistent
 // flags the real root provides. Returns captured stdout / stderr.
-// Parallel of cmd/cli/template_test.runTemplateCmd.
+// Parallel of cmd/cli/vm.runVMCmd.
 func runPoolCmd(t *testing.T, endpoint string, args []string) (stdout, stderr string, err error) {
 	t.Helper()
 	parent := pool.NewCommand()
