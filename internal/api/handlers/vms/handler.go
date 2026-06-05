@@ -77,7 +77,8 @@ type Store interface {
 	ListVMs(ctx context.Context, arg store.ListVMsParams) ([]store.VM, error)
 	UpdateVMRuntimePhase(ctx context.Context, arg store.UpdateVMRuntimePhaseParams) error
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
+	FirmwareByID(ctx context.Context, id uuid.UUID) (store.Firmware, error)
+	DefaultFirmwareForArchType(ctx context.Context, arch store.CPUArch, ftype store.FirmwareType) (store.Firmware, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
 	CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
@@ -138,20 +139,21 @@ func New(
 // vmView mirrors components/schemas/VM in api/openapi/control-plane.yaml.
 // Referenced-resource fields are rendered as names instead of UUIDs:
 //
-//   - template carries templates.name (nil when the source template has
-//     been deleted — vms.template_id is ON DELETE SET NULL),
 //   - pool carries storage_pools.name (drawn from vm_disks[0].storage_pool_id),
 //   - node carries the agent-reported current location (vm_runtime.current_node_id)
 //     rendered as nodes.name; nil while the VM is still in 'creating'.
 //
-// status is projected (not stored) - see projection.go. owner_id keeps
-// the UUID rendering: users are outside the resolver scope, so
-// narrowing to a username would lose round-trippability.
+// The image source is surfaced directly (image_url + format); the VM row is
+// self-describing, there is no template entity. status is projected (not
+// stored) - see projection.go. owner_id keeps the UUID rendering: users are
+// outside the resolver scope, so narrowing to a username would lose
+// round-trippability.
 type vmView struct {
 	ID           string          `json:"id"`
 	Name         string          `json:"name"`
 	OwnerID      string          `json:"owner_id"`
-	Template     *string         `json:"template"`
+	ImageURL     string          `json:"image_url"`
+	Format       string          `json:"format"`
 	Pool         string          `json:"pool"`
 	Node         *string         `json:"node"`
 	Architecture string          `json:"architecture"`
@@ -166,12 +168,11 @@ type vmView struct {
 
 // vmViewNames bundles the resolved name lookups that response
 // rendering requires. Each field may be empty / nil when the underlying
-// row is missing or the FK was nulled out (template deletion). The
-// caller pre-resolves; toView only renders.
+// row is missing or the FK was nulled out. The caller pre-resolves;
+// toView only renders.
 type vmViewNames struct {
-	template *string
-	pool     string
-	node     *string
+	pool string
+	node *string
 }
 
 // toView projects a (vm row, runtime row) pair plus the pre-resolved
@@ -184,7 +185,8 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		ID:           vm.ID.String(),
 		Name:         vm.Name,
 		OwnerID:      vm.OwnerID.String(),
-		Template:     names.template,
+		ImageURL:     vm.ImageURL,
+		Format:       string(vm.ImageFormat),
 		Pool:         names.pool,
 		Node:         names.node,
 		Architecture: string(vm.Architecture),

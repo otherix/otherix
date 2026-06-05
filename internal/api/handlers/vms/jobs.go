@@ -5,7 +5,6 @@ package vms
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 
@@ -24,14 +23,22 @@ import (
 
 // VMCreateArgs is the queue job-args payload for a `vm.create` task. The
 // atomic-enqueue handler (Create) inserts the task row, mints a fresh task id,
-// and enqueues this payload; the worker resolves vm / template / pool / node
-// before dispatching to the executor.
+// and enqueues this payload; the worker resolves vm / pool / node before
+// dispatching to the executor.
+//
+// The image source (ImageURL / ImageSHA256 / Format / DiskGiB) is carried so the
+// worker can hand it straight to the agent without consulting a template - the
+// VM row is self-describing. ImageSHA256 is the hex-encoded digest (empty when
+// the caller did not pin a checksum).
 type VMCreateArgs struct {
-	TaskID     uuid.UUID `json:"task_id"`
-	VMID       uuid.UUID `json:"vm_id"`
-	TemplateID uuid.UUID `json:"template_id"`
-	PoolID     uuid.UUID `json:"pool_id"`
-	NodeID     uuid.UUID `json:"node_id"`
+	TaskID      uuid.UUID `json:"task_id"`
+	VMID        uuid.UUID `json:"vm_id"`
+	PoolID      uuid.UUID `json:"pool_id"`
+	NodeID      uuid.UUID `json:"node_id"`
+	ImageURL    string    `json:"image_url"`
+	ImageSHA256 string    `json:"image_sha256"`
+	Format      string    `json:"format"`
+	DiskGiB     int       `json:"disk_gib"`
 }
 
 // Kind names the job kind. Mirrors the OpenAPI Task.type value surfaced through
@@ -99,11 +106,18 @@ func (VMRebootArgs) Kind() string { return "vm.reboot" }
 // agent's 202 returns, persisting the agent task id via UpdateTaskAgentTaskID.
 // The executor never touches the store directly.
 type CreateArgs struct {
-	TaskID        uuid.UUID
-	AgentTaskID   *uuid.UUID
-	VM            store.VM
-	Disk          store.VMDisk
-	Template      store.Template
+	TaskID      uuid.UUID
+	AgentTaskID *uuid.UUID
+	VM          store.VM
+	Disk        store.VMDisk
+	// ImageURL / ImageSHA256 / Format / DiskGiB are the image source the
+	// executor hands to the agent. ImageSHA256 is the hex-encoded digest
+	// (empty when unpinned). The worker reads these off the self-describing VM
+	// and disk rows.
+	ImageURL      string
+	ImageSHA256   string
+	Format        string
+	DiskGiB       int
 	Pool          store.StoragePool
 	Node          store.Node
 	NICs          []agentclient.VMCreateNIC
@@ -111,9 +125,14 @@ type CreateArgs struct {
 }
 
 // CreateResult is the create executor's output. Surfaced into the task's
-// `result` JSONB so operators can correlate without a follow-up GET.
+// `result` JSONB so operators can correlate without a follow-up GET. The agent
+// resolves the content digest and the materialized/virtual disk sizes; the
+// worker echoes them into the task result.
 type CreateResult struct {
-	VMID string `json:"vm_id"`
+	VMID             string `json:"vm_id"`
+	ImageSHA256      string `json:"image_sha256"`
+	DiskSizeBytes    int64  `json:"disk_size_bytes"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
 }
 
 // CreateExecutor is the per-task-type seam for vm.create. Production
@@ -178,18 +197,18 @@ type LifecycleExecutor interface {
 }
 
 // Failure code constants for the task `error` envelope. Pass-through agent
-// codes (`qemu_spawn_failed`, `template_not_found`, `pool_full`, ...) are
-// preserved verbatim by classifyVMError.
+// codes (`qemu_spawn_failed`, `image_unavailable`, `checksum_mismatch`,
+// `pool_full`, ...) are preserved verbatim by classifyVMError.
 const (
 	errCodeVMNotFound         = "vm_not_found"
-	errCodeVMTemplateMissing  = "template_not_found"
 	errCodeVMPoolMissing      = "pool_not_found"
 	errCodeVMNodeMissing      = "node_not_found"
 	errCodeVMAgentUnreachabl  = "agent_unreachable"
 	errCodeVMTimeout          = "request_timeout"
 	errCodeVMCreateFailed     = "vm_create_failed"
 	errCodeVMDeleteFailed     = "vm_delete_failed"
-	errCodeVMImageUnavailable = "vm_image_unavailable"
+	errCodeVMImageUnavailable = "image_unavailable"
+	errCodeVMChecksumMismatch = "checksum_mismatch"
 )
 
 // Failure codes specific to the L2 async lifecycle surface. Pass-through agent
@@ -229,11 +248,4 @@ func classifyVMError(err error, fallback string) string {
 		return errCodeVMTimeout
 	}
 	return fallback
-}
-
-// templateChecksumHex projects the template's binary checksum to the
-// hex-encoded form the agent's wire shape carries (a 64-character hex string
-// per the agent's contract).
-func templateChecksumHex(t store.Template) string {
-	return hex.EncodeToString(t.ImageChecksumSha256)
 }
