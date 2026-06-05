@@ -52,6 +52,12 @@ var (
 	// ErrInvalidChecksumFormat is returned when a non-empty expected
 	// checksum fails the 64-char lowercase hex pattern.
 	ErrInvalidChecksumFormat = errors.New("expected_checksum_sha256 must be 64-char lowercase hex")
+	// ErrInvalidImageBasename is returned when a derived cache identity is
+	// not a safe single path segment (empty, "." / ".." traversal, or
+	// containing a path separator). Such a value would let filepath.Join
+	// collapse the cache path out of the images/ directory, so EnsureImage
+	// rejects it before any filesystem action.
+	ErrInvalidImageBasename = errors.New("image url basename is not a valid single path segment")
 )
 
 // ChecksumMismatchError signals the URL did not serve the operator-pinned
@@ -117,6 +123,19 @@ func basenameFromURL(rawURL string) string {
 	return path.Base(rawURL)
 }
 
+// validImageBasename reports whether name is a safe single-segment cache file
+// identity: non-empty, not a "." / ".." traversal segment, and free of path
+// separators. A traversal segment would let filepath.Join collapse the cache
+// path out of the images/ directory (e.g. ".." resolves to the pool root), so
+// the destructive DeleteImage path and the inline EnsureImage path both reject
+// it before touching the filesystem.
+func validImageBasename(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsRune(name, '/') && !strings.ContainsRune(name, filepath.Separator)
+}
+
 // EnsureImage materializes the image identified by sourceURL on poolName,
 // applying the IfNotPresent pull policy keyed by the URL basename. It is
 // synchronous: runCreate drives it inline before cloning the resulting
@@ -137,6 +156,8 @@ func basenameFromURL(rawURL string) string {
 //   - ErrMissingSourceURL — sourceURL empty
 //   - ErrInvalidChecksumFormat — non-empty expectedSHA is not 64-char
 //     lowercase hex (empty expectedSHA is allowed: compute mode)
+//   - ErrInvalidImageBasename — the URL basename is not a safe single path
+//     segment (empty, "." / ".." traversal, or contains a separator)
 //   - *ChecksumMismatchError — verify mode and the served bytes disagree
 //   - wrapped errors for download / qcow2-magic / filesystem failures
 func (m *Manager) EnsureImage(ctx context.Context, poolName, sourceURL, expectedSHA, format string) (EnsureResult, error) {
@@ -157,6 +178,9 @@ func (m *Manager) EnsureImage(ctx context.Context, poolName, sourceURL, expected
 	}
 
 	basename := basenameFromURL(sourceURL)
+	if !validImageBasename(basename) {
+		return EnsureResult{}, ErrInvalidImageBasename
+	}
 	lock := m.lockForImage(poolName, basename)
 	lock.Lock()
 	defer lock.Unlock()
@@ -334,8 +358,14 @@ func validateQcow2Magic(path string) error {
 // unknown pools.
 //
 // Held under the per-(pool, basename) mutex to prevent a concurrent ensure
-// race (the ensure goroutine renames into the same path).
+// race (the ensure goroutine renames into the same path). A basename that is
+// not a safe single path segment (empty, "." / ".." traversal, or containing a
+// separator) is rejected with ErrInvalidChecksumFormat before any filesystem
+// call, so a crafted delete key can never collapse the path onto the pool root.
 func (m *Manager) DeleteImage(ctx context.Context, poolName, basename string) error {
+	if !validImageBasename(basename) {
+		return ErrInvalidChecksumFormat
+	}
 	m.poolsMu.RLock()
 	p, ok := m.pools[poolName]
 	m.poolsMu.RUnlock()

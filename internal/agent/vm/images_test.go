@@ -274,3 +274,58 @@ func TestIsHexSHA256Lower(t *testing.T) {
 		}
 	}
 }
+
+func TestValidImageBasename(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"ubuntu-24.04-arm64.img", true},
+		{"a.qcow2", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"a/b", false},
+		{"../escape", false},
+		{"images/../..", false},
+	}
+	for _, tc := range cases {
+		if got := validImageBasename(tc.in); got != tc.want {
+			t.Errorf("validImageBasename(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestEnsureImageRejectsTraversalBasename(t *testing.T) {
+	m, poolName, root := newImageTestManager(t)
+	// A source URL whose path basename collapses to ".." must be rejected
+	// before any filesystem action: filepath.Join(root, "images", "..")
+	// would otherwise resolve to the pool root.
+	_, err := m.EnsureImage(context.Background(), poolName, "http://host/foo/..", "", "qcow2")
+	if !errors.Is(err, ErrInvalidImageBasename) {
+		t.Errorf("EnsureImage(traversal) error = %v, want ErrInvalidImageBasename", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "images")); statErr == nil {
+		t.Errorf("images dir created on a rejected traversal basename; want no filesystem action")
+	}
+}
+
+func TestDeleteImageRejectsTraversalBasename(t *testing.T) {
+	m, poolName, root := newImageTestManager(t)
+	// Seed a real cached image so the pool root is non-empty.
+	body := qcow2Body(9)
+	if _, err := m.EnsureImage(context.Background(), poolName, serve(t, body), "", "qcow2"); err != nil {
+		t.Fatalf("seed EnsureImage error = %v", err)
+	}
+	// A crafted delete key of ".." must be rejected, not collapse onto the
+	// pool root via filepath.Join(root, "images", "..").
+	if err := m.DeleteImage(context.Background(), poolName, ".."); !errors.Is(err, ErrInvalidChecksumFormat) {
+		t.Errorf("DeleteImage(\"..\") error = %v, want ErrInvalidChecksumFormat", err)
+	}
+	if _, statErr := os.Stat(root); statErr != nil {
+		t.Errorf("pool root removed by a crafted delete key: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "images")); statErr != nil {
+		t.Errorf("images dir removed by a crafted delete key: %v", statErr)
+	}
+}
