@@ -7,11 +7,10 @@ drives an opt-in heartbeat goroutine to a Control Plane endpoint,
 and exposes a small Test API for state preload, mutation,
 inspection, and fault injection.
 
-Six endpoints are functional (`health.check`, `info.get`,
-`storagePools.list`, `storagePools.get`, `storageImages.list`,
-`tasks.get` as always-404); the remaining 38 of the 44
-`ServerInterface` methods are mounted as 501 stubs so the contract
-is compile-time-covered without runtime reach.
+A handful of endpoints are functional (`health.check`, `info.get`,
+`storagePools.list`, `storagePools.get`, `tasks.get` as always-404);
+the remaining `ServerInterface` methods are mounted as 501 stubs so the
+contract is compile-time-covered without runtime reach.
 
 ## What this is not
 

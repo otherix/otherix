@@ -24,12 +24,14 @@ import (
 // directly to avoid coupling to internal package types. The wire
 // field is `pool` (was `pool_id`) for consistency with the CP edge.
 type vmCreateBody struct {
-	UUID             string `json:"uuid"`
-	Name             string `json:"name"`
-	VCPUs            int    `json:"vcpus"`
-	MemoryMB         int    `json:"memory_mb"`
-	Pool             string `json:"pool"`
-	TemplateChecksum string `json:"template_checksum"`
+	UUID           string `json:"uuid"`
+	Name           string `json:"name"`
+	VCPUs          int    `json:"vcpus"`
+	MemoryMB       int    `json:"memory_mb"`
+	Pool           string `json:"pool"`
+	ImageURL       string `json:"image_url"`
+	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
+	Format         string `json:"format,omitempty"`
 }
 
 func validVMBody(vmID uuid.UUID, poolName string) vmCreateBody {
@@ -43,12 +45,14 @@ func validVMBody(vmID uuid.UUID, poolName string) vmCreateBody {
 // staging independent entries).
 func validNamedVMBody(vmID uuid.UUID, name, poolName string) vmCreateBody {
 	return vmCreateBody{
-		UUID:             vmID.String(),
-		Name:             name,
-		VCPUs:            2,
-		MemoryMB:         2048,
-		Pool:             poolName,
-		TemplateChecksum: strings.Repeat("a", 64),
+		UUID:           vmID.String(),
+		Name:           name,
+		VCPUs:          2,
+		MemoryMB:       2048,
+		Pool:           poolName,
+		ImageURL:       "https://example.test/img.qcow2",
+		ExpectedSHA256: strings.Repeat("a", 64),
+		Format:         "qcow2",
 	}
 }
 
@@ -85,6 +89,26 @@ func TestVmsCreate_DefaultSuccessMaterialises(t *testing.T) {
 	task := pollUntilTerminal(t, m, taskID, 2*time.Second)
 	if string(task.Status) != "success" {
 		t.Fatalf("status = %q, want success", task.Status)
+	}
+
+	// The terminal result carries the image-model correlation fields the CP
+	// worker's createResultFromTerminal decodes: vm_id, the echoed pinned
+	// image_sha256, and deterministic non-zero sizes.
+	if task.Result == nil {
+		t.Fatal("Result = nil, want vm.create terminal result map")
+	}
+	res := *task.Result
+	if got := res["vm_id"]; got != vmID.String() {
+		t.Errorf("result vm_id = %v, want %s", got, vmID)
+	}
+	if got := res["image_sha256"]; got != strings.Repeat("a", 64) {
+		t.Errorf("result image_sha256 = %v, want echoed expected_sha256", got)
+	}
+	if got, _ := res["virtual_size_bytes"].(float64); got <= 0 {
+		t.Errorf("result virtual_size_bytes = %v, want > 0", res["virtual_size_bytes"])
+	}
+	if got, _ := res["disk_size_bytes"].(float64); got <= 0 {
+		t.Errorf("result disk_size_bytes = %v, want > 0", res["disk_size_bytes"])
 	}
 
 	v, ok := m.StoredVM("demo")

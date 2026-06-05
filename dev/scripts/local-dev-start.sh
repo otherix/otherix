@@ -13,7 +13,7 @@
 #    4. lima readiness  — macOS only: verify VM shell responsive + agent binary staged
 #    5. start api-server — background, PID + log in .local/run/ (boots embedded etcd)
 #    6. wait /healthz   — 60s budget
-#    7. seed-mvp        - bootstrap protocol + register template + CLI cluster
+#    7. seed-mvp        - bootstrap protocol + CLI cluster (no template; VMs are created from an image URL)
 #                         (the cluster default pool is CP-auto-provisioned)
 #    8. node list       — final sanity check
 #
@@ -209,7 +209,7 @@ Try:
    ./bin/otherix node list
    ./bin/otherix node get node-1            # WireGuard fabric block + peers
    make smoke-wireguard-mesh                # cross-host WG handshake
-   ./bin/otherix vm create --name demo --template ubuntu-noble-arm64-mvp --vcpus 2 --memory-mb 2048 --wait
+   ./bin/otherix vm create --name demo --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img --arch arm64 --vcpus 2 --memory-mb 2048 --wait
 
 Stop + wipe:
    make local-dev-stop

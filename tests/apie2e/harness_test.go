@@ -12,7 +12,7 @@
 //
 // The suite covers the HTTP surface that needs no dependent-
 // row seeding: auth (login/refresh/logout rotation), user CRUD + RBAC, the
-// infrastructure-resource CRUD (networks, firmwares, nodes, templates),
+// infrastructure-resource CRUD (networks, firmwares, nodes),
 // idempotency replay, and the health probes. Cross-resource delete-blocking
 // (which seeds vm_nics / vm_disks / migrations) stays covered at the store
 // layer by the etcdstore integration suite plus the Lima smoke.

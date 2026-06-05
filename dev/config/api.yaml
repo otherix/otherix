@@ -6,7 +6,7 @@
 # Production deploys use deploy/config/api.example.yaml (agent client
 # disabled by default; operators provision real mTLS material out of
 # band). This dev variant flips agent_client.enabled=true so the
-# vm.create / vm.delete / storage_pool.scan / storage_image.import
+# vm.create / vm.delete / storage_pool.scan
 # workers can dispatch end-to-end against the real agent.
 
 server:

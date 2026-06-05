@@ -11,7 +11,7 @@ import (
 // AgentClientConfig configures the CP→agent HTTP client (polling
 // parameters only) used by river workers to drive async operations
 // on agents — currently the storage_pool.scan worker, with future
-// task types (template.import, vm.*) reusing the same client.
+// task types (vm.*, storage_pool.scan) reusing the same client.
 //
 // mTLS material (the CP's replica-specific leaf cert signed by the
 // cluster CA, plus the cluster CA itself) is NOT configured here.

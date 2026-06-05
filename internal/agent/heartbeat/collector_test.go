@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/vm"
@@ -93,6 +94,53 @@ func TestLinuxCollector_FreeResourceSubtraction(t *testing.T) {
 		// CP-side reconciler reads inventory from full snapshots, not
 		// only running rows.
 		t.Errorf("vms count = %d, want %d", got, want)
+	}
+}
+
+type stubPoolReporter struct{ reports []PoolReport }
+
+func (s stubPoolReporter) PoolReports() []PoolReport { return s.reports }
+
+type fakePoolImageLister struct{ images map[string][]PoolImageReport }
+
+func (f fakePoolImageLister) PoolImages(pool string) []PoolImageReport { return f.images[pool] }
+
+// TestCollectPoolImages confirms the collector folds the per-pool
+// image inventory (from the PoolImageLister seam) into the matching
+// PoolReport.Images for the heartbeat.
+func TestCollectPoolImages(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	img := PoolImageReport{
+		Basename:   "noble.qcow2",
+		SHA256:     "abc123",
+		SizeBytes:  1024,
+		Format:     "qcow2",
+		ImportedAt: "2026-06-05T00:00:00Z",
+	}
+	c := &LinuxCollector{
+		procPath:     dir,
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		pools:        stubPoolReporter{reports: []PoolReport{{Name: "default", ReconciliationStatus: "ready"}}},
+		poolImages:   fakePoolImageLister{images: map[string][]PoolImageReport{"default": {img}}},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := len(rep.Pools); got != 1 {
+		t.Fatalf("pools count = %d, want 1", got)
+	}
+	if diff := cmp.Diff([]PoolImageReport{img}, rep.Pools[0].Images); diff != "" {
+		t.Errorf("Pools[0].Images mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -27,8 +27,8 @@ set -euo pipefail
 
 # --- configuration -----------------------------------------------------
 # Two-node dev stack: the VM lands on node-1 (otherix-dev-1) because only
-# node-1 carries the pool + template; node-2 is a WG-mesh-only peer with no
-# pool, so the scheduler pins placement here. The tap/bridge assertions run
+# node-1 carries the bridge for $BRIDGE_NET; node-2 is a WG-mesh-only peer
+# without it, so the scheduler pins placement here. The tap/bridge assertions run
 # against otherix-dev-1.
 OTX="${OTX:-./bin/otherix}"
 LIMA_VM="${LIMA_VM:-otherix-dev-1}"
@@ -150,10 +150,10 @@ pass "egress=nat without managed rejected by the API edge"
 
 # --- step 4: VM with NIC on the bridge --------------------------------
 echo "=== step 4: vm create --network $BRIDGE_NET ==="
-template="$(otx template list --output json | jq -r '.data[0].name')"
-[[ -n "$template" && "$template" != "null" ]] || fail "no template available (run make seed-mvp)"
-info "using template $template; booting $VM_NAME (<= ${VM_TIMEOUT}s)"
-otx vm create --name "$VM_NAME" --template "$template" --network "$BRIDGE_NET" \
+IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
+ARCH="${ARCH:-arm64}"
+info "booting $VM_NAME from $IMAGE_URL (<= ${VM_TIMEOUT}s; cold pool fetches the image on first use)"
+otx vm create --name "$VM_NAME" --image-url "$IMAGE_URL" --arch "$ARCH" --network "$BRIDGE_NET" \
   --vcpus 2 --memory-mb 2048 --wait --wait-timeout "${VM_TIMEOUT}s" \
   || fail "vm create --network did not reach success"
 pass "$VM_NAME created with a NIC on $BRIDGE_NET"

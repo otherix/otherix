@@ -4,9 +4,12 @@
 package vms
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,164 +21,66 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// TestCheckTemplateUseAccess covers the F2 composite truth table:
-// scope=any unblocks; scope=own + match unblocks; public + read:public
-// unblocks; everything else returns errVMTemplateForbidden.
-func TestCheckTemplateUseAccess(t *testing.T) {
-	t.Parallel()
-
-	publicTemplate := store.Template{ID: uuid.New(), OwnerID: uuid.New(), Visibility: "public"}
-	privateOwned := func(owner uuid.UUID) store.Template {
-		return store.Template{ID: uuid.New(), OwnerID: owner, Visibility: "private"}
-	}
-	privateOther := store.Template{ID: uuid.New(), OwnerID: uuid.New(), Visibility: "private"}
-	mkUser := func(role auth.Role) *auth.User {
-		return &auth.User{ID: uuid.New(), Role: role}
-	}
-
-	cases := []struct {
-		name   string
-		caller *auth.User
-		tmpl   store.Template
-		want   error
-	}{
-		{
-			name:   "admin (any) + private cross-user → ok",
-			caller: mkUser(auth.RoleAdmin),
-			tmpl:   privateOther,
-			want:   nil,
-		},
-		{
-			name:   "operator (any) + public → ok",
-			caller: mkUser(auth.RoleOperator),
-			tmpl:   publicTemplate,
-			want:   nil,
-		},
-		{
-			name: "developer (own) + own private → ok",
-			caller: func() *auth.User {
-				u := mkUser(auth.RoleDeveloper)
-				return u
-			}(),
-			tmpl: store.Template{},
-			want: nil,
-		},
-		{
-			name:   "developer + cross-user private → forbidden",
-			caller: mkUser(auth.RoleDeveloper),
-			tmpl:   privateOther,
-			want:   errVMTemplateForbidden,
-		},
-		{
-			name:   "developer + public template → ok (read:public bypass)",
-			caller: mkUser(auth.RoleDeveloper),
-			tmpl:   publicTemplate,
-			want:   nil,
-		},
-		{
-			// Viewer holds template:read:public, so the public-bypass
-			// branch admits the helper even though they cannot act on
-			// vm:create. The route gate (RequirePermission(PermVMCreate))
-			// blocks the actual call upstream of this helper.
-			name:   "viewer + public → allowed by helper (route gate blocks upstream)",
-			caller: mkUser(auth.RoleViewer),
-			tmpl:   publicTemplate,
-			want:   nil,
-		},
-		{
-			name:   "viewer + private cross-user → forbidden",
-			caller: mkUser(auth.RoleViewer),
-			tmpl:   privateOther,
-			want:   errVMTemplateForbidden,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			tmpl := tc.tmpl
-			// Wire the developer-owns-private case through the caller
-			// id so the comparison ScopeOwn+OwnerID uses real values.
-			if tc.name == "developer (own) + own private → ok" {
-				tmpl = privateOwned(tc.caller.ID)
-			}
-			got := checkTemplateUseAccess(tc.caller, tmpl)
-			if (got == nil) != (tc.want == nil) {
-				t.Fatalf("checkTemplateUseAccess(%s) = %v, want %v", tc.name, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestValidateCreateRequest covers the field-level invariants the
 // API edge enforces before any DB work. Each row exercises one
-// rejection branch; happy-path vetting lives in the handler-level
-// integration test that needs a real store.
-//
-// The validator does not reject non-UUID strings on the `template`
-// or `pool` fields - the resolver layer is responsible for both
-// UUID-rejection (template: name-only) and the multi-instance carve-
-// out (pool: polymorphic), and surfaces 404 / 400 as appropriate.
-// This unit test only covers the field-level edge.
+// rejection branch; happy-path vetting lives in the firmware /
+// schedule tests that need a store fake.
 func TestValidateCreateRequest(t *testing.T) {
 	t.Parallel()
+
+	validSHA := strings.Repeat("ab", 32) // 64 chars lowercase hex
+	base := func() vmCreateRequest {
+		return vmCreateRequest{
+			Name:         "demo",
+			ImageURL:     "https://example.test/img.qcow2",
+			Architecture: "amd64",
+			Pool:         "default",
+			VCPUs:        2,
+			MemoryMB:     2048,
+		}
+	}
 
 	cases := []struct {
 		name string
 		req  vmCreateRequest
 		ok   bool
 	}{
+		{name: "happy path", req: base(), ok: true},
 		{
-			name: "happy path",
-			req: vmCreateRequest{
-				Name:     "demo",
-				Template: "ubuntu-jammy",
-				Pool:     "default",
-				VCPUs:    2,
-				MemoryMB: 2048,
-			},
+			name: "happy path with valid sha + format + disk",
+			req: func() vmCreateRequest {
+				r := base()
+				r.ImageSHA256 = validSHA
+				r.Format = "qcow2"
+				r.DiskGiB = 20
+				return r
+			}(),
 			ok: true,
 		},
-		{
-			name: "empty name",
-			req:  vmCreateRequest{Template: "ubuntu", Pool: "default", VCPUs: 2, MemoryMB: 1024},
-		},
+		{name: "empty name", req: func() vmCreateRequest { r := base(); r.Name = ""; return r }()},
 		{
 			name: "name too long",
-			req: vmCreateRequest{
-				Name:     string(make([]byte, 256)),
-				Template: "ubuntu", Pool: "default", VCPUs: 2, MemoryMB: 1024,
-			},
+			req:  func() vmCreateRequest { r := base(); r.Name = string(make([]byte, 256)); return r }(),
 		},
+		{name: "empty image_url", req: func() vmCreateRequest { r := base(); r.ImageURL = ""; return r }()},
+		{name: "missing arch", req: func() vmCreateRequest { r := base(); r.Architecture = ""; return r }()},
+		{name: "bad arch", req: func() vmCreateRequest { r := base(); r.Architecture = "riscv"; return r }()},
+		{name: "arm64 ok", req: func() vmCreateRequest { r := base(); r.Architecture = "arm64"; return r }(), ok: true},
+		{name: "bad sha (short)", req: func() vmCreateRequest { r := base(); r.ImageSHA256 = "abcd"; return r }()},
+		{name: "bad sha (uppercase)", req: func() vmCreateRequest { r := base(); r.ImageSHA256 = strings.ToUpper(validSHA); return r }()},
+		{name: "bad format", req: func() vmCreateRequest { r := base(); r.Format = "vmdk"; return r }()},
+		{name: "negative disk", req: func() vmCreateRequest { r := base(); r.DiskGiB = -1; return r }()},
 		{
-			name: "empty template",
-			req:  vmCreateRequest{Name: "x", Template: "", Pool: "default", VCPUs: 2, MemoryMB: 1024},
-		},
-		{
-			// Empty pool is admitted - the handler will substitute the
-			// cluster default at runtime, or return 400
-			// default_pool_not_set when no default is configured. The
-			// field-level validator therefore accepts the shape.
+			// Empty pool is admitted - the handler substitutes the cluster
+			// default at runtime, or returns 400 default_pool_not_set.
 			name: "empty pool ok (cluster default fallback)",
-			req:  vmCreateRequest{Name: "x", Template: "ubuntu", Pool: "", VCPUs: 2, MemoryMB: 1024},
+			req:  func() vmCreateRequest { r := base(); r.Pool = ""; return r }(),
 			ok:   true,
 		},
-		{
-			name: "vcpus too small",
-			req:  vmCreateRequest{Name: "x", Template: "ubuntu", Pool: "default", VCPUs: 0, MemoryMB: 1024},
-		},
-		{
-			name: "vcpus too large",
-			req:  vmCreateRequest{Name: "x", Template: "ubuntu", Pool: "default", VCPUs: 129, MemoryMB: 1024},
-		},
-		{
-			name: "memory too small",
-			req:  vmCreateRequest{Name: "x", Template: "ubuntu", Pool: "default", VCPUs: 2, MemoryMB: 64},
-		},
-		{
-			name: "memory too large",
-			req:  vmCreateRequest{Name: "x", Template: "ubuntu", Pool: "default", VCPUs: 2, MemoryMB: 1 << 30},
-		},
+		{name: "vcpus too small", req: func() vmCreateRequest { r := base(); r.VCPUs = 0; return r }()},
+		{name: "vcpus too large", req: func() vmCreateRequest { r := base(); r.VCPUs = 129; return r }()},
+		{name: "memory too small", req: func() vmCreateRequest { r := base(); r.MemoryMB = 64; return r }()},
+		{name: "memory too large", req: func() vmCreateRequest { r := base(); r.MemoryMB = 1 << 30; return r }()},
 	}
 
 	for _, tc := range cases {
@@ -187,6 +92,240 @@ func TestValidateCreateRequest(t *testing.T) {
 				t.Errorf("validateCreateRequest(%s) = %v, want %v", tc.name, got, tc.ok)
 			}
 		})
+	}
+}
+
+// firmwareStoreStub satisfies the handler's Store interface for the
+// resolveFirmware unit tests. It embeds Store (nil) so only the two firmware
+// methods exercised here have bodies; any other call panics.
+type firmwareStoreStub struct {
+	Store
+	byID      map[uuid.UUID]store.Firmware
+	byArch    map[store.FirmwareType]store.Firmware
+	byIDErr   error
+	byArchErr error
+}
+
+func (s *firmwareStoreStub) FirmwareByID(_ context.Context, id uuid.UUID) (store.Firmware, error) {
+	if s.byIDErr != nil {
+		return store.Firmware{}, s.byIDErr
+	}
+	fw, ok := s.byID[id]
+	if !ok {
+		return store.Firmware{}, store.ErrNotFound
+	}
+	return fw, nil
+}
+
+func (s *firmwareStoreStub) DefaultFirmwareForArchType(_ context.Context, _ store.CPUArch, ftype store.FirmwareType) (store.Firmware, error) {
+	if s.byArchErr != nil {
+		return store.Firmware{}, s.byArchErr
+	}
+	fw, ok := s.byArch[ftype]
+	if !ok {
+		return store.Firmware{}, store.ErrNotFound
+	}
+	return fw, nil
+}
+
+// TestResolveFirmware covers the firmware-resolution truth table: an explicit
+// firmware_id wins; otherwise the default for (arch, type) where type defaults
+// to uefi unless firmware=="bios"; bad inputs surface typed sentinels.
+func TestResolveFirmware(t *testing.T) {
+	t.Parallel()
+
+	explicitID := uuid.New()
+	uefiID := uuid.New()
+	biosID := uuid.New()
+	st := &firmwareStoreStub{
+		byID: map[uuid.UUID]store.Firmware{explicitID: {ID: explicitID}},
+		byArch: map[store.FirmwareType]store.Firmware{
+			store.FirmwareTypeUefi: {ID: uefiID},
+			store.FirmwareTypeBios: {ID: biosID},
+		},
+	}
+	h := &Handler{store: st, log: discardLog()}
+
+	cases := []struct {
+		name       string
+		firmware   string
+		firmwareID string
+		wantID     uuid.UUID
+		wantErr    error
+	}{
+		{name: "explicit id wins", firmwareID: explicitID.String(), wantID: explicitID},
+		{name: "default uefi when firmware empty", wantID: uefiID},
+		{name: "explicit uefi", firmware: "uefi", wantID: uefiID},
+		{name: "explicit bios", firmware: "bios", wantID: biosID},
+		{name: "bad uuid", firmwareID: "not-a-uuid", wantErr: errFirmwareBadID},
+		{name: "bad firmware type", firmware: "coreboot", wantErr: errFirmwareBadType},
+		{name: "explicit id missing", firmwareID: uuid.New().String(), wantErr: errFirmwareNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := h.resolveFirmware(context.Background(), store.CpuArchAmd64, tc.firmware, tc.firmwareID)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("resolveFirmware err = %v, want %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveFirmware err = %v, want nil", err)
+			}
+			if got == nil || *got != tc.wantID {
+				t.Errorf("resolveFirmware id = %v, want %s", got, tc.wantID)
+			}
+		})
+	}
+}
+
+// TestResolveFirmwareNoDefault pins the no-default-for-arch/type path: firmware
+// is optional, so with no seeded default the resolver returns (nil, nil) and the
+// VM is created without a firmware row (boots with the agent/qemu default).
+func TestResolveFirmwareNoDefault(t *testing.T) {
+	t.Parallel()
+	st := &firmwareStoreStub{byArch: map[store.FirmwareType]store.Firmware{}}
+	h := &Handler{store: st, log: discardLog()}
+	got, err := h.resolveFirmware(context.Background(), store.CpuArchArm64, "", "")
+	if err != nil {
+		t.Errorf("resolveFirmware err = %v, want nil", err)
+	}
+	if got != nil {
+		t.Errorf("resolveFirmware id = %v, want nil (no firmware)", got)
+	}
+}
+
+// placementReaderFake returns one eligible local_dir pool on one ready node so a
+// scheduleAndEnqueueCreate plan callback can run the real scheduler against a
+// trivial candidate set. Only the methods SchedulePlacement touches in the
+// happy path are populated; the pressure lists return empty.
+type placementReaderFake struct {
+	pool store.ListEligiblePoolsByNameRow
+}
+
+func (f *placementReaderFake) AcquirePlacementLock(context.Context, int64) error { return nil }
+
+func (f *placementReaderFake) ListEligiblePoolsByName(context.Context, string) ([]store.ListEligiblePoolsByNameRow, error) {
+	return []store.ListEligiblePoolsByNameRow{f.pool}, nil
+}
+
+func (f *placementReaderFake) ListMemoryPressuredCandidatesByName(context.Context, string) ([]store.ListMemoryPressuredCandidatesByNameRow, error) {
+	return nil, nil
+}
+
+func (f *placementReaderFake) ListSystemDiskPressuredCandidatesByName(context.Context, string) ([]store.ListSystemDiskPressuredCandidatesByNameRow, error) {
+	return nil, nil
+}
+
+func (f *placementReaderFake) ListDiskPressuredPoolsByName(context.Context, string) ([]store.ListDiskPressuredPoolsByNameRow, error) {
+	return nil, nil
+}
+
+func (f *placementReaderFake) ListStoragePoolsByName(context.Context, string) ([]store.StoragePool, error) {
+	return nil, nil
+}
+
+func (f *placementReaderFake) CountRunningVMsByNode(context.Context, *uuid.UUID) (int64, error) {
+	return 0, nil
+}
+
+func (f *placementReaderFake) ListNetworkNodeStatusByNode(context.Context, uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	return nil, nil
+}
+
+// TestScheduleAndEnqueueCreateBuildsImageWrites pins the create-enqueue seam:
+// the plan callback builds the VM, disk and job-args rows from the image fields
+// on the request plus the resolved firmware id. It runs the real scheduler over
+// a one-pool/one-node fake and inspects the captured VMCreateWrites.
+func TestScheduleAndEnqueueCreateBuildsImageWrites(t *testing.T) {
+	t.Parallel()
+
+	nodeID := uuid.New()
+	poolID := uuid.New()
+	cpuTotal := int32(64)
+	memTotal := int64(262144)
+	reader := &placementReaderFake{pool: store.ListEligiblePoolsByNameRow{
+		PoolEffectiveCapacity: store.PoolEffectiveCapacity{ID: poolID, NodeID: nodeID, Name: "default", Type: "local_dir"},
+		NodeEffectiveAvailability: store.NodeEffectiveAvailability{
+			ID: nodeID, Name: "node-x", Architecture: store.CpuArchAmd64,
+			AdvertisedEndpoint: "https://node-x:8443", Status: store.NodeStatusReady,
+			CPUCoresTotal: &cpuTotal, CPUCoresAvailable: &cpuTotal,
+			MemoryTotalMib: &memTotal, MemoryAvailableMib: &memTotal,
+		},
+	}}
+
+	var captured store.VMCreateWrites
+	st := &createScheduledVMStub{
+		createScheduledVM: func(_ context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
+			w, err := plan(reader)
+			if err != nil {
+				return uuid.Nil, err
+			}
+			captured = w
+			return w.VM.ID, nil
+		},
+	}
+	h := &Handler{store: st, log: discardLog()}
+
+	firmwareID := uuid.New()
+	sha := "ab" + strings.Repeat("cd", 31) // 64 chars lowercase hex
+	_, err := h.scheduleAndEnqueueCreate(context.Background(), scheduleInputs{
+		Caller:     &auth.User{ID: uuid.New(), Role: auth.RoleDeveloper},
+		FirmwareID: &firmwareID,
+		PoolName:   "default",
+		Req: vmCreateRequest{
+			Name:         "demo",
+			ImageURL:     "https://example.test/img.qcow2",
+			ImageSHA256:  sha,
+			Architecture: "amd64",
+			Format:       "qcow2",
+			DiskGiB:      20,
+			VCPUs:        2,
+			MemoryMB:     2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("scheduleAndEnqueueCreate: %v", err)
+	}
+
+	if captured.VM.ImageURL != "https://example.test/img.qcow2" {
+		t.Errorf("VM.ImageURL = %q, want image url", captured.VM.ImageURL)
+	}
+	if captured.VM.ImageFormat != store.ImageFormatQcow2 {
+		t.Errorf("VM.ImageFormat = %q, want qcow2", captured.VM.ImageFormat)
+	}
+	if captured.VM.Architecture != store.CpuArchAmd64 {
+		t.Errorf("VM.Architecture = %q, want amd64", captured.VM.Architecture)
+	}
+	if captured.VM.FirmwareID == nil || *captured.VM.FirmwareID != firmwareID {
+		t.Errorf("VM.FirmwareID = %v, want %s", captured.VM.FirmwareID, firmwareID)
+	}
+	wantSHA, _ := hex.DecodeString(sha)
+	if !bytes.Equal(captured.VM.ImageSHA256, wantSHA) {
+		t.Errorf("VM.ImageSHA256 = %x, want %x", captured.VM.ImageSHA256, wantSHA)
+	}
+	if captured.Disk.SourceKind != "image" {
+		t.Errorf("Disk.SourceKind = %q, want image", captured.Disk.SourceKind)
+	}
+	if captured.Disk.SizeGib != 20 {
+		t.Errorf("Disk.SizeGib = %d, want 20", captured.Disk.SizeGib)
+	}
+	// The image source lives on the VM/disk rows (asserted above); the job
+	// payload carries only the row identifiers.
+	if captured.VM.ImageURL != "https://example.test/img.qcow2" {
+		t.Errorf("VM.ImageURL = %q, want https://example.test/img.qcow2", captured.VM.ImageURL)
+	}
+	if captured.VM.ImageFormat != "qcow2" {
+		t.Errorf("VM.ImageFormat = %q, want qcow2", captured.VM.ImageFormat)
+	}
+	job, ok := captured.Job.(VMCreateArgs)
+	if !ok {
+		t.Fatalf("Job is %T, want VMCreateArgs", captured.Job)
+	}
+	if job.NodeID != nodeID || job.PoolID != poolID {
+		t.Errorf("VMCreateArgs placement = node %s pool %s, want %s / %s", job.NodeID, job.PoolID, nodeID, poolID)
 	}
 }
 

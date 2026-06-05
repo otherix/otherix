@@ -350,11 +350,12 @@ func (h *Handler) loadDeclaredVMs(ctx context.Context, hp store.HeartbeatProject
 
 // applyPoolReports walks each agent-reported pool and applies its
 // reconciliation_status / reconciliation_error onto the matching
-// `storage_pools` row. The join key is
-// (node_id, lower(name)); rows that no longer exist (operator deleted
-// the pool mid-tick) yield zero rows affected — the agent reconciles
-// on its next tick. failure here propagates as a projection error;
-// the transaction rolls back.
+// `storage_pools` row, then persists the pool's reported image inventory as
+// observed state. Both writes share the (node_id, lower(name)) join key; rows
+// that no longer exist (operator deleted the pool mid-tick) are skipped — the
+// reconciliation write is a silent no-op store-side, and the inventory write is
+// skipped here once the resolver reports no match. A genuine store failure on
+// either write propagates as a projection error; the transaction rolls back.
 func (h *Handler) applyPoolReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []poolReport) error {
 	for _, p := range reports {
 		params := store.UpdateStoragePoolReconciliationParams{
@@ -366,6 +367,56 @@ func (h *Handler) applyPoolReports(ctx context.Context, hp store.HeartbeatProjec
 		if err := hp.UpdateStoragePoolReconciliation(ctx, params); err != nil {
 			return fmt.Errorf("update pool reconciliation: %v", err)
 		}
+		if err := h.applyPoolImageInventory(ctx, hp, nodeID, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyPoolImageInventory persists the agent-reported image inventory for one
+// pool as observed state, keyed by the pool's UUID resolved via the same
+// (node_id, lower(name)) lookup the reconciliation write uses. A pool that no
+// longer resolves (deleted mid-tick) skips the inventory write — a write keyed
+// on a non-existent pool would write an orphan key, so the non-match is a safe
+// no-op, not an error. Each image's imported_at is parsed tolerantly: a malformed
+// value degrades to zero time (the image's identity is basename+sha256, not the
+// timestamp) and never drops the image or fails the heartbeat, mirroring the
+// last_started_at handling in applyVMs.
+func (h *Handler) applyPoolImageInventory(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, p poolReport) error {
+	poolID, found, err := hp.StoragePoolIDByNodeName(ctx, nodeID, p.Name)
+	if err != nil {
+		return fmt.Errorf("resolve pool id for inventory: %v", err)
+	}
+	if !found {
+		return nil
+	}
+	images := make([]store.PoolImage, 0, len(p.Images))
+	for _, img := range p.Images {
+		var importedAt time.Time
+		if img.ImportedAt != "" {
+			t, perr := time.Parse(time.RFC3339Nano, img.ImportedAt)
+			if perr != nil {
+				h.log.WarnContext(ctx, "heartbeat pool image imported_at not RFC3339; storing zero time",
+					slog.String("node_id", nodeID.String()),
+					slog.String("pool_name", p.Name),
+					slog.String("basename", img.Basename),
+					slog.String("value", img.ImportedAt))
+			} else {
+				importedAt = t.UTC()
+			}
+		}
+		images = append(images, store.PoolImage{
+			Basename:         img.Basename,
+			ChecksumSha256:   img.SHA256,
+			SizeBytes:        img.SizeBytes,
+			VirtualSizeBytes: img.VirtualSizeBytes,
+			Format:           img.Format,
+			ImportedAt:       importedAt,
+		})
+	}
+	if err := hp.UpsertPoolImageInventory(ctx, poolID, images); err != nil {
+		return fmt.Errorf("upsert pool image inventory: %v", err)
 	}
 	return nil
 }

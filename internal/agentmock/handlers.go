@@ -330,42 +330,10 @@ func (m *Mock) StoragePoolsGet(w http.ResponseWriter, r *http.Request, poolName 
 	m.respondJSON(w, r, opID, http.StatusOK, poolToAPI(p))
 }
 
-// StorageImagesList implements GET /v1/storage-pools/{pool_name}/images.
-func (m *Mock) StorageImagesList(w http.ResponseWriter, r *http.Request, poolName agentapi.PoolName, _ agentapi.StorageImagesListParams) {
-	const opID = "storageImages.list"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.state.mu.Lock()
-	if _, ok := m.state.pools[poolName]; !ok {
-		m.state.mu.Unlock()
-		m.respondNotFound(w, r, opID, "storage pool not found on this agent")
-		return
-	}
-	bucket := m.state.images[poolName]
-	images := make([]agentapi.CachedImage, 0, len(bucket))
-	for _, img := range bucket {
-		images = append(images, imageToAPI(img))
-	}
-	m.state.mu.Unlock()
-	body := agentapi.CachedImageList{
-		Data: images,
-		Meta: agentapi.PaginationMeta{NextCursor: nil},
-	}
-	m.respondJSON(w, r, opID, http.StatusOK, body)
-}
-
 // TasksGet implements GET /v1/tasks/{id}. Looks up the agent-task
-// inserted by StoragePoolsScan, StorageImagesImport, or any future
-// functional initiator and returns the OpenAPI Task projection at
-// the current instant. Unknown ids return the standard not_found
-// envelope.
-//
-// For storage_image.import tasks that have reached terminal-success,
-// the handler materialises the imported file in state.images on the
-// way out — the side effect mirrors a real agent's "file is on disk
-// once the task is done" semantics, observable to subsequent
-// StorageImagesList calls and the Test API's StoredImage helper.
+// inserted by StoragePoolsScan or any future functional initiator and
+// returns the OpenAPI Task projection at the current instant. Unknown
+// ids return the standard not_found envelope.
 func (m *Mock) TasksGet(w http.ResponseWriter, r *http.Request, taskID uuid.UUID) {
 	const opID = "tasks.get"
 	if m.preDispatch(w, r, opID) {
@@ -378,7 +346,6 @@ func (m *Mock) TasksGet(w http.ResponseWriter, r *http.Request, taskID uuid.UUID
 	var snapshot agentTask
 	if ok {
 		snapshot = *task
-		m.materializeImportLocked(&snapshot, now)
 		m.materializeVMCreateLocked(&snapshot, now)
 		m.materializeVMDeleteLocked(&snapshot, now)
 		m.materializeVMLifecycleLocked(&snapshot, now)

@@ -46,8 +46,7 @@ validation_failed). Multi-instance: one invocation registers one
 (name, node) row — the same pool name may live on multiple nodes by
 re-running the command per node.
 
-The command is NOT idempotent at the CLI surface (unlike 'template
-create' which falls through to materialise on 409): a duplicate (name,
+The command is NOT idempotent at the CLI surface: a duplicate (name,
 node) returns ErrPoolExists and the CLI surfaces a clear error.
 Operators driving seed scripts that need re-run safety should pre-check
 existence via 'otherix pool get <name>' before invoking create.

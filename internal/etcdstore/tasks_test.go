@@ -16,17 +16,15 @@ import (
 
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
-	templateshandlers "github.com/otherix/otherix/internal/api/handlers/templates"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // With EnqueueTask / CancelPendingTask implemented, the etcd store satisfies the
-// tasks, templates, and storage-pools handler contracts (the queue-bound
-// producers). Only vms.Store remains (CreateScheduledVM + placement).
+// tasks and storage-pools handler contracts (the queue-bound producers). Only
+// vms.Store remains (CreateScheduledVM + placement).
 var (
 	_ taskshandlers.Store        = (*etcdstore.Store)(nil)
-	_ templateshandlers.Store    = (*etcdstore.Store)(nil)
 	_ storagepoolshandlers.Store = (*etcdstore.Store)(nil)
 )
 

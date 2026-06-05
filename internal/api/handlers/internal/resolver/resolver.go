@@ -4,7 +4,7 @@
 // Package resolver translates an operator-supplied identifier into the
 // underlying store row.
 //
-// Template, Node, and VM identifiers are name-only on
+// Node and VM identifiers are name-only on
 // paths/bodies/filters: they reject UUID format with CodeUUIDInName
 // before any DB roundtrip. Storage pools remain polymorphic - under
 // the multi-instance model UUID addressing is essential for
@@ -33,22 +33,20 @@ type Kind string
 // Resource kinds the resolver recognises. The string values double as
 // the `details.kind` payload on wire envelopes built by the handlers.
 const (
-	KindTemplate Kind = "template"
-	KindPool     Kind = "storage_pool"
-	KindNode     Kind = "node"
-	KindVM       Kind = "vm"
+	KindPool Kind = "storage_pool"
+	KindNode Kind = "node"
+	KindVM   Kind = "vm"
 )
 
 // Querier is the subset of *store.Store domain lookups the resolver
-// needs. Name-only lookups for Template / Node / VM; both UUID-by-id
-// and name-by-list for Pool (multi-instance carve-out - UUID branch
+// needs. Name-only lookups for Node / VM; both UUID-by-id and
+// name-by-list for Pool (multi-instance carve-out - UUID branch
 // retained for per-instance addressing). Keeping the surface narrow
 // lets unit tests pass a hand-rolled fake, and lets any store backend
 // satisfy it structurally. Method names match the store's domain
 // methods (no Get prefix); single-row lookups return store.ErrNotFound
 // when the row is missing.
 type Querier interface {
-	TemplateByName(ctx context.Context, name string) (store.Template, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	ClusterSettings(ctx context.Context) (store.ClusterSetting, error)

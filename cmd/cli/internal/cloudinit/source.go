@@ -2,9 +2,9 @@
 // Copyright 2026 Andrei Taranik
 
 // Package cloudinit holds CLI-side helpers for reading and validating
-// raw `#cloud-config` YAML the operator passes to `otherix template
-// create --cloud-init` / `otherix vm create --cloud-init`. Both flags
-// take a filesystem path OR the literal `-` to slurp stdin (operator
+// raw `#cloud-config` YAML the operator passes to
+// `otherix vm create --cloud-init`. The flag
+// takes a filesystem path OR the literal `-` to slurp stdin (operator
 // UX iteration locks). Validation is best-effort: YAML syntax check
 // + a warning if the body does not start with the `#cloud-config`
 // directive cloud-init expects on the first line.

@@ -41,7 +41,7 @@ const componentName = "api"
 
 // workerMaxAttempts is the per-kind retry budget the dispatcher applies to every
 // async task kind. Mirrors the river MaxAttempts (25) set at enqueue time across
-// vm.create / vm.delete / vm.* lifecycle / storage_pool.scan / storage_image.import.
+// vm.create / vm.delete / vm.* lifecycle / storage_pool.scan.
 const workerMaxAttempts = 25
 
 func main() {
@@ -337,7 +337,7 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 	// The etcd store self-enqueues (EnqueueTask writes the job inline) and
 	// tasks.cancel cancels through the store, so there is no queue client to pass.
 	server, err := api.NewServer(
-		*cfg, st, agentClient,
+		*cfg, st,
 		vmshandlers.LifecycleDeps{AgentClient: agentClient},
 		vmshandlers.ConsoleDeps{AgentClient: agentClient, AccessMode: cfg.Console.AccessMode},
 		authSvc, material, membership, log)
@@ -460,20 +460,14 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 	return wg.Wait, nil
 }
 
-// The storage-pool ImageEnsurer is the production vm.create image-materialization
-// seam. This is the wiring site that imports both packages, so the compile-time
-// satisfaction assertion lives here: it guards against signature drift between
-// the vms.ImageEnsurer interface and the storagepools.ImageEnsurer impl.
-var _ vmshandlers.ImageEnsurer = (*storagepoolshandlers.ImageEnsurer)(nil)
-
-// buildDispatcher registers the six async task-kind handlers on a dispatcher
+// buildDispatcher registers the async task-kind handlers on a dispatcher
 // polling the etcd job queue. Each handler reuses the production agent executor
 // and the Run-form worker in its owning handler package.
 func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *config.APIConfig, log *slog.Logger) *worker.Dispatcher {
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 
 	d.Register("vm.create", workerMaxAttempts,
-		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), storagepoolshandlers.NewImageEnsurer(agentClient, st), log, cfg.Workers.Heartbeat.GoneGrace))
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 	d.Register("vm.delete", workerMaxAttempts,
 		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 
@@ -485,8 +479,6 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
 		storagepoolshandlers.ScanHandler(st, storagepoolshandlers.NewAgentScanExecutor(agentClient), cfg.Placement.Pressure.Disk, log))
-	d.Register("storage_image.import", workerMaxAttempts,
-		storagepoolshandlers.ImportHandler(st, storagepoolshandlers.NewAgentImportExecutor(agentClient), log))
 
 	return d
 }
@@ -568,11 +560,10 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 	}
 }
 
-// buildAgentClient constructs the *agentclient.Client used by both the scan /
-// import / vm executors and the storage_image.delete handler. Returns (nil, nil)
-// when AgentClient.Enabled is false - the api binary still boots so HTTP-only
-// smoke testing stays available; the consumer paths each emit their own
-// degradation envelope.
+// buildAgentClient constructs the *agentclient.Client used by the scan and vm
+// executors. Returns (nil, nil) when AgentClient.Enabled is false - the api
+// binary still boots so HTTP-only smoke testing stays available; the consumer
+// paths each emit their own degradation envelope.
 //
 // mTLS material (replica's leaf cert + cluster CA trust anchor) flows in via
 // material - produced upstream per LoadOrGenerateCPCert. Construction errors at
@@ -581,7 +572,7 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 // agent client.
 func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog.Logger) (*agentclient.Client, error) {
 	if !cfg.AgentClient.Enabled {
-		log.Info("agent client disabled; storage_image.delete and scan workers will surface degraded responses")
+		log.Info("agent client disabled; scan workers will surface degraded responses")
 		return nil, nil
 	}
 	if material.Skipped() || len(material.Cert.Certificate) == 0 || material.ClusterCA == nil {

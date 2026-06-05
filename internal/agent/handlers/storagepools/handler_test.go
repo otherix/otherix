@@ -57,17 +57,6 @@ func newTestManager(t *testing.T) (*vm.Manager, string) {
 	return m, poolName
 }
 
-// poolRootForTest returns the pool root cached by newTestManager.
-func poolRootForTest(t *testing.T, _ *vm.Manager, poolName string) string {
-	t.Helper()
-	v, ok := testPoolRoots.Load(poolName)
-	if !ok {
-		t.Fatalf("pool root not registered for %s; use newTestManager", poolName)
-	}
-	root, _ := v.(string)
-	return root
-}
-
 // drainAgentTask polls m.Task(id) until the task reaches a terminal
 // status (success / failed) or budget expires. Mirrors
 // waitForTaskTerminal in internal/agent/vm/scan_test.go; prevents

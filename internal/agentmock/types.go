@@ -66,41 +66,6 @@ type PoolScanResult struct {
 	Delay          time.Duration
 }
 
-// ImageImportResult is the queued synthetic outcome the mock applies
-// to the next StorageImagesImport invocation against the matching
-// (pool, checksum). Tests seed a per-(pool, checksum) FIFO queue via
-// AddImageImportResult.
-//
-// Status accepts "success" or "failed"; an empty string defaults to
-// "success". SizeBytes / Format default to a 1 MiB qcow2 file when
-// zero; Delay defaults to defaultPoolScanDelay (100ms) when zero —
-// the same lazy time-keyed projection model the scan task uses.
-//
-// Pre-existence rule: when the requested checksum is already staged
-// in the pool (via AddImage or a previous successful import), the
-// import handler emits a terminal-success projection without
-// consuming the FIFO queue. Tests that need to drive the
-// pre-existing-content path keep their queue clean; tests that need
-// to drive a fresh-import outcome stage the result here.
-type ImageImportResult struct {
-	Status    string
-	SizeBytes int64
-	Format    string
-	Error     *ErrorEnvelope
-	Delay     time.Duration
-	// ComputedChecksumSHA256 is the checksum the mock surfaces in
-	// task.result.checksum_sha256 when the request lands in compute
-	// mode (`expected_checksum_sha256` null/absent/empty). Verify-mode
-	// requests echo the request's expected value regardless of what
-	// this field carries. Test authors driving compute-mode scenarios
-	// populate this so the resulting storage_images row carries the
-	// right hash; an empty value in compute mode falls back to a
-	// deterministic synthetic checksum (see computeFallbackChecksum)
-	// so tests that don't care about the value still get a valid
-	// lowercase-hex string.
-	ComputedChecksumSHA256 string
-}
-
 // ErrorEnvelope is the inner-error envelope shape the agent Task
 // surfaces under task.error on failed / cancelled terminals.
 type ErrorEnvelope struct {
@@ -128,7 +93,7 @@ type AgentVM struct {
 	Status       string
 	// UserData (L3) records the cloud-init blob the CP-side resolver
 	// shipped with the create request. Empty when the operator left
-	// both vm.user_data and template.cloud_init_user_data unset.
+	// vm.user_data unset.
 	// Surfaced through StoredVM so integration tests can
 	// assert L3 resolution end-to-end.
 	UserData  string
@@ -233,25 +198,6 @@ func poolToAPI(p storagePool) agentapi.StoragePoolReport {
 	if p.AvailableBytes > 0 {
 		a := p.AvailableBytes
 		out.AvailableBytes = &a
-	}
-	return out
-}
-
-// imageToAPI converts a CachedImage into the codegen wire type.
-func imageToAPI(c CachedImage) agentapi.CachedImage {
-	out := agentapi.CachedImage{
-		ChecksumSha256: c.ChecksumSHA256,
-		Format:         agentapi.CachedImageFormat(c.Format),
-		SizeBytes:      c.SizeBytes,
-		Path:           c.Path,
-	}
-	if !c.LastUsedAt.IsZero() {
-		t := c.LastUsedAt
-		out.LastUsedAt = &t
-	}
-	if c.SourceURL != "" {
-		u := c.SourceURL
-		out.SourceURL = &u
 	}
 	return out
 }

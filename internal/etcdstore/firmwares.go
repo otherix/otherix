@@ -21,7 +21,7 @@ import (
 // uniqueness guards mirroring the SQL partial indexes: uq_firmwares_name_arch
 // (name + architecture) and uq_firmwares_default (one default per architecture +
 // type, only when is_default). Firmwares hard-delete (no deleted_at); delete is
-// blocked when vms or templates still reference the row. Per-node availability
+// blocked when vms still reference the row. Per-node availability
 // (node_firmwares) is populated by the heartbeat receiver and joined for
 // ListNodeFirmwares.
 
@@ -41,15 +41,11 @@ func nodeFirmwarePrefix(nodeID uuid.UUID) string {
 	return etcd.Key("node_firmwares", nodeID.String()) + "/"
 }
 
-// firmwareVMIndexPrefix and firmwareTemplateIndexPrefix are the prefixes under
-// which vms / templates record their firmware reference (written by those
-// slices). DeleteFirmware counts the keys here to block deletion.
+// firmwareVMIndexPrefix is the prefix under which vms record their firmware
+// reference (written by the vm slice). DeleteFirmware counts the keys here to
+// block deletion.
 func firmwareVMIndexPrefix(id uuid.UUID) string {
 	return etcd.Key("index", "vms", "firmware", id.String()) + "/"
-}
-
-func firmwareTemplateIndexPrefix(id uuid.UUID) string {
-	return etcd.Key("index", "templates", "firmware", id.String()) + "/"
 }
 
 // FirmwareByID returns the firmware with the given id, or store.ErrNotFound.
@@ -273,7 +269,7 @@ func (s *Store) ListNodeFirmwares(ctx context.Context, arg store.ListNodeFirmwar
 
 // DeleteFirmware hard-deletes the firmware after verifying it exists and is
 // unreferenced. Returns store.ErrNotFound when missing, or
-// *store.ResourceInUseError (keys "vms" / "templates") when referenced.
+// *store.ResourceInUseError (key "vms") when referenced.
 func (s *Store) DeleteFirmware(ctx context.Context, id uuid.UUID) error {
 	f, err := s.FirmwareByID(ctx, id)
 	if err != nil {
@@ -283,19 +279,8 @@ func (s *Store) DeleteFirmware(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	tplCount, err := s.countPrefix(ctx, firmwareTemplateIndexPrefix(id))
-	if err != nil {
-		return err
-	}
-	if vmCount > 0 || tplCount > 0 {
-		blocking := map[string]int64{}
-		if vmCount > 0 {
-			blocking["vms"] = vmCount
-		}
-		if tplCount > 0 {
-			blocking["templates"] = tplCount
-		}
-		return &store.ResourceInUseError{Resources: blocking}
+	if vmCount > 0 {
+		return &store.ResourceInUseError{Resources: map[string]int64{"vms": vmCount}}
 	}
 	ops := []clientv3.Op{
 		clientv3.OpDelete(firmwareKey(id)),

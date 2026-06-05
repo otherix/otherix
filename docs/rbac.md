@@ -11,20 +11,19 @@ in `users.role` and carried in the JWT `role` claim.
 
 - **`admin`** — full system access including users, nodes, firmware,
   storage pools, and RBAC. Sees everything.
-- **`operator`** — full virtualization management (VMs, templates,
-  networks, the public template catalogue, node maintenance), but **not**
-  user/RBAC management, not node lifecycle (create/delete), not firmware
-  registration, not storage-pool lifecycle.
-- **`developer`** — manages **own** VMs and **own** snapshots, creates
-  **private** templates, reads infrastructure for context. Cannot
-  publish templates, cannot operate other users' VMs, cannot migrate.
+- **`operator`** — full virtualization management (VMs, networks, node
+  maintenance), but **not** user/RBAC management, not node lifecycle
+  (create/delete), not firmware registration, not storage-pool lifecycle.
+- **`developer`** — manages **own** VMs and **own** snapshots, reads
+  infrastructure for context. Cannot operate other users' VMs, cannot
+  migrate.
 - **`viewer`** — read-only access to visible resources. No mutation,
   no console access, no own resource creation.
 
 ## Scopes
 
-Permissions for resources that carry an `owner_id` (`vms`, `templates`,
-`snapshots`) come in two scopes:
+Permissions for resources that carry an `owner_id` (`vms`, `snapshots`)
+come in two scopes:
 
 - **`own`** — the resource's `owner_id` must equal the requesting
   user's `id`.
@@ -34,28 +33,15 @@ For resources without `owner_id` (`nodes`, `networks`, `storage_pools`,
 `firmwares`), only one scope makes sense and the matrix uses **yes / —**
 to mean "permission held / not held".
 
-## Templates and visibility
+## Image use
 
-Templates have a `visibility` field — `public` or `private` (default
-`private`). Visibility controls who can list and use the template:
-
-- `public` templates are listed and usable for VM creation by every
-  authenticated user.
-- `private` templates are listed and usable only by the owner and by
-  `admin` / `operator`.
-
-Visibility is changed only through the dedicated
-`POST /v1/templates/{id}/set-visibility` endpoint, which requires the
-`template:set_visibility` permission held by `admin` and `operator`.
-The author (`templates.owner_id`) **does not change** when visibility
-changes — publishing a private template to public does not transfer
-ownership. Admins and operators moderate the public catalogue through
-their role permissions, not through ownership transfer. There is no
-`created_by` or `published_by` column.
-
-A `developer` cannot publish their own template. They can, however,
-delete it, hand-off the workflow to an operator (out-of-band), or
-clone it.
+There is no template entity and no per-image authorization. A VM is
+created directly from an image URL the caller supplies; the agent
+fetches it. `vm:create` is the single gate for materializing an image
+into a VM — any role that holds `vm:create` may create a VM from any
+image URL. The node-side image cache is observed state surfaced on the
+storage-pool view (gated by `storage_pool:read`); it has no dedicated
+permission.
 
 ## Permissions matrix
 
@@ -111,34 +97,6 @@ which in normal flow coincides with "snapshot of a VM I own".
 > above evaluates strictly against `snapshots.owner_id`. Revisit when
 > transfer ships.
 
-### Templates
-
-| Permission                | admin | operator | developer | viewer |
-|---------------------------|-------|----------|-----------|--------|
-| `template:read:public`    | yes   | yes      | yes       | yes    |
-| `template:read`           | any   | any      | own       | —      |
-| `template:create`         | yes   | yes      | yes       | —      |
-| `template:update`         | any   | any      | own       | —      |
-| `template:delete`         | any   | any      | own       | —      |
-| `template:set_visibility` | yes   | yes      | —         | —      |
-| `template:use`            | any   | any      | own + public | own + public |
-
-`template:create` is unscoped: visibility is fixed to `private` at create
-time and cannot be set in the body. `template:set_visibility` (admin /
-operator) is the only path to flip visibility, so the previous
-`template:create:{public,private}` split — which encoded "may you create
-a public template?" — is no longer needed.
-
-`template:read:public` is the catalogue-browse permission held by every
-role. `template:read` (with scope) controls whether **private**
-templates are visible: developers see their own; admin/operator see all.
-
-`template:use` is what `vm:create` checks against the source template:
-admin/operator may create from any template; developer/viewer may
-create from public templates and their own private ones (`viewer` has
-no `vm:create`, so this only matters for completeness — viewers cannot
-actually create a VM).
-
 ### Networks
 
 Networks have no owner. `manage` covers create / update / delete and is
@@ -168,33 +126,11 @@ is tightly coupled to host filesystem layout and capacity planning.
 |--------------------|-------|----------|-----------|--------|
 | `firmware:read`    | yes   | yes      | yes       | yes    |
 | `firmware:manage`  | yes   | —        | —         | —      |
-| `image_cache:read` | yes   | yes      | yes       | yes    |
 
-`image_cache:read` covers both firmware-catalogue listings and the
-storage-images read endpoints (`GET /v1/storage-pools/{pool_id}/images`,
-`GET /v1/storage-pools/{pool_id}/images/{image_id}`); both shapes
-expose per-pool image cache state, so they share the read permission.
-
-### Storage images
-
-`storage_images` is the per-pool projection of a template's
-content (the junction created when an image is imported into a
-pool). The mutator scopes mirror `template:delete`: admin /
-operator hold both at `any`, developer at `own`. The "own" scope
-reduces to "the image's owning template's `owner_id` ==
-caller.id"; handlers also apply a public-bypass branch
-(`template:read:public` AND `template.visibility = 'public'`) as
-a composite check, not a Scope value (parallels `template:use`).
-
-| Permission              | admin | operator | developer | viewer |
-|-------------------------|-------|----------|-----------|--------|
-| `storage_image:import`  | any   | any      | own       | —      |
-| `storage_image:manage`  | any   | any      | own       | —      |
-
-`storage_image:import` gates `POST /v1/templates/{template_id}/images`.
-`storage_image:manage` gates `DELETE
-/v1/storage-pools/{pool_id}/images/{image_id}`. Reads use
-`image_cache:read` (held by every authenticated role).
+There is no image-cache permission: the per-pool image cache is observed
+state surfaced on the storage-pool view (gated by `storage_pool:read`).
+Materializing an image into a VM is gated by `vm:create` (no per-image
+authorization), and there is no template entity.
 
 ### Nodes
 
@@ -240,8 +176,8 @@ tracking; the "owner" of a task is the user that initiated it.
 ### Cluster configuration
 
 Cluster-level settings (today: default-pool reference held in the
-`cluster_settings` singleton; future: default-template, default-network,
-…) sit on `/v1/cluster/*`. Reads are open to every authenticated role
+`cluster_settings` singleton; future: default-network, …) sit on
+`/v1/cluster/*`. Reads are open to every authenticated role
 because the operator-facing context (e.g. "which pool defaults?") is
 not a secret; mutations are admin-only by precedent with other
 cluster-shaping permissions (`storage_pool:manage`, `node:manage`).

@@ -6,6 +6,7 @@ package vms
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
@@ -26,12 +27,15 @@ import (
 // translate to `cpu_cores` / `memory_mib` at the handler boundary;
 // pool lands on vm_disks.storage_pool_id.
 //
-// The `template` field is a template name; UUID literals are
-// rejected with 400 validation_failed at the resolver. The `pool`
-// field stays polymorphic per the multi-instance carve-out (either
-// a pool name or a per-instance UUID literal). There are no
-// `template_id` / `pool_id` UUID-only fields - the field rename is
-// locked, not a transitional dual-shape.
+// The image source is supplied directly (`image_url` + optional
+// `image_sha256` content pin + `format`): the VM row is self-describing,
+// there is no template entity. `arch` is a required request field
+// (amd64 | arm64). Firmware is resolved from `firmware` ("bios" | "uefi",
+// default uefi) for the (arch, type) default, or from an explicit
+// `firmware_id` uuid escape hatch.
+//
+// The `pool` field stays polymorphic per the multi-instance carve-out
+// (either a pool name or a per-instance UUID literal).
 //
 // Multi-instance pools + scheduler:
 //   - `pool` is optional. When omitted (or empty), the handler reads
@@ -40,44 +44,53 @@ import (
 //   - `node` is an optional placement hint. When provided, the
 //     scheduler restricts the candidate list to exactly that node;
 //     if the node does not host the pool, returns 409 pool_not_on_node.
-//
-// Architecture is NOT a request field - it is resolved from the
-// template (single-arch-per-template invariant).
 type vmCreateRequest struct {
-	Name     string  `json:"name"`
-	Template string  `json:"template"`
-	Pool     string  `json:"pool,omitempty"`
-	Node     *string `json:"node,omitempty"`
-	VCPUs    int     `json:"vcpus"`
-	MemoryMB int     `json:"memory_mb"`
+	Name         string `json:"name"`
+	ImageURL     string `json:"image_url"`
+	ImageSHA256  string `json:"image_sha256,omitempty"`
+	Architecture string `json:"arch"`
+	// Firmware selects the firmware type for the default-firmware lookup:
+	// "bios" or "uefi" (default uefi). Ignored when FirmwareID is set.
+	Firmware string `json:"firmware,omitempty"`
+	// FirmwareID is the explicit firmware-row escape hatch (uuid). When set
+	// it wins over Firmware.
+	FirmwareID string `json:"firmware_id,omitempty"`
+	// Format is the image disk format ("qcow2" | "raw"); defaults to qcow2.
+	Format  string  `json:"format,omitempty"`
+	DiskGiB int     `json:"disk_gib,omitempty"`
+	Pool    string  `json:"pool,omitempty"`
+	Node    *string `json:"node,omitempty"`
 	// Network is an optional network to attach a single NIC to. Accepts
 	// either a network name or a uuid literal, of type bridge or overlay.
 	// When omitted the VM is created with no NIC (the agent falls back to
 	// legacy SLIRP user-mode networking). Other network types are rejected
 	// with 400.
-	Network string `json:"network,omitempty"`
+	Network  string `json:"network,omitempty"`
+	VCPUs    int    `json:"vcpus"`
+	MemoryMB int    `json:"memory_mb"`
 	// UserData is an optional VM-level cloud-init override (L3
-	// Area 3 lock). When provided, fully replaces the template's
-	// baked cloud_init_user_data in the per-VM resolved blob; the
-	// agent receives whichever wins. Stored verbatim in vms.user_data
-	// so the resolution stays a pure function of the VM row.
+	// Area 3 lock). Stored verbatim in vms.user_data so the resolution
+	// stays a pure function of the VM row.
 	UserData *string `json:"user_data,omitempty"`
-	// CloudInitDisabled is the explicit-disable signal (operator UX
-	// iteration). When true, the resolver returns empty user_data to
-	// the agent even if the template has a baked
-	// cloud_init_user_data — the agent skips cidata.iso generation.
-	// Mutually exclusive with UserData; sending both surfaces as 400
-	// validation_failed. Defaults to false; the DB CHECK
-	// chk_vms_cloud_init_disabled_no_userdata is the schema-level
-	// backstop for the same invariant.
+	// CloudInitDisabled is the explicit-disable signal. When true, the
+	// resolver returns empty user_data to the agent and the agent skips
+	// cidata.iso generation. Mutually exclusive with UserData; sending both
+	// surfaces as 400 validation_failed.
 	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
 }
 
-// errVMTemplateForbidden is the in-flight signal that the
-// template-usability composite check rejected the request. Mapped to
-// 404 (no leak) — every authenticated role holds template:read:public,
-// so a 403 here would lie about visibility.
-var errVMTemplateForbidden = errors.New("template not accessible")
+// errFirmwareNotFound is the in-flight signal that firmware resolution found no
+// matching row (explicit id missing, or no default for the arch/type pair). The
+// caller maps it to a 404 / validation_failed wire envelope.
+var errFirmwareNotFound = errors.New("firmware not found")
+
+// errFirmwareBadID is the in-flight signal that an explicit firmware_id failed
+// to parse as a uuid. The caller maps it to 400 validation_failed.
+var errFirmwareBadID = errors.New("firmware_id is not a valid uuid")
+
+// errFirmwareBadType is the in-flight signal that `firmware` carried a value
+// other than "bios" / "uefi". The caller maps it to 400 validation_failed.
+var errFirmwareBadType = errors.New("firmware must be bios or uefi")
 
 // poolNotWritableError signals that the scheduler's chosen pool has
 // a storage type vm.create cannot drive (only `local_dir` today). It
@@ -95,10 +108,9 @@ func (e *poolNotWritableError) Error() string {
 // to the vm.create async pipeline.
 //
 // Permission gate: vm:create. RequirePermission middleware admits
-// admin / operator / developer (matrix has each at scope=any). The
-// handler-side composite check is template-usability — same shape as
-// templates.image_import.checkImportAccess but keyed on
-// `template:use`.
+// admin / operator / developer (matrix has each at scope=any). The image
+// source is supplied directly on the request, so there is no
+// template-usability composite check.
 //
 // HA-safe atomic enqueue: store.LockKeyPlacement is acquired as the
 // first statement inside
@@ -126,14 +138,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	template, err := resolver.Template(r.Context(), h.store, req.Template)
-	if err != nil {
-		writeTemplateLoadError(w, r, err)
-		return
-	}
-	if err := checkTemplateUseAccess(caller, template); err != nil {
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodeNotFound, "template not found", nil)
+	firmwareID, ok := h.resolveFirmwareForRequest(w, r, req)
+	if !ok {
 		return
 	}
 
@@ -148,11 +154,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID, err := h.scheduleAndEnqueueCreate(r.Context(), scheduleInputs{
-		Caller:   caller,
-		Template: template,
-		PoolName: poolName,
-		Network:  network,
-		Req:      req,
+		Caller:     caller,
+		FirmwareID: firmwareID,
+		PoolName:   poolName,
+		Network:    network,
+		Req:        req,
 	})
 	if err != nil {
 		h.writeCreateError(w, r, err)
@@ -179,22 +185,64 @@ func decodeCreateBody(w http.ResponseWriter, r *http.Request) (vmCreateRequest, 
 	return req, true
 }
 
+// maxDiskGiB caps the requested root-disk size; it matches the vm_disks
+// size_gib ceiling in the OpenAPI contract and keeps the int32 disk column and
+// the bytes multiplication (disk_gib * 1 GiB) free of overflow.
+const maxDiskGiB = 65536
+
+// validateCreateImageFields enforces the image-source field invariants:
+// image_url present, arch in {amd64, arm64}, image_sha256 (when set) a 64-char
+// lowercase hex digest, format (when set) in {qcow2, raw}, and disk_gib in
+// [0, maxDiskGiB]. Returns false (after writing the 400 envelope) on the first
+// violation.
+func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
+	if req.ImageURL == "" {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "image_url is required", nil)
+		return false
+	}
+	if req.Architecture != string(store.CpuArchAmd64) && req.Architecture != string(store.CpuArchArm64) {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "arch must be one of: amd64, arm64", nil)
+		return false
+	}
+	if req.ImageSHA256 != "" {
+		if err := validation.ValidateImageChecksumSHA256(req.ImageSHA256); err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "image_sha256 must be 64-char lowercase hex", nil)
+			return false
+		}
+	}
+	if req.Format != "" {
+		if err := validation.ValidateImageFormat(req.Format); err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "format must be one of: qcow2, raw", nil)
+			return false
+		}
+	}
+	// 0 means "default to the image virtual size"; the upper bound matches the
+	// vm_disks size_gib ceiling and keeps the int32 column / bytes math safe.
+	if req.DiskGiB < 0 || req.DiskGiB > maxDiskGiB {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "disk_gib must be between 0 and 65536", nil)
+		return false
+	}
+	return true
+}
+
 // validateCreateRequest enforces the field-level invariants. The
 // schema also carries CHECK constraints (vms.cpu_cores / memory_mib)
 // so a defective request fails twice; the API-edge check produces a
-// friendlier envelope than a raw 23514. Identifier well-formedness
-// (template / pool) is deferred to the resolver layer — it accepts
-// either UUID literals or names and returns a 404 for either branch
-// when no row matches.
+// friendlier envelope than a raw 23514. Identifier well-formedness for
+// `pool` / `network` / `firmware_id` is deferred to the resolver / firmware
+// lookup layers.
 func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
 	if req.Name == "" || len(req.Name) > 255 {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "name is required (1..255 chars)", nil)
 		return false
 	}
-	if req.Template == "" {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "template is required", nil)
+	if !validateCreateImageFields(w, r, req) {
 		return false
 	}
 	if req.VCPUs < 1 || req.VCPUs > 128 {
@@ -221,33 +269,85 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 	return true
 }
 
-// checkTemplateUseAccess enforces the template-usability composite
-// rule. Mirrors templates.image_import.checkImportAccess but uses
-// template:use as the per-resource permission. Returns nil when the
-// caller may use the template; errVMTemplateForbidden otherwise.
-func checkTemplateUseAccess(caller *auth.User, template store.Template) error {
-	scope := auth.ScopeFor(caller.Role, auth.PermTemplateUse)
-	if scope == auth.ScopeAny {
-		return nil
+// resolveFirmwareForRequest resolves the firmware id for a create request and
+// writes the matching wire envelope on failure (returning ok=false to
+// short-circuit Create). An unparseable firmware_id is 400 validation_failed; a
+// missing firmware row (explicit id or no default for arch/type) is 404
+// not_found; a bad `firmware` type string is 400 validation_failed.
+func (h *Handler) resolveFirmwareForRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) (*uuid.UUID, bool) {
+	id, err := h.resolveFirmware(r.Context(), store.CPUArch(req.Architecture), req.Firmware, req.FirmwareID)
+	switch {
+	case err == nil:
+		return id, true
+	case errors.Is(err, errFirmwareBadID):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "firmware_id is not a valid uuid", nil)
+	case errors.Is(err, errFirmwareBadType):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "firmware must be one of: bios, uefi", nil)
+	case errors.Is(err, errFirmwareNotFound):
+		response.WriteError(w, r, http.StatusNotFound,
+			response.CodeNotFound, "no matching firmware", nil)
+	default:
+		h.log.ErrorContext(r.Context(), "resolve firmware", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "resolve firmware", nil)
 	}
-	if scope == auth.ScopeOwn && template.OwnerID == caller.ID {
-		return nil
+	return nil, false
+}
+
+// resolveFirmware resolves the firmware id for a VM create: an explicit
+// firmware_id wins; otherwise the default firmware for (arch, type) where type
+// is "uefi" unless firmware=="bios". Returns a sentinel (errFirmwareBadID /
+// errFirmwareBadType / errFirmwareNotFound) the caller maps to a wire envelope.
+func (h *Handler) resolveFirmware(ctx context.Context, arch store.CPUArch, firmware, firmwareID string) (*uuid.UUID, error) {
+	if firmwareID != "" {
+		id, err := uuid.Parse(firmwareID)
+		if err != nil {
+			return nil, errFirmwareBadID
+		}
+		fw, err := h.store.FirmwareByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, errFirmwareNotFound
+			}
+			return nil, fmt.Errorf("load firmware by id: %v", err)
+		}
+		return &fw.ID, nil
 	}
-	if auth.Has(caller.Role, auth.PermTemplateReadPublic) && template.Visibility == "public" {
-		return nil
+
+	var ftype store.FirmwareType
+	switch firmware {
+	case "", string(store.FirmwareTypeUefi):
+		ftype = store.FirmwareTypeUefi
+	case string(store.FirmwareTypeBios):
+		ftype = store.FirmwareTypeBios
+	default:
+		return nil, errFirmwareBadType
 	}
-	return errVMTemplateForbidden
+	fw, err := h.store.DefaultFirmwareForArchType(ctx, arch, ftype)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Firmware is optional (the VM row's firmware_id is nullable). When
+			// no default firmware is seeded for this arch/type, the VM boots
+			// with the agent/qemu built-in default rather than failing create.
+			// An explicit firmware_id that misses still 404s above.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load default firmware: %v", err)
+	}
+	return &fw.ID, nil
 }
 
 // scheduleInputs bundles the resolved entities scheduleAndEnqueueCreate
 // consumes. Decouples the long argument list from the public Create
 // handler signature.
 type scheduleInputs struct {
-	Caller   *auth.User
-	Template store.Template
-	PoolName string
-	Network  *store.Network
-	Req      vmCreateRequest
+	Caller     *auth.User
+	FirmwareID *uuid.UUID
+	PoolName   string
+	Network    *store.Network
+	Req        vmCreateRequest
 }
 
 // scheduleAndEnqueueCreate runs the atomic critical section: acquire
@@ -279,12 +379,12 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			return store.VMCreateWrites{}, fmt.Errorf("acquire placement lock: %v", err)
 		}
 
-		// Disk requirement is derived from the template's
-		// default_disk_gib in the single-root-disk model.
-		// default_disk_gib is INT NOT NULL with a
-		// CHECK between 1 and 65536, so the multiplication is well-
-		// defined and cannot overflow int64.
-		diskBytes := int64(in.Template.DefaultDiskGib) * 1073741824
+		// Disk reservation for placement is derived from the requested
+		// disk_gib. When disk_gib is 0 the true size is unknown until the
+		// agent sizes the root disk to the image's virtual size, so we
+		// reserve 0 (no disk filter) and let the agent materialize it. A
+		// non-zero request reserves that many GiB.
+		diskBytes := int64(in.Req.DiskGiB) * 1073741824
 		// The network-aware filter excludes nodes where a requested
 		// network failed to reconcile (ADR 0034 NL18). One network per
 		// VM today (single vm_nics row from --network); the slice keeps
@@ -312,10 +412,9 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 		}
 
 		argsJSON, err := json.Marshal(map[string]any{
-			"vm_id":       vmID.String(),
-			"template_id": in.Template.ID.String(),
-			"pool_id":     decision.PoolInstance.ID.String(),
-			"node_id":     decision.Node.ID.String(),
+			"vm_id":   vmID.String(),
+			"pool_id": decision.PoolInstance.ID.String(),
+			"node_id": decision.Node.ID.String(),
 		})
 		if err != nil {
 			return store.VMCreateWrites{}, fmt.Errorf("marshal task args: %v", err)
@@ -337,6 +436,21 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 			}
 		}
 
+		arch := store.CPUArch(in.Req.Architecture)
+		format := store.ImageFormatQcow2
+		if in.Req.Format != "" {
+			format = store.ImageFormat(in.Req.Format)
+		}
+		var imageSHA []byte
+		if in.Req.ImageSHA256 != "" {
+			// Validated 64-char lowercase hex at the API edge, so DecodeString
+			// cannot fail; the error path is defense-in-depth.
+			imageSHA, err = hex.DecodeString(in.Req.ImageSHA256)
+			if err != nil {
+				return store.VMCreateWrites{}, fmt.Errorf("decode image_sha256: %v", err)
+			}
+		}
+
 		nodeID := decision.Node.ID
 		return store.VMCreateWrites{
 			VM: store.CreateVMParams{
@@ -344,31 +458,32 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				OwnerID:           in.Caller.ID,
 				Name:              in.Req.Name,
 				Description:       "",
-				TemplateID:        ptrUUID(in.Template.ID),
-				Architecture:      in.Template.Architecture,
+				Architecture:      arch,
+				ImageURL:          in.Req.ImageURL,
+				ImageSHA256:       imageSHA,
+				ImageFormat:       format,
 				CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded to 1..128 by validateCreateRequest
 				MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded to 128..524288 by validateCreateRequest
 				CPUModel:          "host",
-				MachineType:       machineTypeFor(in.Template.Architecture),
-				FirmwareID:        nil,
+				MachineType:       machineTypeFor(arch),
+				FirmwareID:        in.FirmwareID,
 				PinnedNodeID:      &nodeID,
 				UserData:          in.Req.UserData,
 				CloudInitDisabled: in.Req.CloudInitDisabled,
 				Labels:            []byte(`{}`),
 			},
 			Disk: store.CreateVMDiskParams{
-				VmID:             vmID,
-				StoragePoolID:    decision.PoolInstance.ID,
-				DeviceOrder:      0,
-				Bus:              store.DiskBusVirtio,
-				SizeGib:          in.Template.DefaultDiskGib,
-				SourceKind:       "template",
-				SourceTemplateID: ptrUUID(in.Template.ID),
-				Format:           in.Template.ImageFormat,
-				ReadOnly:         false,
-				CacheMode:        store.DiskCacheModeWriteback,
-				Discard:          store.DiskDiscardUnmap,
-				BootOrder:        nil,
+				VmID:          vmID,
+				StoragePoolID: decision.PoolInstance.ID,
+				DeviceOrder:   0,
+				Bus:           store.DiskBusVirtio,
+				SizeGib:       int32(in.Req.DiskGiB), //nolint:gosec // bounded >= 0 by validateCreateRequest
+				SourceKind:    "image",
+				Format:        format,
+				ReadOnly:      false,
+				CacheMode:     store.DiskCacheModeWriteback,
+				Discard:       store.DiskDiscardUnmap,
+				BootOrder:     nil,
 			},
 			Nic: nic,
 			Task: store.CreateTaskParams{
@@ -382,11 +497,10 @@ func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInput
 				CreatedBy:    &createdBy,
 			},
 			Job: VMCreateArgs{
-				TaskID:     taskID,
-				VMID:       vmID,
-				TemplateID: in.Template.ID,
-				PoolID:     decision.PoolInstance.ID,
-				NodeID:     decision.Node.ID,
+				TaskID: taskID,
+				VMID:   vmID,
+				PoolID: decision.PoolInstance.ID,
+				NodeID: decision.Node.ID,
 			},
 		}, nil
 	})
@@ -413,25 +527,6 @@ func createWithMACRetry(ctx context.Context, st Store, plan func(store.Placement
 		}
 	}
 	return id, err
-}
-
-// writeTemplateLoadError maps a resolver.Template error to a wire
-// envelope. CodeNotFound -> 404 not_found (template missing or
-// invisible - the composite check below would also reject, but
-// loading first keeps the path linear). UUID literals in the
-// `template` body field surface as 400 validation_failed.
-func writeTemplateLoadError(w http.ResponseWriter, r *http.Request, err error) {
-	if resolver.IsUUIDInName(err) {
-		response.WriteUUIDNotAllowedError(w, r, "template", "template")
-		return
-	}
-	if resolver.IsNotFound(err) {
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodeNotFound, "template not found", nil)
-		return
-	}
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "load template", nil)
 }
 
 // resolvePoolName returns the effective pool name for the create
@@ -756,9 +851,3 @@ func generateLocalMAC() (net.HardwareAddr, error) {
 	}
 	return net.HardwareAddr{0x52, 0x54, 0x00, b[0], b[1], b[2]}, nil
 }
-
-// ptrUUID returns a non-nil pointer to id. The store params expect
-// nullable pointers for FKs that are nullable at the schema layer
-// (templates.id is nullable on vms via SET NULL); the handler always
-// has a real id so we wrap it.
-func ptrUUID(id uuid.UUID) *uuid.UUID { return &id }

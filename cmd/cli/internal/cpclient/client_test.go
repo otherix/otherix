@@ -85,7 +85,8 @@ func TestCreateVM_HappyPath(t *testing.T) {
 	c := fixtureClient(t, srv)
 	got, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
 		Name:     "demo",
-		Template: uuid.NewString(),
+		ImageURL: "https://example.com/img.qcow2",
+		Arch:     "amd64",
 		Pool:     uuid.NewString(),
 		VCPUs:    2,
 		MemoryMB: 2048,
@@ -106,13 +107,13 @@ func TestCreateVM_APIError404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"template not found"}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"vm not found"}}`))
 	}))
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
 	_, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
-		Name: "demo", Template: uuid.NewString(), Pool: uuid.NewString(), VCPUs: 2, MemoryMB: 1024,
+		Name: "demo", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 2, MemoryMB: 1024,
 	})
 	if err == nil {
 		t.Fatalf("expected error for 404")
@@ -143,7 +144,7 @@ func TestCreateVM_APIError5xxRetryable(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	_, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
-		Name: "x", Template: uuid.NewString(), Pool: uuid.NewString(), VCPUs: 1, MemoryMB: 1024,
+		Name: "x", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 1, MemoryMB: 1024,
 	})
 	var ae *cpclient.APIError
 	if !errors.As(err, &ae) {
@@ -166,7 +167,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 			"id":            vmID.String(),
 			"name":          "demo",
 			"owner_id":      uuid.NewString(),
-			"template_id":   uuid.NewString(),
+			"image_url":     "https://example.test/img.qcow2",
 			"pool_id":       uuid.NewString(),
 			"node_id":       uuid.NewString(),
 			"architecture":  "amd64",

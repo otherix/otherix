@@ -140,7 +140,7 @@ func TestVMDeleteRunHandlerDeadNodeReclaims(t *testing.T) {
 func seedRunningVMWithNic(t *testing.T, s *etcdstore.Store) (vmID, nodeID, netID, delTaskID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	nodeID, poolID, _ := schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "vm-" + uuid.NewString()[:8]
 
@@ -152,7 +152,7 @@ func seedRunningVMWithNic(t *testing.T, s *etcdstore.Store) (vmID, nodeID, netID
 		t.Fatalf("CreateNetwork: %v", err)
 	}
 
-	writes := vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+	writes := vmCreateWrites(t, name, owner, nodeID, poolID)
 	writes.Nic = &store.CreateVMNicParams{
 		ID: uuid.New(), VmID: writes.VM.ID, NetworkID: netID, DeviceOrder: 0,
 		Model: store.NicModelVirtio, MacAddress: mustMAC(t, "52:54:00:de:ad:00"),
@@ -165,7 +165,6 @@ func seedRunningVMWithNic(t *testing.T, s *etcdstore.Store) (vmID, nodeID, netID
 	}
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: writes.VM.ID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
 	); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess: %v", err)

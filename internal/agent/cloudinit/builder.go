@@ -44,7 +44,7 @@ type Builder struct {
 	Hostname string
 
 	// UserData is raw `#cloud-config` YAML. CP-side resolves
-	// vm.user_data ?: template.cloud_init_user_data; the agent
+	// vm.user_data (no template fallback); the agent
 	// just consumes the blob. Empty UserData is acceptable —
 	// the resulting ISO carries only meta-data, which is enough
 	// to satisfy the NoCloud datasource (cloud-init will boot

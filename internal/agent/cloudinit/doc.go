@@ -8,8 +8,8 @@
 //
 // Per Otherix L3 Area 3 lock: operators ship raw `#cloud-config`
 // YAML; this package does not parse cloud-init semantics beyond
-// hostname injection. Resolution between template-baked default and
-// VM-level override is CP-side; the agent receives a single
+// hostname injection. The VM-level user_data is resolved CP-side
+// (there is no template fallback); the agent receives a single
 // already-resolved blob via VMSpec.cloud_init.user_data.
 //
 // The on-disk layout is ISO9660 with volume label "cidata", containing:

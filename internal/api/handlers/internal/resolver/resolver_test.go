@@ -21,14 +21,10 @@ import (
 // side effects, not just the return value, catches "looked up by name
 // when it should have been by id" regressions cheaply).
 //
-// Template / Node / VM resolve name-only; GetTemplate / GetNodeByID /
-// GetVMByID are not part of the Querier surface. Pool retains both
-// branches for the multi-instance carve-out.
+// Node / VM resolve name-only; GetNodeByID / GetVMByID are not part of
+// the Querier surface. Pool retains both branches for the
+// multi-instance carve-out.
 type stubQuerier struct {
-	template       store.Template
-	templateErr    error
-	templateByName bool
-
 	pool                 store.StoragePool
 	poolList             []store.StoragePool
 	poolErr              error
@@ -44,11 +40,6 @@ type stubQuerier struct {
 	vm       store.VM
 	vmErr    error
 	vmByName bool
-}
-
-func (s *stubQuerier) TemplateByName(_ context.Context, _ string) (store.Template, error) {
-	s.templateByName = true
-	return s.template, s.templateErr
 }
 
 func (s *stubQuerier) StoragePoolByID(_ context.Context, _ uuid.UUID) (store.StoragePool, error) {
@@ -99,32 +90,7 @@ type resolverCase struct {
 }
 
 func TestResolve(t *testing.T) {
-	someErr := errors.New("connection reset")
 	cases := []resolverCase{
-		// Template - name-only. UUID literal rejected before DB.
-		{
-			name: "template uuid rejected", kind: KindTemplate,
-			identifier: "01928cf4-1f00-7c80-8b00-000000000001",
-			wantCode:   CodeUUIDInName,
-		},
-		{
-			name: "template name hit", kind: KindTemplate,
-			identifier: "ubuntu-jammy",
-			wantByName: true,
-		},
-		{
-			name: "template name missing", kind: KindTemplate,
-			identifier: "no-such-template",
-			lookupErr:  store.ErrNotFound,
-			wantByName: true, wantCode: CodeNotFound,
-		},
-		{
-			name: "template internal error", kind: KindTemplate,
-			identifier: "ubuntu-jammy",
-			lookupErr:  someErr,
-			wantByName: true, wantCode: CodeInternal,
-		},
-
 		// Pool - multi-instance carve-out: stays polymorphic.
 		{
 			name: "pool uuid hit", kind: KindPool,
@@ -350,8 +316,6 @@ func TestIsUUIDInName(t *testing.T) {
 
 func programStub(s *stubQuerier, kind Kind, err error) {
 	switch kind {
-	case KindTemplate:
-		s.templateErr = err
 	case KindPool:
 		s.poolErr = err
 	case KindNode:
@@ -364,9 +328,6 @@ func programStub(s *stubQuerier, kind Kind, err error) {
 func callResolve(t *testing.T, q Querier, kind Kind, identifier string) error {
 	t.Helper()
 	switch kind {
-	case KindTemplate:
-		_, err := Template(context.Background(), q, identifier)
-		return err
 	case KindPool:
 		_, err := Pool(context.Background(), q, identifier)
 		return err
@@ -397,8 +358,6 @@ func makePoolList(n int) []store.StoragePool {
 
 func stubRoute(s *stubQuerier, kind Kind) (byID, byName bool) {
 	switch kind {
-	case KindTemplate:
-		return false, s.templateByName
 	case KindPool:
 		return s.poolByID, s.poolByName
 	case KindNode:

@@ -37,28 +37,14 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // writeDeleteError maps the store domain error to the standard
 // envelope. A *store.ResourceInUseError carries the blocking counts;
-// the handler owns the wire policy of how those counts become a 409.
-// The storage-image branch carries the endpoint-specific
-// resource_in_use code; the vm_disks-only branch keeps the generic
-// `conflict` to preserve the historical wire contract.
+// a storage pool is now only ever blocked by attached vm_disks (the
+// image cache is agent-owned and not a CP-side delete blocker), so the
+// 409 keeps the generic `conflict` code and the vm_disks count.
 func writeDeleteError(w http.ResponseWriter, r *http.Request, err error) {
 	var blocking *store.ResourceInUseError
 	if !errors.As(err, &blocking) {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "delete storage pool", nil)
-		return
-	}
-	if imageCount := blocking.Resources["storage_images"]; imageCount > 0 {
-		resources := map[string]int64{"storage_images": imageCount}
-		if diskCount := blocking.Resources["vm_disks"]; diskCount > 0 {
-			resources["vm_disks"] = diskCount
-		}
-		response.WriteBlockingResources(w, r, &response.BlockingResourcesError{
-			Code:      response.CodeResourceInUse,
-			Kind:      "pool",
-			Message:   "storage pool still has materialised storage images; delete them first",
-			Resources: resources,
-		})
 		return
 	}
 	response.WriteBlockingResources(w, r, &response.BlockingResourcesError{

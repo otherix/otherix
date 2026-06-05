@@ -57,24 +57,14 @@ type paginationMeta struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
-// storageImageView mirrors components/schemas/StorageImage in
-// api/openapi/control-plane.yaml. The referenced template and pool
-// are surfaced as their names (operator-facing identifiers rather
-// than UUIDs). The on-disk row's UUIDs remain primary keys; the
-// wire shape just renders names.
-type storageImageView struct {
-	ID             string `json:"id"`
-	Template       string `json:"template"`
-	Pool           string `json:"pool"`
-	ChecksumSHA256 string `json:"checksum_sha256"`
-	SizeBytes      int64  `json:"size_bytes"`
-	Format         string `json:"format"`
-	ImportedAt     string `json:"imported_at"`
-}
-
-// storageImageListResponse is the payload for
-// GET /v1/storage-pools/{pool_id}/images.
-type storageImageListResponse struct {
-	Data []storageImageView `json:"data"`
-	Meta paginationMeta     `json:"meta"`
+// poolImageView is one cached image surfaced on a pool view, sourced from the
+// agent-reported (heartbeat) inventory. Names, not UUIDs: images are an
+// agent-owned cache with no CP-side row.
+type poolImageView struct {
+	Name             string `json:"name"`
+	SHA256           string `json:"sha256"`
+	SizeBytes        int64  `json:"size_bytes"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
+	Format           string `json:"format"`
+	ImportedAt       string `json:"imported_at"`
 }

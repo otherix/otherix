@@ -21,8 +21,8 @@ entities, not cattle. Disks persist. Identities are stable.
 Live migration is a first-class operation that runs peer-to-peer
 between agents, with the control plane out of the data path. Storage
 pools, networks, and firmwares are explicit cluster resources rather
-than abstractions over a cloud provider. Snapshots and templates are
-managed primitives, not afterthoughts.
+than abstractions over a cloud provider. VMs are created directly from
+an image URL, and snapshots are managed primitives, not afterthoughts.
 
 Otherix is built to be deployed in your own datacentre or homelab.
 The control plane ships as standalone binaries that run directly on
@@ -144,7 +144,8 @@ make run-api-dev
 
 # 3. Bootstrap the agent end-to-end — mints join token, provisions
 #    bootstrap material, starts the agent, waits for the node row to
-#    appear, seeds a pool + default template.
+#    appear, seeds the default pool. VMs are created directly from
+#    an image URL (otherix vm create --image-url ... --arch ...).
 make seed-mvp
 
 # 4. Verify the node is reachable (heartbeat is the canonical proof).

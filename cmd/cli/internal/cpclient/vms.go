@@ -20,10 +20,13 @@ import (
 // columns (cpu_cores / memory_mib) — the handler boundary owns the
 // translation.
 //
-// `template` is a template name; UUID literals are rejected with
-// 400 validation_failed at the server. `pool` stays polymorphic per
-// the multi-instance carve-out (either a pool name or a per-instance
-// UUID literal). CLI callers pass operator-friendly names.
+// The VM is created directly from an image source (the template entity
+// is gone). `ImageURL` and `Arch` are required; the server downloads /
+// caches the image into the target pool. `ImageSHA256` pins the
+// expected digest; `Firmware` / `FirmwareID` select firmware by name or
+// uuid; `Format` and `DiskGiB` size the root disk. `pool` stays
+// polymorphic per the multi-instance carve-out (either a pool name or a
+// per-instance UUID literal). CLI callers pass operator-friendly names.
 //
 // Multi-instance pools + scheduler:
 //   - `Pool` is optional. When empty, the server uses the cluster
@@ -33,45 +36,50 @@ import (
 //     scheduler restricts placement to exactly that node; mismatch
 //     returns 409 `pool_not_on_node`.
 type CreateVMRequest struct {
-	Name     string  `json:"name"`
-	Template string  `json:"template"`
-	Pool     string  `json:"pool,omitempty"`
-	Node     *string `json:"node,omitempty"`
-	VCPUs    int     `json:"vcpus"`
-	MemoryMB int     `json:"memory_mb"`
+	Name        string  `json:"name"`
+	ImageURL    string  `json:"image_url"`
+	ImageSHA256 string  `json:"image_sha256,omitempty"`
+	Arch        string  `json:"arch"`
+	Firmware    string  `json:"firmware,omitempty"`
+	FirmwareID  string  `json:"firmware_id,omitempty"`
+	Format      string  `json:"format,omitempty"`
+	DiskGiB     int     `json:"disk_gib,omitempty"`
+	Pool        string  `json:"pool,omitempty"`
+	Node        *string `json:"node,omitempty"`
+	VCPUs       int     `json:"vcpus"`
+	MemoryMB    int     `json:"memory_mb"`
 	// Network is the optional bridge network (name or uuid) to attach a
 	// single NIC to. Omitted leaves the VM with no NIC (the agent falls
 	// back to legacy SLIRP networking). The server rejects non-bridge
 	// types with 400.
 	Network string `json:"network,omitempty"`
-	// UserData is the optional VM-level cloud-init override (L3 /
-	// operator UX iteration). When set, fully replaces the template's
-	// baked cloud_init_user_data in the per-VM resolved blob; agent
-	// receives whichever wins. Mutually exclusive with
-	// CloudInitDisabled — server rejects both set with 400
+	// UserData is the optional VM-level cloud-init user-data. When set,
+	// it is passed through to the agent verbatim. Mutually exclusive
+	// with CloudInitDisabled — server rejects both set with 400
 	// validation_failed (CLI also gates this before dispatch).
 	UserData *string `json:"user_data,omitempty"`
 	// CloudInitDisabled is the explicit-disable signal. When true,
-	// the resolver returns empty user_data to the agent even if the
-	// template has a baked cloud_init_user_data. omitempty lets the
-	// JSON encoder skip the default-false case so existing handlers
+	// the resolver returns empty user_data to the agent. omitempty lets
+	// the JSON encoder skip the default-false case so existing handlers
 	// that decode the historical wire shape still parse cleanly.
 	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
 }
 
 // VM mirrors the response shape internal/api/handlers/vms.toView
-// produces. Name-based references narrowed the referenced-resource
-// fields to names instead of UUIDs: `template` carries templates.name
-// (nil when the row was deleted), `pool` carries storage_pools.name,
-// `node` carries the agent-reported current location's name. owner_id
-// keeps its UUID rendering because users are excluded from the
-// resolver scope. Architecture stays a string here (the CLI does not
-// need the typed CpuArch enum for output formatting).
+// produces. The template entity is gone: a VM is created directly from
+// an image source, so the view carries `image_url` / `image_sha256` /
+// `format` instead of a template reference. `pool` carries
+// storage_pools.name, `node` carries the agent-reported current
+// location's name. owner_id keeps its UUID rendering because users are
+// excluded from the resolver scope. Architecture stays a string here
+// (the CLI does not need the typed CpuArch enum for output formatting).
 type VM struct {
 	ID           string         `json:"id"`
 	Name         string         `json:"name"`
 	OwnerID      string         `json:"owner_id"`
-	Template     *string        `json:"template"`
+	ImageURL     string         `json:"image_url"`
+	ImageSHA256  string         `json:"image_sha256,omitempty"`
+	Format       string         `json:"format"`
 	Pool         string         `json:"pool"`
 	Node         *string        `json:"node"`
 	Architecture string         `json:"architecture"`

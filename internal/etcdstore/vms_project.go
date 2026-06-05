@@ -5,7 +5,6 @@ package etcdstore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -18,21 +17,17 @@ import (
 )
 
 // VM-domain worker projections. These are the named atomic mutators the
-// Run-form workers call, each committing in a single etcd transaction. Where a
-// write is non-idempotent (the template derived_vm_count bump) the projection commits
-// under a compare-on-mod-revision retry loop; the idempotent runtime and task
-// writes ride in the same transaction so a success is all-or-nothing.
+// Run-form workers call, each committing in a single etcd transaction. Every
+// write is idempotent (the runtime put, the soft-delete puts, and the
+// task-finalize put are all blind puts of self-describing values), so a success
+// is all-or-nothing under one transaction and a worker redelivery re-applies
+// identical bytes for the same end state.
 
-// projectTemplateCASRetries bounds the compare-and-set loop that protects the
-// non-idempotent derived_vm_count bump against a concurrent template mutation.
-const projectTemplateCASRetries = 64
-
-// ProjectVMCreateSuccess upserts the VM's runtime row (running), increments the
-// source template's derived_vm_count, and finalizes the create task - all in one
-// transaction. The derived_vm_count bump is non-idempotent, so the whole
-// projection commits under a compare on the template's mod-revision (bounded
-// retry); the runtime and task writes are idempotent blind puts.
-func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, templateID uuid.UUID, fin store.UpdateTaskFinalizedParams) error {
+// ProjectVMCreateSuccess upserts the VM's runtime row (running) and finalizes
+// the create task - both in one transaction. Both writes are idempotent blind
+// puts, so a worker redelivery re-applies the same runtime value and the same
+// finalized-task value, leaving the end state unchanged.
+func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 	runtimeVal, err := etcd.Marshal(vmRuntimeFromUpsert(rt, now))
 	if err != nil {
@@ -42,41 +37,13 @@ func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRun
 	if err != nil {
 		return err
 	}
-
-	for range projectTemplateCASRetries {
-		// Worker redelivery: the task is already committed-terminal, so the
-		// non-idempotent derived_vm_count bump has already been committed.
-		// Skip re-projecting; the worker will CompleteJob.
-		if done, err := s.projectionAlreadyCommitted(ctx, fin.ID); err != nil || done {
-			return err
-		}
-		tmpl, modRev, found, err := s.templateWithRev(ctx, templateID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return store.ErrNotFound
-		}
-		tmpl.DerivedVmCount++
-		tmplVal, err := etcd.Marshal(tmpl)
-		if err != nil {
-			return err
-		}
-		cmps := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(templateKey(templateID)), "=", modRev)}
-		ops := []clientv3.Op{
-			clientv3.OpPut(vmRuntimeKey(rt.VmID), string(runtimeVal)),
-			clientv3.OpPut(templateKey(templateID), string(tmplVal)),
-			clientv3.OpPut(taskKey(fin.ID), string(taskVal)),
-		}
-		committed, err := s.commitProjection(ctx, "project vm create txn", cmps, ops)
-		if err != nil {
-			return err
-		}
-		if committed {
-			return nil
-		}
+	if _, err := s.c.Raw().Txn(ctx).Then(
+		clientv3.OpPut(vmRuntimeKey(rt.VmID), string(runtimeVal)),
+		clientv3.OpPut(taskKey(fin.ID), string(taskVal)),
+	).Commit(); err != nil {
+		return fmt.Errorf("project vm create txn: %v", err)
 	}
-	return fmt.Errorf("project vm create: template derived-count CAS exhausted after %d tries", projectTemplateCASRetries)
+	return nil
 }
 
 // ProjectVMLifecycleSuccess writes the VM's desired_phase (when non-empty), its
@@ -137,50 +104,31 @@ func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, d
 }
 
 // ProjectVMDeleteSuccess soft-deletes a VM and its disks, drops the observed
-// runtime row, decrements the source template's derived_vm_count, and finalizes
-// the delete task - all in one transaction. The derived_vm_count decrement is
-// non-idempotent, so when the VM carries a template the projection commits under
-// a compare on the template mod-revision (bounded retry); a template-less VM
-// commits without a compare. Soft-delete drops the name guard (name reusable)
-// and the owner/template/firmware/pinned-node indexes, and each disk's vm + pool
-// indexes, so no index scan or blocking-count sees the deleted rows.
+// runtime row, and finalizes the delete task - all in one transaction. Every
+// write is an idempotent blind put or delete, so the projection commits
+// unconditionally and a worker redelivery re-applies the same soft-delete for
+// the same end state. Soft-delete drops the name guard (name reusable) and the
+// owner/firmware/pinned-node indexes, and each disk's vm + pool indexes, so no
+// index scan or blocking-count sees the deleted rows.
 func (s *Store) ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 	taskVal, err := s.finalizedTaskValue(ctx, fin)
 	if err != nil {
 		return err
 	}
-	base, err := s.vmDeleteBaseOps(ctx, vm, now, taskVal, fin.ID)
+	ops, err := s.vmDeleteBaseOps(ctx, vm, now, taskVal, fin.ID)
 	if err != nil {
 		return err
 	}
-
-	for range projectTemplateCASRetries {
-		// Worker redelivery: the task is already committed-terminal, so the
-		// non-idempotent derived_vm_count decrement has already been committed.
-		// Skip re-projecting; the worker will CompleteJob.
-		if done, err := s.projectionAlreadyCommitted(ctx, fin.ID); err != nil || done {
-			return err
-		}
-
-		cmps, ops, err := s.vmDeleteCommitInputs(ctx, vm, base)
-		if err != nil {
-			return err
-		}
-		committed, err := s.commitProjection(ctx, "project vm delete txn", cmps, ops)
-		if err != nil {
-			return err
-		}
-		if committed {
-			return nil
-		}
+	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+		return fmt.Errorf("project vm delete txn: %v", err)
 	}
-	return fmt.Errorf("project vm delete: template derived-count CAS exhausted after %d tries", projectTemplateCASRetries)
+	return nil
 }
 
-// vmDeleteBaseOps builds the soft-delete operations shared by the templated and
-// template-less delete paths: the VM row + guard/index removals, the runtime
-// delete, the per-disk soft-delete + index removals, and the task finalize.
+// vmDeleteBaseOps builds the soft-delete operations: the VM row + guard/index
+// removals, the runtime delete, the per-disk soft-delete + index removals, the
+// NIC removals, and the task finalize.
 func (s *Store) vmDeleteBaseOps(ctx context.Context, vm store.VM, now time.Time, taskVal []byte, taskID uuid.UUID) ([]clientv3.Op, error) {
 	vm.DeletedAt = &now
 	vm.UpdatedAt = now
@@ -236,71 +184,11 @@ func (s *Store) vmDeleteBaseOps(ctx context.Context, vm store.VM, now time.Time,
 	return ops, nil
 }
 
-// vmDeleteCommitInputs derives the compare set and the put/delete ops for one
-// delete-projection commit attempt over base. A template-less VM and a VM whose
-// template is hard-gone commit base unguarded (no derived_vm_count decrement);
-// a templated VM appends the decremented template put guarded by a compare on
-// the template's mod-revision, so a concurrent template mutation loses the txn
-// and the caller retries.
-func (s *Store) vmDeleteCommitInputs(ctx context.Context, vm store.VM, base []clientv3.Op) ([]clientv3.Cmp, []clientv3.Op, error) {
-	if vm.TemplateID == nil {
-		return nil, base, nil
-	}
-	tmpl, modRev, found, err := s.templateWithRev(ctx, *vm.TemplateID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !found {
-		// Template hard-gone (should not happen - templates soft-delete):
-		// commit the rest without a decrement rather than wedge the delete.
-		return nil, base, nil
-	}
-	tmpl.DerivedVmCount--
-	tmplVal, err := etcd.Marshal(tmpl)
-	if err != nil {
-		return nil, nil, err
-	}
-	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(templateKey(*vm.TemplateID)), "=", modRev)}
-	ops := append(append([]clientv3.Op{}, base...), clientv3.OpPut(templateKey(*vm.TemplateID), string(tmplVal)))
-	return cmps, ops, nil
-}
-
-// commitProjection commits one projection attempt: a single etcd transaction
-// gating ops on cmps (nil cmps = unconditional commit). It reports whether the
-// txn succeeded so the caller's CAS loop can retry on a lost compare; label
-// names the txn in the wrap of any transport error.
-func (s *Store) commitProjection(ctx context.Context, label string, cmps []clientv3.Cmp, ops []clientv3.Op) (bool, error) {
-	txn := s.c.Raw().Txn(ctx)
-	if len(cmps) > 0 {
-		txn = txn.If(cmps...)
-	}
-	resp, err := txn.Then(ops...).Commit()
-	if err != nil {
-		return false, fmt.Errorf("%s: %v", label, err)
-	}
-	return resp.Succeeded, nil
-}
-
-// projectionAlreadyCommitted reports whether the task is already
-// committed-terminal, meaning a prior delivery committed the projection's
-// non-idempotent template write. A true return lets the worker skip
-// re-projecting and proceed to CompleteJob.
-func (s *Store) projectionAlreadyCommitted(ctx context.Context, taskID uuid.UUID) (bool, error) {
-	task, err := s.TaskByID(ctx, taskID)
-	if err != nil {
-		return false, err
-	}
-	return isCommittedTerminal(task.Status), nil
-}
-
 // vmIndexDeleteOps returns the secondary-index removals matching vmIndexOps:
-// owner, and (when set) template / firmware / pinned-node.
+// owner, and (when set) firmware / pinned-node.
 func vmIndexDeleteOps(vm store.VM) []clientv3.Op {
 	ops := []clientv3.Op{
 		clientv3.OpDelete(etcd.Key("index", "vms", "owner", vm.OwnerID.String(), vm.ID.String())),
-	}
-	if vm.TemplateID != nil {
-		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "template", vm.TemplateID.String(), vm.ID.String())))
 	}
 	if vm.FirmwareID != nil {
 		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "firmware", vm.FirmwareID.String(), vm.ID.String())))
@@ -344,27 +232,10 @@ func (s *Store) finalizedTaskValue(ctx context.Context, fin store.UpdateTaskFina
 	return etcd.Marshal(t)
 }
 
-// isCommittedTerminal reports whether the projection's non-idempotent write has
-// already committed. Only success and cancelled qualify; failed is retryable
-// (failRun finalizes failed but the dispatcher requeues the job), so a failed
-// task must still re-run.
+// isCommittedTerminal reports whether a task has reached a committed-terminal
+// status. Only success and cancelled qualify; failed is retryable (failRun
+// finalizes failed but the dispatcher requeues the job), so a failed task must
+// still re-run.
 func isCommittedTerminal(s store.TaskStatus) bool {
 	return s == store.TaskStatusSuccess || s == store.TaskStatusCancelled
-}
-
-// templateWithRev reads a template row and its current mod-revision, the compare
-// target for the derived_vm_count CAS. found is false when the key is absent.
-func (s *Store) templateWithRev(ctx context.Context, id uuid.UUID) (store.Template, int64, bool, error) {
-	resp, err := s.c.Raw().Get(ctx, templateKey(id))
-	if err != nil {
-		return store.Template{}, 0, false, err
-	}
-	if len(resp.Kvs) == 0 {
-		return store.Template{}, 0, false, nil
-	}
-	var t store.Template
-	if err := json.Unmarshal(resp.Kvs[0].Value, &t); err != nil {
-		return store.Template{}, 0, false, fmt.Errorf("unmarshal template %q: %v", id, err)
-	}
-	return t, resp.Kvs[0].ModRevision, true, nil
 }

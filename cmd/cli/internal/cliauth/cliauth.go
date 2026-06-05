@@ -5,7 +5,7 @@
 // fully-constructed authenticated cpclient.Client. It is the single
 // source of truth for the precedence chain that turns flags + env
 // + config file into a (endpoint, token) pair — every resource
-// subcommand (vm, future template / pool / node) calls
+// subcommand (vm, pool, node, ...) calls
 // BuildClient instead of inlining its own flag plumbing.
 //
 // The package owns no state and has no test of its own: cliconfig

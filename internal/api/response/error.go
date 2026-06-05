@@ -36,9 +36,8 @@ const (
 	CodeRequestTimeout      ErrorCode = "request_timeout"
 	CodeAgentUnreachable    ErrorCode = "agent_unreachable"
 
-	// storage_image.import error codes. Most are passthrough from
-	// the agent's task.error envelope; a few are CP-side
-	// classifications driven by the worker's classifyImportError.
+	// Agent-passthrough vm.create error codes. The agent surfaces
+	// these in the task error envelope; the CP relays them verbatim.
 	CodeAgentTaskLost             ErrorCode = "agent_task_lost"
 	CodeImportTimeout             ErrorCode = "import_timeout"
 	CodeQcow2HeaderInvalid        ErrorCode = "qcow2_header_invalid"
@@ -55,29 +54,19 @@ const (
 	// of the existing prefixes.
 	CodePathNotAllowed ErrorCode = "path_not_allowed"
 
-	// vm.create / vm.delete error codes. The `template_not_accessible`
-	// / `pool_not_writable` / `node_not_ready` / `node_not_found`
-	// group is CP-side validation; `vm_create_failed` /
-	// `vm_delete_failed` collapse classifyVMError fall-through; the
-	// agent passthrough code `qemu_spawn_failed` mirrors what the
-	// agent surfaces on a failed qemu launch.
-	CodeVMNotFound            ErrorCode = "vm_not_found"
-	CodeVMNameInUse           ErrorCode = "vm_name_in_use"
-	CodeTemplateNotAccessible ErrorCode = "template_not_accessible"
-	CodePoolNotWritable       ErrorCode = "pool_not_writable"
-	CodeNodeNotReady          ErrorCode = "node_not_ready"
-	CodeNodeNotFound          ErrorCode = "node_not_found"
-	CodeVMCreateFailed        ErrorCode = "vm_create_failed"
-	CodeVMDeleteFailed        ErrorCode = "vm_delete_failed"
-	CodeQemuSpawnFailed       ErrorCode = "qemu_spawn_failed"
-	// CodeVMImageUnavailable is the vm.create fall-through code when the inline
-	// template-image materialization on the target pool fails for a NON-agent
-	// reason (the storage_images projection failed, or the agent import result
-	// could not be decoded). Agent-side import failures (checksum_mismatch,
-	// download_failed, ...) surface under their own agent code, and transport /
-	// timeout failures under agent_unreachable / request_timeout. It is
-	// RETRYABLE: the inline import may succeed on a later attempt.
-	CodeVMImageUnavailable ErrorCode = "vm_image_unavailable"
+	// vm.create / vm.delete error codes. The `pool_not_writable` /
+	// `node_not_ready` / `node_not_found` group is CP-side validation;
+	// `vm_create_failed` / `vm_delete_failed` collapse classifyVMError
+	// fall-through; the agent passthrough code `qemu_spawn_failed` mirrors
+	// what the agent surfaces on a failed qemu launch.
+	CodeVMNotFound      ErrorCode = "vm_not_found"
+	CodeVMNameInUse     ErrorCode = "vm_name_in_use"
+	CodePoolNotWritable ErrorCode = "pool_not_writable"
+	CodeNodeNotReady    ErrorCode = "node_not_ready"
+	CodeNodeNotFound    ErrorCode = "node_not_found"
+	CodeVMCreateFailed  ErrorCode = "vm_create_failed"
+	CodeVMDeleteFailed  ErrorCode = "vm_delete_failed"
+	CodeQemuSpawnFailed ErrorCode = "qemu_spawn_failed"
 
 	// Placement / cluster-default error codes. Emitted by VM create
 	// handler when the scheduler returns its sentinel errors or the

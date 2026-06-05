@@ -24,7 +24,6 @@ import (
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
-	templateshandlers "github.com/otherix/otherix/internal/api/handlers/templates"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/api/health"
@@ -41,9 +40,8 @@ import (
 type RouterDeps struct {
 	Store              RouterStore
 	AuthService        *auth.Service
-	HealthCheckName    string                            // /readyz dependency label; empty falls to "database"
-	ImageDeleter       storagepoolshandlers.ImageDeleter // may be nil when AgentClient.Enabled=false
-	StoragePools       config.StoragePoolsConfig         // path allowlist
+	HealthCheckName    string                    // /readyz dependency label; empty falls to "database"
+	StoragePools       config.StoragePoolsConfig // path allowlist
 	Logger             *slog.Logger
 	RequestTimeout     time.Duration
 	PlacementAlgorithm string                    // empty falls to scheduler default
@@ -158,11 +156,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	nodesH := nodeshandlers.New(deps.Store, deps.Logger)
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
-	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.ImageDeleter, deps.StoragePools, deps.Logger)
+	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.StoragePools, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
-	templatesH := templateshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
 	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 
@@ -271,21 +268,6 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermNetworkManage, deps.Logger)).Delete("/{id}", networksH.Delete)
 			})
 
-			r.Route("/templates", func(r chi.Router) {
-				r.With(middleware.RequirePermission(auth.PermTemplateReadPublic, deps.Logger)).Get("/", templatesH.List)
-				r.With(middleware.RequirePermission(auth.PermTemplateReadPublic, deps.Logger)).Get("/{id}", templatesH.Get)
-				r.With(middleware.RequirePermission(auth.PermTemplateCreate, deps.Logger)).Post("/", templatesH.Create)
-				r.With(middleware.RequirePermission(auth.PermTemplateUpdate, deps.Logger)).Patch("/{id}", templatesH.Update)
-				r.With(middleware.RequirePermission(auth.PermTemplateDelete, deps.Logger)).Delete("/{id}", templatesH.Delete)
-				r.With(middleware.RequirePermission(auth.PermTemplateSetVisibility, deps.Logger)).Post("/{id}/set-visibility", templatesH.SetVisibility)
-				r.With(middleware.RequirePermission(auth.PermTemplateCreate, deps.Logger)).Post("/{id}/clone", templatesH.Clone)
-				// storage_image.import async handler.
-				// RequirePermission gates on role-level capability;
-				// composite ownership / public-bypass enforcement lives
-				// inside the handler.
-				r.With(middleware.RequirePermission(auth.PermStorageImageImport, deps.Logger)).Post("/{id}/images", templatesH.ImportImage)
-			})
-
 			// /v1/tasks surface. `tasks.list` and `tasks.get` are
 			// gated by `task:read` at the role level and further
 			// scope-checked inside the handlers (admin / operator →
@@ -298,11 +280,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			})
 
 			// /v1/vms surface. RequirePermission gates on role-level
-			// capability; the create handler runs the composite
-			// template-usability check inside the body (matching the
-			// storage_image:import pattern). Delete runs
-			// auth.CheckOwnership after the row loads — cross-user
-			// developer attempts surface as 404 (no leak).
+			// capability; ownership scope checks run inside the handler
+			// bodies. Delete runs auth.CheckOwnership after the row
+			// loads — cross-user developer attempts surface as 404 (no
+			// leak).
 			r.Route("/vms", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/", vmsH.List)
 				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/{id}", vmsH.Get)
@@ -332,23 +313,17 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// the executor is the production agentScanExecutor.
 				r.With(middleware.RequirePermission(auth.PermStoragePoolScan, deps.Logger)).Post("/{id}/scan", storagePoolsH.Scan)
 
-				// storage_images read endpoints. image_cache:read is
-				// held by every authenticated role, so the gate is the
-				// only authorization layer; storage images are an
-				// infrastructure projection without per-owner scope.
-				r.With(middleware.RequirePermission(auth.PermImageCacheRead, deps.Logger)).Get("/{pool_id}/images", storagePoolsH.ListImages)
-				r.With(middleware.RequirePermission(auth.PermImageCacheRead, deps.Logger)).Get("/{pool_id}/images/{image_id}", storagePoolsH.GetImage)
-
-				// storage_image.delete sync handler.
-				// RequirePermission gates on role-level capability;
-				// composite ownership / public-bypass enforcement
-				// happens inside the handler.
-				r.With(middleware.RequirePermission(auth.PermStorageImageManage, deps.Logger)).Delete("/{pool_id}/images/{image_id}", storagePoolsH.DeleteImage)
+				// The per-pool cached-image inventory is no longer a
+				// dedicated sub-resource: it is agent-reported observed
+				// state embedded under `images[]` on the pool-get
+				// response (storage_pool:read). The former
+				// GET/DELETE `/{pool_id}/images[/{image_id}]` endpoints
+				// were removed with the template entity.
 			})
 
 			// /v1/cluster surface. Default-pool reference is the only
-			// setting today; the route group anchors the future
-			// default-template / default-network knobs to the same
+			// setting today; the route group anchors future
+			// default-network and similar knobs to the same
 			// singleton table without re-opening URL design.
 			r.Route("/cluster", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-pool", clusterH.GetDefaultPool)

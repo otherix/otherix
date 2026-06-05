@@ -59,7 +59,7 @@ func seedBridgeNetwork(t *testing.T, s *etcdstore.Store) store.Network {
 // directly through the raw client - exactly the two keys the placement
 // projection reads (the NIC row plus the network index that enumerates it). This
 // avoids the full CreateScheduledVM path, which gates the NIC behind a scheduled
-// placement and template fixture the projection does not consult. It returns the
+// placement fixture the projection does not consult. It returns the
 // owning VM id so the caller can place (or not place) the VM via placeVM.
 func seedVMWithNIC(t *testing.T, cli *etcd.Client, networkID uuid.UUID, mac string) uuid.UUID {
 	t.Helper()

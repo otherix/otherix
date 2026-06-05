@@ -42,6 +42,14 @@ type PoolReporter interface {
 	PoolReports() []PoolReport
 }
 
+// PoolImageLister returns the per-pool cached-image inventory the
+// collector folds into each PoolReport.Images. Implemented by an adapter
+// over vm.Manager.ListImages in the agent serve assembly; nil is allowed
+// (yields no image inventory) for test paths and the legacy wiring.
+type PoolImageLister interface {
+	PoolImages(pool string) []PoolImageReport
+}
+
 // VMReporter returns the per-VM observed-state slice the collector
 // folds into HeartbeatRequest.vms. Implemented by the VM reconciler
 // per L3 D3 — single ownership of observed VM state mirrors the
@@ -75,6 +83,7 @@ type LinuxCollector struct {
 	vms          VMLister
 	vmReporter   VMReporter
 	pools        PoolReporter
+	poolImages   PoolImageLister
 	networks     NetworkReporter
 	wireguard    WireGuardReporter
 	migration    config.MigrationConfig
@@ -96,6 +105,7 @@ type CollectorDeps struct {
 	VMs        VMLister
 	VMReporter VMReporter
 	Pools      PoolReporter
+	PoolImages PoolImageLister
 	Networks   NetworkReporter
 	WireGuard  WireGuardReporter
 	Migration  config.MigrationConfig
@@ -122,6 +132,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		vms:          deps.VMs,
 		vmReporter:   deps.VMReporter,
 		pools:        deps.Pools,
+		poolImages:   deps.PoolImages,
 		networks:     deps.Networks,
 		wireguard:    deps.WireGuard,
 		migration:    deps.Migration,
@@ -207,6 +218,13 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	}
 	if c.pools != nil {
 		report.Pools = c.pools.PoolReports()
+		if c.poolImages != nil {
+			// The PoolReporter owns reconciliation status; the image
+			// inventory is a separate observation merged in per pool name.
+			for i := range report.Pools {
+				report.Pools[i].Images = c.poolImages.PoolImages(report.Pools[i].Name)
+			}
+		}
 	}
 	if c.networks != nil {
 		report.Networks = c.networks.NetworkReports()

@@ -241,7 +241,7 @@ clean-dev: ## Tear down dev environment (per OS)
 
 # seed-mvp orchestrates the join-token bootstrap end-to-end:
 # mints token, provisions bootstrap.env + token to agent host, starts agent,
-# waits for cert-material commit, seeds pool + default + Ubuntu template via
+# waits for cert-material commit, seeds the default pool; VMs are created from an image URL via
 # CLI. Run AFTER `make bootstrap-dev` + `make run-api-dev`.
 seed-mvp: build-cli ## Run the join-token bootstrap + MVP seed (requires CP running + bootstrap-dev staged)
 	@bash dev/scripts/seed-mvp.sh
@@ -276,7 +276,7 @@ install-agent-systemd-user:
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.config/otherix/certs
 	@mkdir -p $(HOME)/.config/otherix/vms
-	@mkdir -p $(HOME)/.config/otherix/pools/default/templates
+	@mkdir -p $(HOME)/.config/otherix/pools/default/images
 	@mkdir -p $(HOME)/.config/otherix/pools/default/vms
 	@mkdir -p $(HOME)/.config/systemd/user
 	@chmod 0750 $(HOME)/.config/otherix/certs

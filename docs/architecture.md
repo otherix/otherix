@@ -15,7 +15,7 @@ handlers and the store live in `internal/store/`.
 
 ## What Otherix is
 
-A self-hosted VM orchestration control plane that manages QEMU virtual machines across a fleet of hypervisor nodes. Users own VMs, templates, and snapshots (tracked via per-resource `owner_id`); nodes, networks, storage pools, and firmwares are shared infrastructure managed by administrators. The scheduler enforces placement policies. Live migration moves running VMs between nodes peer-to-peer without involving the control plane in the data path.
+A self-hosted VM orchestration control plane that manages QEMU virtual machines across a fleet of hypervisor nodes. VMs are created directly from an image URL (no template entity). Users own VMs and snapshots (tracked via per-resource `owner_id`); nodes, networks, storage pools, and firmwares are shared infrastructure managed by administrators. The scheduler enforces placement policies. Live migration moves running VMs between nodes peer-to-peer without involving the control plane in the data path.
 
 **Non-goals (deliberately):** multi-tenancy / SaaS, custom RBAC, OAuth/OIDC, NFS/Ceph storage, OVS/VXLAN networking, OCI registry images. All deferred to future iterations. (Multi-tenancy was scaffolded and then removed in 2026-05-03.)
 
@@ -59,7 +59,7 @@ Designed for HA - replicas self-cluster as a single etcd cluster and
 share work by claiming jobs off the etcd-backed queue.
 
 **Scheduler (in-process)** — picks a node for each new VM and decides
-when to evacuate/rebalance. Reads node capacity, template
+when to evacuate/rebalance. Reads node capacity, VM
 architecture, and labels. Writes nothing user-facing; emits work by
 enqueuing jobs on the etcd queue.
 
@@ -148,7 +148,6 @@ sequence-keyed under `/otherix/jobs/<seq>`. The resource families:
 |---|---|---|
 | Identity | `users`, `api_tokens`, `agent_certs`, `join_tokens`, `refresh_tokens`, `ca_certs` | partial |
 | Infrastructure | `nodes`, `firmwares`, `storage_pools`, `networks` | partial |
-| Templates | `templates` | yes |
 | VM domain (desired) | `vms`, `vm_disks`, `vm_nics`, `snapshots` | yes |
 | VM domain (runtime) | `vm_runtime` | hard delete |
 | Operations | `migrations` (live), `idempotency_keys`, `tasks` | hard delete |
@@ -160,7 +159,22 @@ sequence-keyed under `/otherix/jobs/<seq>`. The resource families:
 - **Timestamps:** RFC 3339 UTC. Standard triplet `created_at`, `updated_at`, `deleted_at` on soft-deletable resources; `updated_at` is stamped by the store on each mutation.
 - **Soft delete:** `deleted_at` set on the row. Application-level cascade. Uniqueness guard keys are released on soft-delete so the value (e.g. an email, a node name) becomes reusable immediately.
 - **Atomicity:** multi-key writes (primary row + guards + secondary indexes + any related rows) commit through a single etcd `Txn` with compare-and-set on `ModRevision`/`CreateRevision`. Sweeps that exceed etcd's default 128-op/txn limit are split into chunks by `commitInChunks`.
-- **Resource ownership:** user-owned resources (`vms`, `templates`, `snapshots`) carry `owner_id` referencing a user; deleting a user that still owns resources is refused. Infrastructure resources (`nodes`, `firmwares`, `storage_pools`, `networks`) have no owner - they're administered for the whole installation. Multi-tenancy was removed in 2026-05-03.
+- **Resource ownership:** user-owned resources (`vms`, `snapshots`) carry `owner_id` referencing a user; deleting a user that still owns resources is refused. Infrastructure resources (`nodes`, `firmwares`, `storage_pools`, `networks`) have no owner - they're administered for the whole installation. Multi-tenancy was removed in 2026-05-03.
+
+### Image cache (agent-owned)
+
+A VM is created from an image URL rather than a control-plane template. The
+image bytes are NOT a control-plane resource: each agent owns a per-pool,
+basename-keyed cache under `{poolRoot}/images/{basename}` (with a
+`{basename}.sha256` sidecar), materialized on first use with Kubernetes
+`IfNotPresent` semantics. Without `--image-sha256` the cache reuses by name;
+with `--image-sha256` it enforces the digest, re-downloading and atomically
+overwriting on sidecar disagreement and failing `checksum_mismatch` if the URL
+serves a different digest. The agent reports its cache inventory to the CP
+through heartbeat, and the CP surfaces it under `storage_pool:read` (shown by
+`otherix pool get <name>` as an `images:` list of name, sha, and size). There
+is no separate image resource, table, or RBAC permission - `vm:create` is the
+single gate for materializing any image URL.
 
 ### Reconciler pattern (Kubernetes-style)
 
@@ -176,8 +190,7 @@ CHECK constraint), rather than by the database:
 
 - One active live-migration per VM (per-VM active-migration guard key, released on terminal phase) - planned, with the live-migration create path.
 - Live-migration source and target are different.
-- VM disk source kind is consistent (`template` ↔ non-null `source_template_id`, `blank` ↔ null).
-- Template delete is blocked by referencing vm_disks, forcing operators to detach before deleting.
+- VM disk source kind is one of `image` or `blank`. There is no template entity and no `source_template_id`: a VM is self-describing, carrying `image_url`, `image_sha256`, `image_format`, `architecture`, and `firmware_id` on its own row. The image bytes are materialized by the agent's per-pool image cache on first use (see the storage section), not tracked as a control-plane resource.
 - Globally unique MAC address among non-deleted NICs (MAC guard key).
 - Exactly one default firmware per `(architecture, type)` (default-firmware guard key).
 - Exactly one default storage pool per node (default-pool guard key).

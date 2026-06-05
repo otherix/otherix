@@ -38,6 +38,16 @@ type HeartbeatProjection interface {
 	FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
 	UpsertVMRuntime(ctx context.Context, arg UpsertVMRuntimeParams) error
 	UpdateStoragePoolReconciliation(ctx context.Context, arg UpdateStoragePoolReconciliationParams) error
+	// StoragePoolIDByNodeName resolves a pool's UUID from its (node_id,
+	// lower(name)) identity, the same join key UpdateStoragePoolReconciliation
+	// matches on. found is false (nil error) when no live pool matches, so a
+	// caller keying an observed-state write on the id can skip it safely rather
+	// than persist an orphan keyed on a pool the CP no longer has.
+	StoragePoolIDByNodeName(ctx context.Context, nodeID uuid.UUID, name string) (uuid.UUID, bool, error)
+	// UpsertPoolImageInventory replaces the observed image inventory for a pool.
+	// An empty slice clears it so a pool that dropped all images reports empty,
+	// not stale.
+	UpsertPoolImageInventory(ctx context.Context, poolID uuid.UUID, images []PoolImage) error
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
 	UpsertNetworkNodeStatus(ctx context.Context, arg UpsertNetworkNodeStatusParams) error
 	ListNetworks(ctx context.Context) ([]Network, error)

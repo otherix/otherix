@@ -70,14 +70,6 @@ type state struct {
 	tasks           map[uuid.UUID]*agentTask
 	poolScanResults map[string][]PoolScanResult
 
-	// storage_image.import projection. Keyed by
-	// (pool_id, expected_checksum_sha256); test authors populate
-	// the FIFO queue via AddImageImportResult. Pre-existing images
-	// (state.images[pool][checksum] already staged via AddImage or
-	// a previous successful import) bypass the queue and emit a
-	// terminal-success projection without consumption.
-	imageImportResults map[imageImportKey][]ImageImportResult
-
 	// MVP Iteration 3 Phase A vm.create / vm.delete projection.
 	// `storedVMs` is the on-node inventory observable through
 	// VmsGet / VmsList; create-success materialises an entry, delete-
@@ -114,16 +106,6 @@ type state struct {
 type storagePool struct {
 	StoragePool
 	reportedAt time.Time
-}
-
-// imageImportKey indexes the per-(pool, checksum) FIFO queue of
-// synthetic import outcomes. Composite-key lookup is the unit of
-// fault injection — different checksums against the same pool carry
-// independent queues. The pool dimension is a string name; it was
-// previously the pool UUID.
-type imageImportKey struct {
-	PoolName       string
-	ChecksumSHA256 string
 }
 
 // vmLifecycleKey indexes the per-(vm name, op) FIFO queue of L2 async

@@ -5,7 +5,7 @@
 // plane and its agents. Iteration 2 ships a single subcommand —
 // ping-agent — used to validate CP→agent mTLS reachability against a
 // running otherix-agent. Future iterations layer on resource
-// subcommands (vm, template, pool) without changing the binary name.
+// subcommands (vm, pool, node, ...) without changing the binary name.
 package main
 
 import (

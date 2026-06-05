@@ -31,15 +31,6 @@ func (s stubScanExec) Execute(context.Context, storagepoolshandlers.ScanArgs) (s
 	return s.res, s.err
 }
 
-type stubImportExec struct {
-	res storagepoolshandlers.ImportResult
-	err error
-}
-
-func (s stubImportExec) Execute(context.Context, storagepoolshandlers.ImportArgs) (storagepoolshandlers.ImportResult, error) {
-	return s.res, s.err
-}
-
 func TestStoragePoolScanRunHandler(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -64,36 +55,5 @@ func TestStoragePoolScanRunHandler(t *testing.T) {
 	got, _ := s.TaskByID(ctx, task.ID)
 	if got.Status != store.TaskStatusSuccess {
 		t.Errorf("task = %v, want success", got.Status)
-	}
-}
-
-func TestStorageImageImportRunHandler(t *testing.T) {
-	s, _ := startStore(t)
-	ctx := context.Background()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	_, poolID, templateID, _ := schedulingFixture(t, s)
-
-	task := taskParams(store.TaskStatusPending, nil)
-	if _, err := s.EnqueueTask(ctx, task, testJobArgs{}); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	raw, _ := json.Marshal(storagepoolshandlers.StorageImageImportArgs{TaskID: task.ID, TemplateID: templateID, PoolID: poolID})
-	exec := stubImportExec{res: storagepoolshandlers.ImportResult{ChecksumSHA256: "abcdef0123456789", SizeBytes: 4096, Format: "qcow2"}}
-	h := storagepoolshandlers.ImportHandler(s, exec, log)
-	if err := h(ctx, raw); err != nil {
-		t.Fatalf("import handler: %v", err)
-	}
-
-	imgs, _ := s.ListStorageImagesByPool(ctx, store.ListStorageImagesByPoolParams{PoolID: poolID, LimitCount: 50})
-	if len(imgs) != 1 || imgs[0].ChecksumSha256 != "abcdef0123456789" {
-		t.Errorf("images = %+v, want one abcdef0123456789", imgs)
-	}
-	got, _ := s.TaskByID(ctx, task.ID)
-	if got.Status != store.TaskStatusSuccess {
-		t.Errorf("task = %v, want success", got.Status)
-	}
-	tpl, _ := s.TemplateByID(ctx, templateID)
-	if len(tpl.ImageChecksumSha256) == 0 {
-		t.Errorf("template checksum not back-propagated")
 	}
 }

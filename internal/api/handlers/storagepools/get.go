@@ -93,5 +93,11 @@ func (h *Handler) projectInstanceForConcept(ctx context.Context, p store.PoolEff
 		// can still see the instance in the aggregated view.
 		node = store.Node{}
 	}
-	return toViewEffective(p, node.Name, node.Status, isClusterDefault), nil
+	view := toViewEffective(p, node.Name, node.Status, isClusterDefault)
+	images, err := h.poolImages(ctx, p.ID)
+	if err != nil {
+		return storagePoolView{}, err
+	}
+	view.Images = images
+	return view, nil
 }

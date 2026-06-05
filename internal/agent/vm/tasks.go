@@ -42,13 +42,6 @@ const (
 	// `vm_id` → `resource_id`) tracked under contract-test parity in
 	// ROADMAP.
 	TaskKindStoragePoolScan TaskKind = "storage_pool.scan"
-	// TaskKindStorageImageImport tracks a POST
-	// /v1/storage-pools/{pool_id}/images task. Same transitional
-	// `vmID` parameter reuse as TaskKindStoragePoolScan — the pool's
-	// UUID rides through. The terminal-success Result carries
-	// `{checksum_sha256, size_bytes, format}` matching the CP-side
-	// agent_import_executor.decodeImportResult contract.
-	TaskKindStorageImageImport TaskKind = "storage_image.import"
 )
 
 // TaskError mirrors the agent error envelope when a task fails. Code

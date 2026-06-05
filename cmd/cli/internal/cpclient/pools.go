@@ -37,8 +37,22 @@ type Pool struct {
 	ReconciliationStatus    string             `json:"reconciliation_status"`
 	LastReconciledAt        *string            `json:"last_reconciled_at"`
 	ReconciliationError     *string            `json:"reconciliation_error"`
+	Images                  []PoolImage        `json:"images"`
 	CreatedAt               string             `json:"created_at"`
 	UpdatedAt               string             `json:"updated_at"`
+}
+
+// PoolImage is one cached source image the server has downloaded into a
+// storage pool. It replaces the old template-cache view: VMs now boot
+// directly from an image URL, and the cached copies surface here so
+// operators can see what is already local to a pool.
+type PoolImage struct {
+	Name             string `json:"name"`
+	SHA256           string `json:"sha256"`
+	SizeBytes        int64  `json:"size_bytes"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
+	Format           string `json:"format"`
+	ImportedAt       string `json:"imported_at"`
 }
 
 // PoolList is the cursor-paginated payload of GET /v1/storage-pools.
@@ -205,11 +219,10 @@ func (c *Client) CreatePool(ctx context.Context, req CreatePoolRequest) (Pool, e
 // refuses the delete because the pool still has dependents. Mirrors
 // response.BlockingResourcesError on the wire side:
 //
-//   - Code is the server-set `error.code` — `resource_in_use` when
-//     storage_images are present, generic `conflict` for the
-//     vm_disks-only branch.
+//   - Code is the server-set `error.code` — generic `conflict` for the
+//     vm_disks blocking branch.
 //   - Resources maps dependent-resource-type → reference count. Known
-//     keys: "storage_images", "vm_disks".
+//     key: "vm_disks".
 type ErrPoolBlocked struct {
 	Code      string
 	Resources map[string]int64
@@ -249,8 +262,7 @@ func (c *Client) DeletePool(ctx context.Context, identifier string) error {
 // map off an APIError into the typed ErrPoolBlocked shape. Returns nil
 // when the details payload is absent or malformed — the caller falls
 // back to the raw *APIError so the operator at least sees the status
-// code. Parallel of decodeBlockingResources in templates.go; the two
-// remain separate to keep the typed-error shape per-domain.
+// code. The typed-error shape is kept per-domain rather than shared.
 func decodePoolBlockingResources(apiErr *APIError) *ErrPoolBlocked {
 	if apiErr.Details == nil {
 		return nil

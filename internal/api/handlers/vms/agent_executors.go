@@ -5,6 +5,7 @@ package vms
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -14,32 +15,25 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// resolveCloudInitUserData merges a VM-level override against the
-// template-level default per L3 Area 3 lock — explicit disable wins,
-// else VM wins when set, else template's cloud_init_user_data wins,
-// else empty (agent skips cidata generation). Both source columns are
-// tri-state nullable *string in the store; we treat NULL and "" identically
-// as "absent" so the operator can pass either form interchangeably.
+// resolveCloudInitUserData resolves the cloud-init blob the agent receives from
+// the VM row alone (there is no template fallback). The vm.user_data column is a
+// tri-state nullable *string; NULL and "" are both treated as "absent".
 //
 // Three-state semantic (operator UX iteration):
 //
-//   - vm.CloudInitDisabled=true                  → "" (explicit disable)
-//   - vm.UserData set                            → override
-//   - template.CloudInitUserData set             → fallback
-//   - none of the above                          → "" (no cloud-init)
+//   - vm.CloudInitDisabled=true  -> "" (explicit disable)
+//   - vm.UserData set            -> override
+//   - none of the above          -> "" (no cloud-init)
 //
 // The DB CHECK chk_vms_cloud_init_disabled_no_userdata makes the
 // disabled-AND-userdata combination unreachable; the early return
 // here is a defense-in-depth signal to the reader, not a runtime branch.
-func resolveCloudInitUserData(vm store.VM, tpl store.Template) string {
+func resolveCloudInitUserData(vm store.VM) string {
 	if vm.CloudInitDisabled {
 		return ""
 	}
 	if vm.UserData != nil && *vm.UserData != "" {
 		return *vm.UserData
-	}
-	if tpl.CloudInitUserData != nil {
-		return *tpl.CloudInitUserData
 	}
 	return ""
 }
@@ -98,7 +92,7 @@ func (e *agentVMCreateExecutor) Execute(ctx context.Context, args CreateArgs) (C
 	}
 	switch terminal.Status {
 	case "success":
-		return CreateResult{VMID: args.VM.ID.String()}, nil
+		return createResultFromTerminal(args.VM.ID, terminal.Result), nil
 	case "failed", "cancelled":
 		if terminal.Error != nil {
 			return CreateResult{}, terminal.Error
@@ -107,6 +101,30 @@ func (e *agentVMCreateExecutor) Execute(ctx context.Context, args CreateArgs) (C
 	default:
 		return CreateResult{}, fmt.Errorf("unexpected agent terminal status %q", terminal.Status)
 	}
+}
+
+// createResultFromTerminal projects the agent's terminal vm.create task result
+// (an OpenAPI Task.result map) onto a CreateResult: the resolved content digest
+// and the materialized/virtual disk sizes the agent computed. A nil or
+// undecodable map degrades gracefully to just the VM id - the success outcome is
+// unchanged, only the correlation metadata is dropped.
+func createResultFromTerminal(vmID uuid.UUID, result map[string]any) CreateResult {
+	out := CreateResult{VMID: vmID.String()}
+	if len(result) == 0 {
+		return out
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return out
+	}
+	var ar agentclient.VMCreateResult
+	if err := json.Unmarshal(raw, &ar); err != nil {
+		return out
+	}
+	out.ImageSHA256 = ar.ImageSHA256
+	out.DiskSizeBytes = ar.DiskSizeBytes
+	out.VirtualSizeBytes = ar.VirtualSizeBytes
+	return out
 }
 
 // postOrResumeCreate returns the agent task id to poll. On a fresh
@@ -119,14 +137,17 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 	}
 	idemKey := uuid.NewString()
 	body := agentclient.VMCreateRequest{
-		UUID:             args.VM.ID,
-		Name:             args.VM.Name,
-		VCPUs:            int(args.VM.CpuCores),
-		MemoryMB:         int(args.VM.MemoryMib),
-		Pool:             args.Pool.Name,
-		TemplateChecksum: templateChecksumHex(args.Template),
-		UserData:         resolveCloudInitUserData(args.VM, args.Template),
-		Nics:             args.NICs,
+		UUID:           args.VM.ID,
+		Name:           args.VM.Name,
+		VCPUs:          int(args.VM.CpuCores),
+		MemoryMB:       int(args.VM.MemoryMib),
+		Pool:           args.Pool.Name,
+		ImageURL:       args.ImageURL,
+		ExpectedSHA256: args.ImageSHA256,
+		Format:         args.Format,
+		DiskGiB:        args.DiskGiB,
+		UserData:       resolveCloudInitUserData(args.VM),
+		Nics:           args.NICs,
 	}
 	agentTaskID, err := e.client.PostVMCreate(ctx, args.Node.AdvertisedEndpoint, idemKey, body)
 	if err != nil {

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,16 +27,22 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// testImageURL is the HTTPS image source every create request in this
+// file carries. The stub manager never actually fetches it (the async
+// ensure fails on the unreachable host); the tests only assert API-edge
+// behaviour up to the 202 hand-off.
+const testImageURL = "https://example.test/ubuntu.img"
+
 // newCreateHarness builds a Handler over a real manager and a spy
-// fabric. When withPool is true a pool plus a stub template file are
-// materialised so a request that clears NIC validation reaches 202.
-func newCreateHarness(t *testing.T, fake *netfabric.FakeFabric, withPool bool) (*Handler, string) {
+// fabric. When withPool is true a pool is materialised so a request that
+// clears NIC validation reaches 202 (the async ensure then fails on the
+// unreachable image host - fine; the tests assert the 202 hand-off).
+func newCreateHarness(t *testing.T, fake *netfabric.FakeFabric, withPool bool) *Handler {
 	t.Helper()
 	tmp := t.TempDir()
 	stateDir := filepath.Join(tmp, "state")
 	poolRoot := filepath.Join(tmp, "pool")
 	const poolName = "default"
-	const checksum = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
 
 	cfg := &config.AgentConfig{StatePath: stateDir}
 	m, err := vm.New(cfg, fake, discardLogger())
@@ -48,12 +53,8 @@ func newCreateHarness(t *testing.T, fake *netfabric.FakeFabric, withPool bool) (
 		if err := m.AddPool(poolName, poolRoot); err != nil {
 			t.Fatalf("AddPool: %v", err)
 		}
-		tmpl := filepath.Join(poolRoot, "templates", checksum+".qcow2")
-		if err := os.WriteFile(tmpl, []byte("stub"), 0o600); err != nil {
-			t.Fatalf("write template: %v", err)
-		}
 	}
-	return New(m, console.NewTokenStore(), discardLogger()), checksum
+	return New(m, console.NewTokenStore(), discardLogger())
 }
 
 func TestCreate_NICEdgeValidation(t *testing.T) {
@@ -123,15 +124,15 @@ func TestCreate_NICEdgeValidation(t *testing.T) {
 			// would reach 202 and fail deep in the goroutine. A 400 here
 			// proves the API edge rejected it.
 			fake := &netfabric.FakeFabric{}
-			h, checksum := newCreateHarness(t, fake, true)
+			h := newCreateHarness(t, fake, true)
 
 			body, _ := json.Marshal(map[string]any{
-				"name":              "vm1",
-				"vcpus":             2,
-				"memory_mb":         1024,
-				"pool":              "default",
-				"template_checksum": checksum,
-				"nics":              tc.nics,
+				"name":      "vm1",
+				"vcpus":     2,
+				"memory_mb": 1024,
+				"pool":      "default",
+				"image_url": testImageURL,
+				"nics":      tc.nics,
 			})
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/vms", bytes.NewReader(body))
@@ -159,14 +160,14 @@ func TestCreate_NICEdgeValidation(t *testing.T) {
 
 func TestCreate_ValidNIC_PassesValidation(t *testing.T) {
 	fake := &netfabric.FakeFabric{}
-	h, checksum := newCreateHarness(t, fake, true)
+	h := newCreateHarness(t, fake, true)
 
 	body, _ := json.Marshal(map[string]any{
-		"name":              "vm1",
-		"vcpus":             2,
-		"memory_mb":         1024,
-		"pool":              "default",
-		"template_checksum": checksum,
+		"name":      "vm1",
+		"vcpus":     2,
+		"memory_mb": 1024,
+		"pool":      "default",
+		"image_url": testImageURL,
 		"nics": []map[string]any{{
 			"id":           uuid.NewString(),
 			"bridge":       "br0",
@@ -187,7 +188,7 @@ func TestCreate_ValidNIC_PassesValidation(t *testing.T) {
 
 	// Drain the async create goroutine to a terminal task state so its
 	// filesystem writes finish before t.TempDir cleanup runs (the stub
-	// template is not a real qcow2, so the task fails - that is fine; we
+	// image is not a real qcow2, so the task fails - that is fine; we
 	// only assert NIC validation passed, evidenced by the 202).
 	var acc asyncAccepted
 	if err := json.Unmarshal(rec.Body.Bytes(), &acc); err != nil {
@@ -214,16 +215,16 @@ func TestCreate_ValidNIC_PassesValidation(t *testing.T) {
 // VM. The CP worker then resumes against the same agent_task_id.
 func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
 	fake := &netfabric.FakeFabric{}
-	h, checksum := newCreateHarness(t, fake, true)
+	h := newCreateHarness(t, fake, true)
 
 	vmID := uuid.NewString()
 	body, _ := json.Marshal(map[string]any{
-		"uuid":              vmID,
-		"name":              "vm1",
-		"vcpus":             2,
-		"memory_mb":         1024,
-		"pool":              "default",
-		"template_checksum": checksum,
+		"uuid":      vmID,
+		"name":      "vm1",
+		"vcpus":     2,
+		"memory_mb": 1024,
+		"pool":      "default",
+		"image_url": testImageURL,
 	})
 
 	post := func() *httptest.ResponseRecorder {
@@ -242,7 +243,7 @@ func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
 		t.Fatalf("decode first accepted: %v", err)
 	}
 
-	// Drain the original create to a terminal state (the stub template is
+	// Drain the original create to a terminal state (the stub image is
 	// not a real qcow2 so it fails — fine; the VM and its task record
 	// remain registered, which is exactly the redelivery window).
 	firstTaskID := uuid.MustParse(firstAcc.TaskID)
@@ -268,5 +269,53 @@ func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
 	}
 	if secondAcc.TaskID != firstAcc.TaskID {
 		t.Errorf("duplicate create task_id = %s, want original %s", secondAcc.TaskID, firstAcc.TaskID)
+	}
+}
+
+// TestCreate_ImageFieldsReachManager confirms the handler threads the new
+// image wire fields (image_url / expected_sha256) into vm.CreateSpec: a
+// body missing image_url and a body carrying a malformed expected_sha256
+// both surface the manager's ErrInvalidSpec as 400 validation_failed.
+// This is the seam check - the manager only rejects those because the
+// handler copied the decoded fields into the spec it passed.
+func TestCreate_ImageFieldsReachManager(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "missing image_url",
+			body: map[string]any{
+				"name": "vm1", "vcpus": 2, "memory_mb": 1024, "pool": "default",
+			},
+		},
+		{
+			name: "malformed expected_sha256",
+			body: map[string]any{
+				"name": "vm1", "vcpus": 2, "memory_mb": 1024, "pool": "default",
+				"image_url": testImageURL, "expected_sha256": "deadbeef",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCreateHarness(t, &netfabric.FakeFabric{}, true)
+			body, _ := json.Marshal(tc.body)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/vms", bytes.NewReader(body))
+
+			h.Create(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+			}
+			var env response.ErrorBody
+			if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if env.Error.Code != response.CodeValidationFailed {
+				t.Errorf("error.code = %q, want %q", env.Error.Code, response.CodeValidationFailed)
+			}
+		})
 	}
 }

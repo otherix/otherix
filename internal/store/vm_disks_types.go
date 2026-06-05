@@ -6,16 +6,15 @@ package store
 import "github.com/google/uuid"
 
 type CreateVMDiskParams struct {
-	VmID             uuid.UUID
-	StoragePoolID    uuid.UUID
-	DeviceOrder      int32
-	Bus              DiskBus
-	SizeGib          int32
-	SourceKind       string
-	SourceTemplateID *uuid.UUID
-	Format           ImageFormat
-	ReadOnly         bool
-	CacheMode        DiskCacheMode
-	Discard          DiskDiscard
-	BootOrder        *int32
+	VmID          uuid.UUID
+	StoragePoolID uuid.UUID
+	DeviceOrder   int32
+	Bus           DiskBus
+	SizeGib       int32
+	SourceKind    string
+	Format        ImageFormat
+	ReadOnly      bool
+	CacheMode     DiskCacheMode
+	Discard       DiskDiscard
+	BootOrder     *int32
 }

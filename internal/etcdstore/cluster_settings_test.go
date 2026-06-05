@@ -15,7 +15,7 @@ import (
 
 // ClusterSettings is one of the six resolver.Querier lookups; the full
 // cluster.Store and resolver-embedding assertions land once storage-pools,
-// nodes, templates, and vms are implemented.
+// nodes and vms are implemented.
 
 func TestClusterSettingsDefaultsWhenAbsent(t *testing.T) {
 	s, _ := startStore(t)

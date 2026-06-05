@@ -72,13 +72,13 @@ func fixtureCreateArgs() (CreateArgs, *atomic.Int32, *atomic.Value) {
 			CpuCores:  2,
 			MemoryMib: 2048,
 		},
-		Disk: store.VMDisk{ID: uuid.New(), VmID: uuid.New()},
-		Template: store.Template{
-			ID:                  uuid.New(),
-			ImageChecksumSha256: []byte{0xab, 0xcd, 0xef},
-		},
-		Pool: store.StoragePool{ID: uuid.New()},
-		Node: store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://node.test"},
+		Disk:        store.VMDisk{ID: uuid.New(), VmID: uuid.New()},
+		ImageURL:    "https://example.test/img.qcow2",
+		ImageSHA256: "abcdef",
+		Format:      "qcow2",
+		DiskGiB:     20,
+		Pool:        store.StoragePool{ID: uuid.New(), Name: "default"},
+		Node:        store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://node.test"},
 		OnAgentTaskID: func(_ context.Context, id uuid.UUID) error {
 			calls.Add(1)
 			arg.Store(id)
@@ -119,6 +119,77 @@ func TestAgentVMCreateExecutor_FirstRunPostsAndPersists(t *testing.T) {
 	}
 	if got, _ := fc.lastPollID.Load().(uuid.UUID); got != wantAgentID {
 		t.Errorf("poll task id = %s, want %s", got, wantAgentID)
+	}
+}
+
+// TestAgentVMCreateExecutor_ForwardsImageSource pins the CP->agent vm-create
+// seam: the executor builds the agent VMCreateRequest from the CreateArgs image
+// fields (image_url + expected_sha256 + format + disk_gib), matching the agent's
+// wire decode.
+func TestAgentVMCreateExecutor_ForwardsImageSource(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeVMClient{
+		postCreateID: uuid.New(),
+		pollResult:   agentclient.TaskTerminal{Status: "success"},
+	}
+	args, _, _ := fixtureCreateArgs()
+
+	exec := NewAgentVMCreateExecutor(fc)
+	if _, err := exec.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	req, _ := fc.lastCreateReq.Load().(agentclient.VMCreateRequest)
+	if req.ImageURL != args.ImageURL {
+		t.Errorf("req.ImageURL = %q, want %q", req.ImageURL, args.ImageURL)
+	}
+	if req.ExpectedSHA256 != args.ImageSHA256 {
+		t.Errorf("req.ExpectedSHA256 = %q, want %q", req.ExpectedSHA256, args.ImageSHA256)
+	}
+	if req.Format != args.Format {
+		t.Errorf("req.Format = %q, want %q", req.Format, args.Format)
+	}
+	if req.DiskGiB != args.DiskGiB {
+		t.Errorf("req.DiskGiB = %d, want %d", req.DiskGiB, args.DiskGiB)
+	}
+}
+
+// TestAgentVMCreateExecutor_SurfacesAgentResult pins the other half of the seam:
+// on agent success the executor decodes the terminal task result
+// (agentclient.VMCreateResult) and surfaces the resolved sha + disk sizes in the
+// CreateResult.
+func TestAgentVMCreateExecutor_SurfacesAgentResult(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeVMClient{
+		postCreateID: uuid.New(),
+		pollResult: agentclient.TaskTerminal{
+			Status: "success",
+			Result: map[string]any{
+				"image_sha256":       "deadbeef",
+				"disk_size_bytes":    float64(123),
+				"virtual_size_bytes": float64(456),
+			},
+		},
+	}
+	args, _, _ := fixtureCreateArgs()
+
+	exec := NewAgentVMCreateExecutor(fc)
+	res, err := exec.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.VMID != args.VM.ID.String() {
+		t.Errorf("res.VMID = %q, want %q", res.VMID, args.VM.ID.String())
+	}
+	if res.ImageSHA256 != "deadbeef" {
+		t.Errorf("res.ImageSHA256 = %q, want %q", res.ImageSHA256, "deadbeef")
+	}
+	if res.DiskSizeBytes != 123 {
+		t.Errorf("res.DiskSizeBytes = %d, want 123", res.DiskSizeBytes)
+	}
+	if res.VirtualSizeBytes != 456 {
+		t.Errorf("res.VirtualSizeBytes = %d, want 456", res.VirtualSizeBytes)
 	}
 }
 

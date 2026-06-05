@@ -19,7 +19,6 @@ import (
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
-	templateshandlers "github.com/otherix/otherix/internal/api/handlers/templates"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/api/health"
@@ -51,7 +50,6 @@ type RouterStore interface {
 	storagepoolshandlers.Store
 	clusterhandlers.Store
 	firmwareshandlers.Store
-	templateshandlers.Store
 	taskshandlers.Store
 	vmshandlers.Store
 	heartbeathandlers.Store

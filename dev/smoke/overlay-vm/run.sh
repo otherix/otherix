@@ -23,8 +23,8 @@
 # No pool staging: the CP auto-provisions the cluster default pool ("default") on
 # every node as it reaches ready (PR #15), so a VM can be placed on either node
 # without a manual pool. Both VMs are created WITHOUT --pool (resolving to that
-# default) and WITHOUT a pre-staged image - each create auto-imports the template
-# image inline on first use (B1 lazy materialization).
+# default) from an image URL - the agent materializes the image into the pool's
+# basename-keyed cache on first use (IfNotPresent).
 #
 # PREREQUISITES: a seeded two-node dev stack built from the CURRENT tree:
 #   make local-dev-start
@@ -41,7 +41,8 @@ VM1="${VM1:-otherix-dev-1}"           # Lima instance backing node-1
 VM2="${VM2:-otherix-dev-2}"           # Lima instance backing node-2
 NODE1="${NODE1:-node-1}"
 NODE2="${NODE2:-node-2}"
-TEMPLATE="${TEMPLATE:-ubuntu-noble-arm64-mvp}"   # seed-mvp arm64 template
+IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"  # Noble minimal arm64 cloudimg
+ARCH="${ARCH:-arm64}"
 SUBNET="${SUBNET:-10.71.0.0/24}"
 IP1="${IP1:-10.71.0.10}"
 IP2="${IP2:-10.71.0.11}"
@@ -86,7 +87,7 @@ net_ready_both() {
 # so systemd-networkd-wait-online does not block boot for ~3min waiting on a DHCP
 # lease that never comes (there is no DHCP server on the overlay). A runcmd
 # `ip addr replace` is a belt-and-suspenders fallback in case the netplan rewrite
-# is masked by the template's baked 50-cloud-init.yaml.
+# is masked by the image's baked 50-cloud-init.yaml.
 #
 # The reachability probe is a TCP connect to the peer's sshd (:22) via bash
 # /dev/tcp - NOT ping. The Ubuntu *minimal* cloudimg ships no iputils-ping (and
@@ -233,16 +234,16 @@ gen_userdata "$IP1" "$IP2" yes > "$UD1"   # VM-A pings VM-B and emits the sentin
 gen_userdata "$IP2" "$IP1" no  > "$UD2"   # VM-B is passive
 
 # Both VMs are created WITHOUT --pool: they resolve to the cluster default pool
-# ("default"), pinned per node by --node. Neither node pre-materialised the
-# template, so each create auto-imports the image inline (B1); budget both for
-# import + create.
+# ("default"), pinned per node by --node. The image is given by URL; on a cold
+# pool the agent materializes it into the pool's basename-keyed cache on first
+# use (IfNotPresent), so budget both creates for download + create.
 COLD_VM_WAIT=$(( VM_WAIT * 2 ))
-info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (default pool, <= ${COLD_VM_WAIT}s each incl. inline image import)"
-otx vm create --name "${NET}-a" --node "$NODE1" --network "$NET" --template "$TEMPLATE" \
+info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (default pool, <= ${COLD_VM_WAIT}s each incl. cold image fetch)"
+otx vm create --name "${NET}-a" --node "$NODE1" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
   --vcpus 2 --memory-mb 2048 --cloud-init "$UD1" \
   --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create A on $NODE1 did not reach success"
-otx vm create --name "${NET}-b" --node "$NODE2" --network "$NET" --template "$TEMPLATE" \
+otx vm create --name "${NET}-b" --node "$NODE2" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
   --vcpus 2 --memory-mb 2048 --cloud-init "$UD2" \
   --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create B on $NODE2 did not reach success"

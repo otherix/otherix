@@ -231,6 +231,19 @@ func (h heartbeatProjection) UpdateStoragePoolReconciliation(ctx context.Context
 	return h.s.c.PutJSON(ctx, storagePoolKey(id), p)
 }
 
+// StoragePoolIDByNodeName resolves a pool's UUID from the (node_id, lower(name))
+// uniqueness guard — the same join key UpdateStoragePoolReconciliation matches
+// on. found is false (nil error) when no guard exists (pool deleted mid-tick).
+func (h heartbeatProjection) StoragePoolIDByNodeName(ctx context.Context, nodeID uuid.UUID, name string) (uuid.UUID, bool, error) {
+	return h.s.resolveGuard(ctx, storagePoolNodeNameGuard(nodeID, name))
+}
+
+// UpsertPoolImageInventory persists the agent-reported observed image inventory
+// for a pool, delegating to the store-level blind put (empty slice clears).
+func (h heartbeatProjection) UpsertPoolImageInventory(ctx context.Context, poolID uuid.UUID, images []store.PoolImage) error {
+	return h.s.UpsertPoolImageInventory(ctx, poolID, images)
+}
+
 // ListStoragePoolsByNode returns the non-deleted pools on a node.
 func (h heartbeatProjection) ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]store.StoragePool, error) {
 	items, err := h.s.c.Range(ctx, storagePoolPrefix())

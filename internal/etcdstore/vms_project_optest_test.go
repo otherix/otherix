@@ -24,11 +24,11 @@ import (
 // task finalize) in a SINGLE etcd transaction. etcd's default --max-txn-ops is
 // 128. The current create model is single-root-disk + single-NIC, so a delete
 // is well under that. This test seeds a VM the normal way (one disk, one NIC, on
-// a node, backed by a template) and asserts the delete projection's op count
-// stays well under the budget. It fails only if a future change (for example a
-// multi-disk/NIC hotplug-attach path) roughly quintuples the per-VM op count
-// without adding a per-VM op-budget cap or chunking the delete. See
-// docs/architecture.md ("Delete projection op budget").
+// a node) and asserts the delete projection's op count stays well under the
+// budget. It fails only if a future change (for example a multi-disk/NIC
+// hotplug-attach path) roughly quintuples the per-VM op count without adding a
+// per-VM op-budget cap or chunking the delete. See docs/architecture.md
+// ("Delete projection op budget").
 func TestVMDeleteProjectionStaysUnderTxnBudget(t *testing.T) {
 	s := startInternalStore(t)
 	ctx := context.Background()
@@ -37,31 +37,24 @@ func TestVMDeleteProjectionStaysUnderTxnBudget(t *testing.T) {
 	ownerID := uuid.New()
 	nodeID := uuid.New()
 	poolID := uuid.New()
-	templateID := uuid.New()
 	firmwareID := uuid.New()
 	networkID := uuid.New()
 	vmID := uuid.New()
 	taskID := uuid.New()
 
-	// Template row, so the templated delete path appends the non-idempotent
-	// derived_vm_count decrement (one extra put on top of the base ops).
-	tmpl := store.Template{ID: templateID, OwnerID: ownerID, Name: "tmpl-" + uuid.NewString()[:8], CreatedAt: now, UpdatedAt: now}
-	if err := s.c.PutJSON(ctx, templateKey(templateID), tmpl); err != nil {
-		t.Fatalf("seed template: %v", err)
-	}
-
-	// VM row with template + firmware + pinned-node set, so every vmIndexDeleteOps
-	// branch fires (owner, template, firmware, pinned-node). This is the widest
-	// index set a single VM carries today.
+	// VM row with firmware + pinned-node set, so every vmIndexDeleteOps branch
+	// fires (owner, firmware, pinned-node). This is the widest index set a single
+	// VM carries today.
 	vm := store.VM{
 		ID:           vmID,
 		OwnerID:      ownerID,
 		Name:         "vm-" + uuid.NewString()[:8],
 		DesiredPhase: store.VmDesiredPhaseRunning,
-		TemplateID:   &templateID,
 		FirmwareID:   &firmwareID,
 		PinnedNodeID: &nodeID,
 		Architecture: store.CpuArchAmd64,
+		ImageURL:     "https://example.test/img.qcow2",
+		ImageFormat:  store.ImageFormatQcow2,
 		CpuCores:     2,
 		MemoryMib:    2048,
 		Generation:   1,
@@ -81,7 +74,7 @@ func TestVMDeleteProjectionStaysUnderTxnBudget(t *testing.T) {
 	// One disk, with its vm + pool indexes (the normal single-root-disk create).
 	disk := store.VMDisk{
 		ID: uuid.New(), VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0,
-		Bus: store.DiskBusVirtio, SizeGib: 20, SourceKind: "template", SourceTemplateID: &templateID,
+		Bus: store.DiskBusVirtio, SizeGib: 20, SourceKind: "image",
 		Format: store.ImageFormatQcow2, CacheMode: store.DiskCacheModeNone, Discard: store.DiskDiscardUnmap,
 		Generation: 1, CreatedAt: now, UpdatedAt: now,
 	}
@@ -117,28 +110,16 @@ func TestVMDeleteProjectionStaysUnderTxnBudget(t *testing.T) {
 		t.Fatalf("seed runtime-node index: %v", err)
 	}
 
-	// Build the exact ops the projection would commit: the base soft-delete ops
-	// plus the templated derived_vm_count put. vmDeleteCommitInputs mirrors the
+	// Build the exact ops the projection would commit. vmDeleteBaseOps is the
 	// real assembly inside ProjectVMDeleteSuccess, so opCount is precise rather
 	// than an estimate.
-	base, err := s.vmDeleteBaseOps(ctx, vm, now, []byte(`{}`), taskID)
+	ops, err := s.vmDeleteBaseOps(ctx, vm, now, []byte(`{}`), taskID)
 	if err != nil {
 		t.Fatalf("vmDeleteBaseOps: %v", err)
 	}
-	_, ops, err := s.vmDeleteCommitInputs(ctx, vm, base)
-	if err != nil {
-		t.Fatalf("vmDeleteCommitInputs: %v", err)
-	}
 	opCount := len(ops)
 
-	// Sanity: a templated commit is exactly the base ops plus one (the
-	// derived_vm_count put). If that ever stops holding, the count below is no
-	// longer the faithful total and the assembly drifted.
-	if opCount != len(base)+1 {
-		t.Errorf("committed ops = %d, base = %d; templated commit should be base+1", opCount, len(base))
-	}
-
-	t.Logf("single-disk/single-NIC vm delete projection = %d ops (base %d + template count 1); etcd --max-txn-ops default is 128", opCount, len(base))
+	t.Logf("single-disk/single-NIC vm delete projection = %d ops; etcd --max-txn-ops default is 128", opCount)
 
 	if opCount > 100 {
 		t.Errorf("vm delete projection = %d ops, want <= 100; a multi-disk/NIC feature must add a per-VM op-budget cap or chunk the delete (see docs/architecture.md)", opCount)

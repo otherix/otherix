@@ -285,6 +285,41 @@ func runReconciler(ctx context.Context, name string, run func(context.Context) e
 	return done
 }
 
+// poolImageAdapter implements heartbeat.PoolImageLister over
+// vm.Manager.ListImages. It maps each vm.CachedImage to the heartbeat
+// PoolImageReport wire shape: ChecksumSHA256 -> SHA256, ImportedAt (a
+// time.Time) -> RFC 3339 string, and VirtualSizeBytes = 0. The cache walk
+// does not run qemu-img info per file, so the virtual size is
+// observed-but-unknown here (known only at create time), not a defect. A
+// ListImages error (e.g. an unknown pool name mid-reconcile) yields nil for
+// that pool so the heartbeat liveness signal is never blocked on inventory.
+type poolImageAdapter struct {
+	ctx     context.Context
+	manager *vm.Manager
+	log     *slog.Logger
+}
+
+// PoolImages returns the cached-image inventory for pool, or nil on error.
+func (a poolImageAdapter) PoolImages(pool string) []heartbeat.PoolImageReport {
+	images, err := a.manager.ListImages(a.ctx, pool)
+	if err != nil {
+		a.log.Warn("heartbeat: pool image inventory unavailable", "pool", pool, "error", err.Error())
+		return nil
+	}
+	out := make([]heartbeat.PoolImageReport, 0, len(images))
+	for _, img := range images {
+		out = append(out, heartbeat.PoolImageReport{
+			Basename:         img.Basename,
+			SHA256:           img.ChecksumSHA256,
+			SizeBytes:        img.SizeBytes,
+			VirtualSizeBytes: 0,
+			Format:           img.Format,
+			ImportedAt:       img.ImportedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return out
+}
+
 // startHeartbeat wires up the agent → CP heartbeat sender alongside
 // the HTTPS server. Returns a channel that is closed when the
 // goroutine exits (so Run can wait for clean shutdown before
@@ -311,6 +346,7 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 		VMs:        manager,
 		VMReporter: vmRec,
 		Pools:      poolRec,
+		PoolImages: poolImageAdapter{ctx: ctx, manager: manager, log: log},
 		Networks:   netRec,
 		WireGuard:  wgRec,
 		Migration:  cfg.Migration,

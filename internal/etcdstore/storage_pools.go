@@ -23,8 +23,8 @@ import (
 // node, so uniqueness is scoped (node_id, lower(name)) via a per-node guard,
 // and a cluster-wide name index backs the name-aggregated lookups. Effective
 // capacity subtracts pending vm_disk commits (disks on the pool created after
-// the last scan). Storage images are content-addressable; the refcounted delete
-// fires the agent file delete only for the last sibling sharing a checksum.
+// the last scan). The observed per-pool image inventory is heartbeat-fed
+// observed state at a single per-pool key (last-writer-wins, no guard).
 
 const bytesPerGiB = 1073741824
 
@@ -44,26 +44,8 @@ func storagePoolNameIndexPrefix(name string) string {
 	return etcd.Key("index", "storage_pools", "name", strings.ToLower(name)) + "/"
 }
 
-func storageImageKey(id uuid.UUID) string { return etcd.Key("storage_images", id.String()) }
-
-func storageImagePoolIndexKey(poolID, id uuid.UUID) string {
-	return etcd.Key("index", "storage_images", "pool", poolID.String(), id.String())
-}
-
-func storageImagePoolIndexPrefix(poolID uuid.UUID) string {
-	return etcd.Key("index", "storage_images", "pool", poolID.String()) + "/"
-}
-
-func storageImageTemplateIndexKey(templateID, id uuid.UUID) string {
-	return etcd.Key("index", "storage_images", "template", templateID.String(), id.String())
-}
-
-// storageImageTemplatePoolGuard enforces UNIQUE(template_id, pool_id) on
-// storage_images (the SQL ON CONFLICT target the import projection upserts
-// against): at most one image row per (template, pool). Written on insert,
-// dropped on refcounted delete.
-func storageImageTemplatePoolGuard(templateID, poolID uuid.UUID) string {
-	return etcd.Key("uniq", "storage_images", "template_pool", templateID.String(), poolID.String())
+func poolImageInventoryKey(poolID uuid.UUID) string {
+	return etcd.Key("pool_images", poolID.String())
 }
 
 // vmDiskKey is the canonical primary key for vm_disks (reused by the vms slice).
@@ -267,15 +249,11 @@ func (s *Store) ListPoolsEffectiveByName(ctx context.Context, name string) ([]st
 }
 
 // DeleteStoragePool soft-deletes a pool after verifying nothing references it.
-// Returns store.ErrNotFound when missing, or *store.ResourceInUseError (keys
-// "storage_images" / "vm_disks") when materialised images or active disks block
-// the delete.
+// Returns store.ErrNotFound when missing, or *store.ResourceInUseError (key
+// "vm_disks") when active disks block the delete. Image cache files are
+// agent-owned and never block a pool delete.
 func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 	p, err := s.StoragePoolByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	imageCount, err := s.countPrefix(ctx, storageImagePoolIndexPrefix(id))
 	if err != nil {
 		return err
 	}
@@ -283,15 +261,8 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	if imageCount > 0 || diskCount > 0 {
-		blocking := map[string]int64{}
-		if imageCount > 0 {
-			blocking["storage_images"] = imageCount
-		}
-		if diskCount > 0 {
-			blocking["vm_disks"] = diskCount
-		}
-		return &store.ResourceInUseError{Resources: blocking}
+	if diskCount > 0 {
+		return &store.ResourceInUseError{Resources: map[string]int64{"vm_disks": diskCount}}
 	}
 	now := time.Now().UTC()
 	p.DeletedAt = &now
@@ -305,6 +276,9 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 			clientv3.OpPut(storagePoolKey(id), string(val)),
 			clientv3.OpDelete(storagePoolNodeNameGuard(p.NodeID, p.Name)),
 			clientv3.OpDelete(storagePoolNameIndexKey(p.Name, id)),
+			// Drop the agent-reported image inventory (observed state); a
+			// deleted pool reports none, and nothing reads it post-delete.
+			clientv3.OpDelete(poolImageInventoryKey(id)),
 		).
 		Commit(); err != nil {
 		return fmt.Errorf("delete storage pool txn: %v", err)
@@ -312,115 +286,30 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// StorageImageByID returns the storage image with the given id, or
-// store.ErrNotFound.
-func (s *Store) StorageImageByID(ctx context.Context, id uuid.UUID) (store.StorageImage, error) {
-	var im store.StorageImage
-	found, err := s.c.GetJSON(ctx, storageImageKey(id), &im)
-	if err != nil {
-		return store.StorageImage{}, err
+// UpsertPoolImageInventory replaces the observed image inventory for a pool
+// with images. Observed state written from the heartbeat path: a blind put,
+// last-writer-wins per heartbeat. An empty slice clears the inventory so a pool
+// that dropped all images reports empty, not stale.
+func (s *Store) UpsertPoolImageInventory(ctx context.Context, poolID uuid.UUID, images []store.PoolImage) error {
+	if len(images) == 0 {
+		_, err := s.c.Delete(ctx, poolImageInventoryKey(poolID))
+		return err
 	}
-	if !found {
-		return store.StorageImage{}, store.ErrNotFound
-	}
-	return im, nil
+	return s.c.PutJSON(ctx, poolImageInventoryKey(poolID), images)
 }
 
-// StorageImageExists reports whether a storage_images row exists for the
-// (template, pool) pair. It reads the UNIQUE(template_id, pool_id) guard: a
-// present guard means a row is materialized for that pair.
-func (s *Store) StorageImageExists(ctx context.Context, templateID, poolID uuid.UUID) (bool, error) {
-	_, found, err := s.resolveGuard(ctx, storageImageTemplatePoolGuard(templateID, poolID))
-	if err != nil {
-		return false, err
-	}
-	return found, nil
-}
-
-// ListStorageImagesByPool returns the images in a pool ordered by (imported_at,
-// id) descending (newest first), after the cursor, capped at LimitCount.
-func (s *Store) ListStorageImagesByPool(ctx context.Context, arg store.ListStorageImagesByPoolParams) ([]store.StorageImage, error) {
-	images, err := s.imagesInPool(ctx, arg.PoolID)
+// PoolImageInventory returns the observed image inventory for a pool, or an
+// empty slice when none was reported yet.
+func (s *Store) PoolImageInventory(ctx context.Context, poolID uuid.UUID) ([]store.PoolImage, error) {
+	var out []store.PoolImage
+	found, err := s.c.GetJSON(ctx, poolImageInventoryKey(poolID), &out)
 	if err != nil {
 		return nil, err
 	}
-	out := images[:0]
-	for _, im := range images {
-		if !beforeImageCursor(im, arg.CursorImportedAt, arg.CursorID) {
-			continue
-		}
-		out = append(out, im)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].ImportedAt.Equal(out[j].ImportedAt) {
-			return out[i].ImportedAt.After(out[j].ImportedAt)
-		}
-		return out[i].ID.String() > out[j].ID.String()
-	})
-	if n := int(arg.LimitCount); n > 0 && len(out) > n {
-		out = out[:n]
+	if !found {
+		return nil, nil
 	}
 	return out, nil
-}
-
-// DeleteStorageImageRefcounted removes an image row, invoking onLastReferent
-// only when no sibling in the pool shares the checksum, so the on-disk file and
-// the row are removed together. Returns store.ErrNotFound when the image is
-// missing or addressed through the wrong pool. authorize gates the delete after
-// the owning template loads; its error and onLastReferent's propagate verbatim.
-func (s *Store) DeleteStorageImageRefcounted(
-	ctx context.Context,
-	poolID, imageID uuid.UUID,
-	authorize func(store.Template) error,
-	onLastReferent func(ctx context.Context, node store.Node, poolName, checksum string) error,
-) (store.StorageImage, store.Template, error) {
-	image, err := s.StorageImageByID(ctx, imageID)
-	if err != nil {
-		return store.StorageImage{}, store.Template{}, err
-	}
-	if image.PoolID != poolID {
-		return store.StorageImage{}, store.Template{}, store.ErrNotFound
-	}
-	template, err := s.TemplateByID(ctx, image.TemplateID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return store.StorageImage{}, store.Template{}, fmt.Errorf("template %s missing for image %s", image.TemplateID, imageID)
-		}
-		return store.StorageImage{}, store.Template{}, err
-	}
-	if err := authorize(template); err != nil {
-		return store.StorageImage{}, store.Template{}, err
-	}
-
-	siblings, err := s.countImageChecksumSiblings(ctx, poolID, image.ChecksumSha256, imageID)
-	if err != nil {
-		return store.StorageImage{}, store.Template{}, err
-	}
-	if siblings == 0 {
-		pool, err := s.StoragePoolByID(ctx, poolID)
-		if err != nil {
-			return store.StorageImage{}, store.Template{}, fmt.Errorf("get pool for agent delete: %v", err)
-		}
-		node, err := s.NodeByID(ctx, pool.NodeID)
-		if err != nil {
-			return store.StorageImage{}, store.Template{}, fmt.Errorf("get node for agent delete: %v", err)
-		}
-		if err := onLastReferent(ctx, node, pool.Name, image.ChecksumSha256); err != nil {
-			return store.StorageImage{}, store.Template{}, err
-		}
-	}
-
-	if _, err := s.c.Raw().Txn(ctx).
-		Then(
-			clientv3.OpDelete(storageImageKey(imageID)),
-			clientv3.OpDelete(storageImagePoolIndexKey(poolID, imageID)),
-			clientv3.OpDelete(storageImageTemplateIndexKey(image.TemplateID, imageID)),
-			clientv3.OpDelete(storageImageTemplatePoolGuard(image.TemplateID, poolID)),
-		).
-		Commit(); err != nil {
-		return store.StorageImage{}, store.Template{}, fmt.Errorf("delete storage image txn: %v", err)
-	}
-	return image, template, nil
 }
 
 // poolEffective projects a pool onto the effective-capacity view, subtracting
@@ -484,56 +373,4 @@ func (s *Store) pendingCommittedBytes(ctx context.Context, p store.StoragePool) 
 		total += int64(d.SizeGib) * bytesPerGiB
 	}
 	return total, nil
-}
-
-// imagesInPool loads every image in a pool via the pool index.
-func (s *Store) imagesInPool(ctx context.Context, poolID uuid.UUID) ([]store.StorageImage, error) {
-	items, err := s.c.Range(ctx, storageImagePoolIndexPrefix(poolID))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]store.StorageImage, 0, len(items))
-	for _, kv := range items {
-		id, perr := uuid.Parse(string(kv.Value))
-		if perr != nil {
-			return nil, fmt.Errorf("corrupt image pool index %q: %v", kv.Key, perr)
-		}
-		im, err := s.StorageImageByID(ctx, id)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		out = append(out, im)
-	}
-	return out, nil
-}
-
-// countImageChecksumSiblings counts images in the pool sharing the checksum,
-// excluding excludeID.
-func (s *Store) countImageChecksumSiblings(ctx context.Context, poolID uuid.UUID, checksum string, excludeID uuid.UUID) (int64, error) {
-	images, err := s.imagesInPool(ctx, poolID)
-	if err != nil {
-		return 0, err
-	}
-	var n int64
-	for _, im := range images {
-		if im.ID != excludeID && im.ChecksumSha256 == checksum {
-			n++
-		}
-	}
-	return n, nil
-}
-
-// beforeImageCursor reports whether (imported_at, id) sorts strictly before the
-// DESC cursor tuple. A nil cursor (first page) admits every row.
-func beforeImageCursor(im store.StorageImage, cursorImportedAt *time.Time, cursorID *uuid.UUID) bool {
-	if cursorImportedAt == nil || cursorID == nil {
-		return true
-	}
-	if !im.ImportedAt.Equal(*cursorImportedAt) {
-		return im.ImportedAt.Before(*cursorImportedAt)
-	}
-	return im.ID.String() < cursorID.String()
 }

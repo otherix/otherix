@@ -11,7 +11,7 @@ info:
 
     Coverage so far:
       - Part 1 — auth, users, nodes, join-tokens.
-      - Part 2 — firmwares, storage-pools, networks, templates, tasks.
+      - Part 2 — firmwares, storage-pools, networks, vms, tasks.
 
     User-owned resources carry an `owner_id` (multi-tenancy is not
     modelled).
@@ -39,8 +39,6 @@ tags:
     description: Per-node storage pools.
   - name: networks
     description: Cluster-wide networks.
-  - name: templates
-    description: VM templates (image source + default sizing).
   - name: vms
     description: |
       Virtual machines. The central resource of the control plane. All
@@ -69,8 +67,8 @@ tags:
       Cluster-level configuration knobs held in the cluster_settings
       singleton. Today only the default-pool reference (used by VM
       create when the request omits `pool`); the route group anchors
-      future cluster-shaping settings (default-template,
-      default-network) at the same path.
+      future cluster-shaping settings (e.g. default-network) at the
+      same path.
   - name: ca
     description: |
       Cluster Certificate Authority introspection. Today serves a
@@ -335,7 +333,7 @@ paths:
         Soft-deletes the user and revokes all their API tokens. A user
         cannot delete themselves through this endpoint.
 
-        The user must not own any VMs, templates, or VM snapshots — those
+        The user must not own any VMs or VM snapshots — those
         resources have `ON DELETE RESTRICT` against `users(id)` in the
         schema, so the delete is rejected with 409 `user_has_resources`
         if any owned resources still exist. Reassigning ownership is not
@@ -357,7 +355,7 @@ paths:
           description: |
             Cannot delete: user owns one or more user-resources. The error
             payload's `details.blocking_resources` enumerates per-type
-            counts (`vms`, `templates`, `vm_snapshots`).
+            counts (`vms`, `vm_snapshots`).
           content:
             application/json:
               schema:
@@ -1270,10 +1268,10 @@ paths:
       tags: [firmwares]
       summary: Delete a firmware (admin only).
       description: |
-        Refuses with `409 conflict` while any active VM or template
-        still references the firmware. The error payload's
+        Refuses with `409 conflict` while any active VM still
+        references the firmware. The error payload's
         `details.blocking_resources` carries the per-type counts (only
-        non-zero keys are present), e.g. `{"vms": 3, "templates": 1}`.
+        non-zero keys are present), e.g. `{"vms": 3}`.
         Firmwares have no force-delete counterpart — the operator must
         remove or repoint the dependent resources first.
 
@@ -1291,10 +1289,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            Cannot delete: firmware is still referenced by active VMs
-            and/or templates. The error payload's
+            Cannot delete: firmware is still referenced by active VMs.
+            The error payload's
             `details.blocking_resources` carries the per-type counts;
-            only non-zero keys appear, e.g. `{"vms": 3, "templates": 1}`.
+            only non-zero keys appear, e.g. `{"vms": 3}`.
           content:
             application/json:
               schema:
@@ -1527,131 +1525,6 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/storage-pools/{pool_id}/images:
-    parameters:
-      - name: pool_id
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
-    get:
-      operationId: storageImages.list
-      tags: [storage-pools]
-      summary: List storage images in a pool.
-      description: |
-        Returns the per-pool projection of imported templates. The list
-        is keyed on `(imported_at, id)` DESC. Cross-pool listings are
-        not supported — query each pool separately.
-
-        **Required permission:** `image_cache:read` (held by every
-        authenticated role).
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Page of storage images.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageImageList"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/storage-pools/{pool_id}/images/{image_id}:
-    parameters:
-      - name: pool_id
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
-      - name: image_id
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
-    get:
-      operationId: storageImages.get
-      tags: [storage-pools]
-      summary: Get a storage image by id.
-      description: |
-        Cross-pool addressing — an `image_id` that exists but lives in
-        a different pool than the path's `pool_id` — yields `404` by
-        the same no-existence-leak rule applied across the API.
-
-        **Required permission:** `image_cache:read`.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      responses:
-        "200":
-          description: Storage image.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageImage"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "500": { $ref: "#/components/responses/Internal" }
-    delete:
-      operationId: storageImages.delete
-      tags: [storage-pools]
-      summary: Delete a storage image (refcount-gated, synchronous).
-      description: |
-        Refcount-gated content-addressable delete. When other
-        `storage_images` rows in the same pool share the
-        checksum the agent's delete is NOT invoked — the
-        on-disk file stays for the surviving siblings. Only the
-        last-referent delete invokes the agent inside the same SQL
-        transaction so the row removal and the file removal commit
-        atomically.
-
-        Cross-pool addressing — an `image_id` that exists but lives
-        in a different pool than the path's `pool_id` — yields
-        `404` by the same no-existence-leak rule applied across the
-        API.
-
-        **Required permission:** `storage_image:manage`. admin /
-        operator hold the permission at scope `any`; developer holds
-        it at scope `own`. The handler-side composite ownership /
-        public-bypass check parallels the import handler and
-        surfaces composite failures as `403 permission_denied`.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200":
-          description: |
-            Storage image deleted. Body is the projection of the row
-            that was just removed, so callers can audit the sha256 /
-            size that was actually evicted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageImage"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "502":
-          description: |
-            Agent at the owning node is unreachable; the delete was
-            rolled back. Caller may retry once the node recovers.
-            `error.code` is `agent_unreachable`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500": { $ref: "#/components/responses/Internal" }
-
   /v1/networks:
     get:
       operationId: networks.list
@@ -1797,305 +1670,6 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/templates:
-    get:
-      operationId: templates.list
-      tags: [templates]
-      summary: List templates.
-      description: |
-        Returned set depends on the caller's role:
-          - `admin`, `operator` — every template (public and private,
-            regardless of ownership).
-          - `developer`, `viewer` — every public template plus their own
-            private templates.
-
-        The optional `visibility` query filter narrows further (e.g.
-        `visibility=public` to browse the public catalogue only).
-
-        **Required permission:** `template:read:public` (everyone) and,
-        for own private templates, `template:read` (own scope).
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-        - $ref: "#/components/parameters/ArchitectureFilter"
-        - $ref: "#/components/parameters/OwnerIdFilter"
-        - name: os_family
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [linux, windows, bsd, other]
-        - name: visibility
-          in: query
-          required: false
-          schema:
-            $ref: "#/components/schemas/TemplateVisibility"
-          description: |
-            Filter to a single visibility class. Note: regardless of
-            this filter, the caller's role still bounds the result set
-            (developers/viewers cannot see other users' private
-            templates by setting `visibility=private`).
-      responses:
-        "200":
-          description: List of templates.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TemplateList"
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "500": { $ref: "#/components/responses/Internal" }
-    post:
-      operationId: templates.create
-      tags: [templates]
-      summary: Create a template.
-      description: |
-        The new template is owned by the calling user (`owner_id` is
-        assigned server-side from the authenticated context). Templates
-        are always created with `visibility = private`; the field is
-        rejected in the request body via `forbidden_fields`. Use
-        `templates.setVisibility` (admin/operator only) to publish.
-
-        **Required permission:** `template:create` (held by `admin`,
-        `operator`, `developer`).
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TemplateCreate"
-      responses:
-        "201":
-          description: Template created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Template"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/templates/{id}:
-    parameters:
-      - $ref: "#/components/parameters/TemplateName"
-    get:
-      operationId: templates.get
-      tags: [templates]
-      summary: Get a template by id.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      responses:
-        "200":
-          description: Template.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Template"
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "500": { $ref: "#/components/responses/Internal" }
-    patch:
-      operationId: templates.update
-      tags: [templates]
-      summary: Update mutable template metadata.
-      description: |
-        Image source fields (`image_url`, `image_checksum_sha256`,
-        `image_format`, `image_size_bytes`) and identity fields
-        (`architecture`, `os_family`, `owner_id`) are immutable — to
-        change them, create a new template (or use `templates.clone`).
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TemplateUpdate"
-      responses:
-        "200":
-          description: Updated template.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Template"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "500": { $ref: "#/components/responses/Internal" }
-    delete:
-      operationId: templates.delete
-      tags: [templates]
-      summary: Soft-delete a template.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "204":
-          description: Deleted.
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/templates/{id}/set-visibility:
-    parameters:
-      - $ref: "#/components/parameters/TemplateName"
-    post:
-      operationId: templates.setVisibility
-      tags: [templates]
-      summary: Change a template's visibility (admin/operator).
-      description: |
-        Sets the template's `visibility` to `public` or `private`.
-        Synchronous: returns 200 with the updated template.
-
-        **Required permission:** `template:set_visibility` (held by
-        `admin` and `operator`). The template's `owner_id` is **not**
-        changed by this action.
-
-        Setting visibility to its current value is a no-op and returns
-        the unchanged template with 200.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SetTemplateVisibilityRequest"
-      responses:
-        "200":
-          description: Updated template.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Template"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/templates/{id}/clone:
-    parameters:
-      - $ref: "#/components/parameters/TemplateName"
-    post:
-      operationId: templates.clone
-      tags: [templates]
-      summary: Clone a template (metadata copy; image URL is shared).
-      description: |
-        Creates a new template that points at the same `image_url` and
-        `image_checksum_sha256` as the source. The image itself is not
-        re-downloaded — both templates reference the same upstream blob.
-        Synchronous: returns 201 with the new template.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TemplateClone"
-      responses:
-        "201":
-          description: Cloned template.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Template"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/templates/{id}/images:
-    parameters:
-      - $ref: "#/components/parameters/TemplateName"
-    post:
-      operationId: storageImages.import
-      tags: [templates, storage-pools, tasks]
-      summary: Import a template's image into a storage pool (asynchronous).
-      description: |
-        Enqueues a `storage_image.import` task that asks the agent
-        owning the target pool to fetch, verify, and stage the image
-        described by the template (`image_url`,
-        `image_checksum_sha256`, `image_format`). Poll
-        `GET /v1/tasks/{id}` for completion; on success a new
-        `storage_images` row materialises with the projected
-        checksum / size / format.
-
-        **Required permission:** `storage_image:import`. admin /
-        operator hold the permission at scope `any`; developer holds
-        it at scope `own`. The handler-side composite check parallels
-        the delete handler — composite failure surfaces as `403
-        permission_denied` (`storage_images` existence is observable
-        via `image_cache:read`).
-
-        The request body is intentionally minimal — `pool_id` only.
-        The agent-side request fields (`source_url`,
-        `expected_checksum_sha256`, `format`) are composed by the
-        worker from the template row so callers cannot materialise
-        content that does not match the template's advertised image.
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/StorageImageImportRequest"
-      responses:
-        "202":
-          description: Import task enqueued.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AsyncTaskAccepted"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: |
-            Pool's owning node is not in a scannable state, or
-            `Idempotency-Key` mismatch. The error envelope's
-            `details.current_status` carries the node's current
-            status when the trigger is the former.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500": { $ref: "#/components/responses/Internal" }
-
   /v1/vms:
     get:
       operationId: vms.list
@@ -2117,14 +1691,6 @@ paths:
             type: string
             enum: [running, stopped, deleted]
           description: Filter by desired phase (the user-set state).
-        - name: template
-          in: query
-          required: false
-          schema: { type: string }
-          description: |
-            Filter by template name the VM was created from. UUID
-            format rejected with 400 `validation_failed`; use
-            `templates.list` to discover names.
         - name: name
           in: query
           required: false
@@ -2153,14 +1719,11 @@ paths:
         process if `desired_phase = running`) happens in the background.
         Poll the task to observe completion.
 
-        **Either `template` or an explicit non-empty `disks` array
-        must be provided.** When `template` is set and `disks` is
-        omitted, a single root disk is provisioned from the template
-        with the template's default size. When `template` is null,
-        every disk in `disks` must specify `source_kind: "blank"` (a
-        VM with no template cannot reference template-sourced disks).
-        Violations return 422 (`template_or_disks_required`,
-        `architecture_mismatch`, `disk_template_not_allowed`).
+        The image source is supplied directly on the body (`image_url`
+        + optional `image_sha256` content pin + `format`); the VM row is
+        self-describing and there is no template entity. A single root
+        disk is provisioned from the image, sized to `disk_gib` (or the
+        image's virtual size when `disk_gib` is 0/omitted).
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -2183,16 +1746,6 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "409": { $ref: "#/components/responses/Conflict" }
-        "422":
-          description: |
-            Semantic validation failure. The error payload's `code` is
-            `validation_failed` with a `details.reason` of
-            `template_or_disks_required`, `architecture_mismatch`, or
-            `disk_template_not_allowed`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/vms/{id}:
@@ -2236,7 +1789,7 @@ paths:
         Only metadata is patchable through this endpoint. Resource
         changes (CPU, RAM, firmware) go through `POST /v1/vms/{id}/resize`
         because they may require a hot operation or restart. Identity
-        fields (`architecture`, `template_id`, `owner_id`) are immutable.
+        fields (`architecture`, `owner_id`) are immutable.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -3759,14 +3312,14 @@ components:
         - download_failed
         - vm_not_found
         - vm_name_in_use
-        - template_not_accessible
         - pool_not_writable
         - node_not_ready
         - node_not_found
         - vm_create_failed
         - vm_delete_failed
         - qemu_spawn_failed
-        - vm_image_unavailable
+        - image_unavailable
+        - disk_too_small
         - pool_not_found
         - pool_not_on_node
         - no_eligible_nodes
@@ -5466,7 +5019,7 @@ components:
           type: boolean
           description: |
             At most one firmware per `(architecture, type)` pair may be
-            marked default; selected when a template/VM does not pin a
+            marked default; selected when a VM does not pin a
             specific firmware.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -5571,6 +5124,7 @@ components:
         - reconciliation_status
         - created_at
         - updated_at
+        - images
       description: |
         Per-node storage pool instance. The same `name` may live on
         multiple nodes (one row per node); `is_cluster_default` is a
@@ -5672,6 +5226,50 @@ components:
             is `failed`. Null for other statuses.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        images:
+          type: array
+          description: |
+            Agent-reported inventory of images cached in this pool. An
+            agent-owned cache (observed state) with no CP-side row;
+            empty `[]` until the agent reports its inventory. Embedded
+            only on the pool-get paths; list / create / update echo it
+            as `[]`.
+          items:
+            type: object
+            required:
+              - name
+              - sha256
+              - size_bytes
+              - virtual_size_bytes
+              - format
+              - imported_at
+            properties:
+              name:
+                type: string
+                description: Name of the cached image file.
+              sha256:
+                type: string
+                minLength: 64
+                maxLength: 64
+                pattern: "^[0-9a-f]{64}$"
+                description: SHA-256 of the cached image, lowercase hex.
+              size_bytes:
+                type: integer
+                format: int64
+                minimum: 0
+                description: On-disk size of the cached image in bytes.
+              virtual_size_bytes:
+                type: integer
+                format: int64
+                minimum: 0
+                description: Virtual (logical) size of the image in bytes.
+              format:
+                type: string
+                description: Image disk format (e.g. qcow2, raw).
+              imported_at:
+                type: string
+                format: date-time
+                description: Time the agent cached the image.
 
     DiskPressureCondition:
       type: [object, "null"]
@@ -5810,82 +5408,6 @@ components:
             $ref: "#/components/schemas/StoragePool"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
-
-    StorageImage:
-      type: object
-      required:
-        - id
-        - template
-        - pool
-        - checksum_sha256
-        - size_bytes
-        - format
-        - imported_at
-      description: |
-        Per-pool projection of an imported template. Junction row over
-        `(template_id, pool_id)` in the DB; the wire surfaces names
-        instead. Imports populate the row; deletes are refcount-gated
-        on `(pool_id, checksum_sha256)`.
-      properties:
-        id:
-          type: string
-          format: uuid
-        template:
-          type: string
-          description: |
-            Name of the template the image was derived from. Empty
-            string when the source template was soft-deleted.
-        pool:
-          type: string
-          description: Name of the pool hosting the cached image.
-        checksum_sha256:
-          type: string
-          minLength: 64
-          maxLength: 64
-          pattern: "^[0-9a-f]{64}$"
-          description: SHA-256 of the imported file, lowercase hex.
-        size_bytes:
-          type: integer
-          format: int64
-          minimum: 0
-        format:
-          type: string
-          enum: [qcow2]
-          description: |
-            Image format. Only qcow2 is supported; raw is a future
-            enum extension.
-        imported_at:
-          type: string
-          format: date-time
-
-    StorageImageList:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/StorageImage"
-        meta:
-          $ref: "#/components/schemas/PaginationMeta"
-
-    StorageImageImportRequest:
-      type: object
-      required: [pool]
-      additionalProperties: false
-      description: |
-        Request body for `storageImages.import`. The handler reads
-        `image_url`, `image_checksum_sha256` and `image_format` from
-        the addressed template row — clients cannot override them.
-      properties:
-        pool:
-          type: string
-          description: |
-            Target storage pool the image is materialised into.
-            Multi-instance carve-out: accepts a UUID literal (specific
-            per-node instance) or a pool name (resolves to the single
-            instance, returns 400 `pool_name_ambiguous` when multiple
-            instances share the name).
 
     Network:
       type: object
@@ -6119,438 +5641,34 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
-    TemplateVisibility:
-      type: string
-      enum: [public, private]
-      description: |
-        Controls who can list and use the template:
-          - `private` (default) — only the owner and admin/operator see it
-            in `templates.list`; only the owner, admin, and operator can
-            create VMs from it.
-          - `public` — every authenticated user sees it and can create VMs
-            from it.
-
-        Visibility is changed via the dedicated `templates.setVisibility`
-        endpoint; it requires the `template:set_visibility` permission
-        (admin/operator). The author (`owner_id`) does NOT change on
-        publish.
-
-    Template:
-      type: object
-      description: |
-        VM template = image source (URL + checksum) plus default sizing
-        and firmware selection. Image fields are flat — the schema does
-        not currently support storage-pool-backed templates.
-      required:
-        - id
-        - owner_id
-        - name
-        - description
-        - visibility
-        - architecture
-        - os_family
-        - os_variant
-        - image_url
-        - image_format
-        - firmware_type
-        - default_cpu_cores
-        - default_memory_mib
-        - default_disk_gib
-        - cloud_init_supported
-        - qemu_guest_agent_expected
-        - metadata
-        - created_at
-        - updated_at
-      properties:
-        id: { type: string, format: uuid }
-        owner_id:
-          type: string
-          format: uuid
-          description: |
-            UUID of the user that owns this template. Assigned server-side
-            on creation; immutable thereafter (publishing to `public` does
-            not change ownership). The owning user cannot be deleted while
-            owned templates exist (`ON DELETE RESTRICT`).
-        name:
-          type: string
-          maxLength: 255
-        description: { type: string }
-        visibility:
-          $ref: "#/components/schemas/TemplateVisibility"
-        architecture:
-          type: string
-          enum: [amd64, arm64]
-        os_family:
-          type: string
-          enum: [linux, windows, bsd, other]
-        os_variant: { type: string }
-        image_url:
-          type: string
-          format: uri
-        image_checksum_sha256:
-          type: [string, "null"]
-          pattern: "^[0-9a-f]{64}$"
-          description: |
-            Lowercase hex sha256 of the source image. Nullable: when
-            null, the agent computed the checksum during a previous
-            compute-mode import (and back-propagated it) or the
-            template has not yet been materialised in any pool.
-            Always non-null after the first successful materialisation
-            regardless of which mode was used.
-        image_format:
-          type: string
-          enum: [qcow2, raw]
-        image_size_bytes:
-          type: [integer, "null"]
-          format: int64
-        firmware_type:
-          type: string
-          enum: [bios, uefi]
-        firmware_id:
-          type: [string, "null"]
-          format: uuid
-          description: |
-            Pin a specific firmware. When null, the default firmware for
-            `(architecture, firmware_type)` is used at VM-create time.
-        default_cpu_cores:
-          type: integer
-          minimum: 1
-          maximum: 256
-        default_memory_mib:
-          type: integer
-          minimum: 128
-          maximum: 4194304
-        default_disk_gib:
-          type: integer
-          minimum: 1
-          maximum: 65536
-        cloud_init_supported: { type: boolean }
-        cloud_init_user_data:
-          type: [string, "null"]
-          description: |
-            Optional raw `#cloud-config` YAML baked into the template.
-            On VM create, the resolution order is `vm.user_data ?:
-            template.cloud_init_user_data ?: empty`; the resolved
-            payload feeds the NoCloud `cidata` ISO attached to the
-            guest. CP-side hostname injection (via gopkg.in/yaml.v3)
-            adds a top-level `hostname: <vm_name>` only when the
-            resolved YAML omits one.
-        qemu_guest_agent_expected: { type: boolean }
-        metadata:
-          type: object
-          additionalProperties: true
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-
-    TemplateCreate:
-      type: object
-      description: |
-        Create a template. The authenticated caller becomes `owner_id`.
-
-        Templates are always created with `visibility = private` —
-        sending `visibility` in the request body is rejected with
-        `400 validation_failed` and `details.forbidden_fields:
-        ["visibility"]`. To publish a template afterwards, an admin or
-        operator calls `templates.setVisibility`; that endpoint does
-        not transfer ownership.
-
-        Required permission: `template:create` (held by admin /
-        operator / developer).
-      required: [name, architecture, os_family, image_url]
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 255
-        description:
-          type: string
-          default: ""
-        architecture:
-          type: string
-          enum: [amd64, arm64]
-        os_family:
-          type: string
-          enum: [linux, windows, bsd, other]
-        os_variant:
-          type: string
-          default: ""
-        image_url:
-          type: string
-          format: uri
-        image_checksum_sha256:
-          type: [string, "null"]
-          pattern: "^[0-9a-f]{64}$"
-          description: |
-            Optional. Two trust modes:
-
-              - **Verify mode** (value provided): agent verifies the
-                computed sha256 against this value during streaming
-                download. Mismatch terminates the import task with
-                `checksum_mismatch`. Use when the operator has a
-                trusted upstream checksum (signed releases, SHA256SUMS
-                files, compliance requirements).
-              - **Compute mode** (null/absent/empty): agent computes
-                the checksum during streaming download and returns it
-                in the task result. The worker back-propagates the
-                computed value onto the template row so future
-                operations behave as if verify mode had been used.
-
-            Empty string is treated identically to absent. Storage
-            layout invariant preserved: the on-disk filename always
-            equals the checksum (computed in compute mode, supplied
-            in verify mode).
-        image_format:
-          type: string
-          enum: [qcow2, raw]
-          default: qcow2
-        image_size_bytes:
-          type: [integer, "null"]
-          format: int64
-        firmware_type:
-          type: string
-          enum: [bios, uefi]
-          default: uefi
-        firmware_id:
-          type: [string, "null"]
-          format: uuid
-        default_cpu_cores:
-          type: integer
-          minimum: 1
-          maximum: 256
-          default: 2
-        default_memory_mib:
-          type: integer
-          minimum: 128
-          maximum: 4194304
-          default: 2048
-        default_disk_gib:
-          type: integer
-          minimum: 1
-          maximum: 65536
-          default: 20
-        cloud_init_supported:
-          type: boolean
-          default: true
-        cloud_init_user_data:
-          type: [string, "null"]
-          description: |
-            Optional raw `#cloud-config` YAML baked into the template
-            (L3). Used as the fallback source when a VM is created
-            without an own `user_data` override. Hostname injection
-            CP-side ensures the guest takes the VM's name unless the
-            YAML already pins one.
-        qemu_guest_agent_expected:
-          type: boolean
-          default: false
-        metadata:
-          type: object
-          additionalProperties: true
-
-    TemplateUpdate:
-      type: object
-      description: |
-        Image source fields and identity fields (architecture, os_family,
-        owner_id) are immutable after creation — clone to a new template
-        instead.
-
-        `visibility` is intentionally absent here: it is changed only
-        through the dedicated `templates.setVisibility` endpoint, which
-        carries its own permission (`template:set_visibility`) and audit
-        action.
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 255
-        description: { type: string }
-        os_variant: { type: string }
-        firmware_type:
-          type: string
-          enum: [bios, uefi]
-        firmware_id:
-          type: [string, "null"]
-          format: uuid
-        default_cpu_cores:
-          type: integer
-          minimum: 1
-          maximum: 256
-        default_memory_mib:
-          type: integer
-          minimum: 128
-          maximum: 4194304
-        default_disk_gib:
-          type: integer
-          minimum: 1
-          maximum: 65536
-        cloud_init_supported: { type: boolean }
-        cloud_init_user_data:
-          type: [string, "null"]
-          description: |
-            Replace the template's baked `#cloud-config` YAML. Send
-            `null` to clear; omit to leave unchanged (PATCH semantics).
-        qemu_guest_agent_expected: { type: boolean }
-        metadata:
-          type: object
-          additionalProperties: true
-
-    TemplateClone:
-      type: object
-      required: [name]
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 255
-        description:
-          type: [string, "null"]
-
-    SetTemplateVisibilityRequest:
-      type: object
-      required: [visibility]
-      properties:
-        visibility:
-          $ref: "#/components/schemas/TemplateVisibility"
-
-    TemplateList:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/Template"
-        meta:
-          $ref: "#/components/schemas/PaginationMeta"
-
-    Condition:
-      type: object
-      description: |
-        Kubernetes-style condition record. The `vm_runtime.conditions`
-        SQL column carries an array of these.
-      required: [type, status, last_transition_time]
-      properties:
-        type:
-          type: string
-          description: |
-            Condition kind, e.g. `Ready`, `QemuGuestAgentAvailable`,
-            `Migrating`. Type names are stable strings; clients should
-            not treat unknown types as errors.
-        status:
-          type: string
-          enum: ["True", "False", "Unknown"]
-        reason:
-          type: [string, "null"]
-          description: Short, machine-readable reason for the current status.
-        message:
-          type: [string, "null"]
-          description: Human-readable explanation.
-        last_transition_time:
-          type: string
-          format: date-time
-
-    VMStatus:
-      type: object
-      description: |
-        Runtime state of a VM, observed and reported by the agent.
-        Populated from the `vm_runtime` SQL row. Lags `desired_phase`
-        until the reconciler converges. Internal fields (`qemu_pid`,
-        `qmp_socket_path`, `vnc_port`, `spice_port`,
-        `serial_console_path`) are not surfaced in the API — use
-        `POST /v1/vms/{id}/console` for console access.
-      required: [phase, observed_generation]
-      properties:
-        phase:
-          type: string
-          enum: [pending, running, paused, stopped, error, gone, orphaned]
-          description: |
-            Observed runtime phase. `orphaned` is set by the Control
-            Plane when the hosting node is force-deleted
-            (`DELETE /v1/nodes/{id}?force=true`) and graceful
-            evacuation was not possible — `current_node_id` is
-            cleared at the same time. Orphaned VMs require manual
-            remediation (migration to another node, or deletion);
-            the reconciler does not auto-reschedule them. Distinct
-            from `gone`, which is the terminal phase reached when
-            the VM itself is deleted. Agents do not emit `orphaned`
-            via heartbeat; it is a CP-derived value.
-        conditions:
-          type: array
-          items:
-            $ref: "#/components/schemas/Condition"
-        current_node_id:
-          type: [string, "null"]
-          format: uuid
-          description: Node currently hosting the VM (`null` until first start).
-        observed_generation:
-          type: integer
-          format: int64
-          description: |
-            The `vms.generation` value the agent has converged to. When
-            equal to `vms.generation`, observed and desired are in sync.
-        last_observed_at:
-          type: [string, "null"]
-          format: date-time
-        last_started_at:
-          type: [string, "null"]
-          format: date-time
-        last_stopped_at:
-          type: [string, "null"]
-          format: date-time
-        last_error_at:
-          type: [string, "null"]
-          format: date-time
-        last_error_message:
-          type: [string, "null"]
-        cpu_usage_percent:
-          type: [number, "null"]
-          description: |
-            Aggregate vCPU usage as a percentage. Reporting cadence is
-            agent-defined; absent when the agent has not yet reported.
-        memory_used_mib:
-          type: [integer, "null"]
-          format: int64
-        guest_os:
-          type: [string, "null"]
-          description: Reported by qemu-guest-agent when available.
-        guest_hostname:
-          type: [string, "null"]
-        guest_ip_addresses:
-          type: [array, "null"]
-          items: { type: string }
-          description: |
-            IP addresses observed inside the guest (qemu-guest-agent).
-            Distinct from per-NIC `ipv4_address` / `ipv6_address`,
-            which are configured at the control plane.
-
     VM:
       type: object
       description: |
         A virtual machine. Top-level fields are the user-set "spec"
-        (what the caller wants). The nested `status` object reflects
-        agent-observed runtime state (what the system reports).
-        Embedded `disks` and `nics` arrays are present only when the
-        request specifies `?include=disks,nics` on
-        `GET /v1/vms/{id}`; list endpoints omit them.
+        (what the caller wants); `status` is the agent-observed runtime
+        phase the system reports. The image source is self-describing
+        (`image_url` + `format`); there is no template entity.
       required:
         - id
-        - owner_id
         - name
-        - description
-        - desired_phase
+        - owner_id
+        - image_url
+        - format
+        - pool
+        - node
         - architecture
-        - cpu_cores
-        - memory_mib
-        - cpu_model
-        - machine_type
-        - ssh_authorized_keys
-        - scheduler_hints
-        - labels
-        - generation
+        - vcpus
+        - memory_mb
         - status
+        - desired_phase
+        - labels
         - created_at
         - updated_at
       properties:
         id: { type: string, format: uuid }
+        name:
+          type: string
+          maxLength: 255
         owner_id:
           type: string
           format: uuid
@@ -6558,337 +5676,171 @@ components:
             UUID of the owning user. Assigned server-side at creation;
             immutable. The user cannot be deleted while owned VMs exist
             (`ON DELETE RESTRICT`).
-        name:
+        image_url:
           type: string
-          maxLength: 255
-        description: { type: string }
-        desired_phase:
-          type: string
-          enum: [running, stopped, deleted]
+          format: uri
           description: |
-            User-set desired phase. The reconciler drives `status.phase`
-            toward this value. Pause/resume operations do **not** change
-            `desired_phase` — they affect only the runtime phase.
-        template_id:
+            Source image URL the root disk was materialised from. The VM
+            row is self-describing — there is no template entity.
+        image_sha256:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Resolved/pinned SHA-256 of the source image, lowercase hex.
+            Omitted when the VM row carries no content pin.
+        format:
+          type: string
+          enum: [qcow2, raw]
+          description: Image disk format.
+        pool:
+          type: string
+          description: |
+            Name of the storage pool hosting the VM's root disk (drawn
+            from the first vm_disks row).
+        node:
           type: [string, "null"]
-          format: uuid
           description: |
-            Template the VM was created from, or `null` for blank VMs
-            and for VMs whose source template was deleted (FK is
-            `ON DELETE SET NULL`).
+            Name of the node currently hosting the VM (agent-reported).
+            `null` while the VM is still being created.
         architecture:
           type: string
           enum: [amd64, arm64]
           description: Immutable after creation.
-        cpu_cores:
+        vcpus:
           type: integer
           minimum: 1
-          maximum: 256
-        memory_mib:
+          maximum: 128
+        memory_mb:
           type: integer
           format: int64
           minimum: 128
-          maximum: 4194304
-          description: |
-            RAM in mebibytes (1 MiB = 1024² bytes), matching the SQL
-            column `vms.memory_mib`.
-        cpu_model:
+          maximum: 524288
+          description: RAM in mebibytes.
+        status:
           type: string
           description: |
-            QEMU `-cpu` model. Default `host` (passes the host CPU
-            through). Other values match the QEMU CPU model catalog.
-        machine_type:
+            Projected lifecycle status (not stored): derived from
+            `vms.deleted_at` and the agent-reported `vm_runtime.phase`.
+        desired_phase:
           type: string
-          description: QEMU `-machine` type, e.g. `q35`, `pc-q35-8.2`, `virt`.
-        firmware_id:
-          type: [string, "null"]
-          format: uuid
+          enum: [running, stopped, deleted]
           description: |
-            Pinned firmware. When `null`, the default firmware for
-            `(architecture, firmware_type-of-template-or-default)` is
-            used at start time.
-        pinned_node_id:
-          type: [string, "null"]
-          format: uuid
-          description: |
-            Hint to the scheduler — when set, the VM must run on this
-            specific node. Distinct from `status.current_node_id`,
-            which reports where the VM is actually running.
-        scheduler_hints:
-          type: object
-          additionalProperties: true
-          description: Free-form hints for the scheduler (jsonb).
-        user_data:
-          type: [string, "null"]
-          description: Cloud-init user-data (raw text or YAML).
-        meta_data:
-          type: [string, "null"]
-          description: Cloud-init meta-data.
-        network_config:
-          type: [string, "null"]
-          description: Cloud-init network-config v2.
-        ssh_authorized_keys:
-          type: array
-          items: { type: string }
+            User-set desired phase. The reconciler drives `status` toward
+            this value.
         labels:
           type: object
           additionalProperties: { type: string }
           description: |
             String-to-string label map (jsonb). Used by the scheduler
             and for filtering in list endpoints.
-        generation:
-          type: integer
-          format: int64
-          description: |
-            Bumped on every spec-changing UPDATE. Compare with
-            `status.observed_generation` to determine if the runtime
-            has caught up.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-        status:
-          $ref: "#/components/schemas/VMStatus"
-        disks:
-          type: array
-          items:
-            $ref: "#/components/schemas/VmDisk"
-          description: |
-            Present only on `GET /v1/vms/{id}?include=disks`. Otherwise
-            omitted from the response.
-        nics:
-          type: array
-          items:
-            $ref: "#/components/schemas/VmNic"
-          description: |
-            Present only on `GET /v1/vms/{id}?include=nics`. Otherwise
-            omitted from the response.
-
-    VMCreateDiskSpec:
-      type: object
-      description: |
-        Disk specification used at VM-create time. Slimmer than
-        `VmDiskCreate`: no `vm_id` (it is the new VM), no
-        `device_order` (assigned by the order in the array). Position
-        0 is the boot disk by convention.
-      required: [size_gib, source_kind]
-      properties:
-        size_gib:
-          type: integer
-          minimum: 1
-          maximum: 65536
-        bus:
-          type: string
-          enum: [virtio, sata, scsi, ide]
-          default: virtio
-        source_kind:
-          type: string
-          enum: [template, blank]
-          description: |
-            `template` — the disk is provisioned from `source_template_id`
-            (the VM-level `template_id` may be a different template, or
-            null). `blank` — fresh empty disk image.
-        source_template_id:
-          type: [string, "null"]
-          format: uuid
-          description: |
-            Required when `source_kind = "template"`; must be null
-            otherwise.
-        storage_pool_id:
-          type: [string, "null"]
-          format: uuid
-          description: |
-            When omitted, the scheduler picks a pool on the chosen
-            node. When provided, the pool must reside on the node the
-            VM lands on.
-        format:
-          type: string
-          enum: [qcow2, raw]
-          default: qcow2
-        read_only:
-          type: boolean
-          default: false
-        cache_mode:
-          type: string
-          enum: [none, writeback, writethrough, directsync, unsafe]
-          default: writeback
-        discard:
-          type: string
-          enum: [ignore, unmap]
-          default: unmap
-        boot_order:
-          type: [integer, "null"]
-          minimum: 0
-
-    VMCreateNicSpec:
-      type: object
-      description: |
-        NIC specification used at VM-create time.
-      required: [network_id]
-      properties:
-        network_id: { type: string, format: uuid }
-        model:
-          type: string
-          enum: [virtio, e1000, e1000e, rtl8139]
-          default: virtio
-        mac_address:
-          type: [string, "null"]
-          pattern: "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
-          description: |
-            Optional. Auto-generated when omitted. Globally unique
-            among non-deleted NICs (collision returns 409).
-        ipv4_address:
-          type: [string, "null"]
-          format: ipv4
-        ipv6_address:
-          type: [string, "null"]
-          format: ipv6
 
     VMCreate:
       type: object
       description: |
-        VM creation body. **Either `template` must be set, or `disks`
-        must be a non-empty array.** When `template` is set and `disks`
-        is omitted, a single root disk is provisioned from the template.
-        When `template` is null, every disk in `disks` must use
-        `source_kind: "blank"`.
+        VM creation body. The image source is supplied directly
+        (`image_url` + optional `image_sha256` content pin + `format`):
+        the VM row is self-describing, there is no template entity.
 
-        Placement model: when no per-disk `storage_pool_id` is
-        supplied, the scheduler picks the placement (node, pool
-        instance) based on the pool name. A pool name is optional —
-        when omitted, the cluster default-pool (cluster_settings.
-        default_pool_name, set via `PUT /v1/cluster/default-pool`)
-        applies; a missing default returns 400 `default_pool_not_set`.
-        The optional `node` field acts as the explicit placement hint;
-        mismatch (pool not on hinted node) surfaces as 409
-        `pool_not_on_node`.
+        Placement model: `pool` is optional — when omitted the cluster
+        default-pool (cluster_settings.default_pool_name, set via
+        `PUT /v1/cluster/default-pool`) applies; a missing default
+        returns 400 `default_pool_not_set`. The optional `node` field is
+        the explicit placement hint; mismatch (pool not on hinted node)
+        surfaces as 409 `pool_not_on_node`. `pool` and `node` accept a
+        name (UUID literal in `node` surfaces as 400 `validation_failed`;
+        `pool` additionally accepts a per-instance UUID literal).
 
-        Name-only narrowing: `template`, `pool`, and `node` accept
-        names only — UUID literals in any of those fields surface as
-        400 `validation_failed`. The pool field retains a multi-
-        instance carve-out for the storage_image import path
-        elsewhere; vm create demands names for all three identifiers.
-
-        The minimal MVP wire shape currently accepted by the handler
-        is `{name, template, pool, node, vcpus, memory_mb}` — the
-        wider schema below describes the eventual API contract and
-        is acknowledged as drifted from the live handler. Schema
-        sync is a separate iteration.
-      required: [name, architecture, cpu_cores, memory_mib, machine_type]
+        Firmware is resolved from `firmware` ("bios" | "uefi", default
+        uefi) for the (arch, type) default, or from an explicit
+        `firmware_id` uuid escape hatch (which wins over `firmware`).
+      required: [name, image_url, arch, vcpus, memory_mb]
       properties:
         name:
           type: string
           minLength: 1
           maxLength: 255
-        description:
+        image_url:
           type: string
-          default: ""
-        architecture:
+          format: uri
+          description: Source image URL the root disk is materialised from.
+        image_sha256:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Optional content pin: the expected SHA-256 of the source
+            image, lowercase hex. When set, the agent verifies the
+            downloaded image against it.
+        arch:
           type: string
           enum: [amd64, arm64]
-        cpu_cores:
+        firmware:
+          type: string
+          enum: [bios, uefi]
+          description: |
+            Selects the firmware type for the default-firmware lookup
+            (default uefi). Ignored when `firmware_id` is set.
+        firmware_id:
+          type: string
+          format: uuid
+          description: |
+            Explicit firmware-row escape hatch. When set it wins over
+            `firmware`.
+        format:
+          type: string
+          enum: [qcow2, raw]
+          default: qcow2
+          description: Image disk format.
+        disk_gib:
+          type: integer
+          minimum: 0
+          description: |
+            Root disk size in GiB. When 0 (or omitted) the agent sizes
+            the root disk to the image's virtual size.
+        pool:
+          type: string
+          description: |
+            Target storage pool (name or per-instance UUID literal).
+            When omitted the cluster default-pool applies.
+        node:
+          type: string
+          description: |
+            Optional placement hint — a node name. When provided the
+            scheduler restricts placement to exactly that node.
+        network:
+          type: string
+          description: |
+            Optional single network to attach one NIC to, given as a
+            network name or uuid (type bridge or overlay). When omitted
+            the VM is created with no NIC (legacy SLIRP fallback).
+        vcpus:
           type: integer
           minimum: 1
-          maximum: 256
-        memory_mib:
+          maximum: 128
+        memory_mb:
           type: integer
           format: int64
           minimum: 128
-          maximum: 4194304
-        cpu_model:
-          type: string
-          default: host
-        machine_type:
-          type: string
-          minLength: 1
-          description: |
-            QEMU machine type. Required because the right default
-            depends on `architecture` (e.g. `q35` for amd64, `virt`
-            for arm64) and the operator's policy.
-        template_id:
-          type: [string, "null"]
-          format: uuid
-        firmware_id:
-          type: [string, "null"]
-          format: uuid
-        firmware_type:
-          type: [string, "null"]
-          enum: [bios, uefi, null]
-          description: |
-            Hint used to pick the default firmware when `firmware_id`
-            is null. Defaults to the template's `firmware_type` when
-            `template_id` is set, otherwise `uefi`.
-        pinned_node_id:
-          type: [string, "null"]
-          format: uuid
-        scheduler_hints:
-          type: object
-          additionalProperties: true
-          default: {}
+          maximum: 524288
+          description: RAM in mebibytes.
         user_data:
           type: [string, "null"]
           description: |
-            VM-level cloud-init `#cloud-config` YAML override. When set,
-            fully replaces the template's `cloud_init_user_data` (Area 3
-            lock — full-replace, never merge). Mutually exclusive with
-            `cloud_init_disabled`; sending both → 400 `validation_failed`.
-            Empty string and null are treated identically by the resolver
-            (both fall through to the template's pre-bake unless
-            `cloud_init_disabled=true`).
+            VM-level cloud-init `#cloud-config` YAML override. Mutually
+            exclusive with `cloud_init_disabled`; sending both → 400
+            `validation_failed`.
         cloud_init_disabled:
           type: boolean
           default: false
           description: |
-            Explicit cloud-init disable. When `true`, the CP-side resolver
-            returns empty user_data to the agent even if the template has
-            a baked `cloud_init_user_data` — the agent skips cidata.iso
-            generation entirely. Mutually exclusive with `user_data`; sending
-            both → 400 `validation_failed`. Three-state semantic:
-            `user_data` set → VM-level override; `user_data` absent +
-            `cloud_init_disabled=false` (default) → template fallback;
-            `cloud_init_disabled=true` → no cloud-init at all.
-        network:
-          type: string
-          description: |
-            Live MVP field: a single bridge network to attach one NIC
-            to, given as a network **name or uuid**. When set the VM is
-            created with one NIC on that network's bridge (the CP mints
-            a `52:54:00` QEMU MAC; the guest configures its own IP).
-            Unknown network → 404 `not_found`; a non-bridge network type
-            → 400 `validation_failed` (overlay attach is a later
-            iteration). When omitted the VM has no NIC and the agent
-            falls back to legacy SLIRP networking. This is the live
-            handler shape; the richer `nics` array below is the eventual
-            contract and is acknowledged as drifted.
-        meta_data:
-          type: [string, "null"]
-        network_config:
-          type: [string, "null"]
-        ssh_authorized_keys:
-          type: array
-          items: { type: string }
-          default: []
-        labels:
-          type: object
-          additionalProperties: { type: string }
-          default: {}
-        disks:
-          type: array
-          items:
-            $ref: "#/components/schemas/VMCreateDiskSpec"
-          default: []
-        nics:
-          type: array
-          items:
-            $ref: "#/components/schemas/VMCreateNicSpec"
-          default: []
-        start_immediately:
-          type: boolean
-          default: true
-          description: |
-            When true (default), `desired_phase` is set to `running`
-            and the agent starts the VM as soon as creation completes.
-            When false, the VM is created with `desired_phase: stopped`
-            and the caller starts it explicitly with
-            `POST /v1/vms/{id}/start`.
+            Explicit cloud-init disable. When `true`, the agent skips
+            cidata.iso generation entirely. Mutually exclusive with
+            `user_data`.
 
     VMUpdate:
       type: object
@@ -7078,10 +6030,7 @@ components:
           maximum: 65536
         source_kind:
           type: string
-          enum: [template, blank]
-        source_template_id:
-          type: [string, "null"]
-          format: uuid
+          enum: [image, blank]
         format:
           type: string
           enum: [qcow2, raw]
@@ -7144,10 +6093,7 @@ components:
           maximum: 65536
         source_kind:
           type: string
-          enum: [template, blank]
-        source_template_id:
-          type: [string, "null"]
-          format: uuid
+          enum: [image, blank]
         format:
           type: string
           enum: [qcow2, raw]
@@ -7170,8 +6116,8 @@ components:
     VmDiskUpdate:
       type: object
       description: |
-        Patches a disk. `bus`, `format`, `source_kind`,
-        `source_template_id` are immutable. `size_gib` may only
+        Patches a disk. `bus`, `format`, and `source_kind` are
+        immutable. `size_gib` may only
         increase (online or offline grow); shrinking returns 409
         (`details.reason = "shrink_not_supported"`).
       properties:
@@ -7553,7 +6499,7 @@ components:
           type: string
           description: |
             Task type identifier in `<resource>.<action>` form, e.g.
-            `storage_pool.scan`, `template.import`, `vm.migrate`.
+            `storage_pool.scan`, `vm.create`, `vm.migrate`.
         status:
           type: string
           enum: [pending, running, success, failed, cancelled]
@@ -7567,8 +6513,8 @@ components:
         resource_type:
           type: string
           description: |
-            The resource the task acts on, e.g. `storage_pool`, `template`,
-            `vm`.
+            The resource the task acts on, e.g. `storage_pool`, `vm`,
+            `migration`.
         resource_id:
           type: [string, "null"]
           format: uuid
@@ -7630,7 +6576,7 @@ components:
         409 `idempotency_key_mismatch`.
 
     # Name-only path parameters. Each resource family
-    # (templates / nodes / vms) accepts a case-insensitive name in
+    # (nodes / vms) accepts a case-insensitive name in
     # the `{id}` path slot and rejects UUID format with 400
     # `validation_failed`. Storage pools keep the polymorphic
     # legacy `{id}` shape per the multi-instance carve-out
@@ -7643,15 +6589,6 @@ components:
       description: |
         VM name. UUID format rejected with 400 `validation_failed`;
         use `vms.list` to discover names.
-
-    TemplateName:
-      name: id
-      in: path
-      required: true
-      schema: { type: string }
-      description: |
-        Template name. UUID format rejected with 400 `validation_failed`;
-        use `templates.list` to discover names.
 
     NodeName:
       name: id

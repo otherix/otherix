@@ -7,17 +7,20 @@
 // **Spec drift note:** api/openapi/control-plane.yaml declares a rich
 // design (`VMCreate` / `VMSpec` shapes with multi-disk, network
 // policy, cloud-init metadata, etc.). The current implementation
-// ships the simplified `{name, template_id, pool_id, vcpus,
-// memory_mb}` shape - same drift policy as the agent.yaml vs the
-// initial agent's hand-written wire shape. Reconciling the spec to
-// the implementation is future work; the current path is documented
-// in code (this comment + create.go's request shape) so operators
-// reading either source land at the truth.
+// ships the simplified `{name, image_url, image_sha256?, arch,
+// firmware?, format?, disk_gib?, pool, vcpus, memory_mb}` shape - same
+// drift policy as the agent.yaml vs the initial agent's hand-written
+// wire shape. Reconciling the spec to the implementation is future
+// work; the current path is documented in code (this comment +
+// create.go's request shape) so operators reading either source land
+// at the truth.
 //
 // Wire-shape translation: the API request carries the simplified
-// `{name, template_id, pool_id, vcpus, memory_mb}` shape; the schema
-// stores `cpu_cores`, `memory_mib`, no top-level pool / node columns.
-// The handler boundary owns the translation:
+// image-source shape above; the schema stores `cpu_cores`,
+// `memory_mib`, the image fields (`image_url`, `image_sha256`,
+// `image_format`, `architecture`, `firmware_id`) on the vms row, and
+// no top-level pool / node columns. The handler boundary owns the
+// translation:
 //
 //   - vcpus    ↔ vms.cpu_cores
 //   - memory_mb ↔ vms.memory_mib
@@ -32,11 +35,10 @@
 // RBAC composition:
 //
 //   - vm:create gate (RequirePermission middleware) admits admin /
-//     operator / developer; viewer is 403 at the route. Handler-side
-//     composite check is template-usability, mirroring
-//     templates.image_import.checkImportAccess: ScopeAny → ok;
-//     ScopeOwn + caller==template.owner → ok; public template +
-//     template:read:public → ok; else 404 (no existence leak).
+//     operator / developer; viewer is 403 at the route. There is no
+//     handler-side composite check: any image URL the caller supplies
+//     is materialized by the agent on create (the former
+//     template-usability check went away with the template entity).
 //   - vm:read gate is held at scope=any by every authenticated role;
 //     no ownership check. ListVMsByOwner stays inactive.
 //   - vm:delete gate admits admin (any) / operator (any) / developer
@@ -46,6 +48,7 @@ package vms
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -60,8 +63,8 @@ import (
 
 // Store is the storage surface the vms handlers depend on: the VM
 // domain methods, the identifier-resolution contract (resolver.Querier)
-// used to resolve vm / template / pool / node parameters, the node and
-// template reads used by the view projectors, the placement-locked
+// used to resolve vm / pool / node parameters, the node and firmware
+// reads used by the view projectors and firmware resolution, the placement-locked
 // CreateScheduledVM seam, and the EnqueueTask producer
 // seam used by delete and the async lifecycle ops. *etcdstore.Store
 // satisfies it; depending on the interface rather than the concrete
@@ -77,7 +80,8 @@ type Store interface {
 	ListVMs(ctx context.Context, arg store.ListVMsParams) ([]store.VM, error)
 	UpdateVMRuntimePhase(ctx context.Context, arg store.UpdateVMRuntimePhaseParams) error
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
+	FirmwareByID(ctx context.Context, id uuid.UUID) (store.Firmware, error)
+	DefaultFirmwareForArchType(ctx context.Context, arch store.CPUArch, ftype store.FirmwareType) (store.Firmware, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
 	CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
@@ -138,20 +142,22 @@ func New(
 // vmView mirrors components/schemas/VM in api/openapi/control-plane.yaml.
 // Referenced-resource fields are rendered as names instead of UUIDs:
 //
-//   - template carries templates.name (nil when the source template has
-//     been deleted — vms.template_id is ON DELETE SET NULL),
 //   - pool carries storage_pools.name (drawn from vm_disks[0].storage_pool_id),
 //   - node carries the agent-reported current location (vm_runtime.current_node_id)
 //     rendered as nodes.name; nil while the VM is still in 'creating'.
 //
-// status is projected (not stored) - see projection.go. owner_id keeps
-// the UUID rendering: users are outside the resolver scope, so
-// narrowing to a username would lose round-trippability.
+// The image source is surfaced directly (image_url + format); the VM row is
+// self-describing, there is no template entity. status is projected (not
+// stored) - see projection.go. owner_id keeps the UUID rendering: users are
+// outside the resolver scope, so narrowing to a username would lose
+// round-trippability.
 type vmView struct {
 	ID           string          `json:"id"`
 	Name         string          `json:"name"`
 	OwnerID      string          `json:"owner_id"`
-	Template     *string         `json:"template"`
+	ImageURL     string          `json:"image_url"`
+	ImageSHA256  string          `json:"image_sha256,omitempty"`
+	Format       string          `json:"format"`
 	Pool         string          `json:"pool"`
 	Node         *string         `json:"node"`
 	Architecture string          `json:"architecture"`
@@ -166,12 +172,11 @@ type vmView struct {
 
 // vmViewNames bundles the resolved name lookups that response
 // rendering requires. Each field may be empty / nil when the underlying
-// row is missing or the FK was nulled out (template deletion). The
-// caller pre-resolves; toView only renders.
+// row is missing or the FK was nulled out. The caller pre-resolves;
+// toView only renders.
 type vmViewNames struct {
-	template *string
-	pool     string
-	node     *string
+	pool string
+	node *string
 }
 
 // toView projects a (vm row, runtime row) pair plus the pre-resolved
@@ -184,7 +189,9 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		ID:           vm.ID.String(),
 		Name:         vm.Name,
 		OwnerID:      vm.OwnerID.String(),
-		Template:     names.template,
+		ImageURL:     vm.ImageURL,
+		ImageSHA256:  hex.EncodeToString(vm.ImageSHA256),
+		Format:       string(vm.ImageFormat),
 		Pool:         names.pool,
 		Node:         names.node,
 		Architecture: string(vm.Architecture),

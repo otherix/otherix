@@ -50,14 +50,19 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 // printVMText renders the operator-friendly multi-line key=value form
 // (one field per line). Nullable fields print "<unset>" so the
-// formatter is unambiguous under empty templates / unscheduled VMs.
-// Referenced resources are surfaced by name — the wire field tags are
-// `template` / `pool` / `node`, and so are the labels below.
+// formatter is unambiguous under unscheduled VMs. Referenced resources
+// are surfaced by name — the wire field tags are `pool` / `node`, and
+// so are the labels below. The image source (`image_url` / `format`)
+// is rendered inline since the template entity is gone.
 func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "id: %s\n", vm.ID)
 	printf(cmd, "name: %s\n", vm.Name)
 	printf(cmd, "owner_id: %s\n", vm.OwnerID)
-	printf(cmd, "template: %s\n", strOrUnset(vm.Template))
+	printf(cmd, "image_url: %s\n", vm.ImageURL)
+	if vm.ImageSHA256 != "" {
+		printf(cmd, "image_sha256: %s\n", vm.ImageSHA256)
+	}
+	printf(cmd, "format: %s\n", vm.Format)
 	printf(cmd, "pool: %s\n", vm.Pool)
 	printf(cmd, "node: %s\n", strOrUnset(vm.Node))
 	printf(cmd, "architecture: %s\n", vm.Architecture)

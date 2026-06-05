@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-func TestCloneTemplate_RoundTrip(t *testing.T) {
+func TestCloneImage_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	src := filepath.Join(dir, "template.qcow2")
+	src := filepath.Join(dir, "image.qcow2")
 	dst := filepath.Join(dir, "vms", "abc", "disk.qcow2")
 
 	want := []byte("pretend this is a qcow2 header and body")
@@ -20,8 +20,8 @@ func TestCloneTemplate_RoundTrip(t *testing.T) {
 		t.Fatalf("seed source: %v", err)
 	}
 
-	if err := CloneTemplate(src, dst); err != nil {
-		t.Fatalf("CloneTemplate: %v", err)
+	if err := CloneImage(src, dst); err != nil {
+		t.Fatalf("CloneImage: %v", err)
 	}
 
 	got, err := os.ReadFile(dst)
@@ -38,21 +38,21 @@ func TestCloneTemplate_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestCloneTemplate_MissingSource(t *testing.T) {
+func TestCloneImage_MissingSource(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "out", "disk.qcow2")
-	err := CloneTemplate(filepath.Join(dir, "missing.qcow2"), dst)
+	err := CloneImage(filepath.Join(dir, "missing.qcow2"), dst)
 	if err == nil {
-		t.Fatalf("CloneTemplate(missing) = nil, want error")
+		t.Fatalf("CloneImage(missing) = nil, want error")
 	}
 }
 
-func TestCloneTemplate_OverwriteExistingFinalIsAtomic(t *testing.T) {
-	// If dst already exists, CloneTemplate writes to dst+".tmp" then renames,
+func TestCloneImage_OverwriteExistingFinalIsAtomic(t *testing.T) {
+	// If dst already exists, CloneImage writes to dst+".tmp" then renames,
 	// so the final file is replaced atomically. Verify that a pre-existing
 	// dst is replaced (not corrupted by interleaved writes).
 	dir := t.TempDir()
-	src := filepath.Join(dir, "template.qcow2")
+	src := filepath.Join(dir, "image.qcow2")
 	dst := filepath.Join(dir, "disk.qcow2")
 	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
 		t.Fatalf("seed source: %v", err)
@@ -60,8 +60,8 @@ func TestCloneTemplate_OverwriteExistingFinalIsAtomic(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("seed dst: %v", err)
 	}
-	if err := CloneTemplate(src, dst); err != nil {
-		t.Fatalf("CloneTemplate: %v", err)
+	if err := CloneImage(src, dst); err != nil {
+		t.Fatalf("CloneImage: %v", err)
 	}
 	got, err := os.ReadFile(dst)
 	if err != nil {

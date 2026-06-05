@@ -19,41 +19,27 @@ const defaultPoolScanDelay = 100 * time.Millisecond
 
 // agentTask is the in-memory record of an agent-side executional
 // task projected through GET /v1/tasks/{id}. Covers
-// `storage_pool.scan` and `storage_image.import`.
+// `storage_pool.scan` and the VM lifecycle task types.
 // projectAgentTask switches on `taskType` to select the appropriate
-// terminal-result projection, so future task types (vm.start,
-// template.import, etc.) can extend the struct without reshaping
-// the helper.
+// terminal-result projection, so future task types can extend the
+// struct without reshaping the helper.
 //
 // Lifecycle is one-shot registration: the initiator handler
-// (StoragePoolsScan / StorageImagesImport) inserts the row and
-// never mutates it. tasks.get callers compute the OpenAPI Task
-// projection from (createdAt + delay + result) at read time — no
-// per-task goroutine or state-machine timer is involved.
+// (StoragePoolsScan / vmCreate / ...) inserts the row and never
+// mutates it. tasks.get callers compute the OpenAPI Task projection
+// from (createdAt + delay + result) at read time — no per-task
+// goroutine or state-machine timer is involved.
 type agentTask struct {
 	id           uuid.UUID
 	taskType     string
 	resourceType string
 	resourceID   uuid.UUID
-	// poolName captures the agent-side pool key when the task targets
-	// a pool resource (storage_pool.scan / storage_image.import). The
-	// agent's pool registry is name-keyed; the materialise-on-tasks.get
-	// side effect uses this to stage the image bucket under the right
-	// name. Empty for VM tasks.
-	poolName  string
-	createdAt time.Time
-	delay     time.Duration
+	createdAt    time.Time
+	delay        time.Duration
 
 	// Scan-flavoured outcome. Set when taskType ==
 	// "storage_pool.scan", zero value otherwise.
 	result PoolScanResult
-
-	// Import-flavoured outcome. Set when taskType ==
-	// "storage_image.import", nil otherwise. importChecksum mirrors
-	// the request's expected_checksum_sha256 so the terminal-success
-	// projection can surface it under task.result.
-	importResult   *ImageImportResult
-	importChecksum string
 
 	// MVP Iteration 3 Phase A: vm.create / vm.delete outcomes. Set
 	// when taskType == "vm.create" / "vm.delete", nil otherwise.
@@ -68,6 +54,15 @@ type agentTask struct {
 	vmDeleteResult *VMDeleteResult
 	vmDeleteName   string
 
+	// vm.create terminal-result correlation fields the CP worker's
+	// createResultFromTerminal decode expects: the resolved image
+	// content digest (echoed from the request's expected_sha256, or a
+	// deterministic synthetic hash in compute mode) plus deterministic
+	// virtual / disk sizes. Set only for taskType == "vm.create".
+	vmImageSHA256      string
+	vmVirtualSizeBytes int64
+	vmDiskSizeBytes    int64
+
 	// L2 async lifecycle (vm.start / vm.stop / vm.poweroff /
 	// vm.reboot). vmLifecycleResult holds the queued synthetic
 	// outcome; vmLifecycleName carries the inventory key for the
@@ -76,72 +71,6 @@ type agentTask struct {
 	vmLifecycleResult *VMLifecycleResult
 	vmLifecycleName   string
 	vmLifecycleOp     string
-}
-
-// defaultImageImportSize is the SizeBytes the mock projects when a
-// queued ImageImportResult leaves SizeBytes zero — a 1 MiB qcow2
-// stub, big enough for a non-zero assertion and small enough to
-// stay clearly synthetic.
-const defaultImageImportSize int64 = 1 << 20
-
-// AddImageImportResult queues a synthetic outcome for the next
-// StorageImagesImport call against (poolID, checksumSHA256). Calls
-// are FIFO per (pool, checksum); an empty queue and absent staged
-// image yield a default success ({SizeBytes: 1 MiB, Format:
-// "qcow2", Delay: defaultPoolScanDelay}).
-//
-// Status defaults to "success" when empty; SizeBytes / Format /
-// Delay default as documented above; Status values other than
-// "success" / "failed" are stored verbatim.
-//
-// Pre-existence rule: when the import handler observes that the
-// requested checksum is already staged in the pool (via AddImage or
-// a prior successful import), the queue is NOT consumed —
-// idempotent re-imports return terminal-success without touching
-// the injected outcome.
-func (m *Mock) AddImageImportResult(poolName, checksumSHA256 string, r ImageImportResult) {
-	m.state.mu.Lock()
-	defer m.state.mu.Unlock()
-	if m.state.imageImportResults == nil {
-		m.state.imageImportResults = map[imageImportKey][]ImageImportResult{}
-	}
-	key := imageImportKey{PoolName: poolName, ChecksumSHA256: checksumSHA256}
-	m.state.imageImportResults[key] = append(m.state.imageImportResults[key], r)
-}
-
-// takeImageImportResultLocked pops the next queued ImageImportResult
-// for (poolName, checksumSHA256), normalising defaults. Empty queue
-// yields a default success result. Caller holds mu.
-func (s *state) takeImageImportResultLocked(poolName, checksumSHA256 string) ImageImportResult {
-	key := imageImportKey{PoolName: poolName, ChecksumSHA256: checksumSHA256}
-	queue := s.imageImportResults[key]
-	if len(queue) == 0 {
-		return ImageImportResult{
-			Status:    "success",
-			SizeBytes: defaultImageImportSize,
-			Format:    "qcow2",
-			Delay:     defaultPoolScanDelay,
-		}
-	}
-	head := queue[0]
-	if len(queue) == 1 {
-		delete(s.imageImportResults, key)
-	} else {
-		s.imageImportResults[key] = queue[1:]
-	}
-	if head.Status == "" {
-		head.Status = "success"
-	}
-	if head.SizeBytes <= 0 {
-		head.SizeBytes = defaultImageImportSize
-	}
-	if head.Format == "" {
-		head.Format = "qcow2"
-	}
-	if head.Delay <= 0 {
-		head.Delay = defaultPoolScanDelay
-	}
-	return head
 }
 
 // AddPoolScanResult queues a synthetic outcome for the next
@@ -231,8 +160,6 @@ func projectAgentTask(t *agentTask, now time.Time) agentapi.Task {
 	task.FinishedAt = &finishedAt
 
 	switch t.taskType {
-	case "storage_image.import":
-		projectImportTerminal(&task, t, finishedAt)
 	case "vm.create":
 		projectVMCreateTerminal(&task, t)
 	case "vm.delete":
@@ -267,40 +194,14 @@ func projectScanTerminal(task *agentapi.Task, t *agentTask, finishedAt time.Time
 	}
 }
 
-// projectImportTerminal fills the Task with the storage_image.import
-// terminal projection — checksum / size / format on success,
-// ErrorEnvelope on failure. The checksum surfaced under
-// task.result is the request's expected_checksum_sha256, since the
-// mock never re-hashes the (synthetic) bytes.
-func projectImportTerminal(task *agentapi.Task, t *agentTask, _ time.Time) {
-	if t.importResult == nil {
-		// Defensive: a storage_image.import task without an attached
-		// outcome is a programming error; surface it as a failed
-		// terminal so tests don't observe a stuck `running`.
-		task.Status = agentapi.TaskStatus("failed")
-		return
-	}
-	task.Status = agentapi.TaskStatus(t.importResult.Status)
-	switch t.importResult.Status {
-	case "success":
-		resultMap := map[string]any{
-			"checksum_sha256": t.importChecksum,
-			"size_bytes":      t.importResult.SizeBytes,
-			"format":          t.importResult.Format,
-		}
-		task.Result = &resultMap
-	case "failed", "cancelled":
-		if t.importResult.Error != nil {
-			task.Error = projectErrorEnvelope(t.importResult.Error)
-		}
-	}
-}
-
 // projectVMCreateTerminal fills the Task with the vm.create
-// terminal projection — vm_id under task.result on success,
-// ErrorEnvelope on failure. The materialisation side effect (staging
-// the AgentVM blueprint into state.storedVMs) is the
-// TasksGet-handler's responsibility, not this projection.
+// terminal projection — vm_id plus the resolved image content digest
+// and the virtual / disk sizes under task.result on success,
+// ErrorEnvelope on failure. The CP worker's createResultFromTerminal
+// decodes image_sha256 / virtual_size_bytes / disk_size_bytes onto
+// the VM row + disk-runtime. The materialisation side effect (staging
+// the AgentVM blueprint into state.storedVMs) is the TasksGet-handler's
+// responsibility, not this projection.
 func projectVMCreateTerminal(task *agentapi.Task, t *agentTask) {
 	if t.vmCreateResult == nil {
 		task.Status = agentapi.TaskStatus("failed")
@@ -310,7 +211,10 @@ func projectVMCreateTerminal(task *agentapi.Task, t *agentTask) {
 	switch t.vmCreateResult.Status {
 	case "success":
 		resultMap := map[string]any{
-			"vm_id": t.resourceID.String(),
+			"vm_id":              t.resourceID.String(),
+			"image_sha256":       t.vmImageSHA256,
+			"virtual_size_bytes": t.vmVirtualSizeBytes,
+			"disk_size_bytes":    t.vmDiskSizeBytes,
 		}
 		task.Result = &resultMap
 	case "failed", "cancelled":

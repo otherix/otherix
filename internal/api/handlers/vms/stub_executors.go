@@ -9,9 +9,6 @@ import "context"
 // canned (CreateResult, error) pair - exported so that the
 // integration-test scaffold (and the smoke harness) can drive
 // VMCreateWorker.Work directly without spinning up an agent.
-//
-// Mirrors the storagepools.StubImportExecutor surface so the test
-// patterns stay symmetric across vertical slices.
 type StubVMCreateExecutor struct {
 	Result CreateResult
 	Err    error

@@ -14,8 +14,10 @@ type CreateVMParams struct {
 	OwnerID           uuid.UUID
 	Name              string
 	Description       string
-	TemplateID        *uuid.UUID
 	Architecture      CPUArch
+	ImageURL          string
+	ImageSHA256       []byte
+	ImageFormat       ImageFormat
 	CpuCores          int32
 	MemoryMib         int32
 	CPUModel          string

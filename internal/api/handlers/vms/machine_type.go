@@ -7,8 +7,8 @@ import "github.com/otherix/otherix/internal/store"
 
 // machineTypeFor returns the qemu machine type the CP picks for a
 // fresh VM whose architecture is arch. The schema requires a non-null
-// `vms.machine_type`; templates do not (yet) carry a per-template
-// override. The mapping mirrors the Iteration 1 agent's defaults:
+// `vms.machine_type`; VMs do not carry a per-VM machine_type
+// override yet. The mapping mirrors the Iteration 1 agent's defaults:
 //
 //   - amd64 → q35  (modern Intel chipset, KVM-friendly defaults)
 //   - arm64 → virt (the canonical ARM virtual machine type)
@@ -16,9 +16,8 @@ import "github.com/otherix/otherix/internal/store"
 // Unknown architectures fall back to "q35" rather than failing —
 // schema-level NOT NULL leaves no zero-value option, and the agent
 // will surface an arch / machine mismatch on launch with an explicit
-// `qemu_spawn_failed` envelope. A future iteration adds a
-// `machine_type` column to templates and the helper falls back here
-// only when the override is empty.
+// `qemu_spawn_failed` envelope. The helper derives the machine type
+// from the architecture alone.
 func machineTypeFor(arch store.CPUArch) string {
 	switch arch {
 	case store.CpuArchArm64:

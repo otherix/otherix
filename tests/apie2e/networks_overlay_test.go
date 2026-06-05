@@ -418,9 +418,9 @@ func TestOverlayVMAttachAllowed(t *testing.T) {
 	var ov overlayNetworkView
 	decodeJSON(t, ovResp, &ov)
 
-	// Seed a schedulable fixture (node + pool + template) so the pool resolver
-	// succeeds and placement has a candidate.
-	nodeID, poolName, templateName := schedulableFixtureWithNode(t, h, adminID)
+	// Seed a schedulable fixture (node + pool + default firmware) so the pool
+	// resolver succeeds and placement has a candidate.
+	nodeID, poolName := schedulableFixtureWithNode(t, h, adminID)
 	// The network-aware filter requires the requested network to be ready on
 	// the candidate node before placement admits it.
 	if err := h.store.UpsertNetworkNodeStatus(context.Background(), store.UpsertNetworkNodeStatusParams{
@@ -429,14 +429,9 @@ func TestOverlayVMAttachAllowed(t *testing.T) {
 		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
 	}
 
-	resp := h.post(t, "/v1/vms", map[string]any{
-		"name":      "vm-ovattach-" + uuid.NewString()[:8],
-		"template":  templateName,
-		"pool":      poolName,
-		"vcpus":     2,
-		"memory_mb": 2048,
-		"network":   ov.Name,
-	}, admin)
+	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
+		"pool": poolName, "network": ov.Name,
+	}), admin)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)

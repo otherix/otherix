@@ -22,12 +22,9 @@
 // the previous default before promoting another firmware. Mirrors
 // storage_pools.
 //
-// Delete is conditional on no active vms or templates referencing the
-// firmware. Even though templates.firmware_id is ON DELETE SET NULL
-// at the schema level, the CP-level policy is to require operators to
-// explicitly clear the pin first; the alternative would silently null
-// out template firmware references on delete. Firmwares have no
-// force-delete counterpart by design.
+// Delete is conditional on no active vms referencing the firmware: the
+// operator must remove or repoint the dependent VMs first. Firmwares have
+// no force-delete counterpart by design.
 //
 // Per-node firmware availability (GET /v1/nodes/{id}/firmwares) is a
 // read-only projection of node_firmwares populated by the future

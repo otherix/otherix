@@ -5,6 +5,7 @@ package vms
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,10 +37,9 @@ type WorkerStore interface {
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
-	TemplateByID(ctx context.Context, id uuid.UUID) (store.Template, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-	ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, templateID uuid.UUID, fin store.UpdateTaskFinalizedParams) error
+	ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams) error
 	ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin store.UpdateTaskFinalizedParams) error
 	ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error
 }
@@ -49,14 +49,14 @@ type WorkerStore interface {
 // it an owning node is treated as terminally dead.
 const defaultStaleGrace = 5 * time.Minute
 
-// CreateHandler returns the dispatcher handler for vm.create jobs. ensurer
-// materializes the template image on the target pool inline before the agent
-// create, so a create on a cold pool imports the image first rather than
-// hard-failing template_not_found. staleGrace is the heartbeat-staleness window
-// past which an owning node is treated as terminally dead (the create then fails
-// fast and terminally rather than burning the retry budget); it defaults to 5
-// minutes when <= 0.
-func CreateHandler(st WorkerStore, exec CreateExecutor, ensurer ImageEnsurer, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+// CreateHandler returns the dispatcher handler for vm.create jobs. The VM row is
+// self-describing - it carries the image URL / digest / format - so the worker
+// hands the image source straight to the agent (the agent does the
+// IfNotPresent pull into the pool cache). staleGrace is the heartbeat-staleness
+// window past which an owning node is treated as terminally dead (the create
+// then fails fast and terminally rather than burning the retry budget); it
+// defaults to 5 minutes when <= 0.
+func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
 	if staleGrace <= 0 {
 		staleGrace = defaultStaleGrace
 	}
@@ -65,11 +65,11 @@ func CreateHandler(st WorkerStore, exec CreateExecutor, ensurer ImageEnsurer, lo
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.create args: %v", err)
 		}
-		return runCreate(ctx, st, exec, ensurer, log, args, staleGrace)
+		return runCreate(ctx, st, exec, log, args, staleGrace)
 	}
 }
 
-func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer ImageEnsurer, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
+func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
 	taskID := args.TaskID
 	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
 		return fmt.Errorf("update task running: %v", err)
@@ -81,10 +81,6 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer
 	disk, err := loadCreateDisk(ctx, st, log, taskID, args.VMID)
 	if err != nil {
 		return err
-	}
-	tpl, err := st.TemplateByID(ctx, args.TemplateID)
-	if err != nil {
-		return failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMTemplateMissing), fmt.Errorf("load template: %v", err))
 	}
 	pool, err := st.StoragePoolByID(ctx, args.PoolID)
 	if err != nil {
@@ -103,10 +99,6 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer
 		return failTerminal(ctx, st, log, "vms.create", taskID, errCodeVMNodeMissing,
 			fmt.Errorf("owning node %s is gone or unreachable; cannot create vm", args.NodeID))
 	}
-	tpl, err = ensureCreateImage(ctx, st, ensurer, log, taskID, tpl, pool, node)
-	if err != nil {
-		return err
-	}
 	nics, err := resolveCreateNICs(ctx, st, args.VMID)
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, "internal", err)
@@ -121,7 +113,10 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer
 		AgentTaskID:   task.AgentTaskID,
 		VM:            vm,
 		Disk:          disk,
-		Template:      tpl,
+		ImageURL:      vm.ImageURL,
+		ImageSHA256:   hex.EncodeToString(vm.ImageSHA256),
+		Format:        string(vm.ImageFormat),
+		DiskGiB:       int(disk.SizeGib),
 		Pool:          pool,
 		Node:          node,
 		NICs:          nics,
@@ -138,7 +133,6 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, ensurer
 	nodeID := args.NodeID
 	if err := st.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: args.VMID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		args.TemplateID,
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
 	); err != nil {
 		return fmt.Errorf("project create success: %v", err)
@@ -159,38 +153,6 @@ func loadCreateDisk(ctx context.Context, st WorkerStore, log *slog.Logger, taskI
 		return store.VMDisk{}, failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("vm %s has no disks", vmID))
 	}
 	return disks[0], nil
-}
-
-// ensureCreateImage materializes the template image on the target pool before
-// the agent create. EnsureImageOnPool is the IfNotPresent pull policy: a fast
-// no-op when the image is already projected, otherwise an inline import drive
-// against the owning agent. The worker holds its slot during a cold-pool import;
-// the INFO log makes a slow first materialization observable. A transient
-// failure (bad URL, checksum mismatch, disk full) is RETRYABLE via failRun - the
-// wrapped cause carries the real reason into the task error envelope. On
-// failure the task is finalized failed and the returned error is non-nil (the
-// caller propagates it for requeue).
-//
-// On success it returns the RELOADED template: EnsureImageOnPool may have
-// back-propagated the agent-computed checksum onto a compute-mode template (the
-// inline import projects it onto the template row in the same transaction), so
-// the caller must use this fresh copy. The copy captured before the import
-// carries an empty checksum, which the agent rejects with invalid_spec /
-// template_not_found - the exact cold-pool failure B1 exists to prevent. On the
-// warm path the reload is a no-op (a present image implies the checksum was
-// already set when it materialised).
-func ensureCreateImage(ctx context.Context, st WorkerStore, ensurer ImageEnsurer, log *slog.Logger, taskID uuid.UUID, tpl store.Template, pool store.StoragePool, node store.Node) (store.Template, error) {
-	log.InfoContext(ctx, "ensuring template image on pool before vm create",
-		slog.String("task_id", taskID.String()), slog.String("template_id", tpl.ID.String()),
-		slog.String("pool_id", pool.ID.String()), slog.String("node_id", node.ID.String()))
-	if err := ensurer.EnsureImageOnPool(ctx, tpl, pool, node); err != nil {
-		return store.Template{}, failRun(ctx, st, log, "vms.create", taskID, classifyVMError(err, errCodeVMImageUnavailable), fmt.Errorf("ensure image on pool: %v", err))
-	}
-	fresh, err := st.TemplateByID(ctx, tpl.ID)
-	if err != nil {
-		return store.Template{}, failRun(ctx, st, log, "vms.create", taskID, classifyLoadErr(err, errCodeVMTemplateMissing), fmt.Errorf("reload template after image ensure: %v", err))
-	}
-	return fresh, nil
 }
 
 // resolveCreateNICs loads the VM's vm_nics and resolves each against its
