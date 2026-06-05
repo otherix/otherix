@@ -751,3 +751,16 @@ type VMRuntime struct {
 	LastObservedAt     *time.Time
 	UpdatedAt          time.Time
 }
+
+// PoolImage is one observed image record in a storage pool inventory,
+// reported by the agent through the heartbeat path. It is observed state, not
+// durable desired state: it mirrors what the agent currently has cached on the
+// pool.
+type PoolImage struct {
+	Basename         string
+	ChecksumSha256   string
+	SizeBytes        int64
+	VirtualSizeBytes int64
+	Format           string
+	ImportedAt       time.Time
+}

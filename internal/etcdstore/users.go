@@ -34,13 +34,9 @@ func userEmailGuard(email string) string {
 }
 
 // Owner-index prefixes consulted by CountUserResources. They are written by the
-// vms / templates / snapshots slices; until those land the counts are zero.
+// vms / snapshots slices; until those land the counts are zero.
 func vmsOwnerPrefix(id uuid.UUID) string {
 	return etcd.Key("index", "vms", "owner", id.String()) + "/"
-}
-
-func templatesOwnerPrefix(id uuid.UUID) string {
-	return etcd.Key("index", "templates", "owner", id.String()) + "/"
 }
 
 func snapshotsOwnerPrefix(id uuid.UUID) string {
@@ -196,14 +192,10 @@ func (s *Store) ListUsers(ctx context.Context, arg store.ListUsersParams) ([]sto
 	return users, nil
 }
 
-// CountUserResources counts the live vms / templates / snapshots owned by the
-// user via their owner-index prefixes, for the handler's delete precheck.
+// CountUserResources counts the live vms / snapshots owned by the user via
+// their owner-index prefixes, for the handler's delete precheck.
 func (s *Store) CountUserResources(ctx context.Context, id uuid.UUID) (store.CountUserResourcesRow, error) {
 	vms, err := s.countPrefix(ctx, vmsOwnerPrefix(id))
-	if err != nil {
-		return store.CountUserResourcesRow{}, err
-	}
-	templates, err := s.countPrefix(ctx, templatesOwnerPrefix(id))
 	if err != nil {
 		return store.CountUserResourcesRow{}, err
 	}
@@ -211,7 +203,7 @@ func (s *Store) CountUserResources(ctx context.Context, id uuid.UUID) (store.Cou
 	if err != nil {
 		return store.CountUserResourcesRow{}, err
 	}
-	return store.CountUserResourcesRow{Vms: vms, Templates: templates, Snapshots: snapshots}, nil
+	return store.CountUserResourcesRow{Vms: vms, Snapshots: snapshots}, nil
 }
 
 // DeleteUser soft-deletes the user (sets deleted_at, drops the email guard so

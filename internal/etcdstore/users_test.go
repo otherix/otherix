@@ -245,26 +245,23 @@ func TestCountUserResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountUserResources: %v", err)
 	}
-	if zero.Vms != 0 || zero.Templates != 0 || zero.Snapshots != 0 {
+	if zero.Vms != 0 || zero.Snapshots != 0 {
 		t.Errorf("CountUserResources(no owned) = %+v, want all zero", zero)
 	}
 
-	// Seed two owned-vm + one owned-template index entries.
+	// Seed two owned-vm index entries.
 	for i := 0; i < 2; i++ {
 		k := etcd.Key("index", "vms", "owner", p.ID.String(), uuid.NewString())
 		if err := cli.Put(ctx, k, []byte("vm")); err != nil {
 			t.Fatalf("seed vm index: %v", err)
 		}
 	}
-	if err := cli.Put(ctx, etcd.Key("index", "templates", "owner", p.ID.String(), uuid.NewString()), []byte("tpl")); err != nil {
-		t.Fatalf("seed template index: %v", err)
-	}
 
 	got, err := s.CountUserResources(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("CountUserResources: %v", err)
 	}
-	if got.Vms != 2 || got.Templates != 1 || got.Snapshots != 0 {
-		t.Errorf("CountUserResources = %+v, want {Vms:2 Templates:1 Snapshots:0}", got)
+	if got.Vms != 2 || got.Snapshots != 0 {
+		t.Errorf("CountUserResources = %+v, want {Vms:2 Snapshots:0}", got)
 	}
 }
