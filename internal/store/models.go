@@ -590,16 +590,6 @@ type Snapshot struct {
 	DeletedAt         *time.Time
 }
 
-type StorageImage struct {
-	ID             uuid.UUID
-	TemplateID     uuid.UUID
-	PoolID         uuid.UUID
-	ChecksumSha256 string
-	SizeBytes      int64
-	Format         string
-	ImportedAt     time.Time
-}
-
 type StoragePool struct {
 	ID             uuid.UUID
 	NodeID         uuid.UUID
@@ -642,34 +632,6 @@ type Task struct {
 	FinishedAt   *time.Time
 }
 
-type Template struct {
-	ID                     uuid.UUID
-	OwnerID                uuid.UUID
-	Name                   string
-	Description            string
-	Visibility             string
-	Architecture           CPUArch
-	OsFamily               OsFamily
-	OsVariant              string
-	ImageUrl               string
-	ImageChecksumSha256    []byte
-	ImageFormat            ImageFormat
-	ImageSizeBytes         *int64
-	FirmwareType           FirmwareType
-	FirmwareID             *uuid.UUID
-	DefaultCpuCores        int32
-	DefaultMemoryMib       int32
-	DefaultDiskGib         int32
-	CloudInitSupported     bool
-	CloudInitUserData      *string
-	QemuGuestAgentExpected bool
-	Metadata               []byte
-	DerivedVmCount         int32
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
-	DeletedAt              *time.Time
-}
-
 type User struct {
 	ID           uuid.UUID
 	Email        string
@@ -688,8 +650,10 @@ type VM struct {
 	Name              string
 	Description       string
 	DesiredPhase      VMDesiredPhase
-	TemplateID        *uuid.UUID
 	Architecture      CPUArch
+	ImageURL          string
+	ImageSHA256       []byte
+	ImageFormat       ImageFormat
 	CpuCores          int32
 	MemoryMib         int32
 	CPUModel          string
@@ -710,23 +674,22 @@ type VM struct {
 }
 
 type VMDisk struct {
-	ID               uuid.UUID
-	VmID             uuid.UUID
-	StoragePoolID    uuid.UUID
-	DeviceOrder      int32
-	Bus              DiskBus
-	SizeGib          int32
-	SourceKind       string
-	SourceTemplateID *uuid.UUID
-	Format           ImageFormat
-	ReadOnly         bool
-	CacheMode        DiskCacheMode
-	Discard          DiskDiscard
-	BootOrder        *int32
-	Generation       int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	DeletedAt        *time.Time
+	ID            uuid.UUID
+	VmID          uuid.UUID
+	StoragePoolID uuid.UUID
+	DeviceOrder   int32
+	Bus           DiskBus
+	SizeGib       int32
+	SourceKind    string
+	Format        ImageFormat
+	ReadOnly      bool
+	CacheMode     DiskCacheMode
+	Discard       DiskDiscard
+	BootOrder     *int32
+	Generation    int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	DeletedAt     *time.Time
 }
 
 type VMDiskRuntime struct {

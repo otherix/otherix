@@ -11,7 +11,6 @@ import (
 
 type CountUserResourcesRow struct {
 	Vms       int64
-	Templates int64
 	Snapshots int64
 }
 
