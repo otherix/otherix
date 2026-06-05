@@ -555,12 +555,25 @@ $ otherix network get demo-net -o yaml
 $ otherix delete -f cluster.yaml --force
 ```
 
-Caveat: a few create-time VM fields do NOT round-trip through `get -o
-yaml`, because the API view does not surface them: `cloudInit` (user_data),
-`firmware`/`firmwareID`, and `diskGiB`. They are consumed at create time, so
-the projected manifest omits them and re-applying the projection reverts
-those to server defaults. Keep the source manifest as the record of what you
-applied. Network and StoragePool manifests round-trip in full.
+Caveat: some fields do NOT round-trip through `get -o yaml`, because the
+API view does not surface them or the server derives them. Keep the source
+manifest as the record of what you applied.
+
+- **VM:** `cloudInit` (user_data), `cloudInitDisabled`, `firmware`/`firmwareID`,
+  and `diskGiB` are consumed at create time and not in the view, so the
+  projected manifest omits them and re-applying reverts those to server
+  defaults. Only the first NIC is projected (the manifest schema attaches a
+  single network); a VM with more than one NIC loses the extras.
+- **Network:** bridge networks round-trip in full. An overlay network
+  projects only `type` + `subnet` (the create API forbids the server-derived
+  `bridgeName`/`mtu`/`vlan`), so re-applying allocates a fresh VNI rather than
+  preserving the original.
+- **StoragePool:** round-trips except the operator-settable `config` blob.
+
+The `config` blob on both Network and StoragePool is not yet
+manifest-expressible (no `config` field in the v1 schema) and is dropped on
+projection; a resource created out-of-band with a non-empty `config` does not
+round-trip it.
 
 ## VM placement scheduler
 
