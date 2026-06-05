@@ -18,7 +18,7 @@ import (
 // Classify maps an error from cpclient to the operator-facing
 // "<category>: <detail>" form. APIError surfaces its own code-bearing
 // message; transport failures get a stable category prefix
-// (request_timeout, connection_refused, tls_handshake_failed,
+// (request_timeout, cancelled, connection_refused, tls_handshake_failed,
 // host_not_found) so shell scripts can branch on them; anything else
 // falls back to request_failed. Returns an error so callers can
 // `return Classify(err)`.
@@ -32,6 +32,8 @@ func Classify(err error) error {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("request_timeout: %s", msg)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("cancelled: %s", msg)
 	case strings.Contains(msg, "connection refused"):
 		return fmt.Errorf("connection_refused: %s", msg)
 	case errors.As(err, &dnsErr) || strings.Contains(msg, "no such host"):

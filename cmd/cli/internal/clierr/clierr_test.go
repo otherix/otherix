@@ -31,6 +31,16 @@ func TestClassifyDeadlineExceeded(t *testing.T) {
 	}
 }
 
+func TestClassifyCanceled(t *testing.T) {
+	// A user Ctrl-C surfaces as context.Canceled; it must not be mislabeled
+	// as a transport fault (request_failed) that scripts grep for.
+	err := fmt.Errorf("get: %w", context.Canceled)
+	got := Classify(err)
+	if !strings.HasPrefix(got.Error(), "cancelled: ") {
+		t.Errorf("Classify(canceled) = %q, want cancelled: prefix", got.Error())
+	}
+}
+
 func TestClassifyConnectionRefused(t *testing.T) {
 	err := errors.New("dial tcp 127.0.0.1:8080: connect: connection refused")
 	got := Classify(err)
