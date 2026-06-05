@@ -507,6 +507,58 @@ ID                                    NAME       STATUS   POOL      IMAGE
 $ otherix vm delete demo-vm --wait --force
 ```
 
+### Declarative manifests
+
+Instead of imperative flags you can apply resources from YAML manifests.
+`otherix create -f` reads one or more multi-document files (kinds
+`Network`, `StoragePool`, `VM`), orders them Network -> StoragePool -> VM
+so name references resolve, and creates each resource. `otherix delete -f`
+removes the same set in reverse order (VM -> StoragePool -> Network).
+
+```bash
+# cluster.yaml: a managed bridge plus a VM attached to it
+$ cat cluster.yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: demo-net
+spec:
+  type: bridge
+  managed: true
+  bridgeName: otdemo0
+  mtu: 1500
+---
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: demo-vm
+spec:
+  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+  arch: arm64
+  network: demo-net
+  vcpus: 2
+  memoryMB: 2048
+  # inline cloud-config is sent as user_data at create time:
+  cloudInit: |
+    #cloud-config
+    package_update: true
+
+# Apply, waiting for the VM task + network reconcile to finish
+$ otherix create -f cluster.yaml --wait --wait-timeout 300s
+
+# Round-trip: project a live resource back to a manifest
+$ otherix vm get demo-vm -o yaml
+$ otherix network get demo-net -o yaml
+
+# Tear down (reverse order, no confirmation prompt)
+$ otherix delete -f cluster.yaml --force
+```
+
+Caveat: cloud-init does NOT round-trip through `get -o yaml`. `cloudInit`
+(user_data) is consumed at create time and is not surfaced by the API, so
+the projected manifest omits it. Keep the source manifest as the record of
+the cloud-config you applied.
+
 ## VM placement scheduler
 
 `otherix vm create` reaches the api-server's vm.create handler, which
