@@ -68,9 +68,22 @@ type DeclaredFDBEntry struct {
 // `storage_pool.scan` for this iteration. Add them when the
 // scan-subsumption iteration lands.
 type PoolReport struct {
-	Name                 string  `json:"name"`
-	ReconciliationStatus string  `json:"reconciliation_status"`
-	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+	Name                 string            `json:"name"`
+	ReconciliationStatus string            `json:"reconciliation_status"`
+	ReconciliationError  *string           `json:"reconciliation_error,omitempty"`
+	Images               []PoolImageReport `json:"images,omitempty"`
+}
+
+// PoolImageReport is one cached image the agent observed in a pool's image
+// directory (basename-keyed cache). Carried inside PoolReport.Images; the CP
+// stores it as observed pool state and surfaces it through pool get.
+type PoolImageReport struct {
+	Basename         string `json:"basename"`
+	SHA256           string `json:"sha256"`
+	SizeBytes        int64  `json:"size_bytes"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
+	Format           string `json:"format"`
+	ImportedAt       string `json:"imported_at"`
 }
 
 // NetworkReport mirrors HeartbeatNetworkReport — one entry per network
