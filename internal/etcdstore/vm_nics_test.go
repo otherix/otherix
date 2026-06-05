@@ -32,7 +32,7 @@ func mustMAC(t *testing.T, s string) net.HardwareAddr {
 func TestCreateScheduledVMWithNicWritesIndexAndBlocksDelete(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	nodeID, poolID, _ := schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "vm-" + uuid.NewString()[:8]
 
@@ -44,7 +44,7 @@ func TestCreateScheduledVMWithNicWritesIndexAndBlocksDelete(t *testing.T) {
 		t.Fatalf("CreateNetwork: %v", err)
 	}
 
-	writes := vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+	writes := vmCreateWrites(t, name, owner, nodeID, poolID)
 	nicID := uuid.New()
 	writes.Nic = &store.CreateVMNicParams{
 		ID: nicID, VmID: writes.VM.ID, NetworkID: netID, DeviceOrder: 0,
@@ -93,7 +93,7 @@ func TestCreateScheduledVMWithNicWritesIndexAndBlocksDelete(t *testing.T) {
 func TestProjectVMDeleteClearsNicAndUnblocksNetwork(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	nodeID, poolID, _ := schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "vm-" + uuid.NewString()[:8]
 
@@ -105,7 +105,7 @@ func TestProjectVMDeleteClearsNicAndUnblocksNetwork(t *testing.T) {
 		t.Fatalf("CreateNetwork: %v", err)
 	}
 
-	writes := vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+	writes := vmCreateWrites(t, name, owner, nodeID, poolID)
 	writes.Nic = &store.CreateVMNicParams{
 		ID: uuid.New(), VmID: writes.VM.ID, NetworkID: netID, DeviceOrder: 0,
 		Model: store.NicModelVirtio, MacAddress: mustMAC(t, "52:54:00:ab:cd:ef"),
@@ -118,7 +118,6 @@ func TestProjectVMDeleteClearsNicAndUnblocksNetwork(t *testing.T) {
 	}
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: writes.VM.ID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
 	); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess: %v", err)
@@ -183,11 +182,11 @@ func TestNetworkByName(t *testing.T) {
 func TestCreateScheduledVMWithoutNic(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	nodeID, poolID, _ := schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "vm-" + uuid.NewString()[:8]
 
-	writes := vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+	writes := vmCreateWrites(t, name, owner, nodeID, poolID)
 	if _, err := s.CreateScheduledVM(ctx, func(store.PlacementReader) (store.VMCreateWrites, error) {
 		return writes, nil
 	}); err != nil {
