@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -21,6 +22,8 @@ import (
 func newManifestCreateCmd() *cobra.Command {
 	var files []string
 	var dryRun bool
+	var wait bool
+	var waitTimeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "create -f FILE [-f FILE ...]",
 		Short: "Create resources from YAML manifests (multi-document).",
@@ -54,11 +57,16 @@ Example:
 				return err
 			}
 			results := runCreatePlan(cmd, c, plan)
+			if wait {
+				waitForCreated(cmd, c, results, waitTimeout)
+			}
 			return renderSummary(cmd, "created", results)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&files, "filename", "f", nil, "manifest file path, or '-' for stdin (repeatable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan without creating anything")
+	cmd.Flags().BoolVar(&wait, "wait", false, "block until every async resource (VM tasks, pool reconciliation) is ready")
+	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 5*time.Minute, "max time to wait when --wait is set")
 	return cmd
 }
 
@@ -73,15 +81,20 @@ func runCreatePlan(cmd *cobra.Command, c *cpclient.Client, plan []manifest.Creat
 			_, err := c.CreateNetwork(ctx, *op.Network)
 			results = append(results, docResult{kind: op.Kind, name: op.Name, err: err})
 		case manifest.KindStoragePool:
-			_, err := c.CreatePool(ctx, *op.Pool)
-			results = append(results, docResult{kind: op.Kind, name: op.Name, note: "node " + op.Pool.Node, err: err})
+			p, err := c.CreatePool(ctx, *op.Pool)
+			res := docResult{kind: op.Kind, name: op.Name, note: "node " + op.Pool.Node, err: err}
+			if err == nil {
+				res.poolID = p.ID.String()
+			}
+			results = append(results, res)
 		case manifest.KindVM:
 			acc, err := c.CreateVM(ctx, *op.VM)
-			note := ""
+			res := docResult{kind: op.Kind, name: op.Name, err: err}
 			if err == nil {
-				note = "task " + acc.TaskID
+				res.taskID = acc.TaskID
+				res.note = "task " + acc.TaskID
 			}
-			results = append(results, docResult{kind: op.Kind, name: op.Name, note: note, err: err})
+			results = append(results, res)
 		}
 	}
 	return results

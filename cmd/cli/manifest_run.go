@@ -48,10 +48,12 @@ func readOneSource(cmd *cobra.Command, f string) ([]byte, error) {
 // docResult records the outcome of one fan-out operation for the
 // summary. A nil err means success.
 type docResult struct {
-	kind string
-	name string
-	note string // e.g. "task <id>" or "node node-1"
-	err  error
+	kind   string
+	name   string
+	note   string // e.g. "task <id>" or "node node-1"
+	err    error
+	taskID string // VM create: accepted task id, for --wait
+	poolID string // StoragePool create: created instance id, for --wait
 }
 
 // renderSummary prints one line per operation and returns a non-nil
