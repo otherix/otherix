@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 func newListCommand() *cobra.Command {
@@ -28,7 +29,7 @@ DEFAULT column reflects cluster_settings.default_pool_name (set via
 	cmd.Flags().String(flagType, "", "filter by pool type (local_dir)")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().String(flagOutput, "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json|yaml")
 	cmd.Flags().Bool(flagShowIDs, false, "include pool instance UUIDs in the table output")
 	return cmd
 }
@@ -56,6 +57,19 @@ func runList(cmd *cobra.Command, _ []string) error {
 	})
 	if err != nil {
 		return classifyError(err)
+	}
+
+	if format == "yaml" {
+		docs := make([][]byte, 0, len(pools.Data))
+		for _, p := range pools.Data {
+			out, err := manifest.ProjectPoolInstance(p)
+			if err != nil {
+				return err
+			}
+			docs = append(docs, out)
+		}
+		printf(cmd, "%s", manifest.JoinDocuments(docs))
+		return nil
 	}
 
 	switch format {

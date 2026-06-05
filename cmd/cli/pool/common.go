@@ -77,10 +77,10 @@ func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
 		raw = defaultFormat
 	}
 	switch raw {
-	case "text", "json", "table":
+	case "text", "json", "table", "yaml":
 		return raw, nil
 	}
-	return "", fmt.Errorf("--%s: unknown format %q (text, json, table)", flagOutput, raw)
+	return "", fmt.Errorf("--%s: unknown format %q (text, json, table, yaml)", flagOutput, raw)
 }
 
 // formatPoolAvailable renders the agent-reported `available_bytes`
