@@ -77,6 +77,7 @@ type Store interface {
 
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
+	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
 	ListVMs(ctx context.Context, arg store.ListVMsParams) ([]store.VM, error)
 	UpdateVMRuntimePhase(ctx context.Context, arg store.UpdateVMRuntimePhaseParams) error
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
@@ -160,6 +161,7 @@ type vmView struct {
 	Format       string          `json:"format"`
 	Pool         string          `json:"pool"`
 	Node         *string         `json:"node"`
+	Networks     []string        `json:"networks"`
 	Architecture string          `json:"architecture"`
 	VCPUs        int             `json:"vcpus"`
 	MemoryMB     int             `json:"memory_mb"`
@@ -177,6 +179,9 @@ type vmView struct {
 type vmViewNames struct {
 	pool string
 	node *string
+	// networks holds the VM's attached network names ordered by NIC
+	// device_order (primary first). Empty when the VM has no NIC.
+	networks []string
 }
 
 // toView projects a (vm row, runtime row) pair plus the pre-resolved
@@ -194,6 +199,7 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		Format:       string(vm.ImageFormat),
 		Pool:         names.pool,
 		Node:         names.node,
+		Networks:     networksOrEmpty(names.networks),
 		Architecture: string(vm.Architecture),
 		VCPUs:        int(vm.CpuCores),
 		MemoryMB:     int(vm.MemoryMib),
@@ -203,6 +209,16 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		CreatedAt:    vm.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:    vm.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+// networksOrEmpty normalises a nil network slice to a non-nil empty
+// slice so the wire `networks` field renders `[]` (the schema declares
+// it a required array) rather than `null` for a VM with no NIC.
+func networksOrEmpty(nets []string) []string {
+	if nets == nil {
+		return []string{}
+	}
+	return nets
 }
 
 // rawJSONOrEmpty returns raw if non-empty, else `{}`. vms.labels is

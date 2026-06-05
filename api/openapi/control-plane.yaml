@@ -5656,6 +5656,7 @@ components:
         - format
         - pool
         - node
+        - networks
         - architecture
         - vcpus
         - memory_mb
@@ -5704,6 +5705,12 @@ components:
           description: |
             Name of the node currently hosting the VM (agent-reported).
             `null` while the VM is still being created.
+        networks:
+          type: array
+          items: { type: string }
+          description: |
+            Names of the networks the VM is attached to, ordered by NIC
+            device_order (primary first). Empty when the VM has no NIC.
         architecture:
           type: string
           enum: [amd64, arm64]

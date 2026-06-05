@@ -15,10 +15,11 @@ import (
 
 // resolveViewNames converts the FK / observed-state UUIDs carried on
 // the vms + vm_disks + vm_runtime rows into the operator-facing name
-// strings that the vmView surfaces. The function does up to two small
-// GetByID lookups - N+1 per row in list endpoints, which is acceptable
-// for the current inventory sizes; a later iteration may swap to a
-// JOIN-based query.
+// strings that the vmView surfaces. The function does a handful of small
+// GetByID lookups (pool, optional node, and one per attached NIC's
+// network) - N+1 per row in list endpoints, which is acceptable for the
+// current inventory sizes; a later iteration may swap to a JOIN-based
+// query.
 //
 // The lookups tolerate missing rows: a vm_runtime row without
 // current_node_id (creating state) surfaces as nil node; a pool
@@ -52,6 +53,40 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 		}
 	}
 
+	networks, err := h.resolveNetworkNames(ctx, vm.ID)
+	if err != nil {
+		return names, err
+	}
+	names.networks = networks
+
+	return names, nil
+}
+
+// resolveNetworkNames returns the VM's attached network names ordered
+// by NIC device_order (ListVMNicsByVM sorts on it), one extra small
+// lookup per NIC. A network soft-deleted out from under a NIC is
+// skipped rather than surfaced as an error - network delete is blocked
+// while NICs reference it, so this only guards an out-of-band mutation.
+func (h *Handler) resolveNetworkNames(ctx context.Context, vmID uuid.UUID) ([]string, error) {
+	nics, err := h.store.ListVMNicsByVM(ctx, vmID)
+	if err != nil {
+		return nil, fmt.Errorf("list vm nics: %v", err)
+	}
+	if len(nics) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(nics))
+	for _, nic := range nics {
+		net, err := h.store.NetworkByID(ctx, nic.NetworkID)
+		switch {
+		case err == nil:
+			names = append(names, net.Name)
+		case errors.Is(err, store.ErrNotFound):
+			continue
+		default:
+			return nil, fmt.Errorf("load network name: %v", err)
+		}
+	}
 	return names, nil
 }
 
