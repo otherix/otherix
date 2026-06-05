@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,15 +38,28 @@ func validateManifestCloudInit(cmd *cobra.Command, plan []manifest.CreateOp) err
 	return nil
 }
 
+// maxManifestBytes caps a single -f source (file or stdin), guarding
+// against unbounded reads (a device node, a runaway pipe, a huge file).
+// Package var (not a const) so tests can lower it; do NOT add
+// t.Parallel() to package-main tests that touch it - it would race.
+var maxManifestBytes int64 = 64 << 20 // 64 MiB
+
 // readManifestDocs reads every -f source (file path, or "-" for stdin),
 // concatenates them with `---`, and parses the combined stream. At
-// least one source is required.
+// least one source is required; stdin may be used at most once.
 func readManifestDocs(cmd *cobra.Command, files []string) ([]manifest.Document, error) {
 	if len(files) == 0 {
-		return nil, fmt.Errorf("at least one -f/--filename is required")
+		return nil, errors.New("at least one -f/--filename is required")
 	}
 	var parts []string
+	stdinUsed := false
 	for _, f := range files {
+		if f == "-" {
+			if stdinUsed {
+				return nil, errors.New("-f - may be given at most once")
+			}
+			stdinUsed = true
+		}
 		data, err := readOneSource(cmd, f)
 		if err != nil {
 			return nil, err
@@ -56,14 +70,47 @@ func readManifestDocs(cmd *cobra.Command, files []string) ([]manifest.Document, 
 	return manifest.Parse(strings.NewReader(combined))
 }
 
-// readOneSource reads a single -f source: a file path, or "-" for stdin.
+// readOneSource reads a single -f source. "-" reads stdin (refused when
+// stdin is a terminal, so an operator who typed `-f -` with nothing
+// piped gets a clear error instead of an indefinite hang). A file path
+// must be a regular file within the size cap; directories, FIFOs, and
+// device nodes are rejected up front rather than read (a FIFO/device
+// would otherwise hang or read unbounded).
 func readOneSource(cmd *cobra.Command, f string) ([]byte, error) {
 	if f == "-" {
-		return io.ReadAll(cmd.InOrStdin())
+		if file, ok := cmd.InOrStdin().(*os.File); ok {
+			if fi, err := file.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+				return nil, errors.New("-f -: refusing to read manifests from a terminal; pipe stdin or pass a file path")
+			}
+		}
+		return readCapped(cmd.InOrStdin())
 	}
-	data, err := os.ReadFile(f) //nolint:gosec // operator-supplied manifest path is the entire point of the flag
+	fi, err := os.Stat(f)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %v", f, err)
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", f)
+	}
+	if fi.Size() > maxManifestBytes {
+		return nil, fmt.Errorf("%s: manifest exceeds the %d-byte limit", f, maxManifestBytes)
+	}
+	data, err := os.ReadFile(f) //nolint:gosec // operator-supplied manifest path
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// readCapped reads from r up to maxManifestBytes, erroring if exceeded
+// (stdin has no stat size, so the cap is enforced via a LimitReader).
+func readCapped(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxManifestBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxManifestBytes {
+		return nil, fmt.Errorf("manifest exceeds the %d-byte limit", maxManifestBytes)
 	}
 	return data, nil
 }

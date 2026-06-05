@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -43,6 +44,14 @@ func TestClassifyTLSHandshake(t *testing.T) {
 	got := Classify(err)
 	if !strings.HasPrefix(got.Error(), "tls_handshake_failed: ") {
 		t.Errorf("Classify(x509) = %q, want tls_handshake_failed: prefix", got.Error())
+	}
+}
+
+func TestClassifyDNSError(t *testing.T) {
+	err := &net.DNSError{Err: "no such host", Name: "nope.invalid", IsNotFound: true}
+	got := Classify(err)
+	if got == nil || !strings.HasPrefix(got.Error(), "host_not_found:") {
+		t.Errorf("Classify(DNSError) = %v, want host_not_found: prefix", got)
 	}
 }
 

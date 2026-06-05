@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -17,20 +18,24 @@ import (
 // Classify maps an error from cpclient to the operator-facing
 // "<category>: <detail>" form. APIError surfaces its own code-bearing
 // message; transport failures get a stable category prefix
-// (request_timeout, connection_refused, tls_handshake_failed) so shell
-// scripts can branch on them; anything else falls back to
-// request_failed. Returns an error so callers can `return Classify(err)`.
+// (request_timeout, connection_refused, tls_handshake_failed,
+// host_not_found) so shell scripts can branch on them; anything else
+// falls back to request_failed. Returns an error so callers can
+// `return Classify(err)`.
 func Classify(err error) error {
 	var apiErr *cpclient.APIError
 	if errors.As(err, &apiErr) {
 		return fmt.Errorf("%s", apiErr.Error())
 	}
 	msg := err.Error()
+	var dnsErr *net.DNSError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("request_timeout: %s", msg)
 	case strings.Contains(msg, "connection refused"):
 		return fmt.Errorf("connection_refused: %s", msg)
+	case errors.As(err, &dnsErr) || strings.Contains(msg, "no such host"):
+		return fmt.Errorf("host_not_found: %v", err)
 	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
 		return fmt.Errorf("tls_handshake_failed: %s", msg)
 	default:
