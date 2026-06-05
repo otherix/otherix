@@ -61,6 +61,26 @@ jobs:
       - name: Integration tests (etcd store + api e2e)
         run: make test-etcd
 
+  test-netfabric:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache: true
+      # The agent data-plane netns suite (real bridge / tap / vxlan / nft
+      # masquerade / wireguard over netlink) is //go:build linux,integration
+      # and self-skips without CAP_NET_ADMIN. A GitHub-hosted ubuntu runner
+      # gives us passwordless sudo (effective root) so it runs for real;
+      # OTHERIX_NETFABRIC_REQUIRE=1 (set by the make target) turns any
+      # capability-missing skip into a hard failure so a data-plane
+      # regression cannot pass green by skipping.
+      - name: Load data-plane kernel modules
+        run: sudo modprobe wireguard vxlan nft_masq nft_chain_nat || true
+      - name: Data-plane netns integration tests (root, skips fail)
+        run: make test-netfabric-native
+
   build:
     runs-on: ubuntu-24.04
     strategy:

@@ -70,7 +70,7 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 TEST_TAGS := test_fast_argon
 INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
-.PHONY: test test-short test-etcd test-netfabric coverage
+.PHONY: test test-short test-etcd test-netfabric test-netfabric-native coverage
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
@@ -107,6 +107,19 @@ test-netfabric: lima-ensure ## netfabric netns integration tests in Lima (cross-
 	limactl cp $$out $(LIMA_VM):/tmp/netfabric.test; \
 	echo ">> running netns integration tests as root in $(LIMA_VM)"; \
 	limactl shell $(LIMA_VM) sudo /tmp/netfabric.test -test.v -test.count=1
+
+# test-netfabric-native runs the SAME netns data-plane suite on a NATIVE
+# linux host as root - no Lima, no cross-compile. This is the CI entrypoint
+# (a privileged GitHub ubuntu runner): build the test binary as the normal
+# user, then run it under sudo. OTHERIX_NETFABRIC_REQUIRE=1 turns the
+# capability-missing skips (no CAP_NET_ADMIN / nftables / wireguard) into
+# HARD failures, so the data plane can never pass green by being silently
+# skipped - the whole point of putting it in CI. Needs root + the
+# wireguard / vxlan / nft kernel modules loaded (the CI job modprobes them).
+test-netfabric-native: ## netfabric netns tests on a native linux root host (CI)
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) test -tags=$(INTEGRATION_TAGS) -c -o $(BIN_DIR)/netfabric.test ./internal/agent/netfabric/
+	sudo OTHERIX_NETFABRIC_REQUIRE=1 $(BIN_DIR)/netfabric.test -test.v -test.count=1
 
 coverage: test ## Generate HTML coverage report
 	$(GO) tool cover -html=coverage.out -o coverage.html

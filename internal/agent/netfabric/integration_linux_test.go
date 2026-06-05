@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,11 +25,29 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// requireNetfabric handles an unavailable data-plane capability (no
+// CAP_NET_ADMIN, no nftables, no wireguard module). By default - on
+// developer laptops and other unprivileged environments - it SKIPS the
+// test, matching the historical t.Skipf behaviour. When
+// OTHERIX_NETFABRIC_REQUIRE is set, as the privileged CI netns job does,
+// it FAILS instead: a regression that silently strips the host's
+// data-plane capabilities must not pass green by skipping the whole
+// suite (the gap this CI job was added to close). Like t.Skipf / t.Fatalf
+// it never returns - both halt the calling test via runtime.Goexit.
+func requireNetfabric(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("OTHERIX_NETFABRIC_REQUIRE") != "" {
+		t.Fatalf("OTHERIX_NETFABRIC_REQUIRE set but a data-plane capability is unavailable: "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 // withNetNS runs fn inside a fresh, throwaway network namespace so the
 // test never touches the host's real interfaces. It locks the goroutine
 // to its OS thread for the duration, as required by the netns API. The
 // test is skipped when the namespace cannot be created (typically a lack
-// of CAP_NET_ADMIN); on Lima with root it runs for real.
+// of CAP_NET_ADMIN); on Lima with root it runs for real. Under
+// OTHERIX_NETFABRIC_REQUIRE that skip becomes a hard failure.
 func withNetNS(t *testing.T, fn func()) {
 	t.Helper()
 	runtime.LockOSThread()
@@ -49,7 +68,7 @@ func withNetNS(t *testing.T, fn func()) {
 
 	ns, err := netns.New()
 	if err != nil {
-		t.Skipf("create netns (needs CAP_NET_ADMIN): %v", err)
+		requireNetfabric(t, "create netns (needs CAP_NET_ADMIN): %v", err)
 	}
 	defer func() {
 		if err := ns.Close(); err != nil {
@@ -1000,7 +1019,7 @@ func TestLinuxFabricNAT(t *testing.T) {
 		// netns without nft support (older kernels, missing modules) makes
 		// the first masquerade op fail; skip rather than fail there.
 		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
-			t.Skipf("EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
+			requireNetfabric(t, "EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
 		}
 
 		if n := countMasqRules(t, subnet); n != 1 {
@@ -1074,7 +1093,7 @@ func TestLinuxFabricRemoveMasqueradeOnFreshNetns(t *testing.T) {
 		// test above.
 		c := &nftables.Conn{}
 		if _, err := c.ListTables(); err != nil {
-			t.Skipf("ListTables() = %v (nftables unavailable in netns?)", err)
+			requireNetfabric(t, "ListTables() = %v (nftables unavailable in netns?)", err)
 		}
 
 		if err := f.RemoveMasquerade(subnet); err != nil {
@@ -1231,7 +1250,7 @@ func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
 		}
 
 		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
-			t.Skipf("EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
+			requireNetfabric(t, "EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
 		}
 		if n := countMasqRules(t, subnet); n != 1 {
 			t.Fatalf("masquerade rule count = %d after first iface, want 1", n)
