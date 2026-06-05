@@ -48,6 +48,7 @@ package vms
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -155,6 +156,7 @@ type vmView struct {
 	Name         string          `json:"name"`
 	OwnerID      string          `json:"owner_id"`
 	ImageURL     string          `json:"image_url"`
+	ImageSHA256  string          `json:"image_sha256,omitempty"`
 	Format       string          `json:"format"`
 	Pool         string          `json:"pool"`
 	Node         *string         `json:"node"`
@@ -188,6 +190,7 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		Name:         vm.Name,
 		OwnerID:      vm.OwnerID.String(),
 		ImageURL:     vm.ImageURL,
+		ImageSHA256:  hex.EncodeToString(vm.ImageSHA256),
 		Format:       string(vm.ImageFormat),
 		Pool:         names.pool,
 		Node:         names.node,
