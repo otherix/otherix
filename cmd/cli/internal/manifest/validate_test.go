@@ -12,6 +12,26 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
+func TestBuildCreatePlanRejectsNetworkWithoutType(t *testing.T) {
+	// A typo'd top-level spec key (e.g. `specc:`) leaves the document with no
+	// spec mapping, so the Network spec decodes empty. Unlike StoragePool
+	// (path required) and VM (imageURL required), Network had no required
+	// field, so the empty create slipped past the CLI edge and was caught
+	// only by the server. The create path must reject a Network with no type.
+	const m = "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: n1 }\nspecc: { type: bridge, bridgeName: br0 }\n"
+	docs, err := manifest.Parse(strings.NewReader(m))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	_, err = manifest.BuildCreatePlan(docs)
+	if err == nil {
+		t.Fatalf("BuildCreatePlan() = nil error, want rejection of a typeless Network")
+	}
+	if !strings.Contains(err.Error(), "spec.type is required") {
+		t.Errorf("err = %v, want 'spec.type is required'", err)
+	}
+}
+
 func parseOne(t *testing.T, src string) manifest.Document {
 	t.Helper()
 	docs, err := manifest.Parse(strings.NewReader(src))

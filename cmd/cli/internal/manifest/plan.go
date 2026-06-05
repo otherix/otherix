@@ -4,6 +4,7 @@
 package manifest
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -132,6 +133,14 @@ func networkCreateOp(d Document) (CreateOp, error) {
 	s, err := DecodeNetworkSpec(d)
 	if err != nil {
 		return CreateOp{}, err
+	}
+	// type is mandatory for a create (the server enum is [bridge, overlay]).
+	// DecodeNetworkSpec is shared with the delete path, which needs only the
+	// name, so the required-field check lives here on the create path -
+	// mirroring the path/imageURL guards for StoragePool/VM. This also
+	// catches a typo'd top-level spec key, which decodes to an empty spec.
+	if s.Type == "" {
+		return CreateOp{}, fmt.Errorf("manifest: document %d (Network/%s): spec.type is required", d.Index, d.Name)
 	}
 	params := cpclient.CreateNetworkParams{
 		Name:       d.Name,
