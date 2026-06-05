@@ -20,15 +20,9 @@ var allPermissions = []auth.Permission{
 	auth.PermSnapshotRead, auth.PermSnapshotCreate, auth.PermSnapshotDelete,
 	auth.PermSnapshotRevert,
 
-	auth.PermTemplateReadPublic, auth.PermTemplateRead,
-	auth.PermTemplateCreate,
-	auth.PermTemplateUpdate, auth.PermTemplateDelete,
-	auth.PermTemplateSetVisibility, auth.PermTemplateUse,
-
 	auth.PermNetworkRead, auth.PermNetworkManage,
 	auth.PermStoragePoolRead, auth.PermStoragePoolManage, auth.PermStoragePoolScan,
 	auth.PermFirmwareRead, auth.PermFirmwareManage, auth.PermImageCacheRead,
-	auth.PermStorageImageImport, auth.PermStorageImageManage,
 
 	auth.PermNodeRead, auth.PermNodeMaintenance, auth.PermNodeManage,
 
@@ -72,13 +66,9 @@ func TestMatrix_ViewerIsReadOnly(t *testing.T) {
 		auth.PermVMLifecycle, auth.PermVMResize, auth.PermVMConsole,
 		auth.PermVMRevert, auth.PermVMMigrate,
 		auth.PermSnapshotCreate, auth.PermSnapshotDelete, auth.PermSnapshotRevert,
-		auth.PermTemplateCreate,
-		auth.PermTemplateUpdate, auth.PermTemplateDelete,
-		auth.PermTemplateSetVisibility,
 		auth.PermNetworkManage,
 		auth.PermStoragePoolManage, auth.PermStoragePoolScan,
 		auth.PermFirmwareManage,
-		auth.PermStorageImageImport, auth.PermStorageImageManage,
 		auth.PermNodeMaintenance, auth.PermNodeManage,
 		auth.PermUserManage,
 		auth.PermTaskCancel,
@@ -108,13 +98,6 @@ func TestMatrix_DeveloperOwnScope(t *testing.T) {
 		{auth.PermSnapshotDelete, auth.ScopeOwn},
 		{auth.PermSnapshotRevert, auth.ScopeOwn},
 
-		{auth.PermTemplateRead, auth.ScopeOwn},
-		{auth.PermTemplateUpdate, auth.ScopeOwn},
-		{auth.PermTemplateDelete, auth.ScopeOwn},
-
-		{auth.PermStorageImageImport, auth.ScopeOwn},
-		{auth.PermStorageImageManage, auth.ScopeOwn},
-
 		{auth.PermAPITokenManage, auth.ScopeOwn},
 
 		{auth.PermTaskRead, auth.ScopeOwn},
@@ -130,7 +113,6 @@ func TestMatrix_DeveloperOwnScope(t *testing.T) {
 func TestMatrix_DeveloperForbidden(t *testing.T) {
 	forbidden := []auth.Permission{
 		auth.PermVMMigrate,
-		auth.PermTemplateSetVisibility,
 		auth.PermNetworkManage,
 		auth.PermStoragePoolManage, auth.PermStoragePoolScan,
 		auth.PermFirmwareManage,
@@ -165,9 +147,6 @@ func TestMatrix_OperatorRestrictions(t *testing.T) {
 		auth.PermVMResize, auth.PermVMConsole, auth.PermVMRevert,
 		auth.PermVMMigrate,
 		auth.PermSnapshotCreate, auth.PermSnapshotDelete, auth.PermSnapshotRevert,
-		auth.PermTemplateRead, auth.PermTemplateUpdate, auth.PermTemplateDelete,
-		auth.PermTemplateSetVisibility,
-		auth.PermStorageImageImport, auth.PermStorageImageManage,
 		auth.PermNodeMaintenance,
 	}
 	for _, p := range anyScopeOperator {
@@ -191,10 +170,20 @@ func TestMatrix_APITokenManageAdminAnyOthersOwn(t *testing.T) {
 	}
 }
 
-func TestMatrix_PublicTemplateReadEveryone(t *testing.T) {
-	for _, role := range allRoles {
-		if !auth.Has(role, auth.PermTemplateReadPublic) {
-			t.Errorf("%s missing template:read:public", role)
+func TestMatrix_VMCreateIsImageGate(t *testing.T) {
+	// vm:create is the single gate for materializing a VM from an image
+	// URL; there is no per-image authorization. admin, operator, and
+	// developer all hold it at ScopeAny (a developer may create a VM from
+	// any image URL they supply); viewer does not hold it at all.
+	cases := map[auth.Role]auth.Scope{
+		auth.RoleAdmin:     auth.ScopeAny,
+		auth.RoleOperator:  auth.ScopeAny,
+		auth.RoleDeveloper: auth.ScopeAny,
+		auth.RoleViewer:    auth.ScopeNone,
+	}
+	for role, want := range cases {
+		if got := auth.ScopeFor(role, auth.PermVMCreate); got != want {
+			t.Errorf("%s scope for vm:create = %q, want %q", role, got, want)
 		}
 	}
 }

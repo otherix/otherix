@@ -38,25 +38,6 @@ const (
 	PermSnapshotDelete Permission = "snapshot:delete"
 	PermSnapshotRevert Permission = "snapshot:revert"
 
-	// Templates. `template:read:public` is the catalogue browse held by
-	// every authenticated user; `template:read` (with scope) governs
-	// private templates. `template:create` is unscoped (any role that
-	// holds it may create templates) — visibility is fixed to `private`
-	// at create time and only `template:set_visibility` (admin/operator)
-	// can flip it. `template:use` carries scope `own` for
-	// developer/viewer in the matrix — VM-create handlers must check
-	// `template:use` (own) OR (`template:read:public` AND
-	// templates.visibility = public). The composite is enforced at the
-	// handler level rather than baked into a "own + public" Scope so
-	// the Scope enum stays small.
-	PermTemplateReadPublic    Permission = "template:read:public"
-	PermTemplateRead          Permission = "template:read"
-	PermTemplateCreate        Permission = "template:create"
-	PermTemplateUpdate        Permission = "template:update"
-	PermTemplateDelete        Permission = "template:delete"
-	PermTemplateSetVisibility Permission = "template:set_visibility"
-	PermTemplateUse           Permission = "template:use"
-
 	// Networks. No owner; only one scope makes sense.
 	PermNetworkRead   Permission = "network:read"
 	PermNetworkManage Permission = "network:manage"
@@ -67,22 +48,13 @@ const (
 	PermStoragePoolManage Permission = "storage_pool:manage"
 	PermStoragePoolScan   Permission = "storage_pool:scan"
 
-	// Firmwares and node-side image cache.
+	// Firmwares and node-side image cache. `image_cache:read` gates the
+	// node-side image-cache read endpoints; there is no per-image
+	// authorization for VM creation (vm:create is the single gate — any
+	// image URL the caller supplies is fetched by the agent).
 	PermFirmwareRead   Permission = "firmware:read"
 	PermFirmwareManage Permission = "firmware:manage"
 	PermImageCacheRead Permission = "image_cache:read"
-
-	// Storage images — per-pool projections of templates' content
-	// (the storage_images junction). Mutator scopes mirror
-	// template:delete: admin/operator hold both at `any`, developer
-	// at `own`. The "own" scope reduces to the image's owning
-	// template's owner_id == caller.id; handlers also apply the
-	// public-bypass branch (template:read:public AND
-	// template.visibility = public) as a composite check, not a
-	// Scope value (parallels template:use). Reads continue to use
-	// PermImageCacheRead unchanged.
-	PermStorageImageImport Permission = "storage_image:import"
-	PermStorageImageManage Permission = "storage_image:manage"
 
 	// Nodes. The (full) vs (summary) response variant is response-shape,
 	// not a separate permission — every role holds `node:read`.
@@ -158,26 +130,15 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermSnapshotDelete: ScopeAny,
 		PermSnapshotRevert: ScopeAny,
 
-		// Templates.
-		PermTemplateReadPublic:    ScopeAny,
-		PermTemplateRead:          ScopeAny,
-		PermTemplateCreate:        ScopeAny,
-		PermTemplateUpdate:        ScopeAny,
-		PermTemplateDelete:        ScopeAny,
-		PermTemplateSetVisibility: ScopeAny,
-		PermTemplateUse:           ScopeAny,
-
 		// Infrastructure.
-		PermNetworkRead:        ScopeAny,
-		PermNetworkManage:      ScopeAny,
-		PermStoragePoolRead:    ScopeAny,
-		PermStoragePoolManage:  ScopeAny,
-		PermStoragePoolScan:    ScopeAny,
-		PermFirmwareRead:       ScopeAny,
-		PermFirmwareManage:     ScopeAny,
-		PermImageCacheRead:     ScopeAny,
-		PermStorageImageImport: ScopeAny,
-		PermStorageImageManage: ScopeAny,
+		PermNetworkRead:       ScopeAny,
+		PermNetworkManage:     ScopeAny,
+		PermStoragePoolRead:   ScopeAny,
+		PermStoragePoolManage: ScopeAny,
+		PermStoragePoolScan:   ScopeAny,
+		PermFirmwareRead:      ScopeAny,
+		PermFirmwareManage:    ScopeAny,
+		PermImageCacheRead:    ScopeAny,
 
 		// Nodes.
 		PermNodeRead:        ScopeAny,
@@ -222,27 +183,13 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermSnapshotDelete: ScopeAny,
 		PermSnapshotRevert: ScopeAny,
 
-		// Templates — full template management including the public
-		// catalogue and visibility moderation.
-		PermTemplateReadPublic:    ScopeAny,
-		PermTemplateRead:          ScopeAny,
-		PermTemplateCreate:        ScopeAny,
-		PermTemplateUpdate:        ScopeAny,
-		PermTemplateDelete:        ScopeAny,
-		PermTemplateSetVisibility: ScopeAny,
-		PermTemplateUse:           ScopeAny,
-
 		// Infrastructure — read everywhere; admin-only for
-		// network/pool/firmware lifecycle. Storage images: operator
-		// holds import/manage at `any` so they can administer image
-		// cache state on behalf of any template owner.
-		PermNetworkRead:        ScopeAny,
-		PermStoragePoolRead:    ScopeAny,
-		PermStoragePoolScan:    ScopeAny,
-		PermFirmwareRead:       ScopeAny,
-		PermImageCacheRead:     ScopeAny,
-		PermStorageImageImport: ScopeAny,
-		PermStorageImageManage: ScopeAny,
+		// network/pool/firmware lifecycle.
+		PermNetworkRead:     ScopeAny,
+		PermStoragePoolRead: ScopeAny,
+		PermStoragePoolScan: ScopeAny,
+		PermFirmwareRead:    ScopeAny,
+		PermImageCacheRead:  ScopeAny,
 
 		// Nodes — read and operational maintenance, but not lifecycle.
 		PermNodeRead:        ScopeAny,
@@ -279,27 +226,11 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermSnapshotDelete: ScopeOwn,
 		PermSnapshotRevert: ScopeOwn,
 
-		// Templates — public catalogue plus own private templates.
-		// PermTemplateUse is own here; VM-create must additionally
-		// allow `public + read:public` via handler logic (see comment
-		// at the constant's declaration).
-		PermTemplateReadPublic: ScopeAny,
-		PermTemplateRead:       ScopeOwn,
-		PermTemplateCreate:     ScopeAny,
-		PermTemplateUpdate:     ScopeOwn,
-		PermTemplateDelete:     ScopeOwn,
-		PermTemplateUse:        ScopeOwn,
-
-		// Infrastructure — read-only for context. Storage images:
-		// developer may import / manage on their own templates' content
-		// (own scope; handlers add the public-bypass branch as a
-		// composite check, not a Scope value).
-		PermNetworkRead:        ScopeAny,
-		PermStoragePoolRead:    ScopeAny,
-		PermFirmwareRead:       ScopeAny,
-		PermImageCacheRead:     ScopeAny,
-		PermStorageImageImport: ScopeOwn,
-		PermStorageImageManage: ScopeOwn,
+		// Infrastructure — read-only for context.
+		PermNetworkRead:     ScopeAny,
+		PermStoragePoolRead: ScopeAny,
+		PermFirmwareRead:    ScopeAny,
+		PermImageCacheRead:  ScopeAny,
 
 		// Nodes — summary read.
 		PermNodeRead: ScopeAny,
@@ -323,12 +254,6 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		// trigger read-side operations that emit task/snapshot rows
 		// against their own id).
 		PermSnapshotRead: ScopeOwn,
-
-		// Templates — only the public catalogue. PermTemplateUse stays
-		// own for symmetry with developer; in practice viewer cannot
-		// create a VM, so this only matters for completeness.
-		PermTemplateReadPublic: ScopeAny,
-		PermTemplateUse:        ScopeOwn,
 
 		// Infrastructure — read-only.
 		PermNetworkRead:     ScopeAny,
