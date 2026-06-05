@@ -186,8 +186,7 @@ export OTHERIX_API_TOKEN="$TOKEN"
 
 ```bash
 # Create a VM (async; returns task id).
-./bin/otherix vm create \
-  --name demo-vm \
+./bin/otherix vm create demo-vm \
   --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
   --arch arm64 \
   --vcpus 2 --memory-mb 2048 \
@@ -475,16 +474,14 @@ literals are rejected by the server with 400 validation_failed.
 
 ```bash
 # Create — uses cluster default pool, scheduler picks node
-$ otherix vm create \
-    --name demo-vm \
+$ otherix vm create demo-vm \
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
     --vcpus 2 --memory-mb 2048 \
     --wait
 
 # Create — explicit pool + node placement hint
-$ otherix vm create \
-    --name pinned-vm \
+$ otherix vm create pinned-vm \
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
     --pool fast-ssd \
@@ -702,8 +699,7 @@ server resolves the cluster default-pool reference held in
 pool on every ready node, so the command below works without `--pool`:
 
 ```bash
-./bin/otherix vm create \
-    --name demo-vm \
+./bin/otherix vm create demo-vm \
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
     --vcpus 2 --memory-mb 2048 --wait
@@ -715,8 +711,7 @@ pool on every ready node, so the command below works without `--pool`:
 To target a specific node explicitly:
 
 ```bash
-./bin/otherix vm create \
-    --name demo-vm \
+./bin/otherix vm create demo-vm \
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
     --pool default \
