@@ -44,11 +44,30 @@ func JoinDocuments(docs [][]byte) []byte {
 	return bytes.Join(docs, []byte("---\n"))
 }
 
-// ProjectNetwork renders a live Network as an apply-ready manifest. It
-// carries mtu (always, since the column is NOT NULL) and vlan (only when
-// a tag is set) so a `network get -o yaml | create -f` round-trip does
-// not silently reset a non-default MTU or drop the VLAN tag.
+// ProjectNetwork renders a live Network as an apply-ready manifest. For
+// a bridge network it carries mtu (always, since the column is NOT NULL)
+// and vlan (only when a tag is set) so a `network get -o yaml | create
+// -f` round-trip does not silently reset a non-default MTU or drop the
+// VLAN tag. For an overlay network the create API forbids bridgeName /
+// mtu / vlan / gateway / egress (all server-derived or fixed) and
+// requires subnet, so the projection emits only type + subnet -- the
+// minimal valid overlay create body. Re-applying allocates a fresh VNI,
+// the same way an id is not preserved across a round-trip. The
+// operator-settable `config` blob is not yet manifest-expressible and so
+// is dropped on every projection (see the docs round-trip caveat).
 func ProjectNetwork(n cpclient.Network) ([]byte, error) {
+	if n.Type == "overlay" {
+		spec := map[string]any{"type": n.Type}
+		if n.Subnet != nil && *n.Subnet != "" {
+			spec["subnet"] = *n.Subnet
+		}
+		return encodeDoc(outDoc{
+			APIVersion: APIVersionV1,
+			Kind:       KindNetwork,
+			Metadata:   outMetadata{Name: n.Name},
+			Spec:       spec,
+		})
+	}
 	spec := map[string]any{
 		"type":       n.Type,
 		"bridgeName": n.BridgeName,
@@ -118,13 +137,14 @@ func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 	})
 }
 
-// ProjectVM renders a live VM as an apply-ready manifest. cloudInit is
-// intentionally omitted: user_data is create-time and not surfaced by
-// the API view, so it cannot round-trip (documented limitation).
-// desiredPhase is also omitted (not part of the v1 VM manifest schema).
-// Only the first network is projected: the v1 VM manifest schema has a
-// single `network` field, so multi-NIC VMs are not manifest-expressible
-// and any NICs beyond the first are intentionally omitted.
+// ProjectVM renders a live VM as an apply-ready manifest. Several
+// create-time fields are intentionally omitted because the API view does
+// not surface them, so they cannot round-trip (documented limitation):
+// cloudInit (user_data), cloudInitDisabled, firmware/firmwareID, and
+// diskGiB. desiredPhase is also omitted (not part of the v1 VM manifest
+// schema). Only the first network is projected: the v1 VM manifest schema
+// has a single `network` field, so multi-NIC VMs are not
+// manifest-expressible and any NICs beyond the first are omitted.
 func ProjectVM(v cpclient.VM) ([]byte, error) {
 	spec := map[string]any{
 		"imageURL": v.ImageURL,

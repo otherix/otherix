@@ -59,6 +59,35 @@ func TestProjectNetworkRoundTripsMTUAndVLAN(t *testing.T) {
 	}
 }
 
+func TestProjectNetworkOverlayIsReappliable(t *testing.T) {
+	// An overlay network's bridge_name/mtu/vlan are server-derived and the
+	// create API forbids them for type=overlay. Projecting them verbatim
+	// yields a manifest the server rejects, so the overlay projection must
+	// emit only type + subnet (the valid overlay create body).
+	subnet := "10.10.0.0/24"
+	n := cpclient.Network{Name: "ovl", Type: "overlay", BridgeName: "otb100", MTU: 1390, Subnet: &subnet}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if strings.Contains(string(out), "bridgeName") {
+		t.Errorf("overlay projection must not emit bridgeName (server-forbidden):\n%s", out)
+	}
+	if strings.Contains(string(out), "mtu") {
+		t.Errorf("overlay projection must not emit mtu (server-forbidden):\n%s", out)
+	}
+	if !strings.Contains(string(out), "type: overlay") || !strings.Contains(string(out), "subnet: 10.10.0.0/24") {
+		t.Errorf("overlay projection missing type/subnet:\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse overlay projection: %v", err)
+	}
+	if _, err := manifest.BuildCreatePlan(docs); err != nil {
+		t.Fatalf("overlay projection not apply-ready: %v", err)
+	}
+}
+
 func TestProjectMultiDocSeparator(t *testing.T) {
 	a := cpclient.Network{Name: "a", Type: "bridge", BridgeName: "br0"}
 	b := cpclient.Network{Name: "b", Type: "bridge", BridgeName: "br1"}
