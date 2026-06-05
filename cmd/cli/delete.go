@@ -91,10 +91,10 @@ func runDeletePlan(cmd *cobra.Command, c *cpclient.Client, targets []manifest.De
 		switch t.Kind {
 		case manifest.KindVM:
 			_, err := c.DeleteVM(ctx, t.Name)
-			results = append(results, docResult{kind: t.Kind, name: t.Name, committed: err == nil, err: cpErr(err)})
+			results = append(results, docResult{kind: t.Kind, name: t.Name, committed: err == nil, err: fanoutErr(err)})
 		case manifest.KindNetwork:
 			err := c.DeleteNetwork(ctx, t.Name)
-			results = append(results, docResult{kind: t.Kind, name: t.Name, committed: err == nil, err: cpErr(err)})
+			results = append(results, docResult{kind: t.Kind, name: t.Name, committed: err == nil, err: fanoutErr(err)})
 		case manifest.KindStoragePool:
 			results = append(results, deletePoolInstance(ctx, c, t))
 		}
@@ -126,7 +126,7 @@ func deletePoolInstance(ctx context.Context, c *cpclient.Client, t manifest.Dele
 	}
 	err = c.DeletePool(ctx, id)
 	res.committed = err == nil
-	res.err = cpErr(err)
+	res.err = fanoutErr(err)
 	return res
 }
 

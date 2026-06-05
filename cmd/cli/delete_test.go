@@ -109,9 +109,20 @@ func TestDeleteReportsBlockerNonZeroExit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := runRoot(t, srv.URL, "delete", "-f", writeManifest(t, deleteManifest), "--force")
+	_, stderr, err := runRoot(t, srv.URL, "delete", "-f", writeManifest(t, deleteManifest), "--force")
 	if err == nil {
 		t.Fatalf("expected non-nil error when a delete is blocked")
+	}
+	// A domain conflict (the network is still in use) must NOT be
+	// mislabeled with clierr's transport "request_failed:" category -
+	// scripts grep that prefix to detect genuine transport faults.
+	if strings.Contains(stderr, "request_failed:") {
+		t.Errorf("blocked-delete stderr carries the transport prefix; want a domain message:\n%s", stderr)
+	}
+	// The failure line must name the blocker and its count so the
+	// operator knows what to clean up.
+	if !strings.Contains(stderr, "blocked") || !strings.Contains(stderr, "vm_nics=2") {
+		t.Errorf("blocked-delete stderr = %q, want it to mention blocked and vm_nics=2", stderr)
 	}
 }
 

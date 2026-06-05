@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/clierr"
 	"github.com/otherix/otherix/cmd/cli/internal/cloudinit"
+	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
@@ -130,12 +132,54 @@ type docResult struct {
 // cpErr classifies an error returned by a cpclient call into the CLI's
 // stable "<category>: <detail>" form (so operator scripts can grep
 // connection_refused:/request_timeout:/etc.), matching the rest of the
-// CLI. Returns nil for nil.
+// CLI. Returns nil for nil. Used for the --wait path (GetPoolByID /
+// WaitTask), where every error is a genuine transport / poll fault and
+// the transport category is correct.
 func cpErr(err error) error {
 	if err == nil {
 		return nil
 	}
 	return clierr.Classify(err)
+}
+
+// fanoutErr renders a fan-out error for the per-document summary. Typed
+// domain conflicts (a resource still in use, or already existing) are
+// surfaced with their own message - never wrapped in clierr's transport
+// "request_failed:" category, which scripts use to detect transport
+// faults. Everything else is classified for the stable category prefix.
+func fanoutErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var poolBlocked *cpclient.ErrPoolBlocked
+	if errors.As(err, &poolBlocked) {
+		return fmt.Errorf("blocked: %s", formatBlocking(poolBlocked.Resources))
+	}
+	var netBlocked *cpclient.ErrNetworkBlocked
+	if errors.As(err, &netBlocked) {
+		return fmt.Errorf("blocked: %s", formatBlocking(netBlocked.Resources))
+	}
+	if errors.Is(err, cpclient.ErrPoolExists) || errors.Is(err, cpclient.ErrNetworkExists) {
+		// already-exists is a clean domain message; keep it verbatim,
+		// no transport prefix.
+		return err
+	}
+	return clierr.Classify(err)
+}
+
+// formatBlocking renders a blocking-resources map deterministically as
+// "k=v, k=v" with sorted keys (avoids Go's map[...] ordering noise).
+func formatBlocking(res map[string]int64) string {
+	keys := make([]string, 0, len(res))
+	for k := range res {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, res[k]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // renderSummary prints one line per operation and returns a non-nil
