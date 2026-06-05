@@ -1,0 +1,14 @@
+# Demo VM manifest for the local dev stack. Apply with:
+#   ./bin/otherix create -f dev/manifests/demo-vm.yaml --wait
+# The default image is the Noble minimal arm64 cloudimg (Mac/Lima dev
+# default). On an amd64 host swap imageURL to the amd64 cloudimg and set
+# arch: amd64.
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: demo
+spec:
+  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+  arch: arm64
+  vcpus: 2
+  memoryMB: 2048

@@ -1,0 +1,10 @@
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: demo-nat
+spec:
+  type: bridge
+  managed: true
+  bridgeName: otnat0
+  egress: nat
+  subnet: 10.77.0.0/24

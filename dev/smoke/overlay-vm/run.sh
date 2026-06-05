@@ -36,16 +36,21 @@
 set -euo pipefail
 
 # --- configuration -----------------------------------------------------
+# Resource names, node pinning, subnet, and the two guest IPs are fixed in the
+# committed manifests (manifests/overlay.yaml + manifests/vms.yaml.tmpl); the
+# constants below mirror them for the assertions/log lines and MUST stay in
+# sync with those files. Only IMAGE_URL / ARCH are rendered into the template.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
 VM1="${VM1:-otherix-dev-1}"           # Lima instance backing node-1
 VM2="${VM2:-otherix-dev-2}"           # Lima instance backing node-2
-NODE1="${NODE1:-node-1}"
-NODE2="${NODE2:-node-2}"
+NODE1="node-1"
+NODE2="node-2"
+NET="ovvm-smoke"                      # fixed; the smoke delete-firsts any stale leftover
 IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"  # Noble minimal arm64 cloudimg
 ARCH="${ARCH:-arm64}"
-SUBNET="${SUBNET:-10.71.0.0/24}"
-IP1="${IP1:-10.71.0.10}"
-IP2="${IP2:-10.71.0.11}"
+IP1="10.71.0.10"
+IP2="10.71.0.11"
 PING_WAIT="${PING_WAIT:-720}"         # seconds to wait for the cross-node ping sentinel.
                                       # On dev Macs (M1/M2 Lima, no nested KVM) the guest
                                       # boots under TCG software emulation and can take ~7min
@@ -80,90 +85,25 @@ net_ready_both() {
   return 0
 }
 
-# gen_userdata SELF-IP PEER-IP DO-PROBE(yes/no) -> #cloud-config on stdout.
-# Statically configures the single overlay NIC. The guest's only NIC enumerates
-# as enp0s1 (deterministic from the agent's QEMU machine type + single virtio-net
-# device on PCI slot 1). We target it by a glob match (en*) and mark it optional
-# so systemd-networkd-wait-online does not block boot for ~3min waiting on a DHCP
-# lease that never comes (there is no DHCP server on the overlay). A runcmd
-# `ip addr replace` is a belt-and-suspenders fallback in case the netplan rewrite
-# is masked by the image's baked 50-cloud-init.yaml.
-#
-# The reachability probe is a TCP connect to the peer's sshd (:22) via bash
-# /dev/tcp - NOT ping. The Ubuntu *minimal* cloudimg ships no iputils-ping (and
-# no nc/arping); curl/wget/bash-builtins are all that's present. A successful
-# /dev/tcp open proves the full L3 path (ARP over the overlay flood entry + the
-# unicast frame across the encrypted VXLAN) end to end. sshd is up by default in
-# the image, so the passive peer needs no listener setup. The success sentinel is
-# echoed to the guest serial console, which the agent persists to
-# /opt/otherix/vms/<id>/serial.log (no SSH into the guest required).
-gen_userdata() {
-  local self="$1" peer="$2" probe="$3"
-  cat <<EOF
-#cloud-config
-users:
-  - name: otherix
-    plain_text_passwd: otherix
-    lock_passwd: false
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: [sudo]
-    shell: /bin/bash
-chpasswd:
-  expire: false
-ssh_pwauth: true
-write_files:
-  - path: /etc/netplan/50-cloud-init.yaml
-    permissions: '0600'
-    content: |
-      network:
-        version: 2
-        ethernets:
-          overlay-nic:
-            match:
-              name: "en*"
-            dhcp4: false
-            dhcp6: false
-            optional: true
-            addresses: [${self}/24]
-runcmd:
-  - netplan apply || true
-  - sleep 2
-  - |
-    # Serial console device differs by arch: ttyAMA0 (PL011) on arm64, ttyS0 on
-    # amd64. The agent captures whichever the QEMU -serial chardev backs into
-    # /opt/otherix/vms/<id>/serial.log, so pick the present one.
-    SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
-    IF=\$(ls /sys/class/net | grep -E '^en' | head -1)
-    ip addr replace ${self}/24 dev "\$IF" 2>/dev/null || true
-    ip link set "\$IF" up 2>/dev/null || true
-    sleep 2
-    { echo "SMOKE_NET if=\$IF serial=\$SC"; ip -br addr show; } > "\$SC" 2>&1 || true
-EOF
-  if [[ "$probe" == "yes" ]]; then
-    cat <<EOF
-  - |
-    SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
-    for i in \$(seq 1 150); do
-      if timeout 3 bash -c "echo > /dev/tcp/${peer}/22" 2>/dev/null; then
-        echo "OVERLAY_PING_OK ${self}->${peer}" > "\$SC"
-        break
-      fi
-      echo "SMOKE_PROBE ${self}->${peer}:22 attempt \$i failed" > "\$SC"
-      sleep 2
-    done
-EOF
-  fi
-}
-
-NET=""
-UD1=""; UD2=""
+# The guest cloud-config now lives in manifests/vms.yaml.tmpl (one document per
+# VM, inline `cloudInit:`), not a heredoc here. Notes preserved from the old
+# gen_userdata for context:
+#   - The single overlay NIC enumerates as en* (deterministic QEMU virtio-net on
+#     PCI slot 1); netplan targets it by glob and marks it optional so
+#     systemd-networkd-wait-online does not block boot waiting on a DHCP lease
+#     that never comes (no DHCP on the overlay). A runcmd `ip addr replace` is a
+#     belt-and-suspenders fallback.
+#   - VM-A's reachability probe is a bash /dev/tcp connect to the peer's sshd
+#     (:22), NOT ping (the Ubuntu *minimal* cloudimg ships no ping/nc). A
+#     successful open proves the full L3 path (ARP over the overlay flood entry +
+#     the unicast frame across the encrypted VXLAN). The OVERLAY_PING_OK sentinel
+#     is echoed to the guest serial console, which the agent persists to
+#     /opt/otherix/vms/<id>/serial.log (no SSH into the guest required).
 cleanup() {
   echo "--- cleanup ---"
   otx vm delete "${NET}-a" --wait --force >/dev/null 2>&1 || true
   otx vm delete "${NET}-b" --wait --force >/dev/null 2>&1 || true
-  [[ -n "$NET" ]] && otx network delete "$NET" --force >/dev/null 2>&1 || true
-  [[ -n "$UD1" ]] && rm -f "$UD1"
-  [[ -n "$UD2" ]] && rm -f "$UD2"
+  otx network delete "$NET" --force >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -210,11 +150,11 @@ pass "default pool ready on $NODE1 and $NODE2"
 
 # --- step 1: overlay + two VMs (one per node) --------------------------
 echo "=== step 1: create overlay + a VM on each node ==="
-NET="ovvm-$$"
-created="$(otx network create "$NET" --type overlay --subnet "$SUBNET" --output json)" \
-  || fail "overlay network create failed"
-VNI="$(echo "$created" | jq -r '.vni')"
-[[ "$VNI" =~ ^[0-9]+$ ]] || fail "no vni in create response: $created"
+# best-effort delete-first so a stale leftover from a prior run does not 409
+cleanup >/dev/null 2>&1 || true
+otx create -f "${SCRIPT_DIR}/manifests/overlay.yaml" || fail "create -f overlay.yaml failed"
+VNI="$(otx network get "$NET" --output json | jq -r '.vni')"
+[[ "$VNI" =~ ^[0-9]+$ ]] || fail "no vni on $NET after create"
 VTEP="otvx$VNI"
 pass "overlay $NET created: vni=$VNI vtep=$VTEP"
 
@@ -229,24 +169,18 @@ done
 (( net_ok == 1 )) || { otx network get "$NET" --output json | jq -c '.status.nodes'; fail "$NET did not reconcile ready on both nodes within ${FDB_WAIT}s"; }
 pass "$NET reconciled ready on both nodes"
 
-UD1="$(mktemp)"; UD2="$(mktemp)"
-gen_userdata "$IP1" "$IP2" yes > "$UD1"   # VM-A pings VM-B and emits the sentinel
-gen_userdata "$IP2" "$IP1" no  > "$UD2"   # VM-B is passive
-
-# Both VMs are created WITHOUT --pool: they resolve to the cluster default pool
-# ("default"), pinned per node by --node. The image is given by URL; on a cold
-# pool the agent materializes it into the pool's basename-keyed cache on first
-# use (IfNotPresent), so budget both creates for download + create.
+# Both VMs resolve to the cluster default pool (no spec.pool) and are pinned per
+# node in the manifest. On a cold pool the agent materializes the image into the
+# pool's basename-keyed cache on first use (IfNotPresent), so budget for the
+# download. create -f applies both VM documents and --wait polls them; the wait
+# budget is shared across the two, so double the per-VM cold budget.
 COLD_VM_WAIT=$(( VM_WAIT * 2 ))
-info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (default pool, <= ${COLD_VM_WAIT}s each incl. cold image fetch)"
-otx vm create "${NET}-a" --node "$NODE1" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
-  --vcpus 2 --memory-mb 2048 --cloud-init "$UD1" \
-  --wait --wait-timeout "${COLD_VM_WAIT}s" \
-  || fail "vm create A on $NODE1 did not reach success"
-otx vm create "${NET}-b" --node "$NODE2" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
-  --vcpus 2 --memory-mb 2048 --cloud-init "$UD2" \
-  --wait --wait-timeout "${COLD_VM_WAIT}s" \
-  || fail "vm create B on $NODE2 did not reach success"
+WAIT_BOTH=$(( COLD_VM_WAIT * 2 ))
+info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (default pool, <= ${WAIT_BOTH}s for both incl. cold image fetch)"
+sed -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" -e "s|@@ARCH@@|${ARCH}|g" \
+  "${SCRIPT_DIR}/manifests/vms.yaml.tmpl" \
+  | otx create -f - --wait --wait-timeout "${WAIT_BOTH}s" \
+  || fail "create -f VMs did not reach success"
 pass "overlay $NET + both VMs created (one per node)"
 
 # resolve the two VM ids (for the on-node serial.log path)
@@ -304,13 +238,15 @@ pass "cross-node VM-to-VM reachability over the overlay succeeded (CP-distribute
 
 # --- step 4: teardown --------------------------------------------------
 echo "=== step 4: teardown VMs + overlay ==="
+# Imperative + --wait so the VMs are gone before the overlay delete (avoids a
+# NIC-release race on the slow cross-node path); best-effort so a teardown hiccup
+# never masks the reachability result proven above. The dedicated manifests smoke
+# covers the `delete -f` reverse-order path.
 otx vm delete "${NET}-a" --wait --force >/dev/null 2>&1 || true
 otx vm delete "${NET}-b" --wait --force >/dev/null 2>&1 || true
 otx network delete "$NET" --force >/dev/null 2>&1 || true
-NET=""   # disarm the trap's network delete (already done)
 pass "VMs + overlay deleted"
 
 trap - EXIT
-rm -f "$UD1" "$UD2"
 echo
 echo "${GREEN}=== overlay-vm smoke PASSED ===${NC}"

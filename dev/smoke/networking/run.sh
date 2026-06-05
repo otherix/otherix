@@ -30,11 +30,12 @@ set -euo pipefail
 # node-1 carries the bridge for $BRIDGE_NET; node-2 is a WG-mesh-only peer
 # without it, so the scheduler pins placement here. The tap/bridge assertions run
 # against otherix-dev-1.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
 LIMA_VM="${LIMA_VM:-otherix-dev-1}"
 NODE="${NODE:-node-1}"
 BRIDGE_NET="demo-bridge"
-BRIDGE_IFACE="otbr0"
+BRIDGE_IFACE="otmbr0"   # otb* is reserved for overlay bridges (otb<vni>); otm* is free
 NAT_NET="demo-nat"
 NAT_IFACE="otnat0"
 NAT_SUBNET="10.77.0.0/24"
@@ -117,8 +118,8 @@ pass "$WG_IFACE up: overlay $WG_OVERLAY, port 51820, $peer_count peer(s), key ma
 
 # --- step 1: managed bridge -------------------------------------------
 echo "=== step 1: managed bridge ($BRIDGE_NET -> $BRIDGE_IFACE) ==="
-otx network create "$BRIDGE_NET" --type bridge --managed --bridge-name "$BRIDGE_IFACE" --mtu 1500 \
-  || fail "network create $BRIDGE_NET failed"
+otx create -f "${SCRIPT_DIR}/manifests/bridge.yaml" \
+  || fail "create -f bridge.yaml failed"
 pass "created $BRIDGE_NET"
 wait_ready "$BRIDGE_NET"
 invm ip -o link show "$BRIDGE_IFACE" >/dev/null 2>&1 \
@@ -127,9 +128,8 @@ pass "$BRIDGE_IFACE exists on $LIMA_VM (managed bridge materialised over netlink
 
 # --- step 2: managed NAT ----------------------------------------------
 echo "=== step 2: managed NAT ($NAT_NET -> $NAT_IFACE, $NAT_SUBNET) ==="
-nat_json="$(otx network create "$NAT_NET" --type bridge --managed --bridge-name "$NAT_IFACE" \
-  --egress nat --subnet "$NAT_SUBNET" --output json)" || fail "network create $NAT_NET failed"
-got_gw="$(echo "$nat_json" | jq -r '.gateway')"
+otx create -f "${SCRIPT_DIR}/manifests/nat.yaml" || fail "create -f nat.yaml failed"
+got_gw="$(otx network get "$NAT_NET" --output json | jq -r '.gateway')"
 [[ "$got_gw" == "$NAT_GATEWAY" ]] || fail "expected auto gateway $NAT_GATEWAY, got '$got_gw'"
 pass "created $NAT_NET, gateway auto-derived to $got_gw"
 wait_ready "$NAT_NET"
@@ -153,9 +153,10 @@ echo "=== step 4: vm create --network $BRIDGE_NET ==="
 IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
 ARCH="${ARCH:-arm64}"
 info "booting $VM_NAME from $IMAGE_URL (<= ${VM_TIMEOUT}s; cold pool fetches the image on first use)"
-otx vm create "$VM_NAME" --image-url "$IMAGE_URL" --arch "$ARCH" --network "$BRIDGE_NET" \
-  --vcpus 2 --memory-mb 2048 --wait --wait-timeout "${VM_TIMEOUT}s" \
-  || fail "vm create --network did not reach success"
+sed -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" -e "s|@@ARCH@@|${ARCH}|g" \
+  "${SCRIPT_DIR}/manifests/vm.yaml.tmpl" \
+  | otx create -f - --wait --wait-timeout "${VM_TIMEOUT}s" \
+  || fail "create -f vm did not reach success"
 pass "$VM_NAME created with a NIC on $BRIDGE_NET"
 # the tap is ot<12-hex>; assert one is enslaved to the bridge
 tap="$(invm ip -o link show master "$BRIDGE_IFACE" 2>/dev/null | awk -F': ' '/ ot/{print $2}' | awk '{print $1}' | head -1 || true)"

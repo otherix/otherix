@@ -5,9 +5,17 @@
 # Declarative-manifests operator smoke - drives the `otherix` CLI as a
 # real operator against a real agent on the Lima VM, exercising the
 # YAML-manifest surface end to end:
-#   - `otherix create -f` (multi-doc: kind Network + kind VM, --wait)
+#   - `otherix create -f` (single multi-doc apply: kind Network + kind VM, --wait)
 #   - `otherix vm get  -o yaml` / `otherix network get -o yaml` round-trip
-#   - `otherix delete -f` (reverse order: VM -> Network)
+#   - `otherix delete -f` (single multi-doc, reverse order: VM -> Network)
+#
+# The VM is intentionally NOT attached to the Network: that keeps the
+# single-shot create -f / delete -f free of the VM<->Network reconcile/teardown
+# dependency (a VM on a brand-new network races the network-aware scheduler on
+# create, and the network delete is blocked by the VM's NIC on delete because VM
+# delete is async). The attached-VM-on-a-manifest-network flow is covered by the
+# networking smoke (which sequences network-reconcile before the VM); the
+# single-apply dependency gap is a ROADMAP backlog item.
 #
 # This is the manifest-feature closure gate (per the iteration discipline +
 # smoke-tests-operator-scenarios rule): the whole flow goes through the
@@ -27,6 +35,7 @@
 set -euo pipefail
 
 # --- configuration -----------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
 NODE="${NODE:-node-1}"
 IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
@@ -61,32 +70,22 @@ node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' 
 [[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-mvp"
 pass "CP up, $NODE ready"
 
-# --- step 1: write the multi-doc manifest ------------------------------
-echo "=== step 1: write manifest ==="
+# best-effort delete-first so a stale leftover from a prior failed run does not
+# 409 the create below (the VM is unattached, so the network delete is not
+# blocked).
+otx vm delete "$VM_NAME" --wait --force >/dev/null 2>&1 || true
+otx network delete "$SMOKE_NET" --force >/dev/null 2>&1 || true
+
+# --- step 1: render the multi-doc manifest from the committed template --
+# The manifest lives in stack.yaml.tmpl (a real file, not an inline heredoc);
+# the script only substitutes its @@...@@ tokens.
+echo "=== step 1: render manifest ==="
 MANIFEST="$(mktemp -t otherix-manifest-smoke.XXXXXX.yaml)"
-cat >"$MANIFEST" <<EOF
-apiVersion: otherix/v1
-kind: Network
-metadata:
-  name: ${SMOKE_NET}
-spec:
-  type: bridge
-  managed: true
-  bridgeName: ${SMOKE_BRIDGE}
-  mtu: 1500
----
-apiVersion: otherix/v1
-kind: VM
-metadata:
-  name: ${VM_NAME}
-spec:
-  imageURL: ${IMAGE_URL}
-  arch: ${ARCH}
-  network: ${SMOKE_NET}
-  vcpus: 2
-  memoryMB: 2048
-EOF
-pass "wrote manifest to $MANIFEST"
+sed \
+  -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" \
+  -e "s|@@ARCH@@|${ARCH}|g" \
+  "${SCRIPT_DIR}/stack.yaml.tmpl" >"$MANIFEST"
+pass "rendered manifest to $MANIFEST"
 
 # --- step 2: create -f (wait for VM ready) -----------------------------
 echo "=== step 2: create -f ==="
