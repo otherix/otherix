@@ -30,13 +30,13 @@ func newDeleteCommand() *cobra.Command {
 		Long: `Submits DELETE /v1/storage-pools/{identifier}. The command fails with
 409 conflict when the pool still has dependent resources:
 
-  - storage_images materialised in the pool;
   - vm_disks still referencing the pool.
 
 Storage pools have no force-delete counterpart by design — the operator
-must remove or migrate the dependent disks/images before retrying. The
+must remove or migrate the dependent disks before retrying. The
 failure output lists the blocking resources and their counts so operators
-know what to clean up first.
+know what to clean up first. (The agent-owned image cache is not a delete
+blocker.)
 
 The CLI accepts both a pool name (cluster-wide concept, resolves only
 when a single per-node instance exists for that name) and a UUID literal
