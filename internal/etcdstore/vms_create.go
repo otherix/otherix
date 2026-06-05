@@ -109,7 +109,9 @@ func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.Placement
 }
 
 // vmFromCreateParams projects CreateVMParams onto a store.VM, defaulting
-// desired_phase to running and generation to 1 (the SQL column defaults).
+// desired_phase to running and generation to 1 (the SQL column defaults). The VM
+// row carries the self-describing image fields (url/sha256/format) the create
+// request resolved, replacing the former template reference.
 func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 	return store.VM{
 		ID:                p.ID,
@@ -117,8 +119,10 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		Name:              p.Name,
 		Description:       p.Description,
 		DesiredPhase:      store.VmDesiredPhaseRunning,
-		TemplateID:        p.TemplateID,
 		Architecture:      p.Architecture,
+		ImageURL:          p.ImageURL,
+		ImageSHA256:       p.ImageSHA256,
+		ImageFormat:       p.ImageFormat,
 		CpuCores:          p.CpuCores,
 		MemoryMib:         p.MemoryMib,
 		CPUModel:          p.CPUModel,
@@ -135,36 +139,33 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 }
 
 // vmDiskFromCreateParams projects CreateVMDiskParams onto a store.VMDisk,
-// minting the disk id (the SQL default) and defaulting generation to 1.
+// minting the disk id (the SQL default) and defaulting generation to 1. The root
+// disk's source is always an image now (the template source kind is gone).
 func vmDiskFromCreateParams(p store.CreateVMDiskParams, now time.Time) store.VMDisk {
 	return store.VMDisk{
-		ID:               uuid.New(),
-		VmID:             p.VmID,
-		StoragePoolID:    p.StoragePoolID,
-		DeviceOrder:      p.DeviceOrder,
-		Bus:              p.Bus,
-		SizeGib:          p.SizeGib,
-		SourceKind:       p.SourceKind,
-		SourceTemplateID: p.SourceTemplateID,
-		Format:           p.Format,
-		ReadOnly:         p.ReadOnly,
-		CacheMode:        p.CacheMode,
-		Discard:          p.Discard,
-		BootOrder:        p.BootOrder,
-		Generation:       1,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:            uuid.New(),
+		VmID:          p.VmID,
+		StoragePoolID: p.StoragePoolID,
+		DeviceOrder:   p.DeviceOrder,
+		Bus:           p.Bus,
+		SizeGib:       p.SizeGib,
+		SourceKind:    "image",
+		Format:        p.Format,
+		ReadOnly:      p.ReadOnly,
+		CacheMode:     p.CacheMode,
+		Discard:       p.Discard,
+		BootOrder:     p.BootOrder,
+		Generation:    1,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 }
 
 // vmIndexOps returns the secondary-index writes that earlier slices consume:
-// name->id (guard, written separately), owner, template, firmware, pinned-node.
+// name->id (guard, written separately), owner, firmware, pinned-node.
 func vmIndexOps(vm store.VM) []clientv3.Op {
 	ops := []clientv3.Op{
 		clientv3.OpPut(etcd.Key("index", "vms", "owner", vm.OwnerID.String(), vm.ID.String()), vm.ID.String()),
-	}
-	if vm.TemplateID != nil {
-		ops = append(ops, clientv3.OpPut(etcd.Key("index", "vms", "template", vm.TemplateID.String(), vm.ID.String()), vm.ID.String()))
 	}
 	if vm.FirmwareID != nil {
 		ops = append(ops, clientv3.OpPut(etcd.Key("index", "vms", "firmware", vm.FirmwareID.String(), vm.ID.String()), vm.ID.String()))

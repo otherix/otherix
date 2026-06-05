@@ -20,27 +20,27 @@ import (
 
 // seedCreatedVM seeds a scheduled VM (vm + disk + pending task) and returns the
 // ids the projection methods key off, plus the create task id.
-func seedCreatedVM(t *testing.T, s *etcdstore.Store) (vmID, nodeID, poolID, templateID, taskID uuid.UUID) {
+func seedCreatedVM(t *testing.T, s *etcdstore.Store) (vmID, nodeID, poolID, taskID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ = schedulingFixture(t, s)
+	nodeID, poolID, _ = schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "vm-" + uuid.NewString()[:8]
 	var writes store.VMCreateWrites
 	taskID, err := s.CreateScheduledVM(ctx, func(store.PlacementReader) (store.VMCreateWrites, error) {
-		writes = vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+		writes = vmCreateWrites(t, name, owner, nodeID, poolID)
 		return writes, nil
 	})
 	if err != nil {
 		t.Fatalf("CreateScheduledVM: %v", err)
 	}
-	return writes.VM.ID, nodeID, poolID, templateID, taskID
+	return writes.VM.ID, nodeID, poolID, taskID
 }
 
 func TestProjectVMCreateSuccess(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	vmID, nodeID, _, templateID, taskID := seedCreatedVM(t, s)
+	vmID, nodeID, _, taskID := seedCreatedVM(t, s)
 
 	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
@@ -52,7 +52,6 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 			Phase:              store.VmPhaseRunning,
 			ObservedGeneration: 1,
 		},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)},
 	); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess: %v", err)
@@ -62,9 +61,11 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 	if err != nil || rt.Phase != store.VmPhaseRunning || rt.CurrentNodeID == nil || *rt.CurrentNodeID != nodeID {
 		t.Errorf("runtime = (%+v, %v), want running on node %v", rt, err, nodeID)
 	}
-	tpl, err := s.TemplateByID(ctx, templateID)
-	if err != nil || tpl.DerivedVmCount != 1 {
-		t.Errorf("template derived_vm_count = (%d, %v), want 1", tpl.DerivedVmCount, err)
+	// The projection must not clobber the self-describing image fields the
+	// create-write path stamped onto the VM row.
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil || vm.ImageURL == "" || vm.ImageFormat == "" {
+		t.Errorf("vm image fields = (url=%q, format=%q, err=%v), want url+format set by create write", vm.ImageURL, vm.ImageFormat, err)
 	}
 	task, err := s.TaskByID(ctx, taskID)
 	if err != nil || task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
@@ -75,7 +76,7 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	vmID, nodeID, _, templateID, taskID := seedCreatedVM(t, s)
+	vmID, nodeID, _, taskID := seedCreatedVM(t, s)
 
 	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
@@ -88,117 +89,31 @@ func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
 	}
 	fin := store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)}
 
-	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+	if err := s.ProjectVMCreateSuccess(ctx, rt, fin); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess (first): %v", err)
 	}
-	// Worker redelivery: the task is already terminal, so re-running the
-	// projection must not bump derived_vm_count a second time.
-	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
+	// Worker redelivery: an unconditional put of the same runtime + finalized
+	// task value re-writes identical bytes, so the end state is unchanged.
+	if err := s.ProjectVMCreateSuccess(ctx, rt, fin); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess (redelivery): %v", err)
 	}
 
-	tpl, err := s.TemplateByID(ctx, templateID)
-	if err != nil || tpl.DerivedVmCount != 1 {
-		t.Errorf("derived_vm_count after redelivery = (%d, %v), want 1", tpl.DerivedVmCount, err)
-	}
-}
-
-func TestProjectVMCreateSuccessIdempotentOnWorkerRedelivery(t *testing.T) {
-	s, _ := startStore(t)
-	ctx := context.Background()
-	vmID, nodeID, _, templateID, taskID := seedCreatedVM(t, s)
-
-	rt := store.UpsertVMRuntimeParams{
-		VmID:               vmID,
-		CurrentNodeID:      &nodeID,
-		Phase:              store.VmPhaseRunning,
-		ObservedGeneration: 1,
-	}
-	fin := store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)}
-
-	// First delivery: the worker stamps the task running before projecting.
-	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
-		t.Fatalf("UpdateTaskRunning (first delivery): %v", err)
-	}
-	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
-		t.Fatalf("ProjectVMCreateSuccess (first delivery): %v", err)
-	}
-	// Worker redelivery: the dispatcher calls UpdateTaskRunning AGAIN at the
-	// top of the second delivery, exactly as runCreate does. This must not
-	// demote the terminal task back to running, or the projection's
-	// terminal-task short-circuit will not fire and derived_vm_count is
-	// double-applied.
-	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
-		t.Fatalf("UpdateTaskRunning (redelivery): %v", err)
-	}
-	if err := s.ProjectVMCreateSuccess(ctx, rt, templateID, fin); err != nil {
-		t.Fatalf("ProjectVMCreateSuccess (redelivery): %v", err)
-	}
-
-	tpl, err := s.TemplateByID(ctx, templateID)
-	if err != nil || tpl.DerivedVmCount != 1 {
-		t.Errorf("derived_vm_count after worker redelivery = (%d, %v), want 1", tpl.DerivedVmCount, err)
+	rtRow, err := s.VMRuntimeByID(ctx, vmID)
+	if err != nil || rtRow.Phase != store.VmPhaseRunning {
+		t.Errorf("runtime after redelivery = (%+v, %v), want running", rtRow, err)
 	}
 	task, _ := s.TaskByID(ctx, taskID)
 	if task.Status != store.TaskStatusSuccess {
-		t.Errorf("task status after worker redelivery = %v, want success (not demoted to running)", task.Status)
-	}
-}
-
-func TestProjectVMDeleteSuccessIdempotentOnWorkerRedelivery(t *testing.T) {
-	s, _ := startStore(t)
-	ctx := context.Background()
-	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
-	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
-	if err := s.ProjectVMCreateSuccess(ctx,
-		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
-		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
-	); err != nil {
-		t.Fatalf("seed create projection: %v", err)
-	}
-	vm, err := s.VMByID(ctx, vmID)
-	if err != nil {
-		t.Fatalf("VMByID: %v", err)
-	}
-
-	delTask := taskParams(store.TaskStatusPending, nil)
-	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
-		t.Fatalf("EnqueueTask(delete): %v", err)
-	}
-	fin := store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess}
-
-	// First delivery: the worker stamps the task running before projecting.
-	if err := s.UpdateTaskRunning(ctx, delTask.ID); err != nil {
-		t.Fatalf("UpdateTaskRunning (first delivery): %v", err)
-	}
-	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
-		t.Fatalf("ProjectVMDeleteSuccess (first delivery): %v", err)
-	}
-	// Worker redelivery with the per-delivery UpdateTaskRunning, mirroring
-	// runDelete. The terminal task must not regress to running or the
-	// decrement is applied twice (negative drift).
-	if err := s.UpdateTaskRunning(ctx, delTask.ID); err != nil {
-		t.Fatalf("UpdateTaskRunning (redelivery): %v", err)
-	}
-	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
-		t.Fatalf("ProjectVMDeleteSuccess (redelivery): %v", err)
-	}
-
-	tpl, _ := s.TemplateByID(ctx, templateID)
-	if tpl.DerivedVmCount != 0 {
-		t.Errorf("derived_vm_count after worker redelivery = %d, want 0 (no negative drift)", tpl.DerivedVmCount)
+		t.Errorf("task status after redelivery = %v, want success", task.Status)
 	}
 }
 
 func TestProjectVMDeleteSuccessIdempotentOnRedelivery(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
-	// Bring it to running (derived_vm_count=1) so delete has a count to decrement.
+	vmID, nodeID, _, createTask := seedCreatedVM(t, s)
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
@@ -217,27 +132,29 @@ func TestProjectVMDeleteSuccessIdempotentOnRedelivery(t *testing.T) {
 	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
 		t.Fatalf("ProjectVMDeleteSuccess (first): %v", err)
 	}
-	// Worker redelivery: the task is already terminal, so re-running the
-	// projection must not decrement derived_vm_count again (no negative drift).
+	// Worker redelivery: re-applying the same soft-delete + finalize is an
+	// unconditional put of identical bytes, so the VM stays deleted and the
+	// task stays success (no negative drift on any derived state).
 	if err := s.ProjectVMDeleteSuccess(ctx, vm, fin); err != nil {
 		t.Fatalf("ProjectVMDeleteSuccess (redelivery): %v", err)
 	}
 
-	tpl, _ := s.TemplateByID(ctx, templateID)
-	if tpl.DerivedVmCount != 0 {
-		t.Errorf("derived_vm_count after redelivery = %d, want 0", tpl.DerivedVmCount)
+	if _, err := s.VMByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMByID after redelivery = %v, want ErrNotFound", err)
+	}
+	task, _ := s.TaskByID(ctx, delTask.ID)
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task status after redelivery = %v, want success", task.Status)
 	}
 }
 
 func TestProjectVMDeleteSuccess(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	vmID, nodeID, poolID, templateID, createTask := seedCreatedVM(t, s)
-	// Bring it to running (runtime row + derived_vm_count=1) so delete has
-	// something to tear down and a count to decrement.
+	vmID, nodeID, poolID, createTask := seedCreatedVM(t, s)
+	// Bring it to running (runtime row) so delete has something to tear down.
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
@@ -272,11 +189,6 @@ func TestProjectVMDeleteSuccess(t *testing.T) {
 	if len(disks) != 0 {
 		t.Errorf("disks after delete = %d, want 0", len(disks))
 	}
-	// derived_vm_count decremented back to 0.
-	tpl, _ := s.TemplateByID(ctx, templateID)
-	if tpl.DerivedVmCount != 0 {
-		t.Errorf("derived_vm_count after delete = %d, want 0", tpl.DerivedVmCount)
-	}
 	// Pool no longer blocked by the (now-deleted) disk: delete must succeed.
 	if err := s.DeleteStoragePool(ctx, poolID); err != nil {
 		t.Errorf("DeleteStoragePool after vm delete = %v, want nil (disk pool-index dropped)", err)
@@ -295,10 +207,9 @@ func TestProjectVMDeleteSuccess(t *testing.T) {
 func TestProjectVMDeleteReleasesRuntimeNodeIndex(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
-	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	vmID, nodeID, _, createTask := seedCreatedVM(t, s)
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
@@ -351,11 +262,10 @@ func countIndex(t *testing.T, cli *etcd.Client, prefix string) int {
 func TestProjectVMLifecycleSuccess(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	vmID, nodeID, _, templateID, createTask := seedCreatedVM(t, s)
+	vmID, nodeID, _, createTask := seedCreatedVM(t, s)
 	// Bring the VM to running so a runtime row exists for the lifecycle phase write.
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
-		templateID,
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)

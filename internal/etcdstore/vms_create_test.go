@@ -23,9 +23,9 @@ import (
 // being vms (CreateScheduledVM + the placement reader).
 var _ vmshandlers.Store = (*etcdstore.Store)(nil)
 
-// schedulingFixture seeds a ready node, a pool on it, and a template, returning
-// the node and pool ids for placement.
-func schedulingFixture(t *testing.T, s *etcdstore.Store) (nodeID, poolID, templateID uuid.UUID, poolName string) {
+// schedulingFixture seeds a ready node and a pool on it, returning the node and
+// pool ids for placement.
+func schedulingFixture(t *testing.T, s *etcdstore.Store) (nodeID, poolID uuid.UUID, poolName string) {
 	t.Helper()
 	ctx := context.Background()
 	np := nodeParams(uniqueNodeName("sched"))
@@ -40,25 +40,22 @@ func schedulingFixture(t *testing.T, s *etcdstore.Store) (nodeID, poolID, templa
 	if _, err := s.CreateStoragePool(ctx, pp); err != nil {
 		t.Fatalf("CreateStoragePool: %v", err)
 	}
-	tp := tplParams(uniqueTplName("sched"), uuid.New())
-	if _, err := s.CreateTemplate(ctx, tp); err != nil {
-		t.Fatalf("CreateTemplate: %v", err)
-	}
-	return np.ID, pp.ID, tp.ID, pp.Name
+	return np.ID, pp.ID, pp.Name
 }
 
-func vmCreateWrites(t *testing.T, name string, owner, nodeID, poolID, templateID uuid.UUID) store.VMCreateWrites {
+func vmCreateWrites(t *testing.T, name string, owner, nodeID, poolID uuid.UUID) store.VMCreateWrites {
 	t.Helper()
 	taskID := uuid.New()
 	vmID := uuid.New()
 	return store.VMCreateWrites{
 		VM: store.CreateVMParams{
 			ID: vmID, OwnerID: owner, Name: name, Architecture: store.CpuArchAmd64,
-			CpuCores: 2, MemoryMib: 2048, TemplateID: &templateID, PinnedNodeID: &nodeID,
+			CpuCores: 2, MemoryMib: 2048, PinnedNodeID: &nodeID,
+			ImageURL: "https://example.test/img.qcow2", ImageFormat: store.ImageFormatQcow2,
 		},
 		Disk: store.CreateVMDiskParams{
 			VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0, Bus: store.DiskBusVirtio,
-			SizeGib: 20, SourceKind: "template", SourceTemplateID: &templateID, Format: store.ImageFormatQcow2,
+			SizeGib: 20, SourceKind: "image", Format: store.ImageFormatQcow2,
 			CacheMode: store.DiskCacheModeNone, Discard: store.DiskDiscardUnmap,
 		},
 		Task: store.CreateTaskParams{
@@ -72,7 +69,7 @@ func vmCreateWrites(t *testing.T, name string, owner, nodeID, poolID, templateID
 func TestCreateScheduledVMHappyPath(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, poolID, templateID, poolName := schedulingFixture(t, s)
+	nodeID, poolID, poolName := schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "vm-" + uuid.NewString()[:8]
 
@@ -86,7 +83,7 @@ func TestCreateScheduledVMHappyPath(t *testing.T) {
 			return store.VMCreateWrites{}, err
 		}
 		sawEligible = len(eligible)
-		return vmCreateWrites(t, name, owner, nodeID, poolID, templateID), nil
+		return vmCreateWrites(t, name, owner, nodeID, poolID), nil
 	})
 	if err != nil {
 		t.Fatalf("CreateScheduledVM: %v", err)
@@ -120,18 +117,18 @@ func TestCreateScheduledVMHappyPath(t *testing.T) {
 func TestCreateScheduledVMDuplicateNameAndPlanError(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	nodeID, poolID, _ := schedulingFixture(t, s)
 	owner := uuid.New()
 	name := "dup-" + uuid.NewString()[:8]
 
 	if _, err := s.CreateScheduledVM(ctx, func(store.PlacementReader) (store.VMCreateWrites, error) {
-		return vmCreateWrites(t, name, owner, nodeID, poolID, templateID), nil
+		return vmCreateWrites(t, name, owner, nodeID, poolID), nil
 	}); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	// Same name collides.
 	if _, err := s.CreateScheduledVM(ctx, func(store.PlacementReader) (store.VMCreateWrites, error) {
-		return vmCreateWrites(t, name, owner, nodeID, poolID, templateID), nil
+		return vmCreateWrites(t, name, owner, nodeID, poolID), nil
 	}); !errors.Is(err, store.ErrVMNameInUse) {
 		t.Errorf("duplicate name = %v, want store.ErrVMNameInUse", err)
 	}
@@ -147,10 +144,10 @@ func TestCreateScheduledVMDuplicateNameAndPlanError(t *testing.T) {
 // fixedMACPlan returns a CreateScheduledVM plan that attaches a single NIC with
 // a pinned MAC to networkID, so two plans sharing a MAC on the same network
 // collide on the per-network MAC guard rather than the VM-name guard.
-func fixedMACPlan(t *testing.T, name string, owner, nodeID, poolID, templateID, networkID uuid.UUID, mac net.HardwareAddr) func(store.PlacementReader) (store.VMCreateWrites, error) {
+func fixedMACPlan(t *testing.T, name string, owner, nodeID, poolID, networkID uuid.UUID, mac net.HardwareAddr) func(store.PlacementReader) (store.VMCreateWrites, error) {
 	t.Helper()
 	return func(store.PlacementReader) (store.VMCreateWrites, error) {
-		w := vmCreateWrites(t, name, owner, nodeID, poolID, templateID)
+		w := vmCreateWrites(t, name, owner, nodeID, poolID)
 		w.Nic = &store.CreateVMNicParams{
 			ID:          uuid.New(),
 			VmID:        w.VM.ID,
@@ -166,7 +163,7 @@ func fixedMACPlan(t *testing.T, name string, owner, nodeID, poolID, templateID, 
 func TestCreateScheduledVMRejectsDuplicateMAC(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, poolID, templateID, _ := schedulingFixture(t, s)
+	nodeID, poolID, _ := schedulingFixture(t, s)
 	owner := uuid.New()
 	netID := seedBridgeNetwork(t, s).ID
 	mac, err := net.ParseMAC("52:54:00:ab:cd:ef")
@@ -176,10 +173,10 @@ func TestCreateScheduledVMRejectsDuplicateMAC(t *testing.T) {
 
 	nameA := "vm-a-" + uuid.NewString()[:8]
 	nameB := "vm-b-" + uuid.NewString()[:8]
-	if _, err := s.CreateScheduledVM(ctx, fixedMACPlan(t, nameA, owner, nodeID, poolID, templateID, netID, mac)); err != nil {
+	if _, err := s.CreateScheduledVM(ctx, fixedMACPlan(t, nameA, owner, nodeID, poolID, netID, mac)); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	if _, err := s.CreateScheduledVM(ctx, fixedMACPlan(t, nameB, owner, nodeID, poolID, templateID, netID, mac)); !errors.Is(err, store.ErrVMNicMACConflict) {
+	if _, err := s.CreateScheduledVM(ctx, fixedMACPlan(t, nameB, owner, nodeID, poolID, netID, mac)); !errors.Is(err, store.ErrVMNicMACConflict) {
 		t.Fatalf("second create err = %v, want store.ErrVMNicMACConflict", err)
 	}
 }
@@ -187,7 +184,7 @@ func TestCreateScheduledVMRejectsDuplicateMAC(t *testing.T) {
 func TestPlacementReaderExcludesCordonedNode(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
-	nodeID, _, _, poolName := schedulingFixture(t, s)
+	nodeID, _, poolName := schedulingFixture(t, s)
 	// Cordon the node -> no eligible pools, but it shows as a (non-pressured)
 	// candidate is still excluded since cordoned fails the schedulable base.
 	if _, err := s.CordonNode(ctx, nodeID); err != nil {
