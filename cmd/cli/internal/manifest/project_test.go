@@ -155,6 +155,49 @@ func TestProjectPoolConceptRoundTrips(t *testing.T) {
 	}
 }
 
+func TestProjectPoolConceptDivergentPathsRoundTripsPerInstance(t *testing.T) {
+	// path is a free per-instance column: instances of one pool name can
+	// carry different per-node paths. A single nodeList doc with one path
+	// would rewrite every node to the first instance's path on re-apply,
+	// silently dropping the others. Divergent paths must project as one
+	// document per instance so each node keeps its own path.
+	c := cpclient.PoolConceptView{
+		Name: "pool1",
+		Instances: []cpclient.Pool{
+			{Name: "pool1", Type: "local_dir", Path: "/opt/a", Node: "node-1"},
+			{Name: "pool1", Type: "local_dir", Path: "/opt/b", Node: "node-2"},
+		},
+	}
+	out, err := manifest.ProjectPoolConcept(c)
+	if err != nil {
+		t.Fatalf("ProjectPoolConcept() error = %v", err)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse projected pool concept: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("projected pool concept is not apply-ready: %v", err)
+	}
+	if len(plan) != 2 {
+		t.Fatalf("divergent-path concept expanded to %d ops, want 2", len(plan))
+	}
+	got := map[string]string{}
+	for _, op := range plan {
+		if op.Pool == nil {
+			t.Fatalf("op %+v missing pool params", op)
+		}
+		got[op.Pool.Node] = op.Pool.Path
+	}
+	if got["node-1"] != "/opt/a" {
+		t.Errorf("node-1 path = %q, want /opt/a", got["node-1"])
+	}
+	if got["node-2"] != "/opt/b" {
+		t.Errorf("node-2 path = %q, want /opt/b", got["node-2"])
+	}
+}
+
 func TestProjectVMSingleNICOnly(t *testing.T) {
 	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512, Networks: []string{"net-a", "net-b"}}
 	out, err := manifest.ProjectVM(v)

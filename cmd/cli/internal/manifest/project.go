@@ -114,17 +114,41 @@ func ProjectPoolInstance(p cpclient.Pool) ([]byte, error) {
 }
 
 // ProjectPoolConcept renders an aggregated pool concept (all instances
-// of a name) as one manifest with `spec.nodeList` - the inverse of the
-// create-time expansion. Type/path are taken from the first instance.
+// of a name) as an apply-ready manifest. When every instance shares the
+// same type and path, it emits one document with `spec.nodeList` - the
+// compact inverse of the create-time expansion. When instances diverge
+// (path is a free per-instance column, so a heterogeneous cluster can
+// hold different paths under one name), a single nodeList document would
+// rewrite every node to the first instance's path on re-apply, silently
+// dropping the others; in that case it emits one document per instance so
+// each node keeps its own type/path.
 func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 	if len(c.Instances) == 0 {
 		return nil, fmt.Errorf("manifest: pool concept %q has no instances to project", c.Name)
+	}
+	first := c.Instances[0]
+	uniform := true
+	for _, inst := range c.Instances[1:] {
+		if inst.Type != first.Type || inst.Path != first.Path {
+			uniform = false
+			break
+		}
+	}
+	if !uniform {
+		docs := make([][]byte, 0, len(c.Instances))
+		for _, inst := range c.Instances {
+			doc, err := ProjectPoolInstance(inst)
+			if err != nil {
+				return nil, err
+			}
+			docs = append(docs, doc)
+		}
+		return JoinDocuments(docs), nil
 	}
 	nodes := make([]string, 0, len(c.Instances))
 	for _, inst := range c.Instances {
 		nodes = append(nodes, inst.Node)
 	}
-	first := c.Instances[0]
 	return encodeDoc(outDoc{
 		APIVersion: APIVersionV1,
 		Kind:       KindStoragePool,

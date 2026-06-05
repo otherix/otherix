@@ -568,7 +568,10 @@ manifest as the record of what you applied.
   projects only `type` + `subnet` (the create API forbids the server-derived
   `bridgeName`/`mtu`/`vlan`), so re-applying allocates a fresh VNI rather than
   preserving the original.
-- **StoragePool:** round-trips except the operator-settable `config` blob.
+- **StoragePool:** round-trips except the operator-settable `config` blob. A
+  multi-node pool projects as a single `nodeList` document when every instance
+  shares a path, or as one document per instance when their paths differ, so
+  each node keeps its own path on re-apply.
 
 The `config` blob on both Network and StoragePool is not yet
 manifest-expressible (no `config` field in the v1 schema) and is dropped on
