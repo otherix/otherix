@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -52,7 +54,12 @@ func classifyError(err error) error {
 	return clierr.Classify(err)
 }
 
-func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
+// outputFormat reads the --output flag (default defaultFormat). The base
+// formats text/json/table are always accepted; extra lists additional
+// formats a command opts into (yaml, only on get/list, which project a
+// manifest). Unknown values surface as usage errors so a mutating command
+// does not silently accept yaml and print text.
+func outputFormat(cmd *cobra.Command, defaultFormat string, extra ...string) (string, error) {
 	raw, err := cmd.Flags().GetString(flagOutput)
 	if err != nil {
 		return "", err
@@ -60,11 +67,11 @@ func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
 	if raw == "" {
 		raw = defaultFormat
 	}
-	switch raw {
-	case "text", "json", "table", "yaml":
+	allowed := append([]string{"text", "json", "table"}, extra...)
+	if slices.Contains(allowed, raw) {
 		return raw, nil
 	}
-	return "", fmt.Errorf("--%s: unknown format %q (text, json, table, yaml)", flagOutput, raw)
+	return "", fmt.Errorf("--%s: unknown format %q (%s)", flagOutput, raw, strings.Join(allowed, ", "))
 }
 
 // formatPoolAvailable renders the agent-reported `available_bytes`

@@ -39,7 +39,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 	netType, _ := cmd.Flags().GetString(flagType)
 	limit, _ := cmd.Flags().GetInt(flagLimit)
 	cursor, _ := cmd.Flags().GetString(flagCursor)
-	format, err := outputFormat(cmd, "table")
+	format, err := outputFormat(cmd, "table", "yaml")
 	if err != nil {
 		return err
 	}

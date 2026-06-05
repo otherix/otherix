@@ -74,7 +74,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	format, err := outputFormat(cmd, "table")
+	format, err := outputFormat(cmd, "table", "yaml")
 	if err != nil {
 		return err
 	}

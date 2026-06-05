@@ -32,7 +32,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	identifier := args[0]
-	format, err := outputFormat(cmd, "text")
+	format, err := outputFormat(cmd, "text", "yaml")
 	if err != nil {
 		return err
 	}
