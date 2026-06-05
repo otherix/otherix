@@ -198,6 +198,123 @@ func TestProjectPoolConceptDivergentPathsRoundTripsPerInstance(t *testing.T) {
 	}
 }
 
+// mustCreatePlan re-parses a projection and builds its create plan,
+// failing the test if either step errors. Shared by the matrix-guard
+// round-trip tests below.
+func mustCreatePlan(t *testing.T, projected []byte) []manifest.CreateOp {
+	t.Helper()
+	docs, err := manifest.Parse(strings.NewReader(string(projected)))
+	if err != nil {
+		t.Fatalf("re-parse projection: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("projection not apply-ready: %v", err)
+	}
+	return plan
+}
+
+// TestProjectNetworkBridgeRoundTripPreservesEveryField is a matrix guard:
+// every create-settable field the bridge Network view carries must survive
+// `get -o yaml | create -f`. A new bridge field added to the view and create
+// surface but not to ProjectNetwork fails here.
+func TestProjectNetworkBridgeRoundTripPreservesEveryField(t *testing.T) {
+	subnet, gateway, vlan := "10.0.0.0/24", "10.0.0.1", 100
+	n := cpclient.Network{
+		Name: "net-full", Type: "bridge", BridgeName: "br9",
+		Managed: true, Egress: "nat",
+		Subnet: &subnet, Gateway: &gateway, MTU: 9000, VlanTag: &vlan,
+	}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	plan := mustCreatePlan(t, out)
+	if len(plan) != 1 || plan[0].Network == nil {
+		t.Fatalf("plan = %+v, want 1 network op", plan)
+	}
+	got := plan[0].Network
+	if got.Type != "bridge" || got.BridgeName != "br9" {
+		t.Errorf("type/bridgeName = %q/%q, want bridge/br9", got.Type, got.BridgeName)
+	}
+	if !got.Managed {
+		t.Errorf("managed lost in round-trip")
+	}
+	if got.Egress != "nat" {
+		t.Errorf("egress = %q, want nat", got.Egress)
+	}
+	if got.Subnet != "10.0.0.0/24" {
+		t.Errorf("subnet = %q, want 10.0.0.0/24", got.Subnet)
+	}
+	if got.Gateway != "10.0.0.1" {
+		t.Errorf("gateway = %q, want 10.0.0.1", got.Gateway)
+	}
+	if got.Mtu == nil || *got.Mtu != 9000 {
+		t.Errorf("mtu = %v, want 9000", got.Mtu)
+	}
+	if got.VlanTag == nil || *got.VlanTag != 100 {
+		t.Errorf("vlan = %v, want 100", got.VlanTag)
+	}
+}
+
+// TestProjectVMRoundTripPreservesViewFields is a matrix guard: every
+// create-settable field the VM view actually carries must survive the
+// round-trip. (firmware/firmwareID/diskGiB/cloudInit are intentionally
+// absent from the view and so cannot round-trip - see the docs caveat.)
+func TestProjectVMRoundTripPreservesViewFields(t *testing.T) {
+	node := "node-7"
+	v := cpclient.VM{
+		Name: "vm-full", ImageURL: "http://x/i.qcow2", ImageSHA256: "abc123",
+		Architecture: "arm64", Format: "raw", Pool: "pool-a", Node: &node,
+		Networks: []string{"net-a"}, VCPUs: 8, MemoryMB: 16384,
+	}
+	out, err := manifest.ProjectVM(v)
+	if err != nil {
+		t.Fatalf("ProjectVM() error = %v", err)
+	}
+	plan := mustCreatePlan(t, out)
+	if len(plan) != 1 || plan[0].VM == nil {
+		t.Fatalf("plan = %+v, want 1 vm op", plan)
+	}
+	got := plan[0].VM
+	if got.ImageURL != "http://x/i.qcow2" || got.ImageSHA256 != "abc123" {
+		t.Errorf("image url/sha = %q/%q", got.ImageURL, got.ImageSHA256)
+	}
+	if got.Arch != "arm64" || got.Format != "raw" {
+		t.Errorf("arch/format = %q/%q, want arm64/raw", got.Arch, got.Format)
+	}
+	if got.Pool != "pool-a" {
+		t.Errorf("pool = %q, want pool-a", got.Pool)
+	}
+	if got.Node == nil || *got.Node != "node-7" {
+		t.Errorf("node = %v, want node-7", got.Node)
+	}
+	if got.Network != "net-a" {
+		t.Errorf("network = %q, want net-a", got.Network)
+	}
+	if got.VCPUs != 8 || got.MemoryMB != 16384 {
+		t.Errorf("vcpus/memoryMB = %d/%d, want 8/16384", got.VCPUs, got.MemoryMB)
+	}
+}
+
+// TestProjectPoolInstanceRoundTripPreservesFields is a matrix guard for the
+// flat per-instance pool projection: type, path, and node must all survive.
+func TestProjectPoolInstanceRoundTripPreservesFields(t *testing.T) {
+	p := cpclient.Pool{Name: "pool-x", Type: "local_dir", Path: "/srv/data", Node: "node-3"}
+	out, err := manifest.ProjectPoolInstance(p)
+	if err != nil {
+		t.Fatalf("ProjectPoolInstance() error = %v", err)
+	}
+	plan := mustCreatePlan(t, out)
+	if len(plan) != 1 || plan[0].Pool == nil {
+		t.Fatalf("plan = %+v, want 1 pool op", plan)
+	}
+	got := plan[0].Pool
+	if got.Name != "pool-x" || got.Type != "local_dir" || got.Path != "/srv/data" || got.Node != "node-3" {
+		t.Errorf("pool = %+v, want {pool-x local_dir /srv/data node-3}", got)
+	}
+}
+
 func TestProjectVMSingleNICOnly(t *testing.T) {
 	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512, Networks: []string{"net-a", "net-b"}}
 	out, err := manifest.ProjectVM(v)
