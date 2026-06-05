@@ -1,6 +1,11 @@
-# Rendered by run.sh: ONLY @@IMAGE_URL@@ / @@ARCH@@ are substituted. Resource
-# names are fixed and must match the script's assertion constants (SMOKE_NET /
-# SMOKE_BRIDGE / VM_NAME).
+# Two independent resources, so a single-shot `create -f` / `delete -f`
+# exercises the manifest mechanics (multi-doc ordering, projection, reverse-order
+# delete) WITHOUT the VM<->Network reconcile/teardown dependency: the VM is not
+# attached to smoke-mf-net, so its placement does not wait on the network
+# reconciling and the network delete is not blocked by the VM's NIC. The
+# attached-VM-on-a-manifest-network flow (which needs sequencing) is covered by
+# the networking smoke; the single-apply dependency gap is a ROADMAP backlog
+# item. Only @@IMAGE_URL@@ / @@ARCH@@ are substituted.
 apiVersion: otherix/v1
 kind: Network
 metadata:
@@ -18,6 +23,5 @@ metadata:
 spec:
   imageURL: "@@IMAGE_URL@@"
   arch: "@@ARCH@@"
-  network: smoke-mf-net
   vcpus: 2
   memoryMB: 2048

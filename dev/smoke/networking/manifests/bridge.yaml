@@ -5,5 +5,5 @@ metadata:
 spec:
   type: bridge
   managed: true
-  bridgeName: otbr0
+  bridgeName: otmbr0
   mtu: 1500

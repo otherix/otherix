@@ -5,9 +5,17 @@
 # Declarative-manifests operator smoke - drives the `otherix` CLI as a
 # real operator against a real agent on the Lima VM, exercising the
 # YAML-manifest surface end to end:
-#   - `otherix create -f` (multi-doc: kind Network + kind VM, --wait)
+#   - `otherix create -f` (single multi-doc apply: kind Network + kind VM, --wait)
 #   - `otherix vm get  -o yaml` / `otherix network get -o yaml` round-trip
-#   - `otherix delete -f` (reverse order: VM -> Network)
+#   - `otherix delete -f` (single multi-doc, reverse order: VM -> Network)
+#
+# The VM is intentionally NOT attached to the Network: that keeps the
+# single-shot create -f / delete -f free of the VM<->Network reconcile/teardown
+# dependency (a VM on a brand-new network races the network-aware scheduler on
+# create, and the network delete is blocked by the VM's NIC on delete because VM
+# delete is async). The attached-VM-on-a-manifest-network flow is covered by the
+# networking smoke (which sequences network-reconcile before the VM); the
+# single-apply dependency gap is a ROADMAP backlog item.
 #
 # This is the manifest-feature closure gate (per the iteration discipline +
 # smoke-tests-operator-scenarios rule): the whole flow goes through the
@@ -62,10 +70,15 @@ node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' 
 [[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-mvp"
 pass "CP up, $NODE ready"
 
+# best-effort delete-first so a stale leftover from a prior failed run does not
+# 409 the create below (the VM is unattached, so the network delete is not
+# blocked).
+otx vm delete "$VM_NAME" --wait --force >/dev/null 2>&1 || true
+otx network delete "$SMOKE_NET" --force >/dev/null 2>&1 || true
+
 # --- step 1: render the multi-doc manifest from the committed template --
 # The manifest lives in stack.yaml.tmpl (a real file, not an inline heredoc);
-# the script only substitutes its @@...@@ tokens so the manifest and the grep
-# assertions below stay a single source of truth.
+# the script only substitutes its @@...@@ tokens.
 echo "=== step 1: render manifest ==="
 MANIFEST="$(mktemp -t otherix-manifest-smoke.XXXXXX.yaml)"
 sed \
