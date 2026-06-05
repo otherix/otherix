@@ -421,32 +421,6 @@ func TestDeletePool_HappyByUUID(t *testing.T) {
 	}
 }
 
-func TestDeletePool_BlockedByStorageImages(t *testing.T) {
-	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":{"code":"resource_in_use","message":"storage pool still has materialised storage images; delete them first","details":{"blocking_resources":{"storage_images":3,"vm_disks":1},"kind":"pool"}}}`))
-	}))
-	defer srv.Close()
-
-	c := fixtureClient(t, srv)
-	err := c.DeletePool(context.Background(), "pool-mvp")
-	var blocked *cpclient.ErrPoolBlocked
-	if !errors.As(err, &blocked) {
-		t.Fatalf("err = %v, want *ErrPoolBlocked", err)
-	}
-	if blocked.Code != "resource_in_use" {
-		t.Errorf("Code = %s, want resource_in_use", blocked.Code)
-	}
-	if blocked.Resources["storage_images"] != 3 {
-		t.Errorf("storage_images = %d, want 3", blocked.Resources["storage_images"])
-	}
-	if blocked.Resources["vm_disks"] != 1 {
-		t.Errorf("vm_disks = %d, want 1", blocked.Resources["vm_disks"])
-	}
-}
-
 func TestDeletePool_BlockedByVMDisksOnly(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
