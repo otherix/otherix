@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -45,6 +46,9 @@ Example:
 			targets, err := manifest.BuildDeletePlan(docs)
 			if err != nil {
 				return err
+			}
+			if len(targets) == 0 {
+				return errors.New("manifest contained no resources")
 			}
 			if dryRun {
 				for _, t := range targets {
@@ -87,10 +91,10 @@ func runDeletePlan(cmd *cobra.Command, c *cpclient.Client, targets []manifest.De
 		switch t.Kind {
 		case manifest.KindVM:
 			_, err := c.DeleteVM(ctx, t.Name)
-			results = append(results, docResult{kind: t.Kind, name: t.Name, err: err})
+			results = append(results, docResult{kind: t.Kind, name: t.Name, committed: err == nil, err: cpErr(err)})
 		case manifest.KindNetwork:
 			err := c.DeleteNetwork(ctx, t.Name)
-			results = append(results, docResult{kind: t.Kind, name: t.Name, err: err})
+			results = append(results, docResult{kind: t.Kind, name: t.Name, committed: err == nil, err: cpErr(err)})
 		case manifest.KindStoragePool:
 			results = append(results, deletePoolInstance(ctx, c, t))
 		}
@@ -105,7 +109,7 @@ func deletePoolInstance(ctx context.Context, c *cpclient.Client, t manifest.Dele
 	res := docResult{kind: t.Kind, name: t.Name, note: "node " + t.PoolNode}
 	concept, _, err := c.GetPoolByName(ctx, t.Name)
 	if err != nil {
-		res.err = err
+		res.err = cpErr(err)
 		return res
 	}
 	var id string
@@ -116,10 +120,13 @@ func deletePoolInstance(ctx context.Context, c *cpclient.Client, t manifest.Dele
 		}
 	}
 	if id == "" {
+		// command-internal precondition, not a transport error: leave raw.
 		res.err = fmt.Errorf("no instance on node %q", t.PoolNode)
 		return res
 	}
-	res.err = c.DeletePool(ctx, id)
+	err = c.DeletePool(ctx, id)
+	res.committed = err == nil
+	res.err = cpErr(err)
 	return res
 }
 

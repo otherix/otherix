@@ -119,6 +119,28 @@ spec:
 	}
 }
 
+func TestCreateEmptyManifestErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("no HTTP call for an empty manifest")
+	}))
+	defer srv.Close()
+	_, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, "# just a comment\n"))
+	if err == nil {
+		t.Fatalf("expected error for empty manifest")
+	}
+}
+
+func TestCreateFailureGoesToStderrAndClassified(t *testing.T) {
+	// Point at a closed port to force a transport (connection refused) error.
+	_, stderr, err := runRoot(t, "http://127.0.0.1:1", "create", "-f", writeManifest(t, createManifest))
+	if err == nil {
+		t.Fatalf("expected error against unreachable endpoint")
+	}
+	if !strings.Contains(stderr, "connection_refused") {
+		t.Errorf("stderr = %q, want a classified connection_refused: line", stderr)
+	}
+}
+
 func TestCreatePartialFailureNonZeroExit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

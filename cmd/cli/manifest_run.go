@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/otherix/otherix/cmd/cli/internal/clierr"
 	"github.com/otherix/otherix/cmd/cli/internal/cloudinit"
 	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
@@ -70,17 +71,32 @@ func readOneSource(cmd *cobra.Command, f string) ([]byte, error) {
 // docResult records the outcome of one fan-out operation for the
 // summary. A nil err means success.
 type docResult struct {
-	kind   string
-	name   string
-	note   string // e.g. "task <id>" or "node node-1"
-	err    error
-	taskID string // VM create: accepted task id, for --wait
-	poolID string // StoragePool create: created instance id, for --wait
+	kind      string
+	name      string
+	note      string // e.g. "task <id>" or "node node-1"
+	err       error
+	committed bool   // server create/delete call itself succeeded
+	taskID    string // VM create: accepted task id, for --wait
+	poolID    string // StoragePool create: created instance id, for --wait
+}
+
+// cpErr classifies an error returned by a cpclient call into the CLI's
+// stable "<category>: <detail>" form (so operator scripts can grep
+// connection_refused:/request_timeout:/etc.), matching the rest of the
+// CLI. Returns nil for nil.
+func cpErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return clierr.Classify(err)
 }
 
 // renderSummary prints one line per operation and returns a non-nil
 // error if any operation failed (so the process exits non-zero).
+// Success lines go to stdout; failure lines go to stderr.
 func renderSummary(cmd *cobra.Command, verb string, results []docResult) error {
+	out := cmd.OutOrStdout()
+	errOut := cmd.ErrOrStderr()
 	failed := 0
 	for _, r := range results {
 		label := r.kind + "/" + r.name
@@ -89,10 +105,17 @@ func renderSummary(cmd *cobra.Command, verb string, results []docResult) error {
 		}
 		if r.err != nil {
 			failed++
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s failed: %s: %v\n", verb, label, r.err)
+			if r.committed {
+				// the resource WAS created/changed server-side; a
+				// follow-up (e.g. --wait) did not converge. Distinct from
+				// a create/delete that never happened.
+				_, _ = fmt.Fprintf(errOut, "%s %s but not ready: %v\n", verb, label, r.err)
+			} else {
+				_, _ = fmt.Fprintf(errOut, "%s failed: %s: %v\n", verb, label, r.err)
+			}
 			continue
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", verb, label)
+		_, _ = fmt.Fprintf(out, "%s %s\n", verb, label)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%s -f: %d of %d documents failed", verb, failed, len(results))

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -46,6 +47,9 @@ Example:
 			if err != nil {
 				return err
 			}
+			if len(plan) == 0 {
+				return errors.New("manifest contained no resources")
+			}
 			if err := validateManifestCloudInit(cmd, plan); err != nil {
 				return err
 			}
@@ -82,17 +86,17 @@ func runCreatePlan(cmd *cobra.Command, c *cpclient.Client, plan []manifest.Creat
 		switch op.Kind {
 		case manifest.KindNetwork:
 			_, err := c.CreateNetwork(ctx, *op.Network)
-			results = append(results, docResult{kind: op.Kind, name: op.Name, err: err})
+			results = append(results, docResult{kind: op.Kind, name: op.Name, committed: err == nil, err: cpErr(err)})
 		case manifest.KindStoragePool:
 			p, err := c.CreatePool(ctx, *op.Pool)
-			res := docResult{kind: op.Kind, name: op.Name, note: "node " + op.Pool.Node, err: err}
+			res := docResult{kind: op.Kind, name: op.Name, note: "node " + op.Pool.Node, committed: err == nil, err: cpErr(err)}
 			if err == nil {
 				res.poolID = p.ID.String()
 			}
 			results = append(results, res)
 		case manifest.KindVM:
 			acc, err := c.CreateVM(ctx, *op.VM)
-			res := docResult{kind: op.Kind, name: op.Name, err: err}
+			res := docResult{kind: op.Kind, name: op.Name, committed: err == nil, err: cpErr(err)}
 			if err == nil {
 				res.taskID = acc.TaskID
 				res.note = "task " + acc.TaskID

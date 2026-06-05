@@ -115,6 +115,17 @@ func TestDeleteReportsBlockerNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestDeleteEmptyManifestErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("no HTTP call for an empty manifest")
+	}))
+	defer srv.Close()
+	_, _, err := runRoot(t, srv.URL, "delete", "-f", writeManifest(t, "# nothing\n"), "--force")
+	if err == nil {
+		t.Fatalf("expected error for empty manifest")
+	}
+}
+
 func TestDeletePoolNoInstanceOnNodeFailsClosed(t *testing.T) {
 	const poolOnlyManifest = `apiVersion: otherix/v1
 kind: StoragePool
