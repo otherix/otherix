@@ -60,6 +60,28 @@ func poolJSON(name, node string) []byte {
 	return raw
 }
 
+// TestPoolCreateRejectsYAMLFormat pins that `yaml` is a get/list-only
+// projection format: a mutating command must reject `-o yaml` with a
+// usage error and never reach the server, rather than silently rendering
+// text. The shared outputFormat helper accepts yaml only when a command
+// opts in (get/list), so create must not.
+func TestPoolCreateRejectsYAMLFormat(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("create must not reach the server when the output format is invalid")
+	}))
+	defer srv.Close()
+	_, _, err := runPoolCmd(t, srv.URL, []string{
+		"create", "p1", "--node", "node-1", "--path", "/opt/p", "--output", "yaml",
+	})
+	if err == nil {
+		t.Fatalf("expected an error for -o yaml on a mutating command")
+	}
+	if !strings.Contains(err.Error(), "unknown format") {
+		t.Errorf("err = %v, want an unknown-format usage error", err)
+	}
+}
+
 func TestPoolCreate_Happy(t *testing.T) {
 	t.Parallel()
 	var posts int

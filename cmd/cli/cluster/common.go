@@ -5,8 +5,6 @@ package cluster
 
 import (
 	"bufio"
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/clierr"
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
@@ -32,21 +31,7 @@ func printf(cmd *cobra.Command, format string, args ...any) {
 }
 
 func classifyError(err error) error {
-	var apiErr *cpclient.APIError
-	if errors.As(err, &apiErr) {
-		return fmt.Errorf("%s", apiErr.Error())
-	}
-	msg := err.Error()
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("request_timeout: %s", msg)
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Errorf("connection_refused: %s", msg)
-	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
-		return fmt.Errorf("tls_handshake_failed: %s", msg)
-	default:
-		return fmt.Errorf("request_failed: %s", msg)
-	}
+	return clierr.Classify(err)
 }
 
 func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {

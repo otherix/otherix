@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 func newGetCommand() *cobra.Command {
@@ -28,7 +29,7 @@ a UUID input.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json|yaml")
 	return cmd
 }
 
@@ -38,7 +39,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	identifier := args[0]
-	format, err := outputFormat(cmd, "text")
+	format, err := outputFormat(cmd, "text", "yaml")
 	if err != nil {
 		return err
 	}
@@ -47,6 +48,14 @@ func runGet(cmd *cobra.Command, args []string) error {
 		instance, raw, err := c.GetPoolByID(cmd.Context(), id)
 		if err != nil {
 			return classifyError(err)
+		}
+		if format == "yaml" {
+			out, err := manifest.ProjectPoolInstance(instance)
+			if err != nil {
+				return err
+			}
+			printf(cmd, "%s", out)
+			return nil
 		}
 		if format == "json" {
 			return printJSON(cmd, raw)
@@ -57,6 +66,14 @@ func runGet(cmd *cobra.Command, args []string) error {
 	concept, raw, err := c.GetPoolByName(cmd.Context(), identifier)
 	if err != nil {
 		return classifyError(err)
+	}
+	if format == "yaml" {
+		out, err := manifest.ProjectPoolConcept(concept)
+		if err != nil {
+			return err
+		}
+		printf(cmd, "%s", out)
+		return nil
 	}
 	if format == "json" {
 		return printJSON(cmd, raw)

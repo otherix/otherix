@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 func newListCommand() *cobra.Command {
@@ -25,7 +26,7 @@ authenticated role may list networks.`,
 	cmd.Flags().String(flagType, "", "filter by network type (bridge)")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().String(flagOutput, "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json|yaml")
 	cmd.Flags().Bool(flagShowIDs, false, "include network UUIDs in the table output")
 	return cmd
 }
@@ -38,7 +39,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 	netType, _ := cmd.Flags().GetString(flagType)
 	limit, _ := cmd.Flags().GetInt(flagLimit)
 	cursor, _ := cmd.Flags().GetString(flagCursor)
-	format, err := outputFormat(cmd, "table")
+	format, err := outputFormat(cmd, "table", "yaml")
 	if err != nil {
 		return err
 	}
@@ -51,6 +52,19 @@ func runList(cmd *cobra.Command, _ []string) error {
 	})
 	if err != nil {
 		return classifyError(err)
+	}
+
+	if format == "yaml" {
+		docs := make([][]byte, 0, len(networks.Data))
+		for _, n := range networks.Data {
+			out, err := manifest.ProjectNetwork(n)
+			if err != nil {
+				return err
+			}
+			docs = append(docs, out)
+		}
+		printf(cmd, "%s", manifest.JoinDocuments(docs))
+		return nil
 	}
 
 	switch format {

@@ -53,6 +53,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(nodecmd.NewCommand())
 	root.AddCommand(clustercmd.NewCommand())
 	root.AddCommand(configcmd.NewCommand())
+	root.AddCommand(newManifestCreateCmd())
+	root.AddCommand(newManifestDeleteCmd())
 
 	return root
 }

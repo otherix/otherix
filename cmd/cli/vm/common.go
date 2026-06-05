@@ -7,9 +7,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/clierr"
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
@@ -55,21 +56,7 @@ func printJSON(cmd *cobra.Command, raw json.RawMessage) error {
 // callers can simply `return classifyError(err)` from RunE; main
 // renders it to stderr with the standard "error: " preamble.
 func classifyError(err error) error {
-	var apiErr *cpclient.APIError
-	if errors.As(err, &apiErr) {
-		return fmt.Errorf("%s", apiErr.Error())
-	}
-	msg := err.Error()
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("request_timeout: %s", msg)
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Errorf("connection_refused: %s", msg)
-	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
-		return fmt.Errorf("tls_handshake_failed: %s", msg)
-	default:
-		return fmt.Errorf("request_failed: %s", msg)
-	}
+	return clierr.Classify(err)
 }
 
 // parseTaskID parses the task id from the CP's AsyncTaskAccepted
@@ -136,10 +123,13 @@ func requireStringFlag(cmd *cobra.Command, name string) (string, error) {
 	return raw, nil
 }
 
-// outputFormat reads the --output flag (default "text"). Unknown
-// values surface as usage errors so subcommands fail fast rather than
-// rendering garbage.
-func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
+// outputFormat reads the --output flag (default defaultFormat). The base
+// formats text/json/table are always accepted; extra lists additional
+// formats a command opts into (yaml, only on get/list, which project a
+// manifest). Unknown values surface as usage errors so subcommands fail
+// fast rather than rendering garbage -- a mutating command does not
+// silently accept yaml and print text.
+func outputFormat(cmd *cobra.Command, defaultFormat string, extra ...string) (string, error) {
 	raw, err := cmd.Flags().GetString(flagOutput)
 	if err != nil {
 		return "", err
@@ -147,9 +137,9 @@ func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {
 	if raw == "" {
 		raw = defaultFormat
 	}
-	switch raw {
-	case "text", "json", "table":
+	allowed := append([]string{"text", "json", "table"}, extra...)
+	if slices.Contains(allowed, raw) {
 		return raw, nil
 	}
-	return "", fmt.Errorf("--%s: unknown format %q (text, json, table)", flagOutput, raw)
+	return "", fmt.Errorf("--%s: unknown format %q (%s)", flagOutput, raw, strings.Join(allowed, ", "))
 }

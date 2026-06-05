@@ -132,6 +132,10 @@ smoke-overlay: ## Overlay (VXLAN) smoke: VTEP+bridge attrs on both nodes + manua
 smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over the overlay via CP-distributed FDB (run after local-dev-start)
 	bash dev/smoke/overlay-vm/run.sh
 
+.PHONY: smoke-manifests
+smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml` / `delete -f` against the real Lima agent (run after local-dev-start)
+	bash dev/smoke/manifests/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt vet
