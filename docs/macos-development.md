@@ -555,10 +555,12 @@ $ otherix network get demo-net -o yaml
 $ otherix delete -f cluster.yaml --force
 ```
 
-Caveat: cloud-init does NOT round-trip through `get -o yaml`. `cloudInit`
-(user_data) is consumed at create time and is not surfaced by the API, so
-the projected manifest omits it. Keep the source manifest as the record of
-the cloud-config you applied.
+Caveat: a few create-time VM fields do NOT round-trip through `get -o
+yaml`, because the API view does not surface them: `cloudInit` (user_data),
+`firmware`/`firmwareID`, and `diskGiB`. They are consumed at create time, so
+the projected manifest omits them and re-applying the projection reverts
+those to server defaults. Keep the source manifest as the record of what you
+applied. Network and StoragePool manifests round-trip in full.
 
 ## VM placement scheduler
 

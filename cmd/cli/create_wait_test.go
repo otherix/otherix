@@ -242,3 +242,63 @@ func TestCreateWaitVMTaskFailure(t *testing.T) {
 		t.Errorf("want the task error surfaced; stdout=%q stderr=%q", stdout, stderr)
 	}
 }
+
+// TestCreateWaitVMTaskCancelled confirms a terminal cancelled task is not
+// mistaken for success: no readiness line, non-zero exit. The waiter must
+// never print "ready" for any status other than the literal "success".
+func TestCreateWaitVMTaskCancelled(t *testing.T) {
+	taskID := uuid.NewString()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/vms":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`))
+		case "/v1/tasks/" + taskID:
+			_, _ = w.Write([]byte(`{"id":"` + taskID + `","type":"vm.create","status":"cancelled","progress":null,"resource_type":"vm","resource_id":null,"result":null,"error":null,"attempts":1,"max_attempts":1,"created_at":"2026-06-05T00:00:00Z","started_at":null,"finished_at":null}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	stdout, stderr, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, waitManifest), "--wait", "--wait-timeout", "10s")
+	if err == nil {
+		t.Fatalf("expected error when the create task is cancelled")
+	}
+	if strings.Contains(stdout, "ready") {
+		t.Errorf("a cancelled task must not be reported ready; stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "cancelled") {
+		t.Errorf("want the cancelled status surfaced; stderr=%q", stderr)
+	}
+}
+
+// TestCreateWaitVMUnknownStatusNeverReady proves the fail-safe core: a task
+// stuck at an empty/unknown status (never terminal) must time out, never be
+// read as success. A false-success here would mislead an operator into a
+// destructive retry, so this is the single most safety-critical property.
+func TestCreateWaitVMUnknownStatusNeverReady(t *testing.T) {
+	taskID := uuid.NewString()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/vms":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`))
+		case "/v1/tasks/" + taskID:
+			// Empty status is not terminal: the waiter must keep polling
+			// until the deadline, then time out - never report ready.
+			_, _ = w.Write([]byte(`{"id":"` + taskID + `","type":"vm.create","status":"","progress":null,"resource_type":"vm","resource_id":null,"result":null,"error":null,"attempts":1,"max_attempts":1,"created_at":"2026-06-05T00:00:00Z","started_at":null,"finished_at":null}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	stdout, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, waitManifest), "--wait", "--wait-timeout", "150ms")
+	if err == nil {
+		t.Fatalf("expected a timeout for a task stuck at unknown status")
+	}
+	if strings.Contains(stdout, "ready") {
+		t.Errorf("an unknown-status task must never be reported ready; stdout=%q", stdout)
+	}
+}
