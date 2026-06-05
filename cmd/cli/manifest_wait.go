@@ -17,8 +17,9 @@ import (
 )
 
 // poolReconcilePoll is the interval for polling pool reconciliation
-// status under --wait.
-const poolReconcilePoll = 2 * time.Second
+// status under --wait. A package-level var (not a const) so tests can
+// lower it; production code never reassigns it.
+var poolReconcilePoll = 2 * time.Second
 
 // waitForCreated blocks until every async resource produced by the
 // create fan-out is ready: VM tasks reach a terminal status and pools
@@ -57,7 +58,7 @@ func waitVMResult(ctx context.Context, c *cpclient.Client, r *docResult, deadlin
 	}
 	task, err := c.WaitTask(ctx, id, cpclient.WaitOptions{Timeout: remaining})
 	if err != nil {
-		r.err = err
+		r.err = cpErr(err)
 		return
 	}
 	if task.Status == "success" {
@@ -83,7 +84,7 @@ func waitPoolResult(ctx context.Context, c *cpclient.Client, r *docResult, deadl
 	for {
 		p, _, err := c.GetPoolByID(ctx, id)
 		if err != nil {
-			r.err = err
+			r.err = cpErr(err)
 			return
 		}
 		switch p.ReconciliationStatus {
@@ -94,15 +95,20 @@ func waitPoolResult(ctx context.Context, c *cpclient.Client, r *docResult, deadl
 			r.err = errors.New("reconciliation failed")
 			return
 		}
-		if time.Now().After(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			r.err = errors.New("reconciliation did not reach ready within timeout")
 			return
+		}
+		sleep := poolReconcilePoll
+		if remaining < sleep {
+			sleep = remaining
 		}
 		select {
 		case <-ctx.Done():
 			r.err = ctx.Err()
 			return
-		case <-time.After(poolReconcilePoll):
+		case <-time.After(sleep):
 		}
 	}
 }
