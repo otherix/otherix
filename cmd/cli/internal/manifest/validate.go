@@ -62,6 +62,9 @@ func DecodeNetworkSpec(d Document) (NetworkSpec, error) {
 	if err := d.Spec.Decode(&s); err != nil {
 		return NetworkSpec{}, fmt.Errorf("manifest: document %d (Network/%s): spec: %v", d.Index, d.Name, err)
 	}
+	// bridgeName is the host bridge identifier; padding it would create a
+	// bogus interface name, so trim like the StoragePool node fields.
+	s.BridgeName = strings.TrimSpace(s.BridgeName)
 	return s, nil
 }
 
@@ -123,6 +126,12 @@ func DecodeVMSpec(d Document) (VMSpec, error) {
 	if err := d.Spec.Decode(&s); err != nil {
 		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec: %v", d.Index, d.Name, err)
 	}
+	// node/pool/network are identity references; a padded value must not
+	// leak into the (node, name) placement key or a resource lookup. Trim
+	// like StoragePool, so whitespace-only collapses to unset.
+	s.Node = strings.TrimSpace(s.Node)
+	s.Pool = strings.TrimSpace(s.Pool)
+	s.Network = strings.TrimSpace(s.Network)
 	if s.ImageURL == "" {
 		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.imageURL is required", d.Index, d.Name)
 	}

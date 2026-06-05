@@ -128,3 +128,40 @@ func TestDecodeStoragePoolSpecRejectsWhitespaceNode(t *testing.T) {
 		t.Errorf("whitespace-only node should be rejected (treated as empty)")
 	}
 }
+
+func TestDecodeVMSpecTrimsPlacementWhitespace(t *testing.T) {
+	// node/pool/network are identity references; padded values must not
+	// leak into the (node, name) placement key, mirroring StoragePool.
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, node: \"  node-9  \", pool: \"  fast  \", network: \"  br  \" }\n")
+	got, err := manifest.DecodeVMSpec(d)
+	if err != nil {
+		t.Fatalf("DecodeVMSpec() error = %v", err)
+	}
+	if got.Node != "node-9" || got.Pool != "fast" || got.Network != "br" {
+		t.Errorf("DecodeVMSpec() placement = node=%q pool=%q network=%q, want node-9/fast/br", got.Node, got.Pool, got.Network)
+	}
+}
+
+func TestDecodeVMSpecTreatsWhitespaceNodeAsUnset(t *testing.T) {
+	// A whitespace-only node must collapse to unset (no placement pin),
+	// not be sent verbatim as a bogus node name.
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, node: \"   \" }\n")
+	got, err := manifest.DecodeVMSpec(d)
+	if err != nil {
+		t.Fatalf("DecodeVMSpec() error = %v", err)
+	}
+	if got.Node != "" {
+		t.Errorf("DecodeVMSpec() node = %q, want empty (whitespace collapses to unset)", got.Node)
+	}
+}
+
+func TestDecodeNetworkSpecTrimsBridgeName(t *testing.T) {
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: n }\nspec: { type: bridge, bridgeName: \"  br0  \" }\n")
+	got, err := manifest.DecodeNetworkSpec(d)
+	if err != nil {
+		t.Fatalf("DecodeNetworkSpec() error = %v", err)
+	}
+	if got.BridgeName != "br0" {
+		t.Errorf("DecodeNetworkSpec() bridgeName = %q, want trimmed br0", got.BridgeName)
+	}
+}
