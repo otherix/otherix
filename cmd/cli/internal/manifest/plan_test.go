@@ -110,6 +110,42 @@ func TestBuildCreatePlanDedupesNodeList(t *testing.T) {
 	}
 }
 
+func TestBuildCreatePlanVMDefaultsVCPUsAndMemory(t *testing.T) {
+	// A minimal VM manifest omits vcpus/memoryMB. The wire fields have no
+	// omitempty and the server rejects 0 (vcpus must be [1,128], memory_mb
+	// [128,524288]), so the manifest path must apply the same client-side
+	// defaults the `vm create` flags do, matching the doc promise that
+	// everything but imageURL/arch is "optional with server/CLI defaults".
+	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64 }\n"
+	docs, _ := manifest.Parse(strings.NewReader(src))
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("BuildCreatePlan() error = %v", err)
+	}
+	if len(plan) != 1 {
+		t.Fatalf("plan has %d ops, want 1", len(plan))
+	}
+	if plan[0].VM.VCPUs != 2 {
+		t.Errorf("VM.VCPUs = %d, want 2 (default)", plan[0].VM.VCPUs)
+	}
+	if plan[0].VM.MemoryMB != 2048 {
+		t.Errorf("VM.MemoryMB = %d, want 2048 (default)", plan[0].VM.MemoryMB)
+	}
+}
+
+func TestBuildCreatePlanVMKeepsExplicitVCPUsAndMemory(t *testing.T) {
+	// Explicit values must survive: defaulting only fills a zero.
+	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, vcpus: 8, memoryMB: 16384 }\n"
+	docs, _ := manifest.Parse(strings.NewReader(src))
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("BuildCreatePlan() error = %v", err)
+	}
+	if plan[0].VM.VCPUs != 8 || plan[0].VM.MemoryMB != 16384 {
+		t.Errorf("VM vcpus/memory = %d/%d, want 8/16384", plan[0].VM.VCPUs, plan[0].VM.MemoryMB)
+	}
+}
+
 func TestBuildCreatePlanVMNodePointer(t *testing.T) {
 	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, node: node-9 }\n"
 	docs, _ := manifest.Parse(strings.NewReader(src))

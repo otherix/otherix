@@ -165,10 +165,28 @@ func poolCreateOps(d Document) ([]CreateOp, error) {
 	return ops, nil
 }
 
+// defaultVMVCPUs and defaultVMMemoryMB mirror the `vm create` flag
+// defaults (cmd/cli/vm/create.go). The wire fields have no omitempty and
+// the server rejects 0, so an omitted vcpus/memoryMB must materialise to
+// these client-side just as the flag path does. Keep in sync with the
+// flag defaults.
+const (
+	defaultVMVCPUs    = 2
+	defaultVMMemoryMB = 2048
+)
+
 func vmCreateOp(d Document) (CreateOp, error) {
 	s, err := DecodeVMSpec(d)
 	if err != nil {
 		return CreateOp{}, err
+	}
+	vcpus := s.VCPUs
+	if vcpus == 0 {
+		vcpus = defaultVMVCPUs
+	}
+	memoryMB := s.MemoryMB
+	if memoryMB == 0 {
+		memoryMB = defaultVMMemoryMB
 	}
 	req := cpclient.CreateVMRequest{
 		Name:              d.Name,
@@ -181,8 +199,8 @@ func vmCreateOp(d Document) (CreateOp, error) {
 		DiskGiB:           s.DiskGiB,
 		Pool:              s.Pool,
 		Network:           s.Network,
-		VCPUs:             s.VCPUs,
-		MemoryMB:          s.MemoryMB,
+		VCPUs:             vcpus,
+		MemoryMB:          memoryMB,
 		CloudInitDisabled: s.CloudInitDisabled,
 	}
 	if s.Node != "" {
