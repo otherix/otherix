@@ -41,7 +41,7 @@ const componentName = "api"
 
 // workerMaxAttempts is the per-kind retry budget the dispatcher applies to every
 // async task kind. Mirrors the river MaxAttempts (25) set at enqueue time across
-// vm.create / vm.delete / vm.* lifecycle / storage_pool.scan / storage_image.import.
+// vm.create / vm.delete / vm.* lifecycle / storage_pool.scan.
 const workerMaxAttempts = 25
 
 func main() {
@@ -466,7 +466,7 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 // the vms.ImageEnsurer interface and the storagepools.ImageEnsurer impl.
 var _ vmshandlers.ImageEnsurer = (*storagepoolshandlers.ImageEnsurer)(nil)
 
-// buildDispatcher registers the six async task-kind handlers on a dispatcher
+// buildDispatcher registers the async task-kind handlers on a dispatcher
 // polling the etcd job queue. Each handler reuses the production agent executor
 // and the Run-form worker in its owning handler package.
 func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *config.APIConfig, log *slog.Logger) *worker.Dispatcher {
@@ -485,8 +485,6 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
 		storagepoolshandlers.ScanHandler(st, storagepoolshandlers.NewAgentScanExecutor(agentClient), cfg.Placement.Pressure.Disk, log))
-	d.Register("storage_image.import", workerMaxAttempts,
-		storagepoolshandlers.ImportHandler(st, storagepoolshandlers.NewAgentImportExecutor(agentClient), log))
 
 	return d
 }

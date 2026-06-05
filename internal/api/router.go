@@ -24,7 +24,6 @@ import (
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
-	templateshandlers "github.com/otherix/otherix/internal/api/handlers/templates"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/api/health"
@@ -162,7 +161,6 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
-	templatesH := templateshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
 	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
 
@@ -269,21 +267,6 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermNetworkManage, deps.Logger)).Post("/", networksH.Create)
 				r.With(middleware.RequirePermission(auth.PermNetworkManage, deps.Logger)).Patch("/{id}", networksH.Update)
 				r.With(middleware.RequirePermission(auth.PermNetworkManage, deps.Logger)).Delete("/{id}", networksH.Delete)
-			})
-
-			r.Route("/templates", func(r chi.Router) {
-				r.With(middleware.RequirePermission(auth.PermTemplateReadPublic, deps.Logger)).Get("/", templatesH.List)
-				r.With(middleware.RequirePermission(auth.PermTemplateReadPublic, deps.Logger)).Get("/{id}", templatesH.Get)
-				r.With(middleware.RequirePermission(auth.PermTemplateCreate, deps.Logger)).Post("/", templatesH.Create)
-				r.With(middleware.RequirePermission(auth.PermTemplateUpdate, deps.Logger)).Patch("/{id}", templatesH.Update)
-				r.With(middleware.RequirePermission(auth.PermTemplateDelete, deps.Logger)).Delete("/{id}", templatesH.Delete)
-				r.With(middleware.RequirePermission(auth.PermTemplateSetVisibility, deps.Logger)).Post("/{id}/set-visibility", templatesH.SetVisibility)
-				r.With(middleware.RequirePermission(auth.PermTemplateCreate, deps.Logger)).Post("/{id}/clone", templatesH.Clone)
-				// storage_image.import async handler.
-				// RequirePermission gates on role-level capability;
-				// composite ownership / public-bypass enforcement lives
-				// inside the handler.
-				r.With(middleware.RequirePermission(auth.PermStorageImageImport, deps.Logger)).Post("/{id}/images", templatesH.ImportImage)
 			})
 
 			// /v1/tasks surface. `tasks.list` and `tasks.get` are
