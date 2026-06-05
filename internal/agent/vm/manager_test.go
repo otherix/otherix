@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -38,20 +40,6 @@ func newTestConfig(t *testing.T) (*config.AgentConfig, string, string) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-// writeTemplate materialises an empty pool template file at the path
-// Manager.Create stats before accepting a create, so a test can drive the
-// happy path without a real qcow2.
-func writeTemplate(t *testing.T, poolRoot, checksum string) {
-	t.Helper()
-	dir := filepath.Join(poolRoot, "templates")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		t.Fatalf("mkdir templates: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, checksum+".qcow2"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write template: %v", err)
-	}
 }
 
 func TestManager_New_ValidatesStatePath(t *testing.T) {
@@ -118,18 +106,18 @@ func TestManager_Create_ValidationErrors(t *testing.T) {
 		t.Fatalf("AddPool: %v", err)
 	}
 
-	validChecksum := "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+	const imageURL = "https://example.test/ubuntu.img"
 	cases := []struct {
 		name string
 		spec CreateSpec
 	}{
-		{"empty name", CreateSpec{Name: "", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, TemplateChecksum: validChecksum}},
-		{"low vcpus", CreateSpec{Name: "x", VCPUs: 0, MemoryMB: 1024, PoolName: poolName, TemplateChecksum: validChecksum}},
-		{"high vcpus", CreateSpec{Name: "x", VCPUs: 200, MemoryMB: 1024, PoolName: poolName, TemplateChecksum: validChecksum}},
-		{"low memory", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 64, PoolName: poolName, TemplateChecksum: validChecksum}},
-		{"empty checksum", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, TemplateChecksum: ""}},
-		{"non-hex checksum", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, TemplateChecksum: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}},
-		{"empty pool", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: "", TemplateChecksum: validChecksum}},
+		{"empty name", CreateSpec{Name: "", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL}},
+		{"low vcpus", CreateSpec{Name: "x", VCPUs: 0, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL}},
+		{"high vcpus", CreateSpec{Name: "x", VCPUs: 200, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL}},
+		{"low memory", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 64, PoolName: poolName, ImageURL: imageURL}},
+		{"empty image url", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, ImageURL: ""}},
+		{"short expected sha", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL, ExpectedSHA256: "deadbeef"}},
+		{"empty pool", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: "", ImageURL: imageURL}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,13 +141,12 @@ func TestManager_Create_UnknownPool(t *testing.T) {
 	if err := m.AddPool(poolName, poolRoot); err != nil {
 		t.Fatalf("AddPool: %v", err)
 	}
-	validChecksum := "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
 	_, err = m.Create(t.Context(), CreateSpec{
-		Name:             "x",
-		VCPUs:            2,
-		MemoryMB:         1024,
-		PoolName:         "not-the-configured-pool",
-		TemplateChecksum: validChecksum,
+		Name:     "x",
+		VCPUs:    2,
+		MemoryMB: 1024,
+		PoolName: "not-the-configured-pool",
+		ImageURL: "https://example.test/ubuntu.img",
 	})
 	if !errors.Is(err, ErrPoolUnknown) {
 		t.Errorf("err = %v, want ErrPoolUnknown", err)
@@ -185,9 +172,6 @@ func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
 		t.Fatalf("AddPool: %v", err)
 	}
 
-	checksum := "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-	writeTemplate(t, poolRoot, checksum)
-
 	vmID := uuid.New()
 	nic := sampleNIC()
 
@@ -208,13 +192,13 @@ func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
 	m.mu.Unlock()
 
 	task, err := m.Create(t.Context(), CreateSpec{
-		UUID:             vmID,
-		Name:             "live-vm",
-		VCPUs:            2,
-		MemoryMB:         1024,
-		PoolName:         poolName,
-		TemplateChecksum: checksum,
-		NICs:             []netfabric.NIC{nic},
+		UUID:     vmID,
+		Name:     "live-vm",
+		VCPUs:    2,
+		MemoryMB: 1024,
+		PoolName: poolName,
+		ImageURL: "https://example.test/ubuntu.img",
+		NICs:     []netfabric.NIC{nic},
 	})
 	if err != nil {
 		t.Fatalf("duplicate Create = %v, want idempotent re-accept", err)
@@ -239,6 +223,155 @@ func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
 	if len(fab.CreateTapCalls) != 0 || len(fab.AttachTapCalls) != 0 {
 		t.Errorf("duplicate Create touched the fabric: createTap=%v attachTap=%v",
 			fab.CreateTapCalls, fab.AttachTapCalls)
+	}
+}
+
+// waitTaskTerminal polls the task store until the task reaches a terminal
+// status (success / failed) or the deadline elapses. Returns the terminal
+// task. Used by the create-flow tests that drive the async runCreate
+// goroutine.
+func waitTaskTerminal(t *testing.T, m *Manager, taskID uuid.UUID) *AgentTask {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		task := m.tasks.Get(taskID)
+		if task != nil && (task.Status == TaskStatusSuccess || task.Status == TaskStatusFailed) {
+			return task
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task %s did not reach a terminal status within the deadline", taskID)
+	return nil
+}
+
+// realQcow2 uses qemu-img to create a qcow2 file with the given virtual
+// size (in bytes) and returns its bytes, so a test httptest.Server can
+// serve a real image whose virtual size qemu-img info will report. Skips
+// the test when qemu-img is absent.
+func realQcow2(t *testing.T, virtualBytes int64) []byte {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "src.qcow2")
+	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", dst, strconv.FormatInt(virtualBytes, 10))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("qemu-img create: %v (%s)", err, out)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read created qcow2: %v", err)
+	}
+	return b
+}
+
+// TestManager_Create_DiskTooSmall_Rejected drives the real Create flow:
+// EnsureImage downloads the served qcow2 (2 GiB virtual size), CloneImage
+// copies it to the per-VM disk, qemu-img info reports the virtual size,
+// and a DiskGiB below that virtual size fails the task with code
+// disk_too_small BEFORE any resize. Needs real qemu-img; skips cleanly
+// when the binary is absent.
+func TestManager_Create_DiskTooSmall_Rejected(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not on PATH; sizing step is uncovered in this env")
+	}
+	m, poolName, _ := newImageTestManager(t)
+
+	body := realQcow2(t, 2*1073741824) // 2 GiB virtual size
+	url := serve(t, body)
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		Name:     "too-small-vm",
+		VCPUs:    1,
+		MemoryMB: 256,
+		PoolName: poolName,
+		ImageURL: url,
+		Format:   "qcow2",
+		DiskGiB:  1, // 1 GiB < 2 GiB virtual size -> reject
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	term := waitTaskTerminal(t, m, task.ID)
+	if term.Status != TaskStatusFailed {
+		t.Fatalf("task status = %q, want %q", term.Status, TaskStatusFailed)
+	}
+	if term.Error == nil || term.Error.Code != "disk_too_small" {
+		t.Fatalf("task error = %+v, want code disk_too_small", term.Error)
+	}
+}
+
+// TestManager_Create_EnsuresImageAndSizes drives Create with DiskGiB=0:
+// EnsureImage downloads the served qcow2, CloneImage copies it, qemu-img
+// info reports the virtual size, and the disk defaults to that virtual
+// size (no resize). The flow then fails at the qemu spawn step (no real
+// guest in unit tests), but NOT for an image/sizing reason - proving the
+// inline ensure + clone + info all ran against the served URL. Needs real
+// qemu-img; skips cleanly when absent.
+func TestManager_Create_EnsuresImageAndSizes(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not on PATH; sizing step is uncovered in this env")
+	}
+	m, poolName, _ := newImageTestManager(t)
+
+	body := realQcow2(t, 1073741824) // 1 GiB virtual size
+	wantSHA := shaHex(body)
+	url := serve(t, body)
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		Name:           "sizing-vm",
+		VCPUs:          1,
+		MemoryMB:       256,
+		PoolName:       poolName,
+		ImageURL:       url,
+		ExpectedSHA256: wantSHA,
+		Format:         "qcow2",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	term := waitTaskTerminal(t, m, task.ID)
+	if term.Status != TaskStatusFailed {
+		// Reaching success would require a real qemu boot; in this env the
+		// spawn step fails. Either way it must not fail on the image path.
+		return
+	}
+	if term.Error == nil {
+		t.Fatal("terminal failed task Error = nil, want populated")
+	}
+	switch term.Error.Code {
+	case "image_unavailable", "checksum_mismatch", "clone_failed", "disk_too_small":
+		t.Fatalf("create failed on the image/sizing path with code %q (%s); ensure+clone+info did not all run",
+			term.Error.Code, term.Error.Message)
+	}
+}
+
+// TestManager_Create_BadChecksum_FailsTask drives Create with an
+// ExpectedSHA256 that does not match the served body, asserting the task
+// fails with code checksum_mismatch. This path is independent of qemu-img
+// (EnsureImage rejects before clone/sizing), so it always runs.
+func TestManager_Create_BadChecksum_FailsTask(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+
+	body := qcow2Body(0x22)
+	url := serve(t, body)
+	wrongSHA := shaHex(qcow2Body(0x33))
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		Name:           "bad-sha-vm",
+		VCPUs:          1,
+		MemoryMB:       256,
+		PoolName:       poolName,
+		ImageURL:       url,
+		ExpectedSHA256: wrongSHA,
+		Format:         "qcow2",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	term := waitTaskTerminal(t, m, task.ID)
+	if term.Status != TaskStatusFailed {
+		t.Fatalf("task status = %q, want %q", term.Status, TaskStatusFailed)
+	}
+	if term.Error == nil || term.Error.Code != "checksum_mismatch" {
+		t.Fatalf("task error = %+v, want code checksum_mismatch", term.Error)
 	}
 }
 

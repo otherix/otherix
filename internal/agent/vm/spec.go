@@ -77,8 +77,8 @@ type VM struct {
 }
 
 // CreateSpec is the wire-shape of a POST /v1/vms body, post-validation.
-// Architecture is derived from the agent's host arch (templates carry
-// exactly one arch, MVP supports same-arch only).
+// Architecture is derived from the agent's host arch (MVP supports
+// same-arch only).
 //
 // UUID is optional: when uuid.Nil the manager generates a fresh id
 // (backward-compatible with curl-driven smoke tests). When non-zero it is
@@ -86,12 +86,21 @@ type VM struct {
 // pre-minted vms.id through to the agent (unified UUID model: CP
 // mints, agent uses).
 type CreateSpec struct {
-	UUID             uuid.UUID
-	Name             string
-	VCPUs            int
-	MemoryMB         int
-	PoolName         string
-	TemplateChecksum string
+	UUID     uuid.UUID
+	Name     string
+	VCPUs    int
+	MemoryMB int
+	PoolName string
+	// ImageURL is the HTTPS source the agent ensures locally (basename-keyed
+	// IfNotPresent cache). ExpectedSHA256, when non-empty, pins the content
+	// digest (verify mode). Format is "qcow2".
+	ImageURL       string
+	ExpectedSHA256 string
+	Format         string
+	// DiskGiB is the requested root-disk size. 0 means default to the image's
+	// virtual size; a value below the virtual size is rejected; a larger value
+	// grows the disk via qemu-img resize after the copy.
+	DiskGiB int
 	// UserData carries already-resolved raw `#cloud-config` YAML
 	// per L3 Area 3 lock — CP-side has merged vm.user_data ?:
 	// template.cloud_init_user_data and injected hostname when

@@ -116,8 +116,8 @@ type Manager struct {
 	pools   map[string]pool
 
 	// imageLocks serialises concurrent storage-image work on the same
-	// (pool, sha256). Keys are imageLockKey, values are *sync.Mutex.
-	// The map grows monotonically — bounded by active distinct content
+	// (pool, basename). Keys are imageLockKey, values are *sync.Mutex.
+	// The map grows monotonically — bounded by active distinct basenames
 	// the operator imports. Cleanup is a future iteration concern (see
 	// ROADMAP). sync.Map's zero value is usable so no init is needed.
 	imageLocks sync.Map
@@ -322,13 +322,12 @@ func ensureWritableDir(path string) error {
 }
 
 // ensurePoolSubdirs creates the per-pool subdirectories the storage-
-// image surface depends on: `templates/` for committed image files
-// (the path Manager.Create clones from) and `scratch/import/` for
-// in-progress downloads. Idempotent — MkdirAll returns nil on
-// existing directories.
+// image surface depends on: `images/` for the cached image files (the
+// path Manager.Create clones from) and `scratch/import/` for in-progress
+// downloads. Idempotent — MkdirAll returns nil on existing directories.
 func ensurePoolSubdirs(root string) error {
 	for _, sub := range []string{
-		filepath.Join(root, "templates"),
+		filepath.Join(root, imagesSubdir),
 		filepath.Join(root, "scratch", "import"),
 	} {
 		if err := os.MkdirAll(sub, 0o750); err != nil {
@@ -424,13 +423,6 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	if !ok {
 		return nil, ErrPoolUnknown
 	}
-	templatePath := filepath.Join(p.root, "templates", spec.TemplateChecksum+".qcow2")
-	if _, err := os.Stat(templatePath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: %s", ErrTemplateMissing, templatePath)
-		}
-		return nil, fmt.Errorf("stat template: %w", err)
-	}
 
 	vmID := spec.UUID
 	if vmID == uuid.Nil {
@@ -486,11 +478,16 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 
 	// #nosec G118 -- async task work intentionally outlives the HTTP request;
 	// the task surface (GET /v1/tasks/{id}) is how clients track progress.
-	go m.runCreate(task.ID, v, templatePath, spec.UserData)
+	go m.runCreate(task.ID, v, spec)
 	return task, nil
 }
 
-func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userData []byte) {
+func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
+	// The create work outlives the HTTP request that spawned it (the task
+	// surface is how clients track progress), so it runs on a fresh
+	// background context rather than the cancelled request context. The
+	// image download enforces its own timeout (importHTTPTimeout).
+	ctx := context.Background()
 	log := m.log.With("vm_id", v.ID.String(), "task_id", taskID.String())
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
@@ -507,16 +504,57 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 		return
 	}
 
-	if err := storage.CloneTemplate(templatePath, v.DiskPath); err != nil {
-		log.Error("clone template", "err", err)
+	ensured, err := m.EnsureImage(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format)
+	if err != nil {
+		var ce *ChecksumMismatchError
+		if errors.As(err, &ce) {
+			log.Error("ensure image (checksum mismatch)", "err", err)
+			m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
+			return
+		}
+		log.Error("ensure image", "err", err)
+		m.failTask(taskID, v.ID, "image_unavailable", err.Error())
+		return
+	}
+
+	if err := storage.CloneImage(ensured.Path, v.DiskPath); err != nil {
+		log.Error("clone image", "err", err)
 		m.failTask(taskID, v.ID, "clone_failed", err.Error())
 		return
+	}
+
+	// Size the freshly-cloned per-VM disk (v.DiskPath), never the shared
+	// cache file: qemu-img info reports the image virtual size, a DiskGiB
+	// below it is rejected (shrink not allowed), and a larger DiskGiB grows
+	// the clone via qemu-img resize.
+	info, err := qemu.ImgInfoOf(ctx, v.DiskPath)
+	if err != nil {
+		log.Error("qemu-img info", "err", err)
+		m.failTask(taskID, v.ID, "internal", fmt.Sprintf("qemu-img info: %v", err))
+		return
+	}
+	diskSize := info.VirtualSize
+	if spec.DiskGiB > 0 {
+		want := int64(spec.DiskGiB) * 1073741824
+		if want < info.VirtualSize {
+			m.failTask(taskID, v.ID, "disk_too_small",
+				fmt.Sprintf("requested disk %d bytes is below image virtual size %d", want, info.VirtualSize))
+			return
+		}
+		if want > info.VirtualSize {
+			if err := qemu.ResizeImg(ctx, v.DiskPath, want); err != nil {
+				log.Error("resize disk", "err", err)
+				m.failTask(taskID, v.ID, "internal", fmt.Sprintf("resize disk: %v", err))
+				return
+			}
+			diskSize = want
+		}
 	}
 
 	if v.CidataPath != "" {
 		builder := &cloudinit.Builder{
 			Hostname: v.Name,
-			UserData: userData,
+			UserData: spec.UserData,
 		}
 		if _, err := builder.Build(v.CidataPath); err != nil {
 			log.Error("build cidata iso", "err", err)
@@ -556,7 +594,12 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, templatePath string, userDa
 	if err := m.persistVM(v.ID); err != nil {
 		log.Warn("persist meta.json (running)", "err", err)
 	}
-	result, _ := json.Marshal(map[string]string{"vm_id": v.ID.String()})
+	result, _ := json.Marshal(map[string]any{
+		"vm_id":              v.ID.String(),
+		"image_sha256":       ensured.SHA256,
+		"virtual_size_bytes": info.VirtualSize,
+		"disk_size_bytes":    diskSize,
+	})
 	m.tasks.Update(taskID, func(t *AgentTask) {
 		t.Status = TaskStatusSuccess
 		t.Result = result
@@ -1422,18 +1465,11 @@ func validateCreateSpec(s CreateSpec) error {
 	if s.PoolName == "" {
 		return fmt.Errorf("pool is required")
 	}
-	return validateChecksum(s.TemplateChecksum)
-}
-
-func validateChecksum(s string) error {
-	if len(s) != 64 {
-		return fmt.Errorf("template_checksum must be a 64-char sha256 hex digest")
+	if s.ImageURL == "" {
+		return fmt.Errorf("image_url is required")
 	}
-	for _, ch := range s {
-		isHex := (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
-		if !isHex {
-			return fmt.Errorf("template_checksum must be hex")
-		}
+	if s.ExpectedSHA256 != "" && len(s.ExpectedSHA256) != 64 {
+		return fmt.Errorf("expected_sha256 must be a 64-char sha256 hex digest")
 	}
 	return nil
 }

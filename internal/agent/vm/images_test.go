@@ -305,8 +305,15 @@ func TestEnsureImageRejectsTraversalBasename(t *testing.T) {
 	if !errors.Is(err, ErrInvalidImageBasename) {
 		t.Errorf("EnsureImage(traversal) error = %v, want ErrInvalidImageBasename", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "images")); statErr == nil {
-		t.Errorf("images dir created on a rejected traversal basename; want no filesystem action")
+	// AddPool pre-creates the images/ dir; the reject must write no file
+	// into it (no traversal-collapsed write landed in the pool root).
+	imagesDir := filepath.Join(root, "images")
+	entries, statErr := os.ReadDir(imagesDir)
+	if statErr != nil {
+		t.Fatalf("read images dir: %v", statErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("images dir holds %d entries after a rejected traversal basename; want none", len(entries))
 	}
 }
 
