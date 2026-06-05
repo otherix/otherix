@@ -61,14 +61,13 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "count owned resources", nil)
 		return
 	}
-	if counts.Vms+counts.Templates+counts.Snapshots > 0 {
+	if counts.Vms+counts.Snapshots > 0 {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict,
 			"user still owns one or more resources",
 			map[string]any{
 				"blocking_resources": map[string]int64{
 					"vms":          counts.Vms,
-					"templates":    counts.Templates,
 					"vm_snapshots": counts.Snapshots,
 				},
 			})
