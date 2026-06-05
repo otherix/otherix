@@ -173,6 +173,7 @@ func (h *Handler) resolveListFilter(
 // (no vm_disks) are skipped silently — the inventory listing must not
 // abort because one row is in a transient state.
 func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter string) ([]vmView, error) {
+	includeOwner := callerCanReadUsers(ctx)
 	views := make([]vmView, 0, len(rows))
 	for _, vm := range rows {
 		runtime, err := h.loadRuntimeOrNil(ctx, vm.ID)
@@ -186,7 +187,7 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 		if len(disks) == 0 {
 			continue
 		}
-		names, err := h.resolveViewNames(ctx, vm, runtime, disks[0])
+		names, err := h.resolveViewNames(ctx, vm, runtime, disks[0], includeOwner)
 		if err != nil {
 			return nil, err
 		}

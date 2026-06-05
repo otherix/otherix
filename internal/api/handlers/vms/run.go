@@ -39,7 +39,7 @@ type WorkerStore interface {
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-	ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams) error
+	ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams, imageSHA256 []byte) error
 	ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin store.UpdateTaskFinalizedParams) error
 	ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error
 }
@@ -131,9 +131,17 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("marshal create result: %v", err))
 	}
 	nodeID := args.NodeID
+	// Decode the agent-resolved hex digest so the projection can stamp it onto
+	// the VM row. A malformed digest (never expected from a successful agent
+	// task) degrades to no stamp rather than failing the committed create.
+	resolvedDigest, decErr := hex.DecodeString(result.ImageSHA256)
+	if decErr != nil {
+		resolvedDigest = nil
+	}
 	if err := st.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: args.VMID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
+		resolvedDigest,
 	); err != nil {
 		return fmt.Errorf("project create success: %v", err)
 	}

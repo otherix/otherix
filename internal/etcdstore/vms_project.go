@@ -4,6 +4,7 @@
 package etcdstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,11 +24,19 @@ import (
 // is all-or-nothing under one transaction and a worker redelivery re-applies
 // identical bytes for the same end state.
 
-// ProjectVMCreateSuccess upserts the VM's runtime row (running) and finalizes
-// the create task - both in one transaction. Both writes are idempotent blind
-// puts, so a worker redelivery re-applies the same runtime value and the same
-// finalized-task value, leaving the end state unchanged.
-func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams) error {
+// ProjectVMCreateSuccess upserts the VM's runtime row (running), stamps the
+// agent-resolved image content digest onto the self-describing VM row, and
+// finalizes the create task - all in one transaction. The runtime and task
+// writes are idempotent blind puts; the digest write is skipped when the row
+// already carries the same bytes, so a worker redelivery re-applies the same
+// runtime + task value and re-reads an already-stamped digest, leaving the end
+// state unchanged.
+//
+// imageSHA256 is the digest the agent computed for the materialized image
+// (empty hints the caller had nothing to stamp). A create that pinned a digest
+// up front already carries it, so the digest write only fires for compute-mode
+// creates (no --image-sha256), surfacing the resolved digest on the VM view.
+func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams, imageSHA256 []byte) error {
 	now := time.Now().UTC()
 	runtimeVal, err := etcd.Marshal(vmRuntimeFromUpsert(rt, now))
 	if err != nil {
@@ -37,13 +46,51 @@ func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRun
 	if err != nil {
 		return err
 	}
-	if _, err := s.c.Raw().Txn(ctx).Then(
+	ops := []clientv3.Op{
 		clientv3.OpPut(vmRuntimeKey(rt.VmID), string(runtimeVal)),
 		clientv3.OpPut(taskKey(fin.ID), string(taskVal)),
-	).Commit(); err != nil {
+	}
+	digestOp, err := s.stampImageDigestOp(ctx, rt.VmID, imageSHA256, now)
+	if err != nil {
+		return err
+	}
+	if digestOp != nil {
+		ops = append(ops, *digestOp)
+	}
+	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return fmt.Errorf("project vm create txn: %v", err)
 	}
 	return nil
+}
+
+// stampImageDigestOp returns the VM-row put that records the agent-resolved
+// image digest, or nil when there is nothing to write: an empty digest, a VM
+// soft-deleted between create and projection, or a row that already carries the
+// same bytes (a pinned create, or a redelivery of a compute-mode create). The
+// no-op-on-equal guard keeps the projection idempotent and leaves a pinned
+// VM's updated_at untouched.
+func (s *Store) stampImageDigestOp(ctx context.Context, vmID uuid.UUID, imageSHA256 []byte, now time.Time) (*clientv3.Op, error) {
+	if len(imageSHA256) == 0 {
+		return nil, nil
+	}
+	vm, err := s.VMByID(ctx, vmID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	if bytes.Equal(vm.ImageSHA256, imageSHA256) {
+		return nil, nil
+	}
+	vm.ImageSHA256 = imageSHA256
+	vm.UpdatedAt = now
+	val, err := etcd.Marshal(vm)
+	if err != nil {
+		return nil, err
+	}
+	op := clientv3.OpPut(vmKey(vmID), string(val))
+	return &op, nil
 }
 
 // ProjectVMLifecycleSuccess writes the VM's desired_phase (when non-empty), its

@@ -7,6 +7,7 @@
 package etcdstore_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -45,6 +46,7 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
 	}
+	resolvedDigest := []byte{0xde, 0xad, 0xbe, 0xef}
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{
 			VmID:               vmID,
@@ -53,6 +55,7 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 			ObservedGeneration: 1,
 		},
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)},
+		resolvedDigest,
 	); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess: %v", err)
 	}
@@ -62,10 +65,14 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 		t.Errorf("runtime = (%+v, %v), want running on node %v", rt, err, nodeID)
 	}
 	// The projection must not clobber the self-describing image fields the
-	// create-write path stamped onto the VM row.
+	// create-write path stamped onto the VM row, and must record the
+	// agent-resolved content digest onto the compute-mode (unpinned) row.
 	vm, err := s.VMByID(ctx, vmID)
 	if err != nil || vm.ImageURL == "" || vm.ImageFormat == "" {
 		t.Errorf("vm image fields = (url=%q, format=%q, err=%v), want url+format set by create write", vm.ImageURL, vm.ImageFormat, err)
+	}
+	if !bytes.Equal(vm.ImageSHA256, resolvedDigest) {
+		t.Errorf("vm image_sha256 = %x, want %x (agent-resolved digest)", vm.ImageSHA256, resolvedDigest)
 	}
 	task, err := s.TaskByID(ctx, taskID)
 	if err != nil || task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
@@ -88,13 +95,16 @@ func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
 		ObservedGeneration: 1,
 	}
 	fin := store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)}
+	digest := []byte{0xde, 0xad, 0xbe, 0xef}
 
-	if err := s.ProjectVMCreateSuccess(ctx, rt, fin); err != nil {
+	if err := s.ProjectVMCreateSuccess(ctx, rt, fin, digest); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess (first): %v", err)
 	}
+	vmFirst, _ := s.VMByID(ctx, vmID)
 	// Worker redelivery: an unconditional put of the same runtime + finalized
-	// task value re-writes identical bytes, so the end state is unchanged.
-	if err := s.ProjectVMCreateSuccess(ctx, rt, fin); err != nil {
+	// task value re-writes identical bytes, and the digest stamp is a no-op
+	// once the row already carries it, so the end state is unchanged.
+	if err := s.ProjectVMCreateSuccess(ctx, rt, fin, digest); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess (redelivery): %v", err)
 	}
 
@@ -106,6 +116,15 @@ func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
 	if task.Status != store.TaskStatusSuccess {
 		t.Errorf("task status after redelivery = %v, want success", task.Status)
 	}
+	// The redelivery must not re-touch the VM row (digest already equal):
+	// updated_at stays stable across the second delivery.
+	vmSecond, _ := s.VMByID(ctx, vmID)
+	if !bytes.Equal(vmSecond.ImageSHA256, digest) {
+		t.Errorf("vm image_sha256 after redelivery = %x, want %x", vmSecond.ImageSHA256, digest)
+	}
+	if !vmSecond.UpdatedAt.Equal(vmFirst.UpdatedAt) {
+		t.Errorf("vm updated_at moved on redelivery: %v -> %v", vmFirst.UpdatedAt, vmSecond.UpdatedAt)
+	}
 }
 
 func TestProjectVMDeleteSuccessIdempotentOnRedelivery(t *testing.T) {
@@ -115,6 +134,7 @@ func TestProjectVMDeleteSuccessIdempotentOnRedelivery(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
 	}
@@ -156,6 +176,7 @@ func TestProjectVMDeleteSuccess(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
 	}
@@ -211,6 +232,7 @@ func TestProjectVMDeleteReleasesRuntimeNodeIndex(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
 	}
@@ -267,6 +289,7 @@ func TestProjectVMLifecycleSuccess(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed create projection: %v", err)
 	}

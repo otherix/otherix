@@ -249,6 +249,61 @@ type vmNetworksView struct {
 	Networks []string `json:"networks"`
 }
 
+// vmOwnerView captures the owner-identity fields of the VM projection.
+type vmOwnerView struct {
+	OwnerID string  `json:"owner_id"`
+	Owner   *string `json:"owner"`
+}
+
+// TestVMViewOwnerGatedByUserRead asserts the owner display_name is
+// resolved onto the VM view only for callers holding user:read: an admin
+// sees `owner`, while a developer (who lacks user:read) sees `owner` =
+// null with the raw `owner_id` still present. owner_id is always set so
+// the VM surface never becomes a back door into the user directory for
+// roles that cannot read it.
+func TestVMViewOwnerGatedByUserRead(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	developer, _ := loginAs(t, h, auth.RoleDeveloper)
+	poolName := schedulableFixture(t, h, adminID)
+
+	body := vmCreateBody(map[string]any{"pool": poolName})
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+	vmName := body["name"].(string)
+
+	// Admin holds user:read -> owner resolves to the owner's display_name.
+	var asAdmin vmOwnerView
+	getResp := h.get(t, "/v1/vms/"+vmName, admin)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin get vm status = %d, want 200", getResp.StatusCode)
+	}
+	decodeJSON(t, getResp, &asAdmin)
+	if asAdmin.OwnerID != adminID.String() {
+		t.Errorf("admin view owner_id = %q, want %q", asAdmin.OwnerID, adminID)
+	}
+	if asAdmin.Owner == nil || *asAdmin.Owner != "E2E "+string(auth.RoleAdmin) {
+		t.Errorf("admin view owner = %v, want %q", asAdmin.Owner, "E2E "+string(auth.RoleAdmin))
+	}
+
+	// Developer lacks user:read -> owner is null, owner_id still present.
+	var asDev vmOwnerView
+	getResp = h.get(t, "/v1/vms/"+vmName, developer)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("developer get vm status = %d, want 200", getResp.StatusCode)
+	}
+	decodeJSON(t, getResp, &asDev)
+	if asDev.Owner != nil {
+		t.Errorf("developer view owner = %v, want null (lacks user:read)", *asDev.Owner)
+	}
+	if asDev.OwnerID != adminID.String() {
+		t.Errorf("developer view owner_id = %q, want %q", asDev.OwnerID, adminID)
+	}
+}
+
 func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)

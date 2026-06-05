@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -28,7 +29,7 @@ import (
 // the caller decides how to handle. Currently every caller surfaces such
 // inconsistencies as 500 - they should not happen against the live
 // schema.
-func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *store.VMRuntime, disk store.VMDisk) (vmViewNames, error) {
+func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *store.VMRuntime, disk store.VMDisk, includeOwner bool) (vmViewNames, error) {
 	names := vmViewNames{}
 
 	pool, err := h.store.StoragePoolByID(ctx, disk.StoragePoolID)
@@ -36,6 +37,20 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 		return names, fmt.Errorf("load pool name: %v", err)
 	}
 	names.pool = pool.Name
+
+	if includeOwner {
+		owner, err := h.store.UserByID(ctx, vm.OwnerID)
+		switch {
+		case err == nil:
+			label := ownerLabel(owner)
+			names.owner = &label
+		case errors.Is(err, store.ErrNotFound):
+			// Owner soft-deleted (ON DELETE RESTRICT blocks this in
+			// practice); leave nil so owner_id still carries the UUID.
+		default:
+			return names, fmt.Errorf("load owner name: %v", err)
+		}
+	}
 
 	if nodeID := observedNodeID(vm, runtime); nodeID != nil {
 		node, err := h.store.NodeByID(ctx, *nodeID)
@@ -88,6 +103,28 @@ func (h *Handler) resolveNetworkNames(ctx context.Context, vmID uuid.UUID) ([]st
 		}
 	}
 	return names, nil
+}
+
+// ownerLabel picks the best human-readable identifier for a VM owner:
+// the display_name when set, falling back to the email (a NOT NULL
+// column) so the resolved owner field is never an empty string - a
+// bootstrap-seeded admin, for instance, has no display_name. Both
+// fields sit behind the user:read gate, so the email fallback widens
+// what an already-privileged caller sees, not who can see it.
+func ownerLabel(u store.User) string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Email
+}
+
+// callerCanReadUsers reports whether the request principal holds
+// user:read - the gate for resolving an owner's display_name onto the VM
+// view. A missing principal (Authn not applied) reads as no, so the
+// owner name never leaks on an unauthenticated path.
+func callerCanReadUsers(ctx context.Context) bool {
+	u := auth.UserFromContext(ctx)
+	return u != nil && auth.Has(u.Role, auth.PermUserRead)
 }
 
 // observedNodeID returns the node the VM is currently *located on* per

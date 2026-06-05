@@ -53,11 +53,17 @@ func runGet(cmd *cobra.Command, args []string) error {
 // formatter is unambiguous under unscheduled VMs. Referenced resources
 // are surfaced by name — the wire field tags are `pool` / `node`, and
 // so are the labels below. The image source (`image_url` / `format`)
-// is rendered inline since the template entity is gone.
+// is rendered inline since the template entity is gone. Owner renders
+// as the resolved display_name when the server returned one (caller
+// holds user:read); otherwise the raw owner_id UUID is shown.
 func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "id: %s\n", vm.ID)
 	printf(cmd, "name: %s\n", vm.Name)
-	printf(cmd, "owner_id: %s\n", vm.OwnerID)
+	if vm.Owner != nil {
+		printf(cmd, "owner: %s\n", *vm.Owner)
+	} else {
+		printf(cmd, "owner_id: %s\n", vm.OwnerID)
+	}
 	printf(cmd, "image_url: %s\n", vm.ImageURL)
 	if vm.ImageSHA256 != "" {
 		printf(cmd, "image_sha256: %s\n", vm.ImageSHA256)

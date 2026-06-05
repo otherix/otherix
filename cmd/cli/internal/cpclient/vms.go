@@ -72,13 +72,15 @@ type CreateVMRequest struct {
 // storage_pools.name, `node` carries the agent-reported current
 // location's name, `networks` carries the attached network names ordered
 // by NIC device_order (empty for a VM with no NIC). owner_id keeps its
-// UUID rendering because users are
-// excluded from the resolver scope. Architecture stays a string here
+// UUID rendering; `owner` carries the owner's display_name (or email
+// when unset) but only for callers holding user:read (admin /
+// operator), nil otherwise. Architecture stays a string here
 // (the CLI does not need the typed CpuArch enum for output formatting).
 type VM struct {
 	ID           string         `json:"id"`
 	Name         string         `json:"name"`
 	OwnerID      string         `json:"owner_id"`
+	Owner        *string        `json:"owner"`
 	ImageURL     string         `json:"image_url"`
 	ImageSHA256  string         `json:"image_sha256,omitempty"`
 	Format       string         `json:"format"`

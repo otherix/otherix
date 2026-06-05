@@ -40,7 +40,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeVMLoadError(w, r, err)
 		return
 	}
-	names, err := h.resolveViewNames(r.Context(), vm, runtime, disk)
+	names, err := h.resolveViewNames(r.Context(), vm, runtime, disk, callerCanReadUsers(r.Context()))
 	if err != nil {
 		writeVMLoadError(w, r, err)
 		return
