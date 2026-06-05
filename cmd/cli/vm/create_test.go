@@ -76,7 +76,7 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-ci-file",
+		"vm-ci-file",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--arch", "amd64",
 		"--pool", "pool-mvp",
@@ -123,7 +123,7 @@ func TestVMCreate_ImageFields(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-img",
+		"vm-img",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--image-sha256", "deadbeef",
 		"--arch", "arm64",
@@ -137,6 +137,7 @@ func TestVMCreate_ImageFields(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	wants := map[string]any{
+		"name":         "vm-img",
 		"image_url":    "https://example.com/ubuntu.qcow2",
 		"image_sha256": "deadbeef",
 		"arch":         "arm64",
@@ -154,6 +155,49 @@ func TestVMCreate_ImageFields(t *testing.T) {
 	}
 }
 
+// TestVMCreate_NameFlagRemoved locks in the positional-name reshape:
+// the old --name flag is gone (clean break, no alias), so passing it
+// is an "unknown flag" error and no HTTP call leaves the box.
+func TestVMCreate_NameFlagRemoved(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when --name is rejected")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"--name", "vm-flag",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+	})
+	if err == nil {
+		t.Fatalf("expected unknown-flag error for --name")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("err = %v, want mention of 'unknown flag'", err)
+	}
+}
+
+// TestVMCreate_MissingName asserts create fails before any HTTP call
+// when the positional name argument is omitted.
+func TestVMCreate_MissingName(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when the name argument is missing")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing name argument")
+	}
+}
+
 // TestVMCreate_MissingImageURL asserts create fails before any HTTP
 // call when --image-url is omitted.
 func TestVMCreate_MissingImageURL(t *testing.T) {
@@ -165,7 +209,7 @@ func TestVMCreate_MissingImageURL(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-no-image",
+		"vm-no-image",
 		"--arch", "amd64",
 		"--vcpus", "1",
 		"--memory-mb", "128",
@@ -189,7 +233,7 @@ func TestVMCreate_MissingArch(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-no-arch",
+		"vm-no-arch",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--vcpus", "1",
 		"--memory-mb", "128",
@@ -234,7 +278,7 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-ci-stdin",
+		"vm-ci-stdin",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--arch", "amd64",
 		"--pool", "pool-mvp",
@@ -262,7 +306,7 @@ func TestVMCreate_NoCloudInit(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-ci-disabled",
+		"vm-ci-disabled",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--arch", "amd64",
 		"--pool", "pool-mvp",
@@ -300,7 +344,7 @@ func TestVMCreate_CloudInitMutualExclusion(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-conflict",
+		"vm-conflict",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--arch", "amd64",
 		"--pool", "pool-mvp",
@@ -334,7 +378,7 @@ func TestVMCreate_CloudInitMalformedYAML(t *testing.T) {
 
 	_, _, err := runVMCmd(t, srv.URL, []string{
 		"create",
-		"--name", "vm-bad-yaml",
+		"vm-bad-yaml",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--arch", "amd64",
 		"--pool", "pool-mvp",

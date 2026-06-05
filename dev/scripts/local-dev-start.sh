@@ -209,7 +209,7 @@ Try:
    ./bin/otherix node list
    ./bin/otherix node get node-1            # WireGuard fabric block + peers
    make smoke-wireguard-mesh                # cross-host WG handshake
-   ./bin/otherix vm create --name demo --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img --arch arm64 --vcpus 2 --memory-mb 2048 --wait
+   ./bin/otherix vm create demo --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img --arch arm64 --vcpus 2 --memory-mb 2048 --wait
 
 Stop + wipe:
    make local-dev-stop

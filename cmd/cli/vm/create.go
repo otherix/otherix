@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	flagName             = "name"
 	flagImageURL         = "image-url"
 	flagImageSHA256      = "image-sha256"
 	flagArch             = "arch"
@@ -38,9 +37,10 @@ const (
 
 func newCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "create",
+		Use:   "create <name>",
 		Short: "Create a new VM (async).",
-		Long: `Submits a vm.create task and returns a task id immediately. Pass --wait
+		Long: `Submits a vm.create task and returns a task id immediately. The VM
+name is the sole positional argument (globally unique). Pass --wait
 to block until the task reaches its terminal state. The VM uuid is
 minted on the CP and reused by the agent.
 
@@ -51,7 +51,7 @@ digest, --firmware / --firmware-id select firmware (name or uuid),
 --format and --disk-gib size the root disk.
 
 Example:
-  otherix vm create --name web-1 --image-url https://example.com/ubuntu.qcow2 \
+  otherix vm create web-1 --image-url https://example.com/ubuntu.qcow2 \
     --arch arm64 --vcpus 2 --memory-mb 2048
 
 --pool accepts either a pool name or a per-instance UUID literal
@@ -72,10 +72,10 @@ gets one NIC attached to that network's bridge (the CP mints a
 52:54:00 QEMU MAC; the guest configures its own IP). Non-bridge
 network types are rejected with 400. When omitted the VM has no NIC
 and the agent falls back to legacy SLIRP networking.`,
+		Args: cobra.ExactArgs(1),
 		RunE: runCreate,
 	}
 
-	cmd.Flags().String(flagName, "", "VM name (required, globally unique)")
 	cmd.Flags().String(flagImageURL, "", "source image URL to download and boot from (required)")
 	cmd.Flags().String(flagImageSHA256, "", "expected sha256 of the image (optional; verified after download)")
 	cmd.Flags().String(flagArch, "", "VM architecture: amd64 or arm64 (required)")
@@ -124,12 +124,6 @@ type createFlags struct {
 func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 	var f createFlags
 	var err error
-	if f.name, err = cmd.Flags().GetString(flagName); err != nil {
-		return f, err
-	}
-	if f.name == "" {
-		return f, fmt.Errorf("--%s is required", flagName)
-	}
 	if err = parseImageFlags(cmd, &f); err != nil {
 		return f, err
 	}
@@ -242,15 +236,20 @@ func readCloudInitFlag(cmd *cobra.Command, name string) (*string, error) {
 	return &out, nil
 }
 
-func runCreate(cmd *cobra.Command, _ []string) error {
+func runCreate(cmd *cobra.Command, args []string) error {
 	c, err := clientFromFlags(cmd)
 	if err != nil {
 		return err
+	}
+	name := args[0]
+	if name == "" {
+		return fmt.Errorf("vm name is required")
 	}
 	f, err := parseCreateFlags(cmd)
 	if err != nil {
 		return err
 	}
+	f.name = name
 
 	req := cpclient.CreateVMRequest{
 		Name:              f.name,

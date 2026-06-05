@@ -239,11 +239,11 @@ gen_userdata "$IP2" "$IP1" no  > "$UD2"   # VM-B is passive
 # use (IfNotPresent), so budget both creates for download + create.
 COLD_VM_WAIT=$(( VM_WAIT * 2 ))
 info "creating ${NET}-a on $NODE1 ($IP1) and ${NET}-b on $NODE2 ($IP2) (default pool, <= ${COLD_VM_WAIT}s each incl. cold image fetch)"
-otx vm create --name "${NET}-a" --node "$NODE1" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
+otx vm create "${NET}-a" --node "$NODE1" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
   --vcpus 2 --memory-mb 2048 --cloud-init "$UD1" \
   --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create A on $NODE1 did not reach success"
-otx vm create --name "${NET}-b" --node "$NODE2" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
+otx vm create "${NET}-b" --node "$NODE2" --network "$NET" --image-url "$IMAGE_URL" --arch "$ARCH" \
   --vcpus 2 --memory-mb 2048 --cloud-init "$UD2" \
   --wait --wait-timeout "${COLD_VM_WAIT}s" \
   || fail "vm create B on $NODE2 did not reach success"

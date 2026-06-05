@@ -153,7 +153,7 @@ echo "=== step 4: vm create --network $BRIDGE_NET ==="
 IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
 ARCH="${ARCH:-arm64}"
 info "booting $VM_NAME from $IMAGE_URL (<= ${VM_TIMEOUT}s; cold pool fetches the image on first use)"
-otx vm create --name "$VM_NAME" --image-url "$IMAGE_URL" --arch "$ARCH" --network "$BRIDGE_NET" \
+otx vm create "$VM_NAME" --image-url "$IMAGE_URL" --arch "$ARCH" --network "$BRIDGE_NET" \
   --vcpus 2 --memory-mb 2048 --wait --wait-timeout "${VM_TIMEOUT}s" \
   || fail "vm create --network did not reach success"
 pass "$VM_NAME created with a NIC on $BRIDGE_NET"
