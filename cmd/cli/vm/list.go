@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 const (
@@ -41,7 +42,7 @@ meta.next_cursor and is opaque — re-pass with --cursor.`,
 	cmd.Flags().String(flagListStatus, "", "filter by status")
 	cmd.Flags().Int(flagListLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagListCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().String(flagOutput, "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json|yaml")
 	cmd.Flags().Bool(flagShowIDs, false, "include VM UUIDs in the table output")
 
 	return cmd
@@ -91,6 +92,19 @@ func runList(cmd *cobra.Command, _ []string) error {
 	})
 	if err != nil {
 		return classifyError(err)
+	}
+
+	if format == "yaml" {
+		docs := make([][]byte, 0, len(vms.Data))
+		for _, vm := range vms.Data {
+			out, err := manifest.ProjectVM(vm)
+			if err != nil {
+				return err
+			}
+			docs = append(docs, out)
+		}
+		printf(cmd, "%s", manifest.JoinDocuments(docs))
+		return nil
 	}
 
 	switch format {
