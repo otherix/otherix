@@ -5,15 +5,13 @@ package network
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/clierr"
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
@@ -49,25 +47,10 @@ func printJSON(cmd *cobra.Command, raw json.RawMessage) error {
 }
 
 // classifyError maps a cpclient error to a stable-prefixed operator
-// message. *APIError surfaces verbatim ("api_error: <code>: <msg>");
-// transport failures get a coarse classifier prefix. Mirror of
-// cmd/cli/pool.classifyError.
+// message. Delegates to clierr.Classify (shared with the other CLI
+// surfaces); kept as a thin wrapper so call sites stay untouched.
 func classifyError(err error) error {
-	var apiErr *cpclient.APIError
-	if errors.As(err, &apiErr) {
-		return fmt.Errorf("%s", apiErr.Error())
-	}
-	msg := err.Error()
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("request_timeout: %s", msg)
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Errorf("connection_refused: %s", msg)
-	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
-		return fmt.Errorf("tls_handshake_failed: %s", msg)
-	default:
-		return fmt.Errorf("request_failed: %s", msg)
-	}
+	return clierr.Classify(err)
 }
 
 func outputFormat(cmd *cobra.Command, defaultFormat string) (string, error) {

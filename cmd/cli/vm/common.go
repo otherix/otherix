@@ -7,16 +7,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/clierr"
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
@@ -55,21 +54,7 @@ func printJSON(cmd *cobra.Command, raw json.RawMessage) error {
 // callers can simply `return classifyError(err)` from RunE; main
 // renders it to stderr with the standard "error: " preamble.
 func classifyError(err error) error {
-	var apiErr *cpclient.APIError
-	if errors.As(err, &apiErr) {
-		return fmt.Errorf("%s", apiErr.Error())
-	}
-	msg := err.Error()
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("request_timeout: %s", msg)
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Errorf("connection_refused: %s", msg)
-	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
-		return fmt.Errorf("tls_handshake_failed: %s", msg)
-	default:
-		return fmt.Errorf("request_failed: %s", msg)
-	}
+	return clierr.Classify(err)
 }
 
 // parseTaskID parses the task id from the CP's AsyncTaskAccepted
