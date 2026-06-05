@@ -5,9 +5,20 @@ package manifest
 
 import (
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// resolveAlias follows a YAML alias node to its anchored target so the
+// spec can be validated and decoded as the mapping it refers to. A
+// non-alias node is returned unchanged.
+func resolveAlias(n yaml.Node) yaml.Node {
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = *n.Alias
+	}
+	return n
+}
 
 // specKeys returns the set of YAML keys present in a spec node. Used
 // for unknown-field rejection: any key outside a kind's allow-set is a
@@ -25,10 +36,11 @@ func specKeys(spec yaml.Node) []string {
 // rejectUnknownKeys returns an error naming the first spec key that is
 // not in allowed.
 func rejectUnknownKeys(d Document, allowed map[string]bool) error {
-	if d.Spec.Kind != 0 && d.Spec.Kind != yaml.MappingNode {
+	spec := resolveAlias(d.Spec)
+	if spec.Kind != 0 && spec.Kind != yaml.MappingNode {
 		return fmt.Errorf("manifest: document %d (%s/%s): spec must be a mapping", d.Index, d.Kind, d.Name)
 	}
-	for _, k := range specKeys(d.Spec) {
+	for _, k := range specKeys(spec) {
 		if !allowed[k] {
 			return fmt.Errorf("manifest: document %d (%s/%s): unknown spec field %q", d.Index, d.Kind, d.Name, k)
 		}
@@ -70,6 +82,13 @@ func DecodeStoragePoolSpec(d Document) (StoragePoolSpec, error) {
 	}
 	if s.Path == "" {
 		return StoragePoolSpec{}, fmt.Errorf("manifest: document %d (StoragePool/%s): spec.path is required", d.Index, d.Name)
+	}
+	// Trim node values so whitespace-only entries are treated as empty:
+	// a padded `node` collapses to the one-of-node/nodeList error, and a
+	// padded nodeList element triggers the empty-element error below.
+	s.Node = strings.TrimSpace(s.Node)
+	for i := range s.NodeList {
+		s.NodeList[i] = strings.TrimSpace(s.NodeList[i])
 	}
 	hasNode, hasList := s.Node != "", len(s.NodeList) > 0
 	switch {

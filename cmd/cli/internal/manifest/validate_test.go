@@ -96,3 +96,35 @@ func TestDecodeVMSpecRejectsDesiredPhaseUnsupported(t *testing.T) {
 		t.Errorf("DecodeVMSpec(desiredPhase set) error = %v, want rejection mentioning desiredPhase", err)
 	}
 }
+
+func TestDecodeAcceptsAliasMappingSpec(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: a }\nspec: &s { type: bridge, bridgeName: br0 }\n---\napiVersion: otherix/v1\nkind: Network\nmetadata: { name: b }\nspec: *s\n"
+	docs, err := manifest.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, d := range docs {
+		got, err := manifest.DecodeNetworkSpec(d)
+		if err != nil {
+			t.Fatalf("DecodeNetworkSpec(%s): %v", d.Name, err)
+		}
+		if got.Type != "bridge" || got.BridgeName != "br0" {
+			t.Errorf("alias spec decoded = %+v, want bridge/br0", got)
+		}
+	}
+}
+
+func TestDecodeAliasSpecStillRejectsUnknownField(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: a }\nspec: &s { type: bridge, bridgeName: br0, bogus: 1 }\n---\napiVersion: otherix/v1\nkind: Network\nmetadata: { name: b }\nspec: *s\n"
+	docs, _ := manifest.Parse(strings.NewReader(src))
+	if _, err := manifest.DecodeNetworkSpec(docs[1]); err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("alias-with-bogus error = %v, want unknown-field 'bogus'", err)
+	}
+}
+
+func TestDecodeStoragePoolSpecRejectsWhitespaceNode(t *testing.T) {
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: StoragePool\nmetadata: { name: p }\nspec: { path: /x, node: \"   \" }\n")
+	if _, err := manifest.DecodeStoragePoolSpec(d); err == nil {
+		t.Errorf("whitespace-only node should be rejected (treated as empty)")
+	}
+}

@@ -125,3 +125,24 @@ func TestProjectPoolConceptRoundTrips(t *testing.T) {
 		t.Errorf("pool-concept round-trip expanded to %d ops, want 2", len(plan))
 	}
 }
+
+func TestProjectVMSingleNICOnly(t *testing.T) {
+	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512, Networks: []string{"net-a", "net-b"}}
+	out, err := manifest.ProjectVM(v)
+	if err != nil {
+		t.Fatalf("ProjectVM: %v", err)
+	}
+	if !strings.Contains(string(out), "network: net-a") {
+		t.Errorf("want network: net-a, got:\n%s", out)
+	}
+	if strings.Contains(string(out), "net-b") {
+		t.Errorf("second NIC must not be projected (single-NIC schema), got:\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if _, err := manifest.BuildCreatePlan(docs); err != nil {
+		t.Fatalf("not apply-ready: %v", err)
+	}
+}

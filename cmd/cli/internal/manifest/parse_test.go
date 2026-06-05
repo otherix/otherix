@@ -70,3 +70,13 @@ func TestParseSkipsEmptyDocuments(t *testing.T) {
 		t.Fatalf("Parse() returned %d docs, want 1 (empty docs skipped)", len(docs))
 	}
 }
+
+func TestParseTrimsName(t *testing.T) {
+	docs, err := manifest.Parse(strings.NewReader("apiVersion: otherix/v1\nkind: VM\nmetadata: { name: \"  web-1  \" }\nspec: { imageURL: https://x/u.qcow2, arch: arm64 }\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if docs[0].Name != "web-1" {
+		t.Errorf("Name = %q, want trimmed 'web-1'", docs[0].Name)
+	}
+}

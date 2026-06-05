@@ -87,7 +87,7 @@ func decodeHeader(node *yaml.Node, index int) (Document, error) {
 		Index:      index,
 		APIVersion: raw.APIVersion,
 		Kind:       raw.Kind,
-		Name:       raw.Metadata.Name,
+		Name:       strings.TrimSpace(raw.Metadata.Name),
 		Spec:       raw.Spec,
 	}, nil
 }
