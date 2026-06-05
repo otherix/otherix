@@ -29,10 +29,9 @@ import (
 // Errors returned by Manager methods. Sentinel errors so handlers can
 // branch on errors.Is for envelope mapping.
 var (
-	ErrNotFound        = errors.New("vm not found")
-	ErrPoolUnknown     = errors.New("pool name does not match a configured pool")
-	ErrTemplateMissing = errors.New("template not found on pool")
-	ErrInvalidSpec     = errors.New("invalid create spec")
+	ErrNotFound    = errors.New("vm not found")
+	ErrPoolUnknown = errors.New("pool name does not match a configured pool")
+	ErrInvalidSpec = errors.New("invalid create spec")
 
 	// ErrInvalidState is returned by sync lifecycle ops (Pause /
 	// Resume / Reset) when the VM is not in a phase that accepts

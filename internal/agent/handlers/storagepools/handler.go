@@ -37,9 +37,6 @@ func New(m *vm.Manager, log *slog.Logger) *Handler {
 // Mount registers /v1/storage-pools routes on r.
 func (h *Handler) Mount(r chi.Router) {
 	r.Post("/{pool_name}/scan", h.Scan)
-	r.Get("/{pool_name}/images", h.ListImages)
-	r.Post("/{pool_name}/images", h.ImportImage)
-	r.Delete("/{pool_name}/images/{checksum}", h.DeleteImage)
 }
 
 // asyncAccepted mirrors `AsyncTaskAccepted` in api/openapi/agent.yaml.

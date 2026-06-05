@@ -105,11 +105,8 @@ tags:
   - name: storage-pools
     description: |
       Per-node storage pools. CRUD lives in the Control Plane API;
-      this surface is read + operational (`scan`, image cache).
-  - name: storage-images
-    description: |
-      Per-pool image cache. Backing store for template-derived disks
-      so an image is fetched and verified once per node.
+      this surface is read + operational (`scan`). The per-pool image
+      cache is reported through the heartbeat, not a REST surface.
   - name: networks
     description: |
       Per-node networking primitives (Linux bridges, taps, VLANs).
@@ -1174,97 +1171,6 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/storage-pools/{pool_name}/images:
-    parameters:
-      - $ref: "#/components/parameters/PoolName"
-    get:
-      operationId: storageImages.list
-      tags: [storage-images]
-      summary: List images cached in a pool.
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Cached images.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CachedImageList"
-        "404": { $ref: "#/components/responses/NotFound" }
-        "500": { $ref: "#/components/responses/Internal" }
-    post:
-      operationId: storageImages.import
-      tags: [storage-images]
-      summary: Fetch and cache an image into a pool (asynchronous).
-      description: |
-        Either `source_url` or `source_path` must be set. The agent
-        fetches the image (or copies a local file), verifies the
-        checksum, and stores it in the pool. Returns 409
-        `image_checksum_mismatch` on hash failure (does not retain
-        the corrupted file).
-
-        Subsequent requests with the same `expected_checksum_sha256`
-        are no-ops once the image is present.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ImageImportRequest"
-      responses:
-        "202":
-          description: Import accepted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AsyncTaskAccepted"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: |
-            Image checksum mismatch, pool out of space, or idempotency
-            mismatch.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/storage-pools/{pool_name}/images/{checksum}:
-    parameters:
-      - $ref: "#/components/parameters/PoolName"
-      - name: checksum
-        in: path
-        required: true
-        schema:
-          type: string
-          pattern: "^[0-9a-f]{64}$"
-        description: Lowercase hex sha256 of the cached image.
-    delete:
-      operationId: storageImages.delete
-      tags: [storage-images]
-      summary: Drop a cached image from a pool (synchronous).
-      description: |
-        Returns 409 `image_in_use` if any active disk references this
-        image as backing store. The Control Plane is responsible for
-        garbage-collection scheduling; this is the eviction primitive.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "204":
-          description: Image deleted.
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: Image is referenced by an active disk.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500": { $ref: "#/components/responses/Internal" }
-
   /v1/networks:
     get:
       operationId: networks.list
@@ -1554,7 +1460,12 @@ components:
         result:
           type: [object, "null"]
           additionalProperties: true
-          description: Task-type-specific payload, populated on success.
+          description: |
+            Task-type-specific payload, populated on success. For
+            `vm.create` the agent returns `vm_id` (string uuid),
+            `image_sha256` (the resolved image content digest),
+            `virtual_size_bytes` (int64, the image's virtual size) and
+            `disk_size_bytes` (int64, the materialized root-disk size).
         error:
           type: [object, "null"]
           description: |
@@ -2534,6 +2445,42 @@ components:
         available_bytes:
           type: [integer, "null"]
           format: int64
+        images:
+          type: array
+          description: |
+            Inventory of images cached in this pool's `images/`
+            directory, projected from a filesystem walk. Reported
+            through the heartbeat so the Control Plane can track which
+            images are already materialised on each node; there is no
+            REST image surface on the agent.
+          items:
+            type: object
+            required: [basename, sha256, size_bytes, virtual_size_bytes, format, imported_at]
+            properties:
+              basename:
+                type: string
+                description: On-disk filename of the cached image in `images/`.
+              sha256:
+                type: string
+                pattern: "^[0-9a-f]{64}$"
+                description: Lowercase hex sha256 content digest of the cached image.
+              size_bytes:
+                type: integer
+                format: int64
+                minimum: 0
+                description: On-disk file size in bytes.
+              virtual_size_bytes:
+                type: integer
+                format: int64
+                minimum: 0
+                description: Virtual (logical) size of the image in bytes, per `qemu-img info`.
+              format:
+                type: string
+                description: Image format, e.g. `qcow2`.
+              imported_at:
+                type: string
+                format: date-time
+                description: When the cached file was last written (modification time).
         reported_at:
           type: string
           format: date-time
@@ -2549,78 +2496,6 @@ components:
             $ref: "#/components/schemas/StoragePoolReport"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
-
-    CachedImage:
-      type: object
-      required: [checksum_sha256, format, size_bytes, path]
-      properties:
-        checksum_sha256:
-          type: string
-          pattern: "^[0-9a-f]{64}$"
-        format:
-          type: string
-          enum: [qcow2, raw]
-        size_bytes:
-          type: integer
-          format: int64
-          minimum: 0
-        path:
-          type: string
-          description: Absolute path of the cached file in the pool.
-        last_used_at:
-          type: [string, "null"]
-          format: date-time
-        source_url:
-          type: [string, "null"]
-          format: uri
-          description: |
-            Origin URL the image was fetched from, for diagnostics.
-            Not used for cache lookup — checksum is the key.
-
-    CachedImageList:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/CachedImage"
-        meta:
-          $ref: "#/components/schemas/PaginationMeta"
-
-    ImageImportRequest:
-      type: object
-      description: |
-        Either `source_url` or `source_path` must be set, but not
-        both. `expected_checksum_sha256` is optional:
-
-          - When provided, the agent verifies the streamed bytes against
-            it and refuses to retain the file on mismatch
-            (`checksum_mismatch` failure code).
-          - When null/absent/empty, the agent computes the sha256 during
-            streaming download and returns it in the task result. No
-            verification gate fires; the operator trusts source URL
-            integrity (TLS + reputable mirror).
-
-        The agent always returns the computed checksum in the
-        terminal-success `result` regardless of which mode was used;
-        verify mode just adds a gate before placement. Storage layout
-        invariant: the on-disk filename always equals the (computed or
-        verified) checksum.
-      required: [format]
-      properties:
-        source_url:
-          type: [string, "null"]
-          format: uri
-        source_path:
-          type: [string, "null"]
-          description: Absolute path on the node, when fetching from local disk.
-        expected_checksum_sha256:
-          type: [string, "null"]
-          pattern: "^[0-9a-f]{64}$"
-        format:
-          type: string
-          enum: [qcow2, raw]
 
     NetworkConfig:
       type: object

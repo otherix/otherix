@@ -33,12 +33,20 @@ import (
 // identity instead of generating its own. Must be non-nil when called
 // from the CP worker.
 type VMCreateRequest struct {
-	UUID             uuid.UUID `json:"uuid"`
-	Name             string    `json:"name"`
-	VCPUs            int       `json:"vcpus"`
-	MemoryMB         int       `json:"memory_mb"`
-	Pool             string    `json:"pool"`
-	TemplateChecksum string    `json:"template_checksum"`
+	UUID     uuid.UUID `json:"uuid"`
+	Name     string    `json:"name"`
+	VCPUs    int       `json:"vcpus"`
+	MemoryMB int       `json:"memory_mb"`
+	Pool     string    `json:"pool"`
+	// ImageURL is the HTTPS source the agent ensures into the pool's
+	// basename-keyed cache (IfNotPresent). ExpectedSHA256, when non-empty,
+	// pins the content digest the agent verifies after fetch. Format
+	// defaults to "qcow2" agent-side when empty. DiskGiB is the requested
+	// root-disk size in GiB (0 = default to the image's virtual size).
+	ImageURL       string `json:"image_url"`
+	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
+	Format         string `json:"format,omitempty"`
+	DiskGiB        int    `json:"disk_gib,omitempty"`
 	// UserData carries the CP-resolved cloud-init `#cloud-config`
 	// blob (L3 Area 3 lock — already-merged vm.user_data ?:
 	// template.cloud_init_user_data, hostname-injected). Empty
@@ -64,6 +72,17 @@ type VMCreateNIC struct {
 	Model       string    `json:"model"`
 	MTU         int       `json:"mtu"`
 	DeviceOrder int       `json:"device_order"`
+}
+
+// VMCreateResult is the agent's terminal vm.create task result: the resolved
+// image content digest, the image's virtual size, and the materialized disk
+// size (in bytes). The CP records the disk size onto vm_disk_runtime and the
+// sha onto the VM row.
+type VMCreateResult struct {
+	VMID             string `json:"vm_id"`
+	ImageSHA256      string `json:"image_sha256"`
+	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
+	DiskSizeBytes    int64  `json:"disk_size_bytes"`
 }
 
 // AgentVM mirrors the agent's vmView wire shape (handler.go). Internal

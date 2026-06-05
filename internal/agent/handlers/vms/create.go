@@ -35,12 +35,20 @@ type createRequest struct {
 	// `pool` is the pool **name**. The agent's local registry is
 	// name-keyed; the cluster-wide UUID polymorphism stays an
 	// operator-edge concern.
-	UUID             string `json:"uuid,omitempty"`
-	Name             string `json:"name"`
-	VCPUs            int    `json:"vcpus"`
-	MemoryMB         int    `json:"memory_mb"`
-	Pool             string `json:"pool"`
-	TemplateChecksum string `json:"template_checksum"`
+	UUID     string `json:"uuid,omitempty"`
+	Name     string `json:"name"`
+	VCPUs    int    `json:"vcpus"`
+	MemoryMB int    `json:"memory_mb"`
+	Pool     string `json:"pool"`
+	// ImageURL is the HTTPS source the agent ensures locally (basename-keyed
+	// IfNotPresent cache). ExpectedSHA256, when non-empty, pins the content
+	// digest (verify mode). Format defaults to "qcow2" when empty. DiskGiB is
+	// the requested root-disk size in GiB (0 = default to the image's virtual
+	// size).
+	ImageURL       string `json:"image_url"`
+	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
+	Format         string `json:"format,omitempty"`
+	DiskGiB        int    `json:"disk_gib,omitempty"`
 	// UserData carries CP-resolved raw `#cloud-config` YAML (L3 Area
 	// 3 lock). Optional — empty value skips cidata generation.
 	// CP-side resolver merges vm.user_data ?:
@@ -119,15 +127,23 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	format := req.Format
+	if format == "" {
+		format = "qcow2"
+	}
+
 	task, err := h.manager.Create(r.Context(), vm.CreateSpec{
-		UUID:             vmID,
-		Name:             req.Name,
-		VCPUs:            req.VCPUs,
-		MemoryMB:         req.MemoryMB,
-		PoolName:         req.Pool,
-		TemplateChecksum: req.TemplateChecksum,
-		UserData:         []byte(req.UserData),
-		NICs:             nics,
+		UUID:           vmID,
+		Name:           req.Name,
+		VCPUs:          req.VCPUs,
+		MemoryMB:       req.MemoryMB,
+		PoolName:       req.Pool,
+		ImageURL:       req.ImageURL,
+		ExpectedSHA256: req.ExpectedSHA256,
+		Format:         format,
+		DiskGiB:        req.DiskGiB,
+		UserData:       []byte(req.UserData),
+		NICs:           nics,
 	})
 	if err != nil {
 		mapCreateError(w, r, err)
@@ -198,9 +214,6 @@ func mapCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, vm.ErrPoolUnknown):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "pool does not match a configured pool", nil)
-	case errors.Is(err, vm.ErrTemplateMissing):
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodeNotFound, "template not found on pool", nil)
 	case errors.Is(err, vm.ErrCreateInFlight):
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict, "vm create already in flight for this id", nil)

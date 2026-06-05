@@ -92,21 +92,6 @@ func TestPoolToAPI_CapacityNonZeroIsPointer(t *testing.T) {
 	}
 }
 
-func TestImageToAPI_ZeroLastUsedAtOmitted(t *testing.T) {
-	got := imageToAPI(CachedImage{
-		ChecksumSHA256: "abc",
-		Format:         "qcow2",
-		SizeBytes:      1024,
-		Path:           "/p/x.qcow2",
-	})
-	if got.LastUsedAt != nil {
-		t.Errorf("LastUsedAt = %v, want nil for zero time", got.LastUsedAt)
-	}
-	if got.SourceURL != nil {
-		t.Errorf("SourceURL = %v, want nil for empty input", got.SourceURL)
-	}
-}
-
 func TestMigrationToAPI_ZeroPortsOmitted(t *testing.T) {
 	got := migrationToAPI(MigrationCapability{
 		Host:           "127.0.0.1",

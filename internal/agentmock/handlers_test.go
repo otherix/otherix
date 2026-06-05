@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -108,32 +107,6 @@ func TestHandler_StoragePoolsGet_NotFound(t *testing.T) {
 	decode(t, resp, &env)
 	if env.Error.Code != "not_found" {
 		t.Errorf("error.code = %q, want not_found", env.Error.Code)
-	}
-}
-
-func TestHandler_StorageImagesList(t *testing.T) {
-	m := Start(t, Options{})
-	pool := "p"
-	m.AddStoragePool(StoragePool{ID: uuid.New(), Name: pool, Type: "local_dir", Path: "/p"})
-	if err := m.AddImage(pool, CachedImage{
-		ChecksumSHA256: strings.Repeat("a", 64),
-		Format:         "qcow2",
-		SizeBytes:      4096,
-		Path:           "/p/img.qcow2",
-		LastUsedAt:     time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("AddImage: %v", err)
-	}
-
-	resp := mustGet(t, m.URL()+"/v1/storage-pools/"+pool+"/images")
-	var list agentapi.CachedImageList
-	decode(t, resp, &list)
-	if len(list.Data) != 1 {
-		t.Fatalf("len(Data) = %d, want 1", len(list.Data))
-	}
-	want := agentapi.CachedImageFormat("qcow2")
-	if list.Data[0].Format != want {
-		t.Errorf("Format = %q, want %q", list.Data[0].Format, want)
 	}
 }
 

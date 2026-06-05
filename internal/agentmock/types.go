@@ -237,25 +237,6 @@ func poolToAPI(p storagePool) agentapi.StoragePoolReport {
 	return out
 }
 
-// imageToAPI converts a CachedImage into the codegen wire type.
-func imageToAPI(c CachedImage) agentapi.CachedImage {
-	out := agentapi.CachedImage{
-		ChecksumSha256: c.ChecksumSHA256,
-		Format:         agentapi.CachedImageFormat(c.Format),
-		SizeBytes:      c.SizeBytes,
-		Path:           c.Path,
-	}
-	if !c.LastUsedAt.IsZero() {
-		t := c.LastUsedAt
-		out.LastUsedAt = &t
-	}
-	if c.SourceURL != "" {
-		u := c.SourceURL
-		out.SourceURL = &u
-	}
-	return out
-}
-
 // migrationToAPI converts a MigrationCapability into the codegen type.
 func migrationToAPI(m MigrationCapability) agentapi.MigrationCapability {
 	out := agentapi.MigrationCapability{

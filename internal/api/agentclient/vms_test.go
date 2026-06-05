@@ -29,12 +29,13 @@ func newClientAutoDir(t *testing.T) *agentclient.Client {
 
 func validVMCreateRequest() agentclient.VMCreateRequest {
 	return agentclient.VMCreateRequest{
-		UUID:             uuid.New(),
-		Name:             "test-vm",
-		VCPUs:            2,
-		MemoryMB:         2048,
-		Pool:             "test-pool",
-		TemplateChecksum: strings.Repeat("a", 64),
+		UUID:           uuid.New(),
+		Name:           "test-vm",
+		VCPUs:          2,
+		MemoryMB:       2048,
+		Pool:           "test-pool",
+		ImageURL:       "https://example.test/ubuntu.img",
+		ExpectedSHA256: strings.Repeat("a", 64),
 	}
 }
 
