@@ -5652,6 +5652,7 @@ components:
         - id
         - name
         - owner_id
+        - owner
         - image_url
         - format
         - pool
@@ -5677,6 +5678,13 @@ components:
             UUID of the owning user. Assigned server-side at creation;
             immutable. The user cannot be deleted while owned VMs exist
             (`ON DELETE RESTRICT`).
+        owner:
+          type: [string, "null"]
+          description: |
+            Display name of the owning user. Resolved only for callers
+            holding `user:read` (admin / operator); `null` for
+            developer / viewer so the VM surface cannot be used to
+            enumerate the user directory those roles cannot read.
         image_url:
           type: string
           format: uri

@@ -137,6 +137,7 @@ func TestVMDeleteRunHandlerFailThenSucceedProjects(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed running: %v", err)
 	}
@@ -186,6 +187,7 @@ func TestVMDeleteRunHandlerSuccess(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed running: %v", err)
 	}
@@ -220,6 +222,7 @@ func TestVMLifecycleRunHandlerStop(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("seed running: %v", err)
 	}

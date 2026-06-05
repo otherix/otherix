@@ -97,7 +97,7 @@ func (s *deleteWorkerStoreStub) StoragePoolByID(context.Context, uuid.UUID) (sto
 	panic("unexpected StoragePoolByID")
 }
 
-func (s *deleteWorkerStoreStub) ProjectVMCreateSuccess(context.Context, store.UpsertVMRuntimeParams, store.UpdateTaskFinalizedParams) error {
+func (s *deleteWorkerStoreStub) ProjectVMCreateSuccess(context.Context, store.UpsertVMRuntimeParams, store.UpdateTaskFinalizedParams, []byte) error {
 	panic("unexpected ProjectVMCreateSuccess")
 }
 
@@ -261,7 +261,7 @@ func (s *createLifecycleWorkerStoreStub) StoragePoolByID(context.Context, uuid.U
 	return store.StoragePool{}, nil
 }
 
-func (s *createLifecycleWorkerStoreStub) ProjectVMCreateSuccess(context.Context, store.UpsertVMRuntimeParams, store.UpdateTaskFinalizedParams) error {
+func (s *createLifecycleWorkerStoreStub) ProjectVMCreateSuccess(context.Context, store.UpsertVMRuntimeParams, store.UpdateTaskFinalizedParams, []byte) error {
 	s.projectedCreate = true
 	return nil
 }
@@ -482,17 +482,27 @@ func TestRunCreateSurfacesAgentResolvedResult(t *testing.T) {
 	if got != want {
 		t.Errorf("task result = %+v, want %+v", got, want)
 	}
+	// The hex digest the agent resolved is decoded and threaded to the
+	// projection so it can stamp the VM row (compute-mode createsurface the
+	// digest on the VM view).
+	if gotDigest := hex.EncodeToString(st.finalDigest); gotDigest != "deadbeef" {
+		t.Errorf("projected image digest = %q, want %q", gotDigest, "deadbeef")
+	}
 }
 
-// captureResultStoreStub captures the result bytes the create projection writes,
-// so a test can assert the agent-resolved fields surfaced into the task result.
+// captureResultStoreStub captures the result bytes and the resolved image
+// digest the create projection receives, so a test can assert the
+// agent-resolved fields surfaced into the task result and the VM-row digest
+// stamp.
 type captureResultStoreStub struct {
 	createLifecycleWorkerStoreStub
 	finalResult []byte
+	finalDigest []byte
 }
 
-func (s *captureResultStoreStub) ProjectVMCreateSuccess(_ context.Context, _ store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams) error {
+func (s *captureResultStoreStub) ProjectVMCreateSuccess(_ context.Context, _ store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams, imageSHA256 []byte) error {
 	s.finalResult = fin.Result
+	s.finalDigest = imageSHA256
 	return nil
 }
 

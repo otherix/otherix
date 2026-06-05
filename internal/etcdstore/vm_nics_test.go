@@ -119,6 +119,7 @@ func TestProjectVMDeleteClearsNicAndUnblocksNetwork(t *testing.T) {
 	if err := s.ProjectVMCreateSuccess(ctx,
 		store.UpsertVMRuntimeParams{VmID: writes.VM.ID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess},
+		nil,
 	); err != nil {
 		t.Fatalf("ProjectVMCreateSuccess: %v", err)
 	}
