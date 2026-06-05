@@ -151,6 +151,72 @@ func TestCreateWaitPoolTimeoutCapped(t *testing.T) {
 	}
 }
 
+// TestCreateWaitPoolGetHangBoundedByTimeout proves Fix R1: a hung pool
+// GET must be bounded by --wait-timeout, not the cpclient http.Client's
+// fixed 30s timeout. The handler blocks the GET until the test ends, so
+// without the per-request deadline the wait would run ~30s.
+func TestCreateWaitPoolGetHangBoundedByTimeout(t *testing.T) {
+	poolID := uuid.NewString()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"` + poolID + `","name":"p1","node":"node-1","type":"local_dir","path":"/opt/p","reconciliation_status":"pending"}`))
+			return
+		}
+		// Hang the GET until the CLIENT cancels it (the per-request
+		// reqCtx deadline bounded by --wait-timeout). Using r.Context()
+		// instead of an external channel lets srv.Close() complete
+		// cleanly once the client cancels - no deadlock on the handler.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	const m = "apiVersion: otherix/v1\nkind: StoragePool\nmetadata: { name: p1 }\nspec: { path: /opt/p, node: node-1 }\n"
+	start := time.Now()
+	_, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, m), "--wait", "--wait-timeout", "1s")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("expected timeout error for a hung pool GET")
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("wait took %v; a hung pool GET was not bounded by --wait-timeout (would be ~30s http client timeout)", elapsed)
+	}
+}
+
+// TestCreateWaitPoolRetriesTransient proves Fix R2: a single transient
+// 503 during the reconcile poll must be retried (not surfaced as a false
+// "not ready"), then the wait converges once the pool reports ready.
+func TestCreateWaitPoolRetriesTransient(t *testing.T) {
+	fastPoolPoll(t)
+	poolID := uuid.NewString()
+	var gets int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"` + poolID + `","name":"p1","node":"node-1","type":"local_dir","path":"/opt/p","reconciliation_status":"pending"}`))
+			return
+		}
+		gets++
+		if gets == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable) // transient blip on first poll
+			_, _ = w.Write([]byte(`{"error":{"code":"internal","message":"blip"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"` + poolID + `","name":"p1","node":"node-1","type":"local_dir","path":"/opt/p","reconciliation_status":"ready"}`))
+	}))
+	defer srv.Close()
+	const m = "apiVersion: otherix/v1\nkind: StoragePool\nmetadata: { name: p1 }\nspec: { path: /opt/p, node: node-1 }\n"
+	stdout, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, m), "--wait", "--wait-timeout", "10s")
+	if err != nil {
+		t.Fatalf("transient blip should be retried, got error: %v", err)
+	}
+	if gets < 2 {
+		t.Errorf("expected a retry after the 503 (>=2 GETs), got %d", gets)
+	}
+	if !strings.Contains(stdout, "ready") {
+		t.Errorf("stdout = %q, want ready after retry", stdout)
+	}
+}
+
 // TestCreateWaitVMTaskFailure confirms a create task reaching terminal
 // failed surfaces the task error envelope and a non-zero exit.
 func TestCreateWaitVMTaskFailure(t *testing.T) {

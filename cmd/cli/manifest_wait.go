@@ -19,6 +19,9 @@ import (
 // poolReconcilePoll is the interval for polling pool reconciliation
 // status under --wait. A package-level var (not a const) so tests can
 // lower it; production code never reassigns it.
+//
+// Package var (not const) so tests can lower it; do NOT add t.Parallel()
+// to package-main tests that touch it - it would race.
 var poolReconcilePoll = 2 * time.Second
 
 // waitForCreated blocks until every async resource produced by the
@@ -62,7 +65,7 @@ func waitVMResult(ctx context.Context, c *cpclient.Client, r *docResult, deadlin
 		return
 	}
 	if task.Status == "success" {
-		r.note = "ready"
+		r.note += " ready"
 		return
 	}
 	env, _ := task.DecodeError()
@@ -82,18 +85,33 @@ func waitPoolResult(ctx context.Context, c *cpclient.Client, r *docResult, deadl
 		return
 	}
 	for {
-		p, _, err := c.GetPoolByID(ctx, id)
-		if err != nil {
-			r.err = cpErr(err)
-			return
-		}
-		switch p.ReconciliationStatus {
-		case "ready":
-			r.note += " ready"
-			return
-		case "failed":
-			r.err = errors.New("reconciliation failed")
-			return
+		// Bound each GET to the shared --wait deadline. Without this the
+		// request would block up to the cpclient http.Client's fixed 30s
+		// timeout, ignoring --wait-timeout (mirrors WaitTask, which derives
+		// a budget-bounded context from opts.Timeout).
+		reqCtx, cancel := context.WithDeadline(ctx, deadline)
+		p, _, gerr := c.GetPoolByID(reqCtx, id)
+		cancel()
+		if gerr == nil {
+			switch p.ReconciliationStatus {
+			case "ready":
+				r.note += " ready"
+				return
+			case "failed":
+				r.err = errors.New("reconciliation failed")
+				return
+			}
+		} else {
+			// Non-retryable (4xx) errors are permanent; surface them.
+			// Transient (5xx/429/408/network) errors and the per-request
+			// deadline-exceeded fall through to the deadline check and
+			// re-poll, matching WaitTask's resilience against a single
+			// transient blip during a minutes-long reconcile.
+			var apiErr *cpclient.APIError
+			if errors.As(gerr, &apiErr) && !apiErr.IsRetryable() {
+				r.err = cpErr(gerr)
+				return
+			}
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
