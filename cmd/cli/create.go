@@ -46,6 +46,9 @@ Example:
 			if err != nil {
 				return err
 			}
+			if err := validateManifestCloudInit(cmd, plan); err != nil {
+				return err
+			}
 			if dryRun {
 				for _, op := range plan {
 					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "would create %s/%s\n", op.Kind, op.Name)

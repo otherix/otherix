@@ -69,6 +69,13 @@ func TestDecodeVMSpecCloudInitMutualExclusion(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNonMappingSpec(t *testing.T) {
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: n }\nspec: [a, b]\n")
+	if _, err := manifest.DecodeNetworkSpec(d); err == nil || !strings.Contains(err.Error(), "mapping") {
+		t.Errorf("DecodeNetworkSpec(list spec) error = %v, want 'spec must be a mapping'", err)
+	}
+}
+
 func TestDecodeVMSpecRejectsDesiredPhaseUnsupported(t *testing.T) {
 	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, desiredPhase: running }\n")
 	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "desiredPhase") {

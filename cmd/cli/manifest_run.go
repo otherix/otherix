@@ -11,8 +11,30 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/otherix/otherix/cmd/cli/internal/cloudinit"
 	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
+
+// validateManifestCloudInit runs the shared cloud-init validator over
+// every VM op carrying inline cloudInit. A parse error fails the whole
+// command before any resource is created (mirroring vm create
+// --cloud-init); non-blocking warnings (e.g. a body not starting with
+// `#cloud-config`) are written to stderr.
+func validateManifestCloudInit(cmd *cobra.Command, plan []manifest.CreateOp) error {
+	for _, op := range plan {
+		if op.Kind != manifest.KindVM || op.VM == nil || op.VM.UserData == nil {
+			continue
+		}
+		warnings, err := cloudinit.Validate([]byte(*op.VM.UserData))
+		if err != nil {
+			return fmt.Errorf("manifest VM %q: cloud-init: %w", op.Name, err)
+		}
+		for _, w := range warnings {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: VM %q cloud-init: %s\n", op.Name, w)
+		}
+	}
+	return nil
+}
 
 // readManifestDocs reads every -f source (file path, or "-" for stdin),
 // concatenates them with `---`, and parses the combined stream. At

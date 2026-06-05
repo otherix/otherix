@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,21 +34,28 @@ func waitForCreated(cmd *cobra.Command, c *cpclient.Client, results []docResult,
 		}
 		switch results[i].kind {
 		case manifest.KindVM:
-			waitVMResult(ctx, c, &results[i], timeout)
+			waitVMResult(ctx, c, &results[i], deadline)
 		case manifest.KindStoragePool:
 			waitPoolResult(ctx, c, &results[i], deadline)
 		}
 	}
 }
 
-// waitVMResult polls the result's task id to terminal status.
-func waitVMResult(ctx context.Context, c *cpclient.Client, r *docResult, timeout time.Duration) {
+// waitVMResult polls the result's task id to terminal status, bounded
+// by the shared deadline so every VM and pool in the fan-out competes
+// for the same overall --wait budget.
+func waitVMResult(ctx context.Context, c *cpclient.Client, r *docResult, deadline time.Time) {
 	id, err := uuid.Parse(r.taskID)
 	if err != nil {
 		r.err = fmt.Errorf("wait: malformed task id %q", r.taskID)
 		return
 	}
-	task, err := c.WaitTask(ctx, id, cpclient.WaitOptions{Timeout: timeout})
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		r.err = errors.New("wait: timeout budget exhausted")
+		return
+	}
+	task, err := c.WaitTask(ctx, id, cpclient.WaitOptions{Timeout: remaining})
 	if err != nil {
 		r.err = err
 		return
@@ -83,11 +91,11 @@ func waitPoolResult(ctx context.Context, c *cpclient.Client, r *docResult, deadl
 			r.note += " ready"
 			return
 		case "failed":
-			r.err = fmt.Errorf("reconciliation failed")
+			r.err = errors.New("reconciliation failed")
 			return
 		}
 		if time.Now().After(deadline) {
-			r.err = fmt.Errorf("reconciliation did not reach ready within timeout")
+			r.err = errors.New("reconciliation did not reach ready within timeout")
 			return
 		}
 		select {

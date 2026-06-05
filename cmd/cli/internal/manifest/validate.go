@@ -25,6 +25,9 @@ func specKeys(spec yaml.Node) []string {
 // rejectUnknownKeys returns an error naming the first spec key that is
 // not in allowed.
 func rejectUnknownKeys(d Document, allowed map[string]bool) error {
+	if d.Spec.Kind != 0 && d.Spec.Kind != yaml.MappingNode {
+		return fmt.Errorf("manifest: document %d (%s/%s): spec must be a mapping", d.Index, d.Kind, d.Name)
+	}
 	for _, k := range specKeys(d.Spec) {
 		if !allowed[k] {
 			return fmt.Errorf("manifest: document %d (%s/%s): unknown spec field %q", d.Index, d.Kind, d.Name, k)

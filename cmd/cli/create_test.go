@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -91,6 +92,30 @@ func TestCreateDryRunIssuesNoCalls(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(stdout), []byte("net-mvp")) || !bytes.Contains([]byte(stdout), []byte("web-1")) {
 		t.Errorf("dry-run plan = %q, want it to list net-mvp and web-1", stdout)
+	}
+}
+
+func TestCreateRejectsMalformedCloudInit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("no HTTP call must happen when cloud-init is malformed")
+	}))
+	defer srv.Close()
+	const m = `apiVersion: otherix/v1
+kind: VM
+metadata: { name: web-1 }
+spec:
+  imageURL: https://x/u.qcow2
+  arch: arm64
+  cloudInit: |
+    #cloud-config
+    users: [unterminated
+`
+	_, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, m))
+	if err == nil {
+		t.Fatalf("expected error for malformed cloud-init")
+	}
+	if !strings.Contains(err.Error(), "cloud-init") {
+		t.Errorf("err = %v, want mention of cloud-init", err)
 	}
 }
 
