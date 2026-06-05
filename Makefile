@@ -276,7 +276,7 @@ install-agent-systemd-user:
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.config/otherix/certs
 	@mkdir -p $(HOME)/.config/otherix/vms
-	@mkdir -p $(HOME)/.config/otherix/pools/default/templates
+	@mkdir -p $(HOME)/.config/otherix/pools/default/images
 	@mkdir -p $(HOME)/.config/otherix/pools/default/vms
 	@mkdir -p $(HOME)/.config/systemd/user
 	@chmod 0750 $(HOME)/.config/otherix/certs

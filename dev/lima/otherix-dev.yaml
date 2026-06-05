@@ -75,7 +75,7 @@ provision:
       fi
 
       mkdir -p /opt/otherix/vms
-      mkdir -p /opt/otherix/pools/default/templates
+      mkdir -p /opt/otherix/pools/default/images
       mkdir -p /opt/otherix/pools/default/vms
       mkdir -p /opt/otherix/certs
       mkdir -p /var/run/otherix

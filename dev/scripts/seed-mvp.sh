@@ -15,23 +15,21 @@
 # WireGuard advertised endpoint (its user-v2 IP, baked into the staged
 # config by `copy-config-lima`). node-2 is bootstrap-only for the base seed: it
 # heartbeats, gets its overlay IP, peers into the WG mesh, and (like every node)
-# has the cluster default pool auto-provisioned on it by the CP, but seed-mvp
-# materialises no template image and creates no VM on it (the WG mesh smoke needs
-# no VM, and the networking smoke pins its VM to node-1). On native Linux the
-# stack stays single-node (node-1).
+# has the cluster default pool auto-provisioned on it by the CP, and creates no
+# VM on it (the WG mesh smoke needs no VM, and the networking smoke pins its VM
+# to node-1). On native Linux the stack stays single-node (node-1).
 #
 # The storage pool is NOT created here: the CP auto-provisions the cluster
 # default pool (`default`) on every node as it reaches ready (PR #15), and that
 # is the cluster default - so seed-mvp neither runs `pool create` nor sets the
-# default. The template is registered without `--pool`; the image auto-imports
-# inline on the first `vm create` (B1 lazy materialization).
+# default. There is no template entity: a VM is created directly from an image
+# URL (`vm create --image-url ... --arch ...`) and the agent materializes the
+# image into the pool's basename-keyed cache on first use (IfNotPresent).
 #
 # Idempotent - re-runs are safe:
 #   - `otherix config add cluster --force` revokes prior token, mints fresh;
 #   - `otherix-agent bootstrap` re-issues cert material with --force and
-#     never overwrites the staged config (operator-tuned settings survive);
-#   - `otherix template create` falls through on 409 (the template already
-#     exists from a prior run).
+#     never overwrites the staged config (operator-tuned settings survive).
 #
 # Required env:
 #   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin email used for CP bootstrap
@@ -84,21 +82,6 @@ case "$(uname -s)" in
     *)      echo "unsupported platform: $(uname -s)" >&2; exit 1 ;;
 esac
 
-# Ubuntu Noble minimal cloudimg — ~150 MiB vs ~664 MiB for the server
-# variant, ~4x faster smoke iteration.
-case "${OTHERIX_NODE_ARCH}" in
-    amd64)
-        OTHERIX_TEMPLATE_URL="${OTHERIX_TEMPLATE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img}"
-        ;;
-    arm64)
-        OTHERIX_TEMPLATE_URL="${OTHERIX_TEMPLATE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
-        ;;
-    *)
-        echo "unsupported architecture: ${OTHERIX_NODE_ARCH}" >&2
-        exit 1
-        ;;
-esac
-
 NODE_NAME_1="${OTHERIX_NODE_NAME:-node-1}"
 NODE_NAME_2="node-2"
 # POOL_NAME is display-only: the cluster default pool is provisioned by the CP
@@ -106,7 +89,6 @@ NODE_NAME_2="node-2"
 # node as it reaches ready. seed-mvp no longer creates a pool or sets the
 # cluster default.
 POOL_NAME="default"
-TEMPLATE_NAME="${OTHERIX_TEMPLATE_NAME:-ubuntu-noble-${OTHERIX_NODE_ARCH}-mvp}"
 
 # Per-platform CP URL the agent sees + per-platform migration host.
 case "${PLATFORM}" in
@@ -126,7 +108,6 @@ echo "   architecture    : ${OTHERIX_NODE_ARCH}"
 echo "   node 1          : ${NODE_NAME_1}"
 [ "${PLATFORM}" = "lima" ] && echo "   node 2          : ${NODE_NAME_2}"
 echo "   default pool    : ${POOL_NAME} (auto-provisioned by the CP on ready nodes)"
-echo "   template name   : ${TEMPLATE_NAME}"
 echo "   CP url          : ${OTHERIX_CP_URL}"
 if [ "${PLATFORM}" = "lima" ]; then
     echo "   Lima instances  : ${OTHERIX_LIMA_INSTANCE_1} (node-1) / ${OTHERIX_LIMA_INSTANCE_2} (node-2)"
@@ -240,33 +221,20 @@ else
     bootstrap_node "${NODE_NAME_1}" "https://127.0.0.1:9443" "127.0.0.1:9443" ""
 fi
 
-# --- Step 4: register template via CLI (no pool, no pre-materialise) ----------
-# The cluster default pool (${POOL_NAME}) is auto-provisioned by the CP from
-# storage_pools.default_pool_name on every node as it reaches ready, so seed-mvp
-# no longer creates a pool or sets the cluster default. The template is
-# registered WITHOUT --pool: as of B1 (lazy image materialization) the first
-# `vm create` auto-imports the image onto the target pool inline, so no warm-up
-# is required. (Pass --pool <name> to template create later if you want an
-# eager warm-up.)
-
-echo ""
-echo ">> Step 4 - registering template '${TEMPLATE_NAME}' via CLI (image auto-imports on first vm create)"
-"${CLI}" template create "${TEMPLATE_NAME}" \
-    --arch "${OTHERIX_NODE_ARCH}" \
-    --os-family linux \
-    --os-variant ubuntu-24.04 \
-    --image-url "${OTHERIX_TEMPLATE_URL}" \
-    --cloud-init "${REPO_ROOT}/dev/config/cloud-init-otherix.yaml"
-
 # --- Done --------------------------------------------------------------------
+# There is no template step: a VM is created directly from an image URL. The
+# cluster default pool (${POOL_NAME}) is auto-provisioned by the CP on every
+# node as it reaches ready, and the agent materializes the image into that
+# pool's basename-keyed cache on the first `vm create --image-url ... --arch ...`
+# (IfNotPresent), so no warm-up is required.
 
 echo ""
 echo ">> seed-mvp complete"
 echo "   node 1   : ${NODE_NAME_1}"
 [ "${PLATFORM}" = "lima" ] && echo "   node 2   : ${NODE_NAME_2}"
 echo "   pool     : ${POOL_NAME} (cluster default, CP-auto-provisioned on ready nodes)"
-echo "   template : ${TEMPLATE_NAME} (image auto-imports on first vm create)"
 echo ""
 echo "next steps:"
 echo "  ${CLI} node list"
 echo "  ${CLI} node get ${NODE_NAME_1}   # WireGuard fabric block + peers"
+echo "  ${CLI} vm create --name demo --image-url <cloudimg-url> --arch ${OTHERIX_NODE_ARCH} --vcpus 2 --memory-mb 2048 --wait"
