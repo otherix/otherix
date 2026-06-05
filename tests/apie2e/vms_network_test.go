@@ -186,6 +186,69 @@ func TestVMCreateAttachesNicToNetwork(t *testing.T) {
 	}
 }
 
+// TestVMViewSurfacesNetworks drives the real GET /v1/vms/{name} and
+// GET /v1/vms projection over etcdstore and asserts the `networks`
+// field reflects the attached NIC's network (the seam the CLI NETWORK
+// column reads). A VM created without --network surfaces an empty
+// array, not null.
+func TestVMViewSurfacesNetworks(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+
+	// VM with one NIC on a bridge network.
+	nodeID, poolName := schedulableFixtureWithNode(t, h, adminID)
+	net := bridgeNetwork(t, h, admin)
+	if err := h.store.UpsertNetworkNodeStatus(context.Background(), store.UpsertNetworkNodeStatusParams{
+		NetworkID: uuid.MustParse(net.ID), NodeID: nodeID, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
+	}
+	withNet := vmCreateBody(map[string]any{"pool": poolName, "network": net.Name})
+	resp := h.post(t, "/v1/vms", withNet, admin)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+	withNetName := withNet["name"].(string)
+
+	var got vmNetworksView
+	getResp := h.get(t, "/v1/vms/"+withNetName, admin)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get vm status = %d, want 200", getResp.StatusCode)
+	}
+	decodeJSON(t, getResp, &got)
+	if diff := cmp.Diff([]string{net.Name}, got.Networks); diff != "" {
+		t.Errorf("vm get networks mismatch (-want +got):\n%s", diff)
+	}
+
+	// VM without a NIC: networks must be the empty array, never null.
+	noNetPool := schedulableFixture(t, h, adminID)
+	noNet := vmCreateBody(map[string]any{"pool": noNetPool})
+	resp = h.post(t, "/v1/vms", noNet, admin)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	var bare vmNetworksView
+	getResp = h.get(t, "/v1/vms/"+noNet["name"].(string), admin)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get vm status = %d, want 200", getResp.StatusCode)
+	}
+	decodeJSON(t, getResp, &bare)
+	if bare.Networks == nil {
+		t.Error("vm get networks = null, want []")
+	}
+	if len(bare.Networks) != 0 {
+		t.Errorf("vm get networks = %v, want []", bare.Networks)
+	}
+}
+
+// vmNetworksView captures only the networks field of the VM projection.
+type vmNetworksView struct {
+	Networks []string `json:"networks"`
+}
+
 func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)

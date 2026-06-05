@@ -75,24 +75,20 @@ func runList(cmd *cobra.Command, _ []string) error {
 func printNodeTable(cmd *cobra.Command, nodes cpclient.NodeList, showIDs bool) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if showIDs {
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tARCHITECTURE\tSTATUS\tCORDONED\tLAST_HEARTBEAT\tAGE")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tARCH\tSTATUS\tCORDONED\tAGE")
 	} else {
-		_, _ = fmt.Fprintln(tw, "NAME\tARCHITECTURE\tSTATUS\tCORDONED\tLAST_HEARTBEAT\tAGE")
+		_, _ = fmt.Fprintln(tw, "NAME\tARCH\tSTATUS\tCORDONED\tAGE")
 	}
 	for _, n := range nodes.Data {
 		cordoned := boolYesNo(n.CordonedAt != nil)
 		status := renderNodeStatus(n)
-		lastBeat := "-"
-		if n.LastHeartbeatAt != nil {
-			lastBeat = humanAge(*n.LastHeartbeatAt) + " ago"
-		}
 		age := humanAge(n.CreatedAt)
 		if showIDs {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				n.ID, n.Name, n.Architecture, status, cordoned, lastBeat, age)
-		} else {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				n.Name, n.Architecture, status, cordoned, lastBeat, age)
+				n.ID, n.Name, n.Architecture, status, cordoned, age)
+		} else {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+				n.Name, n.Architecture, status, cordoned, age)
 		}
 	}
 	_ = tw.Flush()

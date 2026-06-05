@@ -111,27 +111,61 @@ func runList(cmd *cobra.Command, _ []string) error {
 // includes meta.next_cursor when populated so operators can chain
 // the next page without digging in JSON. The ID column is hidden by
 // default — referenced-resource fields are names, and the VM's own
-// UUID is operator-noise unless --show-ids opts back in. The IMAGE
-// column carries the image source URL (the template entity is gone).
+// UUID is operator-noise unless --show-ids opts back in. Columns:
+// NAME STATUS ARCH NODE POOL NETWORK — placement (ARCH/NODE) and
+// connectivity (NETWORK) are the operator-relevant axes; the image
+// source URL lives in `vm get` / `--output json`, not the list.
 func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if showIDs {
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tPOOL\tIMAGE")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tARCH\tNODE\tPOOL\tNETWORK")
 	} else {
-		_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tPOOL\tIMAGE")
+		_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tARCH\tNODE\tPOOL\tNETWORK")
 	}
 	for _, vm := range vms.Data {
-		img := vm.ImageURL
+		node := dashIfEmpty(deref(vm.Node))
+		network := renderVMNetwork(vm.Networks)
 		if showIDs {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-				vm.ID, vm.Name, vm.Status, vm.Pool, img)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				vm.ID, vm.Name, vm.Status, vm.Architecture, node, vm.Pool, network)
 		} else {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-				vm.Name, vm.Status, vm.Pool, img)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				vm.Name, vm.Status, vm.Architecture, node, vm.Pool, network)
 		}
 	}
 	_ = tw.Flush()
 	if vms.Meta.NextCursor != nil && *vms.Meta.NextCursor != "" {
 		printf(cmd, "next_cursor: %s\n", *vms.Meta.NextCursor)
 	}
+}
+
+// renderVMNetwork formats the NETWORK column from the VM's ordered
+// network names: a single network renders its name; multiple render the
+// primary name plus a "(+N)" counter of the remaining NICs. A VM with no
+// NIC renders the "-" placeholder.
+func renderVMNetwork(networks []string) string {
+	switch len(networks) {
+	case 0:
+		return "-"
+	case 1:
+		return networks[0]
+	default:
+		return fmt.Sprintf("%s (+%d)", networks[0], len(networks)-1)
+	}
+}
+
+// deref returns the pointee of p, or the empty string when p is nil.
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// dashIfEmpty renders the "-" placeholder for an empty cell.
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }

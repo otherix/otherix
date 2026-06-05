@@ -4,10 +4,54 @@
 package node
 
 import (
+	"bytes"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
+
+// TestPrintNodeTableColumns locks the column contract of the default
+// node table output: NAME ARCH STATUS CORDONED AGE (ARCHITECTURE
+// abbreviated to ARCH, LAST_HEARTBEAT dropped). The ID column is
+// prepended only under --show-ids.
+func TestPrintNodeTableColumns(t *testing.T) {
+	beat := "2026-05-12T12:00:00Z"
+	list := cpclient.NodeList{Data: []cpclient.Node{{
+		ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Name: "node-1",
+		Architecture: "arm64", Status: "ready", CreatedAt: "2026-05-12T09:00:00Z",
+		LastHeartbeatAt: &beat,
+	}}}
+
+	t.Run("default columns", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printNodeTable(cmd, list, false)
+
+		header := strings.Fields(strings.Split(strings.TrimSpace(buf.String()), "\n")[0])
+		want := []string{"NAME", "ARCH", "STATUS", "CORDONED", "AGE"}
+		if strings.Join(header, " ") != strings.Join(want, " ") {
+			t.Errorf("header = %v, want %v", header, want)
+		}
+	})
+
+	t.Run("show-ids prepends ID", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printNodeTable(cmd, list, true)
+
+		header := strings.Fields(strings.Split(strings.TrimSpace(buf.String()), "\n")[0])
+		want := []string{"ID", "NAME", "ARCH", "STATUS", "CORDONED", "AGE"}
+		if strings.Join(header, " ") != strings.Join(want, " ") {
+			t.Errorf("header = %v, want %v", header, want)
+		}
+	})
+}
 
 // TestRenderNodeStatus covers the STATUS-column computation of the
 // node list view. Reachable nodes append "under_pressure" when any

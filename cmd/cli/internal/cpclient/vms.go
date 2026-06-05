@@ -70,7 +70,9 @@ type CreateVMRequest struct {
 // an image source, so the view carries `image_url` / `image_sha256` /
 // `format` instead of a template reference. `pool` carries
 // storage_pools.name, `node` carries the agent-reported current
-// location's name. owner_id keeps its UUID rendering because users are
+// location's name, `networks` carries the attached network names ordered
+// by NIC device_order (empty for a VM with no NIC). owner_id keeps its
+// UUID rendering because users are
 // excluded from the resolver scope. Architecture stays a string here
 // (the CLI does not need the typed CpuArch enum for output formatting).
 type VM struct {
@@ -82,6 +84,7 @@ type VM struct {
 	Format       string         `json:"format"`
 	Pool         string         `json:"pool"`
 	Node         *string        `json:"node"`
+	Networks     []string       `json:"networks"`
 	Architecture string         `json:"architecture"`
 	VCPUs        int            `json:"vcpus"`
 	MemoryMB     int            `json:"memory_mb"`
