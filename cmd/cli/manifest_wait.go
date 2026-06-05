@@ -29,6 +29,14 @@ var poolReconcilePoll = 2 * time.Second
 // reach reconciliation_status ready/failed. It augments each result's
 // note and sets err on failure. Networks are synchronous (no wait).
 // Results whose create already failed are skipped.
+//
+// Known limitation: the resources share one wall-clock deadline and are
+// waited sequentially, so a resource that never converges can exhaust
+// the budget before a later resource is polled - the later one then
+// reports "timeout budget exhausted" rather than its own task error.
+// This is fail-safe (it never reports a false success) and recoverable
+// (the operator re-polls /v1/tasks/{id} or the resource directly); a
+// per-resource sub-budget or concurrent waits would remove it.
 func waitForCreated(cmd *cobra.Command, c *cpclient.Client, results []docResult, timeout time.Duration) {
 	ctx := cmd.Context()
 	deadline := time.Now().Add(timeout)

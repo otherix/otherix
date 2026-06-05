@@ -35,7 +35,7 @@ func Classify(err error) error {
 	case strings.Contains(msg, "connection refused"):
 		return fmt.Errorf("connection_refused: %s", msg)
 	case errors.As(err, &dnsErr) || strings.Contains(msg, "no such host"):
-		return fmt.Errorf("host_not_found: %v", err)
+		return fmt.Errorf("host_not_found: %s", msg)
 	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
 		return fmt.Errorf("tls_handshake_failed: %s", msg)
 	default:

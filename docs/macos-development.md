@@ -543,7 +543,8 @@ spec:
     #cloud-config
     package_update: true
 
-# Apply, waiting for the VM task + network reconcile to finish
+# Apply, waiting for the VM task to finish (--wait blocks on VM tasks and
+# pool reconciliation; networks are created synchronously, no wait)
 $ otherix create -f cluster.yaml --wait --wait-timeout 300s
 
 # Round-trip: project a live resource back to a manifest
