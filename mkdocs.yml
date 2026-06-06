@@ -47,6 +47,8 @@ theme:
 
 plugins:
   - search
+  # Renders the embedded OpenAPI spec on the REST API reference page.
+  - swagger-ui-tag
 
 markdown_extensions:
   - abbr
