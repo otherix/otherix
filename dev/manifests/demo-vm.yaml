@@ -1,6 +1,6 @@
 # Demo VM manifest for the local dev stack. Apply with:
 #   ./bin/otherix create -f dev/manifests/demo-vm.yaml --wait
-# The default image is the Resolute (26.04) minimal arm64 cloudimg (Mac/Lima dev
+# The default image is the Ubuntu 26.04 LTS server arm64 cloudimg (Mac/Lima dev
 # default). On an amd64 host swap imageURL to the amd64 cloudimg and set
 # arch: amd64.
 apiVersion: otherix/v1
@@ -8,7 +8,7 @@ kind: VM
 metadata:
   name: demo
 spec:
-  imageURL: https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img
+  imageURL: https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img
   arch: arm64
   vcpus: 2
   memoryMB: 2048

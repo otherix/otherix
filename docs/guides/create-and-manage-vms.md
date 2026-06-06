@@ -14,7 +14,7 @@ use.
 
 ```bash
 otherix vm create web-1 \
-  --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
+  --image-url https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img \
   --arch arm64 \
   --vcpus 2 --memory-mb 2048 \
   --wait

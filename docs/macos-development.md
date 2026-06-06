@@ -192,7 +192,7 @@ export OTHERIX_API_TOKEN="$TOKEN"
 ```bash
 # Create a VM (async; returns task id).
 ./bin/otherix vm create demo-vm \
-  --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
+  --image-url https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img \
   --arch arm64 \
   --vcpus 2 --memory-mb 2048 \
   --wait
@@ -203,7 +203,7 @@ export OTHERIX_API_TOKEN="$TOKEN"
 # List VMs.
 ./bin/otherix vm list
 # ID                                    NAME      STATUS   POOL                                  IMAGE
-# <vm-uuid>                             demo-vm   running  <pool-uuid>                           ubuntu-26.04-minimal-cloudimg-arm64.img
+# <vm-uuid>                             demo-vm   running  <pool-uuid>                           ubuntu-26.04-server-cloudimg-arm64.img
 
 # Get a single VM.
 ./bin/otherix vm get <vm-uuid>
@@ -480,14 +480,14 @@ literals are rejected by the server with 400 validation_failed.
 ```bash
 # Create — uses cluster default pool, scheduler picks node
 $ otherix vm create demo-vm \
-    --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
+    --image-url https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img \
     --arch arm64 \
     --vcpus 2 --memory-mb 2048 \
     --wait
 
 # Create — explicit pool + node placement hint
 $ otherix vm create pinned-vm \
-    --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
+    --image-url https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img \
     --arch arm64 \
     --pool fast-ssd \
     --node node-a \
@@ -499,14 +499,14 @@ $ otherix vm get demo-vm
 # List — UUIDs hidden by default
 $ otherix vm list
 NAME       STATUS   POOL      IMAGE
-demo-vm    running  default   ubuntu-26.04-minimal-cloudimg-arm64.img
-pinned-vm  running  fast-ssd  ubuntu-26.04-minimal-cloudimg-arm64.img
+demo-vm    running  default   ubuntu-26.04-server-cloudimg-arm64.img
+pinned-vm  running  fast-ssd  ubuntu-26.04-server-cloudimg-arm64.img
 
 # List with UUIDs (--show-ids)
 $ otherix vm list --show-ids
 ID                                    NAME       STATUS   POOL      IMAGE
-<uuid>                                demo-vm    running  default   ubuntu-26.04-minimal-cloudimg-arm64.img
-<uuid>                                pinned-vm  running  fast-ssd  ubuntu-26.04-minimal-cloudimg-arm64.img
+<uuid>                                demo-vm    running  default   ubuntu-26.04-server-cloudimg-arm64.img
+<uuid>                                pinned-vm  running  fast-ssd  ubuntu-26.04-server-cloudimg-arm64.img
 
 # Delete by name (interactive prompt without --force)
 $ otherix vm delete demo-vm --wait --force
@@ -538,7 +538,7 @@ kind: VM
 metadata:
   name: demo-vm
 spec:
-  imageURL: https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img
+  imageURL: https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img
   arch: arm64
   network: demo-net
   vcpus: 2
@@ -776,7 +776,7 @@ pool on every ready node, so the command below works without `--pool`:
 
 ```bash
 ./bin/otherix vm create demo-vm \
-    --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
+    --image-url https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img \
     --arch arm64 \
     --vcpus 2 --memory-mb 2048 --wait
 # created task=<task-uuid> status=pending
@@ -788,7 +788,7 @@ To target a specific node explicitly:
 
 ```bash
 ./bin/otherix vm create demo-vm \
-    --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
+    --image-url https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img \
     --arch arm64 \
     --pool default \
     --node node-dev \
@@ -812,13 +812,13 @@ phase=running.
 ```bash
 ./bin/otherix vm list
 # NAME      STATUS   POOL       IMAGE
-# demo-vm   running  default    ubuntu-26.04-minimal-cloudimg-arm64.img
+# demo-vm   running  default    ubuntu-26.04-server-cloudimg-arm64.img
 
 ./bin/otherix vm get demo-vm
 # id: <vm-uuid>
 # name: demo-vm
 # owner_id: <user-uuid>
-# image_url: https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img
+# image_url: https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img
 # image_format: qcow2
 # pool: default
 # node: node-dev
