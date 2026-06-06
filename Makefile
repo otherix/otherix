@@ -5,6 +5,9 @@ BIN_DIR         := bin
 GO              := go
 GOLANGCI_VERSION := v2.12.1
 GOLANGCI_IMAGE   := golangci/golangci-lint:$(GOLANGCI_VERSION)
+# GOIMPORTS_VERSION tracks golang.org/x/tools in go.mod (goimports ships from it).
+GOFUMPT_VERSION  := v0.7.0
+GOIMPORTS_VERSION := v0.44.0
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -40,7 +43,7 @@ $(addprefix build-,$(BINARIES)): build-%: ## Build a single daemon binary (api/a
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/otherix-$* ./cmd/$*
 
 # CLI is a special case: cmd dir is `cli/` for layout consistency with the
-# four daemons (cmd/<short>/), but the binary is `otherix` (no component
+# daemons (cmd/<short>/), but the binary is `otherix` (no component
 # suffix) per the kubectl/docker/gh convention for operator CLIs.
 build-cli: ## Build the otherix operator CLI to bin/otherix
 	@mkdir -p $(BIN_DIR)
@@ -60,6 +63,10 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 	  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" \
 	    -o $(BIN_DIR)/linux-arm64/otherix-$$b ./cmd/$$b || exit 1; \
 	done
+
+.PHONY: clean
+clean: ## Remove build artifacts (bin/, coverage reports)
+	rm -rf $(BIN_DIR) coverage.out coverage.html
 
 # ========== Test ==========
 
@@ -151,7 +158,7 @@ smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml`
 
 # ========== Lint ==========
 
-.PHONY: lint fmt vet
+.PHONY: lint fmt fmt-check vet
 lint: ## Run golangci-lint for the host platform AND GOOS=linux (a macOS host build excludes *_linux.go, which CI on ubuntu lints; this matches CI)
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 	  echo ">> using local golangci-lint ($$(golangci-lint version 2>/dev/null | head -n1))"; \
@@ -172,11 +179,24 @@ lint: ## Run golangci-lint for the host platform AND GOOS=linux (a macOS host bu
 	fi
 
 fmt: ## Format with gofumpt + goimports (installed locally on demand)
-	$(GO) run mvdan.cc/gofumpt@v0.7.0 -l -w .
-	$(GO) run golang.org/x/tools/cmd/goimports@latest -local github.com/otherix/otherix -l -w .
+	$(GO) run mvdan.cc/gofumpt@$(GOFUMPT_VERSION) -l -w .
+	$(GO) run golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION) -local github.com/otherix/otherix -l -w .
+
+fmt-check: ## Verify formatting without writing (fails if any file needs gofumpt/goimports)
+	@out="$$($(GO) run mvdan.cc/gofumpt@$(GOFUMPT_VERSION) -l .; \
+	         $(GO) run golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION) -local github.com/otherix/otherix -l .)"; \
+	if [ -n "$$out" ]; then echo ">> these files need formatting (run 'make fmt'):"; echo "$$out" | sort -u; exit 1; fi
 
 vet: ## go vet all packages
 	$(GO) vet ./...
+
+# ci reproduces the merge-gating CI jobs locally, minus the privileged netfabric
+# data-plane suite (needs root / CAP_NET_ADMIN - run `make test-netfabric`
+# separately). Mirrors .github/workflows/ci.yaml: lint, vuln, test-unit,
+# test-etcd, and the agent-api drift check.
+.PHONY: ci
+ci: fmt-check vet lint test test-etcd vuln agent-api-verify ## Run the local CI gate (everything CI gates except privileged netfabric)
+	@echo ">> ci gate passed"
 
 .PHONY: vuln
 vuln: ## Scan for known vulnerabilities via govulncheck (pinned)
@@ -193,9 +213,13 @@ download: ## go mod download
 
 # ========== Run (local dev) ==========
 
-.PHONY: $(addprefix run-,$(BINARIES))
-$(addprefix run-,$(BINARIES)): run-%: build-% ## Build and run a binary against deploy/config/<binary>.example.yaml
-	./$(BIN_DIR)/otherix-$* --config deploy/config/$*.example.yaml
+# Only the api-server has a meaningful "run against the example config on this
+# host" path. The agent is Linux-only and needs bootstrap cert material + root
+# (qemu / netlink); its real entry points are the dev flow (bootstrap-dev ->
+# run-api-dev -> seed-dev) and `make local-dev-start`, not a bare host run.
+.PHONY: run-api
+run-api: build-api ## Build and run the api-server against deploy/config/api.example.yaml
+	./$(BIN_DIR)/otherix-api --config deploy/config/api.example.yaml
 
 .PHONY: run-api-dev
 run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd, no Postgres)
