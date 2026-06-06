@@ -210,6 +210,7 @@ Try:
    ./bin/otherix node get node-1            # WireGuard fabric block + peers
    make smoke-wireguard-mesh                # cross-host WG handshake
    ./bin/otherix create -f dev/manifests/demo-vm.yaml --wait   # demo VM
+   ./bin/otherix vm console demo            # serial console; login ubuntu / demo, detach Ctrl+]
 
 Stop + wipe:
    make local-dev-stop
