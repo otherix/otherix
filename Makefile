@@ -509,6 +509,17 @@ agent-api-verify: ## Fail when the committed agent.gen.go diverges from a fresh 
 	    exit 1; \
 	  fi
 
+# ========== Docs ==========
+
+# User-facing documentation site (mkdocs-material -> docs.otherix.dev via the
+# docs.yaml workflow). Needs the Python deps: pip install -r requirements-docs.txt.
+.PHONY: docs-serve docs-build
+docs-serve: ## Serve the docs site locally with live reload (http://127.0.0.1:8000)
+	mkdocs serve
+
+docs-build: ## Build the docs site into ./site (strict: fails on broken links / nav gaps)
+	mkdocs build --strict
+
 # ========== Mock-agent ==========
 
 .PHONY: agentmock-certs

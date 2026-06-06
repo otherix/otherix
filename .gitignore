@@ -3,6 +3,9 @@
 /dist/
 *.test
 
+# Docs site build output (mkdocs)
+/site/
+
 # Test artifacts
 /coverage.out
 /coverage.html

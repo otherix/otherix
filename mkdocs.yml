@@ -1,0 +1,102 @@
+site_name: Otherix
+site_description: Open-source self-hosted control plane for VMs on KVM/QEMU clusters.
+# Change site_url to the custom domain (e.g. https://docs.otherix.dev/) once it
+# is wired; the GitHub Pages default is https://<org>.github.io/<repo>/.
+site_url: https://otherix.github.io/otherix/
+repo_url: https://github.com/otherix/otherix
+repo_name: otherix/otherix
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Andrei Taranik - Apache-2.0
+
+# Existing top-level docs (architecture.md, rbac.md, scheduler-configuration.md,
+# macos-development.md) stay at their current paths because they are referenced
+# from Go source comments and configs; the section grouping lives here in nav,
+# not in the directory layout. New content lands under the subdirectories below.
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Quickstart: get-started/quickstart.md
+      - Installation: get-started/install.md
+  - Concepts:
+      - Architecture: architecture.md
+      - Desired vs observed state: concepts/desired-vs-observed.md
+      - Networking: concepts/networking.md
+  - Guides:
+      - Join a node: guides/join-a-node.md
+      - Create and manage VMs: guides/create-and-manage-vms.md
+      - Declarative manifests: guides/declarative-manifests.md
+      - Storage pools: guides/storage-pools.md
+      - Networks: guides/networks.md
+      - Users and RBAC: guides/users-and-rbac.md
+      - Console and logs: guides/console-and-logs.md
+  - Operations:
+      - High availability: operations/high-availability.md
+      - Backups: operations/backups.md
+      - Certificates: operations/certificates.md
+      - Troubleshooting: operations/troubleshooting.md
+  - Reference:
+      - CLI: reference/cli.md
+      - REST API: reference/api.md
+      - Configuration: reference/configuration.md
+      - RBAC matrix: rbac.md
+      - Scheduler configuration: scheduler-configuration.md
+      - Error codes: reference/error-codes.md
+  - Development:
+      - macOS development: macos-development.md

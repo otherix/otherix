@@ -1,0 +1,3 @@
+# Documentation site dependencies (mkdocs-material pulls in mkdocs +
+# pymdown-extensions). Pinned for reproducible builds between local and CI.
+mkdocs-material==9.7.6
