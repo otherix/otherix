@@ -28,7 +28,11 @@ state_path: "__OTHERIX_CONFIG__/vms"
 
 control_plane:
   url: "https://localhost:8443"
-  heartbeat_interval: 30s
+  # Compressed for dev (prod default is 30s). The up-channel - node-ready,
+  # pool/network reconciliation_status, observed inventory - only advances on a
+  # heartbeat, so a fast tick makes the default pool converge to ready (and
+  # `vm create` work) in seconds instead of ~45s. stale_threshold is 45s.
+  heartbeat_interval: 5s
 
 tls:
   ca_cert_path: "__OTHERIX_CONFIG__/certs/ca.crt"

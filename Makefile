@@ -376,10 +376,27 @@ lima-ensure: lima-check
 	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_1) HOSTPORT=9443
 	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_2) HOSTPORT=9444
 
+# Nested virtualization (so /dev/kvm appears inside the guest and the agent's
+# qemu can use KVM instead of TCG) needs Apple M3+ AND macOS 15+. Lima exposes it
+# via `nestedVirtualization: true`, vz only. We inject it at create time ONLY on a
+# capable host - it is deliberately NOT in dev/lima/otherix-dev.yaml because that
+# option hard-fails Lima start on M1/M2 (the silicon lacks the capability).
 lima-ensure-one:
-	@if ! limactl list -q 2>/dev/null | grep -q "^$(VM)$$"; then \
-	  echo ">> creating + starting Lima VM $(VM) (cp->agent host port $(HOSTPORT))"; \
-	  limactl start --tty=false --name=$(VM) --set ".portForwards[0].hostPort = $(HOSTPORT)" dev/lima/otherix-dev.yaml; \
+	@extra=""; \
+	if [ "$$(uname -s)" = Darwin ]; then \
+	  gen=$$(sysctl -n machdep.cpu.brand_string 2>/dev/null | sed -nE 's/.*Apple M([0-9]+).*/\1/p'); \
+	  osmaj=$$(sw_vers -productVersion 2>/dev/null | cut -d. -f1); \
+	  if [ -n "$$gen" ] && [ "$$gen" -ge 3 ] && [ "$$osmaj" -ge 15 ]; then \
+	    extra='--set .nestedVirtualization=true'; \
+	  fi; \
+	fi; \
+	if ! limactl list -q 2>/dev/null | grep -q "^$(VM)$$"; then \
+	  if [ -n "$$extra" ]; then \
+	    echo ">> creating Lima VM $(VM) (host port $(HOSTPORT); nested virtualization on -> /dev/kvm in guest)"; \
+	  else \
+	    echo ">> creating Lima VM $(VM) (host port $(HOSTPORT); no nested virtualization -> agent uses TCG)"; \
+	  fi; \
+	  limactl start --tty=false --name=$(VM) --set ".portForwards[0].hostPort = $(HOSTPORT)" $$extra dev/lima/otherix-dev.yaml; \
 	elif [ "$$(limactl list $(VM) --format '{{.Status}}' 2>/dev/null)" != "Running" ]; then \
 	  echo ">> starting Lima VM $(VM)"; \
 	  limactl start $(VM); \

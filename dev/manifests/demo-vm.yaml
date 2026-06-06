@@ -12,3 +12,16 @@ spec:
   arch: arm64
   vcpus: 2
   memoryMB: 2048
+  # cloud-init: set the hostname and reset the default ubuntu user's password
+  # so you can log in on the serial console (`otherix vm console demo`).
+  # Dev-only convenience - do not reuse this password anywhere real.
+  cloudInit: |
+    #cloud-config
+    hostname: demo
+    chpasswd:
+      expire: false
+      users:
+        - name: ubuntu
+          password: demo
+          type: text
+    ssh_pwauth: true
