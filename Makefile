@@ -249,7 +249,7 @@ etcd-reset: ## Wipe the dev embedded-etcd data dir + PKI for a clean-slate smoke
 
 # Dev pipeline: build agent + run as systemd unit. Linux runs natively
 # (user-mode systemd unit). macOS runs the agent inside a Lima VM
-# (Ubuntu 24.04, system unit) and reaches the CP via host.lima.internal.
+# (Ubuntu 26.04, system unit) and reaches the CP via host.lima.internal.
 # See docs/macos-development.md for the macOS path.
 # The macOS dev stack runs TWO Lima VMs so the WireGuard underlay has a real
 # cross-host mesh: otherix-dev-1 (node-1) and otherix-dev-2 (node-2). Both join

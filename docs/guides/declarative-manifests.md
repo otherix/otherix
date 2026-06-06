@@ -72,7 +72,7 @@ kind: VM
 metadata:
   name: demo-vm
 spec:
-  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+  imageURL: https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img
   arch: arm64
   network: demo-net
   vcpus: 2

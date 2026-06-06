@@ -75,7 +75,7 @@ A VM attaches one NIC to a network at create time. Imperatively:
 
 ```bash
 otherix vm create web \
-  --image-url https://example.com/noble.img \
+  --image-url https://example.com/ubuntu-26.04.img \
   --arch arm64 \
   --network net-dev
 ```
@@ -88,7 +88,7 @@ kind: VM
 metadata:
   name: web
 spec:
-  imageURL: https://example.com/noble.img
+  imageURL: https://example.com/ubuntu-26.04.img
   arch: arm64
   network: net-dev
 ```

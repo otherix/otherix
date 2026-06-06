@@ -145,7 +145,7 @@ state.
 
 ```bash
 otherix vm create demo-vm \
-  --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+  --image-url https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img \
   --arch arm64 \
   --vcpus 2 \
   --memory-mb 2048 \
@@ -168,7 +168,7 @@ List and inspect:
 ```bash
 otherix vm list
 # NAME     STATUS   POOL     IMAGE
-# demo-vm  running  default  ubuntu-24.04-minimal-cloudimg-arm64.img
+# demo-vm  running  default  ubuntu-26.04-minimal-cloudimg-arm64.img
 
 otherix vm get demo-vm
 # name: demo-vm

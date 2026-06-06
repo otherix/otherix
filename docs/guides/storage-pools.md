@@ -123,7 +123,7 @@ manage directly. `otherix pool get` lists cached images on each instance:
 otherix pool get 8b1d...
 # ...
 # images:
-#   - ubuntu-24.04-minimal-cloudimg-arm64.img (sha 7f3c1a9b0e2d, 612.0MiB)
+#   - ubuntu-26.04-minimal-cloudimg-arm64.img (sha 7f3c1a9b0e2d, 612.0MiB)
 ```
 
 The image cache is **not** a delete blocker - you do not need to clear it before

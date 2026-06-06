@@ -171,7 +171,7 @@ environment.
 
 See [docs/macos-development.md](docs/macos-development.md). The same
 `make bootstrap-dev` / `deploy-dev` / `clean-dev` targets dispatch to
-a Lima-based pipeline (Ubuntu 24.04 VM, system systemd unit, agent
+a Lima-based pipeline (Ubuntu 26.04 VM, system systemd unit, agent
 reachable from the host via the 127.0.0.1:9443 port forward).
 
 ## Build

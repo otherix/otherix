@@ -1,10 +1,10 @@
 # Otherix dev VM (Linux agent host on macOS).
 #
-# Lima creates an Ubuntu 24.04 VM with native arch matching (aarch64 on
-# Apple Silicon, x86_64 on Intel). Provision installs qemu plus tooling
-# Iteration 1+ needs, prepares Otherix runtime directories, and registers
-# the otherix-agent systemd unit (binary + config copied via Make targets
-# after the VM is up).
+# Lima creates an Ubuntu 26.04 LTS (minimal) VM with native arch matching
+# (aarch64 on Apple Silicon, x86_64 on Intel). The minimal cloud image is small;
+# provision installs qemu plus the tooling the agent needs, prepares Otherix
+# runtime directories, and registers the otherix-agent systemd unit (binary +
+# config copied via Make targets after the VM is up).
 #
 # vmType is intentionally unspecified — Lima picks per host (vz on Apple
 # Silicon). nestedVirtualization is intentionally NOT set here: it needs Apple
@@ -14,9 +14,9 @@
 # functional). See docs/macos-development.md.
 
 images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  - location: "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img"
     arch: "aarch64"
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  - location: "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-amd64.img"
     arch: "x86_64"
 
 cpus: 4

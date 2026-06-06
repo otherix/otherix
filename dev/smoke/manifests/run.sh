@@ -38,7 +38,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
 NODE="${NODE:-node-1}"
-IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
+IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64.img}"
 ARCH="${ARCH:-arm64}"
 VM_NAME="smoke-mf"
 SMOKE_NET="smoke-mf-net"
