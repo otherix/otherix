@@ -19,8 +19,8 @@ import (
 // so that interrupted clones never leave a partial qcow2 at the final
 // path that a subsequent boot might pick up.
 //
-// The MVP uses full-copy clones (cp image.qcow2 -> vm-disk.qcow2).
-// Linked clones are deferred to a post-MVP follow-up.
+// The agent uses full-copy clones (cp image.qcow2 -> vm-disk.qcow2).
+// Linked clones are deferred to a follow-up.
 func CloneImage(srcPath, dstPath string) error {
 	src, err := os.Open(srcPath) // #nosec G304 -- srcPath is a CP-issued image cache path, not user input.
 	if err != nil {

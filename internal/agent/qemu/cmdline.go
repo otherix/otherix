@@ -29,7 +29,7 @@ import (
 type Architecture string
 
 // Architecture values supported by the agent. Cross-arch guests are out
-// of scope for the MVP — host arch must match guest arch.
+// of scope — host arch must match guest arch.
 const (
 	ArchAMD64 Architecture = "amd64"
 	ArchARM64 Architecture = "arm64"
@@ -50,7 +50,7 @@ func DetectAccelerator() string {
 
 // HostArch returns the architecture of the host the agent runs on.
 // Iteration 1 only supports same-arch guests — cross-arch emulation is
-// possible (TCG) but out of scope for the MVP.
+// possible (TCG) but out of scope.
 func HostArch() Architecture {
 	switch runtime.GOARCH {
 	case "amd64":

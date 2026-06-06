@@ -70,7 +70,7 @@ type state struct {
 	tasks           map[uuid.UUID]*agentTask
 	poolScanResults map[string][]PoolScanResult
 
-	// MVP Iteration 3 Phase A vm.create / vm.delete projection.
+	// Iteration 3 Phase A vm.create / vm.delete projection.
 	// `storedVMs` is the on-node inventory observable through
 	// VmsGet / VmsList; create-success materialises an entry, delete-
 	// success removes it. `vmCreateResults` and `vmDeleteResults` are

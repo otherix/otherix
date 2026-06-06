@@ -29,7 +29,7 @@ func TestRenderConceptDiskPressure(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := cpclient.PoolConceptView{
-				Name: "pool-mvp", Type: "local_dir", IsClusterDefault: true,
+				Name: "pool-dev", Type: "local_dir", IsClusterDefault: true,
 				Instances: []cpclient.Pool{{
 					ID: uuid.New(), Node: "node-1", Path: "/opt/otherix/pools/default",
 					ReconciliationStatus: "ready", DiskPressure: tc.dp,
@@ -53,7 +53,7 @@ func TestRenderConceptDiskPressure(t *testing.T) {
 // human-readable size when the pool carries images[].
 func TestRenderInstanceImages(t *testing.T) {
 	p := cpclient.Pool{
-		ID: uuid.New(), Node: "node-1", Name: "pool-mvp",
+		ID: uuid.New(), Node: "node-1", Name: "pool-dev",
 		Type: "local_dir", Path: "/opt/otherix/pools/default",
 		Images: []cpclient.PoolImage{{
 			Name:      "ubuntu-noble.qcow2",
@@ -82,7 +82,7 @@ func TestRenderInstanceImages(t *testing.T) {
 // previously vanished because the cpclient struct carried omitempty; the
 // passthrough keeps absent-vs-null exactly as the server decided.
 func TestPrintJSONPassthrough(t *testing.T) {
-	raw := json.RawMessage(`{"name":"pool-mvp","disk_pressure":null}`)
+	raw := json.RawMessage(`{"name":"pool-dev","disk_pressure":null}`)
 	cmd := &cobra.Command{}
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)

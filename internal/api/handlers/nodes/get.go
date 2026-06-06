@@ -25,7 +25,7 @@ import (
 // Two queries: resolver.Node validates UUID-rejection and returns the
 // resolved row's id (by name lookup); GetNodeEffectiveByID re-fetches
 // from the node_effective_availability view to surface effective
-// columns. The double round-trip is acceptable at MVP scale; a
+// columns. The double round-trip is acceptable at this scale; a
 // future iteration could resolve by name directly on the view if
 // the cost matters.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {

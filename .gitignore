@@ -13,12 +13,7 @@
 *.swp
 
 # Claude Code — personal/local files
-.claude/CLAUDE.md
-.claude/DEV_NOTES.md
-.claude/ROADMAP.md
-.claude/settings.local.json
-.claude/docs/
-.claude/specs/
+.claude/
 CLAUDE.local.md
 
 # Local env

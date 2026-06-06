@@ -117,7 +117,7 @@ placement:
 # default_pool_name into cluster_settings and auto-provisions a pool named
 # "default" at /opt/otherix/pools/default on every node as it reaches ready
 # (the Lima/Makefile dev provisioning already pre-creates that path). That is
-# what makes `vm create` work without `--pool`; seed-mvp no longer creates a
+# what makes `vm create` work without `--pool`; seed-dev no longer creates a
 # pool or sets the cluster default.
 
 workers:

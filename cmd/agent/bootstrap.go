@@ -71,7 +71,7 @@ Examples:
   otherix-agent bootstrap \
     --token=otx_join_... --ca-fingerprint=sha256:... \
     --cp-url=https://cp.example:8443 \
-    --node-name=node-mvp \
+    --node-name=node-dev \
     --advertised-endpoint=https://127.0.0.1:9443 \
     --migration-host=0.0.0.0
 

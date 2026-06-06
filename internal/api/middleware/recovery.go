@@ -18,7 +18,7 @@ import (
 // If the panicked handler had already started writing the response body
 // before panicking, the headers cannot be changed and WriteError's
 // WriteHeader call is silently ignored by net/http; this matches the
-// behaviour of chi.Recoverer and is acceptable for an MVP. The log line
+// behaviour of chi.Recoverer and is acceptable here. The log line
 // is the source of truth for diagnosing such cases.
 func Recoverer(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

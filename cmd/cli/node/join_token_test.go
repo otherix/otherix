@@ -30,9 +30,9 @@ func TestNodeNameLabel(t *testing.T) {
 	if got := nodeNameLabel(nil); got != "-" {
 		t.Errorf("nodeNameLabel(nil) = %q, want -", got)
 	}
-	name := "node-mvp"
-	if got := nodeNameLabel(&name); got != "node-mvp" {
-		t.Errorf("nodeNameLabel(&%q) = %q, want node-mvp", name, got)
+	name := "node-dev"
+	if got := nodeNameLabel(&name); got != "node-dev" {
+		t.Errorf("nodeNameLabel(&%q) = %q, want node-dev", name, got)
 	}
 }
 

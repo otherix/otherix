@@ -28,7 +28,7 @@ const scanTriggerMaxAttempts = 25
 // every pool needing one. The etcd-runtime replacement for the river
 // ScanTriggerWorker; the Scheduler drives it. Unlike the river trigger it does
 // not apply per-pool jitter (the etcd job has no scheduled-at), so all eligible
-// pools enqueue at once - acceptable at MVP scale, revisitable if agent-side
+// pools enqueue at once - acceptable at this scale, revisitable if agent-side
 // scan load needs spreading.
 func ScanTriggerFunc(st ScanTriggerStore, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {

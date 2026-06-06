@@ -79,7 +79,7 @@ type ErrorEnvelope struct {
 // Iteration 1 agent's hand-written `vmView` (id, name, vcpus,
 // memory_mb, pool_id, architecture, status, created_at, updated_at) —
 // the richer agentapi.VMSpec shape is a future design target and is
-// deliberately not surfaced through the MVP wire.
+// deliberately not surfaced through the wire.
 //
 // Tests inspect the inventory through StoredVM / ListStoredVMs;
 // production code uses the HTTP surface.

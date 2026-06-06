@@ -118,7 +118,7 @@ placement:
   # scoring path above — pressure conditions are computed CP-side from
   # heartbeat / scan metrics; nodes (or pools, for disk pressure) flagged
   # with an active condition are excluded from placement until recovery
-  # (hard constraint, no override for MVP). Three pressure types:
+  # (hard constraint, no override). Three pressure types:
   #
   #   - memory       — per-node, heartbeat-driven. Free memory below
   #                    threshold_percent of total. OOM-kill risk.

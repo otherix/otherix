@@ -52,13 +52,13 @@ Operators driving seed scripts that need re-run safety should pre-check
 existence via 'otherix pool get <name>' before invoking create.
 
 Example:
-  otherix pool create pool-mvp \
-    --node node-mvp \
+  otherix pool create pool-dev \
+    --node node-dev \
     --path /opt/otherix/pools/default
 
   # Explicit type (only local_dir is supported today):
-  otherix pool create pool-mvp \
-    --node node-mvp \
+  otherix pool create pool-dev \
+    --node node-dev \
     --type local_dir \
     --path /opt/otherix/pools/default`,
 		Args: cobra.ExactArgs(1),

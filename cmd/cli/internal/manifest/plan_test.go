@@ -15,16 +15,16 @@ import (
 const orderingSrc = `apiVersion: otherix/v1
 kind: VM
 metadata: { name: web-1 }
-spec: { imageURL: https://x/u.qcow2, arch: arm64, pool: pool-mvp, network: net-mvp }
+spec: { imageURL: https://x/u.qcow2, arch: arm64, pool: pool-dev, network: net-dev }
 ---
 apiVersion: otherix/v1
 kind: StoragePool
-metadata: { name: pool-mvp }
+metadata: { name: pool-dev }
 spec: { path: /opt/p, nodeList: [node-1, node-2] }
 ---
 apiVersion: otherix/v1
 kind: Network
-metadata: { name: net-mvp }
+metadata: { name: net-dev }
 spec: { type: bridge, bridgeName: br0 }
 `
 
@@ -52,8 +52,8 @@ func TestBuildCreatePlanOrderingAndExpansion(t *testing.T) {
 	if plan[2].Pool == nil || plan[2].Pool.Node != "node-2" {
 		t.Errorf("op[2] pool node = %+v, want node-2", plan[2].Pool)
 	}
-	if plan[3].VM == nil || plan[3].VM.Name != "web-1" || plan[3].VM.Pool != "pool-mvp" {
-		t.Errorf("op[3] vm = %+v, want web-1/pool-mvp", plan[3].VM)
+	if plan[3].VM == nil || plan[3].VM.Name != "web-1" || plan[3].VM.Pool != "pool-dev" {
+		t.Errorf("op[3] vm = %+v, want web-1/pool-dev", plan[3].VM)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestBuildDeletePlanReverseOrder(t *testing.T) {
 			t.Errorf("target[%d].Kind = %q, want %q", i, plan[i].Kind, w)
 		}
 	}
-	if plan[1].PoolNode != "node-1" || plan[3].Name != "net-mvp" {
+	if plan[1].PoolNode != "node-1" || plan[3].Name != "net-dev" {
 		t.Errorf("delete targets mismatch: %+v", plan)
 	}
 }

@@ -41,7 +41,7 @@ type agentTask struct {
 	// "storage_pool.scan", zero value otherwise.
 	result PoolScanResult
 
-	// MVP Iteration 3 Phase A: vm.create / vm.delete outcomes. Set
+	// Iteration 3 Phase A: vm.create / vm.delete outcomes. Set
 	// when taskType == "vm.create" / "vm.delete", nil otherwise.
 	// vmBlueprint carries the AgentVM that materialises into
 	// state.storedVMs on terminal-success of a create task — the

@@ -10,11 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"net"
 	"net/netip"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,42 +29,12 @@ import (
 // the narrow interface the handler depends on.
 var _ networkshandlers.Store = (*etcdstore.Store)(nil)
 
-// startStore spins up a single-node embedded member, a KV client, and an
-// etcd-backed Store over it, registering cleanup. Returns the Store and the raw
+// startStore returns a Store over the shared embedded member with a freshly
+// wiped keyspace (see FreshStore / TestMain in main_test.go), plus the raw
 // client so tests can seed index keys directly.
 func startStore(t *testing.T) (*etcdstore.Store, *etcd.Client) {
 	t.Helper()
-	cfg := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n1",
-		DataDir:      filepath.Join(t.TempDir(), "member"),
-		PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
-		ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
-		ClusterToken: "otherix-test",
-	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	r, err := etcd.Start(ctx, cfg, log)
-	if err != nil {
-		t.Fatalf("etcd.Start: %v", err)
-	}
-	cli := etcd.NewClient(r)
-	t.Cleanup(func() {
-		_ = cli.Close()
-		r.Stop(10 * time.Second)
-	})
-	return etcdstore.New(cli), cli
-}
-
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freePort: %v", err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	return etcdstore.FreshStore(t)
 }
 
 func netParams(name string) store.CreateNetworkParams {

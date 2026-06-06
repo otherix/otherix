@@ -71,12 +71,13 @@ func TestMain(m *testing.M) {
 	defer cancel()
 
 	rt, err := etcd.Start(ctx, &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "apie2e",
-		DataDir:      filepath.Join(dir, "member"),
-		PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort()),
-		ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort()),
-		ClusterToken: "otherix-apie2e",
+		Mode:          etcd.ModeSingle,
+		Name:          "apie2e",
+		DataDir:       filepath.Join(dir, "member"),
+		PeerURL:       fmt.Sprintf("http://127.0.0.1:%d", freePort()),
+		ClientURL:     fmt.Sprintf("http://127.0.0.1:%d", freePort()),
+		ClusterToken:  "otherix-apie2e",
+		UnsafeNoFsync: true,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "etcd.Start: %v\n", err)

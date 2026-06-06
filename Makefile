@@ -5,6 +5,9 @@ BIN_DIR         := bin
 GO              := go
 GOLANGCI_VERSION := v2.12.1
 GOLANGCI_IMAGE   := golangci/golangci-lint:$(GOLANGCI_VERSION)
+# GOIMPORTS_VERSION tracks golang.org/x/tools in go.mod (goimports ships from it).
+GOFUMPT_VERSION  := v0.7.0
+GOIMPORTS_VERSION := v0.44.0
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -40,7 +43,7 @@ $(addprefix build-,$(BINARIES)): build-%: ## Build a single daemon binary (api/a
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/otherix-$* ./cmd/$*
 
 # CLI is a special case: cmd dir is `cli/` for layout consistency with the
-# four daemons (cmd/<short>/), but the binary is `otherix` (no component
+# daemons (cmd/<short>/), but the binary is `otherix` (no component
 # suffix) per the kubectl/docker/gh convention for operator CLIs.
 build-cli: ## Build the otherix operator CLI to bin/otherix
 	@mkdir -p $(BIN_DIR)
@@ -61,6 +64,10 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 	    -o $(BIN_DIR)/linux-arm64/otherix-$$b ./cmd/$$b || exit 1; \
 	done
 
+.PHONY: clean
+clean: ## Remove build artifacts (bin/, coverage reports)
+	rm -rf $(BIN_DIR) coverage.out coverage.html
+
 # ========== Test ==========
 
 # Build tag list shared across test targets. `test_fast_argon` swaps
@@ -70,7 +77,11 @@ build-linux-arm64: ## Cross-compile all daemons for linux/arm64
 TEST_TAGS := test_fast_argon
 INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
-.PHONY: test test-short test-etcd test-netfabric test-netfabric-native coverage
+.PHONY: test test-short test-etcd test-etcd-fast test-netfabric test-netfabric-native coverage
+
+# The etcd-backed suites share one in-process member per test binary (TestMain),
+# so the wall-clock is dominated by the work, not member churn.
+ETCD_TEST_PKGS := ./internal/etcdstore/... ./tests/apie2e/...
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
@@ -80,10 +91,11 @@ test-short: ## Run unit tests in short mode
 # test-etcd runs the etcd-backed suites: the store layer (internal/etcdstore)
 # and the api-server e2e (tests/apie2e). Both embed etcd in-process, so they
 # need NO Docker - this is the integration test path after the pgx cutover.
-test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
-	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
-	  ./internal/etcdstore/... \
-	  ./tests/apie2e/...
+test-etcd: ## Run etcd-backed store + api e2e suites with -race (no Docker; CI gate)
+	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race $(ETCD_TEST_PKGS)
+
+test-etcd-fast: ## Same etcd-backed suites without -race (fast local iteration; the gate keeps -race via test-etcd)
+	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 $(ETCD_TEST_PKGS)
 
 # test-netfabric runs the agent network-fabric netns integration tests
 # (bridge / tap / nft masquerade over real netlink). They are
@@ -151,7 +163,7 @@ smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml`
 
 # ========== Lint ==========
 
-.PHONY: lint fmt vet
+.PHONY: lint fmt fmt-check vet
 lint: ## Run golangci-lint for the host platform AND GOOS=linux (a macOS host build excludes *_linux.go, which CI on ubuntu lints; this matches CI)
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 	  echo ">> using local golangci-lint ($$(golangci-lint version 2>/dev/null | head -n1))"; \
@@ -172,11 +184,24 @@ lint: ## Run golangci-lint for the host platform AND GOOS=linux (a macOS host bu
 	fi
 
 fmt: ## Format with gofumpt + goimports (installed locally on demand)
-	$(GO) run mvdan.cc/gofumpt@v0.7.0 -l -w .
-	$(GO) run golang.org/x/tools/cmd/goimports@latest -local github.com/otherix/otherix -l -w .
+	$(GO) run mvdan.cc/gofumpt@$(GOFUMPT_VERSION) -l -w .
+	$(GO) run golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION) -local github.com/otherix/otherix -l -w .
+
+fmt-check: ## Verify formatting without writing (fails if any file needs gofumpt/goimports)
+	@out="$$($(GO) run mvdan.cc/gofumpt@$(GOFUMPT_VERSION) -l .; \
+	         $(GO) run golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION) -local github.com/otherix/otherix -l .)"; \
+	if [ -n "$$out" ]; then echo ">> these files need formatting (run 'make fmt'):"; echo "$$out" | sort -u; exit 1; fi
 
 vet: ## go vet all packages
 	$(GO) vet ./...
+
+# ci reproduces the merge-gating CI jobs locally, minus the privileged netfabric
+# data-plane suite (needs root / CAP_NET_ADMIN - run `make test-netfabric`
+# separately). Mirrors .github/workflows/ci.yaml: lint, vuln, test-unit,
+# test-etcd, and the agent-api drift check.
+.PHONY: ci
+ci: fmt-check vet lint test test-etcd vuln agent-api-verify ## Run the local CI gate (everything CI gates except privileged netfabric)
+	@echo ">> ci gate passed"
 
 .PHONY: vuln
 vuln: ## Scan for known vulnerabilities via govulncheck (pinned)
@@ -193,9 +218,13 @@ download: ## go mod download
 
 # ========== Run (local dev) ==========
 
-.PHONY: $(addprefix run-,$(BINARIES))
-$(addprefix run-,$(BINARIES)): run-%: build-% ## Build and run a binary against deploy/config/<binary>.example.yaml
-	./$(BIN_DIR)/otherix-$* --config deploy/config/$*.example.yaml
+# Only the api-server has a meaningful "run against the example config on this
+# host" path. The agent is Linux-only and needs bootstrap cert material + root
+# (qemu / netlink); its real entry points are the dev flow (bootstrap-dev ->
+# run-api-dev -> seed-dev) and `make local-dev-start`, not a bare host run.
+.PHONY: run-api
+run-api: build-api ## Build and run the api-server against deploy/config/api.example.yaml
+	./$(BIN_DIR)/otherix-api --config deploy/config/api.example.yaml
 
 .PHONY: run-api-dev
 run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd, no Postgres)
@@ -231,7 +260,7 @@ LIMA_VM_1   := otherix-dev-1
 LIMA_VM_2   := otherix-dev-2
 LIMA_VM     := $(LIMA_VM_1)
 
-.PHONY: bootstrap-dev deploy-dev clean-dev seed-mvp \
+.PHONY: bootstrap-dev deploy-dev clean-dev seed-dev \
         bootstrap-dev-linux deploy-dev-linux clean-dev-linux \
         bootstrap-dev-macos deploy-dev-macos clean-dev-macos \
         install-agent-systemd-user \
@@ -239,7 +268,7 @@ LIMA_VM     := $(LIMA_VM_1)
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
 
-bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise with 'make seed-mvp')
+bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise with 'make seed-dev')
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) bootstrap-dev-linux ;; \
 	  Darwin) $(MAKE) bootstrap-dev-macos ;; \
@@ -260,12 +289,12 @@ clean-dev: ## Tear down dev environment (per OS)
 	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
 	esac
 
-# seed-mvp orchestrates the join-token bootstrap end-to-end:
+# seed-dev orchestrates the join-token bootstrap end-to-end:
 # mints token, provisions bootstrap.env + token to agent host, starts agent,
 # waits for cert-material commit, seeds the default pool; VMs are created from an image URL via
 # CLI. Run AFTER `make bootstrap-dev` + `make run-api-dev`.
-seed-mvp: build-cli ## Run the join-token bootstrap + MVP seed (requires CP running + bootstrap-dev staged)
-	@bash dev/scripts/seed-mvp.sh
+seed-dev: build-cli ## Run the join-token bootstrap + cluster seed (requires CP running + bootstrap-dev staged)
+	@bash dev/scripts/seed-dev.sh
 
 # local-dev-start / local-dev-stop wrap the full dev stack lifecycle (api-server
 # with embedded etcd + Lima VM + agent + CLI cluster config) into two commands.
@@ -281,11 +310,11 @@ local-dev-stop: ## Stop everything + etcd-reset (DESTRUCTIVE - wipes the embedde
 
 # ----- Linux -----
 
-# Stage user-mode systemd unit + binary. seed-mvp.sh starts the unit
+# Stage user-mode systemd unit + binary. seed-dev.sh starts the unit
 # after provisioning bootstrap material (token + bootstrap.env);
 # auto-start would race with the provisioning.
 bootstrap-dev-linux: build-agent install-agent-systemd-user
-	@echo ">> bootstrap-dev-linux done; agent staged. Finalise with 'make seed-mvp' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-linux done; agent staged. Finalise with 'make seed-dev' after 'make run-api-dev'"
 
 deploy-dev-linux: build-agent
 	@cp $(BIN_DIR)/otherix-agent $(HOME)/.local/bin/otherix-agent
@@ -319,10 +348,10 @@ clean-dev-linux:
 
 # ----- macOS (Lima) -----
 
-# Stage Lima VM + agent binary + config. Agent NOT started — seed-mvp.sh
+# Stage Lima VM + agent binary + config. Agent NOT started — seed-dev.sh
 # provisions bootstrap material and starts it.
 bootstrap-dev-macos: lima-ensure copy-config-lima build-agent-lima copy-agent-lima
-	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise with 'make seed-mvp' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise with 'make seed-dev' after 'make run-api-dev'"
 
 deploy-dev-macos: build-agent-lima copy-agent-lima restart-agent-lima
 	@echo ">> deploy-dev-macos done"

@@ -6,7 +6,7 @@
 # would require root.
 #
 # The agent boots in State A polling-loop mode (no manual restart
-# needed). seed-mvp runs `otherix-agent bootstrap` to materialise
+# needed). seed-dev runs `otherix-agent bootstrap` to materialise
 # cert material; this yaml is preserved across re-bootstrap (bootstrap
 # writes the config file only when absent or with --force, so
 # hand-edits survive).

@@ -79,8 +79,8 @@ func TestNetworkCreate_Happy(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body["name"] != "net-mvp" {
-			t.Errorf("name = %v, want net-mvp", body["name"])
+		if body["name"] != "net-dev" {
+			t.Errorf("name = %v, want net-dev", body["name"])
 		}
 		if body["bridge_name"] != "br0" {
 			t.Errorf("bridge_name = %v, want br0", body["bridge_name"])
@@ -93,12 +93,12 @@ func TestNetworkCreate_Happy(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write(networkJSON(uuid.NewString(), "net-mvp"))
+		_, _ = w.Write(networkJSON(uuid.NewString(), "net-dev"))
 	}))
 	defer srv.Close()
 
 	stdout, _, err := runNetworkCmd(t, srv.URL, []string{
-		"create", "net-mvp", "--bridge-name", "br0",
+		"create", "net-dev", "--bridge-name", "br0",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -106,7 +106,7 @@ func TestNetworkCreate_Happy(t *testing.T) {
 	if posts != 1 {
 		t.Errorf("posts = %d, want 1", posts)
 	}
-	if !strings.Contains(stdout, "network net-mvp created") {
+	if !strings.Contains(stdout, "network net-dev created") {
 		t.Errorf("stdout missing creation message: %q", stdout)
 	}
 }
@@ -118,7 +118,7 @@ func TestNetworkCreate_MissingBridgeName(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := runNetworkCmd(t, srv.URL, []string{"create", "net-mvp"})
+	_, _, err := runNetworkCmd(t, srv.URL, []string{"create", "net-dev"})
 	if err == nil {
 		t.Fatalf("expected error for missing --bridge-name")
 	}
@@ -171,7 +171,7 @@ func TestNetworkCreate_409Conflict(t *testing.T) {
 	defer srv.Close()
 
 	_, _, err := runNetworkCmd(t, srv.URL, []string{
-		"create", "net-mvp", "--bridge-name", "br0",
+		"create", "net-dev", "--bridge-name", "br0",
 	})
 	if err == nil {
 		t.Fatalf("expected error for 409 conflict")
@@ -331,7 +331,7 @@ func TestNetworkGet_TextWithStatus(t *testing.T) {
 			t.Errorf("path = %s, want /v1/networks/%s", r.URL.Path, id)
 		}
 		body := map[string]any{
-			"id": id, "name": "net-mvp", "type": "bridge", "bridge_name": "br0",
+			"id": id, "name": "net-dev", "type": "bridge", "bridge_name": "br0",
 			"managed": false, "egress": "none", "vlan_tag": nil, "mtu": 1500,
 			"subnet": nil, "gateway": nil, "config": map[string]any{},
 			"created_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",
@@ -373,7 +373,7 @@ func TestNetworkGet_StatusEmptyNodeNameFallsBackToUUID(t *testing.T) {
 	nodeID := uuid.NewString()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := map[string]any{
-			"id": id, "name": "net-mvp", "type": "bridge", "bridge_name": "br0",
+			"id": id, "name": "net-dev", "type": "bridge", "bridge_name": "br0",
 			"managed": false, "egress": "none", "vlan_tag": nil, "mtu": 1500,
 			"subnet": nil, "gateway": nil, "config": map[string]any{},
 			"created_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",

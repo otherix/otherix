@@ -34,7 +34,7 @@ Pass token + fingerprint to the agent via:
 (double underscore: koanf env-nesting separator)
 
 Examples:
-  otherix node join-token create --node-name node-mvp --ttl 10m
+  otherix node join-token create --node-name node-dev --ttl 10m
   otherix node join-token create --max-uses 3 --ttl 1h
   otherix node join-token create --ttl 24h  # unlimited within 24h`,
 		RunE: runJoinTokenCreate,

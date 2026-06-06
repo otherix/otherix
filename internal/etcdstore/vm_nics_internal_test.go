@@ -8,56 +8,22 @@ package etcdstore
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"log/slog"
-	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
 )
 
-// startInternalStore boots a single-node embedded member and returns a Store
-// over it. It lives in the internal test package so tests can reach the
-// unexported delete-ops builder and index-key helpers directly.
+// startInternalStore returns a Store over the shared embedded member with a
+// freshly wiped keyspace (see FreshStore / TestMain in main_test.go). It lives
+// in the internal test package so tests can reach the unexported delete-ops
+// builder and index-key helpers directly.
 func startInternalStore(t *testing.T) *Store {
 	t.Helper()
-	cfg := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n1",
-		DataDir:      filepath.Join(t.TempDir(), "member"),
-		PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", internalFreePort(t)),
-		ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", internalFreePort(t)),
-		ClusterToken: "otherix-test",
-	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	r, err := etcd.Start(ctx, cfg, log)
-	if err != nil {
-		t.Fatalf("etcd.Start: %v", err)
-	}
-	cli := etcd.NewClient(r)
-	t.Cleanup(func() {
-		_ = cli.Close()
-		r.Stop(10 * time.Second)
-	})
-	return New(cli)
-}
-
-func internalFreePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freePort: %v", err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	s, _ := FreshStore(t)
+	return s
 }
 
 // TestVMNicDeleteOpsTombstoneDropsNetworkIndex reproduces the redelivery state -

@@ -13,7 +13,7 @@ import (
 func TestParseMultiDoc(t *testing.T) {
 	src := `apiVersion: otherix/v1
 kind: Network
-metadata: { name: net-mvp }
+metadata: { name: net-dev }
 spec: { type: bridge, bridgeName: br0 }
 ---
 apiVersion: otherix/v1
@@ -28,8 +28,8 @@ spec: { imageURL: https://x/u.qcow2, arch: arm64 }
 	if len(docs) != 2 {
 		t.Fatalf("Parse() returned %d docs, want 2", len(docs))
 	}
-	if docs[0].Kind != manifest.KindNetwork || docs[0].Name != "net-mvp" {
-		t.Errorf("doc0 = {%q,%q}, want {Network,net-mvp}", docs[0].Kind, docs[0].Name)
+	if docs[0].Kind != manifest.KindNetwork || docs[0].Name != "net-dev" {
+		t.Errorf("doc0 = {%q,%q}, want {Network,net-dev}", docs[0].Kind, docs[0].Name)
 	}
 	if docs[1].Kind != manifest.KindVM || docs[1].Name != "web-1" {
 		t.Errorf("doc1 = {%q,%q}, want {VM,web-1}", docs[1].Kind, docs[1].Name)

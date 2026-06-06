@@ -1,433 +1,193 @@
-# Otherix — Architecture
+# Otherix - Architecture
 
-**Status:** api-server, agent, and CLI are built and exercised
-end-to-end through the `tests/apie2e/` suite. Scheduler and reconciler
-loops run in-process inside `otherix-api`, alongside the embedded etcd
-member and the worker job runtime. The control plane is wired through
-the join-token bootstrap protocol against the embedded etcd store.
-
-This document is the high-level orientation. The control-plane store
-lives in `internal/etcdstore/`; the embedded etcd member is started by
-`internal/etcd/`; the pgx-free row / params / result types shared by
-handlers and the store live in `internal/store/`.
+A self-hosted control plane for running QEMU virtual machines across a fleet of Linux
+hypervisor nodes. This document is a high-level orientation for engineers with a
+devops/SRE background: what the moving parts are, how they talk, and where state lives.
 
 ---
 
-## What Otherix is
+## What it is
 
-A self-hosted VM orchestration control plane that manages QEMU virtual machines across a fleet of hypervisor nodes. VMs are created directly from an image URL (no template entity). Users own VMs and snapshots (tracked via per-resource `owner_id`); nodes, networks, storage pools, and firmwares are shared infrastructure managed by administrators. The scheduler enforces placement policies. Live migration moves running VMs between nodes peer-to-peer without involving the control plane in the data path.
+Otherix manages the full lifecycle of VMs (create, start/stop, console, delete) on bare
+hypervisors. A VM is created directly from a disk-image URL - there is no template or image
+registry. Users own VMs; nodes, networks, and storage pools are shared infrastructure managed
+by administrators. The system is operated through a kubectl-style CLI (`otherix`) that speaks a
+REST API, including declarative multi-document YAML manifests (`otherix create -f`).
 
-**Non-goals (deliberately):** multi-tenancy / SaaS, custom RBAC, OAuth/OIDC, NFS/Ceph storage, OVS/VXLAN networking, OCI registry images. All deferred to future iterations. (Multi-tenancy was scaffolded and then removed in 2026-05-03.)
+It is deliberately small in surface: no multi-tenancy, no external database, no Postgres/Redis,
+no libvirt. Just three Go binaries and embedded etcd.
 
 ---
 
-## Components
+## The three processes
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                  Control Plane (otherix-api)             │
-│                                                          │
-│  ┌──────────┐  ┌───────────┐  ┌────────────┐  ┌───────┐  │
-│  │ REST API │  │ scheduler │  │ reconciler │  │worker │  │
-│  │ + mTLS   │  │ (in-proc) │  │  loops     │  │ jobs  │  │
-│  └────┬─────┘  └─────┬─────┘  └─────┬──────┘  └───┬───┘  │
-│       │              │              │             │      │
-│       └──────────────┴──────┬───────┴─────────────┘      │
-│                             │                            │
-│                    ┌────────┴────────┐                   │
-│                    │  embedded etcd  │                   │
-│                    │   (in-process)  │                   │
-│                    └─────────────────┘                   │
-└──────────────────────────┬───────────────────────────────┘
-                           │  REST + mTLS
-                           │  (CP ↔ agent)
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-   ┌────▼────┐        ┌────▼────┐        ┌────▼────┐
-   │  agent  │        │  agent  │        │  agent  │
-   │  (node) │        │  (node) │        │  (node) │
-   └─────────┘        └─────────┘        └─────────┘
-        ▲                  ▲                  ▲
-        └──── peer-to-peer QMP migrate ───────┘
+  operator ── otherix (CLI) ──REST──▶ otherix-api ──embeds──▶ etcd
+                                          │  (single stateful store, in-process)
+                                          │ mTLS over a cluster CA
+                                          ▼
+                                     otherix-agent  (one per hypervisor node)
+                                          │
+                                          ▼
+                                     QEMU + Linux networking
 ```
 
-**`otherix-api`** - the public REST API. Embeds the etcd member and
-hosts the scheduler, reconciliation loops, and the worker job runtime
-in-process (no separate worker / scheduler / reconciler tiers, no
-external DB). Reads/writes desired state through `internal/etcdstore`.
-Designed for HA - replicas self-cluster as a single etcd cluster and
-share work by claiming jobs off the etcd-backed queue.
+**`otherix-api`** - the control plane. A single self-contained process that:
+- serves the public REST API (JWT or `otx_` API-token auth);
+- **embeds an etcd member in-process** - the only stateful component;
+- runs the async job dispatcher and periodic maintenance loops in the same process (there is no
+  separate scheduler or reconciler daemon);
+- talks to agents over mutual TLS.
+For HA, multiple `otherix-api` replicas self-cluster into one etcd Raft cluster and share work by
+claiming jobs off the etcd-backed queue.
 
-**Scheduler (in-process)** — picks a node for each new VM and decides
-when to evacuate/rebalance. Reads node capacity, VM
-architecture, and labels. Writes nothing user-facing; emits work by
-enqueuing jobs on the etcd queue.
+**`otherix-agent`** - the per-node daemon (Linux only). Owns the QEMU processes, the node's local
+image cache, and the host networking data plane (bridges, tap devices, VXLAN overlay, WireGuard
+mesh, nftables NAT). It keeps its own state on the local filesystem and **never touches the control
+plane's etcd** - all coordination flows through a periodic heartbeat.
 
-**Reconciler (in-process)** — closes the loop between desired state
-(`vms`, `vm_disks`, `vm_nics`, storage pools, …) and observed state
-(`vm_runtime`, per-resource status columns). When desired generation
-advances past `observed_generation`, the matching loop queues agent
-work and bumps `observed_generation` once the agent confirms.
+**`otherix`** - the CLI. Cobra-based, kubectl/gh ergonomics, multi-cluster config under
+`~/.otherix/config`.
 
-**`otherix-agent`** — runs on each hypervisor node. Talks QEMU
-directly via QMP (no libvirt). Reports node capabilities through
-heartbeat, applies VM lifecycle commands, performs live migrations
-peer-to-peer. Authenticated to the CP via mTLS client certificate
-issued through the `join_tokens` bootstrap protocol.
-
-**`otherix`** — operator CLI. Not a cluster component; installed
-wherever an operator runs commands. Talks to the CP over HTTPS with
-a bearer token (JWT or `otx_*` API token).
-
-**Deployment:** standalone binaries. The control plane runs on a
-dedicated host or alongside an agent for single-node installations;
-agents install on each KVM/QEMU host alongside `qemu-system-*`. The
-control plane embeds etcd in-process, so it has no external stateful
-dependency to bring up.
+> Build note: `make build` produces `otherix-api`, `otherix-agent`, and `otherix`. The control plane
+> is one process; "scheduler" and "reconciler" are in-process loops, not separate binaries.
 
 ---
 
-## Data flow patterns
+## How state is split
 
-### Desired → Observed (reconciliation)
+There are two sources of truth, and keeping them separate is the core design choice:
 
-User issues `PATCH /v1/vms/X { cpu_cores: 4 }` to api-server. The handler:
-1. Updates the VM row and increments `vms.generation` in the same etcd `Txn` (because `cpu_cores` is a whitelisted, generation-bumping field). The bump is applied application-side in `internal/etcdstore`, not by a DB trigger.
-2. Returns 200 to the user.
-
-Asynchronously, reconciler observes `vms.generation > vm_runtime.observed_generation` for VM X. It enqueues a "reconcile VM" job on the etcd queue. A worker:
-1. Reads desired state, computes the diff vs observed.
-2. Issues an agent RPC ("resize VM X cpu to 4").
-3. Agent applies via QMP, reports back.
-4. Worker updates `vm_runtime.observed_generation = vms.generation`.
-
-If the user changes `description` instead, `generation` does NOT bump (cosmetic-only fields are excluded from the bump whitelist) and reconciler does no work.
-
-### Live migration
-
-Live migration is a planned first-class resource. What exists today is the migration row model, active-migration tracking (`activeMigrationsOnNode`, consumed by node force-delete), and cancellation of active migrations when a node is force-deleted; the create endpoint and the phase-driving worker are not yet implemented. The intended flow:
-
-User issues `POST /v1/vms/X/migrate { target_node: Y }`. The handler:
-1. Writes the migration row with `phase='pending'` plus a per-VM active-migration guard key, committed together in a single etcd `Txn` whose compare-and-set on the guard's `CreateRevision` rejects a second active migration for VM X - the etcd analogue of the former partial unique index.
-2. Returns 202 with the migration ID.
-
-A worker then drives the migration through `preparing -> running -> completing -> succeeded|failed|cancelled`. The agents on source and target talk QMP `migrate` directly to each other (peer-to-peer); the worker just polls progress and updates the migration's `bytes_transferred`, `progress_percent`, etc.
-
-### Audit
-
-A dedicated audit-log subsystem is backlog and not yet shipped. The audit
-records that do exist today are written inline alongside the operation that
-produces them: token-redemption consumption rows (`join_token_consumptions`
-and the cluster-join equivalent) are committed in the same etcd `Txn` as the
-cert issuance / node upsert they record, so the audit and its operation
-land together or not at all. There is no partitioned audit table; retention
-of finalized records is handled by the periodic Scheduler sweeps (see
-"Background jobs and maintenance" below), not by detaching monthly partitions.
-
----
-
-## Store design - the big picture
-
-Embedded etcd is the **only** stateful service. No Postgres, no Redis, no
-Kafka, no separate queue process. The async job queue lives in the same etcd
-keyspace, drained by the in-process worker runtime. There is no SQL and no
-migrations: the store (`internal/etcdstore`) enforces all structure
-application-side over an etcd key-schema, and `internal/store` is a pgx-free
-type layer (row / params / result structs + sentinels) shared by handlers and
-the store.
-
-### Key-schema and resource families
-
-Each resource is a JSON value under a primary key `/otherix/<resource>/<id>`.
-Uniqueness constraints are guard keys (an extra key whose presence blocks a
-conflicting write); lookups by a non-primary attribute go through secondary
-index keys (e.g. `/otherix/index/vm_runtime/node/<node_id>/<vm_id>`). Jobs are
-sequence-keyed under `/otherix/jobs/<seq>`. The resource families:
-
-| Family | Resources | Soft-delete? |
+| | Desired state | Observed state |
 |---|---|---|
-| Identity | `users`, `api_tokens`, `agent_certs`, `join_tokens`, `refresh_tokens`, `ca_certs` | partial |
-| Infrastructure | `nodes`, `firmwares`, `storage_pools`, `networks` | partial |
-| VM domain (desired) | `vms`, `vm_disks`, `vm_nics`, `snapshots` | yes |
-| VM domain (runtime) | `vm_runtime` | hard delete |
-| Operations | `migrations` (live), `idempotency_keys`, `tasks` | hard delete |
-| Queue | jobs under `/otherix/jobs/<seq>`, sequence counter `/otherix/seq/jobs` | hard delete |
+| **What** | What the user asked for: VM cpu/memory/disks, networks, pools | What is actually running: qemu pid, phase, metrics, cached images |
+| **Where** | Control-plane etcd (`internal/etcdstore`) | On the agent's local disk |
+| **How it moves** | Pushed down in each heartbeat response | Reported up in each heartbeat request |
 
-### Conventions enforced everywhere
-
-- **IDs:** UUIDv7 - sortable by creation time, generated application-side.
-- **Timestamps:** RFC 3339 UTC. Standard triplet `created_at`, `updated_at`, `deleted_at` on soft-deletable resources; `updated_at` is stamped by the store on each mutation.
-- **Soft delete:** `deleted_at` set on the row. Application-level cascade. Uniqueness guard keys are released on soft-delete so the value (e.g. an email, a node name) becomes reusable immediately.
-- **Atomicity:** multi-key writes (primary row + guards + secondary indexes + any related rows) commit through a single etcd `Txn` with compare-and-set on `ModRevision`/`CreateRevision`. Sweeps that exceed etcd's default 128-op/txn limit are split into chunks by `commitInChunks`.
-- **Resource ownership:** user-owned resources (`vms`, `snapshots`) carry `owner_id` referencing a user; deleting a user that still owns resources is refused. Infrastructure resources (`nodes`, `firmwares`, `storage_pools`, `networks`) have no owner - they're administered for the whole installation. Multi-tenancy was removed in 2026-05-03.
-
-### Image cache (agent-owned)
-
-A VM is created from an image URL rather than a control-plane template. The
-image bytes are NOT a control-plane resource: each agent owns a per-pool,
-basename-keyed cache under `{poolRoot}/images/{basename}` (with a
-`{basename}.sha256` sidecar), materialized on first use with Kubernetes
-`IfNotPresent` semantics. Without `--image-sha256` the cache reuses by name;
-with `--image-sha256` it enforces the digest, re-downloading and atomically
-overwriting on sidecar disagreement and failing `checksum_mismatch` if the URL
-serves a different digest. The agent reports its cache inventory to the CP
-through heartbeat, and the CP surfaces it under `storage_pool:read` (shown by
-`otherix pool get <name>` as an `images:` list of name, sha, and size). There
-is no separate image resource, table, or RBAC permission - `vm:create` is the
-single gate for materializing any image URL.
-
-### Reconciler pattern (Kubernetes-style)
-
-Every desired-state resource has a `generation` bumped by the store on a whitelist of fields. The matching runtime resource carries `observed_generation`. Reconciler scans for `generation > observed_generation` and converges. Cosmetic-only field changes don't bump `generation` and don't trigger reconciler work.
-
-`vm_runtime.conditions` carries Kubernetes-style condition arrays (`{type, status, reason, message, last_transition_time}`) so UI can show rich state without a combinatorial enum explosion.
-
-### Key invariants enforced by the store
-
-The store enforces these application-side, each through a guard key compared
-inside the mutating `Txn` (the etcd analogue of a partial unique index or
-CHECK constraint), rather than by the database:
-
-- One active live-migration per VM (per-VM active-migration guard key, released on terminal phase) - planned, with the live-migration create path.
-- Live-migration source and target are different.
-- VM disk source kind is one of `image` or `blank`. There is no template entity and no `source_template_id`: a VM is self-describing, carrying `image_url`, `image_sha256`, `image_format`, `architecture`, and `firmware_id` on its own row. The image bytes are materialized by the agent's per-pool image cache on first use (see the storage section), not tracked as a control-plane resource.
-- Globally unique MAC address among non-deleted NICs (MAC guard key).
-- Exactly one default firmware per `(architecture, type)` (default-firmware guard key).
-- Exactly one default storage pool per node (default-pool guard key).
-- Network VLAN tag in 1..4094 or NULL (validated at the API edge).
+The control plane writes *desired* state and the agent's reconcilers converge toward it,
+reporting *observed* state back. A VM's API view shows both: top-level fields are what you want;
+a derived `status` reflects what the agent last reported. This is the same desired/observed loop
+Kubernetes uses, on a 30-second heartbeat.
 
 ---
 
-## Structure and schema
+## Storage: embedded etcd
 
-There is no schema and no migration tooling: etcd carries opaque keys and
-values, and the store (`internal/etcdstore`) is the single authority for
-structure. It owns the key-schema described above (primary
-`/otherix/<resource>/<id>` JSON values, uniqueness guard keys, secondary
-indexes, and the `/otherix/jobs/<seq>` queue), and every constraint that a
-relational schema would have expressed as a unique index, CHECK, or FK action
-is instead enforced by a compare-and-set inside the relevant store method's
-`Txn`. There is no goose, no `--migrate-action`, no sqlc, and no `pgx`.
-`internal/store` carries only the row / params / result types and sentinel
-errors shared by handlers and the store.
+etcd runs inside `otherix-api` (no network hop for the control plane's own reads/writes). It is the
+single stateful service - there is no SQL database and no schema migrations; structure is enforced
+in application code (`internal/etcdstore`).
 
-### Background jobs and maintenance
+- **Keys** are laid out as `/otherix/<resource>/<id>` (JSON values), with `uniq/...` keys for
+  uniqueness (e.g. VM name, user email) and `index/...` keys for list ordering.
+- **Atomicity** comes from etcd transactions: a row plus its uniqueness guards plus its async job all
+  commit in one compare-and-set transaction. Large cleanup sweeps are chunked under etcd's
+  per-transaction op limit.
+- **HA** is etcd Raft. Replicas join as learners and are auto-promoted once caught up; peer (Raft)
+  traffic is mutual-TLS, chained to the cluster CA.
+- **Backups** are periodic etcd snapshots written to a configurable directory with retention.
 
-The async queue replaces what was previously an in-database job table. Jobs
-are written under `/otherix/jobs/<seq>` (a monotonic sequence allocated by a
-value-compare CAS loop on `/otherix/seq/jobs`, zero-padded so lexical key
-order matches numeric order). Two in-process components consume them:
-
-- **`internal/worker.Dispatcher`** - polls the queue oldest-first, claims a
-  pending job (a CAS that loses cleanly if another replica won), routes it to
-  the handler registered for its `Kind`, and governs the job's queue lifecycle
-  (`pending → running → completed`, or requeue/fail under the kind's attempt
-  budget). A bounded-concurrency pool caps in-flight work. This is the
-  replacement for the former in-process worker pool.
-- **`internal/worker.Scheduler`** - runs registered periodic functions on
-  independent tickers (the replacement for the former periodic-job scheduler).
-  It drives node-health reconciliation, the storage-pool scan trigger, and the
-  retention sweeps. Per-state task retention (7d completed / 30d
-  failed-or-cancelled) and failed-job retention (7d) are swept here;
-  because the default `--max-txn-ops` is 128, retention sweeps commit in chunks
-  below that limit.
+Cluster-wide settings (default pool, overlay supernet, VNI range, underlay MTU) live in a single
+etcd document, seeded once at boot, rather than being duplicated across each replica's config file.
 
 ---
 
-## Testing strategy
+## Async operations and the job queue
 
-Two test tiers, the integration tier build-tag gated. Neither needs Docker -
-both embed etcd in-process.
+Anything that touches a node or takes more than a moment is asynchronous:
 
-**Unit tests** (`make test`) - plain `go test ./...` with the
-`test_fast_argon` tag swapping OWASP Argon defaults for RFC 9106
-minimums in the test binary. The `integration`-gated suites are skipped.
+1. The API validates the request, writes a **task** plus a **job** to etcd in one transaction, and
+   returns `202 Accepted` with a task id.
+2. The in-process **dispatcher** claims the job (one replica wins via a compare-and-set), calls the
+   owning agent, and polls it to completion.
+3. The client polls `GET /v1/tasks/{id}` (or uses `--wait`) until the task reaches
+   `success` / `failed` / `cancelled`.
 
-**Store / API integration** (`make test-etcd`, build tag `-tags=integration`)
-- covers `internal/etcdstore` (the full store surface over an embedded etcd
-member started per test) and `tests/apie2e` (the api-server e2e suite: the
-real chi router over etcdstore + `httptest`, driving auth rotation /
-theft-detection, user + infra CRUD, RBAC, idempotency, and health). Real-agent
-CP↔agent coverage is the Lima smoke (`make local-dev-start`), not a mock tier.
+Sync `200` is reserved for genuinely fast operations (pause/resume, console-token issuance). VM
+create/delete, start/stop/poweroff/reboot, and pool scans are all async.
 
-Coverage targets for the store suite specifically:
-1. **Guards fire on synthetic violations** - uniqueness guard keys (node name,
-   email, MAC, default firmware / pool) reject conflicting writes; the
-   active-migration guard rejects a second active migration.
-2. **Generation bump behaves** - `updated_at` advances on mutation;
-   `generation` bumps on whitelisted fields, no-ops on cosmetic, handles
-   NULL transitions.
-3. **Atomicity holds** - multi-key writes (row + guards + indexes) land or roll
-   back together; delete projections stay under the 128-op txn budget.
-4. **Queue lifecycle** - claim/complete/retry transitions and at-least-once
-   redelivery resumption behave as specified.
+The queue is etcd-backed (claim-by-revision, per-job attempt budget). Job redelivery is safe: a task
+carries the agent's task id, so a control-plane restart resumes polling instead of re-running the
+operation, and a committed-terminal task is never reopened.
 
-Both tiers run in CI without Docker.
+Periodic loops handle node liveness (promote healthy / mark unreachable / mark gone by heartbeat
+freshness), expired-row cleanup, storage-pool scan triggers, and etcd backups.
 
 ---
 
-## Operations: overlay MTU and VNI range
+## Security model
 
-The cluster overlay's `underlay_mtu` and `vni_range` are
-bootstrap-immutable. Each is seeded into the `cluster_settings`
-singleton first-writer-wins from the api-server's local config; there
-is no runtime mutator. Subsequent replicas read the seeded etcd value
-and ignore their own local config, so the first api-server to boot wins.
-
-- `underlay_mtu` is the physical underlay MTU. The derived overlay
-  inner MTU is `underlay_mtu - 110` (the WireGuard + VXLAN encapsulation
-  overhead), and it must stay at or above 1280, the IPv6 minimum link
-  MTU (RFC 8200). That floor is why the smallest seedable underlay is
-  1390 (110 + 1280); the api-server validates this at config load.
-- `vni_range` bounds VNI allocation and is likewise bootstrap-immutable.
-
-To renumber the underlay MTU (or the VNI range): delete the
-`cluster_settings` singleton key in etcd and re-seed, then recreate the
-overlay networks. Existing overlay rows keep their stamped MTU - it is
-snapshotted at create time and does not follow a later reseed.
+- **Users** authenticate with passwords (argon2id) to get a short-lived JWT (15 min) plus a rotating
+  refresh token; or with long-lived `otx_` API tokens. Refresh tokens carry theft detection - reusing
+  a revoked one burns the whole token family.
+- **RBAC** has four fixed roles (`admin`, `operator`, `developer`, `viewer`) and a static
+  permission matrix with `own`/`any` scopes. Cross-user resources return `404`, never `403`, so
+  existence is never leaked.
+- **Agents** authenticate to the control plane with **mutual TLS**. A per-cluster CA is generated on
+  first boot; each node enrolls by submitting a CSR with a one-time join token, and its identity is
+  its certificate CN (`node-<name>`). The control-plane API verifies agents by certificate
+  fingerprint.
+- **Bootstrap** is trust-on-first-use: an enrolling agent fetches the cluster CA over a pinned
+  fingerprint, then all subsequent traffic is verified against that CA.
 
 ---
 
-## Operations: recovering a gone node
+## Networking (agent data plane)
 
-A node that has transitioned to `gone` cannot be recovered by simply
-re-bootstrapping the agent under the same name. The node-name guard and
-the WireGuard public-key guard persist as long as the old node row
-exists, so a re-bootstrap under the same name fails with a name
-conflict. To reuse the name, the operator must first delete the old row
-with `DELETE /v1/nodes/{id}` (which clears both guards), then run the
-agent bootstrap again. Picking a fresh node name avoids the conflict
-entirely but leaves the dead row behind for later cleanup.
+Each node's agent programs the host network directly via netlink/nftables (no libvirt, no OVS):
 
----
+- a **Linux bridge** per managed network, with **tap** devices wired into QEMU;
+- a **VXLAN overlay** for cross-node VM traffic, with a controller-authoritative forwarding database
+  (the control plane computes the FDB; agents do not learn);
+- a **WireGuard mesh** carrying the overlay between nodes (the control plane recomputes the full peer
+  set each heartbeat; agents just apply it);
+- **nftables masquerade** for egress.
 
-## Operations: overlay FDB freshness during a gone window
-
-Overlay forwarding-database (FDB) freshness is gated on CP liveness.
-The VTEPs run with `nolearning`, so there is no agent-side TTL or aging
-fallback to expire entries on their own. While the CP is down across a
-node's `gone` transition, a stale unicast FDB entry pointing at the
-dead VTEP persists on peer nodes and is not aged out locally. This is
-accepted and bounded by CP recovery: on its next heartbeat round the CP
-re-projects the FDB without the gone node, and peers converge to the
-corrected set.
+MTUs are sized for the encapsulation stack (1500 underlay, 1440 WireGuard, 1390 overlay).
 
 ---
 
-## Operations: orphaned qemu after a partitioned delete
+## VM lifecycle on a node
 
-Deleting a VM whose owning node is `unreachable` (a network
-partition) can leak a qemu process on that node if the node later
-returns. The delete worker (`runDelete` in
-`internal/api/handlers/vms/run.go`) attempts a best-effort agent
-teardown first and only projects the delete directly when that agent
-call fails, so the common case (the node is reachable at delete time)
-reaps qemu cleanly. The leak window is narrow: the node is
-`unreachable` at delete time, the agent teardown does not land, and the
-node later heals with the qemu still running. The agent's VM reconciler
-does not prune VMs the CP has stopped declaring (it reports them and
-waits), so the returned node keeps the orphaned qemu alive.
+QEMU is driven directly (no libvirt), controlled over a QMP socket. The agent:
+- materializes the disk image from a per-pool, basename-keyed cache with `IfNotPresent` semantics and
+  optional SHA-256 enforcement;
+- builds a NoCloud cloud-init seed ISO when user-data is supplied;
+- launches `qemu-system-{x86_64,aarch64}` (KVM when `/dev/kvm` is present, TCG otherwise);
+- exposes the serial console over a WebSocket bridge for `otherix vm console`.
 
-The leak is detectable. The returned node heartbeats the orphaned VM,
-and the CP logs `heartbeat references unknown vm; skipping` (in
-`applyVMs`, `internal/api/handlers/heartbeat/handle.go`) for a VM it no
-longer knows. An operator who sees that log can identify the node and
-manually reap the qemu process.
-
-Authoritative agent-side teardown (the agent destroying a VM it
-infers the CP no longer wants) was deliberately NOT adopted. Acting on
-inferred absence risks destroying a VM that is still wanted - for
-example during a CP-side projection lag or a transient store read - a
-strictly worse outcome than a recoverable, detectable leak. The leak is
-accepted as a known limitation; the teardown is left to the operator,
-who can confirm the VM is genuinely deleted before reaping.
+Lifecycle operations are guarded per-VM so concurrent requests can't race, and graceful stop never
+force-kills - destructive actions fail toward inaction.
 
 ---
 
-## Operations: delete projection op budget (forward constraint)
+## Repository map
 
-`ProjectVMDeleteSuccess` (`internal/etcdstore/vms_project.go`) commits the
-VM soft-delete, its disks, NICs, secondary indexes, the runtime row and its
-by-node index, and the task finalize in a single etcd transaction. etcd's
-default `--max-txn-ops` is 128. The current create model is single-root-disk
-+ single-NIC, so a delete is ~17 ops, far under the limit. If multi-disk or
-multi-NIC VMs are introduced (for example by wiring the already-specified
-`vmDisks.create` / `vmNics.create` hotplug-attach endpoints), the attach path
-MUST enforce a per-VM disk+NIC budget that keeps the delete projection under
-128 ops, or `ProjectVMDeleteSuccess` must chunk the delete. Chunking trades
-atomicity for a partial-delete failure mode (orphaned indexes), so a per-VM
-cap at the attach edge is preferred. The regression test
-`TestVMDeleteProjectionStaysUnderTxnBudget`
-(`internal/etcdstore/vms_project_optest_test.go`) guards the current bound:
-it fails if a single VM's delete projection ever exceeds 100 ops without a
-guard.
-
----
-
-## Operations: idempotency is at-least-once, not exactly-once
-
-The idempotency middleware buffers a mutating response and flushes it to
-the client only after `CompleteIdempotencyKey` commits. This closes the
-duplicate-execution window for a control-plane CRASH between a committed
-side effect and the completion write: the client never sees a 2xx, so its
-retry replays as a first attempt.
-
-It does NOT make mutating requests exactly-once. A handler's side effect
-(for example writing a task or VM row) and the idempotency completion are
-two separate etcd writes, not one transaction. If the side effect commits
-but `CompleteIdempotencyKey` then returns a transient error, the response
-is still flushed and the idempotency row stays `in_flight`; after the
-2-minute lease the row is reclaimable, so a client retry with the same key
-re-runs the handler and can produce a duplicate side effect (a second
-task, a second VM). Treat every mutating endpoint as at-least-once: design
-side effects to tolerate a rare duplicate, or check current state before
-acting on a retry.
-
-True exactly-once requires committing the handler's side effect and the
-idempotency completion in a single etcd transaction. That is a deliberate
-redesign, tracked as backlog, not a band-aid: returning a 5xx when the
-completion write fails would not close the window (it only changes which
-signal the client receives, and a 5xx invites the retry that produces the
-duplicate).
+| Path | What lives there |
+|---|---|
+| `cmd/{api,agent,cli}` | The three binary entry points |
+| `internal/api` | REST server, router, middleware, handlers, response envelope |
+| `internal/etcd` | Embedded etcd runtime, clustering, backups |
+| `internal/etcdstore` | The control-plane store over etcd (key schema, transactions) |
+| `internal/store` | Shared row/params/result types and error sentinels |
+| `internal/auth` | Passwords, JWT, tokens, RBAC, CSR signing |
+| `internal/worker` | Async dispatcher + periodic scheduler |
+| `internal/agent` | Node runtime: VM manager, QEMU, netfabric, heartbeat, reconcilers |
+| `internal/agentapi` | Generated CP-to-agent API (from `api/openapi/agent.yaml`) |
+| `internal/config` | koanf-based config (env prefix `OTHERIX_`) |
+| `api/openapi` | The two API contracts (control-plane + agent) |
+| `deploy/`, `dev/` | Container images, example configs, Lima dev tooling, smoke tests |
 
 ---
 
-## What's next
+## Operational notes
 
-The store, api-server, agent, and CLI are wired end-to-end.
-Larger upcoming themes:
-
-- **Live migration** - store shape lands, agent-side QMP plumbing is the
-  next concrete deliverable.
-- **VM snapshots** - wired through the store and reconciliation
-  framework; CLI / API surface to follow.
-- **Audit-log subsystem** - a first-class audit record store with its own
-  retention sweep; backlog.
-- **Cert rotation** — cluster CA, per-replica CP certs, and per-node
-  agent certs land via the bootstrap protocol but the rotation
-  loops are still backlog.
-- **Observability** — Prometheus metrics, structured logging
-  conventions, tracing.
-
-Store additions deferred until they're actually needed:
-- `node_networks` link resource (when bridge homogeneity assumption breaks)
-- Shared storage pools (NFS)
-- Multi-tenancy (removed 2026-05-03; revisit if a SaaS use case appears)
-- Per-user / per-team resource quotas
-- Custom RBAC roles
-- OAuth identities / web sessions
-- VXLAN/overlay networking
-- OCI registry as image source
-- Transfer-of-ownership endpoint for user-owned resources
-
----
-
-## Pointers
-
-- **Store source of truth:** `internal/etcdstore/`
-- **Shared row / params / result types:** `internal/store/`
-- **Embedded etcd runtime:** `internal/etcd/`
-- **API e2e harness:** `tests/apie2e/harness_test.go`
-- **Local dev stack:** `make local-dev-start` (one-shot api-server with
-  embedded etcd + Lima + agent + CLI config)
-- **Run tests:** `make test-etcd` (no Docker; embeds etcd in-process)
+- **Config** is YAML plus environment overrides (`OTHERIX_` prefix, `__` for nesting). The control
+  plane needs a data directory for etcd and a place for its CA and certs; the agent is configured by
+  the one-shot `otherix-agent bootstrap` command and then runs `otherix-agent serve`.
+- **Images**: control plane is distroless; the agent image is for dev/CI only (running real VMs needs
+  host KVM and privileges).
+- **Tests**: unit tests run with `make test`; etcd-backed integration tests (store + API end-to-end,
+  all embedding etcd in-process, no Docker) with `make test-etcd`; the Linux data-plane suite (real
+  bridges/taps/VXLAN/WireGuard in network namespaces) with `make test-netfabric`.
+- **Architectures**: amd64 and arm64. The agent is Linux only; macOS is supported as a development
+  platform via Lima.

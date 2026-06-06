@@ -9,7 +9,7 @@ macOS without help from Lima. Only the agent needs Linux. The dev
 pipeline below automates VM creation, cross-compilation, and agent
 service management. Cluster CA + CP server cert auto-generate inside
 the CP on first boot; the agent picks up its mTLS material via the
-join-token bootstrap protocol orchestrated by `make seed-mvp`.
+join-token bootstrap protocol orchestrated by `make seed-dev`.
 
 ## Prerequisites
 
@@ -80,14 +80,14 @@ make run-api-dev
 #    Re-export the admin credentials if running in a fresh shell:
 export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
-make seed-mvp
+make seed-dev
 
 # 5. Verify the agent is reachable. The heartbeat path is the
-#    canonical reachability proof — once seed-mvp finishes the node
+#    canonical reachability proof — once seed-dev finishes the node
 #    flips to `ready` within a heartbeat cycle (15s in dev).
 ./bin/otherix node list
 # NAME      ARCHITECTURE  STATUS  CORDONED  AGE
-# node-mvp  arm64         ready   no        20s
+# node-dev  arm64         ready   no        20s
 
 # 6. Daily redeploy after agent code changes (cross-build + copy + restart).
 #    No cert material needs to be re-provisioned — bootstrap is a
@@ -111,13 +111,13 @@ runtime state, `/etc/otherix/` for operator-provided config).
 
 The heartbeat path is the canonical reachability proof — `otherix node
 list` shows the live state of every registered node. Once `make
-seed-mvp` finishes, the agent's first heartbeat lands within a cycle
+seed-dev` finishes, the agent's first heartbeat lands within a cycle
 (15s in dev) and the row flips to `ready`:
 
 ```bash
 ./bin/otherix node list
 # NAME      ARCHITECTURE  STATUS  CORDONED  AGE
-# node-mvp  arm64         ready   no        20s
+# node-dev  arm64         ready   no        20s
 ```
 
 If the node lingers in `pending` past ~30s, inspect the agent journal:
@@ -406,7 +406,7 @@ Deletion has no `--force-cascade`; the operator must remove
 dependent VM disks first. The agent-owned image cache is not a delete
 blocker.
 
-**Note:** `seed-mvp.sh` registers the initial pool through `otherix pool
+**Note:** `seed-dev.sh` registers the initial pool through `otherix pool
 create` (no direct store access - the control plane is the sole writer,
 now backed by embedded etcd). The agent's pool registry is
 name-keyed and populated through reconciliation from CP (the `pools:`
@@ -681,7 +681,7 @@ both `system_disk_pressure` and pool `disk_pressure` to fire on the same
 condition. Both surface — this is accurate, not duplication. Operator
 guide at `docs/scheduler-configuration.md`.
 
-## Iteration 3 Phase D — MVP end-to-end smoke test
+## Iteration 3 Phase D — end-to-end smoke test
 
 Phase D ships the operator workflow that lets you create a real
 Ubuntu VM end-to-end on real hardware: Lima VM (the agent host) →
@@ -712,13 +712,13 @@ through the full sequence.
    The admin user lives in the `users` table with `role='admin'` so
    subsequent API calls authenticate.
 
-### Step 1 — run seed-mvp
+### Step 1 — run seed-dev
 
 ```bash
-make seed-mvp
+make seed-dev
 ```
 
-The target executes `dev/scripts/seed-mvp.sh`, which orchestrates the
+The target executes `dev/scripts/seed-dev.sh`, which orchestrates the
 bootstrap flow end-to-end:
 
 1. Configures the CLI cluster — calls `otherix config add cluster
@@ -726,7 +726,7 @@ bootstrap flow end-to-end:
    CP boot hook consumes). Persists a long-lived API token into
    `~/.otherix/config`.
 2. Mints a join token via `otherix node join-token create
-   --node-name node-mvp --ttl 10m --output json`. Captures the token
+   --node-name node-dev --ttl 10m --output json`. Captures the token
    plaintext + active cluster CA fingerprint.
 3. Provisions the agent host: writes `/etc/otherix/bootstrap-token`
    (mode 0600) + `/etc/otherix/bootstrap.env` (mode 0644, contains
@@ -734,14 +734,14 @@ bootstrap flow end-to-end:
    user-mode lays these out under `~/.config/otherix/` instead.
 4. Starts the agent — `systemctl restart otherix-agent` (Lima) or
    `systemctl --user start otherix-agent` (Linux native).
-5. Polls for `nodes.id WHERE name='node-mvp'` for up to 60s. The row
+5. Polls for `nodes.id WHERE name='node-dev'` for up to 60s. The row
    appears once the CSR redemption commits at the CP side.
 6. Does NOT create a storage pool: the CP auto-provisions the cluster
    default pool (`default`, from `default_pool_name` in code defaults) at
    `/opt/otherix/pools/default` on every node as it reaches `ready`, and
    that is the cluster default. So `vm create` resolves without `--pool`,
-   and seed-mvp no longer runs `pool create` or `cluster set-default-pool`.
-After seed-mvp finishes, the dev cluster has the nodes registered, the
+   and seed-dev no longer runs `pool create` or `cluster set-default-pool`.
+After seed-dev finishes, the dev cluster has the nodes registered, the
 CLI cluster configured, and the `default` pool auto-provisioned. There is
 no template to register: operators create VMs directly from an image URL
 with `otherix vm create --image-url <url> --arch <arch>`. The agent
@@ -755,8 +755,8 @@ stale threshold) makes the transition operator-friendly. Watch with
 
 Sample output:
 ```
->> seed-mvp complete
-   node     : node-mvp (id=<uuid>)
+>> seed-dev complete
+   node     : node-dev (id=<uuid>)
    pool     : default (cluster default, CP-auto-provisioned on ready nodes)
    images   : none staged (vm create fetches the image URL on first use)
 ```
@@ -786,7 +786,7 @@ To target a specific node explicitly:
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
     --pool default \
-    --node node-mvp \
+    --node node-dev \
     --vcpus 2 --memory-mb 2048 --wait
 ```
 
@@ -816,7 +816,7 @@ phase=running.
 # image_url: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
 # image_format: qcow2
 # pool: default
-# node: node-mvp
+# node: node-dev
 # architecture: arm64
 # vcpus: 2
 # memory_mb: 2048
@@ -830,16 +830,26 @@ Pass `--show-ids` to `vm list` if the UUIDs are useful for scripting.
 
 ### Step 5 — console access
 
-The Iteration 1 agent exposes the qemu serial console as a Unix
-socket inside the Lima VM:
+The control plane exposes the VM serial console over a WebSocket that
+the agent bridges to the qemu serial socket. Attach with the CLI:
+
+```bash
+./bin/otherix vm console demo-vm
+```
+
+This issues a single-use console token, opens the stream in your raw
+terminal, and detaches on Ctrl+] (0x1D). The Ubuntu cloud image boots;
+press Enter to get a login prompt.
+
+As a low-level fallback you can still read the qemu serial socket
+directly inside the Lima VM:
 
 ```bash
 limactl shell otherix-dev sudo socat - UNIX-CONNECT:/opt/otherix/vms/<vm-uuid>/console.sock
 ```
 
-The Ubuntu cloud image boots; press Enter to get a login prompt.
-(Cloud-init authentication setup arrives in Iteration 5 — for the
-MVP smoke test, the boot reaching the login prompt confirms the
+(Cloud-init authentication setup arrives in Iteration 5 — for this
+smoke test, the boot reaching the login prompt confirms the
 chain works.)
 
 ### Step 6 — cleanup
@@ -894,40 +904,42 @@ desired identifier.
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the Iteration 1 agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
 | `task.error.code = image_unavailable` | the agent could not materialize the image URL onto the chosen pool during `vm create` (download or cache write failed). Agent-side fetch failures surface under their own code (e.g. `checksum_mismatch`, `download_failed`, or `agent_unreachable`). Read the task error message for the cause, then retry |
-| `task.error.code = node_not_ready` | a fresh `make clean-dev` flipped the node row to pending; rerun `seed-mvp.sh` |
+| `task.error.code = node_not_ready` | a fresh `make clean-dev` flipped the node row to pending; rerun `seed-dev.sh` |
 | `api_error: unauthenticated` from the CLI | `OTHERIX_API_TOKEN` expired (JWTs are 15-min by default); re-login or use a long-lived `otx_*` API token |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; configure via `PUT /v1/cluster/default-pool` or pass `--pool` explicitly |
 | `pool_not_on_node` on `vm create --node X` | the requested pool name has no instance on node `X`; pick a different node or remove the `--node` hint |
 | `no_eligible_nodes` on `vm create` | the pool exists but every hosting node is cordoned, unreachable, or not yet `ready` |
 
-### MVP target achieved
+### End-to-end target achieved
 
 Reaching the login prompt in Step 5 means the full chain works end-to-
-end: CLI → cpclient → CP HTTP → river worker → agentclient mTLS →
-agent → qemu → Ubuntu boot. Phase D's integration tests cover the
+end: CLI → cpclient → CP HTTP → worker dispatcher (etcd-backed) →
+agentclient mTLS → agent → qemu → Ubuntu boot. Phase D's integration tests cover the
 machine-checkable invariants (handler envelopes, RBAC, task
 projection, idempotency, resumption); this smoke test covers the
 human-facing UX and the real-hardware surfaces the integration tests
 cannot reach (real qemu, real KVM/TCG fallback, real serial console).
 
-Post-MVP iterations layer in:
-- cloud-init with NoCloud ISO (Iteration 5);
-- VM lifecycle ops beyond create/delete;
-- live migration, snapshots, multi-disk;
-- WebSocket console proxy (replaces the `socat` tunnel).
+Later iterations have since layered in:
+- cloud-init with a NoCloud seed ISO;
+- the full VM lifecycle (start / stop / poweroff / reboot / pause / resume / reset);
+- the WebSocket console (`otherix vm console`, replacing the `socat` tunnel);
+- declarative YAML manifests (`otherix create -f` / `delete -f`).
+
+Still ahead: live migration, snapshots, and multi-disk VMs.
 
 ## Running the agent against a remote control plane
 
 If the control plane runs somewhere other than the macOS host (a
 remote dev box, a staging cluster), override the bootstrap CP URL
-when running seed-mvp.sh. The agent picks it up via the koanf
-`OTHERIX_BOOTSTRAP__CP_URL` env var that seed-mvp writes to
+when running seed-dev.sh. The agent picks it up via the koanf
+`OTHERIX_BOOTSTRAP__CP_URL` env var that seed-dev writes to
 bootstrap.env on the Lima VM:
 
 ```bash
-# In your shell before running seed-mvp:
+# In your shell before running seed-dev:
 export OTHERIX_CP_URL="https://<reachable-cp-host>:8443"
-make seed-mvp
+make seed-dev
 ```
 
 The CP server cert SAN must include the hostname or IP the agent
@@ -961,8 +973,9 @@ Otherix from a Mac:
 
 - **Run only the control plane locally; agents remotely.** The
   control plane runs natively on macOS (it is a standard REST API
-  server with PostgreSQL); only the agent needs Linux. Connect to
-  agents running on remote test hosts over the network.
+  server that embeds etcd in-process - no external database); only the
+  agent needs Linux. Connect to agents running on remote test hosts
+  over the network.
 - **Run everything in a remote dev environment.** Tools like a
   Linux dev box over SSH, GitHub Codespaces, or any Linux cloud VM
   remove the question entirely.
@@ -971,15 +984,15 @@ Otherix from a Mac:
 
 ### Bootstrap failures
 
-Symptoms surface in `journalctl -u otherix-agent` after `make seed-mvp`.
+Symptoms surface in `journalctl -u otherix-agent` after `make seed-dev`.
 
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `bootstrap: CA fingerprint mismatch (expected sha256:… got sha256:…)` | Operator typo OR active MITM | Re-check the fingerprint in `~/.otherix/config` cluster CA against `bootstrap.env`. If correct, escalate to network team. |
-| `bootstrap: CSR submission rejected by CP: HTTP 401 token_expired` | Token TTL elapsed (default 10m) | Re-run `make seed-mvp` — mints a fresh token. |
-| `bootstrap: CSR submission rejected by CP: HTTP 401 token_exhausted` | Multi-use token cap reached | Re-run `make seed-mvp` — mints a fresh token. |
+| `bootstrap: CSR submission rejected by CP: HTTP 401 token_expired` | Token TTL elapsed (default 10m) | Re-run `make seed-dev` — mints a fresh token. |
+| `bootstrap: CSR submission rejected by CP: HTTP 401 token_exhausted` | Multi-use token cap reached | Re-run `make seed-dev` — mints a fresh token. |
 | `bootstrap: fetch /v1/ca: dial tcp …: connection refused` | CP not running OR unreachable from Lima VM | Verify `make run-api-dev` is still alive; inside Lima, `curl -k https://host.lima.internal:8443/healthz`. |
-| `cert <path> exists but key <path> missing` (or vice-versa) | Partial-state bootstrap (mid-flight crash, manual file deletion) | Manual cleanup — delete cert + key + CA (`/opt/otherix/certs/agent.{crt,key}` + `ca.crt` on Lima, or `~/.config/otherix/certs/agent.*` + `ca.crt` on Linux native), then `make seed-mvp` again. Agent identity is derived from the cert CN — no node-id sidecar to clean up. |
+| `cert <path> exists but key <path> missing` (or vice-versa) | Partial-state bootstrap (mid-flight crash, manual file deletion) | Manual cleanup — delete cert + key + CA (`/opt/otherix/certs/agent.{crt,key}` + `ca.crt` on Lima, or `~/.config/otherix/certs/agent.*` + `ca.crt` on Linux native), then `make seed-dev` again. Agent identity is derived from the cert CN — no node-id sidecar to clean up. |
 | Node lingers in `pending` past 60s | Agent reachable but heartbeat not arriving | `limactl shell otherix-dev sudo journalctl -u otherix-agent -f` — look for `heartbeat` lines OR mTLS handshake failures. |
 
 ### Lifecycle failures (after bootstrap)
@@ -989,6 +1002,6 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-mvp`.
 | `vm get` shows `status: creating` indefinitely | agent endpoint unreachable; check Lima port-forward |
 | `task.error.code = qemu_spawn_failed` | KVM unavailable inside the Lima VM (Apple Silicon vz quirk); the agent automatically falls back to TCG, but a misconfigured cmdline can still fail |
 | `task.error.code = image_unavailable` | the agent could not materialize the image URL onto the chosen pool during `vm create` (download or cache write failed). No pre-staging is required; agent-side fetch failures appear under their own code (`checksum_mismatch`, `download_failed`, `agent_unreachable`). Read the task error and retry |
-| `task.error.code = node_not_ready` | a fresh `make clean-dev` removed the agent; re-run `make bootstrap-dev` + `make seed-mvp` |
-| `api_error: unauthenticated` from the CLI | stored API token revoked OR cluster CA rotated; re-run `make seed-mvp` to refresh the cluster credential |
+| `task.error.code = node_not_ready` | a fresh `make clean-dev` removed the agent; re-run `make bootstrap-dev` + `make seed-dev` |
+| `api_error: unauthenticated` from the CLI | stored API token revoked OR cluster CA rotated; re-run `make seed-dev` to refresh the cluster credential |
 | `default_pool_not_set` on `vm create` without `--pool` | cluster default-pool unset; `otherix cluster set-default-pool <name>` or pass `--pool` explicitly |

@@ -68,6 +68,11 @@ type Config struct {
 	PeerCertFile string
 	PeerKeyFile  string
 	PeerCAFile   string
+
+	// UnsafeNoFsync disables every etcd fsync. It trades durability for speed
+	// and MUST NEVER be set in production; it exists only so the test harness
+	// can cut the fsync cost of the embedded member it spins up per suite.
+	UnsafeNoFsync bool
 }
 
 // peerTLSEnabled reports whether peer mTLS material is fully configured.

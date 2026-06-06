@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# seed-mvp — operator-driven Step 4 bootstrap orchestration.
+# seed-dev — operator-driven Step 4 bootstrap orchestration.
 #
 # The agent runs continuously in State A polling-loop mode
 # (systemd-managed) and we drive bootstrap by invoking
@@ -21,7 +21,7 @@
 #
 # The storage pool is NOT created here: the CP auto-provisions the cluster
 # default pool (`default`) on every node as it reaches ready (PR #15), and that
-# is the cluster default - so seed-mvp neither runs `pool create` nor sets the
+# is the cluster default - so seed-dev neither runs `pool create` nor sets the
 # default. There is no template entity: a VM is created directly from an image
 # URL (`vm create --image-url ... --arch ...`) and the agent materializes the
 # image into the pool's basename-keyed cache on first use (IfNotPresent).
@@ -86,7 +86,7 @@ NODE_NAME_1="${OTHERIX_NODE_NAME:-node-1}"
 NODE_NAME_2="node-2"
 # POOL_NAME is display-only: the cluster default pool is provisioned by the CP
 # from its code default (default_pool_name "default") and auto-created on every
-# node as it reaches ready. seed-mvp no longer creates a pool or sets the
+# node as it reaches ready. seed-dev no longer creates a pool or sets the
 # cluster default.
 POOL_NAME="default"
 
@@ -102,7 +102,7 @@ case "${PLATFORM}" in
         ;;
 esac
 
-echo ">> seed-mvp"
+echo ">> seed-dev"
 echo "   platform        : ${PLATFORM}"
 echo "   architecture    : ${OTHERIX_NODE_ARCH}"
 echo "   node 1          : ${NODE_NAME_1}"
@@ -229,7 +229,7 @@ fi
 # (IfNotPresent), so no warm-up is required.
 
 echo ""
-echo ">> seed-mvp complete"
+echo ">> seed-dev complete"
 echo "   node 1   : ${NODE_NAME_1}"
 [ "${PLATFORM}" = "lima" ] && echo "   node 2   : ${NODE_NAME_2}"
 echo "   pool     : ${POOL_NAME} (cluster default, CP-auto-provisioned on ready nodes)"

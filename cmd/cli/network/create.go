@@ -50,7 +50,7 @@ when the combination is invalid.
 the allocated VNI).
 
 Example:
-  otherix network create net-mvp --bridge-name br0
+  otherix network create net-dev --bridge-name br0
 
   # Managed NAT network with an egress subnet:
   otherix network create net-nat \

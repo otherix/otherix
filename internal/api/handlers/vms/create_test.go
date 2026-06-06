@@ -410,7 +410,7 @@ func TestBuildNoEligibleDetails(t *testing.T) {
 			err: scheduler.NewNodePressureErrorForTest(scheduler.NodePressureDetail{
 				Nodes: []scheduler.PressuredNode{{
 					Node:              "node-a",
-					Pool:              "pool-mvp",
+					Pool:              "pool-dev",
 					Conditions:        []string{"disk_pressure"},
 					DiskPressureSince: &pool,
 				}},
@@ -419,7 +419,7 @@ func TestBuildNoEligibleDetails(t *testing.T) {
 				"reason": "node_pressure",
 				"filtered_due_to_pressure": []map[string]any{{
 					"node":                "node-a",
-					"pool":                "pool-mvp",
+					"pool":                "pool-dev",
 					"conditions":          []string{"disk_pressure"},
 					"disk_pressure_since": rfc(pool),
 				}},
@@ -456,7 +456,7 @@ func TestBuildNoEligibleDetails(t *testing.T) {
 					},
 					{
 						Node:              "node-a",
-						Pool:              "pool-mvp",
+						Pool:              "pool-dev",
 						Conditions:        []string{"disk_pressure"},
 						DiskPressureSince: &pool,
 					},
@@ -472,7 +472,7 @@ func TestBuildNoEligibleDetails(t *testing.T) {
 					},
 					{
 						"node":                "node-a",
-						"pool":                "pool-mvp",
+						"pool":                "pool-dev",
 						"conditions":          []string{"disk_pressure"},
 						"disk_pressure_since": rfc(pool),
 					},
