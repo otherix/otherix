@@ -37,12 +37,12 @@ const (
 	defaultMigrationPortEnd   = 49251
 
 	// defaultListenAddr is the bind address baked into the generated
-	// agent-config.yml when --listen is omitted. 0.0.0.0:9443 matches
+	// agent.yaml when --listen is omitted. 0.0.0.0:9443 matches
 	// the existing dev configs.
 	defaultListenAddr = "0.0.0.0:9443"
 
 	// defaultHeartbeatInterval is the per-tick cadence baked into the
-	// generated agent-config.yml when --heartbeat-interval is omitted.
+	// generated agent.yaml when --heartbeat-interval is omitted.
 	defaultHeartbeatInterval = 30 * time.Second
 )
 
@@ -54,10 +54,10 @@ const (
 func newBootstrapCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Provision cert material + agent-config.yml on a fresh host",
+		Short: "Provision cert material + agent.yaml on a fresh host",
 		Long: `One-shot bootstrap subcommand. Reads operator-supplied flags,
 executes the join-token protocol against the CP, and writes the issued
-cert material plus a generated agent-config.yml to disk. Idempotent — a
+cert material plus a generated agent.yaml to disk. Idempotent — a
 repeat invocation without --force on an already-bootstrapped host
 exits 0 with a "already bootstrapped" message.
 
@@ -97,10 +97,10 @@ Examples:
 	// Optional knobs.
 	flags.Int("migration-port-range-start", defaultMigrationPortStart, "migration port range lower bound")
 	flags.Int("migration-port-range-end", defaultMigrationPortEnd, "migration port range upper bound")
-	flags.String("listen", defaultListenAddr, "agent HTTPS bind address (baked into agent-config.yml)")
-	flags.Duration("heartbeat-interval", defaultHeartbeatInterval, "heartbeat cadence (baked into agent-config.yml)")
+	flags.String("listen", defaultListenAddr, "agent HTTPS bind address (baked into agent.yaml)")
+	flags.Duration("heartbeat-interval", defaultHeartbeatInterval, "heartbeat cadence (baked into agent.yaml)")
 	flags.String("cert-dir", defaultCertDir, "directory for cert material (key/cert/CA atomic writes)")
-	flags.String("config-path", defaultConfigPath, "destination for the generated agent-config.yml")
+	flags.String("config-path", defaultConfigPath, "destination for the generated agent.yaml")
 	flags.Bool("force", false, "overwrite existing cert material + config (re-bootstrap)")
 	flags.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout against the CP")
 	return cmd
@@ -141,7 +141,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	keyPath, certPath, caPath := certPaths(in.certDir)
 
 	// Idempotency is scoped to cert material only (key + cert + CA).
-	// The config file (agent-config.yml) is preserved if it already
+	// The config file (agent.yaml) is preserved if it already
 	// exists — operators commonly hand-tune logger / pools / etc., and
 	// blindly overwriting that on every bootstrap would erase work.
 	// --force does overwrite both cert material and config.
@@ -214,7 +214,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 			MigrationPortRangeStart: in.migrationPortRangeStart,
 			MigrationPortRangeEnd:   in.migrationPortRangeEnd,
 		}); err != nil {
-			return fmt.Errorf("write agent-config.yml: %w", err)
+			return fmt.Errorf("write agent.yaml: %w", err)
 		}
 		wroteConfig = true
 	}
@@ -340,7 +340,7 @@ func inspectCertState(keyPath, certPath, caPath string) presenceState {
 
 // certPaths derives the (key, cert, CA) destination paths from --cert-dir.
 // File names match the convention in dev/config/agent-*.yaml so the
-// generated agent-config.yml points at the right files without operator
+// generated agent.yaml points at the right files without operator
 // intervention.
 func certPaths(certDir string) (keyPath, certPath, caPath string) {
 	return filepath.Join(certDir, "agent.key"),
@@ -358,7 +358,7 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// agentConfigInputs is the data the agent-config.yml template needs.
+// agentConfigInputs is the data the agent.yaml template needs.
 // Kept narrow so the template stays decoupled from the larger bootstrapInputs.
 type agentConfigInputs struct {
 	CPURL                   string

@@ -1,7 +1,230 @@
 # Installation
 
-Install the control plane and an agent: requirements, the embedded etcd member, the bootstrap admin, and TLS material.
+This page covers what you need to run Otherix, how to obtain the three
+artifacts, and how to configure and start the control plane. To go from
+a fresh host to a running VM in one sitting, follow the
+[Quickstart](quickstart.md) instead - it walks the same steps in order
+with copy-paste commands.
 
-!!! warning "Work in progress"
-    This page is a stub. The content is being written - see the
-    [Architecture](../architecture.md) overview in the meantime.
+## Requirements
+
+Otherix has two cluster components plus an operator CLI:
+
+| Artifact | Role | Platform |
+|---|---|---|
+| `otherix-api` | Control plane. Embeds an etcd member, the in-process scheduler, and the worker dispatcher. | Plain Go - runs on any Linux host (and natively on macOS for development). |
+| `otherix-agent` | Node agent. Talks to QEMU directly and reports state over mTLS. | Linux only. Needs KVM + `qemu-system-<arch>`. |
+| `otherix` | Operator CLI. | Any platform. |
+
+Architectures: `amd64` and `arm64`.
+
+The agent needs a Linux host with hardware virtualization:
+
+- `/dev/kvm` present and accessible (verify with `ls -l /dev/kvm`).
+- `qemu-system-x86_64` or `qemu-system-aarch64` installed.
+- For `arm64` guests, a UEFI firmware blob (Debian/Ubuntu:
+  `qemu-efi-aarch64`, default path `/usr/share/AAVMF/AAVMF_CODE.fd`).
+
+The control plane has no external dependencies. There is no Postgres,
+Redis, or message queue to operate - the api-server embeds its own etcd
+member as the only datastore.
+
+!!! note "Developing on macOS"
+    The agent is Linux only. On a Mac, run the control plane natively
+    and the agent inside a Lima VM. See
+    [macOS development](../macos-development.md).
+
+## Getting the artifacts
+
+### Build from source
+
+```bash
+make build              # otherix-api, otherix-agent, otherix into ./bin/
+make build-api          # control plane only
+make build-cli          # CLI only
+```
+
+Cross-compile the daemons for a Linux node from another host:
+
+```bash
+make build-linux-amd64  # -> bin/linux-amd64/otherix-{api,agent}
+make build-linux-arm64  # -> bin/linux-arm64/otherix-{api,agent}
+```
+
+### Container images
+
+Control-plane and agent images are published to GitHub Container
+Registry (`ghcr.io`). The control-plane image is distroless; the agent
+image is Alpine-based and intended for development and CI only (a
+production agent runs as a host binary alongside `qemu-system-*`, not in
+a container - it needs `/dev/kvm` and host networking).
+
+## Filesystem layout
+
+Otherix follows a fixed convention:
+
+| Path | Contents |
+|---|---|
+| `/etc/otherix/` | Operator-provided config (`api.yaml`, `agent.yaml`). |
+| `/opt/otherix/` | Runtime state: etcd data dir, cluster CA, generated certs, pools, VMs. |
+
+The defaults below assume this layout. Override paths in config if your
+deployment differs.
+
+## Configuring the control plane
+
+`otherix-api` reads a single YAML file (`--config`, default
+`/etc/otherix/api.yaml`). Config also binds environment variables with
+the `OTHERIX_` prefix and `__` as the nesting separator (for example
+`OTHERIX_SERVER__LISTEN`). A full annotated reference ships at
+`deploy/config/api.example.yaml`.
+
+For a working single-node install you care about a handful of blocks:
+
+- `server.listen` - the user-facing HTTP API address. Default
+  `0.0.0.0:8080`.
+- `etcd.data_dir` - where the embedded etcd member persists its data.
+  Default `/opt/otherix/etcd`. This is your cluster state; back it up.
+- `auth.jwt_secret` - HS256 signing key for access tokens. **At least 32
+  bytes.** Generate with `openssl rand -hex 32` and replace the example
+  value before any non-dev deploy.
+- `cluster_ca` - on-disk location of the cluster CA (cert + key). The
+  api-server generates it on first boot and reuses it on restart. It
+  signs the per-node agent certs and the per-replica CP server cert.
+- `cp_cert` - per-replica CP server cert lifecycle. The default
+  (Mode C) auto-generates a fresh cert signed by the cluster CA on every
+  boot. Add hostnames the agent will dial via `cp_cert.additional_sans`.
+- `agent_server` - the second HTTPS listener dedicated to mTLS agent
+  traffic (heartbeat, node join, console bridging). **Enable it** for a
+  working cluster. Default listen `0.0.0.0:8443`.
+- `agent_client` - the outbound CP-to-agent client that drives async
+  work (VM create/delete, pool scans). **Enable it** for a working
+  cluster.
+- `workers.enabled` - the in-process job dispatcher and periodic
+  scheduler. Default `true`. When `true`, `agent_client.enabled` MUST
+  also be `true` or the api-server refuses to start (it would otherwise
+  wedge every async task in `pending`).
+
+!!! warning "workers and the agent client are coupled"
+    `workers.enabled: true` requires `agent_client.enabled: true`. To
+    run the api-server as an HTTP-only target with no provisioned mTLS
+    (smoke testing the contract), set `workers.enabled: false` instead.
+
+### Bootstrap admin
+
+The first admin user is seeded from environment variables read on first
+boot, before the HTTP server starts:
+
+```bash
+export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
+export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
+```
+
+With zero existing admin rows and both vars set, the api-server creates
+the admin. Both set with an admin already present is a no-op. Setting
+only one is fatal. If you leave both unset, generate a password hash and
+seed the row yourself:
+
+```bash
+otherix-api --hash-password 'your-plaintext'   # prints an argon2id PHC string
+```
+
+### Minimal `api.yaml`
+
+A single-node config that boots a working cluster (user API + agent
+listener + workers):
+
+```yaml
+server:
+  listen: "0.0.0.0:8080"
+
+auth:
+  # Replace before any non-dev deploy. At least 32 bytes.
+  jwt_secret: "REPLACE-ME-with-openssl-rand-hex-32-output"
+  jwt_access_ttl: 15m
+  jwt_refresh_ttl: 720h
+
+# The second HTTPS listener for mTLS agent traffic (heartbeat, join,
+# console). Required for a working cluster.
+agent_server:
+  enabled: true
+  listen: "0.0.0.0:8443"
+
+# Outbound CP -> agent client. Required when workers.enabled is true.
+# mTLS material is sourced automatically from the cluster CA at boot.
+agent_client:
+  enabled: true
+
+# In-process job dispatcher + periodic scheduler (default on).
+workers:
+  enabled: true
+
+cluster_ca:
+  cert_file: "/opt/otherix/ca/cluster-ca.crt"
+  key_file:  "/opt/otherix/ca/cluster-ca.key"
+
+# Per-replica CP server cert. Auto-generated from the cluster CA by
+# default; list every hostname/IP the agent will dial.
+cp_cert:
+  additional_sans:
+    # - "cp.example.com"
+    # - "10.0.0.100"
+
+etcd:
+  mode: "single"
+  name: "otherix-0"
+  data_dir: "/opt/otherix/etcd"
+
+storage_pools:
+  # The CP auto-provisions a "default" pool on every node as it becomes
+  # ready, so `vm create` works without --pool. Set to "" to opt out and
+  # manage pools manually.
+  default_pool_name: "default"
+```
+
+Everything omitted falls back to documented defaults (see
+`deploy/config/api.example.yaml` for the full set, including the
+placement scheduler and node-pressure knobs).
+
+!!! note "etcd peer URL is always HTTPS"
+    Peer (Raft) mTLS is always on, even single-node, so a later grow to
+    HA needs no transport switch. The api-server auto-generates the peer
+    cert from the cluster CA on each boot. The default
+    `peer_url: https://127.0.0.1:2380` is correct for single-node.
+
+## Running the control plane
+
+```bash
+otherix-api --config /etc/otherix/api.yaml
+```
+
+The process embeds etcd, runs the bootstrap hooks (admin, cluster CA,
+default-pool seed), generates its server cert, and serves the API. It
+blocks until it receives SIGINT/SIGTERM, then shuts down gracefully
+within `server.shutdown_grace`.
+
+Other invocations:
+
+```bash
+otherix-api --version                  # print version and exit
+otherix-api --hash-password 'plain'    # print an argon2id hash and exit
+```
+
+Health probes live outside `/v1/` for Kubernetes:
+
+- `GET /healthz` - liveness (process up, no dependency calls).
+- `GET /readyz` - readiness (checks the store; 503 when not ready).
+
+## Single node vs. HA
+
+The config above runs a single self-clustering api-server
+(`etcd.mode: single`). For a multi-replica control plane that forms one
+etcd cluster over peer mTLS, see
+[High availability](../operations/high-availability.md).
+
+## Next steps
+
+- [Quickstart](quickstart.md) - boot a VM end to end.
+- [Join a node](../guides/join-a-node.md) - enrol an agent with the
+  join-token bootstrap protocol.
+- [Architecture](../architecture.md) - how the pieces fit together.

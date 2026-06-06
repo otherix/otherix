@@ -6,12 +6,12 @@
 //
 //   - `serve` (default — preserves bare-invocation back-compat for
 //     systemd units): boots the agent runtime, polls for cert
-//     material + agent-config.yml, transitions to State B once all
+//     material + agent.yaml, transitions to State B once all
 //     four files are present and valid.
 //   - `bootstrap`: one-shot operator-driven join flow. Reads token +
 //     ca-fingerprint + cp-url + node-name + advertised-endpoint from
 //     CLI flags, executes the join protocol, writes cert material +
-//     agent-config.yml to disk, exits. Idempotent — a repeat invocation
+//     agent.yaml to disk, exits. Idempotent — a repeat invocation
 //     without --force on a bootstrapped host exits 0 with a "already
 //     bootstrapped" message.
 package main

@@ -1,3 +1,5 @@
-# Documentation site dependencies (mkdocs-material pulls in mkdocs +
-# pymdown-extensions). Pinned for reproducible builds between local and CI.
+# Documentation site dependencies. Pinned for reproducible builds between local
+# and CI. mkdocs-material pulls in mkdocs + pymdown-extensions; mkdocs-swagger-ui-tag
+# renders the embedded OpenAPI spec on the REST API reference page.
 mkdocs-material==9.7.6
+mkdocs-swagger-ui-tag==0.8.0
