@@ -73,6 +73,7 @@ func TestBuildArgs_ARM64(t *testing.T) {
 		t.Fatalf("BuildArgs: %v", err)
 	}
 
+	// validSpec uses the tcg accelerator, so this is the TCG path: -cpu max.
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"-machine virt",
@@ -81,12 +82,36 @@ func TestBuildArgs_ARM64(t *testing.T) {
 		"-accel tcg",
 	} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("arm64 args missing %q: %s", want, joined)
+			t.Errorf("arm64 (tcg) args missing %q: %s", want, joined)
 		}
 	}
 
 	if strings.Contains(joined, "-cpu host") {
-		t.Errorf("arm64 should use -cpu max, not host: %s", joined)
+		t.Errorf("arm64 under tcg should use -cpu max, not host: %s", joined)
+	}
+}
+
+func TestBuildArgs_ARM64_KVM(t *testing.T) {
+	spec := validSpec()
+	spec.Architecture = ArchARM64
+	spec.Accelerator = "kvm"
+
+	args, err := BuildArgs(spec)
+	if err != nil {
+		t.Fatalf("BuildArgs: %v", err)
+	}
+
+	// Under KVM the CPU model must be host, not max: -cpu max advertises
+	// IMP-DEF features KVM does not back, wedging newer guest kernels in a
+	// soft lockup during early boot.
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-machine virt", "-cpu host", "-accel kvm"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("arm64 (kvm) args missing %q: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "-cpu max") {
+		t.Errorf("arm64 under kvm should use -cpu host, not max: %s", joined)
 	}
 }
 

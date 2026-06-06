@@ -191,11 +191,21 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		// is available; falls back automatically under TCG.
 		args = append(args, "-cpu", "host")
 	case ArchARM64:
-		// virt machine + max CPU model + UEFI firmware are mandatory on
-		// aarch64 — no legacy BIOS path exists.
+		// virt machine + UEFI firmware are mandatory on aarch64 - there is no
+		// legacy BIOS path. The CPU model is accelerator-dependent: under KVM
+		// use `host` (passthrough of the real CPU). `-cpu max` advertises
+		// IMP-DEF features (e.g. pointer authentication) that KVM does not back,
+		// which on newer guest kernels (Ubuntu 26.04, kernel 7.0) wedges a
+		// udev-worker in a CPU soft lockup / RCU stall early in boot, so the
+		// rootfs is never mounted. Under TCG `host` is invalid, so emulate the
+		// richest model with `max`.
+		cpu := "max"
+		if spec.Accelerator == "kvm" {
+			cpu = "host"
+		}
 		args = append(args,
 			"-machine", "virt",
-			"-cpu", "max",
+			"-cpu", cpu,
 			"-bios", spec.AArch64Firmware,
 		)
 	default:
