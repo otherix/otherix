@@ -130,6 +130,9 @@ func buildEmbedConfig(cfg *Config, log *slog.Logger) (*embed.Config, error) {
 		ec.AutoCompactionRetention = "1h"
 	}
 
+	// Test-only durability bypass (never set in production configs).
+	ec.UnsafeNoFsync = cfg.UnsafeNoFsync
+
 	ec.LogLevel = "warn"
 	// Route etcd's zap logs into Otherix's slog stream. LogOutputs is left
 	// unset because the bridge owns the destination.

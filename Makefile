@@ -77,7 +77,11 @@ clean: ## Remove build artifacts (bin/, coverage reports)
 TEST_TAGS := test_fast_argon
 INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
-.PHONY: test test-short test-etcd test-netfabric test-netfabric-native coverage
+.PHONY: test test-short test-etcd test-etcd-fast test-netfabric test-netfabric-native coverage
+
+# The etcd-backed suites share one in-process member per test binary (TestMain),
+# so the wall-clock is dominated by the work, not member churn.
+ETCD_TEST_PKGS := ./internal/etcdstore/... ./tests/apie2e/...
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
@@ -87,10 +91,11 @@ test-short: ## Run unit tests in short mode
 # test-etcd runs the etcd-backed suites: the store layer (internal/etcdstore)
 # and the api-server e2e (tests/apie2e). Both embed etcd in-process, so they
 # need NO Docker - this is the integration test path after the pgx cutover.
-test-etcd: ## Run etcd-backed store + api e2e suites (no Docker)
-	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race \
-	  ./internal/etcdstore/... \
-	  ./tests/apie2e/...
+test-etcd: ## Run etcd-backed store + api e2e suites with -race (no Docker; CI gate)
+	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 -race $(ETCD_TEST_PKGS)
+
+test-etcd-fast: ## Same etcd-backed suites without -race (fast local iteration; the gate keeps -race via test-etcd)
+	$(GO) test -tags=$(INTEGRATION_TAGS) -count=1 $(ETCD_TEST_PKGS)
 
 # test-netfabric runs the agent network-fabric netns integration tests
 # (bridge / tap / nft masquerade over real netlink). They are
