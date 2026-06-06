@@ -22,29 +22,34 @@ join-token bootstrap protocol orchestrated by `make seed-dev`.
 
 ### Nested KVM and CPU choice
 
-The agent uses KVM, which inside Lima requires nested virtualization.
-Whether nested virtualization is available depends on your macOS
-version, your Lima version, and the VM type Lima picks (`vz` vs
-`qemu`).
+For the agent's QEMU to use KVM (instead of slow TCG software emulation),
+`/dev/kvm` must be present inside the Lima VM, which requires nested
+virtualization. On Apple Silicon that is a hardware capability gated by both
+the chip and the OS:
 
-- **M3 / M3 Pro / M3 Max and later** with macOS 14+: `vz` mode
-  exposes nested virtualization. Lima's default works; `/dev/kvm`
-  appears inside the VM.
-- **M1 / M2** with `vz` mode: no nested virtualization is exposed by
-  Apple's Hypervisor.framework. The agent provisioner detects this
-  and prints a warning; QEMU falls back to TCG (software emulation),
-  which is functional for stub-level Iteration 0 work but too slow
-  for real VM workloads in Iteration 1+. Switch Lima to `qemu` mode
-  if you need KVM (`limactl edit otherix-dev` and set
-  `vmType: qemu`), at the cost of slower VM I/O.
-- **Intel Macs**: nested virtualization is not exposed; same TCG
-  fallback applies.
+- **Apple M3 or later AND macOS 15 (Sequoia) or later**: nested virtualization
+  is available, but it is **not automatic**. Lima must be told to enable it via
+  `nestedVirtualization: true` (vz mode only). The Makefile (`lima-ensure-one`)
+  detects a capable host (chip generation >= M3 and macOS major >= 15) and
+  injects `--set .nestedVirtualization=true` at VM create time, so on these
+  machines `/dev/kvm` appears in the guest and the agent runs VMs under KVM.
+- **M1 / M2**: the silicon has no nested virtualization at all. The agent runs
+  its VMs under **TCG** (software emulation) - functional but slow. Switching
+  `vmType` does **not** help: `vz` and `qemu`+HVF hit the same hardware wall,
+  and `qemu`+TCG could only *emulate* virtualization extensions (software on
+  top of software, slower than just using TCG for the workload). For real
+  KVM-accelerated VMs you need an M3+/macOS15 Mac or a native Linux/KVM host.
+- **Intel Macs**: same - no nested virtualization; TCG fallback applies.
 
-`dev/lima/otherix-dev.yaml` does **not** lock `vmType` so Lima can
-pick the best mode per host. If `ls /dev/kvm` inside the VM reports
-the device is missing and you need real KVM, see Lima's
-[VM type documentation](https://lima-vm.io/docs/config/vmtype/) and
-edit the VM template.
+!!! warning "Why `nestedVirtualization` is not in the Lima template"
+    `nestedVirtualization: true` **hard-fails Lima start** on M1/M2 (and any
+    host that does not support it). That is why it is injected conditionally by
+    the Makefile rather than baked into `dev/lima/otherix-dev.yaml`. Do not add
+    it to the static template - it would break the dev setup on M1/M2.
+
+The provision script in `dev/lima/otherix-dev.yaml` checks `/dev/kvm` and
+prints whether KVM or the TCG fallback is in effect. See Lima's
+[VM type documentation](https://lima-vm.io/docs/config/vmtype/) for background.
 
 ## Setup
 

@@ -6,9 +6,12 @@
 # the otherix-agent systemd unit (binary + config copied via Make targets
 # after the VM is up).
 #
-# vmType is intentionally unspecified — Lima picks per host. M1/M2 machines
-# fall back to qemu mode without nested KVM (agent runs in TCG, slow but
-# functional). M3+ via vz mode gets native KVM. See docs/macos-development.md.
+# vmType is intentionally unspecified — Lima picks per host (vz on Apple
+# Silicon). nestedVirtualization is intentionally NOT set here: it needs Apple
+# M3+ AND macOS 15+, and hard-fails Lima start on M1/M2. The Makefile
+# (lima-ensure-one) detects a capable host and injects it at create time, so
+# M3+/macOS15 gets /dev/kvm in the guest while M1/M2 fall back to TCG (slow but
+# functional). See docs/macos-development.md.
 
 images:
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
