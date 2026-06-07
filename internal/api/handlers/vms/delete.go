@@ -47,6 +47,12 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	taskID, err := h.runDelete(r.Context(), vm, caller)
 	if err != nil {
+		// An unscheduled (pending) VM is deleted CP-side without an agent task:
+		// runDelete reports it via errDeletedSync and the response is 204.
+		if errors.Is(err, errDeletedSync) {
+			response.WriteNoContent(w)
+			return
+		}
 		writeDeleteError(w, r, h.log, err)
 		return
 	}
@@ -62,6 +68,11 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 // caller may not see it (developer scope=own + cross-user). Mapped to
 // 404 (no leak), same as a missing row.
 var errVMNotVisible = errors.New("vm not visible to caller")
+
+// errDeletedSync is the in-flight signal that an unscheduled (pending) VM was
+// deleted CP-side without an agent task. Delete maps it to 204 No Content (there
+// is no async task to poll), distinct from the scheduled-VM 202 + vm.delete path.
+var errDeletedSync = errors.New("vm deleted synchronously")
 
 // errVMNoNode is the in-flight signal that the vm has no resolvable
 // agent endpoint at delete time — vm_disks row missing, pool deleted,
@@ -79,6 +90,22 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 			return uuid.Nil, errVMNotVisible
 		}
 		return uuid.Nil, err
+	}
+
+	// An unscheduled (pending) VM has no node and no agent task: there is nothing
+	// for an agent to tear down. Delete it CP-side and signal a 204. A concurrent
+	// bind (the vms.schedule loop) that won the race surfaces as
+	// ErrVMNotUnscheduled - fall through to the async agent-delete path below so
+	// the now-scheduled VM's agent-side resources are reclaimed.
+	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+		switch err := h.store.DeleteUnscheduledVM(ctx, vm.ID); {
+		case err == nil:
+			return uuid.Nil, errDeletedSync
+		case errors.Is(err, store.ErrVMNotUnscheduled):
+			// Raced a bind - fall through to async delete.
+		default:
+			return uuid.Nil, err
+		}
 	}
 
 	nodeID, err := h.resolveNodeForVM(ctx, vm)

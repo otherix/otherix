@@ -139,6 +139,58 @@ func (s *Store) UpdateVMSchedulingReason(ctx context.Context, vmID uuid.UUID, re
 	return nil
 }
 
+// DeleteUnscheduledVM hard-deletes a VM that is still unscheduled, in one
+// transaction gated by the VM-row ModRevision. Hard delete (not the soft-delete
+// the async path uses) is correct here: an unscheduled VM never reached an agent,
+// so there is no observed runtime state to preserve, and dropping the name guard
+// makes the name reusable immediately. The transaction removes the same guard /
+// index keys CreateUnscheduledVM wrote: the vms row, the name guard, and the
+// owner / firmware indexes (vmIndexDeleteOps), plus the unscheduled index.
+//
+// A missing VM returns store.ErrNotFound. A VM that is no longer unscheduled
+// (bound by the scheduler between the caller's read and this call, or a lost CAS
+// from a concurrent bind) returns store.ErrVMNotUnscheduled so the delete handler
+// falls back to the async agent-delete path - never hard-deleting a VM whose
+// agent-side resources are live.
+func (s *Store) DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error {
+	resp, err := s.c.Raw().Get(ctx, vmKey(vmID))
+	if err != nil {
+		return err
+	}
+	if len(resp.Kvs) == 0 {
+		return store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var vm store.VM
+	if err := json.Unmarshal(resp.Kvs[0].Value, &vm); err != nil {
+		return err
+	}
+	if vm.SchedulingStatus != store.VMSchedulingUnscheduled {
+		return store.ErrVMNotUnscheduled
+	}
+
+	ops := []clientv3.Op{
+		clientv3.OpDelete(vmKey(vm.ID)),
+		clientv3.OpDelete(vmNameGuard(vm.Name)),
+		clientv3.OpDelete(vmUnscheduledIndexKey(vm.ID)),
+	}
+	ops = append(ops, vmIndexDeleteOps(vm)...)
+
+	txResp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
+		return err
+	}
+	if !txResp.Succeeded {
+		// The row moved between the read and the commit (bound or deleted by a
+		// racing scheduler tick / replica) - fall back to the async delete path.
+		return store.ErrVMNotUnscheduled
+	}
+	return nil
+}
+
 // BindScheduledVM binds an unscheduled VM to a (node, pool): it runs plan
 // (which scores candidates via the placement reader and builds the disk / nic /
 // task / job writes), then commits, in one transaction gated by the VM row's

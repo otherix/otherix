@@ -272,3 +272,93 @@ func TestBindScheduledVM(t *testing.T) {
 		t.Errorf("SchedulingReason after stale reason = %v, want nil", vm2.SchedulingReason)
 	}
 }
+
+func TestDeleteUnscheduledVM(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	id, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-del"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+
+	if err := st.DeleteUnscheduledVM(ctx, id); err != nil {
+		t.Fatalf("DeleteUnscheduledVM: %v", err)
+	}
+
+	// The VM row is gone (hard delete - no soft-delete tombstone).
+	if _, err := st.VMByID(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMByID after delete err = %v, want ErrNotFound", err)
+	}
+
+	// Dropped from the unscheduled index.
+	list, err := st.ListUnscheduledVMs(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListUnscheduledVMs: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("unscheduled after delete = %d, want 0", len(list))
+	}
+
+	// The name is reusable immediately (the name guard was dropped).
+	reID, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-del"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM(reuse name): %v", err)
+	}
+	if reID == id {
+		t.Errorf("reused id = %v, want a fresh id (not %v)", reID, id)
+	}
+
+	// Re-deleting the now-missing original id -> ErrNotFound.
+	if err := st.DeleteUnscheduledVM(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteUnscheduledVM(missing) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteUnscheduledVM_RejectsScheduled(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	nodeID, poolID, poolName := schedulingFixture(t, st)
+	vmID, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-del-bound"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+
+	taskID := uuid.New()
+	if err := st.BindScheduledVM(ctx, vmID, func(pr store.PlacementReader) (store.VMBindWrites, error) {
+		pools, perr := pr.ListEligiblePoolsByName(ctx, poolName)
+		if perr != nil {
+			return store.VMBindWrites{}, perr
+		}
+		if len(pools) == 0 {
+			return store.VMBindWrites{}, fmt.Errorf("no eligible pool")
+		}
+		return store.VMBindWrites{
+			PinnedNodeID: nodeID,
+			Disk: store.CreateVMDiskParams{
+				VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0,
+				Bus: store.DiskBusVirtio, SizeGib: 0, SourceKind: "image",
+				Format: store.ImageFormatQcow2, CacheMode: store.DiskCacheModeWriteback,
+				Discard: store.DiskDiscardUnmap,
+			},
+			Task: store.CreateTaskParams{
+				ID: taskID, Type: "vm.create", Status: store.TaskStatusPending,
+				ResourceType: "vm", ResourceID: &vmID, Args: []byte(`{}`), MaxAttempts: 25,
+			},
+			Job: stubJobArgs{},
+		}, nil
+	}); err != nil {
+		t.Fatalf("BindScheduledVM: %v", err)
+	}
+
+	// A scheduled VM is NOT hard-deletable through this path: it reached the
+	// async pipeline (disk/task/job), so the caller must fall back to the agent
+	// delete. The VM row must survive.
+	if err := st.DeleteUnscheduledVM(ctx, vmID); !errors.Is(err, store.ErrVMNotUnscheduled) {
+		t.Errorf("DeleteUnscheduledVM(scheduled) err = %v, want ErrVMNotUnscheduled", err)
+	}
+	if _, err := st.VMByID(ctx, vmID); err != nil {
+		t.Errorf("VMByID after rejected delete err = %v, want nil (row preserved)", err)
+	}
+}

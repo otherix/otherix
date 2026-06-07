@@ -8,6 +8,7 @@ package apie2e
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -186,8 +187,110 @@ func TestScheduleFunc_PendingReasonWhenPoolMissing(t *testing.T) {
 	}
 }
 
-// NOTE: the delete-racing-bind seam test (a CP-side delete of an unscheduled VM
-// concurrent with a reconcile tick must never resurrect the VM or enqueue a
-// task) lands with Task 10, which introduces DeleteUnscheduledVM. Double-bind
-// safety on its own is already covered by the etcdstore BindScheduledVM CAS test
-// (Task 4) and the idempotent second-tick assertion above.
+// TestVMDelete_PendingVMSyncNoContent drives DELETE /v1/vms/{name} on a PENDING
+// (unscheduled) VM: with no node and no agent task, the CP deletes it directly
+// and returns 204 No Content (not the scheduled-VM 202 + vm.delete task). A
+// subsequent GET is 404, and no vm.delete task is enqueued.
+func TestVMDelete_PendingVMSyncNoContent(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+	// Seed a default firmware so admission resolves firmware, but no pool named
+	// "nope" exists - the VM stays pending (unscheduled).
+	seedDefaultFirmware(t, h)
+
+	body := vmCreateBody(map[string]any{"pool": "nope"})
+	vmName := body["name"].(string)
+	createResp := h.post(t, "/v1/vms", body, admin)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID     string `json:"id"`
+		Status struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	}
+	decodeJSON(t, createResp, &created)
+	if created.Status.Phase != "pending" {
+		t.Fatalf("created phase = %q, want pending", created.Status.Phase)
+	}
+	vmID, err := uuid.Parse(created.ID)
+	if err != nil {
+		t.Fatalf("parse created id %q: %v", created.ID, err)
+	}
+
+	delResp := h.delete(t, "/v1/vms/"+vmName, admin)
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete pending vm status = %d, want 204", delResp.StatusCode)
+	}
+
+	getResp := h.get(t, "/v1/vms/"+vmName, admin)
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Errorf("get after delete status = %d, want 404", getResp.StatusCode)
+	}
+
+	// No vm.delete task was enqueued (the delete was CP-side only).
+	delType := "vm.delete"
+	delTasks, err := h.store.ListTasksAny(context.Background(), store.ListTasksAnyParams{
+		TypeFilter: &delType, ResourceIDFilter: &vmID, LimitCount: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListTasksAny: %v", err)
+	}
+	if len(delTasks) != 0 {
+		t.Errorf("vm.delete tasks = %d, want 0 (pending delete is CP-side)", len(delTasks))
+	}
+}
+
+// TestScheduleFunc_DeletedPendingVMNotResurrected is the delete-vs-bind seam test
+// (deferred from Task 9): a pending VM deleted CP-side, then a reconcile tick,
+// must stay GONE and never enqueue a vm.create task. It proves the scheduler loop
+// fail-closes against a deleted VM - DeleteUnscheduledVM drops the unscheduled
+// index and the VM row, so the next ListUnscheduledVMs cannot observe it (and
+// even on an index-lag observation the bind CAS would lose against the missing
+// row). The VM is created against a READY pool, so the only thing keeping the
+// scheduler from binding it is the delete - a regression that resurrected the row
+// would immediately bind it and enqueue the task this asserts is absent.
+func TestScheduleFunc_DeletedPendingVMNotResurrected(t *testing.T) {
+	h := newE2E(t)
+	ctx := context.Background()
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	_, poolName := schedulableFixtureWithNode(t, h, adminID)
+
+	vmID := createPendingVM(t, h, admin, poolName)
+
+	// Delete it CP-side (204) before any reconcile tick runs.
+	body := h.delete(t, "/v1/vms/"+vmNameOf(t, h, admin, vmID), admin)
+	body.Body.Close()
+	if body.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete pending vm status = %d, want 204", body.StatusCode)
+	}
+
+	// Now run the reconcile loop once: the deleted VM must not come back.
+	fn := vms.ScheduleFunc(h.store, vms.ScheduleConfig{Algorithm: "least_vm_count"}, scheduleLogger(), defaultScheduleResources())
+	if err := fn(ctx); err != nil {
+		t.Fatalf("ScheduleFunc: %v", err)
+	}
+
+	if _, err := h.store.VMByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMByID after delete+tick err = %v, want ErrNotFound (no resurrection)", err)
+	}
+	if hasVMCreateTask(t, h, vmID) {
+		t.Error("vm.create task enqueued for a deleted VM - the scheduler resurrected it")
+	}
+}
+
+// vmNameOf resolves a VM's name from its id via the public GET-by-id-less path is
+// not available, so it reads the name from the store directly (the e2e harness
+// shares the store). Keeps the delete-by-name call in the resurrection test
+// honest without re-deriving the generated name.
+func vmNameOf(t *testing.T, h *harness, _ string, id uuid.UUID) string {
+	t.Helper()
+	vm, err := h.store.VMByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("VMByID(%v): %v", id, err)
+	}
+	return vm.Name
+}

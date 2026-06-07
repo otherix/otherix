@@ -88,6 +88,7 @@ type Store interface {
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
 	CreateUnscheduledVM(ctx context.Context, p store.CreateVMParams) (uuid.UUID, error)
+	DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 }
