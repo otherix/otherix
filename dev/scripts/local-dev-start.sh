@@ -15,8 +15,7 @@
 #    6. wait /healthz   — 60s budget
 #    7. seed-dev        - bootstrap protocol + CLI cluster (no template; VMs are created from an image URL)
 #                         (the cluster default pool is CP-auto-provisioned)
-#    8. wait pool       - block until the default pool reconciles to ready
-#    9. node list       — final sanity check
+#    8. node list       — final sanity check
 #
 # Fail-fast on existing state per locked decision (2a): if otherix-api is
 # already running, exit with a clear "run local-dev-stop first" message.
@@ -90,7 +89,7 @@ check_port_free() {
     return 0
 }
 
-echo ">> Step 1/9 — Pre-flight port availability"
+echo ">> Step 1/8 — Pre-flight port availability"
 # Only check ports we bind ourselves later in the flow: the two CP listeners
 # and the Lima agent forward. etcd's 2379/2380 are bound by the embedded
 # member we start in Step 5, not pre-flighted here (a stale dev member on
@@ -105,10 +104,10 @@ if [ "${port_fails}" -gt 0 ]; then
 fi
 echo "   ✓ 8080 / 8443 / 9443 / 9444 all free"
 
-echo ">> Step 2/9 — Build api + agent + cli"
+echo ">> Step 2/8 — Build api + agent + cli"
 make --no-print-directory build >/dev/null
 
-echo ">> Step 3/9 — Stage Lima VM + agent (idempotent)"
+echo ">> Step 3/8 — Stage Lima VM + agent (idempotent)"
 make --no-print-directory bootstrap-dev
 
 # Step 4 closes the "Lima says Started, but not usable" gap. `limactl start`
@@ -118,7 +117,7 @@ make --no-print-directory bootstrap-dev
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
 # landed yet. Linux native skips entirely — bootstrap-dev-linux is
 # synchronous (build + systemd unit install).
-echo ">> Step 4/9 — Lima VM readiness (macOS only, both VMs)"
+echo ">> Step 4/8 — Lima VM readiness (macOS only, both VMs)"
 if [ "$(uname -s)" = "Darwin" ]; then
     for vm in otherix-dev-1 otherix-dev-2; do
         # Shell responsive — bounds Lima 'Started' to actual usability.
@@ -160,14 +159,14 @@ else
     echo "   (Linux native — bootstrap-dev is synchronous, no readiness gate needed)"
 fi
 
-echo ">> Step 5/9 — Start otherix-api in background"
+echo ">> Step 5/8 — Start otherix-api in background"
 nohup "${REPO_ROOT}/bin/otherix-api" --config "${REPO_ROOT}/dev/config/api.yaml" \
     > "${LOG_FILE}" 2>&1 &
 api_pid=$!
 echo "${api_pid}" > "${PID_FILE}"
 echo "   PID ${api_pid} → ${LOG_FILE}"
 
-echo ">> Step 6/9 — Wait for CP /healthz (60s budget)"
+echo ">> Step 6/8 — Wait for CP /healthz (60s budget)"
 ready=0
 for _ in $(seq 1 30); do
     if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
@@ -190,32 +189,14 @@ if [ "${ready}" -ne 1 ]; then
 fi
 echo "   ✓ CP reachable at http://localhost:8080"
 
-echo ">> Step 7/9 — Bootstrap agent + seed cluster (seed-dev)"
+echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-dev)"
 make --no-print-directory seed-dev
 
-echo ">> Step 8/9 — Wait for the default storage pool to become ready"
-# The default pool is auto-provisioned when the node reaches ready, but its
-# reconciliation_status only flips to ready after the agent reports it back via
-# heartbeat. The scheduler rejects a not-ready pool, so `vm create` (and the
-# demo-vm manifest below) fails until it converges. Block here so the hint at
-# the end actually works. Only the default pool exists in dev, so any ready
-# reconciliation_status means it is good.
-pool_ready=0
-for _ in $(seq 1 30); do   # ~60s budget at 2s
-    if "${REPO_ROOT}/bin/otherix" pool list --output json 2>/dev/null \
-         | grep -qE '"reconciliation_status":[[:space:]]*"ready"'; then
-        pool_ready=1
-        break
-    fi
-    sleep 2
-done
-if [ "${pool_ready}" -eq 1 ]; then
-    echo "   ✓ default pool ready"
-else
-    echo "   ⚠ default pool not ready after 60s; 'create -f demo-vm.yaml' may fail until it converges" >&2
-fi
-
-echo ">> Step 9/9 — Final sanity (otherix node list)"
+# No pool-ready wait: VM create is admission-only (returns 201 pending) and the
+# CP scheduler binds the VM once the default pool reconciles to ready, so
+# `create -f demo-vm.yaml` no longer needs the pool to be ready first - the VM
+# sits in `pending` (reason pool_not_ready) and converges on its own.
+echo ">> Step 8/8 — Final sanity (otherix node list)"
 "${REPO_ROOT}/bin/otherix" node list
 
 cat <<EOF
@@ -232,7 +213,8 @@ Try:
    ./bin/otherix node list
    ./bin/otherix node get node-1            # WireGuard fabric block + peers
    make smoke-wireguard-mesh                # cross-host WG handshake
-   ./bin/otherix create -f dev/manifests/demo-vm.yaml --wait   # demo VM
+   ./bin/otherix create -f dev/manifests/demo-vm.yaml --wait   # demo VM (starts pending, converges to running)
+   ./bin/otherix vm get demo                # status: pending (pool_not_ready) -> running as the pool reconciles
    ./bin/otherix vm console demo            # serial console; login ubuntu / demo, detach Ctrl+]
 
 Stop + wipe:
