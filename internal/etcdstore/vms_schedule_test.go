@@ -8,6 +8,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -15,6 +16,12 @@ import (
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
+
+// stubJobArgs is a minimal queue.JobArgs whose Kind matches the vm.create job
+// enqueued by BindScheduledVM.
+type stubJobArgs struct{}
+
+func (stubJobArgs) Kind() string { return "vm.create" }
 
 func mkUnscheduledParams(t *testing.T, name string) store.CreateVMParams {
 	t.Helper()
@@ -146,5 +153,122 @@ func TestUpdateVMSchedulingReason(t *testing.T) {
 	// Missing VM -> ErrNotFound (defensive).
 	if err := st.UpdateVMSchedulingReason(ctx, uuid.New(), store.SchedReasonPoolNotReady, "x", nil); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("UpdateVMSchedulingReason(missing) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestBindScheduledVM(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	// Seed a ready node + pool the plan can place on.
+	nodeID, poolID, poolName := schedulingFixture(t, st)
+
+	vmID, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-bind"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+
+	taskID := uuid.New()
+	err = st.BindScheduledVM(ctx, vmID, func(pr store.PlacementReader) (store.VMBindWrites, error) {
+		// In the real loop the worker runs scheduler.SchedulePlacement here; for
+		// the store-level test we drive the placement reader, then bind directly
+		// to the seeded node/pool.
+		pools, perr := pr.ListEligiblePoolsByName(ctx, poolName)
+		if perr != nil {
+			return store.VMBindWrites{}, perr
+		}
+		if len(pools) == 0 {
+			return store.VMBindWrites{}, fmt.Errorf("no eligible pool")
+		}
+		return store.VMBindWrites{
+			PinnedNodeID: nodeID,
+			Disk: store.CreateVMDiskParams{
+				VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0,
+				Bus: store.DiskBusVirtio, SizeGib: 0, SourceKind: "image",
+				Format: store.ImageFormatQcow2, CacheMode: store.DiskCacheModeWriteback,
+				Discard: store.DiskDiscardUnmap,
+			},
+			Task: store.CreateTaskParams{
+				ID: taskID, Type: "vm.create", Status: store.TaskStatusPending,
+				ResourceType: "vm", ResourceID: &vmID, Args: []byte(`{}`), MaxAttempts: 25,
+			},
+			Job: stubJobArgs{},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("BindScheduledVM: %v", err)
+	}
+
+	vm, err := st.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if vm.SchedulingStatus != store.VMSchedulingScheduled {
+		t.Errorf("status = %q, want scheduled", vm.SchedulingStatus)
+	}
+	if vm.PinnedNodeID == nil || *vm.PinnedNodeID != nodeID {
+		t.Errorf("PinnedNodeID = %v, want %v", vm.PinnedNodeID, nodeID)
+	}
+	if vm.SchedulingReason != nil {
+		t.Errorf("SchedulingReason = %v, want nil", vm.SchedulingReason)
+	}
+
+	disks, err := st.ListVMDisksByVM(ctx, vmID)
+	if err != nil {
+		t.Fatalf("ListVMDisksByVM: %v", err)
+	}
+	if len(disks) != 1 {
+		t.Errorf("disks = %d, want 1", len(disks))
+	}
+	if _, err := st.TaskByID(ctx, taskID); err != nil {
+		t.Errorf("TaskByID(bind task) err = %v, want nil", err)
+	}
+
+	// Unscheduled index dropped.
+	list, err := st.ListUnscheduledVMs(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListUnscheduledVMs: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("unscheduled after bind = %d, want 0", len(list))
+	}
+
+	// Double-bind guard: re-binding a now-scheduled VM loses the ModRevision CAS
+	// and returns ErrVMNotUnscheduled.
+	err = st.BindScheduledVM(ctx, vmID, func(store.PlacementReader) (store.VMBindWrites, error) {
+		return store.VMBindWrites{
+			PinnedNodeID: nodeID,
+			Disk: store.CreateVMDiskParams{
+				VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0,
+				Bus: store.DiskBusVirtio, SizeGib: 0, SourceKind: "image",
+				Format: store.ImageFormatQcow2, CacheMode: store.DiskCacheModeWriteback,
+				Discard: store.DiskDiscardUnmap,
+			},
+			Task: store.CreateTaskParams{
+				ID: uuid.New(), Type: "vm.create", Status: store.TaskStatusPending,
+				ResourceType: "vm", ResourceID: &vmID, Args: []byte(`{}`), MaxAttempts: 25,
+			},
+			Job: stubJobArgs{},
+		}, nil
+	})
+	if !errors.Is(err, store.ErrVMNotUnscheduled) {
+		t.Errorf("re-bind err = %v, want ErrVMNotUnscheduled", err)
+	}
+
+	// Task-3 deferred guard: a stale scheduling reason recorded after the bind
+	// must NOT clobber the bound state (UpdateVMSchedulingReason is a no-op once
+	// the VM is scheduled).
+	if err := st.UpdateVMSchedulingReason(ctx, vmID, store.SchedReasonPoolNotReady, "stale", nil); err != nil {
+		t.Fatalf("UpdateVMSchedulingReason(stale): %v", err)
+	}
+	vm2, err := st.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID after stale reason: %v", err)
+	}
+	if vm2.SchedulingStatus != store.VMSchedulingScheduled {
+		t.Errorf("status after stale reason = %q, want scheduled", vm2.SchedulingStatus)
+	}
+	if vm2.SchedulingReason != nil {
+		t.Errorf("SchedulingReason after stale reason = %v, want nil", vm2.SchedulingReason)
 	}
 }
