@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -33,7 +34,28 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeResolveError(w, r, err)
 		return
 	}
+	h.renderVMRow(w, r, vm, http.StatusOK)
+}
 
+// renderVM loads the VM by id, builds the public projection (runtime +
+// resolved names), and writes it at statusCode. It is the shared render
+// path for Create (201, the freshly-admitted pending VM) and any caller
+// that holds the VM id rather than the name. A missing / inconsistent row
+// maps to the standard 404 / 500 envelope.
+func (h *Handler) renderVM(w http.ResponseWriter, r *http.Request, vmID uuid.UUID, statusCode int) {
+	vm, err := h.store.VMByID(r.Context(), vmID)
+	if err != nil {
+		writeVMLoadError(w, r, err)
+		return
+	}
+	h.renderVMRow(w, r, vm, statusCode)
+}
+
+// renderVMRow renders an already-loaded VM row: it loads the runtime /
+// disk projection, resolves the display names, and writes the view at
+// statusCode. Shared by Get (which resolves the row by name) and renderVM
+// (which loads by id).
+func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.VM, statusCode int) {
 	runtime, disk, err := h.loadVMProjection(r.Context(), vm)
 	if err != nil {
 		writeVMLoadError(w, r, err)
@@ -44,7 +66,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeVMLoadError(w, r, err)
 		return
 	}
-	response.WriteJSON(w, r, http.StatusOK, toView(vm, runtime, names))
+	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names))
 }
 
 // loadVMProjection fetches the vm_runtime row (if any) and the first

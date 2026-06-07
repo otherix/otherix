@@ -64,8 +64,8 @@ import (
 // Store is the storage surface the vms handlers depend on: the VM
 // domain methods, the identifier-resolution contract (resolver.Querier)
 // used to resolve vm / pool / node parameters, the node and firmware
-// reads used by the view projectors and firmware resolution, the placement-locked
-// CreateScheduledVM seam, and the EnqueueTask producer
+// reads used by the view projectors and firmware resolution, the admission-only
+// CreateUnscheduledVM seam, and the EnqueueTask producer
 // seam used by delete and the async lifecycle ops. *etcdstore.Store
 // satisfies it; depending on the interface rather than the concrete
 // store narrows the handler's storage dependency to the methods it uses,
@@ -75,6 +75,7 @@ import (
 type Store interface {
 	resolver.Querier
 
+	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
@@ -86,15 +87,16 @@ type Store interface {
 	DefaultFirmwareForArchType(ctx context.Context, arch store.CPUArch, ftype store.FirmwareType) (store.Firmware, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
-	CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
+	CreateUnscheduledVM(ctx context.Context, p store.CreateVMParams) (uuid.UUID, error)
+	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
 
-// Handler bundles the dependencies for the vms routes. Create / Delete
-// and the async lifecycle ops enqueue through the store's
-// CreateScheduledVM / EnqueueTask seams, so the handler
+// Handler bundles the dependencies for the vms routes. Create persists
+// the VM via the store's admission-only CreateUnscheduledVM seam; Delete
+// and the async lifecycle ops enqueue through EnqueueTask, so the handler
 // no longer holds a queue client. placementAlgorithm threads through to
 // internal/scheduler.SchedulePlacement; the empty string defers to the
 // package default ("resource_aware"). placementResources threads the

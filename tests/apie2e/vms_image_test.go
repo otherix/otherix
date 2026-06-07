@@ -30,6 +30,40 @@ type vmView struct {
 	Architecture string `json:"architecture"`
 }
 
+// TestVMCreate_ReturnsPendingImmediately is the admission-only contract: a VM
+// create returns 201 + the VM view with status.phase=pending immediately, even
+// when no pool exists yet (placement is deferred to the vms.schedule loop). A
+// duplicate name still fails fast with 409.
+func TestVMCreate_ReturnsPendingImmediately(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	// No pool seeded yet -> create must still succeed as pending.
+	body := vmCreateBody(map[string]any{"pool": "default"})
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /v1/vms = %d, want 201", resp.StatusCode)
+	}
+	var vm struct {
+		Name   string `json:"name"`
+		Status struct {
+			Phase  string `json:"phase"`
+			Reason string `json:"reason"`
+		} `json:"status"`
+	}
+	decodeJSON(t, resp, &vm)
+	if vm.Status.Phase != "pending" {
+		t.Errorf("status.phase = %q, want pending", vm.Status.Phase)
+	}
+
+	// Duplicate name -> 409.
+	r2 := h.post(t, "/v1/vms", body, admin)
+	if r2.StatusCode != http.StatusConflict {
+		t.Errorf("dup create = %d, want 409", r2.StatusCode)
+	}
+	r2.Body.Close()
+}
+
 // TestVMCreateFromImageSurfacesImageFields drives the image-model create over
 // the HTTP edge - no template - and asserts the synchronously-committed VM row,
 // read back through vms.get, is self-describing: image_url, the pinned
@@ -43,8 +77,8 @@ func TestVMCreateFromImageSurfacesImageFields(t *testing.T) {
 	body := vmCreateBody(map[string]any{"pool": poolName, "image_sha256": sha})
 	vmName := body["name"].(string)
 	resp := h.post(t, "/v1/vms", body, admin)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
 	}
 	resp.Body.Close()
 
@@ -86,8 +120,8 @@ func TestDeveloperCreatesVMFromAnyImage(t *testing.T) {
 		"pool":      poolName,
 		"image_url": "https://images.example.test/custom/dev-built.qcow2",
 	}), dev)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("developer create vm status = %d, want 202 (vm:create is the only gate)", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("developer create vm status = %d, want 201 (vm:create is the only gate)", resp.StatusCode)
 	}
 	resp.Body.Close()
 }

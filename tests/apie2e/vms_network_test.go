@@ -18,14 +18,6 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// vmCreateAcceptedView is the 202 AsyncTaskAccepted envelope the create handler
-// returns. The async pipeline is not driven in apie2e (no worker dispatcher);
-// the assertions key off the synchronously-committed vms + vm_nics rows.
-type vmCreateAcceptedView struct {
-	TaskID string `json:"task_id"`
-	Status string `json:"status"`
-}
-
 // imageURL is the canonical image source the apie2e VM-create bodies reference.
 // Placement does not fetch it; only the self-describing VM row records it.
 const imageURL = "https://example.test/img.qcow2"
@@ -114,75 +106,50 @@ func bridgeNetwork(t *testing.T, h *harness, admin string) networkView {
 	return net
 }
 
-func TestVMCreateAttachesNicToNetwork(t *testing.T) {
+// TestVMCreateStashesNetworkNamePending asserts admission stashes the requested
+// network NAME on the VM's SchedulingSpec and returns 201 pending: the NIC row
+// is not created at admission (the vms.schedule loop mints it at bind), so the
+// public view surfaces the requested network name from the spec while the VM is
+// pending.
+func TestVMCreateStashesNetworkNamePending(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
-	nodeID, poolName := schedulableFixtureWithNode(t, h, adminID)
+	poolName := schedulableFixture(t, h, adminID)
 	net := bridgeNetwork(t, h, admin)
-	// The network-aware filter requires the requested network to be ready
-	// on the candidate node before placement admits it.
-	if err := h.store.UpsertNetworkNodeStatus(context.Background(), store.UpsertNetworkNodeStatusParams{
-		NetworkID: uuid.MustParse(net.ID), NodeID: nodeID, ReconciliationStatus: "ready",
-	}); err != nil {
-		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
+
+	body := vmCreateBody(map[string]any{"pool": poolName, "network": net.Name})
+	vmName := body["name"].(string)
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
+	}
+	var created struct {
+		Networks []string `json:"networks"`
+		Status   struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	}
+	decodeJSON(t, resp, &created)
+	if created.Status.Phase != "pending" {
+		t.Errorf("status.phase = %q, want pending", created.Status.Phase)
 	}
 
-	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
-		"pool": poolName, "network": net.Name,
-	}), admin)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
-	}
-	var accepted vmCreateAcceptedView
-	decodeJSON(t, resp, &accepted)
-
-	// The task names the VM as its resource; resolve the VM and assert a NIC.
-	task, err := h.store.TaskByID(context.Background(), uuid.MustParse(accepted.TaskID))
+	// No NIC row exists yet (bind is deferred to the schedule loop).
+	vmRow, err := h.store.VMByName(context.Background(), vmName)
 	if err != nil {
-		t.Fatalf("TaskByID: %v", err)
+		t.Fatalf("VMByName: %v", err)
 	}
-	if task.ResourceID == nil {
-		t.Fatal("task.ResourceID = nil, want vm id")
-	}
-	nics, err := h.store.ListVMNicsByVM(context.Background(), *task.ResourceID)
+	nics, err := h.store.ListVMNicsByVM(context.Background(), vmRow.ID)
 	if err != nil {
 		t.Fatalf("ListVMNicsByVM: %v", err)
 	}
-	if len(nics) != 1 {
-		t.Fatalf("nics = %d, want 1", len(nics))
-	}
-	netID := uuid.MustParse(net.ID)
-	if nics[0].NetworkID != netID {
-		t.Errorf("nic network = %v, want %v", nics[0].NetworkID, netID)
-	}
-	if nics[0].Model != store.NicModelVirtio {
-		t.Errorf("nic model = %q, want virtio", nics[0].Model)
-	}
-	mac := nics[0].MacAddress.String()
-	if len(mac) != 17 || mac[:8] != "52:54:00" {
-		t.Errorf("nic mac = %q, want 52:54:00:xx:xx:xx", mac)
+	if len(nics) != 0 {
+		t.Errorf("nics = %d, want 0 (NIC minted at bind, not admission)", len(nics))
 	}
 
-	// The network now has an active referent (the single NIC asserted above):
-	// delete must be blocked with 409 conflict + blocking_resources={vm_nics:1}.
-	resp = h.delete(t, "/v1/networks/"+net.ID, admin)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("delete network status = %d, want 409 (blocked by nic)", resp.StatusCode)
-	}
-	var delEnv struct {
-		Error struct {
-			Code    string `json:"code"`
-			Details struct {
-				BlockingResources map[string]int64 `json:"blocking_resources"`
-			} `json:"details"`
-		} `json:"error"`
-	}
-	decodeJSON(t, resp, &delEnv)
-	if delEnv.Error.Code != "conflict" {
-		t.Errorf("delete error code = %q, want conflict", delEnv.Error.Code)
-	}
-	if diff := cmp.Diff(map[string]int64{"vm_nics": 1}, delEnv.Error.Details.BlockingResources); diff != "" {
-		t.Errorf("blocking_resources mismatch (-want +got):\n%s", diff)
+	// The pending view surfaces the requested network name from the spec.
+	if diff := cmp.Diff([]string{net.Name}, created.Networks); diff != "" {
+		t.Errorf("pending networks mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -205,8 +172,8 @@ func TestVMViewSurfacesNetworks(t *testing.T) {
 	}
 	withNet := vmCreateBody(map[string]any{"pool": poolName, "network": net.Name})
 	resp := h.post(t, "/v1/vms", withNet, admin)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
 	}
 	resp.Body.Close()
 	withNetName := withNet["name"].(string)
@@ -225,8 +192,8 @@ func TestVMViewSurfacesNetworks(t *testing.T) {
 	noNetPool := schedulableFixture(t, h, adminID)
 	noNet := vmCreateBody(map[string]any{"pool": noNetPool})
 	resp = h.post(t, "/v1/vms", noNet, admin)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
 	}
 	resp.Body.Close()
 
@@ -269,8 +236,8 @@ func TestVMViewOwnerGatedByUserRead(t *testing.T) {
 
 	body := vmCreateBody(map[string]any{"pool": poolName})
 	resp := h.post(t, "/v1/vms", body, admin)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
 	}
 	resp.Body.Close()
 	vmName := body["name"].(string)
@@ -309,19 +276,19 @@ func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
 	poolName := schedulableFixture(t, h, adminID)
 
-	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
-		"pool": poolName,
-	}), admin)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create vm status = %d, want 202", resp.StatusCode)
+	body := vmCreateBody(map[string]any{"pool": poolName})
+	vmName := body["name"].(string)
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
 	}
-	var accepted vmCreateAcceptedView
-	decodeJSON(t, resp, &accepted)
-	task, err := h.store.TaskByID(context.Background(), uuid.MustParse(accepted.TaskID))
+	resp.Body.Close()
+
+	vmRow, err := h.store.VMByName(context.Background(), vmName)
 	if err != nil {
-		t.Fatalf("TaskByID: %v", err)
+		t.Fatalf("VMByName: %v", err)
 	}
-	nics, err := h.store.ListVMNicsByVM(context.Background(), *task.ResourceID)
+	nics, err := h.store.ListVMNicsByVM(context.Background(), vmRow.ID)
 	if err != nil {
 		t.Fatalf("ListVMNicsByVM: %v", err)
 	}
@@ -330,78 +297,32 @@ func TestVMCreateWithoutNetworkHasNoNic(t *testing.T) {
 	}
 }
 
-func TestVMCreateUnknownNetworkRejected(t *testing.T) {
+// TestVMCreateUnknownNetworkNameDeferred asserts the admission-only contract for
+// the network field: an explicit network UUID that misses still fails fast with
+// 404 (an explicit reference), but a bare network NAME that does not exist is
+// deferred (stashed on the SchedulingSpec, resolved at bind) and admission
+// returns 201 pending - the unknown name becomes a scheduling reason later, not
+// an admission error.
+func TestVMCreateUnknownNetworkNameDeferred(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
 	poolName := schedulableFixture(t, h, adminID)
 
+	// Bare name miss -> deferred -> 201 pending.
 	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
 		"pool": poolName, "network": "does-not-exist",
 	}), admin)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("create vm status = %d, want 404 (unknown network)", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm (unknown network name) = %d, want 201 (deferred)", resp.StatusCode)
 	}
 	resp.Body.Close()
-}
 
-// TestVMCreateNetworkFailedNoEligibleNode covers the network-aware
-// placement filter (ADR 0034 NL18): the only schedulable node has the
-// requested network in a `failed` reconciliation state, so placement
-// must exclude it and the create returns 409 no_eligible_nodes with a
-// network_not_ready reason rather than scheduling onto the bad node.
-func TestVMCreateNetworkFailedNoEligibleNode(t *testing.T) {
-	h := newE2E(t)
-	admin, _ := loginAs(t, h, auth.RoleAdmin)
-	ctx := context.Background()
-	s := h.store
-
-	// Single ready node + pool + default firmware, built inline so the test owns
-	// the node id for the per-(node, network) status upsert.
-	nodeID := uuid.New()
-	if _, err := s.CreateNode(ctx, store.CreateNodeParams{
-		ID: nodeID, Name: "node-" + uuid.NewString()[:8], Architecture: store.CpuArchAmd64,
-		AdvertisedEndpoint: "https://node.test:9443", MigrationHost: "10.0.0.1",
-		MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251, Status: store.NodeStatusPending,
-	}); err != nil {
-		t.Fatalf("CreateNode: %v", err)
-	}
-	if _, err := s.UncordonNode(ctx, nodeID); err != nil {
-		t.Fatalf("UncordonNode: %v", err)
-	}
-	poolName := "pool-" + uuid.NewString()[:8]
-	if _, err := s.CreateStoragePool(ctx, store.CreateStoragePoolParams{
-		ID: uuid.New(), NodeID: nodeID, Name: poolName, Type: "local_dir",
-		Path: "/opt/otherix/pools/" + poolName, Config: []byte(`{}`),
-	}); err != nil {
-		t.Fatalf("CreateStoragePool: %v", err)
-	}
-	seedDefaultFirmware(t, h)
-
-	net := bridgeNetwork(t, h, admin)
-	// Mark the network failed-to-reconcile on the only candidate node.
-	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
-		NetworkID: uuid.MustParse(net.ID), NodeID: nodeID, ReconciliationStatus: "failed",
-	}); err != nil {
-		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
-	}
-
-	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
-		"pool": poolName, "network": net.Name,
+	// Explicit UUID miss -> still fails fast with 404.
+	resp = h.post(t, "/v1/vms", vmCreateBody(map[string]any{
+		"pool": poolName, "network": uuid.NewString(),
 	}), admin)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("create vm status = %d, want 409 (network failed on only node)", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("create vm (unknown network uuid) = %d, want 404", resp.StatusCode)
 	}
-	var env struct {
-		Error struct {
-			Code    string         `json:"code"`
-			Details map[string]any `json:"details"`
-		} `json:"error"`
-	}
-	decodeJSON(t, resp, &env)
-	if env.Error.Code != "no_eligible_nodes" {
-		t.Errorf("error.code = %q, want no_eligible_nodes", env.Error.Code)
-	}
-	if reason, _ := env.Error.Details["reason"].(string); reason != "network_not_ready" {
-		t.Errorf("details.reason = %q, want network_not_ready (details=%v)", reason, env.Error.Details)
-	}
+	resp.Body.Close()
 }
