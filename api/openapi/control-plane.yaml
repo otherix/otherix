@@ -1713,11 +1713,14 @@ paths:
       tags: [vms]
       summary: Create a virtual machine.
       description: |
-        VM creation is asynchronous: the request returns 202 with a task
-        id; the VM row exists immediately in `desired_phase = stopped`,
-        but agent-side allocation (image cache, disk preallocation, QEMU
-        process if `desired_phase = running`) happens in the background.
-        Poll the task to observe completion.
+        VM creation returns 201 with the persisted VM. The row is
+        admitted immediately and starts in `status.phase = pending`
+        (awaiting scheduling); the scheduler binds it to a node and the
+        agent then performs allocation (image cache, disk preallocation,
+        QEMU process if `desired_phase = running`) in the background.
+        Poll `GET /v1/vms/{id}` and watch `status.phase` (and
+        `status.reason`/`status.message` while `pending`) to observe
+        convergence.
 
         The image source is supplied directly on the body (`image_url`
         + optional `image_sha256` content pin + `format`); the VM row is
@@ -1736,12 +1739,12 @@ paths:
             schema:
               $ref: "#/components/schemas/VMCreate"
       responses:
-        "202":
-          description: VM creation accepted; poll the returned task.
+        "201":
+          description: VM created; starts in `status.phase = pending`.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AsyncTaskAccepted"
+                $ref: "#/components/schemas/VM"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
@@ -5735,10 +5738,38 @@ components:
           maximum: 524288
           description: RAM in mebibytes.
         status:
-          type: string
+          type: object
           description: |
-            Projected lifecycle status (not stored): derived from
-            `vms.deleted_at` and the agent-reported `vm_runtime.phase`.
+            System-reported runtime status. `phase` is the projected
+            lifecycle phase; `pending` means the VM is admitted but
+            awaiting scheduling, with `reason`/`message` explaining why
+            it has not yet been bound or converged.
+          required:
+            - phase
+          properties:
+            phase:
+              type: string
+              enum:
+                - pending
+                - creating
+                - running
+                - paused
+                - stopped
+                - error
+                - gone
+                - orphaned
+              description: Projected lifecycle phase.
+            reason:
+              type: string
+              description: |
+                Short machine-readable reason for the current phase
+                (e.g. `pool_not_ready`). Omitted when there is nothing
+                to explain.
+            message:
+              type: string
+              description: |
+                Human-readable detail for the current phase. Omitted
+                when there is nothing to explain.
         desired_phase:
           type: string
           enum: [running, stopped, deleted]
