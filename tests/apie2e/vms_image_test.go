@@ -108,7 +108,7 @@ func TestVMCreateFromImageSurfacesImageFields(t *testing.T) {
 // TestDeveloperCreatesVMFromAnyImage is the RBAC assertion for the image model:
 // vm:create is the single gate (ScopeAny for developer), with no template gate
 // in the path. A developer creates a VM from an arbitrary image URL and the
-// create is admitted (202), not 403.
+// create is admitted (201 pending), not 403.
 func TestDeveloperCreatesVMFromAnyImage(t *testing.T) {
 	h := newE2E(t)
 	// The pool + firmware must exist (admin-seeded), then the developer creates.
