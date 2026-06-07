@@ -94,6 +94,63 @@ func TestProjectStatus(t *testing.T) {
 	}
 }
 
+// TestProjectStatus_Pending locks the pending precedence: an
+// unscheduled VM projects "pending" regardless of its (absent) runtime,
+// while a scheduled VM with no runtime yet still projects "creating".
+func TestProjectStatus_Pending(t *testing.T) {
+	t.Parallel()
+
+	reason := store.SchedReasonPoolNotReady
+	vm := store.VM{SchedulingStatus: store.VMSchedulingUnscheduled, SchedulingReason: &reason}
+	if got := projectStatus(vm, nil); got != statusPending {
+		t.Errorf("projectStatus(unscheduled) = %q, want %q", got, statusPending)
+	}
+
+	// Scheduled but no runtime yet -> creating (agent task running).
+	vm2 := store.VM{SchedulingStatus: store.VMSchedulingScheduled}
+	if got := projectStatus(vm2, nil); got != statusCreating {
+		t.Errorf("projectStatus(scheduled,no-runtime) = %q, want %q", got, statusCreating)
+	}
+}
+
+// TestToView_PendingSurfacesReasonAndSpec asserts that an unscheduled
+// VM renders status.phase=pending plus the scheduling reason, and that
+// pool / networks fall back to the SchedulingSpec when no disk / NIC
+// rows exist yet (the pre-bind shape).
+func TestToView_PendingSurfacesReasonAndSpec(t *testing.T) {
+	t.Parallel()
+
+	reason := store.SchedReasonNetworkNotReady
+	msg := `network "lan" not ready`
+	spec, err := store.MarshalSchedulingSpec(store.SchedulingSpec{PoolName: "default", NetworkName: ptr("lan")})
+	if err != nil {
+		t.Fatalf("MarshalSchedulingSpec: %v", err)
+	}
+	vm := store.VM{
+		ID: uuid.New(), Name: "p", OwnerID: uuid.New(),
+		SchedulingStatus: store.VMSchedulingUnscheduled, SchedulingReason: &reason,
+		SchedulingMessage: &msg, SchedulingSpec: spec, Labels: []byte(`{}`),
+		ImageFormat: store.ImageFormatQcow2, Architecture: store.CpuArchAmd64,
+	}
+	v := toView(vm, nil, vmViewNames{})
+	if v.Status.Phase != statusPending || v.Status.Reason != reason {
+		t.Errorf("status = %+v, want phase=pending reason=%q", v.Status, reason)
+	}
+	if v.Status.Message != msg {
+		t.Errorf("status.message = %q, want %q", v.Status.Message, msg)
+	}
+	if v.Pool != "default" {
+		t.Errorf("pool = %q, want default (from spec)", v.Pool)
+	}
+	if len(v.Networks) != 1 || v.Networks[0] != "lan" {
+		t.Errorf("networks = %v, want [lan]", v.Networks)
+	}
+}
+
+// ptr returns a pointer to v - a tiny test helper for building optional
+// fields inline.
+func ptr[T any](v T) *T { return &v }
+
 func TestMachineTypeFor(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

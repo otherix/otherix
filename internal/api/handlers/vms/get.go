@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
@@ -35,7 +34,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runtime, disk, err := h.loadVMProjection(r.Context(), vm.ID)
+	runtime, disk, err := h.loadVMProjection(r.Context(), vm)
 	if err != nil {
 		writeVMLoadError(w, r, err)
 		return
@@ -51,13 +50,16 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 // loadVMProjection fetches the vm_runtime row (if any) and the first
 // vm_disks row. vm_runtime is allowed to be missing (worker has not
 // upserted yet — projectStatus collapses that case to "creating").
-// vm_disks is expected to be present once the create-handler
-// transaction committed; absent disks indicate a row created
-// out-of-band, which surfaces as 500 since the API never produces that
-// state.
-func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, store.VMDisk, error) {
+//
+// vm_disks is expected to be present once the create-handler bind
+// committed; an unscheduled (pending) VM, however, has no disk row yet,
+// so an absent disk on an unscheduled VM is the zero VMDisk (toView
+// falls back to the SchedulingSpec for the display pool). An absent disk
+// on an already-scheduled VM indicates a row created out-of-band and
+// surfaces as 500, since the API never produces that state.
+func (h *Handler) loadVMProjection(ctx context.Context, vm store.VM) (*store.VMRuntime, store.VMDisk, error) {
 	var runtime *store.VMRuntime
-	rt, err := h.store.VMRuntimeByID(ctx, vmID)
+	rt, err := h.store.VMRuntimeByID(ctx, vm.ID)
 	switch {
 	case err == nil:
 		runtime = &rt
@@ -66,11 +68,14 @@ func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.
 	default:
 		return nil, store.VMDisk{}, err
 	}
-	disks, err := h.store.ListVMDisksByVM(ctx, vmID)
+	disks, err := h.store.ListVMDisksByVM(ctx, vm.ID)
 	if err != nil {
 		return nil, store.VMDisk{}, err
 	}
 	if len(disks) == 0 {
+		if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+			return runtime, store.VMDisk{}, nil
+		}
 		return nil, store.VMDisk{}, errVMDiskMissing
 	}
 	return runtime, disks[0], nil

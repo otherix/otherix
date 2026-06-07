@@ -158,7 +158,7 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 		return
 	}
 
-	runtime, disk, err := h.loadVMProjection(r.Context(), vm.ID)
+	runtime, disk, err := h.loadVMProjection(r.Context(), vm)
 	if err != nil {
 		writeVMLoadError(w, r, err)
 		return

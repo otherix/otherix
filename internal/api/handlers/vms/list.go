@@ -184,15 +184,25 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 		if err != nil {
 			return nil, err
 		}
-		if len(disks) == 0 {
+		// An unscheduled (pending) VM has no disk row yet; render it from
+		// the zero disk (toView falls back to the SchedulingSpec). Any
+		// other disk-less VM is a transient / inconsistent row and is
+		// skipped so the listing never aborts on one bad row.
+		var disk store.VMDisk
+		switch {
+		case len(disks) > 0:
+			disk = disks[0]
+		case vm.SchedulingStatus == store.VMSchedulingUnscheduled:
+			// disk stays the zero value.
+		default:
 			continue
 		}
-		names, err := h.resolveViewNames(ctx, vm, runtime, disks[0], includeOwner)
+		names, err := h.resolveViewNames(ctx, vm, runtime, disk, includeOwner)
 		if err != nil {
 			return nil, err
 		}
 		view := toView(vm, runtime, names)
-		if statusFilter != "" && view.Status != statusFilter {
+		if statusFilter != "" && view.Status.Phase != statusFilter {
 			continue
 		}
 		views = append(views, view)

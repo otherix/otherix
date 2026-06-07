@@ -170,11 +170,22 @@ type vmView struct {
 	Architecture string          `json:"architecture"`
 	VCPUs        int             `json:"vcpus"`
 	MemoryMB     int             `json:"memory_mb"`
-	Status       string          `json:"status"`
+	Status       vmStatusView    `json:"status"`
 	DesiredPhase string          `json:"desired_phase"`
 	Labels       json.RawMessage `json:"labels"`
 	CreatedAt    string          `json:"created_at"`
 	UpdatedAt    string          `json:"updated_at"`
+}
+
+// vmStatusView is the nested `status` object on the public VM shape.
+// Phase is the projected lifecycle string (see projectStatus); Reason
+// and Message carry the machine-readable / human-readable scheduling
+// detail and are populated only while the VM is unscheduled (pending),
+// omitted otherwise.
+type vmStatusView struct {
+	Phase   string `json:"phase"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // vmViewNames bundles the resolved name lookups that response
@@ -198,7 +209,31 @@ type vmViewNames struct {
 // exists yet (worker has not upserted) — projectStatus collapses that
 // case to "creating". The vm_disks row is consumed upstream to derive
 // names.pool and is not threaded through here.
+//
+// While the VM is unscheduled (pending) it has no disk / NIC rows yet,
+// so names.pool / names.networks are empty; toView then falls back to
+// the SchedulingSpec so the operator still sees the requested pool and
+// network. The scheduling reason / message surface on status.
 func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
+	status := vmStatusView{Phase: projectStatus(vm, runtime)}
+	pool := names.pool
+	nets := names.networks
+	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+		if vm.SchedulingReason != nil {
+			status.Reason = *vm.SchedulingReason
+		}
+		if vm.SchedulingMessage != nil {
+			status.Message = *vm.SchedulingMessage
+		}
+		if sp, err := store.UnmarshalSchedulingSpec(vm.SchedulingSpec); err == nil {
+			if pool == "" {
+				pool = sp.PoolName
+			}
+			if len(nets) == 0 && sp.NetworkName != nil {
+				nets = []string{*sp.NetworkName}
+			}
+		}
+	}
 	return vmView{
 		ID:           vm.ID.String(),
 		Name:         vm.Name,
@@ -207,13 +242,13 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		ImageURL:     vm.ImageURL,
 		ImageSHA256:  hex.EncodeToString(vm.ImageSHA256),
 		Format:       string(vm.ImageFormat),
-		Pool:         names.pool,
+		Pool:         pool,
 		Node:         names.node,
-		Networks:     networksOrEmpty(names.networks),
+		Networks:     networksOrEmpty(nets),
 		Architecture: string(vm.Architecture),
 		VCPUs:        int(vm.CpuCores),
 		MemoryMB:     int(vm.MemoryMib),
-		Status:       projectStatus(vm, runtime),
+		Status:       status,
 		DesiredPhase: string(vm.DesiredPhase),
 		Labels:       rawJSONOrEmpty(vm.Labels),
 		CreatedAt:    vm.CreatedAt.UTC().Format(time.RFC3339Nano),
