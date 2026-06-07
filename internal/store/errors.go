@@ -28,6 +28,10 @@ var (
 	ErrTaskNotCancellable    = errors.New("store: task not cancellable")
 	ErrVMNameInUse           = errors.New("store: vm name already in use")
 	ErrVMNicMACConflict      = errors.New("store: vm nic mac already in use on network")
+	// ErrVMNotUnscheduled is returned by BindScheduledVM / UpdateVMSchedulingReason
+	// when the VM is no longer in the "unscheduled" state (already bound, or
+	// deleted) - the CAS lost. Callers (the scheduler loop) skip the VM.
+	ErrVMNotUnscheduled      = errors.New("store: vm is not unscheduled")
 	ErrFirmwareNameExists    = errors.New("store: firmware name already in use for architecture")
 	ErrFirmwareDefaultExists = errors.New("store: default firmware already exists for architecture and type")
 	ErrJoinTokenInvalid      = errors.New("store: join token unknown or expired")
