@@ -132,6 +132,7 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		UserData:          p.UserData,
 		CloudInitDisabled: p.CloudInitDisabled,
 		Labels:            p.Labels,
+		SchedulingSpec:    p.SchedulingSpec,
 		Generation:        1,
 		CreatedAt:         now,
 		UpdatedAt:         now,
