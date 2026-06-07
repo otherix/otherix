@@ -10,6 +10,7 @@ import "github.com/otherix/otherix/internal/store"
 // intent) and store.VMPhase (agent-observed runtime) — this is the
 // projected union the API exposes.
 const (
+	statusPending  = "pending"
 	statusCreating = "creating"
 	statusRunning  = "running"
 	statusPaused   = "paused"
@@ -22,7 +23,8 @@ const (
 // projectStatus maps the (vms row, vm_runtime row) pair to the
 // user-facing status string per the Phase B truth table:
 //
-//	deleted_at not null      → gone
+//	deleted_at not null              → gone
+//	scheduling_status == unscheduled → pending  (awaiting placement)
 //	runtime nil              → creating  (worker hasn't upserted yet)
 //	runtime.phase == pending → creating  (agent task still in flight)
 //	runtime.phase == running → running
@@ -39,6 +41,9 @@ const (
 func projectStatus(vm store.VM, runtime *store.VMRuntime) string {
 	if vm.DeletedAt != nil {
 		return statusGone
+	}
+	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+		return statusPending
 	}
 	if runtime == nil {
 		return statusCreating
