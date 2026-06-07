@@ -182,27 +182,49 @@ func (s *Store) BindScheduledVM(ctx context.Context, vmID uuid.UUID, plan func(s
 	vm.PinnedNodeID = &writes.PinnedNodeID
 	vm.UpdatedAt = now
 
+	ops, conds, macGuard, err := s.buildBindTxn(ctx, vm, writes, rev, now)
+	if err != nil {
+		return err
+	}
+
+	txResp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
+	if err != nil {
+		return err
+	}
+	if !txResp.Succeeded {
+		return s.classifyBindFailure(ctx, macGuard)
+	}
+	return nil
+}
+
+// buildBindTxn enqueues the create job and assembles the bind transaction: it
+// marshals the scheduled VM, boot disk, and create task rows, builds the op
+// list (rows + indexes + unscheduled-index delete + job), and the guard
+// compares. The conds always carry the VM-row ModRevision CAS; a VM with a NIC
+// adds a per-network MAC CreateRevision guard and returns macGuard non-empty so
+// the caller can disambiguate a lost commit.
+func (s *Store) buildBindTxn(ctx context.Context, vm store.VM, writes store.VMBindWrites, rev int64, now time.Time) (ops []clientv3.Op, conds []clientv3.Cmp, macGuard string, err error) {
 	disk := vmDiskFromCreateParams(writes.Disk, now)
 	seq, jobOp, err := s.enqueueJobOp(ctx, writes.Job)
 	if err != nil {
-		return err
+		return nil, nil, "", err
 	}
 	task := taskFromParams(writes.Task, seq)
 
 	vmVal, err := etcd.Marshal(vm)
 	if err != nil {
-		return err
+		return nil, nil, "", err
 	}
 	diskVal, err := etcd.Marshal(disk)
 	if err != nil {
-		return err
+		return nil, nil, "", err
 	}
 	taskVal, err := etcd.Marshal(task)
 	if err != nil {
-		return err
+		return nil, nil, "", err
 	}
 
-	ops := []clientv3.Op{
+	ops = []clientv3.Op{
 		clientv3.OpPut(vmKey(vm.ID), string(vmVal)),
 		clientv3.OpDelete(vmUnscheduledIndexKey(vm.ID)),
 		clientv3.OpPut(etcd.Key("index", "vms", "pinned_node", writes.PinnedNodeID.String(), vm.ID.String()), vm.ID.String()),
@@ -213,37 +235,33 @@ func (s *Store) BindScheduledVM(ctx context.Context, vmID uuid.UUID, plan func(s
 	ops = append(ops, vmDiskIndexOps(disk)...)
 	ops = append(ops, taskIndexOps(task)...)
 
-	conds := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)}
-	var macGuard string
+	conds = []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)}
 	if writes.Nic != nil {
 		nicOps, nerr := vmNicCreateOps(vmNicFromCreateParams(*writes.Nic, now))
 		if nerr != nil {
-			return nerr
+			return nil, nil, "", nerr
 		}
 		ops = append(ops, nicOps...)
 		macGuard = vmNicMACGuard(writes.Nic.NetworkID, writes.Nic.MacAddress)
 		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0))
 	}
+	return ops, conds, macGuard, nil
+}
 
-	txResp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
-	if err != nil {
-		return err
-	}
-	if !txResp.Succeeded {
-		// Two compares can fail: the VM-row ModRevision CAS and (with a NIC) the
-		// per-network MAC guard. Disambiguate by re-issuing the MAC-guard compare
-		// alone - if it also fails the MAC key already exists, so the collision
-		// was the MAC (which the caller re-mints); otherwise the VM-row
-		// ModRevision moved (deleted or bound by another replica).
-		if macGuard != "" {
-			chk, cerr := s.c.Raw().Txn(ctx).
-				If(clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0)).
-				Commit()
-			if cerr == nil && chk != nil && !chk.Succeeded {
-				return store.ErrVMNicMACConflict
-			}
+// classifyBindFailure maps a lost bind commit to a sentinel. Two compares can
+// fail: the VM-row ModRevision CAS and (with a NIC) the per-network MAC guard.
+// Re-issuing the MAC-guard compare alone disambiguates - if it also fails the
+// MAC key already exists, so the collision was the MAC (ErrVMNicMACConflict,
+// which the caller re-mints); otherwise the VM-row ModRevision moved (deleted or
+// bound by another replica), so the VM is no longer unscheduled.
+func (s *Store) classifyBindFailure(ctx context.Context, macGuard string) error {
+	if macGuard != "" {
+		chk, cerr := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0)).
+			Commit()
+		if cerr == nil && chk != nil && !chk.Succeeded {
+			return store.ErrVMNicMACConflict
 		}
-		return store.ErrVMNotUnscheduled
 	}
-	return nil
+	return store.ErrVMNotUnscheduled
 }
