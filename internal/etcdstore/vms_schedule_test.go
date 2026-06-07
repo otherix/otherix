@@ -7,6 +7,7 @@ package etcdstore_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -113,5 +114,37 @@ func TestListUnscheduledVMs_LimitCap(t *testing.T) {
 	}
 	if len(all) != 3 {
 		t.Errorf("ListUnscheduledVMs(limit=0) returned %d, want 3 (no cap)", len(all))
+	}
+}
+
+func TestUpdateVMSchedulingReason(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	id, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-reason"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+
+	if err := st.UpdateVMSchedulingReason(ctx, id, store.SchedReasonPoolNotReady, `pool "default" not ready`, nil); err != nil {
+		t.Fatalf("UpdateVMSchedulingReason: %v", err)
+	}
+	vm, err := st.VMByID(ctx, id)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if vm.SchedulingReason == nil || *vm.SchedulingReason != store.SchedReasonPoolNotReady {
+		t.Errorf("reason = %v, want %q", vm.SchedulingReason, store.SchedReasonPoolNotReady)
+	}
+	if vm.SchedulingMessage == nil || *vm.SchedulingMessage != `pool "default" not ready` {
+		t.Errorf("message = %v, want %q", vm.SchedulingMessage, `pool "default" not ready`)
+	}
+	if vm.LastScheduleAttemptAt == nil {
+		t.Error("LastScheduleAttemptAt = nil, want set")
+	}
+
+	// Missing VM -> ErrNotFound (defensive).
+	if err := st.UpdateVMSchedulingReason(ctx, uuid.New(), store.SchedReasonPoolNotReady, "x", nil); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateVMSchedulingReason(missing) err = %v, want ErrNotFound", err)
 	}
 }

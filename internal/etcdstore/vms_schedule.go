@@ -5,6 +5,7 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,4 +90,51 @@ func (s *Store) ListUnscheduledVMs(ctx context.Context, limit int) ([]store.VM, 
 		}
 	}
 	return out, nil
+}
+
+// UpdateVMSchedulingReason records the latest unschedulable reason on the VM.
+// It is a single CAS on the VM row's ModRevision and a no-op (returns nil) when
+// the VM is no longer "unscheduled" - the scheduler bound it concurrently, so
+// the reason is stale and must not clobber the bound state. A missing VM
+// returns store.ErrNotFound; a lost CAS (the row was deleted or bound between
+// the read and the commit) also returns nil, since the stale reason is dropped.
+func (s *Store) UpdateVMSchedulingReason(ctx context.Context, vmID uuid.UUID, reason, message string, details []byte) error {
+	resp, err := s.c.Raw().Get(ctx, vmKey(vmID))
+	if err != nil {
+		return err
+	}
+	if len(resp.Kvs) == 0 {
+		return store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var vm store.VM
+	if err := json.Unmarshal(resp.Kvs[0].Value, &vm); err != nil {
+		return err
+	}
+	if vm.SchedulingStatus != store.VMSchedulingUnscheduled {
+		// Bound concurrently - the reason is stale, do not clobber bound state.
+		return nil
+	}
+
+	now := time.Now().UTC()
+	vm.SchedulingReason = &reason
+	vm.SchedulingMessage = &message
+	vm.SchedulingDetails = details
+	vm.LastScheduleAttemptAt = &now
+	vm.UpdatedAt = now
+
+	val, err := etcd.Marshal(vm)
+	if err != nil {
+		return err
+	}
+	// A lost CAS (the row was deleted or bound concurrently) is fine: the stale
+	// reason is simply dropped and the scheduler loop skips the VM cleanly, so
+	// resp.Succeeded is not inspected - both outcomes return nil.
+	if _, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(vmKey(vmID)), "=", rev)).
+		Then(clientv3.OpPut(vmKey(vmID), string(val))).
+		Commit(); err != nil {
+		return err
+	}
+	return nil
 }
