@@ -88,3 +88,30 @@ func TestCreateUnscheduledVM(t *testing.T) {
 		t.Error("CreateUnscheduledVM(dup name) = nil, want ErrVMNameInUse")
 	}
 }
+
+func TestListUnscheduledVMs_LimitCap(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"vm-a", "vm-b", "vm-c"} {
+		if _, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, name)); err != nil {
+			t.Fatalf("CreateUnscheduledVM(%s): %v", name, err)
+		}
+	}
+
+	capped, err := st.ListUnscheduledVMs(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListUnscheduledVMs(limit=2): %v", err)
+	}
+	if len(capped) != 2 {
+		t.Errorf("ListUnscheduledVMs(limit=2) returned %d, want 2", len(capped))
+	}
+
+	all, err := st.ListUnscheduledVMs(ctx, 0)
+	if err != nil {
+		t.Fatalf("ListUnscheduledVMs(limit=0): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("ListUnscheduledVMs(limit=0) returned %d, want 3 (no cap)", len(all))
+	}
+}

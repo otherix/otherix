@@ -36,7 +36,8 @@ func (s *Store) CreateUnscheduledVM(ctx context.Context, p store.CreateVMParams)
 	vm.SchedulingStatus = store.VMSchedulingUnscheduled
 	reason := store.SchedReasonPendingSchedule
 	vm.SchedulingReason = &reason
-	vm.SchedulingSpec = p.SchedulingSpec
+	// SchedulingSpec is already carried through by vmFromCreateParams; the
+	// pinned node is explicitly nil until the scheduler binds the VM.
 	vm.PinnedNodeID = nil
 
 	vmVal, err := etcd.Marshal(vm)
