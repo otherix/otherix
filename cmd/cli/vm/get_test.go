@@ -62,6 +62,34 @@ func TestPrintVMTextOwner(t *testing.T) {
 	})
 }
 
+// TestPrintVMTextStatus covers the status line rendering off the nested
+// status object: a settled phase prints bare, while a pending VM appends
+// the scheduling reason/message so operators see why it is unbound.
+func TestPrintVMTextStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		status cpclient.VMStatus
+		want   string
+	}{
+		{"running bare", cpclient.VMStatus{Phase: "running"}, "running"},
+		{
+			"pending reason+message",
+			cpclient.VMStatus{Phase: "pending", Reason: "pool_not_ready", Message: `pool "default" not ready`},
+			`pending (pool_not_ready: pool "default" not ready)`,
+		},
+		{"pending reason only", cpclient.VMStatus{Phase: "pending", Reason: "pending_schedule"}, "pending (pending_schedule)"},
+		{"pending no reason", cpclient.VMStatus{Phase: "pending"}, "pending"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderVMText(t, cpclient.VM{Status: tc.status})
+			if got, ok := lineFor(out, "status"); !ok || got != tc.want {
+				t.Errorf("status line = %q (present=%v), want %q", got, ok, tc.want)
+			}
+		})
+	}
+}
+
 // TestPrintVMTextImageSHA256 covers the conditional image_sha256 line:
 // shown when the VM row carries a digest, omitted when empty.
 func TestPrintVMTextImageSHA256(t *testing.T) {

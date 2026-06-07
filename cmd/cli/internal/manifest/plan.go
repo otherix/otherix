@@ -30,8 +30,12 @@ type DeleteTarget struct {
 	PoolNode string // StoragePool only
 }
 
-// kindOrder is the create precedence: a VM references a pool and a
-// network by name, so those must exist first. Delete uses the reverse.
+// kindOrder gives a stable, deterministic apply order (Network ->
+// StoragePool -> VM) for readable logs. It is no longer load-bearing for
+// correctness on create: VM admission defers pool/network resolution and
+// never fails on a missing or not-yet-ready dependency, so the order in
+// which the documents are submitted does not matter. Delete still relies
+// on the reverse order (tear down VMs before the pools/networks they use).
 var kindOrder = map[string]int{
 	KindNetwork:     0,
 	KindStoragePool: 1,
@@ -40,8 +44,11 @@ var kindOrder = map[string]int{
 
 // BuildCreatePlan validates every document, expands StoragePool
 // nodeList into per-node operations, and returns the create operations
-// sorted Network -> StoragePool -> VM. Document order is preserved
-// within a kind (stable sort).
+// in a stable Network -> StoragePool -> VM order. The ordering is
+// cosmetic (deterministic logs), not a correctness requirement: VM
+// admission defers pool/network references, so a manifest listing a VM
+// before its pool/network applies without the VM create failing.
+// Document order is preserved within a kind (stable sort).
 func BuildCreatePlan(docs []Document) ([]CreateOp, error) {
 	var ops []CreateOp
 	for _, d := range docs {

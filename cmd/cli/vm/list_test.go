@@ -45,7 +45,7 @@ func TestRenderVMNetwork(t *testing.T) {
 func TestPrintVMTableColumns(t *testing.T) {
 	node := "node-1"
 	list := cpclient.VMList{Data: []cpclient.VM{{
-		ID: "11111111-1111-1111-1111-111111111111", Name: "vm-a", Status: "running",
+		ID: "11111111-1111-1111-1111-111111111111", Name: "vm-a", Status: cpclient.VMStatus{Phase: "running"},
 		Architecture: "arm64", Node: &node, Pool: "default", Networks: []string{"net-a", "net-b"},
 	}}}
 
@@ -87,7 +87,7 @@ func TestPrintVMTableColumns(t *testing.T) {
 // observed node yet (still creating) and no NIC.
 func TestPrintVMTableNilNode(t *testing.T) {
 	list := cpclient.VMList{Data: []cpclient.VM{{
-		Name: "vm-b", Status: "creating", Architecture: "amd64", Node: nil, Pool: "default",
+		Name: "vm-b", Status: cpclient.VMStatus{Phase: "creating"}, Architecture: "amd64", Node: nil, Pool: "default",
 	}}}
 	cmd := &cobra.Command{}
 	var buf bytes.Buffer

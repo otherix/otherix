@@ -53,35 +53,52 @@ func waitForCreated(cmd *cobra.Command, c *cpclient.Client, results []docResult,
 	}
 }
 
-// waitVMResult polls the result's task id to terminal status, bounded
-// by the shared deadline so every VM and pool in the fan-out competes
-// for the same overall --wait budget.
+// waitVMResult polls the created VM's projected status.phase until it
+// reaches running (success) or error/failed (failure), bounded by the
+// shared deadline so every VM and pool in the fan-out competes for the
+// same overall --wait budget. Admission is split from scheduling: the VM
+// starts pending and the CP reconcile loop binds it, so there is no task
+// to poll - the wait drives off the public VM view by name.
 func waitVMResult(ctx context.Context, c *cpclient.Client, r *docResult, deadline time.Time) {
-	id, err := uuid.Parse(r.taskID)
-	if err != nil {
-		r.err = fmt.Errorf("wait: malformed task id %q", r.taskID)
-		return
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			r.err = errors.New("wait: timeout budget exhausted")
+			return
+		}
+		reqCtx, cancel := context.WithDeadline(ctx, deadline)
+		vm, _, gerr := c.VM(reqCtx, r.vmName)
+		cancel()
+		if gerr == nil {
+			switch vm.Status.Phase {
+			case "running":
+				r.note += " ready"
+				return
+			case "error", "failed":
+				r.err = fmt.Errorf("%s: %s", vm.Status.Reason, vm.Status.Message)
+				return
+			}
+		} else {
+			// Non-retryable (4xx) errors are permanent; surface them.
+			// Transient errors and per-request deadline-exceeded fall
+			// through to the deadline check and re-poll.
+			var apiErr *cpclient.APIError
+			if errors.As(gerr, &apiErr) && !apiErr.IsRetryable() {
+				r.err = cpErr(gerr)
+				return
+			}
+		}
+		sleep := poolReconcilePoll
+		if rem := time.Until(deadline); rem < sleep {
+			sleep = rem
+		}
+		select {
+		case <-ctx.Done():
+			r.err = ctx.Err()
+			return
+		case <-time.After(sleep):
+		}
 	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		r.err = errors.New("wait: timeout budget exhausted")
-		return
-	}
-	task, err := c.WaitTask(ctx, id, cpclient.WaitOptions{Timeout: remaining})
-	if err != nil {
-		r.err = cpErr(err)
-		return
-	}
-	if task.Status == "success" {
-		r.note += " ready"
-		return
-	}
-	env, _ := task.DecodeError()
-	if env != nil {
-		r.err = fmt.Errorf("%s: %s", env.Code, env.Message)
-		return
-	}
-	r.err = fmt.Errorf("task terminated with status %q", task.Status)
 }
 
 // waitPoolResult polls GetPoolByID until reconciliation_status is ready

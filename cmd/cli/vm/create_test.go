@@ -44,8 +44,14 @@ func runVMCmd(t *testing.T, endpoint string, args []string) (stdout, stderr stri
 	return out.String(), errBuf.String(), err
 }
 
-func taskAcceptedJSON(taskID string) []byte {
-	return []byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`)
+// createdVMJSON is the 201 admission-only body POST /v1/vms now returns:
+// the VM view in the pending phase (no task envelope). name echoes the
+// request so the create summary line is deterministic.
+func createdVMJSON(name string) []byte {
+	return []byte(`{"id":"` + uuid.NewString() + `","name":"` + name + `","owner_id":"` + uuid.NewString() +
+		`","pool":"default","architecture":"amd64","vcpus":2,"memory_mb":2048,` +
+		`"status":{"phase":"pending","reason":"pending_schedule"},"desired_phase":"running",` +
+		`"labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`)
 }
 
 // TestVMCreate_CloudInitFile sends --cloud-init=<path> and asserts the
@@ -62,15 +68,14 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 	}
 
 	var captured map[string]any
-	taskID := uuid.NewString()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write(taskAcceptedJSON(taskID))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-ci-file"))
 	}))
 	defer srv.Close()
 
@@ -109,15 +114,14 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 func TestVMCreate_ImageFields(t *testing.T) {
 	t.Parallel()
 	var captured map[string]any
-	taskID := uuid.NewString()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write(taskAcceptedJSON(taskID))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-img"))
 	}))
 	defer srv.Close()
 
@@ -260,8 +264,8 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 	// shape, since the stdin redirection lives in package-level state.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write(taskAcceptedJSON(uuid.NewString()))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-ci-stdin"))
 	}))
 	defer srv.Close()
 
@@ -299,8 +303,8 @@ func TestVMCreate_NoCloudInit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write(taskAcceptedJSON(uuid.NewString()))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-ci-disabled"))
 	}))
 	defer srv.Close()
 

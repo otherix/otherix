@@ -4,6 +4,8 @@
 package vm
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -83,7 +85,7 @@ func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "architecture: %s\n", vm.Architecture)
 	printf(cmd, "vcpus: %d\n", vm.VCPUs)
 	printf(cmd, "memory_mb: %d\n", vm.MemoryMB)
-	printf(cmd, "status: %s\n", vm.Status)
+	printf(cmd, "status: %s\n", formatVMStatus(vm.Status))
 	printf(cmd, "desired_phase: %s\n", vm.DesiredPhase)
 	printf(cmd, "created_at: %s\n", vm.CreatedAt)
 	printf(cmd, "updated_at: %s\n", vm.UpdatedAt)
@@ -94,4 +96,24 @@ func strOrUnset(s *string) string {
 		return "<unset>"
 	}
 	return *s
+}
+
+// formatVMStatus renders the nested status object for the text output.
+// A settled VM shows just its phase (e.g. "running"); a VM still pending
+// placement appends the scheduling reason/message the CP reconcile loop
+// recorded, e.g. `pending (pool_not_ready: pool "default" not ready)`,
+// so operators see why it has not been bound yet without reaching for
+// --output json.
+func formatVMStatus(s cpclient.VMStatus) string {
+	if s.Phase != "pending" {
+		return s.Phase
+	}
+	switch {
+	case s.Reason != "" && s.Message != "":
+		return fmt.Sprintf("pending (%s: %s)", s.Reason, s.Message)
+	case s.Reason != "":
+		return fmt.Sprintf("pending (%s)", s.Reason)
+	default:
+		return "pending"
+	}
 }

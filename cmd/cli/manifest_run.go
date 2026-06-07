@@ -125,7 +125,7 @@ type docResult struct {
 	note      string // e.g. "task <id>" or "node node-1"
 	err       error
 	committed bool   // server create/delete call itself succeeded
-	taskID    string // VM create: accepted task id, for --wait
+	vmName    string // VM create: created VM name, polled for --wait
 	poolID    string // StoragePool create: created instance id, for --wait
 }
 

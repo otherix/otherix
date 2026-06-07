@@ -28,16 +28,25 @@ metadata: { name: web-1 }
 spec: { imageURL: https://x/u.qcow2, arch: arm64 }
 `
 
-func TestCreateWaitPollsTaskToSuccess(t *testing.T) {
-	taskID := uuid.NewString()
+// vmCreatedBody is the 201 admission-only response: the VM view in the
+// given phase (no task envelope). The manifest --wait path polls the VM
+// projection by name, not a task.
+func vmCreatedBody(phase string) string {
+	return `{"id":"` + uuid.NewString() + `","name":"web-1","owner_id":"` + uuid.NewString() +
+		`","pool":"default","architecture":"arm64","vcpus":2,"memory_mb":2048,` +
+		`"status":{"phase":"` + phase + `"},"desired_phase":"running","labels":{},` +
+		`"created_at":"2026-06-05T00:00:00Z","updated_at":"2026-06-05T00:00:00Z"}`
+}
+
+func TestCreateWaitPollsVMToRunning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/vms":
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`))
-		case "/v1/tasks/" + taskID:
-			_, _ = w.Write([]byte(`{"id":"` + taskID + `","type":"vm.create","status":"success","progress":null,"resource_type":"vm","resource_id":null,"result":null,"error":null,"attempts":1,"max_attempts":1,"created_at":"2026-06-05T00:00:00Z","started_at":null,"finished_at":null}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/vms":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(vmCreatedBody("pending")))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vms/web-1":
+			_, _ = w.Write([]byte(vmCreatedBody("running")))
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -258,18 +267,27 @@ func TestCreateWaitPoolRetriesTransient(t *testing.T) {
 	}
 }
 
-// TestCreateWaitVMTaskFailure confirms a create task reaching terminal
-// failed surfaces the task error envelope and a non-zero exit.
-func TestCreateWaitVMTaskFailure(t *testing.T) {
-	taskID := uuid.NewString()
+// vmErrorBody is the VM projection in a terminal error phase carrying a
+// scheduling/runtime reason+message, which the manifest --wait path
+// surfaces verbatim.
+func vmErrorBody(phase, reason, message string) string {
+	return `{"id":"` + uuid.NewString() + `","name":"web-1","owner_id":"` + uuid.NewString() +
+		`","pool":"default","architecture":"arm64","vcpus":2,"memory_mb":2048,` +
+		`"status":{"phase":"` + phase + `","reason":"` + reason + `","message":"` + message + `"},` +
+		`"desired_phase":"running","labels":{},"created_at":"2026-06-05T00:00:00Z","updated_at":"2026-06-05T00:00:00Z"}`
+}
+
+// TestCreateWaitVMPhaseError confirms a VM reaching the terminal error
+// phase surfaces its scheduling/runtime reason and a non-zero exit.
+func TestCreateWaitVMPhaseError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/vms":
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`))
-		case "/v1/tasks/" + taskID:
-			_, _ = w.Write([]byte(`{"id":"` + taskID + `","type":"vm.create","status":"failed","progress":null,"resource_type":"vm","resource_id":null,"result":null,"error":{"code":"image_unavailable","message":"boom"},"attempts":1,"max_attempts":1,"created_at":"2026-06-05T00:00:00Z","started_at":null,"finished_at":null}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/vms":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(vmCreatedBody("pending")))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vms/web-1":
+			_, _ = w.Write([]byte(vmErrorBody("error", "image_unavailable", "boom")))
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -277,26 +295,26 @@ func TestCreateWaitVMTaskFailure(t *testing.T) {
 	defer srv.Close()
 	stdout, stderr, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, waitManifest), "--wait", "--wait-timeout", "10s")
 	if err == nil {
-		t.Fatalf("expected error when the create task fails")
+		t.Fatalf("expected error when the VM enters the error phase")
 	}
 	if !strings.Contains(stderr, "image_unavailable") && !strings.Contains(stdout, "image_unavailable") {
-		t.Errorf("want the task error surfaced; stdout=%q stderr=%q", stdout, stderr)
+		t.Errorf("want the error reason surfaced; stdout=%q stderr=%q", stdout, stderr)
 	}
 }
 
-// TestCreateWaitVMTaskCancelled confirms a terminal cancelled task is not
-// mistaken for success: no readiness line, non-zero exit. The waiter must
-// never print "ready" for any status other than the literal "success".
-func TestCreateWaitVMTaskCancelled(t *testing.T) {
-	taskID := uuid.NewString()
+// TestCreateWaitVMPhaseFailed confirms the second terminal failure phase
+// (failed, distinct from error) is not mistaken for success: no readiness
+// line, non-zero exit, and the reason surfaced. The waiter must only
+// print "ready" for the running phase.
+func TestCreateWaitVMPhaseFailed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/vms":
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`))
-		case "/v1/tasks/" + taskID:
-			_, _ = w.Write([]byte(`{"id":"` + taskID + `","type":"vm.create","status":"cancelled","progress":null,"resource_type":"vm","resource_id":null,"result":null,"error":null,"attempts":1,"max_attempts":1,"created_at":"2026-06-05T00:00:00Z","started_at":null,"finished_at":null}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/vms":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(vmCreatedBody("pending")))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vms/web-1":
+			_, _ = w.Write([]byte(vmErrorBody("failed", "create_failed", "agent rejected")))
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -304,32 +322,32 @@ func TestCreateWaitVMTaskCancelled(t *testing.T) {
 	defer srv.Close()
 	stdout, stderr, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, waitManifest), "--wait", "--wait-timeout", "10s")
 	if err == nil {
-		t.Fatalf("expected error when the create task is cancelled")
+		t.Fatalf("expected error when the VM enters the failed phase")
 	}
 	if strings.Contains(stdout, "ready") {
-		t.Errorf("a cancelled task must not be reported ready; stdout=%q", stdout)
+		t.Errorf("a failed VM must not be reported ready; stdout=%q", stdout)
 	}
-	if !strings.Contains(stderr, "cancelled") {
-		t.Errorf("want the cancelled status surfaced; stderr=%q", stderr)
+	if !strings.Contains(stderr, "create_failed") {
+		t.Errorf("want the failed reason surfaced; stderr=%q", stderr)
 	}
 }
 
-// TestCreateWaitVMUnknownStatusNeverReady proves the fail-safe core: a task
-// stuck at an empty/unknown status (never terminal) must time out, never be
-// read as success. A false-success here would mislead an operator into a
-// destructive retry, so this is the single most safety-critical property.
-func TestCreateWaitVMUnknownStatusNeverReady(t *testing.T) {
-	taskID := uuid.NewString()
+// TestCreateWaitVMStuckPendingNeverReady proves the fail-safe core: a VM
+// stuck at a non-terminal phase (pending - the scheduler never binds it)
+// must time out, never be read as success. A false-success here would
+// mislead an operator into a destructive retry, so this is the single
+// most safety-critical property.
+func TestCreateWaitVMStuckPendingNeverReady(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/vms":
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"task_id":"` + taskID + `","status":"pending","links":{"self":"/v1/tasks/` + taskID + `"}}`))
-		case "/v1/tasks/" + taskID:
-			// Empty status is not terminal: the waiter must keep polling
-			// until the deadline, then time out - never report ready.
-			_, _ = w.Write([]byte(`{"id":"` + taskID + `","type":"vm.create","status":"","progress":null,"resource_type":"vm","resource_id":null,"result":null,"error":null,"attempts":1,"max_attempts":1,"created_at":"2026-06-05T00:00:00Z","started_at":null,"finished_at":null}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/vms":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(vmCreatedBody("pending")))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vms/web-1":
+			// Pending is not terminal: the waiter must keep polling until
+			// the deadline, then time out - never report ready.
+			_, _ = w.Write([]byte(vmCreatedBody("pending")))
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -337,9 +355,9 @@ func TestCreateWaitVMUnknownStatusNeverReady(t *testing.T) {
 	defer srv.Close()
 	stdout, _, err := runRoot(t, srv.URL, "create", "-f", writeManifest(t, waitManifest), "--wait", "--wait-timeout", "150ms")
 	if err == nil {
-		t.Fatalf("expected a timeout for a task stuck at unknown status")
+		t.Fatalf("expected a timeout for a VM stuck at the pending phase")
 	}
 	if strings.Contains(stdout, "ready") {
-		t.Errorf("an unknown-status task must never be reported ready; stdout=%q", stdout)
+		t.Errorf("a stuck-pending VM must never be reported ready; stdout=%q", stdout)
 	}
 }

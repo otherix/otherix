@@ -53,7 +53,7 @@ func TestNew_RejectsEmptyToken(t *testing.T) {
 
 func TestCreateVM_HappyPath(t *testing.T) {
 	t.Parallel()
-	wantTaskID := uuid.NewString()
+	vmID := uuid.NewString()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -72,18 +72,30 @@ func TestCreateVM_HappyPath(t *testing.T) {
 		if !strings.Contains(string(body), `"name":"demo"`) {
 			t.Errorf("body missing name field: %s", body)
 		}
+		// Admission-only: the server persists the VM as pending and
+		// returns 201 + the VM view, not a 202 task envelope.
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"task_id": wantTaskID,
-			"status":  "pending",
-			"links":   map[string]any{"self": "/v1/tasks/" + wantTaskID},
+			"id":            vmID,
+			"name":          "demo",
+			"owner_id":      uuid.NewString(),
+			"image_url":     "https://example.com/img.qcow2",
+			"pool":          "default",
+			"architecture":  "amd64",
+			"vcpus":         2,
+			"memory_mb":     2048,
+			"status":        map[string]any{"phase": "pending", "reason": "pending_schedule"},
+			"desired_phase": "running",
+			"labels":        map[string]any{},
+			"created_at":    "2026-05-10T10:00:00Z",
+			"updated_at":    "2026-05-10T10:00:00Z",
 		})
 	}))
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	got, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
+	got, raw, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
 		Name:     "demo",
 		ImageURL: "https://example.com/img.qcow2",
 		Arch:     "amd64",
@@ -94,11 +106,20 @@ func TestCreateVM_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateVM: %v", err)
 	}
-	if got.TaskID != wantTaskID {
-		t.Errorf("TaskID = %s, want %s", got.TaskID, wantTaskID)
+	if got.ID != vmID {
+		t.Errorf("ID = %s, want %s", got.ID, vmID)
 	}
-	if got.Status != "pending" {
-		t.Errorf("Status = %s, want pending", got.Status)
+	if got.Name != "demo" {
+		t.Errorf("Name = %s, want demo", got.Name)
+	}
+	if got.Status.Phase != "pending" {
+		t.Errorf("Status.Phase = %s, want pending", got.Status.Phase)
+	}
+	if got.Status.Reason != "pending_schedule" {
+		t.Errorf("Status.Reason = %s, want pending_schedule", got.Status.Reason)
+	}
+	if !strings.Contains(string(raw), `"phase":"pending"`) {
+		t.Errorf("raw body = %s, want nested status phase", raw)
 	}
 }
 
@@ -112,7 +133,7 @@ func TestCreateVM_APIError404(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
+	_, _, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
 		Name: "demo", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 2, MemoryMB: 1024,
 	})
 	if err == nil {
@@ -143,7 +164,7 @@ func TestCreateVM_APIError5xxRetryable(t *testing.T) {
 	defer srv.Close()
 
 	c := fixtureClient(t, srv)
-	_, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
+	_, _, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
 		Name: "x", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 1, MemoryMB: 1024,
 	})
 	var ae *cpclient.APIError
@@ -173,7 +194,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 			"architecture":  "amd64",
 			"vcpus":         2,
 			"memory_mb":     2048,
-			"status":        "running",
+			"status":        map[string]any{"phase": "running"},
 			"desired_phase": "running",
 			"labels":        map[string]any{},
 			"created_at":    "2026-05-10T10:00:00Z",
@@ -187,8 +208,8 @@ func TestGetVM_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVM: %v", err)
 	}
-	if got.ID != vmID.String() || got.Name != "demo" || got.Status != "running" {
-		t.Errorf("got = %+v, want id=%s name=demo status=running", got, vmID)
+	if got.ID != vmID.String() || got.Name != "demo" || got.Status.Phase != "running" {
+		t.Errorf("got = %+v, want id=%s name=demo status.phase=running", got, vmID)
 	}
 }
 
@@ -202,7 +223,7 @@ func TestGetVM_AcceptsName(t *testing.T) {
 			t.Errorf("path = %s, want /v1/vms/demo-vm", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000001","name":"demo-vm","owner_id":"00000000-0000-0000-0000-000000000002","pool":"default","architecture":"amd64","vcpus":2,"memory_mb":2048,"status":"running","desired_phase":"running","labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000001","name":"demo-vm","owner_id":"00000000-0000-0000-0000-000000000002","pool":"default","architecture":"amd64","vcpus":2,"memory_mb":2048,"status":{"phase":"running"},"desired_phase":"running","labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`))
 	}))
 	defer srv.Close()
 

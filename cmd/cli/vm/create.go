@@ -38,11 +38,12 @@ const (
 func newCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create a new VM (async).",
-		Long: `Submits a vm.create task and returns a task id immediately. The VM
-name is the sole positional argument (globally unique). Pass --wait
-to block until the task reaches its terminal state. The VM uuid is
-minted on the CP and reused by the agent.
+		Short: "Create a new VM (starts pending).",
+		Long: `Creates the VM, which starts in the pending phase, and returns
+immediately. The VM name is the sole positional argument (globally
+unique). A CP-side reconcile loop binds the VM to a (node, pool) once
+its dependencies are ready; pass --wait to block until the VM is
+running. The VM uuid is minted on the CP and reused by the agent.
 
 The VM is created directly from an image source — there is no template
 entity. --image-url and --arch are required; the server downloads and
@@ -92,7 +93,7 @@ and the agent falls back to legacy SLIRP networking.`,
 		"path to a `#cloud-config` YAML; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
 	cmd.Flags().Bool(flagCloudInitDisable, false,
 		"explicitly disable cloud-init for this VM. Mutually exclusive with --cloud-init.")
-	cmd.Flags().Bool(flagWait, false, "block until the task reaches terminal status")
+	cmd.Flags().Bool(flagWait, false, "block until the VM reaches the running phase")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
 	return cmd
@@ -270,25 +271,20 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if f.node != "" {
 		req.Node = &f.node
 	}
-	accepted, err := c.CreateVM(cmd.Context(), req)
+	created, _, err := c.CreateVM(cmd.Context(), req)
 	if err != nil {
 		return classifyError(err)
 	}
 
-	printf(cmd, "created task=%s status=%s\n", accepted.TaskID, accepted.Status)
+	printf(cmd, "created vm=%s status=%s\n", created.Name, created.Status.Phase)
 
 	if !f.wait {
 		return nil
 	}
 
-	taskID, err := parseTaskID(accepted.TaskID)
-	if err != nil {
-		return fmt.Errorf("request_failed: %v", err)
-	}
-
-	if err := waitForTask(cmd.Context(), cmd, c, taskID, f.timeout); err != nil {
+	if err := waitForVMPhase(cmd.Context(), cmd, c, created.Name, f.timeout); err != nil {
 		return classifyError(err)
 	}
-	printf(cmd, "vm running task=%s\n", accepted.TaskID)
+	printf(cmd, "vm running name=%s\n", created.Name)
 	return nil
 }

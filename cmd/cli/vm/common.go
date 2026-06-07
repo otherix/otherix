@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -105,6 +106,77 @@ func waitForTask(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, ta
 		return fmt.Errorf("task %s terminated with status %q (no error envelope)", taskID, task.Status)
 	}
 	return fmt.Errorf("task %s %s: %s: %s", taskID, task.Status, env.Code, env.Message)
+}
+
+// waitForVMPhase polls the named VM until its status.phase reaches a
+// terminal state (running, or error/failed), the timeout fires, or ctx
+// is cancelled. Admission is split from scheduling: a freshly-created VM
+// is `pending` until the CP reconcile loop binds it, then `creating`
+// until the agent reports the runtime up, then `running`. This helper
+// drives that wait off the public VM projection (there is no task to
+// poll any more). Each poll's current scheduling reason is written to
+// cmd.ErrOrStderr so stdout stays parseable; the failure terminal
+// surfaces as a Go error.
+func waitForVMPhase(ctx context.Context, cmd *cobra.Command, c *cpclient.Client, name string, timeout time.Duration) error {
+	stderr := cmd.ErrOrStderr()
+	loopCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	const (
+		initial = 1 * time.Second
+		max     = 5 * time.Second
+	)
+	delay := initial
+	lastReason := ""
+	for {
+		vm, _, err := c.VM(loopCtx, name)
+		if err != nil {
+			var apiErr *cpclient.APIError
+			if errors.As(err, &apiErr) && !apiErr.IsRetryable() {
+				return err
+			}
+			if !errors.As(err, &apiErr) && loopCtx.Err() != nil {
+				return fmt.Errorf("wait vm: %w", loopCtx.Err())
+			}
+			// Transient — fall through to sleep + retry.
+		} else {
+			if vm.Status.Reason != "" && vm.Status.Reason != lastReason {
+				lastReason = vm.Status.Reason
+				_, _ = fmt.Fprintf(stderr, "%s: %s\n", vm.Status.Phase, vm.Status.Reason)
+			}
+			if vm.Status.IsTerminalPhase() {
+				if vm.Status.Phase == "running" {
+					return nil
+				}
+				return fmt.Errorf("vm %s entered phase %q: %s: %s",
+					name, vm.Status.Phase, vm.Status.Reason, vm.Status.Message)
+			}
+		}
+
+		if err := sleepVMCtx(loopCtx, delay); err != nil {
+			return fmt.Errorf("wait vm: %w", err)
+		}
+		delay *= 2
+		if delay > max {
+			delay = max
+		}
+	}
+}
+
+// sleepVMCtx blocks for d or until ctx is done, whichever fires first.
+// Returns ctx.Err() on cancellation, nil on full sleep.
+func sleepVMCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // requireStringFlag fetches a string flag and rejects empty values as

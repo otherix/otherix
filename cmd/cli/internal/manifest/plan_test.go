@@ -11,7 +11,10 @@ import (
 )
 
 // orderingSrc lists VM before StoragePool before Network on purpose, to
-// prove BuildCreatePlan reorders to Network -> StoragePool -> VM.
+// prove BuildCreatePlan emits a stable Network -> StoragePool -> VM
+// order regardless of document order. The ordering is cosmetic now (VM
+// admission defers pool/network references, so submit order no longer
+// affects correctness); the test only pins the deterministic-log shape.
 const orderingSrc = `apiVersion: otherix/v1
 kind: VM
 metadata: { name: web-1 }
@@ -28,6 +31,11 @@ metadata: { name: net-dev }
 spec: { type: bridge, bridgeName: br0 }
 `
 
+// TestBuildCreatePlanStableOrderAndExpansion pins the deterministic
+// (cosmetic) Network -> StoragePool -> VM apply order and the nodeList
+// expansion. The order is no longer required for a successful apply -
+// admission defers references - so this guards log determinism, not a
+// submission dependency.
 func TestBuildCreatePlanOrderingAndExpansion(t *testing.T) {
 	docs, err := manifest.Parse(strings.NewReader(orderingSrc))
 	if err != nil {
