@@ -273,6 +273,12 @@ func (r placementReader) ListNetworkNodeStatusByNode(ctx context.Context, nodeID
 	return r.s.ListNetworkNodeStatusByNode(ctx, nodeID)
 }
 
+// NetworkByName resolves the deferred network name to its row so the bind can
+// set the NIC's network id. Delegates to the store's name-guard lookup.
+func (r placementReader) NetworkByName(ctx context.Context, name string) (store.Network, error) {
+	return r.s.NetworkByName(ctx, name)
+}
+
 // CountRunningVMsByNode counts non-deleted VMs pinned to the node (intent),
 // matching the SQL placement tie-break query.
 func (r placementReader) CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error) {

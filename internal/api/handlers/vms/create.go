@@ -96,13 +96,10 @@ var errFirmwareBadType = errors.New("firmware must be bios or uefi")
 // loop) and surfaces as a pending scheduling reason. The admission edge
 // uses checkPoolWritableBestEffort for a best-effort fail-fast on an
 // already-existing non-writable pool.
-//
-//nolint:unused // consumed by the vms.schedule bind loop (planBind); retained here for that consumer.
 type poolNotWritableError struct {
 	poolType string
 }
 
-//nolint:unused // see poolNotWritableError.
 func (e *poolNotWritableError) Error() string {
 	return fmt.Sprintf("vms: pool type %q not writable", e.poolType)
 }
