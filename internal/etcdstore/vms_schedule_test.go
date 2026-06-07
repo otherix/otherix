@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -274,7 +275,7 @@ func TestBindScheduledVM(t *testing.T) {
 }
 
 func TestDeleteUnscheduledVM(t *testing.T) {
-	st, _ := etcdstore.FreshStore(t)
+	st, cli := etcdstore.FreshStore(t)
 	ctx := context.Background()
 
 	id, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-del"))
@@ -298,6 +299,15 @@ func TestDeleteUnscheduledVM(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Errorf("unscheduled after delete = %d, want 0", len(list))
+	}
+
+	// Pin the raw index drop directly: ListUnscheduledVMs skips rows whose VM
+	// is gone, so it would mask a leaked index key. Range the prefix to prove
+	// the entry was physically removed, not just orphaned.
+	if items, err := cli.Range(ctx, etcd.Key("index", "vms", "unscheduled")+"/"); err != nil {
+		t.Fatalf("range unscheduled index: %v", err)
+	} else if len(items) != 0 {
+		t.Errorf("unscheduled index keys after delete = %d, want 0", len(items))
 	}
 
 	// The name is reusable immediately (the name guard was dropped).
