@@ -281,6 +281,29 @@ func TestDeleteVM_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDeleteVM_PendingNoContent(t *testing.T) {
+	t.Parallel()
+	// A pending (unscheduled) VM is deleted CP-side and returns 204 No Content
+	// with an empty body - DeleteVM must treat that as success (empty
+	// TaskAccepted), not try to decode an absent JSON task envelope.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := fixtureClient(t, srv)
+	got, err := c.DeleteVM(context.Background(), "pending-vm")
+	if err != nil {
+		t.Fatalf("DeleteVM(204) = %v, want nil", err)
+	}
+	if got.TaskID != "" {
+		t.Errorf("TaskID = %q, want empty (synchronous delete)", got.TaskID)
+	}
+}
+
 func TestDeleteVM_AcceptsName(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

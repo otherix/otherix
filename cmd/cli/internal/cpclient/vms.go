@@ -341,9 +341,16 @@ func (c *Client) DeleteVM(ctx context.Context, identifier string) (TaskAccepted,
 	if err != nil {
 		return TaskAccepted{}, err
 	}
-	_, body, err := c.do(httpReq)
+	status, body, err := c.do(httpReq)
 	if err != nil {
 		return TaskAccepted{}, err
+	}
+	// A pending (unscheduled) VM is deleted CP-side and returns 204 No Content
+	// with no body - there is no agent-teardown task to track. A scheduled VM
+	// returns 202 + an AsyncTaskAccepted. An empty TaskAccepted (TaskID == "")
+	// signals the synchronous-delete case to the caller.
+	if status == http.StatusNoContent || len(body) == 0 {
+		return TaskAccepted{}, nil
 	}
 	var out TaskAccepted
 	if err := decodeJSON(body, &out); err != nil {
