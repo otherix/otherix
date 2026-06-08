@@ -55,16 +55,23 @@ preflight() {
     for bin in ip nft unshare; do
         command -v "${bin}" >/dev/null 2>&1 || { echo "✗ missing dependency: ${bin}" >&2; missing=1; }
     done
+    # The agent execs qemu-system-<arch> to run VMs and qemu-img to
+    # inspect/resize disks (internal/agent/qemu/{cmdline,img}.go).
     if ! command -v qemu-system-x86_64 >/dev/null 2>&1 \
         && ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
         echo "✗ missing dependency: qemu-system-x86_64 or qemu-system-aarch64" >&2
         missing=1
     fi
+    command -v qemu-img >/dev/null 2>&1 || { echo "✗ missing dependency: qemu-img (package qemu-utils)" >&2; missing=1; }
     [ -e /dev/kvm ] || { echo "✗ /dev/kvm not present (KVM unavailable)" >&2; missing=1; }
-    if ! lsmod 2>/dev/null | grep -qw wireguard && ! modprobe wireguard 2>/dev/null; then
-        echo "✗ wireguard kernel module not loadable" >&2
-        missing=1
-    fi
+    # The agent builds its network fabric via netlink in-process, so these
+    # modules must be loadable (built-in modules: modprobe is a no-op success).
+    for mod in wireguard vxlan tun bridge; do
+        if ! lsmod 2>/dev/null | grep -qw "${mod}" && ! modprobe "${mod}" 2>/dev/null; then
+            echo "✗ kernel module not loadable: ${mod}" >&2
+            missing=1
+        fi
+    done
     if ! ls /usr/share/OVMF/OVMF_CODE*.fd >/dev/null 2>&1 \
         && ! ls /usr/share/AAVMF/AAVMF_CODE.fd >/dev/null 2>&1; then
         echo "! warning: no OVMF/AAVMF firmware found — UEFI VMs may fail to boot" >&2

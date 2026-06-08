@@ -5,17 +5,53 @@ Otherix dev cluster - control plane (embedded etcd) plus two agents - the same
 topology macOS gets from the two Lima VMs, but using Linux network + mount
 namespaces instead of VMs. No nested virtualization.
 
-## Prerequisites
+## Requirements
 
-- Linux host with `/dev/kvm` (bare metal or a KVM-enabled VM).
-- Packages: `qemu-system-x86_64` or `qemu-system-aarch64`, `iproute2` (`ip`),
-  `nftables` (`nft`), `util-linux` >= 2.32 (`unshare --mount --propagation`), the
-  `wireguard` kernel module, and OVMF/AAVMF UEFI firmware.
-- `sudo` (the network + mount namespace topology requires root).
+### Agent runtime (any host that runs `otherix-agent`)
+
+What the agent needs to boot VMs and build the network fabric - dev or prod:
+
+- **QEMU**: `qemu-system-x86_64` (amd64) or `qemu-system-aarch64` (arm64) to run
+  VMs, plus `qemu-img` to inspect/resize disk images. These are the only two
+  external binaries the agent execs (`internal/agent/qemu/{cmdline,img}.go`).
+- **KVM**: `/dev/kvm` for hardware acceleration. Without it the agent falls back
+  to TCG software emulation (`internal/agent/qemu/cmdline.go` `DetectAccelerator`)
+  - functional but far too slow for real use, so dev treats KVM as required.
+  Access needs membership in the `kvm` group (or root).
+- **Kernel modules** (loadable): `wireguard`, `vxlan`, `tun`, `bridge`, and
+  `nf_tables` + the nft NAT modules (`nft_masq`/`nft_chain_nat`). The agent
+  builds the fabric via netlink in-process; it does **not** shell out to
+  `ip`/`nft`/`wg`.
+- **UEFI firmware (arm64 only)**: `/usr/share/AAVMF/AAVMF_CODE.fd` (package
+  `qemu-efi-aarch64`), configurable via `qemu.aarch64_firmware_path`. amd64 needs
+  no firmware (SeaBIOS is built into QEMU).
+- **Capability**: `CAP_NET_ADMIN` (the netlink network fabric).
+
+The agent does **not** require `wireguard-tools`, `nftables`, `iproute2`, or
+`genisoimage`/`cloud-localds`: WireGuard is configured via `wgctrl`, nftables via
+netlink, and cloud-init seed ISOs are built in pure Go (`go-diskfs`).
+
+Install (Debian/Ubuntu):
+
+```bash
+sudo apt-get install -y qemu-system-x86 qemu-utils                    # amd64
+sudo apt-get install -y qemu-system-arm qemu-utils qemu-efi-aarch64   # arm64
+```
+
+### Dev-topology extras (for `make local-dev-start` on this host)
+
+Beyond the agent itself, the two-node netns wiring
+(`dev/scripts/linux-multinode.sh`) needs, on the host:
+
+- `iproute2` (`ip`) and `nftables` (`nft`) - build the bridge/netns/veth +
+  host NAT for VM image pulls.
+- `util-linux` >= 2.32 (`unshare --mount --propagation`) - the per-agent mount
+  namespace.
+- `sudo` (the netns + mount-namespace topology requires root).
 - Go toolchain (to build the binaries).
 
 `make local-dev-start` runs a dependency preflight and fails with the exact
-missing package if anything is absent.
+missing dependency if anything is absent.
 
 ## Topology
 
