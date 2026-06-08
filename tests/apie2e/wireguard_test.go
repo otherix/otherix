@@ -58,12 +58,12 @@ type wgHeartbeatRequest struct {
 }
 
 type wgHeartbeatCaps struct {
-	CPUModel       string     `json:"cpu_model"`
-	CPUFlags       []string   `json:"cpu_flags"`
-	CPUCoresTotal  int32      `json:"cpu_cores_total"`
-	MemoryTotalMib int64      `json:"memory_total_mib"`
-	KernelVersion  string     `json:"kernel_version"`
-	QEMUVersion    string     `json:"qemu_version"`
+	CPUModel       string   `json:"cpu_model"`
+	CPUFlags       []string `json:"cpu_flags"`
+	CPUCoresTotal  int32    `json:"cpu_cores_total"`
+	MemoryTotalMib int64    `json:"memory_total_mib"`
+	KernelVersion  string   `json:"kernel_version"`
+	QEMUVersion    string   `json:"qemu_version"`
 }
 
 type wgHeartbeatRes struct {
