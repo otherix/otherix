@@ -74,11 +74,10 @@ the cluster-default pool `/opt/otherix/pools/default` resolves to per-node
 storage under `/opt/otherix/dev/nodeN/pools`). Per-node state lives under
 `/opt/otherix/dev/node{1,2}/` (root-owned).
 
-The CP reaches each agent over mTLS at the agent's cert FQDN
-(`node-node-N.agents.otherix.local`), which `up` maps to the node's netns IP in
-`/etc/hosts` (a marked block removed by `down`) - the netns IP itself is not in
-the agent server cert SAN, so this name is how the CP's hostname verification
-passes, mirroring the `*.agents.otherix.local` addressing used in production.
+The CP reaches each agent over mTLS at its advertised netns IP
+(`https://10.77.0.N:9443`), which is included in the agent server cert SAN: the CP
+derives that SAN entry from the node's `advertised_endpoint` when it signs the
+cert at join. No `/etc/hosts` mapping is needed.
 
 ## Bring up / tear down
 
