@@ -28,6 +28,9 @@ set -euo pipefail
 # shellcheck source=../lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 
+# This smoke inspects the kernel WireGuard state with `wg`; require it up front.
+smoke_require_node_cmd wg
+
 # --- configuration -----------------------------------------------------
 # Two-node dev stack: the VM lands on node-1 because only node-1 carries
 # the bridge for $BRIDGE_NET; node-2 is a WG-mesh-only peer without it, so

@@ -68,3 +68,17 @@ run_on() {
 # state_path root, for scripts that index nodes dynamically.
 smoke_handle() { local v="SMOKE_HANDLE_$1"; printf '%s' "${!v}"; }
 smoke_state()  { local v="SMOKE_STATE_$1";  printf '%s' "${!v}"; }
+
+# smoke_require_node_cmd <cmd> — fail early with an actionable message if a tool a
+# smoke runs ON a node is missing. On Linux the smoke runs it inside the netns,
+# which shares the host filesystem, so the binary must be on the host PATH; on
+# macOS the Lima VM provides it (provisioned in the VM image), so this is a no-op.
+smoke_require_node_cmd() {
+    [ "${SMOKE_PLATFORM}" = "netns" ] || return 0
+    command -v "$1" >/dev/null 2>&1 && return 0
+    echo "✗ '$1' not found on the host — required by this smoke (it runs inside the netns)" >&2
+    case "$1" in
+        wg) echo "  install it: sudo apt-get install -y wireguard-tools" >&2 ;;
+    esac
+    exit 1
+}

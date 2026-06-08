@@ -49,6 +49,11 @@ Beyond the agent itself, the two-node netns wiring
   namespace.
 - `sudo` (the netns + mount-namespace topology requires root).
 - Go toolchain (to build the binaries).
+- `wireguard-tools` (`wg`) - only for the `smoke-wireguard-mesh` and
+  `smoke-networking` smokes, which inspect the kernel WireGuard handshake with
+  `wg`. The agent itself does not need it (it uses the in-kernel API via
+  `wgctrl`); install it for those smokes:
+  `sudo apt-get install -y wireguard-tools`.
 
 `make local-dev-start` runs a dependency preflight and fails with the exact
 missing dependency if anything is absent.

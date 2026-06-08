@@ -28,6 +28,9 @@ set -euo pipefail
 # shellcheck source=../lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 
+# This smoke inspects the kernel WireGuard state with `wg`; require it up front.
+smoke_require_node_cmd wg
+
 # --- configuration -----------------------------------------------------
 OTX="${OTX:-./bin/otherix}"
 NODE1="${NODE1:-node-1}"
