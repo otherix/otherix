@@ -67,15 +67,8 @@ func (req joinRequest) validate() error {
 		return errInvalidArchitecture
 	}
 
-	endpoint := strings.TrimSpace(req.AdvertisedEndpoint)
-	switch {
-	case endpoint == "":
-		return errMissingAdvertisedEndpoint
-	case len(endpoint) > advertisedEndpointMaxLength:
-		return errAdvertisedEndpointTooLong
-	}
-	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" || u.Hostname() == "" {
-		return errAdvertisedEndpointInvalidURL
+	if err := validateAdvertisedEndpoint(req.AdvertisedEndpoint); err != nil {
+		return err
 	}
 
 	host := strings.TrimSpace(req.MigrationHost)
@@ -95,6 +88,24 @@ func (req joinRequest) validate() error {
 		return errMigrationPortInvalid
 	}
 
+	return nil
+}
+
+// validateAdvertisedEndpoint enforces that advertised_endpoint is present,
+// within bounds, and an https URL with a host. The endpoint feeds the agent
+// serving-cert SAN at sign time, so a malformed value is rejected up front.
+// Whitespace-only collapses to empty and is treated as missing.
+func validateAdvertisedEndpoint(raw string) error {
+	endpoint := strings.TrimSpace(raw)
+	switch {
+	case endpoint == "":
+		return errMissingAdvertisedEndpoint
+	case len(endpoint) > advertisedEndpointMaxLength:
+		return errAdvertisedEndpointTooLong
+	}
+	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return errAdvertisedEndpointInvalidURL
+	}
 	return nil
 }
 
