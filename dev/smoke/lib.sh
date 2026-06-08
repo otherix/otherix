@@ -1,0 +1,55 @@
+# dev/smoke/lib.sh — platform abstraction shared by dev/smoke/*/run.sh.
+#
+# The two-node dev stack is backed by two Lima VMs on macOS and by two network
+# namespaces (otns1/otns2) on native Linux. Smoke scripts source this file and
+# target nodes through run_on / the per-node handles instead of calling limactl
+# directly, so the same smoke runs unchanged on both platforms:
+#
+#   macOS : run_on <handle> <cmd...> -> limactl shell <handle> -- <cmd...>
+#   Linux : run_on <handle> <cmd...> -> sudo ip netns exec <handle> <cmd...>
+#
+# Handles and state dirs (the agent state_path root, where vms/<id>/serial.log
+# and wg/private.key live) are exposed per node:
+#   SMOKE_HANDLE_1 / SMOKE_HANDLE_2   node-1 / node-2 execution handle
+#   SMOKE_STATE_1  / SMOKE_STATE_2    node-1 / node-2 agent state_path root
+#
+# This file is sourced, not executed; it sets shell variables in the caller.
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # SMOKE_* vars are the public API, consumed by sourcing scripts
+
+case "$(uname -s)" in
+    Darwin)
+        SMOKE_PLATFORM="lima"
+        SMOKE_HANDLE_1="${VM1:-otherix-dev-1}"
+        SMOKE_HANDLE_2="${VM2:-otherix-dev-2}"
+        SMOKE_STATE_1="/opt/otherix"
+        SMOKE_STATE_2="/opt/otherix"
+        ;;
+    Linux)
+        SMOKE_PLATFORM="netns"
+        SMOKE_HANDLE_1="otns1"
+        SMOKE_HANDLE_2="otns2"
+        SMOKE_STATE_1="/opt/otherix/dev/node1"
+        SMOKE_STATE_2="/opt/otherix/dev/node2"
+        ;;
+    *)
+        echo "unsupported platform: $(uname -s)" >&2
+        exit 1
+        ;;
+esac
+
+# run_on <handle> <cmd...> — run a command on the node identified by <handle>
+# (a Lima VM name on macOS, a netns name on Linux). On Linux the command runs as
+# root inside the namespace, so an inner `sudo` in <cmd...> is a harmless no-op.
+run_on() {
+    local handle="$1"; shift
+    case "${SMOKE_PLATFORM}" in
+        lima)  limactl shell "${handle}" -- "$@" ;;
+        netns) sudo ip netns exec "${handle}" "$@" ;;
+    esac
+}
+
+# smoke_handle <1|2> / smoke_state <1|2> — accessors for the per-node handle and
+# state_path root, for scripts that index nodes dynamically.
+smoke_handle() { local v="SMOKE_HANDLE_$1"; printf '%s' "${!v}"; }
+smoke_state()  { local v="SMOKE_STATE_$1";  printf '%s' "${!v}"; }
