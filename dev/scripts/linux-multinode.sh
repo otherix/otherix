@@ -33,11 +33,18 @@ SUBNET="10.77.0.0/24"
 NAT_TABLE="otherix-dev-nat"
 STATE_ROOT="/opt/otherix/dev"
 POOL_MOUNTPOINT="/opt/otherix/pools"
+HOSTS_MARKER="otherix-dev-multinode"
 
 node_ns()   { echo "otns$1"; }
 node_ip()   { echo "10.77.0.$1"; }
 node_veth() { echo "veth-otns$1"; }
 node_dir()  { echo "${STATE_ROOT}/node$1"; }
+# node_fqdn matches the agent server cert SAN minted by auth.SignCSR
+# (DNS "node-<nodeName>.agents.otherix.local"); nodeName here is "node-N", so the
+# FQDN is "node-node-N.agents.otherix.local". The CP dials the agent at this name
+# (resolved to the netns IP via /etc/hosts, see up/down) so mTLS hostname
+# verification passes - the netns IP itself is not in the agent cert SAN.
+node_fqdn() { echo "node-node-$1.agents.otherix.local"; }
 
 require_root() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -127,6 +134,19 @@ up() {
         fi
     fi
 
+    # Map each agent's cert FQDN (node-node-N.agents.otherix.local, the SAN
+    # auth.SignCSR mints) to its netns IP, so the CP's mTLS hostname check passes
+    # when it dials the agent at that name. Idempotent; removed by down().
+    if ! grep -q "${HOSTS_MARKER}" /etc/hosts 2>/dev/null; then
+        {
+            echo "# ${HOSTS_MARKER} BEGIN"
+            for n in 1 2; do
+                echo "$(node_ip "${n}") $(node_fqdn "${n}")"
+            done
+            echo "# ${HOSTS_MARKER} END"
+        } >> /etc/hosts
+    fi
+
     echo ">> linux-multinode up: bridge ${BRIDGE} ${BRIDGE_IP}, netns otns1/otns2, NAT ${NAT_TABLE}"
 }
 
@@ -145,6 +165,10 @@ down() {
     done
     ip link show "${BRIDGE}" >/dev/null 2>&1 && ip link del "${BRIDGE}"
     nft list table ip "${NAT_TABLE}" >/dev/null 2>&1 && nft delete table ip "${NAT_TABLE}"
+
+    if grep -q "${HOSTS_MARKER}" /etc/hosts 2>/dev/null; then
+        sed -i "/# ${HOSTS_MARKER} BEGIN/,/# ${HOSTS_MARKER} END/d" /etc/hosts
+    fi
 
     if [ "${wipe}" = "--wipe" ]; then
         rm -rf "${STATE_ROOT}"
@@ -169,7 +193,7 @@ do_bootstrap() {
         --ca-fingerprint "sha256:${fp}" \
         --cp-url "https://${BRIDGE_IP}:8443" \
         --node-name "node-${n}" \
-        --advertised-endpoint "https://${ip}:9443" \
+        --advertised-endpoint "https://$(node_fqdn "${n}"):9443" \
         --migration-host "${ip}" \
         --migration-port-range-start 49152 \
         --migration-port-range-end 49251 \
