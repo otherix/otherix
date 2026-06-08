@@ -63,7 +63,11 @@ if [ "${stopped}" -eq 0 ] && [ -z "${orphans}" ]; then
     echo "   no api-server processes to stop"
 fi
 
-echo ">> Step 2/3 — Stop + delete Lima VM"
+if [ "$(uname -s)" = "Darwin" ]; then
+    echo ">> Step 2/3 — Stop + delete Lima VMs"
+else
+    echo ">> Step 2/3 — Tear down netns topology + per-node state"
+fi
 make --no-print-directory clean-dev
 
 echo ">> Step 3/3 — Reset embedded etcd (wipe data dir)"
@@ -72,7 +76,11 @@ make --no-print-directory etcd-reset >/dev/null
 echo ""
 echo ">> local-dev-stop complete — system reset"
 echo "   etcd data dir wiped (.local/etcd)"
-echo "   Lima VMs destroyed (otherix-dev-1, otherix-dev-2)"
+if [ "$(uname -s)" = "Darwin" ]; then
+    echo "   Lima VMs destroyed (otherix-dev-1, otherix-dev-2)"
+else
+    echo "   netns topology + /opt/otherix/dev removed (otns1, otns2, otdev0)"
+fi
 echo "   api-server stopped"
 echo ""
 echo "   Run 'make local-dev-start' to bring everything back up."

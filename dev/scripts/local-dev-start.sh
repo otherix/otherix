@@ -97,12 +97,23 @@ echo ">> Step 1/8 — Pre-flight port availability"
 port_fails=0
 check_port_free 8080 "CP main listener"    || port_fails=$((port_fails+1))
 check_port_free 8443 "CP agent listener"   || port_fails=$((port_fails+1))
-check_port_free 9443 "agent-1 (Lima fwd)"  || port_fails=$((port_fails+1))
-check_port_free 9444 "agent-2 (Lima fwd)"  || port_fails=$((port_fails+1))
+if [ "$(uname -s)" = "Darwin" ]; then
+    # Lima forwards the in-VM agent ports onto the host; check them.
+    check_port_free 9443 "agent-1 (Lima fwd)" || port_fails=$((port_fails+1))
+    check_port_free 9444 "agent-2 (Lima fwd)" || port_fails=$((port_fails+1))
+else
+    # Linux agents live inside netns — their 9443 is not on the host. Instead
+    # assert the dev topology is not already up.
+    if ip link show otdev0 >/dev/null 2>&1 || ip netns list 2>/dev/null | grep -qE '^otns[12]$'; then
+        echo "✗ Linux dev topology already present (otdev0 / otns1 / otns2)" >&2
+        echo "  Run 'make local-dev-stop' first." >&2
+        port_fails=$((port_fails+1))
+    fi
+fi
 if [ "${port_fails}" -gt 0 ]; then
     exit 1
 fi
-echo "   ✓ 8080 / 8443 / 9443 / 9444 all free"
+echo "   ✓ required host ports free; dev topology clear"
 
 echo ">> Step 2/8 — Build api + agent + cli"
 make --no-print-directory build >/dev/null
@@ -115,8 +126,8 @@ make --no-print-directory bootstrap-dev
 # agent binary stage) run async and can take 30-60s longer on first start.
 # Without this gate, seed-dev Step 4 (`limactl shell ... otherix-agent
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
-# landed yet. Linux native skips entirely — bootstrap-dev-linux is
-# synchronous (build + systemd unit install).
+# landed yet. Linux native takes the else branch below (a netns-readiness
+# check) — bootstrap-dev-linux is synchronous (build + netns topology up).
 echo ">> Step 4/8 — Lima VM readiness (macOS only, both VMs)"
 if [ "$(uname -s)" = "Darwin" ]; then
     for vm in otherix-dev-1 otherix-dev-2; do
@@ -156,7 +167,13 @@ if [ "$(uname -s)" = "Darwin" ]; then
         echo "   ✓ ${vm} responsive, agent binary staged"
     done
 else
-    echo "   (Linux native — bootstrap-dev is synchronous, no readiness gate needed)"
+    for ns in otns1 otns2; do
+        if ! ip netns list 2>/dev/null | grep -qw "${ns}"; then
+            echo "✗ netns ${ns} missing after bootstrap-dev (topology 'up' failed?)" >&2
+            exit 1
+        fi
+    done
+    echo "   ✓ netns otns1 / otns2 present"
 fi
 
 echo ">> Step 5/8 — Start otherix-api in background"
@@ -192,6 +209,10 @@ echo "   ✓ CP reachable at http://localhost:8080"
 echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-dev)"
 make --no-print-directory seed-dev
 
+# Render the demo VM manifest for this host's arch so `create -f demo-vm.yaml`
+# works on amd64 and arm64 without hand-editing (gitignored output).
+make --no-print-directory demo-manifest
+
 # No pool-ready wait: VM create is admission-only (returns 201 pending) and the
 # CP scheduler binds the VM once the default pool reconciles to ready, so
 # `create -f demo-vm.yaml` no longer needs the pool to be ready first - the VM
@@ -199,6 +220,11 @@ make --no-print-directory seed-dev
 echo ">> Step 8/8 — Final sanity (otherix node list)"
 "${REPO_ROOT}/bin/otherix" node list
 
+if [ "$(uname -s)" = "Darwin" ]; then
+    NODES_LINE="Lima VMs   : otherix-dev-1 (node-1) / otherix-dev-2 (node-2)"
+else
+    NODES_LINE="netns      : otns1 (node-1) / otns2 (node-2)"
+fi
 cat <<EOF
 
 >> local-dev-start complete
@@ -206,7 +232,7 @@ cat <<EOF
    etcd data  : ${REPO_ROOT}/.local/etcd (embedded member)
    api-server : http://localhost:8080 (PID $(cat "${PID_FILE}"))
    api log    : ${LOG_FILE}
-   Lima VMs   : otherix-dev-1 (node-1) / otherix-dev-2 (node-2)
+   ${NODES_LINE}
    CLI        : ${REPO_ROOT}/bin/otherix (cluster: dev)
 
 Try:

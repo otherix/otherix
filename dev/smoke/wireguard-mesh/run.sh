@@ -17,7 +17,7 @@
 # PREREQUISITES: a seeded two-node dev stack, i.e. run AFTER
 #   make local-dev-start
 # so the CP is up on http://localhost:8080, the `dev` CLI cluster is
-# configured, and node-1 (otherix-dev-1) + node-2 (otherix-dev-2) are
+# configured, and node-1 + node-2 (Lima VMs on macOS, netns on Linux) are
 # both `ready` with otwg0 up. CP + agent binaries MUST be built from the
 # current tree (the WG handshake observation is N2c-2).
 #
@@ -25,10 +25,14 @@
 
 set -euo pipefail
 
+# shellcheck source=../lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
+
+# This smoke inspects the kernel WireGuard state with `wg`; require it up front.
+smoke_require_node_cmd wg
+
 # --- configuration -----------------------------------------------------
 OTX="${OTX:-./bin/otherix}"
-VM1="${VM1:-otherix-dev-1}"
-VM2="${VM2:-otherix-dev-2}"
 NODE1="${NODE1:-node-1}"
 NODE2="${NODE2:-node-2}"
 WG_IFACE="otwg0"
@@ -41,8 +45,8 @@ info() { echo "${YEL}..${NC} $*"; }
 fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 
 otx()   { "$OTX" "$@"; }
-invm1() { limactl shell "$VM1" -- "$@"; }
-invm2() { limactl shell "$VM2" -- "$@"; }
+invm1() { run_on "$SMOKE_HANDLE_1" "$@"; }
+invm2() { run_on "$SMOKE_HANDLE_2" "$@"; }
 
 # wg_field NODE JQ_PATH -> prints the requested field from the node's WG block
 wg_field() {
@@ -53,7 +57,6 @@ wg_field() {
 # --- preconditions -----------------------------------------------------
 echo "=== wireguard-mesh smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-command -v limactl >/dev/null || fail "limactl is required"
 curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
 for n in "$NODE1" "$NODE2"; do
   st="$(otx node get "$n" --output json 2>/dev/null | jq -r '.status' || true)"
@@ -70,9 +73,9 @@ OVL2_CIDR="$(wg_field "$NODE2" '.wireguard.overlay_ip')"
 [[ "$OVL1_CIDR" != "$OVL2_CIDR" ]] || fail "both nodes share overlay_ip ${OVL1_CIDR}"
 OVL1_IP="${OVL1_CIDR%/*}"; OVL2_IP="${OVL2_CIDR%/*}"
 invm1 ip -4 addr show "$WG_IFACE" | grep -q "inet $OVL1_CIDR" \
-  || fail "$VM1 $WG_IFACE missing overlay address $OVL1_CIDR"
+  || fail "$SMOKE_HANDLE_1 $WG_IFACE missing overlay address $OVL1_CIDR"
 invm2 ip -4 addr show "$WG_IFACE" | grep -q "inet $OVL2_CIDR" \
-  || fail "$VM2 $WG_IFACE missing overlay address $OVL2_CIDR"
+  || fail "$SMOKE_HANDLE_2 $WG_IFACE missing overlay address $OVL2_CIDR"
 pass "$WG_IFACE up: $NODE1=$OVL1_CIDR, $NODE2=$OVL2_CIDR"
 
 # --- step 2: operator CLI shows the mesh established (primary) ----------
@@ -120,17 +123,17 @@ handshake_recent() {
   now="$($who date +%s)"
   (( now - ts < 180 ))
 }
-handshake_recent invm1 "$PUB2" || fail "$VM1 has no recent handshake with $NODE2 ($PUB2)"
-handshake_recent invm2 "$PUB1" || fail "$VM2 has no recent handshake with $NODE1 ($PUB1)"
+handshake_recent invm1 "$PUB2" || fail "$SMOKE_HANDLE_1 has no recent handshake with $NODE2 ($PUB2)"
+handshake_recent invm2 "$PUB1" || fail "$SMOKE_HANDLE_2 has no recent handshake with $NODE1 ($PUB1)"
 pass "real WG handshake in the kernel both directions (latest-handshakes < 180s)"
 
 # --- step 4: overlay datapath (ping across otwg0) ----------------------
 echo "=== step 4: overlay datapath - ping across otwg0 ==="
 invm1 ping -c 3 -W 2 "$OVL2_IP" >/dev/null 2>&1 \
-  || fail "$VM1 cannot ping $NODE2 overlay $OVL2_IP across $WG_IFACE"
+  || fail "$SMOKE_HANDLE_1 cannot ping $NODE2 overlay $OVL2_IP across $WG_IFACE"
 pass "$NODE1 -> $NODE2 overlay ping ($OVL1_IP -> $OVL2_IP)"
 invm2 ping -c 3 -W 2 "$OVL1_IP" >/dev/null 2>&1 \
-  || fail "$VM2 cannot ping $NODE1 overlay $OVL1_IP across $WG_IFACE"
+  || fail "$SMOKE_HANDLE_2 cannot ping $NODE1 overlay $OVL1_IP across $WG_IFACE"
 pass "$NODE2 -> $NODE1 overlay ping ($OVL2_IP -> $OVL1_IP)"
 
 echo

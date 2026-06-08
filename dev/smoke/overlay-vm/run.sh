@@ -35,6 +35,9 @@
 
 set -euo pipefail
 
+# shellcheck source=../lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
+
 # --- configuration -----------------------------------------------------
 # Resource names, node pinning, subnet, and the two guest IPs are fixed in the
 # committed manifests (manifests/overlay.yaml + manifests/vms.yaml.tmpl); the
@@ -42,13 +45,11 @@ set -euo pipefail
 # sync with those files. Only IMAGE_URL / ARCH are rendered into the template.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
-VM1="${VM1:-otherix-dev-1}"           # Lima instance backing node-1
-VM2="${VM2:-otherix-dev-2}"           # Lima instance backing node-2
 NODE1="node-1"
 NODE2="node-2"
 NET="ovvm-smoke"                      # fixed; the smoke delete-firsts any stale leftover
-IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"  # Noble minimal arm64 cloudimg
-ARCH="${ARCH:-arm64}"
+IMAGE_URL="${IMAGE_URL:-${SMOKE_IMAGE_URL}}"  # default: host-arch Noble minimal cloudimg
+ARCH="${ARCH:-${SMOKE_ARCH}}"
 IP1="10.71.0.10"
 IP2="10.71.0.11"
 PING_WAIT="${PING_WAIT:-720}"         # seconds to wait for the cross-node ping sentinel.
@@ -65,8 +66,8 @@ info() { echo "${YEL}..${NC} $*"; }
 fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 
 otx()   { "$OTX" "$@"; }
-invm1() { limactl shell "$VM1" -- "$@"; }
-invm2() { limactl shell "$VM2" -- "$@"; }
+invm1() { run_on "$SMOKE_HANDLE_1" "$@"; }
+invm2() { run_on "$SMOKE_HANDLE_2" "$@"; }
 
 # overlay_ip NODE -> prints the node's otwg0 overlay host IP (no /prefix)
 overlay_ip() { otx node get "$1" --output json 2>/dev/null | jq -r '.wireguard.overlay_ip' | cut -d/ -f1; }
@@ -98,7 +99,7 @@ net_ready_both() {
 #     successful open proves the full L3 path (ARP over the overlay flood entry +
 #     the unicast frame across the encrypted VXLAN). The OVERLAY_PING_OK sentinel
 #     is echoed to the guest serial console, which the agent persists to
-#     /opt/otherix/vms/<id>/serial.log (no SSH into the guest required).
+#     <state_root>/vms/<id>/serial.log (no SSH into the guest required).
 cleanup() {
   echo "--- cleanup ---"
   otx vm delete "${NET}-a" --wait --force >/dev/null 2>&1 || true
@@ -110,7 +111,6 @@ trap cleanup EXIT
 # --- preconditions -----------------------------------------------------
 echo "=== overlay-vm smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-command -v limactl >/dev/null || fail "limactl is required"
 curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
 CP_VERSION="$(curl -fsS http://localhost:8080/healthz | jq -r '.version')"
 info "CP version: ${CP_VERSION}"
@@ -195,16 +195,16 @@ echo "=== step 2: CP-distributed FDB present on both nodes (no manual fdb) ==="
 # VTEP: an all-zeros BUM/flood entry AND the peer VM's unicast MAC entry. The
 # agent installs both; nothing in this smoke runs `bridge fdb add`. We assert
 # both the flood entry and at least one non-zero unicast entry to the peer VTEP.
-fdb_ok() {  # $1=lima-vm  $2=peer-overlay-ip
+fdb_ok() {  # $1=node-handle  $2=peer-overlay-ip
   local vm="$1" peer_ovl="$2" dump
-  dump="$(limactl shell "$vm" -- bridge fdb show dev "$VTEP" 2>/dev/null || true)"
+  dump="$(run_on "$vm" bridge fdb show dev "$VTEP" 2>/dev/null || true)"
   echo "$dump" | grep -qi "00:00:00:00:00:00 .*dst ${peer_ovl}" || return 1   # BUM/flood
   echo "$dump" | grep -Eiv "00:00:00:00:00:00" | grep -qi "dst ${peer_ovl}" || return 1  # peer-VM unicast
   return 0
 }
 deadline=$(( SECONDS + FDB_WAIT )); ok=0
 while (( SECONDS < deadline )); do
-  if fdb_ok "$VM1" "$OVL2" && fdb_ok "$VM2" "$OVL1"; then ok=1; break; fi
+  if fdb_ok "$SMOKE_HANDLE_1" "$OVL2" && fdb_ok "$SMOKE_HANDLE_2" "$OVL1"; then ok=1; break; fi
   sleep 5
 done
 if (( ok != 1 )); then
@@ -218,11 +218,11 @@ pass "both nodes: CP-distributed FDB on $VTEP (flood + peer-VM unicast, no manua
 echo "=== step 3: cross-node VM-to-VM reachability over the overlay ==="
 # VM-A's cloud-init TCP-probes VM-B's sshd (:22) over the overlay and writes
 # OVERLAY_PING_OK to its serial console on success; the agent persists that
-# console to /opt/otherix/vms/<id>/serial.log. A successful connect proves ARP
+# console to <state_root>/vms/<id>/serial.log. A successful connect proves ARP
 # resolved across the overlay (via the CP flood entry) and the unicast frame
 # traversed the encrypted VXLAN to the peer guest - all on the CP-distributed
 # FDB, no manual neigh/fdb. (The minimal cloudimg has no ping, hence /dev/tcp.)
-SERIAL_A="/opt/otherix/vms/${VMID_A}/serial.log"
+SERIAL_A="${SMOKE_STATE_1}/vms/${VMID_A}/serial.log"
 info "watching $SERIAL_A on $NODE1 for OVERLAY_PING_OK (<= ${PING_WAIT}s)"
 deadline=$(( SECONDS + PING_WAIT )); seen=0
 while (( SECONDS < deadline )); do

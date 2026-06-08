@@ -1,0 +1,47 @@
+# Otherix agent dev config — native Linux, two-node netns topology.
+#
+# Rendered per node by dev/scripts/linux-multinode.sh: __NODE_IP__ is the node's
+# underlay IP (10.77.0.1 / 10.77.0.2) and __NODE_DIR__ is its state dir
+# (/opt/otherix/dev/node1 / .../node2). The script renders this file BEFORE
+# running `otherix-agent bootstrap`, which writes a config only when absent
+# (cmd/agent/bootstrap.go fileExists guard), so this rendered config — including
+# the wireguard block — survives bootstrap.
+#
+# Each agent runs inside its own network namespace (otns1/otns2) and its own
+# mount namespace, with /opt/otherix/pools bind-mounted to __NODE_DIR__/pools, so
+# the CP-dictated cluster-default pool path resolves to per-node storage.
+
+server:
+  listen: "0.0.0.0:9443"          # inside the netns; isolated from the peer agent
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_grace: 30s
+
+logger:
+  level: "debug"
+  format: "json"
+
+state_path: "__NODE_DIR__/vms"
+
+control_plane:
+  url: "https://10.77.0.254:8443"
+  heartbeat_interval: 5s
+
+tls:
+  ca_cert_path: "__NODE_DIR__/certs/ca.crt"
+  cert_path:    "__NODE_DIR__/certs/agent.crt"
+  key_path:     "__NODE_DIR__/certs/agent.key"
+
+migration:
+  host: "__NODE_IP__"
+  port_range_start: 49152
+  port_range_end: 49251
+
+wireguard:
+  listen_port: 51820
+  persistent_keepalive: 25s
+  private_key_path: "__NODE_DIR__/wg/private.key"
+  advertised_endpoint: "__NODE_IP__:51820"
+
+qemu:
+  aarch64_firmware_path: "/usr/share/AAVMF/AAVMF_CODE.fd"
