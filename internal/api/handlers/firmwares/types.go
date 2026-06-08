@@ -47,13 +47,6 @@ type listResponse struct {
 	Meta paginationMeta `json:"meta"`
 }
 
-// nodeFirmwareListResponse is the payload for
-// GET /v1/nodes/{id}/firmwares.
-type nodeFirmwareListResponse struct {
-	Data []nodeFirmwareView `json:"data"`
-	Meta paginationMeta     `json:"meta"`
-}
-
 type paginationMeta struct {
 	NextCursor *string `json:"next_cursor"`
 }

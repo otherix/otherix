@@ -11,19 +11,6 @@ import (
 	"github.com/otherix/otherix/internal/agentapi"
 )
 
-// Firmware describes a firmware blob present on the mock node. Mirrors
-// agentapi.NodeInfoFirmware so the test API does not re-export the
-// generated types — a future codegen change will not fan out into
-// callers.
-type Firmware struct {
-	Name             string
-	Architecture     string // "amd64" | "arm64"
-	Type             string // "bios" | "uefi"
-	CodePath         string
-	VarsTemplatePath string
-	SecureBoot       bool
-}
-
 // StoragePool is the test API view of a storage pool registered with
 // the mock. ReportedAt is set internally by the mock on AddStoragePool
 // and refreshed by SetPoolCapacity; callers do not populate it.
@@ -157,25 +144,6 @@ type MigrationCapability struct {
 	PortRangeEnd   int
 	PortsInUse     int
 	PortsAvailable int
-}
-
-// firmwareToAPI converts a local Firmware into the codegen wire type.
-func firmwareToAPI(f Firmware) agentapi.NodeInfoFirmware {
-	out := agentapi.NodeInfoFirmware{
-		Name:         f.Name,
-		Architecture: agentapi.NodeInfoFirmwareArchitecture(f.Architecture),
-		Type:         agentapi.NodeInfoFirmwareType(f.Type),
-		CodePath:     f.CodePath,
-	}
-	if f.VarsTemplatePath != "" {
-		v := f.VarsTemplatePath
-		out.VarsTemplatePath = &v
-	}
-	if f.SecureBoot {
-		b := true
-		out.SecureBoot = &b
-	}
-	return out
 }
 
 // poolToAPI converts an internal storagePool into a StoragePoolReport.

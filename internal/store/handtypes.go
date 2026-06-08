@@ -33,8 +33,6 @@ type HeartbeatProjection interface {
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) error
 	UpdateNodeMemoryPressure(ctx context.Context, arg UpdateNodeMemoryPressureParams) error
 	UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error
-	LookupFirmwareByCatalog(ctx context.Context, arg LookupFirmwareByCatalogParams) (uuid.UUID, error)
-	UpsertNodeFirmware(ctx context.Context, arg UpsertNodeFirmwareParams) error
 	FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
 	UpsertVMRuntime(ctx context.Context, arg UpsertVMRuntimeParams) error
 	UpdateStoragePoolReconciliation(ctx context.Context, arg UpdateStoragePoolReconciliationParams) error

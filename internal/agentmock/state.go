@@ -58,7 +58,6 @@ type state struct {
 	labels             map[string]string
 
 	// Per-resource collections.
-	firmwares []Firmware
 	migration MigrationCapability
 	pools     map[string]storagePool
 	images    map[string]map[string]CachedImage // pool name → checksum → image
@@ -115,29 +114,6 @@ type storagePool struct {
 type vmLifecycleKey struct {
 	VMName string
 	Op     string
-}
-
-// AddFirmware registers a firmware blob in the node's local
-// catalogue. Reflected in the next /v1/info response and the next
-// heartbeat.
-func (m *Mock) AddFirmware(f Firmware) {
-	m.state.mu.Lock()
-	defer m.state.mu.Unlock()
-	m.state.firmwares = append(m.state.firmwares, f)
-}
-
-// RemoveFirmware drops a firmware by (name, architecture, type).
-// Returns false when no matching entry exists.
-func (m *Mock) RemoveFirmware(name, architecture, fwType string) bool {
-	m.state.mu.Lock()
-	defer m.state.mu.Unlock()
-	for i, f := range m.state.firmwares {
-		if f.Name == name && f.Architecture == architecture && f.Type == fwType {
-			m.state.firmwares = append(m.state.firmwares[:i], m.state.firmwares[i+1:]...)
-			return true
-		}
-	}
-	return false
 }
 
 // AddStoragePool registers a pool. Keying is by pool **name**; the

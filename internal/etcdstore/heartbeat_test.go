@@ -32,10 +32,6 @@ func TestInHeartbeatProjection(t *testing.T) {
 	if _, err := s.CreateNode(ctx, node); err != nil {
 		t.Fatalf("CreateNode: %v", err)
 	}
-	fw := fwParams(uniqueFwName("hbfw"), store.CpuArchAmd64, false)
-	if _, err := s.CreateFirmware(ctx, fw); err != nil {
-		t.Fatalf("CreateFirmware: %v", err)
-	}
 	pool := poolParams(node.ID, uniquePoolName("hbpool"))
 	if _, err := s.CreateStoragePool(ctx, pool); err != nil {
 		t.Fatalf("CreateStoragePool: %v", err)
@@ -63,17 +59,6 @@ func TestInHeartbeatProjection(t *testing.T) {
 		}
 		mc := int32(1)
 		if err := hp.UpdateNodeMemoryPressure(ctx, store.UpdateNodeMemoryPressureParams{ID: node.ID, MemoryPressureSince: since, MemoryPressureCount: mc}); err != nil {
-			return err
-		}
-		// Firmware catalogue lookup + node-firmware upsert.
-		fwID, err := hp.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{Name: fw.Name, Architecture: store.CpuArchAmd64, Type: store.FirmwareTypeUefi})
-		if err != nil {
-			return err
-		}
-		if fwID != fw.ID {
-			t.Errorf("LookupFirmwareByCatalog = %v, want %v", fwID, fw.ID)
-		}
-		if err := hp.UpsertNodeFirmware(ctx, store.UpsertNodeFirmwareParams{NodeID: node.ID, FirmwareID: fwID, CodePath: "/fw/code", Available: true}); err != nil {
 			return err
 		}
 		// Filter existing VM ids.
@@ -124,11 +109,6 @@ func TestInHeartbeatProjection(t *testing.T) {
 	}
 	if n.CPUCoresTotal == nil || *n.CPUCoresTotal != 8 || n.LastHeartbeatAt == nil || n.MemoryPressureCount != 1 {
 		t.Errorf("node after heartbeat = %+v", n)
-	}
-	// node_firmware projected -> ListNodeFirmwares returns it.
-	nfs, err := s.ListNodeFirmwares(ctx, store.ListNodeFirmwaresParams{NodeID: node.ID, LimitCount: 200})
-	if err != nil || len(nfs) != 1 {
-		t.Errorf("ListNodeFirmwares = (%v, %v), want 1", nfs, err)
 	}
 	// Runtime + node index landed -> ListVMsForNodeDeclared sees the VM, and the
 	// effective-availability/node-delete index is populated.

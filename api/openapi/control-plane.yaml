@@ -33,8 +33,7 @@ tags:
     description: One-time tokens for agent bootstrap.
   - name: firmwares
     description: |
-      UEFI/BIOS firmwares known to the cluster, plus per-node availability
-      reported by agents.
+      UEFI/BIOS firmwares known to the cluster.
   - name: storage-pools
     description: Per-node storage pools.
   - name: networks
@@ -799,8 +798,8 @@ paths:
 
         On receipt the Control Plane updates `nodes.last_heartbeat_at`,
         upserts capabilities into the matching `nodes` columns and the
-        `nodes.capabilities` jsonb, refreshes the `node_firmwares`
-        rows, and upserts each `vm_runtime` row from `vms[]`. A
+        `nodes.capabilities` jsonb, and upserts each `vm_runtime` row
+        from `vms[]`. A
         divergence between the reported `vms[]` and the CP's desired
         state schedules reconciliation work — that is internal CP
         logic, not part of the contract surface.
@@ -1171,9 +1170,7 @@ paths:
       tags: [firmwares]
       summary: Register a firmware (admin only).
       description: |
-        Creates a global firmware metadata record. Per-node availability and
-        on-disk paths are reported separately by each agent and surfaced via
-        `GET /v1/nodes/{id}/firmwares`.
+        Creates a global firmware metadata record.
 
         **Required permission:** `firmware:manage` (admin).
       security:
@@ -1297,30 +1294,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "500": { $ref: "#/components/responses/Internal" }
-
-  /v1/nodes/{id}/firmwares:
-    parameters:
-      - $ref: "#/components/parameters/NodeName"
-    get:
-      operationId: nodes.listFirmwares
-      tags: [firmwares, nodes]
-      summary: List firmwares available on a node (reported by the agent).
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Per-node firmware availability records.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/NodeFirmwareList"
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/storage-pools:
@@ -3931,7 +3904,7 @@ components:
       description: |
         Body of `POST /v1/nodes`. Carries the identity and migration
         ingress fields needed to insert a `pending` row. Capability
-        fields (cpu/memory/firmwares/labels/...) are not accepted here
+        fields (cpu/memory/labels/...) are not accepted here
         — they populate from the agent heartbeat after the agent joins.
       required:
         - name
@@ -3974,36 +3947,6 @@ components:
           maximum: 65535
           description: Must be `>= migration_port_range_start`.
 
-    HeartbeatFirmwareReport:
-      type: object
-      description: |
-        A firmware blob present on the reporting node. Mirrors the
-        agent-side `NodeInfoFirmware` schema in `agent.yaml`. The
-        Control Plane reconciles each entry against its `firmwares`
-        catalogue and upserts a `node_firmwares` row keyed on
-        `(node_id, firmware_id)`.
-      required: [name, architecture, type, code_path]
-      properties:
-        name:
-          type: string
-        architecture:
-          type: string
-          enum: [amd64, arm64]
-        type:
-          type: string
-          enum: [bios, uefi]
-        code_path:
-          type: string
-          description: Absolute path to the firmware code blob on the node.
-        vars_template_path:
-          type: [string, "null"]
-          description: |
-            Absolute path to the per-VM NVRAM template, when applicable
-            (UEFI). The agent copies this template per VM at start time.
-        secure_boot:
-          type: boolean
-          default: false
-
     NodeCapabilitiesReport:
       type: object
       description: |
@@ -4011,8 +3954,7 @@ components:
         Most fields land in dedicated `nodes.*` columns (see
         `migrations/00001_init.sql`); fields that have no dedicated
         column (`kvm_available`, `nested_virt`, `qemu_binaries`) are
-        merged into `nodes.capabilities` (jsonb). `firmwares[]` is
-        consumed separately and projected into `node_firmwares`.
+        merged into `nodes.capabilities` (jsonb).
 
         Capability values change rarely (kernel / QEMU upgrades). The
         more volatile per-tick numbers live in `NodeResourcesReport`.
@@ -4026,7 +3968,6 @@ components:
         - kvm_available
         - nested_virt
         - qemu_binaries
-        - firmwares
       properties:
         cpu_model:
           type: string
@@ -4071,10 +4012,6 @@ components:
           type: [object, "null"]
           additionalProperties: true
           description: Opaque agent-defined topology JSON; written to `nodes.numa_topology`.
-        firmwares:
-          type: array
-          items:
-            $ref: "#/components/schemas/HeartbeatFirmwareReport"
 
     NodeResourcesReport:
       type: object
@@ -5087,37 +5024,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Firmware"
-        meta:
-          $ref: "#/components/schemas/PaginationMeta"
-
-    NodeFirmware:
-      type: object
-      description: |
-        Per-node availability of a firmware as reported by the agent.
-      required: [firmware, code_path, available, reported_at]
-      properties:
-        firmware:
-          $ref: "#/components/schemas/Firmware"
-        code_path:
-          type: string
-          description: Absolute path to the firmware code blob on the node.
-        vars_path:
-          type: [string, "null"]
-          description: Absolute path to the firmware NVRAM template, when applicable.
-        available:
-          type: boolean
-        reported_at:
-          type: string
-          format: date-time
-
-    NodeFirmwareList:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/NodeFirmware"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 

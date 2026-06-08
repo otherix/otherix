@@ -56,7 +56,7 @@ testing), and the heartbeat-push wiring (`HeartbeatInterval` +
 
 ## Test API
 
-The Test API exposes state mutation (`AddFirmware`, `AddStoragePool`,
+The Test API exposes state mutation (`AddStoragePool`,
 `SetPoolCapacity`, `AddImage`, `EvictImage`, `SetMigrationCapability`,
 `SetCapability`), inspection (`URL`, `NodeID`, `ReceivedRequests`),
 heartbeat control (`SendHeartbeatNow`, `SuppressHeartbeats`,

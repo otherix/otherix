@@ -527,15 +527,6 @@ type NodeEffectiveAvailability struct {
 	MemoryEffectiveMib       *int64
 }
 
-type NodeFirmware struct {
-	NodeID     uuid.UUID
-	FirmwareID uuid.UUID
-	CodePath   string
-	VarsPath   *string
-	Available  bool
-	ReportedAt time.Time
-}
-
 // Pool availability with pending-VM-disk accounting. Subtracts vm_disks committed after last scan (CP committed but agent has not yet observed). Self-correcting once next scan completes. Operator-visible via the pool API + CLI; future scheduler integration.
 type PoolEffectiveCapacity struct {
 	ID                      uuid.UUID

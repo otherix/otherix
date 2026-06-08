@@ -64,7 +64,6 @@ type wgHeartbeatCaps struct {
 	MemoryTotalMib int64      `json:"memory_total_mib"`
 	KernelVersion  string     `json:"kernel_version"`
 	QEMUVersion    string     `json:"qemu_version"`
-	Firmwares      []struct{} `json:"firmwares"`
 }
 
 type wgHeartbeatRes struct {
@@ -478,7 +477,6 @@ func wgSendHeartbeat(t *testing.T, baseURL string, ag wgAgent, rep *wgHeartbeatR
 			MemoryTotalMib: 8192,
 			KernelVersion:  "test",
 			QEMUVersion:    "test",
-			Firmwares:      []struct{}{},
 		},
 		Resources: wgHeartbeatRes{
 			CPUCoresAvailable:  4,
@@ -529,7 +527,6 @@ func wgSendHeartbeatStatus(t *testing.T, baseURL string, ag wgAgent, rep *wgHear
 			MemoryTotalMib: 8192,
 			KernelVersion:  "test",
 			QEMUVersion:    "test",
-			Firmwares:      []struct{}{},
 		},
 		Resources: wgHeartbeatRes{
 			CPUCoresAvailable:  4,

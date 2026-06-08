@@ -246,9 +246,6 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 			return err
 		}
 		outcome.systemDisk = sysKind
-		if err := h.applyFirmwares(ctx, hp, agent.NodeID, body.Capabilities.Firmwares); err != nil {
-			return err
-		}
 		if err := h.applyVMs(ctx, hp, agent.NodeID, body.VMs); err != nil {
 			return err
 		}
@@ -997,38 +994,6 @@ func resolveMigration(ctx context.Context, hp store.HeartbeatProjection, nodeID 
 		return "", 0, 0, fmt.Errorf("reload node migration: %v", err)
 	}
 	return row.MigrationHost, row.MigrationPortRangeStart, row.MigrationPortRangeEnd, nil
-}
-
-func (h *Handler) applyFirmwares(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []firmwareReport) error {
-	for _, fr := range reports {
-		fwID, err := hp.LookupFirmwareByCatalog(ctx, store.LookupFirmwareByCatalogParams{
-			Name:         fr.Name,
-			Architecture: store.CPUArch(fr.Architecture),
-			Type:         store.FirmwareType(fr.Type),
-		})
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				h.log.WarnContext(ctx, "heartbeat firmware not in catalogue; skipping",
-					slog.String("node_id", nodeID.String()),
-					slog.String("firmware_name", fr.Name),
-					slog.String("firmware_architecture", fr.Architecture),
-					slog.String("firmware_type", fr.Type))
-				continue
-			}
-			return fmt.Errorf("firmware lookup: %v", err)
-		}
-		params := store.UpsertNodeFirmwareParams{
-			NodeID:     nodeID,
-			FirmwareID: fwID,
-			CodePath:   fr.CodePath,
-			VarsPath:   fr.VarsTemplatePath,
-			Available:  true,
-		}
-		if err := hp.UpsertNodeFirmware(ctx, params); err != nil {
-			return fmt.Errorf("upsert node_firmware: %v", err)
-		}
-	}
-	return nil
 }
 
 func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []vmReport) error {

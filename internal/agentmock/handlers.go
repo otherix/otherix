@@ -251,10 +251,6 @@ func (m *Mock) InfoGet(w http.ResponseWriter, r *http.Request) {
 
 func (m *Mock) buildNodeInfoLocked() agentapi.NodeInfo {
 	s := m.state
-	firmwares := make([]agentapi.NodeInfoFirmware, 0, len(s.firmwares))
-	for _, f := range s.firmwares {
-		firmwares = append(firmwares, firmwareToAPI(f))
-	}
 	uptime := max(int64(time.Since(s.startedAt).Seconds()), 0)
 	info := agentapi.NodeInfo{
 		NodeID:             s.nodeID,
@@ -271,7 +267,6 @@ func (m *Mock) buildNodeInfoLocked() agentapi.NodeInfo {
 		QEMUVersion:        s.qemuVersion,
 		KernelVersion:      s.kernelVersion,
 		QEMUBinaries:       cloneStringMap(s.qemuBinaries),
-		Firmwares:          firmwares,
 		Migration:          migrationToAPI(s.migration),
 		StartedAt:          s.startedAt,
 		UptimeSeconds:      uptime,

@@ -11,31 +11,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestAddRemoveFirmware(t *testing.T) {
-	m := Start(t, Options{})
-	fw := Firmware{
-		Name:         "OVMF",
-		Architecture: "amd64",
-		Type:         "uefi",
-		CodePath:     "/usr/share/OVMF/OVMF_CODE.fd",
-	}
-	m.AddFirmware(fw)
-
-	m.state.mu.Lock()
-	got := len(m.state.firmwares)
-	m.state.mu.Unlock()
-	if got != 1 {
-		t.Fatalf("len(firmwares) = %d, want 1", got)
-	}
-
-	if !m.RemoveFirmware("OVMF", "amd64", "uefi") {
-		t.Errorf("RemoveFirmware = false, want true")
-	}
-	if m.RemoveFirmware("OVMF", "amd64", "uefi") {
-		t.Errorf("RemoveFirmware on second call = true, want false")
-	}
-}
-
 func TestStoragePoolMutators(t *testing.T) {
 	m := Start(t, Options{})
 	name := "default"

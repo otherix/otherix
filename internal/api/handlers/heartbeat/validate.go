@@ -36,9 +36,6 @@ func validateRequest(b *requestBody) *validationFailure {
 	if v := validateResources(&b.Resources); v != nil {
 		return v
 	}
-	if v := validateFirmwares(b.Capabilities.Firmwares); v != nil {
-		return v
-	}
 	if v := validateVMs(b.VMs); v != nil {
 		return v
 	}
@@ -79,24 +76,6 @@ func validateResources(r *nodeResourcesReport) *validationFailure {
 	}
 	if r.SystemDiskAvailableBytes != nil && *r.SystemDiskAvailableBytes < 0 {
 		return &validationFailure{field: "resources.system_disk_available_bytes", message: "system_disk_available_bytes must be >= 0"}
-	}
-	return nil
-}
-
-func validateFirmwares(reports []firmwareReport) *validationFailure {
-	for i, fr := range reports {
-		if fr.Name == "" {
-			return &validationFailure{field: fmt.Sprintf("capabilities.firmwares[%d].name", i), message: "name is required"}
-		}
-		if err := validation.ValidateArchitecture(fr.Architecture); err != nil {
-			return &validationFailure{field: fmt.Sprintf("capabilities.firmwares[%d].architecture", i), message: err.Error()}
-		}
-		if err := validation.ValidateFirmwareType(fr.Type); err != nil {
-			return &validationFailure{field: fmt.Sprintf("capabilities.firmwares[%d].type", i), message: err.Error()}
-		}
-		if fr.CodePath == "" {
-			return &validationFailure{field: fmt.Sprintf("capabilities.firmwares[%d].code_path", i), message: "code_path is required"}
-		}
 	}
 	return nil
 }

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package firmwares hosts the /v1/firmwares/* HTTP handlers and the
-// read-only GET /v1/nodes/{id}/firmwares projection. CRUD is gated by
+// Package firmwares hosts the /v1/firmwares/* HTTP handlers. CRUD is gated by
 // `firmware:read` (every role) and `firmware:manage` (admin only) per
 // docs/rbac.md. Firmwares are cluster-wide metadata records with no
 // owner column — the projection returned to every caller is identical.
@@ -25,13 +24,6 @@
 // Delete is conditional on no active vms referencing the firmware: the
 // operator must remove or repoint the dependent VMs first. Firmwares have
 // no force-delete counterpart by design.
-//
-// Per-node firmware availability (GET /v1/nodes/{id}/firmwares) is a
-// read-only projection of node_firmwares populated by the future
-// agent heartbeat receiver. Until that receiver lands the table is
-// empty and the endpoint returns an empty list — clients can wire
-// against the contract today and the response shape "fills in" once
-// agents start reporting.
 package firmwares
 
 import (
@@ -41,25 +33,19 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // Store is the storage surface the firmwares handlers depend on: the
-// firmware domain methods plus the identifier-resolution contract
-// (resolver.Querier) that ListByNode uses to resolve the node path
-// parameter. *etcdstore.Store satisfies it; depending on the interface
-// rather than the concrete store narrows the handler's storage dependency
-// to the methods it uses and lets tests substitute a fake.
+// firmware domain methods. *etcdstore.Store satisfies it; depending on the
+// interface rather than the concrete store narrows the handler's storage
+// dependency to the methods it uses and lets tests substitute a fake.
 type Store interface {
-	resolver.Querier
-
 	FirmwareByID(ctx context.Context, id uuid.UUID) (store.Firmware, error)
 	DefaultFirmwareForArchType(ctx context.Context, arch store.CPUArch, ftype store.FirmwareType) (store.Firmware, error)
 	CreateFirmware(ctx context.Context, arg store.CreateFirmwareParams) (store.Firmware, error)
 	UpdateFirmware(ctx context.Context, arg store.UpdateFirmwareParams) (store.Firmware, error)
 	ListFirmwares(ctx context.Context, arg store.ListFirmwaresParams) ([]store.Firmware, error)
-	ListNodeFirmwares(ctx context.Context, arg store.ListNodeFirmwaresParams) ([]store.ListNodeFirmwaresRow, error)
 	DeleteFirmware(ctx context.Context, id uuid.UUID) error
 }
 
@@ -103,27 +89,5 @@ func toView(f store.Firmware) firmwareView {
 		IsDefault:    f.IsDefault,
 		CreatedAt:    f.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:    f.UpdatedAt.UTC().Format(time.RFC3339Nano),
-	}
-}
-
-// nodeFirmwareView mirrors components/schemas/NodeFirmware. The
-// nested firmware projection reuses firmwareView verbatim.
-type nodeFirmwareView struct {
-	Firmware   firmwareView `json:"firmware"`
-	CodePath   string       `json:"code_path"`
-	VarsPath   *string      `json:"vars_path"`
-	Available  bool         `json:"available"`
-	ReportedAt string       `json:"reported_at"`
-}
-
-// toNodeFirmwareView projects a (NodeFirmware, Firmware) pair into the
-// public response shape.
-func toNodeFirmwareView(nf store.NodeFirmware, f store.Firmware) nodeFirmwareView {
-	return nodeFirmwareView{
-		Firmware:   toView(f),
-		CodePath:   nf.CodePath,
-		VarsPath:   nf.VarsPath,
-		Available:  nf.Available,
-		ReportedAt: nf.ReportedAt.UTC().Format(time.RFC3339Nano),
 	}
 }

@@ -152,7 +152,6 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	caps := NodeCapabilities{
 		CPUFlags:     []string{},
 		QEMUBinaries: map[string]string{},
-		Firmwares:    []FirmwareReport{},
 	}
 
 	model, flags, cores := c.readCPUInfo()

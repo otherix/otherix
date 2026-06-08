@@ -191,7 +191,7 @@ type MigrationCap struct {
 }
 
 // NodeCapabilities is the slow-moving host inventory: CPU model,
-// kernel/qemu versions, NUMA topology, firmware catalogue.
+// kernel/qemu versions, NUMA topology.
 type NodeCapabilities struct {
 	CPUModel           string            `json:"cpu_model"`
 	CPUFlags           []string          `json:"cpu_flags"`
@@ -205,7 +205,6 @@ type NodeCapabilities struct {
 	NestedVirt         bool              `json:"nested_virt"`
 	QEMUBinaries       map[string]string `json:"qemu_binaries"`
 	NumaTopology       map[string]any    `json:"numa_topology,omitempty"`
-	Firmwares          []FirmwareReport  `json:"firmwares"`
 }
 
 // NodeResources is the per-tick free-resource snapshot. Free is
@@ -221,18 +220,6 @@ type NodeResources struct {
 	MemoryAvailableMib       int64  `json:"memory_available_mib"`
 	SystemDiskTotalBytes     *int64 `json:"system_disk_total_bytes,omitempty"`
 	SystemDiskAvailableBytes *int64 `json:"system_disk_available_bytes,omitempty"`
-}
-
-// FirmwareReport describes one firmware blob the agent has on disk.
-// The CP joins on (name, architecture, type) to firmwares.id and upserts
-// the resulting node_firmware row.
-type FirmwareReport struct {
-	Name             string  `json:"name"`
-	Architecture     string  `json:"architecture"`
-	Type             string  `json:"type"`
-	CodePath         string  `json:"code_path"`
-	VarsTemplatePath *string `json:"vars_template_path"`
-	SecureBoot       bool    `json:"secure_boot"`
 }
 
 // VMReport is one entry in the per-VM runtime list. The CP joins on

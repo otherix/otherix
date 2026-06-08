@@ -233,7 +233,6 @@ func TestOverlayNetworkDeclaredToAgents(t *testing.T) {
 			MemoryTotalMib: 8192,
 			KernelVersion:  "test",
 			QEMUVersion:    "test",
-			Firmwares:      []struct{}{},
 		},
 		Resources: wgHeartbeatRes{
 			CPUCoresAvailable:  4,

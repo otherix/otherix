@@ -112,7 +112,6 @@ type nodeCapabilitiesReport struct {
 	NestedVirt         bool              `json:"nested_virt"`
 	QEMUBinaries       map[string]string `json:"qemu_binaries"`
 	NumaTopology       map[string]any    `json:"numa_topology,omitempty"`
-	Firmwares          []firmwareReport  `json:"firmwares"`
 }
 
 type nodeResourcesReport struct {
@@ -125,15 +124,6 @@ type nodeResourcesReport struct {
 	// transition function silently carries state forward on NULL input.
 	SystemDiskTotalBytes     *int64 `json:"system_disk_total_bytes,omitempty"`
 	SystemDiskAvailableBytes *int64 `json:"system_disk_available_bytes,omitempty"`
-}
-
-type firmwareReport struct {
-	Name             string  `json:"name"`
-	Architecture     string  `json:"architecture"`
-	Type             string  `json:"type"`
-	CodePath         string  `json:"code_path"`
-	VarsTemplatePath *string `json:"vars_template_path"`
-	SecureBoot       bool    `json:"secure_boot"`
 }
 
 type vmReport struct {
