@@ -74,6 +74,17 @@ func TestValidateCreateRequest(t *testing.T) {
 		{name: "vcpus too large", req: func() vmCreateRequest { r := base(); r.VCPUs = 129; return r }()},
 		{name: "memory too small", req: func() vmCreateRequest { r := base(); r.MemoryMB = 64; return r }()},
 		{name: "memory too large", req: func() vmCreateRequest { r := base(); r.MemoryMB = 1 << 30; return r }()},
+		{
+			// A node hint is a node name; a uuid literal is rejected at
+			// admission so it never becomes a permanently-pending VM.
+			name: "node hint is uuid",
+			req:  func() vmCreateRequest { r := base(); s := uuid.New().String(); r.Node = &s; return r }(),
+		},
+		{
+			name: "node hint is name ok",
+			req:  func() vmCreateRequest { r := base(); s := "node-1"; r.Node = &s; return r }(),
+			ok:   true,
+		},
 	}
 
 	for _, tc := range cases {

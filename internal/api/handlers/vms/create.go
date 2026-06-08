@@ -296,6 +296,16 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			response.CodeValidationFailed, "memory_mb must be in [128, 524288]", nil)
 		return false
 	}
+	// A node hint is a node name, never a uuid. Rejecting a uuid literal here
+	// keeps the old admission-time 400 (the placement layer also guards via
+	// scheduler.ErrNodeHintIsUUID) so it never silently becomes a pending VM.
+	if req.Node != nil {
+		if _, err := uuid.Parse(*req.Node); err == nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "node must be a name, not a uuid", nil)
+			return false
+		}
+	}
 	// Mutual-exclusion check for the three-state cloud-init contract.
 	if req.CloudInitDisabled && req.UserData != nil && *req.UserData != "" {
 		response.WriteError(w, r, http.StatusBadRequest,

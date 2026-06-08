@@ -202,10 +202,14 @@ func buildBindNIC(vm store.VM, nicNetworkID *uuid.UUID) (*store.CreateVMNicParam
 }
 
 // schedulingReasonFor maps a bind error to the (reason, message, details) the
-// loop records on the still-pending VM. Every branch is cross-checked against
-// the scheduler sentinels in internal/scheduler/placement.go. The default
-// fallthrough (including a non-writable pool) is pool_not_ready: the pool is
-// present but its node/instance is not yet usable.
+// loop records on the still-pending VM. The mapped branches cover every
+// scheduler sentinel that can reach the loop: ErrPoolNotFound,
+// ErrInsufficientResources, ErrNoEligibleNodes (refined into network/pressure),
+// and ErrPoolNotOnNode, plus the local errNetworkNotFound and the
+// non-writable-pool case. ErrNodeHintIsUUID is rejected at admission (a uuid
+// node hint never reaches here), and ErrDefaultPoolNotSet / ErrUnknownAlgorithm
+// are admission/config-time. The default fallthrough is pool_not_ready: a
+// transient infra error retried on the next tick.
 func schedulingReasonFor(err error, spec store.SchedulingSpec) (reason, message string, details []byte) {
 	switch {
 	case errors.Is(err, errNetworkNotFound):
@@ -216,6 +220,12 @@ func schedulingReasonFor(err error, spec store.SchedulingSpec) (reason, message 
 		return store.SchedReasonNetworkNotFound, fmt.Sprintf("network %q not found", name), nil
 	case errors.Is(err, scheduler.ErrPoolNotFound):
 		return store.SchedReasonPoolNotFound, fmt.Sprintf("pool %q not found in cluster", spec.PoolName), nil
+	case errors.Is(err, scheduler.ErrPoolNotOnNode):
+		hint := ""
+		if spec.NodeHint != nil {
+			hint = *spec.NodeHint
+		}
+		return store.SchedReasonPoolNotOnNode, fmt.Sprintf("pool %q not present on node %q", spec.PoolName, hint), nil
 	case errors.Is(err, scheduler.ErrInsufficientResources):
 		d, _ := scheduler.ExtractInsufficientResources(err)
 		return store.SchedReasonInsufficientResources, "no node has sufficient resources", marshalDetail(d)
@@ -224,7 +234,7 @@ func schedulingReasonFor(err error, spec store.SchedulingSpec) (reason, message 
 	default:
 		var pnw *poolNotWritableError
 		if errors.As(err, &pnw) {
-			return store.SchedReasonPoolNotReady, fmt.Sprintf("pool type %q not writable", pnw.poolType), nil
+			return store.SchedReasonPoolNotWritable, fmt.Sprintf("pool type %q not writable", pnw.poolType), nil
 		}
 		return store.SchedReasonPoolNotReady, "pool not ready", nil
 	}

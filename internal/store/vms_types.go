@@ -80,6 +80,8 @@ const (
 	SchedReasonPendingSchedule       = "pending_schedule"
 	SchedReasonPoolNotFound          = "pool_not_found"
 	SchedReasonPoolNotReady          = "pool_not_ready"
+	SchedReasonPoolNotOnNode         = "pool_not_on_node"
+	SchedReasonPoolNotWritable       = "pool_not_writable"
 	SchedReasonNoEligibleNodes       = "no_eligible_nodes"
 	SchedReasonNodePressure          = "node_pressure"
 	SchedReasonInsufficientResources = "insufficient_resources"
