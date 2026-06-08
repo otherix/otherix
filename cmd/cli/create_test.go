@@ -75,8 +75,8 @@ func TestCreateFanOutOrder(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"net-dev","type":"bridge","bridge_name":"br0"}`))
 		case "/v1/vms":
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"task_id":"` + uuid.NewString() + `","status":"pending","links":{"self":"/v1/tasks/x"}}`))
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"web-1","owner_id":"` + uuid.NewString() + `","pool":"default","architecture":"arm64","vcpus":2,"memory_mb":2048,"status":{"phase":"pending","reason":"pending_schedule"},"desired_phase":"running","labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -198,8 +198,8 @@ func TestCreatePartialFailureNonZeroExit(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":{"code":"conflict","message":"already exists"}}`))
 			return
 		}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"task_id":"` + uuid.NewString() + `","status":"pending","links":{"self":"/v1/tasks/x"}}`))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"web-1","owner_id":"` + uuid.NewString() + `","pool":"default","architecture":"arm64","vcpus":2,"memory_mb":2048,"status":{"phase":"pending","reason":"pending_schedule"},"desired_phase":"running","labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`))
 	}))
 	defer srv.Close()
 

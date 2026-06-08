@@ -64,6 +64,13 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return classifyError(err)
 	}
 
+	// A pending (unscheduled) VM is deleted synchronously CP-side (204, no
+	// agent-teardown task): there is nothing to poll, so report and return.
+	if accepted.TaskID == "" {
+		printf(cmd, "deleted vm=%s\n", identifier)
+		return nil
+	}
+
 	printf(cmd, "deleted task=%s status=%s\n", accepted.TaskID, accepted.Status)
 
 	if !wait {

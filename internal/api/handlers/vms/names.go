@@ -32,11 +32,16 @@ import (
 func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *store.VMRuntime, disk store.VMDisk, includeOwner bool) (vmViewNames, error) {
 	names := vmViewNames{}
 
-	pool, err := h.store.StoragePoolByID(ctx, disk.StoragePoolID)
-	if err != nil {
-		return names, fmt.Errorf("load pool name: %v", err)
+	// An unscheduled (pending) VM has no disk row yet, so disk is the
+	// zero value (StoragePoolID == uuid.Nil). Skip the pool lookup; toView
+	// falls back to the SchedulingSpec for the display pool in that case.
+	if disk.StoragePoolID != uuid.Nil {
+		pool, err := h.store.StoragePoolByID(ctx, disk.StoragePoolID)
+		if err != nil {
+			return names, fmt.Errorf("load pool name: %v", err)
+		}
+		names.pool = pool.Name
 	}
-	names.pool = pool.Name
 
 	if includeOwner {
 		owner, err := h.store.UserByID(ctx, vm.OwnerID)

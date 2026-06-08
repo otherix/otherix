@@ -22,6 +22,13 @@ import (
 // violation surfaces as store.ErrVMNameInUse; plan's own errors propagate
 // verbatim. Returns the task id.
 //
+// The production admission path no longer calls this: VM create persists an
+// unscheduled VM (CreateUnscheduledVM) and the vms.schedule loop binds it
+// (BindScheduledVM). CreateScheduledVM is retained as the single-shot
+// direct-bind write path used by the etcdstore / apie2e tests to land a fully
+// bound VM (row + disk + nic + task + job) without driving the two-phase
+// reconcile loop. Do not wire it back into a handler.
+//
 // Unlike the SQL backend's pg_advisory_xact_lock, the placement read and the
 // pinned-node write are not held under one lock across the plan callback (etcd
 // has no cross-callback transaction). This is safe for the single-node default
@@ -132,6 +139,7 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		UserData:          p.UserData,
 		CloudInitDisabled: p.CloudInitDisabled,
 		Labels:            p.Labels,
+		SchedulingSpec:    p.SchedulingSpec,
 		Generation:        1,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -270,6 +278,12 @@ func (r placementReader) ListDiskPressuredPoolsByName(ctx context.Context, name 
 // records for the scheduler's network-aware placement filter (ADR 0034 NL18).
 func (r placementReader) ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error) {
 	return r.s.ListNetworkNodeStatusByNode(ctx, nodeID)
+}
+
+// NetworkByName resolves the deferred network name to its row so the bind can
+// set the NIC's network id. Delegates to the store's name-guard lookup.
+func (r placementReader) NetworkByName(ctx context.Context, name string) (store.Network, error) {
+	return r.s.NetworkByName(ctx, name)
 }
 
 // CountRunningVMsByNode counts non-deleted VMs pinned to the node (intent),

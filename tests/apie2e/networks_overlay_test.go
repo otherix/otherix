@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/auth"
@@ -398,10 +399,9 @@ func TestOverlayNetworkRBACDeveloperCannotCreate(t *testing.T) {
 }
 
 // TestOverlayVMAttachAllowed is the N3c gate-lift assertion: an overlay network
-// created via the real API can be attached to a VM at create time, reaching
-// 202 Accepted. It seeds the overlay reconciled-ready on the fixture node so the
-// network-aware placement filter admits the candidate (mirroring the
-// bridge-attach eligibility seed in TestVMCreateAttachesNicToNetwork).
+// created via the real API can be requested as the attach target at VM create
+// time. Admission is name-deferred (the NIC is minted at bind), so the create
+// reaches 201 pending with the overlay name stashed on the SchedulingSpec.
 func TestOverlayVMAttachAllowed(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
@@ -419,23 +419,23 @@ func TestOverlayVMAttachAllowed(t *testing.T) {
 	decodeJSON(t, ovResp, &ov)
 
 	// Seed a schedulable fixture (node + pool + default firmware) so the pool
-	// resolver succeeds and placement has a candidate.
-	nodeID, poolName := schedulableFixtureWithNode(t, h, adminID)
-	// The network-aware filter requires the requested network to be ready on
-	// the candidate node before placement admits it.
-	if err := h.store.UpsertNetworkNodeStatus(context.Background(), store.UpsertNetworkNodeStatusParams{
-		NetworkID: uuid.MustParse(ov.ID), NodeID: nodeID, ReconciliationStatus: "ready",
-	}); err != nil {
-		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
-	}
+	// resolver succeeds; placement is deferred to the schedule loop.
+	poolName := schedulableFixture(t, h, adminID)
 
 	resp := h.post(t, "/v1/vms", vmCreateBody(map[string]any{
 		"pool": poolName, "network": ov.Name,
 	}), admin)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
+	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("attach VM to overlay status = %d, want 202; body=%s", resp.StatusCode, body)
+		t.Fatalf("attach VM to overlay status = %d, want 201; body=%s", resp.StatusCode, body)
+	}
+	var created struct {
+		Networks []string `json:"networks"`
+	}
+	decodeJSON(t, resp, &created)
+	if diff := cmp.Diff([]string{ov.Name}, created.Networks); diff != "" {
+		t.Errorf("pending networks mismatch (-want +got):\n%s", diff)
 	}
 }
 

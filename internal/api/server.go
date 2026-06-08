@@ -22,13 +22,15 @@ import (
 	"github.com/otherix/otherix/internal/scheduler"
 )
 
-// schedulerResourcesFromConfig translates the koanf-bound
+// SchedulerResourcesFromConfig translates the koanf-bound
 // config.ResourcesConfig into the scheduler-local mirror.
 // internal/scheduler is a leaf package so it does not import config —
 // the api binary copies fields at construction time. Field shapes are
 // kept in lock-step by hand; the per-resource Validate calls run at
-// startup so an inconsistent ratio cannot reach this conversion.
-func schedulerResourcesFromConfig(c config.ResourcesConfig) scheduler.ResourcesConfig {
+// startup so an inconsistent ratio cannot reach this conversion. It is
+// exported so cmd/api can convert the placement config when registering
+// the vms.schedule reconcile loop.
+func SchedulerResourcesFromConfig(c config.ResourcesConfig) scheduler.ResourcesConfig {
 	convert := func(r config.ResourceConfig) scheduler.ResourceConfig {
 		return scheduler.ResourceConfig{
 			Enabled:         r.Enabled,
@@ -76,8 +78,6 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 		StoragePools:       cfg.StoragePools,
 		Logger:             log,
 		RequestTimeout:     cfg.Server.WriteTimeout,
-		PlacementAlgorithm: cfg.Placement.Algorithm,
-		PlacementResources: schedulerResourcesFromConfig(cfg.Placement.Resources),
 		PressureMemory:     cfg.Placement.Pressure.Memory,
 		PressureSystemDisk: cfg.Placement.Pressure.SystemDisk,
 		PressureDisk:       cfg.Placement.Pressure.Disk,

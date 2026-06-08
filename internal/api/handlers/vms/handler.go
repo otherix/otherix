@@ -57,15 +57,14 @@ import (
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/queue"
-	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // Store is the storage surface the vms handlers depend on: the VM
 // domain methods, the identifier-resolution contract (resolver.Querier)
 // used to resolve vm / pool / node parameters, the node and firmware
-// reads used by the view projectors and firmware resolution, the placement-locked
-// CreateScheduledVM seam, and the EnqueueTask producer
+// reads used by the view projectors and firmware resolution, the admission-only
+// CreateUnscheduledVM seam, and the EnqueueTask producer
 // seam used by delete and the async lifecycle ops. *etcdstore.Store
 // satisfies it; depending on the interface rather than the concrete
 // store narrows the handler's storage dependency to the methods it uses,
@@ -75,6 +74,7 @@ import (
 type Store interface {
 	resolver.Querier
 
+	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
@@ -86,58 +86,46 @@ type Store interface {
 	DefaultFirmwareForArchType(ctx context.Context, arch store.CPUArch, ftype store.FirmwareType) (store.Firmware, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
-	CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error)
+	CreateUnscheduledVM(ctx context.Context, p store.CreateVMParams) (uuid.UUID, error)
+	DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error
+	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
+	ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
 
-// Handler bundles the dependencies for the vms routes. Create / Delete
-// and the async lifecycle ops enqueue through the store's
-// CreateScheduledVM / EnqueueTask seams, so the handler
-// no longer holds a queue client. placementAlgorithm threads through to
-// internal/scheduler.SchedulePlacement; the empty string defers to the
-// package default ("resource_aware"). placementResources threads the
-// per-resource gate - zero-value disables every resource and degrades
-// scoring to count-based fallback,
-// so production wiring always passes the config.ResourcesConfig the
-// api binary validated at startup.
+// Handler bundles the dependencies for the vms routes. Create persists
+// the VM via the store's admission-only CreateUnscheduledVM seam; Delete
+// and the async lifecycle ops enqueue through EnqueueTask, so the handler
+// no longer holds a queue client. Placement moved out of the handler: the
+// vms.schedule reconcile loop (cmd/api wires ScheduleFunc) binds pending
+// VMs, so the handler carries no placement config.
 type Handler struct {
-	store              Store
-	log                *slog.Logger
-	placementAlgorithm string
-	placementResources scheduler.ResourcesConfig
-	lifecycle          LifecycleDeps
-	consoleDeps        ConsoleDeps
+	store       Store
+	log         *slog.Logger
+	lifecycle   LifecycleDeps
+	consoleDeps ConsoleDeps
 }
 
 // New constructs a Handler. It takes the Store interface so any
 // conforming backend can be wired in; production passes *store.Store.
-// placementAlgorithm is the validated APIConfig.Placement.Algorithm
-// value — pass "" to accept the scheduler default. placementResources
-// pins the per-resource gate; pass a zero-value (every resource
-// disabled) only in tests / scaffolding contexts that explicitly want
-// count-based scoring across the board. lifecycle bundles the
-// agentclient dependency the sync Pause / Resume / Reset handlers
-// need; tests that exercise the sync surface pass a stub through
-// here without importing the production client. console bundles the
+// lifecycle bundles the agentclient dependency the sync Pause / Resume /
+// Reset handlers need; tests that exercise the sync surface pass a stub
+// through here without importing the production client. console bundles the
 // console-handler deps (agentclient + access mode); tests that don't
 // exercise the console flow pass a zero-value ConsoleDeps.
 func New(
 	s Store,
 	log *slog.Logger,
-	placementAlgorithm string,
-	placementResources scheduler.ResourcesConfig,
 	lifecycle LifecycleDeps,
 	console ConsoleDeps,
 ) *Handler {
 	return &Handler{
-		store:              s,
-		log:                log,
-		placementAlgorithm: placementAlgorithm,
-		placementResources: placementResources,
-		lifecycle:          lifecycle,
-		consoleDeps:        console,
+		store:       s,
+		log:         log,
+		lifecycle:   lifecycle,
+		consoleDeps: console,
 	}
 }
 
@@ -170,11 +158,22 @@ type vmView struct {
 	Architecture string          `json:"architecture"`
 	VCPUs        int             `json:"vcpus"`
 	MemoryMB     int             `json:"memory_mb"`
-	Status       string          `json:"status"`
+	Status       vmStatusView    `json:"status"`
 	DesiredPhase string          `json:"desired_phase"`
 	Labels       json.RawMessage `json:"labels"`
 	CreatedAt    string          `json:"created_at"`
 	UpdatedAt    string          `json:"updated_at"`
+}
+
+// vmStatusView is the nested `status` object on the public VM shape.
+// Phase is the projected lifecycle string (see projectStatus); Reason
+// and Message carry the machine-readable / human-readable scheduling
+// detail and are populated only while the VM is unscheduled (pending),
+// omitted otherwise.
+type vmStatusView struct {
+	Phase   string `json:"phase"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // vmViewNames bundles the resolved name lookups that response
@@ -197,8 +196,34 @@ type vmViewNames struct {
 // names onto its public vmView. runtime is nil when no vm_runtime row
 // exists yet (worker has not upserted) — projectStatus collapses that
 // case to "creating". The vm_disks row is consumed upstream to derive
-// names.pool and is not threaded through here.
-func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
+// names.pool and is not threaded through here. deleting is true when a
+// non-terminal vm.delete task targets this VM, which projectStatus
+// surfaces as status.phase "deleting".
+//
+// While the VM is unscheduled (pending) it has no disk / NIC rows yet,
+// so names.pool / names.networks are empty; toView then falls back to
+// the SchedulingSpec so the operator still sees the requested pool and
+// network. The scheduling reason / message surface on status.
+func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting bool) vmView {
+	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting)}
+	pool := names.pool
+	nets := names.networks
+	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+		if vm.SchedulingReason != nil {
+			status.Reason = *vm.SchedulingReason
+		}
+		if vm.SchedulingMessage != nil {
+			status.Message = *vm.SchedulingMessage
+		}
+		if sp, err := store.UnmarshalSchedulingSpec(vm.SchedulingSpec); err == nil {
+			if pool == "" {
+				pool = sp.PoolName
+			}
+			if len(nets) == 0 && sp.NetworkName != nil {
+				nets = []string{*sp.NetworkName}
+			}
+		}
+	}
 	return vmView{
 		ID:           vm.ID.String(),
 		Name:         vm.Name,
@@ -207,13 +232,13 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
 		ImageURL:     vm.ImageURL,
 		ImageSHA256:  hex.EncodeToString(vm.ImageSHA256),
 		Format:       string(vm.ImageFormat),
-		Pool:         names.pool,
+		Pool:         pool,
 		Node:         names.node,
-		Networks:     networksOrEmpty(names.networks),
+		Networks:     networksOrEmpty(nets),
 		Architecture: string(vm.Architecture),
 		VCPUs:        int(vm.CpuCores),
 		MemoryMB:     int(vm.MemoryMib),
-		Status:       projectStatus(vm, runtime),
+		Status:       status,
 		DesiredPhase: string(vm.DesiredPhase),
 		Labels:       rawJSONOrEmpty(vm.Labels),
 		CreatedAt:    vm.CreatedAt.UTC().Format(time.RFC3339Nano),

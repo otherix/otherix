@@ -1713,11 +1713,14 @@ paths:
       tags: [vms]
       summary: Create a virtual machine.
       description: |
-        VM creation is asynchronous: the request returns 202 with a task
-        id; the VM row exists immediately in `desired_phase = stopped`,
-        but agent-side allocation (image cache, disk preallocation, QEMU
-        process if `desired_phase = running`) happens in the background.
-        Poll the task to observe completion.
+        VM creation returns 201 with the persisted VM. The row is
+        admitted immediately and starts in `status.phase = pending`
+        (awaiting scheduling); the scheduler binds it to a node and the
+        agent then performs allocation (image cache, disk preallocation,
+        QEMU process if `desired_phase = running`) in the background.
+        Poll `GET /v1/vms/{id}` and watch `status.phase` (and
+        `status.reason`/`status.message` while `pending`) to observe
+        convergence.
 
         The image source is supplied directly on the body (`image_url`
         + optional `image_sha256` content pin + `format`); the VM row is
@@ -1736,15 +1739,16 @@ paths:
             schema:
               $ref: "#/components/schemas/VMCreate"
       responses:
-        "202":
-          description: VM creation accepted; poll the returned task.
+        "201":
+          description: VM created; starts in `status.phase = pending`.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AsyncTaskAccepted"
+                $ref: "#/components/schemas/VM"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -1827,6 +1831,10 @@ paths:
         If the VM has a non-terminal migration in progress, the request
         is rejected with 409 (`details.active_migration_id`). Cancel
         the migration first via `POST /v1/migrations/{id}/cancel`.
+
+        A VM still in `status.phase = pending` (never bound to a node, so
+        no agent teardown is needed) is deleted synchronously and returns
+        204 with no body and no task to poll.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -1839,6 +1847,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsyncTaskAccepted"
+        "204":
+          description: |
+            Pending VM deleted synchronously (no agent task to poll).
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -5735,10 +5746,43 @@ components:
           maximum: 524288
           description: RAM in mebibytes.
         status:
-          type: string
+          type: object
           description: |
-            Projected lifecycle status (not stored): derived from
-            `vms.deleted_at` and the agent-reported `vm_runtime.phase`.
+            System-reported runtime status. `phase` is the projected
+            lifecycle phase; `pending` means the VM is admitted but
+            awaiting scheduling, with `reason`/`message` explaining why
+            it has not yet been bound or converged.
+          required:
+            - phase
+          properties:
+            phase:
+              type: string
+              enum:
+                - pending
+                - creating
+                - running
+                - paused
+                - stopped
+                - deleting
+                - error
+                - gone
+                - orphaned
+              description: |
+                Projected lifecycle phase. `deleting` is the in-flight
+                delete window: a non-terminal `vm.delete` task targets the
+                VM but the soft-delete tombstone has not landed yet (after
+                which the VM returns 404).
+            reason:
+              type: string
+              description: |
+                Short machine-readable reason for the current phase
+                (e.g. `pool_not_ready`). Omitted when there is nothing
+                to explain.
+            message:
+              type: string
+              description: |
+                Human-readable detail for the current phase. Omitted
+                when there is nothing to explain.
         desired_phase:
           type: string
           enum: [running, stopped, deleted]
@@ -5765,10 +5809,12 @@ components:
         default-pool (cluster_settings.default_pool_name, set via
         `PUT /v1/cluster/default-pool`) applies; a missing default
         returns 400 `default_pool_not_set`. The optional `node` field is
-        the explicit placement hint; mismatch (pool not on hinted node)
-        surfaces as 409 `pool_not_on_node`. `pool` and `node` accept a
-        name (UUID literal in `node` surfaces as 400 `validation_failed`;
-        `pool` additionally accepts a per-instance UUID literal).
+        the explicit placement hint. The VM is admitted as pending (201);
+        a pool-not-on-hinted-node mismatch keeps it pending with
+        `status.reason` `pool_not_on_node` (poll `GET /v1/vms/{id}`).
+        `pool` and `node` accept a name (UUID literal in `node` surfaces
+        as 400 `validation_failed`; `pool` additionally accepts a
+        per-instance UUID literal).
 
         Firmware is resolved from `firmware` ("bios" | "uefi", default
         uefi) for the (arch, type) default, or from an explicit

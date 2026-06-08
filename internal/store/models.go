@@ -667,10 +667,30 @@ type VM struct {
 	NetworkConfig     *string
 	SshAuthorizedKeys []string
 	Labels            []byte
-	Generation        int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	DeletedAt         *time.Time
+	// SchedulingStatus is the CP-side placement state: "unscheduled" until
+	// the scheduler binds the VM to a (node, pool), then "scheduled". It is
+	// desired/scheduling state, distinct from DesiredPhase (user intent) and
+	// the agent-observed vm_runtime.phase.
+	SchedulingStatus VMSchedulingStatus
+	// SchedulingSpec holds the deferred placement inputs (pool name, disk_gib,
+	// network name, node hint) as JSON, captured at admission and consumed at
+	// bind so the scheduler can resolve the (node, pool) later.
+	SchedulingSpec []byte
+	// SchedulingReason is the machine-readable reason the VM is still
+	// unscheduled (e.g. "pool_not_ready"); nil once scheduled.
+	SchedulingReason *string
+	// SchedulingMessage is the human-readable companion to SchedulingReason.
+	SchedulingMessage *string
+	// SchedulingDetails is the optional structured payload (insufficient
+	// resources / network-unready / node-pressure detail) as JSON.
+	SchedulingDetails []byte
+	// LastScheduleAttemptAt records the last time the scheduler tried to place
+	// this VM; nil before the first attempt.
+	LastScheduleAttemptAt *time.Time
+	Generation            int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	DeletedAt             *time.Time
 }
 
 type VMDisk struct {

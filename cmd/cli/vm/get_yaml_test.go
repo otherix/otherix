@@ -17,7 +17,7 @@ func TestVMGetOutputYAML(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"vm-dev","owner_id":"` + uuid.NewString() +
 			`","image_url":"https://img.example/noble.qcow2","format":"qcow2","pool":"default","node":null,` +
-			`"networks":["net-dev"],"architecture":"amd64","vcpus":2,"memory_mb":2048,"status":"running",` +
+			`"networks":["net-dev"],"architecture":"amd64","vcpus":2,"memory_mb":2048,"status":{"phase":"running"},` +
 			`"desired_phase":"running","created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T10:00:00Z"}`))
 	}))
 	defer srv.Close()

@@ -95,11 +95,11 @@ func runCreatePlan(cmd *cobra.Command, c *cpclient.Client, plan []manifest.Creat
 			}
 			results = append(results, res)
 		case manifest.KindVM:
-			acc, err := c.CreateVM(ctx, *op.VM)
+			vm, _, err := c.CreateVM(ctx, *op.VM)
 			res := docResult{kind: op.Kind, name: op.Name, committed: err == nil, err: fanoutErr(err)}
 			if err == nil {
-				res.taskID = acc.TaskID
-				res.note = "task " + acc.TaskID
+				res.vmName = vm.Name
+				res.note = "pending"
 			}
 			results = append(results, res)
 		}

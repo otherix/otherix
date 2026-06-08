@@ -12,20 +12,19 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
-	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // vmCreateRequest is the body of POST /v1/vms. `vcpus` / `memory_mb`
 // translate to `cpu_cores` / `memory_mib` at the handler boundary;
-// pool lands on vm_disks.storage_pool_id.
+// the requested pool / network names are stashed in the VM's
+// SchedulingSpec and resolved later at bind.
 //
 // The image source is supplied directly (`image_url` + optional
 // `image_sha256` content pin + `format`): the VM row is self-describing,
@@ -41,9 +40,8 @@ import (
 //   - `pool` is optional. When omitted (or empty), the handler reads
 //     cluster_settings.default_pool_name; if unset, returns 400
 //     default_pool_not_set.
-//   - `node` is an optional placement hint. When provided, the
-//     scheduler restricts the candidate list to exactly that node;
-//     if the node does not host the pool, returns 409 pool_not_on_node.
+//   - `node` is an optional placement hint stashed on the SchedulingSpec;
+//     the vms.schedule loop restricts the candidate list to that node.
 type vmCreateRequest struct {
 	Name         string `json:"name"`
 	ImageURL     string `json:"image_url"`
@@ -94,8 +92,10 @@ var errFirmwareBadType = errors.New("firmware must be bios or uefi")
 
 // poolNotWritableError signals that the scheduler's chosen pool has
 // a storage type vm.create cannot drive (only `local_dir` today). It
-// flows as a typed error through the create transaction and surfaces
-// at the wire as 400 pool_not_writable.
+// flows as a typed error through the bind transaction (the vms.schedule
+// loop) and surfaces as a pending scheduling reason. The admission edge
+// uses checkPoolWritableBestEffort for a best-effort fail-fast on an
+// already-existing non-writable pool.
 type poolNotWritableError struct {
 	poolType string
 }
@@ -104,24 +104,22 @@ func (e *poolNotWritableError) Error() string {
 	return fmt.Sprintf("vms: pool type %q not writable", e.poolType)
 }
 
-// Create implements POST /v1/vms — the operator-callable entry point
-// to the vm.create async pipeline.
+// Create implements POST /v1/vms — the operator-callable admission entry
+// point for a VM.
 //
 // Permission gate: vm:create. RequirePermission middleware admits
 // admin / operator / developer (matrix has each at scope=any). The image
 // source is supplied directly on the request, so there is no
 // template-usability composite check.
 //
-// HA-safe atomic enqueue: store.LockKeyPlacement is acquired as the
-// first statement inside
-// the create transaction, so concurrent api-server replicas serialize
-// their placement decisions cluster-wide. Scheduler reads (candidate
-// pools + heartbeat metrics) and subsequent inserts (vms + vm_disks +
-// tasks + river job + UpdateTaskRiverJobID) live under the same
-// transaction-scoped lock; commit/rollback releases it.
+// Admission-only: Create validates the request, captures the deferred
+// placement inputs (pool name, disk size, network name, node hint) in the
+// VM's SchedulingSpec, and persists the VM in the "unscheduled" state via
+// CreateUnscheduledVM. No placement, no disk / NIC / task rows, and no
+// agent job at admission — the vms.schedule loop binds the VM to a
+// (node, pool) once its dependencies are ready.
 //
-// Returns 202 + AsyncTaskAccepted; clients poll /v1/tasks/{task_id}
-// for completion.
+// Returns 201 Created + the VM view (status.phase=pending).
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	caller := auth.UserFromContext(r.Context())
 	if caller == nil {
@@ -147,29 +145,75 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.checkPoolWritableBestEffort(w, r, poolName) {
+		return
+	}
 
-	network, ok := h.resolveNetwork(w, r, req.Network)
+	networkName, ok := h.resolveNetworkName(w, r, req.Network)
 	if !ok {
 		return
 	}
 
-	taskID, err := h.scheduleAndEnqueueCreate(r.Context(), scheduleInputs{
-		Caller:     caller,
-		FirmwareID: firmwareID,
-		PoolName:   poolName,
-		Network:    network,
-		Req:        req,
-	})
+	spec := store.SchedulingSpec{
+		PoolName: poolName,
+		DiskGiB:  int32(req.DiskGiB), //nolint:gosec // bounded 0..65536 by validateCreateRequest
+		NodeHint: req.Node,
+	}
+	if networkName != "" {
+		spec.NetworkName = &networkName
+	}
+	specJSON, err := store.MarshalSchedulingSpec(spec)
 	if err != nil {
-		h.writeCreateError(w, r, err)
+		h.log.ErrorContext(r.Context(), "marshal scheduling spec", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "create vm", nil)
 		return
 	}
 
-	response.WriteJSON(w, r, http.StatusAccepted, response.AsyncTaskAccepted{
-		TaskID: taskID.String(),
-		Status: string(store.TaskStatusPending),
-		Links:  response.AsyncTaskLinks{Self: "/v1/tasks/" + taskID.String()},
+	var imageSHA []byte
+	if req.ImageSHA256 != "" {
+		// Validated 64-char lowercase hex at the API edge, so DecodeString
+		// cannot fail; the error is dropped (defense-in-depth: an empty digest
+		// degrades to name-keyed cache reuse).
+		imageSHA, _ = hex.DecodeString(req.ImageSHA256)
+	}
+	arch := store.CPUArch(req.Architecture)
+	format := store.ImageFormatQcow2
+	if req.Format != "" {
+		format = store.ImageFormat(req.Format)
+	}
+
+	vmID, err := h.store.CreateUnscheduledVM(r.Context(), store.CreateVMParams{
+		ID:                uuid.New(),
+		OwnerID:           caller.ID,
+		Name:              req.Name,
+		Architecture:      arch,
+		ImageURL:          req.ImageURL,
+		ImageSHA256:       imageSHA,
+		ImageFormat:       format,
+		CpuCores:          int32(req.VCPUs),    //nolint:gosec // bounded 1..128 by validateCreateRequest
+		MemoryMib:         int32(req.MemoryMB), //nolint:gosec // bounded 128..524288 by validateCreateRequest
+		CPUModel:          "host",
+		MachineType:       machineTypeFor(arch),
+		FirmwareID:        firmwareID,
+		UserData:          req.UserData,
+		CloudInitDisabled: req.CloudInitDisabled,
+		Labels:            []byte(`{}`),
+		SchedulingSpec:    specJSON,
 	})
+	if err != nil {
+		if errors.Is(err, store.ErrVMNameInUse) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeVMNameInUse, "a vm with this name already exists", nil)
+			return
+		}
+		h.log.ErrorContext(r.Context(), "create unscheduled vm", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "create vm", nil)
+		return
+	}
+
+	h.renderVM(w, r, vmID, http.StatusCreated)
 }
 
 // decodeCreateBody parses the JSON body and writes the standard 400
@@ -230,12 +274,9 @@ func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCre
 	return true
 }
 
-// validateCreateRequest enforces the field-level invariants. The
-// schema also carries CHECK constraints (vms.cpu_cores / memory_mib)
-// so a defective request fails twice; the API-edge check produces a
-// friendlier envelope than a raw 23514. Identifier well-formedness for
-// `pool` / `network` / `firmware_id` is deferred to the resolver / firmware
-// lookup layers.
+// validateCreateRequest enforces the field-level invariants. Identifier
+// well-formedness for `pool` / `network` / `firmware_id` is deferred to the
+// resolver / firmware lookup layers.
 func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
 	if req.Name == "" || len(req.Name) > 255 {
 		response.WriteError(w, r, http.StatusBadRequest,
@@ -255,10 +296,17 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			response.CodeValidationFailed, "memory_mb must be in [128, 524288]", nil)
 		return false
 	}
+	// A node hint is a node name, never a uuid. Rejecting a uuid literal here
+	// keeps the old admission-time 400 (the placement layer also guards via
+	// scheduler.ErrNodeHintIsUUID) so it never silently becomes a pending VM.
+	if req.Node != nil {
+		if _, err := uuid.Parse(*req.Node); err == nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "node must be a name, not a uuid", nil)
+			return false
+		}
+	}
 	// Mutual-exclusion check for the three-state cloud-init contract.
-	// The DB CHECK is the durable backstop; this edge check produces
-	// a friendlier 400 envelope than the raw 23514 the handler would
-	// otherwise propagate.
 	if req.CloudInitDisabled && req.UserData != nil && *req.UserData != "" {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed,
@@ -339,196 +387,6 @@ func (h *Handler) resolveFirmware(ctx context.Context, arch store.CPUArch, firmw
 	return &fw.ID, nil
 }
 
-// scheduleInputs bundles the resolved entities scheduleAndEnqueueCreate
-// consumes. Decouples the long argument list from the public Create
-// handler signature.
-type scheduleInputs struct {
-	Caller     *auth.User
-	FirmwareID *uuid.UUID
-	PoolName   string
-	Network    *store.Network
-	Req        vmCreateRequest
-}
-
-// scheduleAndEnqueueCreate runs the atomic critical section: acquire
-// the cluster-wide placement lock, score candidates with the configured
-// algorithm, and persist vms/vm_disks/tasks rows + the river job in one
-// transaction. Returns the freshly-minted task id on success.
-//
-// Lock scope matters: pg_advisory_xact_lock releases on commit/rollback,
-// so the scheduler's reads (ListEligiblePoolsByName + CountRunningVMs‑
-// ByNode) and the CreateVM write (pinned_node_id) MUST share a single
-// transaction. Otherwise concurrent api-server replicas can observe
-// stale candidate availability and double-allocate. See store.LockKey‑
-// Placement.
-func (h *Handler) scheduleAndEnqueueCreate(ctx context.Context, in scheduleInputs) (uuid.UUID, error) {
-	vmID := uuid.New()
-	taskID := uuid.New()
-	createdBy := in.Caller.ID
-	resID := vmID
-
-	// The store owns the placement-locked transaction (lock release on
-	// commit/rollback keeps the scheduler reads and the pinned-node
-	// write atomic) and the enqueue; this plan callback acquires the
-	// lock through the tx-bound PlacementReader, scores candidates with
-	// the scheduler (the reader is assignable to scheduler.Querier), and
-	// builds the rows + job args from the chosen instance. A uq_vms_name
-	// violation is translated to store.ErrVMNameInUse by the store.
-	return createWithMACRetry(ctx, h.store, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
-		if err := pr.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
-			return store.VMCreateWrites{}, fmt.Errorf("acquire placement lock: %v", err)
-		}
-
-		// Disk reservation for placement is derived from the requested
-		// disk_gib. When disk_gib is 0 the true size is unknown until the
-		// agent sizes the root disk to the image's virtual size, so we
-		// reserve 0 (no disk filter) and let the agent materialize it. A
-		// non-zero request reserves that many GiB.
-		diskBytes := int64(in.Req.DiskGiB) * 1073741824
-		// The network-aware filter excludes nodes where a requested
-		// network failed to reconcile (ADR 0034 NL18). One network per
-		// VM today (single vm_nics row from --network); the slice keeps
-		// the contract open for multi-NIC VMs without a signature change.
-		var networkIDs []uuid.UUID
-		if in.Network != nil {
-			networkIDs = []uuid.UUID{in.Network.ID}
-		}
-		decision, err := scheduler.SchedulePlacement(ctx, pr, scheduler.PlacementRequest{
-			PoolName:   in.PoolName,
-			NodeHint:   in.Req.Node,
-			VCPUs:      in.Req.VCPUs,
-			MemoryMiB:  in.Req.MemoryMB,
-			DiskBytes:  diskBytes,
-			NetworkIDs: networkIDs,
-		}, scheduler.PlacementConfig{
-			Algorithm: h.placementAlgorithm,
-			Resources: h.placementResources,
-		})
-		if err != nil {
-			return store.VMCreateWrites{}, err
-		}
-		if decision.PoolInstance.Type != "local_dir" {
-			return store.VMCreateWrites{}, &poolNotWritableError{poolType: decision.PoolInstance.Type}
-		}
-
-		argsJSON, err := json.Marshal(map[string]any{
-			"vm_id":   vmID.String(),
-			"pool_id": decision.PoolInstance.ID.String(),
-			"node_id": decision.Node.ID.String(),
-		})
-		if err != nil {
-			return store.VMCreateWrites{}, fmt.Errorf("marshal task args: %v", err)
-		}
-
-		var nic *store.CreateVMNicParams
-		if in.Network != nil {
-			mac, macErr := generateLocalMAC()
-			if macErr != nil {
-				return store.VMCreateWrites{}, fmt.Errorf("generate nic mac: %v", macErr)
-			}
-			nic = &store.CreateVMNicParams{
-				ID:          uuid.New(),
-				VmID:        vmID,
-				NetworkID:   in.Network.ID,
-				DeviceOrder: 0,
-				Model:       store.NicModelVirtio,
-				MacAddress:  mac,
-			}
-		}
-
-		arch := store.CPUArch(in.Req.Architecture)
-		format := store.ImageFormatQcow2
-		if in.Req.Format != "" {
-			format = store.ImageFormat(in.Req.Format)
-		}
-		var imageSHA []byte
-		if in.Req.ImageSHA256 != "" {
-			// Validated 64-char lowercase hex at the API edge, so DecodeString
-			// cannot fail; the error path is defense-in-depth.
-			imageSHA, err = hex.DecodeString(in.Req.ImageSHA256)
-			if err != nil {
-				return store.VMCreateWrites{}, fmt.Errorf("decode image_sha256: %v", err)
-			}
-		}
-
-		nodeID := decision.Node.ID
-		return store.VMCreateWrites{
-			VM: store.CreateVMParams{
-				ID:                vmID,
-				OwnerID:           in.Caller.ID,
-				Name:              in.Req.Name,
-				Description:       "",
-				Architecture:      arch,
-				ImageURL:          in.Req.ImageURL,
-				ImageSHA256:       imageSHA,
-				ImageFormat:       format,
-				CpuCores:          int32(in.Req.VCPUs),    //nolint:gosec // bounded to 1..128 by validateCreateRequest
-				MemoryMib:         int32(in.Req.MemoryMB), //nolint:gosec // bounded to 128..524288 by validateCreateRequest
-				CPUModel:          "host",
-				MachineType:       machineTypeFor(arch),
-				FirmwareID:        in.FirmwareID,
-				PinnedNodeID:      &nodeID,
-				UserData:          in.Req.UserData,
-				CloudInitDisabled: in.Req.CloudInitDisabled,
-				Labels:            []byte(`{}`),
-			},
-			Disk: store.CreateVMDiskParams{
-				VmID:          vmID,
-				StoragePoolID: decision.PoolInstance.ID,
-				DeviceOrder:   0,
-				Bus:           store.DiskBusVirtio,
-				SizeGib:       int32(in.Req.DiskGiB), //nolint:gosec // bounded >= 0 by validateCreateRequest
-				SourceKind:    "image",
-				Format:        format,
-				ReadOnly:      false,
-				CacheMode:     store.DiskCacheModeWriteback,
-				Discard:       store.DiskDiscardUnmap,
-				BootOrder:     nil,
-			},
-			Nic: nic,
-			Task: store.CreateTaskParams{
-				ID:           taskID,
-				Type:         "vm.create",
-				Status:       store.TaskStatusPending,
-				ResourceType: "vm",
-				ResourceID:   &resID,
-				Args:         argsJSON,
-				MaxAttempts:  25,
-				CreatedBy:    &createdBy,
-			},
-			Job: VMCreateArgs{
-				TaskID: taskID,
-				VMID:   vmID,
-				PoolID: decision.PoolInstance.ID,
-				NodeID: decision.Node.ID,
-			},
-		}, nil
-	})
-}
-
-// createWithMACRetry calls CreateScheduledVM, re-minting a colliding NIC
-// MAC up to maxMACRetries times. A locally-administered MAC collision on a
-// network is astronomically rare; re-minting makes it transparent instead
-// of a 5xx. plan mints a fresh MAC each call, so a retry re-rolls the MAC.
-// The loop breaks on any non-conflict outcome (success or a different
-// error). A persistent conflict after maxMACRetries attempts returns the
-// last ErrVMNicMACConflict, which the handler maps to 500.
-func createWithMACRetry(ctx context.Context, st Store, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
-	const maxMACRetries = 8
-	var (
-		id  uuid.UUID
-		err error
-	)
-	for attempt := 0; attempt < maxMACRetries; attempt++ {
-		// Each MAC-conflict retry burns a job-sequence number via enqueueJobOp/nextJobSeq (the seq counter advances immediately), so retries leave benign gaps in the sequence - not lost jobs: the job OpPut rides in the failed txn's Then and never commits, so no orphan job row is written.
-		id, err = st.CreateScheduledVM(ctx, plan)
-		if !errors.Is(err, store.ErrVMNicMACConflict) {
-			return id, err
-		}
-	}
-	return id, err
-}
-
 // resolvePoolName returns the effective pool name for the create
 // request. It accepts:
 //
@@ -537,9 +395,11 @@ func createWithMACRetry(ctx context.Context, st Store, plan func(store.Placement
 //   - UUID literal: look up the storage_pools row by id and return
 //     that instance's name (callers retain UUID-based addressing as
 //     a backward-compatible escape hatch into the scheduler's
-//     name-driven placement).
-//   - bare string: passed through as a pool name; the scheduler
-//     resolves to instances.
+//     name-driven placement); a missing id → 404 pool_not_found.
+//   - bare string: passed through verbatim as a pool name without an
+//     existence check. The name is stashed on the SchedulingSpec and
+//     resolved to instances at bind; an unknown name becomes a pending
+//     scheduling reason, never an admission error.
 //
 // The boolean second return mirrors the decode* helpers' short-circuit
 // signal.
@@ -577,273 +437,72 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 	return requested, true
 }
 
-// resolveNetwork resolves the optional `network` request field to a network
-// row. It accepts:
-//
-//   - empty: no NIC is attached (nil, true) — legacy SLIRP fallback.
-//   - uuid literal: looked up by id; unknown id → 404 not_found.
-//   - bare string: looked up by name; unknown name → 404 not_found.
-//
-// Both `bridge` and `overlay` networks are attachable; any other type is
-// rejected with 400. The boolean second return mirrors the other resolve*
+// checkPoolWritableBestEffort fails the create fast with 409 pool_not_writable
+// when the named pool already exists and every instance has a storage type
+// vm.create cannot drive (only local_dir today). When the pool does not exist
+// yet the check is deferred (it becomes a pending reason at bind), consistent
+// with deferred name resolution. The boolean return mirrors the resolve*
 // helpers' short-circuit signal.
-func (h *Handler) resolveNetwork(w http.ResponseWriter, r *http.Request, requested string) (*store.Network, bool) {
+func (h *Handler) checkPoolWritableBestEffort(w http.ResponseWriter, r *http.Request, poolName string) bool {
+	pools, err := h.store.StoragePoolsByName(r.Context(), poolName)
+	if err != nil || len(pools) == 0 {
+		// Unknown / not-yet-created (or a transient read error) -> defer to bind.
+		return true
+	}
+	for _, p := range pools {
+		if p.Type == "local_dir" {
+			return true
+		}
+	}
+	response.WriteError(w, r, http.StatusConflict,
+		response.CodePoolNotWritable,
+		"storage pool type does not support vm.create",
+		map[string]any{"pool": poolName})
+	return false
+}
+
+// resolveNetworkName resolves the optional `network` request field to a
+// network name stashed on the SchedulingSpec; the NIC row is created later at
+// bind. It accepts:
+//
+//   - empty: no NIC is attached (returns "", true) — legacy SLIRP fallback.
+//   - uuid literal: looked up by id (an explicit reference); a missing id →
+//     404 not_found. Returns the instance's canonical name.
+//   - bare string: returned verbatim without an existence check. An unknown
+//     name becomes a pending scheduling reason at bind, never an admission
+//     error.
+//
+// The boolean second return mirrors the other resolve* helpers'
+// short-circuit signal.
+func (h *Handler) resolveNetworkName(w http.ResponseWriter, r *http.Request, requested string) (string, bool) {
 	if requested == "" {
-		return nil, true
+		return "", true
 	}
-	var (
-		net store.Network
-		err error
-	)
-	if id, perr := uuid.Parse(requested); perr == nil {
-		net, err = h.store.NetworkByID(r.Context(), id)
-	} else {
-		net, err = h.store.NetworkByName(r.Context(), requested)
+	id, perr := uuid.Parse(requested)
+	if perr != nil {
+		// A bare name is deferred (no existence check at admission).
+		return requested, true
 	}
+	net, err := h.store.NetworkByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
 				response.CodeNotFound, "network not found", nil)
-			return nil, false
+			return "", false
 		}
 		h.log.ErrorContext(r.Context(), "load network", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "load network", nil)
-		return nil, false
+		return "", false
 	}
-	switch net.Type {
-	case store.NetworkTypeBridge, store.NetworkTypeOverlay:
-		// attachable
-	default:
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed,
-			"network type cannot be attached at vm create",
-			map[string]any{"network_type": string(net.Type)})
-		return nil, false
-	}
-	return &net, true
-}
-
-// writeCreateError dispatches the merged scheduleAndEnqueueCreate
-// error to a wire envelope. Categories, in priority order:
-//
-//   - ErrInsufficientResources (structured details) → 409 no_eligible_nodes
-//   - Other scheduler sentinels                     → 400 / 404 / 409
-//   - poolNotWritableError                          → 400 pool_not_writable
-//   - errVMNameInUse                                → 409 vm_name_in_use
-//   - ErrVMNicMACConflict (retries exhausted)       → 500 internal
-//   - any other error                               → 500 internal
-//
-// The insufficient-resources path wins over the bare no_eligible_nodes
-// sentinel — its envelope carries an actionable utilization payload.
-func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
-	var insufficient *insufficientResourcesView
-	if extractInsufficient(err, &insufficient) {
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeNoEligibleNodes,
-			"no nodes have sufficient resources for the requested VM",
-			insufficient.toDetails())
-		return
-	}
-
-	switch {
-	case errors.Is(err, scheduler.ErrNodeHintIsUUID):
-		response.WriteUUIDNotAllowedError(w, r, "node", "node")
-		return
-	case errors.Is(err, scheduler.ErrPoolNotFound):
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodePoolNotFound,
-			"no pool with this name exists in the cluster", nil)
-		return
-	case errors.Is(err, scheduler.ErrPoolNotOnNode):
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodePoolNotOnNode,
-			"requested node does not host an instance of the requested pool", nil)
-		return
-	case errors.Is(err, scheduler.ErrNoEligibleNodes):
-		details := buildNoEligibleDetails(err)
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeNoEligibleNodes,
-			"pool exists but no node is currently ready and uncordoned",
-			details)
-		return
-	}
-
-	var poolErr *poolNotWritableError
-	if errors.As(err, &poolErr) {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodePoolNotWritable,
-			"storage pool type does not support vm.create",
-			map[string]any{"pool_type": poolErr.poolType})
-		return
-	}
-
-	if errors.Is(err, store.ErrVMNameInUse) {
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeVMNameInUse, "vm name already in use", nil)
-		return
-	}
-
-	// A NIC MAC conflict that survives createWithMACRetry's bounded
-	// re-mint loop is not a client error - it signals a sustained
-	// collision storm (effectively impossible with a 24-bit random
-	// suffix). Surface it as 500, not a 4xx the caller could "fix".
-	if errors.Is(err, store.ErrVMNicMACConflict) {
-		h.log.ErrorContext(r.Context(), "vms.create exhausted nic mac retries", "error", err)
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "enqueue vm task", nil)
-		return
-	}
-
-	h.log.ErrorContext(r.Context(), "vms.create enqueue failed", "error", err)
-	response.WriteError(w, r, http.StatusInternalServerError,
-		response.CodeInternal, "enqueue vm task", nil)
-}
-
-// insufficientResourcesView is the handler-edge projection of the
-// scheduler's structured detail payload. It carries enough metadata to
-// build the `details` map on the 409 envelope without leaking scheduler-
-// internal field types into the wire layer.
-type insufficientResourcesView struct {
-	requiredCPU          int32
-	requiredMemMiB       int32
-	requiredDiskBytes    int64
-	candidatesConsidered int
-	candidatesEligible   int
-	nodes                []scheduler.NodeUtilization
-}
-
-// toDetails renders the view into the `details` map expected by
-// response.WriteError. `reason` is a stable string the operator (or a
-// CLI) can branch on to detect the resource-shortage subcase. Disk
-// fields (pool, disk_used_bytes, disk_total_bytes) on each utilization
-// entry land under additionalProperties — the OpenAPI envelope is
-// free-form.
-func (v *insufficientResourcesView) toDetails() map[string]any {
-	utilization := make([]map[string]any, 0, len(v.nodes))
-	for _, n := range v.nodes {
-		utilization = append(utilization, map[string]any{
-			"node":             n.Node,
-			"pool":             n.Pool,
-			"cpu_used":         n.CPUUsed,
-			"cpu_total":        n.CPUTotal,
-			"mem_used_mib":     n.MemUsedMiB,
-			"mem_total_mib":    n.MemTotalMiB,
-			"disk_used_bytes":  n.DiskUsedBytes,
-			"disk_total_bytes": n.DiskTotalBytes,
-		})
-	}
-	return map[string]any{
-		"reason": "insufficient_resources",
-		"required": map[string]any{
-			"cpu_cores":  v.requiredCPU,
-			"memory_mib": v.requiredMemMiB,
-			"disk_bytes": v.requiredDiskBytes,
-		},
-		"candidates_considered": v.candidatesConsidered,
-		"candidates_eligible":   v.candidatesEligible,
-		"node_utilization":      utilization,
-	}
-}
-
-// buildNoEligibleDetails projects an ErrNoEligibleNodes chain into the
-// 409 envelope's `details` map. When the chain carries a
-// NodePressureDetail the payload includes
-// `reason="node_pressure"` and a per-node breakdown so operators can see
-// which hosts were filtered out by an active pressure condition. The
-// bare sentinel (pool exists but every host is cordoned / unreachable
-// / soft-deleted) returns nil, keeping the bare envelope shape that
-// pre-pressure clients already understand.
-//
-// Each entry emits the timestamps for whichever pressure conditions are
-// active on it and nothing else: PressuredNode's three `*time.Time`
-// fields are nullable (present only when the matching
-// condition is in `Conditions`), so the nil-checks are both a wire
-// hygiene requirement (omit absent fields) and a runtime correctness
-// requirement (calling a method on a nil *time.Time panics).
-// Pool-scoped entries (disk_pressure) additionally surface the `pool`
-// name so the operator can distinguish a node-wide problem from a
-// per-pool exhaustion.
-func buildNoEligibleDetails(err error) map[string]any {
-	if network, ok := scheduler.ExtractNetworkUnreadyDetail(err); ok && network != nil && len(network.Nodes) > 0 {
-		filtered := make([]map[string]any, 0, len(network.Nodes))
-		for _, n := range network.Nodes {
-			networks := make([]map[string]any, 0, len(n.Networks))
-			for _, net := range n.Networks {
-				networks = append(networks, map[string]any{
-					"network_id": net.NetworkID.String(),
-					"status":     net.Status,
-				})
-			}
-			filtered = append(filtered, map[string]any{
-				"node":     n.Node,
-				"networks": networks,
-			})
-		}
-		return map[string]any{
-			"reason":                          "network_not_ready",
-			"filtered_due_to_network_unready": filtered,
-		}
-	}
-
-	pressure, ok := scheduler.ExtractNodePressureDetail(err)
-	if !ok || pressure == nil || len(pressure.Nodes) == 0 {
-		return nil
-	}
-	filtered := make([]map[string]any, 0, len(pressure.Nodes))
-	for _, n := range pressure.Nodes {
-		entry := map[string]any{
-			"node":       n.Node,
-			"conditions": n.Conditions,
-		}
-		if n.Pool != "" {
-			entry["pool"] = n.Pool
-		}
-		if t := n.MemoryPressureSince; t != nil {
-			entry["memory_pressure_since"] = t.UTC().Format(time.RFC3339Nano)
-		}
-		if t := n.SystemDiskPressureSince; t != nil {
-			entry["system_disk_pressure_since"] = t.UTC().Format(time.RFC3339Nano)
-		}
-		if t := n.DiskPressureSince; t != nil {
-			entry["disk_pressure_since"] = t.UTC().Format(time.RFC3339Nano)
-		}
-		filtered = append(filtered, entry)
-	}
-	return map[string]any{
-		"reason":                   "node_pressure",
-		"filtered_due_to_pressure": filtered,
-	}
-}
-
-// extractInsufficient walks the error chain for the scheduler's
-// resource-shortage payload. Returns true (with `out` populated) when
-// the wrapped error is the insufficient-resources sentinel.
-func extractInsufficient(err error, out **insufficientResourcesView) bool {
-	detail, ok := scheduler.ExtractInsufficientResources(err)
-	if !ok {
-		return false
-	}
-	if detail == nil {
-		*out = &insufficientResourcesView{}
-		return true
-	}
-	*out = &insufficientResourcesView{
-		requiredCPU:          detail.RequiredCPU,
-		requiredMemMiB:       detail.RequiredMemMiB,
-		requiredDiskBytes:    detail.RequiredDiskBytes,
-		candidatesConsidered: detail.CandidatesConsidered,
-		candidatesEligible:   detail.CandidatesEligible,
-		nodes:                detail.NodeUtilization,
-	}
-	return true
+	return net.Name, true
 }
 
 // generateLocalMAC mints a locally-administered unicast MAC in QEMU's
 // 52:54:00 OUI with three random low bytes. The 52:54:00 prefix is the
 // conventional QEMU/KVM range; the random suffix gives ~16M values, so a
 // collision within a cluster is astronomically unlikely and no retry loop is
-// warranted.
+// warranted. Consumed by the vms.schedule loop when it mints the NIC at bind.
 func generateLocalMAC() (net.HardwareAddr, error) {
 	var b [3]byte
 	if _, err := rand.Read(b[:]); err != nil {

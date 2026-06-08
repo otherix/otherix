@@ -141,10 +141,10 @@ func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {
 		network := renderVMNetwork(vm.Networks)
 		if showIDs {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				vm.ID, vm.Name, vm.Status, vm.Architecture, node, vm.Pool, network)
+				vm.ID, vm.Name, vm.Status.Phase, vm.Architecture, node, vm.Pool, network)
 		} else {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				vm.Name, vm.Status, vm.Architecture, node, vm.Pool, network)
+				vm.Name, vm.Status.Phase, vm.Architecture, node, vm.Pool, network)
 		}
 	}
 	_ = tw.Flush()

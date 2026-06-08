@@ -174,6 +174,15 @@ func (h *Handler) resolveListFilter(
 // abort because one row is in a transient state.
 func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter string) ([]vmView, error) {
 	includeOwner := callerCanReadUsers(ctx)
+	// One task scan for the whole page: a VM with a non-terminal vm.delete
+	// task projects status "deleting" (see projectStatus). Fails SOFT - a
+	// scan error degrades to no deleting hints (nil set), never a 500 on the
+	// whole list, since the deleting phase is a cosmetic projection.
+	deletingSet, err := h.store.ActiveVMDeleteTaskVMIDs(ctx)
+	if err != nil {
+		h.log.WarnContext(ctx, "active vm.delete scan failed; omitting deleting phase from list", "error", err)
+		deletingSet = nil
+	}
 	views := make([]vmView, 0, len(rows))
 	for _, vm := range rows {
 		runtime, err := h.loadRuntimeOrNil(ctx, vm.ID)
@@ -184,15 +193,26 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 		if err != nil {
 			return nil, err
 		}
-		if len(disks) == 0 {
+		// An unscheduled (pending) VM has no disk row yet; render it from
+		// the zero disk (toView falls back to the SchedulingSpec). Any
+		// other disk-less VM is a transient / inconsistent row and is
+		// skipped so the listing never aborts on one bad row.
+		var disk store.VMDisk
+		switch {
+		case len(disks) > 0:
+			disk = disks[0]
+		case vm.SchedulingStatus == store.VMSchedulingUnscheduled:
+			// disk stays the zero value.
+		default:
 			continue
 		}
-		names, err := h.resolveViewNames(ctx, vm, runtime, disks[0], includeOwner)
+		names, err := h.resolveViewNames(ctx, vm, runtime, disk, includeOwner)
 		if err != nil {
 			return nil, err
 		}
-		view := toView(vm, runtime, names)
-		if statusFilter != "" && view.Status != statusFilter {
+		_, deleting := deletingSet[vm.ID]
+		view := toView(vm, runtime, names, deleting)
+		if statusFilter != "" && view.Status.Phase != statusFilter {
 			continue
 		}
 		views = append(views, view)

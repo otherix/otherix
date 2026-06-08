@@ -209,6 +209,41 @@ func (s *Store) ListTasksOwn(ctx context.Context, arg store.ListTasksOwnParams) 
 	})
 }
 
+// ActiveVMDeleteTaskVMIDs returns the set of VM ids that currently have a
+// pending or running vm.delete task. The vms.get / vms.list projection reads
+// it to surface the in-flight delete window as status "deleting" before the
+// soft-delete tombstone lands. One task-prefix scan.
+//
+// The predicate is exactly pending|running by deliberate taxonomy: failed and
+// cancelled are excluded. failed is retryable (the dispatcher requeues until
+// MaxAttempts), but excluding it means a VM whose delete exhausted its retries
+// (terminally failed) falls back to its real runtime phase rather than a stuck
+// "deleting" forever - the safe direction (fail toward not-deleting). The cost
+// is a brief cosmetic flicker (deleting -> runtime -> deleting) in the window
+// between a transient failure and the next requeue; status is eventually
+// consistent, so the flicker is accepted over the stuck-forever risk.
+func (s *Store) ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error) {
+	items, err := s.c.Range(ctx, taskPrefix())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]struct{})
+	for _, kv := range items {
+		var t store.Task
+		if err := json.Unmarshal(kv.Value, &t); err != nil {
+			return nil, fmt.Errorf("unmarshal task %q: %v", kv.Key, err)
+		}
+		if t.Type != "vm.delete" || t.ResourceID == nil {
+			continue
+		}
+		if t.Status != store.TaskStatusPending && t.Status != store.TaskStatusRunning {
+			continue
+		}
+		out[*t.ResourceID] = struct{}{}
+	}
+	return out, nil
+}
+
 // taskFilter is the unified filter surface for ListTasksAny/Own.
 type taskFilter struct {
 	createdBy          *uuid.UUID

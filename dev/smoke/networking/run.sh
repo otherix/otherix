@@ -158,10 +158,20 @@ sed -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" -e "s|@@ARCH@@|${ARCH}|g" \
   | otx create -f - --wait --wait-timeout "${VM_TIMEOUT}s" \
   || fail "create -f vm did not reach success"
 pass "$VM_NAME created with a NIC on $BRIDGE_NET"
-# the tap is ot<12-hex>; assert one is enslaved to the bridge
-tap="$(invm ip -o link show master "$BRIDGE_IFACE" 2>/dev/null | awk -F': ' '/ ot/{print $2}' | awk '{print $1}' | head -1 || true)"
-[[ -n "$tap" ]] || fail "no tap enslaved to $BRIDGE_IFACE after vm create"
-pass "tap $tap enslaved to $BRIDGE_IFACE (VM NIC materialised)"
+# Managed bridges materialise cluster-wide, and the async scheduler binds the
+# VM to whichever node's requested network reconciled ready first - so resolve
+# the bound node from the VM rather than assuming node-1, then check the tap on
+# that node's agent.
+bound_node="$(otx vm get "$VM_NAME" --output json 2>/dev/null | jq -r '.node // empty')"
+case "$bound_node" in
+  node-2) bound_lima=otherix-dev-2 ;;
+  *)      bound_lima=otherix-dev-1 ;;
+esac
+info "$VM_NAME bound to ${bound_node:-node-1}; checking tap on ${bound_lima}"
+# the tap is ot<12-hex>; assert one is enslaved to the bridge on the bound node
+tap="$(limactl shell "$bound_lima" -- ip -o link show master "$BRIDGE_IFACE" 2>/dev/null | awk -F': ' '/ ot/{print $2}' | awk '{print $1}' | head -1 || true)"
+[[ -n "$tap" ]] || fail "no tap enslaved to $BRIDGE_IFACE on $bound_lima after vm create"
+pass "tap $tap enslaved to $BRIDGE_IFACE on ${bound_lima} (VM NIC materialised)"
 
 # --- step 5: delete-blocking + managed teardown -----------------------
 echo "=== step 5: network delete is blocked by the VM, then removes the bridge ==="

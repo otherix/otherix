@@ -32,9 +32,11 @@ import (
 //   - `Pool` is optional. When empty, the server uses the cluster
 //     default-pool (`PUT /v1/cluster/default-pool` to set); if
 //     not set, returns 400 `default_pool_not_set`.
-//   - `Node` is a new optional placement hint. When non-nil, the
-//     scheduler restricts placement to exactly that node; mismatch
-//     returns 409 `pool_not_on_node`.
+//   - `Node` is an optional placement hint. When non-nil, the
+//     scheduler restricts placement to exactly that node. The VM is
+//     admitted as pending; a pool-not-on-node mismatch keeps it pending
+//     with `status.reason` `pool_not_on_node`. A uuid literal in `Node`
+//     is rejected at create with 400 `validation_failed`.
 type CreateVMRequest struct {
 	Name        string  `json:"name"`
 	ImageURL    string  `json:"image_url"`
@@ -90,11 +92,36 @@ type VM struct {
 	Architecture string         `json:"architecture"`
 	VCPUs        int            `json:"vcpus"`
 	MemoryMB     int            `json:"memory_mb"`
-	Status       string         `json:"status"`
+	Status       VMStatus       `json:"status"`
 	DesiredPhase string         `json:"desired_phase"`
 	Labels       map[string]any `json:"labels"`
 	CreatedAt    string         `json:"created_at"`
 	UpdatedAt    string         `json:"updated_at"`
+}
+
+// VMStatus is the nested system-reported runtime/scheduling status the
+// server projects onto VM.status. Phase is the computed lifecycle phase
+// (pending / creating / running / paused / stopped / error / ...).
+// Reason and Message carry the machine-readable code and human text when
+// the VM is still pending placement (e.g. pool_not_ready); both are empty
+// once the VM has a running phase.
+type VMStatus struct {
+	Phase   string `json:"phase"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// IsTerminalPhase reports whether the VM's scheduling/lifecycle phase has
+// settled enough for `vm create --wait` to stop polling: a running VM is
+// the success terminal, an error/failed phase is the failure terminal.
+// Pending and creating are non-terminal (the scheduler / agent are still
+// converging).
+func (s VMStatus) IsTerminalPhase() bool {
+	switch s.Phase {
+	case "running", "error", "failed":
+		return true
+	}
+	return false
 }
 
 // VMList is the {data, meta} envelope every list endpoint serves.
@@ -128,27 +155,32 @@ type ListVMsParams struct {
 	Status string
 }
 
-// CreateVM submits a POST /v1/vms. 202 returns the parsed
-// TaskAccepted; any non-2xx surfaces as *APIError.
-func (c *Client) CreateVM(ctx context.Context, req CreateVMRequest) (TaskAccepted, error) {
+// CreateVM submits a POST /v1/vms. Admission is split from scheduling:
+// the server persists the VM in `pending` immediately and returns 201
+// with the created VM view (status.phase == "pending"); a CP-side
+// reconcile loop binds it to a (node, pool) later. The raw response body
+// is returned alongside the decoded value so `vm create --output json`
+// can echo the server's projection verbatim. Any non-2xx surfaces as
+// *APIError.
+func (c *Client) CreateVM(ctx context.Context, req CreateVMRequest) (VM, json.RawMessage, error) {
 	if req.Name == "" {
-		return TaskAccepted{}, fmt.Errorf("cpclient.CreateVM: name is required")
+		return VM{}, nil, fmt.Errorf("cpclient.CreateVM: name is required")
 	}
 
 	httpReq, err := c.newRequest(ctx, http.MethodPost, "/v1/vms", req)
 	if err != nil {
-		return TaskAccepted{}, err
+		return VM{}, nil, err
 	}
 	_, body, err := c.do(httpReq)
 	if err != nil {
-		return TaskAccepted{}, err
+		return VM{}, nil, err
 	}
 
-	var out TaskAccepted
+	var out VM
 	if err := decodeJSON(body, &out); err != nil {
-		return TaskAccepted{}, err
+		return VM{}, nil, err
 	}
-	return out, nil
+	return out, json.RawMessage(body), nil
 }
 
 // VM fetches /v1/vms/{identifier}. The parameter is a VM name;
@@ -311,9 +343,16 @@ func (c *Client) DeleteVM(ctx context.Context, identifier string) (TaskAccepted,
 	if err != nil {
 		return TaskAccepted{}, err
 	}
-	_, body, err := c.do(httpReq)
+	status, body, err := c.do(httpReq)
 	if err != nil {
 		return TaskAccepted{}, err
+	}
+	// A pending (unscheduled) VM is deleted CP-side and returns 204 No Content
+	// with no body - there is no agent-teardown task to track. A scheduled VM
+	// returns 202 + an AsyncTaskAccepted. An empty TaskAccepted (TaskID == "")
+	// signals the synchronous-delete case to the caller.
+	if status == http.StatusNoContent || len(body) == 0 {
+		return TaskAccepted{}, nil
 	}
 	var out TaskAccepted
 	if err := decodeJSON(body, &out); err != nil {

@@ -87,6 +87,10 @@ type PlacementReader interface {
 	ListStoragePoolsByName(ctx context.Context, name string) ([]StoragePool, error)
 	CountRunningVMsByNode(ctx context.Context, nodeID *uuid.UUID) (int64, error)
 	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]NetworkNodeStatus, error)
+	// NetworkByName resolves the deferred network name captured at admission to
+	// its row, so the bind can set the NIC's network id. Returns ErrNotFound
+	// when no live network owns the name (a pending scheduling reason).
+	NetworkByName(ctx context.Context, name string) (Network, error)
 }
 
 // VMCreateWrites bundles the rows a vm.create commits atomically: the VM, its
@@ -94,6 +98,10 @@ type PlacementReader interface {
 // args. Nic is nil when the create request named no network (legacy SLIRP
 // fallback on the agent); when set it lands in the same transaction as the VM
 // so the network's delete-block index is consistent the instant the VM exists.
+//
+// This is the input to the direct-bind etcdstore.CreateScheduledVM path, now
+// test-only; the production reconcile path uses CreateVMParams +
+// VMBindWrites. See CreateScheduledVM.
 type VMCreateWrites struct {
 	VM   CreateVMParams
 	Disk CreateVMDiskParams

@@ -34,8 +34,29 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeResolveError(w, r, err)
 		return
 	}
+	h.renderVMRow(w, r, vm, http.StatusOK)
+}
 
-	runtime, disk, err := h.loadVMProjection(r.Context(), vm.ID)
+// renderVM loads the VM by id, builds the public projection (runtime +
+// resolved names), and writes it at statusCode. It is the shared render
+// path for Create (201, the freshly-admitted pending VM) and any caller
+// that holds the VM id rather than the name. A missing / inconsistent row
+// maps to the standard 404 / 500 envelope.
+func (h *Handler) renderVM(w http.ResponseWriter, r *http.Request, vmID uuid.UUID, statusCode int) {
+	vm, err := h.store.VMByID(r.Context(), vmID)
+	if err != nil {
+		writeVMLoadError(w, r, err)
+		return
+	}
+	h.renderVMRow(w, r, vm, statusCode)
+}
+
+// renderVMRow renders an already-loaded VM row: it loads the runtime /
+// disk projection, resolves the display names, and writes the view at
+// statusCode. Shared by Get (which resolves the row by name) and renderVM
+// (which loads by id).
+func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.VM, statusCode int) {
+	runtime, disk, err := h.loadVMProjection(r.Context(), vm)
 	if err != nil {
 		writeVMLoadError(w, r, err)
 		return
@@ -45,19 +66,39 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeVMLoadError(w, r, err)
 		return
 	}
-	response.WriteJSON(w, r, http.StatusOK, toView(vm, runtime, names))
+	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID)))
+}
+
+// vmDeleting reports whether a non-terminal vm.delete task targets vmID,
+// which projectStatus surfaces as status.phase "deleting". It fails SOFT: a
+// task-scan error degrades to false (the VM renders without the deleting
+// hint) and is logged, never propagated. The deleting phase is a cosmetic
+// projection, so a transient tasks-keyspace error must not turn the whole VM
+// read path into a 500.
+func (h *Handler) vmDeleting(ctx context.Context, vmID uuid.UUID) bool {
+	set, err := h.store.ActiveVMDeleteTaskVMIDs(ctx)
+	if err != nil {
+		h.log.WarnContext(ctx, "active vm.delete scan failed; omitting deleting phase",
+			"vm_id", vmID, "error", err)
+		return false
+	}
+	_, ok := set[vmID]
+	return ok
 }
 
 // loadVMProjection fetches the vm_runtime row (if any) and the first
 // vm_disks row. vm_runtime is allowed to be missing (worker has not
 // upserted yet — projectStatus collapses that case to "creating").
-// vm_disks is expected to be present once the create-handler
-// transaction committed; absent disks indicate a row created
-// out-of-band, which surfaces as 500 since the API never produces that
-// state.
-func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.VMRuntime, store.VMDisk, error) {
+//
+// vm_disks is expected to be present once the create-handler bind
+// committed; an unscheduled (pending) VM, however, has no disk row yet,
+// so an absent disk on an unscheduled VM is the zero VMDisk (toView
+// falls back to the SchedulingSpec for the display pool). An absent disk
+// on an already-scheduled VM indicates a row created out-of-band and
+// surfaces as 500, since the API never produces that state.
+func (h *Handler) loadVMProjection(ctx context.Context, vm store.VM) (*store.VMRuntime, store.VMDisk, error) {
 	var runtime *store.VMRuntime
-	rt, err := h.store.VMRuntimeByID(ctx, vmID)
+	rt, err := h.store.VMRuntimeByID(ctx, vm.ID)
 	switch {
 	case err == nil:
 		runtime = &rt
@@ -66,11 +107,14 @@ func (h *Handler) loadVMProjection(ctx context.Context, vmID uuid.UUID) (*store.
 	default:
 		return nil, store.VMDisk{}, err
 	}
-	disks, err := h.store.ListVMDisksByVM(ctx, vmID)
+	disks, err := h.store.ListVMDisksByVM(ctx, vm.ID)
 	if err != nil {
 		return nil, store.VMDisk{}, err
 	}
 	if len(disks) == 0 {
+		if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+			return runtime, store.VMDisk{}, nil
+		}
 		return nil, store.VMDisk{}, errVMDiskMissing
 	}
 	return runtime, disks[0], nil
