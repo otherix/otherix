@@ -169,6 +169,7 @@ agent_client:
 cp_cert:
   additional_sans:
     - "host.lima.internal"
+    - "10.77.0.254"
   local_cache:
     enabled:   true
     cert_path: ".local/pki/cp-cert.crt"
