@@ -262,8 +262,8 @@ LIMA_VM     := $(LIMA_VM_1)
 
 .PHONY: bootstrap-dev deploy-dev clean-dev seed-dev \
         bootstrap-dev-linux deploy-dev-linux clean-dev-linux \
+        local-dev-up-linux local-dev-down-linux \
         bootstrap-dev-macos deploy-dev-macos clean-dev-macos \
-        install-agent-systemd-user \
         lima-check lima-ensure lima-ensure-one \
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
@@ -308,43 +308,32 @@ local-dev-start: ## One-shot bring-up: api-server (embedded etcd) + Lima + agent
 local-dev-stop: ## Stop everything + etcd-reset (DESTRUCTIVE - wipes the embedded-etcd data dir)
 	@bash dev/scripts/local-dev-stop.sh
 
-# ----- Linux -----
+# ----- Linux (two-node netns topology) -----
 
-# Stage user-mode systemd unit + binary. seed-dev.sh starts the unit
-# after provisioning bootstrap material (token + bootstrap.env);
-# auto-start would race with the provisioning.
-bootstrap-dev-linux: build-agent install-agent-systemd-user
-	@echo ">> bootstrap-dev-linux done; agent staged. Finalise with 'make seed-dev' after 'make run-api-dev'"
+MULTINODE_SH := dev/scripts/linux-multinode.sh
 
+# Build the agent, then bring up the privileged netns topology (bridge + 2 netns
+# + veth + host NAT). The agents are bootstrapped + started by seed-dev.sh.
+bootstrap-dev-linux: build-agent
+	@sudo $(MULTINODE_SH) up
+	@echo ">> bootstrap-dev-linux done; topology up. Finalise with 'make seed-dev' after 'make run-api-dev'"
+
+# Rebuild the agent binary and restart both agents in place (config + cert
+# material persist across a restart).
 deploy-dev-linux: build-agent
-	@cp $(BIN_DIR)/otherix-agent $(HOME)/.local/bin/otherix-agent
-	@systemctl --user restart otherix-agent
-	@sleep 1
-	@systemctl --user status otherix-agent --no-pager || true
-
-install-agent-systemd-user:
-	@mkdir -p $(HOME)/.local/bin
-	@mkdir -p $(HOME)/.config/otherix/certs
-	@mkdir -p $(HOME)/.config/otherix/vms
-	@mkdir -p $(HOME)/.config/otherix/pools/default/images
-	@mkdir -p $(HOME)/.config/otherix/pools/default/vms
-	@mkdir -p $(HOME)/.config/systemd/user
-	@chmod 0750 $(HOME)/.config/otherix/certs
-	@cp $(BIN_DIR)/otherix-agent $(HOME)/.local/bin/otherix-agent
-	@sed "s|__OTHERIX_CONFIG__|$(HOME)/.config/otherix|g" dev/config/agent-linux.yaml \
-	    > $(HOME)/.config/otherix/agent.yaml
-	@cp dev/systemd/otherix-agent.service $(HOME)/.config/systemd/user/otherix-agent.service
-	@systemctl --user daemon-reload
-	@echo ">> agent user systemd unit installed at $(HOME)/.config/systemd/user/otherix-agent.service"
+	@sudo $(MULTINODE_SH) restart
+	@echo ">> deploy-dev-linux done"
 
 clean-dev-linux:
-	-systemctl --user stop otherix-agent 2>/dev/null || true
-	-systemctl --user disable otherix-agent 2>/dev/null || true
-	-rm -f $(HOME)/.config/systemd/user/otherix-agent.service
-	-systemctl --user daemon-reload 2>/dev/null || true
-	-rm -f $(HOME)/.local/bin/otherix-agent
-	-rm -rf $(HOME)/.config/otherix
+	-sudo $(MULTINODE_SH) down --wipe
 	@echo ">> clean-dev-linux done"
+
+# Manual privileged topology wrappers (discoverable via make help).
+local-dev-up-linux: build-agent ## Linux: bring up the two-node netns topology (sudo)
+	@sudo $(MULTINODE_SH) up
+
+local-dev-down-linux: ## Linux: tear down the two-node netns topology + state (sudo)
+	@sudo $(MULTINODE_SH) down --wipe
 
 # ----- macOS (Lima) -----
 
