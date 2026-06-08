@@ -26,9 +26,10 @@
 
 set -euo pipefail
 
+# shellcheck source=../lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
+
 OTX="${OTX:-./bin/otherix}"
-VM1="${VM1:-otherix-dev-1}"
-VM2="${VM2:-otherix-dev-2}"
 NODE1="${NODE1:-node-1}"
 NODE2="${NODE2:-node-2}"
 WG_IFACE="otwg0"
@@ -43,8 +44,8 @@ info() { echo "${YEL}..${NC} $*"; }
 fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 
 otx()   { "$OTX" "$@"; }
-invm1() { limactl shell "$VM1" -- "$@"; }
-invm2() { limactl shell "$VM2" -- "$@"; }
+invm1() { run_on "$SMOKE_HANDLE_1" "$@"; }
+invm2() { run_on "$SMOKE_HANDLE_2" "$@"; }
 
 # overlay_ip NODE -> prints the node's otwg0 overlay host IP (no /prefix)
 overlay_ip() { otx node get "$1" --output json 2>/dev/null | jq -r '.wireguard.overlay_ip' | cut -d/ -f1; }
@@ -52,7 +53,6 @@ overlay_ip() { otx node get "$1" --output json 2>/dev/null | jq -r '.wireguard.o
 # --- preconditions -----------------------------------------------------
 echo "=== overlay smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-command -v limactl >/dev/null || fail "limactl is required"
 curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
 for n in "$NODE1" "$NODE2"; do
   st="$(otx node get "$n" --output json 2>/dev/null | jq -r '.status' || true)"
@@ -80,20 +80,20 @@ echo "=== step 2: both nodes materialize VTEP+bridge (fail-closed attrs) ==="
 # assert_node VM OVL_IP -> verifies the device invariants in the VM
 assert_node() {
   local vm="$1" ovl="$2"
-  limactl shell "$vm" -- ip -d link show "$VTEP" 2>/dev/null | grep -q "vxlan id $VNI " || return 1
-  limactl shell "$vm" -- ip -d link show "$VTEP" | grep -q "local $ovl " || return 1
-  limactl shell "$vm" -- ip -d link show "$VTEP" | grep -q "dstport 4789" || return 1
-  limactl shell "$vm" -- ip -d link show "$VTEP" | grep -q "nolearning" || return 1
-  limactl shell "$vm" -- ip link show "$VTEP" | grep -q "mtu 1390" || return 1
-  limactl shell "$vm" -- ip link show "$WG_IFACE" | grep -q "mtu 1440" || return 1
-  limactl shell "$vm" -- ip link show "$BR" | grep -Eq "mtu 1390.*state (UP|UNKNOWN)" || return 1
-  limactl shell "$vm" -- ip -o link show master "$BR" | grep -q "$VTEP" || return 1
+  run_on "$vm" ip -d link show "$VTEP" 2>/dev/null | grep -q "vxlan id $VNI " || return 1
+  run_on "$vm" ip -d link show "$VTEP" | grep -q "local $ovl " || return 1
+  run_on "$vm" ip -d link show "$VTEP" | grep -q "dstport 4789" || return 1
+  run_on "$vm" ip -d link show "$VTEP" | grep -q "nolearning" || return 1
+  run_on "$vm" ip link show "$VTEP" | grep -q "mtu 1390" || return 1
+  run_on "$vm" ip link show "$WG_IFACE" | grep -q "mtu 1440" || return 1
+  run_on "$vm" ip link show "$BR" | grep -Eq "mtu 1390.*state (UP|UNKNOWN)" || return 1
+  run_on "$vm" ip -o link show master "$BR" | grep -q "$VTEP" || return 1
   return 0
 }
 info "waiting for both nodes to materialize (<= ${DEADLINE}s)"
 deadline=$(( SECONDS + DEADLINE )); ok=0
 while (( SECONDS < deadline )); do
-  if assert_node "$VM1" "$OVL1" && assert_node "$VM2" "$OVL2"; then ok=1; break; fi
+  if assert_node "$SMOKE_HANDLE_1" "$OVL1" && assert_node "$SMOKE_HANDLE_2" "$OVL2"; then ok=1; break; fi
   sleep 5
 done
 (( ok == 1 )) || { invm1 ip -d link show "$VTEP" || true; fail "overlay not materialized on both nodes within ${DEADLINE}s"; }
