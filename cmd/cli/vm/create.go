@@ -32,7 +32,11 @@ const (
 
 	defaultVCPUs    = 2
 	defaultMemoryMB = 2048
-	defaultWaitTO   = 5 * time.Minute
+	// defaultWaitTO is the --wait budget. It matches the k8s-style 10m
+	// pending window a `vm create --wait` blocks for while the scheduler
+	// converges; delete / lifecycle --wait reuse it as a terminal-task poll
+	// ceiling.
+	defaultWaitTO = 10 * time.Minute
 )
 
 func newCreateCommand() *cobra.Command {
@@ -65,8 +69,10 @@ Multi-instance pools + scheduler:
     set-default-pool'). Missing default returns 400
     default_pool_not_set.
   - --node is an optional placement hint: when set, the scheduler
-    pins the VM to exactly that node; mismatch (pool not present on
-    the requested node) returns 409 pool_not_on_node.
+    pins the VM to exactly that node. The VM is admitted as pending;
+    if the pool is not present on the requested node it stays pending
+    with status.reason pool_not_on_node (visible via 'vm get'). A uuid
+    literal in --node is rejected at create with 400 validation_failed.
 
 --network is optional: a bridge network name or uuid. When set the VM
 gets one NIC attached to that network's bridge (the CP mints a

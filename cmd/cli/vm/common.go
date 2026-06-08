@@ -123,8 +123,8 @@ func waitForVMPhase(ctx context.Context, cmd *cobra.Command, c *cpclient.Client,
 	defer cancel()
 
 	const (
-		initial = 1 * time.Second
-		max     = 5 * time.Second
+		initial  = 1 * time.Second
+		maxDelay = 5 * time.Second
 	)
 	delay := initial
 	lastReason := ""
@@ -157,8 +157,8 @@ func waitForVMPhase(ctx context.Context, cmd *cobra.Command, c *cpclient.Client,
 			return fmt.Errorf("wait vm: %w", err)
 		}
 		delay *= 2
-		if delay > max {
-			delay = max
+		if delay > maxDelay {
+			delay = maxDelay
 		}
 	}
 }
