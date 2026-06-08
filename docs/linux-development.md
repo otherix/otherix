@@ -34,8 +34,8 @@ netlink, and cloud-init seed ISOs are built in pure Go (`go-diskfs`).
 Install (Debian/Ubuntu):
 
 ```bash
-sudo apt-get install -y qemu-system-x86 qemu-utils                    # amd64
-sudo apt-get install -y qemu-system-arm qemu-utils qemu-efi-aarch64   # arm64
+sudo apt install --no-install-recommends -y qemu-system-x86 qemu-utils                    # amd64
+sudo apt install --no-install-recommends -y qemu-system-arm qemu-utils qemu-efi-aarch64   # arm64
 ```
 
 ### Dev-topology extras (for `make local-dev-start` on this host)
@@ -53,7 +53,7 @@ Beyond the agent itself, the two-node netns wiring
   `smoke-networking` smokes, which inspect the kernel WireGuard handshake with
   `wg`. The agent itself does not need it (it uses the in-kernel API via
   `wgctrl`); install it for those smokes:
-  `sudo apt-get install -y wireguard-tools`.
+  `sudo apt install --no-install-recommends -y wireguard-tools`.
 
 `make local-dev-start` runs a dependency preflight and fails with the exact
 missing dependency if anything is absent.
