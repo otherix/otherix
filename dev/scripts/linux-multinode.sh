@@ -87,14 +87,17 @@ up() {
         ns="$(node_ns "${n}")"; ip="$(node_ip "${n}")"; hveth="$(node_veth "${n}")"
         ip netns list | grep -qw "${ns}" || ip netns add "${ns}"
         ip netns exec "${ns}" ip link set lo up
+        # Create the veth pair once; then (re)apply L3 unconditionally with
+        # idempotent replace ops so a half-built node — veth present but IP/route
+        # missing from a prior interrupted up — is repaired on the next up.
         if ! ip link show "${hveth}" >/dev/null 2>&1; then
             ip link add "${hveth}" type veth peer name eth0 netns "${ns}"
-            ip link set "${hveth}" master "${BRIDGE}"
-            ip link set "${hveth}" up
-            ip netns exec "${ns}" ip addr add "${ip}/${PREFIX}" dev eth0
-            ip netns exec "${ns}" ip link set eth0 up
-            ip netns exec "${ns}" ip route add default via "${BRIDGE_IP}"
         fi
+        ip link set "${hveth}" master "${BRIDGE}"
+        ip link set "${hveth}" up
+        ip netns exec "${ns}" ip addr replace "${ip}/${PREFIX}" dev eth0
+        ip netns exec "${ns}" ip link set eth0 up
+        ip netns exec "${ns}" ip route replace default via "${BRIDGE_IP}"
         mkdir -p "$(node_dir "${n}")/certs" \
                  "$(node_dir "${n}")/vms" \
                  "$(node_dir "${n}")/pools/default/images" \
