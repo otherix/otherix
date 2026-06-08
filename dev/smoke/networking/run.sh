@@ -25,14 +25,16 @@
 
 set -euo pipefail
 
+# shellcheck source=../lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
+
 # --- configuration -----------------------------------------------------
-# Two-node dev stack: the VM lands on node-1 (otherix-dev-1) because only
-# node-1 carries the bridge for $BRIDGE_NET; node-2 is a WG-mesh-only peer
-# without it, so the scheduler pins placement here. The tap/bridge assertions run
-# against otherix-dev-1.
+# Two-node dev stack: the VM lands on node-1 because only node-1 carries
+# the bridge for $BRIDGE_NET; node-2 is a WG-mesh-only peer without it, so
+# the scheduler pins placement here. The tap/bridge assertions run against
+# node-1 ($SMOKE_HANDLE_1).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTX="${OTX:-./bin/otherix}"
-LIMA_VM="${LIMA_VM:-otherix-dev-1}"
 NODE="${NODE:-node-1}"
 BRIDGE_NET="demo-bridge"
 BRIDGE_IFACE="otmbr0"   # otb* is reserved for overlay bridges (otb<vni>); otm* is free
@@ -51,7 +53,7 @@ info() { echo "${YEL}..${NC} $*"; }
 fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 
 otx()  { "$OTX" "$@"; }
-invm() { limactl shell "$LIMA_VM" -- "$@"; }
+invm() { run_on "$SMOKE_HANDLE_1" "$@"; }
 
 # network_status_for NODE NET -> prints reconciliation_status for that node
 network_status_for() {
@@ -84,7 +86,6 @@ trap cleanup EXIT
 # --- preconditions -----------------------------------------------------
 echo "=== networking smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-command -v limactl >/dev/null || fail "limactl is required (Lima dev agent)"
 curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
 node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' || true)"
 [[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-dev"
@@ -99,7 +100,7 @@ pass "CP up, $NODE ready"
 echo "=== step 0: WireGuard fabric (otwg0 on $NODE) ==="
 WG_IFACE="otwg0"
 WG_OVERLAY="10.42.0.1/16"
-WG_KEY_PATH="/opt/otherix/wg/private.key"
+WG_KEY_PATH="${SMOKE_STATE_1}/wg/private.key"
 invm sudo wg show "$WG_IFACE" | grep -q "listening port: 51820" \
   || fail "$WG_IFACE listen port not 51820"
 invm sudo wg show "$WG_IFACE" | grep -q "public key:" \
@@ -123,8 +124,8 @@ otx create -f "${SCRIPT_DIR}/manifests/bridge.yaml" \
 pass "created $BRIDGE_NET"
 wait_ready "$BRIDGE_NET"
 invm ip -o link show "$BRIDGE_IFACE" >/dev/null 2>&1 \
-  || fail "$BRIDGE_IFACE not present on $LIMA_VM after reconcile"
-pass "$BRIDGE_IFACE exists on $LIMA_VM (managed bridge materialised over netlink)"
+  || fail "$BRIDGE_IFACE not present on $SMOKE_HANDLE_1 after reconcile"
+pass "$BRIDGE_IFACE exists on $SMOKE_HANDLE_1 (managed bridge materialised over netlink)"
 
 # --- step 2: managed NAT ----------------------------------------------
 echo "=== step 2: managed NAT ($NAT_NET -> $NAT_IFACE, $NAT_SUBNET) ==="
@@ -164,14 +165,14 @@ pass "$VM_NAME created with a NIC on $BRIDGE_NET"
 # that node's agent.
 bound_node="$(otx vm get "$VM_NAME" --output json 2>/dev/null | jq -r '.node // empty')"
 case "$bound_node" in
-  node-2) bound_lima=otherix-dev-2 ;;
-  *)      bound_lima=otherix-dev-1 ;;
+  node-2) bound_handle="$SMOKE_HANDLE_2" ;;
+  *)      bound_handle="$SMOKE_HANDLE_1" ;;
 esac
-info "$VM_NAME bound to ${bound_node:-node-1}; checking tap on ${bound_lima}"
+info "$VM_NAME bound to ${bound_node:-node-1}; checking tap on ${bound_handle}"
 # the tap is ot<12-hex>; assert one is enslaved to the bridge on the bound node
-tap="$(limactl shell "$bound_lima" -- ip -o link show master "$BRIDGE_IFACE" 2>/dev/null | awk -F': ' '/ ot/{print $2}' | awk '{print $1}' | head -1 || true)"
-[[ -n "$tap" ]] || fail "no tap enslaved to $BRIDGE_IFACE on $bound_lima after vm create"
-pass "tap $tap enslaved to $BRIDGE_IFACE on ${bound_lima} (VM NIC materialised)"
+tap="$(run_on "$bound_handle" ip -o link show master "$BRIDGE_IFACE" 2>/dev/null | awk -F': ' '/ ot/{print $2}' | awk '{print $1}' | head -1 || true)"
+[[ -n "$tap" ]] || fail "no tap enslaved to $BRIDGE_IFACE on $bound_handle after vm create"
+pass "tap $tap enslaved to $BRIDGE_IFACE on ${bound_handle} (VM NIC materialised)"
 
 # --- step 5: delete-blocking + managed teardown -----------------------
 echo "=== step 5: network delete is blocked by the VM, then removes the bridge ==="
@@ -187,7 +188,7 @@ pass "$BRIDGE_NET deleted"
 for _ in $(seq 1 20); do invm ip -o link show "$BRIDGE_IFACE" >/dev/null 2>&1 || break; sleep 3; done
 invm ip -o link show "$BRIDGE_IFACE" >/dev/null 2>&1 \
   && fail "$BRIDGE_IFACE still present after delete (managed bridge not torn down)"
-pass "$BRIDGE_IFACE removed from $LIMA_VM (managed bridge torn down)"
+pass "$BRIDGE_IFACE removed from $SMOKE_HANDLE_1 (managed bridge torn down)"
 
 # --- step 6: NAT teardown ---------------------------------------------
 echo "=== step 6: NAT network teardown ==="
