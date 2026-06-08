@@ -126,8 +126,8 @@ make --no-print-directory bootstrap-dev
 # agent binary stage) run async and can take 30-60s longer on first start.
 # Without this gate, seed-dev Step 4 (`limactl shell ... otherix-agent
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
-# landed yet. Linux native skips entirely — bootstrap-dev-linux is
-# synchronous (build + systemd unit install).
+# landed yet. Linux native takes the else branch below (a netns-readiness
+# check) — bootstrap-dev-linux is synchronous (build + netns topology up).
 echo ">> Step 4/8 — Lima VM readiness (macOS only, both VMs)"
 if [ "$(uname -s)" = "Darwin" ]; then
     for vm in otherix-dev-1 otherix-dev-2; do
