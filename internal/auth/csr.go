@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -210,8 +212,12 @@ func hasCAKeyUsageBits(value []byte) bool {
 // extensions are ignored entirely. Template fields:
 //
 //   - Subject CN: "node-<nodeName>" derived from the validated request.
-//   - SAN DNS: "node-<nodeName>.agents.otherix.local", "localhost".
-//   - SAN IP: 127.0.0.1.
+//   - SAN DNS: "node-<nodeName>.agents.otherix.local", "localhost",
+//     plus the advertisedEndpoint host when it parses to a DNS name.
+//   - SAN IP: 127.0.0.1, plus the advertisedEndpoint host when it
+//     parses to an IP address. The endpoint host is the CP-persisted
+//     advertised_endpoint (server-authoritative), so the CP can dial
+//     the agent at its real address; the CSR's own SAN stays ignored.
 //   - Validity: LeafCertValidity (1 year), with a 1m skew tolerance on
 //     NotBefore so freshly-issued certs don't fail validation on
 //     callers with slightly-fast clocks.
@@ -220,7 +226,7 @@ func hasCAKeyUsageBits(value []byte) bool {
 //     requests and act as clients on the heartbeat path).
 //   - Serial: cryptographically-random 64-bit positive integer.
 //   - SignatureAlgorithm: ECDSAWithSHA384 (matches the CA's P-384 key).
-func SignCSR(csr *x509.CertificateRequest, nodeName string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
+func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
 	serial, err := randomLeafSerial()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate serial: %v", err)
@@ -249,6 +255,17 @@ func SignCSR(csr *x509.CertificateRequest, nodeName string, caCert *x509.Certifi
 		SignatureAlgorithm: x509.ECDSAWithSHA384,
 	}
 
+	// Derive an additional SAN from the node's advertised endpoint so the CP can
+	// dial the agent at its real address. Server-authoritative: the endpoint is
+	// the CP-persisted advertised_endpoint, NOT the CSR's SAN (still ignored).
+	if host := sanHostFromEndpoint(advertisedEndpoint); host != "" {
+		if ip := net.ParseIP(host); ip != nil {
+			template.IPAddresses = appendUniqueIP(template.IPAddresses, ip)
+		} else {
+			template.DNSNames = appendUniqueDNS(template.DNSNames, host)
+		}
+	}
+
 	der, err := x509.CreateCertificate(rand.Reader, template, caCert, csr.PublicKey, caKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create certificate: %v", err)
@@ -265,6 +282,40 @@ func SignCSR(csr *x509.CertificateRequest, nodeName string, caCert *x509.Certifi
 	}
 
 	return certPEM, parsed, nil
+}
+
+// sanHostFromEndpoint extracts the host from an advertised-endpoint URL
+// (e.g. "https://10.77.0.1:9443" -> "10.77.0.1"). It returns "" for an empty or
+// unparseable endpoint, in which case the cert carries only the fixed SAN.
+func sanHostFromEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// appendUniqueDNS appends name to list unless a case-insensitive match is already present.
+func appendUniqueDNS(list []string, name string) []string {
+	for _, n := range list {
+		if strings.EqualFold(n, name) {
+			return list
+		}
+	}
+	return append(list, name)
+}
+
+// appendUniqueIP appends ip to list unless an equal address is already present.
+func appendUniqueIP(list []net.IP, ip net.IP) []net.IP {
+	for _, existing := range list {
+		if existing.Equal(ip) {
+			return list
+		}
+	}
+	return append(list, ip)
 }
 
 // randomLeafSerial returns a cryptographically-random positive 64-bit

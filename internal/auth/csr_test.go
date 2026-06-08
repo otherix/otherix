@@ -286,7 +286,7 @@ func TestSignCSR_HappyPath_TemplateFieldsCorrect(t *testing.T) {
 		t.Fatalf("ValidateCSR: %v", err)
 	}
 
-	certPEM, parsed, err := auth.SignCSR(csr, "foo-node", caCert, signer, now)
+	certPEM, parsed, err := auth.SignCSR(csr, "foo-node", "", caCert, signer, now)
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestSignCSR_ChainVerifies_AgainstCA(t *testing.T) {
 	pemBytes, _ := generateValidCSR(t, "node-chain")
 	csr, _ := auth.ValidateCSR(pemBytes)
 
-	_, leafCert, err := auth.SignCSR(csr, "chain-node", caCert, signer, now)
+	_, leafCert, err := auth.SignCSR(csr, "chain-node", "", caCert, signer, now)
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestSignCSR_DistinctSerials(t *testing.T) {
 
 	seen := map[string]bool{}
 	for i := 0; i < 20; i++ {
-		_, leaf, err := auth.SignCSR(csr, "x", caCert, signer, now)
+		_, leaf, err := auth.SignCSR(csr, "x", "", caCert, signer, now)
 		if err != nil {
 			t.Fatalf("SignCSR #%d: %v", i, err)
 		}
@@ -421,5 +421,92 @@ func TestSignCSR_DistinctSerials(t *testing.T) {
 			t.Errorf("duplicate serial after %d signings: %s", i+1, key)
 		}
 		seen[key] = true
+	}
+}
+
+func hasDNS(list []string, want string) bool {
+	for _, n := range list {
+		if strings.EqualFold(n, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasIP(list []net.IP, want string) bool {
+	target := net.ParseIP(want)
+	for _, ip := range list {
+		if ip.Equal(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSignCSRAdvertisedEndpointSAN(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	caResult, err := auth.GenerateClusterCA(now)
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	caCert, _, err := auth.ParseClusterCACert(caResult.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	caKey, err := auth.ParseClusterCAKey(caResult.KeyPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCAKey: %v", err)
+	}
+	signer, ok := caKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("CA key type = %T, want *ecdsa.PrivateKey", caKey)
+	}
+
+	pemBytes, _ := generateValidCSR(t, "node-1")
+	csr, err := auth.ValidateCSR(pemBytes)
+	if err != nil {
+		t.Fatalf("ValidateCSR: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		endpoint string
+		wantIP   string
+		wantDNS  string
+		extraIPs int
+		extraDNS int
+	}{
+		{name: "ip endpoint", endpoint: "https://10.77.0.1:9443", wantIP: "10.77.0.1", extraIPs: 1, extraDNS: 0},
+		{name: "dns endpoint", endpoint: "https://node1.example.com:9443", wantDNS: "node1.example.com", extraIPs: 0, extraDNS: 1},
+		{name: "loopback dedup", endpoint: "https://127.0.0.1:9443", extraIPs: 0, extraDNS: 0},
+		{name: "empty endpoint", endpoint: "", extraIPs: 0, extraDNS: 0},
+		{name: "malformed endpoint", endpoint: "://nonsense", extraIPs: 0, extraDNS: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, cert, err := auth.SignCSR(csr, "node-1", tt.endpoint, caCert, signer, now)
+			if err != nil {
+				t.Fatalf("SignCSR(%q) error: %v", tt.endpoint, err)
+			}
+			if !hasDNS(cert.DNSNames, "node-node-1.agents.otherix.local") || !hasDNS(cert.DNSNames, "localhost") {
+				t.Errorf("SignCSR(%q) DNSNames = %v, missing fixed entries", tt.endpoint, cert.DNSNames)
+			}
+			if !hasIP(cert.IPAddresses, "127.0.0.1") {
+				t.Errorf("SignCSR(%q) IPAddresses = %v, missing 127.0.0.1", tt.endpoint, cert.IPAddresses)
+			}
+			if got := len(cert.IPAddresses) - 1; got != tt.extraIPs { // minus the fixed 127.0.0.1
+				t.Errorf("SignCSR(%q) extra IPAddresses = %d, want %d (%v)", tt.endpoint, got, tt.extraIPs, cert.IPAddresses)
+			}
+			if got := len(cert.DNSNames) - 2; got != tt.extraDNS { // minus the 2 fixed DNS entries
+				t.Errorf("SignCSR(%q) extra DNSNames = %d, want %d (%v)", tt.endpoint, got, tt.extraDNS, cert.DNSNames)
+			}
+			if tt.wantIP != "" && !hasIP(cert.IPAddresses, tt.wantIP) {
+				t.Errorf("SignCSR(%q) IPAddresses = %v, want %s", tt.endpoint, cert.IPAddresses, tt.wantIP)
+			}
+			if tt.wantDNS != "" && !hasDNS(cert.DNSNames, tt.wantDNS) {
+				t.Errorf("SignCSR(%q) DNSNames = %v, want %s", tt.endpoint, cert.DNSNames, tt.wantDNS)
+			}
+		})
 	}
 }

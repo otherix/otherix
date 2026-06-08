@@ -80,7 +80,7 @@ func (h *Handler) redeem(ctx context.Context, req joinRequest, csr *x509.Certifi
 		MigrationPortRangeEnd:   req.MigrationPortRangeEnd,
 		SourceIP:                sourceIP,
 	}, func(node store.Node) (store.IssuedCert, error) {
-		pem, parsed, err := auth.SignCSR(csr, req.NodeName, ca.cert, ca.key, time.Now())
+		pem, parsed, err := auth.SignCSR(csr, req.NodeName, "", ca.cert, ca.key, time.Now())
 		if err != nil {
 			return store.IssuedCert{}, fmt.Errorf("sign csr: %v", err)
 		}
