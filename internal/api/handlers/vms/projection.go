@@ -18,13 +18,16 @@ const (
 	statusError    = "error"
 	statusGone     = "gone"
 	statusOrphaned = "orphaned"
+	statusDeleting = "deleting"
 )
 
-// projectStatus maps the (vms row, vm_runtime row) pair to the
-// user-facing status string per the Phase B truth table:
+// projectStatus maps the (vms row, vm_runtime row) pair plus the
+// "delete in flight" bit to the user-facing status string per the
+// Phase B truth table:
 //
 //	deleted_at not null              → gone
-//	scheduling_status == unscheduled → pending  (awaiting placement)
+//	active vm.delete task            → deleting  (teardown in flight, pre-tombstone)
+//	scheduling_status == unscheduled → pending   (awaiting placement)
 //	runtime nil              → creating  (worker hasn't upserted yet)
 //	runtime.phase == pending → creating  (agent task still in flight)
 //	runtime.phase == running → running
@@ -34,13 +37,22 @@ const (
 //	runtime.phase == gone    → gone
 //	runtime.phase == orphaned → orphaned
 //
-// Pure function: callers pass the vm row plus a (possibly nil) runtime
-// pointer. Tested independently of the GET handler — the truth table
-// is the single source of behavioural truth for the wire `status`
-// field.
-func projectStatus(vm store.VM, runtime *store.VMRuntime) string {
+// deleting sits below the deleted_at tombstone (a gone VM is gone, not
+// deleting) and above everything else: a delete in flight dominates the
+// observed runtime phase (which still reads running/stopped until the
+// agent tears qemu down). The caller supplies deleting from a live
+// vm.delete task lookup (no desired-state write — see delete.go).
+//
+// Pure function: callers pass the vm row, a (possibly nil) runtime
+// pointer, and the deleting bit. Tested independently of the GET
+// handler — the truth table is the single source of behavioural truth
+// for the wire `status` field.
+func projectStatus(vm store.VM, runtime *store.VMRuntime, deleting bool) string {
 	if vm.DeletedAt != nil {
 		return statusGone
+	}
+	if deleting {
+		return statusDeleting
 	}
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
 		return statusPending

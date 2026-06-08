@@ -42,6 +42,60 @@ func taskParams(status store.TaskStatus, creator *uuid.UUID) store.CreateTaskPar
 	}
 }
 
+// TestActiveVMDeleteTaskVMIDs asserts the projection lookup returns exactly the
+// VMs with a non-terminal vm.delete task: pending and running are in the set,
+// a terminal (success) delete and a different task type are excluded.
+func TestActiveVMDeleteTaskVMIDs(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	vmPending := uuid.New()  // pending vm.delete -> in set
+	vmRunning := uuid.New()  // running vm.delete -> in set
+	vmDone := uuid.New()     // success vm.delete -> excluded (terminal)
+	vmCreating := uuid.New() // pending vm.create -> excluded (wrong type)
+
+	enqueue := func(typ string, res uuid.UUID) uuid.UUID {
+		t.Helper()
+		p := store.CreateTaskParams{
+			ID: uuid.New(), Type: typ, Status: store.TaskStatusPending, ResourceType: "vm",
+			ResourceID: &res, Args: []byte(`{}`), MaxAttempts: 3,
+		}
+		if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+			t.Fatalf("EnqueueTask(%s): %v", typ, err)
+		}
+		return p.ID
+	}
+
+	enqueue("vm.delete", vmPending)
+	runID := enqueue("vm.delete", vmRunning)
+	if err := s.UpdateTaskRunning(ctx, runID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	doneID := enqueue("vm.delete", vmDone)
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: doneID, Status: store.TaskStatusSuccess}); err != nil {
+		t.Fatalf("UpdateTaskFinalized: %v", err)
+	}
+	enqueue("vm.create", vmCreating)
+
+	got, err := s.ActiveVMDeleteTaskVMIDs(ctx)
+	if err != nil {
+		t.Fatalf("ActiveVMDeleteTaskVMIDs: %v", err)
+	}
+	for _, want := range []uuid.UUID{vmPending, vmRunning} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("vm %v with active vm.delete missing from set", want)
+		}
+	}
+	for _, excl := range []uuid.UUID{vmDone, vmCreating} {
+		if _, ok := got[excl]; ok {
+			t.Errorf("vm %v should not be in the active-delete set", excl)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("set size = %d, want 2", len(got))
+	}
+}
+
 func TestEnqueueTaskWritesTaskAndJob(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

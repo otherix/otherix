@@ -174,6 +174,12 @@ func (h *Handler) resolveListFilter(
 // abort because one row is in a transient state.
 func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter string) ([]vmView, error) {
 	includeOwner := callerCanReadUsers(ctx)
+	// One task scan for the whole page: a VM with a non-terminal vm.delete
+	// task projects status "deleting" (see projectStatus).
+	deletingSet, err := h.store.ActiveVMDeleteTaskVMIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
 	views := make([]vmView, 0, len(rows))
 	for _, vm := range rows {
 		runtime, err := h.loadRuntimeOrNil(ctx, vm.ID)
@@ -201,7 +207,8 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 		if err != nil {
 			return nil, err
 		}
-		view := toView(vm, runtime, names)
+		_, deleting := deletingSet[vm.ID]
+		view := toView(vm, runtime, names, deleting)
 		if statusFilter != "" && view.Status.Phase != statusFilter {
 			continue
 		}

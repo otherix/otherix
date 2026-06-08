@@ -19,10 +19,11 @@ func TestProjectStatus(t *testing.T) {
 
 	deleted := time.Now().UTC()
 	cases := []struct {
-		name    string
-		vm      store.VM
-		runtime *store.VMRuntime
-		want    string
+		name     string
+		vm       store.VM
+		runtime  *store.VMRuntime
+		deleting bool
+		want     string
 	}{
 		{
 			name: "deleted vm overrides runtime",
@@ -32,6 +33,20 @@ func TestProjectStatus(t *testing.T) {
 				Phase: store.VmPhaseRunning,
 			},
 			want: statusGone,
+		},
+		{
+			name:     "active delete task overrides running runtime",
+			vm:       store.VM{ID: uuid.New(), SchedulingStatus: store.VMSchedulingScheduled},
+			runtime:  &store.VMRuntime{Phase: store.VmPhaseRunning},
+			deleting: true,
+			want:     statusDeleting,
+		},
+		{
+			name:     "deleted_at wins over an active delete task",
+			vm:       store.VM{ID: uuid.New(), DeletedAt: &deleted},
+			runtime:  &store.VMRuntime{Phase: store.VmPhaseStopped},
+			deleting: true,
+			want:     statusGone,
 		},
 		{
 			name:    "nil runtime → creating",
@@ -86,7 +101,7 @@ func TestProjectStatus(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := projectStatus(tc.vm, tc.runtime)
+			got := projectStatus(tc.vm, tc.runtime, tc.deleting)
 			if got != tc.want {
 				t.Errorf("projectStatus(%s) = %q, want %q", tc.name, got, tc.want)
 			}
@@ -102,13 +117,13 @@ func TestProjectStatus_Pending(t *testing.T) {
 
 	reason := store.SchedReasonPoolNotReady
 	vm := store.VM{SchedulingStatus: store.VMSchedulingUnscheduled, SchedulingReason: &reason}
-	if got := projectStatus(vm, nil); got != statusPending {
+	if got := projectStatus(vm, nil, false); got != statusPending {
 		t.Errorf("projectStatus(unscheduled) = %q, want %q", got, statusPending)
 	}
 
 	// Scheduled but no runtime yet -> creating (agent task running).
 	vm2 := store.VM{SchedulingStatus: store.VMSchedulingScheduled}
-	if got := projectStatus(vm2, nil); got != statusCreating {
+	if got := projectStatus(vm2, nil, false); got != statusCreating {
 		t.Errorf("projectStatus(scheduled,no-runtime) = %q, want %q", got, statusCreating)
 	}
 }
@@ -132,7 +147,7 @@ func TestToView_PendingSurfacesReasonAndSpec(t *testing.T) {
 		SchedulingMessage: &msg, SchedulingSpec: spec, Labels: []byte(`{}`),
 		ImageFormat: store.ImageFormatQcow2, Architecture: store.CpuArchAmd64,
 	}
-	v := toView(vm, nil, vmViewNames{})
+	v := toView(vm, nil, vmViewNames{}, false)
 	if v.Status.Phase != statusPending || v.Status.Reason != reason {
 		t.Errorf("status = %+v, want phase=pending reason=%q", v.Status, reason)
 	}

@@ -282,6 +282,50 @@ func TestScheduleFunc_DeletedPendingVMNotResurrected(t *testing.T) {
 	}
 }
 
+// TestVMGet_DeletingPhaseDuringAsyncDelete drives the real async-delete window
+// end to end: a pending VM is bound by the reconcile loop, the real DELETE
+// enqueues a vm.delete task (202, scheduled VM), and - with no dispatcher
+// draining the task in the test - a subsequent GET projects status.phase
+// "deleting". This is the seam (admission -> bind -> delete-enqueue ->
+// projection), not a direct projectStatus call.
+func TestVMGet_DeletingPhaseDuringAsyncDelete(t *testing.T) {
+	h := newE2E(t)
+	ctx := context.Background()
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	_, poolName := schedulableFixtureWithNode(t, h, adminID)
+
+	vmID := createPendingVM(t, h, admin, poolName)
+
+	fn := vms.ScheduleFunc(h.store, vms.ScheduleConfig{Algorithm: "least_vm_count"}, scheduleLogger(), defaultScheduleResources())
+	if err := fn(ctx); err != nil {
+		t.Fatalf("ScheduleFunc: %v", err)
+	}
+	vmName := vmNameOf(t, h, admin, vmID)
+
+	// Real DELETE on a scheduled VM is async: 202 + a pending vm.delete task. No
+	// dispatcher runs in this test, so the task stays pending and the soft-delete
+	// tombstone never lands.
+	delResp := h.delete(t, "/v1/vms/"+vmName, admin)
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete scheduled vm status = %d, want 202", delResp.StatusCode)
+	}
+
+	getResp := h.get(t, "/v1/vms/"+vmName, admin)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get during delete status = %d, want 200", getResp.StatusCode)
+	}
+	var got struct {
+		Status struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	}
+	decodeJSON(t, getResp, &got)
+	if got.Status.Phase != "deleting" {
+		t.Errorf("status.phase = %q, want deleting (in-flight async delete)", got.Status.Phase)
+	}
+}
+
 // vmNameOf resolves a VM's name from its id via the public GET-by-id-less path is
 // not available, so it reads the name from the store directly (the e2e harness
 // shares the store). Keeps the delete-by-name call in the resurrection test

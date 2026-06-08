@@ -66,7 +66,25 @@ func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.V
 		writeVMLoadError(w, r, err)
 		return
 	}
-	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names))
+	deleting, err := h.vmDeleting(r.Context(), vm.ID)
+	if err != nil {
+		writeVMLoadError(w, r, err)
+		return
+	}
+	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names, deleting))
+}
+
+// vmDeleting reports whether a non-terminal vm.delete task targets vmID,
+// which projectStatus surfaces as status.phase "deleting". The error
+// propagates so the projection fails loud rather than silently dropping the
+// in-flight-delete signal.
+func (h *Handler) vmDeleting(ctx context.Context, vmID uuid.UUID) (bool, error) {
+	set, err := h.store.ActiveVMDeleteTaskVMIDs(ctx)
+	if err != nil {
+		return false, err
+	}
+	_, ok := set[vmID]
+	return ok, nil
 }
 
 // loadVMProjection fetches the vm_runtime row (if any) and the first

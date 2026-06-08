@@ -90,6 +90,7 @@ type Store interface {
 	DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
+	ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -195,14 +196,16 @@ type vmViewNames struct {
 // names onto its public vmView. runtime is nil when no vm_runtime row
 // exists yet (worker has not upserted) — projectStatus collapses that
 // case to "creating". The vm_disks row is consumed upstream to derive
-// names.pool and is not threaded through here.
+// names.pool and is not threaded through here. deleting is true when a
+// non-terminal vm.delete task targets this VM, which projectStatus
+// surfaces as status.phase "deleting".
 //
 // While the VM is unscheduled (pending) it has no disk / NIC rows yet,
 // so names.pool / names.networks are empty; toView then falls back to
 // the SchedulingSpec so the operator still sees the requested pool and
 // network. The scheduling reason / message surface on status.
-func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames) vmView {
-	status := vmStatusView{Phase: projectStatus(vm, runtime)}
+func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting bool) vmView {
+	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting)}
 	pool := names.pool
 	nets := names.networks
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {

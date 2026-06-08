@@ -5763,10 +5763,15 @@ components:
                 - running
                 - paused
                 - stopped
+                - deleting
                 - error
                 - gone
                 - orphaned
-              description: Projected lifecycle phase.
+              description: |
+                Projected lifecycle phase. `deleting` is the in-flight
+                delete window: a non-terminal `vm.delete` task targets the
+                VM but the soft-delete tombstone has not landed yet (after
+                which the VM returns 404).
             reason:
               type: string
               description: |
