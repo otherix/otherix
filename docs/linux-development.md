@@ -113,3 +113,9 @@ sudo dev/scripts/linux-multinode.sh restart   # rebuild loop: restart both agent
   objects; re-run then `make local-dev-start`.
 - `unshare: unrecognized option '--propagation'` means util-linux is older than
   2.32; upgrade it (modern Ubuntu/Debian/Fedora ship a newer release).
+- Image pull fails with `lookup ... on 127.0.0.53:53: connection refused`: DNS
+  inside the netns. `up` writes `/etc/netns/otnsN/resolv.conf` from the host's
+  real upstreams (or `1.1.1.1`), since the default `127.0.0.53` systemd-resolved
+  stub is unreachable from a namespace. If your network blocks the seeded
+  resolver, edit `/etc/netns/otns{1,2}/resolv.conf` to a reachable nameserver and
+  `sudo dev/scripts/linux-multinode.sh restart`.

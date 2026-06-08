@@ -53,6 +53,20 @@ require_root() {
     fi
 }
 
+# write_netns_resolv makes DNS work inside <ns>. The host's /etc/resolv.conf
+# usually points at the 127.0.0.53 systemd-resolved stub, which is unreachable
+# from inside a netns (it is the namespace's own loopback). ip netns exec
+# bind-mounts /etc/netns/<ns>/resolv.conf over /etc/resolv.conf, so we seed it
+# with the host's real upstream nameservers (or a public resolver as a last
+# resort) - reachable from the netns via the bridge + masquerade.
+write_netns_resolv() {
+    local ns="$1" src="/etc/resolv.conf" dest="/etc/netns/$1/resolv.conf"
+    [ -r /run/systemd/resolve/resolv.conf ] && src=/run/systemd/resolve/resolv.conf
+    mkdir -p "/etc/netns/${ns}"
+    awk '/^nameserver[[:space:]]/ && $2 !~ /^127\./ { print }' "${src}" > "${dest}" 2>/dev/null || true
+    grep -q '^nameserver' "${dest}" 2>/dev/null || echo "nameserver 1.1.1.1" > "${dest}"
+}
+
 host_egress_iface() {
     ip route show default 2>/dev/null | awk '/default/ {print $5; exit}'
 }
@@ -100,6 +114,7 @@ up() {
     for n in 1 2; do
         ns="$(node_ns "${n}")"; ip="$(node_ip "${n}")"; hveth="$(node_veth "${n}")"
         ip netns list | grep -qw "${ns}" || ip netns add "${ns}"
+        write_netns_resolv "${ns}"
         ip netns exec "${ns}" ip link set lo up
         # Create the veth pair once; then (re)apply L3 unconditionally with
         # idempotent replace ops so a half-built node — veth present but IP/route
@@ -158,6 +173,7 @@ down() {
     for n in 1 2; do
         ns="$(node_ns "${n}")"
         ip netns list | grep -qw "${ns}" && ip netns del "${ns}"
+        rm -rf "/etc/netns/${ns}"
     done
     for n in 1 2; do
         hveth="$(node_veth "${n}")"
