@@ -38,6 +38,21 @@ case "$(uname -s)" in
         ;;
 esac
 
+# SMOKE_ARCH / SMOKE_IMAGE_URL — default VM arch + image for smokes that boot a
+# VM. The dev node arch equals the host arch (the agent runs on the host on Linux,
+# or in a same-arch Lima VM on macOS), so a VM must use the host arch to boot
+# under KVM instead of slow cross-arch TCG. Smokes use these as the default for
+# their overrideable ARCH / IMAGE_URL.
+case "$(uname -m)" in
+    x86_64|amd64)  SMOKE_ARCH="amd64" ;;
+    aarch64|arm64) SMOKE_ARCH="arm64" ;;
+    *)
+        echo "unsupported host arch: $(uname -m)" >&2
+        exit 1
+        ;;
+esac
+SMOKE_IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-${SMOKE_ARCH}.img"
+
 # run_on <handle> <cmd...> — run a command on the node identified by <handle>
 # (a Lima VM name on macOS, a netns name on Linux). On Linux the command runs as
 # root inside the namespace, so an inner `sudo` in <cmd...> is a harmless no-op.

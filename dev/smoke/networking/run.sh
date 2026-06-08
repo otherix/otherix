@@ -151,8 +151,8 @@ pass "egress=nat without managed rejected by the API edge"
 
 # --- step 4: VM with NIC on the bridge --------------------------------
 echo "=== step 4: vm create --network $BRIDGE_NET ==="
-IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img}"
-ARCH="${ARCH:-arm64}"
+IMAGE_URL="${IMAGE_URL:-${SMOKE_IMAGE_URL}}"
+ARCH="${ARCH:-${SMOKE_ARCH}}"
 info "booting $VM_NAME from $IMAGE_URL (<= ${VM_TIMEOUT}s; cold pool fetches the image on first use)"
 sed -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" -e "s|@@ARCH@@|${ARCH}|g" \
   "${SCRIPT_DIR}/manifests/vm.yaml.tmpl" \
