@@ -143,8 +143,74 @@ down() {
     echo ">> linux-multinode down${wipe:+ (wiped state)}"
 }
 
-# stop_all is defined in Task 4; a stub keeps `down` working until then.
-stop_all() { :; }
+do_bootstrap() {
+    local n="$1" token="$2" fp="$3"
+    local ns ip dir
+    ns="$(node_ns "${n}")"; ip="$(node_ip "${n}")"; dir="$(node_dir "${n}")"
+
+    # Render the per-node config BEFORE bootstrap. The agent writes a config only
+    # when absent (cmd/agent/bootstrap.go:205), so our rendered file — with the
+    # wireguard block — survives; bootstrap only (re)writes cert material.
+    sed -e "s|__NODE_IP__|${ip}|g" -e "s|__NODE_DIR__|${dir}|g" \
+        "${TEMPLATE}" > "${dir}/agent.yaml"
+
+    ip netns exec "${ns}" "${AGENT_BIN}" bootstrap \
+        --token "${token}" \
+        --ca-fingerprint "sha256:${fp}" \
+        --cp-url "https://${BRIDGE_IP}:8443" \
+        --node-name "node-${n}" \
+        --advertised-endpoint "https://${ip}:9443" \
+        --migration-host "${ip}" \
+        --migration-port-range-start 49152 \
+        --migration-port-range-end 49251 \
+        --listen "0.0.0.0:9443" \
+        --cert-dir "${dir}/certs" \
+        --config-path "${dir}/agent.yaml" \
+        --force
+    echo ">> node-${n} bootstrapped (cert material in ${dir}/certs)"
+}
+
+do_start() {
+    local n="$1"
+    local ns dir
+    ns="$(node_ns "${n}")"; dir="$(node_dir "${n}")"
+
+    # ip netns exec -> unshare(mount) -> sh -> exec agent: a single process tree,
+    # so the recorded PID IS the agent. The private bind redirects the
+    # cluster-default pool path to this node's storage; it is invisible to the
+    # host and to the peer agent and vanishes when the process exits.
+    nohup ip netns exec "${ns}" \
+        unshare --mount --propagation private \
+        sh -c "mount --bind '${dir}/pools' '${POOL_MOUNTPOINT}' && exec '${AGENT_BIN}' serve --config '${dir}/agent.yaml'" \
+        > "${dir}/agent.log" 2>&1 &
+    echo $! > "${dir}/agent.pid"
+    echo ">> node-${n} agent started (pid $(cat "${dir}/agent.pid"))"
+}
+
+stop_all() {
+    local n pidf pid
+    for n in 1 2; do
+        pidf="$(node_dir "${n}")/agent.pid"
+        [ -f "${pidf}" ] || continue
+        pid="$(cat "${pidf}")"
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+                kill -0 "${pid}" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
+        rm -f "${pidf}"
+    done
+    echo ">> agents stopped"
+}
+
+restart() {
+    stop_all
+    do_start 1
+    do_start 2
+}
 
 main() {
     local cmd="${1:-}"; shift || true
@@ -152,6 +218,10 @@ main() {
     case "${cmd}" in
         up)        up ;;
         down)      down "${1:-}" ;;
+        bootstrap) do_bootstrap "$1" "$2" "$3" ;;
+        start)     do_start "$1" ;;
+        stop)      stop_all ;;
+        restart)   restart ;;
         *) echo "usage: $0 {up|down [--wipe]|bootstrap N TOKEN FP|start N|stop|restart}" >&2; exit 1 ;;
     esac
 }
