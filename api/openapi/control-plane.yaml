@@ -1748,6 +1748,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -1830,6 +1831,10 @@ paths:
         If the VM has a non-terminal migration in progress, the request
         is rejected with 409 (`details.active_migration_id`). Cancel
         the migration first via `POST /v1/migrations/{id}/cancel`.
+
+        A VM still in `status.phase = pending` (never bound to a node, so
+        no agent teardown is needed) is deleted synchronously and returns
+        204 with no body and no task to poll.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -1842,6 +1847,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsyncTaskAccepted"
+        "204":
+          description: |
+            Pending VM deleted synchronously (no agent task to poll).
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -5796,10 +5804,12 @@ components:
         default-pool (cluster_settings.default_pool_name, set via
         `PUT /v1/cluster/default-pool`) applies; a missing default
         returns 400 `default_pool_not_set`. The optional `node` field is
-        the explicit placement hint; mismatch (pool not on hinted node)
-        surfaces as 409 `pool_not_on_node`. `pool` and `node` accept a
-        name (UUID literal in `node` surfaces as 400 `validation_failed`;
-        `pool` additionally accepts a per-instance UUID literal).
+        the explicit placement hint. The VM is admitted as pending (201);
+        a pool-not-on-hinted-node mismatch keeps it pending with
+        `status.reason` `pool_not_on_node` (poll `GET /v1/vms/{id}`).
+        `pool` and `node` accept a name (UUID literal in `node` surfaces
+        as 400 `validation_failed`; `pool` additionally accepts a
+        per-instance UUID literal).
 
         Firmware is resolved from `firmware` ("bios" | "uefi", default
         uefi) for the (arch, type) default, or from an explicit

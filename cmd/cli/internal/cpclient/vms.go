@@ -32,9 +32,11 @@ import (
 //   - `Pool` is optional. When empty, the server uses the cluster
 //     default-pool (`PUT /v1/cluster/default-pool` to set); if
 //     not set, returns 400 `default_pool_not_set`.
-//   - `Node` is a new optional placement hint. When non-nil, the
-//     scheduler restricts placement to exactly that node; mismatch
-//     returns 409 `pool_not_on_node`.
+//   - `Node` is an optional placement hint. When non-nil, the
+//     scheduler restricts placement to exactly that node. The VM is
+//     admitted as pending; a pool-not-on-node mismatch keeps it pending
+//     with `status.reason` `pool_not_on_node`. A uuid literal in `Node`
+//     is rejected at create with 400 `validation_failed`.
 type CreateVMRequest struct {
 	Name        string  `json:"name"`
 	ImageURL    string  `json:"image_url"`
