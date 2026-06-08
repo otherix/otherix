@@ -10,9 +10,6 @@
 // On a successful call the handler projects the report into:
 //   - `nodes.*` — capability columns, jsonb-merged extras, resources,
 //     `last_heartbeat_at`, `agent_version`, optional migration triple;
-//   - `node_firmwares` — one upsert per firmware in the report whose
-//     (name, architecture, type) matches a registered firmwares row.
-//     Unmatched entries are skipped with a WARN log;
 //   - `vm_runtime` — one upsert per reported VM whose vm_uuid exists
 //     in `vms`. Unknown ids are skipped with a WARN log.
 //

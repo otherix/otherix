@@ -40,21 +40,11 @@ type heartbeatCapabilities struct {
 	KvmAvailable       bool              `json:"kvm_available"`
 	NestedVirt         bool              `json:"nested_virt"`
 	QEMUBinaries       map[string]string `json:"qemu_binaries"`
-	Firmwares          []heartbeatFW     `json:"firmwares"`
 }
 
 type heartbeatResources struct {
 	CPUCoresAvailable  int   `json:"cpu_cores_available"`
 	MemoryAvailableMib int64 `json:"memory_available_mib"`
-}
-
-type heartbeatFW struct {
-	Name             string  `json:"name"`
-	Architecture     string  `json:"architecture"`
-	Type             string  `json:"type"`
-	CodePath         string  `json:"code_path"`
-	VarsTemplatePath *string `json:"vars_template_path,omitempty"`
-	SecureBoot       bool    `json:"secure_boot,omitempty"`
 }
 
 type heartbeatVMReport struct {
@@ -119,23 +109,6 @@ func (m *Mock) buildHeartbeatBody() ([]byte, error) {
 		KvmAvailable:       s.kvmAvailable,
 		NestedVirt:         s.nestedVirt,
 		QEMUBinaries:       cloneStringMap(s.qemuBinaries),
-	}
-	for _, f := range s.firmwares {
-		fw := heartbeatFW{
-			Name:         f.Name,
-			Architecture: f.Architecture,
-			Type:         f.Type,
-			CodePath:     f.CodePath,
-			SecureBoot:   f.SecureBoot,
-		}
-		if f.VarsTemplatePath != "" {
-			v := f.VarsTemplatePath
-			fw.VarsTemplatePath = &v
-		}
-		caps.Firmwares = append(caps.Firmwares, fw)
-	}
-	if caps.Firmwares == nil {
-		caps.Firmwares = []heartbeatFW{}
 	}
 	resources := heartbeatResources{
 		CPUCoresAvailable:  s.cpuCoresAvailable,

@@ -120,41 +120,6 @@ func (h heartbeatProjection) UpdateNodeSystemDiskPressure(ctx context.Context, a
 	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
 }
 
-// LookupFirmwareByCatalog resolves a (name, architecture, type) triple to a
-// firmware id via the name+arch guard, or store.ErrNotFound when the catalogue
-// has no matching entry (the handler skips the entry with a WARN).
-func (h heartbeatProjection) LookupFirmwareByCatalog(ctx context.Context, arg store.LookupFirmwareByCatalogParams) (uuid.UUID, error) {
-	id, found, err := h.s.resolveGuard(ctx, firmwareNameArchGuard(arg.Architecture, arg.Name))
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if !found {
-		return uuid.Nil, store.ErrNotFound
-	}
-	fw, err := h.s.FirmwareByID(ctx, id)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if fw.Type != arg.Type {
-		return uuid.Nil, store.ErrNotFound
-	}
-	return id, nil
-}
-
-// UpsertNodeFirmware refreshes the (node, firmware) availability row, stamping
-// reported_at.
-func (h heartbeatProjection) UpsertNodeFirmware(ctx context.Context, arg store.UpsertNodeFirmwareParams) error {
-	nf := store.NodeFirmware{
-		NodeID:     arg.NodeID,
-		FirmwareID: arg.FirmwareID,
-		CodePath:   arg.CodePath,
-		VarsPath:   arg.VarsPath,
-		Available:  arg.Available,
-		ReportedAt: time.Now().UTC(),
-	}
-	return h.s.c.PutJSON(ctx, etcd.Key("node_firmwares", arg.NodeID.String(), arg.FirmwareID.String()), nf)
-}
-
 // FilterExistingVMIDs returns the subset of ids that reference a live vms row.
 func (h heartbeatProjection) FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error) {
 	out := make([]uuid.UUID, 0, len(ids))

@@ -13,41 +13,6 @@ import (
 	"github.com/otherix/otherix/internal/agentapi"
 )
 
-func TestFirmwareToAPI_OmitsZeroes(t *testing.T) {
-	got := firmwareToAPI(Firmware{
-		Name:         "OVMF",
-		Architecture: "amd64",
-		Type:         "uefi",
-		CodePath:     "/usr/share/OVMF/OVMF_CODE.fd",
-	})
-	if got.VarsTemplatePath != nil {
-		t.Errorf("VarsTemplatePath = %v, want nil for empty input", got.VarsTemplatePath)
-	}
-	if got.SecureBoot != nil {
-		t.Errorf("SecureBoot = %v, want nil for false input", got.SecureBoot)
-	}
-	if got.Name != "OVMF" {
-		t.Errorf("Name = %q, want OVMF", got.Name)
-	}
-}
-
-func TestFirmwareToAPI_PopulatesPointers(t *testing.T) {
-	got := firmwareToAPI(Firmware{
-		Name:             "OVMF_VARS",
-		Architecture:     "arm64",
-		Type:             "uefi",
-		CodePath:         "/usr/share/AAVMF/AAVMF_CODE.fd",
-		VarsTemplatePath: "/usr/share/AAVMF/AAVMF_VARS.fd",
-		SecureBoot:       true,
-	})
-	if got.VarsTemplatePath == nil || *got.VarsTemplatePath != "/usr/share/AAVMF/AAVMF_VARS.fd" {
-		t.Errorf("VarsTemplatePath = %v, want pointer to AAVMF path", got.VarsTemplatePath)
-	}
-	if got.SecureBoot == nil || !*got.SecureBoot {
-		t.Errorf("SecureBoot = %v, want pointer to true", got.SecureBoot)
-	}
-}
-
 func TestPoolToAPI_CapacityZeroIsNil(t *testing.T) {
 	now := time.Now().UTC()
 	p := storagePool{

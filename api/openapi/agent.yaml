@@ -1530,35 +1530,6 @@ components:
           type: string
           enum: [ok]
 
-    NodeInfoFirmware:
-      type: object
-      description: |
-        A firmware blob present on this node. Field names align with
-        the Control Plane's `Firmware` + `NodeFirmware` schemas so the
-        CP can reconcile reported firmwares against its own catalogue.
-      required: [name, architecture, type, code_path]
-      properties:
-        name:
-          type: string
-        architecture:
-          type: string
-          enum: [amd64, arm64]
-        type:
-          type: string
-          enum: [bios, uefi]
-        code_path:
-          type: string
-          description: Absolute path to the firmware code blob on the node.
-        vars_template_path:
-          type: [string, "null"]
-          description: |
-            Absolute path to the per-VM NVRAM template for this
-            firmware, when applicable (UEFI). The agent copies this
-            template per VM at start time.
-        secure_boot:
-          type: boolean
-          default: false
-
     MigrationCapability:
       type: object
       description: |
@@ -1637,7 +1608,6 @@ components:
         - qemu_version
         - kernel_version
         - qemu_binaries
-        - firmwares
         - migration
         - started_at
         - uptime_seconds
@@ -1709,10 +1679,6 @@ components:
             host's, but cross-arch via emulation is allowed).
           additionalProperties:
             type: string
-        firmwares:
-          type: array
-          items:
-            $ref: "#/components/schemas/NodeInfoFirmware"
         migration:
           $ref: "#/components/schemas/MigrationCapability"
         labels:

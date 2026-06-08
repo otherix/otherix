@@ -21,9 +21,7 @@ import (
 // uniqueness guards mirroring the SQL partial indexes: uq_firmwares_name_arch
 // (name + architecture) and uq_firmwares_default (one default per architecture +
 // type, only when is_default). Firmwares hard-delete (no deleted_at); delete is
-// blocked when vms still reference the row. Per-node availability
-// (node_firmwares) is populated by the heartbeat receiver and joined for
-// ListNodeFirmwares.
+// blocked when vms still reference the row.
 
 func firmwareKey(id uuid.UUID) string { return etcd.Key("firmwares", id.String()) }
 
@@ -35,10 +33,6 @@ func firmwareNameArchGuard(arch store.CPUArch, name string) string {
 
 func firmwareDefaultGuard(arch store.CPUArch, ftype store.FirmwareType) string {
 	return etcd.Key("uniq", "firmwares", "default", string(arch), string(ftype))
-}
-
-func nodeFirmwarePrefix(nodeID uuid.UUID) string {
-	return etcd.Key("node_firmwares", nodeID.String()) + "/"
 }
 
 // firmwareVMIndexPrefix is the prefix under which vms record their firmware
@@ -227,40 +221,6 @@ func (s *Store) ListFirmwares(ctx context.Context, arg store.ListFirmwaresParams
 		out = append(out, f)
 	}
 	sortByCreatedAtID(out, func(f store.Firmware) (time.Time, uuid.UUID) { return f.CreatedAt, f.ID })
-	if n := int(arg.LimitCount); n > 0 && len(out) > n {
-		out = out[:n]
-	}
-	return out, nil
-}
-
-// ListNodeFirmwares returns the firmwares reported available on a node, joined
-// with their firmware metadata, ordered by the firmware (created_at, id) pair,
-// cursor-paginated. Empty until the heartbeat receiver populates node_firmwares.
-func (s *Store) ListNodeFirmwares(ctx context.Context, arg store.ListNodeFirmwaresParams) ([]store.ListNodeFirmwaresRow, error) {
-	items, err := s.c.Range(ctx, nodeFirmwarePrefix(arg.NodeID))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]store.ListNodeFirmwaresRow, 0, len(items))
-	for _, kv := range items {
-		var nf store.NodeFirmware
-		if err := json.Unmarshal(kv.Value, &nf); err != nil {
-			return nil, fmt.Errorf("unmarshal node_firmware %q: %v", kv.Key, err)
-		}
-		fw, err := s.FirmwareByID(ctx, nf.FirmwareID)
-		if err != nil {
-			// A node_firmware referencing a removed firmware is skipped rather
-			// than failing the whole list.
-			continue
-		}
-		if !afterCursor(fw.CreatedAt, fw.ID, arg.CursorCreatedAt, arg.CursorID) {
-			continue
-		}
-		out = append(out, store.ListNodeFirmwaresRow{NodeFirmware: nf, Firmware: fw})
-	}
-	sortByCreatedAtID(out, func(r store.ListNodeFirmwaresRow) (time.Time, uuid.UUID) {
-		return r.Firmware.CreatedAt, r.Firmware.ID
-	})
 	if n := int(arg.LimitCount); n > 0 && len(out) > n {
 		out = out[:n]
 	}

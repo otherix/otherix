@@ -196,34 +196,3 @@ func TestFirmwareDeleteAndBlocking(t *testing.T) {
 		t.Errorf("name + default not reusable after delete: %v", err)
 	}
 }
-
-func TestListNodeFirmwaresJoin(t *testing.T) {
-	s, cli := startStore(t)
-	ctx := context.Background()
-	nodeID := uuid.New()
-	// Empty until populated.
-	empty, err := s.ListNodeFirmwares(ctx, store.ListNodeFirmwaresParams{NodeID: nodeID, LimitCount: 200})
-	if err != nil {
-		t.Fatalf("ListNodeFirmwares(empty): %v", err)
-	}
-	if len(empty) != 0 {
-		t.Errorf("ListNodeFirmwares(empty) len = %d, want 0", len(empty))
-	}
-	// Seed a firmware + a node_firmware referencing it.
-	p := fwParams(uniqueFwName("nf"), store.CpuArchAmd64, false)
-	if _, err := s.CreateFirmware(ctx, p); err != nil {
-		t.Fatalf("CreateFirmware: %v", err)
-	}
-	nfKey := etcd.Key("node_firmwares", nodeID.String(), p.ID.String())
-	nf := store.NodeFirmware{NodeID: nodeID, FirmwareID: p.ID, CodePath: "/fw/code", Available: true, ReportedAt: time.Now().UTC()}
-	if err := cli.PutJSON(ctx, nfKey, nf); err != nil {
-		t.Fatalf("seed node_firmware: %v", err)
-	}
-	got, err := s.ListNodeFirmwares(ctx, store.ListNodeFirmwaresParams{NodeID: nodeID, LimitCount: 200})
-	if err != nil {
-		t.Fatalf("ListNodeFirmwares: %v", err)
-	}
-	if len(got) != 1 || got[0].Firmware.ID != p.ID || got[0].NodeFirmware.CodePath != "/fw/code" {
-		t.Errorf("ListNodeFirmwares = %+v, want one joined row for %v", got, p.ID)
-	}
-}

@@ -245,7 +245,6 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/cordon", nodesH.Cordon)
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/uncordon", nodesH.Uncordon)
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Delete("/{id}", nodesH.Delete)
-				r.With(middleware.RequirePermission(auth.PermFirmwareRead, deps.Logger)).Get("/{id}/firmwares", firmwaresH.ListByNode)
 			})
 
 			r.Route("/firmwares", func(r chi.Router) {

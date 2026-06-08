@@ -32,12 +32,6 @@ type ListFirmwaresParams struct {
 	LimitCount      int32
 }
 
-type LookupFirmwareByCatalogParams struct {
-	Name         string
-	Architecture CPUArch
-	Type         FirmwareType
-}
-
 type UpdateFirmwareParams struct {
 	Name       string
 	Version    *string

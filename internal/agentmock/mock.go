@@ -16,7 +16,7 @@
 // storage-pools list/get, storage-images list, tasks.get always-404)
 // out of forty-four; the remaining thirty-eight are mounted as 501
 // stubs so the contract is compile-time-covered without runtime
-// reach. The Test API (see Mock.Start, Mock.AddFirmware,
+// reach. The Test API (see Mock.Start, Mock.AddStoragePool,
 // Mock.SetPoolCapacity, Mock.InjectError, Mock.SendHeartbeatNow,
 // etc.) is the test-author surface; production code does not import
 // this package.
@@ -251,8 +251,7 @@ func newState(opts Options) *state {
 		startedAt:    time.Now().UTC(),
 		hostname:     opts.NodeName,
 		// Capability fields start zero-valued; tests preload what they
-		// need through SetCapability / AddFirmware / AddStoragePool /
-		// etc.
+		// need through SetCapability / AddStoragePool / etc.
 		qemuBinaries:    map[string]string{},
 		migration:       defaultMigrationCapability,
 		pools:           map[string]storagePool{},

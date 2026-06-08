@@ -36,12 +36,6 @@ func TestHandler_InfoIncludesPreloadedState(t *testing.T) {
 	if err := m.SetCapability("cpu_cores_total", 8); err != nil {
 		t.Fatalf("SetCapability: %v", err)
 	}
-	m.AddFirmware(Firmware{
-		Name:         "OVMF_CODE",
-		Architecture: "amd64",
-		Type:         "uefi",
-		CodePath:     "/usr/share/OVMF/OVMF_CODE.fd",
-	})
 
 	resp := mustGet(t, m.URL()+"/v1/info")
 	if resp.StatusCode != http.StatusOK {
@@ -60,12 +54,6 @@ func TestHandler_InfoIncludesPreloadedState(t *testing.T) {
 	}
 	if info.CPUCoresTotal != 8 {
 		t.Errorf("CpuCoresTotal = %d, want 8", info.CPUCoresTotal)
-	}
-	if len(info.Firmwares) != 1 {
-		t.Fatalf("len(Firmwares) = %d, want 1", len(info.Firmwares))
-	}
-	if info.Firmwares[0].Name != "OVMF_CODE" {
-		t.Errorf("Firmwares[0].Name = %q, want OVMF_CODE", info.Firmwares[0].Name)
 	}
 }
 
