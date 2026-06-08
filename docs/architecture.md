@@ -191,3 +191,10 @@ force-kills - destructive actions fail toward inaction.
   bridges/taps/VXLAN/WireGuard in network namespaces) with `make test-netfabric`.
 - **Architectures**: amd64 and arm64. The agent is Linux only; macOS is supported as a development
   platform via Lima.
+- **Upgrade ordering (CP before agents)**: the heartbeat receiver decodes with
+  `DisallowUnknownFields`, so the heartbeat wire contract is neither forward- nor
+  backward-compatible across a field add or removal. When a release changes the heartbeat shape,
+  upgrade the control plane first, then the agents. During the window a not-yet-upgraded agent may
+  be rejected (`400`) and demoted `ready -> unreachable -> gone`; this is non-destructive (running
+  VMs are preserved, `vm_runtime` is never orphaned by the demotion) and self-heals once the agent
+  is upgraded. Upgrading agents first can break heartbeats against the old CP.
