@@ -106,7 +106,7 @@ echo ">> seed-dev"
 echo "   platform        : ${PLATFORM}"
 echo "   architecture    : ${OTHERIX_NODE_ARCH}"
 echo "   node 1          : ${NODE_NAME_1}"
-[ "${PLATFORM}" = "lima" ] && echo "   node 2          : ${NODE_NAME_2}"
+echo "   node 2          : ${NODE_NAME_2}"
 echo "   default pool    : ${POOL_NAME} (auto-provisioned by the CP on ready nodes)"
 echo "   CP url          : ${OTHERIX_CP_URL}"
 if [ "${PLATFORM}" = "lima" ]; then
@@ -212,13 +212,49 @@ bootstrap_node() {
     exit 1
 }
 
-# --- Step 3: bootstrap node-1 (and node-2 on Lima) ---------------------------
+# bootstrap_node_native — native Linux path. Mints a join token (user-level CP
+# API) then hands the privileged netns work to linux-multinode.sh. Arg: 1=node N.
+SUDO_SCRIPT="${REPO_ROOT}/dev/scripts/linux-multinode.sh"
+bootstrap_node_native() {
+    local n="$1" node_name="node-$1"
+
+    echo ""
+    echo ">> bootstrap ${node_name} (10.77.0.${n})"
+
+    local bundle token fp
+    bundle="$("${CLI}" node join-token create --node-name "${node_name}" --ttl 10m --output json)"
+    token="$(echo "${bundle}" | jq -r '.token')"
+    fp="$(echo "${bundle}" | jq -r '.ca_fingerprint_sha256')"
+    if [ -z "${token}" ] || [ "${token}" = "null" ]; then
+        echo "   ✗ token mint failed for ${node_name} — JSON: ${bundle}" >&2
+        exit 1
+    fi
+
+    sudo "${SUDO_SCRIPT}" bootstrap "${n}" "${token}" "${fp}"
+    sudo "${SUDO_SCRIPT}" start "${n}"
+
+    local id=""
+    for i in $(seq 1 60); do
+        id="$(node_id_by_name "${node_name}" || true)"
+        if [ -n "${id}" ]; then
+            echo "   ✓ ${node_name} present after ${i}s — id=${id}"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "   ✗ ${node_name} bootstrap did not complete after 60s" >&2
+    echo "   inspect: sudo tail -50 /opt/otherix/dev/node${n}/agent.log" >&2
+    exit 1
+}
+
+# --- Step 3: bootstrap node-1 + node-2 (both platforms are two-node) ---------
 
 if [ "${PLATFORM}" = "lima" ]; then
     bootstrap_node "${NODE_NAME_1}" "https://127.0.0.1:9443" "0.0.0.0:9443" "${OTHERIX_LIMA_INSTANCE_1}"
     bootstrap_node "${NODE_NAME_2}" "https://127.0.0.1:9444" "0.0.0.0:9443" "${OTHERIX_LIMA_INSTANCE_2}"
 else
-    bootstrap_node "${NODE_NAME_1}" "https://127.0.0.1:9443" "127.0.0.1:9443" ""
+    bootstrap_node_native 1
+    bootstrap_node_native 2
 fi
 
 # --- Done --------------------------------------------------------------------
@@ -231,7 +267,7 @@ fi
 echo ""
 echo ">> seed-dev complete"
 echo "   node 1   : ${NODE_NAME_1}"
-[ "${PLATFORM}" = "lima" ] && echo "   node 2   : ${NODE_NAME_2}"
+echo "   node 2   : ${NODE_NAME_2}"
 echo "   pool     : ${POOL_NAME} (cluster default, CP-auto-provisioned on ready nodes)"
 echo ""
 echo "next steps:"
