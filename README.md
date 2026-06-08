@@ -111,61 +111,37 @@ make api-preview
 # Redoc:      http://localhost:8082
 ```
 
-The one-shot wrapper dispatches to per-OS pipelines. On Linux the
-agent runs as a per-user systemd unit on the host; on macOS the
-agent runs inside a [Lima](https://lima-vm.io) VM (the agent itself
-is Linux-only, the control plane runs natively on macOS). See
-[docs/macos-development.md](docs/macos-development.md) for the macOS
-workflow and rationale. Lower-level targets
-(`bootstrap-dev` / `run-api-dev` / `seed-dev` / `deploy-dev` /
-`clean-dev`) are documented below.
+The one-shot wrapper dispatches to per-OS pipelines. On Linux the two
+agents run in network + mount namespaces on the host; on macOS they
+run inside two [Lima](https://lima-vm.io) VMs (the agent itself is
+Linux-only, the control plane runs natively on macOS). See
+[docs/linux-development.md](docs/linux-development.md) and
+[docs/macos-development.md](docs/macos-development.md) for the per-OS
+workflows and rationale.
 
 ## Linux dev environment
 
-The agent runs natively on Linux as a per-user systemd unit. The
-control plane runs from the same host and embeds its own etcd member,
-so there are no dev dependencies to bring up first. Cert material
-reaches the agent through the join-token bootstrap protocol, not manual
-cert generation — `make seed-dev` orchestrates the full flow end-to-end.
+On a Linux host with KVM, `make local-dev-start` brings up a two-node cluster -
+the control plane (embedded etcd) plus two agents, each in its own network +
+mount namespace - the same topology macOS gets from the two Lima VMs, without
+nested virtualization. The privileged netns wiring lives in
+`dev/scripts/linux-multinode.sh` and runs under `sudo`.
 
 ```bash
-# 1. Stage the agent: build, install user systemd unit at
-#    ~/.config/systemd/user/otherix-agent.service. The agent is NOT
-#    started — the bootstrap protocol provisions cert material first.
-make bootstrap-dev
+# One-shot: build, bring up the netns topology, start the CP, bootstrap both agents
+make local-dev-start
 
-# 2. (separate terminal) run the control plane against the dev config.
-#    The api-server boots its own embedded etcd member (dev data dir
-#    under .local/etcd). First-time only: seed the bootstrap admin via
-#    env vars before start.
-export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
-export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
-make run-api-dev
+# Verify both nodes are reachable (heartbeat is the canonical proof)
+./bin/otherix node list        # node-1 and node-2, both ready
 
-# 3. Bootstrap the agent end-to-end — mints join token, provisions
-#    bootstrap material, starts the agent, waits for the node row to
-#    appear, seeds the default pool. VMs are created directly from
-#    an image URL (otherix vm create --image-url ... --arch ...).
-make seed-dev
-
-# 4. Verify the node is reachable (heartbeat is the canonical proof).
-./bin/otherix node list
-
-# 5. Daily redeploy after agent code changes
-make deploy-dev
-
-# 6. Tail agent logs
-journalctl --user -u otherix-agent -f
-
-# 7. Tear down (also wipes the embedded-etcd data dir)
-make clean-dev
+# Tear down: stop CP, remove netns/bridge/NAT + per-node state, wipe etcd
+make local-dev-stop
 ```
 
-Cluster CA + per-replica CP server cert auto-generate inside the api
-binary on first boot. The agent's cert material
-is installed to `~/.config/otherix/certs/`. KVM is required for real
-VM workloads — verify with `ls /dev/kvm` before relying on the dev
-environment.
+Per-node state lives under `/opt/otherix/dev/node{1,2}/` (root-owned); agent logs
+are at `/opt/otherix/dev/nodeN/agent.log`. KVM is required - verify with
+`ls /dev/kvm` first. See [docs/linux-development.md](docs/linux-development.md)
+for prerequisites, the topology diagram, smokes, and troubleshooting.
 
 ## macOS dev environment
 
