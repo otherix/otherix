@@ -17,7 +17,7 @@
 # PREREQUISITES: a seeded two-node dev stack, i.e. run AFTER
 #   make local-dev-start
 # so the CP is up on http://localhost:8080, the `dev` CLI cluster is
-# configured, and node-1 (otherix-dev-1) + node-2 (otherix-dev-2) are
+# configured, and node-1 + node-2 (Lima VMs on macOS, netns on Linux) are
 # both `ready` with otwg0 up. CP + agent binaries MUST be built from the
 # current tree (the WG handshake observation is N2c-2).
 #
