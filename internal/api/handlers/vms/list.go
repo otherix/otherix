@@ -175,10 +175,13 @@ func (h *Handler) resolveListFilter(
 func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter string) ([]vmView, error) {
 	includeOwner := callerCanReadUsers(ctx)
 	// One task scan for the whole page: a VM with a non-terminal vm.delete
-	// task projects status "deleting" (see projectStatus).
+	// task projects status "deleting" (see projectStatus). Fails SOFT - a
+	// scan error degrades to no deleting hints (nil set), never a 500 on the
+	// whole list, since the deleting phase is a cosmetic projection.
 	deletingSet, err := h.store.ActiveVMDeleteTaskVMIDs(ctx)
 	if err != nil {
-		return nil, err
+		h.log.WarnContext(ctx, "active vm.delete scan failed; omitting deleting phase from list", "error", err)
+		deletingSet = nil
 	}
 	views := make([]vmView, 0, len(rows))
 	for _, vm := range rows {

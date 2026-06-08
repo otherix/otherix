@@ -210,12 +210,18 @@ func (s *Store) ListTasksOwn(ctx context.Context, arg store.ListTasksOwnParams) 
 }
 
 // ActiveVMDeleteTaskVMIDs returns the set of VM ids that currently have a
-// non-terminal (pending or running) vm.delete task. The vms.get / vms.list
-// projection reads it to surface the in-flight delete window as status
-// "deleting" before the soft-delete tombstone lands. One task-prefix scan.
-// Terminal tasks (success / failed / cancelled) are excluded, so a VM whose
-// delete failed terminally falls back to its real runtime phase rather than a
-// stuck "deleting".
+// pending or running vm.delete task. The vms.get / vms.list projection reads
+// it to surface the in-flight delete window as status "deleting" before the
+// soft-delete tombstone lands. One task-prefix scan.
+//
+// The predicate is exactly pending|running by deliberate taxonomy: failed and
+// cancelled are excluded. failed is retryable (the dispatcher requeues until
+// MaxAttempts), but excluding it means a VM whose delete exhausted its retries
+// (terminally failed) falls back to its real runtime phase rather than a stuck
+// "deleting" forever - the safe direction (fail toward not-deleting). The cost
+// is a brief cosmetic flicker (deleting -> runtime -> deleting) in the window
+// between a transient failure and the next requeue; status is eventually
+// consistent, so the flicker is accepted over the stuck-forever risk.
 func (s *Store) ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error) {
 	items, err := s.c.Range(ctx, taskPrefix())
 	if err != nil {

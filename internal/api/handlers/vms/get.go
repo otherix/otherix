@@ -66,25 +66,24 @@ func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.V
 		writeVMLoadError(w, r, err)
 		return
 	}
-	deleting, err := h.vmDeleting(r.Context(), vm.ID)
-	if err != nil {
-		writeVMLoadError(w, r, err)
-		return
-	}
-	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names, deleting))
+	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID)))
 }
 
 // vmDeleting reports whether a non-terminal vm.delete task targets vmID,
-// which projectStatus surfaces as status.phase "deleting". The error
-// propagates so the projection fails loud rather than silently dropping the
-// in-flight-delete signal.
-func (h *Handler) vmDeleting(ctx context.Context, vmID uuid.UUID) (bool, error) {
+// which projectStatus surfaces as status.phase "deleting". It fails SOFT: a
+// task-scan error degrades to false (the VM renders without the deleting
+// hint) and is logged, never propagated. The deleting phase is a cosmetic
+// projection, so a transient tasks-keyspace error must not turn the whole VM
+// read path into a 500.
+func (h *Handler) vmDeleting(ctx context.Context, vmID uuid.UUID) bool {
 	set, err := h.store.ActiveVMDeleteTaskVMIDs(ctx)
 	if err != nil {
-		return false, err
+		h.log.WarnContext(ctx, "active vm.delete scan failed; omitting deleting phase",
+			"vm_id", vmID, "error", err)
+		return false
 	}
 	_, ok := set[vmID]
-	return ok, nil
+	return ok
 }
 
 // loadVMProjection fetches the vm_runtime row (if any) and the first
