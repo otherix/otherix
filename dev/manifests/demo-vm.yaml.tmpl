@@ -1,15 +1,19 @@
-# Demo VM manifest for the local dev stack. Apply with:
+# Demo VM manifest TEMPLATE for the local dev stack.
+#
+# local-dev-start (and `make demo-manifest`) render this to the gitignored
+# dev/manifests/demo-vm.yaml for THIS host's architecture - the dev node arch
+# equals the host arch, so the VM uses KVM instead of cross-arch TCG. Apply the
+# rendered file:
 #   ./bin/otherix create -f dev/manifests/demo-vm.yaml --wait
-# The default image is the Noble minimal arm64 cloudimg (Mac/Lima dev
-# default). On an amd64 host swap imageURL to the amd64 cloudimg and set
-# arch: amd64.
+#
+# __ARCH__ and __IMAGE_URL__ are substituted at render time (amd64 or arm64).
 apiVersion: otherix/v1
 kind: VM
 metadata:
   name: demo
 spec:
-  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
-  arch: arm64
+  imageURL: __IMAGE_URL__
+  arch: __ARCH__
   vcpus: 2
   memoryMB: 2048
   # cloud-init: set the hostname and reset the default ubuntu user's password

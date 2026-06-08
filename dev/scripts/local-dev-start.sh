@@ -209,6 +209,10 @@ echo "   ✓ CP reachable at http://localhost:8080"
 echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-dev)"
 make --no-print-directory seed-dev
 
+# Render the demo VM manifest for this host's arch so `create -f demo-vm.yaml`
+# works on amd64 and arm64 without hand-editing (gitignored output).
+make --no-print-directory demo-manifest
+
 # No pool-ready wait: VM create is admission-only (returns 201 pending) and the
 # CP scheduler binds the VM once the default pool reconciles to ready, so
 # `create -f demo-vm.yaml` no longer needs the pool to be ready first - the VM

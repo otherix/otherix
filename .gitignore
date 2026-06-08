@@ -51,3 +51,6 @@ deploy/config/*.local.yaml
 # Bin output names
 /bin/otherix-*
 
+
+# rendered per-arch demo manifest (dev/manifests/demo-vm.yaml.tmpl is the source)
+/dev/manifests/demo-vm.yaml

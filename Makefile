@@ -296,6 +296,10 @@ clean-dev: ## Tear down dev environment (per OS)
 seed-dev: build-cli ## Run the join-token bootstrap + cluster seed (requires CP running + bootstrap-dev staged)
 	@bash dev/scripts/seed-dev.sh
 
+.PHONY: demo-manifest
+demo-manifest: ## Render dev/manifests/demo-vm.yaml for the host arch (amd64/arm64)
+	@bash dev/scripts/render-demo-manifest.sh
+
 # local-dev-start / local-dev-stop wrap the full dev stack lifecycle (api-server
 # with embedded etcd + Lima VM + agent + CLI cluster config) into two commands.
 # After `make local-dev-start`, `./bin/otherix` works against a fresh cluster
