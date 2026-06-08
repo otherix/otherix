@@ -22,6 +22,13 @@ import (
 // violation surfaces as store.ErrVMNameInUse; plan's own errors propagate
 // verbatim. Returns the task id.
 //
+// The production admission path no longer calls this: VM create persists an
+// unscheduled VM (CreateUnscheduledVM) and the vms.schedule loop binds it
+// (BindScheduledVM). CreateScheduledVM is retained as the single-shot
+// direct-bind write path used by the etcdstore / apie2e tests to land a fully
+// bound VM (row + disk + nic + task + job) without driving the two-phase
+// reconcile loop. Do not wire it back into a handler.
+//
 // Unlike the SQL backend's pg_advisory_xact_lock, the placement read and the
 // pinned-node write are not held under one lock across the plan callback (etcd
 // has no cross-callback transaction). This is safe for the single-node default

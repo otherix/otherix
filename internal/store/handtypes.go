@@ -98,6 +98,10 @@ type PlacementReader interface {
 // args. Nic is nil when the create request named no network (legacy SLIRP
 // fallback on the agent); when set it lands in the same transaction as the VM
 // so the network's delete-block index is consistent the instant the VM exists.
+//
+// This is the input to the direct-bind etcdstore.CreateScheduledVM path, now
+// test-only; the production reconcile path uses CreateVMParams +
+// VMBindWrites. See CreateScheduledVM.
 type VMCreateWrites struct {
 	VM   CreateVMParams
 	Disk CreateVMDiskParams

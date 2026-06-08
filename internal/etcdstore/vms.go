@@ -22,8 +22,9 @@ import (
 // case-insensitive name guard (uq_vms_name, partial on deleted_at). Desired
 // state (the vms row) and observed runtime (vm_runtime) are separate keys.
 // ListVMs filters by pool (a disk on the pool) and node (the runtime's current
-// node). The write path (CreateScheduledVM) lands with the queue slice; this
-// file is the read surface plus VMByName (the last resolver lookup).
+// node). The production write path is admission (CreateUnscheduledVM) plus the
+// reconcile bind (BindScheduledVM, vms_schedule.go); this file is the read
+// surface plus VMByName (the last resolver lookup).
 
 func vmPrefix() string { return etcd.Key("vms") + "/" }
 
