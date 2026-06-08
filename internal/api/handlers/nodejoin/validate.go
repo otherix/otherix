@@ -5,6 +5,7 @@ package nodejoin
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 
 	"github.com/otherix/otherix/internal/store"
@@ -14,17 +15,18 @@ import (
 // the handler. Each carries a distinct details key for operator
 // debugging.
 var (
-	errMissingToken              = errors.New("token is required")
-	errMissingCSR                = errors.New("csr_pem is required")
-	errMissingNodeName           = errors.New("node_name is required")
-	errNodeNameTooLong           = errors.New("node_name must be at most 253 characters")
-	errMissingArchitecture       = errors.New("architecture is required")
-	errInvalidArchitecture       = errors.New("architecture must be one of: amd64, arm64")
-	errMissingAdvertisedEndpoint = errors.New("advertised_endpoint is required")
-	errAdvertisedEndpointTooLong = errors.New("advertised_endpoint must be at most 2048 characters")
-	errMissingMigrationHost      = errors.New("migration_host is required")
-	errMigrationHostTooLong      = errors.New("migration_host must be at most 253 characters")
-	errMigrationPortInvalid      = errors.New("migration_port_range must lie in [1024, 65535] with end >= start")
+	errMissingToken                 = errors.New("token is required")
+	errMissingCSR                   = errors.New("csr_pem is required")
+	errMissingNodeName              = errors.New("node_name is required")
+	errNodeNameTooLong              = errors.New("node_name must be at most 253 characters")
+	errMissingArchitecture          = errors.New("architecture is required")
+	errInvalidArchitecture          = errors.New("architecture must be one of: amd64, arm64")
+	errMissingAdvertisedEndpoint    = errors.New("advertised_endpoint is required")
+	errAdvertisedEndpointTooLong    = errors.New("advertised_endpoint must be at most 2048 characters")
+	errAdvertisedEndpointInvalidURL = errors.New("advertised_endpoint must be an https URL with a host")
+	errMissingMigrationHost         = errors.New("migration_host is required")
+	errMigrationHostTooLong         = errors.New("migration_host must be at most 253 characters")
+	errMigrationPortInvalid         = errors.New("migration_port_range must lie in [1024, 65535] with end >= start")
 )
 
 // Bounds mirror the existing nodes.create handler — same column
@@ -71,6 +73,9 @@ func (req joinRequest) validate() error {
 		return errMissingAdvertisedEndpoint
 	case len(endpoint) > advertisedEndpointMaxLength:
 		return errAdvertisedEndpointTooLong
+	}
+	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return errAdvertisedEndpointInvalidURL
 	}
 
 	host := strings.TrimSpace(req.MigrationHost)
