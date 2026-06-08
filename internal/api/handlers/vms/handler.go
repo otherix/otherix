@@ -57,7 +57,6 @@ import (
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/queue"
-	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -98,49 +97,34 @@ type Store interface {
 // Handler bundles the dependencies for the vms routes. Create persists
 // the VM via the store's admission-only CreateUnscheduledVM seam; Delete
 // and the async lifecycle ops enqueue through EnqueueTask, so the handler
-// no longer holds a queue client. placementAlgorithm threads through to
-// internal/scheduler.SchedulePlacement; the empty string defers to the
-// package default ("resource_aware"). placementResources threads the
-// per-resource gate - zero-value disables every resource and degrades
-// scoring to count-based fallback,
-// so production wiring always passes the config.ResourcesConfig the
-// api binary validated at startup.
+// no longer holds a queue client. Placement moved out of the handler: the
+// vms.schedule reconcile loop (cmd/api wires ScheduleFunc) binds pending
+// VMs, so the handler carries no placement config.
 type Handler struct {
-	store              Store
-	log                *slog.Logger
-	placementAlgorithm string
-	placementResources scheduler.ResourcesConfig
-	lifecycle          LifecycleDeps
-	consoleDeps        ConsoleDeps
+	store       Store
+	log         *slog.Logger
+	lifecycle   LifecycleDeps
+	consoleDeps ConsoleDeps
 }
 
 // New constructs a Handler. It takes the Store interface so any
 // conforming backend can be wired in; production passes *store.Store.
-// placementAlgorithm is the validated APIConfig.Placement.Algorithm
-// value — pass "" to accept the scheduler default. placementResources
-// pins the per-resource gate; pass a zero-value (every resource
-// disabled) only in tests / scaffolding contexts that explicitly want
-// count-based scoring across the board. lifecycle bundles the
-// agentclient dependency the sync Pause / Resume / Reset handlers
-// need; tests that exercise the sync surface pass a stub through
-// here without importing the production client. console bundles the
+// lifecycle bundles the agentclient dependency the sync Pause / Resume /
+// Reset handlers need; tests that exercise the sync surface pass a stub
+// through here without importing the production client. console bundles the
 // console-handler deps (agentclient + access mode); tests that don't
 // exercise the console flow pass a zero-value ConsoleDeps.
 func New(
 	s Store,
 	log *slog.Logger,
-	placementAlgorithm string,
-	placementResources scheduler.ResourcesConfig,
 	lifecycle LifecycleDeps,
 	console ConsoleDeps,
 ) *Handler {
 	return &Handler{
-		store:              s,
-		log:                log,
-		placementAlgorithm: placementAlgorithm,
-		placementResources: placementResources,
-		lifecycle:          lifecycle,
-		consoleDeps:        console,
+		store:       s,
+		log:         log,
+		lifecycle:   lifecycle,
+		consoleDeps: console,
 	}
 }
 

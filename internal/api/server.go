@@ -78,8 +78,6 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 		StoragePools:       cfg.StoragePools,
 		Logger:             log,
 		RequestTimeout:     cfg.Server.WriteTimeout,
-		PlacementAlgorithm: cfg.Placement.Algorithm,
-		PlacementResources: SchedulerResourcesFromConfig(cfg.Placement.Resources),
 		PressureMemory:     cfg.Placement.Pressure.Memory,
 		PressureSystemDisk: cfg.Placement.Pressure.SystemDisk,
 		PressureDisk:       cfg.Placement.Pressure.Disk,

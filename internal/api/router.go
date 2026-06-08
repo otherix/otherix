@@ -31,7 +31,6 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
-	"github.com/otherix/otherix/internal/scheduler"
 )
 
 // RouterDeps bundles the dependencies the router needs. Passed as a
@@ -44,8 +43,6 @@ type RouterDeps struct {
 	StoragePools       config.StoragePoolsConfig // path allowlist
 	Logger             *slog.Logger
 	RequestTimeout     time.Duration
-	PlacementAlgorithm string                    // empty falls to scheduler default
-	PlacementResources scheduler.ResourcesConfig // zero-value disables every resource → count-based fallback
 	PressureMemory     config.PressureConditionConfig
 	PressureSystemDisk config.PressureConditionConfig
 	PressureDisk       config.PressureConditionConfig
@@ -103,7 +100,6 @@ func NewRouter(deps RouterDeps) http.Handler {
 	// stream is not killed at 30 s.
 	if deps.AuthService != nil && deps.Store != nil {
 		streamingVMs := vmshandlers.New(deps.Store, deps.Logger,
-			deps.PlacementAlgorithm, deps.PlacementResources,
 			deps.VMLifecycle, deps.VMConsole)
 		r.Get("/v1/vms/{id}/console-stream", streamingVMs.ConsoleStream)
 
@@ -161,7 +157,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
-	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.PlacementAlgorithm, deps.PlacementResources, deps.VMLifecycle, deps.VMConsole)
+	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.VMLifecycle, deps.VMConsole)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)
