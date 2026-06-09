@@ -4,18 +4,18 @@
 #
 # Subcommands (all require root):
 #   up                  create bridge + 2 netns + veth + host NAT + state dirs
-#   down [--wipe]       tear it all down; --wipe also removes /opt/otherix/dev
+#   down [--wipe]       tear it all down; --wipe also removes /var/lib/otherix/dev
 #   bootstrap N TOK FP  render node-N config, redeem join token inside otnsN
 #   start N             launch node-N agent in its net+mount namespace
 #   stop                kill both agents
 #   restart             stop + start both
 #
 # Node N in {1,2}: netns otnsN, underlay IP 10.77.0.N, host veth veth-otnsN,
-# state dir /opt/otherix/dev/nodeN, node name node-N.
+# state dir /var/lib/otherix/dev/nodeN, node name node-N.
 #
 # netns isolates the agent's fixed-name network resources (otwg0, otherix-nat,
 # otvx*/otb*); the mount namespace + private bind mount in `start` isolates the
-# cluster-default pool path (/opt/otherix/pools -> /opt/otherix/dev/nodeN/pools).
+# cluster-default pool path (/var/lib/otherix/pools -> /var/lib/otherix/dev/nodeN/pools).
 # No agent Go code is involved.
 
 set -euo pipefail
@@ -31,8 +31,8 @@ BRIDGE_IP="10.77.0.254"
 PREFIX="24"
 SUBNET="10.77.0.0/24"
 NAT_TABLE="otherix-dev-nat"
-STATE_ROOT="/opt/otherix/dev"
-POOL_MOUNTPOINT="/opt/otherix/pools"
+STATE_ROOT="/var/lib/otherix/dev"
+POOL_MOUNTPOINT="/var/lib/otherix/pools"
 
 node_ns()   { echo "otns$1"; }
 node_ip()   { echo "10.77.0.$1"; }

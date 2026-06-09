@@ -22,15 +22,15 @@ case "$(uname -s)" in
         SMOKE_PLATFORM="lima"
         SMOKE_HANDLE_1="${VM1:-otherix-dev-1}"
         SMOKE_HANDLE_2="${VM2:-otherix-dev-2}"
-        SMOKE_STATE_1="/opt/otherix"
-        SMOKE_STATE_2="/opt/otherix"
+        SMOKE_STATE_1="/var/lib/otherix"
+        SMOKE_STATE_2="/var/lib/otherix"
         ;;
     Linux)
         SMOKE_PLATFORM="netns"
         SMOKE_HANDLE_1="otns1"
         SMOKE_HANDLE_2="otns2"
-        SMOKE_STATE_1="/opt/otherix/dev/node1"
-        SMOKE_STATE_2="/opt/otherix/dev/node2"
+        SMOKE_STATE_1="/var/lib/otherix/dev/node1"
+        SMOKE_STATE_2="/var/lib/otherix/dev/node2"
         ;;
     *)
         echo "unsupported platform: $(uname -s)" >&2

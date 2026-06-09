@@ -159,7 +159,7 @@ bootstrap_node() {
     fi
 
     if [ -n "${lima_vm}" ]; then
-        # No sudo — /opt/otherix/certs + /etc/otherix are chown'd to the Lima
+        # No sudo — /var/lib/otherix/certs + /etc/otherix are chown'd to the Lima
         # user in the provision script, so cert material lands with the
         # ownership the systemd unit (User=$LIMA_USER) expects.
         limactl shell "${lima_vm}" -- /usr/local/bin/otherix-agent bootstrap \
@@ -243,7 +243,7 @@ bootstrap_node_native() {
         sleep 1
     done
     echo "   ✗ ${node_name} bootstrap did not complete after 60s" >&2
-    echo "   inspect: sudo tail -50 /opt/otherix/dev/node${n}/agent.log" >&2
+    echo "   inspect: sudo tail -50 /var/lib/otherix/dev/node${n}/agent.log" >&2
     exit 1
 }
 
