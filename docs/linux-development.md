@@ -25,7 +25,10 @@ What the agent needs to boot VMs and build the network fabric - dev or prod:
 - **UEFI firmware (arm64 only)**: `/usr/share/AAVMF/AAVMF_CODE.fd` (package
   `qemu-efi-aarch64`), configurable via `qemu.aarch64_firmware_path`. amd64 needs
   no firmware (SeaBIOS is built into QEMU).
-- **Capability**: `CAP_NET_ADMIN` (the netlink network fabric).
+- **Capabilities**: `CAP_NET_ADMIN` (the netlink network fabric) and `CAP_NET_RAW`
+  (the per-node DHCP responder opens an `AF_PACKET` raw socket on each
+  dhcp-enabled overlay bridge to answer guest DISCOVER/REQUEST before the guest
+  has an address). Both must be granted (e.g. systemd `AmbientCapabilities`).
 
 The agent does **not** require `wireguard-tools`, `nftables`, `iproute2`, or
 `genisoimage`/`cloud-localds`: WireGuard is configured via `wgctrl`, nftables via
