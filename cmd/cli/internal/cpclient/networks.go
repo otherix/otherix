@@ -31,6 +31,7 @@ type Network struct {
 	MTU        int             `json:"mtu"`
 	Subnet     *string         `json:"subnet"`
 	Gateway    *string         `json:"gateway"`
+	Dhcp       *bool           `json:"dhcp"`
 	VNI        *int            `json:"vni"`
 	Config     json.RawMessage `json:"config"`
 	CreatedAt  string          `json:"created_at"`
@@ -77,6 +78,7 @@ type CreateNetworkParams struct {
 	Egress     string
 	Subnet     string
 	Gateway    string
+	Dhcp       bool
 	VlanTag    *int
 	Mtu        *int
 }
@@ -105,6 +107,9 @@ func (p CreateNetworkParams) body() map[string]any {
 	}
 	if p.Gateway != "" {
 		out["gateway"] = p.Gateway
+	}
+	if p.Dhcp {
+		out["dhcp"] = true
 	}
 	if p.VlanTag != nil {
 		out["vlan_tag"] = *p.VlanTag

@@ -88,6 +88,58 @@ func TestProjectNetworkOverlayIsReappliable(t *testing.T) {
 	}
 }
 
+func TestProjectNetworkRoundTripsDhcp(t *testing.T) {
+	// dhcp is emitted only when the live network's Dhcp pointer is non-nil
+	// and true, mirroring the conditional egress projection. A dhcp overlay
+	// network must round-trip the flag through `get -o yaml | create -f`.
+	dhcp := true
+	subnet := "10.50.0.0/24"
+	n := cpclient.Network{Name: "net-dhcp", Type: "overlay", Egress: "nat", Subnet: &subnet, Dhcp: &dhcp}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if !strings.Contains(string(out), "dhcp: true") {
+		t.Errorf("projection missing dhcp: true:\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse projected network: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("projected network is not apply-ready: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Network == nil {
+		t.Fatalf("plan = %+v, want 1 network op", plan)
+	}
+	if !plan[0].Network.Dhcp {
+		t.Errorf("Network.Dhcp = false, want true after round-trip")
+	}
+}
+
+func TestProjectNetworkOmitsDhcpWhenFalseOrNil(t *testing.T) {
+	// A nil or false Dhcp pointer must not emit a dhcp line, matching the
+	// non-default-only projection of egress/subnet/gateway.
+	n := cpclient.Network{Name: "net-dev", Type: "bridge", BridgeName: "br0"}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if strings.Contains(string(out), "dhcp") {
+		t.Errorf("projection must omit dhcp when nil:\n%s", out)
+	}
+	dhcpFalse := false
+	n2 := cpclient.Network{Name: "net-dev2", Type: "bridge", BridgeName: "br0", Dhcp: &dhcpFalse}
+	out2, err := manifest.ProjectNetwork(n2)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if strings.Contains(string(out2), "dhcp") {
+		t.Errorf("projection must omit dhcp when false:\n%s", out2)
+	}
+}
+
 func TestProjectMultiDocSeparator(t *testing.T) {
 	a := cpclient.Network{Name: "a", Type: "bridge", BridgeName: "br0"}
 	b := cpclient.Network{Name: "b", Type: "bridge", BridgeName: "br1"}

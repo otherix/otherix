@@ -200,6 +200,63 @@ func TestNetworkCreate_OverlayEgressBody(t *testing.T) {
 	}
 }
 
+func TestNetworkCreate_DhcpBody(t *testing.T) {
+	t.Parallel()
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["dhcp"] != true {
+			t.Errorf("dhcp = %v, want true", body["dhcp"])
+		}
+		if body["type"] != "overlay" {
+			t.Errorf("type = %v, want overlay", body["type"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(networkJSON(uuid.NewString(), "net-dhcp"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runNetworkCmd(t, srv.URL, []string{
+		"create", "net-dhcp", "--type", "overlay",
+		"--subnet", "10.50.0.0/24", "--egress", "nat", "--dhcp",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1", posts)
+	}
+}
+
+func TestNetworkCreate_DhcpOmittedWhenAbsent(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, present := body["dhcp"]; present {
+			t.Errorf("dhcp should be omitted when --dhcp absent, got %v", body["dhcp"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(networkJSON(uuid.NewString(), "net-dev"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runNetworkCmd(t, srv.URL, []string{
+		"create", "net-dev", "--bridge-name", "br0",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+}
+
 func TestNetworkCreate_409Conflict(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

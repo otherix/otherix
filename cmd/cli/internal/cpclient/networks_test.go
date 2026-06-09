@@ -99,6 +99,37 @@ func TestCreateNetworkParamsBody(t *testing.T) {
 				"subnet": "10.50.0.0/24",
 			},
 		},
+		{
+			name: "dhcp true is present",
+			params: CreateNetworkParams{
+				Name:   "net-dhcp",
+				Type:   "overlay",
+				Egress: "nat",
+				Subnet: "10.50.0.0/24",
+				Dhcp:   true,
+			},
+			want: map[string]any{
+				"name":   "net-dhcp",
+				"type":   "overlay",
+				"egress": "nat",
+				"subnet": "10.50.0.0/24",
+				"dhcp":   true,
+			},
+		},
+		{
+			name: "dhcp false is omitted",
+			params: CreateNetworkParams{
+				Name:       "net-nodhcp",
+				Type:       "bridge",
+				BridgeName: "br0",
+				Dhcp:       false,
+			},
+			want: map[string]any{
+				"name":        "net-nodhcp",
+				"type":        "bridge",
+				"bridge_name": "br0",
+			},
+		},
 	}
 
 	for _, tc := range cases {
