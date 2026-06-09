@@ -73,9 +73,9 @@ Host netns
 
 Each agent runs inside its own network namespace (so `otwg0`, the `otherix-nat`
 table, and VXLAN/bridge interfaces are isolated) and its own mount namespace (so
-the cluster-default pool `/opt/otherix/pools/default` resolves to per-node
-storage under `/opt/otherix/dev/nodeN/pools`). Per-node state lives under
-`/opt/otherix/dev/node{1,2}/` (root-owned).
+the cluster-default pool `/var/lib/otherix/pools/default` resolves to per-node
+storage under `/var/lib/otherix/dev/nodeN/pools`). Per-node state lives under
+`/var/lib/otherix/dev/node{1,2}/` (root-owned).
 
 The CP reaches each agent over mTLS at its advertised netns IP
 (`https://10.77.0.N:9443`), which is included in the agent server cert SAN: the CP
@@ -233,7 +233,7 @@ sudo dev/scripts/linux-multinode.sh restart   # rebuild loop: restart both agent
 
 ## Troubleshooting
 
-- Agent logs: `sudo tail -f /opt/otherix/dev/node1/agent.log` (or `node2`).
+- Agent logs: `sudo tail -f /var/lib/otherix/dev/node1/agent.log` (or `node2`).
 - Inspect a node's namespace: `sudo ip netns exec otns1 ip addr`.
 - Stale topology after a crash: `make local-dev-stop` tolerates partially-present
   objects; re-run then `make local-dev-start`.

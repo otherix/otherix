@@ -16,7 +16,7 @@ The cluster CA is the root of trust for everything below it.
 - **Generated once, on first boot** of a `single` or `bootstrap` replica.
 - **Stored in two places that must stay consistent:**
     - On disk, at `cluster_ca.cert_file` / `cluster_ca.key_file`
-      (default `/opt/otherix/ca/cluster-ca.{crt,key}`). The CA must be on disk
+      (default `/var/lib/otherix/ca/cluster-ca.{crt,key}`). The CA must be on disk
       *before* etcd starts, because the peer-mTLS plane needs a CA-signed cert
       pre-start.
     - In etcd, as the active `ca_certs` row. On boot the api-server syncs the
@@ -57,7 +57,7 @@ outbound dials to agents (ExtKeyUsage `serverAuth` + `clientAuth`). The loader
   Both must be set; missing files when configured is fatal. The cluster CA is still
   loaded from etcd to validate inbound agent client certs.
 - **Mode B - local cache.** With `cp_cert.local_cache.enabled: true`, a cert
-  cached at `/opt/otherix/certs/cp-cert.{crt,key}` is reused across restarts when
+  cached at `/var/lib/otherix/certs/cp-cert.{crt,key}` is reused across restarts when
   it still chains to the current CA, is not near expiry, and its SANs cover the
   expected set. Otherwise it falls through to Mode C and the regenerated cert is
   re-cached.
@@ -79,7 +79,7 @@ api-server provisions peer material from the on-disk cluster CA
 (`ProvisionPeerCert`):
 
 - **Auto-generate (default):** a fresh peer leaf signed by the cluster CA, written
-  under `etcd.peer_auto_dir` (default `/opt/otherix/peer/`), with the CA cert
+  under `etcd.peer_auto_dir` (default `/var/lib/otherix/peer/`), with the CA cert
   materialized as the peer trust file. SANs derive from the member's `peer_url` host
   plus the localhost baseline.
 - **Operator override:** set all three of `etcd.peer_cert_file`,
@@ -104,7 +104,7 @@ Each agent gets a client cert when it joins, via the node-join CSR flow:
 - **Agent identity is its cert CN.** The agent parses `node-<name>` from its own
   cert at startup to learn its node name; the CP binds heartbeats to that identity.
 
-The agent persists its cert material under `/opt/otherix/certs/` and reuses it
+The agent persists its cert material under `/var/lib/otherix/certs/` and reuses it
 across restarts. Bootstrap is a one-time event; routine agent restarts do not
 re-issue.
 

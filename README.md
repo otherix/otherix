@@ -138,8 +138,8 @@ make local-dev-start
 make local-dev-stop
 ```
 
-Per-node state lives under `/opt/otherix/dev/node{1,2}/` (root-owned); agent logs
-are at `/opt/otherix/dev/nodeN/agent.log`. KVM is required - verify with
+Per-node state lives under `/var/lib/otherix/dev/node{1,2}/` (root-owned); agent logs
+are at `/var/lib/otherix/dev/nodeN/agent.log`. KVM is required - verify with
 `ls /dev/kvm` first. See [docs/linux-development.md](docs/linux-development.md)
 for prerequisites, the topology diagram, smokes, and troubleshooting.
 

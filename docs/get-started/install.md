@@ -66,7 +66,7 @@ Otherix follows a fixed convention:
 | Path | Contents |
 |---|---|
 | `/etc/otherix/` | Operator-provided config (`api.yaml`, `agent.yaml`). |
-| `/opt/otherix/` | Runtime state: etcd data dir, cluster CA, generated certs, pools, VMs. |
+| `/var/lib/otherix/` | Runtime state: etcd data dir, cluster CA, generated certs, pools, VMs. |
 
 The defaults below assume this layout. Override paths in config if your
 deployment differs.
@@ -84,7 +84,7 @@ For a working single-node install you care about a handful of blocks:
 - `server.listen` - the user-facing HTTP API address. Default
   `0.0.0.0:8080`.
 - `etcd.data_dir` - where the embedded etcd member persists its data.
-  Default `/opt/otherix/etcd`. This is your cluster state; back it up.
+  Default `/var/lib/otherix/etcd`. This is your cluster state; back it up.
 - `auth.jwt_secret` - HS256 signing key for access tokens. **At least 32
   bytes.** Generate with `openssl rand -hex 32` and replace the example
   value before any non-dev deploy.
@@ -160,8 +160,8 @@ workers:
   enabled: true
 
 cluster_ca:
-  cert_file: "/opt/otherix/ca/cluster-ca.crt"
-  key_file:  "/opt/otherix/ca/cluster-ca.key"
+  cert_file: "/var/lib/otherix/ca/cluster-ca.crt"
+  key_file:  "/var/lib/otherix/ca/cluster-ca.key"
 
 # Per-replica CP server cert. Auto-generated from the cluster CA by
 # default; list every hostname/IP the agent will dial.
@@ -173,7 +173,7 @@ cp_cert:
 etcd:
   mode: "single"
   name: "otherix-0"
-  data_dir: "/opt/otherix/etcd"
+  data_dir: "/var/lib/otherix/etcd"
 
 storage_pools:
   # The CP auto-provisions a "default" pool on every node as it becomes

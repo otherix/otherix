@@ -109,7 +109,7 @@ required):
 | `--migration-host` | - | Host/IP advertised for live-migration ingress. Required. |
 | `--migration-port-range-start` | `49152` | Migration port range lower bound. |
 | `--migration-port-range-end` | `49251` | Migration port range upper bound. |
-| `--cert-dir` | `/opt/otherix/certs` | Destination for `agent.key` / `agent.crt` / `ca.crt`. |
+| `--cert-dir` | `/var/lib/otherix/certs` | Destination for `agent.key` / `agent.crt` / `ca.crt`. |
 | `--config-path` | `/etc/otherix/agent.yaml` | Destination for the generated config. |
 | `--listen` | `0.0.0.0:9443` | Agent HTTPS bind address baked into the generated config. |
 | `--heartbeat-interval` | `30s` | Heartbeat cadence baked into the generated config. |

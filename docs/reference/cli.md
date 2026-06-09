@@ -224,7 +224,7 @@ duplicate `(name, node)` is an error.
 | `--show-ids` | `false` | Include the pool UUID in text output. |
 
 ```bash
-otherix pool create pool-dev --node node-dev --path /opt/otherix/pools/default --wait
+otherix pool create pool-dev --node node-dev --path /var/lib/otherix/pools/default --wait
 ```
 
 ### pool delete

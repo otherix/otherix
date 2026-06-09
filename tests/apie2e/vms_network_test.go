@@ -70,7 +70,7 @@ func schedulableFixtureWithNode(t *testing.T, h *harness, owner uuid.UUID) (node
 	poolName = "pool-" + uuid.NewString()[:8]
 	if _, err := s.CreateStoragePool(ctx, store.CreateStoragePoolParams{
 		ID: uuid.New(), NodeID: nodeID, Name: poolName, Type: "local_dir",
-		Path: "/opt/otherix/pools/" + poolName, Config: []byte(`{}`),
+		Path: "/var/lib/otherix/pools/" + poolName, Config: []byte(`{}`),
 	}); err != nil {
 		t.Fatalf("CreateStoragePool: %v", err)
 	}
