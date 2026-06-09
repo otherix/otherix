@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/otherix/otherix/internal/agent/console"
+	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/dnsproxy"
 	storagepoolshandlers "github.com/otherix/otherix/internal/agent/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
@@ -104,16 +105,12 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// an unsupported stub on other platforms keeps the agent compiling.
 	fabric := netfabric.New()
 
-	// Per-node DNS forwarder bound at the overlay gateway anycast address
-	// (169.254.1.1:53). IP_FREEBIND lets the bind succeed before any overlay
-	// bridge owns the address. Empty Upstreams => New discovers the node's
-	// resolvers from resolv.conf at construction time.
-	dnsForwarder, err := dnsproxy.New(dnsproxy.Config{
-		Listen: net.JoinHostPort(netfabric.OverlayGatewayAddr.String(), strconv.Itoa(netfabric.OverlayDNSPort)),
-		Log:    log,
-	})
+	// Per-node overlay L3 services bound at the gateway anycast address: the
+	// DNS forwarder and the DHCPv4 responder. Both are registered per overlay
+	// by the network reconciler and run their own loops below.
+	dnsForwarder, dhcpResponder, err := newOverlayServices(log)
 	if err != nil {
-		return fmt.Errorf("dns forwarder: %w", err)
+		return err
 	}
 
 	manager, err := vm.New(cfg, fabric, log)
@@ -133,9 +130,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// responses and materialises node-local bridges + NAT via the same
 	// fabric the VM manager uses. Plugs into the sender as both
 	// ResponseHandler and NetworkReporter.
-	// TODO(slice2): wire dhcp4 responder here (next task constructs and
-	// threads the real per-node responder; nil keeps DHCP registration off).
-	netReconciler, err := reconciler.NewNetworks(fabric, nil, log, 0)
+	netReconciler, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0)
 	if err != nil {
 		return fmt.Errorf("network reconciler: %w", err)
 	}
@@ -190,6 +185,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	vmReconcilerDone := runReconciler(heartbeatCtx, "vm reconciler", vmReconciler.Run, log)
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
+	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -214,6 +210,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "network reconciler", done: netReconcilerDone},
 		{name: "wireguard reconciler", done: wgReconcilerDone},
 		{name: "dns forwarder", done: dnsForwarderDone},
+		{name: "dhcp responder", done: dhcpResponderDone},
 	}
 
 	select {
@@ -234,6 +231,39 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// overlayService is the runtime contract shared by the DNS forwarder and the
+// DHCPv4 responder: each has a Run loop the agent drives via runReconciler.
+type overlayService interface {
+	Run(ctx context.Context) error
+}
+
+// newOverlayServices constructs the per-node overlay L3 services that bind at
+// the gateway anycast address (169.254.1.1).
+//
+// The DNS forwarder listens on :53; IP_FREEBIND lets the bind succeed before
+// any overlay bridge owns the address, and empty Upstreams => dnsproxy.New
+// discovers the node's resolvers from resolv.conf at construction time. The
+// DHCPv4 responder serves CP-IPAM reservations; its Gateway and DNS default to
+// the overlay anycast gateway and its Lease to dhcp4.DefaultLease, so an
+// otherwise-empty Config suffices. The reconciler registers both per
+// dhcp-enabled overlay; only the responder is also threaded into NewNetworks.
+func newOverlayServices(log *slog.Logger) (dns overlayService, dhcp dhcp4.Responder, err error) {
+	dnsForwarder, err := dnsproxy.New(dnsproxy.Config{
+		Listen: net.JoinHostPort(netfabric.OverlayGatewayAddr.String(), strconv.Itoa(netfabric.OverlayDNSPort)),
+		Log:    log,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("dns forwarder: %w", err)
+	}
+
+	dhcpResponder, err := dhcp4.New(dhcp4.Config{Log: log})
+	if err != nil {
+		return nil, nil, fmt.Errorf("dhcp responder: %w", err)
+	}
+
+	return dnsForwarder, dhcpResponder, nil
 }
 
 // namedDone pairs a reconciler/sender done-channel with its name so a

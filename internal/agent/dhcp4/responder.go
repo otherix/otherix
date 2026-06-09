@@ -9,6 +9,7 @@
 package dhcp4
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"time"
@@ -30,10 +31,12 @@ type NetworkConfig struct {
 
 // Responder serves DHCPv4 on overlay bridges for CP-IPAM reservations. The
 // reconciler registers/deregisters per network; the implementation owns one raw
-// socket per active bridge (added in a later task).
+// socket per active bridge. Run drives the serving loops and is started once by
+// the agent runtime.
 type Responder interface {
 	RegisterNetwork(cfg NetworkConfig) error
 	DeregisterNetwork(networkID string) error
+	Run(ctx context.Context) error
 }
 
 // ReplyOptions are the anycast constants every reply carries (Slice 1 gateway).
