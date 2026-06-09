@@ -4,14 +4,28 @@
 package reconciler
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 )
+
+// countSubstr returns how many lines in s contain sub.
+func countSubstr(s, sub string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, sub) {
+			n++
+		}
+	}
+	return n
+}
 
 // overlayDhcpNet returns an egress=nat overlay with DHCP enabled, a subnet, and
 // one MAC->IP reservation - the only shape for which DHCP registration fires.
@@ -92,6 +106,71 @@ func TestApplyOverlayDHCPRegisterErrorStaysReady(t *testing.T) {
 	// de-schedule the node despite a converged datapath.
 	if rep.ReconciliationStatus != "ready" {
 		t.Errorf("status = %q, want ready (dhcp register failure must not fail the network)", rep.ReconciliationStatus)
+	}
+}
+
+// TestDHCPRegisterFailureLogsOncePerError asserts a permanent DHCP-register
+// failure (e.g. missing CAP_NET_RAW) logs the WARN exactly once across many
+// reconcile passes, not once per pass - registration is re-asserted every pass
+// to converge reservations, so a per-pass WARN would spam the log forever.
+func TestDHCPRegisterFailureLogsOncePerError(t *testing.T) {
+	f := readyEgressFabric()
+	fake := &dhcp4.FakeResponder{Errs: map[string]error{"RegisterNetwork": errors.New("boom")}}
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rec, err := NewNetworks(f, fake, log, time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayDhcpNet()},
+		SelfOverlayIP:    &ip,
+	})
+
+	const passes = 5
+	for range passes {
+		rec.reconcile(context.Background())
+	}
+	if len(fake.RegisterCalls) != passes {
+		t.Fatalf("RegisterCalls = %d, want %d (register re-asserted every pass)", len(fake.RegisterCalls), passes)
+	}
+
+	if got := countSubstr(buf.String(), "overlay dhcp: register failed"); got != 1 {
+		t.Errorf("register-failed WARN count = %d across %d passes, want 1", got, passes)
+	}
+}
+
+// TestDHCPRegisterRecoveryRelogsOnReFailure asserts a recovered registration
+// emits a single INFO and clears the dedup state, so a later re-failure logs
+// the WARN again.
+func TestDHCPRegisterRecoveryRelogsOnReFailure(t *testing.T) {
+	f := readyEgressFabric()
+	fake := &dhcp4.FakeResponder{Errs: map[string]error{"RegisterNetwork": errors.New("boom")}}
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rec, err := NewNetworks(f, fake, log, time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayDhcpNet()},
+		SelfOverlayIP:    &ip,
+	})
+
+	rec.reconcile(context.Background()) // fail -> 1 WARN
+	delete(fake.Errs, "RegisterNetwork")
+	rec.reconcile(context.Background()) // success -> 1 recovered INFO, clears state
+	fake.Errs = map[string]error{"RegisterNetwork": errors.New("boom")}
+	rec.reconcile(context.Background()) // fail again -> WARN re-logs
+
+	out := buf.String()
+	if got := countSubstr(out, "overlay dhcp: register failed"); got != 2 {
+		t.Errorf("register-failed WARN count = %d, want 2 (re-fail must re-log)", got)
+	}
+	if got := countSubstr(out, "overlay dhcp: register recovered"); got != 1 {
+		t.Errorf("register-recovered INFO count = %d, want 1", got)
 	}
 }
 

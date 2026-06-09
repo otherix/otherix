@@ -147,10 +147,24 @@ func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredN
 			Subnet:       subnet,
 			Reservations: parseReservations(ctx, r.log, d.Reservations),
 		}); err != nil {
-			r.log.WarnContext(ctx, "overlay dhcp: register failed; retrying next pass",
-				slog.String("network_id", d.ID), slog.String("error", err.Error()))
-			// best-effort: keep the overlay ready, retried next pass
+			// Log on transition only: registration is re-asserted every pass,
+			// so a permanent failure (e.g. missing CAP_NET_RAW) would spam a
+			// WARN every tick forever and defeat alerting-on-WARN. Emit only on
+			// the first failure or a changed error string. Best-effort: keep
+			// the overlay ready, retried next pass.
+			if last, seen := r.dhcpRegisterErr[d.ID]; !seen || last != err.Error() {
+				r.log.WarnContext(ctx, "overlay dhcp: register failed; retrying next pass",
+					slog.String("network_id", d.ID), slog.String("error", err.Error()))
+				r.dhcpRegisterErr[d.ID] = err.Error()
+			}
+		} else {
+			r.clearDHCPRegisterErr(ctx, d.ID)
 		}
+	} else {
+		// DHCP turned off (or no responder) while the network stays declared:
+		// forget any prior register-error state, emitting the recovery INFO if
+		// there was one, so a later re-enable re-logs a fresh first failure.
+		r.clearDHCPRegisterErr(ctx, d.ID)
 	}
 	r.applied[d.ID] = appliedNetwork{
 		BridgeName: d.BridgeName,
@@ -160,6 +174,20 @@ func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredN
 		HasEgress:  true,
 		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
 	}
+}
+
+// clearDHCPRegisterErr clears the remembered last-logged DHCP register error
+// for id, emitting a single recovery INFO when there was a prior recorded
+// failure. Clearing the entry means a later re-failure logs the WARN again.
+// Called on a successful register and on teardown. Mutated only from the
+// reconcile goroutine, same as r.applied; no lock needed.
+func (r *Networks) clearDHCPRegisterErr(ctx context.Context, id string) {
+	if _, had := r.dhcpRegisterErr[id]; !had {
+		return
+	}
+	delete(r.dhcpRegisterErr, id)
+	r.log.InfoContext(ctx, "overlay dhcp: register recovered",
+		slog.String("network_id", id))
 }
 
 // parseReservations converts the wire reservations to dhcp4 form, skipping

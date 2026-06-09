@@ -55,6 +55,15 @@ type Networks struct {
 	// with the right primitives. Mutated only from the reconcile
 	// goroutine; no lock needed.
 	applied map[string]appliedNetwork
+
+	// dhcpRegisterErr remembers the last-logged DHCP RegisterNetwork error
+	// string per network id, so a permanently failing registration logs a
+	// WARN only on transition (first failure or a changed error) instead of
+	// every reconcile pass. Cleared on a successful register (emitting a
+	// single recovery INFO) and on teardown, so a later re-failure re-logs.
+	// Mutated only from the reconcile goroutine; no lock needed, same as
+	// applied.
+	dhcpRegisterErr map[string]string
 }
 
 // appliedNetwork is the reconciler's memory of one materialised managed
@@ -94,13 +103,14 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 		tick = DefaultTickInterval
 	}
 	return &Networks{
-		log:     log,
-		fabric:  f,
-		dhcp:    dhcp,
-		tick:    tick,
-		trigger: make(chan struct{}, 1),
-		reports: map[string]heartbeat.NetworkReport{},
-		applied: map[string]appliedNetwork{},
+		log:             log,
+		fabric:          f,
+		dhcp:            dhcp,
+		tick:            tick,
+		trigger:         make(chan struct{}, 1),
+		reports:         map[string]heartbeat.NetworkReport{},
+		applied:         map[string]appliedNetwork{},
+		dhcpRegisterErr: map[string]string{},
 	}, nil
 }
 
@@ -391,6 +401,10 @@ func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetw
 				errs = append(errs, err)
 			}
 		}
+		// Forget any remembered register-error state so a deleted-then-recreated
+		// network re-logs its first failure. Best-effort, silent: the network is
+		// going away, not recovering, so no recovery INFO here.
+		delete(r.dhcpRegisterErr, id)
 		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
 			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
 				slog.String("network_id", id),
