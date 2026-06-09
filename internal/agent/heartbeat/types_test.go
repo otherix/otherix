@@ -81,6 +81,51 @@ func TestResponseDecodeDeclaredNetworks(t *testing.T) {
 	}
 }
 
+// TestResponseDecodeDeclaredNetworkDHCP verifies a declared_networks entry
+// carrying dhcp + reservations decodes into DhcpEnabled + the Reservations
+// slice. The response decoder uses DisallowUnknownFields, so this also guards
+// that the new wire fields exist on the struct (a missing field would fail the
+// decode, not silently drop).
+func TestResponseDecodeDeclaredNetworkDHCP(t *testing.T) {
+	body := `{
+		"received_at": "2026-06-01T00:00:00Z",
+		"declared_pools": [],
+		"declared_vms": [],
+		"declared_networks": [
+			{
+				"id": "33333333-3333-3333-3333-333333333333",
+				"name": "vmdhcp",
+				"type": "bridge",
+				"managed": true,
+				"egress": "nat",
+				"bridge_name": "otx-vmdhcp",
+				"mtu": 1500,
+				"subnet": "10.62.0.0/24",
+				"gateway": "10.62.0.1",
+				"vni": null,
+				"dhcp": true,
+				"reservations": [{"mac": "52:54:00:aa:bb:cc", "ip": "10.62.0.5"}]
+			}
+		]
+	}`
+
+	var got Response
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("Unmarshal heartbeat response: %v", err)
+	}
+	if len(got.DeclaredNetworks) != 1 {
+		t.Fatalf("DeclaredNetworks len = %d, want 1", len(got.DeclaredNetworks))
+	}
+	dn := got.DeclaredNetworks[0]
+	if !dn.DhcpEnabled {
+		t.Errorf("DhcpEnabled = false, want true")
+	}
+	want := []DhcpReservation{{MAC: "52:54:00:aa:bb:cc", IP: "10.62.0.5"}}
+	if diff := cmp.Diff(want, dn.Reservations); diff != "" {
+		t.Errorf("Reservations mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestResponseDecodeDeclaredFDB(t *testing.T) {
 	raw := `{"received_at":"t","declared_pools":[],"declared_vms":[],"declared_networks":[],
 	         "declared_wireguard_peers":[],"self_overlay_ip":null,

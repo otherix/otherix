@@ -204,14 +204,24 @@ type declaredVM struct {
 // and Gateway (IP) are non-nil only when Egress="nat". VNI is non-nil
 // only for type=overlay.
 type declaredNetwork struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Type       string  `json:"type"`
-	Managed    bool    `json:"managed"`
-	Egress     string  `json:"egress"`
-	BridgeName string  `json:"bridge_name"`
-	Mtu        int32   `json:"mtu"`
-	VNI        *int32  `json:"vni"`
-	Subnet     *string `json:"subnet"`
-	Gateway    *string `json:"gateway"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Type         string            `json:"type"`
+	Managed      bool              `json:"managed"`
+	Egress       string            `json:"egress"`
+	BridgeName   string            `json:"bridge_name"`
+	Mtu          int32             `json:"mtu"`
+	VNI          *int32            `json:"vni"`
+	Subnet       *string           `json:"subnet"`
+	Gateway      *string           `json:"gateway"`
+	DhcpEnabled  bool              `json:"dhcp"`
+	Reservations []dhcpReservation `json:"reservations"`
+}
+
+// dhcpReservation mirrors DhcpReservation on the agent side (the manual-sync
+// contract). One CP-IPAM MAC->IP binding the per-node DHCP responder serves;
+// non-empty only for dhcp-enabled networks.
+type dhcpReservation struct {
+	MAC string `json:"mac"`
+	IP  string `json:"ip"`
 }
