@@ -26,7 +26,7 @@ func TestPoolGetOutputYAML(t *testing.T) {
 					"node":               "node-a",
 					"name":               "default",
 					"type":               "local_dir",
-					"path":               "/opt/otherix/pools/default",
+					"path":               "/var/lib/otherix/pools/default",
 					"is_cluster_default": true,
 				},
 				{
@@ -34,7 +34,7 @@ func TestPoolGetOutputYAML(t *testing.T) {
 					"node":               "node-b",
 					"name":               "default",
 					"type":               "local_dir",
-					"path":               "/opt/otherix/pools/default",
+					"path":               "/var/lib/otherix/pools/default",
 					"is_cluster_default": true,
 				},
 			},

@@ -49,7 +49,7 @@ func discardLogger() *slog.Logger {
 
 func TestEnsureDefaultPoolsFunc_CreatesForReadyNode(t *testing.T) {
 	f := &defaultPoolStoreFake{settings: store.ClusterSetting{DefaultPoolName: ptr("default")}}
-	hook := EnsureDefaultPoolsFunc(f, "/opt/otherix/pools/", discardLogger())
+	hook := EnsureDefaultPoolsFunc(f, "/var/lib/otherix/pools/", discardLogger())
 
 	nodeID := uuid.New()
 	if err := hook(context.Background(), []store.PromoteHealthyNodesRow{{ID: nodeID, Name: "node-a"}}); err != nil {
@@ -67,7 +67,7 @@ func TestEnsureDefaultPoolsFunc_CreatesForReadyNode(t *testing.T) {
 		NodeID: nodeID,
 		Name:   "default",
 		Type:   validation.StoragePoolTypeLocalDir,
-		Path:   "/opt/otherix/pools/default",
+		Path:   "/var/lib/otherix/pools/default",
 		Config: []byte("{}"),
 	}
 	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(store.CreateStoragePoolParams{}, "ID")); diff != "" {
@@ -80,7 +80,7 @@ func TestEnsureDefaultPoolsFunc_IdempotentOnNameExists(t *testing.T) {
 		settings:  store.ClusterSetting{DefaultPoolName: ptr("default")},
 		createErr: store.ErrStoragePoolNameExists,
 	}
-	hook := EnsureDefaultPoolsFunc(f, "/opt/otherix/pools/", discardLogger())
+	hook := EnsureDefaultPoolsFunc(f, "/var/lib/otherix/pools/", discardLogger())
 
 	if err := hook(context.Background(), []store.PromoteHealthyNodesRow{{ID: uuid.New(), Name: "node-a"}}); err != nil {
 		t.Fatalf("hook returned error on duplicate pool: %v", err)
@@ -92,7 +92,7 @@ func TestEnsureDefaultPoolsFunc_IdempotentOnNameExists(t *testing.T) {
 
 func TestEnsureDefaultPoolsFunc_OptOutWhenUnset(t *testing.T) {
 	f := &defaultPoolStoreFake{settings: store.ClusterSetting{DefaultPoolName: nil}}
-	hook := EnsureDefaultPoolsFunc(f, "/opt/otherix/pools/", discardLogger())
+	hook := EnsureDefaultPoolsFunc(f, "/var/lib/otherix/pools/", discardLogger())
 
 	if err := hook(context.Background(), []store.PromoteHealthyNodesRow{{ID: uuid.New(), Name: "node-a"}}); err != nil {
 		t.Fatalf("hook returned error: %v", err)
@@ -109,7 +109,7 @@ func TestEnsureDefaultPoolsFunc_RejectsPathEscapingName(t *testing.T) {
 	for _, name := range []string{"a/b", "..", ".", "../etc"} {
 		t.Run(name, func(t *testing.T) {
 			f := &defaultPoolStoreFake{settings: store.ClusterSetting{DefaultPoolName: ptr(name)}}
-			hook := EnsureDefaultPoolsFunc(f, "/opt/otherix/pools/", discardLogger())
+			hook := EnsureDefaultPoolsFunc(f, "/var/lib/otherix/pools/", discardLogger())
 
 			if err := hook(context.Background(), []store.PromoteHealthyNodesRow{{ID: uuid.New(), Name: "node-a"}}); err != nil {
 				t.Fatalf("hook returned error: %v", err)
@@ -124,7 +124,7 @@ func TestEnsureDefaultPoolsFunc_RejectsPathEscapingName(t *testing.T) {
 func TestEnsureDefaultPoolsFunc_PropagatesSettingsError(t *testing.T) {
 	sentinel := errors.New("boom")
 	f := &defaultPoolStoreFake{settingsErr: sentinel}
-	hook := EnsureDefaultPoolsFunc(f, "/opt/otherix/pools/", discardLogger())
+	hook := EnsureDefaultPoolsFunc(f, "/var/lib/otherix/pools/", discardLogger())
 
 	if err := hook(context.Background(), []store.PromoteHealthyNodesRow{{ID: uuid.New(), Name: "node-a"}}); !errors.Is(err, sentinel) {
 		t.Fatalf("hook error = %v, want %v", err, sentinel)

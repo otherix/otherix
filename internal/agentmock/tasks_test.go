@@ -276,7 +276,7 @@ func TestStoragePoolsScan_ResourceID(t *testing.T) {
 		ID:   poolUUID,
 		Name: poolID,
 		Type: "local_dir",
-		Path: "/opt/otherix/pools/test-pool",
+		Path: "/var/lib/otherix/pools/test-pool",
 	})
 
 	m.AddPoolScanResult(poolID, agentmock.PoolScanResult{Delay: 20 * time.Millisecond})

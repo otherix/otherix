@@ -18,7 +18,7 @@ func TestStoragePoolMutators(t *testing.T) {
 		ID:   uuid.New(),
 		Name: name,
 		Type: "local_dir",
-		Path: "/opt/otherix/pools/default",
+		Path: "/var/lib/otherix/pools/default",
 	})
 
 	if err := m.SetPoolCapacity(name, 10<<30, 5<<30); err != nil {

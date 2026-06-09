@@ -19,10 +19,10 @@ func validSpec() VMSpec {
 		VCPUs:           2,
 		MemoryMB:        2048,
 		Accelerator:     "tcg",
-		DiskPath:        "/opt/otherix/pools/default/vms/abc/disk.qcow2",
-		QMPSocket:       "/opt/otherix/vms/abc/qmp.sock",
-		ConsoleSocket:   "/opt/otherix/vms/abc/console.sock",
-		PIDFile:         "/opt/otherix/vms/abc/qemu.pid",
+		DiskPath:        "/var/lib/otherix/pools/default/vms/abc/disk.qcow2",
+		QMPSocket:       "/var/lib/otherix/vms/abc/qmp.sock",
+		ConsoleSocket:   "/var/lib/otherix/vms/abc/console.sock",
+		PIDFile:         "/var/lib/otherix/vms/abc/qemu.pid",
 		AArch64Firmware: "/usr/share/AAVMF/AAVMF_CODE.fd",
 	}
 }

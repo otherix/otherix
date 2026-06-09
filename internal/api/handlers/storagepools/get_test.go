@@ -107,13 +107,13 @@ func TestGetByID_SurfacesImageInventory(t *testing.T) {
 	importedAt := time.Date(2026, 5, 7, 12, 34, 56, 789000000, time.UTC)
 
 	fake := &getStoreFake{
-		pool: store.StoragePool{ID: poolID, NodeID: nodeID, Name: "fast", Type: "dir", Path: "/opt/otherix/pools/fast"},
+		pool: store.StoragePool{ID: poolID, NodeID: nodeID, Name: "fast", Type: "dir", Path: "/var/lib/otherix/pools/fast"},
 		effective: store.PoolEffectiveCapacity{
 			ID:                   poolID,
 			NodeID:               nodeID,
 			Name:                 "fast",
 			Type:                 "dir",
-			Path:                 "/opt/otherix/pools/fast",
+			Path:                 "/var/lib/otherix/pools/fast",
 			ReconciliationStatus: "ready",
 			CreatedAt:            importedAt,
 			UpdatedAt:            importedAt,
