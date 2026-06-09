@@ -1333,6 +1333,70 @@ func countMasqIfaceRules(t *testing.T, inIface string) int {
 	return n
 }
 
+func TestLinuxFabricMasqueradeIfacePrunesStaleEgress(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const inIface = "ot-br-prune0"
+		if err := f.EnsureBridge(inIface, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		// Two explicit egress ifaces (the iface need not exist for the rule to install).
+		if err := f.EnsureMasqueradeIface(inIface, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasqueradeIface(lo) = %v", err)
+		}
+		if err := f.EnsureMasqueradeIface(inIface, "eth9"); err != nil {
+			t.Fatalf("EnsureMasqueradeIface(eth9) = %v", err)
+		}
+		// The lo rule must be pruned; only the eth9 rule remains.
+		if n := countMasqIfaceRules(t, inIface); n != 1 {
+			t.Fatalf("iface masq rule count = %d after egress change, want 1 (stale pruned)", n)
+		}
+		// The remaining rule carries the eth9 marker, not lo.
+		c := &nftables.Conn{}
+		table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+		chain := &nftables.Chain{Name: natChainName, Table: table}
+		rules, err := c.GetRules(table, chain)
+		if err != nil {
+			t.Fatalf("GetRules = %v", err)
+		}
+		wantMarker := masqIfaceUserData(inIface, "eth9")
+		matched := false
+		for _, r := range rules {
+			if bytes.Equal(r.UserData, wantMarker) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("remaining rule is not the eth9 rule")
+		}
+	})
+}
+
+func TestLinuxFabricAnycastGatewaySetsArpSysctls(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-arp0"
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureAnycastGateway(bridge, OverlayGatewayAddr, GatewayMAC(0x002000)); err != nil {
+			requireNetfabric(t, "EnsureAnycastGateway = %v", err)
+		}
+		for _, tc := range []struct{ key, want string }{
+			{"arp_ignore", "1"},
+			{"arp_announce", "2"},
+		} {
+			got, err := os.ReadFile("/proc/sys/net/ipv4/conf/" + bridge + "/" + tc.key)
+			if err != nil {
+				t.Fatalf("read %s = %v", tc.key, err)
+			}
+			if strings.TrimSpace(string(got)) != tc.want {
+				t.Errorf("%s = %q, want %q", tc.key, strings.TrimSpace(string(got)), tc.want)
+			}
+		}
+	})
+}
+
 func TestLinuxFabricLinkState(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
