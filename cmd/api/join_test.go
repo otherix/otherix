@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/otherix/otherix/internal/config"
 )
@@ -212,6 +215,111 @@ func TestRunJoinReappliesWhenJoinIncomplete(t *testing.T) {
 	}
 	if !restarted {
 		t.Errorf("restarted = false, want true (failed/partial join must re-apply the corrected token and restart)")
+	}
+}
+
+// TestWriteJoinConfigPreservesTypedKeys locks the round-trip invariant that the
+// koanf load -> Set 5 join keys -> Marshal rewrite in writeJoinConfig does not
+// silently change the TYPE, VALUE, or ORDER of unrelated keys the operator had
+// set. koanf's yaml.v3 marshaler is quote-aware and these survive today; this
+// test guards that against a future koanf / yaml bump. It seeds the fragile key
+// shapes (a duration, a numeric-string, a bool, an order-sensitive list, and a
+// string that would re-parse as a bool unquoted), runs the rewrite, reloads via
+// config.LoadAPI, and asserts each survives intact.
+func TestWriteJoinConfigPreservesTypedKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "api.yaml")
+	// A realistic api.yaml: valid enough for config.LoadAPI to succeed
+	// (jwt_secret >= 32 bytes) and carrying the fragile typed keys.
+	//   - auth.jwt_access_ttl: a time.Duration ("15m").
+	//   - etcd.compaction_retention: a Go string field holding a numeric string
+	//     ("5000") - must NOT coerce to a number on round-trip.
+	//   - workers.enabled: a bool set to false (default is true, so the seed
+	//     value is meaningful) - must NOT flip or drop.
+	//   - storage_pools.allowed_path_prefixes: an order-sensitive list (index 0
+	//     is the default-pool path) - order must survive.
+	//   - etcd.cluster_token: "yes", a string the rewrite does NOT touch that
+	//     would re-parse as a bool if unquoted - must stay the string "yes".
+	content := "server:\n" +
+		"  listen: \"0.0.0.0:9090\"\n" +
+		"auth:\n" +
+		"  jwt_secret: \"0123456789abcdef0123456789abcdef\"\n" +
+		"  jwt_access_ttl: 15m\n" +
+		"workers:\n" +
+		"  enabled: false\n" +
+		"storage_pools:\n" +
+		"  allowed_path_prefixes: [\"/var/lib/otherix/pools/\", \"/mnt/extra/\"]\n" +
+		"etcd:\n" +
+		"  mode: single\n" +
+		"  name: otherix-0\n" +
+		"  peer_url: auto\n" +
+		"  cluster_token: \"yes\"\n" +
+		"  compaction_retention: \"5000\"\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("seed api.yaml: %v", err)
+	}
+
+	// Sanity: the seed loads, so the preconditions are valid.
+	if _, err := config.LoadAPI(cfgPath); err != nil {
+		t.Fatalf("precondition: seed must load, got error: %v", err)
+	}
+
+	tokenPath := filepath.Join(t.TempDir(), "cluster-join-token")
+	in := joinInputs{
+		cpURL:         "https://cp.example:8443",
+		caFingerprint: "sha256:" + fp64,
+		name:          "otherix-1",
+		configPath:    cfgPath,
+		tokenPath:     tokenPath,
+	}
+	if err := writeJoinConfig(in); err != nil {
+		t.Fatalf("writeJoinConfig: %v", err)
+	}
+
+	cfg, err := config.LoadAPI(cfgPath)
+	if err != nil {
+		t.Fatalf("reload config after rewrite: %v", err)
+	}
+
+	// The 5 rewritten keys are set.
+	if cfg.Etcd.Mode != "join" {
+		t.Errorf("Etcd.Mode = %q, want %q", cfg.Etcd.Mode, "join")
+	}
+	if cfg.Etcd.Name != "otherix-1" {
+		t.Errorf("Etcd.Name = %q, want %q", cfg.Etcd.Name, "otherix-1")
+	}
+	if cfg.ClusterJoin.CPURL != "https://cp.example:8443" {
+		t.Errorf("ClusterJoin.CPURL = %q, want %q", cfg.ClusterJoin.CPURL, "https://cp.example:8443")
+	}
+	if cfg.ClusterJoin.TokenPath != tokenPath {
+		t.Errorf("ClusterJoin.TokenPath = %q, want %q", cfg.ClusterJoin.TokenPath, tokenPath)
+	}
+	if cfg.ClusterJoin.CAFingerprint != "sha256:"+fp64 {
+		t.Errorf("ClusterJoin.CAFingerprint = %q, want %q", cfg.ClusterJoin.CAFingerprint, "sha256:"+fp64)
+	}
+
+	// Duration survives as 15m.
+	if cfg.Auth.JWTAccessTTL != 15*time.Minute {
+		t.Errorf("Auth.JWTAccessTTL = %v, want %v", cfg.Auth.JWTAccessTTL, 15*time.Minute)
+	}
+	// Numeric-string string field survives as the string "5000", not a number.
+	if cfg.Etcd.CompactionRetention != "5000" {
+		t.Errorf("Etcd.CompactionRetention = %q, want %q", cfg.Etcd.CompactionRetention, "5000")
+	}
+	// Bool survives as false (default is true, so this proves the seed value
+	// round-tripped rather than the default being reapplied).
+	if cfg.Workers.Enabled {
+		t.Errorf("Workers.Enabled = %v, want %v", cfg.Workers.Enabled, false)
+	}
+	// Quote-sensitive string survives as "yes", not the bool true.
+	if cfg.Etcd.ClusterToken != "yes" {
+		t.Errorf("Etcd.ClusterToken = %q, want %q", cfg.Etcd.ClusterToken, "yes")
+	}
+	// Order-sensitive list survives in seed order (index 0 is the default-pool
+	// path, so order is load-bearing).
+	wantPrefixes := []string{"/var/lib/otherix/pools/", "/mnt/extra/"}
+	if diff := cmp.Diff(wantPrefixes, cfg.StoragePools.AllowedPathPrefixes); diff != "" {
+		t.Errorf("StoragePools.AllowedPathPrefixes mismatch (-want +got):\n%s", diff)
 	}
 }
 
