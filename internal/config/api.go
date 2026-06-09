@@ -667,7 +667,7 @@ func defaultAPIConfig() APIConfig {
 			Mode:         "single",
 			Name:         "otherix-0",
 			DataDir:      "/var/lib/otherix/etcd",
-			PeerURL:      "https://127.0.0.1:2380",
+			PeerURL:      "auto",
 			ClientURL:    "http://127.0.0.1:2379",
 			ClusterToken: "otherix-cluster",
 			PeerAutoDir:  "/var/lib/otherix/peer",

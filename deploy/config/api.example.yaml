@@ -21,7 +21,10 @@ server:
 #                                  does NOT set initial_cluster for a join node.
 #   name             unique member name within the cluster.
 #   data_dir         member data directory (WAL + snapshots). Persist across restarts.
-#   peer_url         Raft peer advertise/listen URL.
+#   peer_url         Raft peer advertise/listen URL. "auto" (the default)
+#                    resolves to the host's routable IPv4 at boot, so a
+#                    single-node default is HA-ready with no operator input;
+#                    an explicit URL overrides it and is used verbatim.
 #   client_url       client advertise/listen URL.
 #   cluster_token    isolates clusters that share a network; distinct token per cluster.
 #   initial_cluster  full member list "n0=https://h0:2380,n1=https://h1:2380,..."
@@ -42,7 +45,9 @@ etcd:
   # path across single-node and HA, so a single->HA grow needs no transport
   # switch). The client URL stays plain http on loopback - the co-located CP
   # is the only client, so there is no remote client traffic to protect.
-  peer_url:      "https://127.0.0.1:2380"
+  # "auto" (the default) resolves to the host's routable IPv4 at boot; set an
+  # explicit https URL to override (used verbatim).
+  peer_url:      "auto"
   client_url:    "http://127.0.0.1:2379"
   cluster_token: "otherix-cluster"
   # compaction_mode:      "periodic"
