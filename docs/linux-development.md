@@ -101,6 +101,64 @@ make smoke-overlay-vm       # two real VMs, cross-node ping over the overlay
 Live migration is not yet implemented and is therefore not part of the Linux dev
 smoke.
 
+## Smoke: overlay egress (manual, static-addressed VM)
+
+Verifies overlay egress (per-node SNAT) end to end against real agents. The CP
+gives overlay VMs internet access by putting a link-local anycast gateway
+(`169.254.1.1`) on every node's `otb<vni>` bridge, enabling `ip_forward`, and
+masquerading overlay traffic out the node's uplink; a per-node DNS forwarder on
+`169.254.1.1:53` relays to the node's upstream resolver. The gateway address is
+node-independent, so it survives live migration. Run after `make
+local-dev-start`.
+
+1. Create a managed overlay network with egress enabled (through the CLI):
+
+   ```bash
+   ./bin/otherix network create ov-egress \
+     --type overlay --subnet 10.60.0.0/24 --egress nat
+   ```
+
+   (`--managed`, `--mtu`, and the bridge name are server-derived for overlay and
+   are rejected if supplied; egress on overlay is always managed.)
+
+2. Create a VM on the overlay with a **static** cloud-init network-config. The
+   gateway and DNS are the link-local anycast address `169.254.1.1`, which is
+   off-subnet, so the default route must be declared `on-link`. Example
+   network-config (netplan v2 form) baked into the VM's cloud-init:
+
+   ```yaml
+   network:
+     version: 2
+     ethernets:
+       eth0:
+         addresses: [10.60.0.5/24]
+         nameservers:
+           addresses: [169.254.1.1]
+         routes:
+           - to: 169.254.1.1/32
+             scope: link
+           - to: default
+             via: 169.254.1.1
+             on-link: true
+   ```
+
+3. From the VM console (`./bin/otherix vm console <id>`), verify egress:
+
+   ```bash
+   ip route                          # default via 169.254.1.1
+   ping -c2 8.8.8.8                  # ICMP egress (SNAT to the node IP)
+   getent hosts archive.ubuntu.com   # DNS via the node forwarder
+   curl -sI http://archive.ubuntu.com/ | head -1   # full egress path
+   ```
+
+4. Confirm the source IP is the node IP: on the node,
+   `sudo ip netns exec otns1 nft list table ip otherix-nat` shows the
+   `iifname "otb<vni>" oifname ... masquerade` rule; the external peer sees the
+   node's address.
+
+Pass criteria: ping + DNS + HTTP all succeed; the masquerade rule is present; no
+`/etc/hosts` mapping and no external DHCP were involved.
+
 ## Manual topology control
 
 ```bash
