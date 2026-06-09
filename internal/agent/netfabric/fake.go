@@ -3,7 +3,10 @@
 
 package netfabric
 
-import "net/netip"
+import (
+	"net"
+	"net/netip"
+)
 
 // FakeFabric is a Spy implementation of Fabric for tests. It records
 // every call into an exported slice and returns a configurable error
@@ -34,6 +37,9 @@ type FakeFabric struct {
 	RemoveGatewayCalls []GatewayCall
 	MasqueradeCalls    []MasqueradeCall
 	RemoveMasqCalls    []netip.Prefix
+
+	AnycastGatewayCalls       []AnycastGatewayCall
+	RemoveAnycastGatewayCalls []AnycastGatewayCall
 
 	// EnableIPForwardingCalls counts EnableIPForwarding invocations.
 	EnableIPForwardingCalls int
@@ -120,6 +126,14 @@ type GatewayCall struct {
 type MasqueradeCall struct {
 	Subnet      netip.Prefix
 	EgressIface string
+}
+
+// AnycastGatewayCall records one EnsureAnycastGateway or RemoveAnycastGateway
+// invocation. MAC is the stringified hardware address (empty for removals).
+type AnycastGatewayCall struct {
+	Bridge string
+	Addr   netip.Addr
+	MAC    string
 }
 
 func (f *FakeFabric) err(method string) error {
@@ -209,6 +223,18 @@ func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix) error {
 func (f *FakeFabric) EnableIPForwarding() error {
 	f.EnableIPForwardingCalls++
 	return f.err("EnableIPForwarding")
+}
+
+// EnsureAnycastGateway records the call and returns Errs["EnsureAnycastGateway"].
+func (f *FakeFabric) EnsureAnycastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+	f.AnycastGatewayCalls = append(f.AnycastGatewayCalls, AnycastGatewayCall{Bridge: bridge, Addr: addr, MAC: mac.String()})
+	return f.err("EnsureAnycastGateway")
+}
+
+// RemoveAnycastGateway records the call and returns Errs["RemoveAnycastGateway"].
+func (f *FakeFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error {
+	f.RemoveAnycastGatewayCalls = append(f.RemoveAnycastGatewayCalls, AnycastGatewayCall{Bridge: bridge, Addr: addr})
+	return f.err("RemoveAnycastGateway")
 }
 
 // EnsureVXLAN records the call and returns Errs["EnsureVXLAN"].

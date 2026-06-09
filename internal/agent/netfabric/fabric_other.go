@@ -8,6 +8,7 @@ package netfabric
 
 import (
 	"errors"
+	"net"
 	"net/netip"
 )
 
@@ -68,6 +69,14 @@ func (unsupportedFabric) RemoveMasquerade(subnet netip.Prefix) error { return er
 
 // EnableIPForwarding reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnableIPForwarding() error { return errUnsupported }
+
+// EnsureAnycastGateway reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) EnsureAnycastGateway(string, netip.Addr, net.HardwareAddr) error {
+	return errUnsupported
+}
+
+// RemoveAnycastGateway reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) RemoveAnycastGateway(string, netip.Addr) error { return errUnsupported }
 
 // EnsureVXLAN reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureVXLAN(cfg VXLANConfig) error { return errUnsupported }

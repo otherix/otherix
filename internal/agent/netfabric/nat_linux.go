@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 
@@ -42,6 +43,61 @@ func (f *linuxFabric) EnableIPForwarding() error {
 	defer f.mu.Unlock()
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("netfabric: enable ip_forward: %v", err)
+	}
+	return nil
+}
+
+// EnsureAnycastGateway pins mac on the bridge link and assigns addr/32 to it,
+// idempotently. Setting the bridge hardware address explicitly stops the
+// kernel auto-inheriting the lowest enslaved-port MAC, keeping the gateway MAC
+// stable; a re-assert each reconcile pass is harmless.
+func (f *linuxFabric) EnsureAnycastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: %v", bridge, err)
+	}
+	if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: set mac: %v", bridge, err)
+	}
+	p := netip.PrefixFrom(addr, addr.BitLen()) // /32 for IPv4
+	a, err := netlink.ParseAddr(p.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: parse %s: %v", bridge, p, err)
+	}
+	if err := netlink.AddrReplace(link, a); err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: %v", bridge, err)
+	}
+	return nil
+}
+
+// RemoveAnycastGateway removes addr/32 from the bridge. It returns nil when the
+// bridge link is absent and when the address is already gone, mirroring
+// RemoveGatewayAddr, so repeated teardown is safe.
+func (f *linuxFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove anycast gateway on %s: %v", bridge, err)
+	}
+	p := netip.PrefixFrom(addr, addr.BitLen())
+	a, err := netlink.ParseAddr(p.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: remove anycast gateway on %s: parse %s: %v", bridge, p, err)
+	}
+	if err := netlink.AddrDel(link, a); err != nil {
+		if errors.Is(err, unix.EADDRNOTAVAIL) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove anycast gateway on %s: %v", bridge, err)
 	}
 	return nil
 }

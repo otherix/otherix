@@ -78,6 +78,15 @@ type Fabric interface {
 	// can route overlay VM egress out its uplink.
 	EnableIPForwarding() error
 
+	// EnsureAnycastGateway pins mac as the bridge link's hardware address and
+	// assigns addr as a /32 to it, idempotently. The bridge becomes the
+	// VM-facing anycast L3 gateway: uniform addr+mac on every node so a VM's
+	// cached next-hop survives live migration and is always answered locally.
+	EnsureAnycastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error
+	// RemoveAnycastGateway removes addr (/32) from the bridge. nil when the
+	// bridge or the address is already absent.
+	RemoveAnycastGateway(bridge string, addr netip.Addr) error
+
 	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
 	// brings it up. Learning is off (the FDB is controller-authoritative);
 	// remotes are supplied only through FDBAppend. It is idempotent.

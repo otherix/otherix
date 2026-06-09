@@ -1337,3 +1337,58 @@ func TestLinuxFabricEnableIPForwarding(t *testing.T) {
 		}
 	})
 }
+
+func TestLinuxFabricAnycastGateway(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-any0"
+		mac := GatewayMAC(0x001000) // 4096
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureAnycastGateway(bridge, OverlayGatewayAddr, mac); err != nil {
+			requireNetfabric(t, "EnsureAnycastGateway = %v", err)
+		}
+
+		link, err := netlink.LinkByName(bridge)
+		if err != nil {
+			t.Fatalf("LinkByName = %v", err)
+		}
+		if got := link.Attrs().HardwareAddr.String(); got != mac.String() {
+			t.Errorf("bridge MAC = %v, want %v", got, mac.String())
+		}
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("AddrList = %v", err)
+		}
+		want := OverlayGatewayAddr.String() + "/32"
+		found := false
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("addr %s not present on %q", want, bridge)
+		}
+
+		// Idempotent re-assert.
+		if err := f.EnsureAnycastGateway(bridge, OverlayGatewayAddr, mac); err != nil {
+			t.Errorf("EnsureAnycastGateway second call = %v", err)
+		}
+
+		// Removal drops the address; idempotent on absent.
+		if err := f.RemoveAnycastGateway(bridge, OverlayGatewayAddr); err != nil {
+			t.Fatalf("RemoveAnycastGateway = %v", err)
+		}
+		addrs, _ = netlink.AddrList(link, netlink.FAMILY_V4)
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == want {
+				t.Errorf("addr %s still present after RemoveAnycastGateway", want)
+			}
+		}
+		if err := f.RemoveAnycastGateway(bridge, OverlayGatewayAddr); err != nil {
+			t.Errorf("RemoveAnycastGateway on absent = %v", err)
+		}
+	})
+}
