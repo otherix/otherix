@@ -5,6 +5,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -107,6 +108,37 @@ func TestApplyOverlayNoEgressSkipsMasq(t *testing.T) {
 	}
 	if rec.applied["ov1"].HasEgress {
 		t.Errorf("HasEgress set for egress=none overlay")
+	}
+}
+
+func TestApplyOverlayEgressErrorStaysReady(t *testing.T) {
+	f := readyEgressFabric()
+	f.Errs = map[string]error{"EnsureMasqueradeIface": errors.New("masq boom")}
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayEgressNet()},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	// L2 (VTEP/bridge/FDB) is converged; an egress install failure must NOT
+	// mark the whole overlay failed - that would wrongly de-schedule the node.
+	if rep.ReconciliationStatus != "ready" {
+		t.Errorf("status = %q, want ready (egress failure must not fail the network)", rep.ReconciliationStatus)
+	}
+	// Egress did not fully install, so HasEgress must be false (teardown/observability).
+	if rec.applied["ov1"].HasEgress {
+		t.Errorf("HasEgress = true, want false (egress install failed)")
 	}
 }
 

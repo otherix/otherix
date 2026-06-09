@@ -85,34 +85,38 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}
 
 	if d.Egress == "nat" {
-		if rep, ok := r.applyOverlayEgress(ctx, d, vniVal); !ok {
-			return rep
-		}
+		r.applyOverlayEgress(ctx, d, vniVal)
 	}
 
 	return ready(d.ID)
 }
 
-// applyOverlayEgress installs the egress=nat datapath for a converged overlay:
-// IPv4 forwarding, the link-local anycast gateway on the bridge, and the
-// interface-keyed SNAT for traffic entering via the bridge. It runs only after
-// the overlay's FDB has converged, so egress is never programmed over a
-// half-built overlay. On success it RE-records the network with HasEgress=true
-// so a later teardown reclaims the masquerade, and returns ok=true. On any
-// fabric error it returns a failed report and ok=false so the caller surfaces it.
-func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredNetwork, vniVal uint32) (heartbeat.NetworkReport, bool) {
+// applyOverlayEgress best-effort installs the egress datapath (ip_forward +
+// anycast gateway + interface masquerade) for an egress=nat overlay whose L2
+// plane has already converged. Egress is a sub-capability: a failure here is
+// logged and retried on the next reconcile pass, and must NOT fail the network.
+// Marking the whole overlay failed on an egress hiccup would wrongly exclude
+// the node from VM placement even though the VTEP/bridge/FDB datapath is up.
+// HasEgress is recorded only when the full datapath installs, so teardown and
+// observability reflect the real state.
+func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredNetwork, vniVal uint32) {
 	if err := r.fabric.EnableIPForwarding(); err != nil {
-		return r.failed(ctx, d, fmt.Sprintf("enable ip_forward: %v", err)), false
+		r.log.WarnContext(ctx, "overlay egress: enable ip_forward failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return
 	}
 	if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, netfabric.GatewayMAC(vniVal)); err != nil {
-		return r.failed(ctx, d, fmt.Sprintf("anycast gateway: %v", err)), false
+		r.log.WarnContext(ctx, "overlay egress: anycast gateway failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return
 	}
 	// Empty egress iface -> netfabric resolves the host default route.
 	if err := r.fabric.EnsureMasqueradeIface(d.BridgeName, ""); err != nil {
-		return r.failed(ctx, d, fmt.Sprintf("egress masquerade: %v", err)), false
+		r.log.WarnContext(ctx, "overlay egress: masquerade failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return
 	}
 	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal, HasEgress: true}
-	return heartbeat.NetworkReport{}, true
 }
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for

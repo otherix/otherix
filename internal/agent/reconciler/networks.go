@@ -363,14 +363,15 @@ func (r *Networks) removeUndeclared(ctx context.Context, declared map[string]str
 func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetwork) error {
 	if a.Overlay {
 		var errs []error
-		if a.HasEgress {
-			if err := r.fabric.RemoveMasqueradeIface(a.BridgeName); err != nil {
-				r.log.WarnContext(ctx, "remove overlay egress masquerade failed during teardown",
-					slog.String("network_id", id),
-					slog.String("error", err.Error()),
-				)
-				errs = append(errs, err)
-			}
+		// Always attempt masquerade removal: it is idempotent (no-op when no
+		// rule exists), and best-effort egress install can leave a rule while
+		// HasEgress reads false, so gating on HasEgress could leak the rule.
+		if err := r.fabric.RemoveMasqueradeIface(a.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "remove overlay egress masquerade failed during teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+			errs = append(errs, err)
 		}
 		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
 			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
