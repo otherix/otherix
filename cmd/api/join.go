@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
@@ -110,29 +111,59 @@ func runJoinCmd(cmd *cobra.Command, _ []string) error {
 		componentName,
 	)
 
-	// Idempotency: a host already configured for join no-ops (no restart)
-	// unless --force is set. Read etcd.mode straight from the file with bare
+	// Idempotency: a host whose join actually COMPLETED no-ops (no restart)
+	// unless --force is set. Read the identity straight from the file with bare
 	// koanf - NOT config.LoadAPI, which runs full Validate + env overlay and
 	// would fall through to a needless rewrite + restart whenever the standalone
 	// file does not validate on its own (e.g. jwt_secret supplied via env, a
 	// common HA shape). Idempotency must fail toward inaction, not bounce a
 	// healthy joined replica.
+	//
+	// The no-op requires evidence the join completed, not merely that mode=join
+	// was written: a healthy joined node has the cluster CA cert+key persisted
+	// on disk (the daemon writes them after a successful redemption). When
+	// mode=join but the CA is absent, the previous join FAILED (wrong token / CP
+	// unreachable); fall through so a re-run with a corrected token re-applies
+	// the token + config and restarts, instead of silently exiting 0 on the
+	// stale flag (Rel-I1).
 	if !in.force {
-		if mode, name, merr := configEtcdIdentity(in.configPath); merr == nil && mode == "join" {
-			log.Info("already configured for join; nothing to do (use --force to re-join)",
+		if id, merr := configEtcdIdentity(in.configPath); merr == nil && id.mode == "join" {
+			if fileExists(id.caCertFile) && fileExists(id.caKeyFile) {
+				log.Info("already configured for join and cluster CA is on disk; nothing to do (use --force to re-join)",
+					slog.String("config_path", in.configPath),
+					slog.String("etcd_name", id.name))
+				return nil
+			}
+			log.Info("configured for join but cluster CA is absent (previous join did not complete); re-applying token and restarting",
 				slog.String("config_path", in.configPath),
-				slog.String("etcd_name", name))
-			return nil
+				slog.String("etcd_name", id.name),
+				slog.String("ca_cert_file", id.caCertFile))
 		}
 	}
 
 	// Write the token plaintext to its own 0600 file and reference it via
 	// cluster_join.token_path, keeping the secret out of the api.yaml.
-	if err := os.MkdirAll(filepath.Dir(in.tokenPath), 0o750); err != nil {
+	tokenDir := filepath.Dir(in.tokenPath)
+	created, err := mkdirAllReport(tokenDir, 0o750)
+	if err != nil {
 		return fmt.Errorf("create token dir: %v", err)
 	}
 	if err := os.WriteFile(in.tokenPath, []byte(in.token+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write join token: %v", err)
+	}
+
+	// Sec-C1: `sudo otherix-api join` runs as root and would leave the token
+	// file root:root 0600 - unreadable by the daemon, which runs as the
+	// otherix user and reads cluster_join.token_path at boot. Chown the token
+	// (and any dir we just created for a custom --token-dest) to match the
+	// owner of the state dir (otherix in the packaged flow, the invoking user
+	// in a same-uid dev run - a no-op). Mode stays 0600: the token redeems the
+	// cluster CA private key, the highest-value secret, so it must not become
+	// world-readable. Best-effort: a chown failure logs a WARN with the manual
+	// fix hint and continues rather than hard-failing the join.
+	chownToParentOwner(in.tokenPath, tokenDir, log)
+	if created != "" {
+		chownToParentOwner(created, filepath.Dir(created), log)
 	}
 
 	if err := writeJoinConfig(in); err != nil {
@@ -224,17 +255,50 @@ func resolveJoinToken(tokenLit, tokenPath string) (string, error) {
 	}
 }
 
-// configEtcdIdentity reads etcd.mode and etcd.name straight from the api.yaml
-// file with bare koanf - no defaults overlay, no env overlay, no Validate. The
-// idempotency guard keys on this so a standalone file that does not validate on
-// its own (env-supplied secrets are the common HA case) does not get
-// misclassified as "not yet joined" and needlessly rewritten + restarted.
-func configEtcdIdentity(path string) (mode, name string, err error) {
+// joinIdentity is the bare-koanf view of the api.yaml the idempotency guard
+// keys on: etcd.mode + etcd.name, plus the cluster_ca cert/key paths (the
+// guard treats those files existing as proof the join completed).
+type joinIdentity struct {
+	mode       string
+	name       string
+	caCertFile string
+	caKeyFile  string
+}
+
+// Default cluster CA file paths, mirroring config.defaultAPIConfig's ClusterCA.
+// The packaged api.yaml omits cluster_ca and relies on these binary defaults,
+// so the guard must default to the same paths when the file is silent.
+const (
+	defaultClusterCACertFile = "/var/lib/otherix/ca/cluster-ca.crt"
+	defaultClusterCAKeyFile  = "/var/lib/otherix/ca/cluster-ca.key"
+)
+
+// configEtcdIdentity reads etcd.mode, etcd.name, and the cluster_ca cert/key
+// paths straight from the api.yaml file with bare koanf - no defaults overlay,
+// no env overlay, no Validate. The idempotency guard keys on this so a
+// standalone file that does not validate on its own (env-supplied secrets are
+// the common HA case) does not get misclassified as "not yet joined" and
+// needlessly rewritten + restarted. The CA paths default to the standard
+// /var/lib/otherix/ca/cluster-ca.{crt,key} when the file omits them (the
+// packaged config relies on the binary default).
+func configEtcdIdentity(path string) (joinIdentity, error) {
 	k := koanf.New(".")
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
-		return "", "", err
+		return joinIdentity{}, err
 	}
-	return k.String("etcd.mode"), k.String("etcd.name"), nil
+	id := joinIdentity{
+		mode:       k.String("etcd.mode"),
+		name:       k.String("etcd.name"),
+		caCertFile: k.String("cluster_ca.cert_file"),
+		caKeyFile:  k.String("cluster_ca.key_file"),
+	}
+	if id.caCertFile == "" {
+		id.caCertFile = defaultClusterCACertFile
+	}
+	if id.caKeyFile == "" {
+		id.caKeyFile = defaultClusterCAKeyFile
+	}
+	return id, nil
 }
 
 // writeJoinConfig surgically rewrites the existing api.yaml: it koanf-loads
@@ -259,6 +323,65 @@ func writeJoinConfig(in joinInputs) error {
 		return fmt.Errorf("marshal config: %v", err)
 	}
 	return atomicWriteFile(in.configPath, b, 0o644)
+}
+
+// mkdirAllReport behaves like os.MkdirAll but reports the shallowest directory
+// it had to create (empty string when the full path already existed), so the
+// caller can chown a freshly-created custom --token-dest dir to the daemon user.
+func mkdirAllReport(path string, perm os.FileMode) (created string, err error) {
+	if _, statErr := os.Stat(path); statErr == nil {
+		return "", nil // already exists, nothing created
+	}
+	// Walk up to the first existing ancestor; that ancestor's first missing
+	// child is the shallowest directory MkdirAll will create.
+	shallowest := path
+	for {
+		parent := filepath.Dir(shallowest)
+		if parent == shallowest {
+			break // reached the root
+		}
+		if _, statErr := os.Stat(parent); statErr == nil {
+			break // parent exists; shallowest is its first missing child
+		}
+		shallowest = parent
+	}
+	if err := os.MkdirAll(path, perm); err != nil {
+		return "", err
+	}
+	return shallowest, nil
+}
+
+// chownToParentOwner chowns path to the uid/gid that owns parentDir, so a file
+// (or dir) written by root inherits the same owner as the state directory (the
+// otherix daemon user in the packaged flow). Best-effort: any stat/chown error,
+// or a target already owned by the current process uid, logs at most a WARN with
+// the manual fix hint and returns without failing the join.
+func chownToParentOwner(path, parentDir string, log *slog.Logger) {
+	st, err := os.Stat(parentDir)
+	if err != nil {
+		log.Warn("could not stat the state dir to inherit ownership for the join token; the daemon user may be unable to read it",
+			slog.String("path", path),
+			slog.String("parent_dir", parentDir),
+			slog.String("error", err.Error()),
+			slog.String("manual_fix", "chown otherix:otherix "+path))
+		return
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return // non-POSIX filesystem; nothing to do
+	}
+	uid, gid := int(sys.Uid), int(sys.Gid)
+	if uid == os.Getuid() {
+		return // already same owner (dev same-uid run); chown is unnecessary
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		log.Warn("could not chown the join token to the daemon user; it may be unreadable at boot",
+			slog.String("path", path),
+			slog.Int("uid", uid),
+			slog.Int("gid", gid),
+			slog.String("error", err.Error()),
+			slog.String("manual_fix", "chown otherix:otherix "+path))
+	}
 }
 
 // atomicWriteFile writes data to path via a temp file in the same directory

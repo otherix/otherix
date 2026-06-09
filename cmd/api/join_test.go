@@ -73,7 +73,19 @@ func TestWriteJoinConfigSetsModeAndBlock(t *testing.T) {
 }
 
 func TestRunJoinIdempotentWhenAlreadyJoined(t *testing.T) {
-	cfgPath := seedAPIYAML(t, "etcd:\n  mode: join\n  name: otherix-1\n")
+	dir := t.TempDir()
+	caCert := filepath.Join(dir, "cluster-ca.crt")
+	caKey := filepath.Join(dir, "cluster-ca.key")
+	cfgPath := seedAPIYAML(t,
+		"cluster_ca:\n  cert_file: \""+caCert+"\"\n  key_file: \""+caKey+"\"\n"+
+			"etcd:\n  mode: join\n  name: otherix-1\n")
+	// Completed join: cluster CA cert+key present on disk.
+	if err := os.WriteFile(caCert, []byte("dummy-cert"), 0o644); err != nil {
+		t.Fatalf("seed ca cert: %v", err)
+	}
+	if err := os.WriteFile(caKey, []byte("dummy-key"), 0o600); err != nil {
+		t.Fatalf("seed ca key: %v", err)
+	}
 	tokenDest := filepath.Join(t.TempDir(), "cluster-join-token")
 
 	restarted := false
@@ -106,16 +118,34 @@ func TestRunJoinIdempotentWhenAlreadyJoined(t *testing.T) {
 // time - a common HA shape) fails standalone Validate; the old LoadAPI-based
 // guard would misread that as "not joined" and rewrite + restart. The fix must
 // still no-op here.
+//
+// This case also represents a HEALTHY joined node (Rel-I1): the no-op now
+// requires the cluster CA cert+key to be present on disk (evidence the join
+// actually completed), so the test seeds dummy CA files at the configured
+// cluster_ca paths in addition to mode=join.
 func TestRunJoinIdempotentWhenFileFailsStandaloneValidate(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "api.yaml")
+	caCert := filepath.Join(dir, "cluster-ca.crt")
+	caKey := filepath.Join(dir, "cluster-ca.key")
 	// No auth.jwt_secret on purpose: config.LoadAPI(cfgPath) returns an error.
-	content := "server:\n  listen: \"0.0.0.0:9090\"\netcd:\n  mode: join\n  name: otherix-1\n"
+	// cluster_ca paths point at the dummy CA files seeded below, so the guard
+	// sees a completed join.
+	content := "server:\n  listen: \"0.0.0.0:9090\"\n" +
+		"cluster_ca:\n  cert_file: \"" + caCert + "\"\n  key_file: \"" + caKey + "\"\n" +
+		"etcd:\n  mode: join\n  name: otherix-1\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("seed api.yaml: %v", err)
 	}
 	if _, err := config.LoadAPI(cfgPath); err == nil {
 		t.Fatalf("precondition: expected LoadAPI to fail standalone Validate, got nil")
+	}
+	// Completed join: cluster CA cert+key are present on disk.
+	if err := os.WriteFile(caCert, []byte("dummy-cert"), 0o644); err != nil {
+		t.Fatalf("seed ca cert: %v", err)
+	}
+	if err := os.WriteFile(caKey, []byte("dummy-key"), 0o600); err != nil {
+		t.Fatalf("seed ca key: %v", err)
 	}
 
 	restarted := false
@@ -138,7 +168,50 @@ func TestRunJoinIdempotentWhenFileFailsStandaloneValidate(t *testing.T) {
 		t.Fatalf("join Execute: %v", err)
 	}
 	if restarted {
-		t.Errorf("restarted = true, want false (joined node must no-op even when the file fails standalone Validate)")
+		t.Errorf("restarted = true, want false (healthy joined node must no-op even when the file fails standalone Validate)")
+	}
+}
+
+// TestRunJoinReappliesWhenJoinIncomplete locks the Rel-I1 self-heal: a host
+// whose api.yaml says mode=join but whose cluster CA is NOT on disk represents a
+// FAILED / partial first join (config written, redemption never completed). A
+// plain re-run with a corrected token must fall through and restart so the new
+// token takes effect - it must NOT no-op on the stale mode=join flag.
+func TestRunJoinReappliesWhenJoinIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "api.yaml")
+	caCert := filepath.Join(dir, "cluster-ca.crt")
+	caKey := filepath.Join(dir, "cluster-ca.key")
+	// mode=join but NO CA files on disk -> a partial/failed join.
+	content := "server:\n  listen: \"0.0.0.0:9090\"\n" +
+		"auth:\n  jwt_secret: \"0123456789abcdef0123456789abcdef\"\n" +
+		"cluster_ca:\n  cert_file: \"" + caCert + "\"\n  key_file: \"" + caKey + "\"\n" +
+		"etcd:\n  mode: join\n  name: otherix-1\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("seed api.yaml: %v", err)
+	}
+
+	restarted := false
+	orig := restartUnit
+	restartUnit = func(*slog.Logger) error {
+		restarted = true
+		return nil
+	}
+	defer func() { restartUnit = orig }()
+
+	cmd := newJoinCommand()
+	cmd.SetArgs([]string{
+		"--cp-url", "https://cp.example:8443",
+		"--ca-fingerprint", "sha256:" + fp64,
+		"--token", "corrected-token",
+		"--config", cfgPath,
+		"--token-dest", filepath.Join(dir, "cluster-join-token"),
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("join Execute: %v", err)
+	}
+	if !restarted {
+		t.Errorf("restarted = false, want true (failed/partial join must re-apply the corrected token and restart)")
 	}
 }
 
