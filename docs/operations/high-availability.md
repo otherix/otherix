@@ -111,9 +111,10 @@ token. `--output text|json` selects the format.
 run:
 
 ```
+umask 077; printf '%s\n' '<token>' > /etc/otherix/cluster-join-token
 sudo otherix-api join \
   --cp-url https://<existing-replica>:8443 \
-  --token <token> \
+  --token-path /etc/otherix/cluster-join-token \
   --ca-fingerprint sha256:<fingerprint> \
   --name otherix-1
 ```
@@ -131,12 +132,41 @@ the host's hostname. `etcd.peer_url` is left at the packaged default `auto`,
 which resolves to the host's routable IPv4 at boot, so there is no per-host peer
 URL to set.
 
-Pass the token inline with `--token` or from a file with `--token-path`
-(exactly one). Other flags: `--config` (default `/etc/otherix/api.yaml`),
-`--token-dest` (default `/var/lib/otherix/cluster-join-token`), `--no-restart`
-(write config but leave the unit for a later restart), and `--force`. The
-existing replica and the new host must share the same `etcd.cluster_token`; the
-packaged default matches, so this is automatic unless an operator changed it.
+Pass the token from a file with `--token-path` (preferred) or inline with
+`--token` (exactly one). The inline form is visible in the process table
+(`ps`, `/proc/<pid>/cmdline`) to any local user, so prefer `--token-path`; the
+daemon removes the consumed token file after a successful join. Other flags:
+`--config` (default `/etc/otherix/api.yaml`), `--token-dest` (default
+`/var/lib/otherix/cluster-join-token`), `--no-restart` (write config but leave
+the unit for a later restart), and `--force`. The existing replica and the new
+host must share the same `etcd.cluster_token`; the packaged default matches, so
+this is automatic unless an operator changed it.
+
+### Recovering a failed or incomplete join
+
+A join can stall partway: a wrong token, an unreachable CP, or a name collision
+leaves the new host short of a promoted voter. Recovery depends on how far the
+join got.
+
+**Cluster CA not yet on disk.** If the join failed before fetching the cluster
+CA (wrong token, CP unreachable, name collision rejected at `/v1/cluster/join`),
+re-run `otherix-api join` with a corrected token. The helper detects that the
+cluster CA is not yet on disk, re-applies the config, and restarts the daemon
+automatically - no manual cleanup.
+
+**Cluster CA fetched but etcd never initialized (partial join).** If the cluster
+CA was already written but the etcd member never initialized, the daemon logs a
+clear "partial join" message naming the files to remove. Remove the cluster CA
+(`/var/lib/otherix/ca/cluster-ca.crt` and `cluster-ca.key`) and the etcd data
+dir (`/var/lib/otherix/etcd`), then re-run join with a FRESH token - the
+original is single-use and already consumed.
+
+**Abandoned join left a dangling learner.** A join that registered the new
+replica as an etcd learner but never completed leaves a non-voting learner in
+the cluster. It does not affect quorum, but it lingers. Find its id with
+`otherix cluster member list` and evict it with
+`otherix cluster member remove <id>` before retrying the join on a different
+host.
 
 **Step 3 - confirm quorum.** Once the new replica has promoted to a voter:
 

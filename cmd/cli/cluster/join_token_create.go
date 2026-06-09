@@ -21,17 +21,22 @@ func newJoinTokenCreateCommand() *cobra.Command {
 		Short: "Mint a cluster-replica join token (admin only).",
 		Long: `Mints a fresh kind=cluster join token. Output is the token plaintext
 plus the cluster CA fingerprint, returned exactly once. Hand BOTH to a
-new control-plane host:
+new control-plane host, saving the token to a 0600 file and joining via
+--token-path (the inline --token form exposes the secret in the process
+table):
 
+  umask 077; printf '%s\n' '<token>' > /etc/otherix/cluster-join-token
   sudo otherix-api join --cp-url https://<this-cp>:8443 \
-    --token <token> --ca-fingerprint sha256:<fingerprint> --name <unique>
+    --token-path /etc/otherix/cluster-join-token \
+    --ca-fingerprint sha256:<fingerprint> --name <unique>
 
 A cluster token redeems for the CA private key, so it defaults to
-single-use; pass --max-uses N to grow several replicas with one token.`,
+single-use; pass --max-uses N (max 16) to grow several replicas with one
+token.`,
 		RunE: runJoinTokenCreate,
 	}
 	cmd.Flags().Duration(flagTTL, defaultTokenTTL, "token validity duration (1m..24h)")
-	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = server default of 1 for cluster tokens)")
+	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = server default of 1; max 16 for cluster tokens)")
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	return cmd
 }
@@ -90,9 +95,12 @@ func printClusterTokenBundle(cmd *cobra.Command, resp cpclient.CreateJoinTokenRe
 	printf(cmd, "CA fingerprint:\n\n")
 	printf(cmd, "  sha256:%s\n\n", resp.CAFingerprintSHA256)
 	printf(cmd, "Save BOTH NOW - server stores only the hash; plaintext cannot be retrieved.\n")
-	printf(cmd, "On the new control-plane host run:\n\n")
+	printf(cmd, "On the new control-plane host, save the token to a file and join:\n\n")
+	printf(cmd, "  umask 077; printf '%%s\\n' '%s' > /etc/otherix/cluster-join-token\n", resp.Token)
 	printf(cmd, "  sudo otherix-api join --cp-url https://<this-cp>:8443 \\\n")
-	printf(cmd, "    --token %s \\\n", resp.Token)
+	printf(cmd, "    --token-path /etc/otherix/cluster-join-token \\\n")
 	printf(cmd, "    --ca-fingerprint sha256:%s --name <unique-member-name>\n\n", resp.CAFingerprintSHA256)
+	printf(cmd, "(--token <plaintext> also works but exposes the token in the process\n")
+	printf(cmd, "table; --token-path is preferred.)\n\n")
 	printf(cmd, "Expires: %s (TTL: %s).\n", resp.ExpiresAt, ttl)
 }
