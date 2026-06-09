@@ -289,6 +289,23 @@ func (s *Store) buildBindTxn(ctx context.Context, vm store.VM, writes store.VMBi
 
 	conds = []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)}
 	if writes.Nic != nil {
+		// CP-IPAM: when the NIC's network is DHCP-enabled with a subnet, allocate
+		// the lowest free host before projecting the NIC row, so the IP lands on
+		// the persisted row, and add a CreateRevision==0 guard on the reservation
+		// key (grouped with the MAC guard below). A lost guard CAS fails the bind
+		// commit, which the scheduler retries - never a double-allocation.
+		net, nerr := s.NetworkByID(ctx, writes.Nic.NetworkID)
+		if nerr != nil {
+			return nil, nil, "", nerr
+		}
+		if net.DhcpEnabled && net.Subnet != nil {
+			ip, aerr := s.allocateNICIPv4(ctx, writes.Nic.NetworkID, *net.Subnet)
+			if aerr != nil {
+				return nil, nil, "", aerr
+			}
+			writes.Nic.Ipv4Address = &ip
+			conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vmNicIPv4ReservationKey(writes.Nic.NetworkID, ip)), "=", 0))
+		}
 		nicOps, nerr := vmNicCreateOps(vmNicFromCreateParams(*writes.Nic, now))
 		if nerr != nil {
 			return nil, nil, "", nerr
