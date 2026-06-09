@@ -38,13 +38,3 @@ func newRootCmd() *cobra.Command {
 
 	return root
 }
-
-// newJoinCommand is a TEMPORARY stub replaced by the real join
-// subcommand in the next task. It exists so the command tree compiles.
-func newJoinCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "join",
-		Short: "Join this control plane to an existing HA cluster (stub).",
-		RunE:  func(*cobra.Command, []string) error { return nil },
-	}
-}
