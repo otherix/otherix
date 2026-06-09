@@ -95,6 +95,49 @@ func TestDeleteNetworkElseBranchPreservesForeignGuard(t *testing.T) {
 	}
 }
 
+// TestNetworkDhcpEnabledRoundTrips creates a network with DhcpEnabled=true,
+// confirms CreateNetwork returns it set, that NetworkByID re-reads it as true
+// (round-trip through the etcd JSON), and that UpdateNetwork (which never
+// carries the immutable flag) preserves it while mutating another field.
+func TestNetworkDhcpEnabledRoundTrips(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	sn := netip.MustParsePrefix("10.60.0.0/24")
+	netID := uuid.New()
+	created, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: netID, Name: "dhcp-net", Type: store.NetworkTypeBridge,
+		BridgeName: "br0", Mtu: 1500, Subnet: &sn, DhcpEnabled: true, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	if !created.DhcpEnabled {
+		t.Errorf("CreateNetwork returned DhcpEnabled = false, want true")
+	}
+
+	reread, err := s.NetworkByID(ctx, netID)
+	if err != nil {
+		t.Fatalf("NetworkByID: %v", err)
+	}
+	if !reread.DhcpEnabled {
+		t.Errorf("NetworkByID DhcpEnabled = false, want true (round-trip through etcd JSON)")
+	}
+
+	// UpdateNetwork carries no DhcpEnabled (immutable); changing Name must
+	// preserve the flag because updated := existing copies it forward.
+	updated, err := s.UpdateNetwork(ctx, store.UpdateNetworkParams{
+		ID: netID, Name: "dhcp-net-renamed", BridgeName: "br0", Mtu: 1500,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateNetwork: %v", err)
+	}
+	if !updated.DhcpEnabled {
+		t.Errorf("UpdateNetwork DhcpEnabled = false, want true (immutable field must be preserved)")
+	}
+}
+
 // TestCreateNetworkOverlayRefusesSubFloorUnderlay seeds a sub-floor underlay MTU
 // directly on the singleton (bypassing SeedUnderlayMTU, which rejects below-floor
 // values) to model a legacy cluster seeded under the old 1280 floor. Creating a

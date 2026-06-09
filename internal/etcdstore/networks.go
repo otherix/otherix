@@ -122,19 +122,20 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		egress = store.NetworkEgressNone
 	}
 	n := store.Network{
-		ID:         arg.ID,
-		Name:       arg.Name,
-		Type:       arg.Type,
-		BridgeName: arg.BridgeName,
-		Managed:    arg.Managed,
-		Egress:     egress,
-		Subnet:     arg.Subnet,
-		Gateway:    arg.Gateway,
-		VlanTag:    arg.VlanTag,
-		Mtu:        arg.Mtu,
-		Config:     arg.Config,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:          arg.ID,
+		Name:        arg.Name,
+		Type:        arg.Type,
+		BridgeName:  arg.BridgeName,
+		Managed:     arg.Managed,
+		Egress:      egress,
+		Subnet:      arg.Subnet,
+		Gateway:     arg.Gateway,
+		DhcpEnabled: arg.DhcpEnabled,
+		VlanTag:     arg.VlanTag,
+		Mtu:         arg.Mtu,
+		Config:      arg.Config,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	guard := networkNameGuard(n.Name)

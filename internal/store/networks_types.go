@@ -11,17 +11,18 @@ import (
 )
 
 type CreateNetworkParams struct {
-	ID         uuid.UUID
-	Name       string
-	Type       NetworkType
-	BridgeName string
-	Managed    bool
-	Egress     NetworkEgress
-	VlanTag    *int32
-	Mtu        int32
-	Subnet     *netip.Prefix
-	Gateway    *netip.Addr
-	Config     []byte
+	ID          uuid.UUID
+	Name        string
+	Type        NetworkType
+	BridgeName  string
+	Managed     bool
+	Egress      NetworkEgress
+	VlanTag     *int32
+	Mtu         int32
+	Subnet      *netip.Prefix
+	Gateway     *netip.Addr
+	DhcpEnabled bool
+	Config      []byte
 }
 
 type ListNetworksParams struct {
