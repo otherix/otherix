@@ -140,9 +140,22 @@ Each node's agent programs the host network directly via netlink/nftables (no li
   (the control plane computes the FDB; agents do not learn);
 - a **WireGuard mesh** carrying the overlay between nodes (the control plane recomputes the full peer
   set each heartbeat; agents just apply it);
-- **nftables masquerade** for egress.
+- **nftables masquerade** for VM egress to the internet.
 
 MTUs are sized for the encapsulation stack (1500 underlay, 1440 WireGuard, 1390 overlay).
+
+**Overlay egress (anycast gateway + DNS).** VMs on a private overlay reach the internet through
+per-node SNAT - the model Kubernetes CNIs use: each node masquerades its own overlay traffic out its
+uplink, so there is no central egress gateway to bottleneck or fail. The subtlety is live migration:
+a VM has to keep working after it moves to another node, so everything it depends on is made
+*anycast* - identical on every node. Its **default gateway** is a fixed link-local address
+(`169.254.1.1`, with a deterministic per-overlay MAC) present on every node's overlay bridge, so the
+local node always answers ARP and routes the VM's egress no matter where it runs (being link-local,
+it also costs no address from the tenant's subnet). **DNS** is served at that same address by a small
+per-node forwarder that relays to whatever upstream resolver the node itself uses. The guiding rule:
+a VM is only ever handed *anycast* addresses (gateway, DNS), never a node-specific one - so nothing it
+caches breaks when it migrates. (The node also installs a route for the overlay subnet back to the
+bridge, so return traffic finds the VM; egress is opt-in per network.)
 
 ---
 
