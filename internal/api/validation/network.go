@@ -135,6 +135,28 @@ func ValidateNetworkInvariants(typ store.NetworkType, managed bool, egress store
 	return nil
 }
 
+// ValidateDhcp enforces the cross-field rules for enabling DHCP on a network.
+// DHCP is overlay-only in this slice (spec non-goal: bridge DHCP needs a
+// different gateway-delivery profile - bridge gateways are in-subnet, the
+// responder's option-121 link-local gateway is overlay-specific). It requires
+// type=overlay, egress=nat (the responder relies on the Slice-1 anycast
+// gateway), and a subnet (IPAM allocates from it). dhcp=false is always valid.
+func ValidateDhcp(dhcp bool, hasSubnet bool, typ store.NetworkType, egress store.NetworkEgress) error {
+	if !dhcp {
+		return nil
+	}
+	if typ != store.NetworkTypeOverlay {
+		return errors.New("dhcp=true requires type=overlay")
+	}
+	if egress != store.NetworkEgressNAT {
+		return errors.New("dhcp=true requires egress=nat")
+	}
+	if !hasSubnet {
+		return errors.New("dhcp=true requires a subnet")
+	}
+	return nil
+}
+
 // ParseSubnet parses s as an IPv4 CIDR prefix and returns it in
 // canonical (masked) form, so host bits in the input are dropped. It
 // rejects non-IPv4 prefixes and prefix lengths outside

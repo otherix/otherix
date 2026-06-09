@@ -5328,7 +5328,7 @@ components:
 
     Network:
       type: object
-      required: [id, name, type, bridge_name, managed, egress, mtu, config, created_at, updated_at]
+      required: [id, name, type, bridge_name, managed, egress, dhcp, mtu, config, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -5357,6 +5357,12 @@ components:
             Managed-egress mode. `none` (default) leaves egress to the
             attached bridge; `nat` masquerades VM traffic and requires
             `managed: true` (type `bridge` or `overlay`).
+        dhcp:
+          type: boolean
+          description: |
+            Immutable after creation. `true` enables CP-IPAM and the
+            per-node DHCP responder for this network. Overlay-only:
+            requires `type: overlay`, `egress: nat`, and a `subnet`.
         subnet:
           type: [string, "null"]
           description: |
@@ -5437,6 +5443,14 @@ components:
             Optional on create (defaults to `none`). `nat` requires
             `managed: true`. On `type: bridge` it also requires a `subnet`;
             on `type: overlay` it enables per-node anycast-gateway SNAT.
+        dhcp:
+          type: boolean
+          default: false
+          description: |
+            Optional on create (defaults to `false`). `true` enables
+            CP-IPAM and the per-node DHCP responder. Overlay-only:
+            requires `type: overlay`, `egress: nat`, and a `subnet`;
+            rejected otherwise. Immutable once the network exists.
         subnet:
           type: string
           description: |
@@ -5472,9 +5486,9 @@ components:
     NetworkUpdate:
       type: object
       description: |
-        `type` and `managed` are immutable after creation; sending
-        either in the body is rejected with `400 validation_failed`
-        carrying `details.forbidden_fields`. `vlan_tag` accepts `null`
+        `type`, `managed`, and `dhcp` are immutable after creation;
+        sending any of them in the body is rejected with
+        `400 validation_failed` carrying `details.forbidden_fields`. `vlan_tag` accepts `null`
         to clear an existing tag; `mtu` cannot be cleared (the column is
         `NOT NULL` since migration 00004). `egress`, `subnet`, and
         `gateway` are mutable: changing `egress` to `nat` requires a
