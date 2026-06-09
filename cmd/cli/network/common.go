@@ -90,3 +90,12 @@ func boolYesNo(b bool) string {
 	}
 	return "no"
 }
+
+// dashIfNil renders an optional string as its value, or "-" when nil or empty.
+// Used for table columns (e.g. CIDR) that are absent on networks without a subnet.
+func dashIfNil(s *string) string {
+	if s == nil || *s == "" {
+		return "-"
+	}
+	return *s
+}

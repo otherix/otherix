@@ -411,10 +411,57 @@ func TestNetworkList_Table(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"NAME", "TYPE", "BRIDGE", "MANAGED", "EGRESS", "MTU", "net-a", "net-b"} {
+	for _, want := range []string{"NAME", "TYPE", "BRIDGE", "MANAGED", "EGRESS", "CIDR", "MTU", "net-a", "net-b"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("table missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+// TestNetworkList_CIDRColumn checks the CIDR column renders a network's subnet
+// and falls back to "-" when the network has none.
+func TestNetworkList_CIDRColumn(t *testing.T) {
+	t.Parallel()
+	withSubnet := map[string]any{
+		"id": uuid.NewString(), "name": "ov-net", "type": "overlay", "bridge_name": "otb1000",
+		"managed": true, "egress": "nat", "vlan_tag": nil, "mtu": 1390,
+		"subnet": "10.62.0.0/24", "gateway": nil, "config": map[string]any{},
+		"created_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",
+	}
+	withSubnetJSON, _ := json.Marshal(withSubnet)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[` + string(withSubnetJSON) + `,` +
+			string(networkJSON(uuid.NewString(), "bridge-net")) + `],"meta":{"next_cursor":null}}`))
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runNetworkCmd(t, srv.URL, []string{"list"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stdout, "10.62.0.0/24") {
+		t.Errorf("table missing CIDR value 10.62.0.0/24:\n%s", stdout)
+	}
+	// bridge-net has subnet=nil -> "-" placeholder.
+	if !strings.Contains(stdout, "-") {
+		t.Errorf("table missing %q placeholder for a subnet-less network:\n%s", "-", stdout)
+	}
+}
+
+// TestNetworkCommand_NetAlias guards the `net` shorthand for `network`.
+func TestNetworkCommand_NetAlias(t *testing.T) {
+	t.Parallel()
+	aliases := network.NewCommand().Aliases
+	found := false
+	for _, a := range aliases {
+		if a == "net" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("network command aliases = %v, want to include %q", aliases, "net")
 	}
 }
 

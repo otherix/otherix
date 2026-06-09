@@ -83,18 +83,19 @@ func runList(cmd *cobra.Command, _ []string) error {
 func printNetworkTable(cmd *cobra.Command, networks cpclient.NetworkList, showIDs bool) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if showIDs {
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tTYPE\tBRIDGE\tMANAGED\tEGRESS\tMTU")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tTYPE\tBRIDGE\tMANAGED\tEGRESS\tCIDR\tMTU")
 	} else {
-		_, _ = fmt.Fprintln(tw, "NAME\tTYPE\tBRIDGE\tMANAGED\tEGRESS\tMTU")
+		_, _ = fmt.Fprintln(tw, "NAME\tTYPE\tBRIDGE\tMANAGED\tEGRESS\tCIDR\tMTU")
 	}
 	for _, n := range networks.Data {
 		managed := boolYesNo(n.Managed)
+		cidr := dashIfNil(n.Subnet)
 		if showIDs {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
-				n.ID, n.Name, n.Type, n.BridgeName, managed, n.Egress, n.MTU)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				n.ID, n.Name, n.Type, n.BridgeName, managed, n.Egress, cidr, n.MTU)
 		} else {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n",
-				n.Name, n.Type, n.BridgeName, managed, n.Egress, n.MTU)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				n.Name, n.Type, n.BridgeName, managed, n.Egress, cidr, n.MTU)
 		}
 	}
 	_ = tw.Flush()
