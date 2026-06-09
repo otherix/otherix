@@ -189,8 +189,10 @@ placement scheduler and node-pressure knobs).
 !!! note "etcd peer URL is always HTTPS"
     Peer (Raft) mTLS is always on, even single-node, so a later grow to
     HA needs no transport switch. The api-server auto-generates the peer
-    cert from the cluster CA on each boot. The default
-    `peer_url: https://127.0.0.1:2380` is correct for single-node.
+    cert from the cluster CA on each boot. The default `peer_url: auto`
+    resolves to this host's routable IPv4 at boot (falling back to
+    loopback only when no route is found), so a later grow to HA needs no
+    change here.
 
 ## Running the control plane
 

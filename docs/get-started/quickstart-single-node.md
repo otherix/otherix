@@ -19,7 +19,7 @@ Check it:
 
 ```bash
 systemctl status otherix-api
-curl -k https://localhost:8443/healthz   # or the configured listener
+curl http://localhost:8080/healthz   # or the configured listener
 ```
 
 ## 2. Install the CLI
