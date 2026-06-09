@@ -43,10 +43,15 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 				response.CodeValidationFailed, err.Error(), nil)
 			return
 		}
+		egress := store.NetworkEgressNone
+		if req.Egress != nil {
+			egress = store.NetworkEgress(*req.Egress)
+		}
 		row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
 			ID:     uuid.New(),
 			Name:   req.Name,
 			Type:   store.NetworkTypeOverlay,
+			Egress: egress,
 			Subnet: &subnet,
 			Config: normaliseConfig(req.Config),
 		})
