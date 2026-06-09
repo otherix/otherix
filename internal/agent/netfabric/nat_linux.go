@@ -279,6 +279,124 @@ func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	return nil
 }
 
+// masqIfaceUserData returns the stable UserData marker for an interface-keyed
+// masquerade rule (inIface egressing via egressIface). masqIfacePrefix returns
+// the egress-iface-independent prefix so RemoveMasqueradeIface can drop every
+// rule for an inIface regardless of which egress iface it resolved to.
+func masqIfaceUserData(inIface, egressIface string) []byte {
+	return append(masqIfacePrefix(inIface), egressIface...)
+}
+
+// masqIfacePrefix returns the leading "otherix:iif:<inIface>:" marker segment.
+func masqIfacePrefix(inIface string) []byte {
+	return []byte("otherix:iif:" + inIface + ":")
+}
+
+// masqIfaceExprs builds the expression sequence for a masquerade rule matching
+// traffic that ENTERED via inIface and LEAVES via egressIface, then
+// masquerades. Unlike masqExprs it is CIDR-independent: it identifies overlay
+// VM traffic by the ingress bridge, not by source subnet. Inter-overlay
+// traffic leaves via otwg0/otvx*, not the uplink, so it never matches.
+func masqIfaceExprs(inIface, egressIface string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifnameComparand(inIface)},
+		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifnameComparand(egressIface)},
+		&expr.Masq{},
+	}
+}
+
+// EnsureMasqueradeIface installs a MASQUERADE rule for traffic entering via
+// inIface and leaving via egressIface, idempotently. When egressIface is empty
+// the host's default-route interface is used. The rule carries a per-inIface
+// UserData marker; a second call that finds it does nothing.
+func (f *linuxFabric) EnsureMasqueradeIface(inIface, egressIface string) error {
+	if egressIface == "" {
+		iface, err := defaultEgressIface()
+		if err != nil {
+			return fmt.Errorf("netfabric: ensure masquerade for iif %s: %v", inIface, err)
+		}
+		egressIface = iface
+	}
+	if len(inIface) >= ifnameSize || len(egressIface) >= ifnameSize {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: iface name exceeds %d-byte limit", inIface, ifnameSize-1)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c := &nftables.Conn{}
+	table, chain := f.natTableChain(c)
+	// Flush is load-bearing on a fresh host: it materialises the table before
+	// the GetRules dump, which would otherwise ENOENT. See masqExprs sibling.
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: %v", inIface, err)
+	}
+
+	marker := masqIfaceUserData(inIface, egressIface)
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: list rules: %v", inIface, err)
+	}
+	for _, r := range rules {
+		if bytes.Equal(r.UserData, marker) {
+			return nil
+		}
+	}
+
+	c.AddRule(&nftables.Rule{
+		Table:    table,
+		Chain:    chain,
+		UserData: marker,
+		Exprs:    masqIfaceExprs(inIface, egressIface),
+	})
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: %v", inIface, err)
+	}
+	return nil
+}
+
+// RemoveMasqueradeIface removes every interface-keyed masquerade rule tagged
+// for inIface, regardless of the egress iface it resolved to. nil when none
+// exists, including when the NAT table was never created.
+func (f *linuxFabric) RemoveMasqueradeIface(inIface string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
+
+	prefix := masqIfacePrefix(inIface)
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove masquerade for iif %s: list rules: %v", inIface, err)
+	}
+	deleted := false
+	for _, r := range rules {
+		if !bytes.HasPrefix(r.UserData, prefix) {
+			continue
+		}
+		r.Table = table
+		r.Chain = chain
+		if err := c.DelRule(r); err != nil {
+			return fmt.Errorf("netfabric: remove masquerade for iif %s: %v", inIface, err)
+		}
+		deleted = true
+	}
+	if !deleted {
+		return nil
+	}
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("netfabric: remove masquerade for iif %s: %v", inIface, err)
+	}
+	return nil
+}
+
 // natTableChain returns get-or-create handles for Otherix's own NAT
 // table and postrouting chain. AddTable and AddChain are create-or-noop
 // at the netlink layer, so calling them on every operation keeps the

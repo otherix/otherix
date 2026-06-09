@@ -1281,6 +1281,58 @@ func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
 	})
 }
 
+func TestLinuxFabricMasqueradeIface(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const inIface = "ot-br-iif0"
+		if err := f.EnsureBridge(inIface, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureMasqueradeIface(inIface, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasqueradeIface = %v (nftables unavailable?)", err)
+		}
+		if n := countMasqIfaceRules(t, inIface); n != 1 {
+			t.Fatalf("iface masq rule count = %d, want 1", n)
+		}
+		if err := f.EnsureMasqueradeIface(inIface, "lo"); err != nil {
+			t.Fatalf("EnsureMasqueradeIface second = %v", err)
+		}
+		if n := countMasqIfaceRules(t, inIface); n != 1 {
+			t.Fatalf("iface masq rule count after re-ensure = %d, want 1", n)
+		}
+		if err := f.RemoveMasqueradeIface(inIface); err != nil {
+			t.Fatalf("RemoveMasqueradeIface = %v", err)
+		}
+		if n := countMasqIfaceRules(t, inIface); n != 0 {
+			t.Fatalf("iface masq rule count after remove = %d, want 0", n)
+		}
+		if err := f.RemoveMasqueradeIface(inIface); err != nil {
+			t.Errorf("RemoveMasqueradeIface on absent = %v", err)
+		}
+	})
+}
+
+// countMasqIfaceRules counts rules in Otherix's NAT chain whose UserData marker
+// is keyed for inIface. Mirrors the existing countMasqRules helper.
+func countMasqIfaceRules(t *testing.T, inIface string) int {
+	t.Helper()
+	c := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		return 0
+	}
+	prefix := masqIfacePrefix(inIface)
+	n := 0
+	for _, r := range rules {
+		if bytes.HasPrefix(r.UserData, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
 func TestLinuxFabricLinkState(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()

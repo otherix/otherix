@@ -38,6 +38,9 @@ type FakeFabric struct {
 	MasqueradeCalls    []MasqueradeCall
 	RemoveMasqCalls    []netip.Prefix
 
+	MasqueradeIfaceCalls []MasqueradeIfaceCall
+	RemoveMasqIfaceCalls []string
+
 	AnycastGatewayCalls       []AnycastGatewayCall
 	RemoveAnycastGatewayCalls []AnycastGatewayCall
 
@@ -125,6 +128,12 @@ type GatewayCall struct {
 // MasqueradeCall records one EnsureMasquerade invocation.
 type MasqueradeCall struct {
 	Subnet      netip.Prefix
+	EgressIface string
+}
+
+// MasqueradeIfaceCall records one EnsureMasqueradeIface invocation.
+type MasqueradeIfaceCall struct {
+	InIface     string
 	EgressIface string
 }
 
@@ -216,6 +225,18 @@ func (f *FakeFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) e
 func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	f.RemoveMasqCalls = append(f.RemoveMasqCalls, subnet)
 	return f.err("RemoveMasquerade")
+}
+
+// EnsureMasqueradeIface records the call and returns Errs["EnsureMasqueradeIface"].
+func (f *FakeFabric) EnsureMasqueradeIface(inIface, egressIface string) error {
+	f.MasqueradeIfaceCalls = append(f.MasqueradeIfaceCalls, MasqueradeIfaceCall{InIface: inIface, EgressIface: egressIface})
+	return f.err("EnsureMasqueradeIface")
+}
+
+// RemoveMasqueradeIface records the call and returns Errs["RemoveMasqueradeIface"].
+func (f *FakeFabric) RemoveMasqueradeIface(inIface string) error {
+	f.RemoveMasqIfaceCalls = append(f.RemoveMasqIfaceCalls, inIface)
+	return f.err("RemoveMasqueradeIface")
 }
 
 // EnableIPForwarding records the call and returns

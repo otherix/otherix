@@ -87,6 +87,13 @@ type Fabric interface {
 	// bridge or the address is already absent.
 	RemoveAnycastGateway(bridge string, addr netip.Addr) error
 
+	// EnsureMasqueradeIface installs a masquerade rule for traffic entering via
+	// inIface and leaving via egressIface (empty = host default route),
+	// idempotently. CIDR-independent; used for overlay egress.
+	EnsureMasqueradeIface(inIface, egressIface string) error
+	// RemoveMasqueradeIface removes every masquerade rule tagged for inIface.
+	RemoveMasqueradeIface(inIface string) error
+
 	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
 	// brings it up. Learning is off (the FDB is controller-authoritative);
 	// remotes are supplied only through FDBAppend. It is idempotent.
