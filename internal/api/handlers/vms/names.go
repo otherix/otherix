@@ -73,41 +73,61 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 		}
 	}
 
-	networks, err := h.resolveNetworkNames(ctx, vm.ID)
+	networks, nics, err := h.resolveNICs(ctx, vm.ID)
 	if err != nil {
 		return names, err
 	}
 	names.networks = networks
+	names.nics = nics
 
 	return names, nil
 }
 
-// resolveNetworkNames returns the VM's attached network names ordered
-// by NIC device_order (ListVMNicsByVM sorts on it), one extra small
-// lookup per NIC. A network soft-deleted out from under a NIC is
-// skipped rather than surfaced as an error - network delete is blocked
-// while NICs reference it, so this only guards an out-of-band mutation.
-func (h *Handler) resolveNetworkNames(ctx context.Context, vmID uuid.UUID) ([]string, error) {
+// resolveNICs loads the VM's NICs once (ordered by device_order, primary first)
+// and resolves them into two parallel views: the attached network names and the
+// compact per-NIC nicView (network name + MAC + allocated IPv4). One NIC load
+// feeds both, so the per-NIC IPv4 surface costs no extra store round-trip beyond
+// the per-NIC NetworkByID lookups the names already required. A network
+// soft-deleted out from under a NIC is skipped (in both slices, keeping them
+// aligned) rather than surfaced as an error - network delete is blocked while
+// NICs reference it, so this only guards an out-of-band mutation.
+func (h *Handler) resolveNICs(ctx context.Context, vmID uuid.UUID) ([]string, []nicView, error) {
 	nics, err := h.store.ListVMNicsByVM(ctx, vmID)
 	if err != nil {
-		return nil, fmt.Errorf("list vm nics: %v", err)
+		return nil, nil, fmt.Errorf("list vm nics: %v", err)
 	}
 	if len(nics) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	names := make([]string, 0, len(nics))
+	views := make([]nicView, 0, len(nics))
 	for _, nic := range nics {
 		net, err := h.store.NetworkByID(ctx, nic.NetworkID)
 		switch {
 		case err == nil:
 			names = append(names, net.Name)
+			views = append(views, nicView{
+				Network:     net.Name,
+				MAC:         nic.MacAddress.String(),
+				Ipv4Address: nicIPv4(nic),
+			})
 		case errors.Is(err, store.ErrNotFound):
 			continue
 		default:
-			return nil, fmt.Errorf("load network name: %v", err)
+			return nil, nil, fmt.Errorf("load network name: %v", err)
 		}
 	}
-	return names, nil
+	return names, views, nil
+}
+
+// nicIPv4 renders a NIC's CP-IPAM-allocated IPv4 as a *string for the wire view,
+// returning nil when the NIC has no allocation (e.g. a plain bridge network).
+func nicIPv4(nic store.VMNic) *string {
+	if nic.Ipv4Address == nil {
+		return nil
+	}
+	s := nic.Ipv4Address.String()
+	return &s
 }
 
 // ownerLabel picks the best human-readable identifier for a VM owner:
