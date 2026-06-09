@@ -161,6 +161,45 @@ func TestNetworkCreate_NatBody(t *testing.T) {
 	}
 }
 
+func TestNetworkCreate_OverlayEgressBody(t *testing.T) {
+	t.Parallel()
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["type"] != "overlay" {
+			t.Errorf("type = %v, want overlay", body["type"])
+		}
+		if body["egress"] != "nat" {
+			t.Errorf("egress = %v, want nat", body["egress"])
+		}
+		if body["subnet"] != "10.50.0.0/24" {
+			t.Errorf("subnet = %v, want 10.50.0.0/24", body["subnet"])
+		}
+		if _, present := body["bridge_name"]; present {
+			t.Errorf("bridge_name must be absent for overlay, got %v", body["bridge_name"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(networkJSON(uuid.NewString(), "net-overlay"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runNetworkCmd(t, srv.URL, []string{
+		"create", "net-overlay", "--type", "overlay",
+		"--subnet", "10.50.0.0/24", "--egress", "nat",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1", posts)
+	}
+}
+
 func TestNetworkCreate_409Conflict(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
