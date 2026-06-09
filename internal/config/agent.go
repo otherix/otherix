@@ -217,7 +217,7 @@ func defaultAgentConfig() AgentConfig {
 			ShutdownGrace: 30 * time.Second,
 		},
 		Logger:    logger.Config{Level: "info", Format: "json"},
-		StatePath: "/opt/otherix/vms",
+		StatePath: "/var/lib/otherix/vms",
 		ControlPlane: ControlPlaneConfig{
 			HeartbeatInterval: 30 * time.Second,
 		},
@@ -231,7 +231,7 @@ func defaultAgentConfig() AgentConfig {
 		WireGuard: WireGuardConfig{
 			ListenPort:          51820,
 			PersistentKeepalive: 25 * time.Second,
-			PrivateKeyPath:      "/opt/otherix/wg/private.key",
+			PrivateKeyPath:      "/var/lib/otherix/wg/private.key",
 		},
 	}
 }
