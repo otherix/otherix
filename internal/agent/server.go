@@ -12,14 +12,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/otherix/otherix/internal/agent/console"
+	"github.com/otherix/otherix/internal/agent/dnsproxy"
 	storagepoolshandlers "github.com/otherix/otherix/internal/agent/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/agent/handlers/vms"
@@ -101,6 +104,18 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// an unsupported stub on other platforms keeps the agent compiling.
 	fabric := netfabric.New()
 
+	// Per-node DNS forwarder bound at the overlay gateway anycast address
+	// (169.254.1.1:53). IP_FREEBIND lets the bind succeed before any overlay
+	// bridge owns the address. Empty Upstreams => New discovers the node's
+	// resolvers from resolv.conf at construction time.
+	dnsForwarder, err := dnsproxy.New(dnsproxy.Config{
+		Listen: net.JoinHostPort(netfabric.OverlayGatewayAddr.String(), strconv.Itoa(netfabric.OverlayDNSPort)),
+		Log:    log,
+	})
+	if err != nil {
+		return fmt.Errorf("dns forwarder: %w", err)
+	}
+
 	manager, err := vm.New(cfg, fabric, log)
 	if err != nil {
 		return fmt.Errorf("vm manager: %w", err)
@@ -172,6 +187,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	netReconcilerDone := runReconciler(heartbeatCtx, "network reconciler", netReconciler.Run, log)
 	vmReconcilerDone := runReconciler(heartbeatCtx, "vm reconciler", vmReconciler.Run, log)
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
+	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -195,6 +211,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "vm reconciler", done: vmReconcilerDone},
 		{name: "network reconciler", done: netReconcilerDone},
 		{name: "wireguard reconciler", done: wgReconcilerDone},
+		{name: "dns forwarder", done: dnsForwarderDone},
 	}
 
 	select {

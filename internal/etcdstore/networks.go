@@ -113,8 +113,8 @@ func (s *Store) NetworkByName(ctx context.Context, name string) (store.Network, 
 // the name guard + primary atomically. A name collision (case-insensitive,
 // among non-deleted rows) returns store.ErrNetworkNameExists. For type=overlay,
 // a VNI is allocated from the cluster range and forced fields (BridgeName,
-// Managed, Egress, Mtu) are stamped by the store regardless of what the caller
-// supplied.
+// Managed, Mtu) are stamped by the store regardless of what the caller
+// supplied. Egress is operator-owned and preserved (empty defaults to none).
 func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams) (store.Network, error) {
 	now := time.Now().UTC()
 	egress := arg.Egress
@@ -165,7 +165,6 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		n.VNI = &vni
 		n.BridgeName = fmt.Sprintf("otb%d", vni)
 		n.Managed = true
-		n.Egress = store.NetworkEgressNone
 		n.Mtu = underlay - store.OverlayEncapOverhead
 		vg := networkVNIGuard(vni)
 		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vg), "=", 0))

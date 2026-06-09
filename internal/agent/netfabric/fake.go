@@ -3,7 +3,10 @@
 
 package netfabric
 
-import "net/netip"
+import (
+	"net"
+	"net/netip"
+)
 
 // FakeFabric is a Spy implementation of Fabric for tests. It records
 // every call into an exported slice and returns a configurable error
@@ -34,6 +37,17 @@ type FakeFabric struct {
 	RemoveGatewayCalls []GatewayCall
 	MasqueradeCalls    []MasqueradeCall
 	RemoveMasqCalls    []netip.Prefix
+
+	MasqueradeIfaceCalls []MasqueradeIfaceCall
+	RemoveMasqIfaceCalls []string
+
+	BridgeRouteCalls []BridgeRouteCall
+
+	AnycastGatewayCalls       []AnycastGatewayCall
+	RemoveAnycastGatewayCalls []AnycastGatewayCall
+
+	// EnableIPForwardingCalls counts EnableIPForwarding invocations.
+	EnableIPForwardingCalls int
 
 	// VXLANExistsResult is returned by VXLANExists alongside
 	// Errs["VXLANExists"].
@@ -119,6 +133,26 @@ type MasqueradeCall struct {
 	EgressIface string
 }
 
+// MasqueradeIfaceCall records one EnsureMasqueradeIface invocation.
+type MasqueradeIfaceCall struct {
+	InIface     string
+	EgressIface string
+}
+
+// BridgeRouteCall records one EnsureBridgeRoute invocation.
+type BridgeRouteCall struct {
+	Subnet netip.Prefix
+	Bridge string
+}
+
+// AnycastGatewayCall records one EnsureAnycastGateway or RemoveAnycastGateway
+// invocation. MAC is the stringified hardware address (empty for removals).
+type AnycastGatewayCall struct {
+	Bridge string
+	Addr   netip.Addr
+	MAC    string
+}
+
 func (f *FakeFabric) err(method string) error {
 	if f.Errs == nil {
 		return nil
@@ -199,6 +233,43 @@ func (f *FakeFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) e
 func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	f.RemoveMasqCalls = append(f.RemoveMasqCalls, subnet)
 	return f.err("RemoveMasquerade")
+}
+
+// EnsureMasqueradeIface records the call and returns Errs["EnsureMasqueradeIface"].
+func (f *FakeFabric) EnsureMasqueradeIface(inIface, egressIface string) error {
+	f.MasqueradeIfaceCalls = append(f.MasqueradeIfaceCalls, MasqueradeIfaceCall{InIface: inIface, EgressIface: egressIface})
+	return f.err("EnsureMasqueradeIface")
+}
+
+// RemoveMasqueradeIface records the call and returns Errs["RemoveMasqueradeIface"].
+func (f *FakeFabric) RemoveMasqueradeIface(inIface string) error {
+	f.RemoveMasqIfaceCalls = append(f.RemoveMasqIfaceCalls, inIface)
+	return f.err("RemoveMasqueradeIface")
+}
+
+// EnsureBridgeRoute records the call and returns Errs["EnsureBridgeRoute"].
+func (f *FakeFabric) EnsureBridgeRoute(subnet netip.Prefix, bridge string) error {
+	f.BridgeRouteCalls = append(f.BridgeRouteCalls, BridgeRouteCall{Subnet: subnet, Bridge: bridge})
+	return f.err("EnsureBridgeRoute")
+}
+
+// EnableIPForwarding records the call and returns
+// Errs["EnableIPForwarding"].
+func (f *FakeFabric) EnableIPForwarding() error {
+	f.EnableIPForwardingCalls++
+	return f.err("EnableIPForwarding")
+}
+
+// EnsureAnycastGateway records the call and returns Errs["EnsureAnycastGateway"].
+func (f *FakeFabric) EnsureAnycastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+	f.AnycastGatewayCalls = append(f.AnycastGatewayCalls, AnycastGatewayCall{Bridge: bridge, Addr: addr, MAC: mac.String()})
+	return f.err("EnsureAnycastGateway")
+}
+
+// RemoveAnycastGateway records the call and returns Errs["RemoveAnycastGateway"].
+func (f *FakeFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error {
+	f.RemoveAnycastGatewayCalls = append(f.RemoveAnycastGatewayCalls, AnycastGatewayCall{Bridge: bridge, Addr: addr})
+	return f.err("RemoveAnycastGateway")
 }
 
 // EnsureVXLAN records the call and returns Errs["EnsureVXLAN"].

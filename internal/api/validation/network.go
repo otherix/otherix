@@ -118,19 +118,19 @@ func ValidateNetworkEgress(s string) error {
 	}
 }
 
-// ValidateNetworkInvariants enforces cross-field constraints that no
-// single-field validator can express. egress=nat requires a managed
-// bridge: NAT masquerading is only meaningful when Otherix owns the
-// bridge (managed) and the network is a Layer-2 bridge. An empty egress
-// is treated as none and imposes no constraint. The egress value is
-// assumed already validated by ValidateNetworkEgress; only nat triggers
-// the constraint here.
+// ValidateNetworkInvariants enforces cross-field rules for egress. egress=nat
+// requires a managed network (the CP owns the bridge it masquerades). It is
+// permitted on type=bridge (subnet-based SNAT) and type=overlay (per-node
+// anycast-gateway SNAT). egress=none has no constraint.
 func ValidateNetworkInvariants(typ store.NetworkType, managed bool, egress store.NetworkEgress) error {
 	if egress != store.NetworkEgressNAT {
 		return nil
 	}
-	if typ != store.NetworkTypeBridge || !managed {
-		return errors.New("egress=nat requires type=bridge and managed=true")
+	if !managed {
+		return errors.New("egress=nat requires managed=true")
+	}
+	if typ != store.NetworkTypeBridge && typ != store.NetworkTypeOverlay {
+		return errors.New("egress=nat requires type=bridge or type=overlay")
 	}
 	return nil
 }

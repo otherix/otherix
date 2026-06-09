@@ -5356,7 +5356,7 @@ components:
           description: |
             Managed-egress mode. `none` (default) leaves egress to the
             attached bridge; `nat` masquerades VM traffic and requires
-            `type: bridge` with `managed: true`.
+            `managed: true` (type `bridge` or `overlay`).
         subnet:
           type: [string, "null"]
           description: |
@@ -5435,8 +5435,8 @@ components:
           default: none
           description: |
             Optional on create (defaults to `none`). `nat` requires
-            `type: bridge`, `managed: true`, and a `subnet`. Forbidden
-            for `type: overlay`.
+            `managed: true`. On `type: bridge` it also requires a `subnet`;
+            on `type: overlay` it enables per-node anycast-gateway SNAT.
         subnet:
           type: string
           description: |

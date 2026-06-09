@@ -101,6 +101,125 @@ make smoke-overlay-vm       # two real VMs, cross-node ping over the overlay
 Live migration is not yet implemented and is therefore not part of the Linux dev
 smoke.
 
+## Smoke: overlay egress (manual, static-addressed VM)
+
+Verifies overlay egress (per-node SNAT) end to end against real agents. The CP
+gives overlay VMs internet access by putting a link-local anycast gateway
+(`169.254.1.1`) on every node's `otb<vni>` bridge, enabling `ip_forward`, and
+masquerading overlay traffic out the node's uplink; a per-node DNS forwarder on
+`169.254.1.1:53` relays to the node's upstream resolver. The gateway address is
+node-independent, so it survives live migration. Run after `make
+local-dev-start`.
+
+1. Create a managed overlay network with egress enabled (through the CLI):
+
+   ```bash
+   ./bin/otherix network create ov-egress \
+     --type overlay --subnet 10.60.0.0/24 --egress nat
+   ```
+
+   (`--managed`, `--mtu`, and the bridge name are server-derived for overlay and
+   are rejected if supplied; egress on overlay is always managed.)
+
+2. Create a VM on the overlay with a **static** cloud-init network-config. The
+   gateway and DNS are the link-local anycast address `169.254.1.1`, which is
+   off-subnet, so the default route must be declared `on-link`. Example
+   network-config (netplan v2 form) baked into the VM's cloud-init:
+
+   ```yaml
+   network:
+     version: 2
+     ethernets:
+       eth0:
+         addresses: [10.60.0.5/24]
+         nameservers:
+           addresses: [169.254.1.1]
+         routes:
+           - to: 169.254.1.1/32
+             scope: link
+           - to: default
+             via: 169.254.1.1
+             on-link: true
+   ```
+
+3. From the VM console (`./bin/otherix vm console <id>`), verify egress:
+
+   ```bash
+   ip route                          # default via 169.254.1.1
+   ping -c2 8.8.8.8                  # ICMP egress (SNAT to the node IP)
+   getent hosts archive.ubuntu.com   # DNS via the node forwarder
+   curl -sI http://archive.ubuntu.com/ | head -1   # full egress path
+   ```
+
+4. Confirm the source IP is the node IP: on the node,
+   `sudo ip netns exec otns1 nft list table ip otherix-nat` shows the
+   `iifname "otb<vni>" oifname ... masquerade` rule; the external peer sees the
+   node's address.
+
+Pass criteria: ping + DNS + HTTP all succeed; the masquerade rule is present; no
+`/etc/hosts` mapping and no external DHCP were involved.
+
+### Multi-overlay anycast containment (extended smoke)
+
+The gateway address `169.254.1.1` is anycast on the `otb<vni>` bridge of EVERY
+egress overlay, each with a distinct per-VNI MAC. Bringing up two egress
+overlays on one node verifies they do not interfere (the agent sets
+`arp_ignore=1` / `arp_announce=2` per bridge to contain the shared address).
+
+1. Create a second egress overlay:
+
+   ```bash
+   ./bin/otherix network create ov-egress-2 \
+     --type overlay --subnet 10.61.0.0/24 --egress nat
+   ```
+
+2. Attach a VM to each overlay (`10.60.0.x` on `ov-egress`, `10.61.0.x` on
+   `ov-egress-2`), both with the same static cloud-init gateway/DNS
+   `169.254.1.1` (on-link), as in the single-overlay scenario.
+
+3. From each VM independently verify egress and DNS:
+
+   ```bash
+   ping -c2 8.8.8.8
+   getent hosts archive.ubuntu.com
+   ```
+
+4. On each node, confirm neither VM learned the other bridge's gateway MAC:
+
+   ```bash
+   # in the VM:
+   ip neigh show 169.254.1.1     # MAC must match THIS overlay's otb<vni>, not the other
+   ```
+
+   And on the node, the per-bridge ARP sysctls are set:
+
+   ```bash
+   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otb<vni>/arp_ignore   # 1
+   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otb<vni>/arp_announce # 2
+   ```
+
+Pass criteria: both VMs reach the internet and resolve DNS independently;
+neither VM's `169.254.1.1` neighbor entry shows the other overlay's MAC.
+
+## Overlay egress: known limitations (Slice 1)
+
+- **DNS forwarder upstreams are read once at agent start.** A change to the
+  node's `/etc/resolv.conf` (DHCP renew, systemd-resolved update) is not picked
+  up until the agent restarts. The forwarder is UDP-only (no TCP fallback) and
+  drops queries beyond an in-flight cap (a flood degrades to drops, not agent
+  exhaustion).
+- **`ip_forward` is enabled host-globally and not reverted.** On a bare-metal
+  agent (host root netns) the first egress overlay sets `net.ipv4.ip_forward=1`
+  for the whole host, and teardown does not reset it. There is no `forward`-chain
+  default-deny yet, so overlay VMs can route to other host-reachable networks;
+  restricting that is a planned follow-up.
+- **No anti-spoof on the overlay L2 segment.** A compromised VM can ARP-spoof the
+  gateway (`169.254.1.1`) and MITM co-overlay VMs' egress and DNS. This is
+  inherent to the flat-L2 overlay until per-port filtering / IPAM lands.
+- **Static addressing only.** VMs are addressed via cloud-init; CP-managed IPAM
+  and a per-node DHCP responder (delivering the gateway via DHCP option 121)
+  arrive in Slice 2.
+
 ## Manual topology control
 
 ```bash

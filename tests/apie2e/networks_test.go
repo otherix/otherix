@@ -285,6 +285,51 @@ func TestNetworksUpdateEgressNoneToNATDerivesGateway(t *testing.T) {
 	}
 }
 
+// TestOverlayNetworkPersistsEgressNAT proves that a managed overlay network
+// created with egress=nat is accepted, surfaces egress=nat on the create
+// response, and round-trips egress=nat through a GET-by-id (persisted, not
+// just echoed). Overlay egress was previously rejected and even the CP-side
+// persistence dropped it; this guards both layers.
+func TestOverlayNetworkPersistsEgressNAT(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	suffix := uuid.NewString()[:8]
+	body := map[string]any{
+		"name":    "net-" + suffix,
+		"type":    "overlay",
+		"managed": true,
+		"egress":  "nat",
+		"subnet":  "10.60.0.0/24",
+	}
+
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+	if created.Type != "overlay" {
+		t.Errorf("type = %q, want overlay", created.Type)
+	}
+	if created.Egress != "nat" {
+		t.Errorf("create egress = %q, want nat", created.Egress)
+	}
+
+	resp = h.get(t, "/v1/networks/"+created.ID, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", resp.StatusCode)
+	}
+	var fetched networkView
+	decodeJSON(t, resp, &fetched)
+	if fetched.Type != "overlay" {
+		t.Errorf("get type = %q, want overlay", fetched.Type)
+	}
+	if fetched.Egress != "nat" {
+		t.Errorf("persisted egress = %q, want nat", fetched.Egress)
+	}
+}
+
 func TestNetworksGetStatusEmptyThenPopulated(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)

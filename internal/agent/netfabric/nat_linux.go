@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 
@@ -32,6 +33,129 @@ const natChainName = "postrouting"
 // matching the kernel IFNAMSIZ. Interface names are NUL-padded to this
 // width before comparison.
 const ifnameSize = 16
+
+// EnableIPForwarding enables IPv4 forwarding in the current network
+// namespace. net.ipv4.ip_forward is per-netns, so writing it from the agent
+// process (which runs in the node's netns) affects only this node. Idempotent:
+// writing "1" when already 1 is a no-op. On a bare-metal agent (host root
+// netns) this is the host-global setting and is not reverted on teardown.
+func (f *linuxFabric) EnableIPForwarding() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// 0o600: procfs ignores the mode (the file already exists), but gosec G306
+	// wants <=0o600. Functionally irrelevant for /proc/sys.
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o600); err != nil {
+		return fmt.Errorf("netfabric: enable ip_forward: %v", err)
+	}
+	return nil
+}
+
+// writeIfaceSysctl writes value to /proc/sys/net/ipv4/conf/<iface>/<key>,
+// the per-interface IPv4 sysctl tree. Used to contain the anycast gateway's
+// shared link-local address to its own bridge.
+func writeIfaceSysctl(iface, key, value string) error {
+	// iface is an Otherix-managed bridge name (otb<vni>), and key is a fixed
+	// procfs leaf - not user input.
+	path := "/proc/sys/net/ipv4/conf/" + iface + "/" + key //nolint:gosec // G304: fixed procfs path, Otherix-owned iface name
+	// 0o600: procfs ignores the mode (the file pre-exists); gosec G306 wants <=0o600.
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %v", path, err)
+	}
+	return nil
+}
+
+// EnsureAnycastGateway pins mac on the bridge link and assigns addr/32 to it,
+// idempotently. Setting the bridge hardware address explicitly stops the
+// kernel auto-inheriting the lowest enslaved-port MAC, keeping the gateway MAC
+// stable; a re-assert each reconcile pass is harmless.
+func (f *linuxFabric) EnsureAnycastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: %v", bridge, err)
+	}
+	if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: set mac: %v", bridge, err)
+	}
+	p := netip.PrefixFrom(addr, addr.BitLen()) // /32 for IPv4
+	a, err := netlink.ParseAddr(p.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: parse %s: %v", bridge, p, err)
+	}
+	if err := netlink.AddrReplace(link, a); err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: %v", bridge, err)
+	}
+	// Anycast containment: the same link-local /32 lives on every overlay
+	// bridge, so restrict ARP replies to the addressed interface (arp_ignore=1)
+	// and force best-local-source announcements (arp_announce=2). This stops a
+	// VM on one overlay from learning another bridge's gateway MAC.
+	if err := writeIfaceSysctl(bridge, "arp_ignore", "1"); err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: %v", bridge, err)
+	}
+	if err := writeIfaceSysctl(bridge, "arp_announce", "2"); err != nil {
+		return fmt.Errorf("netfabric: ensure anycast gateway on %s: %v", bridge, err)
+	}
+	return nil
+}
+
+// RemoveAnycastGateway removes addr/32 from the bridge. It returns nil when the
+// bridge link is absent and when the address is already gone, mirroring
+// RemoveGatewayAddr, so repeated teardown is safe.
+func (f *linuxFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove anycast gateway on %s: %v", bridge, err)
+	}
+	p := netip.PrefixFrom(addr, addr.BitLen())
+	a, err := netlink.ParseAddr(p.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: remove anycast gateway on %s: parse %s: %v", bridge, p, err)
+	}
+	if err := netlink.AddrDel(link, a); err != nil {
+		if errors.Is(err, unix.EADDRNOTAVAIL) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove anycast gateway on %s: %v", bridge, err)
+	}
+	return nil
+}
+
+// EnsureBridgeRoute installs a link-scoped connected route for subnet via the
+// named bridge, idempotently (RouteReplace is add-or-update). Without it the
+// node has no route to the overlay subnet - the anycast gateway is only a
+// link-local /32 - so return/reply traffic to overlay VMs is misrouted out the
+// uplink and lost.
+func (f *linuxFabric) EnsureBridgeRoute(subnet netip.Prefix, bridge string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure bridge route %s on %s: %v", subnet, bridge, err)
+	}
+	_, dst, err := net.ParseCIDR(subnet.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure bridge route %s on %s: parse: %v", subnet, bridge, err)
+	}
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Dst:       dst,
+		Scope:     netlink.SCOPE_LINK,
+	}
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("netfabric: ensure bridge route %s on %s: %v", subnet, bridge, err)
+	}
+	return nil
+}
 
 // EnsureGatewayAddr assigns addr to the named bridge link, idempotently.
 // AddrReplace adds the address when absent and is a no-op when it is
@@ -204,6 +328,144 @@ func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	}
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("netfabric: remove masquerade for %s: %v", subnet, err)
+	}
+	return nil
+}
+
+// masqIfaceUserData returns the stable UserData marker for an interface-keyed
+// masquerade rule (inIface egressing via egressIface). masqIfacePrefix returns
+// the egress-iface-independent prefix so RemoveMasqueradeIface can drop every
+// rule for an inIface regardless of which egress iface it resolved to.
+func masqIfaceUserData(inIface, egressIface string) []byte {
+	return append(masqIfacePrefix(inIface), egressIface...)
+}
+
+// masqIfacePrefix returns the leading "otherix:iif:<inIface>:" marker segment.
+func masqIfacePrefix(inIface string) []byte {
+	return []byte("otherix:iif:" + inIface + ":")
+}
+
+// masqIfaceExprs builds the expression sequence for a masquerade rule matching
+// traffic that ENTERED via inIface and LEAVES via egressIface, then
+// masquerades. Unlike masqExprs it is CIDR-independent: it identifies overlay
+// VM traffic by the ingress bridge, not by source subnet. Inter-overlay
+// traffic leaves via otwg0/otvx*, not the uplink, so it never matches.
+func masqIfaceExprs(inIface, egressIface string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifnameComparand(inIface)},
+		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifnameComparand(egressIface)},
+		&expr.Masq{},
+	}
+}
+
+// EnsureMasqueradeIface installs a MASQUERADE rule for traffic entering via
+// inIface and leaving via egressIface, idempotently. When egressIface is empty
+// the host's default-route interface is used. The rule carries a per-inIface
+// UserData marker; a second call that finds it does nothing.
+func (f *linuxFabric) EnsureMasqueradeIface(inIface, egressIface string) error {
+	if egressIface == "" {
+		iface, err := defaultEgressIface()
+		if err != nil {
+			return fmt.Errorf("netfabric: ensure masquerade for iif %s: %v", inIface, err)
+		}
+		egressIface = iface
+	}
+	if len(inIface) >= ifnameSize || len(egressIface) >= ifnameSize {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: iface name exceeds %d-byte limit", inIface, ifnameSize-1)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c := &nftables.Conn{}
+	table, chain := f.natTableChain(c)
+	// Flush is load-bearing on a fresh host: it materialises the table before
+	// the GetRules dump, which would otherwise ENOENT. See masqExprs sibling.
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: %v", inIface, err)
+	}
+
+	marker := masqIfaceUserData(inIface, egressIface)
+	prefix := masqIfacePrefix(inIface)
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure masquerade for iif %s: list rules: %v", inIface, err)
+	}
+	found := false
+	changed := false
+	for _, r := range rules {
+		if !bytes.HasPrefix(r.UserData, prefix) {
+			continue
+		}
+		if bytes.Equal(r.UserData, marker) {
+			found = true
+			continue
+		}
+		// Stale rule for this ingress bridge with a different egress iface
+		// (the node's default route changed). Prune it so iface-keyed rules do
+		// not accumulate across uplink changes.
+		r.Table = table
+		r.Chain = chain
+		if err := c.DelRule(r); err != nil {
+			return fmt.Errorf("netfabric: ensure masquerade for iif %s: prune stale: %v", inIface, err)
+		}
+		changed = true
+	}
+	if !found {
+		c.AddRule(&nftables.Rule{
+			Table:    table,
+			Chain:    chain,
+			UserData: marker,
+			Exprs:    masqIfaceExprs(inIface, egressIface),
+		})
+		changed = true
+	}
+	if changed {
+		if err := c.Flush(); err != nil {
+			return fmt.Errorf("netfabric: ensure masquerade for iif %s: %v", inIface, err)
+		}
+	}
+	return nil
+}
+
+// RemoveMasqueradeIface removes every interface-keyed masquerade rule tagged
+// for inIface, regardless of the egress iface it resolved to. nil when none
+// exists, including when the NAT table was never created.
+func (f *linuxFabric) RemoveMasqueradeIface(inIface string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
+
+	prefix := masqIfacePrefix(inIface)
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove masquerade for iif %s: list rules: %v", inIface, err)
+	}
+	deleted := false
+	for _, r := range rules {
+		if !bytes.HasPrefix(r.UserData, prefix) {
+			continue
+		}
+		r.Table = table
+		r.Chain = chain
+		if err := c.DelRule(r); err != nil {
+			return fmt.Errorf("netfabric: remove masquerade for iif %s: %v", inIface, err)
+		}
+		deleted = true
+	}
+	if !deleted {
+		return nil
+	}
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("netfabric: remove masquerade for iif %s: %v", inIface, err)
 	}
 	return nil
 }

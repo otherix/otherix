@@ -83,7 +83,55 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	if !converged {
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
+
+	if d.Egress == "nat" {
+		r.applyOverlayEgress(ctx, d, vniVal)
+	}
+
 	return ready(d.ID)
+}
+
+// applyOverlayEgress best-effort installs the egress datapath (ip_forward +
+// anycast gateway + interface masquerade) for an egress=nat overlay whose L2
+// plane has already converged. Egress is a sub-capability: a failure here is
+// logged and retried on the next reconcile pass, and must NOT fail the network.
+// Marking the whole overlay failed on an egress hiccup would wrongly exclude
+// the node from VM placement even though the VTEP/bridge/FDB datapath is up.
+// HasEgress is recorded only when the full datapath installs, so teardown and
+// observability reflect the real state.
+func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredNetwork, vniVal uint32) {
+	if err := r.fabric.EnableIPForwarding(); err != nil {
+		r.log.WarnContext(ctx, "overlay egress: enable ip_forward failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return
+	}
+	if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, netfabric.GatewayMAC(vniVal)); err != nil {
+		r.log.WarnContext(ctx, "overlay egress: anycast gateway failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return
+	}
+	// The anycast gateway is only a link-local /32, so the node has no connected
+	// route to the overlay subnet. Install one on the bridge so return/reply
+	// traffic to overlay VMs is delivered to the bridge instead of misrouted out
+	// the uplink. Best-effort: a bad/absent subnet is logged and skipped (does
+	// not fail the network), a fabric error retries next pass.
+	if d.Subnet != nil {
+		if subnet, err := netip.ParsePrefix(*d.Subnet); err != nil {
+			r.log.WarnContext(ctx, "overlay egress: bad subnet, skipping bridge route",
+				slog.String("network_id", d.ID), slog.String("subnet", *d.Subnet), slog.String("error", err.Error()))
+		} else if err := r.fabric.EnsureBridgeRoute(subnet, d.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "overlay egress: bridge route failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+			return
+		}
+	}
+	// Empty egress iface -> netfabric resolves the host default route.
+	if err := r.fabric.EnsureMasqueradeIface(d.BridgeName, ""); err != nil {
+		r.log.WarnContext(ctx, "overlay egress: masquerade failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return
+	}
+	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal, HasEgress: true}
 }
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for

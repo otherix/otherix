@@ -66,6 +66,7 @@ type appliedNetwork struct {
 	Gateway    netip.Prefix
 	Overlay    bool   // true for a type=overlay network: teardown removes the VTEP too
 	VNI        uint32 // VXLAN id, for RemoveVXLAN on teardown (Overlay only)
+	HasEgress  bool   // true for an overlay materialised with egress=nat: teardown removes the iface masquerade
 }
 
 // networksDesired is the latest CP-declared network intent for this node: the
@@ -362,6 +363,16 @@ func (r *Networks) removeUndeclared(ctx context.Context, declared map[string]str
 func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetwork) error {
 	if a.Overlay {
 		var errs []error
+		// Always attempt masquerade removal: it is idempotent (no-op when no
+		// rule exists), and best-effort egress install can leave a rule while
+		// HasEgress reads false, so gating on HasEgress could leak the rule.
+		if err := r.fabric.RemoveMasqueradeIface(a.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "remove overlay egress masquerade failed during teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+			errs = append(errs, err)
+		}
 		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
 			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
 				slog.String("network_id", id),

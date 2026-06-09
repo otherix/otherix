@@ -775,7 +775,7 @@ func TestCreateNetworkOverlayStampsOverConflictingInput(t *testing.T) {
 		BridgeName: "operator-bogus",       // must be overwritten with otb<vni>
 		Mtu:        1500,                   // must be overwritten with 1390
 		Managed:    false,                  // must be forced true
-		Egress:     store.NetworkEgressNAT, // must be forced none
+		Egress:     store.NetworkEgressNAT, // operator-owned: preserved
 	})
 	if err != nil {
 		t.Fatalf("CreateNetwork: %v", err)
@@ -784,8 +784,11 @@ func TestCreateNetworkOverlayStampsOverConflictingInput(t *testing.T) {
 		t.Fatalf("VNI not allocated")
 	}
 	wantBridge := "otb" + strconv.Itoa(int(*got.VNI))
-	if got.BridgeName != wantBridge || got.Mtu != store.OverlayMTU || !got.Managed || got.Egress != store.NetworkEgressNone {
-		t.Errorf("forced fields = (bridge=%q mtu=%d managed=%v egress=%q), want (%q 1390 true none)",
-			got.BridgeName, got.Mtu, got.Managed, got.Egress, wantBridge)
+	if got.BridgeName != wantBridge || got.Mtu != store.OverlayMTU || !got.Managed {
+		t.Errorf("forced fields = (bridge=%q mtu=%d managed=%v), want (%q 1390 true)",
+			got.BridgeName, got.Mtu, got.Managed, wantBridge)
+	}
+	if got.Egress != store.NetworkEgressNAT {
+		t.Errorf("Egress = %q, want %q (operator-owned, preserved)", got.Egress, store.NetworkEgressNAT)
 	}
 }

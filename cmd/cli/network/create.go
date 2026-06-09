@@ -46,8 +46,10 @@ default) forbids --subnet/--gateway. The server re-validates the
 when the combination is invalid.
 
 --type overlay requires --subnet and forbids --bridge-name/--mtu/--vlan/
---egress/--managed/--gateway (the server derives the bridge name from
-the allocated VNI).
+--managed/--gateway (the server derives the bridge name from the
+allocated VNI and forces the network managed). --egress nat is allowed
+on overlay and enables per-node anycast-gateway SNAT, giving the
+overlay's VMs internet egress.
 
 Example:
   otherix network create net-dev --bridge-name br0
@@ -60,7 +62,11 @@ Example:
     --subnet 10.10.0.0/24
 
   # Overlay (VXLAN) network:
-  otherix network create my-overlay --type overlay --subnet 10.50.0.0/24`,
+  otherix network create my-overlay --type overlay --subnet 10.50.0.0/24
+
+  # Overlay (VXLAN) network with internet egress:
+  otherix network create my-overlay --type overlay \
+    --subnet 10.50.0.0/24 --egress nat`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCreate,
 	}
@@ -113,7 +119,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 // createParamsFromFlags reads the create flags and assembles the
 // CreateNetworkParams. It branches on --type to enforce type-specific
 // requirements: overlay requires --subnet and forbids bridge-only flags
-// (bridge-name, mtu, vlan, egress, managed, gateway); bridge requires
+// (bridge-name, mtu, vlan, managed, gateway); bridge requires
 // --bridge-name. Optional integer flags are translated to pointers only
 // when the operator changed them, so an omitted flag lands as nil and
 // the server applies its default. Split from runCreate to keep
@@ -137,8 +143,9 @@ func createParamsFromFlags(cmd *cobra.Command, name string) (cpclient.CreateNetw
 
 // createOverlayParams assembles CreateNetworkParams for --type overlay.
 // Overlay networks require --subnet and reject bridge-only flags
-// (bridge-name, mtu, vlan, egress, managed, gateway) because those are
-// server-derived for overlay.
+// (bridge-name, mtu, vlan, managed, gateway) because those are
+// server-derived for overlay. --egress nat is allowed: it enables
+// per-node anycast-gateway SNAT for the overlay's VMs.
 func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetworkParams, error) {
 	subnet, err := cmd.Flags().GetString(flagCreateSubnet)
 	if err != nil {
@@ -159,10 +166,6 @@ func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetwor
 	if cmd.Flags().Changed(flagCreateVLAN) {
 		forbidden = append(forbidden, "--vlan")
 	}
-	egress, _ := cmd.Flags().GetString(flagCreateEgress)
-	if egress != "" && egress != defaultNetworkEgress {
-		forbidden = append(forbidden, "--egress")
-	}
 	if cmd.Flags().Changed(flagCreateManaged) {
 		forbidden = append(forbidden, "--managed")
 	}
@@ -176,9 +179,14 @@ func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetwor
 		)
 	}
 
+	egress, _ := cmd.Flags().GetString(flagCreateEgress)
+	if egress == defaultNetworkEgress {
+		egress = ""
+	}
 	return cpclient.CreateNetworkParams{
 		Name:   name,
 		Type:   "overlay",
+		Egress: egress,
 		Subnet: subnet,
 	}, nil
 }

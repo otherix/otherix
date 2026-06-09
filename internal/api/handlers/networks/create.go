@@ -43,10 +43,15 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 				response.CodeValidationFailed, err.Error(), nil)
 			return
 		}
+		egress := store.NetworkEgressNone
+		if req.Egress != nil {
+			egress = store.NetworkEgress(*req.Egress)
+		}
 		row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
 			ID:     uuid.New(),
 			Name:   req.Name,
 			Type:   store.NetworkTypeOverlay,
+			Egress: egress,
 			Subnet: &subnet,
 			Config: normaliseConfig(req.Config),
 		})
@@ -210,8 +215,10 @@ func validateOverlayCreate(req *createRequest) error {
 	if req.Gateway != nil {
 		return errors.New("gateway is forbidden for type=overlay")
 	}
-	if req.Egress != nil && store.NetworkEgress(*req.Egress) != store.NetworkEgressNone {
-		return errors.New("egress=nat is forbidden for type=overlay")
+	if req.Egress != nil {
+		if err := validation.ValidateNetworkEgress(*req.Egress); err != nil {
+			return err
+		}
 	}
 	if req.Managed != nil && !*req.Managed {
 		return errors.New("managed=false is forbidden for type=overlay (always Otherix-managed)")

@@ -1281,6 +1281,159 @@ func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
 	})
 }
 
+func TestLinuxFabricMasqueradeIface(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const inIface = "ot-br-iif0"
+		if err := f.EnsureBridge(inIface, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureMasqueradeIface(inIface, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasqueradeIface = %v (nftables unavailable?)", err)
+		}
+		if n := countMasqIfaceRules(t, inIface); n != 1 {
+			t.Fatalf("iface masq rule count = %d, want 1", n)
+		}
+		if err := f.EnsureMasqueradeIface(inIface, "lo"); err != nil {
+			t.Fatalf("EnsureMasqueradeIface second = %v", err)
+		}
+		if n := countMasqIfaceRules(t, inIface); n != 1 {
+			t.Fatalf("iface masq rule count after re-ensure = %d, want 1", n)
+		}
+		if err := f.RemoveMasqueradeIface(inIface); err != nil {
+			t.Fatalf("RemoveMasqueradeIface = %v", err)
+		}
+		if n := countMasqIfaceRules(t, inIface); n != 0 {
+			t.Fatalf("iface masq rule count after remove = %d, want 0", n)
+		}
+		if err := f.RemoveMasqueradeIface(inIface); err != nil {
+			t.Errorf("RemoveMasqueradeIface on absent = %v", err)
+		}
+	})
+}
+
+// countMasqIfaceRules counts rules in Otherix's NAT chain whose UserData marker
+// is keyed for inIface. Mirrors the existing countMasqRules helper.
+func countMasqIfaceRules(t *testing.T, inIface string) int {
+	t.Helper()
+	c := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		return 0
+	}
+	prefix := masqIfacePrefix(inIface)
+	n := 0
+	for _, r := range rules {
+		if bytes.HasPrefix(r.UserData, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestLinuxFabricMasqueradeIfacePrunesStaleEgress(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const inIface = "ot-br-prune0"
+		if err := f.EnsureBridge(inIface, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		// Two explicit egress ifaces (the iface need not exist for the rule to install).
+		if err := f.EnsureMasqueradeIface(inIface, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasqueradeIface(lo) = %v", err)
+		}
+		if err := f.EnsureMasqueradeIface(inIface, "eth9"); err != nil {
+			t.Fatalf("EnsureMasqueradeIface(eth9) = %v", err)
+		}
+		// The lo rule must be pruned; only the eth9 rule remains.
+		if n := countMasqIfaceRules(t, inIface); n != 1 {
+			t.Fatalf("iface masq rule count = %d after egress change, want 1 (stale pruned)", n)
+		}
+		// The remaining rule carries the eth9 marker, not lo.
+		c := &nftables.Conn{}
+		table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+		chain := &nftables.Chain{Name: natChainName, Table: table}
+		rules, err := c.GetRules(table, chain)
+		if err != nil {
+			t.Fatalf("GetRules = %v", err)
+		}
+		wantMarker := masqIfaceUserData(inIface, "eth9")
+		matched := false
+		for _, r := range rules {
+			if bytes.Equal(r.UserData, wantMarker) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("remaining rule is not the eth9 rule")
+		}
+	})
+}
+
+func TestLinuxFabricAnycastGatewaySetsArpSysctls(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-arp0"
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureAnycastGateway(bridge, OverlayGatewayAddr, GatewayMAC(0x002000)); err != nil {
+			requireNetfabric(t, "EnsureAnycastGateway = %v", err)
+		}
+		for _, tc := range []struct{ key, want string }{
+			{"arp_ignore", "1"},
+			{"arp_announce", "2"},
+		} {
+			got, err := os.ReadFile("/proc/sys/net/ipv4/conf/" + bridge + "/" + tc.key)
+			if err != nil {
+				t.Fatalf("read %s = %v", tc.key, err)
+			}
+			if strings.TrimSpace(string(got)) != tc.want {
+				t.Errorf("%s = %q, want %q", tc.key, strings.TrimSpace(string(got)), tc.want)
+			}
+		}
+	})
+}
+
+func TestLinuxFabricBridgeRoute(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-rt0"
+		subnet := netip.MustParsePrefix("10.62.0.0/24")
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureBridgeRoute(subnet, bridge); err != nil {
+			requireNetfabric(t, "EnsureBridgeRoute = %v", err)
+		}
+		// The connected route for the overlay subnet must point at the bridge,
+		// so the node can deliver return traffic to overlay VMs.
+		routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("RouteList = %v", err)
+		}
+		link, err := netlink.LinkByName(bridge)
+		if err != nil {
+			t.Fatalf("LinkByName = %v", err)
+		}
+		found := false
+		for _, r := range routes {
+			if r.Dst != nil && r.Dst.String() == "10.62.0.0/24" && r.LinkIndex == link.Attrs().Index {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("route 10.62.0.0/24 dev %s not present after EnsureBridgeRoute", bridge)
+		}
+		// Idempotent.
+		if err := f.EnsureBridgeRoute(subnet, bridge); err != nil {
+			t.Errorf("EnsureBridgeRoute second call = %v", err)
+		}
+	})
+}
+
 func TestLinuxFabricLinkState(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
@@ -1314,6 +1467,81 @@ func TestLinuxFabricLinkState(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("Addrs = %v, want to contain 10.52.0.1/24", st.Addrs)
+		}
+	})
+}
+
+func TestLinuxFabricEnableIPForwarding(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		if err := f.EnableIPForwarding(); err != nil {
+			requireNetfabric(t, "EnableIPForwarding() = %v", err)
+		}
+		got, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+		if err != nil {
+			t.Fatalf("read ip_forward = %v", err)
+		}
+		if strings.TrimSpace(string(got)) != "1" {
+			t.Errorf("ip_forward = %q, want 1", strings.TrimSpace(string(got)))
+		}
+		// Idempotent: a second call must succeed and leave it enabled.
+		if err := f.EnableIPForwarding(); err != nil {
+			t.Errorf("EnableIPForwarding() second call = %v", err)
+		}
+	})
+}
+
+func TestLinuxFabricAnycastGateway(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-any0"
+		mac := GatewayMAC(0x001000) // 4096
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureAnycastGateway(bridge, OverlayGatewayAddr, mac); err != nil {
+			requireNetfabric(t, "EnsureAnycastGateway = %v", err)
+		}
+
+		link, err := netlink.LinkByName(bridge)
+		if err != nil {
+			t.Fatalf("LinkByName = %v", err)
+		}
+		if got := link.Attrs().HardwareAddr.String(); got != mac.String() {
+			t.Errorf("bridge MAC = %v, want %v", got, mac.String())
+		}
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("AddrList = %v", err)
+		}
+		want := OverlayGatewayAddr.String() + "/32"
+		found := false
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("addr %s not present on %q", want, bridge)
+		}
+
+		// Idempotent re-assert.
+		if err := f.EnsureAnycastGateway(bridge, OverlayGatewayAddr, mac); err != nil {
+			t.Errorf("EnsureAnycastGateway second call = %v", err)
+		}
+
+		// Removal drops the address; idempotent on absent.
+		if err := f.RemoveAnycastGateway(bridge, OverlayGatewayAddr); err != nil {
+			t.Fatalf("RemoveAnycastGateway = %v", err)
+		}
+		addrs, _ = netlink.AddrList(link, netlink.FAMILY_V4)
+		for _, a := range addrs {
+			if a.IPNet != nil && a.IPNet.String() == want {
+				t.Errorf("addr %s still present after RemoveAnycastGateway", want)
+			}
+		}
+		if err := f.RemoveAnycastGateway(bridge, OverlayGatewayAddr); err != nil {
+			t.Errorf("RemoveAnycastGateway on absent = %v", err)
 		}
 	})
 }

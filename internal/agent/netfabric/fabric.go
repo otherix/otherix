@@ -73,6 +73,32 @@ type Fabric interface {
 	EnsureMasquerade(subnet netip.Prefix, egressIface string) error
 	// RemoveMasquerade removes the masquerade rule for subnet.
 	RemoveMasquerade(subnet netip.Prefix) error
+	// EnableIPForwarding turns on IPv4 forwarding in the agent's network
+	// namespace (net.ipv4.ip_forward=1). Idempotent. Required before a node
+	// can route overlay VM egress out its uplink.
+	EnableIPForwarding() error
+
+	// EnsureAnycastGateway pins mac as the bridge link's hardware address and
+	// assigns addr as a /32 to it, idempotently. The bridge becomes the
+	// VM-facing anycast L3 gateway: uniform addr+mac on every node so a VM's
+	// cached next-hop survives live migration and is always answered locally.
+	EnsureAnycastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error
+	// RemoveAnycastGateway removes addr (/32) from the bridge. nil when the
+	// bridge or the address is already absent.
+	RemoveAnycastGateway(bridge string, addr netip.Addr) error
+
+	// EnsureMasqueradeIface installs a masquerade rule for traffic entering via
+	// inIface and leaving via egressIface (empty = host default route),
+	// idempotently. CIDR-independent; used for overlay egress.
+	EnsureMasqueradeIface(inIface, egressIface string) error
+	// RemoveMasqueradeIface removes every masquerade rule tagged for inIface.
+	RemoveMasqueradeIface(inIface string) error
+
+	// EnsureBridgeRoute installs a link-scoped connected route for subnet via the
+	// named bridge, idempotently, so the node routes return traffic to VMs on the
+	// overlay back to the bridge (the anycast gateway is a link-local /32 and
+	// gives the node no route to the overlay subnet otherwise).
+	EnsureBridgeRoute(subnet netip.Prefix, bridge string) error
 
 	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
 	// brings it up. Learning is off (the FDB is controller-authoritative);
