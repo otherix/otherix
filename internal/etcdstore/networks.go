@@ -388,6 +388,34 @@ func (s *Store) countVMNicsOnNetwork(ctx context.Context, id uuid.UUID) (int64, 
 	return count, nil
 }
 
+// ListVMNicsByNetwork returns the non-deleted NIC rows attached to the network,
+// reconciling the per-network index against live rows: a stale index entry whose
+// row is gone or soft-deleted is skipped. Used by the heartbeat projection to
+// build declared_networks[].reservations.
+func (s *Store) ListVMNicsByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.VMNic, error) {
+	items, err := s.c.Range(ctx, vmNicNetworkIndexPrefix(networkID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.VMNic, 0, len(items))
+	for _, kv := range items {
+		nicID, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
+		}
+		var n store.VMNic
+		found, gerr := s.c.GetJSON(ctx, vmNicKey(nicID), &n)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || n.DeletedAt != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // UpsertNetworkNodeStatus writes the per-(node, network) reconciliation record,
 // always bumping updated_at. last_reconciled_at tracks the last SUCCESSFUL
 // reconciliation: it is stamped only when the reported status is "ready"; a
