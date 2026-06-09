@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,11 @@ var defaultResolvPaths = []string{"/run/systemd/resolve/resolv.conf", "/etc/reso
 // a VM still resolves names even on a host with only a 127.0.0.53 stub.
 const fallbackResolver = "1.1.1.1:53"
 
+// defaultMaxInFlight caps concurrent relays (and thus upstream sockets) when
+// Config.MaxInFlight is unset, bounding the blast radius of a guest flooding
+// the anycast resolver.
+const defaultMaxInFlight = 256
+
 // Config parametrises a Forwarder.
 type Config struct {
 	// Listen is the UDP bind address, e.g. "169.254.1.1:53". Bound with
@@ -40,6 +46,10 @@ type Config struct {
 	// back to upstreamResolvers() at New time.
 	Upstreams []string
 	Log       *slog.Logger
+	// MaxInFlight caps concurrent relays. Excess inbound queries are dropped
+	// (DNS clients retry) rather than queued, so a flooding guest cannot spawn
+	// unbounded goroutines/sockets. <= 0 applies defaultMaxInFlight.
+	MaxInFlight int
 }
 
 // Forwarder relays UDP DNS queries to an upstream resolver.
@@ -49,6 +59,11 @@ type Forwarder struct {
 	log       *slog.Logger
 
 	ready chan struct{}
+
+	// sem bounds concurrent relays; a non-blocking send acquires a slot.
+	sem chan struct{}
+	// dropped counts queries shed because sem was full.
+	dropped atomic.Uint64
 
 	mu   sync.Mutex
 	conn net.PacketConn
@@ -67,13 +82,22 @@ func New(cfg Config) (*Forwarder, error) {
 	if len(ups) == 0 {
 		ups = upstreamResolvers()
 	}
+	max := cfg.MaxInFlight
+	if max <= 0 {
+		max = defaultMaxInFlight
+	}
 	return &Forwarder{
 		listen:    cfg.Listen,
 		upstreams: ups,
 		log:       cfg.Log,
 		ready:     make(chan struct{}),
+		sem:       make(chan struct{}, max),
 	}, nil
 }
+
+// Dropped reports the number of queries shed because the in-flight relay cap
+// was full. Monotonic; for observability and tests.
+func (f *Forwarder) Dropped() uint64 { return f.dropped.Load() }
 
 // Ready is closed once the listener is bound, so callers (and tests) can wait
 // for serving to begin.
@@ -120,7 +144,20 @@ func (f *Forwarder) Run(ctx context.Context) error {
 		}
 		query := make([]byte, n)
 		copy(query, buf[:n])
-		go f.relay(conn, client, query)
+		select {
+		case f.sem <- struct{}{}:
+			go func() {
+				defer func() { <-f.sem }()
+				f.relay(conn, client, query)
+			}()
+		default:
+			// At capacity: drop this query rather than spawn an unbounded
+			// goroutine/socket. DNS clients retry; this caps the blast radius
+			// of a guest flooding the anycast resolver.
+			if n := f.dropped.Add(1); n == 1 || n%1000 == 0 {
+				f.log.Warn("dns forwarder dropping queries at capacity", "dropped_total", n, "max_in_flight", cap(f.sem))
+			}
+		}
 	}
 }
 
@@ -153,11 +190,20 @@ func exchangeUDP(upstream string, query []byte, timeout time.Duration) ([]byte, 
 		return nil, err
 	}
 	resp := make([]byte, 1500)
-	n, err := c.Read(resp)
-	if err != nil {
-		return nil, err
+	for {
+		n, err := c.Read(resp)
+		if err != nil {
+			return nil, err
+		}
+		// Validate the DNS transaction id (first 2 bytes) matches the query.
+		// The connected socket already filters by upstream addr; the txid check
+		// rejects an off-path forged reply racing the real one.
+		if n >= 2 && len(query) >= 2 && resp[0] == query[0] && resp[1] == query[1] {
+			return resp[:n], nil
+		}
+		// Mismatched txid: keep reading until the deadline (the read deadline set
+		// above bounds this loop; a timeout surfaces as an error from c.Read).
 	}
-	return resp[:n], nil
 }
 
 // upstreamResolvers discovers the node's upstream resolvers from the default
