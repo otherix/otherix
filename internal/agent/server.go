@@ -133,7 +133,9 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// responses and materialises node-local bridges + NAT via the same
 	// fabric the VM manager uses. Plugs into the sender as both
 	// ResponseHandler and NetworkReporter.
-	netReconciler, err := reconciler.NewNetworks(fabric, log, 0)
+	// TODO(slice2): wire dhcp4 responder here (next task constructs and
+	// threads the real per-node responder; nil keeps DHCP registration off).
+	netReconciler, err := reconciler.NewNetworks(fabric, nil, log, 0)
 	if err != nil {
 		return fmt.Errorf("network reconciler: %w", err)
 	}

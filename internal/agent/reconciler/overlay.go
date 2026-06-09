@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
@@ -131,7 +132,65 @@ func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredN
 			slog.String("network_id", d.ID), slog.String("error", err.Error()))
 		return
 	}
-	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal, HasEgress: true}
+	// DHCP is overlay-only (the wire dhcp flag is only ever set for egress=nat
+	// overlays). Re-assert the registration on EVERY pass when enabled: the
+	// responder is idempotent (it swaps reservations), so this converges new or
+	// changed reservations. Best-effort, fail toward connectivity: a register
+	// failure is logged and retried next pass, it must NOT fail the network.
+	if d.DhcpEnabled && r.dhcp != nil {
+		if subnet, err := netip.ParsePrefix(deref(d.Subnet)); err != nil {
+			r.log.WarnContext(ctx, "overlay dhcp: bad subnet, skipping registration",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		} else if err := r.dhcp.RegisterNetwork(dhcp4.NetworkConfig{
+			NetworkID:    d.ID,
+			Bridge:       d.BridgeName,
+			Subnet:       subnet,
+			Reservations: parseReservations(ctx, r.log, d.Reservations),
+		}); err != nil {
+			r.log.WarnContext(ctx, "overlay dhcp: register failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+			// best-effort: keep the overlay ready, retried next pass
+		}
+	}
+	r.applied[d.ID] = appliedNetwork{
+		BridgeName: d.BridgeName,
+		Managed:    true,
+		Overlay:    true,
+		VNI:        vniVal,
+		HasEgress:  true,
+		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
+	}
+}
+
+// parseReservations converts the wire reservations to dhcp4 form, skipping
+// entries with an unparseable MAC or IP (logged), so one bad entry never drops
+// the rest.
+func parseReservations(ctx context.Context, log *slog.Logger, in []heartbeat.DhcpReservation) []dhcp4.Reservation {
+	out := make([]dhcp4.Reservation, 0, len(in))
+	for _, r := range in {
+		mac, err := net.ParseMAC(r.MAC)
+		if err != nil {
+			log.WarnContext(ctx, "overlay dhcp: bad reservation mac, skipping",
+				slog.String("mac", r.MAC), slog.String("error", err.Error()))
+			continue
+		}
+		ip, err := netip.ParseAddr(r.IP)
+		if err != nil {
+			log.WarnContext(ctx, "overlay dhcp: bad reservation ip, skipping",
+				slog.String("ip", r.IP), slog.String("error", err.Error()))
+			continue
+		}
+		out = append(out, dhcp4.Reservation{MAC: mac, IP: ip})
+	}
+	return out
+}
+
+// deref returns the pointee of p, or the empty string when p is nil.
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for
