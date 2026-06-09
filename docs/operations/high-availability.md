@@ -112,11 +112,15 @@ run:
 
 ```
 sudo otherix-api join \
-  --cp-url https://<existing-replica>:8080 \
+  --cp-url https://<existing-replica>:8443 \
   --token <token> \
   --ca-fingerprint sha256:<fingerprint> \
   --name otherix-1
 ```
+
+`--cp-url` points at the existing replica's agent-TLS listener (`:8443` by
+default), where `/v1/cluster/join` is served - not the public API listener
+(`:8080`).
 
 This writes the `cluster_join:` block, sets `etcd.mode: join`, and records a
 unique `etcd.name` into `/etc/otherix/api.yaml`, then restarts the unit. At boot

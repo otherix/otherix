@@ -23,7 +23,7 @@ func newJoinTokenCreateCommand() *cobra.Command {
 plus the cluster CA fingerprint, returned exactly once. Hand BOTH to a
 new control-plane host:
 
-  sudo otherix-api join --cp-url https://<this-cp>:8080 \
+  sudo otherix-api join --cp-url https://<this-cp>:8443 \
     --token <token> --ca-fingerprint sha256:<fingerprint> --name <unique>
 
 A cluster token redeems for the CA private key, so it defaults to
@@ -91,7 +91,7 @@ func printClusterTokenBundle(cmd *cobra.Command, resp cpclient.CreateJoinTokenRe
 	printf(cmd, "  sha256:%s\n\n", resp.CAFingerprintSHA256)
 	printf(cmd, "Save BOTH NOW - server stores only the hash; plaintext cannot be retrieved.\n")
 	printf(cmd, "On the new control-plane host run:\n\n")
-	printf(cmd, "  sudo otherix-api join --cp-url https://<this-cp>:8080 \\\n")
+	printf(cmd, "  sudo otherix-api join --cp-url https://<this-cp>:8443 \\\n")
 	printf(cmd, "    --token %s \\\n", resp.Token)
 	printf(cmd, "    --ca-fingerprint sha256:%s --name <unique-member-name>\n\n", resp.CAFingerprintSHA256)
 	printf(cmd, "Expires: %s (TTL: %s).\n", resp.ExpiresAt, ttl)
