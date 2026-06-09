@@ -19,14 +19,11 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.1
-          # goinstall builds golangci-lint from source with the runner's Go,
-          # so its bundled staticcheck typechecks against the same std-lib as
-          # the code. The prebuilt v2.12.1 binary (built against an older Go)
-          # mis-handles the testing.(*T).Fatal no-return fact under go 1.26.4
-          # and emits false-positive SA5011 on correct nil-check-then-Fatal
-          # test code; building from source avoids that mismatch.
-          install-mode: goinstall
+          # v2.12.2 fixes a staticcheck false-positive SA5011 (possible nil
+          # pointer dereference) that v2.12.1 emits on the correct
+          # nil-check-then-t.Fatal test idiom under go 1.26.4. Keep in sync
+          # with GOLANGCI_VERSION in the Makefile.
+          version: v2.12.2
           args: --timeout 5m
 
   vuln:

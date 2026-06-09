@@ -3,7 +3,7 @@
 BINARIES        := api agent
 BIN_DIR         := bin
 GO              := go
-GOLANGCI_VERSION := v2.12.1
+GOLANGCI_VERSION := v2.12.2
 GOLANGCI_IMAGE   := golangci/golangci-lint:$(GOLANGCI_VERSION)
 # GOIMPORTS_VERSION tracks golang.org/x/tools in go.mod (goimports ships from it).
 GOFUMPT_VERSION  := v0.7.0
