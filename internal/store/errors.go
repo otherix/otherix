@@ -42,7 +42,7 @@ var (
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
-	ErrSubnetExhausted           = errors.New("network subnet exhausted")
+	ErrSubnetExhausted           = errors.New("store: network subnet exhausted")
 )
 
 // ResourceInUseError reports that a resource cannot be deleted because other

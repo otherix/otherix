@@ -63,22 +63,31 @@ func vmNicIPv4ReservationPrefix(networkID uuid.UUID) string {
 }
 
 // allocateNICIPv4 returns the lowest free host address in subnet for the
-// network, skipping the network and broadcast addresses. It reads the current
-// reservations (uniq/vm_nics/ipv4/<networkID>/) and returns the first gap. The
-// returned candidate is fixed by a CreateRevision==0 guard in the bind txn, so a
-// lost race fails the bind (retried) rather than double-allocating. Returns
+// network, skipping the network and broadcast addresses and, when gateway is
+// non-nil, the gateway address. It reads the current reservations
+// (uniq/vm_nics/ipv4/<networkID>/) and returns the first gap. The returned
+// candidate is fixed by a CreateRevision==0 guard in the bind txn, so a lost
+// race fails the bind (retried) rather than double-allocating. Returns
 // store.ErrSubnetExhausted when no host is free.
-func (s *Store) allocateNICIPv4(ctx context.Context, networkID uuid.UUID, subnet netip.Prefix) (netip.Addr, error) {
+//
+// A nil gateway is the overlay reality: overlay gateways are link-local
+// (169.254.1.1), not in the VM subnet, so the subnet's first host (.1) is a
+// valid VM address. A bridge-style network carries an in-subnet gateway, which
+// is added to the taken set so it is never handed out.
+func (s *Store) allocateNICIPv4(ctx context.Context, networkID uuid.UUID, subnet netip.Prefix, gateway *netip.Addr) (netip.Addr, error) {
 	items, err := s.c.Range(ctx, vmNicIPv4ReservationPrefix(networkID))
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	taken := make(map[netip.Addr]struct{}, len(items))
+	taken := make(map[netip.Addr]struct{}, len(items)+1)
 	for _, kv := range items {
 		ipStr := kv.Key[strings.LastIndexByte(kv.Key, '/')+1:]
 		if ip, perr := netip.ParseAddr(ipStr); perr == nil {
 			taken[ip] = struct{}{}
 		}
+	}
+	if gateway != nil {
+		taken[*gateway] = struct{}{}
 	}
 	network := subnet.Masked().Addr()
 	broadcast := lastAddr4(subnet)

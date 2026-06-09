@@ -19,23 +19,22 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// seedDhcpNetwork creates a managed type=bridge network with egress=nat, a
-// subnet, and DhcpEnabled=true - the shape that turns on CP-IPAM in the bind
-// txn. It returns the persisted row.
+// seedDhcpNetwork creates a type=overlay network with a subnet and
+// DhcpEnabled=true - the real supported shape that turns on CP-IPAM in the bind
+// txn. Overlay gateways are link-local (169.254.1.1), NOT in the VM subnet, so
+// Gateway is nil and the subnet's first host (.1) is a valid VM address. The
+// store stamps BridgeName/Managed/Mtu/VNI for overlays; it returns the
+// persisted row.
 func seedDhcpNetwork(t *testing.T, s *etcdstore.Store, subnet string) store.Network {
 	t.Helper()
 	p := netip.MustParsePrefix(subnet)
-	gw := p.Masked().Addr().Next()
 	n, err := s.CreateNetwork(context.Background(), store.CreateNetworkParams{
 		ID:          uuid.New(),
 		Name:        uniqueNetName("dhcp"),
-		Type:        store.NetworkTypeBridge,
-		BridgeName:  "br0",
-		Managed:     true,
+		Type:        store.NetworkTypeOverlay,
 		Egress:      store.NetworkEgressNAT,
-		Mtu:         1500,
 		Subnet:      &p,
-		Gateway:     &gw,
+		Gateway:     nil,
 		DhcpEnabled: true,
 		Config:      []byte(`{}`),
 	})
@@ -153,6 +152,50 @@ func TestBindScheduledVMSecondNICDistinctIP(t *testing.T) {
 	}
 	if want := netip.MustParseAddr("10.62.0.2"); ip2 != want {
 		t.Errorf("second ip = %v, want %v", ip2, want)
+	}
+}
+
+// TestBindScheduledVMHonoursPreSeededReservation proves the CP-IPAM
+// reservation guard has teeth WITHOUT relying on real goroutine timing: it
+// pre-seeds the reservation key for the IP the allocator would otherwise pick
+// first (.1), then drives a real BindScheduledVM. A single bind attempt sees
+// the existing reservation in its scan, skips it, and the CreateRevision==0
+// guard on the chosen key fixes the next free host (.2) in the same txn. So two
+// binds can never share an address: an IP already reserved (whether by a
+// committed NIC or by a concurrent bind that won the race) is never re-handed.
+// The guard is the backstop for the scan-then-commit window - a bind that lost
+// the race fails its CreateRevision compare and the scheduler re-plans on the
+// next tick, picking a fresh free IP.
+func TestBindScheduledVMHonoursPreSeededReservation(t *testing.T) {
+	st, cli := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	nodeID, poolID, poolName := schedulingFixture(t, st)
+	net := seedDhcpNetwork(t, st, "10.62.0.0/24")
+
+	// Pre-seed the reservation for .1 (a stand-in for a NIC bound by another
+	// replica), as if a concurrent bind already claimed the allocator's first
+	// candidate.
+	first := netip.MustParseAddr("10.62.0.1")
+	preKey := etcd.Key("uniq", "vm_nics", "ipv4", net.ID.String(), first.String())
+	if err := cli.Put(ctx, preKey, []byte(uuid.NewString())); err != nil {
+		t.Fatalf("pre-seed reservation: %v", err)
+	}
+
+	vmID, _ := bindVMWithNIC(t, st, "vm-ipam-guard", nodeID, poolID, poolName, net.ID, "52:54:00:00:00:09")
+
+	// The bind must NOT have re-used the pre-seeded .1; it gets the next free
+	// host .2, with its own reservation guard committed in the bind txn.
+	ip := nicIP(t, st, ctx, vmID)
+	if ip == first {
+		t.Fatalf("bind re-used pre-seeded reservation %v, want the next free host", first)
+	}
+	if want := netip.MustParseAddr("10.62.0.2"); ip != want {
+		t.Errorf("bound ip = %v, want %v (first free host past the pre-seeded reservation)", ip, want)
+	}
+	resKey := etcd.Key("uniq", "vm_nics", "ipv4", net.ID.String(), ip.String())
+	if _, found, err := cli.Get(ctx, resKey); err != nil || !found {
+		t.Errorf("reservation key %q present=%v err=%v, want present", resKey, found, err)
 	}
 }
 
