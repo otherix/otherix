@@ -3,8 +3,6 @@
 
 package dhcp4
 
-import "context"
-
 // FakeResponder is a Spy implementation of Responder for tests. It records
 // every call into an exported slice and returns a configurable error per
 // method via Errs, keyed by method name (nil or absent => success).
@@ -35,13 +33,6 @@ func (f *FakeResponder) RegisterNetwork(cfg NetworkConfig) error {
 func (f *FakeResponder) DeregisterNetwork(networkID string) error {
 	f.DeregisterCalls = append(f.DeregisterCalls, networkID)
 	return f.err("DeregisterNetwork")
-}
-
-// Run blocks until ctx is cancelled and returns ctx.Err(). The Spy serves no
-// traffic; it exists so FakeResponder satisfies Responder.
-func (f *FakeResponder) Run(ctx context.Context) error {
-	<-ctx.Done()
-	return ctx.Err()
 }
 
 // Ensure FakeResponder satisfies Responder at compile time.

@@ -239,6 +239,13 @@ type overlayService interface {
 	Run(ctx context.Context) error
 }
 
+// dhcpService is the per-node DHCP responder as the agent runtime consumes it:
+// the reconciler-facing dhcp4.Responder plus the Run lifecycle the runtime drives.
+type dhcpService interface {
+	dhcp4.Responder
+	Run(ctx context.Context) error
+}
+
 // newOverlayServices constructs the per-node overlay L3 services that bind at
 // the gateway anycast address (169.254.1.1).
 //
@@ -249,7 +256,7 @@ type overlayService interface {
 // the overlay anycast gateway and its Lease to dhcp4.DefaultLease, so an
 // otherwise-empty Config suffices. The reconciler registers both per
 // dhcp-enabled overlay; only the responder is also threaded into NewNetworks.
-func newOverlayServices(log *slog.Logger) (dns overlayService, dhcp dhcp4.Responder, err error) {
+func newOverlayServices(log *slog.Logger) (dns overlayService, dhcp dhcpService, err error) {
 	dnsForwarder, err := dnsproxy.New(dnsproxy.Config{
 		Listen: net.JoinHostPort(netfabric.OverlayGatewayAddr.String(), strconv.Itoa(netfabric.OverlayDNSPort)),
 		Log:    log,
