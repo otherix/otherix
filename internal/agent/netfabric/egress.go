@@ -25,5 +25,6 @@ const OverlayDNSPort = 53
 // (anycast works, no flooding across the VXLAN) yet distinct per overlay on a
 // host (no duplicate MAC on the same machine).
 func GatewayMAC(vni uint32) net.HardwareAddr {
+	//nolint:gosec // G115: VNI is a 24-bit VXLAN id; truncating each shifted octet to a byte is the intended encoding.
 	return net.HardwareAddr{0x02, 0x00, 0x00, byte(vni >> 16), byte(vni >> 8), byte(vni)}
 }

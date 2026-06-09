@@ -41,7 +41,9 @@ const ifnameSize = 16
 func (f *linuxFabric) EnableIPForwarding() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o644); err != nil {
+	// 0o600: procfs ignores the mode (the file already exists), but gosec G306
+	// wants <=0o600. Functionally irrelevant for /proc/sys.
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o600); err != nil {
 		return fmt.Errorf("netfabric: enable ip_forward: %v", err)
 	}
 	return nil
