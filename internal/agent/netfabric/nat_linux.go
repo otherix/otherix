@@ -37,7 +37,8 @@ const ifnameSize = 16
 // EnableIPForwarding enables IPv4 forwarding in the current network
 // namespace. net.ipv4.ip_forward is per-netns, so writing it from the agent
 // process (which runs in the node's netns) affects only this node. Idempotent:
-// writing "1" when already 1 is a no-op.
+// writing "1" when already 1 is a no-op. On a bare-metal agent (host root
+// netns) this is the host-global setting and is not reverted on teardown.
 func (f *linuxFabric) EnableIPForwarding() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

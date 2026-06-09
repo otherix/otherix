@@ -43,7 +43,9 @@ type Config struct {
 	// anycast address to any overlay bridge.
 	Listen string
 	// Upstreams is the ordered list of resolver host:port targets. Empty falls
-	// back to upstreamResolvers() at New time.
+	// back to upstreamResolvers() at New time. Upstreams are resolved ONCE at
+	// construction: a later resolv.conf change requires an agent restart to take
+	// effect.
 	Upstreams []string
 	Log       *slog.Logger
 	// MaxInFlight caps concurrent relays. Excess inbound queries are dropped

@@ -159,6 +159,67 @@ local-dev-start`.
 Pass criteria: ping + DNS + HTTP all succeed; the masquerade rule is present; no
 `/etc/hosts` mapping and no external DHCP were involved.
 
+### Multi-overlay anycast containment (extended smoke)
+
+The gateway address `169.254.1.1` is anycast on the `otb<vni>` bridge of EVERY
+egress overlay, each with a distinct per-VNI MAC. Bringing up two egress
+overlays on one node verifies they do not interfere (the agent sets
+`arp_ignore=1` / `arp_announce=2` per bridge to contain the shared address).
+
+1. Create a second egress overlay:
+
+   ```bash
+   ./bin/otherix network create ov-egress-2 \
+     --type overlay --subnet 10.61.0.0/24 --egress nat
+   ```
+
+2. Attach a VM to each overlay (`10.60.0.x` on `ov-egress`, `10.61.0.x` on
+   `ov-egress-2`), both with the same static cloud-init gateway/DNS
+   `169.254.1.1` (on-link), as in the single-overlay scenario.
+
+3. From each VM independently verify egress and DNS:
+
+   ```bash
+   ping -c2 8.8.8.8
+   getent hosts archive.ubuntu.com
+   ```
+
+4. On each node, confirm neither VM learned the other bridge's gateway MAC:
+
+   ```bash
+   # in the VM:
+   ip neigh show 169.254.1.1     # MAC must match THIS overlay's otb<vni>, not the other
+   ```
+
+   And on the node, the per-bridge ARP sysctls are set:
+
+   ```bash
+   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otb<vni>/arp_ignore   # 1
+   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otb<vni>/arp_announce # 2
+   ```
+
+Pass criteria: both VMs reach the internet and resolve DNS independently;
+neither VM's `169.254.1.1` neighbor entry shows the other overlay's MAC.
+
+## Overlay egress: known limitations (Slice 1)
+
+- **DNS forwarder upstreams are read once at agent start.** A change to the
+  node's `/etc/resolv.conf` (DHCP renew, systemd-resolved update) is not picked
+  up until the agent restarts. The forwarder is UDP-only (no TCP fallback) and
+  drops queries beyond an in-flight cap (a flood degrades to drops, not agent
+  exhaustion).
+- **`ip_forward` is enabled host-globally and not reverted.** On a bare-metal
+  agent (host root netns) the first egress overlay sets `net.ipv4.ip_forward=1`
+  for the whole host, and teardown does not reset it. There is no `forward`-chain
+  default-deny yet, so overlay VMs can route to other host-reachable networks;
+  restricting that is a planned follow-up.
+- **No anti-spoof on the overlay L2 segment.** A compromised VM can ARP-spoof the
+  gateway (`169.254.1.1`) and MITM co-overlay VMs' egress and DNS. This is
+  inherent to the flat-L2 overlay until per-port filtering / IPAM lands.
+- **Static addressing only.** VMs are addressed via cloud-init; CP-managed IPAM
+  and a per-node DHCP responder (delivering the gateway via DHCP option 121)
+  arrive in Slice 2.
+
 ## Manual topology control
 
 ```bash
