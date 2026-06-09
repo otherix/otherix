@@ -408,11 +408,11 @@ func TestDefaultAPIConfig_EtcdSingleNode(t *testing.T) {
 	want := EtcdConfig{
 		Mode:         "single",
 		Name:         "otherix-0",
-		DataDir:      "/opt/otherix/etcd",
+		DataDir:      "/var/lib/otherix/etcd",
 		PeerURL:      "https://127.0.0.1:2380",
 		ClientURL:    "http://127.0.0.1:2379",
 		ClusterToken: "otherix-cluster",
-		PeerAutoDir:  "/opt/otherix/peer",
+		PeerAutoDir:  "/var/lib/otherix/peer",
 	}
 	if got != want {
 		t.Errorf("defaultAPIConfig().Etcd = %+v, want %+v", got, want)
@@ -441,7 +441,7 @@ func TestStoragePoolsConfig_ValidateDefaultPoolName(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := StoragePoolsConfig{
-				AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+				AllowedPathPrefixes: []string{"/var/lib/otherix/pools/"},
 				DefaultPoolName:     tc.pool,
 			}
 			err := cfg.Validate()
