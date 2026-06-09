@@ -31,6 +31,7 @@ func TestSchedulingReasonFor(t *testing.T) {
 		{name: "pool not on node", err: fmt.Errorf("bind: %w", scheduler.ErrPoolNotOnNode), want: store.SchedReasonPoolNotOnNode},
 		{name: "no eligible nodes", err: fmt.Errorf("bind: %w", scheduler.ErrNoEligibleNodes), want: store.SchedReasonNoEligibleNodes},
 		{name: "pool not writable", err: &poolNotWritableError{poolType: "ceph_rbd"}, want: store.SchedReasonPoolNotWritable},
+		{name: "subnet exhausted", err: fmt.Errorf("bind: %w", store.ErrSubnetExhausted), want: store.SchedReasonSubnetExhausted},
 		{name: "unmapped infra error falls to pool_not_ready", err: fmt.Errorf("etcd timeout"), want: store.SchedReasonPoolNotReady},
 	}
 

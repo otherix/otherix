@@ -187,6 +187,94 @@ func TestScheduleFunc_PendingReasonWhenPoolMissing(t *testing.T) {
 	}
 }
 
+// TestScheduleFunc_SubnetExhaustedReason drives the REAL bind seam against a
+// dhcp overlay whose subnet has no free host left: CP-IPAM (allocateNICIPv4)
+// returns store.ErrSubnetExhausted from inside BindScheduledVM, and the
+// reconcile loop must record reason=subnet_exhausted on the still-pending VM -
+// NOT the misleading pool_not_ready storage default. A /30 overlay yields at
+// most two usable hosts, so a short bind loop fills it; the next VM exhausts.
+func TestScheduleFunc_SubnetExhaustedReason(t *testing.T) {
+	h := newE2E(t)
+	ctx := context.Background()
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	nodeID, poolName := schedulableFixtureWithNode(t, h, adminID)
+
+	// A /30 dhcp overlay: 4 addresses, network + broadcast unusable, so at most
+	// two host slots. Mark it ready on the node so the network-aware placement
+	// filter passes and the bind reaches CP-IPAM.
+	ovNet := overlayDhcpNetwork(t, h, admin, "10.71.0.0/30")
+	if err := h.store.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: uuid.MustParse(ovNet.ID), NodeID: nodeID, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus: %v", err)
+	}
+
+	fn := vms.ScheduleFunc(h.store, vms.ScheduleConfig{Algorithm: "least_vm_count"}, scheduleLogger(), defaultScheduleResources())
+
+	// Fill the subnet by binding VMs until one stays pending with a reason. A /30
+	// has at most two host slots, so this terminates well within the cap.
+	const maxVMs = 6
+	var exhaustedVMID uuid.UUID
+	for i := 0; i < maxVMs; i++ {
+		body := vmCreateBody(map[string]any{"pool": poolName, "network": ovNet.Name})
+		resp := h.post(t, "/v1/vms", body, admin)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create vm %d status = %d, want 201", i, resp.StatusCode)
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		decodeJSON(t, resp, &created)
+		vmID := uuid.MustParse(created.ID)
+
+		if err := fn(ctx); err != nil {
+			t.Fatalf("ScheduleFunc (vm %d): %v", i, err)
+		}
+
+		vm, err := h.store.VMByID(ctx, vmID)
+		if err != nil {
+			t.Fatalf("VMByID (vm %d): %v", i, err)
+		}
+		if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
+			exhaustedVMID = vmID
+			break
+		}
+	}
+
+	if exhaustedVMID == uuid.Nil {
+		t.Fatalf("no VM stayed pending after %d binds; the /30 subnet never exhausted", maxVMs)
+	}
+
+	vm, err := h.store.VMByID(ctx, exhaustedVMID)
+	if err != nil {
+		t.Fatalf("VMByID (exhausted): %v", err)
+	}
+	if vm.SchedulingReason == nil || *vm.SchedulingReason != store.SchedReasonSubnetExhausted {
+		t.Errorf("SchedulingReason = %v, want %q (not pool_not_ready)", vm.SchedulingReason, store.SchedReasonSubnetExhausted)
+	}
+	// The exhausted VM stays pending and enqueues no create task - it is retried
+	// on the next tick, not failed.
+	if hasVMCreateTask(t, h, exhaustedVMID) {
+		t.Error("vm.create task enqueued for a subnet-exhausted VM, want none")
+	}
+
+	// The public status surfaces the same machine-readable reason.
+	getResp := h.get(t, "/v1/vms/"+vm.Name, admin)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get vm status = %d, want 200", getResp.StatusCode)
+	}
+	var got struct {
+		Status struct {
+			Phase  string `json:"phase"`
+			Reason string `json:"reason"`
+		} `json:"status"`
+	}
+	decodeJSON(t, getResp, &got)
+	if got.Status.Reason != store.SchedReasonSubnetExhausted {
+		t.Errorf("public status.reason = %q, want %q", got.Status.Reason, store.SchedReasonSubnetExhausted)
+	}
+}
+
 // TestVMDelete_PendingVMSyncNoContent drives DELETE /v1/vms/{name} on a PENDING
 // (unscheduled) VM: with no node and no agent task, the CP deletes it directly
 // and returns 204 No Content (not the scheduled-VM 202 + vm.delete task). A
