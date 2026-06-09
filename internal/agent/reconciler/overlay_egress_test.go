@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package reconciler
+
+import (
+	"context"
+	"net/netip"
+	"testing"
+	"time"
+
+	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/netfabric"
+)
+
+// overlayEgressNet returns overlayNet() with egress=nat enabled.
+func overlayEgressNet() heartbeat.DeclaredNetwork {
+	d := overlayNet()
+	d.Egress = "nat"
+	return d
+}
+
+// readyEgressFabric is a fabric primed so applyOverlay reaches the egress
+// branch: otwg0 up carrying the self overlay IP.
+func readyEgressFabric() *netfabric.FakeFabric {
+	return &netfabric.FakeFabric{LinkStateResult: map[string]netfabric.LinkState{
+		"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+	}}
+}
+
+func TestApplyOverlayEgressInstallsGatewayAndMasq(t *testing.T) {
+	f := readyEgressFabric()
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayEgressNet()},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "ready" {
+		t.Fatalf("status = %q (%v), want ready", rep.ReconciliationStatus, rep.ReconciliationError)
+	}
+	if f.EnableIPForwardingCalls == 0 {
+		t.Errorf("EnableIPForwarding not called for egress overlay")
+	}
+	if len(f.AnycastGatewayCalls) != 1 {
+		t.Fatalf("AnycastGatewayCalls = %d, want 1", len(f.AnycastGatewayCalls))
+	}
+	gw := f.AnycastGatewayCalls[0]
+	if gw.Bridge != "otb1000" {
+		t.Errorf("anycast gateway bridge = %q, want otb1000", gw.Bridge)
+	}
+	if gw.Addr != netfabric.OverlayGatewayAddr {
+		t.Errorf("anycast gateway addr = %v, want %v", gw.Addr, netfabric.OverlayGatewayAddr)
+	}
+	if want := netfabric.GatewayMAC(1000).String(); gw.MAC != want {
+		t.Errorf("anycast gateway MAC = %q, want %q", gw.MAC, want)
+	}
+	if len(f.MasqueradeIfaceCalls) != 1 || f.MasqueradeIfaceCalls[0].InIface != "otb1000" {
+		t.Errorf("MasqueradeIfaceCalls = %+v, want one for otb1000", f.MasqueradeIfaceCalls)
+	}
+	if !rec.applied["ov1"].HasEgress {
+		t.Errorf("applied[ov1].HasEgress = false, want true")
+	}
+}
+
+func TestApplyOverlayNoEgressSkipsMasq(t *testing.T) {
+	f := readyEgressFabric()
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayNet()}, // egress=""
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	var rep heartbeat.NetworkReport
+	for _, r := range rec.NetworkReports() {
+		if r.ID == "ov1" {
+			rep = r
+		}
+	}
+	if rep.ReconciliationStatus != "ready" {
+		t.Fatalf("status = %q, want ready", rep.ReconciliationStatus)
+	}
+	if f.EnableIPForwardingCalls != 0 {
+		t.Errorf("EnableIPForwarding called for egress=none overlay")
+	}
+	if len(f.AnycastGatewayCalls) != 0 {
+		t.Errorf("AnycastGateway called for egress=none overlay: %+v", f.AnycastGatewayCalls)
+	}
+	if len(f.MasqueradeIfaceCalls) != 0 {
+		t.Errorf("MasqueradeIface called for egress=none overlay: %+v", f.MasqueradeIfaceCalls)
+	}
+	if rec.applied["ov1"].HasEgress {
+		t.Errorf("HasEgress set for egress=none overlay")
+	}
+}
+
+func TestApplyOverlayEgressTeardownRemovesMasq(t *testing.T) {
+	f := readyEgressFabric()
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{overlayEgressNet()},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background()) // materialise
+	// CP deletes the network: empty declared set.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
+	rec.reconcile(context.Background()) // teardown
+	if len(f.RemoveMasqIfaceCalls) != 1 || f.RemoveMasqIfaceCalls[0] != "otb1000" {
+		t.Errorf("RemoveMasqIfaceCalls = %v, want [otb1000]", f.RemoveMasqIfaceCalls)
+	}
+	if len(f.RemoveVXLANCalls) != 1 || len(f.RemoveBridgeCalls) != 1 {
+		t.Errorf("overlay not fully torn down: vxlan=%v bridge=%v", f.RemoveVXLANCalls, f.RemoveBridgeCalls)
+	}
+}

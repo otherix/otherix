@@ -83,7 +83,36 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	if !converged {
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
+
+	if d.Egress == "nat" {
+		if rep, ok := r.applyOverlayEgress(ctx, d, vniVal); !ok {
+			return rep
+		}
+	}
+
 	return ready(d.ID)
+}
+
+// applyOverlayEgress installs the egress=nat datapath for a converged overlay:
+// IPv4 forwarding, the link-local anycast gateway on the bridge, and the
+// interface-keyed SNAT for traffic entering via the bridge. It runs only after
+// the overlay's FDB has converged, so egress is never programmed over a
+// half-built overlay. On success it RE-records the network with HasEgress=true
+// so a later teardown reclaims the masquerade, and returns ok=true. On any
+// fabric error it returns a failed report and ok=false so the caller surfaces it.
+func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredNetwork, vniVal uint32) (heartbeat.NetworkReport, bool) {
+	if err := r.fabric.EnableIPForwarding(); err != nil {
+		return r.failed(ctx, d, fmt.Sprintf("enable ip_forward: %v", err)), false
+	}
+	if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, netfabric.GatewayMAC(vniVal)); err != nil {
+		return r.failed(ctx, d, fmt.Sprintf("anycast gateway: %v", err)), false
+	}
+	// Empty egress iface -> netfabric resolves the host default route.
+	if err := r.fabric.EnsureMasqueradeIface(d.BridgeName, ""); err != nil {
+		return r.failed(ctx, d, fmt.Sprintf("egress masquerade: %v", err)), false
+	}
+	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal, HasEgress: true}
+	return heartbeat.NetworkReport{}, true
 }
 
 // reconcileFDB drives the otvx<vni> kernel FDB to exactly the declared set for
