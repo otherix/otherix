@@ -4,6 +4,7 @@
 package dhcp4
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 
@@ -18,6 +19,18 @@ import (
 // routes: gateway/32 on-link + default via gateway). Option 3 (router) is NOT
 // set - the link-local gateway is out-of-subnet and reached via option 121.
 func buildReply(req *dhcpv4.DHCPv4, res Reservation, subnet netip.Prefix, opt ReplyOptions) (*dhcpv4.DHCPv4, error) {
+	// ip4 calls As4, which panics on an IPv6 address. IPAM gates these to IPv4,
+	// but guard the library-shaped builder against an IPv6 leaking through.
+	if !res.IP.Is4() {
+		return nil, fmt.Errorf("dhcp4: reservation IP %v must be ipv4", res.IP)
+	}
+	if !opt.Gateway.Is4() {
+		return nil, fmt.Errorf("dhcp4: gateway %v must be ipv4", opt.Gateway)
+	}
+	if !opt.DNS.Is4() {
+		return nil, fmt.Errorf("dhcp4: DNS %v must be ipv4", opt.DNS)
+	}
+
 	gateway := ip4(opt.Gateway)
 	yourIP := ip4(res.IP)
 

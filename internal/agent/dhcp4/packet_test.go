@@ -157,6 +157,45 @@ func TestBuildReplyClasslessStaticRoute(t *testing.T) {
 	}
 }
 
+// TestBuildReplyOption121RawBytes asserts the raw RFC-3442 option-121 wire
+// bytes independent of the library decoder. TestBuildReplyClasslessStaticRoute
+// round-trips through the library's own getter, which shares Marshal/Unmarshal
+// with the encoder and would mask a symmetric encoding bug; this test pins the
+// literal wire form so a regression in the encoding fails loudly.
+func TestBuildReplyOption121RawBytes(t *testing.T) {
+	res, subnet, opt := testReservation(t)
+	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
+
+	reply, err := buildReply(req, res, subnet, opt)
+	if err != nil {
+		t.Fatalf("buildReply() = %v", err)
+	}
+
+	// RFC 3442 destination descriptor: significant-octet-count prefix, then the
+	// significant octets of the destination, then the 4-byte router.
+	//   20 a9 fe 01 01 00 00 00 00  -> 169.254.1.1/32 on-link, router 0.0.0.0
+	//   00 a9 fe 01 01              -> 0.0.0.0/0 (no significant octets) via
+	//                                  169.254.1.1
+	want := []byte{
+		0x20, 0xa9, 0xfe, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0xa9, 0xfe, 0x01, 0x01,
+	}
+	got := reply.Options.Get(dhcpv4.OptionClasslessStaticRoute)
+	if !bytes.Equal(got, want) {
+		t.Errorf("option 121 = % x, want % x", got, want)
+	}
+}
+
+func TestBuildReplyRejectsNonIPv4Reservation(t *testing.T) {
+	res, subnet, opt := testReservation(t)
+	res.IP = netip.MustParseAddr("fd00::5")
+	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
+
+	if _, err := buildReply(req, res, subnet, opt); err == nil {
+		t.Fatalf("buildReply() with IPv6 reservation = nil error, want error")
+	}
+}
+
 func TestBuildReplyNoRouterOption(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
