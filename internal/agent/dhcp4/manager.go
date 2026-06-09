@@ -166,8 +166,11 @@ func (r *responder) RegisterNetwork(cfg NetworkConfig) error {
 			srv.snap.Store(snap)
 			return nil
 		}
-		// Bridge changed: tear the old server down and fall through to reopen.
-		r.stopServerLocked(srv)
+		// Bridge changed: tear the old server down (cancel + close + drain) and
+		// fall through to reopen. The read-loop never takes r.mu, so waiting on
+		// its done channel while holding r.mu cannot deadlock; it exits via the
+		// ctx cancel and closed socket independent of the lock.
+		r.stopServer(srv)
 		delete(r.nets, cfg.NetworkID)
 	}
 
@@ -237,35 +240,71 @@ func (r *responder) stopServer(srv *bridgeServer) {
 	}
 }
 
-// stopServerLocked is stopServer for the bridge-change path; the read-loop may
-// not be running yet (registered before Run), so it only closes the socket.
-func (r *responder) stopServerLocked(srv *bridgeServer) {
-	if srv.cancel != nil {
-		srv.cancel()
-	}
-	if srv.conn != nil {
-		_ = srv.conn.close()
-	}
-}
+// serveErrBackoffThreshold is the number of consecutive recv errors tolerated
+// at full speed before the loop starts backing off. A transient blip (EINTR,
+// ENOBUFS) clears well under this; a wedged fd (e.g. ifindex removed, recv
+// erroring every call without blocking) trips it into a slow poll.
+const serveErrBackoffThreshold = 4
+
+// serveErrBackoffBase and serveErrBackoffMax bound the backoff: once the loop is
+// wedged it sleeps base, doubling per error up to max, so a stuck socket polls
+// at most ~5/s instead of burning a core.
+const (
+	serveErrBackoffBase = 10 * time.Millisecond
+	serveErrBackoffMax  = 500 * time.Millisecond
+)
 
 // serve is srv's read-loop: it receives frames, looks up the client MAC in the
-// current snapshot, builds a reply for known MACs, and sends it. It returns on
-// ctx cancel or socket close.
+// current snapshot, builds a reply for known MACs, and sends it.
+//
+// The only fatal path is ctx cancel (deregister/shutdown, which also closes the
+// socket via stopServer): on it serve returns cleanly. Every other recv error
+// is transient (EINTR from async-preemption/signals, ENOBUFS under flood) and
+// must NOT dark the bridge: serve logs, counts it, and continues. A genuinely
+// removed bridge is reaped by the reconciler's DeregisterNetwork (ctx cancel),
+// not by serve closing its own socket - closing here without reopening would
+// re-dark a live bridge. To avoid hot-spinning on a persistent error state, the
+// loop backs off (ctx-interruptibly) once errors run consecutive.
 func (r *responder) serve(ctx context.Context, srv *bridgeServer) {
 	defer close(srv.done)
+	consecErrs := 0
 	for {
 		payload, err := srv.conn.recv()
 		if err != nil {
 			if ctx.Err() != nil {
+				// Deregister/shutdown cancelled the ctx (and closed the socket);
+				// this is the only fatal path.
 				return
 			}
-			// A closed socket surfaces here on deregister/shutdown even when ctx
-			// is not yet observed cancelled; return cleanly rather than spin.
-			r.log.Debug("dhcp recv error", "bridge", srv.bridge, "error", err.Error())
-			return
+			consecErrs++
+			r.log.Warn("dhcp recv error", "bridge", srv.bridge, "error", err.Error(), "consecutive_errors", consecErrs)
+			if consecErrs > serveErrBackoffThreshold {
+				d := serveErrBackoff(consecErrs)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(d):
+				}
+			}
+			continue
 		}
+		consecErrs = 0
 		r.handle(srv, payload)
 	}
+}
+
+// serveErrBackoff returns the sleep for the nth consecutive recv error past the
+// threshold: serveErrBackoffBase doubled once per extra error, capped at
+// serveErrBackoffMax.
+func serveErrBackoff(consecErrs int) time.Duration {
+	d := serveErrBackoffBase
+	for i := serveErrBackoffThreshold + 1; i < consecErrs; i++ {
+		d *= 2
+		if d >= serveErrBackoffMax {
+			return serveErrBackoffMax
+		}
+	}
+	return d
 }
 
 // handle parses one DHCP request, resolves the reservation for the client MAC,

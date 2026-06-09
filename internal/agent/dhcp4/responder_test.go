@@ -5,6 +5,7 @@ package dhcp4
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -18,7 +19,9 @@ import (
 
 // fakeConn is a test packetConn: inbound frames arrive on the in channel, every
 // sent payload is recorded, and a send notifies sent so a test can synchronise
-// on serving without timing races.
+// on serving without timing races. A frame may carry a transient recv error
+// (err != nil) to model a non-fatal socket failure that the serve loop must
+// survive rather than treat as a permanent close.
 type fakeConn struct {
 	bridge string
 
@@ -34,6 +37,9 @@ type fakeConn struct {
 
 type fakeFrame struct {
 	payload []byte
+	// err, when non-nil, is returned by recv instead of a payload. It models a
+	// transient socket error (EINTR, ENOBUFS) that is NOT the close sentinel.
+	err error
 }
 
 type sentFrame struct {
@@ -53,6 +59,9 @@ func newFakeConn(bridge string) *fakeConn {
 func (c *fakeConn) recv() ([]byte, error) {
 	select {
 	case f := <-c.in:
+		if f.err != nil {
+			return nil, f.err
+		}
 		return f.payload, nil
 	case <-c.closeC:
 		return nil, io.EOF
@@ -92,6 +101,12 @@ func (c *fakeConn) recordedSends() []sentFrame {
 	out := make([]sentFrame, len(c.sends))
 	copy(out, c.sends)
 	return out
+}
+
+// feedRecvError pushes a transient recv error through the fake conn. It is not
+// the close sentinel, so the serve loop must survive it.
+func feedRecvError(c *fakeConn, err error) {
+	c.in <- fakeFrame{err: err}
 }
 
 // feedDiscover marshals a DISCOVER from mac and pushes it through the fake conn.
@@ -311,6 +326,86 @@ func TestDeregisterNetworkClosesSocket(t *testing.T) {
 	}
 	if err := r.DeregisterNetwork("nonexistent"); err != nil {
 		t.Fatalf("DeregisterNetwork(absent) = %v", err)
+	}
+}
+
+func TestServeSurvivesTransientRecvError(t *testing.T) {
+	r, conns := testResponder(t)
+	runResponder(t, r)
+
+	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
+	if err := r.RegisterNetwork(NetworkConfig{
+		NetworkID:    "net-1",
+		Bridge:       "otb100",
+		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
+		Reservations: []Reservation{res},
+	}); err != nil {
+		t.Fatalf("RegisterNetwork() = %v", err)
+	}
+
+	c := conns["otb100"]
+	// A transient recv error must NOT kill the loop. The valid DISCOVER queued
+	// behind it must still be served.
+	feedRecvError(c, errors.New("transient recv failure"))
+	feedDiscover(t, c, res.MAC)
+	waitSend(t, c)
+
+	sends := c.recordedSends()
+	if len(sends) != 1 {
+		t.Fatalf("recorded %d sends, want 1 (loop must survive transient recv error)", len(sends))
+	}
+	reply, err := dhcpv4.FromBytes(sends[0].payload)
+	if err != nil {
+		t.Fatalf("FromBytes() = %v", err)
+	}
+	if got := reply.MessageType(); got != dhcpv4.MessageTypeOffer {
+		t.Errorf("MessageType = %v, want OFFER", got)
+	}
+	if got := reply.YourIPAddr.String(); got != "10.20.0.5" {
+		t.Errorf("YourIPAddr = %v, want 10.20.0.5", got)
+	}
+}
+
+func TestRegisterBridgeRenameDrainsOldServer(t *testing.T) {
+	r, conns := testResponder(t)
+	runResponder(t, r)
+
+	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
+	cfg := NetworkConfig{
+		NetworkID:    "net-1",
+		Bridge:       "otb100",
+		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
+		Reservations: []Reservation{res},
+	}
+	if err := r.RegisterNetwork(cfg); err != nil {
+		t.Fatalf("RegisterNetwork() = %v", err)
+	}
+	old := conns["otb100"]
+
+	// Re-register the same networkID on a renamed bridge: the old server must be
+	// drained (socket closed) and a new socket opened on the new bridge.
+	cfg.Bridge = "otb200"
+	if err := r.RegisterNetwork(cfg); err != nil {
+		t.Fatalf("RegisterNetwork() rename = %v", err)
+	}
+
+	if !old.isClosed() {
+		t.Fatal("bridge rename did not close the old socket")
+	}
+	newC, ok := conns["otb200"]
+	if !ok {
+		t.Fatal("bridge rename did not open a socket on the new bridge")
+	}
+
+	// The new bridge serves the reservation.
+	feedDiscover(t, newC, res.MAC)
+	waitSend(t, newC)
+	if got := len(newC.recordedSends()); got != 1 {
+		t.Fatalf("new bridge recorded %d sends, want 1", got)
+	}
+	// The old socket is dead and serves nothing.
+	if got := len(old.recordedSends()); got != 0 {
+		t.Fatalf("old bridge recorded %d sends after rename, want 0", got)
 	}
 }
 
