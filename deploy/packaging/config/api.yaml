@@ -1,0 +1,16 @@
+# Otherix control-plane API server configuration.
+# Managed by the otherix-api package as a conffile: your edits survive
+# upgrades. Secrets (auth.jwt_secret, bootstrap admin) are supplied via
+# /etc/otherix/api.env (see EnvironmentFile in the systemd unit).
+
+server:
+  listen: "0.0.0.0:8080"
+
+# Embedded etcd. `mode: single` + `peer_url: auto` boots a one-member
+# cluster that advertises this host's routable IPv4, so it is HA-ready:
+# growing to 3 members needs no reconfiguration here. For a fresh HA
+# cluster set mode/initial_cluster per the HA guide instead.
+etcd:
+  mode: "single"
+  name: "otherix-0"
+  peer_url: "auto"

@@ -1,0 +1,24 @@
+[Unit]
+Description=Otherix agent (hypervisor node)
+Documentation=https://github.com/otherix/otherix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=otherix
+Group=otherix
+ExecStart=/usr/bin/otherix-agent serve
+Restart=on-failure
+RestartSec=5s
+StateDirectory=otherix
+# CAP_NET_ADMIN: the netlink network fabric (bridges/taps/VXLAN/WireGuard/nft).
+# CAP_NET_RAW: the per-node DHCP responder opens an AF_PACKET raw socket on
+# each dhcp-enabled overlay bridge to answer guest DISCOVER before the guest
+# has an address.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
