@@ -66,6 +66,9 @@ func (unsupportedFabric) EnsureMasquerade(subnet netip.Prefix, egressIface strin
 // RemoveMasquerade reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) RemoveMasquerade(subnet netip.Prefix) error { return errUnsupported }
 
+// EnableIPForwarding reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) EnableIPForwarding() error { return errUnsupported }
+
 // EnsureVXLAN reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureVXLAN(cfg VXLANConfig) error { return errUnsupported }
 

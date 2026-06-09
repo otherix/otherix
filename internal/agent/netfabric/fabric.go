@@ -73,6 +73,10 @@ type Fabric interface {
 	EnsureMasquerade(subnet netip.Prefix, egressIface string) error
 	// RemoveMasquerade removes the masquerade rule for subnet.
 	RemoveMasquerade(subnet netip.Prefix) error
+	// EnableIPForwarding turns on IPv4 forwarding in the agent's network
+	// namespace (net.ipv4.ip_forward=1). Idempotent. Required before a node
+	// can route overlay VM egress out its uplink.
+	EnableIPForwarding() error
 
 	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
 	// brings it up. Learning is off (the FDB is controller-authoritative);

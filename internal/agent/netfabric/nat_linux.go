@@ -33,6 +33,19 @@ const natChainName = "postrouting"
 // width before comparison.
 const ifnameSize = 16
 
+// EnableIPForwarding enables IPv4 forwarding in the current network
+// namespace. net.ipv4.ip_forward is per-netns, so writing it from the agent
+// process (which runs in the node's netns) affects only this node. Idempotent:
+// writing "1" when already 1 is a no-op.
+func (f *linuxFabric) EnableIPForwarding() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o644); err != nil {
+		return fmt.Errorf("netfabric: enable ip_forward: %v", err)
+	}
+	return nil
+}
+
 // EnsureGatewayAddr assigns addr to the named bridge link, idempotently.
 // AddrReplace adds the address when absent and is a no-op when it is
 // already present, so a second call against the same bridge succeeds.

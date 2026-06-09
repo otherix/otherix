@@ -35,6 +35,9 @@ type FakeFabric struct {
 	MasqueradeCalls    []MasqueradeCall
 	RemoveMasqCalls    []netip.Prefix
 
+	// EnableIPForwardingCalls counts EnableIPForwarding invocations.
+	EnableIPForwardingCalls int
+
 	// VXLANExistsResult is returned by VXLANExists alongside
 	// Errs["VXLANExists"].
 	VXLANExistsResult bool
@@ -199,6 +202,13 @@ func (f *FakeFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) e
 func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	f.RemoveMasqCalls = append(f.RemoveMasqCalls, subnet)
 	return f.err("RemoveMasquerade")
+}
+
+// EnableIPForwarding records the call and returns
+// Errs["EnableIPForwarding"].
+func (f *FakeFabric) EnableIPForwarding() error {
+	f.EnableIPForwardingCalls++
+	return f.err("EnableIPForwarding")
 }
 
 // EnsureVXLAN records the call and returns Errs["EnsureVXLAN"].

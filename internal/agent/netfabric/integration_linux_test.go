@@ -1317,3 +1317,23 @@ func TestLinuxFabricLinkState(t *testing.T) {
 		}
 	})
 }
+
+func TestLinuxFabricEnableIPForwarding(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		if err := f.EnableIPForwarding(); err != nil {
+			requireNetfabric(t, "EnableIPForwarding() = %v", err)
+		}
+		got, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+		if err != nil {
+			t.Fatalf("read ip_forward = %v", err)
+		}
+		if strings.TrimSpace(string(got)) != "1" {
+			t.Errorf("ip_forward = %q, want 1", strings.TrimSpace(string(got)))
+		}
+		// Idempotent: a second call must succeed and leave it enabled.
+		if err := f.EnableIPForwarding(); err != nil {
+			t.Errorf("EnableIPForwarding() second call = %v", err)
+		}
+	})
+}
