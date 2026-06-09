@@ -143,7 +143,8 @@ func TestValidateNetworkInvariants(t *testing.T) {
 	}{
 		{name: "nat bridge managed ok", typ: store.NetworkTypeBridge, managed: true, egress: store.NetworkEgressNAT, wantErr: false},
 		{name: "nat bridge unmanaged rejected", typ: store.NetworkTypeBridge, managed: false, egress: store.NetworkEgressNAT, wantErr: true},
-		{name: "nat non-bridge rejected", typ: store.NetworkType("overlay"), managed: true, egress: store.NetworkEgressNAT, wantErr: true},
+		{name: "nat overlay managed ok", typ: store.NetworkTypeOverlay, managed: true, egress: store.NetworkEgressNAT, wantErr: false},
+		{name: "nat overlay unmanaged rejected", typ: store.NetworkTypeOverlay, managed: false, egress: store.NetworkEgressNAT, wantErr: true},
 		{name: "none bridge managed ok", typ: store.NetworkTypeBridge, managed: true, egress: store.NetworkEgressNone, wantErr: false},
 		{name: "none bridge unmanaged ok", typ: store.NetworkTypeBridge, managed: false, egress: store.NetworkEgressNone, wantErr: false},
 		{name: "empty egress no constraint", typ: store.NetworkType("overlay"), managed: false, egress: store.NetworkEgress(""), wantErr: false},

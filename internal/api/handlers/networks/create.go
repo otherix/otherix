@@ -210,8 +210,10 @@ func validateOverlayCreate(req *createRequest) error {
 	if req.Gateway != nil {
 		return errors.New("gateway is forbidden for type=overlay")
 	}
-	if req.Egress != nil && store.NetworkEgress(*req.Egress) != store.NetworkEgressNone {
-		return errors.New("egress=nat is forbidden for type=overlay")
+	if req.Egress != nil {
+		if err := validation.ValidateNetworkEgress(*req.Egress); err != nil {
+			return err
+		}
 	}
 	if req.Managed != nil && !*req.Managed {
 		return errors.New("managed=false is forbidden for type=overlay (always Otherix-managed)")
