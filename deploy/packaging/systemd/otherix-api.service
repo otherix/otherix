@@ -1,0 +1,22 @@
+[Unit]
+Description=Otherix control-plane API server (embedded etcd)
+Documentation=https://github.com/otherix/otherix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=otherix
+Group=otherix
+# Operator secrets (jwt_secret, optional bootstrap admin) live here.
+# `-` prefix: missing file is not an error.
+EnvironmentFile=-/etc/otherix/api.env
+ExecStart=/usr/bin/otherix-api --config /etc/otherix/api.yaml
+Restart=on-failure
+RestartSec=5s
+StateDirectory=otherix
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

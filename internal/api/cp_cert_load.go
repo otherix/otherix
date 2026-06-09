@@ -32,7 +32,7 @@ import (
 // expose which mode produced the material:
 //
 //   - "operator_files" — Mode A, loaded from cp_cert.cert_file/key_file.
-//   - "local_cache"    — Mode B, loaded from /opt/otherix/certs/cp-cert.*.
+//   - "local_cache"    — Mode B, loaded from /var/lib/otherix/certs/cp-cert.*.
 //   - "auto_generate"  — Mode C, freshly minted on boot.
 //   - "skipped"        — neither agent_server nor agent_client enabled;
 //     material zero-valued, downstream skips wiring.

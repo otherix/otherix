@@ -132,7 +132,7 @@ metadata:
   name: default
 spec:
   type: local_dir
-  path: /opt/otherix/pools/default
+  path: /var/lib/otherix/pools/default
   nodeList:
     - node-a
     - node-b

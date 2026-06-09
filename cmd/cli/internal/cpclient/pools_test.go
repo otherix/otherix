@@ -250,8 +250,8 @@ func TestCreatePool_HappyPath(t *testing.T) {
 		if body["type"] != "local_dir" {
 			t.Errorf("type = %v, want local_dir", body["type"])
 		}
-		if body["path"] != "/opt/otherix/pools/default" {
-			t.Errorf("path = %v, want /opt/otherix/pools/default", body["path"])
+		if body["path"] != "/var/lib/otherix/pools/default" {
+			t.Errorf("path = %v, want /var/lib/otherix/pools/default", body["path"])
 		}
 		if _, present := body["config"]; present {
 			t.Errorf("config key must not appear when caller omitted it (server applies default)")
@@ -263,7 +263,7 @@ func TestCreatePool_HappyPath(t *testing.T) {
 			"node":               "node-dev",
 			"name":               "pool-dev",
 			"type":               "local_dir",
-			"path":               "/opt/otherix/pools/default",
+			"path":               "/var/lib/otherix/pools/default",
 			"is_cluster_default": false,
 			"config":             map[string]any{},
 			"created_at":         "2026-05-15T10:00:00Z",
@@ -277,7 +277,7 @@ func TestCreatePool_HappyPath(t *testing.T) {
 		Node: "node-dev",
 		Name: "pool-dev",
 		Type: "local_dir",
-		Path: "/opt/otherix/pools/default",
+		Path: "/var/lib/otherix/pools/default",
 	})
 	if err != nil {
 		t.Fatalf("CreatePool: %v", err)
@@ -334,7 +334,7 @@ func TestCreatePool_409ReturnsSentinel(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	_, err := c.CreatePool(context.Background(), cpclient.CreatePoolRequest{
-		Node: "node-dev", Name: "pool-dev", Type: "local_dir", Path: "/opt/otherix/pools/default",
+		Node: "node-dev", Name: "pool-dev", Type: "local_dir", Path: "/var/lib/otherix/pools/default",
 	})
 	if !errors.Is(err, cpclient.ErrPoolExists) {
 		t.Fatalf("err = %v, want errors.Is(err, ErrPoolExists)", err)

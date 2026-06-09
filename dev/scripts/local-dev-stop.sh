@@ -79,7 +79,7 @@ echo "   etcd data dir wiped (.local/etcd)"
 if [ "$(uname -s)" = "Darwin" ]; then
     echo "   Lima VMs destroyed (otherix-dev-1, otherix-dev-2)"
 else
-    echo "   netns topology + /opt/otherix/dev removed (otns1, otns2, otdev0)"
+    echo "   netns topology + /var/lib/otherix/dev removed (otns1, otns2, otdev0)"
 fi
 echo "   api-server stopped"
 echo ""

@@ -87,7 +87,7 @@ func TestLoadAgent(t *testing.T) {
 	if got, want := cfg.WireGuard.PersistentKeepalive, 25*time.Second; got != want {
 		t.Errorf("WireGuard.PersistentKeepalive = %v, want %v", got, want)
 	}
-	if got, want := cfg.WireGuard.PrivateKeyPath, "/opt/otherix/wg/private.key"; got != want {
+	if got, want := cfg.WireGuard.PrivateKeyPath, "/var/lib/otherix/wg/private.key"; got != want {
 		t.Errorf("WireGuard.PrivateKeyPath = %q, want %q", got, want)
 	}
 }

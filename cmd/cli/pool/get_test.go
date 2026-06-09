@@ -31,7 +31,7 @@ func TestRenderConceptDiskPressure(t *testing.T) {
 			v := cpclient.PoolConceptView{
 				Name: "pool-dev", Type: "local_dir", IsClusterDefault: true,
 				Instances: []cpclient.Pool{{
-					ID: uuid.New(), Node: "node-1", Path: "/opt/otherix/pools/default",
+					ID: uuid.New(), Node: "node-1", Path: "/var/lib/otherix/pools/default",
 					ReconciliationStatus: "ready", DiskPressure: tc.dp,
 				}},
 			}
@@ -54,7 +54,7 @@ func TestRenderConceptDiskPressure(t *testing.T) {
 func TestRenderInstanceImages(t *testing.T) {
 	p := cpclient.Pool{
 		ID: uuid.New(), Node: "node-1", Name: "pool-dev",
-		Type: "local_dir", Path: "/opt/otherix/pools/default",
+		Type: "local_dir", Path: "/var/lib/otherix/pools/default",
 		Images: []cpclient.PoolImage{{
 			Name:      "ubuntu-noble.qcow2",
 			SHA256:    "abcdef0123456789aaaa",

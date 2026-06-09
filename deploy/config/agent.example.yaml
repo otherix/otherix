@@ -8,7 +8,7 @@ logger:
   level: "info"
   format: "json"
 
-state_path: "/opt/otherix/vms"
+state_path: "/var/lib/otherix/vms"
 
 control_plane:
   url: "https://cp.otherix.local:8080"
@@ -27,5 +27,5 @@ migration:
 wireguard:
   listen_port: 51820
   persistent_keepalive: 25s
-  private_key_path: /opt/otherix/wg/private.key
+  private_key_path: /var/lib/otherix/wg/private.key
   advertised_endpoint: ""   # host:port peers dial; empty for single-node fabric

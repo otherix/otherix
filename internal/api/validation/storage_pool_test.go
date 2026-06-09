@@ -61,7 +61,7 @@ func TestValidatePoolPath(t *testing.T) {
 		input   string
 		wantErr bool
 	}{
-		{name: "absolute", input: "/opt/otherix/pools/default", wantErr: false},
+		{name: "absolute", input: "/var/lib/otherix/pools/default", wantErr: false},
 		{name: "root", input: "/", wantErr: false},
 		{name: "trailing slash", input: "/var/lib/", wantErr: false},
 		{name: "with-dotdot", input: "/var/lib/../foo", wantErr: false},

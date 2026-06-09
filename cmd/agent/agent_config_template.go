@@ -33,7 +33,7 @@ logger:
   level: "info"                        # default; "debug" for local debugging
   format: "json"
 
-state_path: "/opt/otherix/vms"
+state_path: "/var/lib/otherix/vms"
 
 control_plane:
   url: "{{.CPURL}}"                    # bootstrap --cp-url

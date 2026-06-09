@@ -1,0 +1,89 @@
+name: release
+
+on:
+  pull_request:
+    paths:
+      - '.goreleaser.yaml'
+      - 'deploy/packaging/**'
+      - '.github/workflows/release.yaml'
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: >-
+            ${{ github.event_name == 'pull_request'
+              && 'release --snapshot --clean --skip=publish'
+              || 'release --clean' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Upload snapshot artifacts (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-snapshot
+          path: dist/*.deb
+          retention-days: 7
+
+  deb-install-test:
+    needs: goreleaser
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-snapshot
+          path: dist
+      - name: Install + assert otherix-api .deb
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y curl
+          # dpkg cannot run systemctl in a container; mask it so postinstall
+          # does not fail the install. We assert files + binary, not boot.
+          ln -sf /bin/true /usr/bin/systemctl
+          apt-get install -y ./dist/otherix-api_*_amd64.deb || dpkg -i ./dist/otherix-api_*_amd64.deb
+          test -x /usr/bin/otherix-api
+          /usr/bin/otherix-api --version
+          test -f /lib/systemd/system/otherix-api.service
+          test -f /etc/otherix/api.yaml
+          test -f /etc/otherix/api.env
+          getent passwd otherix
+      - name: Boot smoke (packaged config must start, not crash-loop)
+        run: |
+          set -eux
+          # shellcheck disable=SC1091
+          . /etc/otherix/api.env
+          export OTHERIX_AUTH__JWT_SECRET
+          export OTHERIX_BOOTSTRAP_ADMIN_EMAIL OTHERIX_BOOTSTRAP_ADMIN_PASSWORD 2>/dev/null || true
+          /usr/bin/otherix-api --config /etc/otherix/api.yaml >/tmp/api.log 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then echo "api process exited early"; break; fi
+            sleep 1
+          done
+          cat /tmp/api.log || true
+          kill "$pid" 2>/dev/null || true
+          test "$ok" = "1"

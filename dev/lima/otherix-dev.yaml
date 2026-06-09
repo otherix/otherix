@@ -77,17 +77,17 @@ provision:
         echo "⚠ /dev/kvm not available; agent will use TCG (slow)"
       fi
 
-      mkdir -p /opt/otherix/vms
-      mkdir -p /opt/otherix/pools/default/images
-      mkdir -p /opt/otherix/pools/default/vms
-      mkdir -p /opt/otherix/certs
+      mkdir -p /var/lib/otherix/vms
+      mkdir -p /var/lib/otherix/pools/default/images
+      mkdir -p /var/lib/otherix/pools/default/vms
+      mkdir -p /var/lib/otherix/certs
       mkdir -p /var/run/otherix
       mkdir -p /etc/otherix
 
-      chown -R "$LIMA_USER:$LIMA_USER" /opt/otherix /var/run/otherix /etc/otherix
+      chown -R "$LIMA_USER:$LIMA_USER" /var/lib/otherix /var/run/otherix /etc/otherix
       # Cert directory mode 0750 — agent process reads + writes (key file
       # gets 0600 on its own via bootstrap.Persist atomic writes).
-      chmod 0750 /opt/otherix/certs
+      chmod 0750 /var/lib/otherix/certs
 
       # systemd unit (polling-loop): the agent boots in State A (polls
       # 5s for cert material + config) and transitions to State B once

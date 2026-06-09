@@ -26,7 +26,7 @@ func poolParams(nodeID uuid.UUID, name string) store.CreateStoragePoolParams {
 		NodeID: nodeID,
 		Name:   name,
 		Type:   "local_dir",
-		Path:   "/opt/otherix/pools/" + name,
+		Path:   "/var/lib/otherix/pools/" + name,
 		Config: []byte(`{}`),
 	}
 }
@@ -102,7 +102,7 @@ func TestPoolEffectiveCapacityPending(t *testing.T) {
 	poolID := uuid.New()
 	p := store.StoragePool{
 		ID: poolID, NodeID: uuid.New(), Name: uniquePoolName("eff"), Type: "local_dir",
-		Path: "/opt/otherix/pools/eff", AvailableBytes: &avail, ReportedAt: &scan,
+		Path: "/var/lib/otherix/pools/eff", AvailableBytes: &avail, ReportedAt: &scan,
 		ReconciliationStatus: "ok", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	if err := cli.PutJSON(ctx, etcd.Key("storage_pools", poolID.String()), p); err != nil {

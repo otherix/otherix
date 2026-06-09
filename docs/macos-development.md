@@ -109,7 +109,7 @@ make clean-dev
 
 The Lima VM is named `otherix-dev`. Inside the VM the agent reads its
 config from `/etc/otherix/agent.yaml` and persists its cert material to
-`/opt/otherix/certs/` (filesystem convention — `/opt/otherix/` for
+`/var/lib/otherix/certs/` (filesystem convention — `/var/lib/otherix/` for
 runtime state, `/etc/otherix/` for operator-provided config).
 
 ## Verifying CP↔agent connectivity
@@ -135,7 +135,7 @@ Common boot patterns to look for:
 
 - `agent: bootstrap complete` — first-boot bootstrap landed successfully.
 - `agent: using existing cert material` — subsequent boot,
-  reusing `/opt/otherix/certs/agent.{crt,key}`.
+  reusing `/var/lib/otherix/certs/agent.{crt,key}`.
 - `bootstrap protocol:` — bootstrap-side error. Token may be expired,
   CA fingerprint may not match, or CP unreachable.
 - `partial bootstrap state` — fatal. Cert OR key file missing; delete
@@ -364,9 +364,9 @@ Full CRUD surface:
 ```bash
 $ otherix pool list
 NAME      NODE      TYPE       PATH                           AVAILABLE  DEFAULT  AGE
-default   node-a    local_dir  /opt/otherix/pools/default     80.0GiB    yes      5d
-default   node-b    local_dir  /opt/otherix/pools/default     95.0GiB    yes      5d
-fast-ssd  node-a    local_dir  /opt/otherix/pools/fast        400.0GiB            3d
+default   node-a    local_dir  /var/lib/otherix/pools/default     80.0GiB    yes      5d
+default   node-b    local_dir  /var/lib/otherix/pools/default     95.0GiB    yes      5d
+fast-ssd  node-a    local_dir  /var/lib/otherix/pools/fast        400.0GiB            3d
 
 # Aggregated cluster-wide view by name
 $ otherix pool get default
@@ -376,11 +376,11 @@ is_cluster_default: true
 instances:
   - node: node-a
     id: <uuid>
-    path: /opt/otherix/pools/default
+    path: /var/lib/otherix/pools/default
     available: 80.0GiB
   - node: node-b
     id: <uuid>
-    path: /opt/otherix/pools/default
+    path: /var/lib/otherix/pools/default
     available: 95.0GiB
 
 # Flat instance view by UUID
@@ -389,16 +389,16 @@ id: <pool-uuid>
 name: default
 node: node-a
 type: local_dir
-path: /opt/otherix/pools/default
+path: /var/lib/otherix/pools/default
 available_bytes: 80.0GiB
 is_cluster_default: true
 ...
 
 # Register a pool on a node (admin-only)
-$ otherix pool create fast-ssd --node node-a --path /opt/otherix/pools/fast
+$ otherix pool create fast-ssd --node node-a --path /var/lib/otherix/pools/fast
 pool fast-ssd created on node node-a
 type: local_dir
-path: /opt/otherix/pools/fast
+path: /var/lib/otherix/pools/fast
 
 # Delete a pool (refuses when vm_disks reference it)
 $ otherix pool delete fast-ssd --force
@@ -743,7 +743,7 @@ bootstrap flow end-to-end:
    appears once the CSR redemption commits at the CP side.
 6. Does NOT create a storage pool: the CP auto-provisions the cluster
    default pool (`default`, from `default_pool_name` in code defaults) at
-   `/opt/otherix/pools/default` on every node as it reaches `ready`, and
+   `/var/lib/otherix/pools/default` on every node as it reaches `ready`, and
    that is the cluster default. So `vm create` resolves without `--pool`,
    and seed-dev no longer runs `pool create` or `cluster set-default-pool`.
 After seed-dev finishes, the dev cluster has the nodes registered, the
@@ -850,7 +850,7 @@ As a low-level fallback you can still read the qemu serial socket
 directly inside the Lima VM:
 
 ```bash
-limactl shell otherix-dev sudo socat - UNIX-CONNECT:/opt/otherix/vms/<vm-uuid>/console.sock
+limactl shell otherix-dev sudo socat - UNIX-CONNECT:/var/lib/otherix/vms/<vm-uuid>/console.sock
 ```
 
 (Cloud-init authentication setup arrives in Iteration 5 — for this
@@ -869,7 +869,7 @@ chain works.)
 Verify:
 ```bash
 limactl shell otherix-dev pgrep -af qemu-system   # nothing
-limactl shell otherix-dev ls /opt/otherix/vms/    # empty
+limactl shell otherix-dev ls /var/lib/otherix/vms/    # empty
 ```
 
 ### Cluster default-pool configuration
@@ -997,7 +997,7 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-dev`.
 | `bootstrap: CSR submission rejected by CP: HTTP 401 token_expired` | Token TTL elapsed (default 10m) | Re-run `make seed-dev` — mints a fresh token. |
 | `bootstrap: CSR submission rejected by CP: HTTP 401 token_exhausted` | Multi-use token cap reached | Re-run `make seed-dev` — mints a fresh token. |
 | `bootstrap: fetch /v1/ca: dial tcp …: connection refused` | CP not running OR unreachable from Lima VM | Verify `make run-api-dev` is still alive; inside Lima, `curl -k https://host.lima.internal:8443/healthz`. |
-| `cert <path> exists but key <path> missing` (or vice-versa) | Partial-state bootstrap (mid-flight crash, manual file deletion) | Manual cleanup — delete cert + key + CA (`/opt/otherix/certs/agent.{crt,key}` + `ca.crt` on Lima, or `~/.config/otherix/certs/agent.*` + `ca.crt` on Linux native), then `make seed-dev` again. Agent identity is derived from the cert CN — no node-id sidecar to clean up. |
+| `cert <path> exists but key <path> missing` (or vice-versa) | Partial-state bootstrap (mid-flight crash, manual file deletion) | Manual cleanup — delete cert + key + CA (`/var/lib/otherix/certs/agent.{crt,key}` + `ca.crt` on Lima, or `~/.config/otherix/certs/agent.*` + `ca.crt` on Linux native), then `make seed-dev` again. Agent identity is derived from the cert CN — no node-id sidecar to clean up. |
 | Node lingers in `pending` past 60s | Agent reachable but heartbeat not arriving | `limactl shell otherix-dev sudo journalctl -u otherix-agent -f` — look for `heartbeat` lines OR mTLS handshake failures. |
 
 ### Lifecycle failures (after bootstrap)

@@ -25,7 +25,7 @@ logger:
   level: "debug"
   format: "json"
 
-state_path: "/opt/otherix/vms"
+state_path: "/var/lib/otherix/vms"
 
 control_plane:
   url: "https://host.lima.internal:8443"
@@ -36,9 +36,9 @@ control_plane:
   heartbeat_interval: 5s
 
 tls:
-  ca_cert_path: "/opt/otherix/certs/ca.crt"
-  cert_path:    "/opt/otherix/certs/agent.crt"
-  key_path:     "/opt/otherix/certs/agent.key"
+  ca_cert_path: "/var/lib/otherix/certs/ca.crt"
+  cert_path:    "/var/lib/otherix/certs/agent.crt"
+  key_path:     "/var/lib/otherix/certs/agent.key"
 
 migration:
   host: "0.0.0.0"
@@ -53,7 +53,7 @@ migration:
 wireguard:
   listen_port: 51820
   persistent_keepalive: 25s
-  private_key_path: "/opt/otherix/wg/private.key"
+  private_key_path: "/var/lib/otherix/wg/private.key"
   advertised_endpoint: "__WG_ADVERTISED_ENDPOINT__"
 
 qemu:

@@ -50,7 +50,7 @@ func poolJSON(name, node string) []byte {
 		"node":               node,
 		"name":               name,
 		"type":               "local_dir",
-		"path":               "/opt/otherix/pools/" + name,
+		"path":               "/var/lib/otherix/pools/" + name,
 		"is_cluster_default": false,
 		"config":             map[string]any{},
 		"created_at":         "2026-05-15T10:00:00Z",
@@ -115,7 +115,7 @@ func TestPoolCreate_Happy(t *testing.T) {
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{
 		"create", "pool-dev",
 		"--node", "node-dev",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -148,7 +148,7 @@ func TestPoolCreate_ExplicitType(t *testing.T) {
 		"create", "pool-dev",
 		"--node", "node-dev",
 		"--type", "local_dir",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -164,7 +164,7 @@ func TestPoolCreate_MissingNode(t *testing.T) {
 
 	_, _, err := runPoolCmd(t, srv.URL, []string{
 		"create", "pool-dev",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 	})
 	if err == nil {
 		t.Fatalf("expected error for missing --node")
@@ -205,7 +205,7 @@ func TestPoolCreate_409Conflict(t *testing.T) {
 	_, _, err := runPoolCmd(t, srv.URL, []string{
 		"create", "pool-dev",
 		"--node", "node-dev",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 	})
 	if err == nil {
 		t.Fatalf("expected error for 409 conflict")
@@ -230,7 +230,7 @@ func TestPoolCreate_404NodeMissing(t *testing.T) {
 	_, _, err := runPoolCmd(t, srv.URL, []string{
 		"create", "pool-dev",
 		"--node", "missing",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 	})
 	if err == nil {
 		t.Fatalf("expected error for 404")
@@ -252,7 +252,7 @@ func TestPoolCreate_OutputJSON(t *testing.T) {
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{
 		"create", "pool-dev",
 		"--node", "node-dev",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 		"--output", "json",
 	})
 	if err != nil {
@@ -279,7 +279,7 @@ func TestPoolCreate_ShowIDs(t *testing.T) {
 	stdout, _, err := runPoolCmd(t, srv.URL, []string{
 		"create", "pool-dev",
 		"--node", "node-dev",
-		"--path", "/opt/otherix/pools/default",
+		"--path", "/var/lib/otherix/pools/default",
 		"--show-ids",
 	})
 	if err != nil {

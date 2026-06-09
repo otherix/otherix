@@ -33,6 +33,7 @@ import (
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/logger"
+	"github.com/otherix/otherix/internal/netdetect"
 	"github.com/otherix/otherix/internal/version"
 	"github.com/otherix/otherix/internal/worker"
 )
@@ -95,6 +96,13 @@ func run() error {
 
 	for _, msg := range cfg.Placement.Warnings() {
 		log.Warn("placement config", "warning", msg)
+	}
+
+	// Resolve an auto/empty peer URL to the host's routable IPv4 before any
+	// consumer reads it (peer cert SANs, initial-cluster, the etcd member).
+	// This keeps a single-node default HA-ready without operator input.
+	if err := resolvePeerURL(cfg, log); err != nil {
+		return err
 	}
 
 	// A join node with no cluster CA on disk fetches it from an existing
@@ -172,6 +180,32 @@ func run() error {
 	}
 
 	return runServe(ctx, cfg, st, authSvc, caMaterial, log)
+}
+
+// resolvePeerURL resolves an auto/empty etcd peer URL to the host's routable
+// IPv4 in place on cfg, before any consumer (peer cert SANs, initial-cluster,
+// the etcd member) reads it. An operator-supplied URL is left untouched; a
+// changed value is logged at INFO.
+func resolvePeerURL(cfg *config.APIConfig, log *slog.Logger) error {
+	resolved, err := netdetect.ResolvePeerURL(cfg.Etcd.PeerURL, netdetect.RoutableIPv4)
+	if err != nil {
+		return fmt.Errorf("resolve peer url: %v", err)
+	}
+	if resolved == cfg.Etcd.PeerURL {
+		return nil
+	}
+	// A loopback fallback fired only on auto/empty raw (an operator who set
+	// https://127.0.0.1:2380 explicitly takes the equal-value early return
+	// above and is not warned - that is their choice). Surface it loudly: such
+	// a node is not HA-ready until peer_url names a routable address.
+	if resolved == "https://127.0.0.1:2380" {
+		log.Warn("no routable IPv4 found; etcd peer URL falls back to loopback - this node is not HA-ready until peer_url is set to a routable address",
+			"from", cfg.Etcd.PeerURL, "to", resolved)
+	} else {
+		log.Info("resolved etcd peer url", "from", cfg.Etcd.PeerURL, "to", resolved)
+	}
+	cfg.Etcd.PeerURL = resolved
+	return nil
 }
 
 // ensureClusterCAForJoin fetches the cluster CA from an existing replica and

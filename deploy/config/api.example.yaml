@@ -21,7 +21,10 @@ server:
 #                                  does NOT set initial_cluster for a join node.
 #   name             unique member name within the cluster.
 #   data_dir         member data directory (WAL + snapshots). Persist across restarts.
-#   peer_url         Raft peer advertise/listen URL.
+#   peer_url         Raft peer advertise/listen URL. "auto" (the default)
+#                    resolves to the host's routable IPv4 at boot, so a
+#                    single-node default is HA-ready with no operator input;
+#                    an explicit URL overrides it and is used verbatim.
 #   client_url       client advertise/listen URL.
 #   cluster_token    isolates clusters that share a network; distinct token per cluster.
 #   initial_cluster  full member list "n0=https://h0:2380,n1=https://h1:2380,..."
@@ -37,12 +40,14 @@ server:
 etcd:
   mode:          "single"
   name:          "otherix-0"
-  data_dir:      "/opt/otherix/etcd"
+  data_dir:      "/var/lib/otherix/etcd"
   # Peer (Raft) URL is https everywhere: peer mTLS is always on (one code
   # path across single-node and HA, so a single->HA grow needs no transport
   # switch). The client URL stays plain http on loopback - the co-located CP
   # is the only client, so there is no remote client traffic to protect.
-  peer_url:      "https://127.0.0.1:2380"
+  # "auto" (the default) resolves to the host's routable IPv4 at boot; set an
+  # explicit https URL to override (used verbatim).
+  peer_url:      "auto"
   client_url:    "http://127.0.0.1:2379"
   cluster_token: "otherix-cluster"
   # compaction_mode:      "periodic"
@@ -50,7 +55,7 @@ etcd:
   # initial_cluster: "otherix-0=https://10.0.0.10:2380,otherix-1=https://10.0.0.11:2380,otherix-2=https://10.0.0.12:2380"
   # Peer mTLS material. Left unset, the api-server auto-generates a peer cert
   # from the on-disk cluster CA on each boot, writing it under peer_auto_dir.
-  # peer_auto_dir: "/opt/otherix/peer"
+  # peer_auto_dir: "/var/lib/otherix/peer"
   # Set all three peer_*_file to supply externally-managed peer material
   # instead (used verbatim; the cold multi-node bootstrap path).
   # peer_cert_file: "/etc/otherix/peer/tls.crt"
@@ -168,7 +173,7 @@ storage_pools:
   # absolute and end with '/'. A pool whose path is not under one of
   # these is rejected at create time.
   allowed_path_prefixes:
-    - "/opt/otherix/pools/"
+    - "/var/lib/otherix/pools/"
 
   # Cluster default pool name. When non-empty, the control plane
   # AUTO-PROVISIONS an instance of this pool on every node as it is
@@ -225,7 +230,7 @@ workers:
   backup:
     enabled:   false
     interval:  6h
-    dir:       "/opt/otherix/backups"
+    dir:       "/var/lib/otherix/backups"
     retention: 7
 
 
@@ -290,8 +295,8 @@ cp_cert:
   # Mode B — local cache (optional).
   local_cache:
     enabled:   false
-    cert_path: "/opt/otherix/certs/cp-cert.crt"
-    key_path:  "/opt/otherix/certs/cp-cert.key"
+    cert_path: "/var/lib/otherix/certs/cp-cert.crt"
+    key_path:  "/var/lib/otherix/certs/cp-cert.key"
 
   # Mode C — additional SANs above auto-detected baseline.
   additional_sans:
@@ -308,8 +313,8 @@ cp_cert:
 # boot and reloads it on restart; a join node receives it via the
 # replica-join protocol before its member starts.
 cluster_ca:
-  cert_file: "/opt/otherix/ca/cluster-ca.crt"
-  key_file:  "/opt/otherix/ca/cluster-ca.key"
+  cert_file: "/var/lib/otherix/ca/cluster-ca.crt"
+  key_file:  "/var/lib/otherix/ca/cluster-ca.key"
 
 # Joiner-side cluster CA fetch. Consulted only when etcd.mode is "join" and no
 # cluster CA is on disk yet: the replica redeems a kind=cluster join token at an

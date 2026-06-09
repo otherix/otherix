@@ -65,7 +65,7 @@ func TestHandler_StoragePoolsList(t *testing.T) {
 		ID:   id,
 		Name: name,
 		Type: "local_dir",
-		Path: "/opt/otherix/pools/default",
+		Path: "/var/lib/otherix/pools/default",
 	})
 	if err := m.SetPoolCapacity(name, 100<<30, 50<<30); err != nil {
 		t.Fatalf("SetPoolCapacity: %v", err)

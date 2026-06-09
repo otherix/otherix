@@ -26,9 +26,9 @@ import (
 const (
 	// defaultCertDir is the on-disk directory the bootstrap protocol
 	// targets for cert material per Otherix filesystem convention
-	// (`/opt/otherix/` for runtime state, `/etc/otherix/` for operator
+	// (`/var/lib/otherix/` for runtime state, `/etc/otherix/` for operator
 	// config).
-	defaultCertDir = "/opt/otherix/certs"
+	defaultCertDir = "/var/lib/otherix/certs"
 
 	// defaultMigrationPortStart / defaultMigrationPortEnd mirror the
 	// ephemeral-range default. Operators may override via

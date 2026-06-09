@@ -535,3 +535,24 @@ docs-build: ## Build the docs site into ./site (strict: fails on broken links / 
 .PHONY: agentmock-certs
 agentmock-certs: ## Regenerate mock-agent test certificates (run-on-demand; output committed)
 	$(GO) run ./internal/agentmock/internal/certgen
+
+# ========== Release ==========
+
+GORELEASER_VERSION := v2.5.0
+GORELEASER_IMAGE   := goreleaser/goreleaser:$(GORELEASER_VERSION)
+
+# release-snapshot builds the full release locally with no publish step.
+# The build MUST run on the host Go toolchain (go.mod requires Go 1.26 and the
+# `tool` directive): every released goreleaser Docker image still bundles an
+# older Go (v2.5.0 -> 1.23, even v2.12 -> 1.25), so the pinned image cannot
+# parse go.mod. Prefer a local goreleaser binary; otherwise fall back to
+# `go run` at the pinned version, which compiles against the host's Go.
+.PHONY: release-snapshot
+release-snapshot: ## Build a local snapshot release (.deb + archives, no publish)
+	@if command -v goreleaser >/dev/null 2>&1; then \
+	  echo ">> using local goreleaser ($$(goreleaser --version 2>/dev/null | head -n1))"; \
+	  goreleaser release --snapshot --clean --skip=publish; \
+	else \
+	  echo ">> goreleaser not found locally, using go run goreleaser@$(GORELEASER_VERSION) (host Go toolchain)"; \
+	  $(GO) run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) release --snapshot --clean --skip=publish; \
+	fi

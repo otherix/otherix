@@ -120,13 +120,13 @@ func TestReconcile_AddsNewPool(t *testing.T) {
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredPools: []heartbeat.DeclaredPool{
-			{Name: "alpha", Type: "local_dir", Path: "/opt/otherix/pools/alpha"},
+			{Name: "alpha", Type: "local_dir", Path: "/var/lib/otherix/pools/alpha"},
 		},
 	})
 	rec.reconcile(context.Background())
 
 	added := mgr.addedSnapshot()
-	want := []addCall{{Name: "alpha", Root: "/opt/otherix/pools/alpha"}}
+	want := []addCall{{Name: "alpha", Root: "/var/lib/otherix/pools/alpha"}}
 	if diff := cmp.Diff(want, added); diff != "" {
 		t.Errorf("AddPool calls mismatch (-want +got):\n%s", diff)
 	}
@@ -143,7 +143,7 @@ func TestReconcile_AddsNewPool(t *testing.T) {
 // dropping the entry).
 func TestReconcile_RemovesUndeclaredPool(t *testing.T) {
 	mgr := newFakeManager()
-	_ = mgr.AddPool("removed", "/opt/otherix/pools/removed")
+	_ = mgr.AddPool("removed", "/var/lib/otherix/pools/removed")
 	rec, _ := NewPools(mgr, discardLogger(), DefaultTickInterval)
 
 	// Empty declared_pools — CP wants this node to hold zero pools.
@@ -194,7 +194,7 @@ func TestReconcile_RecoversFromFailure(t *testing.T) {
 	rec, _ := NewPools(mgr, discardLogger(), DefaultTickInterval)
 
 	resp := &heartbeat.Response{DeclaredPools: []heartbeat.DeclaredPool{
-		{Name: "flaky", Type: "local_dir", Path: "/opt/otherix/pools/flaky"},
+		{Name: "flaky", Type: "local_dir", Path: "/var/lib/otherix/pools/flaky"},
 	}}
 	rec.HandleHeartbeatResponse(context.Background(), resp)
 	rec.reconcile(context.Background())
@@ -236,7 +236,7 @@ func TestRun_HandlesTriggerAndTick(t *testing.T) {
 	// Trigger one reconcile via heartbeat receipt.
 	rec.HandleHeartbeatResponse(ctx, &heartbeat.Response{
 		DeclaredPools: []heartbeat.DeclaredPool{
-			{Name: "a", Type: "local_dir", Path: "/opt/otherix/pools/a"},
+			{Name: "a", Type: "local_dir", Path: "/var/lib/otherix/pools/a"},
 		},
 	})
 

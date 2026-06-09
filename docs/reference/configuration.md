@@ -80,8 +80,8 @@ Per-replica CP server-cert lifecycle. Three modes: operator override
 | `cp_cert.cert_file` | (none) | Operator-override cert path (paired with `key_file`). |
 | `cp_cert.key_file` | (none) | Operator-override key path (paired with `cert_file`). |
 | `cp_cert.local_cache.enabled` | `false` | Persist/reuse a generated cert across restarts. |
-| `cp_cert.local_cache.cert_path` | `/opt/otherix/certs/cp-cert.crt` | Cache cert path. |
-| `cp_cert.local_cache.key_path` | `/opt/otherix/certs/cp-cert.key` | Cache key path. |
+| `cp_cert.local_cache.cert_path` | `/var/lib/otherix/certs/cp-cert.crt` | Cache cert path. |
+| `cp_cert.local_cache.key_path` | `/var/lib/otherix/certs/cp-cert.key` | Cache key path. |
 | `cp_cert.additional_sans` | (none) | Extra SANs unioned with the auto-detected baseline. |
 | `cp_cert.validity` | `365d` (8760h) | Generated-cert validity (>= 24h when set). |
 
@@ -91,8 +91,8 @@ On-disk cluster CA location (cert + key), provisioned before etcd starts.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `cluster_ca.cert_file` | `/opt/otherix/ca/cluster-ca.crt` | CA cert path (required). |
-| `cluster_ca.key_file` | `/opt/otherix/ca/cluster-ca.key` | CA key path (required). |
+| `cluster_ca.cert_file` | `/var/lib/otherix/ca/cluster-ca.crt` | CA cert path (required). |
+| `cluster_ca.key_file` | `/var/lib/otherix/ca/cluster-ca.key` | CA key path (required). |
 
 ### cluster_join
 
@@ -178,7 +178,7 @@ VM placement algorithm and per-resource gating.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `storage_pools.allowed_path_prefixes` | `[/opt/otherix/pools/]` | Allowed `path` prefixes for pool create (each must be absolute and end with `/`; at least one entry). |
+| `storage_pools.allowed_path_prefixes` | `[/var/lib/otherix/pools/]` | Allowed `path` prefixes for pool create (each must be absolute and end with `/`; at least one entry). |
 | `storage_pools.default_pool_name` | `default` | Cluster default pool auto-provisioned on boot; empty string opts out. |
 
 ### network
@@ -202,7 +202,7 @@ api-server boot with no operator input.
 | --- | --- | --- |
 | `etcd.mode` | `single` | `single`, `bootstrap`, or `join`. |
 | `etcd.name` | `otherix-0` | Unique member name within the cluster. |
-| `etcd.data_dir` | `/opt/otherix/etcd` | Member data directory (WAL + snapshots). |
+| `etcd.data_dir` | `/var/lib/otherix/etcd` | Member data directory (WAL + snapshots). |
 | `etcd.peer_url` | `https://127.0.0.1:2380` | Raft peer advertise/listen URL. |
 | `etcd.client_url` | `http://127.0.0.1:2379` | Client advertise/listen URL. |
 | `etcd.cluster_token` | `otherix-cluster` | Initial-cluster token isolating clusters. |
@@ -210,7 +210,7 @@ api-server boot with no operator input.
 | `etcd.peer_cert_file` | (none) | Operator peer (Raft) mTLS cert. |
 | `etcd.peer_key_file` | (none) | Operator peer mTLS key. |
 | `etcd.peer_ca_file` | (none) | Operator cluster-CA trust anchor for peer mTLS. |
-| `etcd.peer_auto_dir` | `/opt/otherix/peer` | Directory for auto-generated peer cert/key/ca. |
+| `etcd.peer_auto_dir` | `/var/lib/otherix/peer` | Directory for auto-generated peer cert/key/ca. |
 | `etcd.compaction_mode` | `periodic` | `periodic` or `revision`. |
 | `etcd.compaction_retention` | `1h` | Duration (periodic) or count (revision). |
 
@@ -240,7 +240,7 @@ The agent's HTTPS (mTLS) server.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `state_path` | `/opt/otherix/vms` | Agent local state root (running VMs, caches). |
+| `state_path` | `/var/lib/otherix/vms` | Agent local state root (running VMs, caches). |
 
 ### control_plane
 
@@ -283,7 +283,7 @@ WG overlay-fabric tunables. The keypair is generated lazily at serve time.
 | --- | --- | --- |
 | `wireguard.listen_port` | `51820` | WG UDP listen port. |
 | `wireguard.persistent_keepalive` | `25s` | Per-peer keepalive interval. |
-| `wireguard.private_key_path` | `/opt/otherix/wg/private.key` | Persisted private-key path. |
+| `wireguard.private_key_path` | `/var/lib/otherix/wg/private.key` | Persisted private-key path. |
 | `wireguard.advertised_endpoint` | (none) | `host:port` advertised to peers (required for mesh reachability; empty is valid single-node). |
 
 !!! note "Agent bootstrap is not config"

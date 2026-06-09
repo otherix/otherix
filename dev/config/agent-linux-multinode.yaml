@@ -2,13 +2,13 @@
 #
 # Rendered per node by dev/scripts/linux-multinode.sh: __NODE_IP__ is the node's
 # underlay IP (10.77.0.1 / 10.77.0.2) and __NODE_DIR__ is its state dir
-# (/opt/otherix/dev/node1 / .../node2). The script renders this file BEFORE
+# (/var/lib/otherix/dev/node1 / .../node2). The script renders this file BEFORE
 # running `otherix-agent bootstrap`, which writes a config only when absent
 # (cmd/agent/bootstrap.go fileExists guard), so this rendered config — including
 # the wireguard block — survives bootstrap.
 #
 # Each agent runs inside its own network namespace (otns1/otns2) and its own
-# mount namespace, with /opt/otherix/pools bind-mounted to __NODE_DIR__/pools, so
+# mount namespace, with /var/lib/otherix/pools bind-mounted to __NODE_DIR__/pools, so
 # the CP-dictated cluster-default pool path resolves to per-node storage.
 
 server:

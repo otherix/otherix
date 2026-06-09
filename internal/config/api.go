@@ -111,7 +111,7 @@ type EtcdConfig struct {
 // A bootstrap / single node generates the CA here on first boot and
 // reloads it on restart; a join node receives it via the replica-join
 // protocol before its member starts. Defaults to
-// /opt/otherix/ca/cluster-ca.{crt,key}.
+// /var/lib/otherix/ca/cluster-ca.{crt,key}.
 type ClusterCAConfig struct {
 	CertFile string `koanf:"cert_file"`
 	KeyFile  string `koanf:"key_file"`
@@ -147,7 +147,7 @@ type ClusterJoinConfig struct {
 // /v1/storage-pools`. The path allowlist constrains what filesystem
 // prefixes a pool's `path` field can target — defence in depth against
 // operator typo / hostile create that points at /etc/. Default
-// `/opt/otherix/pools/` matches the filesystem convention in CLAUDE.md;
+// `/var/lib/otherix/pools/` matches the filesystem convention in CLAUDE.md;
 // operators widening the allowlist (NFS mountpoints, custom locations)
 // override at deploy time.
 type StoragePoolsConfig struct {
@@ -174,7 +174,7 @@ type StoragePoolsConfig struct {
 // Mode B (local cache) — LocalCache.Enabled = true → cached cert
 // reused across restarts when still valid (chain to current CA,
 // NotAfter > now + 30d buffer, SAN superset of expected). Cache
-// path defaults to /opt/otherix/certs/cp-cert.{crt,key}.
+// path defaults to /var/lib/otherix/certs/cp-cert.{crt,key}.
 //
 // Mode C (auto-generate) — fresh ECDSA P-384 leaf signed by cluster
 // CA on every boot, in-memory only. Default mode. SAN composition =
@@ -641,8 +641,8 @@ func defaultAPIConfig() APIConfig {
 			Validity: 365 * 24 * time.Hour,
 			LocalCache: CPCertCacheConfig{
 				Enabled:  false,
-				CertPath: "/opt/otherix/certs/cp-cert.crt",
-				KeyPath:  "/opt/otherix/certs/cp-cert.key",
+				CertPath: "/var/lib/otherix/certs/cp-cert.crt",
+				KeyPath:  "/var/lib/otherix/certs/cp-cert.key",
 			},
 		},
 		Placement: PlacementConfig{
@@ -651,11 +651,11 @@ func defaultAPIConfig() APIConfig {
 			Pressure:  defaultPressureConfig(),
 		},
 		ClusterCA: ClusterCAConfig{
-			CertFile: "/opt/otherix/ca/cluster-ca.crt",
-			KeyFile:  "/opt/otherix/ca/cluster-ca.key",
+			CertFile: "/var/lib/otherix/ca/cluster-ca.crt",
+			KeyFile:  "/var/lib/otherix/ca/cluster-ca.key",
 		},
 		StoragePools: StoragePoolsConfig{
-			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+			AllowedPathPrefixes: []string{"/var/lib/otherix/pools/"},
 			DefaultPoolName:     "default",
 		},
 		Network: NetworkConfig{
@@ -666,11 +666,11 @@ func defaultAPIConfig() APIConfig {
 		Etcd: EtcdConfig{
 			Mode:         "single",
 			Name:         "otherix-0",
-			DataDir:      "/opt/otherix/etcd",
-			PeerURL:      "https://127.0.0.1:2380",
+			DataDir:      "/var/lib/otherix/etcd",
+			PeerURL:      "auto",
 			ClientURL:    "http://127.0.0.1:2379",
 			ClusterToken: "otherix-cluster",
-			PeerAutoDir:  "/opt/otherix/peer",
+			PeerAutoDir:  "/var/lib/otherix/peer",
 		},
 	}
 }
@@ -678,8 +678,8 @@ func defaultAPIConfig() APIConfig {
 // Validate sanitises the allowlist — empty prefix list is a rejection
 // of every path, which is a footgun on boot. Operators that want to
 // allow `/` explicitly must list it. Trailing-slash invariant: every
-// prefix must end with `/` so substring match `/opt/otherix/pools-evil/`
-// does not match an `/opt/otherix/pools` prefix.
+// prefix must end with `/` so substring match `/var/lib/otherix/pools-evil/`
+// does not match an `/var/lib/otherix/pools` prefix.
 func (s StoragePoolsConfig) Validate() error {
 	if len(s.AllowedPathPrefixes) == 0 {
 		return errors.New("storage_pools.allowed_path_prefixes must contain at least one entry")

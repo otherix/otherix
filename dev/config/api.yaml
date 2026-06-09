@@ -37,7 +37,7 @@ etcd:
   data_dir:      ".local/etcd"
   # Peer mTLS is always on (uniform single-node + HA). https peer URL +
   # auto-generated peer cert under a gitignored, dev-user-writable dir
-  # (the production default /opt/otherix/peer needs root).
+  # (the production default /var/lib/otherix/peer needs root).
   peer_url:      "https://127.0.0.1:2380"
   peer_auto_dir: ".local/pki/peer"
   client_url:    "http://127.0.0.1:2379"
@@ -50,7 +50,7 @@ etcd:
 
 # Cluster CA on disk (provisioned before etcd starts; the peer plane needs it
 # pre-start). Dev points it at a gitignored, dev-user-writable dir; production
-# defaults to /opt/otherix/ca (needs root). `make etcd-reset` wipes .local/pki
+# defaults to /var/lib/otherix/ca (needs root). `make etcd-reset` wipes .local/pki
 # too, so a reset re-generates a fresh CA in lockstep with the etcd data dir.
 cluster_ca:
   cert_file: ".local/pki/cluster-ca.crt"
@@ -113,9 +113,9 @@ placement:
       consecutive_required: 1
 
 # No storage_pools block: the CP uses its code defaults (default_pool_name
-# "default", allowed_path_prefixes ["/opt/otherix/pools/"]). On boot it seeds
+# "default", allowed_path_prefixes ["/var/lib/otherix/pools/"]). On boot it seeds
 # default_pool_name into cluster_settings and auto-provisions a pool named
-# "default" at /opt/otherix/pools/default on every node as it reaches ready
+# "default" at /var/lib/otherix/pools/default on every node as it reaches ready
 # (the Lima/Makefile dev provisioning already pre-creates that path). That is
 # what makes `vm create` work without `--pool`; seed-dev no longer creates a
 # pool or sets the cluster default.

@@ -28,8 +28,8 @@ instance**, so a name that lives on three nodes appears three times:
 ```bash
 otherix pool list
 # NAME     NODE    TYPE       PATH                          AVAILABLE  STATUS  DEFAULT  AGE
-# default  node-a  local_dir  /opt/otherix/pools/default    80.1GiB    ready   yes      2d
-# default  node-b  local_dir  /opt/otherix/pools/default    79.4GiB    ready   yes      2d
+# default  node-a  local_dir  /var/lib/otherix/pools/default    80.1GiB    ready   yes      2d
+# default  node-b  local_dir  /var/lib/otherix/pools/default    79.4GiB    ready   yes      2d
 ```
 
 The `DEFAULT` column reflects the cluster default pool (see below). Filter with
@@ -67,7 +67,7 @@ once per node (or use a [manifest](declarative-manifests.md) with `nodeList`).
 ```bash
 otherix pool create default \
   --node node-a \
-  --path /opt/otherix/pools/default
+  --path /var/lib/otherix/pools/default
 ```
 
 | Flag | Required | Meaning |
@@ -84,9 +84,9 @@ re-run safety.
 ### The allowed-path gate
 
 The Control Plane only accepts pool paths under an operator-configured
-allowlist, defaulting to `/opt/otherix/pools/`. A `--path` outside every
+allowlist, defaulting to `/var/lib/otherix/pools/`. A `--path` outside every
 configured prefix is rejected with `path_not_allowed`. The prefix match is
-boundary-safe: `/opt/otherix/pools` does not match `/opt/otherix/pools-evil/`.
+boundary-safe: `/var/lib/otherix/pools` does not match `/var/lib/otherix/pools-evil/`.
 The path must be absolute (start with `/`) and at most 1024 bytes.
 
 ## The cluster default pool

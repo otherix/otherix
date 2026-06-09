@@ -189,7 +189,7 @@ func newE2E(t *testing.T) *harness {
 		Store:       s,
 		AuthService: svc,
 		StoragePools: config.StoragePoolsConfig{
-			AllowedPathPrefixes: []string{"/opt/otherix/pools/"},
+			AllowedPathPrefixes: []string{"/var/lib/otherix/pools/"},
 		},
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		RequestTimeout:    10 * time.Second,
