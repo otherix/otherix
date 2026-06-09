@@ -37,41 +37,61 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if store.NetworkType(req.Type) == store.NetworkTypeOverlay {
-		subnet, err := validation.ParseSubnet(*req.Subnet)
-		if err != nil {
-			response.WriteError(w, r, http.StatusBadRequest,
-				response.CodeValidationFailed, err.Error(), nil)
-			return
-		}
-		egress := store.NetworkEgressNone
-		if req.Egress != nil {
-			egress = store.NetworkEgress(*req.Egress)
-		}
-		row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
-			ID:     uuid.New(),
-			Name:   req.Name,
-			Type:   store.NetworkTypeOverlay,
-			Egress: egress,
-			Subnet: &subnet,
-			Config: normaliseConfig(req.Config),
-		})
-		if err != nil {
-			h.writeCreateNetworkError(w, r, err)
-			return
-		}
-		if row.VNI != nil {
-			if _, max, rangeErr := h.store.VNIRange(r.Context()); rangeErr == nil {
-				const vniHighWaterRemaining = 256
-				if remaining := max - *row.VNI; remaining < vniHighWaterRemaining {
-					h.log.Warn("overlay VNI range nearing exhaustion",
-						"allocated_vni", *row.VNI, "max_vni", max, "remaining", remaining)
-				}
-			}
-		}
-		response.WriteJSON(w, r, http.StatusCreated, toView(row))
+		h.createOverlay(w, r, &req)
 		return
 	}
+	h.createBridge(w, r, &req)
+}
 
+// createOverlay handles the type=overlay create branch: it parses the subnet,
+// resolves egress, enforces the DHCP cross-field rules, persists the row (the
+// store stamps VNI / bridge name / mtu / managed), and warns on VNI exhaustion.
+func (h *Handler) createOverlay(w http.ResponseWriter, r *http.Request, req *createRequest) {
+	subnet, err := validation.ParseSubnet(*req.Subnet)
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+	egress := store.NetworkEgressNone
+	if req.Egress != nil {
+		egress = store.NetworkEgress(*req.Egress)
+	}
+	dhcp := req.Dhcp != nil && *req.Dhcp
+	if err := validation.ValidateDhcp(dhcp, true, store.NetworkTypeOverlay, egress); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+	row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
+		ID:          uuid.New(),
+		Name:        req.Name,
+		Type:        store.NetworkTypeOverlay,
+		Egress:      egress,
+		Subnet:      &subnet,
+		DhcpEnabled: dhcp,
+		Config:      normaliseConfig(req.Config),
+	})
+	if err != nil {
+		h.writeCreateNetworkError(w, r, err)
+		return
+	}
+	if row.VNI != nil {
+		if _, max, rangeErr := h.store.VNIRange(r.Context()); rangeErr == nil {
+			const vniHighWaterRemaining = 256
+			if remaining := max - *row.VNI; remaining < vniHighWaterRemaining {
+				h.log.Warn("overlay VNI range nearing exhaustion",
+					"allocated_vni", *row.VNI, "max_vni", max, "remaining", remaining)
+			}
+		}
+	}
+	response.WriteJSON(w, r, http.StatusCreated, toView(row))
+}
+
+// createBridge handles the type=bridge create branch: it resolves the
+// egress-driven subnet/gateway, materialises the mtu default, enforces the DHCP
+// cross-field rules (which reject dhcp=true on a bridge), and persists the row.
+func (h *Handler) createBridge(w http.ResponseWriter, r *http.Request, req *createRequest) {
 	managed := req.Managed != nil && *req.Managed
 	egress := store.NetworkEgressNone
 	if req.Egress != nil {
@@ -90,20 +110,26 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		mtu = *req.MTU
 	}
 
-	cfg := normaliseConfig(req.Config)
+	dhcp := req.Dhcp != nil && *req.Dhcp
+	if err := validation.ValidateDhcp(dhcp, req.Subnet != nil, store.NetworkType(req.Type), egress); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
 
 	row, err := h.store.CreateNetwork(r.Context(), store.CreateNetworkParams{
-		ID:         uuid.New(),
-		Name:       req.Name,
-		Type:       store.NetworkType(req.Type),
-		BridgeName: req.BridgeName,
-		Managed:    managed,
-		Egress:     egress,
-		VlanTag:    req.VlanTag,
-		Mtu:        mtu,
-		Subnet:     subnet,
-		Gateway:    gateway,
-		Config:     cfg,
+		ID:          uuid.New(),
+		Name:        req.Name,
+		Type:        store.NetworkType(req.Type),
+		BridgeName:  req.BridgeName,
+		Managed:     managed,
+		Egress:      egress,
+		VlanTag:     req.VlanTag,
+		Mtu:         mtu,
+		Subnet:      subnet,
+		Gateway:     gateway,
+		DhcpEnabled: dhcp,
+		Config:      normaliseConfig(req.Config),
 	})
 	if err != nil {
 		h.writeCreateNetworkError(w, r, err)

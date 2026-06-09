@@ -41,6 +41,7 @@ type NetworkSpec struct {
 	Egress     string `yaml:"egress"`
 	Subnet     string `yaml:"subnet"`
 	Gateway    string `yaml:"gateway"`
+	Dhcp       bool   `yaml:"dhcp"`
 	MTU        *int   `yaml:"mtu"`
 	VLAN       *int   `yaml:"vlan"`
 }

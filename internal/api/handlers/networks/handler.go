@@ -58,21 +58,22 @@ func New(s Store, log *slog.Logger) *Handler {
 // ListNetworkNodeStatusByNetwork). The list path leaves it nil so the
 // `omitempty` keeps the cheap list response free of per-node status.
 type networkView struct {
-	ID         string          `json:"id"`
-	Name       string          `json:"name"`
-	Type       string          `json:"type"`
-	BridgeName string          `json:"bridge_name"`
-	Managed    bool            `json:"managed"`
-	Egress     string          `json:"egress"`
-	VlanTag    *int32          `json:"vlan_tag"`
-	MTU        int32           `json:"mtu"`
-	Subnet     *string         `json:"subnet"`
-	Gateway    *string         `json:"gateway"`
-	VNI        *int32          `json:"vni"`
-	Config     json.RawMessage `json:"config"`
-	CreatedAt  string          `json:"created_at"`
-	UpdatedAt  string          `json:"updated_at"`
-	Status     *statusView     `json:"status,omitempty"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Type        string          `json:"type"`
+	BridgeName  string          `json:"bridge_name"`
+	Managed     bool            `json:"managed"`
+	Egress      string          `json:"egress"`
+	VlanTag     *int32          `json:"vlan_tag"`
+	MTU         int32           `json:"mtu"`
+	Subnet      *string         `json:"subnet"`
+	Gateway     *string         `json:"gateway"`
+	DhcpEnabled bool            `json:"dhcp"`
+	VNI         *int32          `json:"vni"`
+	Config      json.RawMessage `json:"config"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   string          `json:"updated_at"`
+	Status      *statusView     `json:"status,omitempty"`
 }
 
 // statusView is the GET-by-id-only per-node reconciliation rollup
@@ -100,20 +101,21 @@ type networkNodeStatusView struct {
 // is left nil; the GET-by-id handler attaches it explicitly.
 func toView(n store.Network) networkView {
 	return networkView{
-		ID:         n.ID.String(),
-		Name:       n.Name,
-		Type:       string(n.Type),
-		BridgeName: n.BridgeName,
-		Managed:    n.Managed,
-		Egress:     string(n.Egress),
-		VlanTag:    n.VlanTag,
-		MTU:        n.Mtu,
-		Subnet:     prefixString(n.Subnet),
-		Gateway:    addrString(n.Gateway),
-		VNI:        n.VNI,
-		Config:     rawJSONOrEmpty(n.Config),
-		CreatedAt:  n.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:  n.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:          n.ID.String(),
+		Name:        n.Name,
+		Type:        string(n.Type),
+		BridgeName:  n.BridgeName,
+		Managed:     n.Managed,
+		Egress:      string(n.Egress),
+		VlanTag:     n.VlanTag,
+		MTU:         n.Mtu,
+		Subnet:      prefixString(n.Subnet),
+		Gateway:     addrString(n.Gateway),
+		DhcpEnabled: n.DhcpEnabled,
+		VNI:         n.VNI,
+		Config:      rawJSONOrEmpty(n.Config),
+		CreatedAt:   n.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:   n.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 

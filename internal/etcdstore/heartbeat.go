@@ -291,6 +291,12 @@ func (h heartbeatProjection) ListNetworks(ctx context.Context) ([]store.Network,
 	return out, nil
 }
 
+// ListVMNicsByNetwork returns the non-deleted NIC rows attached to the network
+// so the projection can build declared_networks[].reservations.
+func (h heartbeatProjection) ListVMNicsByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.VMNic, error) {
+	return h.s.ListVMNicsByNetwork(ctx, networkID)
+}
+
 // ListVMsForNodeDeclared returns the per-node VM desired-state inventory: live
 // vms whose runtime current_node_id is the node and whose phase has not reached
 // 'gone', sorted lower(name) ascending.

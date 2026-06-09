@@ -113,8 +113,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 // does not allow on PATCH and returns the offending field names (nil
 // when none are present). `type` is API-immutable; `managed` is fixed at
 // creation time (egress=nat requires managed=true, and flipping managed
-// would silently invalidate that invariant), so both are rejected here
-// before the typed decode.
+// would silently invalidate that invariant); `dhcp` is fixed at creation
+// time (a network's DHCP profile is set once), so all three are rejected
+// here before the typed decode.
 func rejectImmutableKeys(body []byte) []string {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil
@@ -126,7 +127,7 @@ func rejectImmutableKeys(body []byte) []string {
 		return nil
 	}
 	var forbidden []string
-	for _, k := range []string{"type", "managed"} {
+	for _, k := range []string{"type", "managed", "dhcp"} {
 		if _, ok := keys[k]; ok {
 			forbidden = append(forbidden, k)
 		}

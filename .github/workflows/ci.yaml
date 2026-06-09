@@ -19,7 +19,11 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.1
+          # v2.12.2 fixes a staticcheck false-positive SA5011 (possible nil
+          # pointer dereference) that v2.12.1 emits on the correct
+          # nil-check-then-t.Fatal test idiom under go 1.26.4. Keep in sync
+          # with GOLANGCI_VERSION in the Makefile.
+          version: v2.12.2
           args: --timeout 5m
 
   vuln:

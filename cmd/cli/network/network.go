@@ -24,8 +24,9 @@ import "github.com/spf13/cobra"
 // be registered onto the root cobra tree by main.
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "network",
-		Short: "Manage networks (CP /v1/networks surface)",
+		Use:     "network",
+		Aliases: []string{"net"},
+		Short:   "Manage networks (CP /v1/networks surface)",
 		Long: `network groups the operator-facing commands against the Control
 Plane's /v1/networks surface. Networks are cluster-wide bridge
 definitions; every authenticated role can read them, admin alone may

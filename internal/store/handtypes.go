@@ -49,6 +49,11 @@ type HeartbeatProjection interface {
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
 	UpsertNetworkNodeStatus(ctx context.Context, arg UpsertNetworkNodeStatusParams) error
 	ListNetworks(ctx context.Context) ([]Network, error)
+	// ListVMNicsByNetwork returns the non-deleted NIC rows attached to the
+	// network, reconciling the per-network index against live rows. The
+	// projection joins them into declared_networks[].reservations (MAC ->
+	// Ipv4Address) for the agent's per-network DHCP.
+	ListVMNicsByNetwork(ctx context.Context, networkID uuid.UUID) ([]VMNic, error)
 	UpsertAgentWireguard(ctx context.Context, arg UpsertAgentWireguardParams) error
 	ListAgentWireguard(ctx context.Context) ([]AgentWireguard, error)
 	ListAgentWireguardAtRev(ctx context.Context, rev int64) ([]AgentWireguard, error)

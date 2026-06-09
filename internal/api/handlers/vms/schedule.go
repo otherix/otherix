@@ -205,8 +205,8 @@ func buildBindNIC(vm store.VM, nicNetworkID *uuid.UUID) (*store.CreateVMNicParam
 // loop records on the still-pending VM. The mapped branches cover every
 // scheduler sentinel that can reach the loop: ErrPoolNotFound,
 // ErrInsufficientResources, ErrNoEligibleNodes (refined into network/pressure),
-// and ErrPoolNotOnNode, plus the local errNetworkNotFound and the
-// non-writable-pool case. ErrNodeHintIsUUID is rejected at admission (a uuid
+// and ErrPoolNotOnNode, plus the local errNetworkNotFound, the store-side
+// ErrSubnetExhausted (IPAM full), and the non-writable-pool case. ErrNodeHintIsUUID is rejected at admission (a uuid
 // node hint never reaches here), and ErrDefaultPoolNotSet / ErrUnknownAlgorithm
 // are admission/config-time. The default fallthrough is pool_not_ready: a
 // transient infra error retried on the next tick.
@@ -231,6 +231,8 @@ func schedulingReasonFor(err error, spec store.SchedulingSpec) (reason, message 
 		return store.SchedReasonInsufficientResources, "no node has sufficient resources", marshalDetail(d)
 	case errors.Is(err, scheduler.ErrNoEligibleNodes):
 		return noEligibleReasonFor(err)
+	case errors.Is(err, store.ErrSubnetExhausted):
+		return store.SchedReasonSubnetExhausted, "the network's subnet has no free addresses", nil
 	default:
 		var pnw *poolNotWritableError
 		if errors.As(err, &pnw) {

@@ -169,16 +169,26 @@ type DeclaredVM struct {
 // Subnet (canonical CIDR) and Gateway (IP) are populated when
 // Egress="nat", null otherwise. VNI is non-nil only for type=overlay.
 type DeclaredNetwork struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Type       string  `json:"type"`
-	Managed    bool    `json:"managed"`
-	Egress     string  `json:"egress"`
-	BridgeName string  `json:"bridge_name"`
-	Mtu        int32   `json:"mtu"`
-	VNI        *int32  `json:"vni"`
-	Subnet     *string `json:"subnet"`
-	Gateway    *string `json:"gateway"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Type         string            `json:"type"`
+	Managed      bool              `json:"managed"`
+	Egress       string            `json:"egress"`
+	BridgeName   string            `json:"bridge_name"`
+	Mtu          int32             `json:"mtu"`
+	VNI          *int32            `json:"vni"`
+	Subnet       *string           `json:"subnet"`
+	Gateway      *string           `json:"gateway"`
+	DhcpEnabled  bool              `json:"dhcp"`
+	Reservations []DhcpReservation `json:"reservations"`
+}
+
+// DhcpReservation is one MAC->IP binding the CP-IPAM allocated for a NIC on a
+// dhcp-enabled network. The per-node DHCP responder answers DISCOVER/REQUEST for
+// MAC with IP. Non-empty only for networks with DhcpEnabled.
+type DhcpReservation struct {
+	MAC string `json:"mac"`
+	IP  string `json:"ip"`
 }
 
 // MigrationCap advertises the migration ingress configuration. The

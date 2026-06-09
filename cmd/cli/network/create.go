@@ -23,6 +23,7 @@ const (
 	flagCreateGateway    = "gateway"
 	flagCreateMTU        = "mtu"
 	flagCreateVLAN       = "vlan"
+	flagCreateDhcp       = "dhcp"
 
 	defaultNetworkType   = "bridge"
 	defaultNetworkEgress = "none"
@@ -78,6 +79,7 @@ Example:
 	cmd.Flags().String(flagCreateGateway, "", "gateway IP inside --subnet (derived when omitted)")
 	cmd.Flags().Int(flagCreateMTU, 0, "link MTU (68..9216; server defaults to 1500 when omitted)")
 	cmd.Flags().Int(flagCreateVLAN, 0, "VLAN tag (1..4094; omitted leaves the network untagged)")
+	cmd.Flags().Bool(flagCreateDhcp, false, "enable CP-IPAM + DHCP responder (overlay only; requires --egress nat --subnet)")
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the network UUID in the text output")
 
@@ -183,11 +185,13 @@ func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetwor
 	if egress == defaultNetworkEgress {
 		egress = ""
 	}
+	dhcp, _ := cmd.Flags().GetBool(flagCreateDhcp)
 	return cpclient.CreateNetworkParams{
 		Name:   name,
 		Type:   "overlay",
 		Egress: egress,
 		Subnet: subnet,
+		Dhcp:   dhcp,
 	}, nil
 }
 
@@ -207,6 +211,7 @@ func createBridgeParams(cmd *cobra.Command, name, netType string) (cpclient.Crea
 	egress, _ := cmd.Flags().GetString(flagCreateEgress)
 	subnet, _ := cmd.Flags().GetString(flagCreateSubnet)
 	gateway, _ := cmd.Flags().GetString(flagCreateGateway)
+	dhcp, _ := cmd.Flags().GetBool(flagCreateDhcp)
 
 	// The default egress is "none", which the server applies when the
 	// field is omitted; drop it so the request body carries egress only
@@ -223,6 +228,7 @@ func createBridgeParams(cmd *cobra.Command, name, netType string) (cpclient.Crea
 		Egress:     egress,
 		Subnet:     subnet,
 		Gateway:    gateway,
+		Dhcp:       dhcp,
 	}
 	if cmd.Flags().Changed(flagCreateMTU) {
 		mtu, _ := cmd.Flags().GetInt(flagCreateMTU)
@@ -261,6 +267,7 @@ func renderCreateOutput(cmd *cobra.Command, n cpclient.Network, format string, s
 	printf(cmd, "egress: %s\n", n.Egress)
 	printf(cmd, "subnet: %s\n", orDash(n.Subnet))
 	printf(cmd, "gateway: %s\n", orDash(n.Gateway))
+	printf(cmd, "dhcp: %t\n", n.Dhcp != nil && *n.Dhcp)
 	printf(cmd, "mtu: %d\n", n.MTU)
 	return nil
 }

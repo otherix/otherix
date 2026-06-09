@@ -87,6 +87,7 @@ const (
 	SchedReasonInsufficientResources = "insufficient_resources"
 	SchedReasonNetworkNotReady       = "network_not_ready"
 	SchedReasonNetworkNotFound       = "network_not_found"
+	SchedReasonSubnetExhausted       = "subnet_exhausted"
 	SchedReasonFirmwareNotReady      = "firmware_not_ready"
 )
 

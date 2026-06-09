@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/netip"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +47,75 @@ func vmNicMACGuard(networkID uuid.UUID, mac net.HardwareAddr) string {
 	return etcd.Key("uniq", "vm_nics", "mac", networkID.String(), mac.String())
 }
 
+// vmNicIPv4ReservationKey is the per-(network, ip) CP-IPAM reservation guard: a
+// (network_id, ipv4) key whose CreateRevision==0 compare in the bind transaction
+// fixes the address the allocator chose, so two concurrent binds can never claim
+// the same host. The reservation rides in the same txn as the NIC row and is
+// released in the NIC-delete ops, keeping the NIC and its reservation atomic.
+func vmNicIPv4ReservationKey(networkID uuid.UUID, ip netip.Addr) string {
+	return etcd.Key("uniq", "vm_nics", "ipv4", networkID.String(), ip.String())
+}
+
+// vmNicIPv4ReservationPrefix ranges every IPv4 reservation on a network, the
+// taken-set the allocator scans to find the first free host.
+func vmNicIPv4ReservationPrefix(networkID uuid.UUID) string {
+	return etcd.Key("uniq", "vm_nics", "ipv4", networkID.String()) + "/"
+}
+
+// allocateNICIPv4 returns the lowest free host address in subnet for the
+// network, skipping the network and broadcast addresses and, when gateway is
+// non-nil, the gateway address. It reads the current reservations
+// (uniq/vm_nics/ipv4/<networkID>/) and returns the first gap. The returned
+// candidate is fixed by a CreateRevision==0 guard in the bind txn, so a lost
+// race fails the bind (retried) rather than double-allocating. Returns
+// store.ErrSubnetExhausted when no host is free.
+//
+// A nil gateway is the overlay reality: overlay gateways are link-local
+// (169.254.1.1), not in the VM subnet, so the subnet's first host (.1) is a
+// valid VM address. A bridge-style network carries an in-subnet gateway, which
+// is added to the taken set so it is never handed out.
+func (s *Store) allocateNICIPv4(ctx context.Context, networkID uuid.UUID, subnet netip.Prefix, gateway *netip.Addr) (netip.Addr, error) {
+	items, err := s.c.Range(ctx, vmNicIPv4ReservationPrefix(networkID))
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	taken := make(map[netip.Addr]struct{}, len(items)+1)
+	for _, kv := range items {
+		ipStr := kv.Key[strings.LastIndexByte(kv.Key, '/')+1:]
+		if ip, perr := netip.ParseAddr(ipStr); perr == nil {
+			taken[ip] = struct{}{}
+		}
+	}
+	if gateway != nil {
+		taken[*gateway] = struct{}{}
+	}
+	network := subnet.Masked().Addr()
+	broadcast := lastAddr4(subnet)
+	for ip := network.Next(); ip.IsValid() && subnet.Contains(ip); ip = ip.Next() {
+		if ip == broadcast {
+			break
+		}
+		if _, ok := taken[ip]; !ok {
+			return ip, nil
+		}
+	}
+	return netip.Addr{}, store.ErrSubnetExhausted
+}
+
+// lastAddr4 returns the broadcast (last) address of an IPv4 prefix: the network
+// address with every host bit set. For /31 and /32 the broadcast equals (or sits
+// adjacent to) the network address, so the allocator's gap scan finds no usable
+// host and exhausts, which is the intended behaviour for those prefixes.
+func lastAddr4(p netip.Prefix) netip.Addr {
+	network := p.Masked()
+	b := network.Addr().As4()
+	hostBits := 32 - network.Bits()
+	for i := 0; i < hostBits; i++ {
+		b[3-i/8] |= 1 << (i % 8)
+	}
+	return netip.AddrFrom4(b)
+}
+
 // vmNicFromCreateParams projects CreateVMNicParams onto a store.VMNic, stamping
 // timestamps and defaulting generation to 1 (matching the VM/disk create
 // projections).
@@ -72,12 +143,19 @@ func vmNicCreateOps(n store.VMNic) ([]clientv3.Op, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []clientv3.Op{
+	ops := []clientv3.Op{
 		clientv3.OpPut(vmNicKey(n.ID), string(val)),
 		clientv3.OpPut(vmNicVMIndexKey(n.VmID, n.ID), n.ID.String()),
 		clientv3.OpPut(vmNicNetworkIndexKey(n.NetworkID, n.ID), n.ID.String()),
 		clientv3.OpPut(vmNicMACGuard(n.NetworkID, n.MacAddress), n.ID.String()),
-	}, nil
+	}
+	if n.Ipv4Address != nil {
+		// CP-IPAM reservation guard. The allocator fixed this address; the
+		// CreateRevision==0 compare paired with this Put lives in the bind txn, so
+		// the reservation is committed atomically with the NIC row.
+		ops = append(ops, clientv3.OpPut(vmNicIPv4ReservationKey(n.NetworkID, *n.Ipv4Address), n.ID.String()))
+	}
+	return ops, nil
 }
 
 // vmNicDeleteOps returns the soft-delete operations for every NIC of the VM:
@@ -111,6 +189,12 @@ func (s *Store) vmNicDeleteOps(ctx context.Context, vmID uuid.UUID, now time.Tim
 				clientv3.OpDelete(vmNicNetworkIndexKey(n.NetworkID, id)),
 				clientv3.OpDelete(vmNicMACGuard(n.NetworkID, n.MacAddress)),
 			)
+			if n.Ipv4Address != nil {
+				// Release the CP-IPAM reservation. The live row carries NetworkID +
+				// Ipv4Address, so the guard key is reconstructable here (same scope
+				// as the MAC guard above); the !found branch cannot do this.
+				ops = append(ops, clientv3.OpDelete(vmNicIPv4ReservationKey(n.NetworkID, *n.Ipv4Address)))
+			}
 			continue
 		}
 		if !found {
@@ -133,6 +217,12 @@ func (s *Store) vmNicDeleteOps(ctx context.Context, vmID uuid.UUID, now time.Tim
 			clientv3.OpDelete(vmNicNetworkIndexKey(n.NetworkID, id)),
 			clientv3.OpDelete(vmNicMACGuard(n.NetworkID, n.MacAddress)),
 		)
+		if n.Ipv4Address != nil {
+			// Release the CP-IPAM reservation: the live row in hand carries the
+			// NetworkID + Ipv4Address that key the guard, so the IP frees exactly
+			// when the NIC is torn down.
+			ops = append(ops, clientv3.OpDelete(vmNicIPv4ReservationKey(n.NetworkID, *n.Ipv4Address)))
+		}
 	}
 	return ops, nil
 }

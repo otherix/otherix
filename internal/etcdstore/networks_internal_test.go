@@ -95,6 +95,49 @@ func TestDeleteNetworkElseBranchPreservesForeignGuard(t *testing.T) {
 	}
 }
 
+// TestNetworkDhcpEnabledRoundTrips creates a network with DhcpEnabled=true,
+// confirms CreateNetwork returns it set, that NetworkByID re-reads it as true
+// (round-trip through the etcd JSON), and that UpdateNetwork (which never
+// carries the immutable flag) preserves it while mutating another field.
+func TestNetworkDhcpEnabledRoundTrips(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	sn := netip.MustParsePrefix("10.60.0.0/24")
+	netID := uuid.New()
+	created, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: netID, Name: "dhcp-net", Type: store.NetworkTypeBridge,
+		BridgeName: "br0", Mtu: 1500, Subnet: &sn, DhcpEnabled: true, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	if !created.DhcpEnabled {
+		t.Errorf("CreateNetwork returned DhcpEnabled = false, want true")
+	}
+
+	reread, err := s.NetworkByID(ctx, netID)
+	if err != nil {
+		t.Fatalf("NetworkByID: %v", err)
+	}
+	if !reread.DhcpEnabled {
+		t.Errorf("NetworkByID DhcpEnabled = false, want true (round-trip through etcd JSON)")
+	}
+
+	// UpdateNetwork carries no DhcpEnabled (immutable); changing Name must
+	// preserve the flag because updated := existing copies it forward.
+	updated, err := s.UpdateNetwork(ctx, store.UpdateNetworkParams{
+		ID: netID, Name: "dhcp-net-renamed", BridgeName: "br0", Mtu: 1500,
+		Subnet: &sn, Config: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateNetwork: %v", err)
+	}
+	if !updated.DhcpEnabled {
+		t.Errorf("UpdateNetwork DhcpEnabled = false, want true (immutable field must be preserved)")
+	}
+}
+
 // TestCreateNetworkOverlayRefusesSubFloorUnderlay seeds a sub-floor underlay MTU
 // directly on the singleton (bypassing SeedUnderlayMTU, which rejects below-floor
 // values) to model a legacy cluster seeded under the old 1280 floor. Creating a
@@ -215,6 +258,112 @@ func TestDeleteNetworkIgnoresStaleNicIndexWithoutRow(t *testing.T) {
 	if err := s.DeleteNetwork(ctx, netID); err != nil {
 		t.Fatalf("DeleteNetwork wedged by stale nic index = %v, want nil", err)
 	}
+}
+
+// TestListVMNicsByNetwork seeds two live NICs on a network (one with an
+// Ipv4Address, one without), a soft-deleted NIC, and a stale index entry whose
+// row is gone, then asserts ListVMNicsByNetwork returns exactly the two live
+// rows: the soft-deleted NIC is excluded and the stale index entry is skipped.
+func TestListVMNicsByNetwork(t *testing.T) {
+	s := startInternalStore(t)
+	ctx := context.Background()
+
+	netID := uuid.New()
+	if _, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID: netID, Name: "dhcp-list", Type: store.NetworkTypeBridge,
+		BridgeName: "br0", Mtu: 1500, Subnet: ptrPrefix("10.70.0.0/24"),
+		DhcpEnabled: true, Config: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+
+	now := time.Now().UTC()
+
+	// Live NIC with an Ipv4Address.
+	ip := netip.MustParseAddr("10.70.0.10")
+	withIP := uuid.New()
+	if err := s.c.PutJSON(ctx, vmNicKey(withIP), store.VMNic{
+		ID: withIP, VmID: uuid.New(), NetworkID: netID, DeviceOrder: 0,
+		Model: store.NicModelVirtio, Ipv4Address: &ip, Generation: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed nic with ip: %v", err)
+	}
+	if err := s.c.Put(ctx, vmNicNetworkIndexKey(netID, withIP), []byte(withIP.String())); err != nil {
+		t.Fatalf("seed index withIP: %v", err)
+	}
+
+	// Live NIC without an Ipv4Address.
+	noIP := uuid.New()
+	if err := s.c.PutJSON(ctx, vmNicKey(noIP), store.VMNic{
+		ID: noIP, VmID: uuid.New(), NetworkID: netID, DeviceOrder: 1,
+		Model: store.NicModelVirtio, Generation: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed nic without ip: %v", err)
+	}
+	if err := s.c.Put(ctx, vmNicNetworkIndexKey(netID, noIP), []byte(noIP.String())); err != nil {
+		t.Fatalf("seed index noIP: %v", err)
+	}
+
+	// Soft-deleted NIC: indexed but excluded.
+	deletedID := uuid.New()
+	if err := s.c.PutJSON(ctx, vmNicKey(deletedID), store.VMNic{
+		ID: deletedID, VmID: uuid.New(), NetworkID: netID, DeviceOrder: 2,
+		Model: store.NicModelVirtio, Generation: 1, CreatedAt: now, UpdatedAt: now,
+		DeletedAt: &now,
+	}); err != nil {
+		t.Fatalf("seed soft-deleted nic: %v", err)
+	}
+	if err := s.c.Put(ctx, vmNicNetworkIndexKey(netID, deletedID), []byte(deletedID.String())); err != nil {
+		t.Fatalf("seed index deleted: %v", err)
+	}
+
+	// Stale index entry whose NIC row is gone (hard-gone): skipped.
+	staleID := uuid.New()
+	if err := s.c.Put(ctx, vmNicNetworkIndexKey(netID, staleID), []byte(staleID.String())); err != nil {
+		t.Fatalf("seed stale index: %v", err)
+	}
+
+	got, err := s.ListVMNicsByNetwork(ctx, netID)
+	if err != nil {
+		t.Fatalf("ListVMNicsByNetwork: %v", err)
+	}
+
+	gotIDs := make(map[uuid.UUID]bool, len(got))
+	for _, n := range got {
+		gotIDs[n.ID] = true
+	}
+	want := map[uuid.UUID]bool{withIP: true, noIP: true}
+	if len(got) != len(want) {
+		t.Fatalf("ListVMNicsByNetwork returned %d rows, want %d", len(got), len(want))
+	}
+	for id := range want {
+		if !gotIDs[id] {
+			t.Errorf("ListVMNicsByNetwork missing live NIC %s", id)
+		}
+	}
+	if gotIDs[deletedID] {
+		t.Errorf("ListVMNicsByNetwork returned soft-deleted NIC %s, want excluded", deletedID)
+	}
+	if gotIDs[staleID] {
+		t.Errorf("ListVMNicsByNetwork returned stale-index NIC %s, want skipped", staleID)
+	}
+
+	// The Ipv4Address round-trips on the row that carries one.
+	for _, n := range got {
+		if n.ID == withIP {
+			if n.Ipv4Address == nil || *n.Ipv4Address != ip {
+				t.Errorf("withIP NIC Ipv4Address = %v, want %v", n.Ipv4Address, ip)
+			}
+		}
+	}
+}
+
+// ptrPrefix parses a CIDR string and returns a pointer to the prefix, for
+// seeding network Subnet fields in tests.
+func ptrPrefix(cidr string) *netip.Prefix {
+	p := netip.MustParsePrefix(cidr)
+	return &p
 }
 
 // TestDeleteNetworkBlocksOnLiveNicRow is the discriminating counterpart: a

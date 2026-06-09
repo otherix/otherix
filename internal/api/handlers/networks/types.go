@@ -24,6 +24,7 @@ type createRequest struct {
 	MTU        *int32          `json:"mtu,omitempty"`
 	Subnet     *string         `json:"subnet,omitempty"`
 	Gateway    *string         `json:"gateway,omitempty"`
+	Dhcp       *bool           `json:"dhcp,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 }
 
@@ -48,10 +49,10 @@ type createRequest struct {
 //     value; a JSON string sets it. Clearing is only legal when the
 //     resulting egress is none.
 //
-// `type` and `managed` are intentionally ABSENT from the struct. The
-// handler does a pre-decode key sweep that rejects both with 400
-// forbidden_fields before this struct is decoded — `type` is
-// API-immutable and `managed` is fixed at creation time.
+// `type`, `managed`, and `dhcp` are intentionally ABSENT from the struct.
+// The handler does a pre-decode key sweep that rejects all three with 400
+// forbidden_fields before this struct is decoded — `type` is API-immutable
+// and `managed` / `dhcp` are fixed at creation time.
 type updateRequest struct {
 	Name       *string         `json:"name,omitempty"`
 	BridgeName *string         `json:"bridge_name,omitempty"`

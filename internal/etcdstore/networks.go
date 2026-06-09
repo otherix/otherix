@@ -122,19 +122,20 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		egress = store.NetworkEgressNone
 	}
 	n := store.Network{
-		ID:         arg.ID,
-		Name:       arg.Name,
-		Type:       arg.Type,
-		BridgeName: arg.BridgeName,
-		Managed:    arg.Managed,
-		Egress:     egress,
-		Subnet:     arg.Subnet,
-		Gateway:    arg.Gateway,
-		VlanTag:    arg.VlanTag,
-		Mtu:        arg.Mtu,
-		Config:     arg.Config,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:          arg.ID,
+		Name:        arg.Name,
+		Type:        arg.Type,
+		BridgeName:  arg.BridgeName,
+		Managed:     arg.Managed,
+		Egress:      egress,
+		Subnet:      arg.Subnet,
+		Gateway:     arg.Gateway,
+		DhcpEnabled: arg.DhcpEnabled,
+		VlanTag:     arg.VlanTag,
+		Mtu:         arg.Mtu,
+		Config:      arg.Config,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	guard := networkNameGuard(n.Name)
@@ -385,6 +386,34 @@ func (s *Store) countVMNicsOnNetwork(ctx context.Context, id uuid.UUID) (int64, 
 		count++
 	}
 	return count, nil
+}
+
+// ListVMNicsByNetwork returns the non-deleted NIC rows attached to the network,
+// reconciling the per-network index against live rows: a stale index entry whose
+// row is gone or soft-deleted is skipped. Used by the heartbeat projection to
+// build declared_networks[].reservations.
+func (s *Store) ListVMNicsByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.VMNic, error) {
+	items, err := s.c.Range(ctx, vmNicNetworkIndexPrefix(networkID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.VMNic, 0, len(items))
+	for _, kv := range items {
+		nicID, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
+		}
+		var n store.VMNic
+		found, gerr := s.c.GetJSON(ctx, vmNicKey(nicID), &n)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || n.DeletedAt != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // UpsertNetworkNodeStatus writes the per-(node, network) reconciliation record,

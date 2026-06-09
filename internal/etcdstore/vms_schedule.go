@@ -289,6 +289,23 @@ func (s *Store) buildBindTxn(ctx context.Context, vm store.VM, writes store.VMBi
 
 	conds = []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)}
 	if writes.Nic != nil {
+		// CP-IPAM: when the NIC's network is DHCP-enabled with a subnet, allocate
+		// the lowest free host before projecting the NIC row, so the IP lands on
+		// the persisted row, and add a CreateRevision==0 guard on the reservation
+		// key (grouped with the MAC guard below). A lost guard CAS fails the bind
+		// commit, which the scheduler retries - never a double-allocation.
+		net, nerr := s.NetworkByID(ctx, writes.Nic.NetworkID)
+		if nerr != nil {
+			return nil, nil, "", nerr
+		}
+		if net.DhcpEnabled && net.Subnet != nil {
+			ip, aerr := s.allocateNICIPv4(ctx, writes.Nic.NetworkID, *net.Subnet, net.Gateway)
+			if aerr != nil {
+				return nil, nil, "", aerr
+			}
+			writes.Nic.Ipv4Address = &ip
+			conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vmNicIPv4ReservationKey(writes.Nic.NetworkID, ip)), "=", 0))
+		}
 		nicOps, nerr := vmNicCreateOps(vmNicFromCreateParams(*writes.Nic, now))
 		if nerr != nil {
 			return nil, nil, "", nerr
@@ -300,12 +317,17 @@ func (s *Store) buildBindTxn(ctx context.Context, vm store.VM, writes store.VMBi
 	return ops, conds, macGuard, nil
 }
 
-// classifyBindFailure maps a lost bind commit to a sentinel. Two compares can
-// fail: the VM-row ModRevision CAS and (with a NIC) the per-network MAC guard.
-// Re-issuing the MAC-guard compare alone disambiguates - if it also fails the
-// MAC key already exists, so the collision was the MAC (ErrVMNicMACConflict,
-// which the caller re-mints); otherwise the VM-row ModRevision moved (deleted or
-// bound by another replica), so the VM is no longer unscheduled.
+// classifyBindFailure maps a lost bind commit to a sentinel. Three compares can
+// fail: the VM-row ModRevision CAS, (with a NIC) the per-network MAC guard, and
+// (with CP-IPAM) the per-(network, ip) reservation guard. Re-issuing the
+// MAC-guard compare alone disambiguates - if it also fails the MAC key already
+// exists, so the collision was the MAC (ErrVMNicMACConflict, which the caller
+// re-mints); otherwise the VM-row ModRevision moved (deleted or bound by another
+// replica) OR a concurrent bind already reserved the IP the allocator picked.
+// Both of the latter fold into ErrVMNotUnscheduled: the VM is left unscheduled
+// and the next schedule tick re-plans it, where the allocator re-picks a free IP
+// (the now-taken candidate is skipped). No separate IP probe is needed - the
+// next-tick re-pick is the recovery.
 func (s *Store) classifyBindFailure(ctx context.Context, macGuard string) error {
 	if macGuard != "" {
 		chk, cerr := s.c.Raw().Txn(ctx).

@@ -56,18 +56,40 @@ func JoinDocuments(docs [][]byte) []byte {
 // operator-settable `config` blob is not yet manifest-expressible and so
 // is dropped on every projection (see the docs round-trip caveat).
 func ProjectNetwork(n cpclient.Network) ([]byte, error) {
+	var spec map[string]any
 	if n.Type == "overlay" {
-		spec := map[string]any{"type": n.Type}
-		if n.Subnet != nil && *n.Subnet != "" {
-			spec["subnet"] = *n.Subnet
-		}
-		return encodeDoc(outDoc{
-			APIVersion: APIVersionV1,
-			Kind:       KindNetwork,
-			Metadata:   outMetadata{Name: n.Name},
-			Spec:       spec,
-		})
+		spec = overlayNetworkSpec(n)
+	} else {
+		spec = bridgeNetworkSpec(n)
 	}
+	return encodeDoc(outDoc{
+		APIVersion: APIVersionV1,
+		Kind:       KindNetwork,
+		Metadata:   outMetadata{Name: n.Name},
+		Spec:       spec,
+	})
+}
+
+// overlayNetworkSpec builds the apply-ready spec map for an overlay
+// network: type + subnet (the minimal valid overlay create body) plus
+// dhcp when the CP enabled CP-IPAM. bridgeName / mtu / vlan / gateway /
+// egress are server-derived or fixed for overlay and so are not emitted.
+func overlayNetworkSpec(n cpclient.Network) map[string]any {
+	spec := map[string]any{"type": n.Type}
+	if n.Subnet != nil && *n.Subnet != "" {
+		spec["subnet"] = *n.Subnet
+	}
+	if n.Dhcp != nil && *n.Dhcp {
+		spec["dhcp"] = true
+	}
+	return spec
+}
+
+// bridgeNetworkSpec builds the apply-ready spec map for a bridge
+// network. mtu is always emitted (NOT NULL, lossless even at 1500); the
+// remaining fields are emitted only when non-default so the round-trip
+// stays minimal.
+func bridgeNetworkSpec(n cpclient.Network) map[string]any {
 	spec := map[string]any{
 		"type":       n.Type,
 		"bridgeName": n.BridgeName,
@@ -84,18 +106,16 @@ func ProjectNetwork(n cpclient.Network) ([]byte, error) {
 	if n.Gateway != nil && *n.Gateway != "" {
 		spec["gateway"] = *n.Gateway
 	}
+	if n.Dhcp != nil && *n.Dhcp {
+		spec["dhcp"] = true
+	}
 	// MTU is NOT NULL / always populated, so emitting it (even 1500) is
 	// lossless. VlanTag is nullable: a nil pointer means untagged.
 	spec["mtu"] = n.MTU
 	if n.VlanTag != nil {
 		spec["vlan"] = *n.VlanTag
 	}
-	return encodeDoc(outDoc{
-		APIVersion: APIVersionV1,
-		Kind:       KindNetwork,
-		Metadata:   outMetadata{Name: n.Name},
-		Spec:       spec,
-	})
+	return spec
 }
 
 // ProjectPoolInstance renders a single pool instance (node-scoped) as a

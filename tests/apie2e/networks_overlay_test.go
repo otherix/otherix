@@ -181,6 +181,141 @@ func TestOverlayNetworkPatchOnlyName(t *testing.T) {
 	assertErrorCode(t, mtuResp, "validation_failed")
 }
 
+// overlayDhcpView is the minimal decode shape for the dhcp flag on a network.
+type overlayDhcpView struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Dhcp bool   `json:"dhcp"`
+}
+
+// TestOverlayNetworkCreateWithDhcp verifies that an overlay network created with
+// egress=nat, a subnet, and dhcp=true is persisted with dhcp enabled and surfaces
+// dhcp:true in the create response.
+func TestOverlayNetworkCreateWithDhcp(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	body := map[string]any{
+		"name":   "ov-dhcp-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"egress": "nat",
+		"subnet": "10.61.0.0/24",
+		"dhcp":   true,
+	}
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create overlay dhcp status = %d, want 201; body=%s", resp.StatusCode, raw)
+	}
+	var created overlayDhcpView
+	decodeJSON(t, resp, &created)
+	if created.Type != "overlay" {
+		t.Errorf("type = %q, want overlay", created.Type)
+	}
+	if !created.Dhcp {
+		t.Errorf("dhcp = false, want true")
+	}
+
+	// GET-by-id round-trips dhcp:true.
+	getResp := h.get(t, "/v1/networks/"+created.ID, admin)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", getResp.StatusCode)
+	}
+	var fetched overlayDhcpView
+	decodeJSON(t, getResp, &fetched)
+	if !fetched.Dhcp {
+		t.Errorf("dhcp on GET = false, want true (must round-trip)")
+	}
+}
+
+// TestOverlayNetworkCreateDhcpRequiresNAT verifies that dhcp=true on an overlay
+// network without egress=nat (egress omitted -> none) is rejected with 400
+// validation_failed.
+func TestOverlayNetworkCreateDhcpRequiresNAT(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	body := map[string]any{
+		"name":   "ov-dhcp-noegress-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"subnet": "10.62.0.0/24",
+		"dhcp":   true,
+	}
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create overlay dhcp without egress=nat status = %d, want 400", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}
+
+// TestBridgeNetworkCreateDhcpRejected verifies that dhcp=true on a type=bridge
+// network is rejected with 400 validation_failed (DHCP is overlay-only).
+func TestBridgeNetworkCreateDhcpRejected(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	suffix := uuid.NewString()[:8]
+	body := map[string]any{
+		"name":        "br-dhcp-" + suffix,
+		"type":        "bridge",
+		"bridge_name": "br" + suffix[:6],
+		"dhcp":        true,
+	}
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create bridge with dhcp status = %d, want 400", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}
+
+// TestOverlayNetworkPatchDhcpForbidden verifies that PATCH bodies containing the
+// immutable dhcp key are rejected with 400 validation_failed and dhcp listed in
+// details.forbidden_fields.
+func TestOverlayNetworkPatchDhcpForbidden(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	createResp := h.post(t, "/v1/networks", map[string]any{
+		"name":   "ov-dhcp-patch-" + uuid.NewString()[:8],
+		"type":   "overlay",
+		"egress": "nat",
+		"subnet": "10.63.0.0/24",
+		"dhcp":   true,
+	}, admin)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create overlay dhcp status = %d, want 201", createResp.StatusCode)
+	}
+	var created overlayDhcpView
+	decodeJSON(t, createResp, &created)
+
+	patchResp := h.patch(t, "/v1/networks/"+created.ID, map[string]any{"dhcp": false}, admin)
+	if patchResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch dhcp status = %d, want 400", patchResp.StatusCode)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				ForbiddenFields []string `json:"forbidden_fields"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	decodeJSON(t, patchResp, &env)
+	if env.Error.Code != "validation_failed" {
+		t.Errorf("patch dhcp error code = %q, want validation_failed", env.Error.Code)
+	}
+	found := false
+	for _, f := range env.Error.Details.ForbiddenFields {
+		if f == "dhcp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("forbidden_fields = %v, want to include dhcp", env.Error.Details.ForbiddenFields)
+	}
+}
+
 // TestOverlayNetworkDeclaredToAgents verifies that overlay networks ARE now
 // declared in the declared_networks down-channel (the N3b D1 flip). It seeds one
 // bridge and one overlay network, drives a synthetic agent heartbeat over the

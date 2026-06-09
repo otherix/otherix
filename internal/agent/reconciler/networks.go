@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
@@ -40,6 +41,7 @@ import (
 type Networks struct {
 	log    *slog.Logger
 	fabric netfabric.Fabric
+	dhcp   dhcp4.Responder // per-node DHCPv4 responder for dhcp-enabled overlays; may be nil
 	tick   time.Duration
 
 	desired atomic.Pointer[networksDesired]
@@ -53,6 +55,15 @@ type Networks struct {
 	// with the right primitives. Mutated only from the reconcile
 	// goroutine; no lock needed.
 	applied map[string]appliedNetwork
+
+	// dhcpRegisterErr remembers the last-logged DHCP RegisterNetwork error
+	// string per network id, so a permanently failing registration logs a
+	// WARN only on transition (first failure or a changed error) instead of
+	// every reconcile pass. Cleared on a successful register (emitting a
+	// single recovery INFO) and on teardown, so a later re-failure re-logs.
+	// Mutated only from the reconcile goroutine; no lock needed, same as
+	// applied.
+	dhcpRegisterErr map[string]string
 }
 
 // appliedNetwork is the reconciler's memory of one materialised managed
@@ -67,6 +78,7 @@ type appliedNetwork struct {
 	Overlay    bool   // true for a type=overlay network: teardown removes the VTEP too
 	VNI        uint32 // VXLAN id, for RemoveVXLAN on teardown (Overlay only)
 	HasEgress  bool   // true for an overlay materialised with egress=nat: teardown removes the iface masquerade
+	HasDHCP    bool   // true for a dhcp-enabled overlay registered with the responder: teardown deregisters it
 }
 
 // networksDesired is the latest CP-declared network intent for this node: the
@@ -81,8 +93,9 @@ type networksDesired struct {
 // NewNetworks builds the network reconciler. tick==0 falls back to
 // DefaultTickInterval. Returns ErrNilFabric when fabric is nil so
 // boot-time misconfiguration surfaces at construction, not at the first
-// reconcile.
-func NewNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration) (*Networks, error) {
+// reconcile. dhcp may be nil, in which case the reconciler skips DHCP
+// registration entirely (a node with no DHCP responder support).
+func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tick time.Duration) (*Networks, error) {
 	if f == nil {
 		return nil, ErrNilFabric
 	}
@@ -90,12 +103,14 @@ func NewNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration) (*Net
 		tick = DefaultTickInterval
 	}
 	return &Networks{
-		log:     log,
-		fabric:  f,
-		tick:    tick,
-		trigger: make(chan struct{}, 1),
-		reports: map[string]heartbeat.NetworkReport{},
-		applied: map[string]appliedNetwork{},
+		log:             log,
+		fabric:          f,
+		dhcp:            dhcp,
+		tick:            tick,
+		trigger:         make(chan struct{}, 1),
+		reports:         map[string]heartbeat.NetworkReport{},
+		applied:         map[string]appliedNetwork{},
+		dhcpRegisterErr: map[string]string{},
 	}, nil
 }
 
@@ -373,6 +388,23 @@ func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetw
 			)
 			errs = append(errs, err)
 		}
+		// Always attempt deregistration: DeregisterNetwork is idempotent (no-op
+		// when the network was never registered), and best-effort DHCP register
+		// can leave the responder serving a bridge while HasDHCP reads false, so
+		// gating on HasDHCP could leak the socket.
+		if r.dhcp != nil {
+			if err := r.dhcp.DeregisterNetwork(id); err != nil {
+				r.log.WarnContext(ctx, "deregister overlay dhcp failed during teardown",
+					slog.String("network_id", id),
+					slog.String("error", err.Error()),
+				)
+				errs = append(errs, err)
+			}
+		}
+		// Forget any remembered register-error state so a deleted-then-recreated
+		// network re-logs its first failure. Best-effort, silent: the network is
+		// going away, not recovering, so no recovery INFO here.
+		delete(r.dhcpRegisterErr, id)
 		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
 			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
 				slog.String("network_id", id),

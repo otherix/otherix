@@ -524,10 +524,35 @@ func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatPr
 	}
 	out := make([]declaredNetwork, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, networkToDeclared(row))
+		dn := networkToDeclared(row)
+		if row.DhcpEnabled {
+			nics, nerr := hp.ListVMNicsByNetwork(ctx, row.ID)
+			if nerr != nil {
+				return nil, fmt.Errorf("list nics for network %s: %v", row.ID, nerr)
+			}
+			dn.Reservations = reservationsFromNICs(nics)
+		}
+		out = append(out, dn)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// reservationsFromNICs projects NIC rows onto wire reservations, skipping NICs
+// without an allocated IPv4. Sorted by MAC so heartbeats are deterministic.
+func reservationsFromNICs(nics []store.VMNic) []dhcpReservation {
+	out := make([]dhcpReservation, 0, len(nics))
+	for _, n := range nics {
+		if n.Ipv4Address == nil {
+			continue
+		}
+		out = append(out, dhcpReservation{MAC: n.MacAddress.String(), IP: n.Ipv4Address.String()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].MAC < out[j].MAC })
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // networkToDeclared projects a store.Network onto the heartbeat wire
@@ -535,14 +560,15 @@ func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatPr
 // (canonical CIDR / IP) and leaving them nil when unset.
 func networkToDeclared(n store.Network) declaredNetwork {
 	dn := declaredNetwork{
-		ID:         n.ID.String(),
-		Name:       n.Name,
-		Type:       string(n.Type),
-		Managed:    n.Managed,
-		Egress:     string(n.Egress),
-		BridgeName: n.BridgeName,
-		Mtu:        n.Mtu,
-		VNI:        n.VNI,
+		ID:          n.ID.String(),
+		Name:        n.Name,
+		Type:        string(n.Type),
+		Managed:     n.Managed,
+		Egress:      string(n.Egress),
+		BridgeName:  n.BridgeName,
+		Mtu:         n.Mtu,
+		VNI:         n.VNI,
+		DhcpEnabled: n.DhcpEnabled,
 	}
 	if n.Subnet != nil {
 		s := n.Subnet.String()

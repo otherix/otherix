@@ -107,7 +107,11 @@ provision:
       RestartSec=5s
       StandardOutput=journal
       StandardError=journal
-      AmbientCapabilities=CAP_NET_ADMIN
+      # CAP_NET_ADMIN: the netlink network fabric (bridges/taps/VXLAN/WireGuard/nft).
+      # CAP_NET_RAW: the per-node DHCP responder opens an AF_PACKET raw socket on
+      # each dhcp-enabled overlay bridge to answer guest DISCOVER before the guest
+      # has an address.
+      AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 
       [Install]
       WantedBy=multi-user.target

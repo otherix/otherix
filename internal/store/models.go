@@ -437,6 +437,11 @@ type Network struct {
 	// Egress=nat (defaults to the first usable host in Subnet). Nil
 	// otherwise.
 	Gateway *netip.Addr
+	// DhcpEnabled turns on CP-IPAM + the per-node DHCP responder for this
+	// network: every NIC gets a CP-allocated Ipv4Address from Subnet and the
+	// agent serves it over DHCP. Requires Subnet (and, for overlay, Egress=nat).
+	// Immutable after create.
+	DhcpEnabled bool
 	// VNI is the CP-allocated VXLAN Network Identifier, unique and
 	// immutable, present only for type=overlay. Nil for bridge.
 	VNI       *int32

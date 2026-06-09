@@ -155,6 +155,7 @@ type vmView struct {
 	Pool         string          `json:"pool"`
 	Node         *string         `json:"node"`
 	Networks     []string        `json:"networks"`
+	Nics         []nicView       `json:"nics"`
 	Architecture string          `json:"architecture"`
 	VCPUs        int             `json:"vcpus"`
 	MemoryMB     int             `json:"memory_mb"`
@@ -163,6 +164,17 @@ type vmView struct {
 	Labels       json.RawMessage `json:"labels"`
 	CreatedAt    string          `json:"created_at"`
 	UpdatedAt    string          `json:"updated_at"`
+}
+
+// nicView is the compact per-NIC projection on the public VM shape. Network is
+// the resolved network name (same resolution as the parallel Networks slice);
+// MAC is the NIC's hardware address; Ipv4Address carries the CP-IPAM-allocated
+// host as a string, or nil when the NIC has no allocation (e.g. a plain bridge
+// network, where IPAM does not run).
+type nicView struct {
+	Network     string  `json:"network"`
+	MAC         string  `json:"mac_address"`
+	Ipv4Address *string `json:"ipv4_address"`
 }
 
 // vmStatusView is the nested `status` object on the public VM shape.
@@ -190,6 +202,11 @@ type vmViewNames struct {
 	// networks holds the VM's attached network names ordered by NIC
 	// device_order (primary first). Empty when the VM has no NIC.
 	networks []string
+	// nics holds the compact per-NIC views (network name, MAC, allocated
+	// IPv4) in the same NIC device_order as networks, so networks[i] and
+	// nics[i] line up. Empty when the VM has no NIC. Derived from the same
+	// ListVMNicsByVM load that produces networks - no extra store round-trip.
+	nics []nicView
 }
 
 // toView projects a (vm row, runtime row) pair plus the pre-resolved
@@ -235,6 +252,7 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting b
 		Pool:         pool,
 		Node:         names.node,
 		Networks:     networksOrEmpty(nets),
+		Nics:         nicsOrEmpty(names.nics),
 		Architecture: string(vm.Architecture),
 		VCPUs:        int(vm.CpuCores),
 		MemoryMB:     int(vm.MemoryMib),
@@ -254,6 +272,16 @@ func networksOrEmpty(nets []string) []string {
 		return []string{}
 	}
 	return nets
+}
+
+// nicsOrEmpty normalises a nil NIC slice to a non-nil empty slice so the wire
+// `nics` field renders `[]` (a required array) rather than `null` for a VM with
+// no NIC.
+func nicsOrEmpty(nics []nicView) []nicView {
+	if nics == nil {
+		return []nicView{}
+	}
+	return nics
 }
 
 // rawJSONOrEmpty returns raw if non-empty, else `{}`. vms.labels is

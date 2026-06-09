@@ -154,6 +154,24 @@ func TestBuildCreatePlanVMKeepsExplicitVCPUsAndMemory(t *testing.T) {
 	}
 }
 
+func TestBuildCreatePlanNetworkMapsDhcp(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: net-dhcp }\nspec: { type: overlay, egress: nat, subnet: 10.50.0.0/24, dhcp: true }\n"
+	docs, err := manifest.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("BuildCreatePlan() error = %v", err)
+	}
+	if len(plan) != 1 || plan[0].Network == nil {
+		t.Fatalf("plan = %+v, want 1 network op", plan)
+	}
+	if !plan[0].Network.Dhcp {
+		t.Errorf("Network.Dhcp = false, want true")
+	}
+}
+
 func TestBuildCreatePlanVMNodePointer(t *testing.T) {
 	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, node: node-9 }\n"
 	docs, _ := manifest.Parse(strings.NewReader(src))

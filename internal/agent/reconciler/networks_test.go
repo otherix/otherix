@@ -22,7 +22,7 @@ func strptr(s string) *string { return &s }
 // overlay IP (self_overlay_ip), which the overlay path needs as the VTEP
 // source address.
 func TestNetworksHandleResponseStoresSelfOverlayIP(t *testing.T) {
-	rec, err := NewNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestNetworksHandleResponseStoresSelfOverlayIP(t *testing.T) {
 // TestNewNetworks_RejectsNilFabric confirms boot-time misconfiguration
 // surfaces at construction, not at the first reconcile.
 func TestNewNetworks_RejectsNilFabric(t *testing.T) {
-	_, err := NewNetworks(nil, discardLogger(), 0)
+	_, err := NewNetworks(nil, nil, discardLogger(), 0)
 	if !errors.Is(err, ErrNilFabric) {
 		t.Errorf("NewNetworks(nil, …) error = %v, want ErrNilFabric", err)
 	}
@@ -55,7 +55,7 @@ func TestNewNetworks_RejectsNilFabric(t *testing.T) {
 // TestNewNetworks_DefaultsTick confirms a zero tick falls back to the
 // documented default.
 func TestNewNetworks_DefaultsTick(t *testing.T) {
-	rec, err := NewNetworks(&netfabric.FakeFabric{}, discardLogger(), 0)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestNewNetworks_DefaultsTick(t *testing.T) {
 // masquerade side effects.
 func TestReconcile_ManagedPlainBridge(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -95,7 +95,7 @@ func TestReconcile_ManagedPlainBridge(t *testing.T) {
 // gateway address + masquerade and reports ready.
 func TestReconcile_ManagedNAT(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -132,7 +132,7 @@ func TestReconcile_ManagedNAT(t *testing.T) {
 // subnet+gateway fails without touching the fabric NAT primitives.
 func TestReconcile_ManagedNATMissingSubnet(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -157,7 +157,7 @@ func TestReconcile_ManagedNATMissingSubnet(t *testing.T) {
 // operator bridge exists reports ready and never calls EnsureBridge.
 func TestReconcile_UnmanagedExisting(t *testing.T) {
 	fab := &netfabric.FakeFabric{BridgeExistsResult: true}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -181,7 +181,7 @@ func TestReconcile_UnmanagedExisting(t *testing.T) {
 // operator bridge is absent fails and never creates anything.
 func TestReconcile_UnmanagedMissing(t *testing.T) {
 	fab := &netfabric.FakeFabric{BridgeExistsResult: false}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -206,7 +206,7 @@ func TestReconcile_UnmanagedMissing(t *testing.T) {
 // without touching the fabric at all.
 func TestReconcile_UnsupportedType(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -228,7 +228,7 @@ func TestReconcile_UnsupportedType(t *testing.T) {
 // captured as a failed report carrying the error text.
 func TestReconcile_EnsureBridgeError(t *testing.T) {
 	fab := &netfabric.FakeFabric{Errs: map[string]error{"EnsureBridge": errors.New("netlink: permission denied")}}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -254,7 +254,7 @@ func TestReconcile_EnsureBridgeError(t *testing.T) {
 // bridge) and dropped from reports.
 func TestReconcile_RemovesManagedBridge(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -294,7 +294,7 @@ func TestReconcile_RemovesManagedBridge(t *testing.T) {
 // the "still applied" assertion below fails on the unfixed code.
 func TestReconcile_TeardownFailureRetainsAppliedForRetry(t *testing.T) {
 	fab := &netfabric.FakeFabric{Errs: map[string]error{"RemoveBridge": errors.New("ebusy")}}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -326,7 +326,7 @@ func TestReconcile_TeardownFailureRetainsAppliedForRetry(t *testing.T) {
 // bridge down entirely (RemoveBridge(old)) and ensures the new one.
 func TestReconcile_BridgeRenameTearsDownOldBridge(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -360,7 +360,7 @@ func TestReconcile_BridgeRenameTearsDownOldBridge(t *testing.T) {
 // masquerade + gateway addr but leaves the bridge in place.
 func TestReconcile_NATToNoneTearsDownNAT(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -400,7 +400,7 @@ func TestReconcile_NATToNoneTearsDownNAT(t *testing.T) {
 // masquerade and asserts the NEW one.
 func TestReconcile_NATSubnetChangeReplacesMasquerade(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -445,7 +445,7 @@ func TestReconcile_NATSubnetChangeReplacesMasquerade(t *testing.T) {
 // teardown must not fire when nothing changed.
 func TestReconcile_SteadyStateNoTeardown(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	net := heartbeat.DeclaredNetwork{
 		ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
@@ -477,7 +477,7 @@ func TestReconcile_SteadyStateNoTeardown(t *testing.T) {
 // the early record the managed bridge orphans on the host with no GC.
 func TestReconcile_PartialNATFailureRecordsBridge(t *testing.T) {
 	fab := &netfabric.FakeFabric{Errs: map[string]error{"EnsureMasquerade": errors.New("nft: boom")}}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -528,7 +528,7 @@ func TestReconcile_PartialNATFailureRecordsBridge(t *testing.T) {
 // early must not turn the steady-state no-op into a rename/NAT-drop teardown.
 func TestReconcile_PartialNATFailureSteadyStateNoTeardown(t *testing.T) {
 	fab := &netfabric.FakeFabric{Errs: map[string]error{"EnsureMasquerade": errors.New("nft: boom")}}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	net := heartbeat.DeclaredNetwork{
 		ID: "net-nat", Name: "nat0", Type: "bridge", Managed: true,
@@ -559,7 +559,7 @@ func TestReconcile_PartialNATFailureSteadyStateNoTeardown(t *testing.T) {
 // operator bridge is never deleted by the agent.
 func TestReconcile_DoesNotRemoveUnmanagedBridge(t *testing.T) {
 	fab := &netfabric.FakeFabric{BridgeExistsResult: true}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -583,7 +583,7 @@ func TestReconcile_DoesNotRemoveUnmanagedBridge(t *testing.T) {
 // sorted by network id.
 func TestNetworkReports_Sorted(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), DefaultTickInterval)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), DefaultTickInterval)
 
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
@@ -606,7 +606,7 @@ func TestNetworkReports_Sorted(t *testing.T) {
 // on trigger AND on ticker, and exits cleanly on ctx cancellation.
 func TestRun_NetworksHandlesTriggerAndTick(t *testing.T) {
 	fab := &netfabric.FakeFabric{}
-	rec, _ := NewNetworks(fab, discardLogger(), 20*time.Millisecond)
+	rec, _ := NewNetworks(fab, nil, discardLogger(), 20*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
