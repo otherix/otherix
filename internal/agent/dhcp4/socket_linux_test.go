@@ -14,7 +14,7 @@ import (
 
 func TestIPChecksumKnownVector(t *testing.T) {
 	// RFC 1071-style worked example header (checksum field zeroed) from the
-	// classic UDP/IP derivation yields 0xb1e6.
+	// classic UDP/IP derivation yields 0xb861.
 	header := []byte{
 		0x45, 0x00, 0x00, 0x73, 0x00, 0x00, 0x40, 0x00,
 		0x40, 0x11, 0x00, 0x00, 0xc0, 0xa8, 0x00, 0x01,
@@ -103,15 +103,12 @@ func TestParseDHCPFrameRecoversRequest(t *testing.T) {
 	payload := []byte("client-discover")
 	frame := requestFrame(src, payload)
 
-	gotPayload, gotMAC, ok := parseDHCPFrame(frame)
+	gotPayload, ok := parseDHCPFrame(frame)
 	if !ok {
 		t.Fatal("parseDHCPFrame returned ok=false for a well-formed request")
 	}
 	if string(gotPayload) != string(payload) {
 		t.Errorf("payload = %q, want %q", gotPayload, payload)
-	}
-	if gotMAC.String() != src.String() {
-		t.Errorf("src MAC = %v, want %v", gotMAC, src)
 	}
 }
 
@@ -122,7 +119,7 @@ func TestParseDHCPFrameRejectsNonDHCP(t *testing.T) {
 	udp := frame[ethHeaderLen+ipHeaderLen:]
 	binary.BigEndian.PutUint16(udp[2:4], 53)
 
-	if _, _, ok := parseDHCPFrame(frame); ok {
+	if _, ok := parseDHCPFrame(frame); ok {
 		t.Error("parseDHCPFrame accepted a non-DHCP (port 53) frame")
 	}
 }

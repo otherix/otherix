@@ -33,8 +33,7 @@ type fakeConn struct {
 }
 
 type fakeFrame struct {
-	payload   []byte
-	clientMAC net.HardwareAddr
+	payload []byte
 }
 
 type sentFrame struct {
@@ -51,12 +50,12 @@ func newFakeConn(bridge string) *fakeConn {
 	}
 }
 
-func (c *fakeConn) recv() ([]byte, net.HardwareAddr, error) {
+func (c *fakeConn) recv() ([]byte, error) {
 	select {
 	case f := <-c.in:
-		return f.payload, f.clientMAC, nil
+		return f.payload, nil
 	case <-c.closeC:
-		return nil, nil, io.EOF
+		return nil, io.EOF
 	}
 }
 
@@ -102,7 +101,7 @@ func feedDiscover(t *testing.T, c *fakeConn, mac net.HardwareAddr) {
 	if err != nil {
 		t.Fatalf("dhcpv4.New() = %v", err)
 	}
-	c.in <- fakeFrame{payload: req.ToBytes(), clientMAC: mac}
+	c.in <- fakeFrame{payload: req.ToBytes()}
 }
 
 // waitSend blocks until the conn records a send or the deadline elapses.

@@ -20,11 +20,11 @@ import (
 )
 
 // packetConn is one bridge's raw L2 socket: it yields inbound DHCP request
-// payloads (UDP/67) with the client's MAC, and sends reply payloads back.
+// payloads (UDP/67) and sends reply payloads back.
 type packetConn interface {
 	// recv returns the next DHCP request payload (the UDP body, i.e. the bytes
-	// dhcpv4.FromBytes expects) and the client source MAC.
-	recv() (payload []byte, clientMAC net.HardwareAddr, err error)
+	// dhcpv4.FromBytes expects).
+	recv() (payload []byte, err error)
 	// send frames payload as Ethernet/IPv4/UDP (server 169.254.1.1:67 -> client
 	// :68) to dstMAC and writes it.
 	send(payload []byte, dstMAC net.HardwareAddr) error
@@ -254,7 +254,7 @@ func (r *responder) stopServerLocked(srv *bridgeServer) {
 func (r *responder) serve(ctx context.Context, srv *bridgeServer) {
 	defer close(srv.done)
 	for {
-		payload, clientMAC, err := srv.conn.recv()
+		payload, err := srv.conn.recv()
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -264,13 +264,13 @@ func (r *responder) serve(ctx context.Context, srv *bridgeServer) {
 			r.log.Debug("dhcp recv error", "bridge", srv.bridge, "error", err.Error())
 			return
 		}
-		r.handle(srv, payload, clientMAC)
+		r.handle(srv, payload)
 	}
 }
 
 // handle parses one DHCP request, resolves the reservation for the client MAC,
 // and sends the reply. Unknown MACs are dropped.
-func (r *responder) handle(srv *bridgeServer, payload []byte, clientMAC net.HardwareAddr) {
+func (r *responder) handle(srv *bridgeServer, payload []byte) {
 	req, err := dhcpv4.FromBytes(payload)
 	if err != nil {
 		r.log.Debug("dhcp parse error", "bridge", srv.bridge, "error", err.Error())

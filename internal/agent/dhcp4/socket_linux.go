@@ -60,19 +60,19 @@ func openAFPacket(bridge string) (packetConn, error) {
 }
 
 // recv reads frames until it sees a UDP datagram to port 67, returning the UDP
-// payload and the Ethernet source MAC. Non-DHCP frames are skipped.
-func (c *afpacketConn) recv() ([]byte, net.HardwareAddr, error) {
+// payload. Non-DHCP frames are skipped.
+func (c *afpacketConn) recv() ([]byte, error) {
 	buf := make([]byte, 1500)
 	for {
 		n, _, err := unix.Recvfrom(c.fd, buf, 0)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		payload, srcMAC, ok := parseDHCPFrame(buf[:n])
+		payload, ok := parseDHCPFrame(buf[:n])
 		if !ok {
 			continue
 		}
-		return payload, srcMAC, nil
+		return payload, nil
 	}
 }
 
@@ -104,41 +104,39 @@ func (c *afpacketConn) close() error {
 }
 
 // parseDHCPFrame validates an Ethernet/IPv4/UDP frame and returns the UDP
-// payload and Ethernet source MAC when it is a DHCP request (UDP dst port 67).
-// It returns ok=false for any frame that is not such a request.
-func parseDHCPFrame(frame []byte) (payload []byte, srcMAC net.HardwareAddr, ok bool) {
+// payload when it is a DHCP request (UDP dst port 67). It returns ok=false for
+// any frame that is not such a request.
+func parseDHCPFrame(frame []byte) (payload []byte, ok bool) {
 	if len(frame) < ethHeaderLen+ipHeaderLen+udpHeaderLen {
-		return nil, nil, false
+		return nil, false
 	}
 	// Ethernet: ethertype IPv4.
 	if binary.BigEndian.Uint16(frame[12:14]) != unix.ETH_P_IP {
-		return nil, nil, false
+		return nil, false
 	}
-	src := make(net.HardwareAddr, 6)
-	copy(src, frame[6:12])
 
 	ip := frame[ethHeaderLen:]
 	// IPv4: version 4, proto UDP. IHL gives the header length in 32-bit words.
 	if ip[0]>>4 != 4 {
-		return nil, nil, false
+		return nil, false
 	}
 	ihl := int(ip[0]&0x0f) * 4
 	if ihl < ipHeaderLen || len(ip) < ihl+udpHeaderLen {
-		return nil, nil, false
+		return nil, false
 	}
 	if ip[9] != unix.IPPROTO_UDP {
-		return nil, nil, false
+		return nil, false
 	}
 
 	udp := ip[ihl:]
 	if binary.BigEndian.Uint16(udp[2:4]) != dhcpServerPort {
-		return nil, nil, false
+		return nil, false
 	}
 	udpLen := int(binary.BigEndian.Uint16(udp[4:6]))
 	if udpLen < udpHeaderLen || len(udp) < udpLen {
-		return nil, nil, false
+		return nil, false
 	}
-	return udp[udpHeaderLen:udpLen], src, true
+	return udp[udpHeaderLen:udpLen], true
 }
 
 // buildFrame frames payload as Ethernet (srcMAC->dstMAC, IPv4) + IPv4
