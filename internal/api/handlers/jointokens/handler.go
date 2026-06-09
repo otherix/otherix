@@ -69,6 +69,8 @@ var (
 	errIntendedNameTooLong = errors.New("intended_node_name must be at most 253 characters")
 	errInvalidKind         = errors.New("kind must be \"node\" or \"cluster\"")
 	errClusterNodeBound    = errors.New("cluster tokens cannot carry intended_node_name")
+
+	errClusterMaxUsesTooHigh = errors.New("max_uses for a cluster token must be <= 16")
 )
 
 // errTokenNotFound is the sentinel for a token row missing entirely;
