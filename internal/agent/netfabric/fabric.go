@@ -94,6 +94,12 @@ type Fabric interface {
 	// RemoveMasqueradeIface removes every masquerade rule tagged for inIface.
 	RemoveMasqueradeIface(inIface string) error
 
+	// EnsureBridgeRoute installs a link-scoped connected route for subnet via the
+	// named bridge, idempotently, so the node routes return traffic to VMs on the
+	// overlay back to the bridge (the anycast gateway is a link-local /32 and
+	// gives the node no route to the overlay subnet otherwise).
+	EnsureBridgeRoute(subnet netip.Prefix, bridge string) error
+
 	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
 	// brings it up. Learning is off (the FDB is controller-authoritative);
 	// remotes are supplied only through FDBAppend. It is idempotent.

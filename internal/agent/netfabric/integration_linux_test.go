@@ -1397,6 +1397,43 @@ func TestLinuxFabricAnycastGatewaySetsArpSysctls(t *testing.T) {
 	})
 }
 
+func TestLinuxFabricBridgeRoute(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		const bridge = "ot-br-rt0"
+		subnet := netip.MustParsePrefix("10.62.0.0/24")
+		if err := f.EnsureBridge(bridge, 1500); err != nil {
+			t.Fatalf("EnsureBridge = %v", err)
+		}
+		if err := f.EnsureBridgeRoute(subnet, bridge); err != nil {
+			requireNetfabric(t, "EnsureBridgeRoute = %v", err)
+		}
+		// The connected route for the overlay subnet must point at the bridge,
+		// so the node can deliver return traffic to overlay VMs.
+		routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+		if err != nil {
+			t.Fatalf("RouteList = %v", err)
+		}
+		link, err := netlink.LinkByName(bridge)
+		if err != nil {
+			t.Fatalf("LinkByName = %v", err)
+		}
+		found := false
+		for _, r := range routes {
+			if r.Dst != nil && r.Dst.String() == "10.62.0.0/24" && r.LinkIndex == link.Attrs().Index {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("route 10.62.0.0/24 dev %s not present after EnsureBridgeRoute", bridge)
+		}
+		// Idempotent.
+		if err := f.EnsureBridgeRoute(subnet, bridge); err != nil {
+			t.Errorf("EnsureBridgeRoute second call = %v", err)
+		}
+	})
+}
+
 func TestLinuxFabricLinkState(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()

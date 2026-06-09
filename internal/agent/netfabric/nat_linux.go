@@ -129,6 +129,34 @@ func (f *linuxFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error
 	return nil
 }
 
+// EnsureBridgeRoute installs a link-scoped connected route for subnet via the
+// named bridge, idempotently (RouteReplace is add-or-update). Without it the
+// node has no route to the overlay subnet - the anycast gateway is only a
+// link-local /32 - so return/reply traffic to overlay VMs is misrouted out the
+// uplink and lost.
+func (f *linuxFabric) EnsureBridgeRoute(subnet netip.Prefix, bridge string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure bridge route %s on %s: %v", subnet, bridge, err)
+	}
+	_, dst, err := net.ParseCIDR(subnet.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure bridge route %s on %s: parse: %v", subnet, bridge, err)
+	}
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Dst:       dst,
+		Scope:     netlink.SCOPE_LINK,
+	}
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("netfabric: ensure bridge route %s on %s: %v", subnet, bridge, err)
+	}
+	return nil
+}
+
 // EnsureGatewayAddr assigns addr to the named bridge link, idempotently.
 // AddrReplace adds the address when absent and is a no-op when it is
 // already present, so a second call against the same bridge succeeds.

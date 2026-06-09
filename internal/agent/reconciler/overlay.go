@@ -110,6 +110,21 @@ func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredN
 			slog.String("network_id", d.ID), slog.String("error", err.Error()))
 		return
 	}
+	// The anycast gateway is only a link-local /32, so the node has no connected
+	// route to the overlay subnet. Install one on the bridge so return/reply
+	// traffic to overlay VMs is delivered to the bridge instead of misrouted out
+	// the uplink. Best-effort: a bad/absent subnet is logged and skipped (does
+	// not fail the network), a fabric error retries next pass.
+	if d.Subnet != nil {
+		if subnet, err := netip.ParsePrefix(*d.Subnet); err != nil {
+			r.log.WarnContext(ctx, "overlay egress: bad subnet, skipping bridge route",
+				slog.String("network_id", d.ID), slog.String("subnet", *d.Subnet), slog.String("error", err.Error()))
+		} else if err := r.fabric.EnsureBridgeRoute(subnet, d.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "overlay egress: bridge route failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+			return
+		}
+	}
 	// Empty egress iface -> netfabric resolves the host default route.
 	if err := r.fabric.EnsureMasqueradeIface(d.BridgeName, ""); err != nil {
 		r.log.WarnContext(ctx, "overlay egress: masquerade failed; retrying next pass",

@@ -41,6 +41,8 @@ type FakeFabric struct {
 	MasqueradeIfaceCalls []MasqueradeIfaceCall
 	RemoveMasqIfaceCalls []string
 
+	BridgeRouteCalls []BridgeRouteCall
+
 	AnycastGatewayCalls       []AnycastGatewayCall
 	RemoveAnycastGatewayCalls []AnycastGatewayCall
 
@@ -135,6 +137,12 @@ type MasqueradeCall struct {
 type MasqueradeIfaceCall struct {
 	InIface     string
 	EgressIface string
+}
+
+// BridgeRouteCall records one EnsureBridgeRoute invocation.
+type BridgeRouteCall struct {
+	Subnet netip.Prefix
+	Bridge string
 }
 
 // AnycastGatewayCall records one EnsureAnycastGateway or RemoveAnycastGateway
@@ -237,6 +245,12 @@ func (f *FakeFabric) EnsureMasqueradeIface(inIface, egressIface string) error {
 func (f *FakeFabric) RemoveMasqueradeIface(inIface string) error {
 	f.RemoveMasqIfaceCalls = append(f.RemoveMasqIfaceCalls, inIface)
 	return f.err("RemoveMasqueradeIface")
+}
+
+// EnsureBridgeRoute records the call and returns Errs["EnsureBridgeRoute"].
+func (f *FakeFabric) EnsureBridgeRoute(subnet netip.Prefix, bridge string) error {
+	f.BridgeRouteCalls = append(f.BridgeRouteCalls, BridgeRouteCall{Subnet: subnet, Bridge: bridge})
+	return f.err("EnsureBridgeRoute")
 }
 
 // EnableIPForwarding records the call and returns

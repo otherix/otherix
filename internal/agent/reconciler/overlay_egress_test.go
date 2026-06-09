@@ -75,6 +75,31 @@ func TestApplyOverlayEgressInstallsGatewayAndMasq(t *testing.T) {
 	}
 }
 
+func TestApplyOverlayEgressInstallsSubnetRoute(t *testing.T) {
+	f := readyEgressFabric()
+	rec, err := NewNetworks(f, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := overlayEgressNet()
+	subnet := "10.62.0.0/24"
+	d.Subnet = &subnet
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.BridgeRouteCalls) != 1 {
+		t.Fatalf("BridgeRouteCalls = %d, want 1 (overlay subnet route for return traffic)", len(f.BridgeRouteCalls))
+	}
+	got := f.BridgeRouteCalls[0]
+	if got.Bridge != "otb1000" || got.Subnet.String() != "10.62.0.0/24" {
+		t.Errorf("BridgeRouteCall = %+v, want {10.62.0.0/24 otb1000}", got)
+	}
+}
+
 func TestApplyOverlayNoEgressSkipsMasq(t *testing.T) {
 	f := readyEgressFabric()
 	rec, err := NewNetworks(f, discardLogger(), time.Minute)

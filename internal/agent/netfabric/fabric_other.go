@@ -84,6 +84,9 @@ func (unsupportedFabric) EnsureMasqueradeIface(string, string) error { return er
 // RemoveMasqueradeIface reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) RemoveMasqueradeIface(string) error { return errUnsupported }
 
+// EnsureBridgeRoute reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) EnsureBridgeRoute(netip.Prefix, string) error { return errUnsupported }
+
 // EnsureVXLAN reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureVXLAN(cfg VXLANConfig) error { return errUnsupported }
 
