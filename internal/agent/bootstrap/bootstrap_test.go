@@ -204,7 +204,7 @@ func newCAChain(t *testing.T, nodeName string) *caChain {
 	if err != nil {
 		t.Fatalf("ParseCertificateRequest: %v", err)
 	}
-	leafPEM, leafCert, err := auth.SignCSR(csr, nodeName, caCert, caSigner, time.Now())
+	leafPEM, leafCert, err := auth.SignCSR(csr, nodeName, "", caCert, caSigner, time.Now())
 	if err != nil {
 		t.Fatalf("auth.SignCSR: %v", err)
 	}
