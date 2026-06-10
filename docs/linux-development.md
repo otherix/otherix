@@ -127,8 +127,10 @@ local-dev-start`.
 
 2. Create a VM on the overlay with a **static** cloud-init network-config. The
    gateway and DNS are the link-local anycast address `169.254.1.1`, which is
-   off-subnet, so the default route must be declared `on-link`. Example
-   network-config (netplan v2 form) baked into the VM's cloud-init:
+   off-subnet, so the default route must be declared `on-link`. Deliver the
+   network-config (netplan v2 form) via `otherix vm create --network-config
+   <file>` (the preferred way to ship static addressing; user-data still goes
+   through `--user-data`):
 
    ```yaml
    network:

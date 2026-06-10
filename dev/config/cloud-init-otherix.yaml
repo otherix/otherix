@@ -1,12 +1,12 @@
 #cloud-config
 # Dev cloud-init for the local-dev-start environment. Passed via
-# `--cloud-init` on `otherix vm create` so `otherix vm console <name>`
+# `--user-data` on `otherix vm create` so `otherix vm console <name>`
 # lands an operator at a login prompt with working
 # credentials (`otherix` / `otherix`, passwordless sudo).
 #
 # WARNING: plain-text password is acceptable for DEV ONLY. Production
 # deployments must override with SSH keys or hashed passwords on a
-# per-VM basis through `otherix vm create --cloud-init=<path>`.
+# per-VM basis through `otherix vm create --user-data=<path>`.
 
 users:
   - name: otherix

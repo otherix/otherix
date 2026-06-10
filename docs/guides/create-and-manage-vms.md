@@ -48,8 +48,9 @@ vm running task=<task-uuid>
 | `--network` | (unset) | Bridge network name or uuid to attach one NIC. Non-bridge types return 400. When omitted the VM has no NIC and the agent falls back to SLIRP networking. |
 | `--vcpus` | `2` | vCPU count (1..128). |
 | `--memory-mb` | `2048` | Memory in MiB (128..524288). |
-| `--cloud-init` | (unset) | Path to a `#cloud-config` YAML, or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
-| `--no-cloud-init` | `false` | Explicitly disable cloud-init. Mutually exclusive with `--cloud-init`. |
+| `--user-data` | (unset) | Path to a `#cloud-config` user-data YAML, or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
+| `--network-config` | (unset) | Path to a cloud-init network-config YAML (netplan v2), or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
+| `--no-cloud-init` | `false` | Explicitly disable cloud-init. Mutually exclusive with `--user-data` and `--network-config`. |
 | `--wait` | `false` | Block until the task reaches terminal status. |
 | `--wait-timeout` | `5m` | Max wait when `--wait` is set. |
 

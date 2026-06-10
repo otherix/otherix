@@ -87,7 +87,7 @@ net_ready_both() {
 }
 
 # The guest cloud-config now lives in manifests/vms.yaml.tmpl (one document per
-# VM, inline `cloudInit:`), not a heredoc here. Notes preserved from the old
+# VM, inline `userData:`), not a heredoc here. Notes preserved from the old
 # gen_userdata for context:
 #   - The single overlay NIC enumerates as en* (deterministic QEMU virtio-net on
 #     PCI slot 1); netplan targets it by glob and marks it optional so
