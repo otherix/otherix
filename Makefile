@@ -161,6 +161,10 @@ smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over t
 smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml` / `delete -f` against the real Lima agent (run after local-dev-start)
 	bash dev/smoke/manifests/run.sh
 
+.PHONY: smoke-vm-lifecycle
+smoke-vm-lifecycle: ## VM lifecycle smoke: `otherix vm` start/stop/poweroff/reboot/pause/resume/reset on a real agent (run after local-dev-start)
+	bash dev/smoke/vm-lifecycle/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt fmt-check vet
