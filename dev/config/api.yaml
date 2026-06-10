@@ -1,5 +1,5 @@
 # Otherix api-server dev config — runs natively on the dev host
-# (macOS or Linux) with `make run-api-dev`. The CP dials the agent at
+# (macOS or Linux) under `make local-dev-start`. The CP dials the agent at
 # the Lima port-forward (mac) or the local agent endpoint (Linux);
 # mTLS material auto-managed (see cp_cert block below).
 #
@@ -29,8 +29,8 @@ agent_server:
 # Embedded etcd member - the only stateful service. Dev runs a
 # single-node member with a repo-relative, gitignored data dir (.local/etcd,
 # resolved against the api-server's working directory, which is the repo root
-# under both `make run-api-dev` and local-dev-start). `make etcd-reset` wipes
-# it for a clean-slate smoke run. No Postgres, no migrations.
+# under `make local-dev-start`). `make etcd-reset` wipes it for a clean-slate
+# smoke run. No Postgres, no migrations.
 etcd:
   mode:          "single"
   name:          "otherix-dev-0"

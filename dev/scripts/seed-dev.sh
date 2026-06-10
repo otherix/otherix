@@ -123,7 +123,7 @@ for i in $(seq 1 30); do
         break
     fi
     if [ "${i}" -eq 30 ]; then
-        echo "   ✗ CP not reachable after 30s — is 'make run-api-dev' running?" >&2
+        echo "   ✗ CP not reachable after 30s — is the dev api-server running ('make local-dev-start')?" >&2
         exit 1
     fi
     sleep 1
