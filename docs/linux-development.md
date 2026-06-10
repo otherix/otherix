@@ -99,6 +99,7 @@ you may be prompted for your password.
 make smoke-wireguard-mesh   # cross-node WireGuard handshake
 make smoke-overlay          # VXLAN overlay datapath across both nodes
 make smoke-overlay-vm       # two real VMs, cross-node ping over the overlay
+make smoke-vm-lifecycle     # one VM, full start/stop/poweroff/reboot/pause/resume/reset matrix on a real agent
 ```
 
 Live migration is not yet implemented and is therefore not part of the Linux dev
