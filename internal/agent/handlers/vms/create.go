@@ -55,6 +55,9 @@ type createRequest struct {
 	// top-level `hostname:` (no template fallback)
 	// matching the VM name when missing.
 	UserData string `json:"user_data,omitempty"`
+	// NetworkConfig carries the CP-supplied cloud-init network-config
+	// blob (NoCloud /network-config). Optional; passed through verbatim.
+	NetworkConfig string `json:"network_config,omitempty"`
 	// Nics are the CP-declared network interfaces to attach. Absent or
 	// empty means legacy SLIRP user-mode networking.
 	Nics []nicReq `json:"nics,omitempty"`
@@ -143,6 +146,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Format:         format,
 		DiskGiB:        req.DiskGiB,
 		UserData:       []byte(req.UserData),
+		NetworkData:    []byte(req.NetworkConfig),
 		NICs:           nics,
 	})
 	if err != nil {
