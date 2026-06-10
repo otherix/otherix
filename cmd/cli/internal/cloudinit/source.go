@@ -3,7 +3,7 @@
 
 // Package cloudinit holds CLI-side helpers for reading and validating
 // raw `#cloud-config` YAML the operator passes to
-// `otherix vm create --cloud-init`. The flag
+// `otherix vm create --user-data`. The flag
 // takes a filesystem path OR the literal `-` to slurp stdin (operator
 // UX iteration locks). Validation is best-effort: YAML syntax check
 // + a warning if the body does not start with the `#cloud-config`

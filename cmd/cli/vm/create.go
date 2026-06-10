@@ -27,7 +27,8 @@ const (
 	flagNetwork          = "network"
 	flagVCPUs            = "vcpus"
 	flagMemoryMB         = "memory-mb"
-	flagCloudInitPath    = "cloud-init"
+	flagUserDataPath     = "user-data"
+	flagNetworkConfig    = "network-config"
 	flagCloudInitDisable = "no-cloud-init"
 
 	defaultVCPUs    = 2
@@ -95,10 +96,12 @@ and the agent falls back to legacy SLIRP networking.`,
 	cmd.Flags().String(flagNetwork, "", "bridge network to attach one NIC to — network name or uuid (optional)")
 	cmd.Flags().Int(flagVCPUs, defaultVCPUs, "vCPU count (1..128)")
 	cmd.Flags().Int(flagMemoryMB, defaultMemoryMB, "memory in MiB (128..524288)")
-	cmd.Flags().String(flagCloudInitPath, "",
-		"path to a `#cloud-config` YAML; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
+	cmd.Flags().String(flagUserDataPath, "",
+		"path to a `#cloud-config` user-data YAML; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
+	cmd.Flags().String(flagNetworkConfig, "",
+		"path to a cloud-init network-config YAML (netplan v2); use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
 	cmd.Flags().Bool(flagCloudInitDisable, false,
-		"explicitly disable cloud-init for this VM. Mutually exclusive with --cloud-init.")
+		"explicitly disable cloud-init for this VM. Mutually exclusive with --user-data and --network-config.")
 	cmd.Flags().Bool(flagWait, false, "block until the VM reaches the running phase")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
@@ -122,7 +125,8 @@ type createFlags struct {
 	network           string
 	vcpus             int
 	memoryMB          int
-	cloudInitUserData *string
+	userData          *string
+	networkConfig     *string
 	cloudInitDisabled bool
 	wait              bool
 	timeout           time.Duration
@@ -194,29 +198,37 @@ func parseImageFlags(cmd *cobra.Command, f *createFlags) error {
 	return nil
 }
 
-// parseCloudInitFlags reads --no-cloud-init and --cloud-init onto f and
-// enforces their mutual exclusion. Extracted from parseCreateFlags to
+// parseCloudInitFlags reads --no-cloud-init, --user-data, and
+// --network-config onto f and enforces that --no-cloud-init is mutually
+// exclusive with either content channel. --user-data and
+// --network-config compose freely. Extracted from parseCreateFlags to
 // keep that orchestrator inside the gocyclo cap.
 func parseCloudInitFlags(cmd *cobra.Command, f *createFlags) error {
 	var err error
 	if f.cloudInitDisabled, err = cmd.Flags().GetBool(flagCloudInitDisable); err != nil {
 		return err
 	}
-	if f.cloudInitUserData, err = readCloudInitFlag(cmd, flagCloudInitPath); err != nil {
+	if f.userData, err = readCloudInitFlag(cmd, flagUserDataPath, true); err != nil {
 		return err
 	}
-	if f.cloudInitUserData != nil && f.cloudInitDisabled {
-		return fmt.Errorf("--%s and --%s are mutually exclusive", flagCloudInitPath, flagCloudInitDisable)
+	if f.networkConfig, err = readCloudInitFlag(cmd, flagNetworkConfig, false); err != nil {
+		return err
+	}
+	if f.cloudInitDisabled && (f.userData != nil || f.networkConfig != nil) {
+		return fmt.Errorf("--%s is mutually exclusive with --%s and --%s",
+			flagCloudInitDisable, flagUserDataPath, flagNetworkConfig)
 	}
 	return nil
 }
 
-// readCloudInitFlag turns the `--cloud-init=<path|->` flag into the
-// resolved YAML content. Empty flag returns nil; non-empty reads
-// (file or stdin) and validates (best-effort) through the shared
-// cloudinit package so the contract (warnings to stderr, parse errors
-// bubble up) stays uniform across resources.
-func readCloudInitFlag(cmd *cobra.Command, name string) (*string, error) {
+// readCloudInitFlag turns a `<path|->` cloud-init flag into the resolved
+// YAML content. Empty flag returns nil; non-empty reads (file or stdin)
+// through the shared cloudinit package. When validate is true the body
+// is run through the best-effort #cloud-config validator (warnings to
+// stderr, parse errors bubble up) — appropriate for --user-data. When
+// validate is false the content is treated as opaque (netplan
+// network-config is not #cloud-config), so only the read happens.
+func readCloudInitFlag(cmd *cobra.Command, name string, validate bool) (*string, error) {
 	raw, err := cmd.Flags().GetString(name)
 	if err != nil {
 		return nil, err
@@ -228,16 +240,18 @@ func readCloudInitFlag(cmd *cobra.Command, name string) (*string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--%s: %w", name, err)
 	}
-	warnings, err := cloudinit.Validate(data)
-	if err != nil {
-		return nil, fmt.Errorf("--%s: %w", name, err)
-	}
-	stderr := cmd.ErrOrStderr()
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	for _, w := range warnings {
-		_, _ = fmt.Fprintf(stderr, "warning: --%s: %s\n", name, w)
+	if validate {
+		warnings, err := cloudinit.Validate(data)
+		if err != nil {
+			return nil, fmt.Errorf("--%s: %w", name, err)
+		}
+		stderr := cmd.ErrOrStderr()
+		if stderr == nil {
+			stderr = os.Stderr
+		}
+		for _, w := range warnings {
+			_, _ = fmt.Fprintf(stderr, "warning: --%s: %s\n", name, w)
+		}
 	}
 	out := string(data)
 	return &out, nil
@@ -271,7 +285,8 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		Network:           f.network,
 		VCPUs:             f.vcpus,
 		MemoryMB:          f.memoryMB,
-		UserData:          f.cloudInitUserData,
+		UserData:          f.userData,
+		NetworkConfig:     f.networkConfig,
 		CloudInitDisabled: f.cloudInitDisabled,
 	}
 	if f.node != "" {
