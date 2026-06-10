@@ -446,7 +446,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		PIDFile:       filepath.Join(m.stateDir, vmID.String(), "qemu.pid"),
 		NICs:          spec.NICs,
 	}
-	if len(spec.UserData) > 0 {
+	if needsCidata(spec) {
 		v.CidataPath = filepath.Join(m.stateDir, vmID.String(), "cidata.iso")
 	}
 
@@ -559,8 +559,9 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 
 	if v.CidataPath != "" {
 		builder := &cloudinit.Builder{
-			Hostname: v.Name,
-			UserData: spec.UserData,
+			Hostname:    v.Name,
+			UserData:    spec.UserData,
+			NetworkData: spec.NetworkData,
 		}
 		if _, err := builder.Build(v.CidataPath); err != nil {
 			log.Error("build cidata iso", "err", err)
