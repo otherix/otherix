@@ -70,12 +70,19 @@ func (s *Sanitizer) Process(chunk []byte) []byte {
 // L14 rules (revised after real-agent smoke caught the staircase
 // effect that stripping CR produced on console-stream sessions):
 //
-//   - Strip C0 control bytes except \t (0x09), \n (0x0A), and \r (0x0D).
-//     CR is preserved so a terminal in raw mode (the interactive
-//     console CLI) renders `\r\n` line endings as "col 0, next row"
-//     and so progress bars / spinner output that overwrites the
-//     current line with `\r[ * ]\r[ ** ]` keeps working both live
-//     and replayed via the on-disk log file.
+//   - Strip C0 control bytes except \b (0x08), \t (0x09), \n (0x0A),
+//     and \r (0x0D). CR is preserved so a terminal in raw mode (the
+//     interactive console CLI) renders `\r\n` line endings as "col 0,
+//     next row" and so progress bars / spinner output that overwrites
+//     the current line with `\r[ * ]\r[ ** ]` keeps working both live
+//     and replayed via the on-disk log file. BS is preserved so the
+//     guest's line-editing echo reaches the interactive console: bash
+//     readline moves the cursor left with `\b` and erases a character
+//     with the `\b \b` (backspace, space, backspace) sequence. Stripping
+//     `\b` left the keystroke working (it is sent to the guest on the
+//     un-sanitized input path) while the visual echo silently vanished -
+//     backspace and the left/right arrow keys edited the line but never
+//     moved the cursor on screen.
 //   - Preserve UTF-8 multi-byte sequences (bytes >= 0x80 pass through
 //     unchanged; we do not validate UTF-8).
 //   - Preserve ANSI CSI escape sequences (ESC '[' parameters?
@@ -112,7 +119,7 @@ func sanitizeWithCarry(data []byte) (out, carry []byte) {
 			continue
 		}
 		switch {
-		case b == '\t' || b == '\n' || b == '\r':
+		case b == '\b' || b == '\t' || b == '\n' || b == '\r':
 			out = append(out, b)
 		case b < 0x20, b == 0x7F:
 			continue

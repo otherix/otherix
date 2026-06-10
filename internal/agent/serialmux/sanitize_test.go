@@ -57,9 +57,19 @@ func TestSanitize(t *testing.T) {
 			want: []byte("a\r\nb"),
 		},
 		{
-			name: "strip BS VT FF other ctrl",
-			in:   []byte{'a', 0x01, 0x02, 0x03, 0x08, 0x0B, 0x0C, 'b'},
+			name: "strip VT FF other ctrl (BS preserved separately)",
+			in:   []byte{'a', 0x01, 0x02, 0x03, 0x0B, 0x0C, 'b'},
 			want: []byte("ab"),
+		},
+		{
+			name: "preserve BS (backspace - readline cursor-left / erase)",
+			in:   []byte{'a', 0x08, 'b'},
+			want: []byte{'a', 0x08, 'b'},
+		},
+		{
+			name: "preserve destructive backspace erase echo",
+			in:   []byte("ls\b \b"),
+			want: []byte("ls\b \b"),
 		},
 		{
 			name: "strip DEL",
