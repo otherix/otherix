@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,77 @@ func newTestConfig(t *testing.T) (*config.AgentConfig, string, string) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestManager_New_ReattachesMuxForRunningVM pins the agent-restart
+// recovery contract: a VM that was running when the agent stopped has
+// its serial multiplexer RE-ATTACHED on the next New(), so `vm console`
+// and `vm logs` keep working without restarting the VM. Before this the
+// mux was attached only on create/start/reboot, so an agent restart
+// silently broke console/logs for every running VM (GetMux returned nil
+// and both endpoints reported "restart the vm to re-enable") until the
+// VM itself was rebooted. A stopped VM gets no multiplexer.
+func TestManager_New_ReattachesMuxForRunningVM(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+
+	// Short-pathed unix socket standing in for the running qemu's
+	// -serial chardev. The real console.sock under the state dir would
+	// overflow the ~104-char sun_path limit on some platforms, so the
+	// fake lives under /tmp.
+	sockDir, err := os.MkdirTemp("/tmp", "oxsock")
+	if err != nil {
+		t.Skipf("cannot create short socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "c.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", sockPath, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(conn net.Conn) { _, _ = io.Copy(io.Discard, conn) }(c)
+		}
+	}()
+
+	writeMeta := func(name string, status Status, sock string) {
+		t.Helper()
+		id := uuid.New()
+		if werr := state.WriteMeta(filepath.Join(cfg.StatePath, id.String()), &state.VMMeta{
+			VMID:          id,
+			Name:          name,
+			VCPUs:         2,
+			MemoryMB:      1024,
+			PoolName:      "default",
+			Architecture:  string(qemu.HostArch()),
+			ConsoleSocket: sock,
+			Status:        string(status),
+			CreatedAt:     time.Now().UTC(),
+			UpdatedAt:     time.Now().UTC(),
+		}); werr != nil {
+			t.Fatalf("WriteMeta(%s): %v", name, werr)
+		}
+	}
+
+	writeMeta("live-vm", StatusRunning, sockPath)
+	writeMeta("idle-vm", StatusStopped, filepath.Join(sockDir, "absent.sock"))
+
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if m.GetMux("live-vm") == nil {
+		t.Error("GetMux(live-vm) = nil, want a re-attached multiplexer for the running VM")
+	}
+	if m.GetMux("idle-vm") != nil {
+		t.Error("GetMux(idle-vm) != nil, want no multiplexer for a stopped VM")
+	}
 }
 
 func TestManager_New_ValidatesStatePath(t *testing.T) {

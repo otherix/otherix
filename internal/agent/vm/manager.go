@@ -236,6 +236,22 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			NICs:          metaToNICs(meta.NICs),
 		}
 		m.vms[v.ID] = v
+
+		// Re-attach the serial multiplexer for a VM that is still running
+		// so `vm console` / `vm logs` survive an agent restart: the qemu
+		// process and its console socket outlive the agent, so a fresh
+		// agent must reconnect to them - otherwise GetMux returns nil and
+		// both endpoints report "restart the vm to re-enable" until the VM
+		// itself is restarted. Best-effort: a dial failure (qemu actually
+		// gone since meta.json was written) is logged and never blocks
+		// boot - the VM is probed lazily on Get/List and its true state is
+		// reported through heartbeat. Stopped VMs have no console socket.
+		if v.Status == StatusRunning {
+			if err := m.attachMux(log, v); err != nil {
+				log.Warn("recover: re-attach serial multiplexer",
+					"vm", v.Name, "err", err.Error())
+			}
+		}
 	}
 
 	// Reclaim host taps left behind by VMs that no longer exist (crash
