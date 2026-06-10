@@ -1,0 +1,62 @@
+# Managed bridge (NAT egress) + a VM that configures a STATIC IP via
+# cloud-init network-config.
+#
+# DHCP is NOT available on bridge networks (otherix serves DHCP only on
+# dhcp-enabled overlays), so a bridge VM gets its address from the
+# network-config below, not from DHCP. See deploy/examples/README.md.
+#
+# Apply:  otherix create -f deploy/examples/arm64/bridge-nat-static.yaml --wait
+# Login:  otherix vm console ex-bridge-vm   (user otherix / password otherix)
+# Remove: otherix delete -f deploy/examples/arm64/bridge-nat-static.yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: ex-bridge
+spec:
+  type: bridge
+  bridgeName: exbr0
+  managed: true
+  egress: nat
+  subnet: 10.81.0.0/24
+  gateway: 10.81.0.1
+---
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: ex-bridge-vm
+spec:
+  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+  arch: arm64
+  network: ex-bridge
+  vcpus: 2
+  memoryMB: 2048
+  # cloud-init user-data: a passwordful sudo user for serial-console login.
+  # Dev/demo convenience only - do not reuse this credential anywhere real.
+  userData: |
+    #cloud-config
+    users:
+      - name: otherix
+        plain_text_passwd: otherix
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+    ssh_pwauth: true
+    chpasswd:
+      expire: false
+  # cloud-init network-config (netplan v2): static address on the bridge
+  # subnet, default route via the managed-bridge gateway (10.81.0.1, which
+  # the host NATs). The single virtio-net NIC enumerates as en*.
+  networkConfig: |
+    network:
+      version: 2
+      ethernets:
+        primary:
+          match:
+            name: "en*"
+          addresses: [10.81.0.10/24]
+          routes:
+            - to: default
+              via: 10.81.0.1
+          nameservers:
+            addresses: [1.1.1.1, 8.8.8.8]

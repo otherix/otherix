@@ -1,0 +1,46 @@
+# Overlay (VXLAN) network with NAT egress and DHCP + a VM that gets its IP
+# AUTOMATICALLY via DHCP.
+#
+# DHCP is an overlay-only feature (type=overlay + egress=nat + subnet +
+# dhcp=true). The per-node DHCP responder hands the guest its IP, mask, DNS
+# and default route, so the VM needs NO network-config - cloud-init's default
+# brings the NIC up with DHCP. See deploy/examples/README.md.
+#
+# Apply:  otherix create -f deploy/examples/arm64/overlay-nat-dhcp.yaml --wait
+# Login:  otherix vm console ex-overlay-vm   (user otherix / password otherix)
+# Remove: otherix delete -f deploy/examples/arm64/overlay-nat-dhcp.yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: ex-overlay
+spec:
+  type: overlay
+  egress: nat
+  subnet: 10.82.0.0/24
+  dhcp: true
+---
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: ex-overlay-vm
+spec:
+  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+  arch: arm64
+  network: ex-overlay
+  vcpus: 2
+  memoryMB: 2048
+  # cloud-init user-data: a passwordful sudo user for serial-console login.
+  # Dev/demo convenience only - do not reuse this credential anywhere real.
+  # No network-config: the VM gets its address via the overlay DHCP responder.
+  userData: |
+    #cloud-config
+    users:
+      - name: otherix
+        plain_text_passwd: otherix
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+    ssh_pwauth: true
+    chpasswd:
+      expire: false
