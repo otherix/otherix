@@ -374,3 +374,20 @@ func TestPostVMCreate_ConnectionRefused(t *testing.T) {
 // Sanity: ensure unused import-suppressed; this drains io to keep
 // imports honest if we ever need to add ReadAll-style assertions.
 var _ = io.Discard
+
+func TestVMCreateRequestNetworkConfigJSON(t *testing.T) {
+	b, err := json.Marshal(agentclient.VMCreateRequest{UUID: uuid.New(), Name: "v", NetworkConfig: "network:\n  version: 2\n"})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(b), `"network_config"`) {
+		t.Errorf("Marshal omitted network_config: %s", b)
+	}
+	b2, err := json.Marshal(agentclient.VMCreateRequest{UUID: uuid.New(), Name: "v"})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if strings.Contains(string(b2), "network_config") {
+		t.Errorf("Marshal included empty network_config: %s", b2)
+	}
+}

@@ -104,9 +104,15 @@ type CreateSpec struct {
 	// UserData carries already-resolved raw `#cloud-config` YAML
 	// per L3 Area 3 lock — CP-side has resolved vm.user_data and
 	// injected hostname (there is no template fallback) when
-	// needed. When empty the agent skips cidata generation (legacy
-	// VMs still boot, just without a NoCloud seed).
+	// needed. When empty (and NetworkData is also empty) the agent
+	// skips cidata generation (legacy VMs still boot, just without a
+	// NoCloud seed).
 	UserData []byte
+	// NetworkData carries the CP-supplied cloud-init network-config
+	// (NoCloud /network-config; netplan v2 / net-config v1/v2),
+	// passed through verbatim. Empty means cloud-init falls back to
+	// DHCP discovery. Independent of UserData - either or both may be set.
+	NetworkData []byte
 	// NICs are the CP-declared network interfaces to materialise. Empty
 	// means legacy SLIRP user-mode networking (curl-driven smoke tests
 	// and pre-networking callers that omit the field).

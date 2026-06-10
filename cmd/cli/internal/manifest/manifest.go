@@ -59,8 +59,10 @@ type StoragePoolSpec struct {
 
 // VMSpec is the spec body for kind VM. Required fields are ImageURL
 // and Arch; everything else is optional with server/CLI defaults.
-// CloudInit is the inline cloud-config payload (maps to user_data on
-// the wire); CloudInitDisabled is mutually exclusive with it.
+// UserData is the inline cloud-config payload (maps to user_data on
+// the wire) and NetworkConfig is the inline cloud-init network-config
+// payload (maps to network_config); both are mutually exclusive with
+// CloudInitDisabled.
 type VMSpec struct {
 	ImageURL          string `yaml:"imageURL"`
 	ImageSHA256       string `yaml:"imageSHA256"`
@@ -74,6 +76,7 @@ type VMSpec struct {
 	Pool              string `yaml:"pool"`
 	Network           string `yaml:"network"`
 	Node              string `yaml:"node"`
-	CloudInit         string `yaml:"cloudInit"`
+	UserData          string `yaml:"userData"`
+	NetworkConfig     string `yaml:"networkConfig"`
 	CloudInitDisabled bool   `yaml:"cloudInitDisabled"`
 }

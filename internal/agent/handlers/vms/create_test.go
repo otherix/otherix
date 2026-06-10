@@ -272,6 +272,65 @@ func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
 	}
 }
 
+// TestCreateMapsNetworkConfig confirms the handler threads the
+// network_config wire field into vm.CreateSpec.NetworkData. The harness
+// runs over a real manager (there is no spec-capturing fake), so the
+// seam is observed through the manager: a non-empty NetworkData makes
+// needsCidata true, which synchronously sets the VM's CidataPath during
+// Create (before the async image-ensure fails on the unreachable host).
+// An empty CidataPath would mean NetworkConfig never reached the spec.
+func TestCreateMapsNetworkConfig(t *testing.T) {
+	fake := &netfabric.FakeFabric{}
+	h := newCreateHarness(t, fake, true)
+
+	vmID := uuid.New()
+	body, _ := json.Marshal(map[string]any{
+		"uuid":           vmID.String(),
+		"name":           "vm1",
+		"vcpus":          2,
+		"memory_mb":      1024,
+		"pool":           "default",
+		"image_url":      testImageURL,
+		"network_config": "network:\n  version: 2\n",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/vms", bytes.NewReader(body))
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	v, err := h.manager.Get(vmID)
+	if err != nil {
+		t.Fatalf("manager.Get(%s): %v", vmID, err)
+	}
+	if v.CidataPath == "" {
+		t.Errorf("CidataPath = %q, want non-empty (network_config must reach CreateSpec.NetworkData)", v.CidataPath)
+	}
+
+	// Drain the async create goroutine to a terminal state so its
+	// filesystem writes finish before t.TempDir cleanup runs (the stub
+	// image is not a real qcow2, so the task fails - that is fine).
+	var acc asyncAccepted
+	if err := json.Unmarshal(rec.Body.Bytes(), &acc); err != nil {
+		t.Fatalf("decode accepted: %v", err)
+	}
+	taskID := uuid.MustParse(acc.TaskID)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		task := h.manager.Task(taskID)
+		if task != nil && (task.Status == vm.TaskStatusSuccess || task.Status == vm.TaskStatusFailed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("async create task did not reach a terminal state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestCreate_ImageFieldsReachManager confirms the handler threads the new
 // image wire fields (image_url / expected_sha256) into vm.CreateSpec: a
 // body missing image_url and a body carrying a malformed expected_sha256

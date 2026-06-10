@@ -54,11 +54,11 @@ func createdVMJSON(name string) []byte {
 		`"labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`)
 }
 
-// TestVMCreate_CloudInitFile sends --cloud-init=<path> and asserts the
+// TestVMCreate_UserDataFile sends --user-data=<path> and asserts the
 // CP request body carries the resolved YAML in user_data with
 // cloud_init_disabled false. Locks in operator UX iteration's primary
-// path (file source).
-func TestVMCreate_CloudInitFile(t *testing.T) {
+// path (file source) under the renamed flag.
+func TestVMCreate_UserDataFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	yamlPath := filepath.Join(dir, "ci.yaml")
@@ -87,7 +87,7 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 		"--pool", "pool-dev",
 		"--vcpus", "2",
 		"--memory-mb", "512",
-		"--cloud-init", yamlPath,
+		"--user-data", yamlPath,
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -103,6 +103,162 @@ func TestVMCreate_CloudInitFile(t *testing.T) {
 	}
 	if got := captured["arch"]; got != "amd64" {
 		t.Errorf("arch = %v, want amd64", got)
+	}
+}
+
+// TestVMCreate_OldCloudInitFlagRemoved locks in the clean break: the old
+// --cloud-init flag is gone (no hidden alias), so passing it is an
+// "unknown flag" error and no HTTP call leaves the box.
+func TestVMCreate_OldCloudInitFlagRemoved(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when --cloud-init is rejected")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-old-flag",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--cloud-init", "/tmp/whatever.yaml",
+	})
+	if err == nil {
+		t.Fatalf("expected unknown-flag error for --cloud-init")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("err = %v, want mention of 'unknown flag'", err)
+	}
+}
+
+// TestVMCreate_NetworkConfigFile sends --network-config=<path> and
+// asserts the CP request body carries the resolved netplan YAML in
+// network_config. The content is opaque to the CLI (netplan v2, not
+// #cloud-config), so no validator warnings gate it.
+func TestVMCreate_NetworkConfigFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ncPath := filepath.Join(dir, "nc.yaml")
+	ncBody := "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
+	if err := os.WriteFile(ncPath, []byte(ncBody), 0o600); err != nil {
+		t.Fatalf("seed yaml: %v", err)
+	}
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-nc-file"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-nc-file",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--pool", "pool-dev",
+		"--vcpus", "2",
+		"--memory-mb", "512",
+		"--network-config", ncPath,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := captured["network_config"]; got != ncBody {
+		t.Errorf("network_config = %v, want %q", got, ncBody)
+	}
+	if _, present := captured["user_data"]; present {
+		t.Errorf("user_data unexpectedly present when only --network-config set: %v", captured["user_data"])
+	}
+}
+
+// TestVMCreate_NetworkConfigMutualExclusion locks in the CLI-level guard:
+// supplying both --network-config AND --no-cloud-init fails before any
+// HTTP call leaves the box.
+func TestVMCreate_NetworkConfigMutualExclusion(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ncPath := filepath.Join(dir, "nc.yaml")
+	if err := os.WriteFile(ncPath, []byte("version: 2\n"), 0o600); err != nil {
+		t.Fatalf("seed yaml: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when mutual-exclusion guard fires")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-nc-conflict",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--pool", "pool-dev",
+		"--vcpus", "1",
+		"--memory-mb", "128",
+		"--network-config", ncPath,
+		"--no-cloud-init",
+	})
+	if err == nil {
+		t.Fatalf("expected mutual-exclusion error")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("err = %v, want mention of 'mutually exclusive'", err)
+	}
+}
+
+// TestVMCreate_UserDataAndNetworkConfig sends both --user-data and
+// --network-config and asserts the request body carries BOTH fields with
+// no error: the two cloud-init channels are independent and composable.
+func TestVMCreate_UserDataAndNetworkConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	udPath := filepath.Join(dir, "ud.yaml")
+	udBody := "#cloud-config\nusers:\n  - name: from-file\n"
+	if err := os.WriteFile(udPath, []byte(udBody), 0o600); err != nil {
+		t.Fatalf("seed user-data: %v", err)
+	}
+	ncPath := filepath.Join(dir, "nc.yaml")
+	ncBody := "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
+	if err := os.WriteFile(ncPath, []byte(ncBody), 0o600); err != nil {
+		t.Fatalf("seed network-config: %v", err)
+	}
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-ud-nc"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-ud-nc",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--pool", "pool-dev",
+		"--vcpus", "2",
+		"--memory-mb", "512",
+		"--user-data", udPath,
+		"--network-config", ncPath,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := captured["user_data"]; got != udBody {
+		t.Errorf("user_data = %v, want %q", got, udBody)
+	}
+	if got := captured["network_config"]; got != ncBody {
+		t.Errorf("network_config = %v, want %q", got, ncBody)
 	}
 }
 
@@ -250,7 +406,7 @@ func TestVMCreate_MissingArch(t *testing.T) {
 	}
 }
 
-// TestVMCreate_CloudInitStdin sends --cloud-init=- and pipes content
+// TestVMCreate_CloudInitStdin sends --user-data=- and pipes content
 // through os.Stdin. The cobra command does not let us inject stdin
 // directly, but the cloudinit package's stdinReader var is swapped
 // in the helper test; here we only verify the CLI passes "-" through
@@ -288,7 +444,7 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 		"--pool", "pool-dev",
 		"--vcpus", "1",
 		"--memory-mb", "128",
-		"--cloud-init", "-",
+		"--user-data", "-",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -330,7 +486,7 @@ func TestVMCreate_NoCloudInit(t *testing.T) {
 }
 
 // TestVMCreate_CloudInitMutualExclusion locks in the CLI-level guard:
-// supplying both --cloud-init AND --no-cloud-init fails before any
+// supplying both --user-data AND --no-cloud-init fails before any
 // HTTP call leaves the box. DB CHECK + handler validation are the
 // server-side backstops; this test covers the operator-friendly UX
 // (failure without round-trip).
@@ -354,7 +510,7 @@ func TestVMCreate_CloudInitMutualExclusion(t *testing.T) {
 		"--pool", "pool-dev",
 		"--vcpus", "1",
 		"--memory-mb", "128",
-		"--cloud-init", yamlPath,
+		"--user-data", yamlPath,
 		"--no-cloud-init",
 	})
 	if err == nil {
@@ -388,7 +544,7 @@ func TestVMCreate_CloudInitMalformedYAML(t *testing.T) {
 		"--pool", "pool-dev",
 		"--vcpus", "1",
 		"--memory-mb", "128",
-		"--cloud-init", yamlPath,
+		"--user-data", yamlPath,
 	})
 	if err == nil {
 		t.Fatalf("expected YAML parse error")

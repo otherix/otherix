@@ -70,6 +70,12 @@ type vmCreateRequest struct {
 	// Area 3 lock). Stored verbatim in vms.user_data so the resolution
 	// stays a pure function of the VM row.
 	UserData *string `json:"user_data,omitempty"`
+	// NetworkConfig is an optional VM-level cloud-init network-config
+	// (NoCloud /network-config). Stored verbatim in vms.network_config
+	// and passed through to the agent's cidata seed at create time.
+	// Mutually exclusive with cloud_init_disabled; allowed alongside
+	// user_data (different channels).
+	NetworkConfig *string `json:"network_config,omitempty"`
 	// CloudInitDisabled is the explicit-disable signal. When true, the
 	// resolver returns empty user_data to the agent and the agent skips
 	// cidata.iso generation. Mutually exclusive with UserData; sending both
@@ -198,6 +204,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		FirmwareID:        firmwareID,
 		UserData:          req.UserData,
 		CloudInitDisabled: req.CloudInitDisabled,
+		NetworkConfig:     req.NetworkConfig,
 		Labels:            []byte(`{}`),
 		SchedulingSpec:    specJSON,
 	})
@@ -306,12 +313,30 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			return false
 		}
 	}
-	// Mutual-exclusion check for the three-state cloud-init contract.
+	if !validateCloudInitExclusivity(w, r, req) {
+		return false
+	}
+	return true
+}
+
+// validateCloudInitExclusivity enforces the cloud-init three-state contract:
+// cloud_init_disabled may not be combined with either cloud-init channel.
+// user_data and network_config are independent channels and may be set
+// together; each is individually mutually exclusive with the disable flag.
+// It writes a 400 and returns false on conflict.
+func validateCloudInitExclusivity(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
 	if req.CloudInitDisabled && req.UserData != nil && *req.UserData != "" {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed,
 			"user_data and cloud_init_disabled are mutually exclusive",
 			map[string]any{"conflicting_fields": []string{"user_data", "cloud_init_disabled"}})
+		return false
+	}
+	if req.CloudInitDisabled && req.NetworkConfig != nil && *req.NetworkConfig != "" {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"network_config and cloud_init_disabled are mutually exclusive",
+			map[string]any{"conflicting_fields": []string{"network_config", "cloud_init_disabled"}})
 		return false
 	}
 	return true

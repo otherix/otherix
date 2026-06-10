@@ -544,7 +544,7 @@ spec:
   vcpus: 2
   memoryMB: 2048
   # inline cloud-config is sent as user_data at create time:
-  cloudInit: |
+  userData: |
     #cloud-config
     package_update: true
 
@@ -564,7 +564,8 @@ Caveat: some fields do NOT round-trip through `get -o yaml`, because the
 API view does not surface them or the server derives them. Keep the source
 manifest as the record of what you applied.
 
-- **VM:** `cloudInit` (user_data), `cloudInitDisabled`, `firmware`/`firmwareID`,
+- **VM:** `userData` (user_data), `networkConfig` (network_config),
+  `cloudInitDisabled`, `firmware`/`firmwareID`,
   and `diskGiB` are consumed at create time and not in the view, so the
   projected manifest omits them and re-applying reverts those to server
   defaults. Only the first NIC is projected (the manifest schema attaches a

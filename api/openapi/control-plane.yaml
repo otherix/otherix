@@ -5850,6 +5850,14 @@ components:
             Explicit cloud-init disable. When `true`, the agent skips
             cidata.iso generation entirely. Mutually exclusive with
             `user_data`.
+        network_config:
+          type: [string, "null"]
+          description: |
+            VM-level cloud-init network-config (NoCloud `/network-config`,
+            netplan v2 / net-config v1/v2), passed through to the guest
+            verbatim. Mutually exclusive with `cloud_init_disabled`;
+            allowed alongside `user_data`. When omitted the guest uses
+            cloud-init's DHCP fallback.
 
     VMUpdate:
       type: object
@@ -5878,10 +5886,6 @@ components:
           type: array
           items: { type: string }
         user_data:
-          type: [string, "null"]
-        meta_data:
-          type: [string, "null"]
-        network_config:
           type: [string, "null"]
 
     VMList:

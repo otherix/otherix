@@ -79,7 +79,7 @@ spec:
   memoryMB: 2048
   diskGiB: 20
   # inline cloud-config, sent as user_data at create time:
-  cloudInit: |
+  userData: |
     #cloud-config
     package_update: true
     users:
@@ -110,11 +110,11 @@ otherix create -f cluster.yaml --dry-run
 | --- | --- | --- |
 | `Network` | `type` | `bridgeName`, `managed`, `egress`, `subnet`, `gateway`, `mtu`, `vlan` |
 | `StoragePool` | `path`, one of `node` / `nodeList` | `type` |
-| `VM` | `imageURL`, `arch` | `imageSHA256`, `firmware` / `firmwareID`, `format`, `diskGiB`, `vcpus`, `memoryMB`, `pool`, `network`, `node`, `cloudInit` / `cloudInitDisabled` |
+| `VM` | `imageURL`, `arch` | `imageSHA256`, `firmware` / `firmwareID`, `format`, `diskGiB`, `vcpus`, `memoryMB`, `pool`, `network`, `node`, `userData`, `networkConfig` / `cloudInitDisabled` |
 
 Within a kind, a few fields are mutually exclusive: `node` and `nodeList`
-(StoragePool); `firmware` and `firmwareID`, and `cloudInit` and
-`cloudInitDisabled` (VM). When `vcpus` or `memoryMB` is omitted the CLI applies
+(StoragePool); `firmware` and `firmwareID`, and `userData` /
+`networkConfig` each with `cloudInitDisabled` (VM). When `vcpus` or `memoryMB` is omitted the CLI applies
 the same defaults as `vm create` (2 vCPUs, 2048 MiB). See
 [Networks](networks.md), [Storage pools](storage-pools.md), and
 [Create and manage VMs](create-and-manage-vms.md) for the meaning of each field.
@@ -161,7 +161,8 @@ status, owner, reconciliation) so the output re-applies cleanly.
     `get -o yaml | create -f` round-trip is not always lossless. Keep your
     source manifest as the record of what you applied.
 
-    - **VM:** `cloudInit` (user_data), `cloudInitDisabled`, `firmware` /
+    - **VM:** `userData` (user_data), `networkConfig` (network_config),
+      `cloudInitDisabled`, `firmware` /
       `firmwareID`, and `diskGiB` are consumed at create time and are not in
       the view, so the projection omits them and re-applying reverts those to
       server defaults. Only the first NIC is projected (the v1 VM schema

@@ -60,6 +60,10 @@ type CreateVMRequest struct {
 	// with CloudInitDisabled — server rejects both set with 400
 	// validation_failed (CLI also gates this before dispatch).
 	UserData *string `json:"user_data,omitempty"`
+	// NetworkConfig is the optional VM-level cloud-init network-config
+	// (NoCloud /network-config). Mutually exclusive with
+	// CloudInitDisabled; allowed alongside UserData.
+	NetworkConfig *string `json:"network_config,omitempty"`
 	// CloudInitDisabled is the explicit-disable signal. When true,
 	// the resolver returns empty user_data to the agent. omitempty lets
 	// the JSON encoder skip the default-false case so existing handlers

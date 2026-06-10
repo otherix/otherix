@@ -20,9 +20,9 @@ import (
 )
 
 // validateManifestCloudInit runs the shared cloud-init validator over
-// every VM op carrying inline cloudInit. A parse error fails the whole
+// every VM op carrying inline userData. A parse error fails the whole
 // command before any resource is created (mirroring vm create
-// --cloud-init); non-blocking warnings (e.g. a body not starting with
+// --user-data); non-blocking warnings (e.g. a body not starting with
 // `#cloud-config`) are written to stderr.
 func validateManifestCloudInit(cmd *cobra.Command, plan []manifest.CreateOp) error {
 	for _, op := range plan {

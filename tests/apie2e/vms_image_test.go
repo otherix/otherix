@@ -105,6 +105,100 @@ func TestVMCreateFromImageSurfacesImageFields(t *testing.T) {
 	}
 }
 
+// TestVMCreatePersistsNetworkConfig drives the image-model create over the HTTP
+// edge with a network_config blob and asserts it is persisted verbatim on the
+// VM row. The public vms.get view omits cloud-init payloads (user_data /
+// network_config never surface through the API), so the assertion reads the row
+// back through the store the same way the forwarding seam (the create executor's
+// resolveCloudInitNetworkConfig) consumes it.
+func TestVMCreatePersistsNetworkConfig(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	poolName := schedulableFixture(t, h, adminID)
+
+	const netCfg = "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
+	body := vmCreateBody(map[string]any{"pool": poolName, "network_config": netCfg})
+	vmName := body["name"].(string)
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	vm, err := h.store.VMByName(context.Background(), vmName)
+	if err != nil {
+		t.Fatalf("VMByName(%q): %v", vmName, err)
+	}
+	if vm.NetworkConfig == nil {
+		t.Fatalf("vm.NetworkConfig = nil, want %q", netCfg)
+	}
+	if *vm.NetworkConfig != netCfg {
+		t.Errorf("vm.NetworkConfig = %q, want %q", *vm.NetworkConfig, netCfg)
+	}
+}
+
+// TestVMCreateNetworkConfigAndCloudInitDisabledConflict asserts the mutual-
+// exclusion contract: network_config alongside cloud_init_disabled is rejected
+// with 400 validation_failed through the real admission POST path.
+func TestVMCreateNetworkConfigAndCloudInitDisabledConflict(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	poolName := schedulableFixture(t, h, adminID)
+
+	body := vmCreateBody(map[string]any{
+		"pool":                poolName,
+		"network_config":      "version: 2\n",
+		"cloud_init_disabled": true,
+	})
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create vm status = %d, want 400", resp.StatusCode)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "validation_failed" {
+		t.Errorf("error.code = %q, want validation_failed", env.Error.Code)
+	}
+}
+
+// TestVMCreateUserDataAndNetworkConfigCompatible asserts user_data and
+// network_config are NOT mutually exclusive (distinct cloud-init channels):
+// supplying both is admitted (201) and both persist on the VM row.
+func TestVMCreateUserDataAndNetworkConfigCompatible(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	poolName := schedulableFixture(t, h, adminID)
+
+	const userData = "#cloud-config\nhostname: test\n"
+	const netCfg = "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
+	body := vmCreateBody(map[string]any{
+		"pool":           poolName,
+		"user_data":      userData,
+		"network_config": netCfg,
+	})
+	vmName := body["name"].(string)
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm status = %d, want 201 (user_data + network_config are not mutually exclusive)", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	vm, err := h.store.VMByName(context.Background(), vmName)
+	if err != nil {
+		t.Fatalf("VMByName(%q): %v", vmName, err)
+	}
+	if vm.UserData == nil || *vm.UserData != userData {
+		t.Errorf("vm.UserData = %v, want %q", vm.UserData, userData)
+	}
+	if vm.NetworkConfig == nil || *vm.NetworkConfig != netCfg {
+		t.Errorf("vm.NetworkConfig = %v, want %q", vm.NetworkConfig, netCfg)
+	}
+}
+
 // TestDeveloperCreatesVMFromAnyImage is the RBAC assertion for the image model:
 // vm:create is the single gate (ScopeAny for developer), with no template gate
 // in the path. A developer creates a VM from an arbitrary image URL and the

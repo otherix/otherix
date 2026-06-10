@@ -53,6 +53,10 @@ type VMCreateRequest struct {
 	// string on the wire means "no cidata"; the agent skips
 	// ISO generation when absent.
 	UserData string `json:"user_data,omitempty"`
+	// NetworkConfig carries the operator-supplied cloud-init
+	// network-config blob (NoCloud /network-config), passed through
+	// verbatim. Empty means the agent writes no /network-config.
+	NetworkConfig string `json:"network_config,omitempty"`
 	// Nics are the fully-resolved network interfaces to attach. The
 	// CP-side worker resolves each vm_nic row against its network
 	// (bridge_name + mtu come from the network; mac/model/order from

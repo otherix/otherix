@@ -98,6 +98,25 @@ func TestBuilderBuildWithNetworkData(t *testing.T) {
 	}
 }
 
+func TestBuilderBuildOmitsNetworkConfigWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "cidata.iso")
+	b := &Builder{
+		Hostname: "no-net-vm",
+		UserData: []byte("#cloud-config\n"),
+	}
+	if _, err := b.Build(out); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read iso: %v", err)
+	}
+	if bytes.Contains(data, []byte("network-config")) {
+		t.Errorf("iso contains network-config entry when NetworkData empty")
+	}
+}
+
 func TestBuilderBuildEmptyHostname(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "cidata.iso")

@@ -121,7 +121,7 @@ metadata: { name: web-1 }
 spec:
   imageURL: https://x/u.qcow2
   arch: arm64
-  cloudInit: |
+  userData: |
     #cloud-config
     users: [unterminated
 `

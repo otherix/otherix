@@ -70,4 +70,30 @@ func TestResolveCloudInitUserData_ThreeState(t *testing.T) {
 	}
 }
 
+// TestResolveCloudInitNetworkConfig mirrors the user-data resolver three-state
+// semantic for the network-config blob: disabled wins, a set NetworkConfig is
+// forwarded verbatim, and a nil column resolves to "".
+func TestResolveCloudInitNetworkConfig(t *testing.T) {
+	t.Parallel()
+
+	nc := "network:\n  version: 2\n"
+	tests := []struct {
+		name string
+		vm   store.VM
+		want string
+	}{
+		{name: "nil", vm: store.VM{}, want: ""},
+		{name: "empty string", vm: store.VM{NetworkConfig: ptrString("")}, want: ""},
+		{name: "set", vm: store.VM{NetworkConfig: &nc}, want: nc},
+		{name: "disabled wins", vm: store.VM{NetworkConfig: &nc, CloudInitDisabled: true}, want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveCloudInitNetworkConfig(tc.vm); got != tc.want {
+				t.Errorf("resolveCloudInitNetworkConfig(%s) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func ptrString(s string) *string { return &s }
