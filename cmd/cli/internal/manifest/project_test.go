@@ -311,7 +311,7 @@ func TestProjectNetworkBridgeRoundTripPreservesEveryField(t *testing.T) {
 
 // TestProjectVMRoundTripPreservesViewFields is a matrix guard: every
 // create-settable field the VM view actually carries must survive the
-// round-trip. (firmware/firmwareID/diskGiB/cloudInit are intentionally
+// round-trip. (firmware/firmwareID/diskGiB/userData are intentionally
 // absent from the view and so cannot round-trip - see the docs caveat.)
 func TestProjectVMRoundTripPreservesViewFields(t *testing.T) {
 	node := "node-7"

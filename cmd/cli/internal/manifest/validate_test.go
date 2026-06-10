@@ -96,10 +96,17 @@ func TestDecodeVMSpecRequiresImageAndArch(t *testing.T) {
 	}
 }
 
-func TestDecodeVMSpecCloudInitMutualExclusion(t *testing.T) {
-	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  cloudInit: \"#cloud-config\"\n  cloudInitDisabled: true\n")
+func TestDecodeVMSpecUserDataMutualExclusion(t *testing.T) {
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  userData: \"#cloud-config\"\n  cloudInitDisabled: true\n")
 	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("cloudInit+disabled error = %v, want 'mutually exclusive'", err)
+		t.Errorf("userData+disabled error = %v, want 'mutually exclusive'", err)
+	}
+}
+
+func TestDecodeVMSpecNetworkConfigMutualExclusion(t *testing.T) {
+	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  networkConfig: \"version: 2\"\n  cloudInitDisabled: true\n")
+	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("networkConfig+disabled error = %v, want 'mutually exclusive'", err)
 	}
 }
 

@@ -88,8 +88,8 @@ func TestBuildDeletePlanReverseOrder(t *testing.T) {
 	}
 }
 
-func TestVMSpecToRequestMapsCloudInit(t *testing.T) {
-	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  cloudInit: |\n    #cloud-config\n    packages: [htop]\n"
+func TestVMSpecToRequestMapsUserData(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  userData: |\n    #cloud-config\n    packages: [htop]\n"
 	docs, _ := manifest.Parse(strings.NewReader(src))
 	plan, err := manifest.BuildCreatePlan(docs)
 	if err != nil {
@@ -100,6 +100,21 @@ func TestVMSpecToRequestMapsCloudInit(t *testing.T) {
 	}
 	if plan[0].VM.UserData == nil || !strings.HasPrefix(*plan[0].VM.UserData, "#cloud-config") {
 		t.Errorf("VM.UserData = %v, want inline cloud-config", plan[0].VM.UserData)
+	}
+}
+
+func TestVMSpecToRequestMapsNetworkConfig(t *testing.T) {
+	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  networkConfig: |\n    version: 2\n    ethernets: {}\n"
+	docs, _ := manifest.Parse(strings.NewReader(src))
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("BuildCreatePlan() error = %v", err)
+	}
+	if len(plan) != 1 {
+		t.Fatalf("plan has %d ops, want 1", len(plan))
+	}
+	if plan[0].VM.NetworkConfig == nil || !strings.HasPrefix(*plan[0].VM.NetworkConfig, "version: 2") {
+		t.Errorf("VM.NetworkConfig = %v, want inline network-config", plan[0].VM.NetworkConfig)
 	}
 }
 

@@ -224,9 +224,13 @@ func vmCreateOp(d Document) (CreateOp, error) {
 		node := s.Node
 		req.Node = &node
 	}
-	if s.CloudInit != "" {
-		ci := s.CloudInit
-		req.UserData = &ci
+	if s.UserData != "" {
+		ud := s.UserData
+		req.UserData = &ud
+	}
+	if s.NetworkConfig != "" {
+		nc := s.NetworkConfig
+		req.NetworkConfig = &nc
 	}
 	return CreateOp{Kind: KindVM, Name: d.Name, VM: &req}, nil
 }

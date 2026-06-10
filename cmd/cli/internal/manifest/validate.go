@@ -112,12 +112,13 @@ var vmSpecKeys = map[string]bool{
 	"imageURL": true, "imageSHA256": true, "arch": true, "firmware": true,
 	"firmwareID": true, "format": true, "diskGiB": true, "vcpus": true,
 	"memoryMB": true, "pool": true, "network": true, "node": true,
-	"cloudInit": true, "cloudInitDisabled": true,
+	"userData": true, "networkConfig": true, "cloudInitDisabled": true,
 }
 
 // DecodeVMSpec decodes and validates a VM document's spec. imageURL and
-// arch are required; firmware/firmwareID and cloudInit/cloudInitDisabled
-// are mutually exclusive.
+// arch are required; firmware/firmwareID are mutually exclusive, and
+// userData and networkConfig are each mutually exclusive with
+// cloudInitDisabled.
 func DecodeVMSpec(d Document) (VMSpec, error) {
 	if err := rejectUnknownKeys(d, vmSpecKeys); err != nil {
 		return VMSpec{}, err
@@ -141,8 +142,11 @@ func DecodeVMSpec(d Document) (VMSpec, error) {
 	if s.Firmware != "" && s.FirmwareID != "" {
 		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.firmware and spec.firmwareID are mutually exclusive", d.Index, d.Name)
 	}
-	if s.CloudInit != "" && s.CloudInitDisabled {
-		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.cloudInit and spec.cloudInitDisabled are mutually exclusive", d.Index, d.Name)
+	if s.UserData != "" && s.CloudInitDisabled {
+		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.userData and spec.cloudInitDisabled are mutually exclusive", d.Index, d.Name)
+	}
+	if s.NetworkConfig != "" && s.CloudInitDisabled {
+		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.networkConfig and spec.cloudInitDisabled are mutually exclusive", d.Index, d.Name)
 	}
 	return s, nil
 }

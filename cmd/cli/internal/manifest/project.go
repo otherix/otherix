@@ -184,7 +184,7 @@ func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 // ProjectVM renders a live VM as an apply-ready manifest. Several
 // create-time fields are intentionally omitted because the API view does
 // not surface them, so they cannot round-trip (documented limitation):
-// cloudInit (user_data), cloudInitDisabled, firmware/firmwareID, and
+// userData (user_data), cloudInitDisabled, firmware/firmwareID, and
 // diskGiB. desiredPhase is also omitted (not part of the v1 VM manifest
 // schema). Only the first network is projected: the v1 VM manifest schema
 // has a single `network` field, so multi-NIC VMs are not
