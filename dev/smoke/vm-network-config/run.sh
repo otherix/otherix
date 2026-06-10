@@ -95,10 +95,17 @@ wait_serial() {
 }
 
 TMPDIR_NC=""
-cleanup() {
-  echo "--- cleanup ---"
+# delete_stale_resources removes the CP-side VM + overlay (best-effort). Used both
+# for the pre-run delete-first and by cleanup. It deliberately does NOT touch the
+# local temp dir, so the pre-run delete-first cannot wipe the cloud-init payloads
+# (which are written before step 1).
+delete_stale_resources() {
   otx vm delete "$VM" --wait --force >/dev/null 2>&1 || true
   otx network delete "$NET" --force >/dev/null 2>&1 || true
+}
+cleanup() {
+  echo "--- cleanup ---"
+  delete_stale_resources
   [ -n "$TMPDIR_NC" ] && rm -rf "$TMPDIR_NC" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -183,7 +190,7 @@ pass "CP up (${CP_VERSION}); $NODE1 ready; default pool ready"
 
 # --- step 1: egress overlay network ------------------------------------
 echo "=== step 1: create egress overlay $NET ==="
-cleanup >/dev/null 2>&1 || true   # best-effort delete-first of a stale leftover
+delete_stale_resources   # best-effort delete-first of a stale leftover (keeps temp payloads)
 otx network create "$NET" --type overlay --subnet "$SUBNET" --egress nat \
   || fail "network create $NET failed"
 pass "egress overlay $NET created (subnet $SUBNET, egress nat)"
