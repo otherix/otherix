@@ -87,8 +87,26 @@ func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "memory_mb: %d\n", vm.MemoryMB)
 	printf(cmd, "status: %s\n", formatVMStatus(vm.Status))
 	printf(cmd, "desired_phase: %s\n", vm.DesiredPhase)
+	if line, ok := cloudInitPresence(vm.UserData); ok {
+		printf(cmd, "user_data: %s\n", line)
+	}
+	if line, ok := cloudInitPresence(vm.NetworkConfig); ok {
+		printf(cmd, "network_config: %s\n", line)
+	}
 	printf(cmd, "created_at: %s\n", vm.CreatedAt)
 	printf(cmd, "updated_at: %s\n", vm.UpdatedAt)
+}
+
+// cloudInitPresence renders the presence indicator for a write-once-read
+// cloud-init payload (user_data / network_config) in the plain text view.
+// The blob itself can be large and is not echoed inline - operators reach
+// for `-o yaml` / `-o json` to read the content. Returns ok=false when the
+// payload is unset (nil) or empty so the caller omits the line entirely.
+func cloudInitPresence(p *string) (string, bool) {
+	if p == nil || *p == "" {
+		return "", false
+	}
+	return fmt.Sprintf("<set, %d bytes>", len(*p)), true
 }
 
 func strOrUnset(s *string) string {

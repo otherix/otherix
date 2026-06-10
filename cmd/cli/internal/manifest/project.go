@@ -181,14 +181,14 @@ func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 	})
 }
 
-// ProjectVM renders a live VM as an apply-ready manifest. Several
-// create-time fields are intentionally omitted because the API view does
-// not surface them, so they cannot round-trip (documented limitation):
-// userData (user_data), cloudInitDisabled, firmware/firmwareID, and
-// diskGiB. desiredPhase is also omitted (not part of the v1 VM manifest
-// schema). Only the first network is projected: the v1 VM manifest schema
-// has a single `network` field, so multi-NIC VMs are not
-// manifest-expressible and any NICs beyond the first are omitted.
+// ProjectVM renders a live VM as an apply-ready manifest. The cloud-init
+// payloads (userData / networkConfig) round-trip when the view surfaces
+// them. Several create-time fields are still omitted because the API view
+// does not carry them (documented limitation): cloudInitDisabled,
+// firmware/firmwareID, and diskGiB. desiredPhase is also omitted (not part
+// of the v1 VM manifest schema). Only the first network is projected: the
+// v1 VM manifest schema has a single `network` field, so multi-NIC VMs are
+// not manifest-expressible and any NICs beyond the first are omitted.
 func ProjectVM(v cpclient.VM) ([]byte, error) {
 	spec := map[string]any{
 		"imageURL": v.ImageURL,
@@ -210,6 +210,12 @@ func ProjectVM(v cpclient.VM) ([]byte, error) {
 	}
 	if len(v.Networks) > 0 {
 		spec["network"] = v.Networks[0]
+	}
+	if v.UserData != nil && *v.UserData != "" {
+		spec["userData"] = *v.UserData
+	}
+	if v.NetworkConfig != nil && *v.NetworkConfig != "" {
+		spec["networkConfig"] = *v.NetworkConfig
 	}
 	return encodeDoc(outDoc{
 		APIVersion: APIVersionV1,

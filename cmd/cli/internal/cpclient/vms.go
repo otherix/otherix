@@ -99,8 +99,15 @@ type VM struct {
 	Status       VMStatus       `json:"status"`
 	DesiredPhase string         `json:"desired_phase"`
 	Labels       map[string]any `json:"labels"`
-	CreatedAt    string         `json:"created_at"`
-	UpdatedAt    string         `json:"updated_at"`
+	// UserData and NetworkConfig echo the cloud-init payloads supplied at
+	// create time, verbatim (nil when unset). Set once at create and
+	// immutable for the VM's lifetime. `vm get -o yaml` round-trips them
+	// into an apply-ready manifest; the plain text view shows a presence
+	// indicator only (the blobs can be large).
+	UserData      *string `json:"user_data"`
+	NetworkConfig *string `json:"network_config"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 // VMStatus is the nested system-reported runtime/scheduling status the

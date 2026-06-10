@@ -126,25 +126,27 @@ func runList(cmd *cobra.Command, _ []string) error {
 // the next page without digging in JSON. The ID column is hidden by
 // default — referenced-resource fields are names, and the VM's own
 // UUID is operator-noise unless --show-ids opts back in. Columns:
-// NAME STATUS ARCH NODE POOL NETWORK — placement (ARCH/NODE) and
-// connectivity (NETWORK) are the operator-relevant axes; the image
-// source URL lives in `vm get` / `--output json`, not the list.
+// NAME STATUS ARCH NODE POOL NETWORK AGE — placement (ARCH/NODE) and
+// connectivity (NETWORK) are the operator-relevant axes; AGE is the
+// compact created_at delta (matching node/pool list). The image source
+// URL lives in `vm get` / `--output json`, not the list.
 func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if showIDs {
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tARCH\tNODE\tPOOL\tNETWORK")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tARCH\tNODE\tPOOL\tNETWORK\tAGE")
 	} else {
-		_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tARCH\tNODE\tPOOL\tNETWORK")
+		_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tARCH\tNODE\tPOOL\tNETWORK\tAGE")
 	}
 	for _, vm := range vms.Data {
 		node := dashIfEmpty(deref(vm.Node))
 		network := renderVMNetwork(vm.Networks)
+		age := humanAge(vm.CreatedAt)
 		if showIDs {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				vm.ID, vm.Name, vm.Status.Phase, vm.Architecture, node, vm.Pool, network)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				vm.ID, vm.Name, vm.Status.Phase, vm.Architecture, node, vm.Pool, network, age)
 		} else {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				vm.Name, vm.Status.Phase, vm.Architecture, node, vm.Pool, network)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				vm.Name, vm.Status.Phase, vm.Architecture, node, vm.Pool, network, age)
 		}
 	}
 	_ = tw.Flush()

@@ -162,8 +162,16 @@ type vmView struct {
 	Status       vmStatusView    `json:"status"`
 	DesiredPhase string          `json:"desired_phase"`
 	Labels       json.RawMessage `json:"labels"`
-	CreatedAt    string          `json:"created_at"`
-	UpdatedAt    string          `json:"updated_at"`
+	// UserData and NetworkConfig echo the cloud-init payloads the caller
+	// supplied at create time, verbatim. They are nullable (omitted when
+	// unset) and read back the way a k8s pod spec reads back inline config -
+	// the operator authored them and can already read them from inside the
+	// guest, so the view is not a secrecy boundary (unlike password_hash,
+	// an irreversible credential digest, which stays stripped).
+	UserData      *string `json:"user_data,omitempty"`
+	NetworkConfig *string `json:"network_config,omitempty"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 // nicView is the compact per-NIC projection on the public VM shape. Network is
@@ -242,25 +250,27 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting b
 		}
 	}
 	return vmView{
-		ID:           vm.ID.String(),
-		Name:         vm.Name,
-		OwnerID:      vm.OwnerID.String(),
-		Owner:        names.owner,
-		ImageURL:     vm.ImageURL,
-		ImageSHA256:  hex.EncodeToString(vm.ImageSHA256),
-		Format:       string(vm.ImageFormat),
-		Pool:         pool,
-		Node:         names.node,
-		Networks:     networksOrEmpty(nets),
-		Nics:         nicsOrEmpty(names.nics),
-		Architecture: string(vm.Architecture),
-		VCPUs:        int(vm.CpuCores),
-		MemoryMB:     int(vm.MemoryMib),
-		Status:       status,
-		DesiredPhase: string(vm.DesiredPhase),
-		Labels:       rawJSONOrEmpty(vm.Labels),
-		CreatedAt:    vm.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:    vm.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:            vm.ID.String(),
+		Name:          vm.Name,
+		OwnerID:       vm.OwnerID.String(),
+		Owner:         names.owner,
+		ImageURL:      vm.ImageURL,
+		ImageSHA256:   hex.EncodeToString(vm.ImageSHA256),
+		Format:        string(vm.ImageFormat),
+		Pool:          pool,
+		Node:          names.node,
+		Networks:      networksOrEmpty(nets),
+		Nics:          nicsOrEmpty(names.nics),
+		Architecture:  string(vm.Architecture),
+		VCPUs:         int(vm.CpuCores),
+		MemoryMB:      int(vm.MemoryMib),
+		Status:        status,
+		DesiredPhase:  string(vm.DesiredPhase),
+		Labels:        rawJSONOrEmpty(vm.Labels),
+		UserData:      vm.UserData,
+		NetworkConfig: vm.NetworkConfig,
+		CreatedAt:     vm.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:     vm.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 

@@ -311,14 +311,19 @@ func TestProjectNetworkBridgeRoundTripPreservesEveryField(t *testing.T) {
 
 // TestProjectVMRoundTripPreservesViewFields is a matrix guard: every
 // create-settable field the VM view actually carries must survive the
-// round-trip. (firmware/firmwareID/diskGiB/userData are intentionally
-// absent from the view and so cannot round-trip - see the docs caveat.)
+// round-trip. (firmware/firmwareID/diskGiB are intentionally absent from
+// the view and so cannot round-trip - see the docs caveat.) Cloud-init
+// payloads (userData/networkConfig) DO surface on the view and must
+// round-trip.
 func TestProjectVMRoundTripPreservesViewFields(t *testing.T) {
 	node := "node-7"
+	userData := "#cloud-config\npackages: [htop]\n"
+	netCfg := "version: 2\nethernets: {}\n"
 	v := cpclient.VM{
 		Name: "vm-full", ImageURL: "http://x/i.qcow2", ImageSHA256: "abc123",
 		Architecture: "arm64", Format: "raw", Pool: "pool-a", Node: &node,
 		Networks: []string{"net-a"}, VCPUs: 8, MemoryMB: 16384,
+		UserData: &userData, NetworkConfig: &netCfg,
 	}
 	out, err := manifest.ProjectVM(v)
 	if err != nil {
@@ -346,6 +351,12 @@ func TestProjectVMRoundTripPreservesViewFields(t *testing.T) {
 	}
 	if got.VCPUs != 8 || got.MemoryMB != 16384 {
 		t.Errorf("vcpus/memoryMB = %d/%d, want 8/16384", got.VCPUs, got.MemoryMB)
+	}
+	if got.UserData == nil || *got.UserData != userData {
+		t.Errorf("userData = %v, want %q", got.UserData, userData)
+	}
+	if got.NetworkConfig == nil || *got.NetworkConfig != netCfg {
+		t.Errorf("networkConfig = %v, want %q", got.NetworkConfig, netCfg)
 	}
 }
 
