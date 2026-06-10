@@ -16,6 +16,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/store"
+	"github.com/otherix/otherix/internal/wskeepalive"
 )
 
 // ConsoleStream implements GET /v1/vms/{id}/console-stream — the
@@ -179,7 +180,20 @@ func (h *Handler) relayConsoleFrames(parent context.Context, vmName string, down
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(4)
+
+	// keepalive both legs: pinging downstream detects a dead/half-open
+	// operator (the case the agent cannot see - it would otherwise keep
+	// the single-console slot held), pinging upstream detects a dead
+	// agent. Either failure cancels the relay and closes both sides.
+	go func() {
+		defer wg.Done()
+		wskeepalive.Run(ctx, cancel, downstream, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
+	}()
+	go func() {
+		defer wg.Done()
+		wskeepalive.Run(ctx, cancel, upstream, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
+	}()
 
 	go func() {
 		defer wg.Done()

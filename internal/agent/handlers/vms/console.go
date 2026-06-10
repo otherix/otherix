@@ -19,6 +19,7 @@ import (
 	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/wskeepalive"
 )
 
 // consoleTokenRequest mirrors the agent.yaml ConsoleTokenRequest
@@ -283,7 +284,17 @@ func (h *Handler) pumpConsoleViaMux(parent context.Context, vmName string, wsCon
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
+
+	// keepalive: ping the operator (the CP in proxy mode, the operator
+	// directly in direct mode) so a half-open / dead session is detected
+	// and cancelled - which unwinds the pumps below and runs the deferred
+	// sub.Close(), freeing the single-console slot. Without it an abrupt
+	// disconnect leaves the slot held until the agent restarts.
+	go func() {
+		defer wg.Done()
+		wskeepalive.Run(ctx, cancel, wsConn, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
+	}()
 
 	// mux -> websocket pump
 	go func() {
