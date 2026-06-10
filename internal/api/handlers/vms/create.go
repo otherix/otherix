@@ -313,7 +313,18 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			return false
 		}
 	}
-	// Mutual-exclusion check for the three-state cloud-init contract.
+	if !validateCloudInitExclusivity(w, r, req) {
+		return false
+	}
+	return true
+}
+
+// validateCloudInitExclusivity enforces the cloud-init three-state contract:
+// cloud_init_disabled may not be combined with either cloud-init channel.
+// user_data and network_config are independent channels and may be set
+// together; each is individually mutually exclusive with the disable flag.
+// It writes a 400 and returns false on conflict.
+func validateCloudInitExclusivity(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
 	if req.CloudInitDisabled && req.UserData != nil && *req.UserData != "" {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed,
