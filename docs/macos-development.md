@@ -72,9 +72,11 @@ make bootstrap-dev
 #
 #    First-time only: provide bootstrap admin credentials so the CP
 #    seeds the admin user row on first boot.
+#    (Shortcut: `make local-dev-start` runs steps 3+4 — api + agent +
+#    CLI — in one command. The explicit steps below are the manual path.)
 export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
-make run-api-dev
+make build-api && ./bin/otherix-api --config dev/config/api.yaml
 
 # 4. (separate terminal) bootstrap the agent — mints a join token via
 #    the CLI, provisions bootstrap.env + token plaintext to the Lima
@@ -705,12 +707,13 @@ through the full sequence.
    ```bash
    export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
    export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
-   make run-api-dev
+   make build-api && ./bin/otherix-api --config dev/config/api.yaml
    ```
-   `run-api-dev` uses `dev/config/api.yaml` — the workers (vm.create
-   / vm.delete / storage_pool.scan) dispatch
-   end-to-end against the real agent (mTLS material auto-managed via
-   the api config's `cp_cert` block). The production `make run-api` target keeps
+   (`make local-dev-start` automates this whole flow.) The dev config
+   `dev/config/api.yaml` — the workers (vm.create / vm.delete /
+   storage_pool.scan) dispatch end-to-end against the real agent (mTLS
+   material auto-managed via the api config's `cp_cert` block). The
+   production `deploy/config/api.example.yaml` config keeps
    `agent_client.enabled: false` by default and refuses to start with
    `workers.enabled: true` until operators provision real mTLS material
    (Phase 2 lock).
@@ -997,7 +1000,7 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-dev`.
 | `bootstrap: CA fingerprint mismatch (expected sha256:… got sha256:…)` | Operator typo OR active MITM | Re-check the fingerprint in `~/.otherix/config` cluster CA against `bootstrap.env`. If correct, escalate to network team. |
 | `bootstrap: CSR submission rejected by CP: HTTP 401 token_expired` | Token TTL elapsed (default 10m) | Re-run `make seed-dev` — mints a fresh token. |
 | `bootstrap: CSR submission rejected by CP: HTTP 401 token_exhausted` | Multi-use token cap reached | Re-run `make seed-dev` — mints a fresh token. |
-| `bootstrap: fetch /v1/ca: dial tcp …: connection refused` | CP not running OR unreachable from Lima VM | Verify `make run-api-dev` is still alive; inside Lima, `curl -k https://host.lima.internal:8443/healthz`. |
+| `bootstrap: fetch /v1/ca: dial tcp …: connection refused` | CP not running OR unreachable from Lima VM | Verify the dev api-server is still alive (`tail -f .local/run/otherix-api.log`); inside Lima, `curl -k https://host.lima.internal:8443/healthz`. |
 | `cert <path> exists but key <path> missing` (or vice-versa) | Partial-state bootstrap (mid-flight crash, manual file deletion) | Manual cleanup — delete cert + key + CA (`/var/lib/otherix/certs/agent.{crt,key}` + `ca.crt` on Lima, or `~/.config/otherix/certs/agent.*` + `ca.crt` on Linux native), then `make seed-dev` again. Agent identity is derived from the cert CN — no node-id sidecar to clean up. |
 | Node lingers in `pending` past 60s | Agent reachable but heartbeat not arriving | `limactl shell otherix-dev sudo journalctl -u otherix-agent -f` — look for `heartbeat` lines OR mTLS handshake failures. |
 

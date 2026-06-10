@@ -97,10 +97,10 @@ you may be prompted for your password.
 
 ```bash
 make smoke-wireguard-mesh   # cross-node WireGuard handshake
-make smoke-overlay          # VXLAN overlay datapath across both nodes
 make smoke-overlay-vm       # two real VMs, cross-node ping over the overlay
 make smoke-vm-lifecycle     # one VM, full start/stop/poweroff/reboot/pause/resume/reset matrix on a real agent
 make smoke-vm-network-config # static guest IP delivered via --network-config (no write_files hack)
+make smoke-all              # all stack-dependent smokes in sequence (excludes smoke-ha)
 ```
 
 Live migration is not yet implemented and is therefore not part of the Linux dev
@@ -230,9 +230,9 @@ neither VM's `169.254.1.1` neighbor entry shows the other overlay's MAC.
 ## Manual topology control
 
 ```bash
-make local-dev-up-linux     # just the netns topology (sudo)
-make local-dev-down-linux   # tear it down + wipe state (sudo)
-sudo dev/scripts/linux-multinode.sh restart   # rebuild loop: restart both agents
+sudo dev/scripts/linux-multinode.sh up            # just the netns topology
+sudo dev/scripts/linux-multinode.sh down --wipe   # tear it down + wipe state
+sudo dev/scripts/linux-multinode.sh restart       # rebuild loop: restart both agents
 ```
 
 ## Troubleshooting

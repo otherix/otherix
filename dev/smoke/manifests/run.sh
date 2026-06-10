@@ -22,7 +22,7 @@
 # real `otherix` CLI, never curl.
 #
 # PREREQUISITES: a seeded dev environment, i.e. run AFTER
-#   make local-dev-start      (or: make run-api-dev + make seed-dev)
+#   make local-dev-start
 # so that: the CP is up on http://localhost:8080, the `dev` CLI cluster
 # is configured, the node is `ready`, and a default pool exists. The CP
 # and CLI binaries MUST be built from the current tree (the manifest

@@ -5,7 +5,7 @@
 # Networking N3c overlay VM-to-VM smoke - proves two real VMs on different
 # nodes, attached to the same type=overlay network, reach each other over the
 # encrypted VXLAN overlay using ONLY the CP-distributed FDB (no manual
-# neigh/fdb, unlike the N3b smoke-overlay which programmed the FDB by hand).
+# neigh/fdb, unlike the earlier N3b manual-FDB overlay smoke).
 # Guest IPs are cloud-init-configured (N3c has no CP-side IP assignment).
 #
 # What it proves, end to end:

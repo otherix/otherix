@@ -149,10 +149,6 @@ smoke-networking: ## Networking operator smoke: drives `otherix network`/`vm cre
 smoke-wireguard-mesh: ## Cross-agent WireGuard mesh smoke: real cross-host handshake between the two Lima nodes (run after local-dev-start)
 	bash dev/smoke/wireguard-mesh/run.sh
 
-.PHONY: smoke-overlay
-smoke-overlay: ## Overlay (VXLAN) smoke: VTEP+bridge attrs on both nodes + manual-FDB cross-node datapath (run after local-dev-start)
-	bash dev/smoke/overlay/run.sh
-
 .PHONY: smoke-overlay-vm
 smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over the overlay via CP-distributed FDB (run after local-dev-start)
 	bash dev/smoke/overlay-vm/run.sh
@@ -168,6 +164,18 @@ smoke-vm-lifecycle: ## VM lifecycle smoke: `otherix vm` start/stop/poweroff/rebo
 .PHONY: smoke-vm-network-config
 smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otherix vm create --network-config` on a real agent (run after local-dev-start)
 	bash dev/smoke/vm-network-config/run.sh
+
+# smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
+# stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
+# spins its own 3 api-server processes and does not use the dev stand; run it
+# separately.
+.PHONY: smoke-all
+smoke-all: ## Run all stack-dependent smokes in sequence (run after local-dev-start; excludes smoke-ha)
+	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-network-config; do \
+	  echo ">> smoke: $$s"; \
+	  bash dev/smoke/$$s/run.sh || { echo "✗ smoke-$$s failed"; exit 1; }; \
+	done
+	@echo ">> smoke-all complete (smoke-ha is standalone — run 'make smoke-ha' separately)"
 
 # ========== Lint ==========
 
@@ -224,24 +232,6 @@ tidy: ## go mod tidy
 download: ## go mod download
 	$(GO) mod download
 
-# ========== Run (local dev) ==========
-
-# Only the api-server has a meaningful "run against the example config on this
-# host" path. The agent is Linux-only and needs bootstrap cert material + root
-# (qemu / netlink); its real entry points are the dev flow (bootstrap-dev ->
-# run-api-dev -> seed-dev) and `make local-dev-start`, not a bare host run.
-.PHONY: run-api
-run-api: build-api ## Build and run the api-server against deploy/config/api.example.yaml
-	./$(BIN_DIR)/otherix-api --config deploy/config/api.example.yaml
-
-.PHONY: run-api-dev
-run-api-dev: build-api ## Run the api-server with the dev config (embedded etcd, no Postgres)
-	./$(BIN_DIR)/otherix-api --config dev/config/api.yaml
-
-.PHONY: restart-api-dev
-restart-api-dev: build-api ## Rebuild + restart the dev api-server in background (preserves embedded-etcd state)
-	@bash dev/scripts/restart-api-dev.sh
-
 # ========== Dev environment ==========
 
 # etcd-reset wipes the dev member's gitignored data dir AND the dev PKI for a
@@ -268,39 +258,49 @@ LIMA_VM_1   := otherix-dev-1
 LIMA_VM_2   := otherix-dev-2
 LIMA_VM     := $(LIMA_VM_1)
 
-.PHONY: bootstrap-dev deploy-dev clean-dev seed-dev \
+# bootstrap-dev / deploy-dev / clean-dev / restart-agent are internal per-OS
+# dispatchers used by the local-dev-* family. They are intentionally NOT in
+# `make help` (no `##`) — the documented surface is local-dev-*.
+.PHONY: bootstrap-dev deploy-dev clean-dev restart-agent seed-dev \
         bootstrap-dev-linux deploy-dev-linux clean-dev-linux \
-        local-dev-up-linux local-dev-down-linux \
         bootstrap-dev-macos deploy-dev-macos clean-dev-macos \
         lima-check lima-ensure lima-ensure-one \
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
 
-bootstrap-dev: ## Stage dev environment (per OS — agent NOT started; finalise with 'make seed-dev')
+bootstrap-dev:
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) bootstrap-dev-linux ;; \
 	  Darwin) $(MAKE) bootstrap-dev-macos ;; \
 	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
 	esac
 
-deploy-dev: ## Rebuild + (re)deploy agent (per OS)
+deploy-dev:
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) deploy-dev-linux ;; \
 	  Darwin) $(MAKE) deploy-dev-macos ;; \
 	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
 	esac
 
-clean-dev: ## Tear down dev environment (per OS)
+clean-dev:
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) clean-dev-linux ;; \
 	  Darwin) $(MAKE) clean-dev-macos ;; \
 	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
 	esac
 
+# restart-agent bounces the agents WITHOUT rebuilding (used by local-dev-restart).
+restart-agent:
+	@case "$$(uname -s)" in \
+	  Linux)  sudo $(MULTINODE_SH) restart ;; \
+	  Darwin) $(MAKE) --no-print-directory restart-agent-lima ;; \
+	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
+	esac
+
 # seed-dev orchestrates the join-token bootstrap end-to-end:
 # mints token, provisions bootstrap.env + token to agent host, starts agent,
 # waits for cert-material commit, seeds the default pool; VMs are created from an image URL via
-# CLI. Run AFTER `make bootstrap-dev` + `make run-api-dev`.
+# CLI. `make local-dev-start` runs this for you; invoke standalone only to re-seed a running stand.
 seed-dev: build-cli ## Run the join-token bootstrap + cluster seed (requires CP running + bootstrap-dev staged)
 	@bash dev/scripts/seed-dev.sh
 
@@ -308,17 +308,34 @@ seed-dev: build-cli ## Run the join-token bootstrap + cluster seed (requires CP 
 demo-manifest: ## Render dev/manifests/demo-vm.yaml for the host arch (amd64/arm64)
 	@bash dev/scripts/render-demo-manifest.sh
 
-# local-dev-start / local-dev-stop wrap the full dev stack lifecycle (api-server
-# with embedded etcd + Lima VM + agent + CLI cluster config) into two commands.
-# After `make local-dev-start`, `./bin/otherix` works against a fresh cluster
-# with no further setup. `make local-dev-stop` wipes everything including the
-# embedded-etcd data dir — pair these two when you need a clean slate.
-.PHONY: local-dev-start local-dev-stop
-local-dev-start: ## One-shot bring-up: api-server (embedded etcd) + Lima + agent + CLI (admin@otherix.local / correct-horse-battery-staple by default)
+# local-dev-* is the documented dev-stack control surface (macOS Lima 2 VMs /
+# Linux netns 2 nodes). start/stop/clean/cleanrestart are the lifecycle;
+# restart/deploy are the non-destructive inner loop (etcd/pki + VMs/certs
+# preserved). The per-OS internals (bootstrap-dev/deploy-dev/clean-dev,
+# *-linux/*-macos, lima-*) are hidden from `make help`.
+.PHONY: local-dev-start local-dev-stop local-dev-clean \
+        local-dev-restart local-dev-deploy local-dev-cleanrestart
+
+local-dev-start: ## Dev stack up: api-server (embedded etcd) + agents + CLI (admin@otherix.local / correct-horse-battery-staple)
 	@bash dev/scripts/local-dev-start.sh
 
-local-dev-stop: ## Stop everything + etcd-reset (DESTRUCTIVE - wipes the embedded-etcd data dir)
+local-dev-stop: ## Dev stack down + wipe etcd/pki + delete VMs/netns (DESTRUCTIVE)
 	@bash dev/scripts/local-dev-stop.sh
+
+local-dev-clean: ## local-dev-stop + remove .local/ and the dev CLI cluster (pristine slate)
+	@bash dev/scripts/local-dev-clean.sh
+
+local-dev-restart: ## Bounce api + agents in place, no rebuild (state preserved)
+	@bash dev/scripts/restart-api-dev.sh
+	@$(MAKE) --no-print-directory restart-agent
+
+local-dev-deploy: build-api ## Rebuild + restart api + agents to pick up code changes (state preserved)
+	@$(MAKE) --no-print-directory deploy-dev
+	@bash dev/scripts/restart-api-dev.sh
+
+local-dev-cleanrestart: ## local-dev-stop then local-dev-start (nuke + fresh cluster)
+	@$(MAKE) --no-print-directory local-dev-stop
+	@$(MAKE) --no-print-directory local-dev-start
 
 # ----- Linux (two-node netns topology) -----
 
@@ -328,7 +345,7 @@ MULTINODE_SH := dev/scripts/linux-multinode.sh
 # + veth + host NAT). The agents are bootstrapped + started by seed-dev.sh.
 bootstrap-dev-linux: build-agent
 	@sudo $(MULTINODE_SH) up
-	@echo ">> bootstrap-dev-linux done; topology up. Finalise with 'make seed-dev' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-linux done; topology up (driven by 'make local-dev-start')"
 
 # Rebuild the agent binary and restart both agents in place (config + cert
 # material persist across a restart).
@@ -340,19 +357,12 @@ clean-dev-linux:
 	-sudo $(MULTINODE_SH) down --wipe
 	@echo ">> clean-dev-linux done"
 
-# Manual privileged topology wrappers (discoverable via make help).
-local-dev-up-linux: build-agent ## Linux: bring up the two-node netns topology (sudo)
-	@sudo $(MULTINODE_SH) up
-
-local-dev-down-linux: ## Linux: tear down the two-node netns topology + state (sudo)
-	@sudo $(MULTINODE_SH) down --wipe
-
 # ----- macOS (Lima) -----
 
 # Stage Lima VM + agent binary + config. Agent NOT started — seed-dev.sh
 # provisions bootstrap material and starts it.
 bootstrap-dev-macos: lima-ensure copy-config-lima build-agent-lima copy-agent-lima
-	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)'. Finalise with 'make seed-dev' after 'make run-api-dev'"
+	@echo ">> bootstrap-dev-macos done; agent staged inside Lima '$(LIMA_VM)' (driven by 'make local-dev-start')"
 
 deploy-dev-macos: build-agent-lima copy-agent-lima restart-agent-lima
 	@echo ">> deploy-dev-macos done"
