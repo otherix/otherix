@@ -90,6 +90,37 @@ func TestPrintVMTextStatus(t *testing.T) {
 	}
 }
 
+// TestPrintVMTextCloudInit covers the presence indicators for the
+// write-once-read cloud-init payloads: when set, the text view shows a
+// "<set, N bytes>" indicator (not the blob, which can be large - operators
+// reach for -o yaml / -o json to see the content); when unset, the line is
+// omitted entirely.
+func TestPrintVMTextCloudInit(t *testing.T) {
+	userData := "#cloud-config\nhostname: h\n"
+	netCfg := "version: 2\n"
+	t.Run("present shows byte count, not content", func(t *testing.T) {
+		out := renderVMText(t, cpclient.VM{UserData: &userData, NetworkConfig: &netCfg})
+		if got, ok := lineFor(out, "user_data"); !ok || got != "<set, 26 bytes>" {
+			t.Errorf("user_data line = %q (present=%v), want %q", got, ok, "<set, 26 bytes>")
+		}
+		if got, ok := lineFor(out, "network_config"); !ok || got != "<set, 11 bytes>" {
+			t.Errorf("network_config line = %q (present=%v), want %q", got, ok, "<set, 11 bytes>")
+		}
+		if strings.Contains(out, "#cloud-config") || strings.Contains(out, "version: 2") {
+			t.Errorf("text view leaked cloud-init content:\n%s", out)
+		}
+	})
+	t.Run("unset omits both lines", func(t *testing.T) {
+		out := renderVMText(t, cpclient.VM{})
+		if _, ok := lineFor(out, "user_data"); ok {
+			t.Error("user_data line present for nil payload, want omitted")
+		}
+		if _, ok := lineFor(out, "network_config"); ok {
+			t.Error("network_config line present for nil payload, want omitted")
+		}
+	})
+}
+
 // TestPrintVMTextImageSHA256 covers the conditional image_sha256 line:
 // shown when the VM row carries a digest, omitted when empty.
 func TestPrintVMTextImageSHA256(t *testing.T) {

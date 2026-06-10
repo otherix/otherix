@@ -20,14 +20,17 @@ import (
 )
 
 // vmView is the subset of the vms.get projection the image-model tests assert
-// on: the self-describing image fields plus the resource id.
+// on: the self-describing image fields plus the resource id and the
+// write-once-read cloud-init payloads (nullable - absent when unset).
 type vmView struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	ImageURL     string `json:"image_url"`
-	ImageSHA256  string `json:"image_sha256"`
-	Format       string `json:"format"`
-	Architecture string `json:"architecture"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	ImageURL      string  `json:"image_url"`
+	ImageSHA256   string  `json:"image_sha256"`
+	Format        string  `json:"format"`
+	Architecture  string  `json:"architecture"`
+	UserData      *string `json:"user_data"`
+	NetworkConfig *string `json:"network_config"`
 }
 
 // TestVMCreate_ReturnsPendingImmediately is the admission-only contract: a VM
@@ -107,10 +110,10 @@ func TestVMCreateFromImageSurfacesImageFields(t *testing.T) {
 
 // TestVMCreatePersistsNetworkConfig drives the image-model create over the HTTP
 // edge with a network_config blob and asserts it is persisted verbatim on the
-// VM row. The public vms.get view omits cloud-init payloads (user_data /
-// network_config never surface through the API), so the assertion reads the row
-// back through the store the same way the forwarding seam (the create executor's
-// resolveCloudInitNetworkConfig) consumes it.
+// VM row, read back through the store the same way the forwarding seam (the
+// create executor's resolveCloudInitNetworkConfig) consumes it. The public
+// vms.get view surfaces the same payload - that is covered separately by
+// TestVMGetSurfacesCloudInitPayloads.
 func TestVMCreatePersistsNetworkConfig(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)
@@ -134,6 +137,62 @@ func TestVMCreatePersistsNetworkConfig(t *testing.T) {
 	}
 	if *vm.NetworkConfig != netCfg {
 		t.Errorf("vm.NetworkConfig = %q, want %q", *vm.NetworkConfig, netCfg)
+	}
+}
+
+// TestVMGetSurfacesCloudInitPayloads asserts the read view contract: a VM
+// created with user_data + network_config surfaces both verbatim through the
+// public vms.get projection (k8s-style: the spec a caller submitted is readable
+// back, RBAC-gated). A VM created without them surfaces null for both, so the
+// nullable fields stay absent rather than echoing empty strings.
+func TestVMGetSurfacesCloudInitPayloads(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	poolName := schedulableFixture(t, h, adminID)
+
+	const userData = "#cloud-config\nhostname: surfaced\n"
+	const netCfg = "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
+
+	withCI := vmCreateBody(map[string]any{"pool": poolName, "user_data": userData, "network_config": netCfg})
+	withName := withCI["name"].(string)
+	if resp := h.post(t, "/v1/vms", withCI, admin); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm (with cloud-init) status = %d, want 201", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	resp := h.get(t, "/v1/vms/"+withName, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get vm status = %d, want 200", resp.StatusCode)
+	}
+	var vm vmView
+	decodeJSON(t, resp, &vm)
+	if vm.UserData == nil || *vm.UserData != userData {
+		t.Errorf("user_data = %v, want %q", vm.UserData, userData)
+	}
+	if vm.NetworkConfig == nil || *vm.NetworkConfig != netCfg {
+		t.Errorf("network_config = %v, want %q", vm.NetworkConfig, netCfg)
+	}
+
+	// A VM with no cloud-init surfaces null (absent) for both, not "".
+	bare := vmCreateBody(map[string]any{"pool": poolName})
+	bareName := bare["name"].(string)
+	if resp := h.post(t, "/v1/vms", bare, admin); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create vm (bare) status = %d, want 201", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	resp = h.get(t, "/v1/vms/"+bareName, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get bare vm status = %d, want 200", resp.StatusCode)
+	}
+	var bareVM vmView
+	decodeJSON(t, resp, &bareVM)
+	if bareVM.UserData != nil {
+		t.Errorf("bare user_data = %v, want nil", *bareVM.UserData)
+	}
+	if bareVM.NetworkConfig != nil {
+		t.Errorf("bare network_config = %v, want nil", *bareVM.NetworkConfig)
 	}
 }
 

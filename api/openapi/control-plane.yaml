@@ -1766,7 +1766,8 @@ paths:
         Only metadata is patchable through this endpoint. Resource
         changes (CPU, RAM, firmware) go through `POST /v1/vms/{id}/resize`
         because they may require a hot operation or restart. Identity
-        fields (`architecture`, `owner_id`) are immutable.
+        fields (`architecture`, `owner_id`) and cloud-init payloads
+        (`user_data`, `network_config`) are immutable.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -5742,6 +5743,21 @@ components:
           description: |
             String-to-string label map (jsonb). Used by the scheduler
             and for filtering in list endpoints.
+        user_data:
+          type: [string, "null"]
+          description: |
+            Cloud-init user-data the caller supplied at create time, echoed
+            back verbatim (`null` when unset). Set once at create and
+            immutable for the VM's lifetime (no PATCH path). Read-back of
+            caller-authored spec, the way a Pod spec echoes inline config —
+            not a secrecy boundary, since the guest can already read it.
+            RBAC `vm:read` gates access.
+        network_config:
+          type: [string, "null"]
+          description: |
+            Cloud-init network-config (NoCloud `/network-config`) the caller
+            supplied at create time, echoed back verbatim (`null` when unset).
+            Immutable for the VM's lifetime, same as `user_data`.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -5863,7 +5879,9 @@ components:
       type: object
       description: |
         Patches the user-mutable metadata of a VM. All fields are
-        optional; omitted fields are left unchanged.
+        optional; omitted fields are left unchanged. Cloud-init payloads
+        (`user_data`, `network_config`) are NOT patchable - they are set
+        once at create time and immutable for the VM's lifetime.
       properties:
         name:
           type: string
@@ -5885,8 +5903,6 @@ components:
         ssh_authorized_keys:
           type: array
           items: { type: string }
-        user_data:
-          type: [string, "null"]
 
     VMList:
       type: object

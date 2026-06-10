@@ -179,6 +179,34 @@ func sleepVMCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// humanAge renders an RFC 3339 timestamp as a compact age relative to now
+// (s / m / h / d), matching the `node` and `pool` list views. An empty or
+// unparseable input renders the "-" placeholder so the column never shows a
+// raw timestamp or a Go zero time.
+func humanAge(rfc3339 string) string {
+	if rfc3339 == "" {
+		return "-"
+	}
+	t, err := time.Parse(time.RFC3339Nano, rfc3339)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, rfc3339)
+		if err != nil {
+			return "-"
+		}
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 // requireStringFlag fetches a string flag and rejects empty values as
 // usage errors. The CLI forwards the raw string and the server
 // resolves it (name-only for VM/Node; polymorphic for

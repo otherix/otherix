@@ -35,3 +35,28 @@ func TestVMGetOutputYAML(t *testing.T) {
 		t.Errorf("yaml output leaked server fields:\n%s", stdout)
 	}
 }
+
+// TestVMGetOutputYAMLCloudInit asserts the cloud-init payloads surface in the
+// `vm get -o yaml` projection (an apply-ready clone manifest) when the server
+// returns them, so a get | create -f round-trip reproduces the cloud-init.
+func TestVMGetOutputYAMLCloudInit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"vm-ci","owner_id":"` + uuid.NewString() +
+			`","image_url":"https://img.example/noble.qcow2","format":"qcow2","pool":"default","node":null,` +
+			`"networks":[],"architecture":"amd64","vcpus":2,"memory_mb":2048,"status":{"phase":"running"},` +
+			`"desired_phase":"running","user_data":"#cloud-config\nhostname: ci\n",` +
+			`"network_config":"version: 2\n","created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T10:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runVMCmd(t, srv.URL, []string{"get", "vm-ci", "-o", "yaml"})
+	if err != nil {
+		t.Fatalf("get -o yaml error = %v", err)
+	}
+	for _, want := range []string{"userData:", "#cloud-config", "networkConfig:", "version: 2"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("yaml output missing %q:\n%s", want, stdout)
+		}
+	}
+}
