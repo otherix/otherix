@@ -46,6 +46,27 @@ func mkUnscheduledParams(t *testing.T, name string) store.CreateVMParams {
 	}
 }
 
+func TestCreateVMRoundTripsNetworkConfig(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	nc := "network:\n  version: 2\n"
+	p := mkUnscheduledParams(t, "vm-netcfg")
+	p.NetworkConfig = &nc
+	id, err := st.CreateUnscheduledVM(ctx, p)
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+
+	vm, err := st.VMByID(ctx, id)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if vm.NetworkConfig == nil || *vm.NetworkConfig != nc {
+		t.Errorf("VMByID().NetworkConfig = %v, want %q", vm.NetworkConfig, nc)
+	}
+}
+
 func TestCreateUnscheduledVM(t *testing.T) {
 	st, _ := etcdstore.FreshStore(t)
 	ctx := context.Background()

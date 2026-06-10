@@ -138,6 +138,7 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		PinnedNodeID:      p.PinnedNodeID,
 		UserData:          p.UserData,
 		CloudInitDisabled: p.CloudInitDisabled,
+		NetworkConfig:     p.NetworkConfig,
 		Labels:            p.Labels,
 		SchedulingSpec:    p.SchedulingSpec,
 		Generation:        1,

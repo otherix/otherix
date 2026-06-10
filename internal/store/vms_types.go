@@ -29,6 +29,7 @@ type CreateVMParams struct {
 	PinnedNodeID      *uuid.UUID
 	UserData          *string
 	CloudInitDisabled bool
+	NetworkConfig     *string
 	Labels            []byte
 	// SchedulingSpec is the JSON-encoded store.SchedulingSpec captured at
 	// admission; CreateUnscheduledVM persists it verbatim.
