@@ -38,6 +38,19 @@ func resolveCloudInitUserData(vm store.VM) string {
 	return ""
 }
 
+// resolveCloudInitNetworkConfig returns the network-config blob the agent
+// should write to /network-config, or "" when cloud-init is disabled or no
+// network-config was supplied. Mirrors resolveCloudInitUserData.
+func resolveCloudInitNetworkConfig(vm store.VM) string {
+	if vm.CloudInitDisabled {
+		return ""
+	}
+	if vm.NetworkConfig != nil && *vm.NetworkConfig != "" {
+		return *vm.NetworkConfig
+	}
+	return ""
+}
+
 // agentVMClient is the narrow agent-client surface vm executors
 // depend on. *agentclient.Client satisfies it structurally; tests
 // pass an in-test fake without importing the production client.
@@ -147,6 +160,7 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 		Format:         args.Format,
 		DiskGiB:        args.DiskGiB,
 		UserData:       resolveCloudInitUserData(args.VM),
+		NetworkConfig:  resolveCloudInitNetworkConfig(args.VM),
 		Nics:           args.NICs,
 	}
 	agentTaskID, err := e.client.PostVMCreate(ctx, args.Node.AdvertisedEndpoint, idemKey, body)

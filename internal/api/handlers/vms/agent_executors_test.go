@@ -219,6 +219,55 @@ func TestAgentVMCreateExecutor_ForwardsNics(t *testing.T) {
 	}
 }
 
+// TestAgentVMCreateExecutor_ForwardsNetworkConfig pins the cloud-init
+// network-config half of the CP->agent seam: a vm.NetworkConfig set on the
+// CreateArgs.VM reaches the agent VMCreateRequest.NetworkConfig field through
+// the real Execute/postOrResumeCreate path, while a disabled VM forwards "".
+func TestAgentVMCreateExecutor_ForwardsNetworkConfig(t *testing.T) {
+	t.Parallel()
+
+	nc := "network:\n  version: 2\n"
+
+	t.Run("set forwards verbatim", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeVMClient{
+			postCreateID: uuid.New(),
+			pollResult:   agentclient.TaskTerminal{Status: "success"},
+		}
+		args, _, _ := fixtureCreateArgs()
+		args.VM.NetworkConfig = &nc
+
+		exec := NewAgentVMCreateExecutor(fc)
+		if _, err := exec.Execute(context.Background(), args); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		req, _ := fc.lastCreateReq.Load().(agentclient.VMCreateRequest)
+		if req.NetworkConfig != nc {
+			t.Errorf("req.NetworkConfig = %q, want %q", req.NetworkConfig, nc)
+		}
+	})
+
+	t.Run("disabled wins forwards empty", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeVMClient{
+			postCreateID: uuid.New(),
+			pollResult:   agentclient.TaskTerminal{Status: "success"},
+		}
+		args, _, _ := fixtureCreateArgs()
+		args.VM.NetworkConfig = &nc
+		args.VM.CloudInitDisabled = true
+
+		exec := NewAgentVMCreateExecutor(fc)
+		if _, err := exec.Execute(context.Background(), args); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		req, _ := fc.lastCreateReq.Load().(agentclient.VMCreateRequest)
+		if req.NetworkConfig != "" {
+			t.Errorf("req.NetworkConfig = %q, want %q (disabled wins)", req.NetworkConfig, "")
+		}
+	})
+}
+
 func TestAgentVMCreateExecutor_ResumeSkipsPost(t *testing.T) {
 	t.Parallel()
 
