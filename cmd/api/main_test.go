@@ -57,6 +57,29 @@ func TestWarnIfUnderlayMTUBelowFloor(t *testing.T) {
 	}
 }
 
+func TestRootCmdHasServeAndJoin(t *testing.T) {
+	root := newRootCmd()
+	var names []string
+	for _, c := range root.Commands() {
+		names = append(names, c.Name())
+	}
+	wantServe, wantJoin := false, false
+	for _, n := range names {
+		if n == "serve" {
+			wantServe = true
+		}
+		if n == "join" {
+			wantJoin = true
+		}
+	}
+	if !wantServe || !wantJoin {
+		t.Errorf("root subcommands = %v, want both serve and join", names)
+	}
+	if root.RunE == nil {
+		t.Errorf("bare otherix-api must default to serve (root.RunE is nil)")
+	}
+}
+
 func TestBuildInitialCluster(t *testing.T) {
 	cases := []struct {
 		name        string

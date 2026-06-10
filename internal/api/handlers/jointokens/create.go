@@ -28,6 +28,13 @@ const defaultTTLSeconds = 3600
 // would be unusable anyway).
 const intendedNodeNameMaxLength = 253
 
+// maxClusterTokenUses caps an explicit max_uses on a cluster token. A
+// cluster token redeems for the cluster CA private key (the
+// highest-value secret), so even a finite-but-large cap is
+// operationally equivalent to unlimited. 16 is a generous upper bound
+// on the number of CP replicas grown with a single token.
+const maxClusterTokenUses = 16
+
 // Create implements POST /v1/nodes/join-tokens. Required permission:
 // node:manage (admin only — gated by the router-level
 // RequirePermission middleware). Mints a fresh token bundle (token +
@@ -142,22 +149,9 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 		return "", nil, 0, nil, errTTLOutOfRange
 	}
 
-	if req.MaxUses != nil {
-		if *req.MaxUses < 1 {
-			return "", nil, 0, nil, errMaxUsesNotPositive
-		}
-		v := *req.MaxUses
-		maxUses = &v
-	}
-
-	// A cluster token redeems for the CA private key, so it must never be
-	// unlimited-use: default an omitted max_uses to 1 (the operator can still set
-	// a finite N explicitly for a multi-replica grow). This closes the footgun
-	// where a cluster token with no cap yields the CA key to anyone, repeatedly,
-	// for the whole TTL.
-	if kind == store.JoinTokenKindCluster && maxUses == nil {
-		one := int32(1)
-		maxUses = &one
+	maxUses, err = normaliseMaxUses(kind, req.MaxUses)
+	if err != nil {
+		return "", nil, 0, nil, err
 	}
 
 	if req.IntendedNodeName != nil {
@@ -182,6 +176,36 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 	}
 
 	return kind, intendedNodeName, ttl, maxUses, nil
+}
+
+// normaliseMaxUses canonicalises the requested max_uses and applies the
+// cluster-token policy. A requested value must be positive. A cluster token
+// redeems for the CA private key, so it must never be unlimited-use: an omitted
+// max_uses defaults to 1, and an explicit value above maxClusterTokenUses is
+// rejected (a near-unlimited cap is operationally equivalent to unlimited for the
+// whole TTL). Node tokens are unaffected — they redeem only leaf certs.
+func normaliseMaxUses(kind string, requested *int32) (*int32, error) {
+	var maxUses *int32
+	if requested != nil {
+		if *requested < 1 {
+			return nil, errMaxUsesNotPositive
+		}
+		v := *requested
+		maxUses = &v
+	}
+
+	if kind != store.JoinTokenKindCluster {
+		return maxUses, nil
+	}
+
+	if maxUses == nil {
+		one := int32(1)
+		return &one, nil
+	}
+	if *maxUses > maxClusterTokenUses {
+		return nil, errClusterMaxUsesTooHigh
+	}
+	return maxUses, nil
 }
 
 // normaliseKind resolves the optional kind field to a canonical kind, defaulting
@@ -226,6 +250,10 @@ func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, errClusterNodeBound):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "cluster tokens cannot carry intended_node_name", nil)
+	case errors.Is(err, errClusterMaxUsesTooHigh):
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "max_uses for a cluster token must be <= 16",
+			map[string]any{"max_uses_ceiling": maxClusterTokenUses})
 	default:
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "invalid request body", nil)

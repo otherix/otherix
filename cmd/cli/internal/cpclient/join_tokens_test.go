@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +70,38 @@ func TestCreateJoinToken_HappyPath(t *testing.T) {
 	}
 	if out.ConsumptionCount != 0 {
 		t.Errorf("ConsumptionCount = %d, want 0", out.ConsumptionCount)
+	}
+}
+
+func TestCreateJoinToken_SendsKind(t *testing.T) {
+	t.Parallel()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":                    uuid.NewString(),
+			"intended_node_name":    nil,
+			"expires_at":            "2026-06-10T00:00:00Z",
+			"max_uses":              1,
+			"consumption_count":     0,
+			"created_by_user_id":    nil,
+			"created_at":            "2026-06-10T00:00:00Z",
+			"token":                 "otx_join_x",
+			"ca_fingerprint_sha256": strings.Repeat("a", 64),
+		})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	kind := "cluster"
+	if _, err := c.CreateJoinToken(context.Background(), cpclient.CreateJoinTokenRequest{Kind: &kind}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	if got := gotBody["kind"]; got != "cluster" {
+		t.Errorf("request body kind = %v, want %q", got, "cluster")
 	}
 }
 

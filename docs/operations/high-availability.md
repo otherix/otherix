@@ -89,6 +89,95 @@ token plaintext and the cluster CA fingerprint to pin. Supply the token via
 `token_path` (preferred, keeps the secret out of the config file) or inline
 `token`; exactly one.
 
+### Growing from single to HA (recommended)
+
+The fastest way to grow a running single-node control plane into HA is the pair
+of operator wrappers below. They drive the same `join` engine documented above -
+no hand-edited config, no raw API calls.
+
+**Step 1 - mint a join token (on an existing replica).** Run:
+
+```
+otherix cluster join-token create --ttl 1h
+```
+
+This prints the token plaintext and the cluster CA fingerprint as
+`sha256:<hex>`. A cluster token redeems for the cluster CA *private* key, so it
+is single-use by default; pass `--max-uses N` to grow several replicas with one
+token. `--output text|json` selects the format.
+
+**Step 2 - join the cluster (on the new control-plane host).** With the
+`otherix-api` .deb already installed and the daemon running in `single` mode,
+run:
+
+```
+umask 077; printf '%s\n' '<token>' > /etc/otherix/cluster-join-token
+sudo otherix-api join \
+  --cp-url https://<existing-replica>:8443 \
+  --token-path /etc/otherix/cluster-join-token \
+  --ca-fingerprint sha256:<fingerprint> \
+  --name otherix-1
+```
+
+`--cp-url` points at the existing replica's agent-TLS listener (`:8443` by
+default), where `/v1/cluster/join` is served - not the public API listener
+(`:8080`).
+
+This writes the `cluster_join:` block, sets `etcd.mode: join`, and records a
+unique `etcd.name` into `/etc/otherix/api.yaml`, then restarts the unit. At boot
+the daemon redeems the token, registers itself as a learner, and auto-promotes
+to a voter once caught up (see below). `etcd.name` must be unique across the
+cluster - do not reuse the seed node's default `otherix-0`; `--name` defaults to
+the host's hostname. `etcd.peer_url` is left at the packaged default `auto`,
+which resolves to the host's routable IPv4 at boot, so there is no per-host peer
+URL to set.
+
+Pass the token from a file with `--token-path` (preferred) or inline with
+`--token` (exactly one). The inline form is visible in the process table
+(`ps`, `/proc/<pid>/cmdline`) to any local user, so prefer `--token-path`; the
+daemon removes the consumed token file after a successful join. Other flags:
+`--config` (default `/etc/otherix/api.yaml`), `--token-dest` (default
+`/var/lib/otherix/cluster-join-token`), `--no-restart` (write config but leave
+the unit for a later restart), and `--force`. The existing replica and the new
+host must share the same `etcd.cluster_token`; the packaged default matches, so
+this is automatic unless an operator changed it.
+
+### Recovering a failed or incomplete join
+
+A join can stall partway: a wrong token, an unreachable CP, or a name collision
+leaves the new host short of a promoted voter. Recovery depends on how far the
+join got.
+
+**Cluster CA not yet on disk.** If the join failed before fetching the cluster
+CA (wrong token, CP unreachable, name collision rejected at `/v1/cluster/join`),
+re-run `otherix-api join` with a corrected token. The helper detects that the
+cluster CA is not yet on disk, re-applies the config, and restarts the daemon
+automatically - no manual cleanup.
+
+**Cluster CA fetched but etcd never initialized (partial join).** If the cluster
+CA was already written but the etcd member never initialized, the daemon logs a
+clear "partial join" message naming the files to remove. Remove the cluster CA
+(`/var/lib/otherix/ca/cluster-ca.crt` and `cluster-ca.key`) and the etcd data
+dir (`/var/lib/otherix/etcd`), then re-run join with a FRESH token - the
+original is single-use and already consumed.
+
+**Abandoned join left a dangling learner.** A join that registered the new
+replica as an etcd learner but never completed leaves a non-voting learner in
+the cluster. It does not affect quorum, but it lingers. Find its id with
+`otherix cluster member list` and evict it with
+`otherix cluster member remove <id>` before retrying the join on a different
+host.
+
+**Step 3 - confirm quorum.** Once the new replica has promoted to a voter:
+
+```
+otherix cluster member list
+```
+
+The `cluster_join:` YAML block shown above is the equivalent manual edit for
+IaC-templated deployments - the wrappers exist for convenience and do not
+replace the config-driven path.
+
 ### Learner registration and auto-promotion
 
 When a `join` node calls `/v1/cluster/join`, the existing replica registers the

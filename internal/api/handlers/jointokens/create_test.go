@@ -91,6 +91,31 @@ func TestNormaliseCreateRequestClusterMaxUses(t *testing.T) {
 		t.Errorf("cluster explicit max_uses = %v, want 3", maxUses)
 	}
 
+	// An explicit cap at the ceiling is allowed.
+	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("cluster"), MaxUses: int32ptr(maxClusterTokenUses)})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest at ceiling: %v", err)
+	}
+	if maxUses == nil || *maxUses != maxClusterTokenUses {
+		t.Errorf("cluster max_uses at ceiling = %v, want %d", maxUses, maxClusterTokenUses)
+	}
+
+	// An explicit cap above the ceiling is rejected: a cluster token redeems for the
+	// CA private key, so a near-unlimited max_uses defeats the single-use intent.
+	_, _, _, _, err = normaliseCreateRequest(createRequest{Kind: strptr("cluster"), MaxUses: int32ptr(maxClusterTokenUses + 1)})
+	if !errors.Is(err, errClusterMaxUsesTooHigh) {
+		t.Errorf("cluster max_uses above ceiling: err = %v, want %v", err, errClusterMaxUsesTooHigh)
+	}
+
+	// A node token is unaffected by the cluster ceiling - leaf certs only.
+	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("node"), MaxUses: int32ptr(1000)})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest node large max_uses: %v", err)
+	}
+	if maxUses == nil || *maxUses != 1000 {
+		t.Errorf("node max_uses = %v, want 1000 (node unaffected)", maxUses)
+	}
+
 	// A node token with no max_uses stays unlimited (nil) - unchanged behavior.
 	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("node")})
 	if err != nil {

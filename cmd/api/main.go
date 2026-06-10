@@ -7,16 +7,13 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/otherix/otherix/internal/api"
@@ -32,9 +29,7 @@ import (
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
-	"github.com/otherix/otherix/internal/logger"
 	"github.com/otherix/otherix/internal/netdetect"
-	"github.com/otherix/otherix/internal/version"
 	"github.com/otherix/otherix/internal/worker"
 )
 
@@ -46,140 +41,10 @@ const componentName = "api"
 const workerMaxAttempts = 25
 
 func main() {
-	if err := run(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-// run is the body of main extracted so that deferred cleanup runs before exit.
-func run() error {
-	configPath := flag.String("config", "/etc/otherix/api.yaml", "path to config file")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	hashPassword := flag.String("hash-password", "", "if set, print an argon2id hash of the given plaintext and exit (for bootstrap)")
-	flag.Parse()
-
-	if *showVersion {
-		v := version.Current()
-		fmt.Printf("otherix-%s %s (commit %s, built %s)\n", componentName, v.Version, v.Commit, v.Date)
-		return nil
-	}
-
-	if *hashPassword != "" {
-		hash, err := auth.HashPassword(*hashPassword)
-		if err != nil {
-			return fmt.Errorf("hash password: %v", err)
-		}
-		fmt.Println(hash)
-		return nil
-	}
-
-	cfg, err := config.LoadAPI(*configPath)
-	if err != nil {
-		return fmt.Errorf("config: %v", err)
-	}
-
-	log := logger.WithComponent(logger.New(cfg.Logger), componentName)
-	logger.SetDefault(log)
-
-	v := version.Current()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	log.Info("starting",
-		"binary", "otherix-"+componentName,
-		"version", v.Version,
-		"commit", v.Commit,
-		"listen", cfg.Server.Listen,
-	)
-
-	for _, msg := range cfg.Placement.Warnings() {
-		log.Warn("placement config", "warning", msg)
-	}
-
-	// Resolve an auto/empty peer URL to the host's routable IPv4 before any
-	// consumer reads it (peer cert SANs, initial-cluster, the etcd member).
-	// This keeps a single-node default HA-ready without operator input.
-	if err := resolvePeerURL(cfg, log); err != nil {
-		return err
-	}
-
-	// A join node with no cluster CA on disk fetches it from an existing
-	// replica before anything else: the peer plane needs the CA pre-start and
-	// a joiner must adopt the cluster's shared CA, not mint its own.
-	if cfg.Etcd.Mode == "join" {
-		ic, err := ensureClusterCAForJoin(ctx, cfg, log)
-		if err != nil {
-			return fmt.Errorf("fetch cluster CA for join: %v", err)
-		}
-		cfg.Etcd.InitialCluster = ic
-	}
-
-	// Provision the cluster CA on disk before etcd starts: the peer (Raft)
-	// mTLS plane needs a CA-signed cert pre-start. A bootstrap / single node
-	// generates it on first boot and reloads it on restart; a join node loads
-	// the CA fetched above (allowGenerate is false for join, so a missing CA
-	// fails fast rather than forking a new trust root).
-	caMaterial, caGenerated, err := auth.LoadOrGenerateClusterCAOnDisk(
-		cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, cfg.Etcd.Mode != "join", time.Now())
-	if err != nil {
-		return fmt.Errorf("provision cluster CA on disk: %v", err)
-	}
-	log.Info("cluster CA on disk",
-		"generated", caGenerated,
-		"fingerprint_sha256", hex.EncodeToString(caMaterial.Fingerprint),
-		"cert_file", cfg.ClusterCA.CertFile)
-
-	// Provision the etcd peer (Raft) mTLS material from the on-disk CA before
-	// the member starts. Peer mTLS is always on (uniform across single-node and
-	// HA); with no operator override the peer leaf is auto-generated each boot.
-	peerMat, err := api.ProvisionPeerCert(caMaterial, api.PeerCertParams{
-		PeerURL:          cfg.Etcd.PeerURL,
-		OperatorCertFile: cfg.Etcd.PeerCertFile,
-		OperatorKeyFile:  cfg.Etcd.PeerKeyFile,
-		OperatorCAFile:   cfg.Etcd.PeerCAFile,
-		GenCertPath:      filepath.Join(cfg.Etcd.PeerAutoDir, "peer.crt"),
-		GenKeyPath:       filepath.Join(cfg.Etcd.PeerAutoDir, "peer.key"),
-		GenCAPath:        filepath.Join(cfg.Etcd.PeerAutoDir, "peer-ca.crt"),
-	}, time.Now(), log)
-	if err != nil {
-		return fmt.Errorf("provision peer cert: %v", err)
-	}
-
-	// Start the embedded etcd member, then build the KV client and the
-	// etcd-backed store over it. Deferred cleanup runs LIFO: the client closes
-	// before the member stops, both bounded by ShutdownGrace.
-	etcdCfg := etcdConfigFromAPI(cfg.Etcd)
-	etcdCfg.PeerCertFile = peerMat.CertFile
-	etcdCfg.PeerKeyFile = peerMat.KeyFile
-	etcdCfg.PeerCAFile = peerMat.CAFile
-	rt, err := etcd.Start(ctx, etcdCfg, log)
-	if err != nil {
-		return fmt.Errorf("etcd start: %v", err)
-	}
-	defer rt.Stop(cfg.Server.ShutdownGrace)
-
-	cli := etcd.NewClient(rt)
-	defer func() {
-		// Close races the shutdown context cancellation; a context.Canceled
-		// here is the benign result of a clean shutdown, not a failure.
-		if cerr := cli.Close(); cerr != nil && !errors.Is(cerr, context.Canceled) {
-			log.Error("etcd client close", "error", cerr)
-		}
-	}()
-	st := etcdstore.New(cli)
-
-	authSvc, err := auth.NewService(auth.Config{
-		JWTSecret:    []byte(cfg.Auth.JWTSecret),
-		JWTAccessTTL: cfg.Auth.JWTAccessTTL,
-		RefreshTTL:   cfg.Auth.JWTRefreshTTL,
-	}, st)
-	if err != nil {
-		return fmt.Errorf("auth init: %v", err)
-	}
-
-	return runServe(ctx, cfg, st, authSvc, caMaterial, log)
 }
 
 // resolvePeerURL resolves an auto/empty etcd peer URL to the host's routable
@@ -208,17 +73,47 @@ func resolvePeerURL(cfg *config.APIConfig, log *slog.Logger) error {
 	return nil
 }
 
-// ensureClusterCAForJoin fetches the cluster CA from an existing replica and
-// persists it to disk when a join node has no CA yet, returning the etcd
-// initial-cluster string computed from the membership the join call reports. On
-// a restart (CA already on disk) it is a no-op and returns the configured
-// initial-cluster, so the fetch happens exactly once per joining replica. The CA
-// cert + key land at the cluster_ca paths, ready for the on-disk provisioning
-// step that follows.
+// ensureClusterCAForJoin returns the etcd initial-cluster string a joining
+// replica needs to start, fetching the cluster CA from an existing replica
+// exactly once across the joiner's lifetime. The single-use join token forces
+// the control flow to survive a restart WITHOUT re-redeeming it. Three branches,
+// checked before any token resolution so a restart never hits the network:
+//
+//   - Member dir present: etcd is fully initialized and recovers membership from
+//     the WAL, ignoring initial-cluster. Return the configured value verbatim
+//     (empty is fine) - no fetch, no sidecar needed.
+//   - CA on disk but no member dir (a partial join across a restart, token
+//     already spent): resume from the saved initial-cluster sidecar. A
+//     missing/empty sidecar is an unrecoverable partial join - return a clear
+//     actionable error naming the cleanup, not the misleading etcd one.
+//   - No CA (first join): resolve the token, fetch the CA, reject an etcd.name
+//     collision before persisting anything, persist the CA, persist the computed
+//     initial-cluster to the sidecar, and remove the consumed token file.
+//
+// The sidecar lives next to the CA (a daemon-writable dir) and is written
+// atomically after the CA so it never exists without one.
 func ensureClusterCAForJoin(ctx context.Context, cfg *config.APIConfig, log *slog.Logger) (string, error) {
-	if fileExists(cfg.ClusterCA.CertFile) && fileExists(cfg.ClusterCA.KeyFile) {
-		log.Info("cluster CA already on disk; skipping join fetch")
+	icSidecar := filepath.Join(filepath.Dir(cfg.ClusterCA.CertFile), "initial-cluster")
+
+	// etcd creates <DataDir>/member on first successful start; once present it
+	// recovers membership from the WAL and ignores initial-cluster. Mirror
+	// internal/etcd memberDirExists so a restart after a healthy first start
+	// never re-fetches and never requires the sidecar.
+	if fileExists(filepath.Join(cfg.Etcd.DataDir, "member")) {
+		log.Info("etcd member already initialized; recovering from WAL")
 		return cfg.Etcd.InitialCluster, nil
+	}
+
+	if fileExists(cfg.ClusterCA.CertFile) && fileExists(cfg.ClusterCA.KeyFile) {
+		// Partial join across a restart: the CA was persisted but the member was
+		// never initialized, and the single-use token is already spent. Recover
+		// the previously-computed initial-cluster from the sidecar.
+		if ic := readInitialClusterSidecar(icSidecar); ic != "" {
+			log.Info("resuming partial join from saved initial-cluster", "sidecar", icSidecar)
+			return ic, nil
+		}
+		return "", fmt.Errorf("partial join detected: cluster CA is present but the etcd member was never initialized and no saved initial-cluster exists at %s; the join token is already consumed - remove the cluster CA (%s, %s) and the etcd data dir (%s), then re-run 'otherix-api join' with a fresh token",
+			icSidecar, cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, cfg.Etcd.DataDir)
 	}
 
 	jc := cfg.ClusterJoin
@@ -244,6 +139,16 @@ func ensureClusterCAForJoin(ctx context.Context, cfg *config.APIConfig, log *slo
 	if err != nil {
 		return "", err
 	}
+
+	// Reject an etcd.name collision before persisting anything. FetchClusterCA
+	// has already consumed the token and registered the learner, but writing no
+	// CA/sidecar keeps the on-disk state clean: the operator just re-runs join
+	// with a unique --name and a fresh token, with nothing CA-side to clean up.
+	if otherPeer, collides := nameCollision(res.Members, cfg.Etcd.Name, cfg.Etcd.PeerURL); collides {
+		return "", fmt.Errorf("etcd member name %q is already used by another member in the cluster (peer %s); choose a unique --name and re-run 'otherix-api join' (the join token was consumed, so use a fresh one)",
+			cfg.Etcd.Name, otherPeer)
+	}
+
 	if err := auth.WriteCertCacheAtomic(cfg.ClusterCA.CertFile, cfg.ClusterCA.KeyFile, res.CA.CertPEM, res.CA.KeyPEM); err != nil {
 		return "", fmt.Errorf("persist fetched cluster CA: %v", err)
 	}
@@ -251,7 +156,85 @@ func ensureClusterCAForJoin(ctx context.Context, cfg *config.APIConfig, log *slo
 		"fingerprint_sha256", hex.EncodeToString(res.CA.Fingerprint),
 		"cert_file", cfg.ClusterCA.CertFile)
 
-	return buildInitialCluster(res.Members, cfg.Etcd.Name, cfg.Etcd.PeerURL), nil
+	ic := buildInitialCluster(res.Members, cfg.Etcd.Name, cfg.Etcd.PeerURL)
+
+	// Persist the computed initial-cluster so a restart before the member dir
+	// exists can resume without the spent token. Best-effort: a write failure
+	// still lets this first boot proceed; only a restart-before-member-init
+	// would then hit the clear partial-join error, which is acceptable.
+	if err := writeInitialClusterSidecar(icSidecar, ic); err != nil {
+		log.Warn("could not persist initial-cluster sidecar; a restart before etcd initializes will require a fresh-token rejoin",
+			"sidecar", icSidecar, "error", err)
+	}
+
+	// The token is now spent and never needed again (later boots use the sidecar
+	// or the WAL). Remove the token file so a CA-key-redeeming secret is not left
+	// at rest. Only a file-backed token is removed; an inline token has no file.
+	if jc.TokenPath != "" {
+		if err := os.Remove(jc.TokenPath); err != nil {
+			log.Warn("could not remove consumed join token", "token_path", jc.TokenPath, "error", err)
+		} else {
+			log.Info("removed consumed join token", "token_path", jc.TokenPath)
+		}
+	}
+
+	return ic, nil
+}
+
+// nameCollision reports whether selfName is already claimed by a different
+// member in the fetched membership. A same-name entry whose peer URL equals
+// selfPeerURL is this node being re-registered (fine); a same-name entry with a
+// different peer URL is a real collision. Peer URLs compare canonically so
+// trailing-slash spellings do not falsely diverge. Returns the colliding peer.
+func nameCollision(members []api.ClusterMemberRef, selfName, selfPeerURL string) (string, bool) {
+	self := canonPeerURL(selfPeerURL)
+	for _, m := range members {
+		if m.Name == selfName && canonPeerURL(m.PeerURL) != self {
+			return m.PeerURL, true
+		}
+	}
+	return "", false
+}
+
+// readInitialClusterSidecar returns the trimmed initial-cluster persisted next
+// to the cluster CA, or "" when the sidecar is absent, unreadable, or empty. An
+// empty result is treated as missing by the caller (a truncated write must not
+// hand etcd a blank initial-cluster).
+func readInitialClusterSidecar(path string) string {
+	b, err := os.ReadFile(path) //nolint:gosec // daemon-derived path next to the configured cluster CA, not operator/user input
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// writeInitialClusterSidecar atomically writes the initial-cluster string via a
+// temp file in the same directory plus a rename, mode 0600, so a concurrent
+// reader never observes a partial write.
+func writeInitialClusterSidecar(path, ic string) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".initial-cluster-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %v", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := tmp.WriteString(ic); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %v", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %v", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp file: %v", err)
+	}
+	return nil
 }
 
 // buildInitialCluster renders the etcd initial-cluster "name=peer,..." from the

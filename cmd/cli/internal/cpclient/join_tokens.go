@@ -35,8 +35,11 @@ type JoinTokenList struct {
 }
 
 // CreateJoinTokenRequest mirrors components/schemas/JoinTokenCreate.
-// All fields optional; server applies defaults (ttl=1h, max_uses=null).
+// All fields optional; server applies defaults (kind=node, ttl=1h,
+// max_uses=null). A non-nil Kind of "cluster" mints a cluster-join
+// token (server forces max_uses=1 when the caller omits it).
 type CreateJoinTokenRequest struct {
+	Kind             *string `json:"kind,omitempty"`
 	IntendedNodeName *string `json:"intended_node_name,omitempty"`
 	TTLSeconds       *int    `json:"ttl_seconds,omitempty"`
 	MaxUses          *int32  `json:"max_uses,omitempty"`
