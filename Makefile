@@ -165,6 +165,10 @@ smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml`
 smoke-vm-lifecycle: ## VM lifecycle smoke: `otherix vm` start/stop/poweroff/reboot/pause/resume/reset on a real agent (run after local-dev-start)
 	bash dev/smoke/vm-lifecycle/run.sh
 
+.PHONY: smoke-vm-network-config
+smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otherix vm create --network-config` on a real agent (run after local-dev-start)
+	bash dev/smoke/vm-network-config/run.sh
+
 # ========== Lint ==========
 
 .PHONY: lint fmt fmt-check vet
