@@ -232,7 +232,36 @@ tidy: ## go mod tidy
 download: ## go mod download
 	$(GO) mod download
 
-# ========== Dev environment ==========
+# ========== Local dev stack ==========
+
+# local-dev-* is the documented dev-stack control surface (macOS Lima 2 VMs /
+# Linux netns 2 nodes). start/stop/clean/cleanrestart are the lifecycle;
+# restart/deploy are the non-destructive inner loop (etcd/pki + VMs/certs
+# preserved). The per-OS internals (bootstrap-dev/deploy-dev/clean-dev,
+# *-linux/*-macos, lima-*) are hidden from `make help`.
+.PHONY: local-dev-start local-dev-stop local-dev-clean \
+        local-dev-restart local-dev-deploy local-dev-cleanrestart
+
+local-dev-start: ## Dev stack up: api-server (embedded etcd) + agents + CLI (admin@otherix.local / correct-horse-battery-staple)
+	@bash dev/scripts/local-dev-start.sh
+
+local-dev-stop: ## Dev stack down + wipe etcd/pki + delete VMs/netns (DESTRUCTIVE)
+	@bash dev/scripts/local-dev-stop.sh
+
+local-dev-clean: ## local-dev-stop + remove .local/ and the dev CLI cluster (pristine slate)
+	@bash dev/scripts/local-dev-clean.sh
+
+local-dev-restart: ## Bounce api + agents in place, no rebuild (state preserved)
+	@bash dev/scripts/restart-api-dev.sh
+	@$(MAKE) --no-print-directory restart-agent
+
+local-dev-deploy: build-api ## Rebuild + restart api + agents to pick up code changes (state preserved)
+	@$(MAKE) --no-print-directory deploy-dev
+	@bash dev/scripts/restart-api-dev.sh
+
+local-dev-cleanrestart: ## local-dev-stop then local-dev-start (nuke + fresh cluster)
+	@$(MAKE) --no-print-directory local-dev-stop
+	@$(MAKE) --no-print-directory local-dev-start
 
 # etcd-reset wipes the dev member's gitignored data dir AND the dev PKI for a
 # clean-slate smoke run. The api-server recreates the data dir, regenerates the
@@ -243,7 +272,7 @@ download: ## go mod download
 etcd-reset: ## Wipe the dev embedded-etcd data dir + PKI for a clean-slate smoke run
 	rm -rf .local/etcd .local/pki
 
-# ========== Dev environment (agent) ==========
+# ----- Dev environment internals (per-OS dispatchers; not in make help) -----
 
 # Dev pipeline: build agent + run as systemd unit. Linux runs natively
 # (user-mode systemd unit). macOS runs the agent inside a Lima VM
@@ -307,35 +336,6 @@ seed-dev: build-cli ## Run the join-token bootstrap + cluster seed (requires CP 
 .PHONY: demo-manifest
 demo-manifest: ## Render dev/manifests/demo-vm.yaml for the host arch (amd64/arm64)
 	@bash dev/scripts/render-demo-manifest.sh
-
-# local-dev-* is the documented dev-stack control surface (macOS Lima 2 VMs /
-# Linux netns 2 nodes). start/stop/clean/cleanrestart are the lifecycle;
-# restart/deploy are the non-destructive inner loop (etcd/pki + VMs/certs
-# preserved). The per-OS internals (bootstrap-dev/deploy-dev/clean-dev,
-# *-linux/*-macos, lima-*) are hidden from `make help`.
-.PHONY: local-dev-start local-dev-stop local-dev-clean \
-        local-dev-restart local-dev-deploy local-dev-cleanrestart
-
-local-dev-start: ## Dev stack up: api-server (embedded etcd) + agents + CLI (admin@otherix.local / correct-horse-battery-staple)
-	@bash dev/scripts/local-dev-start.sh
-
-local-dev-stop: ## Dev stack down + wipe etcd/pki + delete VMs/netns (DESTRUCTIVE)
-	@bash dev/scripts/local-dev-stop.sh
-
-local-dev-clean: ## local-dev-stop + remove .local/ and the dev CLI cluster (pristine slate)
-	@bash dev/scripts/local-dev-clean.sh
-
-local-dev-restart: ## Bounce api + agents in place, no rebuild (state preserved)
-	@bash dev/scripts/restart-api-dev.sh
-	@$(MAKE) --no-print-directory restart-agent
-
-local-dev-deploy: build-api ## Rebuild + restart api + agents to pick up code changes (state preserved)
-	@$(MAKE) --no-print-directory deploy-dev
-	@bash dev/scripts/restart-api-dev.sh
-
-local-dev-cleanrestart: ## local-dev-stop then local-dev-start (nuke + fresh cluster)
-	@$(MAKE) --no-print-directory local-dev-stop
-	@$(MAKE) --no-print-directory local-dev-start
 
 # ----- Linux (two-node netns topology) -----
 
