@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +26,10 @@ import (
 // ErrJoinNodeNameMismatch / ErrJoinNodeNameTaken; sign's own error propagates
 // unwrapped with nothing persisted.
 //
-// Unlike the SQL path's SELECT FOR UPDATE, this is a read-then-write sequence:
-// safe for the single-node default; the HA path will gate it behind the
-// placement-style advisory lock (ROADMAP).
+// max_uses is enforced atomically, mirroring cluster-join: the commit is
+// guarded by a compare-and-set on the token's consumed-count key, so concurrent
+// redemptions cannot push a token past max_uses and a single-use intended-node
+// token cannot yield two certs.
 func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenParams, sign func(node store.Node) (store.IssuedCert, error)) (store.RedeemJoinTokenResult, error) {
 	token, err := s.JoinTokenByHash(ctx, p.TokenHash)
 	if err != nil {
@@ -36,7 +38,7 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		}
 		return store.RedeemJoinTokenResult{}, fmt.Errorf("token lookup: %v", err)
 	}
-	if err := s.validateRedeemToken(ctx, token, store.JoinTokenKindNode); err != nil {
+	if err := s.validateRedeemTokenKind(token, store.JoinTokenKindNode); err != nil {
 		return store.RedeemJoinTokenResult{}, err
 	}
 
@@ -84,11 +86,70 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		clientv3.OpPut(joinTokenConsumptionKey(consumption.ID), string(consVal)),
 		clientv3.OpPut(joinTokenConsumptionsIndexKey(token.ID, consumption.ID), consumption.ID.String()),
 	)
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
-		return store.RedeemJoinTokenResult{}, fmt.Errorf("redeem join token txn: %v", err)
-	}
 
+	if err := s.commitNodeRedemption(ctx, token, ops); err != nil {
+		return store.RedeemJoinTokenResult{}, err
+	}
 	return store.RedeemJoinTokenResult{NodeID: node.ID, TokenID: token.ID}, nil
+}
+
+// commitNodeRedemption commits the cert + consumption ops guarded by a
+// compare-and-set on the token's consumed-count key, mirroring the cluster-join
+// CAS loop: read the consumption counter, reject with ErrJoinTokenExhausted
+// when the max_uses cap is reached, then write the increment + ops guarded by a
+// compare on the counter's revision. A lost CAS means a concurrent redemption
+// committed first - re-read and re-check. This keeps a max_uses=N token from
+// enrolling more than N nodes and a single-use intended-node token from
+// yielding two certs under a concurrent-POST race.
+func (s *Store) commitNodeRedemption(ctx context.Context, token store.JoinToken, ops []clientv3.Op) error {
+	countKey := joinTokenConsumedCountKey(token.ID)
+	for attempt := 0; attempt < clusterRedeemCASRetries; attempt++ {
+		cur, rev, err := s.readNodeConsumedCount(ctx, countKey, joinTokenConsumptionsIndexPrefix(token.ID))
+		if err != nil {
+			return err
+		}
+		if token.MaxUses != nil && cur >= int64(*token.MaxUses) {
+			return store.ErrJoinTokenExhausted
+		}
+
+		guard := clientv3.Compare(clientv3.CreateRevision(countKey), "=", 0)
+		if rev != 0 {
+			guard = clientv3.Compare(clientv3.ModRevision(countKey), "=", rev)
+		}
+		txnResp, err := s.c.Raw().Txn(ctx).
+			If(guard).
+			Then(append([]clientv3.Op{clientv3.OpPut(countKey, strconv.FormatInt(cur+1, 10))}, ops...)...).
+			Commit()
+		if err != nil {
+			return fmt.Errorf("redeem join token txn: %v", err)
+		}
+		if txnResp.Succeeded {
+			return nil
+		}
+		// CAS lost to a concurrent redemption; re-read and retry.
+	}
+	return fmt.Errorf("redeem join token: too many concurrent attempts")
+}
+
+// readNodeConsumedCount returns the token's redemption count and the counter
+// key's ModRevision. When the counter key is absent (a token first redeemed
+// before the counter existed, or never redeemed), it falls back to the
+// historical consumption-index count so max_uses still accounts for
+// pre-counter redemptions; rev stays 0 so the first writer guards on
+// CreateRevision==0.
+func (s *Store) readNodeConsumedCount(ctx context.Context, countKey, indexPrefix string) (count, modRev int64, err error) {
+	n, rev, err := s.readConsumedCount(ctx, countKey)
+	if err != nil {
+		return 0, 0, err
+	}
+	if rev != 0 {
+		return n, rev, nil
+	}
+	idx, err := s.countPrefix(ctx, indexPrefix)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count consumptions: %v", err)
+	}
+	return idx, 0, nil
 }
 
 // validateRedeemTokenKind enforces the kind-and-expiry invariants shared by node
@@ -105,28 +166,6 @@ func (s *Store) validateRedeemTokenKind(token store.JoinToken, wantKind string) 
 	}
 	if kind != wantKind {
 		return store.ErrJoinTokenInvalid
-	}
-	return nil
-}
-
-// validateRedeemToken adds the (non-atomic) max_uses pre-check to the kind
-// invariants. The node-join path relies on it; max_uses enforcement here is a
-// read-then-write and is not race-tight under concurrent redemptions (tracked
-// for the HA advisory-lock work). The cluster-join path does NOT use this - it
-// enforces max_uses atomically via a CAS counter, since its payload is the CA
-// private key.
-func (s *Store) validateRedeemToken(ctx context.Context, token store.JoinToken, wantKind string) error {
-	if err := s.validateRedeemTokenKind(token, wantKind); err != nil {
-		return err
-	}
-	if token.MaxUses != nil {
-		count, err := s.countPrefix(ctx, joinTokenConsumptionsIndexPrefix(token.ID))
-		if err != nil {
-			return fmt.Errorf("count consumptions: %v", err)
-		}
-		if count >= int64(*token.MaxUses) {
-			return store.ErrJoinTokenExhausted
-		}
 	}
 	return nil
 }

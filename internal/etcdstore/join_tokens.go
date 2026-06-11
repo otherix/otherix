@@ -45,9 +45,11 @@ func joinTokenConsumptionsIndexPrefix(tokenID uuid.UUID) string {
 }
 
 // joinTokenConsumedCountKey holds the authoritative redemption count for a
-// token, CAS-incremented in the same txn as each cluster-join consumption so
-// max_uses is enforced atomically even under concurrent redemptions (the
-// consumption-index prefix count is non-atomic and only used for display).
+// token, CAS-incremented in the same txn as each consumption (node and cluster
+// join alike) so max_uses is enforced atomically even under concurrent
+// redemptions. The consumption-index prefix count is non-atomic: it serves
+// display and the node-join fallback for tokens first redeemed before the
+// counter existed (see readNodeConsumedCount).
 func joinTokenConsumedCountKey(tokenID uuid.UUID) string {
 	return etcd.Key("index", "join_token_consumed", tokenID.String())
 }

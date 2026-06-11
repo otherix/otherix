@@ -31,8 +31,8 @@ const clusterRedeemCASRetries = 16
 // so the endpoint never reveals which failed; an over-cap token surfaces
 // ErrJoinTokenExhausted.
 //
-// Like RedeemJoinToken this is a read-then-write sequence (single-node safe; HA
-// will gate it behind the placement-style advisory lock).
+// Like RedeemJoinToken, max_uses is enforced atomically via a compare-and-set
+// on the token's consumed-count key.
 func (s *Store) RedeemClusterJoinToken(ctx context.Context, p store.RedeemClusterJoinTokenParams) (store.RedeemClusterJoinResult, error) {
 	token, err := s.JoinTokenByHash(ctx, p.TokenHash)
 	if err != nil {

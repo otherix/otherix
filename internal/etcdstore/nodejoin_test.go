@@ -9,12 +9,15 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -168,5 +171,127 @@ func TestRedeemJoinTokenRejections(t *testing.T) {
 	sentinel := errors.New("sign failed")
 	if _, err := s.RedeemJoinToken(ctx, redeemParams(signHash, "sign-node"), func(store.Node) (store.IssuedCert, error) { return store.IssuedCert{}, sentinel }); !errors.Is(err, sentinel) {
 		t.Errorf("sign error = %v, want propagated sentinel", err)
+	}
+}
+
+// TestRedeemJoinTokenConcurrentMaxUses pins the atomic max_uses invariant: N
+// concurrent redemptions of one max_uses=2 token must yield exactly 2
+// successes; the rest must observe store.ErrJoinTokenExhausted. Against the
+// pre-CAS read-then-write redemption all N pass the count check and commit.
+func TestRedeemJoinTokenConcurrentMaxUses(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	two := int32(2)
+	hash := []byte("concurrent-cap-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &two, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+
+	const n = 6
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = s.RedeemJoinToken(ctx, redeemParams(hash, fmt.Sprintf("cap-node-%d", i)), func(store.Node) (store.IssuedCert, error) {
+				return issuedCert(), nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	succeeded := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, store.ErrJoinTokenExhausted):
+		default:
+			t.Errorf("RedeemJoinToken(goroutine %d) = %v, want nil or store.ErrJoinTokenExhausted", i, err)
+		}
+	}
+	if succeeded != 2 {
+		t.Errorf("concurrent redemptions succeeded = %d, want exactly 2 (max_uses=2)", succeeded)
+	}
+}
+
+// TestRedeemJoinTokenConcurrentIntendedNodeSingleUse pins the single-use
+// intended-node invariant: two concurrent redemptions for the bound name must
+// yield exactly one success and exactly one active cert for that node. The
+// loser surfaces ErrJoinTokenExhausted (lost the consumed-count CAS) or
+// ErrJoinNodeNameTaken (saw the winner's cert before its own count read).
+func TestRedeemJoinTokenConcurrentIntendedNodeSingleUse(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	bound := "bound-concurrent-node"
+	hash := []byte("concurrent-bound-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, IntendedNodeName: &bound, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+
+	const n = 2
+	errs := make([]error, n)
+	results := make([]store.RedeemJoinTokenResult, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = s.RedeemJoinToken(ctx, redeemParams(hash, bound), func(store.Node) (store.IssuedCert, error) {
+				return issuedCert(), nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	succeeded := 0
+	var nodeID uuid.UUID
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+			nodeID = results[i].NodeID
+		case errors.Is(err, store.ErrJoinTokenExhausted), errors.Is(err, store.ErrJoinNodeNameTaken):
+		default:
+			t.Errorf("RedeemJoinToken(goroutine %d) = %v, want nil, store.ErrJoinTokenExhausted, or store.ErrJoinNodeNameTaken", i, err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("concurrent bound redemptions succeeded = %d, want exactly 1 (max_uses=1)", succeeded)
+	}
+	certs, err := cli.Range(ctx, etcd.Key("index", "agent_certs", "node", nodeID.String())+"/")
+	if err != nil {
+		t.Fatalf("range agent cert node index: %v", err)
+	}
+	if len(certs) != 1 {
+		t.Errorf("active certs for node %s = %d, want exactly 1", bound, len(certs))
+	}
+}
+
+// TestRedeemJoinTokenCountsPreCounterConsumptions pins the migration fallback:
+// a token redeemed by a pre-counter CP build has a consumption index entry but
+// no consumed-count key. The count read must fall back to the historical index
+// count so max_uses still accounts for those redemptions.
+func TestRedeemJoinTokenCountsPreCounterConsumptions(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	hash := []byte("pre-counter-hash")
+	jt, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	// Simulate the pre-counter redemption: index entry present, no counter key.
+	consID := uuid.New()
+	if err := cli.Put(ctx, etcd.Key("index", "join_token_consumptions", "token", jt.ID.String(), consID.String()), []byte(consID.String())); err != nil {
+		t.Fatalf("seed pre-counter consumption index: %v", err)
+	}
+
+	if _, err := s.RedeemJoinToken(ctx, redeemParams(hash, "pre-counter-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	}); !errors.Is(err, store.ErrJoinTokenExhausted) {
+		t.Errorf("RedeemJoinToken(pre-counter exhausted token) = %v, want store.ErrJoinTokenExhausted", err)
 	}
 }
