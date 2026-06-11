@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,6 +35,39 @@ const importHTTPTimeout = time.Hour
 // importMaxRedirects bounds redirect chain length for source URL
 // fetches.
 const importMaxRedirects = 5
+
+// importDialTimeout bounds the TCP connect per dial/redirect hop.
+const importDialTimeout = 30 * time.Second
+
+// maxImageBytes caps the size of a single image download so a hostile or
+// misconfigured source cannot fill the pool. 64 GiB is generous for any
+// cloud image (Ubuntu Noble minimal cloudimg is under 300 MiB; even fat
+// appliance images stay in the low tens of GiB). A var, not a const, solely
+// so the over-cap test can lower it.
+var maxImageBytes int64 = 64 << 30
+
+// blockLocalDial rejects a dial to a node-local or special-use address:
+// loopback (the agent's own services), link-local unicast (incl. the cloud
+// IMDS at 169.254.169.254 and fe80::/10), multicast, and unspecified. That
+// kills cloud-metadata and loopback/agent-local SSRF while intentionally
+// ALLOWING RFC1918 + ULA private ranges - operators legitimately host VM
+// image mirrors on private networks. It runs as the net.Dialer Control hook
+// on the resolved IP of EVERY connection the image download makes -
+// including redirect hops - so it is DNS-rebind-safe (SSRF guard, audit M1).
+func blockLocalDial(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("parse dial address %q: %v", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("image source resolved to non-IP address %q", host)
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("image source resolves to a node-local or special-use address %s", ip)
+	}
+	return nil
+}
 
 // imagesSubdir is the per-pool cache directory holding the image files and
 // their sidecars (renamed from the former templates/ layout).
@@ -236,7 +271,7 @@ func (m *Manager) downloadIntoCache(ctx context.Context, root, basename, imgPath
 	tempPath := filepath.Join(scratchDir, basename+"."+uuid.NewString()+".tmp")
 	defer func() { _ = os.Remove(tempPath) }()
 
-	size, computedSHA, dlErr := downloadAndHash(ctx, sourceURL, tempPath)
+	size, computedSHA, dlErr := m.downloadAndHash(ctx, sourceURL, tempPath)
 	if dlErr != nil {
 		return EnsureResult{}, fmt.Errorf("download %s: %v", sourceURL, dlErr)
 	}
@@ -274,7 +309,12 @@ func (d *downloadError) Unwrap() error { return d.cause }
 // pass. Returns (size_bytes, hex_sha256, nil) on success or
 // (0, "", *downloadError) on any failure. HTTP-level failures populate
 // downloadError.status; transport failures leave it zero.
-func downloadAndHash(ctx context.Context, sourceURL, tempPath string) (int64, string, error) {
+//
+// Every dial - including each redirect hop - goes through m.imageDialControl
+// (blockLocalDial in production), which vets the resolved IP post-DNS.
+// The body is read through a maxImageBytes cap that fails closed: an
+// over-cap source errors out rather than truncating into the cache.
+func (m *Manager) downloadAndHash(ctx context.Context, sourceURL, tempPath string) (int64, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, importHTTPTimeout)
 	defer cancel()
 
@@ -283,7 +323,18 @@ func downloadAndHash(ctx context.Context, sourceURL, tempPath string) (int64, st
 		return 0, "", &downloadError{cause: fmt.Errorf("build request: %w", err)}
 	}
 
+	// Clone the default transport so its defaults (TLSHandshakeTimeout,
+	// ForceAttemptHTTP2, idle-conn pooling, ...) carry over, then override
+	// only what the SSRF posture requires. A forward proxy would terminate
+	// the connection at the proxy and route onward from there, so the dial
+	// Control hook would only ever see the proxy's IP - blinding the SSRF
+	// guard. Disable proxying for image downloads so the guard always
+	// inspects the real image-host IP.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = (&net.Dialer{Timeout: importDialTimeout, Control: m.imageDialControl}).DialContext
 	client := &http.Client{
+		Transport: transport,
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= importMaxRedirects {
 				return fmt.Errorf("stopped after %d redirects", len(via))
@@ -291,6 +342,7 @@ func downloadAndHash(ctx context.Context, sourceURL, tempPath string) (int64, st
 			return nil
 		},
 	}
+	defer client.CloseIdleConnections()
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return 0, "", &downloadError{cause: fmt.Errorf("http get: %w", err)}
@@ -313,13 +365,18 @@ func downloadAndHash(ctx context.Context, sourceURL, tempPath string) (int64, st
 	}
 
 	hasher := sha256.New()
-	size, copyErr := io.Copy(io.MultiWriter(f, hasher), resp.Body)
+	// Read one byte past the cap so an exactly-at-cap image passes while an
+	// over-cap source is detected and rejected (never silently truncated).
+	size, copyErr := io.Copy(io.MultiWriter(f, hasher), io.LimitReader(resp.Body, maxImageBytes+1))
 	closeErr := f.Close()
 	if copyErr != nil {
 		return 0, "", &downloadError{cause: fmt.Errorf("stream body: %w", copyErr)}
 	}
 	if closeErr != nil {
 		return 0, "", &downloadError{cause: fmt.Errorf("close temp file: %w", closeErr)}
+	}
+	if size > maxImageBytes {
+		return 0, "", &downloadError{cause: fmt.Errorf("image exceeds max size %d bytes", maxImageBytes)}
 	}
 	return size, hex.EncodeToString(hasher.Sum(nil)), nil
 }

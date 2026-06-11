@@ -6,6 +6,7 @@ package validation
 import (
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/otherix/otherix/internal/store"
 )
@@ -29,6 +30,24 @@ func ValidateImageChecksumSHA256(s string) error {
 		default:
 			return errors.New("image_sha256 must be lowercase hex (no uppercase, no separators)")
 		}
+	}
+	return nil
+}
+
+// ValidateImageURL returns nil when s is an absolute https URL with a
+// non-empty host. Plaintext (http), local (file), and exotic (ftp, gopher,
+// ...) schemes are rejected at the API edge so a vm:create holder cannot
+// point the agent's image fetch at an arbitrary destination (SSRF, audit
+// M1). DNS resolution is intentionally NOT done here - the agent performs
+// the fetch and enforces the local-address dial guard there, where DNS
+// rebinding actually matters.
+func ValidateImageURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("image_url is not a valid URL: %v", err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return errors.New("image_url must be an absolute https URL")
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,6 +115,13 @@ type Manager struct {
 	poolsMu sync.RWMutex
 	pools   map[string]pool
 
+	// imageDialControl is the net.Dialer Control hook applied to every dial
+	// the image download client performs, including redirect hops (the
+	// Control runs on the resolved IP, post-DNS, so it is DNS-rebind-safe).
+	// New sets it to blockLocalDial (SSRF guard, audit M1); image tests
+	// driving httptest servers on loopback set it to nil to opt out.
+	imageDialControl func(network, address string, c syscall.RawConn) error
+
 	// imageLocks serialises concurrent storage-image work on the same
 	// (pool, basename). Keys are imageLockKey, values are *sync.Mutex.
 	// The map grows monotonically — bounded by active distinct basenames
@@ -201,16 +209,17 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	log.Info("qemu accelerator selected", "accelerator", accelerator)
 
 	m := &Manager{
-		log:             log,
-		stateDir:        cfg.StatePath,
-		pools:           map[string]pool{},
-		aarch64Firmware: cfg.QEMU.AArch64FirmwarePath,
-		accelerator:     accelerator,
-		fabric:          fabric,
-		vms:             map[uuid.UUID]*VM{},
-		tasks:           NewTaskStore(),
-		createTasks:     map[uuid.UUID]uuid.UUID{},
-		muxes:           map[string]*serialmux.Multiplexer{},
+		log:              log,
+		stateDir:         cfg.StatePath,
+		pools:            map[string]pool{},
+		aarch64Firmware:  cfg.QEMU.AArch64FirmwarePath,
+		accelerator:      accelerator,
+		fabric:           fabric,
+		imageDialControl: blockLocalDial,
+		vms:              map[uuid.UUID]*VM{},
+		tasks:            NewTaskStore(),
+		createTasks:      map[uuid.UUID]uuid.UUID{},
+		muxes:            map[string]*serialmux.Multiplexer{},
 	}
 
 	metas, err := state.ScanState(cfg.StatePath, log)
