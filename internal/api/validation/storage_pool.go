@@ -71,9 +71,9 @@ func ValidateStoragePoolName(s string) error {
 // ValidatePoolPath returns nil when s is a syntactically valid
 // absolute POSIX path: 1..PoolPathMaxLength bytes, starts with `/`, no
 // embedded NUL byte, and no `..` path segment. The validator does NOT
-// canonicalise cosmetic forms (trailing slash, `//`) — the path is
+// canonicalise cosmetic forms (trailing slash, `//`) - the path is
 // part of the contract with the agent and shipping a stricter form
-// than the operator typed would surprise them — but a `..` traversal
+// than the operator typed would surprise them - but a `..` traversal
 // segment is never a legitimate pool root and would let the path
 // escape the allowlist gate, so it is rejected outright rather than
 // silently rewritten (audit M2).
@@ -115,7 +115,7 @@ var ErrPoolPathNotAllowed = errors.New("path is not on the storage_pools allowli
 // `/var/lib/otherix/pools` cannot match `/var/lib/otherix/pools-evil/`.
 // The candidate is canonicalised with filepath.Clean before matching,
 // so a `..` traversal form (`/var/lib/otherix/pools/../../../etc`)
-// cannot HasPrefix-match its way past the gate (audit M2) — the gate
+// cannot HasPrefix-match its way past the gate (audit M2) - the gate
 // is self-protecting regardless of whether the caller ran
 // ValidatePoolPath first. Callers SHOULD still run ValidatePoolPath
 // first for the full syntactic checks (NUL-free, length cap).
@@ -123,11 +123,14 @@ func ValidatePoolPathAgainstAllowlist(path string, prefixes []string) error {
 	// Canonicalise before matching: collapse `..` and `//` so the prefix
 	// match operates on the path the filesystem would actually resolve.
 	// filepath.Clean strips any trailing slash, so re-append `/` for the
-	// substring match — `/var/lib/otherix/pools` must still match the
+	// substring match - `/var/lib/otherix/pools` must still match the
 	// prefix `/var/lib/otherix/pools/`.
 	candidate := filepath.Clean(path) + "/"
 	for _, prefix := range prefixes {
-		if strings.HasPrefix(candidate, prefix) {
+		// Clean the prefix too so a cosmetically-sloppy operator prefix
+		// (`/var/lib//pools/`) still matches a cleaned candidate, matching
+		// the defaultpool guard's behavior.
+		if strings.HasPrefix(candidate, filepath.Clean(prefix)+"/") {
 			return nil
 		}
 	}
