@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -242,6 +243,14 @@ func writeConsoleAgentError(w http.ResponseWriter, r *http.Request, log interfac
 // either at the listener itself or upstream at a reverse proxy that
 // forwards `X-Forwarded-Proto`. Direct mode always emits wss:// — the
 // agent serves HTTPS via mTLS unconditionally.
+//
+// The VM name is path-escaped and the token query-escaped. The token is
+// hex (escaping is a no-op for it today), but a VM name is only
+// length-validated (1..255 chars, no charset) today, so a name with
+// URL-special characters is creatable and would produce a malformed URL
+// without PathEscape - the escaping is a real correctness fix, not
+// merely defensive. Direct mode escapes the token only: WebsocketPath is
+// agent-supplied and already a valid path.
 func buildConsoleWebsocketURL(mode string, r *http.Request, agentEndpoint, vmName string, agentResp agentclient.IssueConsoleTokenResponse) (string, error) {
 	switch mode {
 	case "", "proxy":
@@ -253,7 +262,7 @@ func buildConsoleWebsocketURL(mode string, r *http.Request, agentEndpoint, vmNam
 		}
 		wsScheme := httpSchemeToWebSocket(detectScheme(r))
 		return fmt.Sprintf("%s://%s/v1/vms/%s/console-stream?token=%s",
-			wsScheme, host, vmName, agentResp.Token), nil
+			wsScheme, host, url.PathEscape(vmName), url.QueryEscape(agentResp.Token)), nil
 	case "direct":
 		// agentEndpoint is `https://host:port`; swap to wss:// and tail
 		// in the agent-supplied websocket path. The agent owns the
@@ -264,7 +273,7 @@ func buildConsoleWebsocketURL(mode string, r *http.Request, agentEndpoint, vmNam
 			return "", err
 		}
 		return fmt.Sprintf("wss://%s%s?token=%s",
-			hostPart, agentResp.WebsocketPath, agentResp.Token), nil
+			hostPart, agentResp.WebsocketPath, url.QueryEscape(agentResp.Token)), nil
 	default:
 		return "", fmt.Errorf("unsupported console access mode %q", mode)
 	}
