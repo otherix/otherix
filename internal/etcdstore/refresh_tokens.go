@@ -188,39 +188,57 @@ func (s *Store) TouchRefreshToken(ctx context.Context, id uuid.UUID) error {
 	return s.c.PutJSON(ctx, refreshTokenKey(id), row)
 }
 
-// RotateRefreshToken revokes the parent token and inserts the child in one
-// transaction (the rotation atomicity the SQL backend gets from InTx). Returns
-// the child row. The parent must exist.
+// RotateRefreshToken atomically revokes the parent token and inserts the child
+// in one transaction gated by a CAS on the parent's ModRevision, so two
+// rotations of the same parent can never both commit. Returns the child row.
+// A missing parent returns store.ErrNotFound. An already-revoked parent, or a
+// parent modified between the read and the commit (a concurrent rotation),
+// returns store.ErrRefreshTokenConflict without inserting the child - the
+// caller treats the double-spend as theft.
 func (s *Store) RotateRefreshToken(ctx context.Context, parentID uuid.UUID, child store.CreateRefreshTokenParams) (store.RefreshToken, error) {
-	var parent store.RefreshToken
-	found, err := s.c.GetJSON(ctx, refreshTokenKey(parentID), &parent)
+	resp, err := s.c.Raw().Get(ctx, refreshTokenKey(parentID))
 	if err != nil {
 		return store.RefreshToken{}, err
 	}
-	if !found {
+	if len(resp.Kvs) == 0 {
 		return store.RefreshToken{}, store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var parent store.RefreshToken
+	if err := json.Unmarshal(resp.Kvs[0].Value, &parent); err != nil {
+		return store.RefreshToken{}, err
+	}
+	if parent.RevokedAt != nil {
+		return store.RefreshToken{}, store.ErrRefreshTokenConflict
 	}
 
 	now := time.Now().UTC()
-	ops := make([]clientv3.Op, 0, 5)
-	if parent.RevokedAt == nil {
-		parent.RevokedAt = &now
-		parentVal, merr := etcd.Marshal(parent)
-		if merr != nil {
-			return store.RefreshToken{}, merr
-		}
-		ops = append(ops, clientv3.OpPut(refreshTokenKey(parentID), string(parentVal)))
+	parent.RevokedAt = &now
+	parentVal, err := etcd.Marshal(parent)
+	if err != nil {
+		return store.RefreshToken{}, err
 	}
-
 	childRow := refreshTokenFromParams(child, now)
 	childVal, err := etcd.Marshal(childRow)
 	if err != nil {
 		return store.RefreshToken{}, err
 	}
-	ops = append(ops, refreshTokenWriteOps(childRow, string(childVal))...)
+	ops := append(
+		[]clientv3.Op{clientv3.OpPut(refreshTokenKey(parentID), string(parentVal))},
+		refreshTokenWriteOps(childRow, string(childVal))...,
+	)
 
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+	txnResp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(refreshTokenKey(parentID)), "=", rev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
 		return store.RefreshToken{}, fmt.Errorf("rotate refresh token txn: %v", err)
+	}
+	if !txnResp.Succeeded {
+		// The parent moved between our read and the commit: a concurrent
+		// rotation won. Nothing was written.
+		return store.RefreshToken{}, store.ErrRefreshTokenConflict
 	}
 	return childRow, nil
 }

@@ -31,7 +31,11 @@ var (
 	// ErrVMNotUnscheduled is returned by BindScheduledVM / UpdateVMSchedulingReason
 	// when the VM is no longer in the "unscheduled" state (already bound, or
 	// deleted) - the CAS lost. Callers (the scheduler loop) skip the VM.
-	ErrVMNotUnscheduled      = errors.New("store: vm is not unscheduled")
+	ErrVMNotUnscheduled = errors.New("store: vm is not unscheduled")
+	// ErrRefreshTokenConflict is returned by RotateRefreshToken when the parent
+	// token was already revoked or was rotated concurrently - the presented
+	// token was double-spent. The auth service treats it as theft.
+	ErrRefreshTokenConflict  = errors.New("store: refresh token rotated concurrently")
 	ErrFirmwareNameExists    = errors.New("store: firmware name already in use for architecture")
 	ErrFirmwareDefaultExists = errors.New("store: default firmware already exists for architecture and type")
 	ErrJoinTokenInvalid      = errors.New("store: join token unknown or expired")

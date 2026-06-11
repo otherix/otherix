@@ -181,12 +181,8 @@ func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Ad
 
 	if row.RevokedAt != nil {
 		// Detected theft: a revoked refresh was presented. Burn the
-		// whole family. Surface the family-revoke error only if the
-		// downstream sentinel didn't already carry the meaning.
-		if revErr := s.store.RevokeRefreshTokenFamily(ctx, row.FamilyID); revErr != nil {
-			return nil, fmt.Errorf("revoke family on replay: %v", revErr)
-		}
-		return nil, ErrTokenReplay
+		// whole family.
+		return nil, s.burnFamily(ctx, row.FamilyID)
 	}
 
 	if row.ExpiresAt.Before(time.Now()) {
@@ -217,12 +213,29 @@ func (s *Service) Refresh(ctx context.Context, plaintext, ua string, ip netip.Ad
 	// Atomic rotation: the presented token is revoked and the child is
 	// inserted together, so the family chain never has a gap.
 	if _, err := s.store.RotateRefreshToken(ctx, row.ID, childParams); err != nil {
+		if errors.Is(err, store.ErrRefreshTokenConflict) {
+			// A concurrent rotation already spent this token: the
+			// presented refresh was double-spent, which is the same
+			// theft signal as replaying a revoked token.
+			return nil, s.burnFamily(ctx, row.FamilyID)
+		}
 		return nil, fmt.Errorf("rotate refresh token: %v", err)
 	}
 
 	// Touch outside the rotation — non-critical.
 	_ = s.store.TouchRefreshToken(ctx, row.ID)
 	return pair, nil
+}
+
+// burnFamily revokes every token in the family and reports ErrTokenReplay. It
+// is the theft response shared by the revoked-presentation and the
+// concurrent-rotation branches of Refresh; the family-revoke error surfaces
+// only if the revoke itself fails.
+func (s *Service) burnFamily(ctx context.Context, familyID uuid.UUID) error {
+	if err := s.store.RevokeRefreshTokenFamily(ctx, familyID); err != nil {
+		return fmt.Errorf("revoke family on replay: %v", err)
+	}
+	return ErrTokenReplay
 }
 
 // Logout revokes the presented refresh token. Idempotent: an unknown or
