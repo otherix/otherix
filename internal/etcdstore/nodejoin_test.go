@@ -295,3 +295,42 @@ func TestRedeemJoinTokenCountsPreCounterConsumptions(t *testing.T) {
 		t.Errorf("RedeemJoinToken(pre-counter exhausted token) = %v, want store.ErrJoinTokenExhausted", err)
 	}
 }
+
+// TestRedeemJoinTokenSeedsCounterFromPreCounterIndex pins the counter-seeding
+// transition of the migration fallback: a max_uses=2 token with one pre-counter
+// consumption index entry and no counter key. The first post-fix redemption
+// must succeed (the fallback reads count=1 from the index and commits the
+// counter at 2), and the second must be rejected exhausted off the now
+// authoritative counter - the historical index count is absorbed into the
+// counter on first redemption.
+func TestRedeemJoinTokenSeedsCounterFromPreCounterIndex(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	two := int32(2)
+	hash := []byte("pre-counter-seed-hash")
+	jt, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &two, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	// Simulate one pre-counter redemption: index entry present, no counter key.
+	consID := uuid.New()
+	if err := cli.Put(ctx, etcd.Key("index", "join_token_consumptions", "token", jt.ID.String(), consID.String()), []byte(consID.String())); err != nil {
+		t.Fatalf("seed pre-counter consumption index: %v", err)
+	}
+
+	// First redemption succeeds: fallback reads count=1 from the index,
+	// commits the counter at 2.
+	if _, err := s.RedeemJoinToken(ctx, redeemParams(hash, "seed-node-1"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	}); err != nil {
+		t.Fatalf("RedeemJoinToken(first post-fix redemption) = %v, want nil", err)
+	}
+
+	// Second redemption is rejected: the authoritative counter now reads 2,
+	// which meets max_uses=2.
+	if _, err := s.RedeemJoinToken(ctx, redeemParams(hash, "seed-node-2"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	}); !errors.Is(err, store.ErrJoinTokenExhausted) {
+		t.Errorf("RedeemJoinToken(second post-fix redemption) = %v, want store.ErrJoinTokenExhausted", err)
+	}
+}

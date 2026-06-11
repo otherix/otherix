@@ -46,6 +46,21 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		return store.RedeemJoinTokenResult{}, store.ErrJoinNodeNameMismatch
 	}
 
+	// Fast-path: reject an already-exhausted token before doing the expensive
+	// upsert + CSR sign. This is advisory only - the authoritative cap
+	// enforcement is the compare-and-set in commitNodeRedemption, which
+	// re-reads the count under the guard and handles the token becoming
+	// exhausted concurrently after this check.
+	if token.MaxUses != nil {
+		cur, _, err := s.readNodeConsumedCount(ctx, joinTokenConsumedCountKey(token.ID), joinTokenConsumptionsIndexPrefix(token.ID))
+		if err != nil {
+			return store.RedeemJoinTokenResult{}, err
+		}
+		if cur >= int64(*token.MaxUses) {
+			return store.RedeemJoinTokenResult{}, store.ErrJoinTokenExhausted
+		}
+	}
+
 	node, err := s.upsertJoinNode(ctx, p)
 	if err != nil {
 		return store.RedeemJoinTokenResult{}, err
@@ -103,7 +118,7 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 // yielding two certs under a concurrent-POST race.
 func (s *Store) commitNodeRedemption(ctx context.Context, token store.JoinToken, ops []clientv3.Op) error {
 	countKey := joinTokenConsumedCountKey(token.ID)
-	for attempt := 0; attempt < clusterRedeemCASRetries; attempt++ {
+	for attempt := 0; attempt < joinRedeemCASRetries; attempt++ {
 		cur, rev, err := s.readNodeConsumedCount(ctx, countKey, joinTokenConsumptionsIndexPrefix(token.ID))
 		if err != nil {
 			return err

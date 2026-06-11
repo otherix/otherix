@@ -17,9 +17,10 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// clusterRedeemCASRetries bounds the compare-and-set retries when concurrent
-// cluster-join redemptions race on the same token's consumption counter.
-const clusterRedeemCASRetries = 16
+// joinRedeemCASRetries bounds the compare-and-set retries when concurrent
+// join-token redemptions (node or cluster) race on the same token's
+// consumed-count key.
+const joinRedeemCASRetries = 16
 
 // RedeemClusterJoinToken runs the cluster-replica redemption: resolve the token
 // by hash (rejecting unknown/expired/non-cluster), enforce max_uses, and record
@@ -52,7 +53,7 @@ func (s *Store) RedeemClusterJoinToken(ctx context.Context, p store.RedeemCluste
 	// token (which yields the CA private key) from being redeemed twice under a
 	// concurrent-POST race.
 	countKey := joinTokenConsumedCountKey(token.ID)
-	for attempt := 0; attempt < clusterRedeemCASRetries; attempt++ {
+	for attempt := 0; attempt < joinRedeemCASRetries; attempt++ {
 		cur, rev, err := s.readConsumedCount(ctx, countKey)
 		if err != nil {
 			return store.RedeemClusterJoinResult{}, err
