@@ -70,10 +70,21 @@ func TestFetchClusterCAFingerprintMismatch(t *testing.T) {
 	ca, _ := auth.GenerateClusterCA(time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
 	srv := clusterJoinServer(t, ca.CertPEM, ca.KeyPEM)
 
+	// Flip the first hex character to one guaranteed different from the real
+	// fingerprint so the pin always mismatches. A hardcoded "00" prefix
+	// collides with the real fingerprint ~1/256 of the time (when the random
+	// cert serial yields a fingerprint already starting with 0x00), which
+	// made this test flaky.
+	wrong := []byte(fingerprintHexOf(ca.Fingerprint))
+	if wrong[0] == '0' {
+		wrong[0] = '1'
+	} else {
+		wrong[0] = '0'
+	}
 	_, err := api.FetchClusterCA(context.Background(), api.ClusterJoinFetchParams{
 		CPURL:         srv.URL,
 		Token:         "otx_join_whatever",
-		CAFingerprint: "00" + fingerprintHexOf(ca.Fingerprint)[2:], // wrong
+		CAFingerprint: string(wrong),
 		Timeout:       5 * time.Second,
 	}, nil)
 	if err == nil {
