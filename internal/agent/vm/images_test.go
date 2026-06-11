@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/otherix/otherix/internal/agent/netfabric"
@@ -48,6 +49,11 @@ func newImageTestManager(t *testing.T) (*Manager, string, string) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// The SSRF dial guard (blockNonPublicDial) refuses loopback, which is
+	// exactly where httptest servers listen. Cache/hash tests are about the
+	// pull policy, not the guard, so they opt out; the guard itself is pinned
+	// by TestBlockNonPublicDial and TestEnsureImageBlocksNonPublicSource.
+	m.imageDialControl = nil
 	if err := m.AddPool(poolName, poolRoot); err != nil {
 		t.Fatalf("AddPool: %v", err)
 	}
@@ -188,6 +194,7 @@ func TestEnsureImageUnknownPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	m.imageDialControl = nil // see newImageTestManager
 	if _, err := m.EnsureImage(context.Background(), "unknown-pool", "http://x.invalid/a.img", "", "qcow2"); !errors.Is(err, ErrPoolUnknown) {
 		t.Errorf("err = %v, want ErrPoolUnknown", err)
 	}
@@ -314,6 +321,95 @@ func TestEnsureImageRejectsTraversalBasename(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("images dir holds %d entries after a rejected traversal basename; want none", len(entries))
+	}
+}
+
+// TestBlockNonPublicDial pins the SSRF guard's address taxonomy (audit M1):
+// loopback, RFC1918, link-local (incl. the cloud IMDS at 169.254.169.254),
+// ULA, multicast, and unspecified addresses are refused; public addresses
+// pass; non-IP hosts are refused (the guard runs post-DNS, so a hostname
+// reaching it means the dialer is miswired).
+func TestBlockNonPublicDial(t *testing.T) {
+	cases := []struct {
+		name    string
+		address string
+		wantErr bool
+	}{
+		{"loopback v4", "127.0.0.1:80", true},
+		{"loopback v6", "[::1]:443", true},
+		{"private 10/8", "10.0.0.5:443", true},
+		{"private 192.168/16", "192.168.1.1:80", true},
+		{"private 172.16/12", "172.16.0.1:8080", true},
+		{"link-local IMDS", "169.254.169.254:80", true},
+		{"link-local v6", "[fe80::1]:80", true},
+		{"ULA v6", "[fd00::1]:443", true},
+		{"multicast v4", "224.0.0.1:80", true},
+		{"unspecified v4", "0.0.0.0:80", true},
+		{"unspecified v6", "[::]:80", true},
+		{"non-ip host", "internal-svc:80", true},
+		{"missing port", "127.0.0.1", true},
+		{"public v4", "93.184.216.34:443", false},
+		{"public v6", "[2606:2800:220:1:248:1893:25c8:1946]:443", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := blockNonPublicDial("tcp4", tc.address, nil)
+			if gotErr := err != nil; gotErr != tc.wantErr {
+				t.Errorf("blockNonPublicDial(%q) error = %v, wantErr %v", tc.address, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestEnsureImageBlocksNonPublicSource proves the guard is wired into the
+// real fetch path: a Manager fresh from New (guard NOT nilled, unlike
+// newImageTestManager) must refuse to download from an httptest server,
+// which listens on loopback.
+func TestEnsureImageBlocksNonPublicSource(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	url := serve(t, qcow2Body(0x44))
+	_, err = m.EnsureImage(context.Background(), poolName, url, "", "qcow2")
+	if err == nil {
+		t.Fatal("EnsureImage(loopback source) error = nil, want SSRF guard rejection")
+	}
+	if !strings.Contains(err.Error(), "non-public address") {
+		t.Errorf("EnsureImage(loopback source) error = %v, want it to name the non-public address", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(poolRoot, "images", "ubuntu-24.04-arm64.img")); statErr == nil {
+		t.Errorf("cache file written for a guard-blocked download; want nothing written")
+	}
+}
+
+// TestEnsureImageExceedsMaxBytes pins the download byte cap: a body larger
+// than maxImageBytes fails closed (no truncated file enters the cache). The
+// cap is a package var solely so this test can lower it; nothing in this
+// package runs t.Parallel, so the override cannot race.
+func TestEnsureImageExceedsMaxBytes(t *testing.T) {
+	old := maxImageBytes
+	maxImageBytes = 16
+	t.Cleanup(func() { maxImageBytes = old })
+
+	m, poolName, root := newImageTestManager(t)
+	body := append(qcow2Body(0x55), make([]byte, 32)...) // 40 bytes > 16-byte cap
+	url := serve(t, body)
+
+	_, err := m.EnsureImage(context.Background(), poolName, url, "", "qcow2")
+	if err == nil {
+		t.Fatal("EnsureImage(over cap) error = nil, want size-cap rejection")
+	}
+	if !strings.Contains(err.Error(), "exceeds max size") {
+		t.Errorf("EnsureImage(over cap) error = %v, want it to report the size cap", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "images", "ubuntu-24.04-arm64.img")); statErr == nil {
+		t.Errorf("cache file written for an over-cap download; want nothing written")
 	}
 }
 

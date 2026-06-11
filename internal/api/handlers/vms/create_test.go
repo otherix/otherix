@@ -56,6 +56,15 @@ func TestValidateCreateRequest(t *testing.T) {
 			req:  func() vmCreateRequest { r := base(); r.Name = string(make([]byte, 256)); return r }(),
 		},
 		{name: "empty image_url", req: func() vmCreateRequest { r := base(); r.ImageURL = ""; return r }()},
+		{
+			// SSRF guard (audit M1): only absolute https URLs are admitted, so
+			// a vm:create holder cannot point the agent at http://169.254.169.254
+			// or any other plaintext/internal scheme.
+			name: "http image_url",
+			req:  func() vmCreateRequest { r := base(); r.ImageURL = "http://169.254.169.254/latest/meta-data/"; return r }(),
+		},
+		{name: "file image_url", req: func() vmCreateRequest { r := base(); r.ImageURL = "file:///etc/passwd"; return r }()},
+		{name: "relative image_url", req: func() vmCreateRequest { r := base(); r.ImageURL = "/images/img.qcow2"; return r }()},
 		{name: "missing arch", req: func() vmCreateRequest { r := base(); r.Architecture = ""; return r }()},
 		{name: "bad arch", req: func() vmCreateRequest { r := base(); r.Architecture = "riscv"; return r }()},
 		{name: "arm64 ok", req: func() vmCreateRequest { r := base(); r.Architecture = "arm64"; return r }(), ok: true},
