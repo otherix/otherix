@@ -480,6 +480,7 @@ type AuthConfig struct {
 var jwtSecretDenylist = map[string]struct{}{
 	"dev-only-jwt-secret-32-bytes-pad!":                {}, // old shipped example value
 	"CHANGE_ME_set_a_unique_random_32plus_byte_secret": {}, // current example placeholder
+	"REPLACE-ME-with-openssl-rand-hex-32-output":       {}, // docs placeholder (docs/get-started/install.md)
 }
 
 // singleRepeatedByte reports whether s is non-empty and consists of a single
@@ -494,12 +495,15 @@ func singleRepeatedByte(s string) bool {
 
 // Validate enforces the minimum-viable auth config: a 32-byte JWT secret
 // (HS256 minimum) that is not a shipped placeholder, and positive TTLs.
-// The api binary calls this at start.
+// The secret is trimmed of surrounding whitespace before every check so
+// whitespace padding cannot satisfy the minimum length and an
+// all-whitespace value collapses to length zero. The api binary calls
+// this at start.
 func (a AuthConfig) Validate() error {
-	if len(a.JWTSecret) < 32 {
-		return fmt.Errorf("auth.jwt_secret must be at least 32 bytes (got %d)", len(a.JWTSecret))
-	}
 	secret := strings.TrimSpace(a.JWTSecret)
+	if len(secret) < 32 {
+		return fmt.Errorf("auth.jwt_secret must be at least 32 bytes (got %d)", len(secret))
+	}
 	if _, denied := jwtSecretDenylist[secret]; denied {
 		return errors.New("auth.jwt_secret is a known placeholder/example value; set a unique random 32+ byte secret")
 	}
