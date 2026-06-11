@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -307,10 +308,23 @@ func serveErrBackoff(consecErrs int) time.Duration {
 	return d
 }
 
+// dhcpParse parses one raw DHCP payload. It is a package-level seam over
+// dhcpv4.FromBytes (the accepted mutable-global exception) so tests can force
+// a parse panic and prove handle's recover keeps the serve loop alive;
+// production code never reassigns it.
+var dhcpParse = dhcpv4.FromBytes
+
 // handle parses one DHCP request, resolves the reservation for the client MAC,
-// and sends the reply. Unknown MACs are dropped.
+// and sends the reply. Unknown MACs are dropped. It recovers from panics
+// (payload is guest-controlled and crosses a third-party parser): a panicking
+// frame is logged and dropped rather than killing the agent process.
 func (r *responder) handle(srv *bridgeServer, payload []byte) {
-	req, err := dhcpv4.FromBytes(payload)
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.log.Error("dhcp handler panicked, dropping frame", "bridge", srv.bridge, "panic", fmt.Sprintf("%v", rec), "stack", string(debug.Stack()))
+		}
+	}()
+	req, err := dhcpParse(payload)
 	if err != nil {
 		r.log.Debug("dhcp parse error", "bridge", srv.bridge, "error", err.Error())
 		return
