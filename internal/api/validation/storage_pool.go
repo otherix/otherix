@@ -6,6 +6,8 @@ package validation
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -39,30 +41,42 @@ func ValidateStoragePoolType(t string) error {
 	return fmt.Errorf("invalid storage pool type %q (must be one of: %s)", t, StoragePoolTypeLocalDir)
 }
 
+// storagePoolNameRe restricts a pool name to start with an alphanumeric
+// and continue with alphanumerics, dot, dash, or underscore - notably no
+// '/' (the etcd key separator), so a name cannot poison the pool-name
+// prefix-scan index (audit M5).
+var storagePoolNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 // ValidateStoragePoolName returns nil when s is a syntactically valid
-// pool name. The rules mirror network and node naming: 1..255 runes,
-// no leading/trailing whitespace. The `(node_id, name)` partial unique
-// index in the schema enforces the global uniqueness invariant; this
-// helper only catches malformed inputs.
+// pool name: 1..255 runes matching [A-Za-z0-9][A-Za-z0-9._-]*. The
+// charset deliberately excludes '/' (and all whitespace, separators,
+// and control characters) - the pool-name secondary index is consumed
+// by a prefix scan, so a '/' in a name would fold one pool's index
+// entries into another's. The `(node_id, name)` partial unique index
+// in the schema enforces the global uniqueness invariant; this helper
+// only catches malformed inputs.
 func ValidateStoragePoolName(s string) error {
 	if s == "" {
 		return errors.New("name is required")
 	}
-	if s != strings.TrimSpace(s) {
-		return errors.New("name must not have leading or trailing whitespace")
-	}
 	if utf8.RuneCountInString(s) > StoragePoolNameMaxLength {
 		return fmt.Errorf("name is too long (max %d runes)", StoragePoolNameMaxLength)
+	}
+	if !storagePoolNameRe.MatchString(s) {
+		return fmt.Errorf("invalid pool name %q (must match [A-Za-z0-9][A-Za-z0-9._-]*)", s)
 	}
 	return nil
 }
 
 // ValidatePoolPath returns nil when s is a syntactically valid
 // absolute POSIX path: 1..PoolPathMaxLength bytes, starts with `/`, no
-// embedded NUL byte. The validator does NOT canonicalise — the path is
+// embedded NUL byte, and no `..` path segment. The validator does NOT
+// canonicalise cosmetic forms (trailing slash, `//`) — the path is
 // part of the contract with the agent and shipping a stricter form
-// (no trailing slash, collapsed `..`, …) than the operator typed
-// would surprise them.
+// than the operator typed would surprise them — but a `..` traversal
+// segment is never a legitimate pool root and would let the path
+// escape the allowlist gate, so it is rejected outright rather than
+// silently rewritten (audit M2).
 func ValidatePoolPath(s string) error {
 	if s == "" {
 		return errors.New("path is required")
@@ -75,6 +89,11 @@ func ValidatePoolPath(s string) error {
 	}
 	if strings.ContainsRune(s, 0) {
 		return errors.New("path must not contain the NUL byte")
+	}
+	for _, segment := range strings.Split(s, "/") {
+		if segment == ".." {
+			return errors.New("path must not contain a '..' segment")
+		}
 	}
 	return nil
 }
@@ -94,16 +113,19 @@ var ErrPoolPathNotAllowed = errors.New("path is not on the storage_pools allowli
 //
 // Trailing-slash invariant: prefixes are validated to end in `/` so
 // `/var/lib/otherix/pools` cannot match `/var/lib/otherix/pools-evil/`.
-// Callers MUST run ValidatePoolPath first — this gate trusts the
-// path to already be syntactically valid (absolute, NUL-free).
+// The candidate is canonicalised with filepath.Clean before matching,
+// so a `..` traversal form (`/var/lib/otherix/pools/../../../etc`)
+// cannot HasPrefix-match its way past the gate (audit M2) — the gate
+// is self-protecting regardless of whether the caller ran
+// ValidatePoolPath first. Callers SHOULD still run ValidatePoolPath
+// first for the full syntactic checks (NUL-free, length cap).
 func ValidatePoolPathAgainstAllowlist(path string, prefixes []string) error {
-	// path is already validated by ValidatePoolPath — absolute, NUL-free.
-	// Ensure path itself ends in `/` for the substring match so
-	// `/var/lib/otherix/pools` matches `/var/lib/otherix/pools/`.
-	candidate := path
-	if !strings.HasSuffix(candidate, "/") {
-		candidate += "/"
-	}
+	// Canonicalise before matching: collapse `..` and `//` so the prefix
+	// match operates on the path the filesystem would actually resolve.
+	// filepath.Clean strips any trailing slash, so re-append `/` for the
+	// substring match — `/var/lib/otherix/pools` must still match the
+	// prefix `/var/lib/otherix/pools/`.
+	candidate := filepath.Clean(path) + "/"
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(candidate, prefix) {
 			return nil
