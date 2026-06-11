@@ -61,7 +61,9 @@ logger:
   format: "json"
 
 auth:
-  jwt_secret: "dev-only-jwt-secret-32-bytes-pad!"
+  # Dev-only secret for the throwaway local dev stack; fine to keep in-repo.
+  # Not on the startup denylist, so `make local-dev-start` boots cleanly.
+  jwt_secret: "otherix-local-dev-stack-signing-key-32b"
   jwt_access_ttl: 15m
   jwt_refresh_ttl: 720h
 

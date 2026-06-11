@@ -67,10 +67,14 @@ logger:
   format: "json"
 
 auth:
-  # MUST be replaced before any non-dev deploy. At least 32 bytes; use
-  # `openssl rand -hex 32` or similar. Rotation invalidates all
-  # outstanding access tokens (refresh tokens are stateful and unaffected).
-  jwt_secret: "dev-only-jwt-secret-32-bytes-pad!"
+  # MUST be replaced before the server will start: this placeholder is
+  # intentionally rejected at startup, so a verbatim copy of this file can
+  # never become a live signing key. Set a unique random secret of at least
+  # 32 bytes (`openssl rand -hex 32` or similar). In production supply it via
+  # the OTHERIX_AUTH__JWT_SECRET environment variable (the .deb postinstall
+  # does this). Rotation invalidates all outstanding access tokens (refresh
+  # tokens are stateful and unaffected).
+  jwt_secret: "CHANGE_ME_set_a_unique_random_32plus_byte_secret"
   jwt_access_ttl: 15m
   jwt_refresh_ttl: 720h
 

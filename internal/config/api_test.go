@@ -4,9 +4,15 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/file"
+	"github.com/knadh/koanf/v2"
 )
 
 func TestResourcesConfig_Validate(t *testing.T) {
@@ -450,6 +456,146 @@ func TestStoragePoolsConfig_ValidateDefaultPoolName(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Errorf("Validate() with DefaultPoolName=%q = %v, want nil", tc.pool, err)
+			}
+		})
+	}
+}
+
+// repoRoot walks up from the test working directory until it finds go.mod,
+// so the test can resolve repo-relative config paths regardless of how the
+// test binary is invoked.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() = %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("go.mod not found walking up from test working directory")
+		}
+		dir = parent
+	}
+}
+
+// jwtSecretFromYAML extracts auth.jwt_secret from the YAML config file at
+// path. It fails the test if the file is unreadable or the key is absent,
+// so a renamed key surfaces as a test failure rather than a silent pass.
+func jwtSecretFromYAML(t *testing.T, path string) string {
+	t.Helper()
+	k := koanf.New(".")
+	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
+		t.Fatalf("load %q: %v", path, err)
+	}
+	secret := k.String("auth.jwt_secret")
+	if secret == "" {
+		t.Fatalf("%q has no auth.jwt_secret value", path)
+	}
+	return secret
+}
+
+// TestAuthConfig_Validate_ShippedConfigSeam guards the seam between the
+// shipped config files and jwtSecretDenylist: the public example placeholder
+// MUST fail startup (a verbatim copy of the example file is a publicly known
+// signing key), while the dev-stack config MUST keep booting because
+// local-dev-start runs the api against it. Changing either file's jwt_secret
+// without updating the denylist fails here.
+func TestAuthConfig_Validate_ShippedConfigSeam(t *testing.T) {
+	root := repoRoot(t)
+	validTTLs := AuthConfig{
+		JWTAccessTTL:  15 * time.Minute,
+		JWTRefreshTTL: 720 * time.Hour,
+	}
+
+	t.Run("example config secret must be rejected", func(t *testing.T) {
+		cfg := validTTLs
+		cfg.JWTSecret = jwtSecretFromYAML(t, filepath.Join(root, "deploy", "config", "api.example.yaml"))
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() with example-file jwt_secret = nil, want error (shipped example must fail startup)")
+		}
+	})
+
+	t.Run("dev stack config secret must pass", func(t *testing.T) {
+		cfg := validTTLs
+		cfg.JWTSecret = jwtSecretFromYAML(t, filepath.Join(root, "dev", "config", "api.yaml"))
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with dev-stack jwt_secret = %v, want nil (local dev stack must boot)", err)
+		}
+	})
+}
+
+func TestAuthConfig_Validate_JWTSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  string
+		wantErr bool
+	}{
+		{
+			name:   "valid random secret passes",
+			secret: "k9Qz3vR7mX1pL5wT8nB2cJ6hF0dY4sGa",
+		},
+		{
+			name:    "too short rejected",
+			secret:  "short-secret",
+			wantErr: true,
+		},
+		{
+			name:    "old shipped example value denylisted",
+			secret:  "dev-only-jwt-secret-32-bytes-pad!",
+			wantErr: true,
+		},
+		{
+			name:    "explicit placeholder denylisted",
+			secret:  "CHANGE_ME_set_a_unique_random_32plus_byte_secret",
+			wantErr: true,
+		},
+		{
+			name:    "single repeated byte rejected",
+			secret:  strings.Repeat("x", 40),
+			wantErr: true,
+		},
+		{
+			name:    "docs placeholder denylisted",
+			secret:  "REPLACE-ME-with-openssl-rand-hex-32-output",
+			wantErr: true,
+		},
+		{
+			name:    "denylisted value with surrounding whitespace rejected",
+			secret:  "  dev-only-jwt-secret-32-bytes-pad!  ",
+			wantErr: true,
+		},
+		{
+			name:    "all-whitespace secret rejected",
+			secret:  strings.Repeat(" ", 40),
+			wantErr: true,
+		},
+		{
+			name:    "whitespace padding does not satisfy minimum length",
+			secret:  strings.Repeat("a1b2c3d", 4) + "xyz ", // 31 real bytes + trailing space
+			wantErr: true,
+		},
+		{
+			name:   "dev stack secret passes",
+			secret: "otherix-local-dev-stack-signing-key-32b",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := AuthConfig{
+				JWTSecret:     tc.secret,
+				JWTAccessTTL:  15 * time.Minute,
+				JWTRefreshTTL: 720 * time.Hour,
+			}
+			err := cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with JWTSecret=%q = nil, want error", tc.secret)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with JWTSecret=%q = %v, want nil", tc.secret, err)
 			}
 		})
 	}
