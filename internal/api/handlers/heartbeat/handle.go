@@ -1038,10 +1038,36 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 	for _, id := range known {
 		knownSet[id] = struct{}{}
 	}
+	pinned, err := hp.FilterVMIDsPinnedToNode(ctx, nodeID, ids)
+	if err != nil {
+		return fmt.Errorf("filter pinned vm ids: %v", err)
+	}
+	pinnedSet := make(map[uuid.UUID]struct{}, len(pinned))
+	for _, id := range pinned {
+		pinnedSet[id] = struct{}{}
+	}
 
 	for _, r := range reports {
 		if _, ok := knownSet[r.VMUUID]; !ok {
 			h.log.WarnContext(ctx, "heartbeat references unknown vm; skipping",
+				slog.String("node_id", nodeID.String()),
+				slog.String("vm_uuid", r.VMUUID.String()))
+			continue
+		}
+		// Placement-authority gate (audit H2). current_node_id feeds the
+		// overlay FDB projection and force-delete orphaning, so a heartbeat
+		// must never move a VM's runtime to a node the scheduler did not pin
+		// it to: the cert binding authenticates WHO reports, not WHICH VMs
+		// they may claim. Fail-closed: a VM pinned to another node, or not
+		// pinned at all (unscheduled), is skipped, never claimed.
+		//
+		// Migration caveat: when live migration lands, this static-pin gate
+		// must be made migration-aware (honor the CP-mediated source->target
+		// transition, not the static pin), otherwise it would reject the
+		// legitimate migration target's claim. Live migration is not
+		// implemented today, so the static gate is correct now.
+		if _, ok := pinnedSet[r.VMUUID]; !ok {
+			h.log.WarnContext(ctx, "heartbeat claims a vm not pinned to the reporting node; skipping runtime claim",
 				slog.String("node_id", nodeID.String()),
 				slog.String("vm_uuid", r.VMUUID.String()))
 			continue

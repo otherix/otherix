@@ -303,3 +303,62 @@ func TestHeartbeatUpsertNetworkNodeStatus(t *testing.T) {
 		t.Errorf("failed status error = %v, want %q", failedRows[0].ReconciliationError, errMsg)
 	}
 }
+
+// TestFilterVMIDsPinnedToNode verifies the placement-authority gate of the
+// heartbeat projection (audit H2): only ids whose vms row is pinned to the
+// queried node pass the filter, so a node pinned to B can never be claimed by
+// A's heartbeat, and an unscheduled VM (nil pin) is excluded for every node.
+func TestFilterVMIDsPinnedToNode(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := uuid.New()
+	nodeB := uuid.New()
+
+	pinnedToB := vmRow(uniqueNodeName("hbpinb"))
+	pinnedToB.PinnedNodeID = &nodeB
+	seedVM(t, cli, pinnedToB)
+
+	unscheduled := vmRow(uniqueNodeName("hbunsched"))
+	seedVM(t, cli, unscheduled)
+
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		got, err := hp.FilterVMIDsPinnedToNode(ctx, nodeB, []uuid.UUID{pinnedToB.ID})
+		if err != nil {
+			return err
+		}
+		if diff := cmp.Diff([]uuid.UUID{pinnedToB.ID}, got); diff != "" {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeB) mismatch (-want +got):\n%s", diff)
+		}
+
+		got, err = hp.FilterVMIDsPinnedToNode(ctx, nodeA, []uuid.UUID{pinnedToB.ID})
+		if err != nil {
+			return err
+		}
+		if len(got) != 0 {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeA, pinned-to-B) = %v, want []", got)
+		}
+
+		for _, n := range []uuid.UUID{nodeA, nodeB} {
+			got, err = hp.FilterVMIDsPinnedToNode(ctx, n, []uuid.UUID{unscheduled.ID})
+			if err != nil {
+				return err
+			}
+			if len(got) != 0 {
+				t.Errorf("FilterVMIDsPinnedToNode(%v, unscheduled) = %v, want []", n, got)
+			}
+		}
+
+		// A missing row is skipped, mirroring FilterExistingVMIDs.
+		got, err = hp.FilterVMIDsPinnedToNode(ctx, nodeB, []uuid.UUID{uuid.New()})
+		if err != nil {
+			return err
+		}
+		if len(got) != 0 {
+			t.Errorf("FilterVMIDsPinnedToNode(missing vm) = %v, want []", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection: %v", err)
+	}
+}

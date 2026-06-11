@@ -34,6 +34,12 @@ type HeartbeatProjection interface {
 	UpdateNodeMemoryPressure(ctx context.Context, arg UpdateNodeMemoryPressureParams) error
 	UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error
 	FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
+	// FilterVMIDsPinnedToNode returns the subset of ids whose vms row is pinned
+	// to nodeID (PinnedNodeID set and equal). It is the placement-authority gate
+	// for the heartbeat: a node may only report runtime for VMs the scheduler
+	// pinned to it, so a heartbeat cannot move vm_runtime.current_node_id to a
+	// node the VM is not placed on.
+	FilterVMIDsPinnedToNode(ctx context.Context, nodeID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error)
 	UpsertVMRuntime(ctx context.Context, arg UpsertVMRuntimeParams) error
 	UpdateStoragePoolReconciliation(ctx context.Context, arg UpdateStoragePoolReconciliationParams) error
 	// StoragePoolIDByNodeName resolves a pool's UUID from its (node_id,
