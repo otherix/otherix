@@ -117,6 +117,25 @@ func TestBuilderBuildOmitsNetworkConfigWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestBuilderBuildISOMode0600(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "cidata.iso")
+	b := &Builder{
+		Hostname: "h",
+		UserData: []byte("#cloud-config\nusers:\n  - name: secret-user\n"),
+	}
+	if _, err := b.Build(out); err != nil {
+		t.Fatalf("Build returned err = %v", err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil {
+		t.Fatalf("stat iso: %v", err)
+	}
+	if got, want := fi.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("Build() ISO mode = %v, want %v", got, want)
+	}
+}
+
 func TestBuilderBuildEmptyHostname(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "cidata.iso")

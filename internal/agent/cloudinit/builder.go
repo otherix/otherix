@@ -79,6 +79,18 @@ func (b *Builder) Build(outputPath string) (string, error) {
 		return "", fmt.Errorf("cloudinit: create disk: %w", err)
 	}
 	d.LogicalBlocksize = 2048
+	// The ISO carries guest secrets (user-data may contain passwords
+	// and SSH keys), so it must be owner-only like the agent's cert
+	// key material. diskfs.Create makes the backing file 0o666 (0644
+	// after the default umask) and the file is still empty here;
+	// tightening the mode before
+	// populateAndFinalize means secret bytes are only ever written
+	// into an already-0600 file. The chmod does not affect the open
+	// handle diskfs holds, so subsequent writes succeed.
+	if err := os.Chmod(outputPath, 0o600); err != nil {
+		_ = d.Close()
+		return "", fmt.Errorf("cloudinit: chmod cidata: %w", err)
+	}
 	if err := b.populateAndFinalize(d); err != nil {
 		_ = d.Close()
 		return "", err
