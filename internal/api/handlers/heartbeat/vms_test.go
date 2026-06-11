@@ -25,6 +25,12 @@ type vmRuntimeSpy struct {
 	// pinned is the set FilterVMIDsPinnedToNode returns (ids pinned to the
 	// reporting node).
 	pinned []uuid.UUID
+	// gotPinnedNodeID and gotPinnedIDs record the arguments of the last
+	// FilterVMIDsPinnedToNode call, so the test can assert applyVMs wires the
+	// reporting node id (the gate's authority) and the reported vm ids into
+	// the placement gate rather than some other values.
+	gotPinnedNodeID uuid.UUID
+	gotPinnedIDs    []uuid.UUID
 	// upserts records UpsertVMRuntime calls in order.
 	upserts []store.UpsertVMRuntimeParams
 }
@@ -33,7 +39,9 @@ func (s *vmRuntimeSpy) FilterExistingVMIDs(_ context.Context, _ []uuid.UUID) ([]
 	return s.existing, nil
 }
 
-func (s *vmRuntimeSpy) FilterVMIDsPinnedToNode(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]uuid.UUID, error) {
+func (s *vmRuntimeSpy) FilterVMIDsPinnedToNode(_ context.Context, nodeID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
+	s.gotPinnedNodeID = nodeID
+	s.gotPinnedIDs = ids
 	return s.pinned, nil
 }
 
@@ -129,6 +137,20 @@ func TestApplyVMsPlacementGate(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.want, spy.upserts); diff != "" {
 				t.Errorf("applyVMs(...) UpsertVMRuntime calls mismatch (-want +got):\n%s", diff)
+			}
+			// Call-site wiring: the gate's authority is the node id applyVMs
+			// was invoked with, and the candidate set is the reported vm ids
+			// (in report order). A regression passing a wrong node id or a
+			// wrong id set into FilterVMIDsPinnedToNode fails here.
+			if spy.gotPinnedNodeID != reportingNode {
+				t.Errorf("applyVMs passed nodeID = %v to FilterVMIDsPinnedToNode, want %v", spy.gotPinnedNodeID, reportingNode)
+			}
+			wantIDs := make([]uuid.UUID, 0, len(tt.reports))
+			for _, r := range tt.reports {
+				wantIDs = append(wantIDs, r.VMUUID)
+			}
+			if diff := cmp.Diff(wantIDs, spy.gotPinnedIDs); diff != "" {
+				t.Errorf("applyVMs FilterVMIDsPinnedToNode ids mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
