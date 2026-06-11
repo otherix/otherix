@@ -39,8 +39,8 @@ func ValidateImageChecksumSHA256(s string) error {
 // ...) schemes are rejected at the API edge so a vm:create holder cannot
 // point the agent's image fetch at an arbitrary destination (SSRF, audit
 // M1). DNS resolution is intentionally NOT done here - the agent performs
-// the fetch and enforces the non-public-address dial guard there, where
-// DNS rebinding actually matters.
+// the fetch and enforces the local-address dial guard there, where DNS
+// rebinding actually matters.
 func ValidateImageURL(s string) error {
 	u, err := url.Parse(s)
 	if err != nil {

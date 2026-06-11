@@ -43,13 +43,15 @@ const importMaxRedirects = 5
 // so the over-cap test can lower it.
 var maxImageBytes int64 = 64 << 30
 
-// blockNonPublicDial rejects a dial to a non-public address: loopback,
-// RFC1918 + ULA private ranges, link-local (incl. the cloud IMDS at
-// 169.254.169.254), multicast, and unspecified. It runs as the net.Dialer
-// Control hook on the resolved IP of EVERY connection the image download
-// makes - including redirect hops - so it is DNS-rebind-safe (SSRF guard,
-// audit M1).
-func blockNonPublicDial(_, address string, _ syscall.RawConn) error {
+// blockLocalDial rejects a dial to a node-local or special-use address:
+// loopback (the agent's own services), link-local unicast (incl. the cloud
+// IMDS at 169.254.169.254 and fe80::/10), multicast, and unspecified. That
+// kills cloud-metadata and loopback/agent-local SSRF while intentionally
+// ALLOWING RFC1918 + ULA private ranges - operators legitimately host VM
+// image mirrors on private networks. It runs as the net.Dialer Control hook
+// on the resolved IP of EVERY connection the image download makes -
+// including redirect hops - so it is DNS-rebind-safe (SSRF guard, audit M1).
+func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
@@ -58,9 +60,9 @@ func blockNonPublicDial(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("image source resolved to non-ip address %q", host)
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("image source resolves to non-public address %s", ip)
+		return fmt.Errorf("image source resolves to a node-local or special-use address %s", ip)
 	}
 	return nil
 }
@@ -307,7 +309,7 @@ func (d *downloadError) Unwrap() error { return d.cause }
 // downloadError.status; transport failures leave it zero.
 //
 // Every dial - including each redirect hop - goes through m.imageDialControl
-// (blockNonPublicDial in production), which vets the resolved IP post-DNS.
+// (blockLocalDial in production), which vets the resolved IP post-DNS.
 // The body is read through a maxImageBytes cap that fails closed: an
 // over-cap source errors out rather than truncating into the cache.
 func (m *Manager) downloadAndHash(ctx context.Context, sourceURL, tempPath string) (int64, string, error) {

@@ -118,7 +118,7 @@ type Manager struct {
 	// imageDialControl is the net.Dialer Control hook applied to every dial
 	// the image download client performs, including redirect hops (the
 	// Control runs on the resolved IP, post-DNS, so it is DNS-rebind-safe).
-	// New sets it to blockNonPublicDial (SSRF guard, audit M1); image tests
+	// New sets it to blockLocalDial (SSRF guard, audit M1); image tests
 	// driving httptest servers on loopback set it to nil to opt out.
 	imageDialControl func(network, address string, c syscall.RawConn) error
 
@@ -215,7 +215,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		aarch64Firmware:  cfg.QEMU.AArch64FirmwarePath,
 		accelerator:      accelerator,
 		fabric:           fabric,
-		imageDialControl: blockNonPublicDial,
+		imageDialControl: blockLocalDial,
 		vms:              map[uuid.UUID]*VM{},
 		tasks:            NewTaskStore(),
 		createTasks:      map[uuid.UUID]uuid.UUID{},

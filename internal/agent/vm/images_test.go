@@ -49,10 +49,10 @@ func newImageTestManager(t *testing.T) (*Manager, string, string) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// The SSRF dial guard (blockNonPublicDial) refuses loopback, which is
+	// The SSRF dial guard (blockLocalDial) refuses loopback, which is
 	// exactly where httptest servers listen. Cache/hash tests are about the
 	// pull policy, not the guard, so they opt out; the guard itself is pinned
-	// by TestBlockNonPublicDial and TestEnsureImageBlocksNonPublicSource.
+	// by TestBlockLocalDial and TestEnsureImageBlocksLocalSource.
 	m.imageDialControl = nil
 	if err := m.AddPool(poolName, poolRoot); err != nil {
 		t.Fatalf("AddPool: %v", err)
@@ -324,12 +324,13 @@ func TestEnsureImageRejectsTraversalBasename(t *testing.T) {
 	}
 }
 
-// TestBlockNonPublicDial pins the SSRF guard's address taxonomy (audit M1):
-// loopback, RFC1918, link-local (incl. the cloud IMDS at 169.254.169.254),
-// ULA, multicast, and unspecified addresses are refused; public addresses
+// TestBlockLocalDial pins the SSRF guard's address taxonomy (audit M1):
+// loopback, link-local (incl. the cloud IMDS at 169.254.169.254), multicast,
+// and unspecified addresses are refused; RFC1918 + ULA private addresses
+// pass (operators host image mirrors on private networks); public addresses
 // pass; non-IP hosts are refused (the guard runs post-DNS, so a hostname
 // reaching it means the dialer is miswired).
-func TestBlockNonPublicDial(t *testing.T) {
+func TestBlockLocalDial(t *testing.T) {
 	cases := []struct {
 		name    string
 		address string
@@ -337,12 +338,12 @@ func TestBlockNonPublicDial(t *testing.T) {
 	}{
 		{"loopback v4", "127.0.0.1:80", true},
 		{"loopback v6", "[::1]:443", true},
-		{"private 10/8", "10.0.0.5:443", true},
-		{"private 192.168/16", "192.168.1.1:80", true},
-		{"private 172.16/12", "172.16.0.1:8080", true},
+		{"private 10/8", "10.0.0.5:443", false},
+		{"private 192.168/16", "192.168.1.1:80", false},
+		{"private 172.16/12", "172.16.0.1:8080", false},
 		{"link-local IMDS", "169.254.169.254:80", true},
 		{"link-local v6", "[fe80::1]:80", true},
-		{"ULA v6", "[fd00::1]:443", true},
+		{"ULA v6", "[fd00::1]:443", false},
 		{"multicast v4", "224.0.0.1:80", true},
 		{"unspecified v4", "0.0.0.0:80", true},
 		{"unspecified v6", "[::]:80", true},
@@ -353,19 +354,19 @@ func TestBlockNonPublicDial(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := blockNonPublicDial("tcp4", tc.address, nil)
+			err := blockLocalDial("tcp4", tc.address, nil)
 			if gotErr := err != nil; gotErr != tc.wantErr {
-				t.Errorf("blockNonPublicDial(%q) error = %v, wantErr %v", tc.address, err, tc.wantErr)
+				t.Errorf("blockLocalDial(%q) error = %v, wantErr %v", tc.address, err, tc.wantErr)
 			}
 		})
 	}
 }
 
-// TestEnsureImageBlocksNonPublicSource proves the guard is wired into the
+// TestEnsureImageBlocksLocalSource proves the guard is wired into the
 // real fetch path: a Manager fresh from New (guard NOT nilled, unlike
 // newImageTestManager) must refuse to download from an httptest server,
 // which listens on loopback.
-func TestEnsureImageBlocksNonPublicSource(t *testing.T) {
+func TestEnsureImageBlocksLocalSource(t *testing.T) {
 	cfg, poolRoot, poolName := newTestConfig(t)
 	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
@@ -380,8 +381,8 @@ func TestEnsureImageBlocksNonPublicSource(t *testing.T) {
 	if err == nil {
 		t.Fatal("EnsureImage(loopback source) error = nil, want SSRF guard rejection")
 	}
-	if !strings.Contains(err.Error(), "non-public address") {
-		t.Errorf("EnsureImage(loopback source) error = %v, want it to name the non-public address", err)
+	if !strings.Contains(err.Error(), "node-local or special-use address") {
+		t.Errorf("EnsureImage(loopback source) error = %v, want it to name the blocked address", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(poolRoot, "images", "ubuntu-24.04-arm64.img")); statErr == nil {
 		t.Errorf("cache file written for a guard-blocked download; want nothing written")
