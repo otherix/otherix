@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -163,12 +164,25 @@ func (f *Forwarder) Run(ctx context.Context) error {
 	}
 }
 
+// dnsExchange forwards one query to a single upstream. It is a package-level
+// seam over exchangeUDP (the accepted mutable-global exception) so tests can
+// force an exchange panic and prove relay's recover keeps the forwarder alive;
+// production code never reassigns it.
+var dnsExchange = exchangeUDP
+
 // relay forwards one query to the first responsive upstream and writes the
 // response back to client. Best-effort: a failed upstream is logged and the
-// query is dropped (the VM resolver retries).
+// query is dropped (the VM resolver retries). It recovers from panics (query
+// and the upstream response are untrusted network bytes): a panicking query is
+// logged and dropped rather than killing the agent process.
 func (f *Forwarder) relay(conn net.PacketConn, client net.Addr, query []byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			f.log.Error("dns relay panicked, dropping query", "panic", fmt.Sprintf("%v", rec), "stack", string(debug.Stack()))
+		}
+	}()
 	for _, up := range f.upstreams {
-		resp, err := exchangeUDP(up, query, 3*time.Second)
+		resp, err := dnsExchange(up, query, 3*time.Second)
 		if err != nil {
 			f.log.Warn("dns upstream exchange failed", "upstream", up, "error", err.Error())
 			continue
