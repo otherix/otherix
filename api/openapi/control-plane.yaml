@@ -105,6 +105,7 @@ paths:
                 $ref: "#/components/schemas/LoginResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/auth/refresh:
@@ -6709,6 +6710,22 @@ components:
       description: |
         State conflict (uniqueness, dependent resources, idempotency mismatch,
         invalid status transition).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    RateLimited:
+      description: |
+        Too many recent failed attempts from this source IP or for this
+        account (`rate_limited`). `details.retry_after_seconds` mirrors
+        the `Retry-After` header. Counters are per-replica and count
+        only failures; successful credentials are never throttled.
+      headers:
+        Retry-After:
+          description: Seconds until the oldest counted failure ages out.
+          schema:
+            type: integer
       content:
         application/json:
           schema:

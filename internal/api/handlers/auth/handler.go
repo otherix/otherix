@@ -14,10 +14,16 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	coreauth "github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/ratelimit"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -32,17 +38,38 @@ type Store interface {
 
 // Ensure the production store satisfies the handler's storage contract.
 
-// Handler bundles dependencies for the /v1/auth/* routes.
-type Handler struct {
-	svc   *coreauth.Service
-	store Store
+// Service is the auth-service surface the handlers depend on.
+// *coreauth.Service satisfies it; depending on the interface narrows the
+// handler's dependency to the methods it calls and lets tests substitute
+// a spy (e.g. to assert the rate limiter short-circuits Login before the
+// argon2 verification path runs).
+type Service interface {
+	Login(ctx context.Context, creds coreauth.Credentials) (*coreauth.TokenPair, error)
+	Refresh(ctx context.Context, plaintext, userAgent string, ip netip.Addr) (*coreauth.TokenPair, error)
+	Logout(ctx context.Context, plaintext string) error
+	LogoutAll(ctx context.Context, userID uuid.UUID) error
 }
 
-// New constructs a Handler. Both dependencies are required; the user
+// Ensure the production auth service satisfies the handler's contract.
+var _ Service = (*coreauth.Service)(nil)
+
+// Handler bundles dependencies for the /v1/auth/* routes.
+type Handler struct {
+	svc   Service
+	store Store
+	// loginLimiter throttles repeated FAILED logins per source IP and
+	// per target email before the argon2id verify runs. Nil disables
+	// throttling entirely (fail-open): login behaves exactly as it did
+	// before the limiter existed.
+	loginLimiter *ratelimit.FailureLimiter
+}
+
+// New constructs a Handler. The service and store are required; the user
 // store is needed by Login to surface the authenticated user inline in
-// LoginResponse per the OpenAPI shape.
-func New(svc *coreauth.Service, s Store) *Handler {
-	return &Handler{svc: svc, store: s}
+// LoginResponse per the OpenAPI shape. loginLimiter may be nil, which
+// disables login-failure throttling.
+func New(svc Service, s Store, loginLimiter *ratelimit.FailureLimiter) *Handler {
+	return &Handler{svc: svc, store: s, loginLimiter: loginLimiter}
 }
 
 type loginRequest struct {
@@ -106,6 +133,21 @@ func toUserView(u store.User) userView {
 }
 
 // Login authenticates by email + password and returns access+refresh tokens.
+//
+// Before the credential check (an argon2id verify costing ~19 MiB and
+// tens of milliseconds per call) the handler consults the optional
+// failed-login rate limiter under two keys: the source IP and the
+// lowercased target email. Either key being over budget short-circuits
+// to 429 rate_limited without touching argon2, capping brute-force CPU
+// and memory amplification. Only FAILED credential checks are recorded:
+// successful logins never count toward or reset the window, so a success
+// can neither extend nor clear an existing block. Note this means an
+// in-window block still 429s any attempt on that key, INCLUDING one with
+// a correct password, until the window passes; a success simply does not
+// record, it does not unblock. The worst false-positive is a throttled
+// legitimate user who retries after the window. That lowers net risk (a
+// recoverable throttle replaces a recoverable DoS) with no irreversible
+// failure mode.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -118,15 +160,42 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			response.CodeValidationFailed, "email and password are required", nil)
 		return
 	}
+	// Reject an over-long email before building limiter keys or running
+	// argon2. A >EmailMaxLength email can never match a stored user (every
+	// stored email passed validation, <= EmailMaxLength), so this only
+	// short-circuits input that would have 401'd anyway after a wasted
+	// dummy KDF - no legitimate login changes. This also caps the per-email
+	// limiter key at <= EmailMaxLength bytes, so attacker-controlled email
+	// bytes cannot turn the bounded limiter into a memory vector.
+	if len(req.Email) > validation.EmailMaxLength {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "email is too long", nil)
+		return
+	}
+
+	addr := clientAddr(r)
+	limiterKeys := loginLimiterKeys(addr, req.Email)
+	if h.rejectIfLoginThrottled(w, r, limiterKeys) {
+		return
+	}
 
 	pair, err := h.svc.Login(r.Context(), coreauth.Credentials{
 		Email:     req.Email,
 		Password:  req.Password,
 		UserAgent: r.UserAgent(),
-		IP:        clientAddr(r),
+		IP:        addr,
 	})
 	if err != nil {
 		if errors.Is(err, coreauth.ErrInvalidCredentials) {
+			// Count only credential failures: successes are never
+			// recorded, and failures age out of the window on their
+			// own (no clear-on-success, so a slow brute force cannot
+			// reset its budget by sprinkling in valid logins).
+			if h.loginLimiter != nil {
+				for _, k := range limiterKeys {
+					h.loginLimiter.RecordFailure(k)
+				}
+			}
 			response.WriteError(w, r, http.StatusUnauthorized,
 				response.CodeInvalidCredentials, "invalid email or password", nil)
 			return
@@ -235,6 +304,54 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.WriteNoContent(w)
+}
+
+// loginLimiterKeys builds the failure-counter keys for one login
+// attempt: the source IP and the lowercased target email. The ip key is
+// skipped when addr is the zero netip.Addr so unattributable requests
+// do not collapse into one shared bucket; the email key still
+// constrains attacks on a single account. Behind a reverse proxy the
+// per-IP key collapses to the proxy address, so the per-email key
+// carries the weight there too (accepted tradeoff).
+func loginLimiterKeys(addr netip.Addr, email string) []string {
+	var keys []string
+	if addr.IsValid() {
+		keys = append(keys, "ip:"+addr.String())
+	}
+	return append(keys, "email:"+strings.ToLower(email))
+}
+
+// rejectIfLoginThrottled writes a 429 rate_limited response and reports
+// true when any key is over the failed-login budget. Retry-After (and
+// details.retry_after_seconds) is the ceiling in seconds of the LARGER
+// remaining block among the keys, clamped to at least 1. A nil limiter
+// never throttles.
+func (h *Handler) rejectIfLoginThrottled(w http.ResponseWriter, r *http.Request, keys []string) bool {
+	if h.loginLimiter == nil {
+		return false
+	}
+	var blocked bool
+	var retryAfter time.Duration
+	for _, k := range keys {
+		if b, ra := h.loginLimiter.Blocked(k); b {
+			blocked = true
+			if ra > retryAfter {
+				retryAfter = ra
+			}
+		}
+	}
+	if !blocked {
+		return false
+	}
+	secs := int64((retryAfter + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+	response.WriteError(w, r, http.StatusTooManyRequests,
+		response.CodeRateLimited, "too many failed login attempts, retry later",
+		map[string]any{"retry_after_seconds": secs})
+	return true
 }
 
 // clientAddr extracts the request's source IP. RemoteAddr is "host:port";
