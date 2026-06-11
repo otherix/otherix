@@ -131,6 +131,24 @@ func (h heartbeatProjection) FilterExistingVMIDs(ctx context.Context, ids []uuid
 	return out, nil
 }
 
+// FilterVMIDsPinnedToNode returns the subset of ids whose live vms row is
+// pinned to nodeID. The pin is read from the row itself (the field the
+// scheduler writes), not the pinned-node index; ids with a missing row are
+// skipped, mirroring FilterExistingVMIDs.
+func (h heartbeatProjection) FilterVMIDsPinnedToNode(ctx context.Context, nodeID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		vm, err := h.s.VMByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		if vm.PinnedNodeID != nil && *vm.PinnedNodeID == nodeID {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // UpsertVMRuntime projects a per-VM runtime snapshot, stamping last_observed_at
 // and maintaining the vm_runtime-by-node index that DeleteNode consumes.
 func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.UpsertVMRuntimeParams) error {
