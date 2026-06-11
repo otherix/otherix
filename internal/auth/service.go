@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -102,21 +103,21 @@ type TokenPair struct {
 	RefreshToken    string
 }
 
-// dummyLoginHash is a fixed argon2id hash verified against on the
+// dummyLoginHash returns a fixed argon2id hash verified against on the
 // user-not-found path so Login pays the same KDF cost whether or not
 // the email exists, closing the enumeration timing oracle (audit M6).
-// Hashing at package init via the real HashPassword keeps its cost
-// parameters identical to what VerifyPassword pays for a stored hash
-// in this build, including under the test_fast_argon tag.
-var dummyLoginHash = mustDummyLoginHash()
-
-func mustDummyLoginHash() string {
+// Computed lazily on first use (sync.OnceValue) so it always observes
+// the active argon2 cost parameters: a package-level var initializer
+// would run before the test_fast_argon init() override and capture the
+// production cost, making the dummy verify more expensive than a real
+// one under test builds (audit M6 review).
+var dummyLoginHash = sync.OnceValue(func() string {
 	h, err := HashPassword("otherix-login-timing-equalizer")
 	if err != nil {
 		panic("auth: precompute dummy login hash: " + err.Error())
 	}
 	return h
-}
+})
 
 // Login verifies creds against the users table and issues a fresh token
 // pair starting a new refresh-token family. Returns ErrInvalidCredentials
@@ -129,8 +130,11 @@ func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, err
 			// Equalize work with the user-found branch: run the KDF
 			// against a fixed dummy hash and discard the result, so an
 			// unauthenticated caller cannot tell a missing account from
-			// a wrong password by timing the response (audit M6).
-			_, _ = VerifyPassword(dummyLoginHash, creds.Password)
+			// a wrong password by timing the response (audit M6). The
+			// dummy verify pays the same KDF cost as a real verify
+			// because the hash is computed lazily with the active
+			// argon2 parameters.
+			_, _ = VerifyPassword(dummyLoginHash(), creds.Password)
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("lookup user: %v", err)

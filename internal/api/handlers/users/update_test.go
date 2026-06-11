@@ -5,6 +5,7 @@ package users_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,7 +165,7 @@ func TestUpdateWithoutPasswordDoesNotRevokeSessions(t *testing.T) {
 }
 
 func TestUpdateMeRevokeFailureSurfacesAs500(t *testing.T) {
-	fake := &fakeUsersStore{user: seedFakeUser("developer"), revokeErr: context.DeadlineExceeded}
+	fake := &fakeUsersStore{user: seedFakeUser("developer"), revokeErr: errors.New("revoke failed")}
 	caller := &auth.User{ID: fake.user.ID, Role: auth.RoleDeveloper, Type: auth.TypeJWT}
 	router := newUpdateHarness(fake, caller)
 
