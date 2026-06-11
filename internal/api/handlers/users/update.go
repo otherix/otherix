@@ -78,7 +78,31 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "update user", nil)
 		return
 	}
+	if !h.revokeSessionsIfPasswordChanged(w, r, req, row.ID) {
+		return
+	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
+}
+
+// revokeSessionsIfPasswordChanged revokes every refresh token of user id
+// when req carried a password change, and is a no-op otherwise. The new
+// password hash is already persisted by the time this runs; the revoke is
+// the session-invalidation half of a password change (audit M7) - without
+// it a stolen refresh token keeps minting access tokens for its 30-day
+// TTL. Access JWTs are stateless and survive up to their short TTL by
+// design. A revoke failure is surfaced as 500 rather than swallowed,
+// because silently leaving sessions alive defeats the point; it returns
+// false after writing that error and true otherwise.
+func (h *Handler) revokeSessionsIfPasswordChanged(w http.ResponseWriter, r *http.Request, req updateRequest, id uuid.UUID) bool {
+	if req.Password == nil {
+		return true
+	}
+	if err := h.store.RevokeAllUserRefreshTokens(r.Context(), id); err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "revoke sessions", nil)
+		return false
+	}
+	return true
 }
 
 // applyMutableFields merges the optional fields of req into row in

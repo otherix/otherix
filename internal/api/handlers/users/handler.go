@@ -32,6 +32,7 @@ type Store interface {
 	ListUsers(ctx context.Context, arg store.ListUsersParams) ([]store.User, error)
 	CountUserResources(ctx context.Context, id uuid.UUID) (store.CountUserResourcesRow, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) error
+	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error
 }
 
 // Ensure the production store satisfies the handler's storage contract.
