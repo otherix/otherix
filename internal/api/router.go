@@ -33,22 +33,40 @@ import (
 	"github.com/otherix/otherix/internal/config"
 )
 
+// DefaultMaxRequestBodyBytes is the request-body cap applied when
+// RouterDeps.MaxRequestBodyBytes is zero. 1 MiB is generous for the
+// REST surface: CSRs are ~1-2 KB, login bodies tiny, VM-create
+// cloud-init blobs well under this.
+const DefaultMaxRequestBodyBytes int64 = 1 << 20
+
+// DefaultMaxAgentBodyBytes is the request-body cap applied to the
+// agent listener when RouterDeps.MaxAgentBodyBytes is zero. The agent
+// listener is mTLS-trusted and its heartbeat body scales with node
+// density (per-pool image inventory + per-VM runtime states /
+// reconciliation conditions), so its cap is a generous memory backstop,
+// not a tight anti-DoS limit. The anonymous join/CA endpoints it shares
+// (nodes.join, cluster.join, ca.get) are kilobytes and sit far under
+// it. 16 MiB.
+const DefaultMaxAgentBodyBytes int64 = 16 << 20
+
 // RouterDeps bundles the dependencies the router needs. Passed as a
 // struct rather than positional args because the API surface grows; new
 // fields can land without breaking call sites.
 type RouterDeps struct {
-	Store              RouterStore
-	AuthService        *auth.Service
-	HealthCheckName    string                    // /readyz dependency label; empty falls to "database"
-	StoragePools       config.StoragePoolsConfig // path allowlist
-	Logger             *slog.Logger
-	RequestTimeout     time.Duration
-	PressureMemory     config.PressureConditionConfig
-	PressureSystemDisk config.PressureConditionConfig
-	PressureDisk       config.PressureConditionConfig
-	VMLifecycle        vmshandlers.LifecycleDeps // sync pause/resume/reset agentclient
-	VMConsole          vmshandlers.ConsoleDeps   // console token issuance + proxy relay
-	ClusterMembership  ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
+	Store               RouterStore
+	AuthService         *auth.Service
+	HealthCheckName     string                    // /readyz dependency label; empty falls to "database"
+	StoragePools        config.StoragePoolsConfig // path allowlist
+	Logger              *slog.Logger
+	RequestTimeout      time.Duration
+	MaxRequestBodyBytes int64 // public-router request-body cap in bytes; 0 means DefaultMaxRequestBodyBytes, negative disables the cap
+	MaxAgentBodyBytes   int64 // agent-router request-body cap in bytes; 0 means DefaultMaxAgentBodyBytes, negative disables the cap
+	PressureMemory      config.PressureConditionConfig
+	PressureSystemDisk  config.PressureConditionConfig
+	PressureDisk        config.PressureConditionConfig
+	VMLifecycle         vmshandlers.LifecycleDeps // sync pause/resume/reset agentclient
+	VMConsole           vmshandlers.ConsoleDeps   // console token issuance + proxy relay
+	ClusterMembership   ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
 }
 
 // NewRouter constructs the api-server's HTTP handler: a chi router with
@@ -74,6 +92,11 @@ func NewRouter(deps RouterDeps) http.Handler {
 	// there is no separate queue binder to wire here.
 	r := chi.NewRouter()
 
+	bodyLimit := deps.MaxRequestBodyBytes
+	if bodyLimit == 0 {
+		bodyLimit = DefaultMaxRequestBodyBytes
+	}
+
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger(deps.Logger))
 	r.Use(middleware.Recoverer(deps.Logger))
@@ -81,7 +104,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	// routes (vms.consoleStream) must opt out, because the pump
 	// goroutines inherit r.Context() and would terminate at
 	// deps.RequestTimeout (~30s by default). The bounded-REST subtree
-	// below opts back in via a Group.
+	// below opts back in via a Group. The same Group carries
+	// MaxBodyBytes: the streaming siblings are GET/WebSocket routes with
+	// no request body and intentionally stay uncapped.
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, r, http.StatusNotFound,
@@ -113,6 +138,13 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(deps.RequestTimeout))
+		// Cap request bodies on the whole bounded-REST surface,
+		// including the anonymous bodied endpoints (auth.login,
+		// nodes.join) an unauthenticated client could otherwise use to
+		// force unbounded buffering. A read past the cap fails inside
+		// the handler's JSON decode and surfaces as 400
+		// validation_failed.
+		r.Use(middleware.MaxBodyBytes(bodyLimit))
 
 		checkName := deps.HealthCheckName
 		if checkName == "" {
@@ -351,10 +383,24 @@ func mountV1(r chi.Router, deps RouterDeps) {
 func NewAgentRouter(deps RouterDeps) http.Handler {
 	r := chi.NewRouter()
 
+	bodyLimit := deps.MaxAgentBodyBytes
+	if bodyLimit == 0 {
+		bodyLimit = DefaultMaxAgentBodyBytes
+	}
+
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger(deps.Logger))
 	r.Use(middleware.Recoverer(deps.Logger))
 	r.Use(middleware.Timeout(deps.RequestTimeout))
+	// The agent listener carries the anonymous bodied bootstrap
+	// endpoints (nodes.join, cluster.join) named by the body-cap
+	// finding AND the mTLS-trusted heartbeat. The heartbeat body scales
+	// with node density (pool image inventory + per-VM runtime/conditions)
+	// and can exceed 1 MiB on a dense node, so this router uses a separate,
+	// generous cap (DefaultMaxAgentBodyBytes) as a memory backstop rather
+	// than the public router's 1 MiB anti-DoS limit. The tiny anonymous
+	// join/CA endpoints sit far under it.
+	r.Use(middleware.MaxBodyBytes(bodyLimit))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, r, http.StatusNotFound,
