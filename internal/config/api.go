@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/otherix/otherix/internal/api/validation"
@@ -471,11 +472,39 @@ type AuthConfig struct {
 	JWTRefreshTTL time.Duration `koanf:"jwt_refresh_ttl"`
 }
 
+// jwtSecretDenylist holds JWT secrets that ship in this repository as
+// placeholders or examples. A verbatim copy of a shipped config must never
+// become a live signing key: JWT verification is stateless, so anyone who
+// reads the public example file could forge admin tokens. Validate rejects
+// these values outright.
+var jwtSecretDenylist = map[string]struct{}{
+	"dev-only-jwt-secret-32-bytes-pad!":                {}, // old shipped example value
+	"CHANGE_ME_set_a_unique_random_32plus_byte_secret": {}, // current example placeholder
+}
+
+// singleRepeatedByte reports whether s is non-empty and consists of a single
+// byte repeated for its whole length (e.g. "xxxx..."). Such a secret has
+// effectively no entropy; real random secrets never match this.
+func singleRepeatedByte(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.Count(s, s[:1]) == len(s)
+}
+
 // Validate enforces the minimum-viable auth config: a 32-byte JWT secret
-// (HS256 minimum), and positive TTLs. The api binary calls this at start.
+// (HS256 minimum) that is not a shipped placeholder, and positive TTLs.
+// The api binary calls this at start.
 func (a AuthConfig) Validate() error {
 	if len(a.JWTSecret) < 32 {
 		return fmt.Errorf("auth.jwt_secret must be at least 32 bytes (got %d)", len(a.JWTSecret))
+	}
+	secret := strings.TrimSpace(a.JWTSecret)
+	if _, denied := jwtSecretDenylist[secret]; denied {
+		return errors.New("auth.jwt_secret is a known placeholder/example value; set a unique random 32+ byte secret")
+	}
+	if singleRepeatedByte(secret) {
+		return errors.New("auth.jwt_secret is a single repeated byte; set a unique random 32+ byte secret")
 	}
 	if a.JWTAccessTTL <= 0 {
 		return errors.New("auth.jwt_access_ttl must be > 0")

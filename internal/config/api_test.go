@@ -454,3 +454,56 @@ func TestStoragePoolsConfig_ValidateDefaultPoolName(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthConfig_Validate_JWTSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  string
+		wantErr bool
+	}{
+		{
+			name:   "valid random secret passes",
+			secret: "k9Qz3vR7mX1pL5wT8nB2cJ6hF0dY4sGa",
+		},
+		{
+			name:    "too short rejected",
+			secret:  "short-secret",
+			wantErr: true,
+		},
+		{
+			name:    "old shipped example value denylisted",
+			secret:  "dev-only-jwt-secret-32-bytes-pad!",
+			wantErr: true,
+		},
+		{
+			name:    "explicit placeholder denylisted",
+			secret:  "CHANGE_ME_set_a_unique_random_32plus_byte_secret",
+			wantErr: true,
+		},
+		{
+			name:    "single repeated byte rejected",
+			secret:  strings.Repeat("x", 40),
+			wantErr: true,
+		},
+		{
+			name:   "dev stack secret passes",
+			secret: "otherix-local-dev-stack-signing-key-32b",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := AuthConfig{
+				JWTSecret:     tc.secret,
+				JWTAccessTTL:  15 * time.Minute,
+				JWTRefreshTTL: 720 * time.Hour,
+			}
+			err := cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with JWTSecret=%q = nil, want error", tc.secret)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with JWTSecret=%q = %v, want nil", tc.secret, err)
+			}
+		})
+	}
+}
