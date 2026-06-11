@@ -300,7 +300,19 @@ LOOP:
 		case b := <-sub.Bytes():
 			got = append(got, b...)
 		case <-sub.Done():
-			break LOOP
+			// Done can fire while the history tail is still buffered in
+			// Bytes(): streamHistoryThenAttach delivers the tail and then
+			// closes, so both channels are ready and the outer select may
+			// pick Done first. Drain the buffered bytes before stopping,
+			// mirroring the production streamLogs drainSubscriber path.
+			for {
+				select {
+				case b := <-sub.Bytes():
+					got = append(got, b...)
+				default:
+					break LOOP
+				}
+			}
 		case <-deadline:
 			t.Fatalf("subscriber stalled with got=%q", got)
 		}
