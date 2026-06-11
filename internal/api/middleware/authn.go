@@ -72,15 +72,17 @@ func authErrorToResponse(err error) (response.ErrorCode, string) {
 }
 
 // bearerToken extracts the token portion of an Authorization: Bearer
-// header. Returns ("", false) when the header is absent, malformed, or
-// has no token after the scheme.
+// header. The scheme match is case-insensitive per RFC 7235; the token
+// after the scheme is returned verbatim (the downstream otx_ prefix
+// match is case-sensitive). Returns ("", false) when the header is
+// absent, malformed, or has no token after the scheme.
 func bearerToken(r *http.Request) (string, bool) {
 	h := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(h, prefix) {
+	scheme, rest, ok := strings.Cut(h, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		return "", false
 	}
-	tok := strings.TrimSpace(h[len(prefix):])
+	tok := strings.TrimSpace(rest)
 	if tok == "" {
 		return "", false
 	}

@@ -83,6 +83,7 @@ func TestAuthnMalformedHeader(t *testing.T) {
 	}{
 		{name: "no scheme", auth: "abc"},
 		{name: "wrong scheme", auth: "Basic abc"},
+		{name: "scheme only", auth: "Bearer"},
 		{name: "bearer empty", auth: "Bearer "},
 		{name: "bearer whitespace", auth: "Bearer    "},
 	}
@@ -95,6 +96,35 @@ func TestAuthnMalformedHeader(t *testing.T) {
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("status = %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+// TestAuthnBearerSchemeCaseInsensitive covers RFC 7235: the auth-scheme
+// is case-insensitive, so `bearer`, `BEARER`, etc. must authenticate.
+// The token after the scheme must reach the verifier verbatim - the
+// downstream otx_ prefix match is case-sensitive.
+func TestAuthnBearerSchemeCaseInsensitive(t *testing.T) {
+	for _, scheme := range []string{"bearer", "BEARER", "BeArEr"} {
+		t.Run(scheme, func(t *testing.T) {
+			v := &stubVerifier{
+				jwtUser: &auth.User{ID: uuid.New(), Role: auth.RoleAdmin, Type: auth.TypeJWT},
+			}
+			cap := &captureUser{}
+			h := middleware.Authn(v)(cap)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", scheme+" eyJ.fake.jwt")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if v.gotJWT != "eyJ.fake.jwt" {
+				t.Errorf("VerifyAccessToken got %q, want %q", v.gotJWT, "eyJ.fake.jwt")
+			}
+			if cap.got == nil {
+				t.Error("downstream handler saw no principal")
 			}
 		})
 	}

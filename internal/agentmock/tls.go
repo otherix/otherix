@@ -49,7 +49,7 @@ func serverTLSConfig() (*tls.Config, error) {
 		Certificates: []tls.Certificate{pair},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}, nil
 }
 
@@ -68,7 +68,7 @@ func clientTLSConfig() (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{pair},
 		RootCAs:      pool,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}, nil
 }
 
@@ -132,7 +132,7 @@ func ControlPlaneServerTLSConfig() (*tls.Config, error) {
 		Certificates: []tls.Certificate{pair},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}, nil
 }
 

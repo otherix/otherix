@@ -31,10 +31,16 @@ type AgentVerifier interface {
 // `agentMTLS` scheme in api/openapi/control-plane.yaml.
 //
 // AgentMTLS does NOT verify the certificate chain against the
-// cluster CA — that is the TLS listener's job (configured with
-// `tls.Config.ClientAuth = tls.RequireAndVerifyClientCert` and a
-// CA-anchored ClientCAs pool). By the time AgentMTLS runs the chain
-// has already been verified or the connection terminated.
+// cluster CA itself. The agent-facing listener is configured with
+// `tls.Config.ClientAuth = tls.VerifyClientCertIfGiven` and a
+// CA-anchored ClientCAs pool (see buildAgentServerTLSConfig in
+// internal/api/server.go): a presented client cert IS chain-verified
+// during the handshake, but connections without any client cert are
+// also accepted, because the same listener serves the anonymous
+// bootstrap routes (`/v1/ca`, `/v1/nodes/join`). This middleware
+// supplies the "require" half per route subtree: it rejects requests
+// that arrived without a client certificate, and binds the (already
+// chain-verified) cert's fingerprint to a registered, unrevoked agent.
 func AgentMTLS(v AgentVerifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

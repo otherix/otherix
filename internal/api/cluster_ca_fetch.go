@@ -127,7 +127,7 @@ func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams) (clusterJoin
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // TOFU - security from the post-receipt CA fingerprint pin
-				MinVersion:         tls.VersionTLS12,
+				MinVersion:         tls.VersionTLS13,
 			},
 			Proxy: nil,
 		},

@@ -204,6 +204,21 @@ func TestNew_RejectsEmptyMaterial(t *testing.T) {
 	}
 }
 
+// TestNew_PinsTLS13Floor asserts the CP->agent dialer refuses TLS
+// handshakes below 1.3. Both ends are Go crypto/tls (1.3 always
+// available), so there is no compatibility reason to keep a 1.2 floor.
+func TestNew_PinsTLS13Floor(t *testing.T) {
+	t.Parallel()
+	cli := newClient(t, writeMaterial(t))
+	tr, ok := cli.HTTPClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport is %T, want *http.Transport", cli.HTTPClient().Transport)
+	}
+	if got := tr.TLSClientConfig.MinVersion; got != tls.VersionTLS13 {
+		t.Errorf("TLSClientConfig.MinVersion = %#x, want %#x (TLS 1.3)", got, uint16(tls.VersionTLS13))
+	}
+}
+
 func TestPostScan_HappyPath(t *testing.T) {
 	t.Parallel()
 	dir := writeMaterial(t)
