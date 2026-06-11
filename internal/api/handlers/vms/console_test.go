@@ -6,6 +6,7 @@ package vms
 import (
 	"crypto/tls"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -176,6 +177,61 @@ func TestBuildConsoleWebsocketURLProxyScheme(t *testing.T) {
 				t.Errorf("buildConsoleWebsocketURL = %q, want %q", got, tc.wantPrefix)
 			}
 		})
+	}
+}
+
+// TestBuildConsoleWebsocketURLEscapesToken drives a token that needs
+// percent-encoding through both access modes and asserts it round-trips
+// via net/url - a raw fmt interpolation would corrupt the `+` and `=`
+// bytes on the wire.
+func TestBuildConsoleWebsocketURLEscapesToken(t *testing.T) {
+	const rawToken = "a b+c/d=="
+	agentResp := agentclient.IssueConsoleTokenResponse{
+		Token:         rawToken,
+		WebsocketPath: "/v1/vms/demo/console-stream",
+	}
+
+	for _, mode := range []string{"proxy", "direct"} {
+		t.Run(mode, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "/v1/vms/demo/console", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Host = "api.example.com"
+
+			got, err := buildConsoleWebsocketURL(mode, req, "https://agent.example.com:9090", "demo", agentResp)
+			if err != nil {
+				t.Fatalf("buildConsoleWebsocketURL: %v", err)
+			}
+			u, err := url.Parse(got)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", got, err)
+			}
+			if tok := u.Query().Get("token"); tok != rawToken {
+				t.Errorf("token round-trip = %q, want %q", tok, rawToken)
+			}
+		})
+	}
+}
+
+// TestBuildConsoleWebsocketURLProxyEscapesVMName asserts the VM name is
+// path-escaped in proxy mode (direct mode takes the agent-supplied
+// WebsocketPath verbatim, so there is nothing to escape there).
+func TestBuildConsoleWebsocketURLProxyEscapesVMName(t *testing.T) {
+	agentResp := agentclient.IssueConsoleTokenResponse{Token: "tok-123"}
+	req, err := http.NewRequest(http.MethodPost, "/v1/vms/demo/console", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "api.example.com"
+
+	got, err := buildConsoleWebsocketURL("proxy", req, "https://agent.example.com:9090", "demo vm", agentResp)
+	if err != nil {
+		t.Fatalf("buildConsoleWebsocketURL: %v", err)
+	}
+	want := "ws://api.example.com/v1/vms/demo%20vm/console-stream?token=tok-123"
+	if got != want {
+		t.Errorf("buildConsoleWebsocketURL = %q, want %q", got, want)
 	}
 }
 
