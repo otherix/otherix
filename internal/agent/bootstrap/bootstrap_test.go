@@ -11,6 +11,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -492,5 +493,16 @@ func TestTokenHashPrefix(t *testing.T) {
 	want := hex.EncodeToString(sum[:])[:8]
 	if got := tokenHashPrefix("otx_join_abc"); got != want {
 		t.Errorf("tokenHashPrefix = %q, want %q", got, want)
+	}
+}
+
+// TestNewBootstrapTransportPinsTLS13Floor asserts the TOFU /v1/ca
+// fetch transport refuses TLS handshakes below 1.3. The CP listener is
+// Go crypto/tls (1.3 always available), so the bootstrap dialer has no
+// compatibility reason to keep a 1.2 floor.
+func TestNewBootstrapTransportPinsTLS13Floor(t *testing.T) {
+	tr := newBootstrapTransport()
+	if got := tr.TLSClientConfig.MinVersion; got != tls.VersionTLS13 {
+		t.Errorf("TLSClientConfig.MinVersion = %#x, want %#x (TLS 1.3)", got, uint16(tls.VersionTLS13))
 	}
 }

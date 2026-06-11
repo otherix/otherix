@@ -23,8 +23,8 @@ func TestServerTLSConfig_RequiresClientCert(t *testing.T) {
 	if len(cfg.Certificates) != 1 {
 		t.Errorf("len(Certificates) = %d, want 1", len(cfg.Certificates))
 	}
-	if cfg.MinVersion != tls.VersionTLS12 {
-		t.Errorf("MinVersion = %x, want TLS 1.2", cfg.MinVersion)
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Errorf("MinVersion = %x, want TLS 1.3", cfg.MinVersion)
 	}
 }
 

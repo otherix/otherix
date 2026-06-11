@@ -317,11 +317,19 @@ func (s *Service) VerifyAPIToken(ctx context.Context, plaintext string) (*User, 
 		return nil, fmt.Errorf("lookup user: %v", err)
 	}
 
+	role, err := ParseRole(user.Role)
+	if err != nil {
+		// A stored role outside the enum (schema drift, manual edit)
+		// must not silently land as a principal with no permissions.
+		// Mirrors the VerifyAccessToken guard.
+		return nil, ErrInvalidToken
+	}
+
 	_ = s.store.TouchAPIToken(ctx, row.ID)
 
 	return &User{
 		ID:         user.ID,
-		Role:       Role(user.Role),
+		Role:       role,
 		Type:       TypeAPIToken,
 		APITokenID: &row.ID,
 	}, nil

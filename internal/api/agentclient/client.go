@@ -73,7 +73,7 @@ func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Cer
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      pool,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}
 
 	// Per-request safety net: each underlying HTTP call is bounded by

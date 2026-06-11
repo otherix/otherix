@@ -200,7 +200,7 @@ func (s *Server) Run(ctx context.Context) error {
 // buildAgentServerTLSConfig builds the TLS config for the agent
 // listener: presents material.Cert (the replica's per-boot server
 // cert), verifies client certs against material.ClusterCA (the
-// cluster-wide trust anchor) only when present, pins TLS 1.2 minimum.
+// cluster-wide trust anchor) only when present, pins TLS 1.3 minimum.
 //
 // ClientAuth is `tls.VerifyClientCertIfGiven` rather than
 // `RequireAndVerifyClientCert` because the same listener serves both
@@ -230,6 +230,6 @@ func buildAgentServerTLSConfig(material TLSMaterial) (*tls.Config, error) {
 		Certificates: []tls.Certificate{material.Cert},
 		ClientCAs:    pool,
 		ClientAuth:   tls.VerifyClientCertIfGiven,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}, nil
 }

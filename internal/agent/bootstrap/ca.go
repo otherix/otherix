@@ -154,8 +154,8 @@ func fetchAndVerifyCA(ctx context.Context, cpURL, expectedFingerprint string, ti
 // bootstrap request. Captures the policy decisions:
 //
 //   - InsecureSkipVerify: true — TOFU, fingerprint match compensates.
-//   - MinVersion: TLS 1.2 — modern floor; TLS 1.3 preferred but 1.2
-//     accepted because the CP may be behind older ingress.
+//   - MinVersion: TLS 1.3 - the CP listener is Go crypto/tls (1.3
+//     always available), so nothing below 1.3 is accepted.
 //   - Proxy: nil — env-var proxies (HTTP_PROXY etc.) intentionally
 //     ignored. Operators running bootstrap behind a corporate proxy
 //     must surface that complexity explicitly in a future iteration.
@@ -163,7 +163,7 @@ func newBootstrapTransport() *http.Transport {
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // TOFU - security from post-receipt fingerprint + chain verification
-			MinVersion:         tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS13,
 		},
 		Proxy:                 nil,
 		TLSHandshakeTimeout:   10 * time.Second,

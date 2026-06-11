@@ -169,9 +169,10 @@ func TestVerifyAccessTokenIsStateless(t *testing.T) {
 	}
 }
 
-// TestVerifyAPITokenRejectsInvalidRows covers the two guard paths: a revoked
-// or expired token (the store's valid-only filter returns not-found) and a
-// live token whose owner was soft-deleted. Both must surface ErrInvalidToken.
+// TestVerifyAPITokenRejectsInvalidRows covers the guard paths: a revoked
+// or expired token (the store's valid-only filter returns not-found), a
+// live token whose owner was soft-deleted, and a live token whose owner
+// carries a role outside the enum. All must surface ErrInvalidToken.
 func TestVerifyAPITokenRejectsInvalidRows(t *testing.T) {
 	t.Run("revoked or expired token", func(t *testing.T) {
 		fake := &fakeAuthStore{
@@ -199,6 +200,27 @@ func TestVerifyAPITokenRejectsInvalidRows(t *testing.T) {
 
 		if _, err := svc.VerifyAPIToken(context.Background(), "otx_orphaned"); !errors.Is(err, auth.ErrInvalidToken) {
 			t.Errorf("VerifyAPIToken(soft-deleted owner) error = %v, want ErrInvalidToken", err)
+		}
+	})
+
+	t.Run("owner with out-of-enum role", func(t *testing.T) {
+		// Mirrors the VerifyAccessToken guard: a stored role outside
+		// the enum (schema drift, manual edit) must not land as a
+		// principal with no permissions.
+		for _, role := range []string{"superuser", ""} {
+			fake := &fakeAuthStore{
+				apiTokenByHash: func(_ context.Context, _ []byte) (store.ApiToken, error) {
+					return store.ApiToken{ID: uuid.New(), UserID: uuid.New()}, nil
+				},
+				userByID: func(_ context.Context, _ uuid.UUID) (store.User, error) {
+					return store.User{ID: uuid.New(), Role: role}, nil
+				},
+			}
+			svc := newTestService(t, fake)
+
+			if _, err := svc.VerifyAPIToken(context.Background(), "otx_badrole"); !errors.Is(err, auth.ErrInvalidToken) {
+				t.Errorf("VerifyAPIToken(role %q) error = %v, want ErrInvalidToken", role, err)
+			}
 		}
 	})
 

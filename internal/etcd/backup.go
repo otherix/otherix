@@ -67,7 +67,9 @@ func SnapshotSave(ctx context.Context, clientURL, outPath string) (int64, error)
 	defer func() { _ = rc.Close() }()
 
 	tmp := outPath + ".tmp"
-	f, err := os.Create(tmp) //nolint:gosec // outPath is an operator-configured backup destination, not untrusted input
+	// 0600: the snapshot is a full copy of cluster state (password hashes,
+	// token hashes, CA key) - owner-only, never group/world readable.
+	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // outPath is an operator-configured backup destination, not untrusted input
 	if err != nil {
 		return 0, fmt.Errorf("create snapshot file: %v", err)
 	}

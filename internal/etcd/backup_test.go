@@ -71,6 +71,11 @@ func TestSnapshotSave(t *testing.T) {
 	if fi.Size() != n {
 		t.Errorf("snapshot file size = %d, want %d (reported bytes)", fi.Size(), n)
 	}
+	// A snapshot is a full copy of cluster state (password hashes, token
+	// hashes, CA key) - owner-only, never group/world readable.
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("snapshot file mode = %#o, want 0600", got)
+	}
 	if _, err := os.Stat(out + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("staging file %s.tmp still present after save", out)
 	}
