@@ -237,3 +237,27 @@ func TestRefreshRejectsSoftDeletedUser(t *testing.T) {
 		t.Errorf("revoked tokens = %v, want [%v]", fake.revokedRefreshTokens, row.ID)
 	}
 }
+
+// TestLoginUnknownEmailReturnsInvalidCredentials pins the user-not-found
+// branch of Login to the same sentinel as a wrong password, so the endpoint
+// cannot distinguish the two cases. The timing half of that guarantee (the
+// dummy-hash KDF cost, audit M6) is covered structurally by
+// TestDummyLoginHashIsRealArgon2id.
+func TestLoginUnknownEmailReturnsInvalidCredentials(t *testing.T) {
+	fake := &fakeAuthStore{} // UserByEmail defaults to store.ErrNotFound.
+	svc := newTestService(t, fake)
+
+	_, err := svc.Login(context.Background(), auth.Credentials{
+		Email:    "nobody@example.test",
+		Password: "irrelevant-password",
+	})
+	if !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Errorf("Login(unknown email) error = %v, want ErrInvalidCredentials", err)
+	}
+	// The not-found path must never mint or persist tokens.
+	for _, call := range fake.calls {
+		if call == "CreateRefreshToken" {
+			t.Errorf("Login(unknown email) persisted a refresh token; calls = %v", fake.calls)
+		}
+	}
+}

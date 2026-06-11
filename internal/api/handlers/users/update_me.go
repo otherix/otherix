@@ -70,5 +70,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "update user", nil)
 		return
 	}
+	if !h.revokeSessionsIfPasswordChanged(w, r, req, row.ID) {
+		return
+	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
 }

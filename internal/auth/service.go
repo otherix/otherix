@@ -102,14 +102,35 @@ type TokenPair struct {
 	RefreshToken    string
 }
 
+// dummyLoginHash is a fixed argon2id hash verified against on the
+// user-not-found path so Login pays the same KDF cost whether or not
+// the email exists, closing the enumeration timing oracle (audit M6).
+// Hashing at package init via the real HashPassword keeps its cost
+// parameters identical to what VerifyPassword pays for a stored hash
+// in this build, including under the test_fast_argon tag.
+var dummyLoginHash = mustDummyLoginHash()
+
+func mustDummyLoginHash() string {
+	h, err := HashPassword("otherix-login-timing-equalizer")
+	if err != nil {
+		panic("auth: precompute dummy login hash: " + err.Error())
+	}
+	return h
+}
+
 // Login verifies creds against the users table and issues a fresh token
 // pair starting a new refresh-token family. Returns ErrInvalidCredentials
 // for both "no such user" and "wrong password" — the endpoint must not
-// distinguish.
+// distinguish, by error shape or by response latency.
 func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, error) {
 	user, err := s.store.UserByEmail(ctx, creds.Email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			// Equalize work with the user-found branch: run the KDF
+			// against a fixed dummy hash and discard the result, so an
+			// unauthenticated caller cannot tell a missing account from
+			// a wrong password by timing the response (audit M6).
+			_, _ = VerifyPassword(dummyLoginHash, creds.Password)
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("lookup user: %v", err)
