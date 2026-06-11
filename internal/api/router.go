@@ -31,6 +31,7 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
+	"github.com/otherix/otherix/internal/ratelimit"
 )
 
 // DefaultMaxRequestBodyBytes is the request-body cap applied when
@@ -55,6 +56,7 @@ const DefaultMaxAgentBodyBytes int64 = 16 << 20
 type RouterDeps struct {
 	Store               RouterStore
 	AuthService         *auth.Service
+	LoginRateLimiter    *ratelimit.FailureLimiter // per-replica failed-login throttle; nil disables throttling
 	HealthCheckName     string                    // /readyz dependency label; empty falls to "database"
 	StoragePools        config.StoragePoolsConfig // path allowlist
 	Logger              *slog.Logger
@@ -176,7 +178,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 //     plaintext invariant. The remaining methods opt in to idem
 //     individually.
 func mountV1(r chi.Router, deps RouterDeps) {
-	authH := authhandlers.New(deps.AuthService, deps.Store)
+	authH := authhandlers.New(deps.AuthService, deps.Store, deps.LoginRateLimiter)
 	caH := cahandlers.New(deps.Store, deps.Logger)
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
 	usersH := usershandlers.New(deps.Store)

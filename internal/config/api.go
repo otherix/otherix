@@ -465,11 +465,40 @@ func (p PlacementConfig) Warnings() []string {
 	return out
 }
 
-// AuthConfig holds JWT signing material and token lifetimes.
+// AuthConfig holds JWT signing material, token lifetimes, and the
+// failed-login rate-limit knobs.
 type AuthConfig struct {
-	JWTSecret     string        `koanf:"jwt_secret"`
-	JWTAccessTTL  time.Duration `koanf:"jwt_access_ttl"`
-	JWTRefreshTTL time.Duration `koanf:"jwt_refresh_ttl"`
+	JWTSecret      string               `koanf:"jwt_secret"`
+	JWTAccessTTL   time.Duration        `koanf:"jwt_access_ttl"`
+	JWTRefreshTTL  time.Duration        `koanf:"jwt_refresh_ttl"`
+	LoginRateLimit LoginRateLimitConfig `koanf:"login_rate_limit"`
+}
+
+// Failed-login rate-limit defaults. Lenient on purpose: the limiter
+// exists to cap brute-force argon2 amplification, and its worst
+// false-positive is throttling a legitimate user, so the budget errs
+// toward never firing on honest typos.
+const (
+	DefaultLoginMaxFailures = 10
+	DefaultLoginRateWindow  = 15 * time.Minute
+	DefaultLoginRateMaxKeys = 10000
+)
+
+// LoginRateLimitConfig bounds repeated FAILED logins per source IP and
+// per target email before the argon2id verify runs. MaxFailures <= 0
+// disables the limiter entirely (login is never throttled); Window and
+// MaxKeys fall back to the defaults above when zero or negative.
+//
+// The counters are per-replica (in-process memory, not etcd): in an HA
+// deployment an attacker spreading attempts across N replicas gets up
+// to N times the budget, and behind a reverse proxy the per-IP key
+// collapses to the proxy address so the per-email key carries the
+// weight. Both are accepted tradeoffs versus putting the hot auth path
+// through etcd on every attempt.
+type LoginRateLimitConfig struct {
+	MaxFailures int           `koanf:"max_failures"`
+	Window      time.Duration `koanf:"window"`
+	MaxKeys     int           `koanf:"max_keys"`
 }
 
 // jwtSecretDenylist holds JWT secrets that ship in this repository as
@@ -637,8 +666,16 @@ func defaultAPIConfig() APIConfig {
 			WriteTimeout:  30 * time.Second,
 			ShutdownGrace: 30 * time.Second,
 		},
-		Logger:  logger.Config{Level: "info", Format: "json"},
-		Auth:    AuthConfig{JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 30 * 24 * time.Hour},
+		Logger: logger.Config{Level: "info", Format: "json"},
+		Auth: AuthConfig{
+			JWTAccessTTL:  15 * time.Minute,
+			JWTRefreshTTL: 30 * 24 * time.Hour,
+			LoginRateLimit: LoginRateLimitConfig{
+				MaxFailures: DefaultLoginMaxFailures,
+				Window:      DefaultLoginRateWindow,
+				MaxKeys:     DefaultLoginRateMaxKeys,
+			},
+		},
 		Console: ConsoleConfig{AccessMode: "proxy"},
 		Workers: WorkersConfig{
 			Enabled:    true,

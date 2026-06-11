@@ -19,6 +19,7 @@ import (
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
+	"github.com/otherix/otherix/internal/ratelimit"
 	"github.com/otherix/otherix/internal/scheduler"
 )
 
@@ -42,6 +43,30 @@ func SchedulerResourcesFromConfig(c config.ResourcesConfig) scheduler.ResourcesC
 		Memory: convert(c.Memory),
 		Disk:   convert(c.Disk),
 	}
+}
+
+// newLoginRateLimiter builds the per-replica failed-login limiter from
+// config, or returns nil (throttling disabled, login behaves exactly as
+// before the limiter existed) when MaxFailures <= 0. Window and MaxKeys
+// fall back to the config defaults when unset so a partially-specified
+// block cannot yield an unbounded or zero-width limiter.
+func newLoginRateLimiter(cfg config.LoginRateLimitConfig) *ratelimit.FailureLimiter {
+	if cfg.MaxFailures <= 0 {
+		return nil
+	}
+	window := cfg.Window
+	if window <= 0 {
+		window = config.DefaultLoginRateWindow
+	}
+	maxKeys := cfg.MaxKeys
+	if maxKeys <= 0 {
+		maxKeys = config.DefaultLoginRateMaxKeys
+	}
+	return ratelimit.New(ratelimit.Config{
+		MaxFailures: cfg.MaxFailures,
+		Window:      window,
+		MaxKeys:     maxKeys,
+	})
 }
 
 // Server wraps net/http.Server with the api-server's lifecycle: a single
@@ -74,6 +99,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 	handler := NewRouter(RouterDeps{
 		Store:              s,
 		AuthService:        authSvc,
+		LoginRateLimiter:   newLoginRateLimiter(cfg.Auth.LoginRateLimit),
 		HealthCheckName:    "etcd",
 		StoragePools:       cfg.StoragePools,
 		Logger:             log,
