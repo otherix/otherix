@@ -36,6 +36,9 @@ const importHTTPTimeout = time.Hour
 // fetches.
 const importMaxRedirects = 5
 
+// importDialTimeout bounds the TCP connect per dial/redirect hop.
+const importDialTimeout = 30 * time.Second
+
 // maxImageBytes caps the size of a single image download so a hostile or
 // misconfigured source cannot fill the pool. 64 GiB is generous for any
 // cloud image (Ubuntu Noble minimal cloudimg is under 300 MiB; even fat
@@ -54,14 +57,13 @@ var maxImageBytes int64 = 64 << 30
 func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse dial address %q: %v", address, err)
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return fmt.Errorf("image source resolved to non-ip address %q", host)
+		return fmt.Errorf("image source resolved to non-IP address %q", host)
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return fmt.Errorf("image source resolves to a node-local or special-use address %s", ip)
 	}
 	return nil
@@ -321,9 +323,18 @@ func (m *Manager) downloadAndHash(ctx context.Context, sourceURL, tempPath strin
 		return 0, "", &downloadError{cause: fmt.Errorf("build request: %w", err)}
 	}
 
-	dialer := &net.Dialer{Timeout: 30 * time.Second, Control: m.imageDialControl}
+	// Clone the default transport so its defaults (TLSHandshakeTimeout,
+	// ForceAttemptHTTP2, idle-conn pooling, ...) carry over, then override
+	// only what the SSRF posture requires. A forward proxy would terminate
+	// the connection at the proxy and route onward from there, so the dial
+	// Control hook would only ever see the proxy's IP - blinding the SSRF
+	// guard. Disable proxying for image downloads so the guard always
+	// inspects the real image-host IP.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = (&net.Dialer{Timeout: importDialTimeout, Control: m.imageDialControl}).DialContext
 	client := &http.Client{
-		Transport: &http.Transport{DialContext: dialer.DialContext},
+		Transport: transport,
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= importMaxRedirects {
 				return fmt.Errorf("stopped after %d redirects", len(via))
