@@ -66,7 +66,7 @@ var (
 	errTTLOutOfRange       = errors.New("ttl_seconds must be in [60, 86400]")
 	errMaxUsesNotPositive  = errors.New("max_uses must be >= 1 when set")
 	errPreboundMultiUse    = errors.New("pre-bound tokens cannot be reused: set max_uses=1 or omit intended_node_name")
-	errIntendedNameTooLong = errors.New("intended_node_name must be at most 253 characters")
+	errIntendedNameInvalid = errors.New("intended_node_name must be a lowercase RFC 1123 DNS label")
 	errInvalidKind         = errors.New("kind must be \"node\" or \"cluster\"")
 	errClusterNodeBound    = errors.New("cluster tokens cannot carry intended_node_name")
 

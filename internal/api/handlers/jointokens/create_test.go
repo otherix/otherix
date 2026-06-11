@@ -71,6 +71,47 @@ func TestNormaliseCreateRequestKind(t *testing.T) {
 
 func int32ptr(v int32) *int32 { return &v }
 
+func TestNormaliseCreateRequestIntendedNodeNameCharset(t *testing.T) {
+	// intended_node_name pre-binds a token to a name that becomes a cert
+	// CN `node-<name>` at redemption, so it must be a lowercase RFC 1123
+	// DNS label.
+	invalid := []string{"Bad_Name", "a.b", "a/b", "-x", "NODE1"}
+	for _, name := range invalid {
+		req := createRequest{IntendedNodeName: strptr(name), MaxUses: int32ptr(1)}
+		if _, _, _, _, err := normaliseCreateRequest(req); err == nil {
+			t.Errorf("normaliseCreateRequest(intended_node_name=%q) = nil, want error", name)
+		}
+	}
+
+	// A valid label persists trimmed.
+	req := createRequest{IntendedNodeName: strptr("  node-1  "), MaxUses: int32ptr(1)}
+	_, got, _, _, err := normaliseCreateRequest(req)
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest valid: %v", err)
+	}
+	if got == nil || *got != "node-1" {
+		t.Errorf("intended_node_name = %v, want %q (trimmed validated)", got, "node-1")
+	}
+
+	// Absent (*string nil) leaves the token unbound, no validation.
+	_, got, _, _, err = normaliseCreateRequest(createRequest{})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest absent: %v", err)
+	}
+	if got != nil {
+		t.Errorf("intended_node_name = %v, want nil (absent = unbound)", got)
+	}
+
+	// Explicit null (*string -> "") collapses to absent: still unbound.
+	_, got, _, _, err = normaliseCreateRequest(createRequest{IntendedNodeName: strptr("")})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest empty: %v", err)
+	}
+	if got != nil {
+		t.Errorf("intended_node_name = %v, want nil (empty = unbound)", got)
+	}
+}
+
 func TestNormaliseCreateRequestClusterMaxUses(t *testing.T) {
 	// A cluster token with no max_uses must default to single-use - it must never
 	// be unlimited, since redemption yields the CA private key.

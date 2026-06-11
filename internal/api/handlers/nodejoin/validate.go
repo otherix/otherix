@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -18,7 +19,6 @@ var (
 	errMissingToken                 = errors.New("token is required")
 	errMissingCSR                   = errors.New("csr_pem is required")
 	errMissingNodeName              = errors.New("node_name is required")
-	errNodeNameTooLong              = errors.New("node_name must be at most 253 characters")
 	errMissingArchitecture          = errors.New("architecture is required")
 	errInvalidArchitecture          = errors.New("architecture must be one of: amd64, arm64")
 	errMissingAdvertisedEndpoint    = errors.New("advertised_endpoint is required")
@@ -32,18 +32,21 @@ var (
 // Bounds mirror the existing nodes.create handler — same column
 // shape, same edge constraints.
 const (
-	nodeNameMaxLength           = 253
 	advertisedEndpointMaxLength = 2048
 	migrationHostMaxLength      = 253
 	minMigrationPort            = 1024
 	maxMigrationPort            = 65535
 )
 
-// validate normalises and validates the request body. Returns the
-// canonicalised values + a sentinel error suitable for direct status
-// mapping. Whitespace-only fields collapse to empty string and are
-// treated as missing.
-func (req joinRequest) validate() error {
+// validate normalises and validates the request body. Returns a
+// sentinel error suitable for direct status mapping. Whitespace-only
+// fields collapse to empty string and are treated as missing. The
+// pointer receiver lets validate normalise req.NodeName in place: the
+// trimmed, charset-validated name is what redeem() then feeds into both
+// the node row and SignCSR (cert CN `node-<name>` + SAN), so the value
+// that is VALIDATED is the value that is SIGNED - no padded-vs-vetted
+// drift (e.g. " node-1 " validating as node-1 but signed untrimmed).
+func (req *joinRequest) validate() error {
 	if strings.TrimSpace(req.Token) == "" {
 		return errMissingToken
 	}
@@ -52,12 +55,17 @@ func (req joinRequest) validate() error {
 	}
 
 	name := strings.TrimSpace(req.NodeName)
-	switch {
-	case name == "":
+	if name == "" {
 		return errMissingNodeName
-	case len(name) > nodeNameMaxLength:
-		return errNodeNameTooLong
 	}
+	// The redeemed name becomes the server-authoritative cert CN
+	// `node-<name>` + SAN, so it must be a lowercase RFC 1123 DNS label
+	// (audit LOW). Persist the trimmed value back so the signed name
+	// equals the validated name.
+	if err := validation.ValidateNodeName(name); err != nil {
+		return err
+	}
+	req.NodeName = name
 
 	arch := strings.TrimSpace(req.Architecture)
 	switch {
