@@ -9,6 +9,8 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,6 +105,117 @@ func TestRotateRefreshToken(t *testing.T) {
 	// Rotating a missing parent fails.
 	if _, err := s.RotateRefreshToken(ctx, uuid.New(), rtParams([]byte("x"), user, family, future)); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("rotate missing parent = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRotateRefreshTokenRefusesRevokedParent guards the serialized half of the
+// double-spend window (audit M8): once a parent has been rotated (revoked), a
+// second rotation of the same parent must be refused with
+// store.ErrRefreshTokenConflict and must not insert another live child, so the
+// family ends with exactly one live token.
+func TestRotateRefreshTokenRefusesRevokedParent(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	future := time.Now().UTC().Add(time.Hour)
+	user := uuid.New()
+	family := uuid.New()
+	parent, err := s.CreateRefreshToken(ctx, rtParams([]byte("parent-cas"), user, family, future))
+	if err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+
+	childA := store.CreateRefreshTokenParams{
+		ID: uuid.New(), UserID: user, TokenHash: []byte("child-a"), FamilyID: family, ParentID: &parent.ID, ExpiresAt: future,
+	}
+	if _, err := s.RotateRefreshToken(ctx, parent.ID, childA); err != nil {
+		t.Fatalf("first rotation: %v", err)
+	}
+
+	childB := store.CreateRefreshTokenParams{
+		ID: uuid.New(), UserID: user, TokenHash: []byte("child-b"), FamilyID: family, ParentID: &parent.ID, ExpiresAt: future,
+	}
+	if _, err := s.RotateRefreshToken(ctx, parent.ID, childB); !errors.Is(err, store.ErrRefreshTokenConflict) {
+		t.Errorf("second rotation = %v, want ErrRefreshTokenConflict", err)
+	}
+	if _, err := s.RefreshTokenByHash(ctx, []byte("child-b")); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("childB lookup = %v, want ErrNotFound (childB must not be inserted)", err)
+	}
+	// The family holds exactly one live token: childA.
+	gotParent, _ := s.RefreshTokenByHash(ctx, []byte("parent-cas"))
+	if gotParent.RevokedAt == nil {
+		t.Errorf("parent not revoked after rotation")
+	}
+	gotA, err := s.RefreshTokenByHash(ctx, []byte("child-a"))
+	if err != nil || gotA.RevokedAt != nil {
+		t.Errorf("childA = (%+v, %v), want live", gotA, err)
+	}
+}
+
+// TestRotateRefreshTokenConcurrentSingleWinner guards the simultaneous half of
+// the double-spend window (audit M8): N concurrent rotations of the same live
+// parent must produce exactly one live child; every loser observes
+// store.ErrRefreshTokenConflict. The CAS on the parent's ModRevision makes the
+// invariant hold regardless of scheduling.
+func TestRotateRefreshTokenConcurrentSingleWinner(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	future := time.Now().UTC().Add(time.Hour)
+	user := uuid.New()
+	family := uuid.New()
+	parent, err := s.CreateRefreshToken(ctx, rtParams([]byte("parent-race"), user, family, future))
+	if err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+
+	const n = 8
+	errs := make([]error, n)
+	hashes := make([][]byte, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		hashes[i] = []byte(fmt.Sprintf("race-child-%d", i))
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = s.RotateRefreshToken(ctx, parent.ID, store.CreateRefreshTokenParams{
+				ID: uuid.New(), UserID: user, TokenHash: hashes[i], FamilyID: family, ParentID: &parent.ID, ExpiresAt: future,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	var winners, conflicts int
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, store.ErrRefreshTokenConflict):
+			conflicts++
+		default:
+			t.Errorf("rotation %d = %v, want nil or ErrRefreshTokenConflict", i, err)
+		}
+	}
+	if winners != 1 || conflicts != n-1 {
+		t.Errorf("winners = %d, conflicts = %d, want 1 and %d", winners, conflicts, n-1)
+	}
+
+	// Exactly one live child exists; every loser's child is absent.
+	var live int
+	for i := range hashes {
+		got, err := s.RefreshTokenByHash(ctx, hashes[i])
+		switch {
+		case err == nil && got.RevokedAt == nil:
+			live++
+		case errors.Is(err, store.ErrNotFound):
+		default:
+			t.Errorf("child %d lookup = (%+v, %v)", i, got, err)
+		}
+	}
+	if live != 1 {
+		t.Errorf("live children = %d, want exactly 1", live)
+	}
+	gotParent, _ := s.RefreshTokenByHash(ctx, []byte("parent-race"))
+	if gotParent.RevokedAt == nil {
+		t.Errorf("parent not revoked after concurrent rotations")
 	}
 }
 

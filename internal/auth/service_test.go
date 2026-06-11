@@ -28,8 +28,10 @@ type fakeAuthStore struct {
 	userByID           func(ctx context.Context, id uuid.UUID) (store.User, error)
 	refreshTokenByHash func(ctx context.Context, hash []byte) (store.RefreshToken, error)
 	apiTokenByHash     func(ctx context.Context, hash []byte) (store.ApiToken, error)
+	rotateRefreshToken func(ctx context.Context, parentID uuid.UUID, child store.CreateRefreshTokenParams) (store.RefreshToken, error)
 
 	revokedRefreshTokens []uuid.UUID
+	revokedFamilies      []uuid.UUID
 }
 
 func (f *fakeAuthStore) UserByEmail(ctx context.Context, email string) (store.User, error) {
@@ -66,8 +68,11 @@ func (f *fakeAuthStore) CreateRefreshToken(_ context.Context, _ store.CreateRefr
 	return store.RefreshToken{}, nil
 }
 
-func (f *fakeAuthStore) RotateRefreshToken(_ context.Context, _ uuid.UUID, _ store.CreateRefreshTokenParams) (store.RefreshToken, error) {
+func (f *fakeAuthStore) RotateRefreshToken(ctx context.Context, parentID uuid.UUID, child store.CreateRefreshTokenParams) (store.RefreshToken, error) {
 	f.calls = append(f.calls, "RotateRefreshToken")
+	if f.rotateRefreshToken != nil {
+		return f.rotateRefreshToken(ctx, parentID, child)
+	}
 	return store.RefreshToken{}, nil
 }
 
@@ -77,8 +82,9 @@ func (f *fakeAuthStore) RevokeRefreshToken(_ context.Context, id uuid.UUID) erro
 	return nil
 }
 
-func (f *fakeAuthStore) RevokeRefreshTokenFamily(_ context.Context, _ uuid.UUID) error {
+func (f *fakeAuthStore) RevokeRefreshTokenFamily(_ context.Context, familyID uuid.UUID) error {
 	f.calls = append(f.calls, "RevokeRefreshTokenFamily")
+	f.revokedFamilies = append(f.revokedFamilies, familyID)
 	return nil
 }
 
@@ -235,6 +241,39 @@ func TestRefreshRejectsSoftDeletedUser(t *testing.T) {
 	}
 	if len(fake.revokedRefreshTokens) != 1 || fake.revokedRefreshTokens[0] != row.ID {
 		t.Errorf("revoked tokens = %v, want [%v]", fake.revokedRefreshTokens, row.ID)
+	}
+}
+
+// TestRefreshConcurrentRotationIsTheft guards the concurrent double-spend
+// path (audit M8): when the store reports store.ErrRefreshTokenConflict from
+// RotateRefreshToken (a concurrent rotation already spent the parent), the
+// service must treat the presentation as theft - burn the whole family and
+// return ErrTokenReplay, exactly like a revoked-token presentation.
+func TestRefreshConcurrentRotationIsTheft(t *testing.T) {
+	row := store.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    uuid.New(),
+		FamilyID:  uuid.New(),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	fake := &fakeAuthStore{
+		refreshTokenByHash: func(_ context.Context, _ []byte) (store.RefreshToken, error) {
+			return row, nil
+		},
+		userByID: func(_ context.Context, id uuid.UUID) (store.User, error) {
+			return store.User{ID: id, Role: "viewer"}, nil
+		},
+		rotateRefreshToken: func(_ context.Context, _ uuid.UUID, _ store.CreateRefreshTokenParams) (store.RefreshToken, error) {
+			return store.RefreshToken{}, store.ErrRefreshTokenConflict
+		},
+	}
+	svc := newTestService(t, fake)
+
+	if _, err := svc.Refresh(context.Background(), "refresh-plaintext", "", netip.Addr{}); !errors.Is(err, auth.ErrTokenReplay) {
+		t.Errorf("Refresh(concurrent rotation) error = %v, want ErrTokenReplay", err)
+	}
+	if len(fake.revokedFamilies) != 1 || fake.revokedFamilies[0] != row.FamilyID {
+		t.Errorf("revoked families = %v, want [%v]", fake.revokedFamilies, row.FamilyID)
 	}
 }
 
