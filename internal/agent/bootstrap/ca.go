@@ -180,15 +180,20 @@ func newBootstrapTransport() *http.Transport {
 
 // verifyingTransport builds the *http.Transport used for the token-bearing
 // POST /v1/nodes/join. Unlike newBootstrapTransport (which the /v1/ca anchor
-// fetch uses), it VERIFIES the CP serving cert against the operator-pinned
-// cluster CA bundle - the token must not leave the agent until the server is
-// authenticated (audit H4). The bundle is the same trust anchor steady-state
-// heartbeat uses, so any CP cert that works for heartbeat verifies here.
-func verifyingTransport(caBundlePEM []byte) (*http.Transport, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caBundlePEM) {
-		return nil, fmt.Errorf("bootstrap: pinned CA bundle contains no PEM certificates")
+// fetch uses), it VERIFIES the CP serving cert against EXACTLY the
+// operator-pinned cluster CA - the single cert whose fingerprint the operator
+// supplied - and nothing else (audit H4). Deliberately NOT the full /v1/ca
+// bundle: the bundle arrives over an unauthenticated TOFU channel, so an
+// active MITM can append its own CA next to the pinned one with
+// self-consistent per-entry fingerprints; pooling the whole bundle would let
+// that attacker CA authenticate the server that receives the token. The
+// trust pool here contains exactly the pinned cert.
+func verifyingTransport(pinnedCA *x509.Certificate) (*http.Transport, error) {
+	if pinnedCA == nil {
+		return nil, errors.New("bootstrap: pinned CA cert is nil")
 	}
+	pool := x509.NewCertPool()
+	pool.AddCert(pinnedCA)
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
 			RootCAs:    pool,

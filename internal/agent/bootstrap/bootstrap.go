@@ -45,8 +45,9 @@ type Result struct {
 //     sha256(cert.Raw) matches cfg.CAFingerprint (TOFU pin).
 //  3. Generate ECDSA P-384 keypair and build CSR.
 //  4. POST /v1/nodes/join over a transport that verifies the CP
-//     serving cert against the pinned cluster CA - the token is never
-//     sent to an unauthenticated server. **The token is consumed at
+//     serving cert against the operator-pinned cluster CA ONLY (not the
+//     full TOFU-served bundle) - the token is never sent to a server
+//     not authenticated by the pinned CA. **The token is consumed at
 //     the CP side once HTTP returns 201, even if the agent never
 //     observes the response** - retry requires a fresh token.
 //  5. Re-verify the returned CA matches the pinned fingerprint,
@@ -102,7 +103,7 @@ func Bootstrap(ctx context.Context, cfg *config.BootstrapConfig, log *slog.Logge
 		slog.String("token_hash_prefix", hashPrefix),
 		slog.String("node_name", cfg.NodeName))
 
-	resp, err := submitCSR(ctx, cfg, token, string(csrPEM), caPEM, timeout)
+	resp, err := submitCSR(ctx, cfg, token, string(csrPEM), caCert, timeout)
 	if err != nil {
 		log.WarnContext(ctx, "bootstrap: CSR submission failed — token may have been consumed",
 			slog.String("token_hash_prefix", hashPrefix),

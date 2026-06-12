@@ -6,6 +6,7 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,9 +51,11 @@ type errorEnvelope struct {
 }
 
 // submitCSR posts the CSR + token to /v1/nodes/join over a transport
-// that VERIFIES the CP serving cert against the pinned cluster CA
-// bundle (caBundlePEM, from the preceding /v1/ca fetch) - the secret
-// token is never transmitted to an unauthenticated server (audit H4).
+// that VERIFIES the CP serving cert against the operator-pinned cluster
+// CA specifically (pinnedCA, the single /v1/ca bundle entry matching the
+// operator fingerprint) - NOT the whole TOFU-served bundle, which a MITM
+// could have padded with its own CA. The secret token is never
+// transmitted to a server not authenticated by the pinned CA (audit H4).
 // verifyResponseChain downstream of the response decode stays as
 // defense-in-depth on the returned cert material.
 //
@@ -61,8 +64,8 @@ type errorEnvelope struct {
 // happens at the CP side when this function returns nil; partial
 // success (response observed by CP but lost in transit) leaves the
 // token consumed without a usable cert and forces operator intervention.
-func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM string, caBundlePEM []byte, timeout time.Duration) (*joinResponse, error) {
-	transport, err := verifyingTransport(caBundlePEM)
+func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM string, pinnedCA *x509.Certificate, timeout time.Duration) (*joinResponse, error) {
+	transport, err := verifyingTransport(pinnedCA)
 	if err != nil {
 		return nil, err
 	}

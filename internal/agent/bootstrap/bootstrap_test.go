@@ -513,7 +513,11 @@ func TestVerifyingTransportPinsCAAndTLS13(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterCA: %v", err)
 	}
-	tr, err := verifyingTransport(caResult.CertPEM)
+	caCert, _, err := auth.ParseClusterCACert(caResult.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	tr, err := verifyingTransport(caCert)
 	if err != nil {
 		t.Fatalf("verifyingTransport: %v", err)
 	}
@@ -524,13 +528,13 @@ func TestVerifyingTransportPinsCAAndTLS13(t *testing.T) {
 		t.Errorf("MinVersion = %d, want TLS 1.3 (%d)", tr.TLSClientConfig.MinVersion, tls.VersionTLS13)
 	}
 	if tr.TLSClientConfig.RootCAs == nil {
-		t.Error("RootCAs must be set to the pinned bundle")
+		t.Error("RootCAs must be set to the pinned CA")
 	}
 }
 
-func TestVerifyingTransportRejectsEmptyBundle(t *testing.T) {
-	if _, err := verifyingTransport([]byte("not a pem")); err == nil {
-		t.Error("verifyingTransport(no PEM) = nil error, want failure")
+func TestVerifyingTransportRejectsNilAnchor(t *testing.T) {
+	if _, err := verifyingTransport(nil); err == nil {
+		t.Error("verifyingTransport(nil) = nil error, want failure")
 	}
 }
 
@@ -580,10 +584,14 @@ func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterCA: %v", err)
 	}
+	caCert, _, err := auth.ParseClusterCACert(ca.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
 	srv, reached := startJoinTLSServer(t, ca)
 	cfg := &config.BootstrapConfig{CPURL: srv.URL, NodeName: "node-1", Architecture: "arm64"}
 
-	_, err = submitCSR(context.Background(), cfg, "tok", "csr", ca.CertPEM, 10*time.Second)
+	_, err = submitCSR(context.Background(), cfg, "tok", "csr", caCert, 10*time.Second)
 	if err != nil {
 		t.Fatalf("submitCSR against verified server: %v", err)
 	}
@@ -593,12 +601,13 @@ func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
 }
 
 // startBootstrapTLSServer starts an httptest TLS server serving BOTH /v1/ca
-// and /v1/nodes/join. /v1/ca returns advertisedCA's cert (what the operator
-// fingerprint pins); the server's TLS cert is signed by tlsSignCA (equal to
-// advertisedCA in the positive case, a different CA in the MITM case). It
-// records whether the join handler was reached (atomic - the handler runs on
-// the server goroutine).
-func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
+// and /v1/nodes/join. /v1/ca returns every advertisedCAs entry, each with a
+// self-consistent fingerprint (the first entry is the bundle signer); the
+// server's TLS cert is signed by tlsSignCA (equal to the pinned CA in the
+// positive case, a different CA in the MITM cases). It records whether the
+// join handler was reached (atomic - the handler runs on the server
+// goroutine).
+func startBootstrapTLSServer(t *testing.T, tlsSignCA auth.ClusterCAResult, advertisedCAs ...auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
 	t.Helper()
 	caCert, _, err := auth.ParseClusterCACert(tlsSignCA.CertPEM)
 	if err != nil {
@@ -621,21 +630,28 @@ func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterC
 		t.Fatalf("x509 keypair: %v", err)
 	}
 
-	advCert, _, err := auth.ParseClusterCACert(advertisedCA.CertPEM)
-	if err != nil {
-		t.Fatalf("parse adv ca: %v", err)
+	if len(advertisedCAs) == 0 {
+		t.Fatal("startBootstrapTLSServer needs at least one advertised CA")
 	}
-	advFP := sha256.Sum256(advCert.Raw)
+	entries := make([]caCertEntry, 0, len(advertisedCAs))
+	for _, adv := range advertisedCAs {
+		advCert, _, err := auth.ParseClusterCACert(adv.CertPEM)
+		if err != nil {
+			t.Fatalf("parse adv ca: %v", err)
+		}
+		advFP := sha256.Sum256(advCert.Raw)
+		entries = append(entries, caCertEntry{
+			CertPEM:           string(adv.CertPEM),
+			FingerprintSHA256: hex.EncodeToString(advFP[:]),
+		})
+	}
 
 	var reached atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(caBundleResponse{
-			CAs: []caCertEntry{{
-				CertPEM:           string(advertisedCA.CertPEM),
-				FingerprintSHA256: hex.EncodeToString(advFP[:]),
-			}},
-			SignerFingerprintSHA256: hex.EncodeToString(advFP[:]),
+			CAs:                     entries,
+			SignerFingerprintSHA256: entries[0].FingerprintSHA256,
 		})
 	})
 	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
@@ -691,6 +707,50 @@ func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 	})
 }
 
+// TestBootstrap_SecondBundleCACannotAuthenticateJoin seam-proves the join
+// POST verifies against ONLY the operator-pinned CA, not the whole TOFU
+// bundle. Attack encoded: an active MITM on the unauthenticated /v1/ca fetch
+// returns [realPinnedCA, attackerCA] - both entries self-consistent (correct
+// per-entry fingerprints) and the operator pin present - then presents an
+// attackerCA-signed leaf to /v1/nodes/join. If any bundle entry beyond the
+// pinned cert lands in the POST trust pool, the handshake verifies and the
+// token leaks. The handshake must fail and the join handler must never run.
+func TestBootstrap_SecondBundleCACannotAuthenticateJoin(t *testing.T) {
+	realCA, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("gen real ca: %v", err)
+	}
+	// Backdate the attacker CA so it is valid NOW - the test must fail on
+	// pool narrowing, not on a not-yet-valid attacker cert.
+	attackerCA, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("gen attacker ca: %v", err)
+	}
+	realCert, _, err := auth.ParseClusterCACert(realCA.CertPEM)
+	if err != nil {
+		t.Fatalf("parse real ca: %v", err)
+	}
+	realSum := sha256.Sum256(realCert.Raw)
+
+	// TLS leaf signed by attackerCA; /v1/ca bundle carries BOTH CAs.
+	srv, reached := startBootstrapTLSServer(t, attackerCA, realCA, attackerCA)
+	cfg := &config.BootstrapConfig{
+		Token:         "tok",
+		CPURL:         srv.URL,
+		CAFingerprint: hex.EncodeToString(realSum[:]),
+		NodeName:      "node-1",
+		Architecture:  "arm64",
+	}
+
+	_, err = Bootstrap(context.Background(), cfg, nil)
+	if err == nil {
+		t.Fatal("Bootstrap with attacker CA smuggled into TOFU bundle = nil error, want TLS verification failure")
+	}
+	if reached.Load() {
+		t.Error("join handler reached via attacker bundle CA - token leaked despite operator pin")
+	}
+}
+
 func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
 	// Pin the REAL cluster CA, but the server's TLS cert is signed by a DIFFERENT
 	// CA (the MITM): verification must fail and the handler must never be reached.
@@ -702,10 +762,14 @@ func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterCA mitm: %v", err)
 	}
+	realCert, _, err := auth.ParseClusterCACert(realCA.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert real: %v", err)
+	}
 	srv, reached := startJoinTLSServer(t, mitmCA) // server cert chains to mitmCA
 	cfg := &config.BootstrapConfig{CPURL: srv.URL, NodeName: "node-1", Architecture: "arm64"}
 
-	_, err = submitCSR(context.Background(), cfg, "tok", "csr", realCA.CertPEM, 10*time.Second)
+	_, err = submitCSR(context.Background(), cfg, "tok", "csr", realCert, 10*time.Second)
 	if err == nil {
 		t.Fatal("submitCSR against MITM server = nil error, want TLS verification failure")
 	}
