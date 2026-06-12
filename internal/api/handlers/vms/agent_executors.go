@@ -148,7 +148,7 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 	if args.AgentTaskID != nil {
 		return *args.AgentTaskID, nil
 	}
-	idemKey := uuid.NewString()
+	idemKey := args.TaskID.String()
 	body := agentclient.VMCreateRequest{
 		UUID:           args.VM.ID,
 		Name:           args.VM.Name,
@@ -227,7 +227,7 @@ func (e *agentVMDeleteExecutor) postOrResumeDelete(ctx context.Context, args Del
 	if args.AgentTaskID != nil {
 		return *args.AgentTaskID, nil
 	}
-	idemKey := uuid.NewString()
+	idemKey := args.TaskID.String()
 	agentTaskID, err := e.client.DeleteVM(ctx, args.Node.AdvertisedEndpoint, args.VMName, idemKey)
 	if err != nil {
 		// 404 on delete-of-missing-vm is idempotent success — the

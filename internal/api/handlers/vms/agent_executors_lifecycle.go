@@ -74,7 +74,7 @@ func (e *agentVMLifecycleExecutor) postOrResume(ctx context.Context, op string, 
 	if args.AgentTaskID != nil {
 		return *args.AgentTaskID, nil
 	}
-	idemKey := uuid.NewString()
+	idemKey := args.TaskID.String()
 	agentTaskID, err := e.dispatch(ctx, op, args.Node.AdvertisedEndpoint, args.VM.Name, idemKey)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("post vm.%s: %w", op, err)

@@ -105,6 +105,10 @@ provision:
       ExecStart=/usr/local/bin/otherix-agent serve
       Restart=on-failure
       RestartSec=5s
+      # KillMode=process so an agent restart kills ONLY the agent, not the
+      # daemonized qemu guests in its cgroup (the agent re-adopts running VMs on
+      # restart); the default control-group would kill every guest on each bounce.
+      KillMode=process
       StandardOutput=journal
       StandardError=journal
       # CAP_NET_ADMIN: the netlink network fabric (bridges/taps/VXLAN/WireGuard/nft).

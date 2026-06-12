@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -51,11 +52,17 @@ type deleteWorkerStoreStub struct {
 	// committed-terminal (success/cancelled), so the handler must abort.
 	taskTerminal bool
 
-	projectedDelete bool
+	projectedDelete    bool
+	clearedAgentTaskID bool
 }
 
 func (s *deleteWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
 	return s.taskTerminal, nil
+}
+
+func (s *deleteWorkerStoreStub) ClearTaskAgentTaskID(context.Context, uuid.UUID) error {
+	s.clearedAgentTaskID = true
+	return nil
 }
 
 func (s *deleteWorkerStoreStub) UpdateTaskFinalized(context.Context, store.UpdateTaskFinalizedParams) error {
@@ -220,10 +227,16 @@ type createLifecycleWorkerStoreStub struct {
 	finalizedError     []byte // the error envelope of the last failed finalize
 	projectedCreate    bool
 	projectedLifecycle bool
+	clearedAgentTaskID bool
 }
 
 func (s *createLifecycleWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
 	return s.taskTerminal, nil
+}
+
+func (s *createLifecycleWorkerStoreStub) ClearTaskAgentTaskID(context.Context, uuid.UUID) error {
+	s.clearedAgentTaskID = true
+	return nil
 }
 
 func (s *createLifecycleWorkerStoreStub) UpdateTaskFinalized(_ context.Context, arg store.UpdateTaskFinalizedParams) error {
@@ -487,6 +500,89 @@ func TestRunCreateExecErrorRetryable(t *testing.T) {
 	}
 	if !exec.called {
 		t.Errorf("agent create not attempted on live node")
+	}
+}
+
+// TestRunCreateClearsAgentTaskIDOn404 pins R2-M2 for the create path: when the
+// agent task vanished (poll 404, e.g. the agent restarted and lost its in-memory
+// task store), the worker clears the persisted agent_task_id so the redelivery
+// re-POSTs and the agent's durable dedup reconciles. It still returns a retryable
+// error (failRun semantics).
+func TestRunCreateClearsAgentTaskIDOn404(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
+	exec := &spyCreateExecutor{err: &agentclient.AgentError{Status: 404, Code: "not_found"}}
+
+	err := runCreate(context.Background(), st, exec, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err == nil {
+		t.Fatalf("runCreate = nil, want non-nil (retryable after clear)")
+	}
+	if !st.clearedAgentTaskID {
+		t.Errorf("agent_task_id not cleared on a 404; the redelivery cannot re-POST")
+	}
+}
+
+// TestRunCreateDoesNotClearOnNon404 confirms the clear is narrow: a non-404 agent
+// error must NOT clear the persisted agent_task_id.
+func TestRunCreateDoesNotClearOnNon404(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
+	exec := &spyCreateExecutor{err: &agentclient.AgentError{Status: 500, Code: "internal"}}
+
+	err := runCreate(context.Background(), st, exec, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err == nil {
+		t.Fatalf("runCreate = nil, want non-nil (retryable)")
+	}
+	if st.clearedAgentTaskID {
+		t.Errorf("agent_task_id cleared on a non-404 error; the clear must be 404-only")
+	}
+}
+
+// TestRunDeleteClearsAgentTaskIDOn404 mirrors the create case for delete on a
+// live (ready) node.
+func TestRunDeleteClearsAgentTaskIDOn404(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, AdvertisedEndpoint: "https://node-x:8443", LastHeartbeatAt: &fresh}
+	st := &deleteWorkerStoreStub{vm: store.VM{ID: vmID, Name: "vm-x"}, node: node}
+	exec := &spyDeleteExecutor{err: &agentclient.AgentError{Status: 404, Code: "not_found"}}
+
+	err := runDelete(context.Background(), st, exec, discardLog(), 5*time.Minute,
+		VMDeleteArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID})
+	if err == nil {
+		t.Fatalf("runDelete = nil, want non-nil (retryable after clear)")
+	}
+	if !st.clearedAgentTaskID {
+		t.Errorf("agent_task_id not cleared on a 404; the redelivery cannot re-POST")
+	}
+}
+
+// TestRunDeleteDoesNotClearOnNon404: a non-404 delete error on a live node must
+// not clear the persisted agent_task_id.
+func TestRunDeleteDoesNotClearOnNon404(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, AdvertisedEndpoint: "https://node-x:8443", LastHeartbeatAt: &fresh}
+	st := &deleteWorkerStoreStub{vm: store.VM{ID: vmID, Name: "vm-x"}, node: node}
+	exec := &spyDeleteExecutor{err: &agentclient.AgentError{Status: 500, Code: "internal"}}
+
+	err := runDelete(context.Background(), st, exec, discardLog(), 5*time.Minute,
+		VMDeleteArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID})
+	if err == nil {
+		t.Fatalf("runDelete = nil, want non-nil (retryable)")
+	}
+	if st.clearedAgentTaskID {
+		t.Errorf("agent_task_id cleared on a non-404 error; the clear must be 404-only")
 	}
 }
 

@@ -27,6 +27,7 @@ type fakeVMClient struct {
 	lastPollID      atomic.Value
 
 	lastCreateReq atomic.Value
+	lastIdemKey   atomic.Value
 
 	postCreateID  uuid.UUID
 	postCreateErr error
@@ -39,17 +40,19 @@ type fakeVMClient struct {
 }
 
 func (f *fakeVMClient) PostVMCreate(
-	_ context.Context, _ string, _ string, req agentclient.VMCreateRequest,
+	_ context.Context, _ string, idemKey string, req agentclient.VMCreateRequest,
 ) (uuid.UUID, error) {
 	f.postCreateCalls.Add(1)
 	f.lastCreateReq.Store(req)
+	f.lastIdemKey.Store(idemKey)
 	return f.postCreateID, f.postCreateErr
 }
 
 func (f *fakeVMClient) DeleteVM(
-	_ context.Context, _ string, _ string, _ string,
+	_ context.Context, _ string, _ string, idemKey string,
 ) (uuid.UUID, error) {
 	f.deleteCalls.Add(1)
+	f.lastIdemKey.Store(idemKey)
 	return f.deleteID, f.deleteErr
 }
 
@@ -87,6 +90,37 @@ func fixtureCreateArgs() (CreateArgs, *atomic.Int32, *atomic.Value) {
 	}, &calls, &arg
 }
 
+// TestAgentVMCreateExecutor_PollGoneIsAgentTaskGone pins the wrap depth between Execute and
+// isAgentTaskGone: a PollTask 404 (the agent task vanished after a restart) must survive Execute's
+// `poll task: %w` wrap so the M2 clear-on-404 path in runCreate fires. A non-404 poll error must
+// NOT match. Without the `%w` in Execute this test fails, guarding a regression the bare-AgentError
+// handler tests cannot catch.
+func TestAgentVMCreateExecutor_PollGoneIsAgentTaskGone(t *testing.T) {
+	t.Parallel()
+
+	resumeID := uuid.New()
+	args, _, _ := fixtureCreateArgs()
+	args.AgentTaskID = &resumeID // resumption: skip POST, go straight to PollTask.
+
+	gone := &fakeVMClient{pollErr: &agentclient.AgentError{Status: 404}}
+	_, err := NewAgentVMCreateExecutor(gone).Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("Execute(poll 404) = nil error, want a wrapped agent error")
+	}
+	if !isAgentTaskGone(err) {
+		t.Errorf("isAgentTaskGone(%v) = false, want true (the 404 must survive Execute's wrap)", err)
+	}
+
+	other := &fakeVMClient{pollErr: &agentclient.AgentError{Status: 500}}
+	_, err = NewAgentVMCreateExecutor(other).Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("Execute(poll 500) = nil error, want a wrapped agent error")
+	}
+	if isAgentTaskGone(err) {
+		t.Errorf("isAgentTaskGone(%v) = true, want false (only 404 is task-gone)", err)
+	}
+}
+
 func TestAgentVMCreateExecutor_FirstRunPostsAndPersists(t *testing.T) {
 	t.Parallel()
 
@@ -119,6 +153,64 @@ func TestAgentVMCreateExecutor_FirstRunPostsAndPersists(t *testing.T) {
 	}
 	if got, _ := fc.lastPollID.Load().(uuid.UUID); got != wantAgentID {
 		t.Errorf("poll task id = %s, want %s", got, wantAgentID)
+	}
+}
+
+// TestAgentVMCreateExecutor_StableIdempotencyKey pins the agent idempotency key
+// to the stable CP task id (args.TaskID) rather than a fresh random uuid per
+// attempt. The key must equal args.TaskID.String() and be identical across two
+// separate Execute attempts for the same task (audit R2-M1a).
+func TestAgentVMCreateExecutor_StableIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	args, _, _ := fixtureCreateArgs()
+
+	fc1 := &fakeVMClient{postCreateID: uuid.New(), pollResult: agentclient.TaskTerminal{Status: "success"}}
+	exec := NewAgentVMCreateExecutor(fc1)
+	if _, err := exec.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute attempt 1: %v", err)
+	}
+	key1, _ := fc1.lastIdemKey.Load().(string)
+	if key1 != args.TaskID.String() {
+		t.Errorf("idempotency key = %q, want stable task id %q", key1, args.TaskID.String())
+	}
+
+	fc2 := &fakeVMClient{postCreateID: uuid.New(), pollResult: agentclient.TaskTerminal{Status: "success"}}
+	exec = NewAgentVMCreateExecutor(fc2)
+	if _, err := exec.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute attempt 2: %v", err)
+	}
+	key2, _ := fc2.lastIdemKey.Load().(string)
+	if key2 != key1 {
+		t.Errorf("idempotency key not stable across attempts: %q vs %q", key1, key2)
+	}
+}
+
+// TestAgentVMDeleteExecutor_StableIdempotencyKey: the delete executor likewise
+// uses the stable CP task id as the agent idempotency key (audit R2-M1a).
+func TestAgentVMDeleteExecutor_StableIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	taskID := uuid.New()
+	fc := &fakeVMClient{
+		deleteID:   uuid.New(),
+		pollResult: agentclient.TaskTerminal{Status: "success"},
+	}
+	args := DeleteArgs{
+		TaskID:        taskID,
+		VMID:          uuid.New(),
+		VMName:        "demo",
+		Node:          store.Node{AdvertisedEndpoint: "https://node.test"},
+		OnAgentTaskID: func(_ context.Context, _ uuid.UUID) error { return nil },
+	}
+
+	exec := NewAgentVMDeleteExecutor(fc)
+	if _, err := exec.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	key, _ := fc.lastIdemKey.Load().(string)
+	if key != taskID.String() {
+		t.Errorf("delete idempotency key = %q, want stable task id %q", key, taskID.String())
 	}
 }
 
