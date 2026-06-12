@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,11 +22,8 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// clusterJoinServer stands up a TLS test server that advertises signCA on
-// GET /v1/ca (the prefetch pin anchor), presents a serving cert signed by
-// signCA (so the verified token POST passes), and answers POST
-// /v1/cluster/join with the given CA cert/key PEM.
-func clusterJoinServer(t *testing.T, signCA auth.ClusterCAResult, caCertPEM, caKeyPEM []byte) *httptest.Server {
+// leafSignedBy generates a 127.0.0.1 TLS serving keypair signed by signCA.
+func leafSignedBy(t *testing.T, signCA auth.ClusterCAResult) tls.Certificate {
 	t.Helper()
 	signCert, _, err := auth.ParseClusterCACert(signCA.CertPEM)
 	if err != nil {
@@ -47,7 +46,19 @@ func clusterJoinServer(t *testing.T, signCA auth.ClusterCAResult, caCertPEM, caK
 	if err != nil {
 		t.Fatalf("X509KeyPair: %v", err)
 	}
+	return leaf
+}
 
+// clusterJoinServer stands up a TLS test server that advertises signCA on
+// GET /v1/ca (the prefetch pin anchor), presents a serving cert signed by
+// signCA (so the verified token POST passes), and answers POST
+// /v1/cluster/join with the given CA cert/key PEM. The returned flag reports
+// whether the join handler was reached.
+func clusterJoinServer(t *testing.T, signCA auth.ClusterCAResult, caCertPEM, caKeyPEM []byte) (*httptest.Server, *atomic.Bool) {
+	t.Helper()
+	leaf := leafSignedBy(t, signCA)
+
+	var reached atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -60,6 +71,7 @@ func clusterJoinServer(t *testing.T, signCA auth.ClusterCAResult, caCertPEM, caK
 		})
 	})
 	mux.HandleFunc("/v1/cluster/join", func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -71,7 +83,7 @@ func clusterJoinServer(t *testing.T, signCA auth.ClusterCAResult, caCertPEM, caK
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, &reached
 }
 
 func fingerprintHexOf(fp []byte) string { return hex.EncodeToString(fp) }
@@ -81,7 +93,7 @@ func TestFetchClusterCASuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterCA: %v", err)
 	}
-	srv := clusterJoinServer(t, ca, ca.CertPEM, ca.KeyPEM)
+	srv, _ := clusterJoinServer(t, ca, ca.CertPEM, ca.KeyPEM)
 
 	got, err := api.FetchClusterCA(context.Background(), api.ClusterJoinFetchParams{
 		CPURL:         srv.URL,
@@ -106,7 +118,7 @@ func TestFetchClusterCASuccess(t *testing.T) {
 
 func TestFetchClusterCAFingerprintMismatch(t *testing.T) {
 	ca, _ := auth.GenerateClusterCA(time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
-	srv := clusterJoinServer(t, ca, ca.CertPEM, ca.KeyPEM)
+	srv, _ := clusterJoinServer(t, ca, ca.CertPEM, ca.KeyPEM)
 
 	// Flip the first hex character to one guaranteed different from the real
 	// fingerprint so the pin always mismatches. A hardcoded "00" prefix
@@ -146,31 +158,11 @@ func TestFetchClusterCA_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 	// makeServer serves /v1/ca advertising the REAL cluster CA and
 	// /v1/cluster/join returning its cert+key; the server's own TLS leaf is
 	// signed by tlsSignCA (== ca in the verified case, a MITM CA otherwise).
-	makeServer := func(t *testing.T, tlsSignCA auth.ClusterCAResult) (*httptest.Server, *bool) {
+	makeServer := func(t *testing.T, tlsSignCA auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
 		t.Helper()
-		signCert, _, err := auth.ParseClusterCACert(tlsSignCA.CertPEM)
-		if err != nil {
-			t.Fatalf("ParseClusterCACert: %v", err)
-		}
-		signKeyAny, err := auth.ParseClusterCAKey(tlsSignCA.KeyPEM)
-		if err != nil {
-			t.Fatalf("ParseClusterCAKey: %v", err)
-		}
-		signer, ok := signKeyAny.(crypto.Signer)
-		if !ok {
-			t.Fatalf("CA key %T is not a crypto.Signer", signKeyAny)
-		}
-		leafCertPEM, leafKeyPEM, err := auth.GenerateReplicaCert(
-			signCert, signer, nil, []net.IP{net.ParseIP("127.0.0.1")}, time.Hour, time.Now())
-		if err != nil {
-			t.Fatalf("GenerateReplicaCert: %v", err)
-		}
-		leaf, err := tls.X509KeyPair(leafCertPEM, leafKeyPEM)
-		if err != nil {
-			t.Fatalf("X509KeyPair: %v", err)
-		}
+		leaf := leafSignedBy(t, tlsSignCA)
 
-		reached := false
+		var reached atomic.Bool
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -183,7 +175,7 @@ func TestFetchClusterCA_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 			})
 		})
 		mux.HandleFunc("/v1/cluster/join", func(w http.ResponseWriter, r *http.Request) {
-			reached = true
+			reached.Store(true)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -211,13 +203,15 @@ func TestFetchClusterCA_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 		if _, err := api.FetchClusterCA(context.Background(), p, nil); err != nil {
 			t.Fatalf("FetchClusterCA against verified server: %v", err)
 		}
-		if !*reached {
+		if !reached.Load() {
 			t.Error("cluster-join handler not reached over verified TLS")
 		}
 	})
 
 	t.Run("mitm tls cert aborts before cluster-join", func(t *testing.T) {
-		mitm, err := auth.GenerateClusterCA(time.Now().Add(time.Second))
+		// Backdated so the MITM CA is valid at handshake time - the abort must
+		// be caused by the CA being untrusted, not by a not-yet-valid cert.
+		mitm, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
 		if err != nil {
 			t.Fatalf("GenerateClusterCA mitm: %v", err)
 		}
@@ -232,10 +226,113 @@ func TestFetchClusterCA_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 		if _, err := api.FetchClusterCA(context.Background(), p, nil); err == nil {
 			t.Fatal("FetchClusterCA against MITM = nil error, want TLS verification failure")
 		}
-		if *reached {
+		if reached.Load() {
 			t.Error("cluster-join handler reached over UNVERIFIED TLS - cluster token leaked")
 		}
 	})
+}
+
+// TestFetchClusterCA_RogueReplicaReturnsDifferentCA covers the post-receipt
+// fingerprint check: TLS and /v1/ca both advertise the operator-pinned CA (so
+// the prefetch pin passes and the join POST verifies), but /v1/cluster/join
+// returns a DIFFERENT CA's cert/key in the body. FetchClusterCA must reach the
+// join handler (the failure is post-receipt, not pre-send) and then reject the
+// response at the CA fingerprint comparison.
+func TestFetchClusterCA_RogueReplicaReturnsDifferentCA(t *testing.T) {
+	pinned, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA pinned: %v", err)
+	}
+	rogue, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GenerateClusterCA rogue: %v", err)
+	}
+	srv, reached := clusterJoinServer(t, pinned, rogue.CertPEM, rogue.KeyPEM)
+
+	_, err = api.FetchClusterCA(context.Background(), api.ClusterJoinFetchParams{
+		CPURL:         srv.URL,
+		Token:         "otx_join_whatever",
+		CAFingerprint: fingerprintHexOf(pinned.Fingerprint),
+		PeerURL:       "https://127.0.0.1:2380",
+		Timeout:       10 * time.Second,
+	}, nil)
+	if err == nil {
+		t.Fatal("expected post-receipt fingerprint-mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cluster CA fingerprint mismatch") {
+		t.Errorf("error = %q, want it to contain %q", err, "cluster CA fingerprint mismatch")
+	}
+	if !reached.Load() {
+		t.Error("cluster-join handler not reached - failure happened pre-send, want post-receipt")
+	}
+}
+
+// TestFetchClusterCA_MITMBundleCANotPooled proves the verify pool contains
+// ONLY the operator-pinned CA. An active MITM on the TOFU /v1/ca fetch returns
+// [pinnedCA, attackerCA] - every entry self-consistent, the pinned fingerprint
+// present - and presents a TLS serving cert signed by attackerCA. If the whole
+// bundle were pooled the handshake would verify and the cluster token would
+// leak to the MITM; with the pool narrowed to the pinned CA the POST must
+// abort before the join handler is reached.
+func TestFetchClusterCA_MITMBundleCANotPooled(t *testing.T) {
+	pinned, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA pinned: %v", err)
+	}
+	// Backdate the attacker CA so it is VALID at handshake time: the test must
+	// prove the handshake fails because the attacker CA is not in the pool,
+	// not because its cert happens to be not-yet-valid.
+	attacker, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GenerateClusterCA attacker: %v", err)
+	}
+	leaf := leafSignedBy(t, attacker)
+
+	var reached atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"cas": []map[string]string{
+				{
+					"cert_pem":           string(pinned.CertPEM),
+					"fingerprint_sha256": fingerprintHexOf(pinned.Fingerprint),
+				},
+				{
+					"cert_pem":           string(attacker.CertPEM),
+					"fingerprint_sha256": fingerprintHexOf(attacker.Fingerprint),
+				},
+			},
+			"signer_fingerprint_sha256": fingerprintHexOf(pinned.Fingerprint),
+		})
+	})
+	mux.HandleFunc("/v1/cluster/join", func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"ca_cert_pem": string(pinned.CertPEM),
+			"ca_key_pem":  string(pinned.KeyPEM),
+		})
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	_, err = api.FetchClusterCA(context.Background(), api.ClusterJoinFetchParams{
+		CPURL:         srv.URL,
+		Token:         "otx_join_whatever",
+		CAFingerprint: fingerprintHexOf(pinned.Fingerprint),
+		PeerURL:       "https://127.0.0.1:2380",
+		Timeout:       10 * time.Second,
+	}, nil)
+	if err == nil {
+		t.Fatal("FetchClusterCA over attacker-CA TLS = nil error, want verification failure")
+	}
+	if reached.Load() {
+		t.Error("cluster-join handler reached over attacker-CA TLS - injected bundle CA was pooled, cluster token leaked")
+	}
 }
 
 func TestFetchClusterCAKeyDoesNotMatchCert(t *testing.T) {
@@ -243,7 +340,7 @@ func TestFetchClusterCAKeyDoesNotMatchCert(t *testing.T) {
 	ca2, _ := auth.GenerateClusterCA(time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
 	// Serve ca1's cert with ca2's key: a tampered pair. TLS is signed by ca1
 	// so the verified POST goes through; the key/cert pairing check must fail.
-	srv := clusterJoinServer(t, ca1, ca1.CertPEM, ca2.KeyPEM)
+	srv, _ := clusterJoinServer(t, ca1, ca1.CertPEM, ca2.KeyPEM)
 
 	_, err := api.FetchClusterCA(context.Background(), api.ClusterJoinFetchParams{
 		CPURL:         srv.URL,

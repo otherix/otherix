@@ -134,13 +134,17 @@ type caBundleResponse struct {
 }
 
 // prefetchPinnedCA fetches /v1/ca over a TOFU (InsecureSkipVerify) connection
-// and returns a cert pool of the bundle after confirming the operator-pinned
-// fingerprint is present and every entry's reported fingerprint matches its
-// recomputed one (defense-in-depth against a MITM rewriting part of the JSON).
-// The pool then anchors the verified /v1/cluster/join POST so the cluster
-// token is never sent before the server is authenticated (audit H4). The TLS
-// skip is acceptable only here: no CA is pinned yet, the payload is public
-// (CA certs only), and the fingerprint pin makes substitution detectable.
+// and returns a cert pool containing ONLY the operator-pinned CA. Every bundle
+// entry is still checked for fingerprint self-consistency and the pinned
+// fingerprint must be present, but no other entry lands in the pool: the
+// bundle arrives over an unauthenticated channel, so an active MITM could
+// append its own (self-consistent) CA alongside the real one - pooling the
+// whole bundle would let an attacker-CA-signed leaf pass the verified
+// /v1/cluster/join handshake and capture the cluster token. The pool then
+// anchors the verified /v1/cluster/join POST so the token is never sent
+// before the server is authenticated (audit H4). The TLS skip is acceptable
+// only here: no CA is pinned yet, the payload is public (CA certs only), and
+// the fingerprint pin makes substitution detectable.
 func prefetchPinnedCA(ctx context.Context, cpURL, expectedFingerprint string, timeout time.Duration) (*x509.CertPool, error) {
 	client := &http.Client{
 		Timeout: timeout,
@@ -202,9 +206,9 @@ func prefetchPinnedCA(ctx context.Context, cpURL, expectedFingerprint string, ti
 		}
 		if computedHex == expectedFingerprint {
 			pinned = true
-		}
-		if !pool.AppendCertsFromPEM([]byte(entry.CertPEM)) {
-			return nil, fmt.Errorf("/v1/ca cas[%d] contains no usable PEM certificate", i)
+			if !pool.AppendCertsFromPEM([]byte(entry.CertPEM)) {
+				return nil, fmt.Errorf("/v1/ca cas[%d] contains no usable PEM certificate", i)
+			}
 		}
 	}
 	if !pinned {
@@ -236,6 +240,9 @@ func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams, caPool *x509
 			},
 			Proxy: nil,
 		},
+		// Never follow redirects: a 307/308 would re-send the cluster token
+		// body to whatever target the server names.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, p.Timeout)
