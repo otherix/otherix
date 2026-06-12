@@ -49,16 +49,24 @@ type errorEnvelope struct {
 	} `json:"error"`
 }
 
-// submitCSR posts the CSR + token to /v1/nodes/join. Same
-// InsecureSkipVerify posture as fetchAndVerifyCA. Security comes from
-// verifyResponseChain downstream of the response decode.
+// submitCSR posts the CSR + token to /v1/nodes/join over a transport
+// that VERIFIES the CP serving cert against the pinned cluster CA
+// bundle (caBundlePEM, from the preceding /v1/ca fetch) - the secret
+// token is never transmitted to an unauthenticated server (audit H4).
+// verifyResponseChain downstream of the response decode stays as
+// defense-in-depth on the returned cert material.
 //
 // Non-2xx response → wrapped ErrCSRRejected with the parsed envelope.
 // Network / decode failure → plain fmt.Errorf chain. Token consumption
 // happens at the CP side when this function returns nil; partial
 // success (response observed by CP but lost in transit) leaves the
 // token consumed without a usable cert and forces operator intervention.
-func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM string, timeout time.Duration) (*joinResponse, error) {
+func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM string, caBundlePEM []byte, timeout time.Duration) (*joinResponse, error) {
+	transport, err := verifyingTransport(caBundlePEM)
+	if err != nil {
+		return nil, err
+	}
+
 	body := joinRequest{
 		Token:                   token,
 		CSRPEM:                  csrPEM,
@@ -76,7 +84,7 @@ func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM s
 
 	client := &http.Client{
 		Timeout:   timeout,
-		Transport: newBootstrapTransport(),
+		Transport: transport,
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)

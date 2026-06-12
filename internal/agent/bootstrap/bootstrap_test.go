@@ -532,3 +532,84 @@ func TestVerifyingTransportRejectsEmptyBundle(t *testing.T) {
 		t.Error("verifyingTransport(no PEM) = nil error, want failure")
 	}
 }
+
+// startJoinTLSServer starts an httptest TLS server presenting a leaf signed by
+// signCA (CN otherix-cp-replica, IP SAN 127.0.0.1 so the 127.0.0.1 dial verifies).
+// It records whether the /v1/nodes/join handler was reached. Returns the server
+// and a pointer to the reached flag.
+func startJoinTLSServer(t *testing.T, signCA auth.ClusterCAResult) (*httptest.Server, *bool) {
+	t.Helper()
+	caCert, _, err := auth.ParseClusterCACert(signCA.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	caKeyAny, err := auth.ParseClusterCAKey(signCA.KeyPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCAKey: %v", err)
+	}
+	caSigner, ok := caKeyAny.(crypto.Signer)
+	if !ok {
+		t.Fatalf("CA key %T does not implement crypto.Signer", caKeyAny)
+	}
+	leafCertPEM, leafKeyPEM, err := auth.GenerateReplicaCert(caCert, caSigner, nil, []net.IP{net.ParseIP("127.0.0.1")}, time.Hour, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateReplicaCert: %v", err)
+	}
+	leaf, err := tls.X509KeyPair(leafCertPEM, leafKeyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+
+	reached := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(joinResponse{NodeID: "n1", CertPEM: "x", CACertPEM: "y"})
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, &reached
+}
+
+func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
+	ca, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	srv, reached := startJoinTLSServer(t, ca)
+	cfg := &config.BootstrapConfig{CPURL: srv.URL, NodeName: "node-1", Architecture: "arm64"}
+
+	_, err = submitCSR(context.Background(), cfg, "tok", "csr", ca.CertPEM, 10*time.Second)
+	if err != nil {
+		t.Fatalf("submitCSR against verified server: %v", err)
+	}
+	if !*reached {
+		t.Error("join handler not reached over a verified connection")
+	}
+}
+
+func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
+	// Pin the REAL cluster CA, but the server's TLS cert is signed by a DIFFERENT
+	// CA (the MITM): verification must fail and the handler must never be reached.
+	realCA, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA real: %v", err)
+	}
+	mitmCA, err := auth.GenerateClusterCA(time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("GenerateClusterCA mitm: %v", err)
+	}
+	srv, reached := startJoinTLSServer(t, mitmCA) // server cert chains to mitmCA
+	cfg := &config.BootstrapConfig{CPURL: srv.URL, NodeName: "node-1", Architecture: "arm64"}
+
+	_, err = submitCSR(context.Background(), cfg, "tok", "csr", realCA.CertPEM, 10*time.Second)
+	if err == nil {
+		t.Fatal("submitCSR against MITM server = nil error, want TLS verification failure")
+	}
+	if *reached {
+		t.Error("join handler was reached over an UNVERIFIED connection - token leaked")
+	}
+}
