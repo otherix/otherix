@@ -171,3 +171,26 @@ func newBootstrapTransport() *http.Transport {
 		IdleConnTimeout:       90 * time.Second,
 	}
 }
+
+// verifyingTransport builds the *http.Transport used for the token-bearing
+// POST /v1/nodes/join. Unlike newBootstrapTransport (which the /v1/ca anchor
+// fetch uses), it VERIFIES the CP serving cert against the operator-pinned
+// cluster CA bundle - the token must not leave the agent until the server is
+// authenticated (audit H4). The bundle is the same trust anchor steady-state
+// heartbeat uses, so any CP cert that works for heartbeat verifies here.
+func verifyingTransport(caBundlePEM []byte) (*http.Transport, error) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caBundlePEM) {
+		return nil, fmt.Errorf("bootstrap: pinned CA bundle contains no PEM certificates")
+	}
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs:    pool,
+			MinVersion: tls.VersionTLS13,
+		},
+		Proxy:                 nil,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}, nil
+}

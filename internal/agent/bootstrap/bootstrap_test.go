@@ -506,3 +506,29 @@ func TestNewBootstrapTransportPinsTLS13Floor(t *testing.T) {
 		t.Errorf("TLSClientConfig.MinVersion = %#x, want %#x (TLS 1.3)", got, uint16(tls.VersionTLS13))
 	}
 }
+
+func TestVerifyingTransportPinsCAAndTLS13(t *testing.T) {
+	caResult, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	tr, err := verifyingTransport(caResult.CertPEM)
+	if err != nil {
+		t.Fatalf("verifyingTransport: %v", err)
+	}
+	if tr.TLSClientConfig.InsecureSkipVerify {
+		t.Error("verifyingTransport must NOT skip verification")
+	}
+	if tr.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Errorf("MinVersion = %d, want TLS 1.3 (%d)", tr.TLSClientConfig.MinVersion, tls.VersionTLS13)
+	}
+	if tr.TLSClientConfig.RootCAs == nil {
+		t.Error("RootCAs must be set to the pinned bundle")
+	}
+}
+
+func TestVerifyingTransportRejectsEmptyBundle(t *testing.T) {
+	if _, err := verifyingTransport([]byte("not a pem")); err == nil {
+		t.Error("verifyingTransport(no PEM) = nil error, want failure")
+	}
+}
