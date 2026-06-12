@@ -55,6 +55,21 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{name: "missing client-url", mutate: func(c *Config) { c.ClientURL = "" }, wantErr: true},
+		{name: "client-url bind-all rejected", mutate: func(c *Config) { c.ClientURL = "http://0.0.0.0:2379" }, wantErr: true},
+		{name: "client-url ipv6 bind-all rejected", mutate: func(c *Config) { c.ClientURL = "http://[::]:2379" }, wantErr: true},
+		{name: "client-url private ip rejected", mutate: func(c *Config) { c.ClientURL = "http://10.0.0.5:2379" }, wantErr: true},
+		{name: "client-url lan ip rejected", mutate: func(c *Config) { c.ClientURL = "http://192.168.1.1:2379" }, wantErr: true},
+		{name: "client-url public host rejected", mutate: func(c *Config) { c.ClientURL = "https://etcd.example.com:2379" }, wantErr: true},
+		// Intentional fail-closed: the guard pins on the literal address and does
+		// no DNS resolution, so a non-"localhost" name is rejected even if it
+		// would resolve to 127.0.0.1 via /etc/hosts.
+		{name: "client-url loopback-resolving hostname rejected", mutate: func(c *Config) { c.ClientURL = "http://myhost.local:2379" }, wantErr: true},
+		{name: "client-url userinfo trick rejected", mutate: func(c *Config) { c.ClientURL = "http://127.0.0.1@evil.com:2379" }, wantErr: true},
+		{name: "client-url ipv4-mapped loopback ok", mutate: func(c *Config) { c.ClientURL = "http://[::ffff:127.0.0.1]:2379" }, wantErr: false},
+		{name: "client-url ipv6 loopback ok", mutate: func(c *Config) { c.ClientURL = "http://[::1]:2379" }, wantErr: false},
+		{name: "client-url localhost ok", mutate: func(c *Config) { c.ClientURL = "http://localhost:2379" }, wantErr: false},
+		{name: "client-url localhost uppercase ok", mutate: func(c *Config) { c.ClientURL = "http://LOCALHOST:2379" }, wantErr: false},
+		{name: "client-url 127.0.0.5 ok", mutate: func(c *Config) { c.ClientURL = "http://127.0.0.5:2379" }, wantErr: false},
 		{name: "missing cluster-token", mutate: func(c *Config) { c.ClusterToken = "" }, wantErr: true},
 		{name: "bootstrap needs initial-cluster", mutate: func(c *Config) { c.Mode = ModeBootstrap }, wantErr: true},
 		{name: "join needs initial-cluster on fresh data dir", mutate: func(c *Config) { c.Mode = ModeJoin }, wantErr: true},
@@ -95,6 +110,31 @@ func TestConfigValidate(t *testing.T) {
 				t.Errorf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.5", true},
+		{"::1", true},
+		{"::ffff:127.0.0.1", true},
+		{"localhost", true},
+		{"LocalHost", true},
+		{"0.0.0.0", false},
+		{"::", false},
+		{"10.0.0.5", false},
+		{"192.168.1.1", false},
+		{"example.com", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isLoopbackHost(tt.host); got != tt.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
 	}
 }
 
