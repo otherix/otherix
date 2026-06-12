@@ -90,6 +90,37 @@ func fixtureCreateArgs() (CreateArgs, *atomic.Int32, *atomic.Value) {
 	}, &calls, &arg
 }
 
+// TestAgentVMCreateExecutor_PollGoneIsAgentTaskGone pins the wrap depth between Execute and
+// isAgentTaskGone: a PollTask 404 (the agent task vanished after a restart) must survive Execute's
+// `poll task: %w` wrap so the M2 clear-on-404 path in runCreate fires. A non-404 poll error must
+// NOT match. Without the `%w` in Execute this test fails, guarding a regression the bare-AgentError
+// handler tests cannot catch.
+func TestAgentVMCreateExecutor_PollGoneIsAgentTaskGone(t *testing.T) {
+	t.Parallel()
+
+	resumeID := uuid.New()
+	args, _, _ := fixtureCreateArgs()
+	args.AgentTaskID = &resumeID // resumption: skip POST, go straight to PollTask.
+
+	gone := &fakeVMClient{pollErr: &agentclient.AgentError{Status: 404}}
+	_, err := NewAgentVMCreateExecutor(gone).Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("Execute(poll 404) = nil error, want a wrapped agent error")
+	}
+	if !isAgentTaskGone(err) {
+		t.Errorf("isAgentTaskGone(%v) = false, want true (the 404 must survive Execute's wrap)", err)
+	}
+
+	other := &fakeVMClient{pollErr: &agentclient.AgentError{Status: 500}}
+	_, err = NewAgentVMCreateExecutor(other).Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("Execute(poll 500) = nil error, want a wrapped agent error")
+	}
+	if isAgentTaskGone(err) {
+		t.Errorf("isAgentTaskGone(%v) = true, want false (only 404 is task-gone)", err)
+	}
+}
+
 func TestAgentVMCreateExecutor_FirstRunPostsAndPersists(t *testing.T) {
 	t.Parallel()
 

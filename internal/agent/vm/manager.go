@@ -524,12 +524,15 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 // success so the CP reconciles; a failed VM reports failed; an in-progress VM
 // with no live task was interrupted (crash mid-create) and reports failed
 // (vm_create_interrupted) rather than re-spawn (which could clobber). The VM
-// record itself is never mutated here.
+// record itself is never mutated here. The success result carries vm_id only
+// (the image digest / sizes from the original create are not re-derived); the
+// CP's createResultFromTerminal degrades gracefully, dropping just the
+// correlation metadata, so the VM still projects to success.
 func (m *Manager) idempotentCreateResult(vmID uuid.UUID, status Status) *AgentTask {
 	t := m.tasks.Create(TaskKindVMCreate, vmID)
 	switch status {
 	case StatusRunning, StatusStopped, StatusPaused:
-		result, _ := json.Marshal(map[string]any{"vm_id": vmID.String()})
+		result, _ := json.Marshal(map[string]string{"vm_id": vmID.String()})
 		m.tasks.Update(t.ID, func(at *AgentTask) {
 			at.Status = TaskStatusSuccess
 			at.Result = result

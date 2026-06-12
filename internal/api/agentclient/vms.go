@@ -124,8 +124,9 @@ type agentVMListResponse struct {
 //
 // idempotencyKey is forwarded as the agent-side Idempotency-Key
 // header. The agent's idempotency scope is independent of the CP's
-// user-facing scope; the CP-side worker mints a fresh per-attempt
-// key (resumption pattern keyed by agent_task_id).
+// user-facing scope; the CP-side worker passes the stable CP task id
+// (so a redelivered attempt reuses the same key), and dedup is keyed by
+// agent_task_id resumption plus the agent's durable per-vm-id check.
 func (c *Client) PostVMCreate(
 	ctx context.Context,
 	endpoint string,
