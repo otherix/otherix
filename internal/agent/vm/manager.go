@@ -475,25 +475,37 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		v.CidataPath = filepath.Join(m.stateDir, vmID.String(), "cidata.iso")
 	}
 
-	// Register the VM and mint its create task atomically, re-accepting on a
-	// duplicate vmID. The CP mints a fresh idempotency key per attempt and
-	// the agent has no idempotency middleware, so a job redelivered before
-	// the CP persisted the agent_task_id re-POSTs this create. Overwriting
-	// m.vms[vmID] and spawning a second runCreate would clobber the
-	// in-flight VM and re-materialise its NICs (tap churn). Instead echo
-	// back the ORIGINAL vm.create task so the CP worker resumes against the
-	// same agent_task_id, leaving the live VM and its taps untouched. The
-	// duplicate check and the insert share one critical section so two
-	// concurrent first attempts cannot both materialise the VM.
+	// Durable dedup: m.vms is reloaded from disk on restart, so a redelivered
+	// vm.create must be deduped on the DURABLE m.vms[vmID], not only on the
+	// in-memory createTasks map (which is rebuilt EMPTY on restart). A job
+	// redelivered before the CP persisted the agent_task_id - after the agent
+	// restarted - re-POSTs this create; overwriting m.vms[vmID] and spawning a
+	// second runCreate would clobber the live VM's disk and re-materialise its
+	// NICs (tap churn). Never overwrite an existing VM. The duplicate check and
+	// the insert share one critical section so two concurrent first attempts
+	// cannot both materialise the VM.
 	m.mu.Lock()
-	if origTaskID, dup := m.createTasks[vmID]; dup {
-		m.mu.Unlock()
-		if existing := m.tasks.Get(origTaskID); existing != nil {
-			return existing, nil
+	if _, exists := m.vms[vmID]; exists {
+		origTaskID, hasTask := m.createTasks[vmID]
+		var reloadedStatus Status
+		if !hasTask {
+			reloadedStatus = m.vms[vmID].Status
 		}
-		// The record exists but the task is gone (should not happen while
-		// the process is up). Treat it as a conflict the handler maps to 409.
-		return nil, ErrCreateInFlight
+		m.mu.Unlock()
+		if hasTask {
+			// In-process resumption: echo the ORIGINAL create task so the CP
+			// resumes against the same agent_task_id, leaving the live VM and
+			// its taps untouched.
+			if existing := m.tasks.Get(origTaskID); existing != nil {
+				return existing, nil
+			}
+			// The record exists but the task is gone (should not happen while
+			// the process is up). Treat it as a conflict the handler maps to 409.
+			return nil, ErrCreateInFlight
+		}
+		// Post-restart redelivery: no live create task. Mint an idempotent task
+		// reflecting the reloaded VM status WITHOUT overwriting or re-spawning.
+		return m.idempotentCreateResult(vmID, reloadedStatus), nil
 	}
 	task := m.tasks.Create(TaskKindVMCreate, vmID)
 	m.vms[vmID] = v
@@ -504,6 +516,36 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	// the task surface (GET /v1/tasks/{id}) is how clients track progress.
 	go m.runCreate(task.ID, v, spec)
 	return task, nil
+}
+
+// idempotentCreateResult mints a terminal create task that reflects an
+// already-present VM's status, for a redelivered create that must NOT
+// re-materialise the VM. A completed VM (running / stopped / paused) reports
+// success so the CP reconciles; a failed VM reports failed; an in-progress VM
+// with no live task was interrupted (crash mid-create) and reports failed
+// (vm_create_interrupted) rather than re-spawn (which could clobber). The VM
+// record itself is never mutated here.
+func (m *Manager) idempotentCreateResult(vmID uuid.UUID, status Status) *AgentTask {
+	t := m.tasks.Create(TaskKindVMCreate, vmID)
+	switch status {
+	case StatusRunning, StatusStopped, StatusPaused:
+		result, _ := json.Marshal(map[string]any{"vm_id": vmID.String()})
+		m.tasks.Update(t.ID, func(at *AgentTask) {
+			at.Status = TaskStatusSuccess
+			at.Result = result
+		})
+	case StatusFailed:
+		m.tasks.Update(t.ID, func(at *AgentTask) {
+			at.Status = TaskStatusFailed
+			at.Error = &TaskError{Code: "vm_create_failed", Message: "vm create previously failed"}
+		})
+	default: // creating / pending / stopping / deleting, no live task -> interrupted prior attempt.
+		m.tasks.Update(t.ID, func(at *AgentTask) {
+			at.Status = TaskStatusFailed
+			at.Error = &TaskError{Code: "vm_create_interrupted", Message: "vm create was interrupted; recreate the vm"}
+		})
+	}
+	return m.tasks.Get(t.ID)
 }
 
 // sizeCreatedDisk sizes the freshly-cloned per-VM disk at diskPath (never the

@@ -298,6 +298,177 @@ func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
 	}
 }
 
+// TestManager_Create_DuplicateRunningVM_NoCreateTask models a post-restart
+// redelivery: m.vms is reloaded from disk (so a completed VM is present) but
+// m.createTasks is empty (rebuilt empty on restart). A redelivered vm.create
+// for that vmID must return an idempotent SUCCESS task reflecting the reloaded
+// status WITHOUT overwriting the live VM record or spawning a second runCreate
+// that would clobber its disk and taps.
+func TestManager_Create_DuplicateRunningVM_NoCreateTask(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	fab := &netfabric.FakeFabric{}
+	m, err := New(cfg, fab, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	vmID := uuid.New()
+	// A reloaded, completed VM with NO live create task (createTasks empty).
+	orig := &VM{
+		ID:           vmID,
+		Name:         "vm-x",
+		PoolName:     poolName,
+		Architecture: qemu.HostArch(),
+		Status:       StatusRunning,
+		DiskPath:     "/orig/disk.qcow2",
+	}
+	m.mu.Lock()
+	m.vms[vmID] = orig
+	m.mu.Unlock()
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		UUID:     vmID,
+		Name:     "vm-x",
+		VCPUs:    2,
+		MemoryMB: 1024,
+		PoolName: poolName,
+		ImageURL: "https://example.test/ubuntu.img",
+	})
+	if err != nil {
+		t.Fatalf("Create(dup running) = %v, want nil", err)
+	}
+	if task.Status != TaskStatusSuccess {
+		t.Errorf("idempotent task status = %q, want %q", task.Status, TaskStatusSuccess)
+	}
+
+	m.mu.Lock()
+	got := m.vms[vmID]
+	m.mu.Unlock()
+	if got != orig || got.Status != StatusRunning || got.DiskPath != "/orig/disk.qcow2" {
+		t.Errorf("live VM was overwritten: got %+v", got)
+	}
+	if len(fab.CreateTapCalls) != 0 || len(fab.AttachTapCalls) != 0 {
+		t.Errorf("redelivered Create spawned a runCreate: createTap=%v attachTap=%v",
+			fab.CreateTapCalls, fab.AttachTapCalls)
+	}
+}
+
+// TestManager_Create_DuplicateFailedVM_NoCreateTask: a reloaded VM in failed
+// status (create genuinely failed before) redelivered with createTasks empty
+// returns an idempotent FAILED task without overwriting the record.
+func TestManager_Create_DuplicateFailedVM_NoCreateTask(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	fab := &netfabric.FakeFabric{}
+	m, err := New(cfg, fab, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	vmID := uuid.New()
+	orig := &VM{
+		ID:           vmID,
+		Name:         "vm-x",
+		PoolName:     poolName,
+		Architecture: qemu.HostArch(),
+		Status:       StatusFailed,
+		DiskPath:     "/orig/disk.qcow2",
+	}
+	m.mu.Lock()
+	m.vms[vmID] = orig
+	m.mu.Unlock()
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		UUID:     vmID,
+		Name:     "vm-x",
+		VCPUs:    2,
+		MemoryMB: 1024,
+		PoolName: poolName,
+		ImageURL: "https://example.test/ubuntu.img",
+	})
+	if err != nil {
+		t.Fatalf("Create(dup failed) = %v, want nil", err)
+	}
+	if task.Status != TaskStatusFailed {
+		t.Errorf("idempotent task status = %q, want %q", task.Status, TaskStatusFailed)
+	}
+	if task.Error == nil || task.Error.Code != "vm_create_failed" {
+		t.Errorf("task error = %+v, want code vm_create_failed", task.Error)
+	}
+	m.mu.Lock()
+	got := m.vms[vmID]
+	m.mu.Unlock()
+	if got != orig {
+		t.Errorf("live VM was overwritten on duplicate failed create")
+	}
+	if len(fab.CreateTapCalls) != 0 || len(fab.AttachTapCalls) != 0 {
+		t.Errorf("redelivered Create spawned a runCreate: createTap=%v attachTap=%v",
+			fab.CreateTapCalls, fab.AttachTapCalls)
+	}
+}
+
+// TestManager_Create_DuplicateInterruptedVM_NoCreateTask: a reloaded VM stuck
+// in an in-progress status (creating) with no live create task was interrupted
+// mid-create (crash). The redelivery reports a clean terminal failed task
+// (vm_create_interrupted) rather than re-spawning a runCreate that could clobber.
+func TestManager_Create_DuplicateInterruptedVM_NoCreateTask(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	fab := &netfabric.FakeFabric{}
+	m, err := New(cfg, fab, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	vmID := uuid.New()
+	orig := &VM{
+		ID:           vmID,
+		Name:         "vm-x",
+		PoolName:     poolName,
+		Architecture: qemu.HostArch(),
+		Status:       StatusCreating,
+		DiskPath:     "/orig/disk.qcow2",
+	}
+	m.mu.Lock()
+	m.vms[vmID] = orig
+	m.mu.Unlock()
+
+	task, err := m.Create(t.Context(), CreateSpec{
+		UUID:     vmID,
+		Name:     "vm-x",
+		VCPUs:    2,
+		MemoryMB: 1024,
+		PoolName: poolName,
+		ImageURL: "https://example.test/ubuntu.img",
+	})
+	if err != nil {
+		t.Fatalf("Create(dup interrupted) = %v, want nil", err)
+	}
+	if task.Status != TaskStatusFailed {
+		t.Errorf("idempotent task status = %q, want %q", task.Status, TaskStatusFailed)
+	}
+	if task.Error == nil || task.Error.Code != "vm_create_interrupted" {
+		t.Errorf("task error = %+v, want code vm_create_interrupted", task.Error)
+	}
+	m.mu.Lock()
+	got := m.vms[vmID]
+	m.mu.Unlock()
+	if got != orig {
+		t.Errorf("live VM was overwritten on duplicate interrupted create")
+	}
+	if len(fab.CreateTapCalls) != 0 || len(fab.AttachTapCalls) != 0 {
+		t.Errorf("redelivered Create spawned a runCreate: createTap=%v attachTap=%v",
+			fab.CreateTapCalls, fab.AttachTapCalls)
+	}
+}
+
 // waitTaskTerminal polls the task store until the task reaches a terminal
 // status (success / failed) or the deadline elapses. Returns the terminal
 // task. Used by the create-flow tests that drive the async runCreate
