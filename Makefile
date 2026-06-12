@@ -165,6 +165,10 @@ smoke-vm-lifecycle: ## VM lifecycle smoke: `otherix vm` start/stop/poweroff/rebo
 smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otherix vm create --network-config` on a real agent (run after local-dev-start)
 	bash dev/smoke/vm-network-config/run.sh
 
+.PHONY: smoke-vm-create-redelivery
+smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
+	bash dev/smoke/vm-create-redelivery/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
