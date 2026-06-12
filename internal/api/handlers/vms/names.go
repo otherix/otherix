@@ -152,6 +152,15 @@ func callerCanReadUsers(ctx context.Context) bool {
 	return u != nil && auth.Has(u.Role, auth.PermUserRead)
 }
 
+// callerCanReadVMSecrets reports whether the request principal may see the secret-bearing VM
+// fields (user_data, network_config, image_url). The gate is vm:console on THIS VM: a caller who
+// can console into the guest can already extract these, so the view reveals nothing new. admin /
+// operator hold console at any scope; a developer holds it for own VMs; a viewer holds none. A
+// missing principal reads as false, so secrets never leak on an unauthenticated path.
+func callerCanReadVMSecrets(ctx context.Context, ownerID uuid.UUID) bool {
+	return auth.CheckOwnership(auth.UserFromContext(ctx), &ownerID, auth.PermVMConsole) == nil
+}
+
 // observedNodeID returns the node the VM is currently *located on* per
 // D6: vm_runtime.current_node_id wins (real-time agent-reported
 // state). When no runtime row exists yet, falls back to

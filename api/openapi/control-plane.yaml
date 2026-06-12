@@ -5601,7 +5601,6 @@ components:
         - name
         - owner_id
         - owner
-        - image_url
         - format
         - pool
         - node
@@ -5641,6 +5640,9 @@ components:
           description: |
             Source image URL the root disk was materialised from. The VM
             row is self-describing — there is no template entity.
+            Returned only to callers who hold `vm:console` on this VM
+            (the URL can carry presigned private-mirror credentials);
+            omitted otherwise.
         image_sha256:
           type: string
           minLength: 64
@@ -5764,16 +5766,16 @@ components:
           description: |
             Cloud-init user-data the caller supplied at create time, echoed
             back verbatim (`null` when unset). Set once at create and
-            immutable for the VM's lifetime (no PATCH path). Read-back of
-            caller-authored spec, the way a Pod spec echoes inline config —
-            not a secrecy boundary, since the guest can already read it.
-            RBAC `vm:read` gates access.
+            immutable for the VM's lifetime (no PATCH path). Returned only
+            to callers who hold `vm:console` on this VM; omitted otherwise.
         network_config:
           type: [string, "null"]
           description: |
             Cloud-init network-config (NoCloud `/network-config`) the caller
             supplied at create time, echoed back verbatim (`null` when unset).
-            Immutable for the VM's lifetime, same as `user_data`.
+            Immutable for the VM's lifetime, same as `user_data`. Returned
+            only to callers who hold `vm:console` on this VM; omitted
+            otherwise.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
