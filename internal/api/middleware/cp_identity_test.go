@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package middleware
+package middleware_test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -14,6 +15,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/auth"
 )
 
@@ -47,7 +49,7 @@ func TestRequireCPIdentity(t *testing.T) {
 				nextCalled = true
 				w.WriteHeader(http.StatusOK)
 			})
-			h := RequireCPIdentity(log)(next)
+			h := middleware.RequireCPIdentity(log)(next)
 
 			req := httptest.NewRequest(http.MethodGet, "/v1/vms", nil)
 			req.TLS = tt.tlsState
@@ -78,5 +80,38 @@ func TestRequireCPIdentity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRequireCPIdentityRejectionBodiesIdentical guards against an identity
+// oracle: the wrong-CN rejection body must be byte-identical to the no-cert
+// rejection body so a caller cannot distinguish the two cases.
+func TestRequireCPIdentityRejectionBodiesIdentical(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next handler called, want rejection")
+	})
+	h := middleware.RequireCPIdentity(log)(next)
+
+	wrongCNReq := httptest.NewRequest(http.MethodGet, "/v1/vms", nil)
+	wrongCNReq.TLS = tlsStateWithCN("node-evil")
+	wrongCNRec := httptest.NewRecorder()
+	h.ServeHTTP(wrongCNRec, wrongCNReq)
+
+	noCertReq := httptest.NewRequest(http.MethodGet, "/v1/vms", nil)
+	noCertReq.TLS = nil
+	noCertRec := httptest.NewRecorder()
+	h.ServeHTTP(noCertRec, noCertReq)
+
+	if wrongCNRec.Code != http.StatusForbidden {
+		t.Errorf("wrong-CN status = %d, want %d", wrongCNRec.Code, http.StatusForbidden)
+	}
+	if noCertRec.Code != http.StatusForbidden {
+		t.Errorf("no-cert status = %d, want %d", noCertRec.Code, http.StatusForbidden)
+	}
+	wrongCNBody := wrongCNRec.Body.Bytes()
+	noCertBody := noCertRec.Body.Bytes()
+	if !bytes.Equal(wrongCNBody, noCertBody) {
+		t.Errorf("rejection bodies differ:\nwrong-CN: %s\nno-cert:  %s", wrongCNBody, noCertBody)
 	}
 }
