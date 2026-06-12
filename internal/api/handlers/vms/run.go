@@ -131,17 +131,7 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 		OnAgentTaskID: onAgentTaskID(st, taskID),
 	})
 	if execErr != nil {
-		if isAgentTaskGone(execErr) {
-			// The agent task vanished (agent restart): clear the stale
-			// agent_task_id so the redelivery re-POSTs and the agent's durable
-			// dedup (m.vms) reconciles - a completed VM returns success, closing
-			// the false-failed-after-restart divergence (R2-M2). Safe: the re-POST
-			// cannot clobber (R2-M1 / ADR 0042).
-			if cerr := st.ClearTaskAgentTaskID(ctx, taskID); cerr != nil {
-				return fmt.Errorf("clear agent_task_id: %v", cerr)
-			}
-		}
-		return failRun(ctx, st, log, "vms.create", taskID, classifyVMError(execErr, errCodeVMCreateFailed), execErr)
+		return failCreateExec(ctx, st, log, taskID, execErr)
 	}
 
 	resultJSON, err := json.Marshal(result)
@@ -286,14 +276,8 @@ func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *sl
 			OnAgentTaskID: onAgentTaskID(st, taskID),
 		})
 		if execErr != nil {
-			if isAgentTaskGone(execErr) {
-				// The agent task vanished (agent restart): clear the stale
-				// agent_task_id so the redelivery re-POSTs. The re-POST is
-				// naturally idempotent for delete (a missing VM 404s to an
-				// idempotent success) (R2-M2).
-				if cerr := st.ClearTaskAgentTaskID(ctx, taskID); cerr != nil {
-					return fmt.Errorf("clear agent_task_id: %v", cerr)
-				}
+			if cerr := clearAgentTaskIDIfGone(ctx, st, taskID, execErr); cerr != nil {
+				return cerr
 			}
 			if node.Status != store.NodeStatusUnreachable {
 				return failRun(ctx, st, log, "vms.delete", taskID, classifyVMError(execErr, errCodeVMDeleteFailed), execErr)
@@ -451,6 +435,35 @@ func onAgentTaskID(st WorkerStore, taskID uuid.UUID) func(context.Context, uuid.
 func isAgentTaskGone(err error) bool {
 	var ae *agentclient.AgentError
 	return errors.As(err, &ae) && ae.Status == 404
+}
+
+// failCreateExec handles a vm.create executor error: it clears a stale
+// agent_task_id on a permanent agent-task 404 (so the redelivery re-POSTs and the
+// agent's durable dedup reconciles, R2-M2) and then finalizes the task failed
+// with retry semantics. A clear-write failure preempts and is returned so the
+// caller requeues.
+func failCreateExec(ctx context.Context, st WorkerStore, log *slog.Logger, taskID uuid.UUID, execErr error) error {
+	if cerr := clearAgentTaskIDIfGone(ctx, st, taskID, execErr); cerr != nil {
+		return cerr
+	}
+	return failRun(ctx, st, log, "vms.create", taskID, classifyVMError(execErr, errCodeVMCreateFailed), execErr)
+}
+
+// clearAgentTaskIDIfGone clears the task's persisted agent_task_id when execErr
+// is a permanent agent-task 404 (the agent task vanished, typically after an
+// agent restart), so the redelivery re-POSTs and the agent's durable dedup
+// (m.vms) reconciles instead of re-polling a vanished task forever (R2-M2). It is
+// a no-op for any other error. A clear-write failure is returned so the caller
+// requeues; otherwise nil and the caller proceeds to failRun. Safe: the re-POST
+// cannot clobber a live VM (R2-M1 / ADR 0042).
+func clearAgentTaskIDIfGone(ctx context.Context, st WorkerStore, taskID uuid.UUID, execErr error) error {
+	if !isAgentTaskGone(execErr) {
+		return nil
+	}
+	if err := st.ClearTaskAgentTaskID(ctx, taskID); err != nil {
+		return fmt.Errorf("clear agent_task_id: %v", err)
+	}
+	return nil
 }
 
 // classifyLoadErr maps an entity-read error to a *_not_found code (when the row
