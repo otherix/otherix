@@ -31,7 +31,16 @@ type JobSource interface {
 	// RetryJob requeues a failed job while under maxAttempts, else fails it;
 	// returns whether it was requeued.
 	RetryJob(ctx context.Context, id int64, maxAttempts int32) (bool, error)
+	// RequeueJob returns a running job to pending without an attempt bump, used
+	// on the graceful-shutdown path (a deploy is not a real failure).
+	RequeueJob(ctx context.Context, id int64) error
 }
+
+// bookkeepingTimeout bounds the post-handler queue bookkeeping run on a context
+// that survives the shutdown cancel (context.WithoutCancel), so an in-flight job
+// can still be requeued/completed during graceful shutdown without blocking
+// teardown indefinitely.
+const bookkeepingTimeout = 5 * time.Second
 
 // Handler executes one job's payload. A nil return completes the job; a non-nil
 // return requeues it (until the kind's attempt budget is spent). Handlers own
@@ -139,21 +148,42 @@ func (d *Dispatcher) drain(ctx context.Context) {
 }
 
 // execute runs one claimed job and resolves its queue lifecycle: complete on
-// success, requeue or fail on error.
+// success, requeue (no attempt bump) when graceful shutdown aborted the handler,
+// or retry/fail on a real error.
+//
+// The queue bookkeeping runs on a context derived with context.WithoutCancel so
+// it SURVIVES a shutdown cancel of ctx: otherwise an in-flight job aborted by
+// SIGTERM would be stranded 'running' forever (PendingJobs is pending-only and
+// nothing else transitions running back). The store/etcd stays available until
+// Dispatcher.Run returns - cmd/api awaits startWorkers' wg.Wait (which Run's
+// in-flight wg.Wait feeds) BEFORE the deferred etcd teardown in serve.go, so
+// these writes land. The bg context is bounded by bookkeepingTimeout so teardown
+// is not blocked indefinitely.
 func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registration) {
-	if err := reg.handler(ctx, j.Args); err != nil {
-		d.log.WarnContext(ctx, "worker job failed", "kind", j.Kind, "job_id", j.ID, "attempts", j.Attempts, "error", err)
-		requeued, rerr := d.src.RetryJob(ctx, j.ID, reg.maxAttempts)
+	herr := reg.handler(ctx, j.Args)
+	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+	defer cancel()
+	switch {
+	case herr != nil && ctx.Err() != nil:
+		// Graceful shutdown cancelled the run ctx and the handler aborted on it:
+		// requeue the job to pending WITHOUT penalising the attempt counter (a
+		// deploy is not a real failure) so the next boot redelivers it.
+		if rerr := d.src.RequeueJob(bg, j.ID); rerr != nil {
+			d.log.ErrorContext(bg, "worker dispatcher: shutdown requeue failed", "job_id", j.ID, "error", rerr)
+		}
+	case herr != nil:
+		d.log.WarnContext(ctx, "worker job failed", "kind", j.Kind, "job_id", j.ID, "attempts", j.Attempts, "error", herr)
+		requeued, rerr := d.src.RetryJob(bg, j.ID, reg.maxAttempts)
 		if rerr != nil {
-			d.log.ErrorContext(ctx, "worker dispatcher: retry bookkeeping failed", "job_id", j.ID, "error", rerr)
+			d.log.ErrorContext(bg, "worker dispatcher: retry bookkeeping failed", "job_id", j.ID, "error", rerr)
 			return
 		}
 		if !requeued {
 			d.log.WarnContext(ctx, "worker job exhausted attempts", "kind", j.Kind, "job_id", j.ID)
 		}
-		return
-	}
-	if err := d.src.CompleteJob(ctx, j.ID); err != nil {
-		d.log.ErrorContext(ctx, "worker dispatcher: complete failed", "job_id", j.ID, "error", err)
+	default:
+		if err := d.src.CompleteJob(bg, j.ID); err != nil {
+			d.log.ErrorContext(bg, "worker dispatcher: complete failed", "job_id", j.ID, "error", err)
+		}
 	}
 }

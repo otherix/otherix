@@ -47,11 +47,16 @@ type deleteWorkerStoreStub struct {
 	// nodeErr is returned by NodeByID; store.ErrNotFound models a
 	// force-deleted owning node.
 	nodeErr error
+	// taskTerminal makes UpdateTaskRunning report the task already
+	// committed-terminal (success/cancelled), so the handler must abort.
+	taskTerminal bool
 
 	projectedDelete bool
 }
 
-func (s *deleteWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) error { return nil }
+func (s *deleteWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
+	return s.taskTerminal, nil
+}
 
 func (s *deleteWorkerStoreStub) UpdateTaskFinalized(context.Context, store.UpdateTaskFinalizedParams) error {
 	return nil
@@ -207,6 +212,9 @@ type createLifecycleWorkerStoreStub struct {
 	node    store.Node
 	disk    store.VMDisk
 	nodeErr error
+	// taskTerminal makes UpdateTaskRunning report the task already
+	// committed-terminal (success/cancelled), so the handler must abort.
+	taskTerminal bool
 
 	finalizedFailed    bool
 	finalizedError     []byte // the error envelope of the last failed finalize
@@ -214,8 +222,8 @@ type createLifecycleWorkerStoreStub struct {
 	projectedLifecycle bool
 }
 
-func (s *createLifecycleWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) error {
-	return nil
+func (s *createLifecycleWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
+	return s.taskTerminal, nil
 }
 
 func (s *createLifecycleWorkerStoreStub) UpdateTaskFinalized(_ context.Context, arg store.UpdateTaskFinalizedParams) error {
@@ -380,6 +388,83 @@ func TestRunCreateTerminallyDeadNode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRunCreateAbortsOnTerminalTask pins R2-M3 for the create path: a redelivery
+// whose task is already committed-terminal (UpdateTaskRunning reports
+// alreadyTerminal=true) completes WITHOUT contacting the agent - the executor is
+// never called and no projection runs. The dispatcher then CompleteJob-deletes
+// the job.
+func TestRunCreateAbortsOnTerminalTask(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{
+		vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID},
+		taskTerminal: true,
+	}
+	exec := &spyCreateExecutor{}
+
+	err := runCreate(context.Background(), st, exec, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate(terminal task) = %v, want nil", err)
+	}
+	if exec.called {
+		t.Errorf("agent create attempted on a committed-terminal task; must abort without contacting the agent")
+	}
+	if st.projectedCreate {
+		t.Errorf("ProjectVMCreateSuccess called on a committed-terminal task; the abort path must not project")
+	}
+}
+
+// TestRunLifecycleAbortsOnTerminalTask pins R2-M3 for the lifecycle path: a
+// redelivery of an already committed-terminal task returns nil without invoking
+// the agent lifecycle executor or projecting.
+func TestRunLifecycleAbortsOnTerminalTask(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, taskTerminal: true}
+	exec := &spyLifecycleExecutor{}
+
+	err := runLifecycle(context.Background(), st, exec, discardLog(), uuid.New(), vmID, nodeID,
+		"start", store.VmDesiredPhaseRunning, store.VmPhaseRunning, errCodeVMStartFailed, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runLifecycle(terminal task) = %v, want nil", err)
+	}
+	if exec.called {
+		t.Errorf("agent lifecycle attempted on a committed-terminal task; must abort")
+	}
+	if st.projectedLifecycle {
+		t.Errorf("ProjectVMLifecycleSuccess called on a committed-terminal task; the abort path must not project")
+	}
+}
+
+// TestRunDeleteAbortsOnTerminalTask pins R2-M3 for the delete path: a redelivery
+// of an already committed-terminal task returns nil without invoking the agent
+// delete executor or projecting.
+func TestRunDeleteAbortsOnTerminalTask(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &deleteWorkerStoreStub{vm: store.VM{ID: vmID, Name: "vm-x"}, node: node, taskTerminal: true}
+	exec := &spyDeleteExecutor{}
+
+	err := runDelete(context.Background(), st, exec, discardLog(), 5*time.Minute,
+		VMDeleteArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID})
+	if err != nil {
+		t.Fatalf("runDelete(terminal task) = %v, want nil", err)
+	}
+	if exec.called {
+		t.Errorf("agent teardown attempted on a committed-terminal task; must abort")
+	}
+	if st.projectedDelete {
+		t.Errorf("ProjectVMDeleteSuccess called on a committed-terminal task; the abort path must not project")
 	}
 }
 

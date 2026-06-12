@@ -21,6 +21,7 @@ type jobSourceFake struct {
 	jobs      map[int64]etcdstore.Job
 	completed map[int64]bool
 	retried   map[int64]int32 // id -> last maxAttempts passed to RetryJob
+	requeued  map[int64]int   // id -> RequeueJob call count
 }
 
 func newJobSourceFake() *jobSourceFake {
@@ -28,6 +29,7 @@ func newJobSourceFake() *jobSourceFake {
 		jobs:      make(map[int64]etcdstore.Job),
 		completed: make(map[int64]bool),
 		retried:   make(map[int64]int32),
+		requeued:  make(map[int64]int),
 	}
 }
 
@@ -84,7 +86,68 @@ func (f *jobSourceFake) RetryJob(_ context.Context, id int64, maxAttempts int32)
 	return j.State == etcdstore.JobStatePending, nil
 }
 
+func (f *jobSourceFake) RequeueJob(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requeued[id]++
+	j := f.jobs[id]
+	j.State = etcdstore.JobStatePending
+	f.jobs[id] = j
+	return nil
+}
+
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestExecuteRequeuesOnShutdown drives the REAL execute path with a cancelled
+// run ctx (the graceful-shutdown signal): a handler that aborts because of the
+// cancel must REQUEUE the job (RequeueJob), NOT RetryJob it (no attempt bump). A
+// normal handler error with a live ctx still goes through RetryJob.
+func TestExecuteRequeuesOnShutdown(t *testing.T) {
+	// abortOnCancel returns the ctx error, modelling a handler that aborts when
+	// graceful shutdown cancels the run ctx mid-flight.
+	abortOnCancel := registration{
+		handler:     func(ctx context.Context, _ []byte) error { return ctx.Err() },
+		maxAttempts: 5,
+	}
+
+	// Shutdown path: ctx cancelled, handler returns ctx.Err() != nil.
+	t.Run("shutdown requeues without retry", func(t *testing.T) {
+		src := newJobSourceFake()
+		src.add(etcdstore.Job{ID: 10, Kind: "test.job", State: etcdstore.JobStateRunning})
+		d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		d.execute(ctx, etcdstore.Job{ID: 10, Kind: "test.job"}, abortOnCancel)
+		src.mu.Lock()
+		defer src.mu.Unlock()
+		if src.requeued[10] != 1 {
+			t.Errorf("RequeueJob calls = %d, want 1 (shutdown path)", src.requeued[10])
+		}
+		if _, retried := src.retried[10]; retried {
+			t.Errorf("RetryJob called on the shutdown path; want RequeueJob only")
+		}
+		if src.completed[10] {
+			t.Errorf("job completed on the shutdown path; want requeued")
+		}
+	})
+
+	// Normal-error path: ctx live, handler returns a real error -> RetryJob.
+	t.Run("live error retries", func(t *testing.T) {
+		src := newJobSourceFake()
+		src.add(etcdstore.Job{ID: 11, Kind: "test.job", State: etcdstore.JobStateRunning})
+		d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
+		boom := registration{handler: func(context.Context, []byte) error { return context.DeadlineExceeded }, maxAttempts: 5}
+		d.execute(context.Background(), etcdstore.Job{ID: 11, Kind: "test.job"}, boom)
+		src.mu.Lock()
+		defer src.mu.Unlock()
+		if src.retried[11] != 5 {
+			t.Errorf("RetryJob maxAttempts = %d, want 5 (live-error path)", src.retried[11])
+		}
+		if src.requeued[11] != 0 {
+			t.Errorf("RequeueJob called on a live-error path; want RetryJob only")
+		}
+	})
+}
 
 func TestDispatcherRunsAndCompletes(t *testing.T) {
 	src := newJobSourceFake()

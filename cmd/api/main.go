@@ -365,6 +365,13 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 		return fmt.Errorf("server: %v", err)
 	}
 
+	// Shutdown ordering contract (load-bearing for the graceful-shutdown requeue,
+	// audit R2-H3a): stopWorkers() blocks on the dispatcher's in-flight wg.Wait,
+	// so every in-flight handler finishes and its queue bookkeeping (which runs on
+	// a context.WithoutCancel that survives ctx cancel) lands BEFORE runServe
+	// returns. Only after runServe returns do serve.go's deferred etcd client
+	// Close and member Stop run, so the store stays available for those requeue/
+	// complete writes. Do NOT tear etcd down before this returns.
 	stopWorkers()
 	promoteWG.Wait()
 

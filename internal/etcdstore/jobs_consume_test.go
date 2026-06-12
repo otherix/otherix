@@ -100,6 +100,78 @@ func TestJobRetryAndFail(t *testing.T) {
 	}
 }
 
+// TestRequeueJob pins the graceful-shutdown requeue: a running job returns to
+// pending with NO attempt bump; a non-running job is left untouched.
+func TestRequeueJob(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := s.TaskByID(ctx, p.ID)
+	if ok, _ := s.ClaimJob(ctx, *task.RiverJobID); !ok {
+		t.Fatal("claim")
+	}
+	if err := s.RequeueJob(ctx, *task.RiverJobID); err != nil {
+		t.Fatalf("RequeueJob: %v", err)
+	}
+	pending, _ := s.PendingJobs(ctx)
+	var found bool
+	for _, j := range pending {
+		if j.ID == *task.RiverJobID {
+			found = true
+			if j.Attempts != 0 {
+				t.Errorf("attempts bumped on requeue: %d, want 0", j.Attempts)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("requeued job not pending again")
+	}
+
+	// A second requeue (job now pending, not running) is a no-op: it must not
+	// touch the job.
+	if err := s.RequeueJob(ctx, *task.RiverJobID); err != nil {
+		t.Fatalf("RequeueJob (non-running) = %v, want nil no-op", err)
+	}
+	pending, _ = s.PendingJobs(ctx)
+	var stillFound bool
+	for _, j := range pending {
+		if j.ID == *task.RiverJobID && j.Attempts == 0 {
+			stillFound = true
+		}
+	}
+	if !stillFound {
+		t.Errorf("non-running requeue mutated the job")
+	}
+}
+
+// TestRetryJobOnlyRequeuesRunning pins the RetryJob state guard (defense-in-
+// depth): a job that is NOT running (e.g. already requeued to pending) is left
+// untouched and reported not-requeued, never resurrected with a bumped attempt.
+func TestRetryJobOnlyRequeuesRunning(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	job := mustPending(t, s)[0] // pending, never claimed
+
+	requeued, err := s.RetryJob(ctx, job.ID, 5)
+	if err != nil {
+		t.Fatalf("RetryJob(pending) = %v", err)
+	}
+	if requeued {
+		t.Errorf("RetryJob requeued a non-running (pending) job; the state guard must skip it")
+	}
+	after := mustPending(t, s)
+	if len(after) != 1 || after[0].Attempts != 0 {
+		t.Errorf("RetryJob mutated a non-running job: %+v", after)
+	}
+}
+
 func mustPending(t *testing.T, s *etcdstore.Store) []etcdstore.Job {
 	t.Helper()
 	jobs, err := s.PendingJobs(context.Background())

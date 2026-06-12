@@ -88,10 +88,19 @@ func taskIndexOps(t store.Task) []clientv3.Op {
 	return []clientv3.Op{clientv3.OpPut(etcd.Key("index", "tasks", "created_by", t.CreatedBy.String(), t.ID.String()), t.ID.String())}
 }
 
-// CancelPendingTask cancels a pending task and its backing job atomically: the
-// task flips to cancelled and the job (when jobRef is non-nil) is cancelled in
-// the same transaction. Returns store.ErrTaskNotCancellable when the task is no
-// longer pending, or store.ErrNotFound when it is missing.
+// CancelPendingTask cancels a pending task and deletes its backing job in ONE
+// transaction, gated on the job still being pending (ModRevision CAS). It is
+// mutually exclusive with ClaimJob: whichever commits first wins; a CAS loss
+// (the dispatcher claimed the job between our read and commit) returns
+// store.ErrTaskNotCancellable (the cancel handler maps it to 409
+// task_not_cancellable). Returns store.ErrNotFound when the task is missing.
+//
+// The job row is DELETED (like CompleteJob on success), not marked cancelled, so
+// no lingering cancelled job row is left and no sweep is needed. Because a
+// cancelled task's job is always deleted (never running), the dispatcher (which
+// delivers only pending jobs) never delivers a job whose task is cancelled - the
+// invariant that dissolves the execute-after-cancel, RetryJob-resurrect, and
+// projection-clobber races at the root.
 func (s *Store) CancelPendingTask(ctx context.Context, id uuid.UUID, jobRef *int64) (store.Task, error) {
 	t, err := s.TaskByID(ctx, id)
 	if err != nil {
@@ -103,13 +112,40 @@ func (s *Store) CancelPendingTask(ctx context.Context, id uuid.UUID, jobRef *int
 	now := time.Now().UTC()
 	t.Status = store.TaskStatusCancelled
 	t.FinishedAt = &now
-	if jobRef != nil {
-		if err := s.cancelJob(ctx, *jobRef); err != nil {
+	taskVal, err := etcd.Marshal(t)
+	if err != nil {
+		return store.Task{}, err
+	}
+	// No backing job (EnqueueTask always stamps one; defensive): there is no
+	// claim race without a job, so a blind put is safe.
+	if jobRef == nil {
+		if err := s.c.PutJSON(ctx, taskKey(id), t); err != nil {
 			return store.Task{}, err
 		}
+		return t, nil
 	}
-	if err := s.c.PutJSON(ctx, taskKey(id), t); err != nil {
+	job, jobModRev, found, err := s.jobWithRev(ctx, *jobRef)
+	if err != nil {
 		return store.Task{}, err
+	}
+	if !found || job.State != JobStatePending {
+		// The job was already claimed (running) or resolved: the op is in flight
+		// or done, so the task is no longer cancellable.
+		return store.Task{}, store.ErrTaskNotCancellable
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(jobKey(*jobRef)), "=", jobModRev)).
+		Then(
+			clientv3.OpPut(taskKey(id), string(taskVal)),
+			clientv3.OpDelete(jobKey(*jobRef)),
+		).
+		Commit()
+	if err != nil {
+		return store.Task{}, fmt.Errorf("cancel task txn: %v", err)
+	}
+	if !resp.Succeeded {
+		// The dispatcher claimed the job between our read and this commit.
+		return store.Task{}, store.ErrTaskNotCancellable
 	}
 	return t, nil
 }
@@ -127,28 +163,28 @@ func (s *Store) updateTask(ctx context.Context, id uuid.UUID, mutate func(*store
 	return s.c.PutJSON(ctx, taskKey(id), t)
 }
 
-// UpdateTaskRunning transitions a task pending -> running: it stamps started_at
-// on the first transition (coalesced across retries) and increments the attempt
-// counter. Worker entry point.
+// UpdateTaskRunning transitions a task pending/failed -> running: it stamps
+// started_at on the first transition (coalesced across retries) and increments
+// the attempt counter. Worker entry point.
 //
-// A worker redelivery calls this at the top of every delivery, including
-// deliveries of an already-committed task (the agent ACK was lost, the job is
-// redelivered after the projection committed). A committed-terminal task
-// (success / cancelled) must NEVER regress to running: it would reopen a task
-// the operator sees as done and spuriously bump its Attempts counter. So a
-// committed-terminal task is skipped entirely - no write, no status regression,
-// no Attempts bump. (The projections are themselves idempotent now, so this is
-// belt-and-suspenders rather than load-bearing for correctness.) A failed task
-// is retryable (failRun finalizes failed but the
+// It returns alreadyTerminal=true WITHOUT writing when the task is already
+// committed-terminal (success / cancelled). A worker redelivery calls this at
+// the top of every delivery, including deliveries of an already-committed task
+// (the agent ACK was lost, the job is redelivered after the projection
+// committed). A committed-terminal task must NEVER regress to running: it would
+// reopen a task the operator sees as done and spuriously bump its Attempts
+// counter - so it is skipped (no write) and the caller is told to ABORT
+// execution rather than contact the agent (the dispatcher then CompleteJob-
+// deletes the job). A failed task is retryable (failRun finalizes failed but the
 // dispatcher requeues the job), so it still transitions to running and bumps
 // Attempts on redelivery - this is what makes the fail-then-succeed retry work.
-func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
+func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error) {
 	t, err := s.TaskByID(ctx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if isCommittedTerminal(t.Status) {
-		return nil
+		return true, nil
 	}
 	t.Status = store.TaskStatusRunning
 	if t.StartedAt == nil {
@@ -156,7 +192,10 @@ func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
 		t.StartedAt = &now
 	}
 	t.Attempts++
-	return s.c.PutJSON(ctx, taskKey(id), t)
+	if err := s.c.PutJSON(ctx, taskKey(id), t); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // UpdateTaskFinalized writes a task's terminal status (success / failed /

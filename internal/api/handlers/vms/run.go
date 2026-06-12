@@ -29,7 +29,7 @@ import (
 // task-lifecycle mutators, entity reads, and the atomic success projections.
 // *etcdstore.Store satisfies it (asserted in the etcdstore integration tests).
 type WorkerStore interface {
-	UpdateTaskRunning(ctx context.Context, id uuid.UUID) error
+	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
 	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
 	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
@@ -71,8 +71,15 @@ func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleG
 
 func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
 	taskID := args.TaskID
-	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
+	alreadyTerminal, err := st.UpdateTaskRunning(ctx, taskID)
+	if err != nil {
 		return fmt.Errorf("update task running: %v", err)
+	}
+	if alreadyTerminal {
+		// The task already committed success/cancelled (a lost-ACK redelivery, or
+		// a cancel that won the CAS): do NOT contact the agent. Return nil so the
+		// dispatcher CompleteJob-deletes the job.
+		return nil
 	}
 	vm, err := st.VMByID(ctx, args.VMID)
 	if err != nil {
@@ -237,8 +244,14 @@ func nodeTerminallyDead(node store.Node, nodeErr error, staleGrace time.Duration
 
 func runDelete(ctx context.Context, st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleGrace time.Duration, args VMDeleteArgs) error {
 	taskID := args.TaskID
-	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
+	alreadyTerminal, err := st.UpdateTaskRunning(ctx, taskID)
+	if err != nil {
 		return fmt.Errorf("update task running: %v", err)
+	}
+	if alreadyTerminal {
+		// The task already committed success/cancelled: do NOT contact the agent.
+		// Return nil so the dispatcher CompleteJob-deletes the job.
+		return nil
 	}
 	vm, err := st.VMByID(ctx, args.VMID)
 	if err != nil {
@@ -324,8 +337,14 @@ func LifecycleHandler(st WorkerStore, exec LifecycleExecutor, log *slog.Logger, 
 }
 
 func runLifecycle(ctx context.Context, st WorkerStore, exec LifecycleExecutor, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, op string, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, failureCode string, staleGrace time.Duration) error {
-	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
+	alreadyTerminal, err := st.UpdateTaskRunning(ctx, taskID)
+	if err != nil {
 		return fmt.Errorf("update task running: %v", err)
+	}
+	if alreadyTerminal {
+		// The task already committed success/cancelled: do NOT contact the agent.
+		// Return nil so the dispatcher CompleteJob-deletes the job.
+		return nil
 	}
 	vm, err := st.VMByID(ctx, vmID)
 	if err != nil {
