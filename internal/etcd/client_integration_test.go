@@ -10,8 +10,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,21 +21,17 @@ import (
 // client over it, registering cleanup. Shared by the client integration tests.
 func startTestClient(t *testing.T) *etcd.Client {
 	t.Helper()
-	cfg := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n1",
-		DataDir:      filepath.Join(t.TempDir(), "member"),
-		PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
-		ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
-		ClusterToken: "otherix-test",
+	build := func() *etcd.Config {
+		return &etcd.Config{
+			Mode:         etcd.ModeSingle,
+			Name:         "n1",
+			DataDir:      filepath.Join(t.TempDir(), "member"),
+			PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClusterToken: "otherix-test",
+		}
 	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	r, err := etcd.Start(ctx, cfg, log)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	r := startWithRetry(t, build)
 	cli := etcd.NewClient(r)
 	t.Cleanup(func() {
 		_ = cli.Close()

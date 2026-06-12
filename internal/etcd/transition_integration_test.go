@@ -69,32 +69,34 @@ func TestSingleToHATransition(t *testing.T) {
 		t.Fatal("CA key is not a crypto.Signer")
 	}
 
-	// Allocate the four loopback ports up front.
-	peer0 := fmt.Sprintf("https://127.0.0.1:%d", freePort(t))
-	client0 := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
+	// node1's peer port is allocated once up front: it is registered as the
+	// learner's peer URL and baked into InitialCluster before node1 starts, so
+	// it cannot be re-rolled by a start retry.
 	peer1 := fmt.Sprintf("https://127.0.0.1:%d", freePort(t))
-	client1 := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
 
 	cert0, key0, caf0 := peerMaterial(t, dir, "n0", signer, ca)
 	cert1, key1, caf1 := peerMaterial(t, dir, "n1", signer, ca)
 
-	// node0: single-node member with peer mTLS.
-	cfg0 := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n0",
-		DataDir:      filepath.Join(dir, "n0"),
-		PeerURL:      peer0,
-		ClientURL:    client0,
-		ClusterToken: "otherix-transition",
-		PeerCertFile: cert0,
-		PeerKeyFile:  key0,
-		PeerCAFile:   caf0,
+	// node0: single-node member with peer mTLS. Its ports re-roll per attempt;
+	// node1's wiring below reads the ports of the config that actually started.
+	var cfg0 *etcd.Config
+	build0 := func() *etcd.Config {
+		cfg0 = &etcd.Config{
+			Mode:         etcd.ModeSingle,
+			Name:         "n0",
+			DataDir:      filepath.Join(dir, "n0"),
+			PeerURL:      fmt.Sprintf("https://127.0.0.1:%d", freePort(t)),
+			ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClusterToken: "otherix-transition",
+			PeerCertFile: cert0,
+			PeerKeyFile:  key0,
+			PeerCAFile:   caf0,
+		}
+		return cfg0
 	}
-	r0, err := etcd.Start(ctx, cfg0, log)
-	if err != nil {
-		t.Fatalf("start node0: %v", err)
-	}
+	r0 := startWithRetry(t, build0)
 	defer r0.Stop(10 * time.Second)
+	peer0, client0 := cfg0.PeerURL, cfg0.ClientURL
 
 	mc0 := etcd.NewMembershipClient(client0, log)
 	if n, err := mc0.VoterCount(ctx); err != nil || n != 1 {
@@ -106,23 +108,27 @@ func TestSingleToHATransition(t *testing.T) {
 		t.Fatalf("RegisterLearner: %v", err)
 	}
 
-	cfg1 := &etcd.Config{
-		Mode:           etcd.ModeJoin,
-		Name:           "n1",
-		DataDir:        filepath.Join(dir, "n1"),
-		PeerURL:        peer1,
-		ClientURL:      client1,
-		ClusterToken:   "otherix-transition",
-		InitialCluster: fmt.Sprintf("n0=%s,n1=%s", peer0, peer1),
-		PeerCertFile:   cert1,
-		PeerKeyFile:    key1,
-		PeerCAFile:     caf1,
+	// node1: peer1 stays fixed across attempts (the learner registration and
+	// InitialCluster pin it); only the client port re-rolls on a lost race.
+	var cfg1 *etcd.Config
+	build1 := func() *etcd.Config {
+		cfg1 = &etcd.Config{
+			Mode:           etcd.ModeJoin,
+			Name:           "n1",
+			DataDir:        filepath.Join(dir, "n1"),
+			PeerURL:        peer1,
+			ClientURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClusterToken:   "otherix-transition",
+			InitialCluster: fmt.Sprintf("n0=%s,n1=%s", peer0, peer1),
+			PeerCertFile:   cert1,
+			PeerKeyFile:    key1,
+			PeerCAFile:     caf1,
+		}
+		return cfg1
 	}
-	r1, err := etcd.Start(ctx, cfg1, log)
-	if err != nil {
-		t.Fatalf("start node1 (join): %v", err)
-	}
+	r1 := startWithRetry(t, build1)
 	defer r1.Stop(10 * time.Second)
+	client1 := cfg1.ClientURL
 
 	// Promote the learner to a voter by retrying the single-shot promote until
 	// the cluster reports 2 voters - etcd rejects promotion until the learner's
