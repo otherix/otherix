@@ -591,6 +591,104 @@ func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
 	}
 }
 
+// startBootstrapTLSServer starts an httptest TLS server serving BOTH /v1/ca
+// and /v1/nodes/join. /v1/ca returns advertisedCA's cert (what the operator
+// fingerprint pins); the server's TLS cert is signed by tlsSignCA (equal to
+// advertisedCA in the positive case, a different CA in the MITM case). It
+// records whether the join handler was reached.
+func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterCAResult) (*httptest.Server, *bool) {
+	t.Helper()
+	caCert, _, err := auth.ParseClusterCACert(tlsSignCA.CertPEM)
+	if err != nil {
+		t.Fatalf("parse tls ca: %v", err)
+	}
+	caKeyAny, err := auth.ParseClusterCAKey(tlsSignCA.KeyPEM)
+	if err != nil {
+		t.Fatalf("parse tls ca key: %v", err)
+	}
+	caSigner, ok := caKeyAny.(crypto.Signer)
+	if !ok {
+		t.Fatalf("CA key %T does not implement crypto.Signer", caKeyAny)
+	}
+	leafCertPEM, leafKeyPEM, err := auth.GenerateReplicaCert(caCert, caSigner, nil, []net.IP{net.ParseIP("127.0.0.1")}, time.Hour, time.Now())
+	if err != nil {
+		t.Fatalf("gen leaf: %v", err)
+	}
+	leaf, err := tls.X509KeyPair(leafCertPEM, leafKeyPEM)
+	if err != nil {
+		t.Fatalf("x509 keypair: %v", err)
+	}
+
+	advCert, _, err := auth.ParseClusterCACert(advertisedCA.CertPEM)
+	if err != nil {
+		t.Fatalf("parse adv ca: %v", err)
+	}
+	advFP := sha256.Sum256(advCert.Raw)
+
+	reached := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(caBundleResponse{
+			CAs: []caCertEntry{{
+				CertPEM:           string(advertisedCA.CertPEM),
+				FingerprintSHA256: hex.EncodeToString(advFP[:]),
+			}},
+			SignerFingerprintSHA256: hex.EncodeToString(advFP[:]),
+		})
+	})
+	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(joinResponse{NodeID: "n1", CertPEM: "x", CACertPEM: "y"})
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, &reached
+}
+
+// TestBootstrap_TokenOnlySentOverVerifiedTLS seam-proves through the REAL
+// Bootstrap entry point that the join token is transmitted only after the CP
+// serving cert verifies against the fingerprint-pinned cluster CA (audit H4).
+func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
+	ca, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("gen ca: %v", err)
+	}
+	advCert, _, err := auth.ParseClusterCACert(ca.CertPEM)
+	if err != nil {
+		t.Fatalf("parse ca: %v", err)
+	}
+	advSum := sha256.Sum256(advCert.Raw)
+	advFP := hex.EncodeToString(advSum[:])
+
+	t.Run("verified server reaches join", func(t *testing.T) {
+		srv, reached := startBootstrapTLSServer(t, ca, ca) // tls cert == advertised CA
+		cfg := &config.BootstrapConfig{Token: "tok", CPURL: srv.URL, CAFingerprint: advFP, NodeName: "node-1", Architecture: "arm64"}
+		_, _ = Bootstrap(context.Background(), cfg, nil) // may fail later at verifyResponseChain; we assert reach
+		if !*reached {
+			t.Error("join handler not reached against a verified server")
+		}
+	})
+
+	t.Run("mitm tls cert aborts before join", func(t *testing.T) {
+		mitm, err := auth.GenerateClusterCA(time.Now().Add(time.Second))
+		if err != nil {
+			t.Fatalf("gen mitm ca: %v", err)
+		}
+		srv, reached := startBootstrapTLSServer(t, mitm, ca) // /v1/ca advertises real ca, TLS cert from mitm
+		cfg := &config.BootstrapConfig{Token: "tok", CPURL: srv.URL, CAFingerprint: advFP, NodeName: "node-1", Architecture: "arm64"}
+		_, err = Bootstrap(context.Background(), cfg, nil)
+		if err == nil {
+			t.Fatal("Bootstrap against MITM tls cert = nil error, want failure")
+		}
+		if *reached {
+			t.Error("join handler reached over UNVERIFIED TLS - token leaked to MITM")
+		}
+	})
+}
+
 func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
 	// Pin the REAL cluster CA, but the server's TLS cert is signed by a DIFFERENT
 	// CA (the MITM): verification must fail and the handler must never be reached.

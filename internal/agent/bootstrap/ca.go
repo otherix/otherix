@@ -71,8 +71,11 @@ type caBundleResponse struct {
 // fetchAndVerifyCA performs the first bootstrap network round-trip:
 // GET /v1/ca with InsecureSkipVerify, decodes the CA trust-set bundle, and
 // pins the operator fingerprint against one of its entries (TOFU). The TLS
-// skip is essential because the CP's serving cert may not chain to the
-// cluster CA we are bootstrapping against.
+// skip is acceptable only here: the cluster CA is not yet pinned at this
+// first call, so there is nothing to verify the CP serving cert against;
+// the payload is public (CA certs only); and the operator fingerprint pin
+// makes any MITM substitution detectable. The subsequent token-bearing
+// POST /v1/nodes/join IS verified against the CA pinned here (audit H4).
 //
 // Returns the concatenated trust bundle PEM (every CA the agent must trust,
 // to persist as its trust anchor) plus the parsed pinned CA cert (the one
