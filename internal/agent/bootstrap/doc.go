@@ -9,12 +9,16 @@
 // token at /v1/nodes/join. The returned cert + key + CA + node-id
 // are then persisted to disk atomically.
 //
-// First-request TLS posture is `InsecureSkipVerify: true` - the CP's
-// TLS server certificate is not necessarily issued by the cluster CA
-// we are bootstrapping against, so the standard chain-of-trust
-// mechanism cannot bind the two requests. Security instead comes
-// from two cryptographic checks performed after the network
-// round-trips complete:
+// TLS posture: only the GET /v1/ca anchor fetch uses
+// `InsecureSkipVerify: true` - at that first call no cluster CA is
+// pinned yet, so there is nothing to verify the CP serving cert
+// against; the payload is public (CA certificates only); and the
+// operator fingerprint pin makes any MITM substitution detectable.
+// Once /v1/ca has pinned the cluster CA, the token-bearing
+// POST /v1/nodes/join verifies the CP serving cert against that
+// pinned CA before the token leaves the agent, so a MITM cannot
+// capture the token. Two cryptographic checks on the returned
+// material complete the binding:
 //
 //  1. sha256(returned_ca_cert.Raw) must equal the operator-pinned
 //     fingerprint.

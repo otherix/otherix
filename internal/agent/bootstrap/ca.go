@@ -71,8 +71,11 @@ type caBundleResponse struct {
 // fetchAndVerifyCA performs the first bootstrap network round-trip:
 // GET /v1/ca with InsecureSkipVerify, decodes the CA trust-set bundle, and
 // pins the operator fingerprint against one of its entries (TOFU). The TLS
-// skip is essential because the CP's serving cert may not chain to the
-// cluster CA we are bootstrapping against.
+// skip is acceptable only here: the cluster CA is not yet pinned at this
+// first call, so there is nothing to verify the CP serving cert against;
+// the payload is public (CA certs only); and the operator fingerprint pin
+// makes any MITM substitution detectable. The subsequent token-bearing
+// POST /v1/nodes/join IS verified against the CA pinned here (audit H4).
 //
 // Returns the concatenated trust bundle PEM (every CA the agent must trust,
 // to persist as its trust anchor) plus the parsed pinned CA cert (the one
@@ -150,10 +153,13 @@ func fetchAndVerifyCA(ctx context.Context, cpURL, expectedFingerprint string, ti
 	return []byte(bundle.String()), pinned, nil
 }
 
-// newBootstrapTransport is the *http.Transport used for every
-// bootstrap request. Captures the policy decisions:
+// newBootstrapTransport is the *http.Transport used ONLY by the
+// fetchAndVerifyCA /v1/ca anchor fetch (the insecure TOFU leg); the
+// token-bearing POST /v1/nodes/join uses verifyingTransport instead.
+// Captures the policy decisions:
 //
-//   - InsecureSkipVerify: true — TOFU, fingerprint match compensates.
+//   - InsecureSkipVerify: true - TOFU, no cluster CA pinned yet at the
+//     anchor fetch; the operator fingerprint pin compensates.
 //   - MinVersion: TLS 1.3 - the CP listener is Go crypto/tls (1.3
 //     always available), so nothing below 1.3 is accepted.
 //   - Proxy: nil — env-var proxies (HTTP_PROXY etc.) intentionally
@@ -170,4 +176,32 @@ func newBootstrapTransport() *http.Transport {
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	}
+}
+
+// verifyingTransport builds the *http.Transport used for the token-bearing
+// POST /v1/nodes/join. Unlike newBootstrapTransport (which the /v1/ca anchor
+// fetch uses), it VERIFIES the CP serving cert against EXACTLY the
+// operator-pinned cluster CA - the single cert whose fingerprint the operator
+// supplied - and nothing else (audit H4). Deliberately NOT the full /v1/ca
+// bundle: the bundle arrives over an unauthenticated TOFU channel, so an
+// active MITM can append its own CA next to the pinned one with
+// self-consistent per-entry fingerprints; pooling the whole bundle would let
+// that attacker CA authenticate the server that receives the token. The
+// trust pool here contains exactly the pinned cert.
+func verifyingTransport(pinnedCA *x509.Certificate) (*http.Transport, error) {
+	if pinnedCA == nil {
+		return nil, errors.New("bootstrap: pinned CA cert is nil")
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(pinnedCA)
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs:    pool,
+			MinVersion: tls.VersionTLS13,
+		},
+		Proxy:                 nil,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}, nil
 }

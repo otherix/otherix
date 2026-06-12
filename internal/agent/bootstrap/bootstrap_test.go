@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -504,5 +505,279 @@ func TestNewBootstrapTransportPinsTLS13Floor(t *testing.T) {
 	tr := newBootstrapTransport()
 	if got := tr.TLSClientConfig.MinVersion; got != tls.VersionTLS13 {
 		t.Errorf("TLSClientConfig.MinVersion = %#x, want %#x (TLS 1.3)", got, uint16(tls.VersionTLS13))
+	}
+}
+
+func TestVerifyingTransportPinsCAAndTLS13(t *testing.T) {
+	caResult, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	caCert, _, err := auth.ParseClusterCACert(caResult.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	tr, err := verifyingTransport(caCert)
+	if err != nil {
+		t.Fatalf("verifyingTransport: %v", err)
+	}
+	if tr.TLSClientConfig.InsecureSkipVerify {
+		t.Error("verifyingTransport must NOT skip verification")
+	}
+	if tr.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Errorf("MinVersion = %d, want TLS 1.3 (%d)", tr.TLSClientConfig.MinVersion, tls.VersionTLS13)
+	}
+	if tr.TLSClientConfig.RootCAs == nil {
+		t.Error("RootCAs must be set to the pinned CA")
+	}
+}
+
+func TestVerifyingTransportRejectsNilAnchor(t *testing.T) {
+	if _, err := verifyingTransport(nil); err == nil {
+		t.Error("verifyingTransport(nil) = nil error, want failure")
+	}
+}
+
+// startJoinTLSServer starts an httptest TLS server presenting a leaf signed by
+// signCA (CN otherix-cp-replica, IP SAN 127.0.0.1 so the 127.0.0.1 dial verifies).
+// It records whether the /v1/nodes/join handler was reached. Returns the server
+// and the reached flag (atomic - the handler runs on the server goroutine).
+func startJoinTLSServer(t *testing.T, signCA auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
+	t.Helper()
+	caCert, _, err := auth.ParseClusterCACert(signCA.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	caKeyAny, err := auth.ParseClusterCAKey(signCA.KeyPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCAKey: %v", err)
+	}
+	caSigner, ok := caKeyAny.(crypto.Signer)
+	if !ok {
+		t.Fatalf("CA key %T does not implement crypto.Signer", caKeyAny)
+	}
+	leafCertPEM, leafKeyPEM, err := auth.GenerateReplicaCert(caCert, caSigner, nil, []net.IP{net.ParseIP("127.0.0.1")}, time.Hour, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateReplicaCert: %v", err)
+	}
+	leaf, err := tls.X509KeyPair(leafCertPEM, leafKeyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+
+	var reached atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(joinResponse{NodeID: "n1", CertPEM: "x", CACertPEM: "y"})
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, &reached
+}
+
+func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
+	ca, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	caCert, _, err := auth.ParseClusterCACert(ca.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	srv, reached := startJoinTLSServer(t, ca)
+	cfg := &config.BootstrapConfig{CPURL: srv.URL, NodeName: "node-1", Architecture: "arm64"}
+
+	_, err = submitCSR(context.Background(), cfg, "tok", "csr", caCert, 10*time.Second)
+	if err != nil {
+		t.Fatalf("submitCSR against verified server: %v", err)
+	}
+	if !reached.Load() {
+		t.Error("join handler not reached over a verified connection")
+	}
+}
+
+// startBootstrapTLSServer starts an httptest TLS server serving BOTH /v1/ca
+// and /v1/nodes/join. /v1/ca returns every advertisedCAs entry, each with a
+// self-consistent fingerprint (the first entry is the bundle signer); the
+// server's TLS cert is signed by tlsSignCA (equal to the pinned CA in the
+// positive case, a different CA in the MITM cases). It records whether the
+// join handler was reached (atomic - the handler runs on the server
+// goroutine).
+func startBootstrapTLSServer(t *testing.T, tlsSignCA auth.ClusterCAResult, advertisedCAs ...auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
+	t.Helper()
+	caCert, _, err := auth.ParseClusterCACert(tlsSignCA.CertPEM)
+	if err != nil {
+		t.Fatalf("parse tls ca: %v", err)
+	}
+	caKeyAny, err := auth.ParseClusterCAKey(tlsSignCA.KeyPEM)
+	if err != nil {
+		t.Fatalf("parse tls ca key: %v", err)
+	}
+	caSigner, ok := caKeyAny.(crypto.Signer)
+	if !ok {
+		t.Fatalf("CA key %T does not implement crypto.Signer", caKeyAny)
+	}
+	leafCertPEM, leafKeyPEM, err := auth.GenerateReplicaCert(caCert, caSigner, nil, []net.IP{net.ParseIP("127.0.0.1")}, time.Hour, time.Now())
+	if err != nil {
+		t.Fatalf("gen leaf: %v", err)
+	}
+	leaf, err := tls.X509KeyPair(leafCertPEM, leafKeyPEM)
+	if err != nil {
+		t.Fatalf("x509 keypair: %v", err)
+	}
+
+	if len(advertisedCAs) == 0 {
+		t.Fatal("startBootstrapTLSServer needs at least one advertised CA")
+	}
+	entries := make([]caCertEntry, 0, len(advertisedCAs))
+	for _, adv := range advertisedCAs {
+		advCert, _, err := auth.ParseClusterCACert(adv.CertPEM)
+		if err != nil {
+			t.Fatalf("parse adv ca: %v", err)
+		}
+		advFP := sha256.Sum256(advCert.Raw)
+		entries = append(entries, caCertEntry{
+			CertPEM:           string(adv.CertPEM),
+			FingerprintSHA256: hex.EncodeToString(advFP[:]),
+		})
+	}
+
+	var reached atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(caBundleResponse{
+			CAs:                     entries,
+			SignerFingerprintSHA256: entries[0].FingerprintSHA256,
+		})
+	})
+	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(joinResponse{NodeID: "n1", CertPEM: "x", CACertPEM: "y"})
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, &reached
+}
+
+// TestBootstrap_TokenOnlySentOverVerifiedTLS seam-proves through the REAL
+// Bootstrap entry point that the join token is transmitted only after the CP
+// serving cert verifies against the fingerprint-pinned cluster CA (audit H4).
+func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
+	ca, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("gen ca: %v", err)
+	}
+	advCert, _, err := auth.ParseClusterCACert(ca.CertPEM)
+	if err != nil {
+		t.Fatalf("parse ca: %v", err)
+	}
+	advSum := sha256.Sum256(advCert.Raw)
+	advFP := hex.EncodeToString(advSum[:])
+
+	t.Run("verified server reaches join", func(t *testing.T) {
+		srv, reached := startBootstrapTLSServer(t, ca, ca) // tls cert == advertised CA
+		cfg := &config.BootstrapConfig{Token: "tok", CPURL: srv.URL, CAFingerprint: advFP, NodeName: "node-1", Architecture: "arm64"}
+		_, _ = Bootstrap(context.Background(), cfg, nil) // may fail later at verifyResponseChain; we assert reach
+		if !reached.Load() {
+			t.Error("join handler not reached against a verified server")
+		}
+	})
+
+	t.Run("mitm tls cert aborts before join", func(t *testing.T) {
+		// Backdate the MITM CA so the handshake fails on UNTRUSTED chain, not on
+		// not-yet-valid validity - otherwise a pool-widening regression could slip
+		// past this test on timing alone.
+		mitm, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatalf("gen mitm ca: %v", err)
+		}
+		srv, reached := startBootstrapTLSServer(t, mitm, ca) // /v1/ca advertises real ca, TLS cert from mitm
+		cfg := &config.BootstrapConfig{Token: "tok", CPURL: srv.URL, CAFingerprint: advFP, NodeName: "node-1", Architecture: "arm64"}
+		_, err = Bootstrap(context.Background(), cfg, nil)
+		if err == nil {
+			t.Fatal("Bootstrap against MITM tls cert = nil error, want failure")
+		}
+		if reached.Load() {
+			t.Error("join handler reached over UNVERIFIED TLS - token leaked to MITM")
+		}
+	})
+}
+
+// TestBootstrap_SecondBundleCACannotAuthenticateJoin seam-proves the join
+// POST verifies against ONLY the operator-pinned CA, not the whole TOFU
+// bundle. Attack encoded: an active MITM on the unauthenticated /v1/ca fetch
+// returns [realPinnedCA, attackerCA] - both entries self-consistent (correct
+// per-entry fingerprints) and the operator pin present - then presents an
+// attackerCA-signed leaf to /v1/nodes/join. If any bundle entry beyond the
+// pinned cert lands in the POST trust pool, the handshake verifies and the
+// token leaks. The handshake must fail and the join handler must never run.
+func TestBootstrap_SecondBundleCACannotAuthenticateJoin(t *testing.T) {
+	realCA, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("gen real ca: %v", err)
+	}
+	// Backdate the attacker CA so it is valid NOW - the test must fail on
+	// pool narrowing, not on a not-yet-valid attacker cert.
+	attackerCA, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("gen attacker ca: %v", err)
+	}
+	realCert, _, err := auth.ParseClusterCACert(realCA.CertPEM)
+	if err != nil {
+		t.Fatalf("parse real ca: %v", err)
+	}
+	realSum := sha256.Sum256(realCert.Raw)
+
+	// TLS leaf signed by attackerCA; /v1/ca bundle carries BOTH CAs.
+	srv, reached := startBootstrapTLSServer(t, attackerCA, realCA, attackerCA)
+	cfg := &config.BootstrapConfig{
+		Token:         "tok",
+		CPURL:         srv.URL,
+		CAFingerprint: hex.EncodeToString(realSum[:]),
+		NodeName:      "node-1",
+		Architecture:  "arm64",
+	}
+
+	_, err = Bootstrap(context.Background(), cfg, nil)
+	if err == nil {
+		t.Fatal("Bootstrap with attacker CA smuggled into TOFU bundle = nil error, want TLS verification failure")
+	}
+	if reached.Load() {
+		t.Error("join handler reached via attacker bundle CA - token leaked despite operator pin")
+	}
+}
+
+func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
+	// Pin the REAL cluster CA, but the server's TLS cert is signed by a DIFFERENT
+	// CA (the MITM): verification must fail and the handler must never be reached.
+	realCA, err := auth.GenerateClusterCA(time.Now())
+	if err != nil {
+		t.Fatalf("GenerateClusterCA real: %v", err)
+	}
+	// Backdate so the handshake fails on UNTRUSTED chain, not not-yet-valid.
+	mitmCA, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GenerateClusterCA mitm: %v", err)
+	}
+	realCert, _, err := auth.ParseClusterCACert(realCA.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert real: %v", err)
+	}
+	srv, reached := startJoinTLSServer(t, mitmCA) // server cert chains to mitmCA
+	cfg := &config.BootstrapConfig{CPURL: srv.URL, NodeName: "node-1", Architecture: "arm64"}
+
+	_, err = submitCSR(context.Background(), cfg, "tok", "csr", realCert, 10*time.Second)
+	if err == nil {
+		t.Fatal("submitCSR against MITM server = nil error, want TLS verification failure")
+	}
+	if reached.Load() {
+		t.Error("join handler was reached over an UNVERIFIED connection - token leaked")
 	}
 }
