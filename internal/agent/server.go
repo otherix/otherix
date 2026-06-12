@@ -465,6 +465,7 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger(log))
 	r.Use(middleware.Recoverer(log))
+	r.Use(middleware.RequireCPIdentity(log))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, r, http.StatusNotFound,

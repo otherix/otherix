@@ -174,6 +174,9 @@ func LoadOrGenerateCPCert(ctx context.Context, s CPCertCAStore, cfg config.APICo
 
 // loadOperatorFiles implements Mode A. Both paths must exist
 // (configured intent + missing files = fatal, not silent fallback).
+// The leaf's Subject CommonName is pinned to auth.CPCertCommonName -
+// agents reject any other CN at their RequireCPIdentity gate, so a
+// mismatched operator cert must fail boot, not 403 on every call.
 // Cluster CA still loaded from DB so the inbound listener's ClientCAs
 // pool has the correct trust anchor for agent client cert validation.
 func loadOperatorFiles(certFile, keyFile string, s CPCertCAStore, ctx context.Context) (TLSMaterial, error) {
@@ -186,6 +189,16 @@ func loadOperatorFiles(certFile, keyFile string, s CPCertCAStore, ctx context.Co
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return TLSMaterial{}, fmt.Errorf("load operator cert: %v", err)
+	}
+	if len(cert.Certificate) == 0 {
+		return TLSMaterial{}, fmt.Errorf("cp_cert.cert_file %s: no certificate in file", certFile)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return TLSMaterial{}, fmt.Errorf("cp_cert.cert_file %s: parse leaf: %v", certFile, err)
+	}
+	if leaf.Subject.CommonName != auth.CPCertCommonName {
+		return TLSMaterial{}, fmt.Errorf("cp_cert.cert_file %s: leaf CommonName %q must be %q (agents pin the control-plane identity to this CN; a mismatched cert boots but every agent rejects it with 403)", certFile, leaf.Subject.CommonName, auth.CPCertCommonName)
 	}
 	caCert, _, err := loadClusterCAFromDB(ctx, s)
 	if err != nil {

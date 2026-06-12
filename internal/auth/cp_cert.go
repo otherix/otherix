@@ -32,6 +32,12 @@ const CPCertValidity = 365 * 24 * time.Hour
 // failures under steady-state.
 const CPCertNearExpiryBuffer = 30 * 24 * time.Hour
 
+// CPCertCommonName is the Subject CommonName carried by every control-plane
+// replica server cert minted by GenerateReplicaCert. It is the identity the
+// agent listener pins to authorize inbound /v1 requests (audit H1): all HA
+// replicas share it, node certs never carry it.
+const CPCertCommonName = "otherix-cp-replica"
+
 // hostnameFn is the indirection point for os.Hostname so tests can
 // inject deterministic values. Production callers leave it pointing
 // at the real syscall. Mirrors the package-level testability seam
@@ -59,7 +65,7 @@ func GenerateReplicaCert(caCert *x509.Certificate, caKey crypto.Signer, dnsNames
 	if validity <= 0 {
 		validity = CPCertValidity
 	}
-	return signLeafCert(caCert, caKey, "otherix-cp-replica", dnsNames, ips, validity, now)
+	return signLeafCert(caCert, caKey, CPCertCommonName, dnsNames, ips, validity, now)
 }
 
 // signLeafCert mints an ECDSA P-384 leaf signed by the cluster CA, shared
