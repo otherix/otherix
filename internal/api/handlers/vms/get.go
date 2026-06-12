@@ -66,7 +66,9 @@ func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.V
 		writeVMLoadError(w, r, err)
 		return
 	}
-	response.WriteJSON(w, r, statusCode, toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID)))
+	response.WriteJSON(w, r, statusCode,
+		toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID),
+			callerCanReadVMSecrets(r.Context(), vm.OwnerID)))
 }
 
 // vmDeleting reports whether a non-terminal vm.delete task targets vmID,

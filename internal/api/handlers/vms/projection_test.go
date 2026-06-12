@@ -147,7 +147,7 @@ func TestToView_PendingSurfacesReasonAndSpec(t *testing.T) {
 		SchedulingMessage: &msg, SchedulingSpec: spec, Labels: []byte(`{}`),
 		ImageFormat: store.ImageFormatQcow2, Architecture: store.CpuArchAmd64,
 	}
-	v := toView(vm, nil, vmViewNames{}, false)
+	v := toView(vm, nil, vmViewNames{}, false /* deleting */, true /* includeSecrets */)
 	if v.Status.Phase != statusPending || v.Status.Reason != reason {
 		t.Errorf("status = %+v, want phase=pending reason=%q", v.Status, reason)
 	}

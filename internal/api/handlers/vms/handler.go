@@ -40,7 +40,12 @@
 //     is materialized by the agent on create (the former
 //     template-usability check went away with the template entity).
 //   - vm:read gate is held at scope=any by every authenticated role;
-//     no ownership check. ListVMsByOwner stays inactive.
+//     no ownership check on the inventory fields. ListVMsByOwner stays
+//     inactive. The secret-bearing view fields (user_data,
+//     network_config, image_url) are the carve-out: they are stripped
+//     unless the caller holds vm:console on that VM (see
+//     callerCanReadVMSecrets), closing the cross-owner cloud-init /
+//     presigned-URL leak (audit R2-H1).
 //   - vm:delete gate admits admin (any) / operator (any) / developer
 //     (own); auth.CheckOwnership inside handler enforces own→404
 //     bridge per CLAUDE.md "403 vs 404" rule.
@@ -145,11 +150,16 @@ func New(
 // developer / viewer so the VM surface cannot be used to enumerate the user
 // directory those roles cannot otherwise read.
 type vmView struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	OwnerID      string          `json:"owner_id"`
-	Owner        *string         `json:"owner"`
-	ImageURL     string          `json:"image_url"`
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	OwnerID string  `json:"owner_id"`
+	Owner   *string `json:"owner"`
+	// ImageURL is secret-gated like UserData / NetworkConfig below: a
+	// presigned private-mirror URL can embed credentials, so it is omitted
+	// for callers without vm:console on this VM. ImageSHA256 and Format are
+	// inventory (a digest and a format string reveal no secret) and stay
+	// visible to every vm:read holder.
+	ImageURL     string          `json:"image_url,omitempty"`
 	ImageSHA256  string          `json:"image_sha256,omitempty"`
 	Format       string          `json:"format"`
 	Pool         string          `json:"pool"`
@@ -162,12 +172,15 @@ type vmView struct {
 	Status       vmStatusView    `json:"status"`
 	DesiredPhase string          `json:"desired_phase"`
 	Labels       json.RawMessage `json:"labels"`
-	// UserData and NetworkConfig echo the cloud-init payloads the caller
-	// supplied at create time, verbatim. They are nullable (omitted when
-	// unset) and read back the way a k8s pod spec reads back inline config -
-	// the operator authored them and can already read them from inside the
-	// guest, so the view is not a secrecy boundary (unlike password_hash,
-	// an irreversible credential digest, which stays stripped).
+	// UserData and NetworkConfig echo the cloud-init payloads the VM was
+	// created with, verbatim - but ONLY to callers holding vm:console on
+	// this VM (owner for developer scope=own; any VM for admin / operator).
+	// Those callers can already extract the payloads from inside the guest,
+	// so the view reveals nothing new to them; everyone else (viewer, a
+	// developer reading a foreign VM) gets the fields stripped, because
+	// cloud-init routinely carries guest passwords, SSH keys, and API
+	// tokens. See callerCanReadVMSecrets and the includeSecrets parameter
+	// on toView (audit finding R2-H1).
 	UserData      *string `json:"user_data,omitempty"`
 	NetworkConfig *string `json:"network_config,omitempty"`
 	CreatedAt     string  `json:"created_at"`
@@ -229,7 +242,13 @@ type vmViewNames struct {
 // so names.pool / names.networks are empty; toView then falls back to
 // the SchedulingSpec so the operator still sees the requested pool and
 // network. The scheduling reason / message surface on status.
-func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting bool) vmView {
+//
+// includeSecrets gates the secret-bearing fields (user_data,
+// network_config, image_url): when false they are left at their zero
+// values so the omitempty wire fields render absent. Callers compute it
+// per-VM via callerCanReadVMSecrets(ctx, vm.OwnerID) - vm:console on
+// this VM is the access signal (audit R2-H1).
+func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool) vmView {
 	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting)}
 	pool := names.pool
 	nets := names.networks
@@ -249,7 +268,7 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting b
 			}
 		}
 	}
-	return vmView{
+	v := vmView{
 		ID:            vm.ID.String(),
 		Name:          vm.Name,
 		OwnerID:       vm.OwnerID.String(),
@@ -272,6 +291,12 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting b
 		CreatedAt:     vm.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:     vm.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if !includeSecrets {
+		v.ImageURL = ""
+		v.UserData = nil
+		v.NetworkConfig = nil
+	}
+	return v
 }
 
 // networksOrEmpty normalises a nil network slice to a non-nil empty

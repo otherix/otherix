@@ -76,7 +76,16 @@ resume — every transition between desired phases.
 not considered confidential within a single self-hosted installation.
 Sensitive runtime fields (qemu pid, file paths, raw VNC ports) are
 **not** in the public API at all, so role-based filtering on the response
-is not the gate.
+is not the gate for those.
+
+The secret-bearing VM view fields are the exception: `user_data`,
+`network_config` (cloud-init payloads - guest passwords, SSH keys, API
+tokens), and `image_url` (presigned private-mirror URLs can embed
+credentials) are surfaced only to callers holding `vm:console` on that
+VM - the callers who can already extract them from inside the guest.
+Everyone else (viewer, a developer reading a foreign VM) receives the
+VM with those fields absent. Inventory fields (`image_sha256`, `format`,
+sizing, placement) stay visible to every `vm:read` holder.
 
 ### Snapshots
 
