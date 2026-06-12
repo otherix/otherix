@@ -12,6 +12,12 @@ ExecStart=/usr/bin/otherix-agent serve
 Restart=on-failure
 RestartSec=5s
 StateDirectory=otherix
+# KillMode=process so restarting/upgrading the agent kills ONLY the agent
+# process, not the daemonized qemu guests sharing its cgroup. The agent
+# re-adopts running VMs on restart (serial mux re-attach + heartbeat), so the
+# guests must outlive an agent bounce; the default control-group would kill
+# every running guest on each agent restart.
+KillMode=process
 # CAP_NET_ADMIN: the netlink network fabric (bridges/taps/VXLAN/WireGuard/nft).
 # CAP_NET_RAW: the per-node DHCP responder opens an AF_PACKET raw socket on
 # each dhcp-enabled overlay bridge to answer guest DISCOVER before the guest

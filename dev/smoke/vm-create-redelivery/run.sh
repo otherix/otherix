@@ -82,7 +82,7 @@ otx() { "$OTX" "$@"; }
 # etcd_get KEY -> raw value at KEY ("" when absent)
 etcd_get() { ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" get "$1" --print-value-only 2>/dev/null || true; }
 # etcd_put KEY VALUE
-etcd_put() { ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" put "$1" "$2" >/dev/null; }
+etcd_put() { ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" put "$1" "$2" >/dev/null 2>&1; }
 
 # vm_phase NAME -> CP-observed status.phase ("" if gone)
 vm_phase() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true; }
@@ -179,8 +179,11 @@ pass "created and running (qemu pid=$PID_BEFORE)"
 
 # Resolve the CP task that created this VM (its agent_task_id is what the bug
 # failed to persist; the redelivery below re-arms its job).
-TASK_ID="$(otx task list --output json 2>/dev/null \
-  | jq -r --arg vm "$VMID" 'first(.data[]? | select(.resource_id==$vm and .type=="vm.create") | .id)' || true)"
+# The CLI has no `task` surface, so read the task rows straight from the dev etcd
+# member (PascalCase keys - store.Task carries no json tags). ResourceID is the vm
+# id; Type is "vm.create".
+TASK_ID="$(ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" get /otherix/tasks/ --prefix --print-value-only 2>/dev/null \
+  | jq -rs --arg vm "$VMID" 'map(select(.Type=="vm.create" and .ResourceID==$vm)) | .[0].ID // empty' || true)"
 [[ "$TASK_ID" =~ ^[0-9a-f-]{36}$ ]] || fail "could not resolve the vm.create task id for $VMID (got '${TASK_ID:-none}')"
 POOL_ID="$(otx pool get default --output json | jq -r --arg n "$NODE1" 'first(.instances[]? | select(.node==$n) | .id)')"
 NODE_ID="$(otx node get "$NODE1" --output json | jq -r '.id')"
@@ -229,7 +232,7 @@ echo "=== step 3: assert the redelivery did NOT clobber and the task succeeds ==
 # returns an idempotent SUCCESS without a second runCreate.
 deadline=$(( SECONDS + TASK_WAIT )); status=""
 while (( SECONDS < deadline )); do
-  status="$(otx task get "$TASK_ID" --output json 2>/dev/null | jq -r '.status' || true)"
+  status="$(etcd_get "/otherix/tasks/${TASK_ID}" | jq -r '.Status' 2>/dev/null || true)"
   [[ "$status" == "success" ]] && break
   [[ "$status" == "failed" || "$status" == "cancelled" ]] && \
     fail "redelivered task reached '$status' (want success) - the create did NOT reconcile"
