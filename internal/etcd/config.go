@@ -11,9 +11,11 @@ package etcd
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Mode selects the embedded member's cluster bootstrap behaviour.
@@ -104,6 +106,37 @@ func (c *Config) validatePeerURL() error {
 	return nil
 }
 
+// validateClientURL checks the client URL is a valid URL bound to loopback. The
+// etcd client KV API is plaintext and unauthenticated and exposes the cluster CA
+// private key and every secret hash, so it must never bind to a routable address
+// (audit M4). The control plane reads KV in-process; the membership/backup TCP
+// clients dial the local loopback client URL; HA inter-member traffic uses the
+// peer (Raft) transport - so there is no legitimate non-loopback client URL.
+func (c *Config) validateClientURL() error {
+	u, err := url.Parse(c.ClientURL)
+	if err != nil || c.ClientURL == "" || u.Host == "" {
+		return fmt.Errorf("client-url is required and must be a valid URL")
+	}
+	if !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf("client-url host %q is not loopback: the etcd client KV API is "+
+			"plaintext and unauthenticated (it exposes the cluster CA private key and all "+
+			"secrets), so it must bind to loopback (127.0.0.1 / ::1 / localhost)", u.Hostname())
+	}
+	return nil
+}
+
+// isLoopbackHost reports whether host is a loopback address (127.0.0.0/8 or ::1)
+// or the name "localhost" (case-insensitive). It does not resolve DNS: any other
+// hostname is rejected even if it would resolve to a loopback address, pinning
+// the guard on the literal value (fail-closed).
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Validate checks the config invariants. It returns the first failure
 // encountered so the operator sees one clear error.
 func (c *Config) Validate() error {
@@ -121,8 +154,8 @@ func (c *Config) Validate() error {
 	if err := c.validatePeerURL(); err != nil {
 		return err
 	}
-	if u, err := url.Parse(c.ClientURL); err != nil || c.ClientURL == "" || u.Host == "" {
-		return fmt.Errorf("client-url is required and must be a valid URL")
+	if err := c.validateClientURL(); err != nil {
+		return err
 	}
 	if c.ClusterToken == "" {
 		return fmt.Errorf("cluster-token is required")
