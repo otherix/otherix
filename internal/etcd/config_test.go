@@ -64,6 +64,8 @@ func TestConfigValidate(t *testing.T) {
 		// no DNS resolution, so a non-"localhost" name is rejected even if it
 		// would resolve to 127.0.0.1 via /etc/hosts.
 		{name: "client-url loopback-resolving hostname rejected", mutate: func(c *Config) { c.ClientURL = "http://myhost.local:2379" }, wantErr: true},
+		{name: "client-url userinfo trick rejected", mutate: func(c *Config) { c.ClientURL = "http://127.0.0.1@evil.com:2379" }, wantErr: true},
+		{name: "client-url ipv4-mapped loopback ok", mutate: func(c *Config) { c.ClientURL = "http://[::ffff:127.0.0.1]:2379" }, wantErr: false},
 		{name: "client-url ipv6 loopback ok", mutate: func(c *Config) { c.ClientURL = "http://[::1]:2379" }, wantErr: false},
 		{name: "client-url localhost ok", mutate: func(c *Config) { c.ClientURL = "http://localhost:2379" }, wantErr: false},
 		{name: "client-url localhost uppercase ok", mutate: func(c *Config) { c.ClientURL = "http://LOCALHOST:2379" }, wantErr: false},
@@ -119,6 +121,7 @@ func TestIsLoopbackHost(t *testing.T) {
 		{"127.0.0.1", true},
 		{"127.0.0.5", true},
 		{"::1", true},
+		{"::ffff:127.0.0.1", true},
 		{"localhost", true},
 		{"LocalHost", true},
 		{"0.0.0.0", false},
