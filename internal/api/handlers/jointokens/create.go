@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -21,12 +22,6 @@ import (
 // Default TTL when the caller omits ttl_seconds; mirrors the
 // OpenAPI default (3600 s = 1 hour).
 const defaultTTLSeconds = 3600
-
-// intendedNodeNameMaxLength bounds the API-edge length check. 253
-// matches the practical DNS-name ceiling and the nodes.name validator
-// (defense-in-depth — SQL accepts arbitrary text, but a 4 KB blob
-// would be unusable anyway).
-const intendedNodeNameMaxLength = 253
 
 // maxClusterTokenUses caps an explicit max_uses on a cluster token. A
 // cluster token redeems for the cluster CA private key (the
@@ -162,8 +157,12 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 			if kind == store.JoinTokenKindCluster {
 				return "", nil, 0, nil, errClusterNodeBound
 			}
-			if len(trimmed) > intendedNodeNameMaxLength {
-				return "", nil, 0, nil, errIntendedNameTooLong
+			// intended_node_name pre-binds the token to a name that becomes
+			// the cert CN `node-<name>` at redemption, so constrain it to a
+			// lowercase RFC 1123 DNS label (audit LOW). The trimmed,
+			// validated value is what gets persisted below.
+			if err := validation.ValidateNodeName(trimmed); err != nil {
+				return "", nil, 0, nil, errIntendedNameInvalid
 			}
 			// Pre-bound + multi-use combination — defense-in-depth
 			// against the SQL CHECK constraint. Refuses each
@@ -241,9 +240,11 @@ func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 			map[string]any{
 				"forbidden_combination": []string{"intended_node_name", "max_uses>1"},
 			})
-	case errors.Is(err, errIntendedNameTooLong):
+	case errors.Is(err, errIntendedNameInvalid):
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "intended_node_name must be at most 253 characters", nil)
+			response.CodeValidationFailed,
+			"intended_node_name must be a lowercase RFC 1123 DNS label ([a-z0-9] and '-', start and end alphanumeric, max 63 characters)",
+			map[string]any{"field": "intended_node_name"})
 	case errors.Is(err, errInvalidKind):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, `kind must be "node" or "cluster"`, nil)

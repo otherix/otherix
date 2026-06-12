@@ -12,12 +12,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/store"
 )
-
-// nameMaxLength is the upper bound on nodes.name. 253 matches the
-// practical DNS-name ceiling and is a safe fit for the unique index.
-const nameMaxLength = 253
 
 // advertisedEndpointMaxLength bounds nodes.advertised_endpoint. 2048 is the
 // pragmatic URL length most servers accept; the column itself is
@@ -56,8 +53,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row, err := h.store.CreateNode(r.Context(), store.CreateNodeParams{
-		ID:                      uuid.New(),
-		Name:                    req.Name,
+		ID: uuid.New(),
+		// Persist the same trimmed value validateCreate vetted - the DNS
+		// label guarantee must hold for the stored name, not just the
+		// validated copy.
+		Name:                    strings.TrimSpace(req.Name),
 		Architecture:            store.CPUArch(req.Architecture),
 		AdvertisedEndpoint:      req.AdvertisedEndpoint,
 		MigrationHost:           req.MigrationHost,
@@ -82,12 +82,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 // validateCreate enforces the API-edge invariants. Order is biased
 // toward returning the most specific error first.
 func validateCreate(req createRequest) error {
-	name := strings.TrimSpace(req.Name)
-	switch {
-	case name == "":
-		return errors.New("name is required")
-	case len(name) > nameMaxLength:
-		return errors.New("name is too long")
+	// The name flows into the issued agent cert CN `node-<name>` and SAN
+	// `node-<name>.agents.otherix.local`, so it is constrained to a
+	// lowercase RFC 1123 DNS label (audit LOW).
+	if err := validation.ValidateNodeName(strings.TrimSpace(req.Name)); err != nil {
+		return err
 	}
 
 	switch req.Architecture {

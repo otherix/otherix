@@ -5,7 +5,10 @@ package vms
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -53,7 +56,22 @@ func TestValidateCreateRequest(t *testing.T) {
 		{name: "empty name", req: func() vmCreateRequest { r := base(); r.Name = ""; return r }()},
 		{
 			name: "name too long",
-			req:  func() vmCreateRequest { r := base(); r.Name = string(make([]byte, 256)); return r }(),
+			req:  func() vmCreateRequest { r := base(); r.Name = strings.Repeat("a", 64); return r }(),
+		},
+		{
+			// Audit LOW: the name feeds the cidata local-hostname /
+			// instance-id and the console-stream URL path, so it must be a
+			// lowercase RFC 1123 DNS label.
+			name: "name with uppercase and underscore",
+			req:  func() vmCreateRequest { r := base(); r.Name = "Bad_Name"; return r }(),
+		},
+		{
+			name: "name with slash",
+			req:  func() vmCreateRequest { r := base(); r.Name = "a/b"; return r }(),
+		},
+		{
+			name: "name with leading hyphen",
+			req:  func() vmCreateRequest { r := base(); r.Name = "-vm"; return r }(),
 		},
 		{name: "empty image_url", req: func() vmCreateRequest { r := base(); r.ImageURL = ""; return r }()},
 		{
@@ -105,6 +123,40 @@ func TestValidateCreateRequest(t *testing.T) {
 				t.Errorf("validateCreateRequest(%s) = %v, want %v", tc.name, got, tc.ok)
 			}
 		})
+	}
+}
+
+// TestValidateCreateRequestInvalidNameEnvelope pins the wire contract
+// for the VM name rule: an invalid name yields 400 with the
+// validation_failed code.
+func TestValidateCreateRequestInvalidNameEnvelope(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	req := vmCreateRequest{
+		Name:         "Bad_Name",
+		ImageURL:     "https://example.test/img.qcow2",
+		Architecture: "amd64",
+		Pool:         "default",
+		VCPUs:        2,
+		MemoryMB:     2048,
+	}
+	if got := validateCreateRequest(rec, fakeRequest(), req); got {
+		t.Fatal("validateCreateRequest(Bad_Name) = true, want false")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Error.Code != "validation_failed" {
+		t.Errorf("error.code = %q, want %q", body.Error.Code, "validation_failed")
 	}
 }
 

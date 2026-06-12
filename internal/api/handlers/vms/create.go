@@ -290,9 +290,12 @@ func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCre
 // well-formedness for `pool` / `network` / `firmware_id` is deferred to the
 // resolver / firmware lookup layers.
 func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
-	if req.Name == "" || len(req.Name) > 255 {
+	// The name feeds the cidata local-hostname / instance-id and the
+	// console-stream URL path, so it is constrained to a lowercase
+	// RFC 1123 DNS label (audit LOW).
+	if err := validation.ValidateVMName(req.Name); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "name is required (1..255 chars)", nil)
+			response.CodeValidationFailed, err.Error(), nil)
 		return false
 	}
 	if !validateCreateImageFields(w, r, req) {

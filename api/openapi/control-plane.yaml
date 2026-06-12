@@ -3919,11 +3919,14 @@ components:
         name:
           type: string
           minLength: 1
-          maxLength: 253
+          maxLength: 63
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
           description: |
-            Stable cluster-unique node name. Convention is the DNS short
-            name of the host. Cannot collide with another non-deleted
-            node.
+            Stable cluster-unique node name. Must be a lowercase
+            RFC 1123 DNS label ([a-z0-9] and '-', starting and ending
+            alphanumeric, max 63 characters) - the name flows into the
+            issued agent cert CN/SAN. Convention is the DNS short name
+            of the host. Cannot collide with another non-deleted node.
         architecture:
           type: string
           enum: [amd64, arm64]
@@ -4677,7 +4680,14 @@ components:
             cannot carry `intended_node_name`.
         intended_node_name:
           type: [string, "null"]
-          maxLength: 253
+          maxLength: 63
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          description: |
+            Optional node name to pre-bind the token to. When set, must
+            be a lowercase RFC 1123 DNS label ([a-z0-9] and '-', starting
+            and ending alphanumeric, max 63 characters) - it becomes the
+            cert CN `node-<name>` at redemption. Null / absent leaves the
+            token unbound.
         ttl_seconds:
           type: integer
           minimum: 60
@@ -4838,10 +4848,15 @@ components:
             from `node_name`.
         node_name:
           type: string
-          maxLength: 253
+          minLength: 1
+          maxLength: 63
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
           description: |
-            Identity for the issued cert + the nodes row. Must match
-            the token's `intended_node_name` if the token was minted
+            Identity for the issued cert + the nodes row. Must be a
+            lowercase RFC 1123 DNS label ([a-z0-9] and '-', starting and
+            ending alphanumeric, max 63 characters) - the name flows into
+            the server-authoritative cert CN `node-<name>` and SAN. Must
+            match the token's `intended_node_name` if the token was minted
             pre-bound.
         architecture:
           type: string
@@ -5788,7 +5803,13 @@ components:
         name:
           type: string
           minLength: 1
-          maxLength: 255
+          maxLength: 63
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          description: |
+            VM name. Must be a lowercase RFC 1123 DNS label ([a-z0-9]
+            and '-', starting and ending alphanumeric, max 63
+            characters) - the name becomes the guest's cloud-init
+            local-hostname.
         image_url:
           type: string
           format: uri
