@@ -8,6 +8,7 @@ import (
 	"crypto"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -56,22 +57,26 @@ type clusterJoinResponse struct {
 	} `json:"members"`
 }
 
-// FetchClusterCA performs the joiner's bootstrap round-trip: POST the cluster
-// token to /v1/cluster/join over a TOFU TLS connection (the target replica's
-// serving cert does not chain to the CA we are fetching), then verify the
-// returned CA against the operator-pinned fingerprint and confirm the key pairs
-// with the cert. Returns the CA material to persist on disk before etcd starts.
-//
-// TLS uses InsecureSkipVerify: the payload is self-verifying via the
-// fingerprint pin (the same TOFU model as agent bootstrap), so transport
-// authentication is not relied upon.
+// FetchClusterCA performs the joiner's bootstrap round-trip: first GET /v1/ca
+// over a TOFU connection and pin the cluster CA by the operator fingerprint,
+// then POST the cluster token to /v1/cluster/join over a transport that
+// VERIFIES the target replica's serving cert against that pinned CA - the
+// token never leaves the joiner before the server is authenticated (audit H4).
+// The returned CA is re-checked against the operator-pinned fingerprint and
+// the key confirmed to pair with the cert (defense-in-depth). Returns the CA
+// material to persist on disk before etcd starts.
 func FetchClusterCA(ctx context.Context, p ClusterJoinFetchParams, log *slog.Logger) (ClusterJoinResult, error) {
 	expected, err := normalizeCAFingerprint(p.CAFingerprint)
 	if err != nil {
 		return ClusterJoinResult{}, err
 	}
 
-	body, err := postClusterJoin(ctx, p)
+	caPool, err := prefetchPinnedCA(ctx, p.CPURL, expected, p.Timeout)
+	if err != nil {
+		return ClusterJoinResult{}, err
+	}
+
+	body, err := postClusterJoin(ctx, p, caPool)
 	if err != nil {
 		return ClusterJoinResult{}, err
 	}
@@ -114,9 +119,109 @@ func FetchClusterCA(ctx context.Context, p ClusterJoinFetchParams, log *slog.Log
 	}, nil
 }
 
-// postClusterJoin issues the TOFU POST and decodes the response, mapping a
-// non-201 status to a descriptive error.
-func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams) (clusterJoinResponse, error) {
+// caCertEntry mirrors one element of components/schemas/ClusterCA.cas in
+// control-plane.yaml, decoding only the fields the prefetch needs.
+type caCertEntry struct {
+	CertPEM           string `json:"cert_pem"`
+	FingerprintSHA256 string `json:"fingerprint_sha256"`
+}
+
+// caBundleResponse mirrors components/schemas/ClusterCA: the CA trust set
+// plus the active signer's fingerprint.
+type caBundleResponse struct {
+	CAs                     []caCertEntry `json:"cas"`
+	SignerFingerprintSHA256 string        `json:"signer_fingerprint_sha256"`
+}
+
+// prefetchPinnedCA fetches /v1/ca over a TOFU (InsecureSkipVerify) connection
+// and returns a cert pool of the bundle after confirming the operator-pinned
+// fingerprint is present and every entry's reported fingerprint matches its
+// recomputed one (defense-in-depth against a MITM rewriting part of the JSON).
+// The pool then anchors the verified /v1/cluster/join POST so the cluster
+// token is never sent before the server is authenticated (audit H4). The TLS
+// skip is acceptable only here: no CA is pinned yet, the payload is public
+// (CA certs only), and the fingerprint pin makes substitution detectable.
+func prefetchPinnedCA(ctx context.Context, cpURL, expectedFingerprint string, timeout time.Duration) (*x509.CertPool, error) {
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // TOFU anchor fetch - public payload, fingerprint-pinned below
+				MinVersion:         tls.VersionTLS13,
+			},
+			Proxy: nil,
+		},
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, cpURL+"/v1/ca", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build /v1/ca request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch /v1/ca: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("fetch /v1/ca: HTTP %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(preview)))
+	}
+
+	var body caBundleResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode /v1/ca response: %v", err)
+	}
+	if len(body.CAs) == 0 {
+		return nil, errors.New("/v1/ca response has empty cas bundle")
+	}
+
+	pool := x509.NewCertPool()
+	pinned := false
+	for i, entry := range body.CAs {
+		if entry.CertPEM == "" {
+			return nil, fmt.Errorf("/v1/ca cas[%d] has empty cert_pem", i)
+		}
+		cert, _, err := auth.ParseClusterCACert([]byte(entry.CertPEM))
+		if err != nil {
+			return nil, fmt.Errorf("parse /v1/ca cas[%d]: %v", i, err)
+		}
+		computed := sha256.Sum256(cert.Raw)
+		computedHex := hex.EncodeToString(computed[:])
+		reported := strings.ToLower(strings.TrimSpace(entry.FingerprintSHA256))
+		if reported != computedHex {
+			return nil, fmt.Errorf(
+				"server-reported fingerprint %q for /v1/ca cas[%d] does not match computed %q",
+				reported, i, computedHex)
+		}
+		if computedHex == expectedFingerprint {
+			pinned = true
+		}
+		if !pool.AppendCertsFromPEM([]byte(entry.CertPEM)) {
+			return nil, fmt.Errorf("/v1/ca cas[%d] contains no usable PEM certificate", i)
+		}
+	}
+	if !pinned {
+		return nil, fmt.Errorf(
+			"operator-pinned fingerprint %s is not present in the /v1/ca bundle (%d CAs)",
+			expectedFingerprint, len(body.CAs))
+	}
+
+	return pool, nil
+}
+
+// postClusterJoin POSTs the cluster token over a transport that verifies the
+// target replica's serving cert against the prefetched, fingerprint-pinned
+// cluster CA pool, and decodes the response, mapping a non-201 status to a
+// descriptive error. Only the /v1/ca prefetch is TOFU; this token-bearing
+// call is fully verified (audit H4).
+func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams, caPool *x509.CertPool) (clusterJoinResponse, error) {
 	reqBody, err := json.Marshal(map[string]string{"token": p.Token, "peer_url": p.PeerURL})
 	if err != nil {
 		return clusterJoinResponse{}, fmt.Errorf("marshal request: %v", err)
@@ -126,8 +231,8 @@ func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams) (clusterJoin
 		Timeout: p.Timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // TOFU - security from the post-receipt CA fingerprint pin
-				MinVersion:         tls.VersionTLS13,
+				RootCAs:    caPool,
+				MinVersion: tls.VersionTLS13,
 			},
 			Proxy: nil,
 		},
