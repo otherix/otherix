@@ -85,6 +85,10 @@ func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM s
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
+		// The CP never redirects /v1/nodes/join. Following a 307/308 would
+		// re-send the token body (possibly cross-scheme to plain http), so
+		// return any redirect as-is instead of following it.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)

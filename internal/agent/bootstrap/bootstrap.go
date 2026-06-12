@@ -48,7 +48,7 @@ type Result struct {
 //     serving cert against the pinned cluster CA - the token is never
 //     sent to an unauthenticated server. **The token is consumed at
 //     the CP side once HTTP returns 201, even if the agent never
-//     observes the response** — retry requires a fresh token.
+//     observes the response** - retry requires a fresh token.
 //  5. Re-verify the returned CA matches the pinned fingerprint,
 //     then verify the leaf cert chains to the same CA.
 //

@@ -153,10 +153,13 @@ func fetchAndVerifyCA(ctx context.Context, cpURL, expectedFingerprint string, ti
 	return []byte(bundle.String()), pinned, nil
 }
 
-// newBootstrapTransport is the *http.Transport used for every
-// bootstrap request. Captures the policy decisions:
+// newBootstrapTransport is the *http.Transport used ONLY by the
+// fetchAndVerifyCA /v1/ca anchor fetch (the insecure TOFU leg); the
+// token-bearing POST /v1/nodes/join uses verifyingTransport instead.
+// Captures the policy decisions:
 //
-//   - InsecureSkipVerify: true — TOFU, fingerprint match compensates.
+//   - InsecureSkipVerify: true - TOFU, no cluster CA pinned yet at the
+//     anchor fetch; the operator fingerprint pin compensates.
 //   - MinVersion: TLS 1.3 - the CP listener is Go crypto/tls (1.3
 //     always available), so nothing below 1.3 is accepted.
 //   - Proxy: nil — env-var proxies (HTTP_PROXY etc.) intentionally

@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -536,8 +537,8 @@ func TestVerifyingTransportRejectsEmptyBundle(t *testing.T) {
 // startJoinTLSServer starts an httptest TLS server presenting a leaf signed by
 // signCA (CN otherix-cp-replica, IP SAN 127.0.0.1 so the 127.0.0.1 dial verifies).
 // It records whether the /v1/nodes/join handler was reached. Returns the server
-// and a pointer to the reached flag.
-func startJoinTLSServer(t *testing.T, signCA auth.ClusterCAResult) (*httptest.Server, *bool) {
+// and the reached flag (atomic - the handler runs on the server goroutine).
+func startJoinTLSServer(t *testing.T, signCA auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
 	t.Helper()
 	caCert, _, err := auth.ParseClusterCACert(signCA.CertPEM)
 	if err != nil {
@@ -560,10 +561,10 @@ func startJoinTLSServer(t *testing.T, signCA auth.ClusterCAResult) (*httptest.Se
 		t.Fatalf("X509KeyPair: %v", err)
 	}
 
-	reached := false
+	var reached atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
-		reached = true
+		reached.Store(true)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(joinResponse{NodeID: "n1", CertPEM: "x", CACertPEM: "y"})
 	})
@@ -586,7 +587,7 @@ func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submitCSR against verified server: %v", err)
 	}
-	if !*reached {
+	if !reached.Load() {
 		t.Error("join handler not reached over a verified connection")
 	}
 }
@@ -595,8 +596,9 @@ func TestSubmitCSR_VerifiedServerReached(t *testing.T) {
 // and /v1/nodes/join. /v1/ca returns advertisedCA's cert (what the operator
 // fingerprint pins); the server's TLS cert is signed by tlsSignCA (equal to
 // advertisedCA in the positive case, a different CA in the MITM case). It
-// records whether the join handler was reached.
-func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterCAResult) (*httptest.Server, *bool) {
+// records whether the join handler was reached (atomic - the handler runs on
+// the server goroutine).
+func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterCAResult) (*httptest.Server, *atomic.Bool) {
 	t.Helper()
 	caCert, _, err := auth.ParseClusterCACert(tlsSignCA.CertPEM)
 	if err != nil {
@@ -625,7 +627,7 @@ func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterC
 	}
 	advFP := sha256.Sum256(advCert.Raw)
 
-	reached := false
+	var reached atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(caBundleResponse{
@@ -637,7 +639,7 @@ func startBootstrapTLSServer(t *testing.T, tlsSignCA, advertisedCA auth.ClusterC
 		})
 	})
 	mux.HandleFunc("/v1/nodes/join", func(w http.ResponseWriter, r *http.Request) {
-		reached = true
+		reached.Store(true)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(joinResponse{NodeID: "n1", CertPEM: "x", CACertPEM: "y"})
 	})
@@ -667,7 +669,7 @@ func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 		srv, reached := startBootstrapTLSServer(t, ca, ca) // tls cert == advertised CA
 		cfg := &config.BootstrapConfig{Token: "tok", CPURL: srv.URL, CAFingerprint: advFP, NodeName: "node-1", Architecture: "arm64"}
 		_, _ = Bootstrap(context.Background(), cfg, nil) // may fail later at verifyResponseChain; we assert reach
-		if !*reached {
+		if !reached.Load() {
 			t.Error("join handler not reached against a verified server")
 		}
 	})
@@ -683,7 +685,7 @@ func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 		if err == nil {
 			t.Fatal("Bootstrap against MITM tls cert = nil error, want failure")
 		}
-		if *reached {
+		if reached.Load() {
 			t.Error("join handler reached over UNVERIFIED TLS - token leaked to MITM")
 		}
 	})
@@ -707,7 +709,7 @@ func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
 	if err == nil {
 		t.Fatal("submitCSR against MITM server = nil error, want TLS verification failure")
 	}
-	if *reached {
+	if reached.Load() {
 		t.Error("join handler was reached over an UNVERIFIED connection - token leaked")
 	}
 }
