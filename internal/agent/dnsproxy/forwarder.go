@@ -39,7 +39,9 @@ const defaultMaxInFlight = 256
 
 // defaultMaxPerSource caps concurrent relays from a single client IP, so one
 // guest cannot consume the global in-flight pool and starve other tenants' DNS
-// (audit R2-M4).
+// (audit R2-M4). 16 of the 256 global slots is ~1/16 of the pool: a single
+// abusive source holds at most that share, leaving the rest for other guests,
+// while honest DNS (which resolves fast) rarely reaches 16 concurrent in-flight.
 const defaultMaxPerSource = 16
 
 // Config parametrises a Forwarder.
