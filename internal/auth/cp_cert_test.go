@@ -56,6 +56,12 @@ func parseCert(t *testing.T, pemBytes []byte) *x509.Certificate {
 	return cert
 }
 
+func TestCPCertCommonNameConstant(t *testing.T) {
+	if got, want := CPCertCommonName, "otherix-cp-replica"; got != want {
+		t.Errorf("CPCertCommonName = %q, want %q", got, want)
+	}
+}
+
 func TestGenerateReplicaCert_Template(t *testing.T) {
 	caCert, caKey := genTestCA(t)
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
