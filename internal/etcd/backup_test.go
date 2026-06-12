@@ -25,31 +25,29 @@ import (
 // the backup and cluster integration tests.
 func startMemberWithClientURL(t *testing.T) string {
 	t.Helper()
-	clientURL := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
-	cfg := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n1",
-		DataDir:      filepath.Join(t.TempDir(), "member"),
-		PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
-		ClientURL:    clientURL,
-		ClusterToken: "otherix-test",
+	var cfg *etcd.Config
+	build := func() *etcd.Config {
+		cfg = &etcd.Config{
+			Mode:         etcd.ModeSingle,
+			Name:         "n1",
+			DataDir:      filepath.Join(t.TempDir(), "member"),
+			PeerURL:      fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClusterToken: "otherix-test",
+		}
+		return cfg
 	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ctx := context.Background()
 
-	r, err := etcd.Start(ctx, cfg, log)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	r := startWithRetry(t, build)
 	cli := etcd.NewClient(r)
 	t.Cleanup(func() {
 		_ = cli.Close()
 		r.Stop(10 * time.Second)
 	})
-	if err := cli.Put(ctx, etcd.Key("backup-test", "k"), []byte("v")); err != nil {
+	if err := cli.Put(context.Background(), etcd.Key("backup-test", "k"), []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	return clientURL
+	return cfg.ClientURL
 }
 
 func TestSnapshotSave(t *testing.T) {

@@ -53,30 +53,31 @@ func TestMembershipClient(t *testing.T) {
 		t.Fatal("CA key is not a crypto.Signer")
 	}
 
-	peer0 := fmt.Sprintf("https://127.0.0.1:%d", freePort(t))
-	client0 := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
+	// peer1 is a phantom peer URL never bound by a member, so a single up-front
+	// allocation is fine - it cannot lose a bind race.
 	peer1 := fmt.Sprintf("https://127.0.0.1:%d", freePort(t))
 
 	cert0, key0, caf0 := peerMaterial(t, dir, "n0", signer, ca)
 
-	cfg0 := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n0",
-		DataDir:      filepath.Join(dir, "n0"),
-		PeerURL:      peer0,
-		ClientURL:    client0,
-		ClusterToken: "otherix-membership",
-		PeerCertFile: cert0,
-		PeerKeyFile:  key0,
-		PeerCAFile:   caf0,
+	var cfg0 *etcd.Config
+	build0 := func() *etcd.Config {
+		cfg0 = &etcd.Config{
+			Mode:         etcd.ModeSingle,
+			Name:         "n0",
+			DataDir:      filepath.Join(dir, "n0"),
+			PeerURL:      fmt.Sprintf("https://127.0.0.1:%d", freePort(t)),
+			ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClusterToken: "otherix-membership",
+			PeerCertFile: cert0,
+			PeerKeyFile:  key0,
+			PeerCAFile:   caf0,
+		}
+		return cfg0
 	}
-	r0, err := etcd.Start(ctx, cfg0, log)
-	if err != nil {
-		t.Fatalf("start n0: %v", err)
-	}
+	r0 := startWithRetry(t, build0)
 	defer r0.Stop(10 * time.Second)
 
-	mc := etcd.NewMembershipClient(client0, log)
+	mc := etcd.NewMembershipClient(cfg0.ClientURL, log)
 
 	// ListMembers on a fresh single-node cluster: exactly one voter.
 	members, err := mc.ListMembers(ctx)

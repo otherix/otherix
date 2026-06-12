@@ -10,8 +10,6 @@ import (
 	"context"
 	"crypto"
 	"fmt"
-	"io"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -62,26 +60,26 @@ func TestStartWithPeerMTLS(t *testing.T) {
 	writeFile(t, keyFile, keyPEM)
 	writeFile(t, caFile, ca.CertPEM)
 
-	cfg := &etcd.Config{
-		Mode:         etcd.ModeSingle,
-		Name:         "n1",
-		DataDir:      filepath.Join(dir, "member"),
-		PeerURL:      fmt.Sprintf("https://127.0.0.1:%d", freePort(t)),
-		ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
-		ClusterToken: "otherix-test",
-		PeerCertFile: certFile,
-		PeerKeyFile:  keyFile,
-		PeerCAFile:   caFile,
+	var cfg *etcd.Config
+	build := func() *etcd.Config {
+		cfg = &etcd.Config{
+			Mode:         etcd.ModeSingle,
+			Name:         "n1",
+			DataDir:      filepath.Join(dir, "member"),
+			PeerURL:      fmt.Sprintf("https://127.0.0.1:%d", freePort(t)),
+			ClientURL:    fmt.Sprintf("http://127.0.0.1:%d", freePort(t)),
+			ClusterToken: "otherix-test",
+			PeerCertFile: certFile,
+			PeerKeyFile:  keyFile,
+			PeerCAFile:   caFile,
+		}
+		return cfg
 	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	r, err := etcd.Start(ctx, cfg, log)
-	if err != nil {
-		t.Fatalf("Start with peer mTLS: %v", err)
-	}
+	r := startWithRetry(t, build)
 	defer r.Stop(10 * time.Second)
 
 	if err := put(ctx, cfg.ClientURL, "/otherix/test/peer-mtls", "ok"); err != nil {
