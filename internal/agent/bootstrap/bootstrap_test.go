@@ -691,7 +691,10 @@ func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 	})
 
 	t.Run("mitm tls cert aborts before join", func(t *testing.T) {
-		mitm, err := auth.GenerateClusterCA(time.Now().Add(time.Second))
+		// Backdate the MITM CA so the handshake fails on UNTRUSTED chain, not on
+		// not-yet-valid validity - otherwise a pool-widening regression could slip
+		// past this test on timing alone.
+		mitm, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
 		if err != nil {
 			t.Fatalf("gen mitm ca: %v", err)
 		}
@@ -758,7 +761,8 @@ func TestSubmitCSR_MITMServerRejectedTokenNotSent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterCA real: %v", err)
 	}
-	mitmCA, err := auth.GenerateClusterCA(time.Now().Add(time.Second))
+	// Backdate so the handshake fails on UNTRUSTED chain, not not-yet-valid.
+	mitmCA, err := auth.GenerateClusterCA(time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("GenerateClusterCA mitm: %v", err)
 	}
