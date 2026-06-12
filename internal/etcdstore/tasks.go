@@ -163,28 +163,28 @@ func (s *Store) updateTask(ctx context.Context, id uuid.UUID, mutate func(*store
 	return s.c.PutJSON(ctx, taskKey(id), t)
 }
 
-// UpdateTaskRunning transitions a task pending -> running: it stamps started_at
-// on the first transition (coalesced across retries) and increments the attempt
-// counter. Worker entry point.
+// UpdateTaskRunning transitions a task pending/failed -> running: it stamps
+// started_at on the first transition (coalesced across retries) and increments
+// the attempt counter. Worker entry point.
 //
-// A worker redelivery calls this at the top of every delivery, including
-// deliveries of an already-committed task (the agent ACK was lost, the job is
-// redelivered after the projection committed). A committed-terminal task
-// (success / cancelled) must NEVER regress to running: it would reopen a task
-// the operator sees as done and spuriously bump its Attempts counter. So a
-// committed-terminal task is skipped entirely - no write, no status regression,
-// no Attempts bump. (The projections are themselves idempotent now, so this is
-// belt-and-suspenders rather than load-bearing for correctness.) A failed task
-// is retryable (failRun finalizes failed but the
+// It returns alreadyTerminal=true WITHOUT writing when the task is already
+// committed-terminal (success / cancelled). A worker redelivery calls this at
+// the top of every delivery, including deliveries of an already-committed task
+// (the agent ACK was lost, the job is redelivered after the projection
+// committed). A committed-terminal task must NEVER regress to running: it would
+// reopen a task the operator sees as done and spuriously bump its Attempts
+// counter - so it is skipped (no write) and the caller is told to ABORT
+// execution rather than contact the agent (the dispatcher then CompleteJob-
+// deletes the job). A failed task is retryable (failRun finalizes failed but the
 // dispatcher requeues the job), so it still transitions to running and bumps
 // Attempts on redelivery - this is what makes the fail-then-succeed retry work.
-func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
+func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error) {
 	t, err := s.TaskByID(ctx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if isCommittedTerminal(t.Status) {
-		return nil
+		return true, nil
 	}
 	t.Status = store.TaskStatusRunning
 	if t.StartedAt == nil {
@@ -192,7 +192,10 @@ func (s *Store) UpdateTaskRunning(ctx context.Context, id uuid.UUID) error {
 		t.StartedAt = &now
 	}
 	t.Attempts++
-	return s.c.PutJSON(ctx, taskKey(id), t)
+	if err := s.c.PutJSON(ctx, taskKey(id), t); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // UpdateTaskFinalized writes a task's terminal status (success / failed /

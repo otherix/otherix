@@ -30,7 +30,7 @@ import (
 // WorkerStore is the storage surface the storage-pool worker handlers depend on.
 // *etcdstore.Store satisfies it (asserted in the etcdstore integration tests).
 type WorkerStore interface {
-	UpdateTaskRunning(ctx context.Context, id uuid.UUID) error
+	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
@@ -50,8 +50,15 @@ func ScanHandler(st WorkerStore, exec ScanExecutor, pressureDisk config.Pressure
 
 func runScan(ctx context.Context, st WorkerStore, exec ScanExecutor, pressureDisk config.PressureConditionConfig, log *slog.Logger, args StoragePoolScanArgs) error {
 	taskID := args.TaskID
-	if err := st.UpdateTaskRunning(ctx, taskID); err != nil {
+	alreadyTerminal, err := st.UpdateTaskRunning(ctx, taskID)
+	if err != nil {
 		return fmt.Errorf("update task running: %v", err)
+	}
+	if alreadyTerminal {
+		// The task already committed success/cancelled (a lost-ACK redelivery, or
+		// a cancel that won the CAS): do NOT contact the agent. Return nil so the
+		// dispatcher CompleteJob-deletes the job.
+		return nil
 	}
 	pool, err := st.StoragePoolByID(ctx, args.PoolID)
 	if err != nil {

@@ -68,7 +68,7 @@ func TestActiveVMDeleteTaskVMIDs(t *testing.T) {
 
 	enqueue("vm.delete", vmPending)
 	runID := enqueue("vm.delete", vmRunning)
-	if err := s.UpdateTaskRunning(ctx, runID); err != nil {
+	if _, err := s.UpdateTaskRunning(ctx, runID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
 	}
 	doneID := enqueue("vm.delete", vmDone)
@@ -227,7 +227,7 @@ func TestUpdateTaskRunningStampsAndIncrements(t *testing.T) {
 		t.Fatalf("EnqueueTask: %v", err)
 	}
 
-	if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+	if _, err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
 	}
 	got, _ := s.TaskByID(ctx, p.ID)
@@ -238,7 +238,7 @@ func TestUpdateTaskRunningStampsAndIncrements(t *testing.T) {
 	firstStarted := *got.StartedAt
 
 	// Second transition: attempts++ but started_at is coalesced (unchanged).
-	if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+	if _, err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
 		t.Fatalf("UpdateTaskRunning (retry): %v", err)
 	}
 	got, _ = s.TaskByID(ctx, p.ID)
@@ -248,7 +248,7 @@ func TestUpdateTaskRunningStampsAndIncrements(t *testing.T) {
 	}
 
 	// Missing task.
-	if err := s.UpdateTaskRunning(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.UpdateTaskRunning(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("UpdateTaskRunning(missing) = %v, want store.ErrNotFound", err)
 	}
 }
@@ -277,7 +277,7 @@ func TestUpdateTaskRunningSkipsCommittedTerminalButPromotesFailed(t *testing.T) 
 			}
 
 			// Drive the task to its terminal state (one delivery + finalize).
-			if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+			if _, err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
 				t.Fatalf("UpdateTaskRunning: %v", err)
 			}
 			if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
@@ -290,8 +290,14 @@ func TestUpdateTaskRunningSkipsCommittedTerminalButPromotesFailed(t *testing.T) 
 
 			// A worker redelivery calls UpdateTaskRunning again at the top of the
 			// delivery.
-			if err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+			terminal, err := s.UpdateTaskRunning(ctx, p.ID)
+			if err != nil {
 				t.Fatalf("UpdateTaskRunning (redelivery) = %v, want nil", err)
+			}
+			// A committed-terminal task signals alreadyTerminal=true; a retryable
+			// (failed) task signals false (it promotes to running).
+			if terminal == tc.promote {
+				t.Errorf("alreadyTerminal after %s redelivery = %v, want %v", tc.name, terminal, !tc.promote)
 			}
 			after, _ := s.TaskByID(ctx, p.ID)
 
@@ -311,6 +317,45 @@ func TestUpdateTaskRunningSkipsCommittedTerminalButPromotesFailed(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+// TestUpdateTaskRunningSignalsTerminal pins the M3 signal: a committed-terminal
+// (success/cancelled) task returns alreadyTerminal=true with NO write (Attempts
+// not bumped, status unchanged); a pending task returns false and advances to
+// running.
+func TestUpdateTaskRunningSignalsTerminal(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	// success task
+	ps := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, ps, testJobArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: ps.ID, Status: store.TaskStatusSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.TaskByID(ctx, ps.ID)
+	terminal, err := s.UpdateTaskRunning(ctx, ps.ID)
+	if err != nil || !terminal {
+		t.Fatalf("UpdateTaskRunning(success) = %v,%v; want true,nil", terminal, err)
+	}
+	after, _ := s.TaskByID(ctx, ps.ID)
+	if after.Attempts != before.Attempts || after.Status != store.TaskStatusSuccess {
+		t.Errorf("terminal task mutated: %+v -> %+v", before, after)
+	}
+	// pending task
+	pp := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, pp, testJobArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err = s.UpdateTaskRunning(ctx, pp.ID)
+	if err != nil || terminal {
+		t.Fatalf("UpdateTaskRunning(pending) = %v,%v; want false,nil", terminal, err)
+	}
+	got, _ := s.TaskByID(ctx, pp.ID)
+	if got.Status != store.TaskStatusRunning || got.Attempts != 1 {
+		t.Errorf("pending not advanced: %+v", got)
 	}
 }
 

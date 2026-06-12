@@ -43,7 +43,7 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 	ctx := context.Background()
 	vmID, nodeID, _, taskID := seedCreatedVM(t, s)
 
-	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+	if _, err := s.UpdateTaskRunning(ctx, taskID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
 	}
 	resolvedDigest := []byte{0xde, 0xad, 0xbe, 0xef}
@@ -85,7 +85,7 @@ func TestProjectVMCreateSuccessIdempotentOnRedelivery(t *testing.T) {
 	ctx := context.Background()
 	vmID, nodeID, _, taskID := seedCreatedVM(t, s)
 
-	if err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+	if _, err := s.UpdateTaskRunning(ctx, taskID); err != nil {
 		t.Fatalf("UpdateTaskRunning: %v", err)
 	}
 	rt := store.UpsertVMRuntimeParams{
