@@ -62,3 +62,26 @@ func TestBuildRouterPinsCPIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildRouterRejectsNodeCertOnConsoleStream pins the worst H1
+// capability route: a stolen node cert opening a peer's serial console.
+// A node-identity peer cert must be rejected with 403 at the
+// RequireCPIdentity gate, before the console-stream handler runs.
+// Only the node case is exercised here - a CP cert would proceed into
+// the websocket/proxy handler with nil deps, which is not the seam
+// being pinned.
+func TestBuildRouterRejectsNodeCertOnConsoleStream(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.AgentConfig{}
+	cfg.Server.ReadTimeout = 5 * time.Second
+	handler := buildRouter(cfg, "node-test", log, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vms/some-vm/console-stream?token=x", nil)
+	req.TLS = cpIdentityTLSState("node-evil")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("console-stream with node cert: status = %d, want 403", rec.Code)
+	}
+}
