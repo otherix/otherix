@@ -24,13 +24,15 @@ import (
 // JobState enumerates a job's lifecycle on the etcd queue.
 type JobState string
 
-// Job lifecycle states on the etcd-backed queue.
+// Job lifecycle states on the etcd-backed queue. There is no terminal
+// "cancelled" job state: a cancel deletes the backing job in the same CAS
+// transaction that flips its task to cancelled (see CancelPendingTask), so a
+// cancelled task simply has no job - never a cancelled one.
 const (
 	JobStatePending   JobState = "pending"
 	JobStateRunning   JobState = "running"
 	JobStateCompleted JobState = "completed"
 	JobStateFailed    JobState = "failed"
-	JobStateCancelled JobState = "cancelled"
 )
 
 // Job is the persisted unit of background work consumed by the worker runtime.
@@ -74,18 +76,4 @@ func (s *Store) enqueueJobOp(ctx context.Context, args queue.JobArgs) (int64, cl
 		return 0, clientv3.Op{}, err
 	}
 	return seq, clientv3.OpPut(jobKey(seq), string(val)), nil
-}
-
-// cancelJob best-effort flips a job to cancelled. A missing job is a no-op.
-func (s *Store) cancelJob(ctx context.Context, seq int64) error {
-	var job Job
-	found, err := s.c.GetJSON(ctx, jobKey(seq), &job)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	job.State = JobStateCancelled
-	return s.c.PutJSON(ctx, jobKey(seq), job)
 }
