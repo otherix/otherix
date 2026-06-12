@@ -37,6 +37,13 @@ const fallbackResolver = "1.1.1.1:53"
 // the anycast resolver.
 const defaultMaxInFlight = 256
 
+// defaultMaxPerSource caps concurrent relays from a single client IP, so one
+// guest cannot consume the global in-flight pool and starve other tenants' DNS
+// (audit R2-M4). 16 of the 256 global slots is ~1/16 of the pool: a single
+// abusive source holds at most that share, leaving the rest for other guests,
+// while honest DNS (which resolves fast) rarely reaches 16 concurrent in-flight.
+const defaultMaxPerSource = 16
+
 // Config parametrises a Forwarder.
 type Config struct {
 	// Listen is the UDP bind address, e.g. "169.254.1.1:53". Bound with
@@ -53,6 +60,11 @@ type Config struct {
 	// (DNS clients retry) rather than queued, so a flooding guest cannot spawn
 	// unbounded goroutines/sockets. <= 0 applies defaultMaxInFlight.
 	MaxInFlight int
+	// MaxPerSource caps concurrent relays from a single client IP. Queries from a
+	// source already at its cap are dropped (the client retries) even when the
+	// global pool has room, so one guest cannot monopolise the resolver. <= 0
+	// applies defaultMaxPerSource.
+	MaxPerSource int
 }
 
 // Forwarder relays UDP DNS queries to an upstream resolver.
@@ -67,6 +79,14 @@ type Forwarder struct {
 	sem chan struct{}
 	// dropped counts queries shed because sem was full.
 	dropped atomic.Uint64
+
+	// maxPerSource caps concurrent relays per client IP (the fairness layer over
+	// the global sem). inflight tracks live relays per source under smu and
+	// self-cleans at zero so it cannot grow unbounded under spoofed source IPs.
+	maxPerSource  int
+	smu           sync.Mutex
+	inflight      map[string]int
+	sourceDropped atomic.Uint64
 
 	mu   sync.Mutex
 	conn net.PacketConn
@@ -89,18 +109,66 @@ func New(cfg Config) (*Forwarder, error) {
 	if max <= 0 {
 		max = defaultMaxInFlight
 	}
+	perSource := cfg.MaxPerSource
+	if perSource <= 0 {
+		perSource = defaultMaxPerSource
+	}
 	return &Forwarder{
-		listen:    cfg.Listen,
-		upstreams: ups,
-		log:       cfg.Log,
-		ready:     make(chan struct{}),
-		sem:       make(chan struct{}, max),
+		listen:       cfg.Listen,
+		upstreams:    ups,
+		log:          cfg.Log,
+		ready:        make(chan struct{}),
+		sem:          make(chan struct{}, max),
+		maxPerSource: perSource,
+		inflight:     map[string]int{},
 	}, nil
 }
 
 // Dropped reports the number of queries shed because the in-flight relay cap
 // was full. Monotonic; for observability and tests.
 func (f *Forwarder) Dropped() uint64 { return f.dropped.Load() }
+
+// SourceDropped reports the number of queries shed because the per-source
+// in-flight cap was reached. Monotonic; for observability and tests.
+func (f *Forwarder) SourceDropped() uint64 { return f.sourceDropped.Load() }
+
+// acquireSource reserves a per-source in-flight slot for ip, returning false
+// when ip is already at MaxPerSource. Paired with releaseSource.
+func (f *Forwarder) acquireSource(ip string) bool {
+	f.smu.Lock()
+	defer f.smu.Unlock()
+	if f.inflight[ip] >= f.maxPerSource {
+		return false
+	}
+	f.inflight[ip]++
+	return true
+}
+
+// releaseSource frees a per-source slot for ip, deleting the entry at zero so
+// the map only holds currently-active sources (self-cleaning, bounded even
+// under spoofed source IPs).
+func (f *Forwarder) releaseSource(ip string) {
+	f.smu.Lock()
+	defer f.smu.Unlock()
+	if n := f.inflight[ip] - 1; n > 0 {
+		f.inflight[ip] = n
+	} else {
+		delete(f.inflight, ip)
+	}
+}
+
+// sourceIP extracts the client IP (the tenant identity; the UDP source port
+// varies per query).
+func sourceIP(a net.Addr) string {
+	if ua, ok := a.(*net.UDPAddr); ok {
+		return ua.IP.String()
+	}
+	host, _, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return a.String()
+	}
+	return host
+}
 
 // Ready is closed once the listener is bound, so callers (and tests) can wait
 // for serving to begin.
@@ -147,18 +215,30 @@ func (f *Forwarder) Run(ctx context.Context) error {
 		}
 		query := make([]byte, n)
 		copy(query, buf[:n])
+		ip := sourceIP(client)
+		if !f.acquireSource(ip) {
+			// This source already holds MaxPerSource relays: drop (the client
+			// retries) so one guest cannot starve the global pool. Accounted
+			// separately from the global capacity drop.
+			if d := f.sourceDropped.Add(1); d == 1 || d%1000 == 0 {
+				f.log.Warn("dns forwarder dropping queries: per-source cap",
+					"source", ip, "dropped_total", d, "max_per_source", f.maxPerSource)
+			}
+			continue
+		}
 		select {
 		case f.sem <- struct{}{}:
 			go func() {
-				defer func() { <-f.sem }()
+				defer func() { <-f.sem; f.releaseSource(ip) }()
 				f.relay(conn, client, query)
 			}()
 		default:
-			// At capacity: drop this query rather than spawn an unbounded
-			// goroutine/socket. DNS clients retry; this caps the blast radius
-			// of a guest flooding the anycast resolver.
-			if n := f.dropped.Add(1); n == 1 || n%1000 == 0 {
-				f.log.Warn("dns forwarder dropping queries at capacity", "dropped_total", n, "max_in_flight", cap(f.sem))
+			// Global pool full: release the per-source slot we just took and drop
+			// this query rather than spawn an unbounded goroutine/socket. DNS
+			// clients retry; this caps the blast radius of a flood.
+			f.releaseSource(ip)
+			if d := f.dropped.Add(1); d == 1 || d%1000 == 0 {
+				f.log.Warn("dns forwarder dropping queries at capacity", "dropped_total", d, "max_in_flight", cap(f.sem))
 			}
 		}
 	}
