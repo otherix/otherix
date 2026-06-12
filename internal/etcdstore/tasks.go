@@ -219,6 +219,16 @@ func (s *Store) UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskA
 	})
 }
 
+// ClearTaskAgentTaskID nils the task's stored agent task id, so the next worker
+// delivery re-POSTs to the agent instead of resuming a vanished agent task (used
+// when the agent task 404s after an agent restart). A missing task returns
+// store.ErrNotFound.
+func (s *Store) ClearTaskAgentTaskID(ctx context.Context, id uuid.UUID) error {
+	return s.updateTask(ctx, id, func(t *store.Task) {
+		t.AgentTaskID = nil
+	})
+}
+
 // ListTasksAny returns tasks matching the optional filters (unscoped), ordered
 // by (created_at, id) descending, after the cursor, capped at LimitCount.
 func (s *Store) ListTasksAny(ctx context.Context, arg store.ListTasksAnyParams) ([]store.Task, error) {

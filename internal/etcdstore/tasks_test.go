@@ -416,3 +416,32 @@ func TestUpdateTaskAgentTaskID(t *testing.T) {
 		t.Errorf("UpdateTaskAgentTaskID(missing) = %v, want store.ErrNotFound", err)
 	}
 }
+
+func TestClearTaskAgentTaskID(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusRunning, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	agentTaskID := uuid.New()
+	if err := s.UpdateTaskAgentTaskID(ctx, store.UpdateTaskAgentTaskIDParams{
+		ID:          p.ID,
+		AgentTaskID: &agentTaskID,
+	}); err != nil {
+		t.Fatalf("UpdateTaskAgentTaskID: %v", err)
+	}
+
+	if err := s.ClearTaskAgentTaskID(ctx, p.ID); err != nil {
+		t.Fatalf("ClearTaskAgentTaskID: %v", err)
+	}
+	got, _ := s.TaskByID(ctx, p.ID)
+	if got.AgentTaskID != nil {
+		t.Errorf("agent_task_id = %v, want nil after clear", got.AgentTaskID)
+	}
+
+	if err := s.ClearTaskAgentTaskID(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ClearTaskAgentTaskID(missing) = %v, want store.ErrNotFound", err)
+	}
+}
