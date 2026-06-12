@@ -88,6 +88,12 @@ func (s *Store) RetryJob(ctx context.Context, id int64, maxAttempts int32) (bool
 	if !found {
 		return false, nil
 	}
+	if job.State != JobStateRunning {
+		// Defense-in-depth: only a running job (claimed by this worker) is ours to
+		// retry. A job that is no longer running was resolved out from under us
+		// (requeued, completed, cancelled-deleted); never resurrect it.
+		return false, nil
+	}
 	job.Attempts++
 	requeued := job.Attempts < maxAttempts
 	if requeued {
@@ -101,6 +107,28 @@ func (s *Store) RetryJob(ctx context.Context, id int64, maxAttempts int32) (bool
 		return false, fmt.Errorf("retry job %d: %v", id, err)
 	}
 	return requeued, nil
+}
+
+// RequeueJob returns a running job to pending WITHOUT bumping its attempt
+// counter, used when a graceful shutdown aborted the handler mid-flight (a
+// deploy is not a real failure, so it must not consume the retry budget). A job
+// that is not currently running is left untouched - it was already resolved
+// (completed, retried, or cancelled-deleted), so requeueing it would resurrect
+// finished work.
+func (s *Store) RequeueJob(ctx context.Context, id int64) error {
+	var job Job
+	found, err := s.c.GetJSON(ctx, jobKey(id), &job)
+	if err != nil {
+		return err
+	}
+	if !found || job.State != JobStateRunning {
+		return nil
+	}
+	job.State = JobStatePending
+	if err := s.c.PutJSON(ctx, jobKey(id), job); err != nil {
+		return fmt.Errorf("requeue job %d: %v", id, err)
+	}
+	return nil
 }
 
 // WatchJobs returns a watch channel over the job prefix so a dispatcher can wake
