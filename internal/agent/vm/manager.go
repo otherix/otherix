@@ -23,7 +23,6 @@ import (
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/state"
-	"github.com/otherix/otherix/internal/agent/storage"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -601,22 +600,23 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	ensured, err := m.EnsureImage(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format)
+	// EnsureImageInto holds the per-image lock across the ensure and the clone
+	// so a concurrent ensure cannot overwrite the cache file between the digest
+	// verify and the clone (audit R2-L5).
+	ensured, err := m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
 	if err != nil {
 		var ce *ChecksumMismatchError
-		if errors.As(err, &ce) {
+		switch {
+		case errors.As(err, &ce):
 			log.Error("ensure image (checksum mismatch)", "err", err)
 			m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
-			return
+		case errors.Is(err, ErrCloneFailed):
+			log.Error("clone image", "err", err)
+			m.failTask(taskID, v.ID, "clone_failed", err.Error())
+		default:
+			log.Error("ensure image", "err", err)
+			m.failTask(taskID, v.ID, "image_unavailable", err.Error())
 		}
-		log.Error("ensure image", "err", err)
-		m.failTask(taskID, v.ID, "image_unavailable", err.Error())
-		return
-	}
-
-	if err := storage.CloneImage(ensured.Path, v.DiskPath); err != nil {
-		log.Error("clone image", "err", err)
-		m.failTask(taskID, v.ID, "clone_failed", err.Error())
 		return
 	}
 

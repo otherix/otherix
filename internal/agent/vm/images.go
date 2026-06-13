@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/storage"
 )
 
 // importHTTPTimeout caps the worst-case duration of a single image
@@ -93,6 +95,10 @@ var (
 	// collapse the cache path out of the images/ directory, so EnsureImage
 	// rejects it before any filesystem action.
 	ErrInvalidImageBasename = errors.New("image url basename is not a valid single path segment")
+	// ErrCloneFailed wraps a failure to clone the cached image into the VM
+	// disk path. EnsureImageInto returns it so the create flow can map the
+	// failure to a clone_failed envelope distinct from image_unavailable.
+	ErrCloneFailed = errors.New("clone image into disk path failed")
 )
 
 // ChecksumMismatchError signals the URL did not serve the operator-pinned
@@ -196,40 +202,114 @@ func validImageBasename(name string) bool {
 //   - *ChecksumMismatchError — verify mode and the served bytes disagree
 //   - wrapped errors for download / qcow2-magic / filesystem failures
 func (m *Manager) EnsureImage(ctx context.Context, poolName, sourceURL, expectedSHA, format string) (EnsureResult, error) {
+	p, basename, err := m.resolveEnsure(poolName, sourceURL, expectedSHA, format)
+	if err != nil {
+		return EnsureResult{}, err
+	}
+	lock := m.lockForImage(poolName, basename)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.ensureLocked(ctx, p.root, basename, sourceURL, expectedSHA)
+}
+
+// EnsureImageInto materializes the pool image (download-on-miss, digest-verify)
+// and clones it into dstPath, holding the per-image lock across both steps so a
+// concurrent ensure for the same (pool, basename) cannot overwrite the cache
+// file between the verify and the clone (audit R2-L5). On a pinned-digest cache
+// HIT it re-hashes the cache file bytes (not the sidecar), so a tampered cache
+// file routes to the existing re-download path. Clone failures are wrapped in
+// ErrCloneFailed so the caller can map them to clone_failed.
+func (m *Manager) EnsureImageInto(ctx context.Context, poolName, sourceURL, expectedSHA, format, dstPath string) (EnsureResult, error) {
+	p, basename, err := m.resolveEnsure(poolName, sourceURL, expectedSHA, format)
+	if err != nil {
+		return EnsureResult{}, err
+	}
+	lock := m.lockForImage(poolName, basename)
+	lock.Lock()
+	defer lock.Unlock()
+	res, err := m.ensureLocked(ctx, p.root, basename, sourceURL, expectedSHA)
+	if err != nil {
+		return EnsureResult{}, err
+	}
+	if err := storage.CloneImage(res.Path, dstPath); err != nil {
+		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
+	}
+	return res, nil
+}
+
+// resolveEnsure runs the pre-flight validation (format, source URL, checksum
+// shape, pool existence, basename safety) shared by EnsureImage and
+// EnsureImageInto, returning the resolved pool and cache basename.
+func (m *Manager) resolveEnsure(poolName, sourceURL, expectedSHA, format string) (pool, string, error) {
 	if format != "qcow2" {
-		return EnsureResult{}, fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
+		return pool{}, "", fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
 	}
 	if sourceURL == "" {
-		return EnsureResult{}, ErrMissingSourceURL
+		return pool{}, "", ErrMissingSourceURL
 	}
 	if expectedSHA != "" && !isHexSHA256Lower(expectedSHA) {
-		return EnsureResult{}, ErrInvalidChecksumFormat
+		return pool{}, "", ErrInvalidChecksumFormat
 	}
 	m.poolsMu.RLock()
 	p, ok := m.pools[poolName]
 	m.poolsMu.RUnlock()
 	if !ok {
-		return EnsureResult{}, ErrPoolUnknown
+		return pool{}, "", ErrPoolUnknown
 	}
-
 	basename := basenameFromURL(sourceURL)
 	if !validImageBasename(basename) {
-		return EnsureResult{}, ErrInvalidImageBasename
+		return pool{}, "", ErrInvalidImageBasename
 	}
-	lock := m.lockForImage(poolName, basename)
-	lock.Lock()
-	defer lock.Unlock()
+	return p, basename, nil
+}
 
-	imgPath := filepath.Join(p.root, imagesSubdir, basename)
+// ensureLocked assumes the per-(pool, basename) lock is already held. It
+// resolves the cache paths, serves a verified HIT, or downloads on a miss /
+// stale slot. On a pinned-digest HIT it re-hashes the cache file bytes and
+// compares to expectedSHA (not the sidecar): a disagreement falls through to
+// the re-download path exactly like a sidecar disagreement. An unpinned HIT
+// keeps name-keyed IfNotPresent reuse with no re-hash.
+func (m *Manager) ensureLocked(ctx context.Context, root, basename, sourceURL, expectedSHA string) (EnsureResult, error) {
+	imgPath := filepath.Join(root, imagesSubdir, basename)
 	sidecarPath := imgPath + ".sha256"
 
 	if cachedSHA, size, present := readCachedImage(imgPath, sidecarPath); present {
-		if expectedSHA == "" || cachedSHA == expectedSHA {
+		switch {
+		case expectedSHA == "":
+			// Unpinned: name-keyed reuse, no re-hash.
 			return EnsureResult{SHA256: cachedSHA, Path: imgPath, SizeBytes: size}, nil
+		case cachedSHA == expectedSHA:
+			// Pinned and the sidecar agrees: re-hash the file bytes to defend
+			// against an out-of-band local write that left the sidecar stale.
+			fileSHA, err := hashFile(imgPath)
+			if err != nil {
+				return EnsureResult{}, fmt.Errorf("re-hash cached image: %v", err)
+			}
+			if fileSHA == expectedSHA {
+				return EnsureResult{SHA256: fileSHA, Path: imgPath, SizeBytes: size}, nil
+			}
+			// File bytes disagree with the pinned digest: stale slot -> re-download.
+		default:
+			// Sidecar disagrees with the pinned digest: stale slot -> re-download.
 		}
-		// expectedSHA set and sidecar disagrees: stale slot -> re-download+overwrite.
 	}
-	return m.downloadIntoCache(ctx, p.root, basename, imgPath, sidecarPath, sourceURL, expectedSHA)
+	return m.downloadIntoCache(ctx, root, basename, imgPath, sidecarPath, sourceURL, expectedSHA)
+}
+
+// hashFile computes the sha256 of the file at path as a lowercase hex string.
+func hashFile(path string) (string, error) {
+	// #nosec G304 -- path is an agent-owned cache path under a validated
+	// basename ({pool.root}/images/{basename}), not caller-supplied input.
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // readCachedImage reports the cached sha (from the sidecar), the file size,
