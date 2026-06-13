@@ -41,11 +41,16 @@ cat cluster.yaml | otherix create -f -
 
 ## Apply ordering
 
-A VM references a network and a storage pool by name, so those must exist
-first. `otherix create -f` always orders the documents
-**Network -> StoragePool -> VM** regardless of their order in the file, so name
-references resolve. `otherix delete -f` runs the reverse order
-(**VM -> StoragePool -> Network**) so dependents go first.
+On create, document order does not matter. A VM references a network and a
+storage pool by name, but VM admission resolves those references lazily and
+never fails on a missing or not-yet-ready dependency, so a manifest that lists
+a VM before its network or pool applies fine. `otherix create -f` still sorts
+the documents **Network -> StoragePool -> VM**, but that ordering is cosmetic
+(deterministic, readable logs) rather than a correctness requirement.
+
+On delete, order does matter: `otherix delete -f` runs the reverse order
+(**VM -> StoragePool -> Network**) so dependents are torn down before the pools
+and networks they use.
 
 Both commands are best-effort: each document is reported independently and the
 command exits non-zero if any document failed. A network that still has VM NICs
