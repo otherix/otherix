@@ -585,3 +585,39 @@ func TestNetworksUpdateEgressEmptyNormalisesToNone(t *testing.T) {
 		t.Errorf("get egress = %q, want none", fetched.Egress)
 	}
 }
+
+// TestNetworkNameRejectsSlashOnCreate verifies a network name containing '/' is
+// rejected at create; it would poison the etcd uniqueness-guard key path, and
+// pool/VM/node names already forbid it (audit R2-L7).
+func TestNetworkNameRejectsSlashOnCreate(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	body := newNetworkBody()
+	body["name"] = "a/b"
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}
+
+// TestNetworkNameRejectsSlashOnUpdate verifies patching a network name to one
+// containing '/' is rejected, mirroring the create-side guard (audit R2-L7).
+func TestNetworkNameRejectsSlashOnUpdate(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	resp := h.post(t, "/v1/networks", newNetworkBody(), admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+
+	resp = h.patch(t, "/v1/networks/"+created.ID, map[string]any{"name": "a/b"}, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch status = %d, want 400", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}

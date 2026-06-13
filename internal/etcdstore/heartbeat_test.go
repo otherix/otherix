@@ -152,6 +152,73 @@ func TestInHeartbeatProjection(t *testing.T) {
 	}
 }
 
+// TestUpsertVMRuntimeNodeIndexConsistency drives the real UpsertVMRuntime
+// through nil -> nodeA -> nodeB -> nil and asserts after each call that the
+// by-node index holds exactly the current-node entry (and not the stale one)
+// and that the vm_runtime row's CurrentNodeID matches. The non-atomic code
+// already produced a consistent index in the no-crash path, so this is
+// primarily a REGRESSION guard that the atomized row+index Txn (audit R2-L9)
+// preserves the index invariant DeleteNode consumes.
+func TestUpsertVMRuntimeNodeIndexConsistency(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	vm := vmRow(uniqueNodeName("hbidxvm"))
+	seedVM(t, cli, vm)
+	nodeA, nodeB := uuid.New(), uuid.New()
+
+	idxKey := func(node uuid.UUID) string {
+		return etcd.Key("index", "vm_runtime", "node", node.String(), vm.ID.String())
+	}
+	upsert := func(node *uuid.UUID) {
+		t.Helper()
+		if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+			return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+				VmID: vm.ID, CurrentNodeID: node, Phase: store.VmPhaseRunning, ObservedGeneration: 1,
+			})
+		}); err != nil {
+			t.Fatalf("UpsertVMRuntime(%v): %v", node, err)
+		}
+	}
+	// assertIndex checks the by-node index holds an entry for vm under want
+	// (when non-nil) and holds none under absent.
+	assertIndex := func(want *uuid.UUID, absent ...uuid.UUID) {
+		t.Helper()
+		if want != nil {
+			val, found, err := cli.Get(ctx, idxKey(*want))
+			if err != nil || !found || string(val) != vm.ID.String() {
+				t.Errorf("index[%v] = (%q, %v, %v), want vm id present", *want, val, found, err)
+			}
+		}
+		for _, a := range absent {
+			_, found, err := cli.Get(ctx, idxKey(a))
+			if err != nil || found {
+				t.Errorf("index[%v] = (found=%v, %v), want absent", a, found, err)
+			}
+		}
+		var rt store.VMRuntime
+		if _, err := cli.GetJSON(ctx, etcd.Key("vm_runtime", vm.ID.String()), &rt); err != nil {
+			t.Fatalf("GetJSON vm_runtime: %v", err)
+		}
+		switch {
+		case want == nil && rt.CurrentNodeID != nil:
+			t.Errorf("row CurrentNodeID = %v, want nil", rt.CurrentNodeID)
+		case want != nil && (rt.CurrentNodeID == nil || *rt.CurrentNodeID != *want):
+			t.Errorf("row CurrentNodeID = %v, want %v", rt.CurrentNodeID, *want)
+		}
+	}
+
+	// nil -> nodeA: index gains nodeA, row pinned to nodeA.
+	upsert(&nodeA)
+	assertIndex(&nodeA, nodeB)
+	// nodeA -> nodeB: index moves to nodeB, nodeA entry gone.
+	upsert(&nodeB)
+	assertIndex(&nodeB, nodeA)
+	// nodeB -> nil: no index entry for the vm, row CurrentNodeID nil.
+	upsert(nil)
+	assertIndex(nil, nodeA, nodeB)
+}
+
 // TestHeartbeatDeclaredNetworksClusterWide verifies the projection hands the
 // FULL set of non-deleted networks to every node (networks are cluster-wide,
 // not node-scoped). Two distinct nodes both observe the same network set,

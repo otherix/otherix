@@ -6,12 +6,14 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
@@ -169,26 +171,35 @@ func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.Upse
 	rt.LastErrorMessage = arg.LastErrorMessage
 	now := time.Now().UTC()
 	rt.LastObservedAt = &now
-	if err := h.s.c.PutJSON(ctx, vmRuntimeKey(arg.VmID), rt); err != nil {
+
+	// Commit the runtime row and the (conditional) by-node index Delete/Put in
+	// one Txn so a crash cannot leave the row's current_node_id pointing at a
+	// node the index no longer (or does not yet) reference. DeleteNode consumes
+	// this index, so a dangling entry would make a force-delete miss a VM
+	// (audit R2-L9). Row + at most one Delete + at most one Put is <= 3 ops,
+	// well under etcd's per-txn limit.
+	val, err := etcd.Marshal(rt)
+	if err != nil {
 		return err
 	}
-	return h.reindexRuntimeNode(ctx, arg.VmID, oldNode, arg.CurrentNodeID)
-}
-
-// reindexRuntimeNode keeps the vm_runtime-by-node index in step with a runtime's
-// current_node_id transition.
-func (h heartbeatProjection) reindexRuntimeNode(ctx context.Context, vmID uuid.UUID, oldNode, newNode *uuid.UUID) error {
-	if oldNode != nil && (newNode == nil || *oldNode != *newNode) {
-		if _, err := h.s.c.Delete(ctx, etcd.Key("index", "vm_runtime", "node", oldNode.String(), vmID.String())); err != nil {
-			return err
-		}
+	ops := []clientv3.Op{clientv3.OpPut(vmRuntimeKey(arg.VmID), string(val))}
+	if oldNode != nil && (arg.CurrentNodeID == nil || *oldNode != *arg.CurrentNodeID) {
+		ops = append(ops, clientv3.OpDelete(vmRuntimeNodeIndexKey(*oldNode, arg.VmID)))
 	}
-	if newNode != nil && (oldNode == nil || *oldNode != *newNode) {
-		if err := h.s.c.Put(ctx, etcd.Key("index", "vm_runtime", "node", newNode.String(), vmID.String()), []byte(vmID.String())); err != nil {
-			return err
-		}
+	if arg.CurrentNodeID != nil && (oldNode == nil || *oldNode != *arg.CurrentNodeID) {
+		ops = append(ops, clientv3.OpPut(vmRuntimeNodeIndexKey(*arg.CurrentNodeID, arg.VmID), arg.VmID.String()))
+	}
+	if _, err := h.s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+		return fmt.Errorf("upsert vm_runtime txn: %v", err)
 	}
 	return nil
+}
+
+// vmRuntimeNodeIndexKey is the by-node index entry for a vm_runtime row, the
+// per-VM leaf under vmRuntimeNodeIndexPrefix that DeleteNode ranges to find the
+// VMs to orphan.
+func vmRuntimeNodeIndexKey(node, vmID uuid.UUID) string {
+	return etcd.Key("index", "vm_runtime", "node", node.String(), vmID.String())
 }
 
 // UpdateStoragePoolReconciliation applies the agent's reconciliation report for
