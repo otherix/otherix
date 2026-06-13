@@ -167,15 +167,27 @@ func (h *Handler) writeCreateNetworkError(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// validateNetworkName checks the create-side network name (trimmed by the
+// caller): non-empty, within the length bound, and free of '/' (which would
+// poison the etcd uniqueness-guard key path - audit R2-L7).
+func validateNetworkName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("name is required")
+	case utf8.RuneCountInString(name) > validation.NetworkNameMaxLength:
+		return errors.New("name is too long")
+	case strings.ContainsRune(name, '/'):
+		return errors.New("name must not contain '/'")
+	}
+	return nil
+}
+
 // validateCreate enforces the API-edge invariants on the create
 // payload. Order is biased toward the most specific error first.
 func validateCreate(req *createRequest) error {
 	req.Name = strings.TrimSpace(req.Name)
-	switch {
-	case req.Name == "":
-		return errors.New("name is required")
-	case utf8.RuneCountInString(req.Name) > validation.NetworkNameMaxLength:
-		return errors.New("name is too long")
+	if err := validateNetworkName(req.Name); err != nil {
+		return err
 	}
 
 	if err := validation.ValidateNetworkType(req.Type); err != nil {

@@ -156,17 +156,29 @@ func rejectNonNameKeys(body []byte) []string {
 	return forbidden
 }
 
+// updateNameError validates a patched network name (trimmed by the caller),
+// returning the validation message for an empty, over-length, or '/'-bearing
+// name ('/' would poison the etcd uniqueness-guard key path - audit R2-L7), or
+// "" when the name is acceptable.
+func updateNameError(name string) string {
+	switch {
+	case name == "":
+		return "name must not be empty"
+	case utf8.RuneCountInString(name) > validation.NetworkNameMaxLength:
+		return "name is too long"
+	case strings.ContainsRune(name, '/'):
+		return "name must not contain '/'"
+	}
+	return ""
+}
+
 // applyUpdate merges req into row in place. Returns false (after
 // writing the validation-failed response) when a field is invalid.
 func applyUpdate(w http.ResponseWriter, r *http.Request, row *store.Network, req *updateRequest) bool {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
-		switch {
-		case name == "":
-			writeValidation(w, r, "name must not be empty")
-			return false
-		case utf8.RuneCountInString(name) > validation.NetworkNameMaxLength:
-			writeValidation(w, r, "name is too long")
+		if msg := updateNameError(name); msg != "" {
+			writeValidation(w, r, msg)
 			return false
 		}
 		row.Name = name
