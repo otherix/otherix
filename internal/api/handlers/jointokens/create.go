@@ -165,8 +165,8 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 				return "", nil, 0, nil, errIntendedNameInvalid
 			}
 			// Pre-bound + multi-use combination — defense-in-depth
-			// against the SQL CHECK constraint. Refuses each
-			// max_uses != 1 (including nil meaning unlimited).
+			// against the SQL CHECK constraint. Refuses any
+			// max_uses != 1.
 			if maxUses == nil || *maxUses != 1 {
 				return "", nil, 0, nil, errPreboundMultiUse
 			}

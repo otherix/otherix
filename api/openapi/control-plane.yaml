@@ -873,7 +873,7 @@ paths:
         Mints a bootstrap token an agent process exchanges for a
         per-node certificate during enrolment. Multi-use semantics:
 
-        - `max_uses` omitted — defaults to single-use (1) for both
+        - `max_uses` omitted - defaults to single-use (1) for both
           node and cluster kinds. A truly unlimited token is no
           longer mintable.
         - `max_uses = N` — strict cap, decremented at redemption.
