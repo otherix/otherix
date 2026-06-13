@@ -56,6 +56,14 @@ func openAFPacket(bridge string) (packetConn, error) {
 		return nil, fmt.Errorf("dhcp4: bind %s: %w", bridge, err)
 	}
 
+	// Attach the kernel BPF pre-filter so a guest IPv4 flood is dropped in the
+	// kernel instead of waking userspace per frame (audit R2-L4). Fail closed:
+	// a socket without its filter would serve the unfiltered firehose.
+	if err := attachDHCPFilter(fd); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("dhcp4: attach filter %s: %w", bridge, err)
+	}
+
 	return &afpacketConn{fd: fd, ifindex: iface.Index, srcMAC: iface.HardwareAddr}, nil
 }
 

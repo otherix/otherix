@@ -10,7 +10,45 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	yaml "gopkg.in/yaml.v3"
 )
+
+// TestBuildMetaDataYAMLSafe drives R2-M5: a hostname carrying a newline must
+// round-trip as a single quoted scalar, never injecting an extra top-level
+// YAML key. The output must parse to EXACTLY two keys (instance-id,
+// local-hostname) with local-hostname equal to the literal input.
+func TestBuildMetaDataYAMLSafe(t *testing.T) {
+	evil := "evil\nruncmd: [touch /pwned]"
+	out, err := buildMetaData(evil)
+	if err != nil {
+		t.Fatalf("buildMetaData returned err = %v", err)
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal(out, &m); err != nil {
+		t.Fatalf("yaml.Unmarshal(meta-data) err = %v:\n%s", err, out)
+	}
+	if got, want := len(m), 2; got != want {
+		t.Fatalf("meta-data key count = %d, want %d (keys=%v):\n%s", got, want, keysOf(m), out)
+	}
+	if got, want := m["local-hostname"], evil; got != want {
+		t.Errorf("local-hostname = %q, want %q", got, want)
+	}
+	if got, want := m["instance-id"], "iid-otherix-"+evil; got != want {
+		t.Errorf("instance-id = %q, want %q", got, want)
+	}
+	if _, injected := m["runcmd"]; injected {
+		t.Errorf("newline in hostname injected a runcmd key:\n%s", out)
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
 
 // ISO9660 Primary Volume Descriptor starts at byte offset 32768
 // (logical sector 16). Magic "CD001" sits at PVD+1 (PVD[0] is the

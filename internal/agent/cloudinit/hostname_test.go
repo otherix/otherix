@@ -8,7 +8,46 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	yaml "gopkg.in/yaml.v3"
 )
+
+// TestInjectHostnameFallbackYAMLSafe drives R2-M5: each injectHostname fallback
+// path (empty input, header-only input) with a hostname carrying a newline and
+// a colon must emit a single cloud-config mapping whose hostname equals the
+// literal input, never injecting an extra top-level key.
+func TestInjectHostnameFallbackYAMLSafe(t *testing.T) {
+	evil := "evil\nruncmd: [touch /pwned]\nother: x"
+	cases := []struct {
+		name     string
+		userData string
+	}{
+		{"empty input", ""},
+		{"whitespace-only input", "  \n\t\n"},
+		{"header-only input", "#cloud-config\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := injectHostname([]byte(tc.userData), evil)
+			if err != nil {
+				t.Fatalf("injectHostname err = %v", err)
+			}
+			if !bytes.HasPrefix(bytes.TrimSpace(out), []byte(userDataHeader)) {
+				t.Errorf("output missing %q header:\n%s", userDataHeader, out)
+			}
+			var m map[string]any
+			if err := yaml.Unmarshal(out, &m); err != nil {
+				t.Fatalf("yaml.Unmarshal(user-data) err = %v:\n%s", err, out)
+			}
+			if got, want := len(m), 1; got != want {
+				t.Fatalf("user-data key count = %d, want %d:\n%s", got, want, out)
+			}
+			if got, want := m["hostname"], evil; got != want {
+				t.Errorf("hostname = %q, want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestInjectHostname(t *testing.T) {
 	tests := []struct {

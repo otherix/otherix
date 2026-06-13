@@ -433,3 +433,48 @@ func TestDeleteImageRejectsTraversalBasename(t *testing.T) {
 		t.Errorf("images dir removed by a crafted delete key: %v", statErr)
 	}
 }
+
+// TestEnsureImageIntoRehashesTamperedHit drives R2-L5: on a pinned-digest
+// cache HIT whose file bytes were tampered out-of-band (the .sha256 sidecar
+// still says S), EnsureImageInto must NOT clone the tampered bytes. It
+// re-hashes the cache file, sees the disagreement, re-downloads the correct
+// bytes from the source, and the cloned dst matches S.
+func TestEnsureImageIntoRehashesTamperedHit(t *testing.T) {
+	m, poolName, root := newImageTestManager(t)
+	body := qcow2Body(11)
+	want := shaHex(body)
+	url := serve(t, body)
+
+	dst1 := filepath.Join(t.TempDir(), "disk1.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, want, "qcow2", dst1); err != nil {
+		t.Fatalf("EnsureImageInto(seed) error = %v", err)
+	}
+	got1, _ := os.ReadFile(dst1)
+	if shaHex(got1) != want {
+		t.Fatalf("seed clone sha = %q, want %q", shaHex(got1), want)
+	}
+
+	// Tamper the cache file bytes, leaving the sidecar claiming the original S.
+	imgPath := filepath.Join(root, "images", "ubuntu-24.04-arm64.img")
+	if err := os.WriteFile(imgPath, qcow2Body(99), 0o600); err != nil {
+		t.Fatalf("tamper cache file: %v", err)
+	}
+	sidecar, _ := os.ReadFile(imgPath + ".sha256")
+	if strings.TrimSpace(string(sidecar)) != want {
+		t.Fatalf("sidecar changed by tamper; got %q, want %q", sidecar, want)
+	}
+
+	dst2 := filepath.Join(t.TempDir(), "disk2.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, want, "qcow2", dst2); err != nil {
+		t.Fatalf("EnsureImageInto(tampered hit) error = %v", err)
+	}
+	got2, _ := os.ReadFile(dst2)
+	if shaHex(got2) != want {
+		t.Errorf("clone of tampered hit sha = %q, want %q (re-download did not heal the cache)", shaHex(got2), want)
+	}
+	// The cache file itself must now hold the correct bytes (re-downloaded).
+	cached, _ := os.ReadFile(imgPath)
+	if shaHex(cached) != want {
+		t.Errorf("cache file sha after re-download = %q, want %q", shaHex(cached), want)
+	}
+}
