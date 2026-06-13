@@ -31,6 +31,10 @@ jobs:
       - run: pip install -r requirements-docs.txt
       # --strict fails the build on broken links or pages missing from the nav.
       - run: mkdocs build --strict
+      # Publish the canonical installer at docs.otherix.dev/install.sh so the
+      # get.otherix.dev Worker can alias it. Post-build copy: --strict only
+      # checks markdown nav/links, so this extra static file does not affect it.
+      - run: cp deploy/install/install.sh site/install.sh
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main'
         with:
