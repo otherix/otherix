@@ -29,11 +29,13 @@ func newManifestCreateCmd() *cobra.Command {
 		Use:   "create -f FILE [-f FILE ...]",
 		Short: "Create resources from YAML manifests (multi-document).",
 		Long: `Reads otherix/v1 manifests (Network, StoragePool, VM), validates
-and orders them, and creates each resource. Documents are separated by
-'---'. Resources are created Network -> StoragePool -> VM so name
-references resolve. A StoragePool with spec.nodeList is expanded to one
-instance per node. Best-effort: each document is reported independently
-and the command exits non-zero if any failed.
+and creates each resource. Documents are separated by '---'. Document
+order does not matter on create: VM admission resolves pool/network
+references lazily, so resources are applied Network -> StoragePool -> VM
+only for deterministic logs, not correctness. A StoragePool with
+spec.nodeList is expanded to one instance per node. Best-effort: each
+document is reported independently and the command exits non-zero if
+any failed.
 
 Example:
   otherix create -f cluster.yaml
