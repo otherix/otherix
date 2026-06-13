@@ -76,8 +76,12 @@ func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog
 		return fmt.Errorf("count admins: %v", err)
 	}
 	if count > 0 {
-		log.InfoContext(ctx, "bootstrap admin skipped: admin user already exists",
-			slog.Int64("admin_count", count))
+		log.WarnContext(ctx, "bootstrap admin env is set but an admin already exists; "+
+			"remove OTHERIX_BOOTSTRAP_ADMIN_EMAIL and OTHERIX_BOOTSTRAP_ADMIN_PASSWORD "+
+			"(e.g. from /etc/otherix/api.env) so the bootstrap credentials no longer sit in the environment",
+			slog.Int64("admin_count", count),
+			slog.String("email_var", EnvBootstrapAdminEmail),
+			slog.String("password_var", EnvBootstrapAdminPassword))
 		return nil
 	}
 
