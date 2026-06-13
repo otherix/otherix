@@ -157,12 +157,23 @@ func TestNormaliseCreateRequestClusterMaxUses(t *testing.T) {
 		t.Errorf("node max_uses = %v, want 1000 (node unaffected)", maxUses)
 	}
 
-	// A node token with no max_uses stays unlimited (nil) - unchanged behavior.
+	// A node token with no max_uses now defaults to single-use, not unlimited
+	// (audit R2-L3): an unbounded multi-redemption join credential left live for
+	// the whole TTL is a footgun, so multi-use is an explicit max_uses=N opt-in.
 	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("node")})
 	if err != nil {
 		t.Fatalf("normaliseCreateRequest node: %v", err)
 	}
-	if maxUses != nil {
-		t.Errorf("node max_uses = %v, want nil (unlimited within TTL)", maxUses)
+	if maxUses == nil || *maxUses != 1 {
+		t.Errorf("node max_uses = %v, want 1 (single-use default)", maxUses)
+	}
+
+	// An explicit node max_uses is still honoured (multi-use opt-in).
+	_, _, _, maxUses, err = normaliseCreateRequest(createRequest{Kind: strptr("node"), MaxUses: int32ptr(5)})
+	if err != nil {
+		t.Fatalf("normaliseCreateRequest node explicit: %v", err)
+	}
+	if maxUses == nil || *maxUses != 5 {
+		t.Errorf("node explicit max_uses = %v, want 5", maxUses)
 	}
 }

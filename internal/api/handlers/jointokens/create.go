@@ -177,34 +177,24 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 	return kind, intendedNodeName, ttl, maxUses, nil
 }
 
-// normaliseMaxUses canonicalises the requested max_uses and applies the
-// cluster-token policy. A requested value must be positive. A cluster token
-// redeems for the CA private key, so it must never be unlimited-use: an omitted
-// max_uses defaults to 1, and an explicit value above maxClusterTokenUses is
-// rejected (a near-unlimited cap is operationally equivalent to unlimited for the
-// whole TTL). Node tokens are unaffected — they redeem only leaf certs.
+// normaliseMaxUses canonicalises the requested max_uses. An omitted value defaults to a
+// single use for every kind: an unbounded, multi-redemption join credential left live for the
+// whole TTL is a footgun, so multi-use must be an explicit opt-in via max_uses=N (audit R2-L3).
+// A requested value must be positive; a cluster token additionally caps at maxClusterTokenUses
+// (it redeems for the CA private key, so a near-unlimited cap is operationally unlimited).
 func normaliseMaxUses(kind string, requested *int32) (*int32, error) {
-	var maxUses *int32
-	if requested != nil {
-		if *requested < 1 {
-			return nil, errMaxUsesNotPositive
-		}
-		v := *requested
-		maxUses = &v
-	}
-
-	if kind != store.JoinTokenKindCluster {
-		return maxUses, nil
-	}
-
-	if maxUses == nil {
+	if requested == nil {
 		one := int32(1)
 		return &one, nil
 	}
-	if *maxUses > maxClusterTokenUses {
+	if *requested < 1 {
+		return nil, errMaxUsesNotPositive
+	}
+	if kind == store.JoinTokenKindCluster && *requested > maxClusterTokenUses {
 		return nil, errClusterMaxUsesTooHigh
 	}
-	return maxUses, nil
+	v := *requested
+	return &v, nil
 }
 
 // normaliseKind resolves the optional kind field to a canonical kind, defaulting

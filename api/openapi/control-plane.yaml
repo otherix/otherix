@@ -873,8 +873,11 @@ paths:
         Mints a bootstrap token an agent process exchanges for a
         per-node certificate during enrolment. Multi-use semantics:
 
-        - `max_uses = null` — unlimited within TTL (fleet bootstrap).
+        - `max_uses` omitted — defaults to single-use (1) for both
+          node and cluster kinds. A truly unlimited token is no
+          longer mintable.
         - `max_uses = N` — strict cap, decremented at redemption.
+          A cluster token additionally caps at 16.
         - `intended_node_name` set ⇒ `max_uses` must equal 1
           (single-use pre-bound).
 
@@ -4650,8 +4653,9 @@ components:
           type: [integer, "null"]
           minimum: 1
           description: |
-            Null = unlimited within TTL. Non-null = strict cap;
-            redemption (Step 2) refuses the call when
+            Null = unlimited within TTL (legacy rows only; newly
+            minted tokens always carry a finite cap). Non-null =
+            strict cap; redemption (Step 2) refuses the call when
             consumption_count would exceed max_uses.
         consumption_count:
           type: integer
@@ -4696,10 +4700,12 @@ components:
         max_uses:
           type: [integer, "null"]
           minimum: 1
-          default: null
+          default: 1
           description: |
-            Optional consumption cap. Null = unlimited within TTL.
-            Must equal 1 (or be omitted) when `intended_node_name`
+            Consumption cap. Omitted defaults to single-use (1) for
+            both node and cluster kinds; a truly unlimited token is
+            no longer mintable. A cluster token additionally caps at
+            16. Must equal 1 (or be omitted) when `intended_node_name`
             is set — pre-bound tokens are single-use by construction
             (defense-in-depth: API edge + SQL CHECK constraint).
 

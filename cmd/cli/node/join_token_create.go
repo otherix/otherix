@@ -25,8 +25,8 @@ once. Save BOTH NOW; the server stores only sha256(token) and
 plaintext cannot be retrieved.
 
 Use --node-name to bind the token to a specific node identity
-(single-use only). Omit --node-name and pass --max-uses=N (or
-leave unset for unlimited) to mint a fleet-bootstrap token.
+(single-use only). An omitted --max-uses defaults to single-use;
+pass --max-uses=N to mint a multi-use fleet-bootstrap token.
 
 Pass token + fingerprint to the agent via:
   OTHERIX_BOOTSTRAP__TOKEN=<token>
@@ -36,11 +36,11 @@ Pass token + fingerprint to the agent via:
 Examples:
   otherix node join-token create --node-name node-dev --ttl 10m
   otherix node join-token create --max-uses 3 --ttl 1h
-  otherix node join-token create --ttl 24h  # unlimited within 24h`,
+  otherix node join-token create --ttl 24h            # single-use within 24h`,
 		RunE: runJoinTokenCreate,
 	}
 	cmd.Flags().Duration(flagTTL, defaultTokenTTL, "token validity duration (1m..24h)")
-	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = unlimited within TTL)")
+	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = server default of 1)")
 	cmd.Flags().String(flagNodeName, "", "bind token to a specific node identity (forces single-use)")
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	return cmd
