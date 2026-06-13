@@ -62,6 +62,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	roleChanged := req.Role != nil && *req.Role != row.Role
+
 	if !applyMutableFields(w, r, &row, req, true) {
 		return
 	}
@@ -78,23 +80,24 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "update user", nil)
 		return
 	}
-	if !h.revokeSessionsIfPasswordChanged(w, r, req, row.ID) {
+	if !h.revokeSessionsIfCredentialsChanged(w, r, req, roleChanged, row.ID) {
 		return
 	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
 }
 
-// revokeSessionsIfPasswordChanged revokes every refresh token of user id
-// when req carried a password change, and is a no-op otherwise. The new
-// password hash is already persisted by the time this runs; the revoke is
-// the session-invalidation half of a password change (audit M7) - without
-// it a stolen refresh token keeps minting access tokens for its 30-day
-// TTL. Access JWTs are stateless and survive up to their short TTL by
-// design. A revoke failure is surfaced as 500 rather than swallowed,
-// because silently leaving sessions alive defeats the point; it returns
-// false after writing that error and true otherwise.
-func (h *Handler) revokeSessionsIfPasswordChanged(w http.ResponseWriter, r *http.Request, req updateRequest, id uuid.UUID) bool {
-	if req.Password == nil {
+// revokeSessionsIfCredentialsChanged revokes every refresh token of user id
+// when the update changed the password OR the role, and is a no-op otherwise.
+// Both are credential-equivalent session resets: a password change is the M7
+// session-invalidation half (audit M7), and a role change (especially a
+// demotion or lockdown) must likewise drop the user's live refresh sessions so
+// a stolen or stale refresh token cannot keep minting tokens after the operator
+// changed the user's standing (audit R2-L1). Access JWTs are stateless and
+// survive up to their short TTL by design. A revoke failure is surfaced as 500
+// rather than swallowed, because silently leaving sessions alive defeats the
+// point; it returns false after writing that error and true otherwise.
+func (h *Handler) revokeSessionsIfCredentialsChanged(w http.ResponseWriter, r *http.Request, req updateRequest, roleChanged bool, id uuid.UUID) bool {
+	if req.Password == nil && !roleChanged {
 		return true
 	}
 	if err := h.store.RevokeAllUserRefreshTokens(r.Context(), id); err != nil {

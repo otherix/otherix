@@ -19,6 +19,7 @@ type BeginIdempotencyKeyParams struct {
 }
 
 type CompleteIdempotencyKeyParams struct {
+	UserID          *uuid.UUID
 	ResponseStatus  *int32
 	ResponseHeaders []byte
 	ResponseBody    []byte

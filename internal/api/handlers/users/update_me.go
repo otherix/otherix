@@ -70,7 +70,9 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "update user", nil)
 		return
 	}
-	if !h.revokeSessionsIfPasswordChanged(w, r, req, row.ID) {
+	// Role changes are rejected above (line ~37), so a /me update can only
+	// reset credentials via a password change.
+	if !h.revokeSessionsIfCredentialsChanged(w, r, req, false, row.ID) {
 		return
 	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))

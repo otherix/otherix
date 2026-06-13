@@ -9,27 +9,41 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Idempotency keys back the mutating-endpoint replay guard. The client-supplied
-// key is the primary key: /otherix/idempotency_keys/<key> -> JSON row. The
-// middleware's in_flight -> completed lifecycle maps to compare-guarded writes
-// (begin inserts only if absent; reclaim overwrites only an expired row).
-// not-found / conflict / no-op cases return the store's not-found sentinel
-// store.ErrNotFound, which the middleware tolerates.
+// Idempotency keys back the mutating-endpoint replay guard. The row key is
+// scoped per user: /otherix/idempotency_keys/<user_id>/<key> -> JSON row, so two
+// users may use the same client-supplied key string without colliding (audit
+// R2-L10). The middleware's in_flight -> completed lifecycle maps to
+// compare-guarded writes (begin inserts only if absent; reclaim overwrites only
+// an expired row). not-found / conflict / no-op cases return the store's
+// not-found sentinel store.ErrNotFound, which the middleware tolerates.
 
-func idempotencyKeyKey(key string) string { return etcd.Key("idempotency_keys") + "/" + key }
+func idempotencyKeyKey(userID uuid.UUID, key string) string {
+	return etcd.Key("idempotency_keys") + "/" + userID.String() + "/" + key
+}
 
 func idempotencyPrefix() string { return etcd.Key("idempotency_keys") + "/" }
 
-// GetIdempotencyKey returns the row for key, or store.ErrNotFound.
-func (s *Store) GetIdempotencyKey(ctx context.Context, key string) (store.IdempotencyKey, error) {
+// idempotencyParamsKey derives the per-user etcd key from a params struct's UserID and Key. It
+// errors when userID is nil: the idempotency middleware runs after Authn, so a nil user id is a
+// programming error, never a request-driven case.
+func idempotencyParamsKey(userID *uuid.UUID, key string) (string, error) {
+	if userID == nil {
+		return "", fmt.Errorf("idempotency key requires a user id")
+	}
+	return idempotencyKeyKey(*userID, key), nil
+}
+
+// GetIdempotencyKey returns the row for (userID, key), or store.ErrNotFound.
+func (s *Store) GetIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) (store.IdempotencyKey, error) {
 	var row store.IdempotencyKey
-	found, err := s.c.GetJSON(ctx, idempotencyKeyKey(key), &row)
+	found, err := s.c.GetJSON(ctx, idempotencyKeyKey(userID, key), &row)
 	if err != nil {
 		return store.IdempotencyKey{}, err
 	}
@@ -43,6 +57,10 @@ func (s *Store) GetIdempotencyKey(ctx context.Context, key string) (store.Idempo
 // absent (the ON CONFLICT DO NOTHING analogue). A concurrent claim returns
 // store.ErrNotFound so the middleware re-reads the winner's row.
 func (s *Store) BeginIdempotencyKey(ctx context.Context, arg store.BeginIdempotencyKeyParams) (store.IdempotencyKey, error) {
+	k, err := idempotencyParamsKey(arg.UserID, arg.Key)
+	if err != nil {
+		return store.IdempotencyKey{}, err
+	}
 	row := store.IdempotencyKey{
 		Key:           arg.Key,
 		UserID:        arg.UserID,
@@ -57,7 +75,6 @@ func (s *Store) BeginIdempotencyKey(ctx context.Context, arg store.BeginIdempote
 	if err != nil {
 		return store.IdempotencyKey{}, err
 	}
-	k := idempotencyKeyKey(arg.Key)
 	resp, err := s.c.Raw().Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(k), "=", 0)).
 		Then(clientv3.OpPut(k, string(val))).
@@ -75,8 +92,11 @@ func (s *Store) BeginIdempotencyKey(ctx context.Context, arg store.BeginIdempote
 // in_flight). Returns store.ErrNotFound when the key is missing, not yet
 // expired, or a concurrent caller reclaimed it first.
 func (s *Store) ReclaimIdempotencyKey(ctx context.Context, arg store.ReclaimIdempotencyKeyParams) (store.IdempotencyKey, error) {
-	k := idempotencyKeyKey(arg.Key)
-	existing, modRev, found, err := s.idempotencyWithRev(ctx, arg.Key)
+	k, err := idempotencyParamsKey(arg.UserID, arg.Key)
+	if err != nil {
+		return store.IdempotencyKey{}, err
+	}
+	existing, modRev, found, err := s.idempotencyWithRev(ctx, *arg.UserID, arg.Key)
 	if err != nil {
 		return store.IdempotencyKey{}, err
 	}
@@ -115,7 +135,11 @@ func (s *Store) ReclaimIdempotencyKey(ctx context.Context, arg store.ReclaimIdem
 // to completed. A missing or non-in_flight row is a no-op (matching the SQL
 // state guard / :exec semantics).
 func (s *Store) CompleteIdempotencyKey(ctx context.Context, arg store.CompleteIdempotencyKeyParams) error {
-	row, err := s.GetIdempotencyKey(ctx, arg.Key)
+	k, err := idempotencyParamsKey(arg.UserID, arg.Key)
+	if err != nil {
+		return err
+	}
+	row, err := s.GetIdempotencyKey(ctx, *arg.UserID, arg.Key)
 	if err != nil {
 		return nil //nolint:nilerr // missing row: nothing to complete (SQL no-op)
 	}
@@ -129,20 +153,20 @@ func (s *Store) CompleteIdempotencyKey(ctx context.Context, arg store.CompleteId
 	row.ExpiresAt = arg.ExpiresAt
 	now := time.Now().UTC()
 	row.CompletedAt = &now
-	return s.c.PutJSON(ctx, idempotencyKeyKey(arg.Key), row)
+	return s.c.PutJSON(ctx, k, row)
 }
 
 // DeleteIdempotencyKey removes an in_flight row (the non-2xx cleanup path). A
 // missing or already-completed row is a no-op (matching the SQL state guard).
-func (s *Store) DeleteIdempotencyKey(ctx context.Context, key string) error {
-	row, err := s.GetIdempotencyKey(ctx, key)
+func (s *Store) DeleteIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) error {
+	row, err := s.GetIdempotencyKey(ctx, userID, key)
 	if err != nil {
 		return nil //nolint:nilerr // missing row: nothing to delete
 	}
 	if row.State != "in_flight" {
 		return nil
 	}
-	if _, err := s.c.Delete(ctx, idempotencyKeyKey(key)); err != nil {
+	if _, err := s.c.Delete(ctx, idempotencyKeyKey(userID, key)); err != nil {
 		return fmt.Errorf("delete idempotency key: %v", err)
 	}
 	return nil
@@ -177,8 +201,8 @@ func (s *Store) DeleteExpiredIdempotencyKeys(ctx context.Context) (int64, error)
 }
 
 // idempotencyWithRev reads a row and its mod-revision (the reclaim CAS target).
-func (s *Store) idempotencyWithRev(ctx context.Context, key string) (store.IdempotencyKey, int64, bool, error) {
-	resp, err := s.c.Raw().Get(ctx, idempotencyKeyKey(key))
+func (s *Store) idempotencyWithRev(ctx context.Context, userID uuid.UUID, key string) (store.IdempotencyKey, int64, bool, error) {
+	resp, err := s.c.Raw().Get(ctx, idempotencyKeyKey(userID, key))
 	if err != nil {
 		return store.IdempotencyKey{}, 0, false, err
 	}
