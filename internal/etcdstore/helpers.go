@@ -5,12 +5,30 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+// decodeOrQuarantine unmarshals val into dst. On a decode failure it logs a WARN
+// naming the key and returns false so the caller skips the item, rather than
+// failing the whole Range scan - one malformed persisted key must not halt a
+// consume/sweep loop every tick (audit R2-L12). Only per-item decode failures
+// are quarantined; a transient Range error stays the caller's to return. The
+// poison key is never deleted, only skipped and logged so an operator can
+// investigate.
+func (s *Store) decodeOrQuarantine(ctx context.Context, key string, val []byte, dst any, kind string) bool {
+	if err := json.Unmarshal(val, dst); err != nil {
+		s.log.WarnContext(ctx, "etcdstore: quarantining undecodable key",
+			slog.String("kind", kind), slog.String("key", key), slog.String("error", err.Error()))
+		return false
+	}
+	return true
+}
 
 // resolveGuard reads a uniqueness/index guard key whose value is a UUID and
 // parses it. found is false (nil error) when the guard is absent. Guards double

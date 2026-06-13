@@ -25,6 +25,7 @@ package etcdstore
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/otherix/otherix/internal/etcd"
 )
@@ -33,12 +34,24 @@ import (
 // holds a KV client over the embedded member; one Store instance carries
 // every resource's methods.
 type Store struct {
-	c *etcd.Client
+	c   *etcd.Client
+	log *slog.Logger
 }
 
+// Option configures a Store.
+type Option func(*Store)
+
+// WithLogger sets the Store's logger, used for quarantine warnings when a
+// persisted key fails to decode. Defaults to slog.Default().
+func WithLogger(log *slog.Logger) Option { return func(s *Store) { s.log = log } }
+
 // New constructs a Store over the given KV client.
-func New(c *etcd.Client) *Store {
-	return &Store{c: c}
+func New(c *etcd.Client, opts ...Option) *Store {
+	s := &Store{c: c, log: slog.Default()}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // healthPingKey is a sentinel the readiness probe reads to confirm the etcd

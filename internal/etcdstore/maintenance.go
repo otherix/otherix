@@ -5,7 +5,6 @@ package etcdstore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,8 +42,8 @@ func (s *Store) DeleteExpiredTasks(ctx context.Context, arg store.DeleteExpiredT
 	)
 	for _, kv := range items {
 		var t store.Task
-		if err := json.Unmarshal(kv.Value, &t); err != nil {
-			return 0, fmt.Errorf("unmarshal task %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &t, "task") {
+			continue
 		}
 		if !taskRetentionExpired(t, arg) {
 			continue
@@ -109,8 +108,8 @@ func (s *Store) DeleteFailedJobs(ctx context.Context, olderThan time.Time) (int6
 	)
 	for _, kv := range items {
 		var j Job
-		if err := json.Unmarshal(kv.Value, &j); err != nil {
-			return 0, fmt.Errorf("unmarshal job %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &j, "job") {
+			continue
 		}
 		if j.State != JobStateFailed || j.FailedAt == nil || !j.FailedAt.Before(olderThan) {
 			continue
@@ -158,8 +157,8 @@ func (s *Store) DeleteOrphanedNetworkNodeStatus(ctx context.Context) (int64, err
 	)
 	for _, kv := range items {
 		var st store.NetworkNodeStatus
-		if err := json.Unmarshal(kv.Value, &st); err != nil {
-			return 0, fmt.Errorf("unmarshal network_node_status %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &st, "network_node_status") {
+			continue
 		}
 		ok, seen := live[st.NetworkID]
 		if !seen {
@@ -280,8 +279,8 @@ func (s *Store) liveNodes(ctx context.Context) ([]store.Node, error) {
 	out := make([]store.Node, 0, len(items))
 	for _, kv := range items {
 		var n store.Node
-		if err := json.Unmarshal(kv.Value, &n); err != nil {
-			return nil, fmt.Errorf("unmarshal node %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &n, "node") {
+			continue
 		}
 		if n.DeletedAt != nil {
 			continue
@@ -306,8 +305,8 @@ func (s *Store) ListPoolsNeedingScan(ctx context.Context) ([]store.ListPoolsNeed
 	var rows []store.ListPoolsNeedingScanRow
 	for _, kv := range items {
 		var p store.StoragePool
-		if err := json.Unmarshal(kv.Value, &p); err != nil {
-			return nil, fmt.Errorf("unmarshal storage pool %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &p, "storage_pool") {
+			continue
 		}
 		if p.DeletedAt != nil || inflight[p.ID] {
 			continue
@@ -338,8 +337,8 @@ func (s *Store) poolsWithInflightScan(ctx context.Context) (map[uuid.UUID]bool, 
 	inflight := make(map[uuid.UUID]bool)
 	for _, kv := range items {
 		var t store.Task
-		if err := json.Unmarshal(kv.Value, &t); err != nil {
-			return nil, fmt.Errorf("unmarshal task %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &t, "task") {
+			continue
 		}
 		if t.Type != "storage_pool.scan" {
 			continue

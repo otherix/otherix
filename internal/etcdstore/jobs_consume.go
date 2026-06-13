@@ -31,8 +31,8 @@ func (s *Store) PendingJobs(ctx context.Context) ([]Job, error) {
 	out := make([]Job, 0, len(items))
 	for _, kv := range items {
 		var j Job
-		if err := json.Unmarshal(kv.Value, &j); err != nil {
-			return nil, fmt.Errorf("unmarshal job %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &j, "job") {
+			continue
 		}
 		if j.State == JobStatePending {
 			out = append(out, j)
