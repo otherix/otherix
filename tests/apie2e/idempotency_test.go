@@ -57,6 +57,37 @@ func TestIdempotencyReplaySameKeyAndBody(t *testing.T) {
 	}
 }
 
+// TestIdempotencyPerUserScopeNoCrossUserCollision drives the real seam for
+// audit R2-L10: two different users posting the same mutating endpoint with the
+// SAME Idempotency-Key but DIFFERENT bodies must both succeed. Idempotency keys
+// are scoped per user, so neither user can squat a key string to grief the
+// other (a 24h 409 denial under the old global-key scheme).
+func TestIdempotencyPerUserScopeNoCrossUserCollision(t *testing.T) {
+	h := newE2E(t)
+	adminA, idA := loginAs(t, h, auth.RoleAdmin)
+	adminB, idB := loginAs(t, h, auth.RoleAdmin)
+	if idA == idB {
+		t.Fatalf("loginAs returned the same user id %q for both admins, want distinct", idA)
+	}
+
+	key := "idem-shared-key"
+	hdr := map[string]string{middleware.HeaderIdempotencyKey: key, "Content-Type": "application/json"}
+
+	resp := h.do(t, http.MethodPost, "/v1/networks", newNetworkBody(), adminA, hdr)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("user A create status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// User B uses the SAME key with a DIFFERENT body. Per-user scope means no
+	// cross-user collision: B must create its own network, not get 409.
+	resp = h.do(t, http.MethodPost, "/v1/networks", newNetworkBody(), adminB, hdr)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("user B create with shared key status = %d, want 201 (no cross-user collision)", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 func TestIdempotencyMismatchSameKeyDifferentBody(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)

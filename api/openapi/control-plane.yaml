@@ -6685,7 +6685,8 @@ components:
       description: |
         Optional idempotency key. Same key + same body within 24 h returns the
         original cached response. Same key + different body within 24 h returns
-        409 `idempotency_key_mismatch`.
+        409 `idempotency_key_mismatch`. Scope is per authenticated user: two
+        users may use the same key string without colliding.
 
     # Name-only path parameters. Each resource family
     # (nodes / vms) accepts a case-insensitive name in

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -46,14 +47,21 @@ func newFakeStore() *fakeIdempStore {
 	return &fakeIdempStore{rows: map[string]store.IdempotencyKey{}}
 }
 
-func (f *fakeIdempStore) GetIdempotencyKey(_ context.Context, key string) (store.IdempotencyKey, error) {
+// idempMapKey mirrors the store's per-user key scoping in the in-memory fake:
+// rows are keyed on (user_id, key) so two users using the same key string do
+// not collide (audit R2-L10).
+func idempMapKey(userID uuid.UUID, key string) string {
+	return userID.String() + "/" + key
+}
+
+func (f *fakeIdempStore) GetIdempotencyKey(_ context.Context, userID uuid.UUID, key string) (store.IdempotencyKey, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls.get++
 	if f.getErr != nil {
 		return store.IdempotencyKey{}, f.getErr
 	}
-	row, ok := f.rows[key]
+	row, ok := f.rows[idempMapKey(userID, key)]
 	if !ok {
 		return store.IdempotencyKey{}, store.ErrNotFound
 	}
@@ -70,7 +78,11 @@ func (f *fakeIdempStore) BeginIdempotencyKey(_ context.Context, arg store.BeginI
 	if f.beginErr != nil {
 		return store.IdempotencyKey{}, f.beginErr
 	}
-	if _, exists := f.rows[arg.Key]; exists {
+	if arg.UserID == nil {
+		return store.IdempotencyKey{}, fmt.Errorf("begin idempotency key requires a user id")
+	}
+	mk := idempMapKey(*arg.UserID, arg.Key)
+	if _, exists := f.rows[mk]; exists {
 		return store.IdempotencyKey{}, store.ErrNotFound
 	}
 	row := store.IdempotencyKey{
@@ -83,7 +95,7 @@ func (f *fakeIdempStore) BeginIdempotencyKey(_ context.Context, arg store.BeginI
 		CreatedAt:     time.Now(),
 		ExpiresAt:     arg.ExpiresAt,
 	}
-	f.rows[arg.Key] = row
+	f.rows[mk] = row
 	return row, nil
 }
 
@@ -91,7 +103,11 @@ func (f *fakeIdempStore) ReclaimIdempotencyKey(_ context.Context, arg store.Recl
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls.reclaim++
-	row, ok := f.rows[arg.Key]
+	if arg.UserID == nil {
+		return store.IdempotencyKey{}, fmt.Errorf("reclaim idempotency key requires a user id")
+	}
+	mk := idempMapKey(*arg.UserID, arg.Key)
+	row, ok := f.rows[mk]
 	if !ok || time.Now().Before(row.ExpiresAt) {
 		return store.IdempotencyKey{}, store.ErrNotFound
 	}
@@ -106,7 +122,7 @@ func (f *fakeIdempStore) ReclaimIdempotencyKey(_ context.Context, arg store.Recl
 	row.CreatedAt = time.Now()
 	row.CompletedAt = nil
 	row.ExpiresAt = arg.ExpiresAt
-	f.rows[arg.Key] = row
+	f.rows[mk] = row
 	return row, nil
 }
 
@@ -114,7 +130,11 @@ func (f *fakeIdempStore) CompleteIdempotencyKey(_ context.Context, arg store.Com
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls.complete++
-	row, ok := f.rows[arg.Key]
+	if arg.UserID == nil {
+		return fmt.Errorf("complete idempotency key requires a user id")
+	}
+	mk := idempMapKey(*arg.UserID, arg.Key)
+	row, ok := f.rows[mk]
 	if !ok || row.State != "in_flight" {
 		return nil
 	}
@@ -125,16 +145,17 @@ func (f *fakeIdempStore) CompleteIdempotencyKey(_ context.Context, arg store.Com
 	row.ExpiresAt = arg.ExpiresAt
 	now := time.Now()
 	row.CompletedAt = &now
-	f.rows[arg.Key] = row
+	f.rows[mk] = row
 	return nil
 }
 
-func (f *fakeIdempStore) DeleteIdempotencyKey(_ context.Context, key string) error {
+func (f *fakeIdempStore) DeleteIdempotencyKey(_ context.Context, userID uuid.UUID, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls.delete++
-	if row, ok := f.rows[key]; ok && row.State == "in_flight" {
-		delete(f.rows, key)
+	mk := idempMapKey(userID, key)
+	if row, ok := f.rows[mk]; ok && row.State == "in_flight" {
+		delete(f.rows, mk)
 	}
 	return nil
 }
@@ -419,7 +440,12 @@ func TestIdempotency_DifferentBodyMismatch(t *testing.T) {
 	}
 }
 
-func TestIdempotency_DifferentUserMismatch(t *testing.T) {
+// TestIdempotency_DifferentUsersDoNotCollide asserts that two different users
+// using the SAME key string get independent namespaces: the second user's
+// request runs on its own row instead of colliding with the first user's row
+// (audit R2-L10 - the old global-key scope returned 409 here, letting a user
+// squat a key string to grief others).
+func TestIdempotency_DifferentUsersDoNotCollide(t *testing.T) {
 	fake := newFakeStore()
 	mw := Idempotency(fake, discardLog())
 	h := mw(okHandler(http.StatusCreated, `{"ok":true}`))
@@ -429,16 +455,13 @@ func TestIdempotency_DifferentUserMismatch(t *testing.T) {
 	rr1 := httptest.NewRecorder()
 	h.ServeHTTP(rr1, authedRequest(http.MethodPost, "/v1/users", body, uuid.New(), "k1"))
 	if rr1.Code != http.StatusCreated {
-		t.Fatalf("first status = %d", rr1.Code)
+		t.Fatalf("first user status = %d, want 201", rr1.Code)
 	}
 
 	rr2 := httptest.NewRecorder()
 	h.ServeHTTP(rr2, authedRequest(http.MethodPost, "/v1/users", body, uuid.New(), "k1"))
-	if rr2.Code != http.StatusConflict {
-		t.Errorf("cross-user status = %d, want 409", rr2.Code)
-	}
-	if !strings.Contains(rr2.Body.String(), "idempotency_key_mismatch") {
-		t.Errorf("body = %q", rr2.Body.String())
+	if rr2.Code != http.StatusCreated {
+		t.Errorf("second user status = %d, want 201 (no cross-user collision)", rr2.Code)
 	}
 }
 
@@ -517,11 +540,12 @@ func TestBeginUsesShortLease(t *testing.T) {
 
 func TestAcquireReclaimsStaleInFlight(t *testing.T) {
 	key := "k1"
+	userID := uuid.New()
 	past := time.Now().Add(-time.Minute)
 	fake := newFakeStore()
-	fake.rows[key] = store.IdempotencyKey{Key: key, State: "in_flight", ExpiresAt: past}
+	fake.rows[idempMapKey(userID, key)] = store.IdempotencyKey{Key: key, UserID: &userID, State: "in_flight", ExpiresAt: past}
 
-	_, action, err := acquireKey(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	_, action, err := acquireKey(context.Background(), fake, key, userID, "POST", "/v1/vms", []byte("body"))
 	if err != nil {
 		t.Fatalf("acquireKey: %v", err)
 	}
@@ -532,11 +556,12 @@ func TestAcquireReclaimsStaleInFlight(t *testing.T) {
 
 func TestReclaimUsesShortLease(t *testing.T) {
 	key := "k-reclaim"
+	userID := uuid.New()
 	past := time.Now().Add(-time.Minute)
 	fake := newFakeStore()
-	fake.rows[key] = store.IdempotencyKey{Key: key, State: "in_flight", ExpiresAt: past}
+	fake.rows[idempMapKey(userID, key)] = store.IdempotencyKey{Key: key, UserID: &userID, State: "in_flight", ExpiresAt: past}
 
-	row, action, err := acquireKey(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	row, action, err := acquireKey(context.Background(), fake, key, userID, "POST", "/v1/vms", []byte("body"))
 	if err != nil {
 		t.Fatalf("acquireKey: %v", err)
 	}
@@ -551,10 +576,11 @@ func TestReclaimUsesShortLease(t *testing.T) {
 
 func TestCompleteExtendsLease(t *testing.T) {
 	key := "k-complete"
+	userID := uuid.New()
 	fake := newFakeStore()
 
 	// Begin stamps the short in_flight lease.
-	begun, action, err := tryBegin(context.Background(), fake, key, uuid.New(), "POST", "/v1/vms", []byte("body"))
+	begun, action, err := tryBegin(context.Background(), fake, key, userID, "POST", "/v1/vms", []byte("body"))
 	if err != nil || action != actionProceed {
 		t.Fatalf("tryBegin = %v, %v", action, err)
 	}
@@ -566,6 +592,7 @@ func TestCompleteExtendsLease(t *testing.T) {
 	// finalizeKey does on a 2xx outcome.
 	status := int32(http.StatusCreated)
 	if err := fake.CompleteIdempotencyKey(context.Background(), store.CompleteIdempotencyKeyParams{
+		UserID:         &userID,
 		ResponseStatus: &status,
 		ExpiresAt:      time.Now().Add(IdempotencyTTL),
 		Key:            key,
@@ -573,7 +600,7 @@ func TestCompleteExtendsLease(t *testing.T) {
 		t.Fatalf("CompleteIdempotencyKey: %v", err)
 	}
 
-	completed, err := fake.GetIdempotencyKey(context.Background(), key)
+	completed, err := fake.GetIdempotencyKey(context.Background(), userID, key)
 	if err != nil {
 		t.Fatalf("GetIdempotencyKey: %v", err)
 	}

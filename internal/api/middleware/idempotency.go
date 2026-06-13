@@ -43,11 +43,11 @@ const IdempotencyInFlightLease = 2 * time.Minute
 // data layer. *store.Queries implements it; tests substitute an
 // in-memory stub.
 type IdempotencyStore interface {
-	GetIdempotencyKey(ctx context.Context, key string) (store.IdempotencyKey, error)
+	GetIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) (store.IdempotencyKey, error)
 	BeginIdempotencyKey(ctx context.Context, arg store.BeginIdempotencyKeyParams) (store.IdempotencyKey, error)
 	ReclaimIdempotencyKey(ctx context.Context, arg store.ReclaimIdempotencyKeyParams) (store.IdempotencyKey, error)
 	CompleteIdempotencyKey(ctx context.Context, arg store.CompleteIdempotencyKeyParams) error
-	DeleteIdempotencyKey(ctx context.Context, key string) error
+	DeleteIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) error
 }
 
 // hopByHopHeaders are not replayed verbatim — they are connection or
@@ -153,7 +153,7 @@ func Idempotency(s IdempotencyStore, log *slog.Logger) func(http.Handler) http.H
 				// the process crashes between here and the flush, the
 				// client never received a 2xx, so its retry replays as a
 				// first attempt against the reclaimable in_flight row.
-				finalizeKey(r.Context(), s, key, rec, log)
+				finalizeKey(r.Context(), s, user.ID, key, rec, log)
 				rec.flush(w)
 			}
 		})
@@ -180,7 +180,7 @@ func idempotencyNotFound(err error) bool {
 }
 
 func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid.UUID, method, path string, hash []byte) (store.IdempotencyKey, idemAction, error) {
-	row, err := s.GetIdempotencyKey(ctx, key)
+	row, err := s.GetIdempotencyKey(ctx, userID, key)
 	if idempotencyNotFound(err) {
 		return tryBegin(ctx, s, key, userID, method, path, hash)
 	}
@@ -199,7 +199,7 @@ func acquireKey(ctx context.Context, s IdempotencyStore, key string, userID uuid
 			Key:           key,
 		})
 		if idempotencyNotFound(err) {
-			row, err = s.GetIdempotencyKey(ctx, key)
+			row, err = s.GetIdempotencyKey(ctx, userID, key)
 			if err != nil {
 				return store.IdempotencyKey{}, 0, err
 			}
@@ -230,7 +230,7 @@ func tryBegin(ctx context.Context, s IdempotencyStore, key string, userID uuid.U
 	if !idempotencyNotFound(err) {
 		return store.IdempotencyKey{}, 0, err
 	}
-	row, err = s.GetIdempotencyKey(ctx, key)
+	row, err = s.GetIdempotencyKey(ctx, userID, key)
 	if err != nil {
 		return store.IdempotencyKey{}, 0, err
 	}
@@ -257,7 +257,7 @@ func determineAction(row store.IdempotencyKey, userID uuid.UUID, method, path st
 	}
 }
 
-func finalizeKey(ctx context.Context, s IdempotencyStore, key string, rec *recorder, log *slog.Logger) {
+func finalizeKey(ctx context.Context, s IdempotencyStore, userID uuid.UUID, key string, rec *recorder, log *slog.Logger) {
 	if rec.statusCode >= 200 && rec.statusCode < 300 {
 		hdr, err := encodeHeaders(rec.headers)
 		if err != nil {
@@ -268,6 +268,7 @@ func finalizeKey(ctx context.Context, s IdempotencyStore, key string, rec *recor
 		}
 		status := int32(rec.statusCode) //nolint:gosec // status is bounded by net/http
 		if err := s.CompleteIdempotencyKey(ctx, store.CompleteIdempotencyKeyParams{
+			UserID:          userIDPtr(userID),
 			ResponseStatus:  &status,
 			ResponseHeaders: hdr,
 			ResponseBody:    rec.body.Bytes(),
@@ -280,7 +281,7 @@ func finalizeKey(ctx context.Context, s IdempotencyStore, key string, rec *recor
 		}
 		return
 	}
-	if err := s.DeleteIdempotencyKey(ctx, key); err != nil {
+	if err := s.DeleteIdempotencyKey(ctx, userID, key); err != nil {
 		log.ErrorContext(ctx, "idempotency delete failed",
 			slog.String("key", key),
 			slog.String("error", err.Error()))
