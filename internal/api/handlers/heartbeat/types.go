@@ -65,6 +65,10 @@ type poolReport struct {
 	ReconciliationStatus string            `json:"reconciliation_status"`
 	ReconciliationError  *string           `json:"reconciliation_error,omitempty"`
 	Images               []poolImageReport `json:"images,omitempty"`
+	// ImagesUnavailable is true when the agent could not enumerate this pool's
+	// image cache this tick (a transient ListImages error). The CP then
+	// preserves the prior inventory rather than clearing it (audit R2-L11).
+	ImagesUnavailable bool `json:"images_unavailable,omitempty"`
 }
 
 // poolImageReport mirrors one entry of HeartbeatPoolReport.images — the agent's

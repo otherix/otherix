@@ -5,7 +5,6 @@ package etcdstore
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -279,8 +278,8 @@ func (s *Store) ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]stru
 	out := make(map[uuid.UUID]struct{})
 	for _, kv := range items {
 		var t store.Task
-		if err := json.Unmarshal(kv.Value, &t); err != nil {
-			return nil, fmt.Errorf("unmarshal task %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &t, "task") {
+			continue
 		}
 		if t.Type != "vm.delete" || t.ResourceID == nil {
 			continue
@@ -313,8 +312,8 @@ func (s *Store) listTasks(ctx context.Context, f taskFilter) ([]store.Task, erro
 	out := make([]store.Task, 0, len(items))
 	for _, kv := range items {
 		var t store.Task
-		if err := json.Unmarshal(kv.Value, &t); err != nil {
-			return nil, fmt.Errorf("unmarshal task %q: %v", kv.Key, err)
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &t, "task") {
+			continue
 		}
 		if !taskMatches(t, f) {
 			continue

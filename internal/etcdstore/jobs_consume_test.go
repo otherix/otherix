@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -169,6 +170,44 @@ func TestRetryJobOnlyRequeuesRunning(t *testing.T) {
 	after := mustPending(t, s)
 	if len(after) != 1 || after[0].Attempts != 0 {
 		t.Errorf("RetryJob mutated a non-running job: %+v", after)
+	}
+}
+
+// TestPendingJobsQuarantinesUndecodableKey pins the L12 quarantine: a malformed
+// job key under the jobs prefix must not halt PendingJobs. The valid pending job
+// is still returned, no error, and the poison key is left in place (not deleted)
+// so an operator can investigate (audit R2-L12).
+func TestPendingJobsQuarantinesUndecodableKey(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	// One valid pending job via the normal enqueue path.
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	// A poison key under the jobs prefix carrying raw non-JSON bytes.
+	poisonKey := etcd.Key("jobs", "99999999999999999999")
+	if _, err := cli.Raw().Put(ctx, poisonKey, "not json"); err != nil {
+		t.Fatalf("seed poison key: %v", err)
+	}
+
+	got, err := s.PendingJobs(ctx)
+	if err != nil {
+		t.Fatalf("PendingJobs error = %v, want nil", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("PendingJobs len = %d, want 1 (valid job, poison skipped)", len(got))
+	}
+
+	// The poison key is quarantined (skipped + logged), never deleted.
+	resp, err := cli.Raw().Get(ctx, poisonKey)
+	if err != nil {
+		t.Fatalf("get poison key: %v", err)
+	}
+	if len(resp.Kvs) != 1 {
+		t.Errorf("poison key count = %d, want 1 (must not be deleted)", len(resp.Kvs))
 	}
 }
 

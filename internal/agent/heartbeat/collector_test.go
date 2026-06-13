@@ -101,9 +101,18 @@ type stubPoolReporter struct{ reports []PoolReport }
 
 func (s stubPoolReporter) PoolReports() []PoolReport { return s.reports }
 
-type fakePoolImageLister struct{ images map[string][]PoolImageReport }
+type fakePoolImageLister struct {
+	images map[string][]PoolImageReport
+	// unavailable pools report known=false (the agent could not enumerate them).
+	unavailable map[string]bool
+}
 
-func (f fakePoolImageLister) PoolImages(pool string) []PoolImageReport { return f.images[pool] }
+func (f fakePoolImageLister) PoolImages(pool string) ([]PoolImageReport, bool) {
+	if f.unavailable[pool] {
+		return nil, false
+	}
+	return f.images[pool], true
+}
 
 // TestCollectPoolImages confirms the collector folds the per-pool
 // image inventory (from the PoolImageLister seam) into the matching
@@ -141,6 +150,47 @@ func TestCollectPoolImages(t *testing.T) {
 	}
 	if diff := cmp.Diff([]PoolImageReport{img}, rep.Pools[0].Images); diff != "" {
 		t.Errorf("Pools[0].Images mismatch (-want +got):\n%s", diff)
+	}
+	// A successful enumeration sets ImagesUnavailable = false; the inventory is
+	// authoritative.
+	if rep.Pools[0].ImagesUnavailable {
+		t.Errorf("Pools[0].ImagesUnavailable = true, want false (enumeration succeeded)")
+	}
+}
+
+// TestCollectPoolImagesUnavailable confirms the tri-state fail-closed contract:
+// a PoolImageLister that returns known=false (the agent could not enumerate the
+// pool) makes the collector set ImagesUnavailable = true with no images, so the
+// CP preserves the prior inventory rather than clearing it (audit R2-L11).
+func TestCollectPoolImagesUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	c := &LinuxCollector{
+		procPath:     dir,
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		pools:        stubPoolReporter{reports: []PoolReport{{Name: "default", ReconciliationStatus: "ready"}}},
+		poolImages:   fakePoolImageLister{unavailable: map[string]bool{"default": true}},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := len(rep.Pools); got != 1 {
+		t.Fatalf("pools count = %d, want 1", got)
+	}
+	if !rep.Pools[0].ImagesUnavailable {
+		t.Errorf("Pools[0].ImagesUnavailable = false, want true (enumeration failed)")
+	}
+	if len(rep.Pools[0].Images) != 0 {
+		t.Errorf("Pools[0].Images = %+v, want empty when unavailable", rep.Pools[0].Images)
 	}
 }
 

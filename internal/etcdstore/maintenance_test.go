@@ -78,6 +78,48 @@ func TestDeleteExpiredTasks(t *testing.T) {
 	}
 }
 
+// TestDeleteExpiredTasksQuarantinesUndecodableKey pins the L12 quarantine on a
+// representative sweep: a malformed task key must not halt DeleteExpiredTasks.
+// The valid expired task is still deleted (count 1), no error, and the poison
+// key is left in place (audit R2-L12).
+func TestDeleteExpiredTasksQuarantinesUndecodableKey(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	// One valid task that is past retention once finalized.
+	expired := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, expired, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: expired.ID, Status: store.TaskStatusSuccess}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// A poison key under the tasks prefix carrying raw non-JSON bytes.
+	poisonKey := etcd.Key("tasks", "poison")
+	if _, err := cli.Raw().Put(ctx, poisonKey, "not json"); err != nil {
+		t.Fatalf("seed poison key: %v", err)
+	}
+
+	future := time.Now().UTC().Add(time.Hour)
+	deleted, err := s.DeleteExpiredTasks(ctx, store.DeleteExpiredTasksParams{CompletedCutoff: future, FailedCutoff: future})
+	if err != nil {
+		t.Fatalf("DeleteExpiredTasks error = %v, want nil", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1 (valid expired task, poison skipped)", deleted)
+	}
+
+	// The poison key is quarantined (skipped + logged), never deleted.
+	resp, err := cli.Raw().Get(ctx, poisonKey)
+	if err != nil {
+		t.Fatalf("get poison key: %v", err)
+	}
+	if len(resp.Kvs) != 1 {
+		t.Errorf("poison key count = %d, want 1 (must not be deleted)", len(resp.Kvs))
+	}
+}
+
 // TestDeleteFailedJobsRespectsStateAndAge seeds four job rows directly and runs
 // the sweep with a 7-day cutoff: only the failed job older than the cutoff is
 // deleted; recent-failed, running, and pending rows survive.

@@ -388,6 +388,13 @@ func (h *Handler) applyPoolImageInventory(ctx context.Context, hp store.Heartbea
 	if !found {
 		return nil
 	}
+	if p.ImagesUnavailable {
+		// The agent could not enumerate this pool's images this tick (a transient
+		// ListImages error). Preserve the prior inventory rather than clear it: an
+		// empty upsert deletes the inventory, and a transient producer error must
+		// not wipe observed state (audit R2-L11, fail-closed).
+		return nil
+	}
 	images := make([]store.PoolImage, 0, len(p.Images))
 	for _, img := range p.Images {
 		var importedAt time.Time
