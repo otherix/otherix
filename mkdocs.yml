@@ -6,29 +6,19 @@ repo_name: otherix/otherix
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; 2026 Andrei Taranik - Apache-2.0
 
-# Existing top-level docs (architecture.md, rbac.md, scheduler-configuration.md,
-# macos-development.md) stay at their current paths because they are referenced
-# from Go source comments and configs; the section grouping lives here in nav,
-# not in the directory layout. New content lands under the subdirectories below.
 docs_dir: docs
 
 theme:
   name: material
+  logo: assets/otherix-mark.svg
+  favicon: assets/otherix-mark.svg
+  # Self-hosted fonts: families are declared via @font-face in otherix.css.
+  font: false
+  # Dark-only, to match the otherix.dev landing.
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: indigo
-      accent: indigo
-      toggle:
-        icon: material/weather-night
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: indigo
-      accent: indigo
-      toggle:
-        icon: material/weather-sunny
-        name: Switch to light mode
+    scheme: slate
+    primary: custom
+    accent: custom
   features:
     - navigation.sections
     - navigation.top
@@ -42,6 +32,9 @@ theme:
     - toc.follow
   icon:
     repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/otherix.css
 
 plugins:
   - search

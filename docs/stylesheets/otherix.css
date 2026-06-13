@@ -1,0 +1,123 @@
+/* =========================================================================
+   Otherix — MkDocs Material theme overrides
+   Brings docs.otherix.dev in line with the otherix.dev landing:
+   #1e2327 canvas, teal #58ccc2 accent, IBM Plex type, brand code colors.
+   Dark-only + self-hosted fonts.
+
+   Loaded via `extra_css: [stylesheets/otherix.css]`, with
+   `theme.font: false` and palette `primary: custom` / `accent: custom`.
+   Fonts are self-hosted — run stylesheets/fonts/fetch-fonts.sh once.
+   ========================================================================= */
+
+/* ---- Self-hosted IBM Plex (run stylesheets/fonts/fetch-fonts.sh) -------- */
+@font-face { font-family:'IBM Plex Sans'; font-style:normal; font-weight:400; font-display:swap; src:url('fonts/ibm-plex-sans-400.woff2') format('woff2'); }
+@font-face { font-family:'IBM Plex Sans'; font-style:normal; font-weight:500; font-display:swap; src:url('fonts/ibm-plex-sans-500.woff2') format('woff2'); }
+@font-face { font-family:'IBM Plex Sans'; font-style:normal; font-weight:600; font-display:swap; src:url('fonts/ibm-plex-sans-600.woff2') format('woff2'); }
+@font-face { font-family:'IBM Plex Sans'; font-style:normal; font-weight:700; font-display:swap; src:url('fonts/ibm-plex-sans-700.woff2') format('woff2'); }
+@font-face { font-family:'IBM Plex Mono'; font-style:normal; font-weight:400; font-display:swap; src:url('fonts/ibm-plex-mono-400.woff2') format('woff2'); }
+@font-face { font-family:'IBM Plex Mono'; font-style:normal; font-weight:500; font-display:swap; src:url('fonts/ibm-plex-mono-500.woff2') format('woff2'); }
+@font-face { font-family:'IBM Plex Mono'; font-style:normal; font-weight:600; font-display:swap; src:url('fonts/ibm-plex-mono-600.woff2') format('woff2'); }
+
+/* theme.font is false, so set the families ourselves */
+:root {
+  --md-text-font: "IBM Plex Sans";
+  --md-code-font: "IBM Plex Mono";
+  --md-text-font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --md-code-font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ---- DARK (slate) — the only scheme -------------------------------------*/
+[data-md-color-scheme="slate"] {
+  --md-hue: 210;
+
+  --md-default-bg-color:        #1e2327;
+  --md-default-bg-color--light: #22282c;
+  --md-default-bg-color--lighter:#262c31;
+  --md-default-bg-color--lightest:#2e353b;
+
+  --md-default-fg-color:        #eef1f2;
+  --md-default-fg-color--light: #b6bec4;
+  --md-default-fg-color--lighter:#8a939a;
+  --md-default-fg-color--lightest: rgba(180,190,196,0.12);
+
+  /* header / nav bar */
+  --md-primary-fg-color:        #1b1f23;
+  --md-primary-fg-color--light: #2e353b;
+  --md-primary-fg-color--dark:  #16191c;
+  --md-primary-bg-color:        #eef1f2;
+  --md-primary-bg-color--light: #9aa4ab;
+
+  /* accent — links on hover, active nav, focus rings */
+  --md-accent-fg-color:         #58ccc2;
+  --md-accent-fg-color--transparent: rgba(88,204,194,0.12);
+  --md-accent-bg-color:         #1e2327;
+  --md-accent-bg-color--light:  #9aa4ab;
+
+  --md-typeset-a-color:         #58ccc2;
+
+  /* code */
+  --md-code-fg-color:           #cdd5da;
+  --md-code-bg-color:           #16191c;
+  --md-code-hl-comment-color:   #5f6b72;
+  --md-code-hl-keyword-color:   #b9a4f0;
+  --md-code-hl-function-color:  #74b6e8;
+  --md-code-hl-string-color:    #82d99a;
+  --md-code-hl-number-color:    #e3c178;
+  --md-code-hl-constant-color:  #74b6e8;
+  --md-code-hl-name-color:      #cdd5da;
+  --md-code-hl-operator-color:  #9aa4ab;
+  --md-code-hl-punctuation-color:#9aa4ab;
+  --md-code-hl-variable-color:  #ff9ccb;
+  --md-code-hl-special-color:   #ff6bb0;
+
+  /* footer */
+  --md-footer-fg-color:         #eef1f2;
+  --md-footer-fg-color--light:  #9aa4ab;
+  --md-footer-fg-color--lighter:#5f6b72;
+  --md-footer-bg-color:         #1b1f23;
+  --md-footer-bg-color--dark:   #16191c;
+}
+
+/* ---- Brand chrome ------------------------------------------------------- */
+.md-header { border-bottom: 1px solid rgba(180,190,196,0.10); box-shadow: none; }
+.md-header[data-md-state="shadow"], .md-header--shadow { box-shadow: none; }
+
+/* wordmark in the header reads in mono, like the site */
+.md-header__title, .md-header__topic .md-ellipsis {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.md-tabs { border-bottom: 1px solid rgba(180,190,196,0.10); }
+
+::selection { background: rgba(88,204,194,0.28); }
+
+.md-nav__link--active,
+.md-nav__item .md-nav__link--active { color: #58ccc2; }
+
+.md-typeset blockquote {
+  border-left: 2px solid rgba(88,204,194,0.45);
+  color: #9aa4ab;
+}
+
+.md-typeset code {
+  background: rgba(180,190,196,0.08);
+  border: 1px solid rgba(180,190,196,0.10);
+}
+
+.md-clipboard:hover { color: #58ccc2; }
+
+.md-typeset table:not([class]) { border: 1px solid rgba(180,190,196,0.10); }
+.md-typeset table:not([class]) th {
+  background: #22282c;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .72rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #9aa4ab;
+}
+.md-typeset table:not([class]) td { border-top: 1px solid rgba(180,190,196,0.07); }
+
+.md-search__input { background: rgba(180,190,196,0.10); }
+.md-search__input::placeholder { color: #9aa4ab; }
