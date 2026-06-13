@@ -14,7 +14,7 @@ picture see the [Architecture](../architecture.md) overview.
 
 The **top-level** fields on a VM are desired state. They live in the control
 plane's etcd store and only change when you change them (via `otherix vm create`,
-`otherix vm set`, or a manifest). They are your intent:
+the lifecycle verbs, or a manifest). They are your intent:
 
 | Field | Meaning |
 |---|---|
@@ -27,8 +27,10 @@ plane's etcd store and only change when you change them (via `otherix vm create`
 Patching any of these changes what you want. It does not, by itself, change what
 is running - the agent has to converge to the new intent first.
 
-Each VM also carries a `generation` counter. The control plane bumps it every
-time desired state changes, so it acts as a version stamp for your intent.
+Each VM also carries a `generation` field. It is a forward-compatibility stamp
+for your intent: today the control plane fixes it at `1` on create and does not
+yet bump it per change, so `generation` always equals `status.observed_generation`.
+Per-change bumping is planned but not yet wired.
 
 ## Observed state - what the agent reports
 
@@ -57,13 +59,15 @@ the user-facing string from the observed runtime row each time you read the VM:
 
 ## Telling whether the runtime caught up
 
-`generation` (desired) and `status.observed_generation` (observed) together tell
-you whether the agent has applied your latest change:
+The live convergence signal today is `status.phase` (observed) against
+`desired_phase` (desired): while they differ, a change is still propagating; once
+they match, the runtime has caught up with your intent.
 
-```text
-generation == status.observed_generation   → runtime is in sync with your intent
-generation >  status.observed_generation   → a change is still propagating
-```
+The `generation` / `status.observed_generation` pair is reserved for the same
+purpose at finer granularity, but is not a useful signal yet - `generation` is
+currently fixed at `1`, so the two are always equal regardless of pending work.
+Once per-change generation bumping is wired (planned), a `generation >
+status.observed_generation` delta will mean a change is still propagating.
 
 Because observed state arrives over the heartbeat (every ~30s by default),
 `status` lags top-level fields briefly after any change. On each node the

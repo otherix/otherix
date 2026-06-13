@@ -59,9 +59,9 @@ prints whether KVM or the TCG fallback is in effect. See Lima's
 #    to apply. For a clean-slate run, wipe any prior dev state:
 make etcd-reset
 
-# 2. Stage the Lima VM (Ubuntu 24.04, native arch): provision qemu /
+# 2. Stage both Lima VMs (Ubuntu 24.04, native arch): provision qemu /
 #    dirs / systemd unit, cross-build agent, copy binary + config
-#    into the VM. The agent is NOT started — the join-token bootstrap
+#    into each VM. The agents are NOT started — the join-token bootstrap
 #    flow (Step 5) needs to provision bootstrap.env + token first.
 make bootstrap-dev
 
@@ -93,23 +93,26 @@ make seed-dev
 #    canonical reachability proof — once seed-dev finishes the node
 #    flips to `ready` within a heartbeat cycle (15s in dev).
 ./bin/otherix node list
-# NAME      ARCHITECTURE  STATUS  CORDONED  AGE
-# node-dev  arm64         ready   no        20s
+# NAME    ARCHITECTURE  STATUS  CORDONED  AGE
+# node-1  arm64         ready   no        20s
+# node-2  arm64         ready   no        20s
 
 # 6. Daily redeploy after agent code changes (cross-build + copy + restart).
 #    No cert material needs to be re-provisioned — bootstrap is a
 #    one-time event and the cert material survives restarts.
 make deploy-dev
 
-# 7. Tail agent logs from inside the VM.
-limactl shell otherix-dev sudo journalctl -u otherix-agent -f
+# 7. Tail agent logs from inside a VM (otherix-dev-2 for node-2).
+limactl shell otherix-dev-1 sudo journalctl -u otherix-agent -f
 
-# 8. Tear down (stops + deletes the Lima VM; CP cert + cluster CA
+# 8. Tear down (stops + deletes both Lima VMs; CP cert + cluster CA
 #    persist in the embedded-etcd data dir until `make etcd-reset`).
 make clean-dev
 ```
 
-The Lima VM is named `otherix-dev`. Inside the VM the agent reads its
+The macOS dev stack runs two Lima VMs, `otherix-dev-1` (node-1) and
+`otherix-dev-2` (node-2), forming a real cross-host WireGuard mesh. Inside
+each VM the agent reads its
 config from `/etc/otherix/agent.yaml` and persists its cert material to
 `/var/lib/otherix/certs/` (filesystem convention — `/var/lib/otherix/` for
 runtime state, `/etc/otherix/` for operator-provided config).
@@ -123,14 +126,16 @@ seed-dev` finishes, the agent's first heartbeat lands within a cycle
 
 ```bash
 ./bin/otherix node list
-# NAME      ARCHITECTURE  STATUS  CORDONED  AGE
-# node-dev  arm64         ready   no        20s
+# NAME    ARCHITECTURE  STATUS  CORDONED  AGE
+# node-1  arm64         ready   no        20s
+# node-2  arm64         ready   no        20s
 ```
 
-If the node lingers in `pending` past ~30s, inspect the agent journal:
+If a node lingers in `pending` past ~30s, inspect that node's agent journal
+(use `otherix-dev-2` for node-2):
 
 ```bash
-limactl shell otherix-dev sudo journalctl -u otherix-agent --no-pager | tail -50
+limactl shell otherix-dev-1 sudo journalctl -u otherix-agent --no-pager | tail -50
 ```
 
 Common boot patterns to look for:
@@ -614,12 +619,13 @@ inputs:
 ```bash
 # Heartbeat metrics underpin the fit check / scoring.
 $ otherix node list
-NAME      ARCH    STATUS  CORDONED  LAST_HEARTBEAT  AGE
-node-dev  arm64   ready   false     8s ago          1h
+NAME    ARCH    STATUS  CORDONED  LAST_HEARTBEAT  AGE
+node-1  arm64   ready   false     8s ago          1h
+node-2  arm64   ready   false     7s ago          1h
 
 # `node get` shows per-node CPU / memory totals and live availability —
 # the same view the scheduler sees.
-$ otherix node get node-dev
+$ otherix node get node-1
 ...
 hardware:
   cpu_cores: used 2/4 cores
@@ -734,17 +740,17 @@ bootstrap flow end-to-end:
    --force` using the bootstrap admin credentials (same env vars the
    CP boot hook consumes). Persists a long-lived API token into
    `~/.otherix/config`.
-2. Mints a join token via `otherix node join-token create
-   --node-name node-dev --ttl 10m --output json`. Captures the token
-   plaintext + active cluster CA fingerprint.
+2. Mints a join token per node via `otherix node join-token create
+   --node-name node-1 --ttl 10m --output json` (and again for `node-2`).
+   Captures each token plaintext + active cluster CA fingerprint.
 3. Provisions the agent host: writes `/etc/otherix/bootstrap-token`
    (mode 0600) + `/etc/otherix/bootstrap.env` (mode 0644, contains
    `OTHERIX_BOOTSTRAP__*` koanf env-var overrides). Linux native
    user-mode lays these out under `~/.config/otherix/` instead.
 4. Starts the agent — `systemctl restart otherix-agent` (Lima) or
    `systemctl --user start otherix-agent` (Linux native).
-5. Polls for `nodes.id WHERE name='node-dev'` for up to 60s. The row
-   appears once the CSR redemption commits at the CP side.
+5. Polls for `nodes.id WHERE name='node-1'` (and `node-2`) for up to 60s.
+   Each row appears once that node's CSR redemption commits at the CP side.
 6. Does NOT create a storage pool: the CP auto-provisions the cluster
    default pool (`default`, from `default_pool_name` in code defaults) at
    `/var/lib/otherix/pools/default` on every node as it reaches `ready`, and
@@ -765,7 +771,7 @@ stale threshold) makes the transition operator-friendly. Watch with
 Sample output:
 ```
 >> seed-dev complete
-   node     : node-dev (id=<uuid>)
+   nodes    : node-1 (id=<uuid>) / node-2 (id=<uuid>)
    pool     : default (cluster default, CP-auto-provisioned on ready nodes)
    images   : none staged (vm create fetches the image URL on first use)
 ```
@@ -795,7 +801,7 @@ To target a specific node explicitly:
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
     --pool default \
-    --node node-dev \
+    --node node-1 \
     --vcpus 2 --memory-mb 2048 --wait
 ```
 
@@ -825,7 +831,7 @@ phase=running.
 # image_url: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
 # image_format: qcow2
 # pool: default
-# node: node-dev
+# node: node-1
 # architecture: arm64
 # vcpus: 2
 # memory_mb: 2048
@@ -851,10 +857,10 @@ terminal, and detaches on Ctrl+] (0x1D). The Ubuntu cloud image boots;
 press Enter to get a login prompt.
 
 As a low-level fallback you can still read the qemu serial socket
-directly inside the Lima VM:
+directly inside the Lima VM hosting the guest (`otherix-dev-1` for node-1):
 
 ```bash
-limactl shell otherix-dev sudo socat - UNIX-CONNECT:/var/lib/otherix/vms/<vm-uuid>/console.sock
+limactl shell otherix-dev-1 sudo socat - UNIX-CONNECT:/var/lib/otherix/vms/<vm-uuid>/console.sock
 ```
 
 (Cloud-init authentication setup arrives in Iteration 5 — for this
@@ -872,8 +878,8 @@ chain works.)
 
 Verify:
 ```bash
-limactl shell otherix-dev pgrep -af qemu-system   # nothing
-limactl shell otherix-dev ls /var/lib/otherix/vms/    # empty
+limactl shell otherix-dev-1 pgrep -af qemu-system   # nothing
+limactl shell otherix-dev-1 ls /var/lib/otherix/vms/    # empty
 ```
 
 ### Cluster default-pool configuration
@@ -1002,7 +1008,7 @@ Symptoms surface in `journalctl -u otherix-agent` after `make seed-dev`.
 | `bootstrap: CSR submission rejected by CP: HTTP 401 token_exhausted` | Multi-use token cap reached | Re-run `make seed-dev` — mints a fresh token. |
 | `bootstrap: fetch /v1/ca: dial tcp …: connection refused` | CP not running OR unreachable from Lima VM | Verify the dev api-server is still alive (`tail -f .local/run/otherix-api.log`); inside Lima, `curl -k https://host.lima.internal:8443/healthz`. |
 | `cert <path> exists but key <path> missing` (or vice-versa) | Partial-state bootstrap (mid-flight crash, manual file deletion) | Manual cleanup — delete cert + key + CA (`/var/lib/otherix/certs/agent.{crt,key}` + `ca.crt` on Lima, or `~/.config/otherix/certs/agent.*` + `ca.crt` on Linux native), then `make seed-dev` again. Agent identity is derived from the cert CN — no node-id sidecar to clean up. |
-| Node lingers in `pending` past 60s | Agent reachable but heartbeat not arriving | `limactl shell otherix-dev sudo journalctl -u otherix-agent -f` — look for `heartbeat` lines OR mTLS handshake failures. |
+| Node lingers in `pending` past 60s | Agent reachable but heartbeat not arriving | `limactl shell otherix-dev-1 sudo journalctl -u otherix-agent -f` (use `otherix-dev-2` for node-2) — look for `heartbeat` lines OR mTLS handshake failures. |
 
 ### Lifecycle failures (after bootstrap)
 

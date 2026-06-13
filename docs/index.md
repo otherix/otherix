@@ -33,8 +33,8 @@ the workload:
 
 - **Created from an image URL** - no template entity, no registry. The agent
   materializes the image into a per-pool cache on first use.
-- **Live migration is first-class** and runs peer-to-peer between agents, with
-  the control plane out of the data path.
+- **Live migration is designed to be peer-to-peer** between agents, with the
+  control plane out of the data path (planned).
 - **Storage pools, networks, and firmwares are explicit cluster resources**, not
   abstractions over a cloud provider.
 - **One stateful service.** Embedded etcd is the only datastore - no Postgres, no

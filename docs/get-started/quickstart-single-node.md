@@ -57,10 +57,11 @@ curl -fsSL https://raw.githubusercontent.com/otherix/otherix/main/deploy/install
   | sudo OTHERIX_COMPONENT=agent sh
 sudo otherix-agent bootstrap \
   --token <join-token> \
-  --cp-url https://<cp-host>:8080 \
+  --cp-url https://<cp-host>:8443 \
   --ca-fingerprint <sha256> \
   --node-name <name> \
-  --advertised-endpoint <agent-host>:9443
+  --advertised-endpoint <agent-host>:9443 \
+  --migration-host <agent-host>
 ```
 
 Issue the join token from the CLI (`otherix node join-token create`),

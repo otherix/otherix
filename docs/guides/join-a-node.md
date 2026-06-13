@@ -42,7 +42,7 @@ needs the token to redeem and the fingerprint to pin the CP's TLS cert
 | Flag | Default | Notes |
 |---|---|---|
 | `--ttl` | `1h` | Validity, clamped to `[1m, 24h]`. |
-| `--max-uses` | `0` | Consumption cap. `0` means unlimited within the TTL. |
+| `--max-uses` | `0` | Consumption cap. `0` (or omitted) defaults to single-use (server default of 1); multi-use is an explicit `--max-uses N` opt-in. |
 | `--node-name` | (unset) | Bind the token to a specific node identity. Forces single-use (`--max-uses` is set to 1 server-side). |
 | `--output` | `text` | `text` or `json`. |
 
@@ -52,8 +52,11 @@ Two minting modes:
   ever provision that one node identity. Defense-in-depth for known
   hosts.
 - **Fleet bootstrap** - omit `--node-name`. Pass `--max-uses N` for a
-  strict cap, or leave it at `0` for unlimited redemptions within the
-  TTL. Each agent supplies its own `--node-name` at bootstrap time.
+  strict multi-redemption cap. Omitting `--max-uses` (or leaving it at
+  `0`) defaults to single-use (server default of 1) - a truly unlimited
+  token cannot be minted from the CLI/API; unbounded redemptions survive
+  only on legacy rows. Each agent supplies its own `--node-name` at
+  bootstrap time.
 
 ### Manage tokens
 

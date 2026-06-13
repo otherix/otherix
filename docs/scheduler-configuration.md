@@ -340,11 +340,17 @@ setups (advanced) detect independently per filesystem.
   pinned VMs. Same tie-break. Operator opt-out for clusters that
   cannot rely on heartbeat metrics or want pure count-based spread.
 
-Per-resource configuration is meaningful only with `resource_aware`. Under
-`least_vm_count`, the `resources` block is parsed and validated but does
-not influence placement decisions. Validation warnings still fire,
-which keeps the configuration honest if an operator flips back to
-`resource_aware` later.
+The `resources` block always gates eligibility: the resource fit check
+(does the node have enough free CPU / memory / disk for the request,
+accounting for overcommit) runs for **both** algorithms, so a node that
+cannot fit the VM is never picked regardless of `algorithm`. What
+`least_vm_count` ignores is the resource-aware **scoring** - it ranks the
+remaining eligible nodes by pinned-VM count rather than LeastAllocated.
+So per-resource tuning (overcommit ratios, enable/disable) still affects
+which nodes are eligible under `least_vm_count`; it just does not affect
+the final ranking among them. Validation warnings still fire, which keeps
+the configuration honest if an operator flips back to `resource_aware`
+later.
 
 ## Operator workflow when changing config
 

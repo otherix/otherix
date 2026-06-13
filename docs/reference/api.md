@@ -33,7 +33,7 @@ curl -s http://localhost:8080/v1/vms -H "Authorization: Bearer $TOKEN"
 ```
 
 Anonymous endpoints (`POST /v1/auth/login`, `POST /v1/auth/refresh`, `GET /v1/ca`,
-`POST /v1/nodes/join`) declare `security: []`. See
+`POST /v1/nodes/join`, `POST /v1/cluster/join`) declare `security: []`. See
 [Users and RBAC](../guides/users-and-rbac.md) for roles and scopes.
 
 ## Error envelope

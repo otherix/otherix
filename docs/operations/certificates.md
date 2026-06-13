@@ -99,8 +99,10 @@ Each agent gets a client cert when it joins, via the node-join CSR flow:
   plaintext join token.
 - The CP validates the token and signs the CSR with the cluster CA. The cert
   template is server-authoritative: `CN=node-<name>`, SAN includes
-  `node-<name>.agents.otherix.local`, ~1-year validity. The CSR's own
-  Subject/SAN are ignored (defense against CN injection).
+  `node-<name>.agents.otherix.local` plus `localhost`/`127.0.0.1` and the
+  host from the agent's `advertised_endpoint` (so the CP can dial the
+  agent at its real address), ~1-year validity. The CSR's own Subject/SAN
+  are ignored (defense against CN injection).
 - **Agent identity is its cert CN.** The agent parses `node-<name>` from its own
   cert at startup to learn its node name; the CP binds heartbeats to that identity.
 

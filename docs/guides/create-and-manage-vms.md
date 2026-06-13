@@ -20,14 +20,14 @@ otherix vm create web-1 \
   --wait
 ```
 
-`vm create` is **async**: it submits a `vm.create` task and prints the
-task id immediately. `--wait` blocks until the task reaches a terminal
-state.
+`vm create` is **async**: the VM is admitted in the `pending` phase and
+the command returns immediately. `--wait` blocks until the VM reaches
+the `running` phase.
 
 ```text
-created task=<task-uuid> status=pending
+created vm=<name> status=<phase>
 .....
-vm running task=<task-uuid>
+vm running name=<name>
 ```
 
 ### Flags
@@ -44,15 +44,15 @@ vm running task=<task-uuid>
 | `--format` | (server default) | Disk format, e.g. `qcow2` or `raw`. |
 | `--disk-gib` | (image virtual size) | Root disk size in GiB. |
 | `--pool` | (cluster default) | Storage pool name or uuid. When omitted the server resolves the cluster default-pool; if none is set it returns `400 default_pool_not_set`. |
-| `--node` | (scheduler picks) | Placement hint - node name or uuid. Mismatch (pool not on that node) returns `409 pool_not_on_node`. |
-| `--network` | (unset) | Bridge network name or uuid to attach one NIC. Non-bridge types return 400. When omitted the VM has no NIC and the agent falls back to SLIRP networking. |
+| `--node` | (scheduler picks) | Placement hint - node name or uuid. The VM is still admitted as `pending`; if the pool is not present on the requested node it stays pending with `status.reason=pool_not_on_node` (visible via `vm get`). |
+| `--network` | (unset) | Network name or uuid to attach one NIC. Bridge or overlay are both accepted; an unknown name becomes a pending scheduling reason at bind, not an admission error. When omitted the VM has no NIC and the agent falls back to SLIRP networking. |
 | `--vcpus` | `2` | vCPU count (1..128). |
 | `--memory-mb` | `2048` | Memory in MiB (128..524288). |
 | `--user-data` | (unset) | Path to a `#cloud-config` user-data YAML, or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--network-config` | (unset) | Path to a cloud-init network-config YAML (netplan v2), or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--no-cloud-init` | `false` | Explicitly disable cloud-init. Mutually exclusive with `--user-data` and `--network-config`. |
 | `--wait` | `false` | Block until the task reaches terminal status. |
-| `--wait-timeout` | `5m` | Max wait when `--wait` is set. |
+| `--wait-timeout` | `10m` | Max wait when `--wait` is set. |
 
 When `--pool` is omitted the cluster default-pool reference is used and
 the scheduler picks the (node, pool instance) target. A `--node` hint
@@ -69,8 +69,8 @@ otherix vm list --show-ids
 ```
 
 ```text
-NAME       STATUS   ARCH   NODE      POOL      NETWORK
-web-1      running  arm64  node-1    default   -
+NAME       STATUS   ARCH   NODE      POOL      NETWORK   AGE
+web-1      running  arm64  node-1    default   -         3m
 ```
 
 `vm list` is cursor-paginated (`--limit`, `--cursor`) and filters
@@ -114,7 +114,11 @@ Sync commands (`pause`, `resume`, `reset`) accept `--output`
 VM is already in (e.g. pausing a paused VM) returns `409 conflict`.
 
 Async commands (`start`, `stop`, `poweroff`, `reboot`, `delete`)
-accept `--wait` and `--wait-timeout` (default `5m`).
+accept `--wait` and `--wait-timeout` (default `10m`).
+
+`vm delete` is async only when there is an agent-side teardown to run.
+A `pending` (unscheduled) VM is deleted synchronously CP-side: the
+command prints `deleted vm=<name>` and returns with no task id to poll.
 
 ```bash
 otherix vm stop web-1 --wait
