@@ -146,8 +146,9 @@ MTUs are sized for the encapsulation stack (1500 underlay, 1440 WireGuard, 1390 
 
 **Overlay egress (anycast gateway + DNS).** VMs on a private overlay reach the internet through
 per-node SNAT - the model Kubernetes CNIs use: each node masquerades its own overlay traffic out its
-uplink, so there is no central egress gateway to bottleneck or fail. The subtlety is live migration:
-a VM has to keep working after it moves to another node, so everything it depends on is made
+uplink, so there is no central egress gateway to bottleneck or fail. The subtlety is live migration
+(planned, not yet implemented): a VM has to keep working after it moves to another node, so the
+overlay is designed up front so everything it depends on is made
 *anycast* - identical on every node. Its **default gateway** is a fixed link-local address
 (`169.254.1.1`, with a deterministic per-overlay MAC) present on every node's overlay bridge, so the
 local node always answers ARP and routes the VM's egress no matter where it runs (being link-local,

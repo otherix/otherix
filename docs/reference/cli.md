@@ -78,7 +78,7 @@ sole positional.
 | `--network-config` | (none) | Path to a cloud-init network-config YAML (netplan v2), or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--no-cloud-init` | `false` | Explicitly disable cloud-init. Mutually exclusive with `--user-data` and `--network-config`. |
 | `--wait` | `false` | Block until the task reaches terminal status. |
-| `--wait-timeout` | `5m` | Max wait when `--wait` is set. |
+| `--wait-timeout` | `10m` | Max wait when `--wait` is set. |
 
 ```bash
 otherix vm create web-1 --image-url https://example.com/ubuntu.qcow2 \
@@ -119,7 +119,7 @@ Delete a VM (async). Prompts when stdin is a TTY unless `--force`.
 | --- | --- | --- |
 | `--force` | `false` | Skip the confirmation prompt. |
 | `--wait` | `false` | Block until terminal status. |
-| `--wait-timeout` | `5m` | Max wait when `--wait` is set. |
+| `--wait-timeout` | `10m` | Max wait when `--wait` is set. |
 
 ```bash
 otherix vm delete web-1 --force --wait
@@ -141,7 +141,7 @@ otherix vm pause web-1
 ### vm lifecycle (async)
 
 `start`, `stop`, `poweroff`, and `reboot` are asynchronous; each takes a VM
-positional plus `--wait` / `--wait-timeout` (`5m`).
+positional plus `--wait` / `--wait-timeout` (`10m`).
 
 - `vm start <vm>` - boot the QEMU process; sets `desired_phase=running`.
 - `vm stop <vm>` - graceful ACPI shutdown. `--force` short-circuits to the
@@ -265,6 +265,7 @@ Create one cluster-wide network. Admin-only.
 | `--gateway` | (derived) | Gateway IP inside `--subnet`. |
 | `--mtu` | server `1500` | Link MTU (68..9216). |
 | `--vlan` | (untagged) | VLAN tag (1..4094). |
+| `--dhcp` | `false` | Enable CP-IPAM + DHCP responder (overlay only; requires `--egress nat` `--subnet`). |
 | `-o, --output` | `text` | `text|json`. |
 | `--show-ids` | `false` | Include the network UUID in text output. |
 
@@ -363,7 +364,7 @@ exactly once.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--ttl` | `1h` | Token validity (1m..24h). |
-| `--max-uses` | `0` (unlimited within TTL) | Consumption cap. |
+| `--max-uses` | `0` (server default of 1 = single-use) | Consumption cap. `0` and an omitted value both default to single-use; a truly unlimited token cannot be minted from the CLI/API. |
 | `--node-name` | (none) | Bind token to a node identity (forces single-use). |
 | `--output` | `text` | `text|json`. |
 
@@ -439,6 +440,22 @@ use requires `--force`.
 
 ```bash
 otherix cluster unset-default-pool --force
+```
+
+### cluster join-token create
+
+Mint a `kind=cluster` (HA-grow) join token used to add a new control-plane
+replica. Admin-only; the bundle (token plaintext + cluster CA fingerprint) is
+printed exactly once.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--ttl` | `1h` | Token validity (1m..24h). |
+| `--max-uses` | `0` (server default of 1 = single-use; cap 16 for cluster tokens) | Consumption cap. |
+| `--output` | `text` | `text|json`. |
+
+```bash
+otherix cluster join-token create --max-uses 3
 ```
 
 ### cluster member list

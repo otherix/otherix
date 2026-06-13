@@ -47,7 +47,8 @@ otherix network create net-nat \
 
 An overlay network is a VXLAN segment; the Control Plane derives the bridge name
 from an allocated VNI. It requires `--subnet` and **forbids** the bridge-only
-flags (`--bridge-name`, `--mtu`, `--vlan`, `--egress`, `--managed`, `--gateway`):
+flags (`--bridge-name`, `--mtu`, `--vlan`, `--managed`, `--gateway`). `--egress
+nat` is allowed for an overlay (per-node anycast-gateway SNAT):
 
 ```bash
 otherix network create my-overlay --type overlay --subnet 10.50.0.0/24

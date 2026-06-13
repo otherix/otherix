@@ -125,7 +125,9 @@ For a working single-node install you care about a handful of blocks:
   boot. Add hostnames the agent will dial via `cp_cert.additional_sans`.
 - `agent_server` - the second HTTPS listener dedicated to mTLS agent
   traffic (heartbeat, node join, console bridging). **Enable it** for a
-  working cluster. Default listen `0.0.0.0:8443`.
+  working cluster. There is no default listen address; when enabled, the
+  listen address must be set or startup fails (the minimal yaml below
+  sets `0.0.0.0:8443`).
 - `agent_client` - the outbound CP-to-agent client that drives async
   work (VM create/delete, pool scans). **Enable it** for a working
   cluster.
@@ -168,7 +170,8 @@ server:
   listen: "0.0.0.0:8080"
 
 auth:
-  # Replace before any non-dev deploy. At least 32 bytes.
+  # This placeholder is denylisted and rejected at every boot - replace
+  # it before starting the server. At least 32 bytes.
   jwt_secret: "REPLACE-ME-with-openssl-rand-hex-32-output"
   jwt_access_ttl: 15m
   jwt_refresh_ttl: 720h

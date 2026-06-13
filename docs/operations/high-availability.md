@@ -27,7 +27,7 @@ Each member needs four etcd settings, configured under the `etcd:` block of
 | `etcd.mode` | `single` (default), `bootstrap`, or `join` - see below |
 | `etcd.name` | Unique member name within the cluster (e.g. `otherix-0`) |
 | `etcd.peer_url` | This member's Raft peer advertise/listen URL (`https://host:2380`) |
-| `etcd.client_url` | This member's client advertise/listen URL (`http://host:2379`) |
+| `etcd.client_url` | This member's client advertise/listen URL; the shipped default is loopback-only `http://127.0.0.1:2379` (`http://host:2379` here is illustrative) |
 | `etcd.initial_cluster` | Full member list `n0=peer0,n1=peer1,...` (bootstrap mode) |
 | `etcd.cluster_token` | Initial-cluster token; isolates clusters sharing a network |
 

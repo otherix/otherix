@@ -113,7 +113,7 @@ otherix create -f cluster.yaml --dry-run
 
 | Kind | Required | Optional |
 | --- | --- | --- |
-| `Network` | `type` | `bridgeName`, `managed`, `egress`, `subnet`, `gateway`, `mtu`, `vlan` |
+| `Network` | `type` | `bridgeName`, `managed`, `dhcp`, `egress`, `subnet`, `gateway`, `mtu`, `vlan` |
 | `StoragePool` | `path`, one of `node` / `nodeList` | `type` |
 | `VM` | `imageURL`, `arch` | `imageSHA256`, `firmware` / `firmwareID`, `format`, `diskGiB`, `vcpus`, `memoryMB`, `pool`, `network`, `node`, `userData`, `networkConfig` / `cloudInitDisabled` |
 
@@ -166,16 +166,17 @@ status, owner, reconciliation) so the output re-applies cleanly.
     `get -o yaml | create -f` round-trip is not always lossless. Keep your
     source manifest as the record of what you applied.
 
-    - **VM:** `userData` (user_data), `networkConfig` (network_config),
-      `cloudInitDisabled`, `firmware` /
-      `firmwareID`, and `diskGiB` are consumed at create time and are not in
-      the view, so the projection omits them and re-applying reverts those to
-      server defaults. Only the first NIC is projected (the v1 VM schema
-      attaches a single `network`); a multi-NIC VM loses the extras.
+    - **VM:** `cloudInitDisabled`, `firmware` / `firmwareID`, and `diskGiB`
+      are consumed at create time and are not in the view, so the projection
+      omits them and re-applying reverts those to server defaults.
+      (`userData` and `networkConfig` *do* round-trip - they are emitted
+      whenever the view surfaces a non-empty value.) Only the first NIC is
+      projected (the v1 VM schema attaches a single `network`); a multi-NIC
+      VM loses the extras.
     - **Network:** bridge networks round-trip in full. An overlay network
-      projects only `type` + `subnet` (the create API forbids the
-      server-derived `bridgeName` / `mtu` / `vlan`), so re-applying allocates a
-      fresh VNI rather than preserving the original.
+      projects `type` + `subnet` (plus `dhcp` when CP-IPAM is enabled); the
+      create API forbids the server-derived `bridgeName` / `mtu` / `vlan`, so
+      re-applying allocates a fresh VNI rather than preserving the original.
     - **StoragePool:** round-trips except the operator-settable `config` blob.
       A multi-node pool projects as a single `nodeList` document when every
       instance shares a path, or as one document per instance when paths

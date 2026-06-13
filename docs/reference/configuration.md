@@ -123,6 +123,9 @@ JWT signing material and token lifetimes.
 | `auth.jwt_secret` | (required) | HS256 secret; must be >= 32 bytes. |
 | `auth.jwt_access_ttl` | `15m` | Access-token TTL (> 0). |
 | `auth.jwt_refresh_ttl` | `30d` (720h) | Refresh-token TTL (> 0). |
+| `auth.login_rate_limit.max_failures` | `10` | Failed logins per key before throttling. |
+| `auth.login_rate_limit.window` | `15m` | Sliding window for the failure count. |
+| `auth.login_rate_limit.max_keys` | `10000` | Max tracked rate-limit keys (in-process). |
 
 ### console
 
@@ -203,7 +206,7 @@ api-server boot with no operator input.
 | `etcd.mode` | `single` | `single`, `bootstrap`, or `join`. |
 | `etcd.name` | `otherix-0` | Unique member name within the cluster. |
 | `etcd.data_dir` | `/var/lib/otherix/etcd` | Member data directory (WAL + snapshots). |
-| `etcd.peer_url` | `https://127.0.0.1:2380` | Raft peer advertise/listen URL. |
+| `etcd.peer_url` | `auto` | Raft peer advertise/listen URL. The sentinel `auto` resolves at boot to the host's routable IPv4 peer URL. |
 | `etcd.client_url` | `http://127.0.0.1:2379` | Client advertise/listen URL. |
 | `etcd.cluster_token` | `otherix-cluster` | Initial-cluster token isolating clusters. |
 | `etcd.initial_cluster` | (none) | Full member list (required for `bootstrap` / `join`). |

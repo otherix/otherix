@@ -57,8 +57,8 @@ api-server logs (joiner) or `journalctl -u otherix-agent` (agent).
 | Symptom | Likely cause | How to inspect / recover |
 | --- | --- | --- |
 | `cluster CA fingerprint mismatch` (joiner) or `bootstrap: CA fingerprint mismatch` (agent) | The pinned `ca_fingerprint` does not match the CA the server returned - operator typo or, rarely, a MITM | Re-check the pinned fingerprint against the live cluster CA (mint a fresh join token to read the current fingerprint). If it genuinely differs, treat as a security event |
-| `token_expired` / `HTTP 401 token_expired` | Join token TTL elapsed | Mint a fresh join token and retry |
-| `token_exhausted` | A multi-use join token hit its `max_uses` cap | Mint a fresh token |
+| `HTTP 401 unauthenticated` ("token not recognized or expired") | Join token TTL elapsed or token unknown | Mint a fresh join token and retry. The api-server slog WARN `reason` field (`token_invalid`) distinguishes the cause |
+| `HTTP 401 unauthenticated` ("token max_uses exceeded") | A multi-use join token hit its `max_uses` cap | Mint a fresh token. The slog WARN `reason` field is `token_exhausted` |
 | `cluster CA divergence: on-disk CA ... does not match active etcd CA` | The on-disk cluster CA and the active `ca_certs` row in etcd disagree (e.g. wiped etcd data dir with a stale on-disk CA, or a restore mismatch) | Make the two consistent - restore the matching CA, or for dev `make etcd-reset` wipes both together. See [Certificates](certificates.md) and [Backups](backups.md) |
 | Joiner registered as learner but never becomes a voter | The learner has not caught up, or the promote loop cannot reach quorum | Watch `GET /v1/cluster/members`; the ~15s promote loop converts caught-up learners automatically. Check the joiner's etcd logs for replication progress |
 | `cert <path> exists but key <path> missing` (agent) | Partial bootstrap state - a mid-flight crash or manual file deletion left cert without key (or vice-versa) | Delete the orphaned cert + key + CA material under the agent's cert dir (`/var/lib/otherix/certs/`), then re-run the agent bootstrap. Identity is derived from the cert CN - no sidecar file to clean up |

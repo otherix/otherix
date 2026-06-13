@@ -174,8 +174,9 @@ directory is administrative information.
 
 ### Tasks
 
-`tasks` is a contract surface over river jobs and ad-hoc operation
-tracking; the "owner" of a task is the user that initiated it.
+`tasks` is a contract surface over the etcd-backed async job queue
+(drained by `internal/worker`) and ad-hoc operation tracking; the
+"owner" of a task is the user that initiated it.
 
 | Permission     | admin | operator | developer | viewer |
 |----------------|-------|----------|-----------|--------|
@@ -216,7 +217,7 @@ lives in code:
   on mismatch.
 - The `403` response body uses the standard error envelope
   (`{ error: { code, message, details? } }`); for permission
-  failures, `code` is `permission_denied` and `details.required`
+  failures, `code` is `permission_denied` and `details.required_permission`
   carries the missing permission string for client-side debugging
   and audit log correlation.
 - `404 not_found` is preferred over `403` when revealing existence
