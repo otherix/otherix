@@ -98,6 +98,8 @@ install_daemon() {
 		echo "  email:    $email"
 		echo "  password: $pass"
 		echo "  (printed once; stored in /etc/otherix/api.env)"
+		echo "  After first login, remove OTHERIX_BOOTSTRAP_ADMIN_EMAIL and"
+		echo "  OTHERIX_BOOTSTRAP_ADMIN_PASSWORD from /etc/otherix/api.env."
 		echo "======================================================="
 	fi
 	echo "Installed $pkg $v"
