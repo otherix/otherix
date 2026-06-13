@@ -43,11 +43,15 @@ type PoolReporter interface {
 }
 
 // PoolImageLister returns the per-pool cached-image inventory the
-// collector folds into each PoolReport.Images. Implemented by an adapter
-// over vm.Manager.ListImages in the agent serve assembly; nil is allowed
-// (yields no image inventory) for test paths and the legacy wiring.
+// collector folds into each PoolReport.Images, plus a known flag. known is
+// false when the agent could not enumerate the pool this tick (a transient
+// error); the collector then marks PoolReport.ImagesUnavailable so the CP
+// preserves the prior inventory rather than clearing it (audit R2-L11).
+// Implemented by an adapter over vm.Manager.ListImages in the agent serve
+// assembly; nil is allowed (yields no image inventory) for test paths and the
+// legacy wiring.
 type PoolImageLister interface {
-	PoolImages(pool string) []PoolImageReport
+	PoolImages(pool string) ([]PoolImageReport, bool)
 }
 
 // VMReporter returns the per-VM observed-state slice the collector
@@ -221,7 +225,9 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 			// The PoolReporter owns reconciliation status; the image
 			// inventory is a separate observation merged in per pool name.
 			for i := range report.Pools {
-				report.Pools[i].Images = c.poolImages.PoolImages(report.Pools[i].Name)
+				imgs, known := c.poolImages.PoolImages(report.Pools[i].Name)
+				report.Pools[i].Images = imgs
+				report.Pools[i].ImagesUnavailable = !known
 			}
 		}
 	}

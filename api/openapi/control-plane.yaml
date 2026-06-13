@@ -4269,6 +4269,59 @@ components:
           type: [string, "null"]
           format: date-time
           description: Forward-compatibility surface; see capacity_bytes.
+        images:
+          type: array
+          description: |
+            Agent-observed cached-image inventory for this pool (the
+            basename-keyed image cache). Absent or empty with
+            images_unavailable=false means the pool has no cached images;
+            see images_unavailable for the could-not-enumerate case.
+          items:
+            $ref: "#/components/schemas/HeartbeatPoolImage"
+        images_unavailable:
+          type: boolean
+          description: |
+            True when the agent could not enumerate this pool's image cache
+            this tick (a transient error). The CP then PRESERVES the
+            previously-reported inventory instead of clearing it, so a
+            transient producer error does not wipe observed state. Absent or
+            false means the images array is authoritative (an empty array
+            clears the inventory).
+
+    HeartbeatPoolImage:
+      type: object
+      description: |
+        One cached image the agent observed in a pool's image directory
+        (basename-keyed cache). Carried inside HeartbeatPoolReport.images;
+        the CP stores it as observed pool state and surfaces it on pool get.
+      required: [basename]
+      properties:
+        basename:
+          type: string
+          description: The cached image's basename (the cache key).
+        sha256:
+          type: string
+          description: Agent-observed SHA-256 of the cached image, if known.
+        size_bytes:
+          type: integer
+          format: int64
+          description: On-disk size of the cached image in bytes.
+        virtual_size_bytes:
+          type: integer
+          format: int64
+          description: |
+            Virtual (guest-visible) size in bytes. Observed-but-unknown
+            during a cache walk (0) unless captured at create time.
+        format:
+          type: string
+          description: Image format (e.g. qcow2, raw).
+        imported_at:
+          type: string
+          format: date-time
+          description: |
+            When the agent imported the image into the cache (RFC 3339). A
+            malformed value degrades to zero time CP-side, never dropping the
+            image (identity is basename+sha256).
 
     HeartbeatNetworkReport:
       type: object
