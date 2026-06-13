@@ -13,6 +13,7 @@ import (
 	"github.com/diskfs/go-diskfs/disk"
 	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/diskfs/go-diskfs/filesystem/iso9660"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // DefaultDiskSize is the ISO image size in bytes used when Builder.Size
@@ -136,7 +137,11 @@ func (b *Builder) populateAndFinalize(d *disk.Disk) error {
 	if err != nil {
 		return fmt.Errorf("cloudinit: hostname injection: %w", err)
 	}
-	if err := writeFile(fs, "/meta-data", buildMetaData(b.Hostname)); err != nil {
+	metaData, err := buildMetaData(b.Hostname)
+	if err != nil {
+		return err
+	}
+	if err := writeFile(fs, "/meta-data", metaData); err != nil {
 		return err
 	}
 	if err := writeFile(fs, "/user-data", userData); err != nil {
@@ -179,6 +184,17 @@ func writeFile(fs filesystem.FileSystem, name string, content []byte) error {
 	return nil
 }
 
-func buildMetaData(hostname string) []byte {
-	return []byte(fmt.Sprintf("instance-id: iid-otherix-%s\nlocal-hostname: %s\n", hostname, hostname))
+// buildMetaData renders the NoCloud meta-data document. The hostname is
+// yaml-encoded (never interpolated) so a name carrying a newline or YAML
+// metacharacter cannot inject extra top-level keys (audit R2-M5).
+func buildMetaData(hostname string) ([]byte, error) {
+	type metaData struct {
+		InstanceID    string `yaml:"instance-id"`
+		LocalHostname string `yaml:"local-hostname"`
+	}
+	b, err := yaml.Marshal(metaData{InstanceID: "iid-otherix-" + hostname, LocalHostname: hostname})
+	if err != nil {
+		return nil, fmt.Errorf("cloudinit: marshal meta-data: %w", err)
+	}
+	return b, nil
 }

@@ -30,7 +30,7 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 	}
 	trimmed := bytes.TrimSpace(userData)
 	if len(trimmed) == 0 {
-		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
+		return minimalCloudConfig(hostname)
 	}
 
 	body := trimmed
@@ -47,7 +47,7 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 		// Header-only input ("#cloud-config\n") collapses to
 		// the same empty-input path — minimal cloud-config
 		// with the VM hostname so the guest still picks it up.
-		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
+		return minimalCloudConfig(hostname)
 	}
 
 	var node yaml.Node
@@ -60,7 +60,7 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 	case root == nil:
 		// Empty document after the header — still emit a minimal
 		// `hostname:` mapping so the guest takes the VM name.
-		return []byte(fmt.Sprintf("%s\nhostname: %s\n", userDataHeader, hostname)), nil
+		return minimalCloudConfig(hostname)
 	case root.Kind != yaml.MappingNode:
 		// Non-mapping top-level (e.g. a bare scalar or sequence)
 		// is a user-supplied cloud-config that cannot have keys
@@ -91,6 +91,17 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 		return nil, fmt.Errorf("close yaml encoder: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// minimalCloudConfig emits a #cloud-config blob carrying only a yaml-encoded
+// hostname, so the name is encoded (never interpolated) even on the fallback
+// paths (audit R2-M5).
+func minimalCloudConfig(hostname string) ([]byte, error) {
+	b, err := yaml.Marshal(map[string]string{"hostname": hostname})
+	if err != nil {
+		return nil, fmt.Errorf("marshal minimal cloud-config: %w", err)
+	}
+	return append([]byte(userDataHeader+"\n"), b...), nil
 }
 
 func documentRoot(n *yaml.Node) *yaml.Node {

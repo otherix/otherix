@@ -1533,6 +1533,9 @@ func validateCreateSpec(s CreateSpec) error {
 	if len(s.Name) > 255 {
 		return fmt.Errorf("name must be ≤ 255 chars")
 	}
+	if !validVMName(s.Name) {
+		return fmt.Errorf("name must be a lowercase RFC1123 DNS label")
+	}
 	if s.VCPUs < 1 || s.VCPUs > 128 {
 		return fmt.Errorf("vcpus must be in [1, 128]")
 	}
