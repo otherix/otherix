@@ -1526,6 +1526,11 @@ func (m *Manager) failTaskOnly(taskID uuid.UUID, code, message string) {
 	})
 }
 
+// maxAgentDiskGiB mirrors the control-plane maxDiskGiB; the agent bounds
+// disk_gib itself so a direct agent call or a buggy control plane cannot request
+// a multi-PiB qemu-img resize (audit R2-L6).
+const maxAgentDiskGiB = 65536
+
 func validateCreateSpec(s CreateSpec) error {
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
@@ -1550,6 +1555,9 @@ func validateCreateSpec(s CreateSpec) error {
 	}
 	if s.ExpectedSHA256 != "" && len(s.ExpectedSHA256) != 64 {
 		return fmt.Errorf("expected_sha256 must be a 64-char sha256 hex digest")
+	}
+	if s.DiskGiB < 0 || s.DiskGiB > maxAgentDiskGiB {
+		return fmt.Errorf("disk_gib must be in [0, %d]", maxAgentDiskGiB)
 	}
 	return nil
 }
