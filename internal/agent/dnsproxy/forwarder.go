@@ -77,6 +77,9 @@ type Forwarder struct {
 
 	// sem bounds concurrent relays; a non-blocking send acquires a slot.
 	sem chan struct{}
+	// wg tracks in-flight relay goroutines so Run drains them before returning,
+	// preventing a relay from outliving Run and racing the dnsExchange seam.
+	wg sync.WaitGroup
 	// dropped counts queries shed because sem was full.
 	dropped atomic.Uint64
 
@@ -208,6 +211,7 @@ func (f *Forwarder) Run(ctx context.Context) error {
 		n, client, err := conn.ReadFrom(buf)
 		if err != nil {
 			if ctx.Err() != nil {
+				f.wg.Wait()
 				return ctx.Err()
 			}
 			f.log.Warn("dns forwarder read error", "error", err.Error())
@@ -228,8 +232,9 @@ func (f *Forwarder) Run(ctx context.Context) error {
 		}
 		select {
 		case f.sem <- struct{}{}:
+			f.wg.Add(1)
 			go func() {
-				defer func() { <-f.sem; f.releaseSource(ip) }()
+				defer func() { f.wg.Done(); <-f.sem; f.releaseSource(ip) }()
 				f.relay(conn, client, query)
 			}()
 		default:
