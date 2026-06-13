@@ -36,6 +36,35 @@ member as the only datastore.
 
 ## Getting the artifacts
 
+### Install a released build
+
+The fastest path on a Linux host is the install script. It downloads the
+requested artifact from the latest GitHub release, verifies it against the
+published `SHA256SUMS` (fail-closed), and installs it.
+
+```bash
+# Operator CLI (installs to /usr/local/bin/otherix)
+curl -fsSL get.otherix.dev | OTHERIX_COMPONENT=cli sh
+
+# Control plane (.deb; run as root)
+curl -fsSL get.otherix.dev | OTHERIX_COMPONENT=api sudo -E sh
+
+# Node agent (.deb; run as root on a KVM host)
+curl -fsSL get.otherix.dev | OTHERIX_COMPONENT=agent sudo -E sh
+```
+
+The endpoint serves the script as plain text - read it before piping to a
+shell. It honours three environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OTHERIX_COMPONENT` | `api` | `api`, `agent`, or `cli`. |
+| `OTHERIX_VERSION` | `latest` | A release tag such as `v1.2.3`. |
+| `OTHERIX_REPO` | `otherix/otherix` | Source `owner/repo` for releases. |
+
+On macOS the script installs the CLI via Homebrew
+(`brew install otherix/tap/otherix`); the daemons are Linux only.
+
 ### Build from source
 
 ```bash
