@@ -122,6 +122,9 @@ brews:
     repository:
       owner: otherix
       name: homebrew-tap
+      # Push the formula with the dedicated tap PAT, not the default
+      # GITHUB_TOKEN (scoped to this repo only -> 403 on the tap).
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/otherix/otherix
     description: Otherix operator CLI.
     license: Apache-2.0
