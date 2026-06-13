@@ -1,8 +1,6 @@
 site_name: Otherix
 site_description: Open-source self-hosted control plane for VMs on KVM/QEMU clusters.
-# Change site_url to the custom domain (e.g. https://docs.otherix.dev/) once it
-# is wired; the GitHub Pages default is https://<org>.github.io/<repo>/.
-site_url: https://otherix.github.io/otherix/
+site_url: https://docs.otherix.dev/
 repo_url: https://github.com/otherix/otherix
 repo_name: otherix/otherix
 edit_uri: edit/main/docs/
