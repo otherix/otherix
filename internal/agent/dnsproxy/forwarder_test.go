@@ -5,6 +5,7 @@ package dnsproxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -12,6 +13,54 @@ import (
 	"testing"
 	"time"
 )
+
+// TestRunWaitsForInflightRelaysBeforeReturning: Run must not return until in-flight relays finish, so
+// a relay goroutine cannot outlive Run and race the package-level dnsExchange seam (fixes the R2-M4
+// data race). Not parallel: it mutates the seam.
+func TestRunWaitsForInflightRelaysBeforeReturning(t *testing.T) {
+	relayEntered := make(chan struct{})
+	release := make(chan struct{})
+	orig := dnsExchange
+	defer func() { dnsExchange = orig }()
+	dnsExchange = func(string, []byte, time.Duration) ([]byte, error) {
+		close(relayEntered)
+		<-release
+		return nil, errors.New("released")
+	}
+	fwd, err := New(Config{Listen: "127.0.0.1:0", Upstreams: []string{"192.0.2.1:53"}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { _ = fwd.Run(ctx); close(runDone) }()
+	select {
+	case <-fwd.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("forwarder not ready")
+	}
+	client, err := net.Dial("udp4", fwd.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("dial = %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatalf("write = %v", err)
+	}
+	<-relayEntered
+	cancel()
+	select {
+	case <-runDone:
+		t.Fatal("Run returned before the in-flight relay finished")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after the relay finished")
+	}
+}
 
 // startStubUpstream runs a UDP server that echoes back the query bytes with the
 // QR (response) bit set, standing in for a real resolver. Returns its addr.
@@ -49,8 +98,9 @@ func TestForwarderRelaysQuery(t *testing.T) {
 		t.Fatalf("New = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = fwd.Run(ctx) }()
+	runDone := make(chan struct{})
+	go func() { _ = fwd.Run(ctx); close(runDone) }()
+	t.Cleanup(func() { cancel(); <-runDone })
 
 	select {
 	case <-fwd.Ready():
@@ -124,8 +174,9 @@ func TestForwarderRejectsMismatchedTxid(t *testing.T) {
 		t.Fatalf("New = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = fwd.Run(ctx) }()
+	runDone := make(chan struct{})
+	go func() { _ = fwd.Run(ctx); close(runDone) }()
+	t.Cleanup(func() { cancel(); <-runDone })
 
 	select {
 	case <-fwd.Ready():
@@ -180,8 +231,9 @@ func TestForwarderDropsAtCapacity(t *testing.T) {
 		t.Fatalf("New = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = fwd.Run(ctx) }()
+	runDone := make(chan struct{})
+	go func() { _ = fwd.Run(ctx); close(runDone) }()
+	t.Cleanup(func() { cancel(); <-runDone })
 
 	select {
 	case <-fwd.Ready():
@@ -273,8 +325,9 @@ func TestForwarderPerSourceCapDropsOneFloodingSource(t *testing.T) {
 		t.Fatalf("New = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = fwd.Run(ctx) }()
+	runDone := make(chan struct{})
+	go func() { _ = fwd.Run(ctx); close(runDone) }()
+	t.Cleanup(func() { cancel(); <-runDone })
 
 	select {
 	case <-fwd.Ready():
