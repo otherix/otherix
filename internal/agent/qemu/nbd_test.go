@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package qemu
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestQemuNBDServerArgs(t *testing.T) {
+	args := QemuNBDServerArgs(QemuNBDServerSpec{
+		CredsDir:       "/run/mig/tls",
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+		Port:           49152,
+		Export:         "tok123",
+		DiskPath:       "/var/lib/otherix/vms/v1/disk.qcow2",
+	})
+	joined := strings.Join(args, " ")
+
+	wants := []string{
+		"--object tls-creds-x509,id=migtls,endpoint=server,dir=/run/mig/tls,verify-peer=on",
+		"--object authz-simple,id=migauthz,identity=CN=node-src",
+		"--tls-creds migtls",
+		"--tls-authz migauthz",
+		"--persistent",
+		"-f qcow2",
+		"-x tok123",
+		"-b 10.0.0.2",
+		"-p 49152",
+		"/var/lib/otherix/vms/v1/disk.qcow2",
+	}
+	for _, w := range wants {
+		if !strings.Contains(joined, w) {
+			t.Errorf("QemuNBDServerArgs missing %q in:\n%s", w, joined)
+		}
+	}
+	// Writable: must NOT contain the read-only flag.
+	if strings.Contains(joined, "--read-only") || containsArg(args, "-r") {
+		t.Errorf("QemuNBDServerArgs is read-only; need writable for a push target")
+	}
+	// Fail-closed: never plaintext.
+	if strings.Contains(joined, "verify-peer=off") {
+		t.Errorf("QemuNBDServerArgs disables peer verification")
+	}
+}
+
+func TestQemuImgPushArgs(t *testing.T) {
+	args := QemuImgPushArgs(QemuImgPushSpec{
+		CredsDir:       "/run/mig/tls",
+		SourceDisk:     "/var/lib/otherix/vms/v1/disk.qcow2",
+		TargetHost:     "10.0.0.2",
+		TargetPort:     49152,
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		Export:         "tok123",
+	})
+	joined := strings.Join(args, " ")
+
+	wants := []string{
+		"convert",
+		"-n",
+		"-f qcow2",
+		"--object tls-creds-x509,id=migtls,endpoint=client,dir=/run/mig/tls,verify-peer=on",
+		"--target-image-opts",
+		"/var/lib/otherix/vms/v1/disk.qcow2",
+		"driver=nbd",
+		"server.type=inet",
+		"server.host=10.0.0.2",
+		"server.port=49152",
+		"tls-creds=migtls",
+		"tls-hostname=node-tgt.agents.otherix.local",
+		"export=tok123",
+	}
+	for _, w := range wants {
+		if !strings.Contains(joined, w) {
+			t.Errorf("QemuImgPushArgs missing %q in:\n%s", w, joined)
+		}
+	}
+	// Source disk (positional) must precede the target image-opts blob.
+	si := indexOfArg(args, "/var/lib/otherix/vms/v1/disk.qcow2")
+	ti := lastIndexContaining(args, "driver=nbd")
+	if si < 0 || ti < 0 || si > ti {
+		t.Errorf("source disk (%d) must come before target opts (%d)", si, ti)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func indexOfArg(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastIndexContaining(args []string, sub string) int {
+	idx := -1
+	for i, a := range args {
+		if strings.Contains(a, sub) {
+			idx = i
+		}
+	}
+	return idx
+}
