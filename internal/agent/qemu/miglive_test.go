@@ -121,6 +121,8 @@ func (f *fakeLiveConn) BlockdevDel(string) error {
 	return nil
 }
 
+func (f *fakeLiveConn) Close() error { return nil }
+
 func (f *fakeLiveConn) QueryMigrate() (MigrateInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

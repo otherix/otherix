@@ -52,6 +52,7 @@ func (f *fakeLiveConn) QueryMigrate() (qemu.MigrateInfo, error) { return qemu.Mi
 func (f *fakeLiveConn) Events(ctx context.Context) (<-chan qmp.Event, error) {
 	return nil, nil
 }
+func (f *fakeLiveConn) Close() error { return nil }
 
 func TestStartIncoming_LiveReservesPairAndReturnsBothEndpoints(t *testing.T) {
 	m := newTestManager(t)
@@ -149,8 +150,10 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 	v := m.seedRunningVM(t, "demo")
 
 	var ranLive bool
+	var gotSpec qemu.LiveSourceSpec
 	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, progress func(qemu.MigrateInfo)) error {
 		ranLive = true
+		gotSpec = spec
 		return nil
 	}
 	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
@@ -173,6 +176,15 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 	waitPhase(t, m, migID, "completed")
 	if !ranLive {
 		t.Errorf("migRunLiveSource was not invoked")
+	}
+
+	// The blockdev-mirror device= must be the boot disk's BlockBackend name.
+	// The boot disk launches as the first `-drive if=virtio`, so QEMU names it
+	// virtio0. The wrong value (virtio-disk0) is what the smoke caught: real
+	// qemu replied "Cannot find device='virtio-disk0'". This is the teeth the
+	// prior tests lacked.
+	if gotSpec.SrcDiskNode != "virtio0" {
+		t.Errorf("spec.SrcDiskNode = %q, want %q", gotSpec.SrcDiskNode, "virtio0")
 	}
 
 	// Assert the raw persisted status: live migration must NOT power off the

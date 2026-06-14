@@ -35,6 +35,7 @@ type LiveSourceConn interface {
 	BlockdevDel(nodeName string) error
 	QueryMigrate() (MigrateInfo, error)
 	Events(ctx context.Context) (<-chan qmp.Event, error)
+	Close() error
 }
 
 var _ LiveSourceConn = (*QMPClient)(nil)

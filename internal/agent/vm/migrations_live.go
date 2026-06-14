@@ -17,14 +17,17 @@ import (
 	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
-// liveSourceDiskNode is the node-name of the OS disk on the RUNNING source
-// guest, the device blockdev-mirror copies. The base launch (cmdline.go)
-// attaches the OS disk as `-drive ...,if=virtio`, whose qdev id qemu derives
-// as virtio-disk0 on the default machine type. blockdev-mirror accepts that
-// device id as the mirror source. SMOKE MUST VALIDATE this id resolves on a
-// real running guest; if a future cmdline change moves to a node-named
-// blockdev, set this to that node-name instead.
-const liveSourceDiskNode = "virtio-disk0"
+// liveSourceDiskNode is the BlockBackend device name of the OS disk on the
+// RUNNING source guest, the device blockdev-mirror copies. The base launch
+// (cmdline.go BuildArgs) attaches the boot disk as the FIRST `-drive
+// file=...,if=virtio` (cidata is a second if=virtio drive), and QEMU names
+// if=virtio BlockBackends virtio0, virtio1, ... in order, so the boot disk's
+// device name is virtio0. blockdev-mirror's device param accepts a
+// BlockBackend device name, so virtio0 is the stable handle: the boot disk is
+// always the first if=virtio drive and the source VM always launches with it
+// (never OmitBootDisk). The auto node-name (#blockNNN) is unstable and must
+// NOT be hardcoded. Verified via query-block on a running guest.
+const liveSourceDiskNode = "virtio0"
 
 // liveTargetDiskNode is the node-name the migration target assigns to its
 // destination disk blockdev (LiveIncomingArgs emits it, SetupLiveIncoming
@@ -106,7 +109,8 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 
 	// Launch the paused -incoming qemu, then dial it and arm the incoming
 	// transport (NBD export + RAM channel) over QMP. The launched qemu keeps
-	// running; the setup conn is left open (the OS reaps the fd on exit).
+	// running; the setup conn is closed once setup completes (it only carries
+	// the monitoring socket, not the qemu process).
 	if err := m.migLaunchIncoming(ctx, v, ls); err != nil {
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("launch incoming qemu: %v", err)
@@ -116,6 +120,9 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("dial target qmp: %v", err)
 	}
+	// Closing the QMP client closes only the monitoring socket, NOT the
+	// launched qemu process, so it is safe to close after setup.
+	defer func() { _ = conn.Close() }()
 	if err := qemu.SetupLiveIncoming(conn, ls); err != nil {
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("setup live incoming: %v", err)
@@ -190,6 +197,10 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		fail("qmp_unavailable", fmt.Sprintf("dial source qmp: %v", err))
 		return
 	}
+	// The manager owns the dialed conn; close the monitoring socket on return
+	// (closing it does not affect the running guest). RunLiveSource borrows it
+	// but never owns it.
+	defer func() { _ = conn.Close() }()
 
 	spec := qemu.LiveSourceSpec{
 		SrcDiskNode:          liveSourceDiskNode,
