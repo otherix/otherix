@@ -55,6 +55,8 @@ type Record struct {
 
 	// Target side.
 	Port        int    // reserved ingress port (target only)
+	NBDPort     int    // reserved NBD disk-export ingress port (live target only)
+	BlockJobID  string // blockdev-mirror job-id (live source only), for finalize/abort
 	NBDPid      int    // qemu-nbd pid (target only)
 	ListenEndpt string // host:port advertised to the source
 	AuthToken   string // correlation id + NBD export name

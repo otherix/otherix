@@ -60,6 +60,19 @@ func TestStorePutGetUpdate(t *testing.T) {
 	}
 }
 
+func TestRecord_LiveFields_RoundTrip(t *testing.T) {
+	s := NewStore()
+	id := uuid.New()
+	s.Put(&Record{MigrationID: id, Role: RoleTarget, Mode: ModeLive, NBDPort: 49153, BlockJobID: "mirror-disk0"})
+	got, ok := s.Get(id)
+	if !ok {
+		t.Fatal("Get() not found")
+	}
+	if got.NBDPort != 49153 || got.BlockJobID != "mirror-disk0" {
+		t.Errorf("live fields = {NBDPort:%d BlockJobID:%q}, want {49153 mirror-disk0}", got.NBDPort, got.BlockJobID)
+	}
+}
+
 func TestStoreUpdateMissing(t *testing.T) {
 	s := NewStore()
 	if s.Update(uuid.New(), func(*Record) {}) {
