@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -164,6 +165,45 @@ func TestRunLiveSource_AbortOnRAMFailureBeforeSwitchover(t *testing.T) {
 	assertAbortBoth(t, got)
 	if contains(got, "migrate-continue") {
 		t.Errorf("call order = %v, must NOT contain migrate-continue after failure", got)
+	}
+}
+
+func TestRunLiveSource_WatchdogAbortsOnStall(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+	// Never decreases: lastProgress never advances, watchdog fires.
+	f.migInfo.RAM.Remaining = 1 << 30
+
+	spec := testSpec()
+	spec.ConvergenceTimeout = 50 * time.Millisecond
+	spec.ProgressPollInterval = 10 * time.Millisecond
+
+	err := RunLiveSource(context.Background(), f, spec, nil)
+	if err == nil {
+		t.Fatalf("RunLiveSource() = nil, want watchdog error on stall")
+	}
+
+	got := f.snapshot()
+	assertAbortBoth(t, got)
+	if contains(got, "migrate-continue") {
+		t.Errorf("call order = %v, must NOT contain migrate-continue on watchdog abort", got)
+	}
+}
+
+// TestWatchdogErrorMentionsTimeout ensures the watchdog error message
+// references the convergence timeout so logs are diagnosable.
+func TestWatchdogErrorMentionsTimeout(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+	f.migInfo.RAM.Remaining = 1 << 30
+
+	spec := testSpec()
+	spec.ConvergenceTimeout = 50 * time.Millisecond
+	spec.ProgressPollInterval = 10 * time.Millisecond
+
+	err := RunLiveSource(context.Background(), f, spec, nil)
+	if err == nil || !strings.Contains(err.Error(), "converge") {
+		t.Fatalf("RunLiveSource() = %v, want error mentioning convergence", err)
 	}
 }
 
