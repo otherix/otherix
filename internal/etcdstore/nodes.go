@@ -479,10 +479,17 @@ func (s *Store) activeMigrationsOnNode(ctx context.Context, nodeID uuid.UUID) ([
 	return active, nil
 }
 
-// cancelMigrationOps builds the put-ops that mark each migration cancelled with
-// the audit reason and stamp completed_at, returning the ops + count. It does
-// not commit - the caller appends the ops to the force-delete cascade so they
-// commit atomically with the rest.
+// cancelMigrationOps builds the ops that mark each migration cancelled with the
+// audit reason and stamp completed_at, plus the terminalCleanupOps that release
+// the migration's transient state (the active-per-VM guard + per-node index
+// entries) on the terminal transition - the same release every other terminal
+// path (CommitMigrationCutover, UpdateMigrationProgress-to-terminal,
+// CancelMigration) performs. Without it, force-deleting a node mid-migration
+// would leave the per-VM active guard dangling and the VM permanently
+// un-migratable (every future CreateMigration CAS would hit the guard and 409).
+// Returns the ops + cancelled count. It does not commit - the caller appends the
+// ops to the force-delete cascade so they commit (chunked) with the rest. All
+// terminalCleanupOps are idempotent OpDeletes, safe under commitInChunks.
 func cancelMigrationOps(migs []store.Migration, reason string) ([]clientv3.Op, int64, error) {
 	now := time.Now().UTC()
 	ops := make([]clientv3.Op, 0, len(migs))
@@ -497,6 +504,7 @@ func cancelMigrationOps(migs []store.Migration, reason string) ([]clientv3.Op, i
 			return nil, 0, err
 		}
 		ops = append(ops, clientv3.OpPut(migrationKey(m.ID), string(val)))
+		ops = append(ops, terminalCleanupOps(m)...)
 		n++
 	}
 	return ops, n, nil

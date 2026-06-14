@@ -836,6 +836,49 @@ func TestCancelMigration_ActiveReleasesGuard(t *testing.T) {
 	}
 }
 
+// TestNodeForceDelete_ReleasesMigrationGuard proves the A2.2 seam fix: the
+// node-force-delete cascade that cancels active migrations must release the
+// per-VM active guard the same way every other terminal transition does.
+// Without the fix the guard dangles and the VM is permanently un-migratable
+// (every future CreateMigration CAS hits the guard and returns
+// ErrMigrationActiveExists), with no API recovery since the row is already
+// terminal. The proof of release is that a fresh CreateMigration for the same
+// VM SUCCEEDS after the force-delete.
+func TestNodeForceDelete_ReleasesMigrationGuard(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	nodeA, nodeB := cancelStartNodes(t, s)
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	// An ACTIVE migration with source=nodeA, target=nodeB holds the guard.
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	out, err := s.DeleteNode(ctx, nodeA.ID, true, uuid.New())
+	if err != nil {
+		t.Fatalf("DeleteNode(force): %v", err)
+	}
+	if out.MigrationsCancelled != 1 {
+		t.Errorf("MigrationsCancelled = %d, want 1", out.MigrationsCancelled)
+	}
+
+	// The migration row is now terminal-cancelled (cancel cascade still writes it).
+	persisted, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if persisted.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("migration Phase = %q, want cancelled", persisted.Phase)
+	}
+
+	// The active-VM guard MUST be released: a fresh CreateMigration for the same
+	// VM succeeds. Before the fix this returns ErrMigrationActiveExists (the guard
+	// leaked) and the VM is permanently un-migratable.
+	p2 := migrationParams(vm.ID, nodeB.ID, nodeA.ID)
+	if _, err := s.CreateMigration(ctx, p2, migrationJobArgsStub{TaskID: p2.Task.ID, MigrationID: p2.ID}); err != nil {
+		t.Errorf("CreateMigration after node force-delete = %v, want nil (guard released)", err)
+	}
+}
+
 func TestCancelMigration_TerminalRejected(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
