@@ -341,6 +341,140 @@ func assertAbortBoth(t *testing.T, calls []string) {
 	}
 }
 
+// coupledLiveConn models go-qemu's real concurrency contract that the buffered
+// fakeLiveConn does NOT: a single producer goroutine demultiplexes one socket
+// into BOTH the command-response stream and the async-event channel, and the
+// event channel is unbuffered. Concretely, a QMP command that starts a job
+// (blockdev-mirror, migrate, block-job-cancel, migrate-continue) makes QEMU emit
+// the job's status event, and that event can reach the wire before the command's
+// own reply; go-qemu's listen goroutine blocks delivering the event until someone
+// receives it, which also blocks delivery of the reply. So here the event-emitting
+// methods do a BLOCKING send of their triggering event before returning - i.e. the
+// method cannot "return its reply" until the event is drained. If RunLiveSource
+// does not continuously drain the event channel from the moment it subscribes, the
+// very first such command deadlocks. This is the regression the buffered fake can
+// never catch.
+type coupledLiveConn struct {
+	mu     sync.Mutex
+	calls  []string
+	events chan qmp.Event // UNBUFFERED on purpose: one producer, no slack
+}
+
+func (c *coupledLiveConn) rec(s string) {
+	c.mu.Lock()
+	c.calls = append(c.calls, s)
+	c.mu.Unlock()
+}
+
+func (c *coupledLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error {
+	c.rec("object-add:" + endpoint)
+	return nil
+}
+func (c *coupledLiveConn) ObjectAddAuthz(string, string) error { c.rec("object-add:authz"); return nil }
+func (c *coupledLiveConn) BlockdevAddNBD(n, h string, p int, e, cr, hn string) error {
+	c.rec("blockdev-add")
+	return nil
+}
+
+func (c *coupledLiveConn) BlockdevMirror(jobID, device, target string) error {
+	c.rec("blockdev-mirror")
+	// The mirror job starts and emits its event before the reply lands.
+	c.events <- blockJobEvent("BLOCK_JOB_READY", jobID)
+	return nil
+}
+
+func (c *coupledLiveConn) MigrateSetCapabilities(map[string]bool) error {
+	c.rec("set-caps")
+	return nil
+}
+
+func (c *coupledLiveConn) NBDServerStart(string, int, string, string) error {
+	c.rec("nbd-server-start")
+	return nil
+}
+
+func (c *coupledLiveConn) BlockExportAdd(string, string, string, bool) error {
+	c.rec("block-export-add")
+	return nil
+}
+func (c *coupledLiveConn) MigrateIncoming(string) error          { c.rec("migrate-incoming"); return nil }
+func (c *coupledLiveConn) MigrateSetParameters(LiveParams) error { c.rec("set-params"); return nil }
+
+func (c *coupledLiveConn) Migrate(string) error {
+	c.rec("migrate")
+	c.events <- migrationEvent("pre-switchover")
+	return nil
+}
+
+func (c *coupledLiveConn) BlockJobCancel(device string, force bool) error {
+	c.rec(fmt.Sprintf("block-job-cancel:%t", force))
+	if !force {
+		c.events <- blockJobEvent("BLOCK_JOB_COMPLETED", "mirror0")
+	}
+	return nil
+}
+
+func (c *coupledLiveConn) MigrateContinue() error {
+	c.rec("migrate-continue")
+	c.events <- migrationEvent("completed")
+	return nil
+}
+
+func (c *coupledLiveConn) MigrateCancel() error                    { c.rec("migrate_cancel"); return nil }
+func (c *coupledLiveConn) BlockdevDel(string) error                { c.rec("blockdev-del"); return nil }
+func (c *coupledLiveConn) Close() error                            { return nil }
+func (c *coupledLiveConn) QueryMigrate() (MigrateInfo, error)      { return MigrateInfo{}, nil }
+func (c *coupledLiveConn) QueryBlockJobs() ([]BlockJobInfo, error) { return nil, nil }
+func (c *coupledLiveConn) Events(context.Context) (<-chan qmp.Event, error) {
+	return c.events, nil
+}
+
+// TestRunLiveSource_EventEmittingCommandDoesNotDeadlock drives the source
+// against a connection whose event-emitting commands block until their event is
+// drained (go-qemu's real single-producer contract). RunLiveSource must keep the
+// event channel drained from the moment it subscribes, so blockdev-mirror (and
+// every later event-emitting command) returns and the run converges. Without a
+// continuous drainer the run wedges forever in blockdev-mirror.
+func TestRunLiveSource_EventEmittingCommandDoesNotDeadlock(t *testing.T) {
+	c := &coupledLiveConn{events: make(chan qmp.Event)}
+
+	done := make(chan error, 1)
+	go func() { done <- RunLiveSource(context.Background(), c, testSpec(), nil) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunLiveSource() = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunLiveSource deadlocked: an event-emitting QMP command blocked because the event channel was not drained from subscription")
+	}
+}
+
+// TestRunLiveSource_DiskMirrorStallFailsClosed asserts that a disk mirror that
+// never reaches BLOCK_JOB_READY (a genuinely stuck QEMU, not a wrapper deadlock)
+// fails closed within DiskMirrorTimeout instead of blocking forever. The buffered
+// fake returns from blockdev-mirror immediately but feeds no BLOCK_JOB_READY, so
+// only the per-phase timeout can release the wait. A live migration that cannot
+// converge must abort and leave the guest on the source, not hang.
+func TestRunLiveSource_DiskMirrorStallFailsClosed(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 4)} // no BLOCK_JOB_READY ever fed
+	spec := testSpec()
+	spec.DiskMirrorTimeout = 100 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() { done <- RunLiveSource(context.Background(), f, spec, nil) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("RunLiveSource() = nil, want error on a stalled disk mirror")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunLiveSource did not fail closed on a stalled disk mirror within the timeout")
+	}
+}
+
 func contains(s []string, v string) bool { return indexOf(s, v) >= 0 }
 
 func indexOf(s []string, v string) int {

@@ -60,7 +60,20 @@ type LiveSourceSpec struct {
 	MaxBandwidthBytes    int64
 	ConvergenceTimeout   time.Duration // watchdog: max time without RAM progress before abort
 	ProgressPollInterval time.Duration // watchdog poll cadence (default 2s if zero)
+	DiskMirrorTimeout    time.Duration // max time to reach BLOCK_JOB_READY (bulk disk copy); default liveDefaultDiskMirrorTimeout
+	SwitchoverTimeout    time.Duration // max time for each post-pre-switchover wait (finalize, final completed); default liveDefaultSwitchoverTimeout
 }
+
+// Per-phase fail-closed bounds applied by RunLiveSource when a LiveSourceSpec
+// leaves them zero. They turn a genuinely stuck QEMU (a wait whose event never
+// arrives) into an aborted migration that leaves the guest on the source, rather
+// than a wait that blocks forever. The disk-copy bound is generous (the whole
+// disk may transfer); the switchover bounds are short (the mirror is already
+// caught up and the RAM already converged at pre-switchover).
+const (
+	liveDefaultDiskMirrorTimeout = 30 * time.Minute
+	liveDefaultSwitchoverTimeout = 2 * time.Minute
+)
 
 // LiveProgress is a point-in-time snapshot of a live migration's disk-mirror
 // and RAM-transfer state, emitted periodically by RunLiveSource so the manager
@@ -87,10 +100,30 @@ type LiveProgress struct {
 // and the disk mirror and returns the wrapped error, leaving the guest
 // running on the source.
 func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, report func(LiveProgress)) error {
-	ch, err := conn.Events(ctx)
+	rawCh, err := conn.Events(ctx)
 	if err != nil {
 		return fmt.Errorf("open qmp events: %w", err)
 	}
+
+	// go-qemu demultiplexes command responses AND async events out of ONE
+	// goroutine over unbuffered channels: if nobody is receiving the event
+	// channel, that goroutine blocks delivering the event and therefore stops
+	// delivering command responses too. Every QMP command that starts a job
+	// emits its status event on start (blockdev-mirror, migrate,
+	// block-job-cancel, migrate-continue), and that event can reach the wire
+	// before the command's own reply - so without a continuous drainer the very
+	// next command's reply never arrives and the run wedges forever. fanoutEvents
+	// drains rawCh from now until this function returns, buffering events so the
+	// staged waiters below still see them in order. Its lifetime is an
+	// independent drainCtx cancelled by the deferred stopDrain, which runs AFTER
+	// the inline abort path, so a parent-ctx-triggered abort cannot re-wedge the
+	// listener mid-teardown.
+	drainCtx, stopDrain := context.WithCancel(context.Background())
+	defer stopDrain()
+	ch := fanoutEvents(drainCtx, rawCh)
+
+	diskMirrorTimeout := durationOr(s.DiskMirrorTimeout, liveDefaultDiskMirrorTimeout)
+	switchoverTimeout := durationOr(s.SwitchoverTimeout, liveDefaultSwitchoverTimeout)
 
 	// Periodic best-effort progress reporter. It polls query-block-jobs
 	// (disk phase) and query-migrate (RAM phase) concurrently with the
@@ -113,7 +146,7 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		abortLiveSource(conn, s)
 		return fmt.Errorf("start disk mirror: %w", err)
 	}
-	if err := waitBlockJobEvent(ctx, ch, "BLOCK_JOB_READY", s.JobID); err != nil {
+	if err := waitBlockJobTimeout(ctx, ch, "BLOCK_JOB_READY", s.JobID, diskMirrorTimeout); err != nil {
 		abortLiveSource(conn, s)
 		return fmt.Errorf("wait mirror ready: %w", err)
 	}
@@ -158,7 +191,7 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		abortLiveSource(conn, s)
 		return fmt.Errorf("finalize disk mirror: %w", err)
 	}
-	if err := waitBlockJobEvent(ctx, ch, "BLOCK_JOB_COMPLETED", s.JobID); err != nil {
+	if err := waitBlockJobTimeout(ctx, ch, "BLOCK_JOB_COMPLETED", s.JobID, switchoverTimeout); err != nil {
 		abortLiveSource(conn, s)
 		return fmt.Errorf("wait mirror completed: %w", err)
 	}
@@ -166,7 +199,7 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		abortLiveSource(conn, s)
 		return fmt.Errorf("continue migration: %w", err)
 	}
-	if _, err := waitMigrationStatus(ctx, ch, "completed", []string{"failed", "cancelled"}); err != nil {
+	if err := waitMigrationStatusTimeout(ctx, ch, "completed", []string{"failed", "cancelled"}, switchoverTimeout); err != nil {
 		abortLiveSource(conn, s)
 		return fmt.Errorf("wait migration completed: %w", err)
 	}
@@ -176,6 +209,78 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 	// does not undo a completed migration.
 	_ = conn.BlockdevDel(s.NBDNode)
 	return nil
+}
+
+// fanoutEvents continuously drains src into an unbounded in-memory buffer and
+// re-emits every event, in order, on the returned channel. It decouples
+// go-qemu's single producer goroutine - which serializes command responses and
+// async events and blocks on an unbuffered event channel - from RunLiveSource's
+// staged consumers, which only receive events while inside a waiter. The drainer
+// never blocks src for longer than one loop iteration, so the producer is free to
+// keep delivering command responses no matter when an event is emitted. It stops
+// and closes the returned channel when ctx is cancelled or src is closed (after
+// flushing the buffer), so waiters observe end-of-stream.
+func fanoutEvents(ctx context.Context, src <-chan qmp.Event) <-chan qmp.Event {
+	out := make(chan qmp.Event)
+	go func() {
+		defer close(out)
+		var buf []qmp.Event
+		for {
+			var outCh chan<- qmp.Event
+			var next qmp.Event
+			if len(buf) > 0 {
+				outCh = out
+				next = buf[0]
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-src:
+				if !ok {
+					// Source closed: stop receiving, flush what remains.
+					src = nil
+					if len(buf) == 0 {
+						return
+					}
+					continue
+				}
+				buf = append(buf, ev)
+			case outCh <- next:
+				buf = buf[1:]
+				if src == nil && len(buf) == 0 {
+					return
+				}
+			}
+		}
+	}()
+	return out
+}
+
+// durationOr returns v when it is positive, otherwise def. Used to apply the
+// per-phase timeout defaults when a LiveSourceSpec leaves them zero.
+func durationOr(v, def time.Duration) time.Duration {
+	if v > 0 {
+		return v
+	}
+	return def
+}
+
+// waitBlockJobTimeout wraps waitBlockJobEvent with a fail-closed deadline so a
+// block-job event that never arrives (a stuck mirror) aborts the migration
+// instead of blocking forever on the only other escape, parent-ctx cancel.
+func waitBlockJobTimeout(ctx context.Context, ch <-chan qmp.Event, eventName, device string, timeout time.Duration) error {
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return waitBlockJobEvent(wctx, ch, eventName, device)
+}
+
+// waitMigrationStatusTimeout wraps waitMigrationStatus with a fail-closed
+// deadline for the post-switchover completion wait.
+func waitMigrationStatusTimeout(ctx context.Context, ch <-chan qmp.Event, want string, failStates []string, timeout time.Duration) error {
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, err := waitMigrationStatus(wctx, ch, want, failStates)
+	return err
 }
 
 // reportLiveProgress polls the disk-mirror block jobs and the RAM-migration
