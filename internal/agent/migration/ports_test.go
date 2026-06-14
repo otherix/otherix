@@ -50,3 +50,32 @@ func TestPortAllocatorReleaseUnknownIsNoop(t *testing.T) {
 		t.Errorf("Reserve() = %d,%v, want 49152,nil", p, err)
 	}
 }
+
+func TestPortAllocator_ReservePair_DistinctAndReleasable(t *testing.T) {
+	a := NewPortAllocator(49152, 49155)
+	ram, nbd, err := a.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair() error = %v", err)
+	}
+	if ram == nbd {
+		t.Errorf("ReservePair() returned equal ports %d == %d", ram, nbd)
+	}
+	a.ReleasePair(ram, nbd)
+	// After release all four ports are free again: two more pairs fit.
+	if _, _, err := a.ReservePair(); err != nil {
+		t.Errorf("ReservePair() after release error = %v", err)
+	}
+}
+
+func TestPortAllocator_ReservePair_ExhaustionRollsBackFirst(t *testing.T) {
+	// Odd-sized range of 1 free port: the pair cannot be satisfied, and the
+	// FIRST reserved port must be rolled back (not leaked).
+	a := NewPortAllocator(49152, 49152)
+	if _, _, err := a.ReservePair(); err == nil {
+		t.Fatal("ReservePair() on a 1-port range = nil error, want ErrNoFreePort")
+	}
+	// The single port must be free again (rollback), so a single Reserve works.
+	if _, err := a.Reserve(); err != nil {
+		t.Errorf("Reserve() after failed ReservePair error = %v; first port leaked", err)
+	}
+}
