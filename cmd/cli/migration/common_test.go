@@ -11,9 +11,9 @@ func TestShortID(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"truncates a uuid to 12", "abcdef0123456789-0000-0000", "abcdef012345"},
-		{"exactly 12 is unchanged", "abcdef012345", "abcdef012345"},
-		{"shorter than 12 is unchanged", "abc", "abc"},
+		{"truncates a uuid to the 8-char first segment", "abcdef0123456789-0000-0000", "abcdef01"},
+		{"exactly 8 is unchanged", "abcdef01", "abcdef01"},
+		{"shorter than 8 is unchanged", "abc", "abc"},
 		{"empty is unchanged", "", ""},
 	}
 	for _, tc := range cases {

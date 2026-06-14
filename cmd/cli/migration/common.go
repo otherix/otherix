@@ -98,13 +98,14 @@ func dashIfEmpty(s string) string {
 	return s
 }
 
-// shortID truncates a migration id to its first 12 hex chars for display. The
-// CP resolves a unique prefix (>= 8 chars) back to the full row, so the short
-// form is enough for the operator to pass to `migration get`/`cancel`. Strings
-// already <= 12 chars pass through unchanged.
+// shortID truncates a migration id to the first segment of its UUID (the 8
+// leading hex chars, no hyphen) for display. The CP resolves a unique prefix
+// (>= 8 chars) back to the full row, so this short form is enough to pass to
+// `migration get`/`cancel`; an ambiguous prefix returns 409 there. Strings
+// shorter than 8 chars pass through unchanged.
 func shortID(s string) string {
-	if len(s) > 12 {
-		return s[:12]
+	if len(s) >= 8 {
+		return s[:8]
 	}
 	return s
 }

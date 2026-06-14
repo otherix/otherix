@@ -46,7 +46,7 @@ func TestPrintMigrationTableNamesAndShortID(t *testing.T) {
 		t.Errorf("table header missing name columns:\n%s", out)
 	}
 	// tabwriter pads with spaces, so assert on substrings of the data row.
-	for _, want := range []string{"abcdef012345", "web-01", "node-a", "node-b-id", "active", "30%"} {
+	for _, want := range []string{"abcdef01", "web-01", "node-a", "node-b-id", "active", "30%"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q:\n%s", want, out)
 		}

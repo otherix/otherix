@@ -54,7 +54,7 @@ func TestPrintMigrationTextPendingWaiting(t *testing.T) {
 
 // TestPrintMigrationTextActive covers a running migration: progress is shown
 // with a percent sign, the VM and node NAMES render (not the ids), the id is
-// shortened to 12 chars, and no waiting line appears.
+// shortened to its 8-char first segment, and no waiting line appears.
 func TestPrintMigrationTextActive(t *testing.T) {
 	srcID := "11111111-1111-1111-1111-111111111111"
 	tgtID := "22222222-2222-2222-2222-222222222222"
@@ -72,8 +72,8 @@ func TestPrintMigrationTextActive(t *testing.T) {
 		TargetNodeName:  &tgtName,
 		Live:            true,
 	})
-	if got, ok := lineFor(out, "id"); !ok || got != "abcdef012345" {
-		t.Errorf("id line = %q (present=%v), want %q", got, ok, "abcdef012345")
+	if got, ok := lineFor(out, "id"); !ok || got != "abcdef01" {
+		t.Errorf("id line = %q (present=%v), want %q", got, ok, "abcdef01")
 	}
 	if got, ok := lineFor(out, "vm"); !ok || got != "web-01" {
 		t.Errorf("vm line = %q (present=%v), want %q", got, ok, "web-01")
