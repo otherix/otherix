@@ -4,7 +4,12 @@
 package vm
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
@@ -43,4 +48,40 @@ func (m *Manager) defaultTestPoolRoot(t *testing.T) string {
 	}
 	t.Fatalf("default test pool %q not registered", m.defaultTestPool())
 	return ""
+}
+
+// seedStoppedVM registers a stopped VM in the default test pool with a real
+// (stub) disk file on disk, mirroring how Create / AdoptForMigration set the
+// VM fields. The disk content is irrelevant to the migration push fake; only
+// the path and its parent directory must exist.
+func (m *Manager) seedStoppedVM(t *testing.T, name string) *VM {
+	t.Helper()
+	id := uuid.New()
+	root := m.defaultTestPoolRoot(t)
+	disk, qmp, console, pid := m.vmPaths(root, id)
+	if err := os.MkdirAll(filepath.Dir(disk), 0o750); err != nil {
+		t.Fatalf("mkdir disk parent: %v", err)
+	}
+	if err := os.WriteFile(disk, []byte("qcow2-stub"), 0o600); err != nil {
+		t.Fatalf("write stub disk: %v", err)
+	}
+	now := time.Now().UTC()
+	v := &VM{
+		ID:            id,
+		Name:          name,
+		VCPUs:         1,
+		MemoryMB:      512,
+		PoolName:      m.defaultTestPool(),
+		Status:        StatusStopped,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		DiskPath:      disk,
+		QMPSocket:     qmp,
+		ConsoleSocket: console,
+		PIDFile:       pid,
+	}
+	m.mu.Lock()
+	m.vms[id] = v
+	m.mu.Unlock()
+	return v
 }

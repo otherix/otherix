@@ -181,3 +181,211 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	})
 	return IncomingResult{ListenEndpoint: endpoint, AuthToken: token}, nil
 }
+
+// OutgoingSpec parameterizes source-side migration.
+type OutgoingSpec struct {
+	MigrationID    uuid.UUID
+	VMUUID         uuid.UUID
+	VMName         string
+	Mode           string
+	TargetEndpoint string
+	TargetIdentity string
+	AuthToken      string
+}
+
+// StartOutgoing kicks off the source side: mint a vm.migrate task, record a
+// source migration, and run the disk push asynchronously. Returns the task
+// immediately (202 semantics). Every failure path leaves the VM on this node
+// (fail-safe) and marks the migration failed.
+func (m *Manager) StartOutgoing(ctx context.Context, s OutgoingSpec) (*AgentTask, error) {
+	v, err := m.Get(s.VMUUID)
+	if err != nil {
+		return nil, fmt.Errorf("vm %s: %v", s.VMUUID, err)
+	}
+	task := m.tasks.Create(TaskKindVMMigrate, s.VMUUID)
+	m.migrations.Put(&migration.Record{
+		MigrationID: s.MigrationID, VMID: s.VMUUID, VMName: s.VMName,
+		Role: migration.RoleSource, Mode: migration.Mode(s.Mode), Phase: migration.PhaseSetup,
+		PeerEndpoint: s.TargetEndpoint, AuthToken: s.AuthToken, AgentTaskID: task.ID,
+		CreatedAt: time.Now().UTC(),
+	})
+	// Detach from the request context: the push outlives the HTTP call (202
+	// semantics), so a request-scoped cancel must not abort the migration.
+	go m.runOutgoing(context.Background(), task.ID, s, v.DiskPath)
+	return task, nil
+}
+
+// runOutgoing executes the source-side push asynchronously: stop the VM if
+// running, materialize client TLS creds, push the disk over NBD+TLS, and mark
+// phases setup -> active -> completed. Any error marks the migration failed
+// and leaves the VM on this node (fail-safe).
+//
+// KNOWN LIMITATION (2a): the push runs through m.migRunConvert, which wraps the
+// blocking qemu.RunQemuImgConvert and returns no pid. Record.ConvertPid is
+// therefore never set on the source, so CancelMigration cannot interrupt an
+// in-flight push (its ConvertPid > 0 branch is dormant here). This is
+// acceptable: cancel is best-effort, an uninterruptible push runs to completion
+// or the migration fails, and either way the VM stays on the source.
+func (m *Manager) runOutgoing(ctx context.Context, taskID uuid.UUID, s OutgoingSpec, srcDisk string) {
+	fail := func(code, msg string) {
+		m.migrations.Update(s.MigrationID, func(r *migration.Record) {
+			r.Phase = migration.PhaseFailed
+			r.ErrorMessage = msg
+			r.CompletedAt = time.Now().UTC()
+		})
+		m.tasks.Update(taskID, func(t *AgentTask) {
+			t.Status = TaskStatusFailed
+			t.Error = &TaskError{Code: code, Message: msg}
+		})
+	}
+
+	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
+
+	// 1. Stop the VM if running (offline move).
+	if v, err := m.Get(s.VMUUID); err == nil && v.Status == StatusRunning {
+		if _, err := m.Stop(ctx, s.VMName); err != nil {
+			fail("stop_failed", fmt.Sprintf("stop vm before migrate: %v", err))
+			return
+		}
+		if err := m.waitStopped(ctx, s.VMUUID, 90*time.Second); err != nil {
+			fail("stop_failed", fmt.Sprintf("wait vm stopped: %v", err))
+			return
+		}
+	}
+	m.migrations.Update(s.MigrationID, func(r *migration.Record) { r.Phase = migration.PhaseActive; r.StartedAt = time.Now().UTC() })
+
+	// 2. Client TLS creds.
+	credsDir := filepath.Join(m.stateDir, "migrations", s.MigrationID.String(), "tls")
+	if err := qemu.MaterializeMigrationCreds(credsDir, qemu.MigrationTLSClient, m.tlsCA, m.tlsCert, m.tlsKey); err != nil {
+		fail("tls_setup_failed", err.Error())
+		return
+	}
+	m.migrations.Update(s.MigrationID, func(r *migration.Record) { r.CredsDir = credsDir })
+
+	// 3. Push the disk over NBD+TLS.
+	host, portStr, err := net.SplitHostPort(s.TargetEndpoint)
+	if err != nil {
+		fail("internal", fmt.Sprintf("bad target endpoint %q: %v", s.TargetEndpoint, err))
+		return
+	}
+	port, _ := strconv.Atoi(portStr)
+	if err := m.migRunConvert(ctx, qemu.QemuImgPushArgs(qemu.QemuImgPushSpec{
+		CredsDir: credsDir, SourceDisk: srcDisk, TargetHost: host, TargetPort: port,
+		TargetIdentity: s.TargetIdentity, Export: s.AuthToken,
+	})); err != nil {
+		fail("convergence_failed", fmt.Sprintf("disk push: %v", err))
+		return
+	}
+
+	// 4. Done. The CP worker observes success, runs cutover, then starts on
+	//    target and deletes this copy. We only mark completed here.
+	m.migrations.Update(s.MigrationID, func(r *migration.Record) {
+		r.Phase = migration.PhaseCompleted
+		r.CompletedAt = time.Now().UTC()
+	})
+	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+}
+
+// waitStopped polls until the VM reaches StatusStopped or the timeout elapses.
+func (m *Manager) waitStopped(ctx context.Context, id uuid.UUID, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		v, err := m.Get(id)
+		if err == nil && v.Status == StatusStopped {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("vm %s not stopped within %s", id, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// MigrationView projects a record into the agent-API Migration fields the
+// handler serializes.
+type MigrationView struct {
+	MigrationID      uuid.UUID
+	VMUUID           uuid.UUID
+	Role             string
+	Mode             string
+	Phase            string
+	ProgressPercent  int
+	BytesTotal       *int64
+	BytesTransferred int64
+	PeerEndpoint     *string
+	ErrorMessage     *string
+	CreatedAt        time.Time
+}
+
+// GetMigration returns the agent's current view of a migration.
+func (m *Manager) GetMigration(id uuid.UUID) (MigrationView, bool) {
+	rec, ok := m.migrations.Get(id)
+	if !ok {
+		return MigrationView{}, false
+	}
+	pct := 0
+	if rec.Phase == migration.PhaseCompleted {
+		pct = 100
+	} else if rec.BytesTotal > 0 {
+		pct = int(rec.BytesTransferred * 100 / rec.BytesTotal)
+	}
+	view := MigrationView{
+		MigrationID: rec.MigrationID, VMUUID: rec.VMID, Role: string(rec.Role),
+		Mode: string(rec.Mode), Phase: string(rec.Phase), ProgressPercent: pct,
+		BytesTransferred: rec.BytesTransferred, CreatedAt: rec.CreatedAt,
+	}
+	if rec.BytesTotal > 0 {
+		bt := rec.BytesTotal
+		view.BytesTotal = &bt
+	}
+	if rec.PeerEndpoint != "" {
+		pe := rec.PeerEndpoint
+		view.PeerEndpoint = &pe
+	} else if rec.ListenEndpt != "" {
+		le := rec.ListenEndpt
+		view.PeerEndpoint = &le
+	}
+	if rec.ErrorMessage != "" {
+		em := rec.ErrorMessage
+		view.ErrorMessage = &em
+	}
+	return view, true
+}
+
+// CancelMigration aborts a pre-cutover migration: kill child processes,
+// release the port, and pin phase=cancelled. Best-effort and idempotent; a
+// terminal migration is returned unchanged.
+//
+// On the source, an in-flight disk push cannot be interrupted (see
+// runOutgoing's KNOWN LIMITATION: ConvertPid is never set), so the
+// ConvertPid > 0 branch below is dormant for source records today. The push
+// runs to completion or fails; the VM stays on source either way.
+func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
+	rec, ok := m.migrations.Get(id)
+	if !ok {
+		return MigrationView{}, false
+	}
+	if !rec.Terminal() {
+		if rec.NBDPid > 0 {
+			_ = qemu.Kill(rec.NBDPid)
+		}
+		if rec.ConvertPid > 0 {
+			_ = qemu.Kill(rec.ConvertPid)
+		}
+		if rec.Port > 0 {
+			m.migPorts.Release(rec.Port)
+		}
+		m.migrations.Update(id, func(r *migration.Record) {
+			r.Phase = migration.PhaseCancelled
+			r.ErrorMessage = "cancelled"
+			r.CompletedAt = time.Now().UTC()
+		})
+	}
+	return m.GetMigration(id)
+}
