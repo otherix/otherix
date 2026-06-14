@@ -87,6 +87,7 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusOK, agentapi.MigrationIncomingResponse{
 		MigrationID:    req.MigrationID,
 		ListenEndpoint: res.ListenEndpoint,
+		NbdEndpoint:    strPtrOrNil(res.NBDEndpoint),
 		AuthToken:      res.AuthToken,
 	})
 }
@@ -128,6 +129,7 @@ func (h *Handler) StartOutgoing(w http.ResponseWriter, r *http.Request) {
 		VMName:         v.Name,
 		Mode:           string(req.Mode),
 		TargetEndpoint: req.TargetEndpoint,
+		NBDEndpoint:    deref(req.NbdEndpoint),
 		TargetIdentity: deref(req.TargetNodeIdentity),
 		AuthToken:      req.AuthToken,
 	})
@@ -233,6 +235,15 @@ func toMigrationAPI(v vm.MigrationView) agentapi.Migration {
 		ErrorMessage:     v.ErrorMessage,
 		CreatedAt:        v.CreatedAt,
 	}
+}
+
+// strPtrOrNil returns a pointer to s, or nil when s is empty, for the
+// optional *string wire fields.
+func strPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // deref returns the pointed-to string or "" when the pointer is nil.

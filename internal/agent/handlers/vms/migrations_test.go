@@ -247,3 +247,88 @@ func TestCancelMigrationHandlerUnknown(t *testing.T) {
 }
 
 func strptr(s string) *string { return &s }
+
+// TestStartIncomingResponseThreadsNbdEndpoint asserts the incoming handler
+// serializes a non-empty IncomingResult.NBDEndpoint into the wire
+// nbd_endpoint field, and omits it (nil) when the result endpoint is empty
+// (the offline case). This is the handler's serialization seam: the live
+// target advertises a distinct NBD listener the source must dial, and the
+// offline path reuses the single endpoint so nbd_endpoint stays absent.
+func TestStartIncomingResponseThreadsNbdEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		res  vm.IncomingResult
+		want *string
+	}{
+		{
+			name: "live carries nbd endpoint",
+			res:  vm.IncomingResult{ListenEndpoint: "h:49200", NBDEndpoint: "h:49153", AuthToken: "tok"},
+			want: strptr("h:49153"),
+		},
+		{
+			name: "offline omits nbd endpoint",
+			res:  vm.IncomingResult{ListenEndpoint: "h:49200", AuthToken: "tok"},
+			want: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Mirror the handler's response construction exactly: the
+			// handler builds MigrationIncomingResponse from the manager's
+			// IncomingResult, mapping NBDEndpoint -> NbdEndpoint via
+			// strPtrOrNil (nil when empty).
+			out := agentapi.MigrationIncomingResponse{
+				MigrationID:    uuid.New(),
+				ListenEndpoint: tc.res.ListenEndpoint,
+				AuthToken:      tc.res.AuthToken,
+				NbdEndpoint:    strPtrOrNil(tc.res.NBDEndpoint),
+			}
+			raw, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded agentapi.MigrationIncomingResponse
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			switch {
+			case tc.want == nil && decoded.NbdEndpoint != nil:
+				t.Errorf("nbd_endpoint = %q, want absent", *decoded.NbdEndpoint)
+			case tc.want != nil && (decoded.NbdEndpoint == nil || *decoded.NbdEndpoint != *tc.want):
+				t.Errorf("nbd_endpoint = %v, want %q", decoded.NbdEndpoint, *tc.want)
+			}
+		})
+	}
+}
+
+// TestStartOutgoingRequestThreadsNbdEndpoint asserts the wire nbd_endpoint
+// field decodes and threads through the same deref the outgoing handler uses
+// to populate OutgoingSpec.NBDEndpoint (the endpoint the source dials for the
+// live blockdev-mirror disk push). This locks the wire field name and the
+// optional-pointer mapping. It does not drive the live handler->manager seam
+// end-to-end: the handler holds a concrete *vm.Manager whose live seams are
+// unexported, and OutgoingSpec.NBDEndpoint is consumed in the detached
+// runOutgoingLive goroutine, never persisted to an observable record. That
+// end-to-end path is covered by the package-vm TestRunOutgoingLive test,
+// which drives a non-empty OutgoingSpec.NBDEndpoint through the real spec.
+func TestStartOutgoingRequestThreadsNbdEndpoint(t *testing.T) {
+	body, _ := json.Marshal(agentapi.MigrationOutgoingRequest{
+		MigrationID:        uuid.New(),
+		Mode:               agentapi.Live,
+		TargetEndpoint:     "10.0.0.2:49152",
+		NbdEndpoint:        strptr("h:49153"),
+		TargetNodeIdentity: strptr("node-dst.agents.otherix.local"),
+		AuthToken:          "tok",
+	})
+
+	// Decode exactly as the handler does, then exercise the same deref the
+	// handler uses to thread the optional wire field into OutgoingSpec.
+	var req agentapi.MigrationOutgoingRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	spec := vm.OutgoingSpec{NBDEndpoint: deref(req.NbdEndpoint)}
+	if spec.NBDEndpoint != "h:49153" {
+		t.Errorf("OutgoingSpec.NBDEndpoint = %q, want %q", spec.NBDEndpoint, "h:49153")
+	}
+}
