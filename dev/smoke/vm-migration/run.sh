@@ -103,12 +103,17 @@ assert_gone() {
   fail "$name still visible after delete within ${PHASE_WAIT}s"
 }
 
-# guest_up_count HANDLE STATE -> number of OTHERIX_GUEST_UP lines in the VM's
+# guest_up_count HANDLE STATE -> number of boot-completion markers in the VM's
 # serial.log on the node identified by HANDLE/STATE (0 when the file is absent).
-# Append-only log -> the count is monotonic, so callers wait for it to INCREASE.
+# Counts EITHER the cloud-init OTHERIX_GUEST_UP sentinel OR the getty login
+# prompt: a migrated guest boots from the COPIED disk where cloud-init already
+# ran on the source, so its first-boot sentinel does not re-fire, but the login
+# prompt appears on every boot and is the same "guest reached userspace" proof
+# an operator sees. Append-only log -> the count is monotonic, so callers wait
+# for it to INCREASE.
 guest_up_count() {
   local handle="$1" state="$2" n
-  n="$(run_on "$handle" sudo grep -c "OTHERIX_GUEST_UP" "${state}/vms/${VMID}/serial.log" 2>/dev/null)" || true
+  n="$(run_on "$handle" sudo grep -cE "OTHERIX_GUEST_UP| login:" "${state}/vms/${VMID}/serial.log" 2>/dev/null)" || true
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   printf '%s' "$n"
 }
