@@ -9,6 +9,7 @@ package migrations_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -430,6 +431,72 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	}
 	if agent.startTargetCalls != 0 {
 		t.Errorf("StartVMOnTarget calls = %d, want 0 (no committed cutover)", agent.startTargetCalls)
+	}
+}
+
+// commitCutoverFailStore wraps a real MigrationWorkerStore and forces
+// CommitMigrationCutover to return a staged error, so a test can drive the
+// dangerous interleaving where the source poll returns success but the atomic
+// cutover commit then fails (CAS loss / store fault). Every other method
+// delegates to the embedded real store.
+type commitCutoverFailStore struct {
+	migrations.MigrationWorkerStore
+	commitCutoverErr error
+}
+
+func (st commitCutoverFailStore) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error {
+	if st.commitCutoverErr != nil {
+		return st.commitCutoverErr
+	}
+	return st.MigrationWorkerStore.CommitMigrationCutover(ctx, migID)
+}
+
+// TestRunMigration_CommitFailsAfterSuccessKeepsSource pins the destructive-seam
+// guard: the source outgoing task polls SUCCESS, but CommitMigrationCutover then
+// ERRORS (CAS loss / store fault). The cutover never committed, so the worker
+// must return the commit error (retryable) and must NOT run post-cutover
+// convergence - the source's copy is NOT deleted and the guest is NOT started on
+// the target. DeleteVMOnSource is destructive (deletes the source disk); it may
+// fire ONLY after a committed cutover.
+func TestRunMigration_CommitFailsAfterSuccessKeepsSource(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	seedBootDisk(t, cli, vm.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+
+	// The poll terminal is success, so the worker reaches commitCutover; the store
+	// wrapper forces that commit to fail.
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+	st := commitCutoverFailStore{MigrationWorkerStore: s, commitCutoverErr: errors.New("commit cutover boom")}
+
+	h := migrations.MigrateHandler(st, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err == nil {
+		t.Fatalf("MigrateHandler(commit-fails) = nil, want the commit error to propagate (retryable)")
+	}
+
+	// KEY assertions: no committed cutover means no destructive post-cutover steps.
+	if agent.deleteSourceCalls != 0 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 0 (commit failed - source must NOT be deleted)", agent.deleteSourceCalls)
+	}
+	if agent.startTargetCalls != 0 {
+		t.Errorf("StartVMOnTarget calls = %d, want 0 (commit failed - no cutover)", agent.startTargetCalls)
+	}
+	// The VM stays pinned to source: the cutover never re-pinned it.
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (commit failed)", gotVM.PinnedNodeID, nodeA.ID)
 	}
 }
 

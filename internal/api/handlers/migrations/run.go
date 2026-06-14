@@ -324,12 +324,12 @@ func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *s
 	if vm.DesiredPhase == store.VmDesiredPhaseRunning {
 		if err := agent.StartVMOnTarget(ctx, target.AdvertisedEndpoint, vm.Name); err != nil {
 			log.WarnContext(ctx, "post-cutover start on target failed",
-				slog.String("migration_id", migID.String()), slog.String("error", err.Error()))
+				slog.String("migration_id", migID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
 		}
 	}
 	if err := agent.DeleteVMOnSource(ctx, source.AdvertisedEndpoint, vm.Name); err != nil {
 		log.WarnContext(ctx, "post-cutover source cleanup failed (disk leaked)",
-			slog.String("migration_id", migID.String()), slog.String("error", err.Error()))
+			slog.String("migration_id", migID.String()), slog.String("source", source.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
 }
 
