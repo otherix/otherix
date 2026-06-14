@@ -213,7 +213,7 @@ func TestMigrationGet_View(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	owner := uuid.New()
 	vm := ownedVM(t, cli, nodeA.ID, owner)
-	m, _ := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, _ := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	h := newHandler(s)
 	rec := httptest.NewRecorder()
@@ -290,8 +290,8 @@ func TestMigrationList_FilterByVM(t *testing.T) {
 	owner := uuid.New()
 	vm1 := ownedVM(t, cli, nodeA.ID, owner)
 	vm2 := ownedVM(t, cli, nodeA.ID, owner)
-	m1, _ := seedNodelessMigration(t, s, vm1.ID, nodeA.ID)
-	_, _ = seedNodelessMigration(t, s, vm2.ID, nodeA.ID)
+	m1, _ := seedNodelessMigration(t, s, vm1.ID, nodeA.ID, true)
+	_, _ = seedNodelessMigration(t, s, vm2.ID, nodeA.ID, true)
 
 	h := newHandler(s)
 	rec := httptest.NewRecorder()
@@ -330,7 +330,7 @@ func TestMigrationList_Paginates(t *testing.T) {
 	// Three migrations on three distinct VMs (one active migration per VM).
 	for i := 0; i < 3; i++ {
 		vm := ownedVM(t, cli, nodeA.ID, owner)
-		seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+		seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 	}
 
 	h := newHandler(s)
@@ -395,7 +395,7 @@ func TestMigrationCancel_Active200(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	owner := uuid.New()
 	vm := ownedVM(t, cli, nodeA.ID, owner)
-	m, _ := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, _ := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	h := newHandler(s)
 	rec := httptest.NewRecorder()
@@ -420,7 +420,7 @@ func TestMigrationCancel_TerminalUnchanged200(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	owner := uuid.New()
 	vm := ownedVM(t, cli, nodeA.ID, owner)
-	m, _ := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, _ := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	ctx := context.Background()
 	// Drive it to a terminal phase first (cancel once).

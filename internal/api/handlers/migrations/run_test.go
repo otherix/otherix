@@ -57,6 +57,11 @@ type fakeMigrationAgent struct {
 	startTargetErr  error
 	deleteSourceErr error
 
+	// incomingNbdEndpoint, when set, is returned as the StartIncomingMigration
+	// response's NbdEndpoint so a test can assert the worker relays it onto the
+	// outgoing request (it lands in outgoingReq.NbdEndpoint).
+	incomingNbdEndpoint *string
+
 	// agentTaskID is the id StartOutgoingMigration returns (and PollTask echoes).
 	agentTaskID uuid.UUID
 }
@@ -70,6 +75,7 @@ func (f *fakeMigrationAgent) StartIncomingMigration(_ context.Context, _, _ stri
 		AuthToken:      "tok-" + req.MigrationID.String(),
 		ListenEndpoint: "10.0.0.2:49152",
 		MigrationID:    req.MigrationID,
+		NbdEndpoint:    f.incomingNbdEndpoint,
 	}, nil
 }
 
@@ -193,7 +199,7 @@ func (migrationJobArgsStub) Kind() string { return "vm.migrate" }
 
 // seedNodelessMigration creates a node-less (target nil) migration + backing task
 // for vm pinned to source, returning the migration row and the backing task id.
-func seedNodelessMigration(t *testing.T, s *etcdstore.Store, vmID, source uuid.UUID) (store.Migration, uuid.UUID) {
+func seedNodelessMigration(t *testing.T, s *etcdstore.Store, vmID, source uuid.UUID, live bool) (store.Migration, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	src := source
@@ -206,7 +212,7 @@ func seedNodelessMigration(t *testing.T, s *etcdstore.Store, vmID, source uuid.U
 		SourceNodeID: &src,
 		TargetNodeID: nil,
 		Reason:       store.MigrationReasonManual,
-		Live:         true,
+		Live:         live,
 		Task: store.CreateTaskParams{
 			ID: taskID, Type: "vm.migrate", Status: store.TaskStatusPending,
 			ResourceType: "migration", ResourceID: &resID, MaxAttempts: 25,
@@ -224,7 +230,7 @@ func seedNodelessMigration(t *testing.T, s *etcdstore.Store, vmID, source uuid.U
 // (pass "" to exercise the empty-pool default-to-source path). The migration is
 // NOT node-less, so the worker skips placeAndBind and goes straight to the
 // handshake.
-func seedExplicitMigration(t *testing.T, s *etcdstore.Store, vmID, source, target uuid.UUID, pool string) (store.Migration, uuid.UUID) {
+func seedExplicitMigration(t *testing.T, s *etcdstore.Store, vmID, source, target uuid.UUID, pool string, live bool) (store.Migration, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	src := source
@@ -239,7 +245,7 @@ func seedExplicitMigration(t *testing.T, s *etcdstore.Store, vmID, source, targe
 		TargetNodeID:   &tgt,
 		TargetPoolName: pool,
 		Reason:         store.MigrationReasonManual,
-		Live:           true,
+		Live:           live,
 		Task: store.CreateTaskParams{
 			ID: taskID, Type: "vm.migrate", Status: store.TaskStatusPending,
 			ResourceType: "migration", ResourceID: &resID, MaxAttempts: 25,
@@ -298,7 +304,7 @@ func TestRunMigration_DefaultsTargetPoolToSourcePool(t *testing.T) {
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default-on-b")
 
 	// Explicit --node migration to B with NO pool (empty TargetPoolName).
-	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "")
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "", true)
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
 	placer := &fakePlacer{} // must NOT be called: the migration is already bound.
@@ -348,7 +354,7 @@ func TestRunMigration_PendingWhenTargetPoolAbsent(t *testing.T) {
 	srcPool := seedPool(t, s, nodeA.ID, "src-pool", "/var/lib/otherix/pools/src-pool-on-a")
 	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 
-	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "")
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "", true)
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
 	placer := &fakePlacer{}
@@ -390,6 +396,9 @@ func TestRunMigration_PendingWhenTargetPoolAbsent(t *testing.T) {
 // TestRunMigration_HappyNodeless drives the full node-less success path: the
 // placer picks target B, the worker binds it, runs the two-phase handshake, the
 // source outgoing task converges, and CommitMigrationCutover re-pins the VM to B.
+// The migration is OFFLINE (live=false) so the post-cutover StartVMOnTarget runs
+// (the live path self-resumes and is covered by
+// TestDriveHandshake_LiveSkipsStartVMOnTarget).
 func TestRunMigration_HappyNodeless(t *testing.T) {
 	s, cli := freshStore(t)
 	ctx := context.Background()
@@ -402,7 +411,7 @@ func TestRunMigration_HappyNodeless(t *testing.T) {
 	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
 	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, false)
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
 	placer := &fakePlacer{decision: scheduler.PlacementDecision{
@@ -475,6 +484,81 @@ func TestRunMigration_HappyNodeless(t *testing.T) {
 	}
 }
 
+// TestDriveHandshake_LiveSkipsStartVMOnTarget pins the live convergence rule: for
+// a LIVE migration the target QEMU self-resumes the guest at switchover, so the
+// worker must NOT call StartVMOnTarget (a start there is a no-op-or-error).
+// DeleteVMOnSource still runs (behind the committed cutover). The target's
+// nbd_endpoint from StartIncomingMigration must be relayed into the outgoing
+// request so the source dials the right NBD disk-export listener.
+func TestDriveHandshake_LiveSkipsStartVMOnTarget(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID) // DesiredPhase=running.
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	// Explicit (bound) LIVE migration: skips placement, goes straight to handshake.
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	nbd := "h:49153"
+	agent := &fakeMigrationAgent{
+		terminal:            agentclient.TaskTerminal{Status: "success"},
+		incomingNbdEndpoint: &nbd,
+	}
+	placer := &fakePlacer{} // must NOT be called: the migration is already bound.
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(live) = %v, want nil", err)
+	}
+
+	if agent.startTargetCalls != 0 {
+		t.Errorf("live migration called StartVMOnTarget %d times, want 0 (guest self-resumes)", agent.startTargetCalls)
+	}
+	if agent.deleteSourceCalls != 1 {
+		t.Errorf("live migration called DeleteVMOnSource %d times, want 1", agent.deleteSourceCalls)
+	}
+	if agent.outgoingReq.NbdEndpoint == nil || *agent.outgoingReq.NbdEndpoint != "h:49153" {
+		t.Errorf("nbd_endpoint relayed = %v, want h:49153", agent.outgoingReq.NbdEndpoint)
+	}
+}
+
+// TestDriveHandshake_OfflineStillStartsVMOnTarget is the revert-to-confirm: an
+// OFFLINE migration whose VM desires running STILL calls StartVMOnTarget (the
+// target adopts a stopped VM and the CP starts it). The live gate must not change
+// the 2a offline behaviour.
+func TestDriveHandshake_OfflineStillStartsVMOnTarget(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID) // DesiredPhase=running.
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	// Explicit (bound) OFFLINE migration.
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	placer := &fakePlacer{} // must NOT be called: the migration is already bound.
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(offline) = %v, want nil", err)
+	}
+
+	if agent.startTargetCalls != 1 {
+		t.Errorf("offline migration called StartVMOnTarget %d times, want 1 (CP starts the adopted stopped VM)", agent.startTargetCalls)
+	}
+	if agent.deleteSourceCalls != 1 {
+		t.Errorf("offline migration called DeleteVMOnSource %d times, want 1", agent.deleteSourceCalls)
+	}
+}
+
 // derefStr returns the pointee of a *string, or "" when nil.
 func derefStr(s *string) string {
 	if s == nil {
@@ -497,7 +581,7 @@ func TestRunMigration_PendingSingleNode(t *testing.T) {
 	// pending verdict here comes from the placer (no eligible node), not the pool.
 	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
 	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	agent := &fakeMigrationAgent{}
 	placer := &fakePlacer{err: scheduler.ErrNoEligibleNodes}
@@ -541,7 +625,7 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
 	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
@@ -622,7 +706,7 @@ func TestRunMigration_CommitFailsAfterSuccessKeepsSource(t *testing.T) {
 	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
 	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	// The poll terminal is success, so the worker reaches commitCutover; the store
 	// wrapper forces that commit to fail.
@@ -669,7 +753,7 @@ func TestRunMigration_FinalizesDanglingTaskCompleted(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	// Simulate the crash window: bind + commit the cutover so the migration is
 	// terminal-completed, but DO NOT finalize the task (it stays pending).
@@ -725,7 +809,7 @@ func TestRunMigration_FinalizesDanglingTaskFailed(t *testing.T) {
 
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	// Drive the migration to terminal-failed via the store, leaving the task
 	// un-finalized (the crash window between the migration fail-write and the task
@@ -772,7 +856,7 @@ func TestRunMigration_ResumesWithoutDoublePost(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	// Bind the target and persist an agent task id: this is the post-restart state
 	// a redelivery resumes from (the source push already started on a prior run).
@@ -853,7 +937,7 @@ func TestRunMigration_AcquiresPlacementLockBeforeBind(t *testing.T) {
 	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
 	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
-	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
 	placer := &fakePlacer{decision: scheduler.PlacementDecision{

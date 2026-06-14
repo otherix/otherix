@@ -313,7 +313,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 		// the already-committed migration. DeleteVMOnSource is unreachable on any
 		// failed / aborted / pending path - it lives strictly on the success arm
 		// after the commit.
-		convergePostCutover(ctx, agent, log, m.ID, vm, source, target)
+		convergePostCutover(ctx, agent, log, m.ID, vm, source, target, m.Live)
 		return nil
 	case "failed", "cancelled":
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
@@ -323,11 +323,15 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 }
 
 // convergePostCutover runs the best-effort post-cutover steps: start the guest
-// on the target when its desired phase is running, then delete the source's
-// stale copy. Both are best-effort and reached ONLY after a committed cutover;
-// neither failure fails the (already committed) migration - a start failure
-// leaves the guest stopped on target, a delete failure leaks the source disk.
-// Leak, never destroy.
+// on the target when its desired phase is running AND the migration was offline,
+// then delete the source's stale copy. Both are best-effort and reached ONLY
+// after a committed cutover; neither failure fails the (already committed)
+// migration - a start failure leaves the guest stopped on target, a delete
+// failure leaks the source disk. Leak, never destroy.
+// The start is gated on !live: for a LIVE migration the target QEMU already
+// resumed the guest itself at switchover, so a start here would be a
+// no-op-or-error. For an OFFLINE migration the target adopted a stopped VM and
+// the CP starts it.
 // Known limitation: when the migrated VM's desired phase is NOT running (a cold
 // migration that stays stopped on the target), no start is dispatched, so the
 // agent's start-path teardown of the incoming qemu-nbd (releaseIncomingNBD) does
@@ -335,8 +339,8 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 // (still holding the disk write lock) are reclaimed lazily on the VM's first
 // start or on agent restart. A leak, never a destroy; acceptable for this slice
 // since offline migration overwhelmingly targets running VMs.
-func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node) {
-	if vm.DesiredPhase == store.VmDesiredPhaseRunning {
+func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node, live bool) {
+	if vm.DesiredPhase == store.VmDesiredPhaseRunning && !live {
 		if err := agent.StartVMOnTarget(ctx, target.AdvertisedEndpoint, vm.Name); err != nil {
 			log.WarnContext(ctx, "post-cutover start on target failed",
 				slog.String("migration_id", migID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
@@ -392,6 +396,10 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		AuthToken:          incoming.AuthToken,
 		MaxBandwidthBytes:  m.MaxBandwidthBytes,
 		MaxDowntimeMs:      int32PtrToInt(m.MaxDowntimeMs),
+		// Relay the target's NBD disk-export listener to the source so a live push
+		// dials the right endpoint. Nil for offline migrations (the target leaves it
+		// unset and the single RAM endpoint doubles as the qemu-nbd server).
+		NbdEndpoint: incoming.NbdEndpoint,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start outgoing migration: %v", err)
