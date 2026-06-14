@@ -41,7 +41,12 @@ tls:
   key_path:     "/var/lib/otherix/certs/agent.key"
 
 migration:
-  host: "0.0.0.0"
+  # Per-node reachable inter-node address (ADR 0013): the host peers dial for
+  # the migration data path. copy-config-lima substitutes this Lima VM's
+  # 192.168.104.x address - NOT 0.0.0.0, which is a bind-all placeholder and is
+  # not routable as a connect destination. QEMU native TLS secures the stream
+  # end-to-end, so this works over any reachable L3 (no overlay required).
+  host: "__MIGRATION_HOST__"
   port_range_start: 49152
   port_range_end: 49251
 

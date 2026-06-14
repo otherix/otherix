@@ -460,7 +460,7 @@ copy-config-lima: lima-ensure
 	  wgip=$$(limactl shell $$vm -- ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.104\.[0-9]+' | head -1); \
 	  if [ -z "$$wgip" ]; then echo "no user-v2 (192.168.104.x) IP on $$vm yet — is the user-v2 network up?"; exit 1; fi; \
 	  echo ">> $$vm WireGuard advertised endpoint: $$wgip:51820"; \
-	  sed "s|__WG_ADVERTISED_ENDPOINT__|$$wgip:51820|" dev/config/agent-macos.yaml > /tmp/agent-$$vm.yaml; \
+	  sed -e "s|__WG_ADVERTISED_ENDPOINT__|$$wgip:51820|" -e "s|__MIGRATION_HOST__|$$wgip|" dev/config/agent-macos.yaml > /tmp/agent-$$vm.yaml; \
 	  limactl cp /tmp/agent-$$vm.yaml $$vm:/tmp/agent.yaml; \
 	  limactl shell $$vm -- sh -c 'sudo mv /tmp/agent.yaml /etc/otherix/agent.yaml && sudo chown "$$(id -un):$$(id -gn)" /etc/otherix/agent.yaml'; \
 	done
