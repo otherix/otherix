@@ -373,15 +373,54 @@ func (s *Store) nodeEffective(ctx context.Context, n store.Node) (store.NodeEffe
 	if err != nil {
 		return store.NodeEffectiveAvailability{}, err
 	}
+	// Reserve capacity for VMs being live-migrated INTO this node, for the
+	// migration's duration (spec crash-semantics). During an active migration
+	// the VM stays pinned to the SOURCE until cutover (CommitMigrationCutover
+	// flips PinnedNodeID to the target), so on the target node it is NOT in the
+	// pinned_node index pendingReservations ranges - this reservation is the only
+	// subtraction here and does not double-count. When the migration goes
+	// terminal its node-index entry is deleted and the reservation disappears;
+	// after cutover the VM is pinned to the target and counted by the pending
+	// path instead.
+	resvCPU, resvMem, err := s.migrationTargetReservations(ctx, n.ID)
+	if err != nil {
+		return store.NodeEffectiveAvailability{}, err
+	}
 	if n.CPUCoresAvailable != nil {
-		v := max(*n.CPUCoresAvailable-pendCPU, 0)
+		v := max(*n.CPUCoresAvailable-pendCPU-resvCPU, 0)
 		e.CPUCoresEffective = &v
 	}
 	if n.MemoryAvailableMib != nil {
-		v := max(*n.MemoryAvailableMib-pendMem, 0)
+		v := max(*n.MemoryAvailableMib-pendMem-resvMem, 0)
 		e.MemoryEffectiveMib = &v
 	}
 	return e, nil
+}
+
+// migrationTargetReservations sums the cpu/memory of VMs being live-migrated
+// into the node by an active (non-terminal) migration. It reuses the per-node
+// migration index activeMigrationsOnNode reads (which already excludes terminal
+// migrations) and keeps only migrations whose target is this node.
+func (s *Store) migrationTargetReservations(ctx context.Context, nodeID uuid.UUID) (cpu int32, mem int64, err error) {
+	migs, err := s.activeMigrationsOnNode(ctx, nodeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, m := range migs {
+		if m.TargetNodeID == nil || *m.TargetNodeID != nodeID {
+			continue
+		}
+		vm, gerr := s.VMByID(ctx, m.VmID)
+		if gerr != nil {
+			if errors.Is(gerr, store.ErrNotFound) {
+				continue
+			}
+			return 0, 0, gerr
+		}
+		cpu += vm.CpuCores
+		mem += int64(vm.MemoryMib)
+	}
+	return cpu, mem, nil
 }
 
 // pendingReservations sums the cpu/memory of vms pinned to the node that the
