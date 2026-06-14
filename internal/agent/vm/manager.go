@@ -174,7 +174,7 @@ type Manager struct {
 	// impls in New; tests inject no-op / recording fakes.
 	migLaunchIncoming func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error
 	migDialQMP        func(socket string) (qemu.LiveSourceConn, error)
-	migRunLiveSource  func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, progress func(qemu.MigrateInfo)) error
+	migRunLiveSource  func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error
 
 	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
 	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard

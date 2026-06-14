@@ -42,6 +42,19 @@ type MigrateInfo struct {
 	} `json:"ram"`
 }
 
+// BlockJobInfo is the decoded query-block-jobs entry the live-migration
+// reporter uses to surface disk-mirror progress (offset/len) and readiness.
+type BlockJobInfo struct {
+	Type   string `json:"type"`
+	Device string `json:"device"`
+	Len    int64  `json:"len"`
+	Offset int64  `json:"offset"`
+	Busy   bool   `json:"busy"`
+	Ready  bool   `json:"ready"`
+	Status string `json:"status"`
+	Speed  int64  `json:"speed"`
+}
+
 // mustCmd marshals a QMP command envelope. args==nil omits the
 // "arguments" key entirely (for verbs that take no arguments). A
 // marshal failure is a programming error (only string/number/bool/map
@@ -393,6 +406,28 @@ func (c *QMPClient) QueryMigrate() (MigrateInfo, error) {
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return MigrateInfo{}, fmt.Errorf("query-migrate decode: %w", err)
+	}
+	return resp.Return, nil
+}
+
+// queryBlockJobsCmd builds query-block-jobs (no arguments).
+func queryBlockJobsCmd() []byte {
+	return mustCmd("query-block-jobs", nil)
+}
+
+// QueryBlockJobs issues query-block-jobs and returns the decoded list of
+// active block jobs, including the disk mirror's offset/len progress and
+// readiness.
+func (c *QMPClient) QueryBlockJobs() ([]BlockJobInfo, error) {
+	raw, err := c.monitor.Run(queryBlockJobsCmd())
+	if err != nil {
+		return nil, fmt.Errorf("query-block-jobs: %w", err)
+	}
+	var resp struct {
+		Return []BlockJobInfo `json:"return"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("query-block-jobs decode: %w", err)
 	}
 	return resp.Return, nil
 }

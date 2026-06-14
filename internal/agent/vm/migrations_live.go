@@ -237,12 +237,7 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		ProgressPollInterval: 2 * time.Second,
 	}
 
-	runErr := m.migRunLiveSource(ctx, conn, spec, func(info qemu.MigrateInfo) {
-		m.migrations.Update(s.MigrationID, func(r *migration.Record) {
-			r.BytesTotal = info.RAM.Total
-			r.BytesTransferred = info.RAM.Total - info.RAM.Remaining
-		})
-	})
+	runErr := m.migRunLiveSource(ctx, conn, spec, m.liveProgressReporter(s.MigrationID))
 	if runErr != nil {
 		fail("convergence_failed", fmt.Sprintf("live migration: %v", runErr))
 		return
@@ -253,6 +248,71 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		r.CompletedAt = time.Now().UTC()
 	})
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+}
+
+// liveProgressReporter returns the periodic LiveProgress callback handed to
+// RunLiveSource. Each tick it (1) logs the full disk-mirror + RAM detail at
+// INFO so an operator (and we) can SEE exactly where a migration is stuck, and
+// (2) updates the coarse bytes-progress on the migration record so
+// `migration get` reflects it. During the DISK phase (no/empty RAM-migrate
+// status, a mirror block job present) the bytes come from the boot disk's
+// block job offset/len; once the RAM phase has started (migrate status
+// non-empty and not "none") they come from the query-migrate RAM counters.
+//
+// NOTE: surfacing the FULL query-migrate breakdown through the CP
+// `migration get` API (new Migration schema fields) is a deliberate follow-up,
+// out of scope here - this puts the full detail in the AGENT LOG and the
+// coarse bytes-progress on the existing record/API.
+func (m *Manager) liveProgressReporter(migrationID uuid.UUID) func(qemu.LiveProgress) {
+	return func(p qemu.LiveProgress) {
+		bootJob, hasBootJob := liveBootDiskJob(p.BlockJobs)
+		ramStarted := p.Migrate.Status != "" && p.Migrate.Status != "none"
+
+		log := m.log.With("migration_id", migrationID.String())
+		if hasBootJob {
+			log = log.With(
+				"block_job_device", bootJob.Device,
+				"block_job_offset", bootJob.Offset,
+				"block_job_len", bootJob.Len,
+				"block_job_ready", bootJob.Ready,
+				"block_job_status", bootJob.Status,
+			)
+		} else {
+			log = log.With("block_jobs", len(p.BlockJobs))
+		}
+		log.Info("live migration progress",
+			"migrate_status", p.Migrate.Status,
+			"ram_remaining", p.Migrate.RAM.Remaining,
+			"ram_transferred", p.Migrate.RAM.Transferred,
+			"ram_total", p.Migrate.RAM.Total,
+			"ram_dirty_pages_rate", p.Migrate.RAM.DirtyPagesRate,
+		)
+
+		m.migrations.Update(migrationID, func(r *migration.Record) {
+			switch {
+			case ramStarted:
+				r.BytesTotal = p.Migrate.RAM.Total
+				r.BytesTransferred = p.Migrate.RAM.Transferred
+			case hasBootJob:
+				r.BytesTotal = bootJob.Len
+				r.BytesTransferred = bootJob.Offset
+			}
+		})
+	}
+}
+
+// liveBootDiskJob returns the block job mirroring the boot disk
+// (Device == liveSourceDiskNode) and whether it was found. The reporter keys
+// disk-phase progress on this entry; an absent entry means the mirror has not
+// started (or has finalized) and the reporter falls back to logging the raw
+// count.
+func liveBootDiskJob(jobs []qemu.BlockJobInfo) (qemu.BlockJobInfo, bool) {
+	for _, j := range jobs {
+		if j.Device == liveSourceDiskNode {
+			return j, true
+		}
+	}
+	return qemu.BlockJobInfo{}, false
 }
 
 // cancelLive aborts a pre-cutover live migration best-effort: cancel the RAM

@@ -50,6 +50,10 @@ func (f *fakeLiveConn) MigrateCancel() error {
 }
 func (f *fakeLiveConn) BlockdevDel(nodeName string) error       { return nil }
 func (f *fakeLiveConn) QueryMigrate() (qemu.MigrateInfo, error) { return qemu.MigrateInfo{}, nil }
+func (f *fakeLiveConn) QueryBlockJobs() ([]qemu.BlockJobInfo, error) {
+	return []qemu.BlockJobInfo{}, nil
+}
+
 func (f *fakeLiveConn) Events(ctx context.Context) (<-chan qmp.Event, error) {
 	return nil, nil
 }
@@ -152,7 +156,7 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 
 	var ranLive bool
 	var gotSpec qemu.LiveSourceSpec
-	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, progress func(qemu.MigrateInfo)) error {
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
 		ranLive = true
 		gotSpec = spec
 		return nil

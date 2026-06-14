@@ -129,6 +129,10 @@ func (f *fakeLiveConn) QueryMigrate() (MigrateInfo, error) {
 	return f.migInfo, nil
 }
 
+func (f *fakeLiveConn) QueryBlockJobs() ([]BlockJobInfo, error) {
+	return []BlockJobInfo{}, nil
+}
+
 func (f *fakeLiveConn) Events(ctx context.Context) (<-chan qmp.Event, error) {
 	return f.events, nil
 }
@@ -185,6 +189,52 @@ func TestRunLiveSource_HappyPathOrder(t *testing.T) {
 	}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
+	}
+}
+
+// TestRunLiveSource_ReporterFires asserts the periodic reporter is invoked at
+// least once during a happy-path run and that it carries the block-job + RAM
+// snapshot the manager logs and surfaces. The happy-path events are fed only
+// after the reporter has fired once, so the run cannot complete before the
+// reporter ticks (no reliance on goroutine timing).
+func TestRunLiveSource_ReporterFires(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 4)}
+
+	var mu sync.Mutex
+	var count int
+	fired := make(chan struct{})
+	report := func(LiveProgress) {
+		mu.Lock()
+		count++
+		first := count == 1
+		mu.Unlock()
+		if first {
+			close(fired)
+		}
+	}
+
+	// Release the happy-path events only once the reporter has ticked, so the
+	// run is guaranteed to outlive at least one report call.
+	go func() {
+		<-fired
+		f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+		f.events <- migrationEvent("pre-switchover")
+		f.events <- blockJobEvent("BLOCK_JOB_COMPLETED", "mirror0")
+		f.events <- migrationEvent("completed")
+	}()
+
+	spec := testSpec()
+	spec.ProgressPollInterval = 5 * time.Millisecond
+
+	if err := RunLiveSource(context.Background(), f, spec, report); err != nil {
+		t.Fatalf("RunLiveSource() = %v, want nil", err)
+	}
+
+	mu.Lock()
+	got := count
+	mu.Unlock()
+	if got == 0 {
+		t.Errorf("reporter was not invoked during a happy-path run")
 	}
 }
 

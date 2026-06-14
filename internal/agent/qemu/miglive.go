@@ -34,6 +34,7 @@ type LiveSourceConn interface {
 	MigrateCancel() error
 	BlockdevDel(nodeName string) error
 	QueryMigrate() (MigrateInfo, error)
+	QueryBlockJobs() ([]BlockJobInfo, error)
 	Events(ctx context.Context) (<-chan qmp.Event, error)
 	Close() error
 }
@@ -61,10 +62,20 @@ type LiveSourceSpec struct {
 	ProgressPollInterval time.Duration // watchdog poll cadence (default 2s if zero)
 }
 
+// LiveProgress is a point-in-time snapshot of a live migration's disk-mirror
+// and RAM-transfer state, emitted periodically by RunLiveSource so the manager
+// can log it and surface progress on the migration record.
+type LiveProgress struct {
+	BlockJobs []BlockJobInfo
+	Migrate   MigrateInfo
+}
+
 // RunLiveSource drives the source side of a live migration to completion
 // or fails closed (aborting and leaving the guest on the source).
-// progress, if non-nil, is called on each watchdog poll with the latest
-// MigrateInfo so the caller can surface RAM progress.
+// report, if non-nil, is called periodically (every
+// s.ProgressPollInterval, default 3s) with a LiveProgress snapshot of the
+// disk-mirror block jobs and the RAM-migration counters so the caller can
+// log and surface progress.
 //
 // The load-bearing order is finalize-then-continue: the disk mirror is
 // gracefully finalized (block-job-cancel force=false then wait
@@ -75,11 +86,20 @@ type LiveSourceSpec struct {
 // caught by the watchdog) RunLiveSource aborts both the RAM migration
 // and the disk mirror and returns the wrapped error, leaving the guest
 // running on the source.
-func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, progress func(MigrateInfo)) error {
+func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, report func(LiveProgress)) error {
 	ch, err := conn.Events(ctx)
 	if err != nil {
 		return fmt.Errorf("open qmp events: %w", err)
 	}
+
+	// Periodic best-effort progress reporter. It polls query-block-jobs
+	// (disk phase) and query-migrate (RAM phase) concurrently with the
+	// main sequencer and the watchdog; the underlying SocketMonitor.Run is
+	// mutex-serialized, so concurrent polling cannot mix responses. The
+	// reporter exits when RunLiveSource returns (done closed via defer).
+	done := make(chan struct{})
+	defer close(done)
+	go reportLiveProgress(done, conn, s, report)
 
 	if err := conn.ObjectAddTLSCreds(migTLSCredsID, s.CredsDir, "client"); err != nil {
 		abortLiveSource(conn, s)
@@ -126,7 +146,7 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, p
 		return fmt.Errorf("start ram migration: %w", err)
 	}
 
-	if err := waitPreSwitchoverWithWatchdog(ctx, conn, ch, s, progress); err != nil {
+	if err := waitPreSwitchoverWithWatchdog(ctx, conn, ch, s); err != nil {
 		abortLiveSource(conn, s)
 		return fmt.Errorf("wait pre-switchover: %w", err)
 	}
@@ -158,12 +178,39 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, p
 	return nil
 }
 
+// reportLiveProgress polls the disk-mirror block jobs and the RAM-migration
+// counters every s.ProgressPollInterval (default 3s) and, when report is
+// non-nil, hands each snapshot to it. Both queries are best-effort: an
+// individual query error is skipped so a transient failure never stalls
+// progress reporting. It runs until done is closed (RunLiveSource returns).
+func reportLiveProgress(done <-chan struct{}, conn LiveSourceConn, s LiveSourceSpec, report func(LiveProgress)) {
+	if report == nil {
+		return
+	}
+	interval := s.ProgressPollInterval
+	if interval <= 0 {
+		interval = 3 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			bj, _ := conn.QueryBlockJobs()
+			mi, _ := conn.QueryMigrate()
+			report(LiveProgress{BlockJobs: bj, Migrate: mi})
+		}
+	}
+}
+
 // waitPreSwitchoverWithWatchdog waits for the MIGRATION pre-switchover
 // event while a background watchdog polls query-migrate. If the RAM
 // remaining stops decreasing for longer than s.ConvergenceTimeout the
 // watchdog cancels the wait so RunLiveSource aborts to the source rather
 // than blocking forever on a migration that will never converge.
-func waitPreSwitchoverWithWatchdog(ctx context.Context, conn LiveSourceConn, ch <-chan qmp.Event, s LiveSourceSpec, progress func(MigrateInfo)) error {
+func waitPreSwitchoverWithWatchdog(ctx context.Context, conn LiveSourceConn, ch <-chan qmp.Event, s LiveSourceSpec) error {
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -186,9 +233,6 @@ func waitPreSwitchoverWithWatchdog(ctx context.Context, conn LiveSourceConn, ch 
 				info, err := conn.QueryMigrate()
 				if err != nil {
 					continue
-				}
-				if progress != nil {
-					progress(info)
 				}
 				if minRemaining < 0 || info.RAM.Remaining < minRemaining {
 					minRemaining = info.RAM.Remaining

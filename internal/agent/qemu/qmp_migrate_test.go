@@ -62,6 +62,19 @@ func TestBlockJobCancelCmd_ForceFlag(t *testing.T) {
 	}
 }
 
+func TestQueryBlockJobsCmd_NoArguments(t *testing.T) {
+	var m map[string]any
+	if err := json.Unmarshal(queryBlockJobsCmd(), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["execute"] != "query-block-jobs" {
+		t.Errorf("execute = %v, want query-block-jobs", m["execute"])
+	}
+	if _, ok := m["arguments"]; ok {
+		t.Errorf("query-block-jobs must omit arguments, got %v", m["arguments"])
+	}
+}
+
 func TestMigrateCancelCmd_Underscore(t *testing.T) {
 	var m map[string]any
 	_ = json.Unmarshal(migrateCancelCmd(), &m)
