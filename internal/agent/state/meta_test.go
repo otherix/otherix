@@ -53,6 +53,28 @@ func TestWriteMeta_ReadMeta_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestVMMetaMigratedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	in := &VMMeta{
+		VMID:     uuid.New(),
+		Name:     "demo",
+		PoolName: "default",
+		DiskPath: "/d/disk.qcow2",
+		Status:   "stopped",
+		Migrated: true,
+	}
+	if err := WriteMeta(dir, in); err != nil {
+		t.Fatalf("WriteMeta() error = %v", err)
+	}
+	out, err := ReadMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadMeta() error = %v", err)
+	}
+	if !out.Migrated {
+		t.Errorf("ReadMeta().Migrated = false, want true")
+	}
+}
+
 func TestWriteMeta_AtomicTempCleared(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "vm")
 	if err := WriteMeta(dir, sampleMeta()); err != nil {

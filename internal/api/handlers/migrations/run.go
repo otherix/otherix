@@ -19,6 +19,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
+// errTargetPoolNotReady signals that the bound target node does not (yet) have
+// the migration's pool. It is retryable-as-pending (D4): the VM stays on
+// source and the migration waits for the pool to appear, rather than failing.
+var errTargetPoolNotReady = errors.New("target pool not ready on node")
+
 // Run-form migration worker for the etcd job runtime. It drains a vm.migrate job
 // and drives the migration to a terminal outcome against the agent two-phase
 // handshake, implementing spec D2 (node-less placement), D3 (PinnedNodeID stays
@@ -48,6 +53,9 @@ type MigrationWorkerStore interface {
 	BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error
 	UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error
 	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
+	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
+	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
+	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 }
 
 // MigrationAgentClient is the narrow agent-call seam the worker drives the
@@ -57,6 +65,13 @@ type MigrationAgentClient interface {
 	StartIncomingMigration(ctx context.Context, endpoint, vmName string, req agentapi.MigrationIncomingRequest) (agentapi.MigrationIncomingResponse, error)
 	StartOutgoingMigration(ctx context.Context, endpoint, vmName string, req agentapi.MigrationOutgoingRequest) (string, error)
 	PollTask(ctx context.Context, endpoint string, agentTaskID uuid.UUID) (agentclient.TaskTerminal, error)
+	// StartVMOnTarget starts the migrated guest on the target node after a
+	// committed cutover (when the VM's desired phase is running).
+	StartVMOnTarget(ctx context.Context, endpoint, vmName string) error
+	// DeleteVMOnSource deletes the source's now-stale copy after a committed
+	// cutover. Best-effort: a failure leaks a disk (recoverable), never destroys
+	// a wanted VM.
+	DeleteVMOnSource(ctx context.Context, endpoint, vmName string) error
 }
 
 // Placer is the placement seam (spec D2): a node-less migrate scores a target
@@ -145,6 +160,18 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load vm: %v", err))
 	}
 
+	// An omitted --pool defaults to the source VM's pool name (correction A):
+	// a VM keeps its pool name across a move. placeAndBind (node-less) and the
+	// explicit-node handshake both consume m.TargetPoolName below.
+	if m.TargetPoolName == "" {
+		spn, err := sourcePoolName(ctx, st, m.VmID)
+		if err != nil {
+			// Retryable: the VM is still on source, nothing durable moved.
+			return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("default target pool: %v", err))
+		}
+		m.TargetPoolName = spn
+	}
+
 	// Spec D2: node-less migrate picks a target via the scheduler (excluding the
 	// source), then binds it. A bound migration skips straight to the handshake.
 	if m.TargetNodeID == nil {
@@ -180,10 +207,9 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		return store.Migration{}, fmt.Errorf("acquire placement lock: %v", err)
 	}
 
+	// TargetPoolName is pre-defaulted to the source VM's pool name in
+	// runMigration; placeAndBind no longer falls back to cfg.DefaultPoolName.
 	poolName := m.TargetPoolName
-	if poolName == "" {
-		poolName = cfg.DefaultPoolName
-	}
 	src := *m.SourceNodeID
 	decision, perr := placer.Place(ctx, scheduler.PlacementRequest{
 		PoolName:      poolName,
@@ -192,22 +218,9 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		MemoryMiB:     int(vm.MemoryMib),
 	})
 	if perr != nil {
-		reason := scheduleReasonFor(perr)
-		now := time.Now().UTC()
-		pending := store.MigrationPhasePending
-		if uerr := st.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{
-			Phase:                 &pending,
-			SchedulingReason:      &reason,
-			LastScheduleAttemptAt: &now,
-		}); uerr != nil {
-			// A progress-write failure is itself retryable; surface it so the
-			// envelope eventually persists.
-			return store.Migration{}, fmt.Errorf("record scheduling reason: %v (cause: %v)", uerr, perr)
-		}
-		log.InfoContext(ctx, "migration pending: no target bound",
-			slog.String("migration_id", m.ID.String()), slog.String("scheduling_reason", reason))
-		// RETRYABLE: return the cause so the dispatcher requeues and the scheduler
-		// retry loop drives the next attempt. The agent is not contacted.
+		// RETRYABLE: record the pending envelope and return the cause so the
+		// dispatcher requeues and the scheduler retry loop drives the next attempt.
+		// The agent is not contacted.
 		//
 		// SLICE-1 LIMITATION (spec D4 retry-forever not yet fully honored): a pending
 		// migration is re-driven ONLY by the vm.migrate job retry budget
@@ -219,11 +232,10 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		// dropped-pending migration leaves the VM un-migratable (every future
 		// CreateMigration returns 409 ErrMigrationActiveExists) until an operator
 		// `migration cancel` (or vm stop/delete) releases the guard via the terminal
-		// transition. The periodic pending re-driver below also fixes this. A periodic
-		// pending-migration re-driver (mirroring the vms.schedule loop, which requeues
-		// unscheduled VMs indefinitely) is required to honor D4 and is tracked in
-		// ROADMAP; it is out of scope for slice 1.
-		return store.Migration{}, fmt.Errorf("migration %s unschedulable: %v", m.ID, perr)
+		// transition. A periodic pending-migration re-driver (mirroring the
+		// vms.schedule loop, which requeues unscheduled VMs indefinitely) is required
+		// to honor D4 and is tracked in ROADMAP; it is out of scope for slice 1.
+		return store.Migration{}, recordPending(ctx, st, log, m.ID, scheduleReasonFor(perr), perr)
 	}
 
 	winnerPool := decision.PoolInstance.Name
@@ -269,6 +281,11 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 
 	agentTaskID, err := startOrResume(ctx, st, agent, log, taskID, task, vm, m, source, target)
 	if err != nil {
+		if errors.Is(err, errTargetPoolNotReady) {
+			// The bound target lacks the migration's pool (correction B): record
+			// pending and requeue (D4), VM stays on source, agent never contacted.
+			return recordPending(ctx, st, log, m.ID, ReasonPoolNotReady, err)
+		}
 		// A handshake-setup error (incoming prep, outgoing start) is retryable: the
 		// VM is still on source, nothing durable moved. Record failed-as-retryable
 		// envelope and return the cause so the dispatcher requeues against the
@@ -287,11 +304,47 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 
 	switch terminal.Status {
 	case "success":
-		return commitCutover(ctx, st, log, taskID, m.ID, terminal)
+		if err := commitCutover(ctx, st, log, taskID, m.ID, terminal); err != nil {
+			return err
+		}
+		// Post-cutover convergence. Reached ONLY after CommitMigrationCutover
+		// returned nil (a committed cutover - a fail-closed input). Best-effort:
+		// a failure here leaks (recoverable), never destroys, and must NOT fail
+		// the already-committed migration. DeleteVMOnSource is unreachable on any
+		// failed / aborted / pending path - it lives strictly on the success arm
+		// after the commit.
+		convergePostCutover(ctx, agent, log, m.ID, vm, source, target)
+		return nil
 	case "failed", "cancelled":
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
 	default:
 		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", terminal.Status))
+	}
+}
+
+// convergePostCutover runs the best-effort post-cutover steps: start the guest
+// on the target when its desired phase is running, then delete the source's
+// stale copy. Both are best-effort and reached ONLY after a committed cutover;
+// neither failure fails the (already committed) migration - a start failure
+// leaves the guest stopped on target, a delete failure leaks the source disk.
+// Leak, never destroy.
+// Known limitation: when the migrated VM's desired phase is NOT running (a cold
+// migration that stays stopped on the target), no start is dispatched, so the
+// agent's start-path teardown of the incoming qemu-nbd (releaseIncomingNBD) does
+// not run here - the target's reserved migration port and the idle qemu-nbd
+// (still holding the disk write lock) are reclaimed lazily on the VM's first
+// start or on agent restart. A leak, never a destroy; acceptable for this slice
+// since offline migration overwhelmingly targets running VMs.
+func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node) {
+	if vm.DesiredPhase == store.VmDesiredPhaseRunning {
+		if err := agent.StartVMOnTarget(ctx, target.AdvertisedEndpoint, vm.Name); err != nil {
+			log.WarnContext(ctx, "post-cutover start on target failed",
+				slog.String("migration_id", migID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
+		}
+	}
+	if err := agent.DeleteVMOnSource(ctx, source.AdvertisedEndpoint, vm.Name); err != nil {
+		log.WarnContext(ctx, "post-cutover source cleanup failed (disk leaked)",
+			slog.String("migration_id", migID.String()), slog.String("source", source.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
 }
 
@@ -308,14 +361,20 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 
 	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseSetup)
 
+	spec, err := incomingVMSpec(ctx, st, m, vm)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
 	mode := agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeLive)
 	if !m.Live {
 		mode = agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeOffline)
 	}
 	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
-		MigrationID: m.ID,
-		Mode:        mode,
-		VMSpec:      minimalVMSpec(vm),
+		MigrationID:        m.ID,
+		Mode:               mode,
+		SourceNodeIdentity: ptrString(sourceIdentity(source.Name)),
+		VMSpec:             spec,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)
@@ -326,12 +385,13 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		outMode = agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeOffline)
 	}
 	agentTaskStr, err := agent.StartOutgoingMigration(ctx, source.AdvertisedEndpoint, vm.Name, agentapi.MigrationOutgoingRequest{
-		MigrationID:       m.ID,
-		Mode:              outMode,
-		TargetEndpoint:    incoming.ListenEndpoint,
-		AuthToken:         incoming.AuthToken,
-		MaxBandwidthBytes: m.MaxBandwidthBytes,
-		MaxDowntimeMs:     int32PtrToInt(m.MaxDowntimeMs),
+		MigrationID:        m.ID,
+		Mode:               outMode,
+		TargetEndpoint:     incoming.ListenEndpoint,
+		TargetNodeIdentity: ptrString(targetIdentity(target.Name)),
+		AuthToken:          incoming.AuthToken,
+		MaxBandwidthBytes:  m.MaxBandwidthBytes,
+		MaxDowntimeMs:      int32PtrToInt(m.MaxDowntimeMs),
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start outgoing migration: %v", err)
@@ -483,19 +543,121 @@ func advancePhase(ctx context.Context, st MigrationWorkerStore, log *slog.Logger
 	}
 }
 
-// minimalVMSpec builds the smallest well-formed VMSpec the incoming-migration
-// request requires. The target agent brings up the migrated guest from the
-// in-band migration stream, not from this spec; the CP threads the identity
-// fields (name, architecture, cpu, memory) so the target can pre-stage. Richer
-// disk / network materialization is the agent data-path slice's concern.
-func minimalVMSpec(vm store.VM) agentapi.VMSpec {
+// incomingVMSpec builds the VMSpec the target agent's StartIncoming handler
+// requires. It threads the VM identity (name, architecture, cpu, memory) AND a
+// single boot disk carrying the two fields the agent actually reads:
+// Disks[0].SizeGib (to size the destination disk - the under-size guard that
+// makes the source-side qemu-img push fail if too small) and
+// Disks[0].StoragePoolPath (the destination pool's filesystem root on the
+// target node, which the agent maps back to a configured pool). The bound
+// migration's TargetPoolName + TargetNodeID resolve that path. The disk's
+// virtual size is the VM's boot-disk row size; the guest itself comes up from
+// the in-band migration stream, not from this spec.
+func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migration, vm store.VM) (agentapi.VMSpec, error) {
+	disks, err := st.ListVMDisksByVM(ctx, vm.ID)
+	if err != nil {
+		return agentapi.VMSpec{}, fmt.Errorf("list vm disks: %v", err)
+	}
+	if len(disks) == 0 {
+		return agentapi.VMSpec{}, fmt.Errorf("vm %s has no boot disk", vm.ID)
+	}
+	boot := disks[0]
+
+	poolPath, err := targetPoolPath(ctx, st, m)
+	if err != nil {
+		return agentapi.VMSpec{}, err
+	}
+
 	return agentapi.VMSpec{
+		VMUUID:       vm.ID,
 		Name:         vm.Name,
 		Architecture: agentapi.VMSpecArchitecture(vm.Architecture),
 		CPUCores:     int(vm.CpuCores),
 		MemoryMib:    int64(vm.MemoryMib),
-	}
+		Disks: []agentapi.VMSpecDisk{{
+			DeviceOrder:     int(boot.DeviceOrder),
+			Bus:             agentapi.VMSpecDiskBus(boot.Bus),
+			Format:          agentapi.VMSpecDiskFormat(boot.Format),
+			SizeGib:         int(boot.SizeGib),
+			StoragePoolPath: poolPath,
+			Source:          agentapi.VMSpecDiskSource{Kind: agentapi.VMSpecDiskSourceKind(boot.SourceKind)},
+		}},
+	}, nil
 }
+
+// targetPoolPath resolves the bound migration's TargetPoolName to the storage
+// pool's absolute filesystem root on the TARGET node. Pool names are scoped per
+// (node_id, name), so the name index can return rows on several nodes; the row
+// on m.TargetNodeID is the destination. A missing pool on the target is NOT a
+// hard failure: it wraps errTargetPoolNotReady so the caller records the
+// migration pending (D4, retryable) and waits for the pool to appear, rather
+// than failing the migration.
+func targetPoolPath(ctx context.Context, st MigrationWorkerStore, m store.Migration) (string, error) {
+	if m.TargetNodeID == nil {
+		return "", fmt.Errorf("migration %s has no target node; cannot resolve pool path", m.ID)
+	}
+	pools, err := st.StoragePoolsByName(ctx, m.TargetPoolName)
+	if err != nil {
+		return "", fmt.Errorf("resolve target pool %q: %v", m.TargetPoolName, err)
+	}
+	for _, p := range pools {
+		if p.NodeID == *m.TargetNodeID {
+			return p.Path, nil
+		}
+	}
+	return "", fmt.Errorf("%w: pool %q on node %s", errTargetPoolNotReady, m.TargetPoolName, *m.TargetNodeID)
+}
+
+// sourcePoolName returns the storage-pool NAME the VM's boot disk lives in on
+// the source node. An omitted target pool defaults to this so a VM keeps its
+// pool name across a move (resolved to the target node's instance of that
+// name), rather than silently landing in the cluster default pool.
+func sourcePoolName(ctx context.Context, st MigrationWorkerStore, vmID uuid.UUID) (string, error) {
+	disks, err := st.ListVMDisksByVM(ctx, vmID)
+	if err != nil {
+		return "", fmt.Errorf("list vm disks: %v", err)
+	}
+	if len(disks) == 0 {
+		return "", fmt.Errorf("vm %s has no boot disk", vmID)
+	}
+	pool, err := st.StoragePoolByID(ctx, disks[0].StoragePoolID)
+	if err != nil {
+		return "", fmt.Errorf("resolve source pool %s: %v", disks[0].StoragePoolID, err)
+	}
+	return pool.Name, nil
+}
+
+// recordPending writes the retryable pending envelope (phase=pending +
+// scheduling_reason) on a migration that cannot bind/advance right now, and
+// returns a retryable error so the dispatcher requeues. The VM stays on
+// source; the agent is never contacted.
+func recordPending(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, migID uuid.UUID, reason string, cause error) error {
+	now := time.Now().UTC()
+	pending := store.MigrationPhasePending
+	if uerr := st.UpdateMigrationProgress(ctx, migID, store.MigrationProgressUpdate{
+		Phase:                 &pending,
+		SchedulingReason:      &reason,
+		LastScheduleAttemptAt: &now,
+	}); uerr != nil {
+		// A progress-write failure is itself retryable; surface it so the envelope
+		// eventually persists.
+		return fmt.Errorf("record scheduling reason: %v (cause: %v)", uerr, cause)
+	}
+	log.InfoContext(ctx, "migration pending",
+		slog.String("migration_id", migID.String()), slog.String("scheduling_reason", reason))
+	return fmt.Errorf("migration %s pending: %v", migID, cause)
+}
+
+// sourceIdentity is the source node leaf-cert DN used for the target's
+// tls-authz pin (Subject is CN-only "node-<name>", per internal/auth/csr.go).
+func sourceIdentity(nodeName string) string { return "CN=node-" + nodeName }
+
+// targetIdentity is the target node SAN name used for the source's
+// tls-hostname pin.
+func targetIdentity(nodeName string) string { return "node-" + nodeName + ".agents.otherix.local" }
+
+// ptrString returns a pointer to s, for the optional *string wire fields.
+func ptrString(s string) *string { return &s }
 
 // scheduleReasonFor maps a placement error to the migration's machine-readable
 // scheduling_reason (mirrors the VM schedule loop). Insufficient-resources maps

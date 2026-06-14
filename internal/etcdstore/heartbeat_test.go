@@ -36,8 +36,12 @@ func TestInHeartbeatProjection(t *testing.T) {
 	if _, err := s.CreateStoragePool(ctx, pool); err != nil {
 		t.Fatalf("CreateStoragePool: %v", err)
 	}
-	// A live VM for the runtime upsert.
+	// A live VM for the runtime upsert. Pin it to the node: ListVMsForNodeDeclared
+	// only declares VMs pinned to the node (desired state follows the
+	// authoritative pin, not the vm_runtime index - see the migration-target
+	// carve-out there).
 	vm := vmRow(uniqueNodeName("hbvm"))
+	vm.PinnedNodeID = &node.ID
 	seedVM(t, cli, vm)
 
 	cores := int32(8)
@@ -159,6 +163,64 @@ func TestInHeartbeatProjection(t *testing.T) {
 // already produced a consistent index in the no-crash path, so this is
 // primarily a REGRESSION guard that the atomized row+index Txn (audit R2-L9)
 // preserves the index invariant DeleteNode consumes.
+// TestListVMsForNodeDeclared_ExcludesMigrationTargetUntilCutover pins the
+// migration-target carve-out: a VM present on the target only via an in-flight
+// migration (a vm_runtime row on the target, but still PINNED to the source) is
+// NOT declared to the target, so the target's reconciler will not Start it
+// mid-migration (which would corrupt the in-flight disk transfer). Once the pin
+// moves to the target at cutover, it is declared normally.
+func TestListVMsForNodeDeclared_ExcludesMigrationTargetUntilCutover(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	source := nodeParams(uniqueNodeName("src"))
+	if _, err := s.CreateNode(ctx, source); err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	target := nodeParams(uniqueNodeName("tgt"))
+	if _, err := s.CreateNode(ctx, target); err != nil {
+		t.Fatalf("CreateNode target: %v", err)
+	}
+
+	vm := vmRow(uniqueNodeName("migvm"))
+	vm.PinnedNodeID = &source.ID // pre-cutover: pinned to the source
+	seedVM(t, cli, vm)
+
+	// The target reports runtime for the VM (the heartbeat gate admits the
+	// migration target), creating a vm_runtime row indexed to the target.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vm.ID, CurrentNodeID: &target.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1,
+		})
+	}); err != nil {
+		t.Fatalf("UpsertVMRuntime: %v", err)
+	}
+
+	declaredOn := func(nodeID uuid.UUID) []store.ListVMsForNodeDeclaredRow {
+		var out []store.ListVMsForNodeDeclaredRow
+		if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+			var e error
+			out, e = hp.ListVMsForNodeDeclared(ctx, nodeID)
+			return e
+		}); err != nil {
+			t.Fatalf("ListVMsForNodeDeclared: %v", err)
+		}
+		return out
+	}
+
+	// Pre-cutover: the target must NOT declare the VM (it is pinned to source).
+	if got := declaredOn(target.ID); len(got) != 0 {
+		t.Errorf("pre-cutover target declared = %+v, want empty (migration target not declared until cutover)", got)
+	}
+
+	// Cutover: the pin moves to the target; now it is declared there.
+	vm.PinnedNodeID = &target.ID
+	seedVM(t, cli, vm)
+	if got := declaredOn(target.ID); len(got) != 1 || got[0].Name != vm.Name {
+		t.Errorf("post-cutover target declared = %+v, want [%s]", got, vm.Name)
+	}
+}
+
 func TestUpsertVMRuntimeNodeIndexConsistency(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()

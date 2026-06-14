@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/cloudinit"
+	"github.com/otherix/otherix/internal/agent/migration"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
@@ -146,6 +147,24 @@ type Manager struct {
 	// re-attaches via reconnectMux's fallback.
 	muxesMu sync.Mutex
 	muxes   map[string]*serialmux.Multiplexer
+
+	// migrations holds the agent's in-memory migration records (target
+	// and source side); migPorts hands out ADR 0013 ingress ports for
+	// incoming migrations. Neither is persisted - the CP re-drives on
+	// agent restart.
+	migrations *migration.Store
+	migPorts   *migration.PortAllocator
+
+	// tlsCA / tlsCert / tlsKey are the agent's mTLS material paths
+	// (cfg.TLS.*), reused to materialise per-migration qemu-nbd server
+	// creds (Task 4).
+	tlsCA, tlsCert, tlsKey string
+
+	// QEMU side-effect seams for the migration path, overridable in
+	// tests. Default to the real qemu.* helpers in New.
+	migCreateDisk func(ctx context.Context, path string, virtualBytes int64) error
+	migSpawnNBD   func(ctx context.Context, args []string) (int, error)
+	migRunConvert func(ctx context.Context, args []string) error
 }
 
 // inFlightAcquire records a new in-flight operation for name. Returns
@@ -220,6 +239,12 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		createTasks:      map[uuid.UUID]uuid.UUID{},
 		muxes:            map[string]*serialmux.Multiplexer{},
 	}
+	m.migrations = migration.NewStore()
+	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
+	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
+	m.migCreateDisk = qemu.CreateDisk
+	m.migSpawnNBD = qemu.SpawnQemuNBD
+	m.migRunConvert = qemu.RunQemuImgConvert
 
 	metas, err := state.ScanState(cfg.StatePath, log)
 	if err != nil {
@@ -242,6 +267,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			PIDFile:       meta.PIDFile,
 			CidataPath:    meta.CidataPath,
 			NICs:          metaToNICs(meta.NICs),
+			Migrated:      meta.Migrated,
 		}
 		m.vms[v.ID] = v
 
@@ -454,6 +480,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 
 	arch := qemu.HostArch()
 
+	disk, qmp, console, pid := m.vmPaths(p.root, vmID)
 	v := &VM{
 		ID:            vmID,
 		Name:          spec.Name,
@@ -464,10 +491,10 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		Status:        StatusPending,
 		CreatedAt:     time.Now().UTC(),
 		UpdatedAt:     time.Now().UTC(),
-		DiskPath:      filepath.Join(p.root, "vms", vmID.String(), "disk.qcow2"),
-		QMPSocket:     filepath.Join(m.stateDir, vmID.String(), "qmp.sock"),
-		ConsoleSocket: filepath.Join(m.stateDir, vmID.String(), "console.sock"),
-		PIDFile:       filepath.Join(m.stateDir, vmID.String(), "qemu.pid"),
+		DiskPath:      disk,
+		QMPSocket:     qmp,
+		ConsoleSocket: console,
+		PIDFile:       pid,
 		NICs:          spec.NICs,
 	}
 	if needsCidata(spec) {
@@ -600,24 +627,34 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	// EnsureImageInto holds the per-image lock across the ensure and the clone
-	// so a concurrent ensure cannot overwrite the cache file between the digest
-	// verify and the clone (audit R2-L5).
-	ensured, err := m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
-	if err != nil {
-		var ce *ChecksumMismatchError
-		switch {
-		case errors.As(err, &ce):
-			log.Error("ensure image (checksum mismatch)", "err", err)
-			m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
-		case errors.Is(err, ErrCloneFailed):
-			log.Error("clone image", "err", err)
-			m.failTask(taskID, v.ID, "clone_failed", err.Error())
-		default:
-			log.Error("ensure image", "err", err)
-			m.failTask(taskID, v.ID, "image_unavailable", err.Error())
+	// A migrated VM's disk was copied in from the source node, so it is
+	// already the authoritative copy - re-cloning from the base image
+	// would overwrite the migrated state. Skip the ensure/clone entirely;
+	// ensured stays zero-valued (no base image was resolved).
+	var (
+		ensured EnsureResult
+		err     error
+	)
+	if !v.Migrated {
+		// EnsureImageInto holds the per-image lock across the ensure and the clone
+		// so a concurrent ensure cannot overwrite the cache file between the digest
+		// verify and the clone (audit R2-L5).
+		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
+		if err != nil {
+			var ce *ChecksumMismatchError
+			switch {
+			case errors.As(err, &ce):
+				log.Error("ensure image (checksum mismatch)", "err", err)
+				m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
+			case errors.Is(err, ErrCloneFailed):
+				log.Error("clone image", "err", err)
+				m.failTask(taskID, v.ID, "clone_failed", err.Error())
+			default:
+				log.Error("ensure image", "err", err)
+				m.failTask(taskID, v.ID, "image_unavailable", err.Error())
+			}
+			return
 		}
-		return
 	}
 
 	virtualSize, diskSize, failCode, failMsg := m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
@@ -908,6 +945,14 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 		m.failTask(taskID, vmID, "internal", err.Error())
 		return
 	}
+
+	// A post-cutover start of a just-migrated VM must release the incoming
+	// migration's qemu-nbd before qemu opens the disk: that server holds an
+	// exclusive write lock and would make the spawn fail with "Failed to get
+	// write lock". Deterministic regardless of how many connections the
+	// transfer used; a no-op for a normal (non-migration) start.
+	m.releaseIncomingNBD(vmID)
+
 	if code, err := m.spawnAndVerify(log, v); err != nil {
 		m.failTask(taskID, vmID, code, err.Error())
 		return
@@ -1475,6 +1520,18 @@ func (m *Manager) transitionVM(id uuid.UUID, status Status, _ string) {
 	v.UpdatedAt = time.Now().UTC()
 }
 
+// vmPaths returns the on-disk paths for a VM with id in pool root poolRoot:
+// the per-VM disk under the pool, and the qmp / console / pid sockets under
+// the agent state dir. Create and AdoptForMigration share it so a
+// destination-side adopt can never derive a path the create flow would not.
+func (m *Manager) vmPaths(poolRoot string, id uuid.UUID) (disk, qmp, console, pid string) {
+	disk = filepath.Join(poolRoot, "vms", id.String(), "disk.qcow2")
+	qmp = filepath.Join(m.stateDir, id.String(), "qmp.sock")
+	console = filepath.Join(m.stateDir, id.String(), "console.sock")
+	pid = filepath.Join(m.stateDir, id.String(), "qemu.pid")
+	return
+}
+
 func (m *Manager) persistVM(id uuid.UUID) error {
 	v, err := m.snapshotVM(id)
 	if err != nil {
@@ -1496,6 +1553,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		CreatedAt:     v.CreatedAt,
 		UpdatedAt:     v.UpdatedAt,
 		NICs:          nicsToMeta(v.NICs),
+		Migrated:      v.Migrated,
 	}
 	return state.WriteMeta(filepath.Join(m.stateDir, v.ID.String()), meta)
 }

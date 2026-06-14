@@ -35,6 +35,11 @@ func newTestConfig(t *testing.T) (*config.AgentConfig, string, string) {
 		QEMU: config.QEMUConfig{
 			AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd",
 		},
+		Migration: config.MigrationConfig{
+			Host:           "127.0.0.1",
+			PortRangeStart: 49152,
+			PortRangeEnd:   49251,
+		},
 	}
 	return cfg, poolRoot, poolName
 }

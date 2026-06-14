@@ -51,6 +51,10 @@ type VMMeta struct {
 	// can reconstruct them on startup replay and tear down the host taps
 	// on delete. Omitted entirely for legacy VMs with no declared NICs.
 	NICs []NICMeta `json:"nics,omitempty"`
+	// Migrated marks a VM whose disk was copied in from another node by a
+	// migration. The agent must NOT re-clone it from the base image on
+	// first start; the disk is already the authoritative copy.
+	Migrated bool `json:"migrated,omitempty"`
 }
 
 // NICMeta is the persisted form of one VM network interface. TapName is

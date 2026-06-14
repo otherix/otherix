@@ -74,6 +74,10 @@ type VM struct {
 	// materialises (host tap + bridge) and wires into the qemu command
 	// line. Empty means legacy SLIRP user-mode networking.
 	NICs []netfabric.NIC
+	// Migrated marks a VM whose disk was copied in from another node by a
+	// migration. The create flow must NOT re-clone it from the base image
+	// on first start; the disk is already the authoritative copy.
+	Migrated bool
 }
 
 // CreateSpec is the wire-shape of a POST /v1/vms body, post-validation.

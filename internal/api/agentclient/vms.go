@@ -416,3 +416,23 @@ func (c *Client) DeleteVM(
 	}
 	return accepted.TaskID, nil
 }
+
+// StartVMOnTarget starts the migrated guest on the target node after a
+// committed cutover. It is the post-cutover convergence wrapper the migration
+// worker calls best-effort: the returned agent task id is discarded (the worker
+// does not poll it), only a non-nil error matters so the worker can log the
+// leak. Thin wrapper over StartVM.
+func (c *Client) StartVMOnTarget(ctx context.Context, endpoint, vmName string) error {
+	_, err := c.StartVM(ctx, endpoint, vmName, "")
+	return err
+}
+
+// DeleteVMOnSource deletes the source's now-stale copy after a committed
+// cutover. Best-effort post-cutover convergence wrapper: the agent task id is
+// discarded; a non-nil error signals a leaked source disk, never a destroyed
+// wanted VM (this is only ever called after the cutover committed). Thin
+// wrapper over DeleteVM.
+func (c *Client) DeleteVMOnSource(ctx context.Context, endpoint, vmName string) error {
+	_, err := c.DeleteVM(ctx, endpoint, vmName, "")
+	return err
+}
