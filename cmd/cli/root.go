@@ -9,6 +9,7 @@ import (
 	clustercmd "github.com/otherix/otherix/cmd/cli/cluster"
 	configcmd "github.com/otherix/otherix/cmd/cli/config"
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	migrationcmd "github.com/otherix/otherix/cmd/cli/migration"
 	networkcmd "github.com/otherix/otherix/cmd/cli/network"
 	nodecmd "github.com/otherix/otherix/cmd/cli/node"
 	poolcmd "github.com/otherix/otherix/cmd/cli/pool"
@@ -48,6 +49,7 @@ func newRootCmd() *cobra.Command {
 		"config file path (default $OTHERIX_CONFIG, then ~/.otherix/config)")
 
 	root.AddCommand(vm.NewCommand())
+	root.AddCommand(migrationcmd.NewCommand())
 	root.AddCommand(poolcmd.NewCommand())
 	root.AddCommand(networkcmd.NewCommand())
 	root.AddCommand(nodecmd.NewCommand())
