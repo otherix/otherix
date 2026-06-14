@@ -25,6 +25,28 @@ type CreateMigrationParams struct {
 	Task              CreateTaskParams
 }
 
+// MigrationProgressUpdate is the set of mutable migration columns an in-flight
+// update may touch. Every field is a pointer (or, for SchedulingReason, paired
+// with ClearSchedulingReason) so a nil leaves the column untouched - the store
+// applies only the non-nil fields under a single ModRevision CAS. Phase may move
+// the migration to a terminal failed/cancelled, which releases its transient
+// locks; cutover to completed is a separate dedicated path.
+type MigrationProgressUpdate struct {
+	Phase                 *MigrationPhase
+	ProgressPercent       *int16
+	BytesTotal            *int64
+	BytesTransferred      *int64
+	BytesRemaining        *int64
+	ErrorMessage          *string
+	StartedAt             *time.Time
+	LastScheduleAttemptAt *time.Time
+	// SchedulingReason sets the retryable scheduling reason. To CLEAR it instead,
+	// set ClearSchedulingReason (a nil SchedulingReason with ClearSchedulingReason
+	// false leaves the column untouched).
+	SchedulingReason      *string
+	ClearSchedulingReason bool
+}
+
 // ListMigrationsParams is cursor pagination plus optional VM/node filters.
 type ListMigrationsParams struct {
 	LimitCount      int32

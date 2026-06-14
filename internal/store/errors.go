@@ -48,6 +48,17 @@ var (
 	// second concurrent migration for the same VM loses the create CAS.
 	ErrMigrationActiveExists = errors.New("active migration already exists for vm")
 
+	// ErrConcurrentUpdate is returned by a CAS-guarded store update (e.g.
+	// CommitMigrationCutover, UpdateMigrationProgress) when the migration or VM
+	// row changed between the read and the commit: the ModRevision compare lost.
+	// The caller re-reads and retries (the worker reconciles).
+	ErrConcurrentUpdate = errors.New("store: row changed concurrently")
+
+	// ErrMigrationTerminal is returned by an update path when the migration is
+	// already in a terminal phase (completed/failed/cancelled) and cannot be
+	// advanced further.
+	ErrMigrationTerminal = errors.New("store: migration is terminal")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")

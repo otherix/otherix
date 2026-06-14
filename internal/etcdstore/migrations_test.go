@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -128,6 +129,205 @@ func TestCreateMigration_WritesRowAndGuards(t *testing.T) {
 	args2 := migrationJobArgsStub{TaskID: p2.Task.ID, MigrationID: p2.ID}
 	if _, err := s.CreateMigration(ctx, p2, args2); !errors.Is(err, store.ErrMigrationActiveExists) {
 		t.Errorf("second CreateMigration = %v, want store.ErrMigrationActiveExists", err)
+	}
+}
+
+// seedPinnedVM writes a vms row pinned to node, plus its pinned_node index entry
+// (byte-matching buildBindTxn), so a cutover's index move is observable.
+func seedPinnedVM(t *testing.T, cli *etcd.Client, node uuid.UUID) store.VM {
+	t.Helper()
+	ctx := context.Background()
+	v := vmRow("mig-" + uuid.NewString()[:8])
+	pin := node
+	v.PinnedNodeID = &pin
+	seedVM(t, cli, v)
+	if err := cli.Put(ctx, etcd.Key("index", "vms", "pinned_node", node.String(), v.ID.String()), []byte(v.ID.String())); err != nil {
+		t.Fatalf("seed pinned_node index: %v", err)
+	}
+	return v
+}
+
+// seedActiveMigration creates a migration (source/target) and drives it to the
+// active phase so terminal-only paths (cutover, fail) have a non-terminal start.
+func seedActiveMigration(t *testing.T, s *etcdstore.Store, vmID, source, target uuid.UUID) store.Migration {
+	t.Helper()
+	ctx := context.Background()
+	p := migrationParams(vmID, source, target)
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+	active := store.MigrationPhaseActive
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &active}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(active): %v", err)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID after activate: %v", err)
+	}
+	return got
+}
+
+func TestCommitMigrationCutover_FlipsPin(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeB.ID {
+		t.Errorf("PinnedNodeID = %v, want nodeB %v", gotVM.PinnedNodeID, nodeB.ID)
+	}
+
+	gotM, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if gotM.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed", gotM.Phase)
+	}
+	if gotM.CompletedAt == nil {
+		t.Errorf("CompletedAt = nil, want set")
+	}
+	if gotM.ProgressPercent != 100 {
+		t.Errorf("ProgressPercent = %d, want 100", gotM.ProgressPercent)
+	}
+
+	// Active-VM guard released: a fresh CreateMigration for the same VM succeeds.
+	p2 := migrationParams(vm.ID, nodeA.ID, nodeB.ID)
+	if _, err := s.CreateMigration(ctx, p2, migrationJobArgsStub{TaskID: p2.Task.ID, MigrationID: p2.ID}); err != nil {
+		t.Errorf("CreateMigration after cutover = %v, want nil (guard released)", err)
+	}
+
+	// pinned_node index moved A -> B.
+	aIdx, err := cli.Range(ctx, etcd.Key("index", "vms", "pinned_node", nodeA.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(A pinned index): %v", err)
+	}
+	for _, kv := range aIdx {
+		if string(kv.Value) == vm.ID.String() {
+			t.Errorf("pinned_node index for vm still present under nodeA, want moved")
+		}
+	}
+	bIdx, err := cli.Range(ctx, etcd.Key("index", "vms", "pinned_node", nodeB.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(B pinned index): %v", err)
+	}
+	foundB := false
+	for _, kv := range bIdx {
+		if string(kv.Value) == vm.ID.String() {
+			foundB = true
+		}
+	}
+	if !foundB {
+		t.Errorf("pinned_node index for vm not under nodeB, want moved")
+	}
+}
+
+func TestUpdateMigrationProgress_FailReleasesGuard(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	failed := store.MigrationPhaseFailed
+	msg := "target_unreachable"
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &failed, ErrorMessage: &msg}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+	}
+
+	gotM, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if gotM.Phase != store.MigrationPhaseFailed {
+		t.Errorf("Phase = %q, want failed", gotM.Phase)
+	}
+	if gotM.ErrorMessage == nil || *gotM.ErrorMessage != msg {
+		t.Errorf("ErrorMessage = %v, want %q", gotM.ErrorMessage, msg)
+	}
+	if gotM.CompletedAt == nil {
+		t.Errorf("CompletedAt = nil, want set on terminal failure")
+	}
+
+	// Guard released: a fresh CreateMigration for the same VM succeeds.
+	p2 := migrationParams(vm.ID, nodeA.ID, nodeB.ID)
+	if _, err := s.CreateMigration(ctx, p2, migrationJobArgsStub{TaskID: p2.Task.ID, MigrationID: p2.ID}); err != nil {
+		t.Errorf("CreateMigration after fail = %v, want nil (guard released)", err)
+	}
+
+	// Fail-safe-to-source: PinnedNodeID is unchanged (still nodeA).
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
+func TestCommitMigrationCutover_NoTarget(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+
+	// Migration with a nil target: pending, source-only.
+	src := nodeA.ID
+	taskID := uuid.New()
+	p := store.CreateMigrationParams{
+		ID:           uuid.New(),
+		VmID:         vm.ID,
+		SourceNodeID: &src,
+		Reason:       store.MigrationReasonManual,
+		Live:         true,
+		Task: store.CreateTaskParams{
+			ID:           taskID,
+			Type:         "vm.migrate",
+			Status:       store.TaskStatusPending,
+			ResourceType: "migration",
+			MaxAttempts:  3,
+		},
+	}
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: taskID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration(no target): %v", err)
+	}
+
+	if err := s.CommitMigrationCutover(ctx, m.ID); err == nil {
+		t.Errorf("CommitMigrationCutover(no target) = nil, want error")
 	}
 }
 
