@@ -198,9 +198,16 @@ func blockdevAddNBDCmd(nodeName, host string, port int, export, tlsCreds, tlsHos
 			"host": host,
 			"port": strconv.Itoa(port),
 		},
-		"export":          export,
-		"tls-creds":       tlsCreds,
-		"tls-hostname":    tlsHostname,
+		"export":       export,
+		"tls-creds":    tlsCreds,
+		"tls-hostname": tlsHostname,
+		// discard=unmap + detect-zeroes=unmap so the blockdev-mirror's all-zero
+		// writes to this NBD client are sent as compact NBD_CMD_WRITE_ZEROES
+		// instead of runs of literal zero bytes over TLS. A sync=full mirror of
+		// a sparse disk otherwise ships the source's zero clusters in full,
+		// which under slow emulation wedges the transfer mid-copy.
+		"discard":         "unmap",
+		"detect-zeroes":   "unmap",
 		"reconnect-delay": 30,
 	})
 }

@@ -324,8 +324,14 @@ func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
 // export node-name SetupLiveIncoming references.
 func LiveIncomingArgs(s LiveIncomingSpec) []string {
 	return []string{
+		// discard=unmap + detect-zeroes=unmap so the WRITE_ZEROES the source
+		// mirror sends (for the disk's allocated-but-zero and unallocated
+		// clusters) land as cheap hole punches instead of allocating and
+		// writing runs of literal zeros. A sync=full mirror otherwise copies
+		// every zero cluster byte-for-byte, which under slow emulation wedges
+		// the transfer; this keeps it to the disk's real data.
 		"-blockdev", fmt.Sprintf(
-			"driver=qcow2,node-name=%s,file.driver=file,file.filename=%s",
+			"driver=qcow2,node-name=%s,discard=unmap,detect-zeroes=unmap,file.driver=file,file.filename=%s",
 			s.DiskNode, s.DiskPath,
 		),
 		"-incoming", "defer",
