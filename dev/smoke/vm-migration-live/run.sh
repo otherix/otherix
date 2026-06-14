@@ -161,18 +161,25 @@ wait_heartbeat() {
 
 cleanup() {
   echo "--- cleanup ---"
+  if [ -n "${SMOKE_KEEP:-}" ]; then
+    info "SMOKE_KEEP set; leaving VM ${VM} (id=${VMID:-?}) in place for inspection"
+    return
+  fi
   otx vm delete "$VM" --wait --force >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 # --- the heartbeat cloud-config (every-second serial heartbeat) --------
-# A systemd oneshot, ordered After=multi-user.target and WantedBy it, so it runs
-# at the tail of EVERY boot. It launches a detached loop that writes an
-# incrementing "OTHERIX_HEARTBEAT <n> <epoch>" line to the arch-correct serial
-# device (ttyS0 on amd64, ttyAMA0 on arm64) once a second; the agent captures
-# that console into serial.log. The counter starts at 0 on each boot, so a reboot
-# (offline cutover, stop/start) RESETS it - which is exactly the signal this
-# smoke keys on. Quoted heredoc -> the shell vars stay literal for the guest.
+# A first-boot runcmd writes a heartbeat script and launches it DETACHED (setsid
+# + nohup) so it survives cloud-init exiting. The loop writes an incrementing
+# "OTHERIX_HEARTBEAT <n> <epoch>" line to the arch-correct serial device (ttyS0
+# on amd64, ttyAMA0 on arm64) once a second; the agent captures that console into
+# serial.log. Crucially the loop is ONE long-lived process: a LIVE migration
+# preserves it (and its monotonic counter) across the move, so the counter
+# CONTINUES on the target - the continuity this smoke keys on. A stop/start
+# (non-live) reboots the guest; cloud-init runcmd does not re-fire on the same
+# instance, so NO heartbeat appears on the target - also a clear failure signal.
+# Quoted heredoc -> the shell vars stay literal for the guest.
 read -r -d '' CLOUD_INIT <<'EOF' || true
 #cloud-config
 write_files:
@@ -188,21 +195,8 @@ write_files:
         i=$((i+1))
         sleep 1
       done
-  - path: /etc/systemd/system/otherix-heartbeat.service
-    permissions: '0644'
-    content: |
-      [Unit]
-      Description=Otherix live-migration-smoke console heartbeat
-      After=multi-user.target
-      [Service]
-      Type=simple
-      ExecStart=/usr/local/bin/otherix-heartbeat.sh
-      Restart=always
-      [Install]
-      WantedBy=multi-user.target
 runcmd:
-  - [ systemctl, daemon-reload ]
-  - [ systemctl, enable, --now, otherix-heartbeat.service ]
+  - [ sh, -c, "setsid nohup /usr/local/bin/otherix-heartbeat.sh >/dev/null 2>&1 < /dev/null &" ]
 EOF
 [ -n "$CLOUD_INIT" ] || fail "internal: cloud-config came out empty"
 
