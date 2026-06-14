@@ -480,7 +480,7 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			response.CodeMethodNotAllowed, "method not allowed for this resource", nil)
 	})
 
-	vmsHandler := vmshandlers.New(manager, consoleTokens, log)
+	vmsHandler := vmshandlers.New(manager, consoleTokens, log, cfg.Migration.Host)
 	tasksHandler := taskshandlers.New(manager, log)
 	storagePoolsHandler := storagepoolshandlers.New(manager, log)
 

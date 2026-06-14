@@ -28,6 +28,12 @@ type Handler struct {
 	manager *vm.Manager
 	tokens  *console.TokenStore
 	log     *slog.Logger
+	// migrationHost is the bind/advertise host the agent listens on for
+	// incoming migrations (config.MigrationConfig.Host). It is threaded
+	// into IncomingSpec.BindHost so the listen endpoint returned to the
+	// source is reachable - intentionally separate from the API listen
+	// address so operators can pin a dedicated migration network.
+	migrationHost string
 }
 
 // New constructs a Handler. Production callers use the package's
@@ -35,8 +41,8 @@ type Handler struct {
 // invariant (former internal/agent/console.ConnectionTracker) is now
 // enforced inside serialmux.Multiplexer.SubscribeConsole, so the
 // Handler no longer takes a ConnectionTracker.
-func New(m *vm.Manager, tokens *console.TokenStore, log *slog.Logger) *Handler {
-	return &Handler{manager: m, tokens: tokens, log: log}
+func New(m *vm.Manager, tokens *console.TokenStore, log *slog.Logger, migrationHost string) *Handler {
+	return &Handler{manager: m, tokens: tokens, log: log, migrationHost: migrationHost}
 }
 
 // Mount registers /v1/vms routes on r. The console-stream route is
@@ -57,6 +63,10 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Post("/{vm_name}/poweroff", h.Poweroff)
 	r.Post("/{vm_name}/reboot", h.Reboot)
 	r.Post("/{vm_name}/console-token", h.ConsoleIssueToken)
+	r.Post("/{vm_name}/migrations/incoming", h.StartIncoming)
+	r.Post("/{vm_name}/migrations/outgoing", h.StartOutgoing)
+	r.Get("/{vm_name}/migrations/{migration_id}", h.GetMigration)
+	r.Post("/{vm_name}/migrations/{migration_id}/cancel", h.CancelMigration)
 }
 
 // vmView is the wire shape returned for a single VM. The wire field
