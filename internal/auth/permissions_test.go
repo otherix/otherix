@@ -188,6 +188,31 @@ func TestMatrix_VMCreateIsImageGate(t *testing.T) {
 	}
 }
 
+func TestMatrix_VMMigrateAdminOperatorOnly(t *testing.T) {
+	// vm:migrate is operator-grade: admin and operator hold it at
+	// ScopeAny; developer and viewer do not hold it at all (the canonical
+	// 403-for-developer rule - a developer sees their own VM but cannot
+	// migrate it). docs/rbac.md VM table is the human-readable contract.
+	if !auth.Has(auth.RoleAdmin, auth.PermVMMigrate) {
+		t.Errorf("admin missing vm:migrate")
+	}
+	if !auth.Has(auth.RoleOperator, auth.PermVMMigrate) {
+		t.Errorf("operator missing vm:migrate")
+	}
+	if auth.Has(auth.RoleDeveloper, auth.PermVMMigrate) {
+		t.Errorf("developer holds vm:migrate, want none")
+	}
+	if auth.Has(auth.RoleViewer, auth.PermVMMigrate) {
+		t.Errorf("viewer holds vm:migrate, want none")
+	}
+	if got := auth.ScopeFor(auth.RoleAdmin, auth.PermVMMigrate); got != auth.ScopeAny {
+		t.Errorf("admin scope for vm:migrate = %q, want any", got)
+	}
+	if got := auth.ScopeFor(auth.RoleOperator, auth.PermVMMigrate); got != auth.ScopeAny {
+		t.Errorf("operator scope for vm:migrate = %q, want any", got)
+	}
+}
+
 func TestMatrix_UnknownRoleHasNoPermissions(t *testing.T) {
 	bogus := auth.Role("ghost")
 	for _, p := range allPermissions {

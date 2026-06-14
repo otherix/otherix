@@ -108,6 +108,13 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 		}
 	}
 
+	// Lifecycle precedence (spec D5): `vm delete` supersedes an in-flight
+	// migration. The desired phase (deleted) outranks "I want it on another
+	// node", so cancel any active migration before enqueuing the delete.
+	// Non-destructive (cancel is fail-safe-to-source pre-cutover, a no-op
+	// post-cutover); see cancelActiveMigration.
+	h.cancelActiveMigration(ctx, vm.ID, "superseded by vm delete")
+
 	nodeID, err := h.resolveNodeForVM(ctx, vm)
 	if err != nil {
 		return uuid.Nil, err
@@ -161,6 +168,39 @@ func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.VM) (uuid.UUID,
 		return uuid.Nil, err
 	}
 	return pool.NodeID, nil
+}
+
+// cancelActiveMigration cancels the VM's in-flight (non-terminal) migration, if
+// any, with the audit reason - the authoritative lifecycle-precedence step for
+// `vm stop` / `vm delete` (spec D5). It is best-effort and fails SOFT: a lookup
+// or cancel error is logged and swallowed so the stop/delete still enqueues. The
+// migration worker also guards via redelivery, so a missed cancel here is
+// recoverable, never a stuck VM; and cancel itself is non-destructive
+// (fail-safe-to-source pre-cutover, a terminal-phase no-op post-cutover), so
+// firing it can never trade a recoverable bug for an irreversible one. A
+// concurrent terminal transition surfaces as ErrMigrationNotCancelable /
+// ErrConcurrentUpdate and is treated as "already done".
+func (h *Handler) cancelActiveMigration(ctx context.Context, vmID uuid.UUID, reason string) {
+	m, ok, err := h.store.ActiveMigrationForVM(ctx, vmID)
+	if err != nil {
+		h.log.WarnContext(ctx, "active migration scan failed; proceeding without cancel",
+			"vm_id", vmID, "error", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	if _, err := h.store.CancelMigration(ctx, m.ID, reason); err != nil {
+		if errors.Is(err, store.ErrMigrationNotCancelable) || errors.Is(err, store.ErrConcurrentUpdate) {
+			// Raced a terminal transition - the migration is already done.
+			return
+		}
+		h.log.WarnContext(ctx, "cancel active migration failed; proceeding with lifecycle op",
+			"vm_id", vmID, "migration_id", m.ID, "error", err)
+		return
+	}
+	h.log.InfoContext(ctx, "cancelled active migration superseded by lifecycle op",
+		"vm_id", vmID, "migration_id", m.ID, "reason", reason)
 }
 
 // writeDeleteError maps the in-flight error returned by runDelete to

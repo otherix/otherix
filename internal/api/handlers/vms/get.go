@@ -68,7 +68,26 @@ func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.V
 	}
 	response.WriteJSON(w, r, statusCode,
 		toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID),
-			callerCanReadVMSecrets(r.Context(), vm.OwnerID)))
+			callerCanReadVMSecrets(r.Context(), vm.OwnerID),
+			h.activeMigration(r.Context(), vm.ID)))
+}
+
+// activeMigration returns the VM's in-flight (non-terminal) migration, or nil.
+// It fails SOFT: a store error degrades to nil (the VM renders without the
+// status.migration summary) and is logged, never propagated. status.migration
+// is a cosmetic observed-state overlay, so a transient migrations-keyspace
+// error must not turn the whole VM read path into a 500.
+func (h *Handler) activeMigration(ctx context.Context, vmID uuid.UUID) *store.Migration {
+	m, ok, err := h.store.ActiveMigrationForVM(ctx, vmID)
+	if err != nil {
+		h.log.WarnContext(ctx, "active migration scan failed; omitting status.migration",
+			"vm_id", vmID, "error", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return &m
 }
 
 // vmDeleting reports whether a non-terminal vm.delete task targets vmID,

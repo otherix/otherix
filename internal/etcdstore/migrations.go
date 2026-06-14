@@ -438,6 +438,36 @@ func (s *Store) BindMigrationTarget(ctx context.Context, migID, targetNodeID uui
 	return nil
 }
 
+// ActiveMigrationForVM returns the VM's single non-terminal migration and
+// true, or (zero, false, nil) when none is active. It ranges the per-VM
+// migration index (which retains terminal rows for history) and returns the
+// first non-terminal one. A VM has at most one active migration - the
+// CreateMigration active-per-VM guard enforces it - so "first" is unambiguous.
+// Used by the lifecycle-precedence path (vm stop/delete cancels an active
+// migration first) and the VM status.migration summary.
+func (s *Store) ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error) {
+	items, err := s.c.Range(ctx, migrationsVMIndexPrefix(vmID))
+	if err != nil {
+		return store.Migration{}, false, err
+	}
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return store.Migration{}, false, fmt.Errorf("corrupt migration vm index %q: %v", kv.Key, perr)
+		}
+		var m store.Migration
+		found, gerr := s.c.GetJSON(ctx, migrationKey(id), &m)
+		if gerr != nil {
+			return store.Migration{}, false, gerr
+		}
+		if !found || isTerminalMigration(m.Phase) {
+			continue
+		}
+		return m, true, nil
+	}
+	return store.Migration{}, false, nil
+}
+
 // MigrationByID returns the migration row with the given id, or
 // store.ErrNotFound. Migrations have no soft-delete column, so a present row is
 // always visible.

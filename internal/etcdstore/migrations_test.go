@@ -1010,3 +1010,59 @@ func TestBindMigrationTarget_RejectsDifferentTarget(t *testing.T) {
 		t.Errorf("BindMigrationTarget(same target) = %v, want nil (idempotent)", err)
 	}
 }
+
+// TestActiveMigrationForVM_ReturnsNonTerminal locks T16a: ActiveMigrationForVM
+// returns the VM's single non-terminal migration; once that migration reaches a
+// terminal phase (or no migration exists) it reports (zero, false, nil).
+func TestActiveMigrationForVM_ReturnsNonTerminal(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	sourceNode := nodeParams(uniqueNodeName("src"))
+	targetNode := nodeParams(uniqueNodeName("tgt"))
+	for _, n := range []store.CreateNodeParams{sourceNode, targetNode} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode(%s): %v", n.Name, err)
+		}
+	}
+
+	vmID := uuid.New()
+
+	// No migration yet -> (zero, false, nil).
+	if got, ok, err := s.ActiveMigrationForVM(ctx, vmID); err != nil || ok || got.ID != uuid.Nil {
+		t.Fatalf("ActiveMigrationForVM(no migration) = (%v, %v, %v), want (zero, false, nil)", got.ID, ok, err)
+	}
+
+	p := migrationParams(vmID, sourceNode.ID, targetNode.ID)
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+
+	// Active (pending) migration -> returned with ok=true.
+	got, ok, err := s.ActiveMigrationForVM(ctx, vmID)
+	if err != nil {
+		t.Fatalf("ActiveMigrationForVM(active): %v", err)
+	}
+	if !ok {
+		t.Fatalf("ActiveMigrationForVM(active) ok = false, want true")
+	}
+	if got.ID != m.ID {
+		t.Errorf("ActiveMigrationForVM(active) ID = %v, want %v", got.ID, m.ID)
+	}
+	if got.Phase != store.MigrationPhasePending {
+		t.Errorf("ActiveMigrationForVM(active) Phase = %q, want pending", got.Phase)
+	}
+
+	// Cancel the migration -> terminal -> no active migration.
+	if _, err := s.CancelMigration(ctx, m.ID, "test cancel"); err != nil {
+		t.Fatalf("CancelMigration: %v", err)
+	}
+	got, ok, err = s.ActiveMigrationForVM(ctx, vmID)
+	if err != nil {
+		t.Fatalf("ActiveMigrationForVM(after cancel): %v", err)
+	}
+	if ok || got.ID != uuid.Nil {
+		t.Errorf("ActiveMigrationForVM(after cancel) = (%v, %v), want (zero, false)", got.ID, ok)
+	}
+}

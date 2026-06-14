@@ -103,6 +103,17 @@ func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op a
 		return
 	}
 
+	// Lifecycle precedence (spec D5): `vm stop` supersedes an in-flight
+	// migration. The desired phase (stopped) outranks "I want it on another
+	// node", so cancel any active migration before enqueuing the stop. Cancel
+	// is non-destructive - pre-cutover the VM never left its source, post-cutover
+	// cancel is a terminal-phase no-op - so this only ever fails safe. Only stop
+	// (and delete, handled in runDelete) trigger this; the other lifecycle ops
+	// (start/poweroff/reboot) leave a migration running.
+	if op == asyncOpStop {
+		h.cancelActiveMigration(r.Context(), vm.ID, "superseded by vm stop")
+	}
+
 	taskID, err := h.runAsyncLifecycleEnqueue(r.Context(), op, vm, caller)
 	if err != nil {
 		writeAsyncLifecycleError(w, r, h.log, op, err)

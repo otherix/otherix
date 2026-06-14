@@ -19,6 +19,7 @@ import (
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
+	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
@@ -192,6 +193,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
 	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.VMLifecycle, deps.VMConsole)
+	migH := migrationshandlers.New(deps.Store, deps.Logger)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)
@@ -329,6 +331,24 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// by RequirePermission(vm:console); ownership scope=own
 				// for developer is enforced inside the handler.
 				r.With(middleware.RequirePermission(auth.PermVMConsole, deps.Logger)).Post("/{id}/console", vmsH.Console)
+				// vms.migrate — async (202). vm:migrate gates the route
+				// (admin / operator only; developer / viewer 403 at the
+				// middleware); ownership scope is enforced inside the
+				// handler. Migration is a VM sub-resource action (ADR
+				// 0009) — created here, polled via /v1/migrations/{id}.
+				r.With(middleware.RequirePermission(auth.PermVMMigrate, deps.Logger)).Post("/{id}/migrate", migH.Start)
+			})
+
+			// /v1/migrations surface. The migration record's own
+			// GET-by-id + list for status polling, plus the best-effort
+			// cancel. Get / List are gated by vm:read so any VM viewer can
+			// poll a migration; Start (above) and Cancel are gated by
+			// vm:migrate. Migrations are never CREATED through this subtree
+			// — only through POST /v1/vms/{id}/migrate (ADR 0009).
+			r.Route("/migrations", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/", migH.List)
+				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/{id}", migH.Get)
+				r.With(middleware.RequirePermission(auth.PermVMMigrate, deps.Logger)).Post("/{id}/cancel", migH.Cancel)
 			})
 
 			r.Route("/storage-pools", func(r chi.Router) {
