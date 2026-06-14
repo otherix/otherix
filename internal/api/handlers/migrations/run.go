@@ -1,0 +1,479 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Andrei Taranik
+
+package migrations
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agentapi"
+	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/scheduler"
+	"github.com/otherix/otherix/internal/store"
+)
+
+// Run-form migration worker for the etcd job runtime. It drains a vm.migrate job
+// and drives the migration to a terminal outcome against the agent two-phase
+// handshake, implementing spec D2 (node-less placement), D3 (PinnedNodeID stays
+// = source until the atomic cutover), D4 (pending retry-forever), and the
+// Crash-semantics fail-safe-to-source rule (every pre-cutover failure leaves the
+// VM on its source).
+//
+// The orchestration is keyed off the SOURCE outgoing task: the worker prepares
+// the target (StartIncomingMigration), starts the source push (StartOutgoingMigration
+// with agent_task_id resumption), then polls the source outgoing task to a
+// terminal status. A terminal-success commits the atomic cutover; a
+// terminal-failure marks the migration failed without ever re-pinning the VM.
+
+// MigrationWorkerStore is the storage surface the migration worker depends on:
+// task-lifecycle mutators, entity reads, and the migration transitions
+// (placement bind, progress / terminal, atomic cutover). *etcdstore.Store
+// satisfies it.
+type MigrationWorkerStore interface {
+	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
+	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
+	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
+	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
+	MigrationByID(ctx context.Context, id uuid.UUID) (store.Migration, error)
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
+	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
+	BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error
+	UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error
+	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
+}
+
+// MigrationAgentClient is the narrow agent-call seam the worker drives the
+// two-phase peer-to-peer handshake through. *agentclient.Client satisfies it
+// structurally; tests inject a fake.
+type MigrationAgentClient interface {
+	StartIncomingMigration(ctx context.Context, endpoint, vmName string, req agentapi.MigrationIncomingRequest) (agentapi.MigrationIncomingResponse, error)
+	StartOutgoingMigration(ctx context.Context, endpoint, vmName string, req agentapi.MigrationOutgoingRequest) (string, error)
+	PollTask(ctx context.Context, endpoint string, agentTaskID uuid.UUID) (agentclient.TaskTerminal, error)
+}
+
+// Placer is the placement seam (spec D2): a node-less migrate scores a target
+// via the same scheduler.SchedulePlacement path used at create, excluding the
+// source node. The production implementation wraps SchedulePlacement over the
+// store's PlacementQuerier; tests inject a fake.
+type Placer interface {
+	Place(ctx context.Context, req scheduler.PlacementRequest) (scheduler.PlacementDecision, error)
+}
+
+// MigrateConfig threads the worker's non-placement knobs. DefaultPoolName is the
+// cluster default the worker falls back to when a migration carries no explicit
+// TargetPoolName (the placement algorithm + resource gating live on the Placer).
+type MigrateConfig struct {
+	DefaultPoolName string
+}
+
+// schedulerPlacer is the production Placer: it runs scheduler.SchedulePlacement
+// against the store's read-only placement querier (NO placement-lock transaction
+// - the worker never re-pins the VM at placement time; cutover does that atomically
+// later, spec D3).
+type schedulerPlacer struct {
+	q   scheduler.Querier
+	cfg scheduler.PlacementConfig
+}
+
+// NewSchedulerPlacer returns the production Placer wrapping SchedulePlacement
+// over q with the given config.
+func NewSchedulerPlacer(q scheduler.Querier, cfg scheduler.PlacementConfig) Placer {
+	return schedulerPlacer{q: q, cfg: cfg}
+}
+
+func (p schedulerPlacer) Place(ctx context.Context, req scheduler.PlacementRequest) (scheduler.PlacementDecision, error) {
+	return scheduler.SchedulePlacement(ctx, p.q, req, p.cfg)
+}
+
+// MigrateHandler returns the dispatcher handler for vm.migrate jobs.
+func MigrateHandler(st MigrationWorkerStore, agent MigrationAgentClient, placer Placer, cfg MigrateConfig, log *slog.Logger) func(context.Context, []byte) error {
+	return func(ctx context.Context, raw []byte) error {
+		var args MigrationRunArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("unmarshal vm.migrate args: %v", err)
+		}
+		return runMigration(ctx, st, agent, placer, cfg, log, args)
+	}
+}
+
+func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, placer Placer, cfg MigrateConfig, log *slog.Logger, args MigrationRunArgs) error {
+	taskID := args.TaskID
+	alreadyTerminal, err := st.UpdateTaskRunning(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("update task running: %v", err)
+	}
+	if alreadyTerminal {
+		// Redelivery whose task already committed success/cancelled: do NOT contact
+		// the agent. Return nil so the dispatcher CompleteJob-deletes the job.
+		return nil
+	}
+
+	m, err := st.MigrationByID(ctx, args.MigrationID)
+	if err != nil {
+		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load migration: %v", err))
+	}
+	if isTerminalPhase(m.Phase) {
+		// Already terminal (a prior delivery committed the cutover, or it was
+		// cancelled/failed): idempotent reconcile-by-query, nothing to do.
+		return nil
+	}
+	if m.SourceNodeID == nil {
+		// A migration with no source is malformed - it can never be driven. Fail
+		// terminally rather than burning the retry budget.
+		return failTerminal(ctx, st, log, taskID, "internal", fmt.Errorf("migration %s has no source node", m.ID))
+	}
+
+	vm, err := st.VMByID(ctx, m.VmID)
+	if err != nil {
+		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load vm: %v", err))
+	}
+
+	// Spec D2: node-less migrate picks a target via the scheduler (excluding the
+	// source), then binds it. A bound migration skips straight to the handshake.
+	if m.TargetNodeID == nil {
+		bound, perr := placeAndBind(ctx, st, placer, cfg, log, m, vm)
+		if perr != nil {
+			return perr
+		}
+		m = bound
+	}
+
+	return driveHandshake(ctx, st, agent, log, taskID, m, vm)
+}
+
+// placeAndBind scores a target for a node-less migration and binds it. On an
+// unschedulable verdict it records the retryable scheduling_reason on the still-
+// pending migration and returns a RETRYABLE error so the dispatcher requeues
+// (spec D4: retry-forever, VM stays on source) - the agent is NEVER contacted.
+// On success it binds the target and returns the reloaded migration.
+func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, cfg MigrateConfig, log *slog.Logger, m store.Migration, vm store.VM) (store.Migration, error) {
+	poolName := m.TargetPoolName
+	if poolName == "" {
+		poolName = cfg.DefaultPoolName
+	}
+	src := *m.SourceNodeID
+	decision, perr := placer.Place(ctx, scheduler.PlacementRequest{
+		PoolName:      poolName,
+		ExcludeNodeID: &src,
+		VCPUs:         int(vm.CpuCores),
+		MemoryMiB:     int(vm.MemoryMib),
+	})
+	if perr != nil {
+		reason := scheduleReasonFor(perr)
+		now := time.Now().UTC()
+		pending := store.MigrationPhasePending
+		if uerr := st.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{
+			Phase:                 &pending,
+			SchedulingReason:      &reason,
+			LastScheduleAttemptAt: &now,
+		}); uerr != nil {
+			// A progress-write failure is itself retryable; surface it so the
+			// envelope eventually persists.
+			return store.Migration{}, fmt.Errorf("record scheduling reason: %v (cause: %v)", uerr, perr)
+		}
+		log.InfoContext(ctx, "migration pending: no target bound",
+			slog.String("migration_id", m.ID.String()), slog.String("scheduling_reason", reason))
+		// RETRYABLE: return the cause so the dispatcher requeues and the scheduler
+		// retry loop drives the next attempt. The agent is not contacted.
+		return store.Migration{}, fmt.Errorf("migration %s unschedulable: %w", m.ID, perr)
+	}
+
+	winnerPool := decision.PoolInstance.Name
+	if err := st.BindMigrationTarget(ctx, m.ID, decision.Node.ID, winnerPool); err != nil {
+		if errors.Is(err, store.ErrMigrationTerminal) {
+			// Raced to terminal (cancel / lifecycle supersede) between read and
+			// bind: idempotent reconcile, nothing to do.
+			return store.Migration{}, nil
+		}
+		// ErrConcurrentUpdate or a transient store error is retryable.
+		return store.Migration{}, fmt.Errorf("bind migration target: %v", err)
+	}
+	reloaded, err := st.MigrationByID(ctx, m.ID)
+	if err != nil {
+		return store.Migration{}, fmt.Errorf("reload migration after bind: %v", err)
+	}
+	return reloaded, nil
+}
+
+// driveHandshake runs the two-phase peer-to-peer handshake against a bound
+// migration and polls the SOURCE outgoing task to terminal. On success it commits
+// the atomic cutover (re-pin source -> target); on failure it marks the migration
+// failed WITHOUT ever re-pinning (fail-safe-to-source).
+func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID uuid.UUID, m store.Migration, vm store.VM) error {
+	if m.TargetNodeID == nil {
+		// Defensive: a bound migration always has a target. A nil here is a bug, not
+		// a retryable condition.
+		return failTerminal(ctx, st, log, taskID, "internal", fmt.Errorf("migration %s has no target after bind", m.ID))
+	}
+	source, err := st.NodeByID(ctx, *m.SourceNodeID)
+	if err != nil {
+		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load source node: %v", err))
+	}
+	target, err := st.NodeByID(ctx, *m.TargetNodeID)
+	if err != nil {
+		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load target node: %v", err))
+	}
+
+	task, err := st.TaskByID(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("reload task: %v", err)
+	}
+
+	agentTaskID, err := startOrResume(ctx, st, agent, log, taskID, task, vm, m, source, target)
+	if err != nil {
+		// A handshake-setup error (incoming prep, outgoing start) is retryable: the
+		// VM is still on source, nothing durable moved. Record failed-as-retryable
+		// envelope and return the cause so the dispatcher requeues against the
+		// attempt budget.
+		return failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable, err)
+	}
+
+	// Advance the migration to active as the source push proceeds, then poll the
+	// source outgoing task to terminal.
+	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseActive)
+
+	terminal, perr := agent.PollTask(ctx, source.AdvertisedEndpoint, agentTaskID)
+	if perr != nil {
+		return failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable, fmt.Errorf("poll outgoing task: %v", perr))
+	}
+
+	switch terminal.Status {
+	case "success":
+		return commitCutover(ctx, st, log, taskID, m.ID, terminal)
+	case "failed", "cancelled":
+		return failMigration(ctx, st, log, taskID, m.ID, terminal)
+	default:
+		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", terminal.Status))
+	}
+}
+
+// startOrResume performs the two-phase handshake setup with agent_task_id
+// resumption on the OUTGOING start. When the task already carries an agent task
+// id (a redelivery after the source push began), it skips BOTH agent POSTs and
+// resumes polling the persisted id - a redelivered job must not double-POST the
+// outgoing start. Otherwise it prepares the target (incoming), starts the source
+// push (outgoing), and persists the returned id.
+func startOrResume(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID uuid.UUID, task store.Task, vm store.VM, m store.Migration, source, target store.Node) (uuid.UUID, error) {
+	if task.AgentTaskID != nil {
+		return *task.AgentTaskID, nil
+	}
+
+	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseSetup)
+
+	mode := agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeLive)
+	if !m.Live {
+		mode = agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeOffline)
+	}
+	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
+		MigrationID: m.ID,
+		Mode:        mode,
+		VMSpec:      minimalVMSpec(vm),
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("start incoming migration: %w", err)
+	}
+
+	outMode := agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeLive)
+	if !m.Live {
+		outMode = agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeOffline)
+	}
+	agentTaskStr, err := agent.StartOutgoingMigration(ctx, source.AdvertisedEndpoint, vm.Name, agentapi.MigrationOutgoingRequest{
+		MigrationID:       m.ID,
+		Mode:              outMode,
+		TargetEndpoint:    incoming.ListenEndpoint,
+		AuthToken:         incoming.AuthToken,
+		MaxBandwidthBytes: m.MaxBandwidthBytes,
+		MaxDowntimeMs:     int32PtrToInt(m.MaxDowntimeMs),
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("start outgoing migration: %w", err)
+	}
+	agentTaskID, perr := uuid.Parse(agentTaskStr)
+	if perr != nil {
+		return uuid.Nil, fmt.Errorf("parse agent task id %q: %v", agentTaskStr, perr)
+	}
+	if err := st.UpdateTaskAgentTaskID(ctx, store.UpdateTaskAgentTaskIDParams{ID: taskID, AgentTaskID: &agentTaskID}); err != nil {
+		return uuid.Nil, fmt.Errorf("persist agent_task_id: %v", err)
+	}
+	return agentTaskID, nil
+}
+
+// commitCutover commits the atomic source -> target re-pin. ErrConcurrentUpdate
+// triggers a reconcile-by-query: re-read the migration; if a concurrent writer
+// already completed it (the cutover landed), treat as success. Then finalize the
+// task success.
+func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID, migID uuid.UUID, terminal agentclient.TaskTerminal) error {
+	err := st.CommitMigrationCutover(ctx, migID)
+	if errors.Is(err, store.ErrConcurrentUpdate) {
+		reloaded, rerr := st.MigrationByID(ctx, migID)
+		if rerr != nil {
+			return fmt.Errorf("reload migration after cutover CAS loss: %v", rerr)
+		}
+		if reloaded.Phase != store.MigrationPhaseCompleted {
+			// Lost the CAS to a non-completing writer (progress update). Retry the
+			// whole drive: the migration is still mid-flight on source.
+			return fmt.Errorf("cutover CAS lost for migration %s (phase %q); retry", migID, reloaded.Phase)
+		}
+		// Already completed by a concurrent commit: idempotent success.
+	} else if err != nil {
+		// A non-CAS cutover error (terminal migration, store fault) is retryable so
+		// the worker reconciles on the next delivery.
+		return fmt.Errorf("commit cutover: %v", err)
+	}
+
+	result := terminal.Result
+	if result == nil {
+		result = map[string]any{"migration_id": migID.String()}
+	}
+	resultJSON, merr := json.Marshal(result)
+	if merr != nil {
+		resultJSON = []byte(`{}`)
+	}
+	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON}); err != nil {
+		return fmt.Errorf("finalize task success: %v", err)
+	}
+	log.InfoContext(ctx, "migration completed (cutover committed)", slog.String("migration_id", migID.String()))
+	return nil
+}
+
+// failMigration marks the migration failed from the source task's terminal-failure
+// envelope WITHOUT ever calling cutover - the VM stays on source (fail-safe). It
+// finalizes the task failed and returns nil so the dispatcher does NOT requeue
+// (the failure is terminal; the source push reported a definitive failure).
+func failMigration(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID, migID uuid.UUID, terminal agentclient.TaskTerminal) error {
+	msg := "migration failed on source agent"
+	code := ErrCodeConvergenceFailed
+	if terminal.Error != nil {
+		if terminal.Error.Message != "" {
+			msg = terminal.Error.Message
+		}
+		if terminal.Error.Code != "" {
+			code = terminal.Error.Code
+		}
+	}
+	failedPhase := store.MigrationPhaseFailed
+	errMsg := msg
+	if uerr := st.UpdateMigrationProgress(ctx, migID, store.MigrationProgressUpdate{
+		Phase:        &failedPhase,
+		ErrorMessage: &errMsg,
+	}); uerr != nil {
+		// A migration-write failure is retryable so the terminal state eventually
+		// persists.
+		return fmt.Errorf("mark migration failed: %v", uerr)
+	}
+	if err := finalizeFailed(ctx, st, log, taskID, code, errors.New(msg)); err != nil {
+		return err
+	}
+	log.WarnContext(ctx, "migration failed pre-cutover (vm stays on source)",
+		slog.String("migration_id", migID.String()), slog.String("code", code), slog.String("error", msg))
+	return nil
+}
+
+// advancePhase best-effort advances the migration to phase. A CAS loss / terminal
+// migration is benign (a concurrent cancel or a prior advance); progress phase is
+// observational and never gates correctness, so the error is logged and swallowed.
+func advancePhase(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, migID uuid.UUID, phase store.MigrationPhase) {
+	if err := st.UpdateMigrationProgress(ctx, migID, store.MigrationProgressUpdate{Phase: &phase}); err != nil {
+		if errors.Is(err, store.ErrMigrationTerminal) || errors.Is(err, store.ErrConcurrentUpdate) {
+			return
+		}
+		log.WarnContext(ctx, "advance migration phase failed (continuing)",
+			slog.String("migration_id", migID.String()), slog.String("phase", string(phase)), slog.String("error", err.Error()))
+	}
+}
+
+// minimalVMSpec builds the smallest well-formed VMSpec the incoming-migration
+// request requires. The target agent brings up the migrated guest from the
+// in-band migration stream, not from this spec; the CP threads the identity
+// fields (name, architecture, cpu, memory) so the target can pre-stage. Richer
+// disk / network materialization is the agent data-path slice's concern.
+func minimalVMSpec(vm store.VM) agentapi.VMSpec {
+	return agentapi.VMSpec{
+		Name:         vm.Name,
+		Architecture: agentapi.VMSpecArchitecture(vm.Architecture),
+		CPUCores:     int(vm.CpuCores),
+		MemoryMib:    int64(vm.MemoryMib),
+	}
+}
+
+// scheduleReasonFor maps a placement error to the migration's machine-readable
+// scheduling_reason (mirrors the VM schedule loop). Insufficient-resources maps
+// to no_capacity; every other unschedulable verdict (no eligible node, pool not
+// found / not on node) maps to no_eligible_target - the operator-visible "leave
+// this node" intent is unsatisfiable right now.
+func scheduleReasonFor(err error) string {
+	switch {
+	case errors.Is(err, scheduler.ErrInsufficientResources):
+		return ReasonNoCapacity
+	case errors.Is(err, scheduler.ErrPoolNotFound), errors.Is(err, scheduler.ErrPoolNotOnNode):
+		return ReasonPoolNotReady
+	default:
+		return ReasonNoEligibleTarget
+	}
+}
+
+// isTerminalPhase reports whether a migration phase is committed-terminal
+// (completed) or terminal-failure (failed / cancelled). The worker treats all
+// three as "nothing to drive".
+func isTerminalPhase(p store.MigrationPhase) bool {
+	switch p {
+	case store.MigrationPhaseCompleted, store.MigrationPhaseFailed, store.MigrationPhaseCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// int32PtrToInt converts a *int32 (store width) to the *int the agent request
+// type expects, preserving nil.
+func int32PtrToInt(v *int32) *int {
+	if v == nil {
+		return nil
+	}
+	n := int(*v)
+	return &n
+}
+
+// failTask writes the failed envelope and returns the cause so the dispatcher
+// RETRIES against the attempt budget (the failure may be transient - target
+// blip, store fault). A finalize-write error preempts the cause and is returned
+// so the envelope persists.
+func failTask(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID uuid.UUID, code string, cause error) error {
+	if err := finalizeFailed(ctx, st, log, taskID, code, cause); err != nil {
+		return err
+	}
+	return cause
+}
+
+// failTerminal writes the failed envelope and returns nil so the dispatcher
+// COMPLETES (deletes) the job - use it for conditions that cannot become
+// satisfiable on retry (a malformed migration with no source/target).
+func failTerminal(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID uuid.UUID, code string, cause error) error {
+	return finalizeFailed(ctx, st, log, taskID, code, cause)
+}
+
+// finalizeFailed writes the terminal failed envelope for taskID. nil on success;
+// a wrapped error when the finalize write itself failed (the caller retries so
+// the envelope eventually persists).
+func finalizeFailed(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID uuid.UUID, code string, cause error) error {
+	envelope, merr := json.Marshal(struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{Code: code, Message: cause.Error()})
+	if merr != nil {
+		envelope = []byte(`{"code":"internal","message":"marshal error envelope failed"}`)
+		log.ErrorContext(ctx, "vm.migrate marshal error envelope failed", slog.String("task_id", taskID.String()), slog.String("code", code))
+	}
+	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusFailed, Error: envelope}); err != nil {
+		log.ErrorContext(ctx, "vm.migrate finalize-failed write failed", slog.String("task_id", taskID.String()), slog.String("code", code), slog.String("error", err.Error()))
+		return fmt.Errorf("finalize failed: %v (cause: %v)", err, cause)
+	}
+	return nil
+}

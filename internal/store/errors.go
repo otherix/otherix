@@ -64,6 +64,12 @@ var (
 	// only pre-cutover (spec D5), so a terminal migration cannot be cancelled.
 	ErrMigrationNotCancelable = errors.New("store: migration is not cancelable")
 
+	// ErrMigrationTargetConflict is returned by BindMigrationTarget when the
+	// migration already has a target node that differs from the one being bound:
+	// a node-less migration binds its scheduler-picked target exactly once, and a
+	// second writer must not re-point it. Re-binding the same target is a no-op.
+	ErrMigrationTargetConflict = errors.New("store: migration already bound to a different target")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")

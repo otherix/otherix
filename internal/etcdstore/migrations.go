@@ -373,6 +373,71 @@ func (s *Store) CancelMigration(ctx context.Context, id uuid.UUID, reason string
 	return m, nil
 }
 
+// BindMigrationTarget binds the scheduler-picked target onto a node-less
+// migration: it sets TargetNodeID (and TargetPoolName), clears SchedulingReason,
+// and writes the per-node index entry for the target so the reservation (Task 7)
+// and the heartbeat placement gate (Task 6) see the bound target. PinnedNodeID is
+// untouched - the VM stays on source until cutover (spec D3). It is the seam the
+// worker calls after SchedulePlacement returns a winner.
+//
+// Guards under a single ModRevision CAS: a terminal migration is rejected with
+// store.ErrMigrationTerminal (binding a target on a dead saga would resurrect it);
+// a migration already bound to a DIFFERENT target is rejected with
+// store.ErrMigrationTargetConflict; re-binding the SAME target is an idempotent
+// no-op (a redelivered worker that already bound). A lost CAS returns
+// store.ErrConcurrentUpdate.
+func (s *Store) BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error {
+	resp, err := s.c.Raw().Get(ctx, migrationKey(migID))
+	if err != nil {
+		return err
+	}
+	if len(resp.Kvs) == 0 {
+		return store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var m store.Migration
+	if err := json.Unmarshal(resp.Kvs[0].Value, &m); err != nil {
+		return err
+	}
+	if isTerminalMigration(m.Phase) {
+		return store.ErrMigrationTerminal
+	}
+	if m.TargetNodeID != nil {
+		if *m.TargetNodeID == targetNodeID {
+			return nil // idempotent: already bound to this target.
+		}
+		return store.ErrMigrationTargetConflict
+	}
+
+	now := time.Now().UTC()
+	target := targetNodeID
+	m.TargetNodeID = &target
+	m.TargetPoolName = poolName
+	m.SchedulingReason = nil
+	m.UpdatedAt = now
+
+	val, err := etcd.Marshal(m)
+	if err != nil {
+		return err
+	}
+	ops := []clientv3.Op{
+		clientv3.OpPut(migrationKey(m.ID), string(val)),
+		clientv3.OpPut(migrationNodeIndexKey(target, m.ID), m.ID.String()),
+	}
+
+	txResp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", rev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
+		return err
+	}
+	if !txResp.Succeeded {
+		return store.ErrConcurrentUpdate
+	}
+	return nil
+}
+
 // MigrationByID returns the migration row with the given id, or
 // store.ErrNotFound. Migrations have no soft-delete column, so a present row is
 // always visible.

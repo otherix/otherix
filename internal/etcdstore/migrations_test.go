@@ -875,3 +875,138 @@ func TestCancelMigration_NotFound(t *testing.T) {
 		t.Errorf("CancelMigration(unknown) err = %v, want store.ErrNotFound", err)
 	}
 }
+
+// migrationParamsNodeless builds CreateMigrationParams with no target bound (the
+// node-less `vm migrate` shape): the worker resolves the target via the
+// scheduler and binds it with BindMigrationTarget.
+func migrationParamsNodeless(vmID, sourceNode uuid.UUID) store.CreateMigrationParams {
+	p := migrationParams(vmID, sourceNode, uuid.Nil)
+	p.TargetNodeID = nil
+	return p
+}
+
+func seedNodelessMigration(t *testing.T, s *etcdstore.Store, vmID, source uuid.UUID) store.Migration {
+	t.Helper()
+	ctx := context.Background()
+	p := migrationParamsNodeless(vmID, source)
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration(nodeless): %v", err)
+	}
+	return m
+}
+
+// TestBindMigrationTarget_BindsAndIndexes pins 12a: binding a node-less
+// migration's target sets TargetNodeID + TargetPoolName, clears SchedulingReason,
+// and writes the per-node index entry the reservation / heartbeat gate range, all
+// under one CAS.
+func TestBindMigrationTarget_BindsAndIndexes(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	sourceNode := nodeParams(uniqueNodeName("src"))
+	targetNode := nodeParams(uniqueNodeName("tgt"))
+	if _, err := s.CreateNode(ctx, sourceNode); err != nil {
+		t.Fatalf("CreateNode(source): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, targetNode); err != nil {
+		t.Fatalf("CreateNode(target): %v", err)
+	}
+
+	vmID := uuid.New()
+	m := seedNodelessMigration(t, s, vmID, sourceNode.ID)
+
+	// Stamp a scheduling reason so we can prove the bind clears it.
+	reason := "no_eligible_target"
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{SchedulingReason: &reason}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(reason): %v", err)
+	}
+
+	if err := s.BindMigrationTarget(ctx, m.ID, targetNode.ID, "fast-ssd"); err != nil {
+		t.Fatalf("BindMigrationTarget: %v", err)
+	}
+
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.TargetNodeID == nil || *got.TargetNodeID != targetNode.ID {
+		t.Errorf("TargetNodeID = %v, want %v", got.TargetNodeID, targetNode.ID)
+	}
+	if got.TargetPoolName != "fast-ssd" {
+		t.Errorf("TargetPoolName = %q, want %q", got.TargetPoolName, "fast-ssd")
+	}
+	if got.SchedulingReason != nil {
+		t.Errorf("SchedulingReason = %v, want nil after bind", got.SchedulingReason)
+	}
+	if got.Phase != store.MigrationPhasePending {
+		t.Errorf("Phase = %q, want pending (bind does not advance phase)", got.Phase)
+	}
+
+	tgtIdx, err := cl.Range(ctx, etcd.Key("index", "migrations", "node", targetNode.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(target node index): %v", err)
+	}
+	if len(tgtIdx) != 1 || string(tgtIdx[0].Value) != m.ID.String() {
+		t.Errorf("target node index = %+v, want one entry valued %s", tgtIdx, m.ID)
+	}
+}
+
+// TestBindMigrationTarget_RejectsTerminal pins fail-safe: a terminal migration
+// can never have a target bound (it would resurrect a dead saga).
+func TestBindMigrationTarget_RejectsTerminal(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	sourceNode := nodeParams(uniqueNodeName("src"))
+	targetNode := nodeParams(uniqueNodeName("tgt"))
+	if _, err := s.CreateNode(ctx, sourceNode); err != nil {
+		t.Fatalf("CreateNode(source): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, targetNode); err != nil {
+		t.Fatalf("CreateNode(target): %v", err)
+	}
+
+	vmID := uuid.New()
+	m := seedNodelessMigration(t, s, vmID, sourceNode.ID)
+	if _, err := s.CancelMigration(ctx, m.ID, "operator cancel"); err != nil {
+		t.Fatalf("CancelMigration: %v", err)
+	}
+
+	if err := s.BindMigrationTarget(ctx, m.ID, targetNode.ID, ""); !errors.Is(err, store.ErrMigrationTerminal) {
+		t.Errorf("BindMigrationTarget(terminal) = %v, want store.ErrMigrationTerminal", err)
+	}
+}
+
+// TestBindMigrationTarget_RejectsDifferentTarget pins the conflict guard: binding
+// a different node onto a migration that already has a target is rejected, while
+// re-binding the SAME target is idempotent.
+func TestBindMigrationTarget_RejectsDifferentTarget(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	sourceNode := nodeParams(uniqueNodeName("src"))
+	targetNode := nodeParams(uniqueNodeName("tgt"))
+	otherNode := nodeParams(uniqueNodeName("oth"))
+	for _, n := range []store.CreateNodeParams{sourceNode, targetNode, otherNode} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode(%s): %v", n.Name, err)
+		}
+	}
+
+	vmID := uuid.New()
+	// Migration already bound to targetNode at create time.
+	p := migrationParams(vmID, sourceNode.ID, targetNode.ID)
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+
+	if err := s.BindMigrationTarget(ctx, m.ID, otherNode.ID, ""); !errors.Is(err, store.ErrMigrationTargetConflict) {
+		t.Errorf("BindMigrationTarget(different target) = %v, want store.ErrMigrationTargetConflict", err)
+	}
+	// Re-binding the same target is a no-op success (idempotent reconcile).
+	if err := s.BindMigrationTarget(ctx, m.ID, targetNode.ID, ""); err != nil {
+		t.Errorf("BindMigrationTarget(same target) = %v, want nil (idempotent)", err)
+	}
+}

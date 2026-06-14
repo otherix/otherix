@@ -20,6 +20,7 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
+	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
@@ -30,6 +31,7 @@ import (
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/netdetect"
+	schedpkg "github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/worker"
 )
 
@@ -503,6 +505,18 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
 		storagepoolshandlers.ScanHandler(st, storagepoolshandlers.NewAgentScanExecutor(agentClient), cfg.Placement.Pressure.Disk, log))
+
+	// vm.migrate drives the live-migration saga (placement / two-phase handshake /
+	// atomic cutover). The placer reuses SchedulePlacement over the store's
+	// read-only querier (no placement lock - the worker re-pins only at cutover).
+	migratePlacer := migrationshandlers.NewSchedulerPlacer(st.PlacementQuerier(), schedpkg.PlacementConfig{
+		Algorithm: cfg.Placement.Algorithm,
+		Resources: api.SchedulerResourcesFromConfig(cfg.Placement.Resources),
+	})
+	d.Register("vm.migrate", workerMaxAttempts,
+		migrationshandlers.MigrateHandler(st, agentClient, migratePlacer, migrationshandlers.MigrateConfig{
+			DefaultPoolName: cfg.StoragePools.DefaultPoolName,
+		}, log))
 
 	return d
 }
