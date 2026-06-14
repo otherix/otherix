@@ -25,6 +25,7 @@ func TestQemuNBDServerArgs(t *testing.T) {
 		"--tls-creds migtls",
 		"--tls-authz migauthz",
 		"--persistent",
+		"--cache=none",
 		"-f qcow2",
 		"-x tok123",
 		"-b 10.0.0.2",

@@ -52,6 +52,12 @@ func NBDServerArgs(s NBDServerSpec) []string {
 		// transfer at a single connection; persistent + explicit teardown keeps
 		// both correctness and parallelism.
 		"--persistent",
+		// O_DIRECT on the destination disk: bypass the host page cache so the
+		// received blocks land on disk directly. This matches how the VM later
+		// opens the disk (cache=none) - avoiding a page-cache coherency window
+		// between qemu-nbd's writes and the guest's O_DIRECT reads - and keeps
+		// a large copy from evicting the host's working set.
+		"--cache=none",
 		"-f", "qcow2",
 		"-x", s.Export,
 		"-b", s.BindHost,
