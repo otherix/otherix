@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -30,9 +29,9 @@ var testPoolRoot string
 // newTestVMsServer builds the real vms.Handler over a real vm.Manager
 // (with the migration port range configured and a single pool seeded)
 // mounted under /v1/vms on a chi router. The migration seams stay the
-// production qemu funcs - tests that would exec qemu either skip when
-// the binary is absent (the incoming happy path) or exercise only the
-// decode / validation / 404 routes that never reach qemu.
+// production qemu funcs; the handler tests here exercise only the decode /
+// validation / 404 routes that never reach qemu (the happy path is covered
+// by the package-vm manager test and the Lima smoke).
 func newTestVMsServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	tmp := t.TempDir()
@@ -79,42 +78,12 @@ func minimalVMSpec(t *testing.T) agentapi.VMSpec {
 	}
 }
 
-func qemuImgAvailable() bool {
-	_, err := exec.LookPath("qemu-img")
-	if err != nil {
-		return false
-	}
-	_, err = exec.LookPath("qemu-nbd")
-	return err == nil
-}
-
-func TestStartIncomingHandlerReturns200WithEndpoint(t *testing.T) {
-	if !qemuImgAvailable() {
-		t.Skip("qemu-img/qemu-nbd not installed; incoming happy path exec's qemu")
-	}
-	srv := newTestVMsServer(t)
-	defer srv.Close()
-
-	body, _ := json.Marshal(agentapi.MigrationIncomingRequest{
-		MigrationID:        uuid.New(),
-		Mode:               agentapi.MigrationIncomingRequestModeOffline,
-		SourceNodeIdentity: strptr("CN=node-src"),
-		VMSpec:             minimalVMSpec(t),
-	})
-	resp, err := http.Post(srv.URL+"/v1/vms/demo/migrations/incoming", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var out agentapi.MigrationIncomingResponse
-	_ = json.NewDecoder(resp.Body).Decode(&out)
-	if out.ListenEndpoint == "" || out.AuthToken == "" {
-		t.Errorf("response missing endpoint/token: %+v", out)
-	}
-}
+// The StartIncoming 200 happy path exec's a real qemu-nbd and now waits for it
+// to listen (WaitNBDListening); a unit test cannot stand up a working TLS NBD
+// server without real node PKI, so that path is covered by the package-vm
+// manager test (TestStartIncomingReservesPortAndReturnsEndpoint, fake seams)
+// and the two-node Lima smoke. The handler tests below cover its decode /
+// validation / error-mapping / routing, which is the handler's own logic.
 
 // TestStartIncomingHandlerRejectsBadBody asserts a malformed JSON body
 // is rejected at the decode edge with 400 before any qemu work.
