@@ -43,6 +43,11 @@ var (
 	ErrJoinNodeNameMismatch  = errors.New("store: node name does not match token binding")
 	ErrJoinNodeNameTaken     = errors.New("store: node already has an active cert")
 
+	// ErrMigrationActiveExists is returned by CreateMigration when the VM already
+	// has a non-terminal migration: the per-VM active guard key is present, so a
+	// second concurrent migration for the same VM loses the create CAS.
+	ErrMigrationActiveExists = errors.New("active migration already exists for vm")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
