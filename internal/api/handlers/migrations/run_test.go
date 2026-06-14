@@ -39,9 +39,22 @@ type fakeMigrationAgent struct {
 	outgoingCalls int
 	pollCalls     int
 
+	startTargetCalls  int
+	deleteSourceCalls int
+
+	// incomingReq / outgoingReq capture the last requests so a test can assert the
+	// threaded identities + disk spec.
+	incomingReq agentapi.MigrationIncomingRequest
+	outgoingReq agentapi.MigrationOutgoingRequest
+
 	// terminal is the staged outgoing-task outcome the worker's PollTask sees.
 	terminal agentclient.TaskTerminal
 	pollErr  error
+
+	// startTargetErr / deleteSourceErr stage post-cutover convergence failures so a
+	// test can prove the worker logs-and-continues (never fails the committed migration).
+	startTargetErr  error
+	deleteSourceErr error
 
 	// agentTaskID is the id StartOutgoingMigration returns (and PollTask echoes).
 	agentTaskID uuid.UUID
@@ -51,6 +64,7 @@ func (f *fakeMigrationAgent) StartIncomingMigration(_ context.Context, _, _ stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.incomingCalls++
+	f.incomingReq = req
 	return agentapi.MigrationIncomingResponse{
 		AuthToken:      "tok-" + req.MigrationID.String(),
 		ListenEndpoint: "10.0.0.2:49152",
@@ -58,10 +72,11 @@ func (f *fakeMigrationAgent) StartIncomingMigration(_ context.Context, _, _ stri
 	}, nil
 }
 
-func (f *fakeMigrationAgent) StartOutgoingMigration(_ context.Context, _, _ string, _ agentapi.MigrationOutgoingRequest) (string, error) {
+func (f *fakeMigrationAgent) StartOutgoingMigration(_ context.Context, _, _ string, req agentapi.MigrationOutgoingRequest) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.outgoingCalls++
+	f.outgoingReq = req
 	if f.agentTaskID == uuid.Nil {
 		f.agentTaskID = uuid.New()
 	}
@@ -76,6 +91,20 @@ func (f *fakeMigrationAgent) PollTask(_ context.Context, _ string, _ uuid.UUID) 
 		return agentclient.TaskTerminal{}, f.pollErr
 	}
 	return f.terminal, nil
+}
+
+func (f *fakeMigrationAgent) StartVMOnTarget(_ context.Context, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startTargetCalls++
+	return f.startTargetErr
+}
+
+func (f *fakeMigrationAgent) DeleteVMOnSource(_ context.Context, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteSourceCalls++
+	return f.deleteSourceErr
 }
 
 // fakePlacer is the placement seam double. It returns a fixed decision or a
@@ -139,6 +168,42 @@ func seedPinnedVM(t *testing.T, cli *etcd.Client, node uuid.UUID) store.VM {
 	return v
 }
 
+// seedBootDisk writes a device-order-0 boot disk for vm via the etcd client
+// (the worker reads it through ListVMDisksByVM to size the destination disk and
+// fill VMSpec.Disks[0]).
+func seedBootDisk(t *testing.T, cli *etcd.Client, vmID uuid.UUID, sizeGib int32) store.VMDisk {
+	t.Helper()
+	ctx := context.Background()
+	d := store.VMDisk{
+		ID: uuid.New(), VmID: vmID, StoragePoolID: uuid.New(),
+		DeviceOrder: 0, Bus: store.DiskBusVirtio, SizeGib: sizeGib,
+		SourceKind: "image", Format: store.ImageFormatQcow2,
+		CacheMode: store.DiskCacheModeWriteback, Discard: store.DiskDiscardUnmap,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_disks", d.ID.String()), d); err != nil {
+		t.Fatalf("seed vm disk: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vm_disks", "vm", vmID.String(), d.ID.String()), []byte(d.ID.String())); err != nil {
+		t.Fatalf("seed vm disk index: %v", err)
+	}
+	return d
+}
+
+// seedPool creates a storage pool named name on node with the given filesystem
+// path, so the worker can resolve TargetPoolName -> StoragePoolPath on the
+// target node.
+func seedPool(t *testing.T, s *etcdstore.Store, node uuid.UUID, name, path string) store.StoragePool {
+	t.Helper()
+	p, err := s.CreateStoragePool(context.Background(), store.CreateStoragePoolParams{
+		ID: uuid.New(), NodeID: node, Name: name, Type: "local_dir", Path: path,
+	})
+	if err != nil {
+		t.Fatalf("CreateStoragePool(%s on %s): %v", name, node, err)
+	}
+	return p
+}
+
 // migrationJobArgsStub is the minimal queue.JobArgs the enqueue path marshals.
 type migrationJobArgsStub struct {
 	TaskID      uuid.UUID
@@ -185,6 +250,8 @@ func TestRunMigration_HappyNodeless(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
+	seedBootDisk(t, cli, vm.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
@@ -222,6 +289,48 @@ func TestRunMigration_HappyNodeless(t *testing.T) {
 	if agent.incomingCalls != 1 || agent.outgoingCalls != 1 {
 		t.Errorf("agent calls: incoming=%d outgoing=%d, want 1/1", agent.incomingCalls, agent.outgoingCalls)
 	}
+
+	// Peer identity threading: the incoming request pins the SOURCE node's
+	// leaf-cert DN; the outgoing request pins the TARGET node's SAN name. The
+	// builders prepend "node-" to the node NAME, so a node named "node-a" yields
+	// "CN=node-node-a", and "node-b" yields "node-node-b.agents.otherix.local".
+	if got := derefStr(agent.incomingReq.SourceNodeIdentity); got != "CN=node-"+nodeA.Name {
+		t.Errorf("incoming SourceNodeIdentity = %q, want %q", got, "CN=node-"+nodeA.Name)
+	}
+	if got := derefStr(agent.outgoingReq.TargetNodeIdentity); got != "node-"+nodeB.Name+".agents.otherix.local" {
+		t.Errorf("outgoing TargetNodeIdentity = %q, want %q", got, "node-"+nodeB.Name+".agents.otherix.local")
+	}
+
+	// VMSpec boot disk: the agent sizes the destination disk from Disks[0].SizeGib
+	// and resolves the target pool from a non-empty Disks[0].StoragePoolPath.
+	if len(agent.incomingReq.VMSpec.Disks) != 1 {
+		t.Fatalf("incoming VMSpec.Disks len = %d, want 1", len(agent.incomingReq.VMSpec.Disks))
+	}
+	boot := agent.incomingReq.VMSpec.Disks[0]
+	if boot.SizeGib != 40 {
+		t.Errorf("incoming VMSpec.Disks[0].SizeGib = %d, want 40", boot.SizeGib)
+	}
+	if boot.StoragePoolPath == "" {
+		t.Errorf("incoming VMSpec.Disks[0].StoragePoolPath = empty, want the target pool root path")
+	}
+
+	// Post-cutover convergence: the VM desires running, so the worker starts it on
+	// the target, then deletes the source's stale copy (both reached ONLY after
+	// the committed cutover).
+	if agent.startTargetCalls != 1 {
+		t.Errorf("StartVMOnTarget calls = %d, want 1 (desired running)", agent.startTargetCalls)
+	}
+	if agent.deleteSourceCalls != 1 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 1 (post-cutover cleanup)", agent.deleteSourceCalls)
+	}
+}
+
+// derefStr returns the pointee of a *string, or "" when nil.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // TestRunMigration_PendingSingleNode pins the D4 retry-forever path: the placer
@@ -280,6 +389,9 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	vm := seedPinnedVM(t, cli, nodeA.ID)
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
+	seedBootDisk(t, cli, vm.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{
 		Status: "failed",
 		Error:  &agentclient.AgentError{Status: 502, Code: migrations.ErrCodeTargetUnreachable, Message: "target unreachable"},
@@ -310,6 +422,14 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	}
 	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
 		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (fail-safe-to-source)", gotVM.PinnedNodeID, nodeA.ID)
+	}
+	// Fail-closed: post-cutover convergence is reached ONLY after a committed
+	// cutover. A pre-cutover failure must NEVER delete the source's copy.
+	if agent.deleteSourceCalls != 0 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 0 (no committed cutover - source must NOT be deleted)", agent.deleteSourceCalls)
+	}
+	if agent.startTargetCalls != 0 {
+		t.Errorf("StartVMOnTarget calls = %d, want 0 (no committed cutover)", agent.startTargetCalls)
 	}
 }
 
@@ -508,6 +628,8 @@ func TestRunMigration_AcquiresPlacementLockBeforeBind(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
+	seedBootDisk(t, cli, vm.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
