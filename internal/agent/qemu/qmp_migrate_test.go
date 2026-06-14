@@ -4,8 +4,11 @@
 package qemu
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/digitalocean/go-qemu/qmp"
 )
 
 func TestNBDServerStartCmd_LegacyAddrShape(t *testing.T) {
@@ -64,5 +67,55 @@ func TestMigrateCancelCmd_Underscore(t *testing.T) {
 	_ = json.Unmarshal(migrateCancelCmd(), &m)
 	if m["execute"] != "migrate_cancel" { // underscore, not hyphen
 		t.Errorf("execute = %v, want migrate_cancel", m["execute"])
+	}
+}
+
+func TestWaitMigrationStatus_ReturnsOnMatch(t *testing.T) {
+	ch := make(chan qmp.Event, 3)
+	ch <- qmp.Event{Event: "MIGRATION", Data: map[string]any{"status": "active"}}
+	ch <- qmp.Event{Event: "MIGRATION", Data: map[string]any{"status": "pre-switchover"}}
+	close(ch)
+	got, err := waitMigrationStatus(context.Background(), ch, "pre-switchover", []string{"failed", "cancelled"})
+	if err != nil {
+		t.Fatalf("waitMigrationStatus error = %v", err)
+	}
+	if got != "pre-switchover" {
+		t.Errorf("status = %q, want pre-switchover", got)
+	}
+}
+
+func TestWaitMigrationStatus_FailsOnTerminalFailure(t *testing.T) {
+	ch := make(chan qmp.Event, 1)
+	ch <- qmp.Event{Event: "MIGRATION", Data: map[string]any{"status": "failed"}}
+	close(ch)
+	if _, err := waitMigrationStatus(context.Background(), ch, "pre-switchover", []string{"failed", "cancelled"}); err == nil {
+		t.Fatal("waitMigrationStatus on failed = nil error, want failure")
+	}
+}
+
+func TestWaitMigrationStatus_ErrorsOnClosedChannel(t *testing.T) {
+	ch := make(chan qmp.Event)
+	close(ch)
+	if _, err := waitMigrationStatus(context.Background(), ch, "pre-switchover", []string{"failed"}); err == nil {
+		t.Fatal("waitMigrationStatus on closed channel = nil error, want failure")
+	}
+}
+
+func TestWaitBlockJobEvent_ReadyForDevice(t *testing.T) {
+	ch := make(chan qmp.Event, 2)
+	ch <- qmp.Event{Event: "BLOCK_JOB_READY", Data: map[string]any{"device": "other"}} // ignored: wrong device
+	ch <- qmp.Event{Event: "BLOCK_JOB_READY", Data: map[string]any{"device": "mirror-disk0"}}
+	close(ch)
+	if err := waitBlockJobEvent(context.Background(), ch, "BLOCK_JOB_READY", "mirror-disk0"); err != nil {
+		t.Errorf("waitBlockJobEvent READY error = %v", err)
+	}
+}
+
+func TestWaitBlockJobEvent_SurfacesJobError(t *testing.T) {
+	ch := make(chan qmp.Event, 1)
+	ch <- qmp.Event{Event: "BLOCK_JOB_COMPLETED", Data: map[string]any{"device": "mirror-disk0", "error": "No space left on device"}}
+	close(ch)
+	if err := waitBlockJobEvent(context.Background(), ch, "BLOCK_JOB_COMPLETED", "mirror-disk0"); err == nil {
+		t.Fatal("waitBlockJobEvent with job error = nil, want error surfaced")
 	}
 }

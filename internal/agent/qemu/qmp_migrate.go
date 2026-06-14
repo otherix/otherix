@@ -4,10 +4,13 @@
 package qemu
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
+
+	"github.com/digitalocean/go-qemu/qmp"
 )
 
 // LiveParams carries the migration tuning knobs surfaced through
@@ -392,4 +395,60 @@ func (c *QMPClient) QueryMigrate() (MigrateInfo, error) {
 		return MigrateInfo{}, fmt.Errorf("query-migrate decode: %w", err)
 	}
 	return resp.Return, nil
+}
+
+// waitMigrationStatus reads MIGRATION events from ch until one reports
+// status==want (returned) or a status listed in failStates is seen
+// (returned as an error). A closed channel or a cancelled ctx before
+// either is an error - the caller treats that as a failed migration and
+// falls back to the source (fail-safe).
+func waitMigrationStatus(ctx context.Context, ch <-chan qmp.Event, want string, failStates []string) (string, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case ev, ok := <-ch:
+			if !ok {
+				return "", fmt.Errorf("qmp event stream closed before migration status %q", want)
+			}
+			if ev.Event != "MIGRATION" {
+				continue
+			}
+			st, _ := ev.Data["status"].(string)
+			if st == want {
+				return st, nil
+			}
+			for _, f := range failStates {
+				if st == f {
+					return "", fmt.Errorf("migration entered terminal status %q", st)
+				}
+			}
+		}
+	}
+}
+
+// waitBlockJobEvent reads block-job events from ch until eventName arrives
+// for device (returned nil). A BLOCK_JOB_COMPLETED / BLOCK_JOB_CANCELLED
+// event carrying a non-empty "error" is surfaced as an error. A closed
+// channel or cancelled ctx before the event is an error.
+func waitBlockJobEvent(ctx context.Context, ch <-chan qmp.Event, eventName, device string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-ch:
+			if !ok {
+				return fmt.Errorf("qmp event stream closed before %s for %q", eventName, device)
+			}
+			if dev, _ := ev.Data["device"].(string); dev != device {
+				continue
+			}
+			if ev.Event == eventName {
+				if msg, _ := ev.Data["error"].(string); msg != "" {
+					return fmt.Errorf("%s for %q reported error: %s", eventName, device, msg)
+				}
+				return nil
+			}
+		}
+	}
 }
