@@ -313,6 +313,111 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	}
 }
 
+// TestRunMigration_FinalizesDanglingTaskCompleted pins the A2.4 fix: a crash
+// between CommitMigrationCutover (migration -> completed) and the task finalize
+// leaves the migration terminal but the backing task still non-terminal. On
+// redelivery the worker hits the migration-already-terminal short-circuit; it
+// MUST finalize the dangling task to match the migration outcome (completed ->
+// success) instead of returning nil with the task stuck running forever. The
+// agent is never contacted in this reconcile-by-query.
+func TestRunMigration_FinalizesDanglingTaskCompleted(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+
+	// Simulate the crash window: bind + commit the cutover so the migration is
+	// terminal-completed, but DO NOT finalize the task (it stays pending).
+	if err := s.BindMigrationTarget(ctx, m.ID, nodeB.ID, "default"); err != nil {
+		t.Fatalf("BindMigrationTarget: %v", err)
+	}
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+	before, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID(before): %v", err)
+	}
+	if before.Status == store.TaskStatusSuccess {
+		t.Fatalf("precondition violated: task already success before redelivery")
+	}
+
+	agent := &fakeMigrationAgent{} // must NOT be contacted.
+	placer := &fakePlacer{}        // must NOT be called.
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(redelivery) = %v, want nil", err)
+	}
+
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID(after): %v", err)
+	}
+	if task.Status != store.TaskStatusSuccess {
+		t.Errorf("task status = %q, want success (dangling task finalized to match completed migration)", task.Status)
+	}
+	if task.FinishedAt == nil {
+		t.Errorf("task FinishedAt = nil, want stamped on finalize")
+	}
+	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 || agent.pollCalls != 0 {
+		t.Errorf("agent contacted on reconcile-by-query: incoming=%d outgoing=%d poll=%d, want 0/0/0",
+			agent.incomingCalls, agent.outgoingCalls, agent.pollCalls)
+	}
+	if placer.calls != 0 {
+		t.Errorf("placer called %d times, want 0", placer.calls)
+	}
+}
+
+// TestRunMigration_FinalizesDanglingTaskFailed pins the A2.4 fix for the failed
+// branch: a failed migration is NOT committed-terminal, so UpdateTaskRunning does
+// NOT short-circuit and the worker reaches the migration-already-terminal branch
+// with the task transitioned to running. It MUST finalize the task to failed to
+// match the migration, not leave it stuck running.
+func TestRunMigration_FinalizesDanglingTaskFailed(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+
+	// Drive the migration to terminal-failed via the store, leaving the task
+	// un-finalized (the crash window between the migration fail-write and the task
+	// finalize).
+	failed := store.MigrationPhaseFailed
+	msg := "convergence stalled"
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &failed, ErrorMessage: &msg}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+	}
+
+	agent := &fakeMigrationAgent{} // must NOT be contacted.
+	placer := &fakePlacer{}        // must NOT be called.
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(redelivery) = %v, want nil", err)
+	}
+
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID(after): %v", err)
+	}
+	if task.Status != store.TaskStatusFailed {
+		t.Errorf("task status = %q, want failed (dangling task finalized to match failed migration)", task.Status)
+	}
+	if task.FinishedAt == nil {
+		t.Errorf("task FinishedAt = nil, want stamped on finalize")
+	}
+	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 || agent.pollCalls != 0 {
+		t.Errorf("agent contacted on reconcile-by-query: incoming=%d outgoing=%d poll=%d, want 0/0/0",
+			agent.incomingCalls, agent.outgoingCalls, agent.pollCalls)
+	}
+}
+
 // TestRunMigration_ResumesWithoutDoublePost pins the agent_task_id resumption
 // (R2-M2 analogue): a redelivered job whose task already carries an agent task id
 // must NOT re-run the two-phase handshake (no double incoming/outgoing POST); it

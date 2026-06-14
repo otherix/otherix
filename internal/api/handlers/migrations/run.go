@@ -122,8 +122,17 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 	}
 	if isTerminalPhase(m.Phase) {
 		// Already terminal (a prior delivery committed the cutover, or it was
-		// cancelled/failed): idempotent reconcile-by-query, nothing to do.
-		return nil
+		// cancelled/failed): idempotent reconcile-by-query. But a crash between the
+		// migration terminal write (cutover / fail / cancel) and the task finalize
+		// can leave the backing task stuck running forever - clients polling
+		// /v1/tasks/{id} would never see terminal, and retention never reaps a
+		// non-terminal task. Reconcile the task to the migration outcome before
+		// returning. UpdateTaskRunning above already returned (alreadyTerminal) for a
+		// committed-terminal task (success/cancelled), so a redelivery whose task is
+		// already finalized never reaches here - no double-finalize. A failed task is
+		// NOT committed-terminal, so it does reach here; finalizing it to match the
+		// migration is the correction.
+		return finalizeForTerminalMigration(ctx, st, log, taskID, m)
 	}
 	if m.SourceNodeID == nil {
 		// A migration with no source is malformed - it can never be driven. Fail
@@ -205,7 +214,12 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		// (workerMaxAttempts = 25). Once that budget is exhausted the job is dropped
 		// and the migration stays pending forever with no further attempts - the
 		// opposite of D4 "retries forever". The VM stays safe on its source node
-		// meanwhile (nothing durable moved; the agent was never contacted). A periodic
+		// meanwhile (nothing durable moved; the agent was never contacted), BUT the
+		// per-VM active-migration guard stays HELD while the migration is pending: a
+		// dropped-pending migration leaves the VM un-migratable (every future
+		// CreateMigration returns 409 ErrMigrationActiveExists) until an operator
+		// `migration cancel` (or vm stop/delete) releases the guard via the terminal
+		// transition. The periodic pending re-driver below also fixes this. A periodic
 		// pending-migration re-driver (mirroring the vms.schedule loop, which requeues
 		// unscheduled VMs indefinitely) is required to honor D4 and is tracked in
 		// ROADMAP; it is out of scope for slice 1.
@@ -401,6 +415,59 @@ func failMigration(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 	log.WarnContext(ctx, "migration failed pre-cutover (vm stays on source)",
 		slog.String("migration_id", migID.String()), slog.String("code", code), slog.String("error", msg))
 	return nil
+}
+
+// finalizeForTerminalMigration reconciles a still-non-terminal backing task to a
+// migration that is already terminal (the redelivery-after-crash window between
+// the migration terminal write and the task finalize). It maps the migration
+// phase to the task's terminal status: completed -> success, failed -> failed,
+// cancelled -> cancelled. The caller has established the migration is terminal
+// and that UpdateTaskRunning did NOT report alreadyTerminal, so the task is not
+// committed-terminal (it cannot be success/cancelled) - this is the first and
+// only finalize on this delivery, never a double-finalize. Returns nil so the
+// dispatcher CompleteJob-deletes the job; a finalize-write error is wrapped and
+// returned (retryable) so the envelope eventually persists.
+func finalizeForTerminalMigration(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID uuid.UUID, m store.Migration) error {
+	switch m.Phase {
+	case store.MigrationPhaseCompleted:
+		result := []byte(fmt.Sprintf(`{"migration_id":%q}`, m.ID.String()))
+		if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: result}); err != nil {
+			return fmt.Errorf("finalize task success for completed migration %s: %v", m.ID, err)
+		}
+		log.InfoContext(ctx, "reconciled dangling task to success for completed migration",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+	case store.MigrationPhaseCancelled:
+		if err := finalizeTask(ctx, st, taskID, store.TaskStatusCancelled, ErrCodeMigrationCancelled, m.ErrorMessage); err != nil {
+			return fmt.Errorf("finalize task cancelled for cancelled migration %s: %v", m.ID, err)
+		}
+		log.InfoContext(ctx, "reconciled dangling task to cancelled for cancelled migration",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+	default: // store.MigrationPhaseFailed
+		if err := finalizeTask(ctx, st, taskID, store.TaskStatusFailed, ErrCodeConvergenceFailed, m.ErrorMessage); err != nil {
+			return fmt.Errorf("finalize task failed for failed migration %s: %v", m.ID, err)
+		}
+		log.WarnContext(ctx, "reconciled dangling task to failed for failed migration",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+	}
+	return nil
+}
+
+// finalizeTask writes a non-success terminal envelope (failed / cancelled) onto
+// the task, carrying the given error code and the migration's recorded message
+// (falling back to a generic message when absent).
+func finalizeTask(ctx context.Context, st MigrationWorkerStore, taskID uuid.UUID, status store.TaskStatus, code string, msg *string) error {
+	m := "migration " + string(status)
+	if msg != nil && *msg != "" {
+		m = *msg
+	}
+	envelope, merr := json.Marshal(struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{Code: code, Message: m})
+	if merr != nil {
+		envelope = []byte(`{"code":"internal","message":"marshal error envelope failed"}`)
+	}
+	return st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: status, Error: envelope})
 }
 
 // advancePhase best-effort advances the migration to phase. A CAS loss / terminal

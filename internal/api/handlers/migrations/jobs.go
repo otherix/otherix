@@ -42,7 +42,8 @@ const (
 
 // Terminal error-code constants for the task `error` JSONB envelope.
 const (
-	ErrCodeTargetUnreachable = "target_unreachable"
-	ErrCodeTLSHandshake      = "tls_handshake_failed"
-	ErrCodeConvergenceFailed = "convergence_failed"
+	ErrCodeTargetUnreachable  = "target_unreachable"
+	ErrCodeTLSHandshake       = "tls_handshake_failed"
+	ErrCodeConvergenceFailed  = "convergence_failed"
+	ErrCodeMigrationCancelled = "migration_cancelled"
 )
