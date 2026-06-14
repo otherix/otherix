@@ -4,8 +4,11 @@
 package qemu
 
 import (
+	"context"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestQemuNBDServerArgs(t *testing.T) {
@@ -112,4 +115,32 @@ func lastIndexContaining(args []string, sub string) int {
 		}
 	}
 	return idx
+}
+
+func TestWaitNBDListening(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	if err := WaitNBDListening(context.Background(), ln.Addr().String(), 2*time.Second); err != nil {
+		t.Errorf("WaitNBDListening on a live listener = %v, want nil", err)
+	}
+
+	// A free port nobody listens on -> timeout.
+	free, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := free.Addr().String()
+	free.Close()
+	if err := WaitNBDListening(context.Background(), addr, 300*time.Millisecond); err == nil {
+		t.Errorf("WaitNBDListening on a dead address = nil, want timeout error")
+	}
 }

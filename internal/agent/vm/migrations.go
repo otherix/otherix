@@ -201,6 +201,19 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 
 	endpoint := net.JoinHostPort(s.BindHost, strconv.Itoa(port))
+
+	// Do not advertise the endpoint until qemu-nbd is actually accepting
+	// connections: SpawnQemuNBD returns when the process forks, but its TLS
+	// listener binds a moment later, and the source connects immediately on
+	// StartOutgoing - returning early races it to "connection refused". On
+	// timeout tear down the half-started server so it does not linger holding
+	// the disk lock + port.
+	if err := m.migWaitNBDReady(ctx, endpoint); err != nil {
+		_ = qemu.StopNBD(nbdPid, 3*time.Second)
+		cleanup()
+		return IncomingResult{}, fmt.Errorf("nbd server not ready: %v", err)
+	}
+
 	m.migrations.Put(&migration.Record{
 		MigrationID: s.MigrationID, VMID: s.VMUUID, VMName: s.VMName,
 		Role: migration.RoleTarget, Mode: migration.Mode(s.Mode), Phase: migration.PhaseSetup,

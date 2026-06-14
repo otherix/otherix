@@ -4,6 +4,7 @@
 package vm
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,6 +29,10 @@ func newTestManager(t *testing.T) *Manager {
 	if err := m.AddPool(poolName, poolRoot); err != nil {
 		t.Fatalf("AddPool(%s): %v", poolName, err)
 	}
+	// No real qemu-nbd in unit tests, so the TCP readiness probe would block;
+	// default it to immediate success. StartIncoming tests inject the fake
+	// spawn/create seams separately.
+	m.migWaitNBDReady = func(context.Context, string) error { return nil }
 	return m
 }
 
