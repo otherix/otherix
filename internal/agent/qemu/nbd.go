@@ -6,7 +6,9 @@ package qemu
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -84,6 +86,21 @@ func QemuImgPushArgs(s QemuImgPushSpec) []string {
 		s.SourceDisk,
 		imgOpts,
 	}
+}
+
+// CreateDisk creates an empty qcow2 of virtualBytes at path (the migration
+// destination disk, later filled by the source push). It ensures the parent
+// directory exists first so qemu-img create does not fail on a missing
+// per-VM state dir.
+func CreateDisk(ctx context.Context, path string, virtualBytes int64) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	out, err := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", path, strconv.FormatInt(virtualBytes, 10)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qemu-img create %s: %v (%s)", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // SpawnQemuNBD starts qemu-nbd detached and returns its pid. qemu-nbd does

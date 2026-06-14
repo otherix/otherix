@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/cloudinit"
+	"github.com/otherix/otherix/internal/agent/migration"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
@@ -146,6 +147,24 @@ type Manager struct {
 	// re-attaches via reconnectMux's fallback.
 	muxesMu sync.Mutex
 	muxes   map[string]*serialmux.Multiplexer
+
+	// migrations holds the agent's in-memory migration records (target
+	// and source side); migPorts hands out ADR 0013 ingress ports for
+	// incoming migrations. Neither is persisted - the CP re-drives on
+	// agent restart.
+	migrations *migration.Store
+	migPorts   *migration.PortAllocator
+
+	// tlsCA / tlsCert / tlsKey are the agent's mTLS material paths
+	// (cfg.TLS.*), reused to materialise per-migration qemu-nbd server
+	// creds (Task 4).
+	tlsCA, tlsCert, tlsKey string
+
+	// QEMU side-effect seams for the migration path, overridable in
+	// tests. Default to the real qemu.* helpers in New.
+	migCreateDisk func(ctx context.Context, path string, virtualBytes int64) error
+	migSpawnNBD   func(ctx context.Context, args []string) (int, error)
+	migRunConvert func(ctx context.Context, args []string) error
 }
 
 // inFlightAcquire records a new in-flight operation for name. Returns
@@ -220,6 +239,12 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		createTasks:      map[uuid.UUID]uuid.UUID{},
 		muxes:            map[string]*serialmux.Multiplexer{},
 	}
+	m.migrations = migration.NewStore()
+	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
+	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
+	m.migCreateDisk = qemu.CreateDisk
+	m.migSpawnNBD = qemu.SpawnQemuNBD
+	m.migRunConvert = qemu.RunQemuImgConvert
 
 	metas, err := state.ScanState(cfg.StatePath, log)
 	if err != nil {
