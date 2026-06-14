@@ -4,11 +4,7 @@
 package migrations
 
 import (
-	"errors"
 	"net/http"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -17,7 +13,9 @@ import (
 
 // Get implements GET /v1/migrations/{id}. Required permission: vm:read (the
 // migration is observed runtime state of a VM, so a vm:read holder can poll
-// it). Migration ids are UUIDs - a non-UUID path param is 400.
+// it). The {id} param is either a full migration UUID or a unique short hex
+// prefix of it (git/docker style): an exact match resolves, an ambiguous prefix
+// is 409, a too-short / non-hex prefix is 400. See resolveMigration.
 //
 // Visibility: every authenticated role holds vm:read at ScopeAny today, so the
 // scope gate is a no-op in practice; it is kept so a future ScopeOwn vm:read
@@ -33,21 +31,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "id must be a uuid", nil)
-		return
-	}
-
-	m, err := h.store.MigrationByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeMigrationNotFound(w, r)
-			return
-		}
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "load migration", nil)
+	m, ok := h.resolveMigration(w, r)
+	if !ok {
 		return
 	}
 
@@ -56,7 +41,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.WriteJSON(w, r, http.StatusOK, toView(m))
+	response.WriteJSON(w, r, http.StatusOK, h.viewWithNames(r.Context(), m))
 }
 
 // callerCanSeeMigration applies the vm:read scope gate: ScopeAny sees every

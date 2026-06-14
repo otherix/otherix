@@ -7,9 +7,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
@@ -35,21 +32,8 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "id must be a uuid", nil)
-		return
-	}
-
-	m, err := h.store.MigrationByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeMigrationNotFound(w, r)
-			return
-		}
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "load migration", nil)
+	m, ok := h.resolveMigration(w, r)
+	if !ok {
 		return
 	}
 
@@ -67,11 +51,11 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.CancelMigration(r.Context(), id, "cancelled by "+caller.ID.String())
+	updated, err := h.store.CancelMigration(r.Context(), m.ID, "cancelled by "+caller.ID.String())
 	if err != nil {
 		if errors.Is(err, store.ErrMigrationNotCancelable) {
 			// Already terminal: best-effort, return the current row unchanged at 200.
-			response.WriteJSON(w, r, http.StatusOK, toView(updated))
+			response.WriteJSON(w, r, http.StatusOK, h.viewWithNames(r.Context(), updated))
 			return
 		}
 		if errors.Is(err, store.ErrNotFound) {
@@ -79,11 +63,11 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.log.ErrorContext(r.Context(), "migrations.cancel failed",
-			"migration_id", id.String(), "error", err)
+			"migration_id", m.ID.String(), "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "cancel migration", nil)
 		return
 	}
 
-	response.WriteJSON(w, r, http.StatusOK, toView(updated))
+	response.WriteJSON(w, r, http.StatusOK, h.viewWithNames(r.Context(), updated))
 }

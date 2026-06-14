@@ -97,7 +97,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		if scope == auth.ScopeOwn && !h.callerOwnsMigration(r, caller, m) {
 			continue
 		}
-		views = append(views, toView(m))
+		views = append(views, h.viewWithNames(r.Context(), m))
 	}
 
 	response.WriteJSON(w, r, http.StatusOK, listResponse{

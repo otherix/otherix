@@ -6,12 +6,40 @@ package qemu
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// WaitNBDListening blocks until a TCP connection to endpoint succeeds or the
+// timeout elapses. SpawnQemuNBD returns as soon as the process forks, but the
+// TLS listener binds a beat later; the migration source connects immediately,
+// so the target must not advertise the endpoint until qemu-nbd is actually
+// accepting connections, or the source races it to "connection refused". A bare
+// TCP probe (connect + close) is enough - qemu-nbd is --persistent, so the
+// dropped non-NBD probe does not disturb the real transfer.
+func WaitNBDListening(ctx context.Context, endpoint string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.DialTimeout("tcp", endpoint, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("qemu-nbd not listening on %s within %s", endpoint, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
 
 // migTLSCredsID and migAuthzID are the fixed QOM object ids used inside a
 // single migration's qemu-nbd / qemu-img invocation.

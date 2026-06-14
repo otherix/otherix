@@ -90,18 +90,22 @@ func runList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// printMigrationTable renders an aligned table to stdout. Columns: ID VM PHASE
-// PROGRESS ROUTE AGE — ROUTE is the "source->target" pair (a "<unset>" target
-// shows for a node-less / not-yet-scheduled migration). The bottom hint prints
-// next_cursor when populated so operators can chain the next page.
+// printMigrationTable renders an aligned table to stdout. Columns: ID VM SOURCE
+// TARGET STATUS PROGRESS AGE — ID is the short migration id (the CP resolves the
+// prefix back), VM/SOURCE/TARGET show human names (falling back to the id, then
+// "-", for a node-less / not-yet-scheduled / force-deleted-node migration). The
+// bottom hint prints next_cursor when populated so operators can chain the next
+// page. Full ids remain available via --output json.
 func printMigrationTable(cmd *cobra.Command, migrations []cpclient.Migration, next string) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ID\tVM\tPHASE\tPROGRESS\tROUTE\tAGE")
+	_, _ = fmt.Fprintln(tw, "ID\tVM\tSOURCE\tTARGET\tSTATUS\tPROGRESS\tAGE")
 	for _, m := range migrations {
-		route := fmt.Sprintf("%s->%s", strOrUnset(m.SourceNodeID), strOrUnset(m.TargetNodeID))
 		progress := fmt.Sprintf("%d%%", m.ProgressPercent)
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.ID, m.VMID, m.Phase, progress, route, humanAge(m.CreatedAt))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			shortID(m.ID), vmLabel(m),
+			nodeLabel(m.SourceNodeName, m.SourceNodeID),
+			nodeLabel(m.TargetNodeName, m.TargetNodeID),
+			m.Phase, progress, humanAge(m.CreatedAt))
 	}
 	_ = tw.Flush()
 	if next != "" {

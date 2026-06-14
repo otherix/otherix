@@ -162,9 +162,10 @@ type Manager struct {
 
 	// QEMU side-effect seams for the migration path, overridable in
 	// tests. Default to the real qemu.* helpers in New.
-	migCreateDisk func(ctx context.Context, path string, virtualBytes int64) error
-	migSpawnNBD   func(ctx context.Context, args []string) (int, error)
-	migRunConvert func(ctx context.Context, args []string) error
+	migCreateDisk   func(ctx context.Context, path string, virtualBytes int64) error
+	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
+	migRunConvert   func(ctx context.Context, args []string) error
+	migWaitNBDReady func(ctx context.Context, endpoint string) error
 }
 
 // inFlightAcquire records a new in-flight operation for name. Returns
@@ -245,6 +246,9 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.migCreateDisk = qemu.CreateDisk
 	m.migSpawnNBD = qemu.SpawnQemuNBD
 	m.migRunConvert = qemu.RunQemuImgConvert
+	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
+		return qemu.WaitNBDListening(ctx, endpoint, 15*time.Second)
+	}
 
 	metas, err := state.ScanState(cfg.StatePath, log)
 	if err != nil {

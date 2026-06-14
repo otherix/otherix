@@ -534,6 +534,13 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			Failed:    cfg.Workers.Tasks.Retention.Failed,
 		}, log))
 
+	s.Register("migrations.cleanup", time.Hour, false,
+		migrationshandlers.CleanupFunc(st, migrationshandlers.RetentionConfig{
+			Completed: cfg.Workers.Migrations.Retention.Completed,
+			Failed:    cfg.Workers.Migrations.Retention.Failed,
+			Cancelled: cfg.Workers.Migrations.Retention.Cancelled,
+		}, log))
+
 	s.Register("heartbeat.reconcile", positiveOr(cfg.Workers.Heartbeat.Interval, 30*time.Second), true,
 		heartbeathandlers.ReconcileFunc(st, heartbeathandlers.ReconcileConfig{
 			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,

@@ -90,18 +90,46 @@ func humanAge(rfc3339 string) string {
 	}
 }
 
-// strOrUnset renders a nullable string field as "<unset>" when nil.
-func strOrUnset(s *string) string {
-	if s == nil {
-		return "<unset>"
-	}
-	return *s
-}
-
 // dashIfEmpty renders the "-" placeholder for an empty cell.
 func dashIfEmpty(s string) string {
 	if s == "" {
 		return "-"
 	}
 	return s
+}
+
+// shortID truncates a migration id to the first segment of its UUID (the 8
+// leading hex chars, no hyphen) for display. The CP resolves a unique prefix
+// (>= 8 chars) back to the full row, so this short form is enough to pass to
+// `migration get`/`cancel`; an ambiguous prefix returns 409 there. Strings
+// shorter than 8 chars pass through unchanged.
+func shortID(s string) string {
+	if len(s) >= 8 {
+		return s[:8]
+	}
+	return s
+}
+
+// vmLabel renders the VM column preferring the human name. vm_name should
+// always resolve server-side, but if it is empty (a missing VM the CP logged
+// rather than 500ing) the id is shown as a fallback so the column is never blank.
+func vmLabel(m cpclient.Migration) string {
+	if m.VMName != "" {
+		return m.VMName
+	}
+	return dashIfEmpty(m.VMID)
+}
+
+// nodeLabel renders a node column preferring the human name. When the name is
+// nil but the id is present (e.g. a force-deleted node whose row is gone but the
+// migration still records the id), the id is shown so the operator is not left
+// blind. Both absent renders the "-" placeholder.
+func nodeLabel(name, id *string) string {
+	if name != nil && *name != "" {
+		return *name
+	}
+	if id != nil && *id != "" {
+		return *id
+	}
+	return "-"
 }

@@ -13,10 +13,12 @@ func newGetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <id>",
 		Short: "Show a migration's projection.",
-		Long: `Fetches a migration's projected view from the CP by its UUID. The text
-view surfaces the phase, transfer progress, source/target nodes and the
-reason. A migration in 'pending' is not an error — it is alive and waiting
-for an eligible target; the scheduling reason is shown as a 'waiting:' line.`,
+		Long: `Fetches a migration's projected view from the CP. The id may be a full
+UUID or a unique short hex prefix (>= 8 chars), which the CP resolves. The
+text view surfaces the phase, transfer progress, source/target node names
+and the reason. A migration in 'pending' is not an error - it is alive and
+waiting for an eligible target; the scheduling reason is shown as a
+'waiting:' line.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
@@ -57,12 +59,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 // has not been bound to a target yet — the spec is explicit that pending is not
 // an error, so it is framed as a wait, not a failure.
 func printMigrationText(cmd *cobra.Command, m cpclient.Migration) {
-	printf(cmd, "id: %s\n", m.ID)
-	printf(cmd, "vm_id: %s\n", m.VMID)
-	printf(cmd, "phase: %s\n", m.Phase)
+	printf(cmd, "id: %s\n", shortID(m.ID))
+	printf(cmd, "vm: %s\n", vmLabel(m))
+	printf(cmd, "status: %s\n", m.Phase)
 	printf(cmd, "progress: %d%%\n", m.ProgressPercent)
-	printf(cmd, "source_node_id: %s\n", strOrUnset(m.SourceNodeID))
-	printf(cmd, "target_node_id: %s\n", strOrUnset(m.TargetNodeID))
+	printf(cmd, "source_node: %s\n", nodeLabel(m.SourceNodeName, m.SourceNodeID))
+	printf(cmd, "target_node: %s\n", nodeLabel(m.TargetNodeName, m.TargetNodeID))
 	printf(cmd, "target_pool: %s\n", dashIfEmpty(m.TargetPoolName))
 	printf(cmd, "reason: %s\n", m.Reason)
 	printf(cmd, "live: %s\n", boolYesNo(m.Live))
