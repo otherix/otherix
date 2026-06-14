@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -78,6 +79,21 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		return nil, fmt.Errorf("persist adopted vm: %v", err)
 	}
 	return v, nil
+}
+
+// removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
+// record and removes the per-VM state directory (meta.json, sockets, pidfile)
+// under stateDir, mirroring runDelete's state-dir removal. It does NOT remove
+// the pool disk dir, which may be shared. The RemoveAll error is best-effort:
+// logged and ignored so a stale directory never blocks rollback. Used by the
+// live incoming prep to leave nothing behind when a later step fails.
+func (m *Manager) removeAdoptedVM(id uuid.UUID) {
+	m.mu.Lock()
+	delete(m.vms, id)
+	m.mu.Unlock()
+	if err := os.RemoveAll(filepath.Join(m.stateDir, id.String())); err != nil {
+		m.log.Warn("removeAdoptedVM: remove agent state dir", "vm_id", id.String(), "err", err)
+	}
 }
 
 // Migrations returns the agent's in-memory migration record store.

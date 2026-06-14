@@ -5,6 +5,7 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitalocean/go-qemu/qmp"
@@ -201,6 +202,89 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 	tk := m.tasks.Get(task.ID)
 	if tk == nil || tk.Status != TaskStatusSuccess {
 		t.Errorf("task = %v, want status success", tk)
+	}
+}
+
+// failingSetupConn is a fakeLiveConn whose NBDServerStart fails, driving
+// SetupLiveIncoming to return an error so startIncomingLive takes the failure
+// path after the VM has been adopted and the -incoming qemu launched.
+type failingSetupConn struct {
+	fakeLiveConn
+}
+
+func (f *failingSetupConn) NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error {
+	return errors.New("nbd-server-start: Address already in use")
+}
+
+// TestStartIncoming_LiveFailedPrepDoesNotPoisonRetry is the teeth test for the
+// rollback: a failed incoming prep must leave NOTHING behind (no adopted VM, no
+// leaked qemu, ports released) so the CP's retry starts fresh. Without the full
+// cleanup, the second call fails with "vm ... already present" because the
+// adopted VM record survives the first failure.
+func TestStartIncoming_LiveFailedPrepDoesNotPoisonRetry(t *testing.T) {
+	m := newTestManager(t)
+
+	// migLaunchIncoming is a no-op (no real qemu); killQEMU is then a quiet
+	// no-op on the missing pidfile when the rollback fires.
+	m.migLaunchIncoming = func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error { return nil }
+	m.migCreateDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
+
+	// First dial yields a conn whose setup fails; second dial succeeds.
+	dials := 0
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		dials++
+		if dials == 1 {
+			return &failingSetupConn{}, nil
+		}
+		return &fakeLiveConn{}, nil
+	}
+
+	migID := uuid.New()
+	vmUUID := uuid.New()
+	spec := IncomingSpec{
+		MigrationID:    migID,
+		VMUUID:         vmUUID,
+		VMName:         "demo",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+	}
+
+	// First attempt fails in SetupLiveIncoming.
+	if _, err := m.startIncomingLive(context.Background(), spec); err == nil {
+		t.Fatalf("first startIncomingLive: want error, got nil")
+	}
+
+	// Rollback must have removed the adopted VM record entirely.
+	if _, err := m.Get(vmUUID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after failed prep, Get(%s) = %v, want ErrNotFound (VM record must be rolled back)", vmUUID, err)
+	}
+	// No migration record should have been stored on the failure path.
+	if _, ok := m.Migrations().Get(migID); ok {
+		t.Errorf("migration record stored despite failed prep")
+	}
+
+	// Second attempt with the same spec must SUCCEED, proving the rollback
+	// unpoisoned the retry (no "vm ... already present").
+	res, err := m.startIncomingLive(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("second startIncomingLive: want success, got %v", err)
+	}
+	if res.ListenEndpoint == "" || res.NBDEndpoint == "" {
+		t.Errorf("retry result endpoints empty: %+v", res)
+	}
+	rec, ok := m.Migrations().Get(migID)
+	if !ok {
+		t.Fatalf("no migration record stored after successful retry")
+	}
+	if rec.Role != migration.RoleTarget {
+		t.Errorf("record Role = %q, want target", rec.Role)
 	}
 }
 

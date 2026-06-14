@@ -66,7 +66,24 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		// retryable capacity condition rather than a hard failure.
 		return IncomingResult{}, fmt.Errorf("reserve migration port pair: %w", err)
 	}
-	cleanup := func() { m.migPorts.ReleasePair(ram, nbd) }
+
+	// Full rollback on any pre-success failure: a failed incoming prep must
+	// leave NOTHING behind so the CP's retry (re-driving StartIncoming) starts
+	// fresh. Each error return below calls cleanup, which unwinds exactly the
+	// steps that ran: kill the launched -incoming qemu, drop the adopted VM
+	// record + its on-disk state, and release the reserved port pair. adopted
+	// and launched track how far execution got.
+	var adopted *VM
+	launched := false
+	cleanup := func() {
+		if launched && adopted != nil {
+			m.killQEMU(adopted)
+		}
+		if adopted != nil {
+			m.removeAdoptedVM(adopted.ID)
+		}
+		m.migPorts.ReleasePair(ram, nbd)
+	}
 
 	credsDir := filepath.Join(m.stateDir, "migrations", s.MigrationID.String(), "tls")
 	if err := qemu.MaterializeMigrationCreds(credsDir, qemu.MigrationTLSServer, m.tlsCA, m.tlsCert, m.tlsKey); err != nil {
@@ -82,6 +99,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		cleanup()
 		return IncomingResult{}, err
 	}
+	adopted = v
 
 	// Destination disk virtual size must be >= the source's (see the offline
 	// StartIncoming for the full rationale): max(DiskSizeBytes, ExpectedSize).
@@ -115,6 +133,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("launch incoming qemu: %v", err)
 	}
+	launched = true
 	conn, err := m.migDialQMP(v.QMPSocket)
 	if err != nil {
 		cleanup()
