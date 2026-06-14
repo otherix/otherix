@@ -100,6 +100,12 @@ type VMSpec struct {
 	// empty slice falls back to a single user-mode SLIRP netdev
 	// (legacy / no-NIC VMs and smoke tests).
 	NICs []netfabric.NIC
+	// OmitBootDisk drops the OS-disk `-drive` from the generated args.
+	// The live-migration target expresses its boot disk instead as a
+	// node-named `-blockdev` (so it can be NBD-exported) plus an explicit
+	// virtio-blk device; emitting the base `-drive` too would express one
+	// disk twice and collide. Offline / normal launches leave this false.
+	OmitBootDisk bool
 }
 
 // qemuModel maps a netfabric NIC model name to the QEMU -device name.
@@ -166,7 +172,13 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		"-smp", strconv.Itoa(spec.VCPUs),
 		"-m", strconv.Itoa(spec.MemoryMB),
 		"-accel", spec.Accelerator,
-		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=none", spec.DiskPath),
+	}
+	if !spec.OmitBootDisk {
+		args = append(args,
+			"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=none", spec.DiskPath),
+		)
+	}
+	args = append(args,
 		"-serial", fmt.Sprintf("unix:%s,server,nowait", spec.ConsoleSocket),
 		"-qmp", fmt.Sprintf("unix:%s,server,nowait", spec.QMPSocket),
 		"-pidfile", spec.PIDFile,
@@ -176,7 +188,7 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		// with -daemonize on qemu 8.x ("cannot be used with -daemonize").
 		// Serial and QMP are already wired to explicit unix sockets above.
 		"-display", "none",
-	}
+	)
 	if spec.CidataPath != "" {
 		args = append(args,
 			"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", spec.CidataPath),

@@ -128,7 +128,11 @@ type IncomingSpec struct {
 // back to the CP; the CP then relays the endpoint + token to the source.
 type IncomingResult struct {
 	ListenEndpoint string
-	AuthToken      string
+	// NBDEndpoint is the target's writable NBD disk listener (live only).
+	// Empty for offline migrations. The CP relays it to the source, which
+	// dials it for blockdev-mirror.
+	NBDEndpoint string
+	AuthToken   string
 }
 
 // StartIncoming prepares this node to receive a migrated VM: reserve a
@@ -143,6 +147,9 @@ type IncomingResult struct {
 // partial is GC'd. No migration record is stored until every step succeeds,
 // so an early failure leaves nothing in m.migrations to delete.
 func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingResult, error) {
+	if migration.Mode(s.Mode) == migration.ModeLive {
+		return m.startIncomingLive(ctx, s)
+	}
 	// Idempotent resume: the CP re-drives the migration task on transient
 	// failure, so a second StartIncoming for the same migration must NOT
 	// re-reserve a port or re-adopt the VM (which would fail "already
@@ -230,6 +237,9 @@ type OutgoingSpec struct {
 	VMName         string
 	Mode           string
 	TargetEndpoint string
+	// NBDEndpoint is the target's NBD disk listener (live only). The source
+	// dials it for blockdev-mirror. Empty for offline migrations.
+	NBDEndpoint    string
 	TargetIdentity string
 	AuthToken      string
 }
@@ -269,6 +279,10 @@ func (m *Manager) StartOutgoing(ctx context.Context, s OutgoingSpec) (*AgentTask
 // acceptable: cancel is best-effort, an uninterruptible push runs to completion
 // or the migration fails, and either way the VM stays on the source.
 func (m *Manager) runOutgoing(ctx context.Context, taskID uuid.UUID, s OutgoingSpec, srcDisk string) {
+	if migration.Mode(s.Mode) == migration.ModeLive {
+		m.runOutgoingLive(ctx, taskID, s)
+		return
+	}
 	fail := func(code, msg string) {
 		m.migrations.Update(s.MigrationID, func(r *migration.Record) {
 			r.Phase = migration.PhaseFailed
@@ -419,6 +433,9 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 	rec, ok := m.migrations.Get(id)
 	if !ok {
 		return MigrationView{}, false
+	}
+	if rec.Mode == migration.ModeLive {
+		return m.cancelLive(id, rec)
 	}
 	if !rec.Terminal() {
 		if rec.NBDPid > 0 {

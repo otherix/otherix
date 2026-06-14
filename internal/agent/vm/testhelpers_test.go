@@ -90,3 +90,15 @@ func (m *Manager) seedStoppedVM(t *testing.T, name string) *VM {
 	m.mu.Unlock()
 	return v
 }
+
+// seedRunningVM registers a VM in StatusRunning in the default test pool with a
+// stub disk on disk, used by the live-migration tests that assert the source
+// guest is NOT powered off (live moves the running guest in place).
+func (m *Manager) seedRunningVM(t *testing.T, name string) *VM {
+	t.Helper()
+	v := m.seedStoppedVM(t, name)
+	m.mu.Lock()
+	v.Status = StatusRunning
+	m.mu.Unlock()
+	return v
+}

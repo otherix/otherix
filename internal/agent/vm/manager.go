@@ -166,6 +166,20 @@ type Manager struct {
 	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
 	migRunConvert   func(ctx context.Context, args []string) error
 	migWaitNBDReady func(ctx context.Context, endpoint string) error
+
+	// Live-migration seams. migLaunchIncoming boots a paused -incoming
+	// qemu for an adopted target VM and waits until its QMP socket is
+	// reachable; migDialQMP dials a VM's QMP socket as a LiveSourceConn;
+	// migRunLiveSource drives the source sequencer. Default to the real
+	// impls in New; tests inject no-op / recording fakes.
+	migLaunchIncoming func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error
+	migDialQMP        func(socket string) (qemu.LiveSourceConn, error)
+	migRunLiveSource  func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, progress func(qemu.MigrateInfo)) error
+
+	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
+	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard
+	// (a zero timeout would make the watchdog fire instantly).
+	migConvergenceTimeout time.Duration
 }
 
 // inFlightAcquire records a new in-flight operation for name. Returns
@@ -248,6 +262,15 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
 		return qemu.WaitNBDListening(ctx, endpoint, 15*time.Second)
+	}
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		return qemu.DialQMP(socket, 5*time.Second)
+	}
+	m.migLaunchIncoming = m.launchIncomingQemu
+	m.migRunLiveSource = qemu.RunLiveSource
+	m.migConvergenceTimeout = cfg.Migration.ConvergenceTimeout
+	if m.migConvergenceTimeout <= 0 {
+		m.migConvergenceTimeout = 10 * time.Minute
 	}
 
 	metas, err := state.ScanState(cfg.StatePath, log)
