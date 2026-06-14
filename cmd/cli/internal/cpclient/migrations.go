@@ -47,8 +47,11 @@ type MigrateResult struct {
 type Migration struct {
 	ID               string  `json:"id"`
 	VMID             string  `json:"vm_id"`
+	VMName           string  `json:"vm_name"`
 	SourceNodeID     *string `json:"source_node_id"`
+	SourceNodeName   *string `json:"source_node_name"`
 	TargetNodeID     *string `json:"target_node_id"`
+	TargetNodeName   *string `json:"target_node_name"`
 	Reason           string  `json:"reason"`
 	Phase            string  `json:"phase"`
 	ProgressPercent  int     `json:"progress_percent"`
