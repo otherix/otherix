@@ -113,6 +113,13 @@ func (m *Mock) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request,
 		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "malformed incoming migration request body")
 		return
 	}
+	// A real target agent cannot build the TLS authz pin without the
+	// source identity; it 400s when absent. Mirror that so the e2e
+	// catches a worker that forgets to send it.
+	if body.SourceNodeIdentity == nil || *body.SourceNodeIdentity == "" {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "source_node_identity is required")
+		return
+	}
 
 	now := time.Now().UTC()
 	m.state.mu.Lock()
@@ -177,6 +184,13 @@ func (m *Mock) VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request,
 	var body agentapi.MigrationOutgoingRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "malformed outgoing migration request body")
+		return
+	}
+	// A real source agent cannot set the tls-hostname pin without the
+	// target identity; it 400s when absent. Mirror that so the e2e
+	// catches a worker that forgets to send it.
+	if body.TargetNodeIdentity == nil || *body.TargetNodeIdentity == "" {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "target_node_identity is required")
 		return
 	}
 

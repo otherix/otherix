@@ -24,8 +24,9 @@ import (
 func startIncoming(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID) agentapi.MigrationIncomingResponse {
 	t.Helper()
 	reqBody := agentapi.MigrationIncomingRequest{
-		MigrationID: migrationID,
-		Mode:        agentapi.MigrationIncomingRequestModeLive,
+		MigrationID:        migrationID,
+		Mode:               agentapi.MigrationIncomingRequestModeLive,
+		SourceNodeIdentity: strPtr("CN=node-source"),
 	}
 	buf, err := json.Marshal(reqBody)
 	if err != nil {
@@ -58,10 +59,11 @@ func startIncoming(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID
 func startOutgoing(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID, target, token string) uuid.UUID {
 	t.Helper()
 	reqBody := agentapi.MigrationOutgoingRequest{
-		AuthToken:      token,
-		MigrationID:    migrationID,
-		Mode:           agentapi.MigrationOutgoingRequestMode("live"),
-		TargetEndpoint: target,
+		AuthToken:          token,
+		MigrationID:        migrationID,
+		Mode:               agentapi.MigrationOutgoingRequestMode("live"),
+		TargetEndpoint:     target,
+		TargetNodeIdentity: strPtr("node-target.agents.otherix.local"),
 	}
 	buf, err := json.Marshal(reqBody)
 	if err != nil {
@@ -277,6 +279,80 @@ func TestMigration_GetUnknown(t *testing.T) {
 	status, _ := getMigration(t, source, "demo", uuid.New())
 	if status != http.StatusNotFound {
 		t.Errorf("get unknown migration status = %d, want 404", status)
+	}
+}
+
+// postMigrationJSON POSTs an arbitrary body to a migration sub-resource
+// path and returns the raw status code. Unlike startIncoming /
+// startOutgoing it does not fail-fast on a non-success status, so the
+// contract-validation tests can assert the 400 path.
+func postMigrationJSON(t *testing.T, m mockURL, vmName, action string, body any) int {
+	t.Helper()
+	buf, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal %s body: %v", action, err)
+	}
+	url := m.URL() + "/v1/vms/" + vmName + "/migrations/" + action
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("build %s request: %v", action, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post %s: %v", action, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+// strPtr returns a pointer to s, for the optional *string identity
+// fields on the migration request types.
+func strPtr(s string) *string { return &s }
+
+// TestMockIncomingRequiresSourceIdentity asserts the mock rejects an
+// incoming request with no SourceNodeIdentity, mirroring a real target
+// agent that cannot build its TLS authz pin without it.
+func TestMockIncomingRequiresSourceIdentity(t *testing.T) {
+	target := startMock(t)
+	body := agentapi.MigrationIncomingRequest{
+		MigrationID: uuid.New(),
+		Mode:        agentapi.MigrationIncomingRequestModeLive,
+		// SourceNodeIdentity intentionally omitted.
+	}
+	if status := postMigrationJSON(t, target, "demo", "incoming", body); status != http.StatusBadRequest {
+		t.Errorf("incoming without source_node_identity status = %d, want 400", status)
+	}
+}
+
+// TestMockIncomingEchoesEndpointAndToken asserts a valid incoming
+// request (with SourceNodeIdentity) still yields 200 plus a non-empty
+// listen_endpoint and auth_token.
+func TestMockIncomingEchoesEndpointAndToken(t *testing.T) {
+	target := startMock(t)
+	in := startIncoming(t, target, "demo", uuid.New())
+	if in.ListenEndpoint == "" {
+		t.Error("incoming listen_endpoint is empty")
+	}
+	if in.AuthToken == "" {
+		t.Error("incoming auth_token is empty")
+	}
+}
+
+// TestMockOutgoingRequiresTargetIdentity asserts the mock rejects an
+// outgoing request with no TargetNodeIdentity, mirroring a real source
+// agent that cannot set its tls-hostname pin without it.
+func TestMockOutgoingRequiresTargetIdentity(t *testing.T) {
+	source := startMock(t)
+	body := agentapi.MigrationOutgoingRequest{
+		AuthToken:      "tok",
+		MigrationID:    uuid.New(),
+		Mode:           agentapi.MigrationOutgoingRequestMode("live"),
+		TargetEndpoint: "127.0.0.1:49152",
+		// TargetNodeIdentity intentionally omitted.
+	}
+	if status := postMigrationJSON(t, source, "demo", "outgoing", body); status != http.StatusBadRequest {
+		t.Errorf("outgoing without target_node_identity status = %d, want 400", status)
 	}
 }
 
