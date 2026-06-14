@@ -143,6 +143,26 @@ func (c *Client) Migration(ctx context.Context, id string) (Migration, json.RawM
 	return out, json.RawMessage(body), nil
 }
 
+// CancelMigration submits POST /v1/migrations/{id}/cancel. Cancel is sync and
+// best-effort (spec D5): 200 returns the current Migration view, terminal or
+// freshly cancelled (the endpoint is idempotent - cancelling an already-terminal
+// migration returns it unchanged at 200). 404 / 5xx surface as *APIError.
+func (c *Client) CancelMigration(ctx context.Context, id string) (Migration, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodPost, "/v1/migrations/"+url.PathEscape(id)+"/cancel", nil)
+	if err != nil {
+		return Migration{}, err
+	}
+	_, body, err := c.do(httpReq)
+	if err != nil {
+		return Migration{}, err
+	}
+	var out Migration
+	if err := decodeJSON(body, &out); err != nil {
+		return Migration{}, err
+	}
+	return out, nil
+}
+
 // ListMigrations fetches GET /v1/migrations with the supplied filters. Returns
 // the decoded rows plus the opaque next-page cursor ("" when the page is the
 // last). Non-2xx surfaces as *APIError.

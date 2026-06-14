@@ -2,12 +2,12 @@
 // Copyright 2026 Andrei Taranik
 
 // Package migration hosts the `otherix migration` cobra subcommand group
-// (get / list) against the Control Plane's /v1/migrations surface. A
+// (get / list / cancel) against the Control Plane's /v1/migrations surface. A
 // migration is created through `otherix vm migrate` (it is a VM sub-resource
-// action); this group is the read side — poll a migration's phase / progress
-// and list migrations filtered by VM or node. Heavy lifting lives in
-// cmd/cli/internal/cpclient; this package owns flag plumbing and output
-// formatting.
+// action); this group polls a migration's phase / progress, lists migrations
+// filtered by VM or node, and cancels a migration (best-effort, pre-cutover).
+// Heavy lifting lives in cmd/cli/internal/cpclient; this package owns flag
+// plumbing and output formatting.
 package migration
 
 import (
@@ -20,16 +20,17 @@ func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migration",
 		Short: "Inspect VM migrations (CP /v1/migrations surface)",
-		Long: `migration groups the read-side operator subcommands against the
-Control Plane's /v1/migrations surface — get a migration by id and
-list migrations filtered by VM or node. Migrations are *created*
-through 'otherix vm migrate <vm>' (a VM sub-resource action), never
-here. Authentication and endpoint resolution flow through the
+		Long: `migration groups the operator subcommands against the Control
+Plane's /v1/migrations surface — get a migration by id, list migrations
+filtered by VM or node, and cancel a migration (best-effort, pre-cutover).
+Migrations are *created* through 'otherix vm migrate <vm>' (a VM sub-resource
+action), never here. Authentication and endpoint resolution flow through the
 root-level --endpoint / --token / --cluster / --config flags.`,
 	}
 
 	cmd.AddCommand(newGetCommand())
 	cmd.AddCommand(newListCommand())
+	cmd.AddCommand(newCancelCommand())
 
 	return cmd
 }
