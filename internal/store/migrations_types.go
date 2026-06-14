@@ -47,6 +47,16 @@ type MigrationProgressUpdate struct {
 	ClearSchedulingReason bool
 }
 
+// DeleteExpiredMigrationsParams carries the per-state retention cutoffs the
+// migration retention sweep keys deletion off. A terminal migration is deleted
+// when its terminal timestamp (CompletedAt when set, else UpdatedAt) is older
+// than the cutoff for its phase. Mirrors DeleteExpiredTasksParams.
+type DeleteExpiredMigrationsParams struct {
+	CompletedCutoff time.Time
+	FailedCutoff    time.Time
+	CancelledCutoff time.Time
+}
+
 // ListMigrationsParams is cursor pagination plus optional VM/node filters.
 type ListMigrationsParams struct {
 	LimitCount      int32

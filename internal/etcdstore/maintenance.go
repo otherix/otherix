@@ -76,6 +76,70 @@ func taskRetentionExpired(t store.Task, arg store.DeleteExpiredTasksParams) bool
 	}
 }
 
+// DeleteExpiredMigrations removes TERMINAL migrations past their per-state
+// retention window (completed past CompletedCutoff; failed past FailedCutoff;
+// cancelled past CancelledCutoff), dropping each migration's per-VM history index
+// entry alongside the row. Only terminal migrations are ever deleted - a
+// non-terminal migration (pending/setup/active/postcopy_active) is IN FLIGHT (the
+// VM is still on its source) and is never swept regardless of age. Mirrors
+// DeleteExpiredTasks. Returns the number of migrations deleted.
+//
+// A terminal migration has already released its active-VM guard and per-node
+// indexes at the terminal transition (terminalCleanupOps); only the row and the
+// per-VM history index remain. terminalCleanupOps(m) is appended defensively so an
+// older row that never released those keys is fully cleaned up - every op is a
+// delete, idempotent when the key is already gone.
+func (s *Store) DeleteExpiredMigrations(ctx context.Context, arg store.DeleteExpiredMigrationsParams) (int64, error) {
+	items, err := s.c.Range(ctx, etcd.Key("migrations")+"/")
+	if err != nil {
+		return 0, err
+	}
+	var (
+		ops     []clientv3.Op
+		deleted int64
+	)
+	for _, kv := range items {
+		var m store.Migration
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &m, "migration") {
+			continue
+		}
+		if !migrationRetentionExpired(m, arg) {
+			continue
+		}
+		ops = append(ops, clientv3.OpDelete(migrationKey(m.ID)))
+		ops = append(ops, clientv3.OpDelete(migrationVMIndexKey(m.VmID, m.ID)))
+		ops = append(ops, terminalCleanupOps(m)...)
+		deleted++
+	}
+	if err := s.commitInChunks(ctx, ops); err != nil {
+		return 0, fmt.Errorf("delete expired migrations: %v", err)
+	}
+	return deleted, nil
+}
+
+// migrationRetentionExpired reports whether a TERMINAL migration is past its
+// per-state retention cutoff. Non-terminal phases (pending/setup/active/
+// postcopy_active) are never expired - they are in flight and must survive any
+// sweep. The terminal timestamp is CompletedAt when set, else UpdatedAt (a
+// terminal transition always stamps both, but UpdatedAt is the safe fallback for
+// any legacy row). Mirrors taskRetentionExpired.
+func migrationRetentionExpired(m store.Migration, arg store.DeleteExpiredMigrationsParams) bool {
+	terminalAt := m.UpdatedAt
+	if m.CompletedAt != nil {
+		terminalAt = *m.CompletedAt
+	}
+	switch m.Phase {
+	case store.MigrationPhaseCompleted:
+		return terminalAt.Before(arg.CompletedCutoff)
+	case store.MigrationPhaseFailed:
+		return terminalAt.Before(arg.FailedCutoff)
+	case store.MigrationPhaseCancelled:
+		return terminalAt.Before(arg.CancelledCutoff)
+	default:
+		return false
+	}
+}
+
 // commitInChunks commits the operations in transactions of at most maxTxnOps so
 // a large sweep never exceeds etcd's per-transaction op limit.
 func (s *Store) commitInChunks(ctx context.Context, ops []clientv3.Op) error {

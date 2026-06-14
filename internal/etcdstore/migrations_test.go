@@ -1193,3 +1193,128 @@ func TestMigrationsByIDPrefix(t *testing.T) {
 		t.Errorf("absent prefix matches = %d, want 0", len(got))
 	}
 }
+
+// seedRetentionMigration writes a migration row directly plus its per-VM history
+// index entry, mirroring the on-disk shape of a migration that already reached a
+// terminal phase (terminalCleanupOps has released the active-VM guard and the
+// per-node indexes; only the row + per-VM history index remain). For non-terminal
+// phases the per-VM index entry is still written - that is the shape the per-VM
+// list keys off - so the test can assert a non-terminal row is NEVER swept.
+func seedRetentionMigration(t *testing.T, cli *etcd.Client, id, vmID uuid.UUID, phase store.MigrationPhase, completedAt *time.Time, updatedAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	m := store.Migration{
+		ID:          id,
+		VmID:        vmID,
+		Reason:      store.MigrationReasonManual,
+		Phase:       phase,
+		CompletedAt: completedAt,
+		CreatedAt:   updatedAt,
+		UpdatedAt:   updatedAt,
+	}
+	if err := cli.PutJSON(ctx, etcd.Key("migrations", id.String()), m); err != nil {
+		t.Fatalf("seed migration row: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "migrations", "vm", vmID.String(), id.String()), []byte(id.String())); err != nil {
+		t.Fatalf("seed migration vm index: %v", err)
+	}
+}
+
+// TestDeleteExpiredMigrations verifies the retention sweep deletes only TERMINAL
+// migrations past their per-state window (completed past CompletedCutoff; failed /
+// cancelled past FailedCutoff / CancelledCutoff), removes each deleted migration's
+// per-VM history index entry (no dangling index), and NEVER touches a non-terminal
+// (in-flight) migration regardless of age - the VM is still on its source.
+func TestDeleteExpiredMigrations(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-40 * 24 * time.Hour) // older than every window
+	recent := now.Add(-1 * time.Hour)    // within every window
+
+	tp := func(t time.Time) *time.Time { return &t }
+
+	// Each seeded migration: (id, phase, completedAt, updatedAt, expectDeleted).
+	type seed struct {
+		name          string
+		phase         store.MigrationPhase
+		completedAt   *time.Time
+		updatedAt     time.Time
+		expectDeleted bool
+	}
+	seeds := []seed{
+		{"completed-old", store.MigrationPhaseCompleted, tp(old), old, true},
+		{"completed-recent", store.MigrationPhaseCompleted, tp(recent), recent, false},
+		{"failed-old", store.MigrationPhaseFailed, tp(old), old, true},
+		{"failed-recent", store.MigrationPhaseFailed, tp(recent), recent, false},
+		{"cancelled-old", store.MigrationPhaseCancelled, tp(old), old, true},
+		// CompletedAt nil -> falls back to UpdatedAt for the age decision.
+		{"failed-old-no-completedat", store.MigrationPhaseFailed, nil, old, true},
+		// In-flight migrations are NEVER swept, no matter how old.
+		{"pending-old", store.MigrationPhasePending, nil, old, false},
+		{"setup-old", store.MigrationPhaseSetup, nil, old, false},
+		{"active-old", store.MigrationPhaseActive, nil, old, false},
+		{"postcopy-old", store.MigrationPhasePostcopyActive, nil, old, false},
+	}
+
+	ids := make(map[string]uuid.UUID, len(seeds))
+	vmIDs := make(map[string]uuid.UUID, len(seeds))
+	for _, sd := range seeds {
+		id := uuid.New()
+		vmID := uuid.New()
+		ids[sd.name] = id
+		vmIDs[sd.name] = vmID
+		seedRetentionMigration(t, cli, id, vmID, sd.phase, sd.completedAt, sd.updatedAt)
+	}
+
+	// Windows: completed 7d, failed 30d, cancelled 30d. old (40d) is past all of
+	// them; recent (1h) is within all of them.
+	deleted, err := s.DeleteExpiredMigrations(ctx, store.DeleteExpiredMigrationsParams{
+		CompletedCutoff: now.Add(-7 * 24 * time.Hour),
+		FailedCutoff:    now.Add(-30 * 24 * time.Hour),
+		CancelledCutoff: now.Add(-30 * 24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("DeleteExpiredMigrations: %v", err)
+	}
+
+	var wantDeleted int64
+	for _, sd := range seeds {
+		if sd.expectDeleted {
+			wantDeleted++
+		}
+	}
+	if deleted != wantDeleted {
+		t.Errorf("DeleteExpiredMigrations deleted = %d, want %d", deleted, wantDeleted)
+	}
+
+	for _, sd := range seeds {
+		id := ids[sd.name]
+		vmID := vmIDs[sd.name]
+		_, err := s.MigrationByID(ctx, id)
+		rowGone := errors.Is(err, store.ErrNotFound)
+		if err != nil && !rowGone {
+			t.Fatalf("MigrationByID(%s): %v", sd.name, err)
+		}
+		idx, ierr := cli.Range(ctx, etcd.Key("index", "migrations", "vm", vmID.String())+"/")
+		if ierr != nil {
+			t.Fatalf("Range(vm index %s): %v", sd.name, ierr)
+		}
+		if sd.expectDeleted {
+			if !rowGone {
+				t.Errorf("%s: migration row still present, want deleted", sd.name)
+			}
+			if len(idx) != 0 {
+				t.Errorf("%s: per-VM index still has %d entries, want 0 (no dangling index)", sd.name, len(idx))
+			}
+			continue
+		}
+		if rowGone {
+			t.Errorf("%s: migration row deleted, want retained", sd.name)
+		}
+		if len(idx) != 1 {
+			t.Errorf("%s: per-VM index has %d entries, want 1 (retained)", sd.name, len(idx))
+		}
+	}
+}

@@ -556,12 +556,13 @@ type ConsoleConfig struct {
 // WorkersConfig controls the in-process River worker pool embedded in the
 // API server.
 type WorkersConfig struct {
-	Enabled         bool                   `koanf:"enabled"`
-	MaxWorkers      int                    `koanf:"max_workers"`
-	Tasks           TasksWorkersConfig     `koanf:"tasks"`
-	Heartbeat       HeartbeatWorkersConfig `koanf:"heartbeat"`
-	StoragePoolScan StoragePoolScanConfig  `koanf:"storage_pool_scan"`
-	Backup          BackupConfig           `koanf:"backup"`
+	Enabled         bool                    `koanf:"enabled"`
+	MaxWorkers      int                     `koanf:"max_workers"`
+	Tasks           TasksWorkersConfig      `koanf:"tasks"`
+	Migrations      MigrationsWorkersConfig `koanf:"migrations"`
+	Heartbeat       HeartbeatWorkersConfig  `koanf:"heartbeat"`
+	StoragePoolScan StoragePoolScanConfig   `koanf:"storage_pool_scan"`
+	Backup          BackupConfig            `koanf:"backup"`
 }
 
 // BackupConfig pins the periodic etcd snapshot worker. When Enabled (and Dir is
@@ -658,6 +659,26 @@ type TaskRetentionConfig struct {
 	Failed    time.Duration `koanf:"failed"`
 }
 
+// MigrationsWorkersConfig groups configuration for the in-process workers that
+// act on the `migrations` resource. Currently ships only the retention sweep
+// (migrations.cleanup); future migrations-domain workers extend this struct.
+// Mirrors TasksWorkersConfig.
+type MigrationsWorkersConfig struct {
+	Retention MigrationRetentionConfig `koanf:"retention"`
+}
+
+// MigrationRetentionConfig is the per-state retention window the
+// migrations.cleanup worker uses to sweep TERMINAL migrations. Only terminal
+// migrations (completed/failed/cancelled) are ever deleted; in-flight migrations
+// are never swept. Zero values fall back to the package defaults at registration
+// time, so an unset block behaves identically to the documented defaults
+// (completed 7d, failed 30d, cancelled 30d). Mirrors TaskRetentionConfig.
+type MigrationRetentionConfig struct {
+	Completed time.Duration `koanf:"completed"`
+	Failed    time.Duration `koanf:"failed"`
+	Cancelled time.Duration `koanf:"cancelled"`
+}
+
 func defaultAPIConfig() APIConfig {
 	return APIConfig{
 		Server: ServerConfig{
@@ -684,6 +705,13 @@ func defaultAPIConfig() APIConfig {
 				Retention: TaskRetentionConfig{
 					Completed: 7 * 24 * time.Hour,
 					Failed:    30 * 24 * time.Hour,
+				},
+			},
+			Migrations: MigrationsWorkersConfig{
+				Retention: MigrationRetentionConfig{
+					Completed: 7 * 24 * time.Hour,
+					Failed:    30 * 24 * time.Hour,
+					Cancelled: 30 * 24 * time.Hour,
 				},
 			},
 			Heartbeat: HeartbeatWorkersConfig{
