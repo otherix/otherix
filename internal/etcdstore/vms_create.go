@@ -202,6 +202,17 @@ func vmDiskIndexOps(d store.VMDisk) []clientv3.Op {
 // read view over the store; it holds no lock and commits nothing.
 func (s *Store) PlacementQuerier() scheduler.Querier { return placementReader{s: s} }
 
+// AcquirePlacementLock acquires the cluster-wide advisory lock named by lockKey.
+// It is the standalone entry the migration worker takes around its placement ->
+// bind window (placeAndBind), which spans two separate store calls (SchedulePlacement
+// then BindMigrationTarget) rather than a single transaction the way vm.create does.
+// On the single-node default this is a no-op (etcd writes are linearizable); the HA
+// path will take an etcd lock keyed by lockKey. It delegates to the placementReader
+// so create and migrate share one lock implementation.
+func (s *Store) AcquirePlacementLock(ctx context.Context, lockKey int64) error {
+	return placementReader{s: s}.AcquirePlacementLock(ctx, lockKey)
+}
+
 // placementReader is the etcd-backed scheduler read surface handed to the plan
 // callback. It composes the per-pool/per-node effective views with the
 // eligibility predicates the SQL placement queries encode.

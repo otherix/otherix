@@ -37,6 +37,7 @@ import (
 // (placement bind, progress / terminal, atomic cutover). *etcdstore.Store
 // satisfies it.
 type MigrationWorkerStore interface {
+	AcquirePlacementLock(ctx context.Context, lockKey int64) error
 	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
 	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
@@ -74,9 +75,9 @@ type MigrateConfig struct {
 }
 
 // schedulerPlacer is the production Placer: it runs scheduler.SchedulePlacement
-// against the store's read-only placement querier (NO placement-lock transaction
-// - the worker never re-pins the VM at placement time; cutover does that atomically
-// later, spec D3).
+// against the store's read-only placement querier. The worker (not this type)
+// holds store.LockKeyPlacement across the read-availability -> bind window so
+// concurrent node-less migrations serialize their target choice; see placeAndBind.
 type schedulerPlacer struct {
 	q   scheduler.Querier
 	cfg scheduler.PlacementConfig
@@ -154,6 +155,22 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 // (spec D4: retry-forever, VM stays on source) - the agent is NEVER contacted.
 // On success it binds the target and returns the reloaded migration.
 func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, cfg MigrateConfig, log *slog.Logger, m store.Migration, vm store.VM) (store.Migration, error) {
+	// Hold store.LockKeyPlacement across the read-availability -> bind decision
+	// window (placer.Place reads candidate availability; BindMigrationTarget pins
+	// the choice). It mirrors the vm.create path, which holds the same lock across
+	// SchedulePlacement + bind, and closes the TOCTOU where two concurrent node-less
+	// migrations both score the same target before either binds and oversubscribe
+	// it (Task-7 reservation only counts ALREADY-bound targets). The lock serializes
+	// this selection->bind window across replicas; it does NOT guard the cutover
+	// re-pin (that is its own atomic txn). On the single-node default it is a no-op
+	// (etcd writes are linearizable); see store.LockKeyPlacement. There is no
+	// explicit release because the no-op stub holds nothing; the HA implementation
+	// will scope the etcd lock's lifetime to this transaction span when it lands.
+	if err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
+		// A lock-acquire failure is retryable: the VM is still on source.
+		return store.Migration{}, fmt.Errorf("acquire placement lock: %v", err)
+	}
+
 	poolName := m.TargetPoolName
 	if poolName == "" {
 		poolName = cfg.DefaultPoolName
@@ -182,7 +199,17 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 			slog.String("migration_id", m.ID.String()), slog.String("scheduling_reason", reason))
 		// RETRYABLE: return the cause so the dispatcher requeues and the scheduler
 		// retry loop drives the next attempt. The agent is not contacted.
-		return store.Migration{}, fmt.Errorf("migration %s unschedulable: %w", m.ID, perr)
+		//
+		// SLICE-1 LIMITATION (spec D4 retry-forever not yet fully honored): a pending
+		// migration is re-driven ONLY by the vm.migrate job retry budget
+		// (workerMaxAttempts = 25). Once that budget is exhausted the job is dropped
+		// and the migration stays pending forever with no further attempts - the
+		// opposite of D4 "retries forever". The VM stays safe on its source node
+		// meanwhile (nothing durable moved; the agent was never contacted). A periodic
+		// pending-migration re-driver (mirroring the vms.schedule loop, which requeues
+		// unscheduled VMs indefinitely) is required to honor D4 and is tracked in
+		// ROADMAP; it is out of scope for slice 1.
+		return store.Migration{}, fmt.Errorf("migration %s unschedulable: %v", m.ID, perr)
 	}
 
 	winnerPool := decision.PoolInstance.Name
@@ -277,7 +304,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		VMSpec:      minimalVMSpec(vm),
 	})
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("start incoming migration: %w", err)
+		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)
 	}
 
 	outMode := agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeLive)
@@ -293,7 +320,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		MaxDowntimeMs:     int32PtrToInt(m.MaxDowntimeMs),
 	})
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("start outgoing migration: %w", err)
+		return uuid.Nil, fmt.Errorf("start outgoing migration: %v", err)
 	}
 	agentTaskID, perr := uuid.Parse(agentTaskStr)
 	if perr != nil {

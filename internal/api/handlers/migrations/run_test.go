@@ -364,6 +364,67 @@ func TestRunMigration_ResumesWithoutDoublePost(t *testing.T) {
 	}
 }
 
+// placementLockSpy wraps a real MigrationWorkerStore and records the call order
+// of AcquirePlacementLock vs BindMigrationTarget, so a test can prove the worker
+// holds store.LockKeyPlacement across the placement -> bind decision window (the
+// TOCTOU guard mirroring the vm.create path). It delegates every method to the
+// embedded real store; only the two ordering-relevant calls are observed.
+type placementLockSpy struct {
+	migrations.MigrationWorkerStore
+	mu       sync.Mutex
+	events   []string
+	lockKeys []int64
+}
+
+func (sp *placementLockSpy) AcquirePlacementLock(ctx context.Context, lockKey int64) error {
+	sp.mu.Lock()
+	sp.events = append(sp.events, "lock")
+	sp.lockKeys = append(sp.lockKeys, lockKey)
+	sp.mu.Unlock()
+	return sp.MigrationWorkerStore.AcquirePlacementLock(ctx, lockKey)
+}
+
+func (sp *placementLockSpy) BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error {
+	sp.mu.Lock()
+	sp.events = append(sp.events, "bind")
+	sp.mu.Unlock()
+	return sp.MigrationWorkerStore.BindMigrationTarget(ctx, migID, targetNodeID, poolName)
+}
+
+// TestRunMigration_AcquiresPlacementLockBeforeBind pins the TOCTOU guard: on the
+// node-less placement path the worker acquires store.LockKeyPlacement BEFORE it
+// binds the chosen target, so two concurrent node-less migrations serialize their
+// target choice across replicas (the lock is a no-op single-node stub today, so
+// this asserts the structural acquire/order, not contention behavior).
+func TestRunMigration_AcquiresPlacementLockBeforeBind(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+
+	spy := &placementLockSpy{MigrationWorkerStore: s}
+	h := migrations.MigrateHandler(spy, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(lock-order) = %v, want nil", err)
+	}
+
+	if len(spy.events) < 2 || spy.events[0] != "lock" || spy.events[1] != "bind" {
+		t.Errorf("call order = %v, want [lock bind ...] (placement lock held across placement -> bind)", spy.events)
+	}
+	if len(spy.lockKeys) == 0 || spy.lockKeys[0] != store.LockKeyPlacement {
+		t.Errorf("lock key = %v, want first acquire on store.LockKeyPlacement (%d)", spy.lockKeys, store.LockKeyPlacement)
+	}
+}
+
 func jobArgs(t *testing.T, taskID, migID uuid.UUID) []byte {
 	t.Helper()
 	b, err := json.Marshal(migrations.MigrationRunArgs{TaskID: taskID, MigrationID: migID})
