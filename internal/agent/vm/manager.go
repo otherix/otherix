@@ -176,6 +176,14 @@ type Manager struct {
 	migDialQMP        func(socket string) (qemu.LiveSourceConn, error)
 	migRunLiveSource  func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error
 
+	// Target-side resume seams. migDialQMPTarget dials a paused -incoming
+	// qemu's QMP socket as a LiveTargetConn; migRunLiveTarget drives the
+	// target sequencer (wait incoming completed -> drop the writable export
+	// -> cont). Default to the real impls in New; tests inject stub conns and
+	// a recording run.
+	migDialQMPTarget func(socket string) (qemu.LiveTargetConn, error)
+	migRunLiveTarget func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error
+
 	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
 	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard
 	// (a zero timeout would make the watchdog fire instantly).
@@ -268,6 +276,10 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	}
 	m.migLaunchIncoming = m.launchIncomingQemu
 	m.migRunLiveSource = qemu.RunLiveSource
+	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) {
+		return qemu.DialQMP(socket, 5*time.Second)
+	}
+	m.migRunLiveTarget = qemu.RunLiveTarget
 	m.migConvergenceTimeout = cfg.Migration.ConvergenceTimeout
 	if m.migConvergenceTimeout <= 0 {
 		m.migConvergenceTimeout = 10 * time.Minute

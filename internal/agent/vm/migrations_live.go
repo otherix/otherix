@@ -156,7 +156,80 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		Port: ram, NBDPort: nbd, ListenEndpt: ramEndpoint, AuthToken: token,
 		CredsDir: credsDir, CreatedAt: time.Now().UTC(),
 	})
+
+	// Drive the target-side resume autonomously: wait for the incoming RAM
+	// stream to complete, tear down the writable export, and cont the guest.
+	// Started now (before the source reaches pre-switchover) so the completed
+	// event is observed without adding to switchover downtime. Tracked by a
+	// local task; the CP polls the SOURCE task, not this one.
+	task := m.tasks.Create(TaskKindVMMigrate, s.VMUUID)
+	// Detach from the request context: the resume outlives the StartIncoming
+	// call (202 semantics) and must observe the incoming-completed event well
+	// after the request returns, so a request-scoped cancel must not abort it.
+	// #nosec G118 -- the target resume intentionally outlives the request (fire-and-converge); a cancelled HTTP request must not abort an in-flight guest resume. The CP re-drives on failure.
+	go m.runIncomingResume(context.Background(), task.ID, s.MigrationID, v.ID, liveExportID, ram, nbd)
+
 	return IncomingResult{ListenEndpoint: ramEndpoint, NBDEndpoint: nbdEndpoint, AuthToken: token}, nil
+}
+
+// runIncomingResume drives the target-side live-migration resume: it dials the
+// paused -incoming qemu and runs RunLiveTarget (wait incoming completed -> drop
+// the writable export -> cont). On success the guest is running from the
+// transferred RAM: flip the VM to StatusRunning, attach the serial mux so the
+// resumed console persists, release the migration port pair, and mark the
+// record completed. On failure there is no fall-back to the source (it is
+// already released): mark the VM StatusFailed and the record failed.
+func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vmID uuid.UUID, exportID string, ram, nbd int) {
+	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
+
+	v, err := m.Get(vmID)
+	if err != nil {
+		m.failIncomingResume(taskID, migrationID, vmID, fmt.Sprintf("vm %s: %v", vmID, err))
+		return
+	}
+
+	conn, err := m.migDialQMPTarget(v.QMPSocket)
+	if err != nil {
+		m.failIncomingResume(taskID, migrationID, vmID, fmt.Sprintf("dial target qmp: %v", err))
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := m.migRunLiveTarget(ctx, conn, qemu.LiveTargetSpec{ExportID: exportID}); err != nil {
+		m.failIncomingResume(taskID, migrationID, vmID, fmt.Sprintf("resume: %v", err))
+		return
+	}
+
+	m.transitionVM(v.ID, StatusRunning, "")
+	if persistErr := m.persistVM(v.ID); persistErr != nil {
+		m.log.Warn("incoming resume: persist meta failed", "vm", v.Name, "err", persistErr)
+	}
+	if err := m.attachMux(m.log, v); err != nil {
+		m.log.Warn("incoming resume: attach mux failed", "vm", v.Name, "err", err)
+	}
+	m.migPorts.ReleasePair(ram, nbd)
+	m.migrations.Update(migrationID, func(r *migration.Record) {
+		r.Phase = migration.PhaseCompleted
+		r.CompletedAt = time.Now().UTC()
+	})
+	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+}
+
+// failIncomingResume marks the target VM failed (no source fall-back after the
+// source has been released) and records the failure on the migration record and
+// the tracking task.
+func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg string) {
+	m.transitionVM(vmID, StatusFailed, msg)
+	_ = m.persistVM(vmID)
+	m.migrations.Update(migrationID, func(r *migration.Record) {
+		r.Phase = migration.PhaseFailed
+		r.ErrorMessage = msg
+		r.CompletedAt = time.Now().UTC()
+	})
+	m.tasks.Update(taskID, func(t *AgentTask) {
+		t.Status = TaskStatusFailed
+		t.Error = &TaskError{Code: "resume_failed", Message: msg}
+	})
 }
 
 // runOutgoingLive drives the SOURCE side of a live migration asynchronously.

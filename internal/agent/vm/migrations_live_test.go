@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/digitalocean/go-qemu/qmp"
 	"github.com/google/uuid"
@@ -290,6 +291,140 @@ func TestStartIncoming_LiveFailedPrepDoesNotPoisonRetry(t *testing.T) {
 	if rec.Role != migration.RoleTarget {
 		t.Errorf("record Role = %q, want target", rec.Role)
 	}
+}
+
+// stubTargetConn is a no-op qemu.LiveTargetConn used to exercise the
+// target-side resume wiring without a real QEMU. RunLiveTarget itself is
+// injected through the migRunLiveTarget seam, so every method is a do-nothing
+// stub.
+type stubTargetConn struct{}
+
+func (stubTargetConn) Events(ctx context.Context) (<-chan qmp.Event, error) { return nil, nil }
+func (stubTargetConn) BlockExportDel(id string) error                       { return nil }
+func (stubTargetConn) NBDServerStop() error                                 { return nil }
+func (stubTargetConn) Cont() error                                          { return nil }
+func (stubTargetConn) Close() error                                         { return nil }
+
+// waitStatus polls the raw in-map VM status (not m.Get, which probes the
+// pidfile absent under the unit fake) until it reaches want or the deadline.
+func waitStatus(t *testing.T, m *Manager, id uuid.UUID, want Status) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		got := m.vms[id].Status
+		m.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m.mu.Lock()
+	got := m.vms[id].Status
+	m.mu.Unlock()
+	t.Fatalf("status never reached %q; last = %q", want, got)
+}
+
+// TestStartIncoming_LiveResumeDrivesToRunning is the success-path teeth for the
+// target-side resume: once startIncomingLive completes setup it spawns a tracked
+// task that runs RunLiveTarget (injected here to return nil). On success the VM
+// must reach StatusRunning and the reserved migration port pair must be released
+// (a fresh ReservePair reclaiming them must succeed even after exhausting the
+// range minus one).
+func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
+	m := newTestManager(t)
+	m.migLaunchIncoming = func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error { return nil }
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	m.migCreateDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
+	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
+	var ranTarget bool
+	m.migRunLiveTarget = func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error {
+		ranTarget = true
+		return nil
+	}
+
+	// Narrow the migration ingress to exactly one (RAM, NBD) pair so the
+	// post-resume ReservePair below has teeth: startIncomingLive reserves the
+	// only pair, and a fresh reservation can succeed afterwards ONLY if
+	// runIncomingResume released it. A regression dropping that release would
+	// leave the range exhausted and the final ReservePair would fail.
+	m.migPorts = migration.NewPortAllocator(49152, 49153)
+
+	migID := uuid.New()
+	vmUUID := uuid.New()
+	res, err := m.startIncomingLive(context.Background(), IncomingSpec{
+		MigrationID:    migID,
+		VMUUID:         vmUUID,
+		VMName:         "demo",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+	})
+	if err != nil {
+		t.Fatalf("startIncomingLive error = %v", err)
+	}
+	if res.ListenEndpoint == "" || res.NBDEndpoint == "" {
+		t.Fatalf("result endpoints empty: %+v", res)
+	}
+
+	waitStatus(t, m, vmUUID, StatusRunning)
+	if !ranTarget {
+		t.Errorf("migRunLiveTarget was not invoked")
+	}
+
+	waitPhase(t, m, migID, "completed")
+
+	// The reserved port pair must be released on success. The range holds
+	// exactly one pair (set above), so this fresh reservation succeeds only
+	// because runIncomingResume released the pair startIncomingLive held; if the
+	// release regressed, the range stays exhausted and ReservePair returns
+	// ErrNoFreePort.
+	if _, _, err := m.migPorts.ReservePair(); err != nil {
+		t.Errorf("ports not released after resume: %v", err)
+	}
+}
+
+// TestStartIncoming_LiveResumeFailureMarksVMFailed is the failure-path teeth:
+// when RunLiveTarget returns an error there is no fall-back to the source (it is
+// already released), so the target VM must be marked StatusFailed and the record
+// failed.
+func TestStartIncoming_LiveResumeFailureMarksVMFailed(t *testing.T) {
+	m := newTestManager(t)
+	m.migLaunchIncoming = func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error { return nil }
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	m.migCreateDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
+	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
+	m.migRunLiveTarget = func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error {
+		return errors.New("incoming did not converge")
+	}
+
+	migID := uuid.New()
+	vmUUID := uuid.New()
+	if _, err := m.startIncomingLive(context.Background(), IncomingSpec{
+		MigrationID:    migID,
+		VMUUID:         vmUUID,
+		VMName:         "demo",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+	}); err != nil {
+		t.Fatalf("startIncomingLive error = %v", err)
+	}
+
+	waitStatus(t, m, vmUUID, StatusFailed)
+	waitPhase(t, m, migID, "failed")
 }
 
 func TestCancelLive_SetsCancelledAndReleasesPorts(t *testing.T) {
