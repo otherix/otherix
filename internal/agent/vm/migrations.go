@@ -105,7 +105,8 @@ type IncomingSpec struct {
 	BindHost       string
 }
 
-// IncomingResult is returned to the CP and relayed to the source.
+// IncomingResult is returned to the agent-API handler, which serializes it
+// back to the CP; the CP then relays the endpoint + token to the source.
 type IncomingResult struct {
 	ListenEndpoint string
 	AuthToken      string
