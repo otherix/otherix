@@ -564,6 +564,43 @@ func TestMigrationByID_ReturnsCreated(t *testing.T) {
 	}
 }
 
+func TestCreateMigration_PersistsOptions(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	sourceNode := nodeParams(uniqueNodeName("src"))
+	targetNode := nodeParams(uniqueNodeName("tgt"))
+	if _, err := s.CreateNode(ctx, sourceNode); err != nil {
+		t.Fatalf("CreateNode(source): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, targetNode); err != nil {
+		t.Fatalf("CreateNode(target): %v", err)
+	}
+
+	p := migrationParams(uuid.New(), sourceNode.ID, targetNode.ID)
+	p.Live = false
+	p.AllowPostcopy = true
+	p.TargetPoolName = "pool-a"
+	args := migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID}
+	if _, err := s.CreateMigration(ctx, p, args); err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+
+	got, err := s.MigrationByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID(%v) = %v, want nil", p.ID, err)
+	}
+	if got.Live != false {
+		t.Errorf("MigrationByID Live = %v, want false", got.Live)
+	}
+	if got.AllowPostcopy != true {
+		t.Errorf("MigrationByID AllowPostcopy = %v, want true", got.AllowPostcopy)
+	}
+	if got.TargetPoolName != "pool-a" {
+		t.Errorf("MigrationByID TargetPoolName = %q, want %q", got.TargetPoolName, "pool-a")
+	}
+}
+
 func TestListMigrations_VMFilter(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

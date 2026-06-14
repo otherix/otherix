@@ -71,6 +71,9 @@ func (s *Store) CreateMigration(ctx context.Context, p store.CreateMigrationPara
 		Phase:             store.MigrationPhasePending,
 		MaxBandwidthBytes: p.MaxBandwidthBytes,
 		MaxDowntimeMs:     p.MaxDowntimeMs,
+		Live:              p.Live,
+		AllowPostcopy:     p.AllowPostcopy,
+		TargetPoolName:    p.TargetPoolName,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

@@ -411,9 +411,16 @@ type Migration struct {
 	QmpCapabilities   []byte
 	MaxBandwidthBytes *int64
 	MaxDowntimeMs     *int32
-	StartedAt         *time.Time
-	CompletedAt       *time.Time
-	ErrorMessage      *string
+	// Live, AllowPostcopy, and TargetPoolName are the durable desired options for
+	// the migration, set at CreateMigration from CreateMigrationParams. Live=false
+	// means an offline migration. The worker and migration get read them off the
+	// row.
+	Live           bool
+	AllowPostcopy  bool
+	TargetPoolName string
+	StartedAt      *time.Time
+	CompletedAt    *time.Time
+	ErrorMessage   *string
 	// SchedulingReason is the machine-readable retryable reason while Phase is
 	// pending and no target is bound (e.g. "no_eligible_target", "no_capacity",
 	// "pool_not_ready"); nil once a target binds. Distinct from ErrorMessage,
