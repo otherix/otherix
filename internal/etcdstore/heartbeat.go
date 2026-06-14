@@ -134,10 +134,30 @@ func (h heartbeatProjection) FilterExistingVMIDs(ctx context.Context, ids []uuid
 }
 
 // FilterVMIDsPinnedToNode returns the subset of ids whose live vms row is
-// pinned to nodeID. The pin is read from the row itself (the field the
+// pinned to nodeID, or which have an active (non-terminal) migration whose
+// target is nodeID. The pin is read from the row itself (the field the
 // scheduler writes), not the pinned-node index; ids with a missing row are
 // skipped, mirroring FilterExistingVMIDs.
+//
+// The migration-target arm makes the placement gate migration-aware (migration
+// design D3): during live migration the guest can be live on the target while
+// the pin is still the source for a brief pre-cutover window, so both the source
+// (via the unchanged pin) and the target (via the active migration) are
+// admitted. A terminal migration does not admit its (former) target -
+// activeMigrationsOnNode excludes terminal phases - and after cutover the pin
+// has moved to the target, so the normal pin check carries the VM.
 func (h heartbeatProjection) FilterVMIDsPinnedToNode(ctx context.Context, nodeID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
+	migs, err := h.s.activeMigrationsOnNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	target := make(map[uuid.UUID]struct{}, len(migs))
+	for _, m := range migs {
+		if m.TargetNodeID != nil && *m.TargetNodeID == nodeID {
+			target[m.VmID] = struct{}{}
+		}
+	}
+
 	out := make([]uuid.UUID, 0, len(ids))
 	for _, id := range ids {
 		vm, err := h.s.VMByID(ctx, id)
@@ -145,6 +165,10 @@ func (h heartbeatProjection) FilterVMIDsPinnedToNode(ctx context.Context, nodeID
 			continue
 		}
 		if vm.PinnedNodeID != nil && *vm.PinnedNodeID == nodeID {
+			out = append(out, id)
+			continue
+		}
+		if _, ok := target[id]; ok {
 			out = append(out, id)
 		}
 	}

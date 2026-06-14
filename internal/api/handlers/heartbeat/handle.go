@@ -1068,11 +1068,7 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 		// they may claim. Fail-closed: a VM pinned to another node, or not
 		// pinned at all (unscheduled), is skipped, never claimed.
 		//
-		// Migration caveat: when live migration lands, this static-pin gate
-		// must be made migration-aware (honor the CP-mediated source->target
-		// transition, not the static pin), otherwise it would reject the
-		// legitimate migration target's claim. Live migration is not
-		// implemented today, so the static gate is correct now.
+		// Placement-authority gate is migration-aware via FilterVMIDsPinnedToNode (admits an active migration's target). See migration design D3.
 		if _, ok := pinnedSet[r.VMUUID]; !ok {
 			h.log.WarnContext(ctx, "heartbeat claims a vm not pinned to the reporting node; skipping runtime claim",
 				slog.String("node_id", nodeID.String()),

@@ -429,3 +429,90 @@ func TestFilterVMIDsPinnedToNode(t *testing.T) {
 		t.Fatalf("RunHeartbeatProjection: %v", err)
 	}
 }
+
+// TestFilterVMIDsPinnedToNode_AdmitsActiveMigrationTarget verifies the
+// placement-authority gate is migration-aware (migration design D3): during an
+// active migration the gate admits the VM both for the source (pin unchanged)
+// and the target (active-migration target), so the just-migrated guest is not
+// rejected as orphaned. After cutover the migration is terminal and the pin has
+// moved to the target, so the old source is no longer admitted and the target is
+// carried by the normal pin, not a stale active-migration entry.
+func TestFilterVMIDsPinnedToNode_AdmitsActiveMigrationTarget(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("hbmiga"))
+	nodeB := nodeParams(uniqueNodeName("hbmigb"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+	nodeC := uuid.New() // neither pinned nor a migration endpoint
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		// 1. Active-migration target nodeB is admitted (pin still nodeA).
+		got, err := hp.FilterVMIDsPinnedToNode(ctx, nodeB.ID, []uuid.UUID{vm.ID})
+		if err != nil {
+			return err
+		}
+		if diff := cmp.Diff([]uuid.UUID{vm.ID}, got); diff != "" {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeB, active-target) mismatch (-want +got):\n%s", diff)
+		}
+
+		// 2. Source nodeA remains admitted via the unchanged pin.
+		got, err = hp.FilterVMIDsPinnedToNode(ctx, nodeA.ID, []uuid.UUID{vm.ID})
+		if err != nil {
+			return err
+		}
+		if diff := cmp.Diff([]uuid.UUID{vm.ID}, got); diff != "" {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeA, source) mismatch (-want +got):\n%s", diff)
+		}
+
+		// 3. Unrelated node nodeC (no pin, no migration) is not admitted.
+		got, err = hp.FilterVMIDsPinnedToNode(ctx, nodeC, []uuid.UUID{vm.ID})
+		if err != nil {
+			return err
+		}
+		if len(got) != 0 {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeC, unrelated) = %v, want []", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection (active): %v", err)
+	}
+
+	// 4. After cutover the migration is terminal and the pin moved to nodeB.
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		// Old source nodeA is no longer admitted: pin moved away and the
+		// migration is terminal (not an active-migration target).
+		got, err := hp.FilterVMIDsPinnedToNode(ctx, nodeA.ID, []uuid.UUID{vm.ID})
+		if err != nil {
+			return err
+		}
+		if len(got) != 0 {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeA, post-cutover) = %v, want []", got)
+		}
+
+		// New owner nodeB is admitted via the normal pin (now nodeB), not a
+		// stale active-migration entry.
+		got, err = hp.FilterVMIDsPinnedToNode(ctx, nodeB.ID, []uuid.UUID{vm.ID})
+		if err != nil {
+			return err
+		}
+		if diff := cmp.Diff([]uuid.UUID{vm.ID}, got); diff != "" {
+			t.Errorf("FilterVMIDsPinnedToNode(nodeB, post-cutover) mismatch (-want +got):\n%s", diff)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection (post-cutover): %v", err)
+	}
+}
