@@ -29,7 +29,7 @@ const migrationIDPrefixMinLen = 8
 // ok=false, so callers must return immediately. The branches:
 //   - full UUID, found -> (migration, true)
 //   - full UUID, absent -> 404 not_found
-//   - prefix shorter than migrationIDPrefixMinLen or non-hex -> 400 validation_failed
+//   - prefix shorter than migrationIDPrefixMinLen or not a uuid-string prefix -> 400 validation_failed
 //   - prefix, zero matches -> 404 not_found
 //   - prefix, one match -> (migration, true)
 //   - prefix, multiple matches -> 409 conflict (ambiguous)
@@ -55,10 +55,10 @@ func (h *Handler) resolveMigration(w http.ResponseWriter, r *http.Request) (stor
 		return m, true
 	}
 
-	if len(raw) < migrationIDPrefixMinLen || !isHex(raw) {
+	if len(raw) < migrationIDPrefixMinLen || !isUUIDPrefix(raw) {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed,
-			"migration id must be a uuid or a hex prefix of at least 8 chars", nil)
+			"migration id must be a uuid or a unique id prefix of at least 8 chars", nil)
 		return store.Migration{}, false
 	}
 
@@ -82,15 +82,22 @@ func (h *Handler) resolveMigration(w http.ResponseWriter, r *http.Request) (stor
 	}
 }
 
-// isHex reports whether s is non-empty and consists solely of lowercase hex
-// digits. The resolver lowercases the raw id before calling this, so uppercase
-// is normalised, not rejected. A UUID's dashes make it non-hex, which is why the
-// full-UUID branch runs first.
-func isHex(s string) bool {
-	if s == "" {
+// isUUIDPrefix reports whether s is a non-empty prefix of a canonical UUID
+// string (lowercase hex with hyphens at positions 8, 13, 18, 23). The short id
+// the CLI shows is the first N characters of the UUID *string*, so for N > 8 it
+// includes a hyphen - a pure-hex check would reject those round-tripped ids.
+// The resolver lowercases s first, so uppercase is normalised, not rejected.
+func isUUIDPrefix(s string) bool {
+	if s == "" || len(s) > 36 {
 		return false
 	}
-	for _, c := range s {
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
