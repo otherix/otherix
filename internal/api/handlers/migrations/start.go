@@ -35,9 +35,12 @@ type migrateRequestBody struct {
 }
 
 // Start implements POST /v1/vms/{id}/migrate - async per spec (202 +
-// AsyncTaskAccepted). Required permission: vm:migrate (admin / operator: any;
-// developer: own; viewer: none). A developer migrating another user's VM gets
-// 404 (no existence leak), the canonical 403-vs-404 rule.
+// AsyncTaskAccepted). Required permission: vm:migrate, held only by admin and
+// operator (both scope any); developer and viewer have no vm:migrate and are
+// rejected by the RequirePermission gate (403 permission_denied) before this
+// handler runs. A caller who can migrate (admin/operator at scope any) sees a VM
+// it cannot otherwise see as 404 (no existence leak), the canonical 403-vs-404
+// rule.
 //
 // Sequence: resolve VM by name -> ownership check (404 on deny) -> parse body
 // -> resolve target_node name to a node id (if given) -> no-op short-circuit

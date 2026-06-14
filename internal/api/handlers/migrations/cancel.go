@@ -19,8 +19,10 @@ import (
 // current Migration view. Best-effort and valid only pre-cutover (spec D5):
 // PinnedNodeID is never touched, so a cancel is trivially fail-safe-to-source.
 // Required permission: vm:migrate (a cancel mutates the migration, same gate as
-// initiating it). A developer cancelling another owner's migration gets 404
-// (no existence leak).
+// initiating it), held only by admin and operator (both scope any); developer
+// and viewer have no vm:migrate and are rejected by RequirePermission (403)
+// before this handler runs. A caller who can cancel but cannot otherwise see the
+// migration gets 404 (no existence leak).
 //
 // An already-terminal migration (completed / failed / cancelled) is returned
 // unchanged at 200 - cancel is idempotent and best-effort, mirroring the
