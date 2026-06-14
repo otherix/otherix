@@ -376,6 +376,19 @@ func (h heartbeatProjection) ListVMsForNodeDeclared(ctx context.Context, nodeID 
 		if err != nil {
 			continue
 		}
+		// Declared (desired) state follows the authoritative pin, not the
+		// vm_runtime-by-node index. A VM present on this node only as the TARGET
+		// of an in-flight migration is pinned to the source until cutover and
+		// shows up in this index because the target reports it (the heartbeat
+		// gate admits the migration target). It must NOT be declared
+		// desired-running here yet, or this node's reconciler would Start it
+		// mid-migration - while qemu-nbd is still receiving its disk - and
+		// corrupt the transfer. After cutover the pin moves here and the VM is
+		// declared normally. Symmetrically, the former source stops declaring it
+		// once the pin leaves.
+		if vm.PinnedNodeID == nil || *vm.PinnedNodeID != nodeID {
+			continue
+		}
 		out = append(out, store.ListVMsForNodeDeclaredRow{
 			Name:         vm.Name,
 			DesiredPhase: vm.DesiredPhase,
