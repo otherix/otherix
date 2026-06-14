@@ -20,11 +20,15 @@ import (
 // reused unchanged. *QMPClient satisfies it.
 type LiveSourceConn interface {
 	ObjectAddTLSCreds(id, dir, endpoint string) error
+	ObjectAddAuthz(id, identity string) error
 	BlockdevAddNBD(nodeName, host string, port int, export, tlsCreds, tlsHostname string) error
 	BlockdevMirror(jobID, device, target string) error
+	NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error
+	BlockExportAdd(id, nodeName, name string, writable bool) error
 	MigrateSetCapabilities(caps map[string]bool) error
 	MigrateSetParameters(p LiveParams) error
 	Migrate(uri string) error
+	MigrateIncoming(uri string) error
 	BlockJobCancel(device string, force bool) error
 	MigrateContinue() error
 	MigrateCancel() error
@@ -205,6 +209,82 @@ func waitPreSwitchoverWithWatchdog(ctx context.Context, conn LiveSourceConn, ch 
 		return err
 	}
 	return nil
+}
+
+// LiveIncomingSpec parameterizes the target side of a live migration.
+type LiveIncomingSpec struct {
+	CredsDir       string // server TLS creds dir
+	SourceIdentity string // "CN=node-<source>"; pins the connecting source DN
+	DiskNode       string // node-name of the destination disk blockdev (exported + booted)
+	DiskPath       string // destination disk file path (for LiveIncomingArgs -blockdev)
+	Export         string // NBD export name (the migration auth token)
+	ExportID       string // block-export-add id (handle for teardown)
+	BindHost       string // migration ingress bind host
+	NBDPort        int    // NBD disk-export ingress port
+	RAMPort        int    // RAM migrate-incoming ingress port
+}
+
+// SetupLiveIncoming configures a just-launched (-incoming defer) target QEMU to
+// receive a live migration: install server TLS creds + the source-DN authz pin,
+// start the in-process NBD server and export the destination disk writable, then
+// arm the deferred incoming RAM channel. The order matters - the NBD export and
+// TLS objects must exist before migrate-incoming opens the socket.
+func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
+	if err := conn.ObjectAddTLSCreds(migTLSCredsID, s.CredsDir, "server"); err != nil {
+		return fmt.Errorf("add server tls creds: %w", err)
+	}
+	if err := conn.ObjectAddAuthz(migAuthzID, s.SourceIdentity); err != nil {
+		return fmt.Errorf("add source authz: %w", err)
+	}
+	if err := conn.NBDServerStart(s.BindHost, s.NBDPort, migTLSCredsID, migAuthzID); err != nil {
+		return fmt.Errorf("start nbd server: %w", err)
+	}
+	if err := conn.BlockExportAdd(s.ExportID, s.DiskNode, s.Export, true); err != nil {
+		return fmt.Errorf("export destination disk: %w", err)
+	}
+	// late-block-activate defers VM-level disk activation to switchover so
+	// the booting guest does not lock the disk while the NBD receive writes
+	// it (the 8.2-safe path - no allow-inactive).
+	caps := map[string]bool{
+		"events":              true,
+		"late-block-activate": true,
+	}
+	if err := conn.MigrateSetCapabilities(caps); err != nil {
+		return fmt.Errorf("set migration capabilities: %w", err)
+	}
+	params := LiveParams{
+		TLSCreds: migTLSCredsID,
+		TLSAuthz: migAuthzID,
+	}
+	if err := conn.MigrateSetParameters(params); err != nil {
+		return fmt.Errorf("set migration parameters: %w", err)
+	}
+	uri := "tcp:" + net.JoinHostPort(s.BindHost, strconv.Itoa(s.RAMPort))
+	if err := conn.MigrateIncoming(uri); err != nil {
+		return fmt.Errorf("arm incoming migration: %w", err)
+	}
+	return nil
+}
+
+// LiveIncomingArgs returns the migration-specific QEMU flags the target launch
+// appends to the base VM cmdline: the destination disk as a node-named blockdev
+// (so SetupLiveIncoming can NBD-export it and the guest can boot it) and
+// -incoming defer (start paused, defer the transport so TLS can be set over QMP
+// before the socket accepts).
+//
+// The base cmdline (cmdline.go) expresses the OS disk as `-drive ...,if=virtio`,
+// which carries no node-name. block-export-add needs a node-name to export, so
+// the migration disk is expressed instead as an explicit two-layer -blockdev
+// (qcow2 format node over a file protocol node) whose top node-name matches the
+// export node-name SetupLiveIncoming references.
+func LiveIncomingArgs(s LiveIncomingSpec) []string {
+	return []string{
+		"-blockdev", fmt.Sprintf(
+			"driver=qcow2,node-name=%s,file.driver=file,file.filename=%s",
+			s.DiskNode, s.DiskPath,
+		),
+		"-incoming", "defer",
+	}
 }
 
 // abortLiveSource fails the source side closed: it cancels the RAM

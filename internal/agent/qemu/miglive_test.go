@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -51,9 +52,43 @@ func (f *fakeLiveConn) BlockdevMirror(j, d, t string) error {
 	return nil
 }
 
-func (f *fakeLiveConn) MigrateSetCapabilities(map[string]bool) error {
-	f.rec("set-caps")
+func (f *fakeLiveConn) MigrateSetCapabilities(caps map[string]bool) error {
+	keys := make([]string, 0, len(caps))
+	for k := range caps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	f.rec("set-caps:" + strings.Join(keys, ","))
 	return nil
+}
+
+func (f *fakeLiveConn) ObjectAddAuthz(id, identity string) error {
+	f.rec("object-add:authz")
+	return nil
+}
+
+func (f *fakeLiveConn) NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error {
+	f.rec("nbd-server-start")
+	return nil
+}
+
+func (f *fakeLiveConn) BlockExportAdd(id, nodeName, name string, writable bool) error {
+	f.rec(fmt.Sprintf("block-export-add:%s", writabilityLabel(writable)))
+	return nil
+}
+
+func (f *fakeLiveConn) MigrateIncoming(string) error {
+	f.rec("migrate-incoming")
+	return nil
+}
+
+// writabilityLabel renders a block-export-add writable flag as the
+// "writable"/"readonly" tag the order tests assert on.
+func writabilityLabel(writable bool) string {
+	if writable {
+		return "writable"
+	}
+	return "readonly"
 }
 
 func (f *fakeLiveConn) MigrateSetParameters(LiveParams) error {
@@ -139,7 +174,7 @@ func TestRunLiveSource_HappyPathOrder(t *testing.T) {
 		"object-add:client",
 		"blockdev-add",
 		"blockdev-mirror",
-		"set-caps",
+		"set-caps:auto-converge,events,pause-before-switchover",
 		"set-params",
 		"migrate",
 		"block-job-cancel:false",
@@ -204,6 +239,36 @@ func TestWatchdogErrorMentionsTimeout(t *testing.T) {
 	err := RunLiveSource(context.Background(), f, spec, nil)
 	if err == nil || !strings.Contains(err.Error(), "converge") {
 		t.Fatalf("RunLiveSource() = %v, want error mentioning convergence", err)
+	}
+}
+
+func TestSetupLiveIncoming_Order(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
+	err := SetupLiveIncoming(f, LiveIncomingSpec{
+		CredsDir: "/c", SourceIdentity: "CN=node-a", DiskNode: "target-disk0",
+		Export: "tok", ExportID: "exp0", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
+	})
+	if err != nil {
+		t.Fatalf("SetupLiveIncoming error = %v", err)
+	}
+	want := []string{
+		"object-add:server", "object-add:authz",
+		"nbd-server-start", "block-export-add:writable",
+		"set-caps:events,late-block-activate", "set-params", "migrate-incoming",
+	}
+	if !reflect.DeepEqual(f.snapshot(), want) {
+		t.Errorf("setup order =\n %v\nwant\n %v", f.snapshot(), want)
+	}
+}
+
+func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
+	args := LiveIncomingArgs(LiveIncomingSpec{DiskNode: "target-disk0", DiskPath: "/pool/vm/disk.qcow2"})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-incoming") || !strings.Contains(joined, "defer") {
+		t.Errorf("LiveIncomingArgs missing -incoming defer: %v", args)
+	}
+	if !strings.Contains(joined, "target-disk0") || !strings.Contains(joined, "/pool/vm/disk.qcow2") {
+		t.Errorf("LiveIncomingArgs missing disk node-name/path: %v", args)
 	}
 }
 
