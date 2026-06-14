@@ -2225,6 +2225,12 @@ components:
           description: |
             Estimated transfer size, used only for progress UX
             until the actual figure is observed.
+        source_node_identity:
+          type: [string, "null"]
+          description: |
+            The source node leaf-cert Distinguished Name ("CN=node-<source>").
+            The target builds a tls-authz object from it to pin the connecting
+            source identity before accepting the NBD/migration stream.
 
     MigrationIncomingResponse:
       type: object
@@ -2276,6 +2282,12 @@ components:
           format: int64
           minimum: 0
           description: Bandwidth cap in bytes per second.
+        target_node_identity:
+          type: [string, "null"]
+          description: |
+            The target node SAN name ("node-<target>.agents.otherix.local").
+            The source sets tls-hostname to it so QEMU validates the target
+            server cert identity, pinning the destination.
 
     Migration:
       type: object
