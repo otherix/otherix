@@ -35,6 +35,7 @@ const (
 	TaskKindVMStop     TaskKind = "vm.stop"
 	TaskKindVMPoweroff TaskKind = "vm.poweroff"
 	TaskKindVMReboot   TaskKind = "vm.reboot"
+	TaskKindVMMigrate  TaskKind = "vm.migrate"
 	// TaskKindStoragePoolScan tracks a POST /v1/storage-pools/{id}/scan
 	// task. The TaskStore.Create call carries the pool's UUID through
 	// the `vmID` parameter — transitional reuse pending the broader
