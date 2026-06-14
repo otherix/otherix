@@ -665,38 +665,6 @@ func (m *Mock) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, _ agent
 	m.respondNotImplemented(w, r, opID)
 }
 
-func (m *Mock) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMMigrationsStartIncomingParams) {
-	const opID = "vmMigrations.startIncoming"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMMigrationsStartOutgoingParams) {
-	const opID = "vmMigrations.startOutgoing"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMMigrationsGet(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.MigrationID) {
-	const opID = "vmMigrations.get"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMMigrationsCancel(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.MigrationID, _ agentapi.VMMigrationsCancelParams) {
-	const opID = "vmMigrations.cancel"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
 // VMConsoleIssueToken implements `POST /v1/vms/{vm_name}/console-token`
 // for mock-driven integration tests. Mirrors the real-agent contract:
 // looks up the stored VM, rejects non-running phase with 409, mints a

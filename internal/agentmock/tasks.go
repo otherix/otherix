@@ -71,6 +71,14 @@ type agentTask struct {
 	vmLifecycleResult *VMLifecycleResult
 	vmLifecycleName   string
 	vmLifecycleOp     string
+
+	// vm.migrate (outgoing) async task. migrationResult holds the
+	// queued synthetic outcome; migrationID correlates the task with
+	// the migrationRecord the VMMigrationsGet handler advances and the
+	// terminal projection settles. Set only for taskType ==
+	// "vm.migrate".
+	migrationResult *MigrationResult
+	migrationID     uuid.UUID
 }
 
 // AddPoolScanResult queues a synthetic outcome for the next
@@ -166,6 +174,8 @@ func projectAgentTask(t *agentTask, now time.Time) agentapi.Task {
 		projectVMDeleteTerminal(&task, t)
 	case "vm.start", "vm.stop", "vm.poweroff", "vm.reboot":
 		projectVMLifecycleTerminal(&task, t)
+	case "vm.migrate":
+		projectVMMigrateTerminal(&task, t)
 	default:
 		// "storage_pool.scan" and any future scan-shaped task type
 		// fall through to the scan projection.

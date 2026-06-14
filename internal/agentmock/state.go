@@ -90,6 +90,15 @@ type state struct {
 	// if non-empty.
 	vmLifecycleResults map[vmLifecycleKey][]VMLifecycleResult
 
+	// Migration two-phase sim. `migrations` is keyed by the
+	// CP-allocated migration uuid and holds the per-migration record
+	// both VMMigrationsGet (phase/progress advance) and the outgoing
+	// task's terminal projection read. `migrationResults` is the
+	// per-source-VM FIFO queue seeded by AddMigrationResult — empty
+	// queue defaults to a success that converges to completed.
+	migrations       map[uuid.UUID]*migrationRecord
+	migrationResults map[string][]MigrationResult
+
 	// Test fixture machinery (no wire surface).
 	requests []RequestRecord
 	inject   injectionState
