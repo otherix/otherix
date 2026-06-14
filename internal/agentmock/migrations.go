@@ -123,7 +123,15 @@ func (m *Mock) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request,
 
 	now := time.Now().UTC()
 	m.state.mu.Lock()
-	listenEndpoint := m.allocateMigrationEndpointLocked()
+	listenEndpoint := m.allocateMigrationEndpointLocked(0)
+	// For live migrations the target exports the guest disks over a
+	// SEPARATE NBD listener, distinct from the RAM listener in
+	// listen_endpoint. Offline reuses the single endpoint, so nbd is nil.
+	var nbdEndpoint *string
+	if body.Mode == agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeLive) {
+		ep := m.allocateMigrationEndpointLocked(1)
+		nbdEndpoint = &ep
+	}
 	if m.state.migrations == nil {
 		m.state.migrations = map[uuid.UUID]*migrationRecord{}
 	}
@@ -150,14 +158,16 @@ func (m *Mock) VMMigrationsStartIncoming(w http.ResponseWriter, r *http.Request,
 		AuthToken:      "mig-token-" + body.MigrationID.String(),
 		ListenEndpoint: listenEndpoint,
 		MigrationID:    body.MigrationID,
+		NbdEndpoint:    nbdEndpoint,
 	})
 }
 
 // allocateMigrationEndpointLocked returns a host:port the source must
-// connect to, drawn from the advertised migration range. The mock
-// hands out the range start; it does not model multi-migration port
-// contention. Caller holds mu.
-func (m *Mock) allocateMigrationEndpointLocked() string {
+// connect to, drawn from the advertised migration range at
+// range-start+offset. The mock hands out fixed offsets (0 for the RAM
+// listener, 1 for the live NBD disk-export listener); it does not model
+// multi-migration port contention. Caller holds mu.
+func (m *Mock) allocateMigrationEndpointLocked(offset int) string {
 	host := m.state.migration.Host
 	if host == "" {
 		host = "127.0.0.1"
@@ -166,7 +176,7 @@ func (m *Mock) allocateMigrationEndpointLocked() string {
 	if port == 0 {
 		port = 49152
 	}
-	return host + ":" + strconv.Itoa(port)
+	return host + ":" + strconv.Itoa(port+offset)
 }
 
 // VMMigrationsStartOutgoing implements
@@ -191,6 +201,15 @@ func (m *Mock) VMMigrationsStartOutgoing(w http.ResponseWriter, r *http.Request,
 	// catches a worker that forgets to send it.
 	if body.TargetNodeIdentity == nil || *body.TargetNodeIdentity == "" {
 		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "target_node_identity is required")
+		return
+	}
+	// A real source agent dials the target's NBD disk-export listener for
+	// live migrations; it 400s when the CP forgot to relay nbd_endpoint
+	// (offline reuses the single endpoint, so the guard is live-only).
+	// Mirror that so the e2e catches a worker that drops the relay.
+	if body.Mode == agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeLive) &&
+		(body.NbdEndpoint == nil || *body.NbdEndpoint == "") {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "nbd_endpoint is required for live migrations")
 		return
 	}
 

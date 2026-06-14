@@ -55,8 +55,11 @@ func startIncoming(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID
 }
 
 // startOutgoing POSTs /v1/vms/{vm}/migrations/outgoing and returns the
-// minted async task id. Fails fast on non-202 / decode error.
-func startOutgoing(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID, target, token string) uuid.UUID {
+// minted async task id. Fails fast on non-202 / decode error. nbd is the
+// target's NBD disk-export endpoint (from the incoming response); the CP
+// relays it onto the outgoing request for live migrations, so the live
+// nbd-required guard is satisfied. Pass "" only for offline flows.
+func startOutgoing(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID, target, token, nbd string) uuid.UUID {
 	t.Helper()
 	reqBody := agentapi.MigrationOutgoingRequest{
 		AuthToken:          token,
@@ -64,6 +67,9 @@ func startOutgoing(t *testing.T, m mockURL, vmName string, migrationID uuid.UUID
 		Mode:               agentapi.MigrationOutgoingRequestMode("live"),
 		TargetEndpoint:     target,
 		TargetNodeIdentity: strPtr("node-target.agents.otherix.local"),
+	}
+	if nbd != "" {
+		reqBody.NbdEndpoint = &nbd
 	}
 	buf, err := json.Marshal(reqBody)
 	if err != nil {
@@ -169,8 +175,13 @@ func TestMigration_TwoPhaseHappyPath(t *testing.T) {
 
 	// Phase 2: source streams out. Stage a deterministic delay so we
 	// can observe the pending->running->success arc.
+	// Relay the target's distinct NBD endpoint onto the outgoing request,
+	// as the CP worker does for live migrations.
+	if in.NbdEndpoint == nil || *in.NbdEndpoint == "" {
+		t.Fatalf("live incoming nbd_endpoint = %v, want non-empty", in.NbdEndpoint)
+	}
 	source.AddMigrationResult(vmName, agentmock.MigrationResult{Delay: 80 * time.Millisecond})
-	taskID := startOutgoing(t, source, vmName, migrationID, in.ListenEndpoint, in.AuthToken)
+	taskID := startOutgoing(t, source, vmName, migrationID, in.ListenEndpoint, in.AuthToken, *in.NbdEndpoint)
 
 	task := pollUntilTerminalURL(t, source, taskID, 2*time.Second)
 	if string(task.Status) != "success" {
@@ -209,7 +220,7 @@ func TestMigration_Failure(t *testing.T) {
 			Message: "could not dial target listen endpoint",
 		},
 	})
-	taskID := startOutgoing(t, source, vmName, migrationID, "127.0.0.1:49152", "tok")
+	taskID := startOutgoing(t, source, vmName, migrationID, "127.0.0.1:49152", "tok", "127.0.0.1:49153")
 
 	task := pollUntilTerminalURL(t, source, taskID, 2*time.Second)
 	if string(task.Status) != "failed" {
@@ -237,7 +248,7 @@ func TestMigration_Stall(t *testing.T) {
 		Delay:      10 * time.Second, // far beyond the poll window
 		FinalPhase: "active",         // never converges
 	})
-	taskID := startOutgoing(t, source, vmName, migrationID, "127.0.0.1:49152", "tok")
+	taskID := startOutgoing(t, source, vmName, migrationID, "127.0.0.1:49152", "tok", "127.0.0.1:49153")
 
 	// Brief settle so the task crosses into running.
 	time.Sleep(30 * time.Millisecond)
@@ -260,7 +271,7 @@ func TestMigration_Cancel(t *testing.T) {
 	vmName := "demo"
 
 	source.AddMigrationResult(vmName, agentmock.MigrationResult{Delay: 10 * time.Second})
-	_ = startOutgoing(t, source, vmName, migrationID, "127.0.0.1:49152", "tok")
+	_ = startOutgoing(t, source, vmName, migrationID, "127.0.0.1:49152", "tok", "127.0.0.1:49153")
 
 	mig := cancelMigration(t, source, vmName, migrationID)
 	if string(mig.Phase) != "cancelled" {
@@ -349,10 +360,105 @@ func TestMockOutgoingRequiresTargetIdentity(t *testing.T) {
 		MigrationID:    uuid.New(),
 		Mode:           agentapi.MigrationOutgoingRequestMode("live"),
 		TargetEndpoint: "127.0.0.1:49152",
+		// NbdEndpoint present so the missing-nbd guard is not what trips here.
+		NbdEndpoint: strPtr("127.0.0.1:49153"),
 		// TargetNodeIdentity intentionally omitted.
 	}
 	if status := postMigrationJSON(t, source, "demo", "outgoing", body); status != http.StatusBadRequest {
 		t.Errorf("outgoing without target_node_identity status = %d, want 400", status)
+	}
+}
+
+// TestMockIncomingReturnsDistinctNbdEndpointForLive locks the live
+// two-endpoint handshake on the target: a live incoming request yields a
+// non-empty nbd_endpoint distinct from listen_endpoint (the RAM listener).
+// A real target exports the guest disks over a SEPARATE NBD listener.
+func TestMockIncomingReturnsDistinctNbdEndpointForLive(t *testing.T) {
+	target := startMock(t)
+	in := startIncoming(t, target, "demo", uuid.New())
+	if in.NbdEndpoint == nil || *in.NbdEndpoint == "" {
+		t.Fatalf("live incoming nbd_endpoint = %v, want non-empty", in.NbdEndpoint)
+	}
+	if *in.NbdEndpoint == in.ListenEndpoint {
+		t.Errorf("nbd_endpoint = %q must differ from listen_endpoint %q", *in.NbdEndpoint, in.ListenEndpoint)
+	}
+}
+
+// TestMockIncomingOmitsNbdEndpointForOffline is the revert-to-confirm: an
+// offline incoming request leaves nbd_endpoint nil (offline reuses the
+// single endpoint as the qemu-nbd server, no second listener).
+func TestMockIncomingOmitsNbdEndpointForOffline(t *testing.T) {
+	target := startMock(t)
+	body := agentapi.MigrationIncomingRequest{
+		MigrationID:        uuid.New(),
+		Mode:               agentapi.MigrationIncomingRequestModeOffline,
+		SourceNodeIdentity: strPtr("CN=node-source"),
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal offline incoming body: %v", err)
+	}
+	url := target.URL() + "/v1/vms/demo/migrations/incoming"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("build offline incoming request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("offline incoming: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("offline incoming status = %d, want 200; body=%s", resp.StatusCode, rb)
+	}
+	var out agentapi.MigrationIncomingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode offline incoming response: %v", err)
+	}
+	if out.NbdEndpoint != nil {
+		t.Errorf("offline incoming nbd_endpoint = %q, want nil", *out.NbdEndpoint)
+	}
+}
+
+// TestMockOutgoingRequiresNbdEndpointForLive is the teeth of the
+// outgoing nbd_endpoint relay: a live outgoing request with no
+// nbd_endpoint is rejected 400, mirroring a real source agent that
+// cannot connect to the target's NBD disk-export listener without it.
+// This catches a CP worker that forgets to relay the target's
+// nbd_endpoint onto the outgoing request.
+func TestMockOutgoingRequiresNbdEndpointForLive(t *testing.T) {
+	source := startMock(t)
+	body := agentapi.MigrationOutgoingRequest{
+		AuthToken:          "tok",
+		MigrationID:        uuid.New(),
+		Mode:               agentapi.MigrationOutgoingRequestMode("live"),
+		TargetEndpoint:     "127.0.0.1:49152",
+		TargetNodeIdentity: strPtr("node-target.agents.otherix.local"),
+		// NbdEndpoint intentionally omitted.
+	}
+	if status := postMigrationJSON(t, source, "demo", "outgoing", body); status != http.StatusBadRequest {
+		t.Errorf("live outgoing without nbd_endpoint status = %d, want 400", status)
+	}
+}
+
+// TestMockOutgoingAllowsMissingNbdEndpointForOffline is the
+// revert-to-confirm: an offline outgoing request needs NO nbd_endpoint
+// (offline reuses the single endpoint), so it still 202s. The live guard
+// must not fire for offline.
+func TestMockOutgoingAllowsMissingNbdEndpointForOffline(t *testing.T) {
+	source := startMock(t)
+	body := agentapi.MigrationOutgoingRequest{
+		AuthToken:          "tok",
+		MigrationID:        uuid.New(),
+		Mode:               agentapi.MigrationOutgoingRequestMode("offline"),
+		TargetEndpoint:     "127.0.0.1:49152",
+		TargetNodeIdentity: strPtr("node-target.agents.otherix.local"),
+		// NbdEndpoint omitted - fine for offline.
+	}
+	if status := postMigrationJSON(t, source, "demo", "outgoing", body); status != http.StatusAccepted {
+		t.Errorf("offline outgoing without nbd_endpoint status = %d, want 202", status)
 	}
 }
 
