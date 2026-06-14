@@ -19,6 +19,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
+// errTargetPoolNotReady signals that the bound target node does not (yet) have
+// the migration's pool. It is retryable-as-pending (D4): the VM stays on
+// source and the migration waits for the pool to appear, rather than failing.
+var errTargetPoolNotReady = errors.New("target pool not ready on node")
+
 // Run-form migration worker for the etcd job runtime. It drains a vm.migrate job
 // and drives the migration to a terminal outcome against the agent two-phase
 // handshake, implementing spec D2 (node-less placement), D3 (PinnedNodeID stays
@@ -50,6 +55,7 @@ type MigrationWorkerStore interface {
 	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
+	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 }
 
 // MigrationAgentClient is the narrow agent-call seam the worker drives the
@@ -154,6 +160,18 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load vm: %v", err))
 	}
 
+	// An omitted --pool defaults to the source VM's pool name (correction A):
+	// a VM keeps its pool name across a move. placeAndBind (node-less) and the
+	// explicit-node handshake both consume m.TargetPoolName below.
+	if m.TargetPoolName == "" {
+		spn, err := sourcePoolName(ctx, st, m.VmID)
+		if err != nil {
+			// Retryable: the VM is still on source, nothing durable moved.
+			return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("default target pool: %v", err))
+		}
+		m.TargetPoolName = spn
+	}
+
 	// Spec D2: node-less migrate picks a target via the scheduler (excluding the
 	// source), then binds it. A bound migration skips straight to the handshake.
 	if m.TargetNodeID == nil {
@@ -189,10 +207,9 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		return store.Migration{}, fmt.Errorf("acquire placement lock: %v", err)
 	}
 
+	// TargetPoolName is pre-defaulted to the source VM's pool name in
+	// runMigration; placeAndBind no longer falls back to cfg.DefaultPoolName.
 	poolName := m.TargetPoolName
-	if poolName == "" {
-		poolName = cfg.DefaultPoolName
-	}
 	src := *m.SourceNodeID
 	decision, perr := placer.Place(ctx, scheduler.PlacementRequest{
 		PoolName:      poolName,
@@ -201,22 +218,9 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		MemoryMiB:     int(vm.MemoryMib),
 	})
 	if perr != nil {
-		reason := scheduleReasonFor(perr)
-		now := time.Now().UTC()
-		pending := store.MigrationPhasePending
-		if uerr := st.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{
-			Phase:                 &pending,
-			SchedulingReason:      &reason,
-			LastScheduleAttemptAt: &now,
-		}); uerr != nil {
-			// A progress-write failure is itself retryable; surface it so the
-			// envelope eventually persists.
-			return store.Migration{}, fmt.Errorf("record scheduling reason: %v (cause: %v)", uerr, perr)
-		}
-		log.InfoContext(ctx, "migration pending: no target bound",
-			slog.String("migration_id", m.ID.String()), slog.String("scheduling_reason", reason))
-		// RETRYABLE: return the cause so the dispatcher requeues and the scheduler
-		// retry loop drives the next attempt. The agent is not contacted.
+		// RETRYABLE: record the pending envelope and return the cause so the
+		// dispatcher requeues and the scheduler retry loop drives the next attempt.
+		// The agent is not contacted.
 		//
 		// SLICE-1 LIMITATION (spec D4 retry-forever not yet fully honored): a pending
 		// migration is re-driven ONLY by the vm.migrate job retry budget
@@ -228,11 +232,10 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		// dropped-pending migration leaves the VM un-migratable (every future
 		// CreateMigration returns 409 ErrMigrationActiveExists) until an operator
 		// `migration cancel` (or vm stop/delete) releases the guard via the terminal
-		// transition. The periodic pending re-driver below also fixes this. A periodic
-		// pending-migration re-driver (mirroring the vms.schedule loop, which requeues
-		// unscheduled VMs indefinitely) is required to honor D4 and is tracked in
-		// ROADMAP; it is out of scope for slice 1.
-		return store.Migration{}, fmt.Errorf("migration %s unschedulable: %v", m.ID, perr)
+		// transition. A periodic pending-migration re-driver (mirroring the
+		// vms.schedule loop, which requeues unscheduled VMs indefinitely) is required
+		// to honor D4 and is tracked in ROADMAP; it is out of scope for slice 1.
+		return store.Migration{}, recordPending(ctx, st, log, m.ID, scheduleReasonFor(perr), perr)
 	}
 
 	winnerPool := decision.PoolInstance.Name
@@ -278,6 +281,11 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 
 	agentTaskID, err := startOrResume(ctx, st, agent, log, taskID, task, vm, m, source, target)
 	if err != nil {
+		if errors.Is(err, errTargetPoolNotReady) {
+			// The bound target lacks the migration's pool (correction B): record
+			// pending and requeue (D4), VM stays on source, agent never contacted.
+			return recordPending(ctx, st, log, m.ID, ReasonPoolNotReady, err)
+		}
 		// A handshake-setup error (incoming prep, outgoing start) is retryable: the
 		// VM is still on source, nothing durable moved. Record failed-as-retryable
 		// envelope and return the cause so the dispatcher requeues against the
@@ -572,8 +580,10 @@ func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migrat
 // targetPoolPath resolves the bound migration's TargetPoolName to the storage
 // pool's absolute filesystem root on the TARGET node. Pool names are scoped per
 // (node_id, name), so the name index can return rows on several nodes; the row
-// on m.TargetNodeID is the destination. A missing pool on the target is an
-// internal inconsistency (the placer bound a target that has the pool).
+// on m.TargetNodeID is the destination. A missing pool on the target is NOT a
+// hard failure: it wraps errTargetPoolNotReady so the caller records the
+// migration pending (D4, retryable) and waits for the pool to appear, rather
+// than failing the migration.
 func targetPoolPath(ctx context.Context, st MigrationWorkerStore, m store.Migration) (string, error) {
 	if m.TargetNodeID == nil {
 		return "", fmt.Errorf("migration %s has no target node; cannot resolve pool path", m.ID)
@@ -587,7 +597,47 @@ func targetPoolPath(ctx context.Context, st MigrationWorkerStore, m store.Migrat
 			return p.Path, nil
 		}
 	}
-	return "", fmt.Errorf("pool %q not found on target node %s", m.TargetPoolName, *m.TargetNodeID)
+	return "", fmt.Errorf("%w: pool %q on node %s", errTargetPoolNotReady, m.TargetPoolName, *m.TargetNodeID)
+}
+
+// sourcePoolName returns the storage-pool NAME the VM's boot disk lives in on
+// the source node. An omitted target pool defaults to this so a VM keeps its
+// pool name across a move (resolved to the target node's instance of that
+// name), rather than silently landing in the cluster default pool.
+func sourcePoolName(ctx context.Context, st MigrationWorkerStore, vmID uuid.UUID) (string, error) {
+	disks, err := st.ListVMDisksByVM(ctx, vmID)
+	if err != nil {
+		return "", fmt.Errorf("list vm disks: %v", err)
+	}
+	if len(disks) == 0 {
+		return "", fmt.Errorf("vm %s has no boot disk", vmID)
+	}
+	pool, err := st.StoragePoolByID(ctx, disks[0].StoragePoolID)
+	if err != nil {
+		return "", fmt.Errorf("resolve source pool %s: %v", disks[0].StoragePoolID, err)
+	}
+	return pool.Name, nil
+}
+
+// recordPending writes the retryable pending envelope (phase=pending +
+// scheduling_reason) on a migration that cannot bind/advance right now, and
+// returns a retryable error so the dispatcher requeues. The VM stays on
+// source; the agent is never contacted.
+func recordPending(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, migID uuid.UUID, reason string, cause error) error {
+	now := time.Now().UTC()
+	pending := store.MigrationPhasePending
+	if uerr := st.UpdateMigrationProgress(ctx, migID, store.MigrationProgressUpdate{
+		Phase:                 &pending,
+		SchedulingReason:      &reason,
+		LastScheduleAttemptAt: &now,
+	}); uerr != nil {
+		// A progress-write failure is itself retryable; surface it so the envelope
+		// eventually persists.
+		return fmt.Errorf("record scheduling reason: %v (cause: %v)", uerr, cause)
+	}
+	log.InfoContext(ctx, "migration pending",
+		slog.String("migration_id", migID.String()), slog.String("scheduling_reason", reason))
+	return fmt.Errorf("migration %s pending: %v", migID, cause)
 }
 
 // sourceIdentity is the source node leaf-cert DN used for the target's

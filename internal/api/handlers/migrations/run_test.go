@@ -169,28 +169,6 @@ func seedPinnedVM(t *testing.T, cli *etcd.Client, node uuid.UUID) store.VM {
 	return v
 }
 
-// seedBootDisk writes a device-order-0 boot disk for vm via the etcd client
-// (the worker reads it through ListVMDisksByVM to size the destination disk and
-// fill VMSpec.Disks[0]).
-func seedBootDisk(t *testing.T, cli *etcd.Client, vmID uuid.UUID, sizeGib int32) store.VMDisk {
-	t.Helper()
-	ctx := context.Background()
-	d := store.VMDisk{
-		ID: uuid.New(), VmID: vmID, StoragePoolID: uuid.New(),
-		DeviceOrder: 0, Bus: store.DiskBusVirtio, SizeGib: sizeGib,
-		SourceKind: "image", Format: store.ImageFormatQcow2,
-		CacheMode: store.DiskCacheModeWriteback, Discard: store.DiskDiscardUnmap,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-	}
-	if err := cli.PutJSON(ctx, etcd.Key("vm_disks", d.ID.String()), d); err != nil {
-		t.Fatalf("seed vm disk: %v", err)
-	}
-	if err := cli.Put(ctx, etcd.Key("index", "vm_disks", "vm", vmID.String(), d.ID.String()), []byte(d.ID.String())); err != nil {
-		t.Fatalf("seed vm disk index: %v", err)
-	}
-	return d
-}
-
 // seedPool creates a storage pool named name on node with the given filesystem
 // path, so the worker can resolve TargetPoolName -> StoragePoolPath on the
 // target node.
@@ -241,6 +219,174 @@ func seedNodelessMigration(t *testing.T, s *etcdstore.Store, vmID, source uuid.U
 	return m, taskID
 }
 
+// seedExplicitMigration creates an explicit-target (--node) migration + backing
+// task for vm: TargetNodeID is pre-bound to target, with the given pool name
+// (pass "" to exercise the empty-pool default-to-source path). The migration is
+// NOT node-less, so the worker skips placeAndBind and goes straight to the
+// handshake.
+func seedExplicitMigration(t *testing.T, s *etcdstore.Store, vmID, source, target uuid.UUID, pool string) (store.Migration, uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	src := source
+	tgt := target
+	taskID := uuid.New()
+	migID := uuid.New()
+	resID := migID
+	p := store.CreateMigrationParams{
+		ID:             migID,
+		VmID:           vmID,
+		SourceNodeID:   &src,
+		TargetNodeID:   &tgt,
+		TargetPoolName: pool,
+		Reason:         store.MigrationReasonManual,
+		Live:           true,
+		Task: store.CreateTaskParams{
+			ID: taskID, Type: "vm.migrate", Status: store.TaskStatusPending,
+			ResourceType: "migration", ResourceID: &resID, MaxAttempts: 25,
+		},
+	}
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: taskID, MigrationID: migID})
+	if err != nil {
+		t.Fatalf("CreateMigration(explicit): %v", err)
+	}
+	return m, taskID
+}
+
+// seedBootDiskInPool writes a device-order-0 boot disk for vm whose
+// StoragePoolID points at poolID, so sourcePoolName resolves the boot disk to a
+// pool with a known name.
+func seedBootDiskInPool(t *testing.T, cli *etcd.Client, vmID, poolID uuid.UUID, sizeGib int32) store.VMDisk {
+	t.Helper()
+	ctx := context.Background()
+	d := store.VMDisk{
+		ID: uuid.New(), VmID: vmID, StoragePoolID: poolID,
+		DeviceOrder: 0, Bus: store.DiskBusVirtio, SizeGib: sizeGib,
+		SourceKind: "image", Format: store.ImageFormatQcow2,
+		CacheMode: store.DiskCacheModeWriteback, Discard: store.DiskDiscardUnmap,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_disks", d.ID.String()), d); err != nil {
+		t.Fatalf("seed vm disk: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vm_disks", "vm", vmID.String(), d.ID.String()), []byte(d.ID.String())); err != nil {
+		t.Fatalf("seed vm disk index: %v", err)
+	}
+	return d
+}
+
+// TestRunMigration_DefaultsTargetPoolToSourcePool pins correction A: an explicit
+// --node migration with an EMPTY TargetPoolName defaults the target pool to the
+// SOURCE VM's pool NAME (not the cluster default). The source boot disk lives in
+// pool "src-pool"; the target node has its own "src-pool" instance with a
+// distinct path. The worker must resolve the source pool name on the TARGET node,
+// so the StartIncoming VMSpec disk carries the TARGET's "src-pool" path.
+func TestRunMigration_DefaultsTargetPoolToSourcePool(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+
+	// Source pool instance on node A; the boot disk lives in it.
+	srcPool := seedPool(t, s, nodeA.ID, "src-pool", "/var/lib/otherix/pools/src-pool-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	// Target node B has its OWN "src-pool" instance with a DISTINCT path.
+	const targetPath = "/var/lib/otherix/pools/src-pool-on-b"
+	seedPool(t, s, nodeB.ID, "src-pool", targetPath)
+	// A cluster "default" pool also exists on B - the worker must NOT pick it.
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default-on-b")
+
+	// Explicit --node migration to B with NO pool (empty TargetPoolName).
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "")
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	placer := &fakePlacer{} // must NOT be called: the migration is already bound.
+
+	// DefaultPoolName set to a SENTINEL the worker must NOT use - correction A
+	// requires the source pool name, never the cluster default.
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{DefaultPoolName: "default"}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(default-pool) = %v, want nil", err)
+	}
+
+	if placer.calls != 0 {
+		t.Errorf("placer called %d times on an explicit-node migration, want 0", placer.calls)
+	}
+	if len(agent.incomingReq.VMSpec.Disks) != 1 {
+		t.Fatalf("incoming VMSpec.Disks len = %d, want 1", len(agent.incomingReq.VMSpec.Disks))
+	}
+	got := agent.incomingReq.VMSpec.Disks[0].StoragePoolPath
+	if got != targetPath {
+		t.Errorf("StoragePoolPath = %q, want target node's src-pool path %q (source pool name resolved on target, NOT cluster default)", got, targetPath)
+	}
+
+	// The cutover still committed (success path).
+	gotMig, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if gotMig.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("migration phase = %q, want completed", gotMig.Phase)
+	}
+}
+
+// TestRunMigration_PendingWhenTargetPoolAbsent pins correction B: an explicit
+// --node migration whose target node does NOT have the (source) pool goes to
+// PENDING (retryable, D4), NOT failed. The worker records phase=pending +
+// scheduling_reason=pool_not_ready, returns a retryable error, leaves the VM on
+// source, and NEVER contacts the agent (no StartIncoming, no DeleteVMOnSource).
+func TestRunMigration_PendingWhenTargetPoolAbsent(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+
+	// Source pool on node A; boot disk lives in it. Node B has NO "src-pool".
+	srcPool := seedPool(t, s, nodeA.ID, "src-pool", "/var/lib/otherix/pools/src-pool-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "")
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	placer := &fakePlacer{}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	err := h(ctx, jobArgs(t, taskID, m.ID))
+	if err == nil {
+		t.Fatalf("MigrateHandler(pool-absent) = nil, want a retryable error so the dispatcher requeues")
+	}
+
+	got, err2 := s.MigrationByID(ctx, m.ID)
+	if err2 != nil {
+		t.Fatalf("MigrationByID: %v", err2)
+	}
+	if got.Phase != store.MigrationPhasePending {
+		t.Errorf("migration phase = %q, want pending", got.Phase)
+	}
+	if got.SchedulingReason == nil || *got.SchedulingReason != migrations.ReasonPoolNotReady {
+		t.Errorf("scheduling_reason = %v, want %q", got.SchedulingReason, migrations.ReasonPoolNotReady)
+	}
+	// The agent was NEVER contacted, and source was NOT deleted (no durable move).
+	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 || agent.pollCalls != 0 {
+		t.Errorf("agent contacted on the pool-absent pending path: incoming=%d outgoing=%d poll=%d, want 0/0/0",
+			agent.incomingCalls, agent.outgoingCalls, agent.pollCalls)
+	}
+	if agent.deleteSourceCalls != 0 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 0 (pending - VM stays on source)", agent.deleteSourceCalls)
+	}
+	// PinnedNodeID unchanged: the VM is still on its source.
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (pending, no cutover)", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
 // TestRunMigration_HappyNodeless drives the full node-less success path: the
 // placer picks target B, the worker binds it, runs the two-phase handshake, the
 // source outgoing task converges, and CommitMigrationCutover re-pins the VM to B.
@@ -251,7 +397,10 @@ func TestRunMigration_HappyNodeless(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	seedBootDisk(t, cli, vm.ID, 40)
+	// Source pool on A so the empty-pool path resolves the source pool NAME; the
+	// target node B has the same name so the bound target's pool is found.
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
@@ -344,6 +493,10 @@ func TestRunMigration_PendingSingleNode(t *testing.T) {
 
 	nodeA := seedReadyNode(t, s, "only-node", "https://only:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
+	// The empty-pool default-to-source path needs a resolvable source pool; the
+	// pending verdict here comes from the placer (no eligible node), not the pool.
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
 	agent := &fakeMigrationAgent{}
@@ -390,7 +543,8 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	vm := seedPinnedVM(t, cli, nodeA.ID)
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
-	seedBootDisk(t, cli, vm.ID, 40)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{
@@ -465,7 +619,8 @@ func TestRunMigration_CommitFailsAfterSuccessKeepsSource(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	seedBootDisk(t, cli, vm.ID, 40)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
@@ -695,7 +850,8 @@ func TestRunMigration_AcquiresPlacementLockBeforeBind(t *testing.T) {
 	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
 	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
 	vm := seedPinnedVM(t, cli, nodeA.ID)
-	seedBootDisk(t, cli, vm.ID, 40)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
 	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
 	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID)
 
