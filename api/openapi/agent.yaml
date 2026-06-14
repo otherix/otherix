@@ -2250,6 +2250,13 @@ components:
             opening the migration channel. Bound to this
             `migration_id`. Returned exactly once; the target
             stores only its hash.
+        nbd_endpoint:
+          description: >-
+            For live migrations only: the target's NBD disk-export listener
+            (host:port), distinct from the RAM listener in listen_endpoint /
+            target_endpoint. Empty for offline migrations, which reuse the single
+            endpoint as the qemu-nbd server.
+          type: [string, "null"]
 
     MigrationOutgoingRequest:
       type: object
@@ -2288,6 +2295,13 @@ components:
             The target node SAN name ("node-<target>.agents.otherix.local").
             The source sets tls-hostname to it so QEMU validates the target
             server cert identity, pinning the destination.
+        nbd_endpoint:
+          description: >-
+            For live migrations only: the target's NBD disk-export listener
+            (host:port), distinct from the RAM listener in listen_endpoint /
+            target_endpoint. Empty for offline migrations, which reuse the single
+            endpoint as the qemu-nbd server.
+          type: [string, "null"]
 
     Migration:
       type: object
