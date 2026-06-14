@@ -687,3 +687,154 @@ func TestListMigrations_OrderingAndLimit(t *testing.T) {
 		t.Errorf("ListMigrations(limit=2) = %v,%v, want first two of all %v,%v", limited[0].ID, limited[1].ID, all[0].ID, all[1].ID)
 	}
 }
+
+// cancelStartNodes is a tiny helper that creates the two nodes a cancel test
+// needs and returns their params.
+func cancelStartNodes(t *testing.T, s *etcdstore.Store) (store.CreateNodeParams, store.CreateNodeParams) {
+	t.Helper()
+	ctx := context.Background()
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+	return nodeA, nodeB
+}
+
+func TestCancelMigration_PendingReleasesGuard(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	nodeA, nodeB := cancelStartNodes(t, s)
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	// Seed a pending migration directly (no progress-update to active).
+	p := migrationParams(vm.ID, nodeA.ID, nodeB.ID)
+	created, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+	if created.Phase != store.MigrationPhasePending {
+		t.Fatalf("seed Phase = %q, want pending", created.Phase)
+	}
+
+	const reason = "operator_cancel"
+	got, err := s.CancelMigration(ctx, created.ID, reason)
+	if err != nil {
+		t.Fatalf("CancelMigration: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("Phase = %q, want cancelled", got.Phase)
+	}
+	if got.ErrorMessage == nil || *got.ErrorMessage != reason {
+		t.Errorf("ErrorMessage = %v, want %q", got.ErrorMessage, reason)
+	}
+	if got.CompletedAt == nil {
+		t.Errorf("CompletedAt = nil, want set")
+	}
+
+	// Persisted row matches the returned row.
+	persisted, err := s.MigrationByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if persisted.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("persisted Phase = %q, want cancelled", persisted.Phase)
+	}
+
+	// Active-VM guard released: a fresh CreateMigration for the same VM succeeds.
+	p2 := migrationParams(vm.ID, nodeA.ID, nodeB.ID)
+	if _, err := s.CreateMigration(ctx, p2, migrationJobArgsStub{TaskID: p2.Task.ID, MigrationID: p2.ID}); err != nil {
+		t.Errorf("CreateMigration after cancel = %v, want nil (guard released)", err)
+	}
+
+	// Fail-safe: PinnedNodeID is unchanged (VM stays on source nodeA).
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
+func TestCancelMigration_ActiveReleasesGuard(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	nodeA, nodeB := cancelStartNodes(t, s)
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	const reason = "operator_cancel"
+	got, err := s.CancelMigration(ctx, m.ID, reason)
+	if err != nil {
+		t.Fatalf("CancelMigration: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("Phase = %q, want cancelled", got.Phase)
+	}
+	if got.ErrorMessage == nil || *got.ErrorMessage != reason {
+		t.Errorf("ErrorMessage = %v, want %q", got.ErrorMessage, reason)
+	}
+	if got.CompletedAt == nil {
+		t.Errorf("CompletedAt = nil, want set")
+	}
+
+	// Guard released: a fresh CreateMigration for the same VM succeeds.
+	p2 := migrationParams(vm.ID, nodeA.ID, nodeB.ID)
+	if _, err := s.CreateMigration(ctx, p2, migrationJobArgsStub{TaskID: p2.Task.ID, MigrationID: p2.ID}); err != nil {
+		t.Errorf("CreateMigration after cancel = %v, want nil (guard released)", err)
+	}
+
+	// Fail-safe: PinnedNodeID is unchanged (VM stays on source nodeA).
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
+func TestCancelMigration_TerminalRejected(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	nodeA, nodeB := cancelStartNodes(t, s)
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	// Drive to completed via cutover.
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	got, err := s.CancelMigration(ctx, m.ID, "too_late")
+	if !errors.Is(err, store.ErrMigrationNotCancelable) {
+		t.Errorf("CancelMigration(completed) err = %v, want store.ErrMigrationNotCancelable", err)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("returned Phase = %q, want unchanged completed", got.Phase)
+	}
+
+	// Persisted row is unchanged - still completed.
+	persisted, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if persisted.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("persisted Phase = %q, want unchanged completed", persisted.Phase)
+	}
+}
+
+func TestCancelMigration_NotFound(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CancelMigration(ctx, uuid.New(), "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("CancelMigration(unknown) err = %v, want store.ErrNotFound", err)
+	}
+}

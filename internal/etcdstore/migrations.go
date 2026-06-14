@@ -317,6 +317,59 @@ func (s *Store) UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, up
 	return nil
 }
 
+// CancelMigration marks a non-terminal migration cancelled with the audit
+// reason under a single ModRevision CAS. Cancel is valid only pre-cutover (spec
+// D5): a migration already in a terminal phase (completed/failed/cancelled) is
+// rejected with store.ErrMigrationNotCancelable and the current row is returned
+// unchanged. On success it stamps CompletedAt, clears SchedulingReason, and
+// appends terminalCleanupOps to release the active-per-VM guard and per-node
+// indexes. PinnedNodeID is never touched here - the VM was never moved off its
+// source, so cancel is trivially fail-safe-to-source. A lost CAS returns
+// store.ErrConcurrentUpdate.
+func (s *Store) CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error) {
+	resp, err := s.c.Raw().Get(ctx, migrationKey(id))
+	if err != nil {
+		return store.Migration{}, err
+	}
+	if len(resp.Kvs) == 0 {
+		return store.Migration{}, store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var m store.Migration
+	if err := json.Unmarshal(resp.Kvs[0].Value, &m); err != nil {
+		return store.Migration{}, err
+	}
+	if isTerminalMigration(m.Phase) {
+		return m, store.ErrMigrationNotCancelable
+	}
+
+	now := time.Now().UTC()
+	m.Phase = store.MigrationPhaseCancelled
+	m.ErrorMessage = &reason
+	m.CompletedAt = &now
+	m.SchedulingReason = nil
+	m.UpdatedAt = now
+
+	val, err := etcd.Marshal(m)
+	if err != nil {
+		return store.Migration{}, err
+	}
+	ops := []clientv3.Op{clientv3.OpPut(migrationKey(m.ID), string(val))}
+	ops = append(ops, terminalCleanupOps(m)...)
+
+	txResp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", rev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
+		return store.Migration{}, err
+	}
+	if !txResp.Succeeded {
+		return store.Migration{}, store.ErrConcurrentUpdate
+	}
+	return m, nil
+}
+
 // MigrationByID returns the migration row with the given id, or
 // store.ErrNotFound. Migrations have no soft-delete column, so a present row is
 // always visible.

@@ -59,6 +59,11 @@ var (
 	// advanced further.
 	ErrMigrationTerminal = errors.New("store: migration is terminal")
 
+	// ErrMigrationNotCancelable is returned by CancelMigration when the migration
+	// is already in a terminal phase (completed/failed/cancelled): cancel is valid
+	// only pre-cutover (spec D5), so a terminal migration cannot be cancelled.
+	ErrMigrationNotCancelable = errors.New("store: migration is not cancelable")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
