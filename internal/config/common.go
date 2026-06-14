@@ -72,6 +72,10 @@ type MigrationConfig struct {
 	Host           string `koanf:"host"`
 	PortRangeStart int    `koanf:"port_range_start"`
 	PortRangeEnd   int    `koanf:"port_range_end"`
+	// ConvergenceTimeout bounds how long the live-migration watchdog
+	// waits without RAM-transfer progress before aborting and failing
+	// safe back to the source. Zero means use the built-in default.
+	ConvergenceTimeout time.Duration `koanf:"convergence_timeout"`
 }
 
 // Validate checks that Host is non-empty and both ports are in
@@ -88,6 +92,9 @@ func (c MigrationConfig) Validate() error {
 	}
 	if c.PortRangeEnd < c.PortRangeStart {
 		return errors.New("port_range_end must be >= port_range_start")
+	}
+	if c.ConvergenceTimeout < 0 {
+		return fmt.Errorf("convergence_timeout must be >= 0, got %s", c.ConvergenceTimeout)
 	}
 	return nil
 }
