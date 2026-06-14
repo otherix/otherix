@@ -242,6 +242,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			PIDFile:       meta.PIDFile,
 			CidataPath:    meta.CidataPath,
 			NICs:          metaToNICs(meta.NICs),
+			Migrated:      meta.Migrated,
 		}
 		m.vms[v.ID] = v
 
@@ -600,24 +601,34 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	// EnsureImageInto holds the per-image lock across the ensure and the clone
-	// so a concurrent ensure cannot overwrite the cache file between the digest
-	// verify and the clone (audit R2-L5).
-	ensured, err := m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
-	if err != nil {
-		var ce *ChecksumMismatchError
-		switch {
-		case errors.As(err, &ce):
-			log.Error("ensure image (checksum mismatch)", "err", err)
-			m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
-		case errors.Is(err, ErrCloneFailed):
-			log.Error("clone image", "err", err)
-			m.failTask(taskID, v.ID, "clone_failed", err.Error())
-		default:
-			log.Error("ensure image", "err", err)
-			m.failTask(taskID, v.ID, "image_unavailable", err.Error())
+	// A migrated VM's disk was copied in from the source node, so it is
+	// already the authoritative copy - re-cloning from the base image
+	// would overwrite the migrated state. Skip the ensure/clone entirely;
+	// ensured stays zero-valued (no base image was resolved).
+	var (
+		ensured EnsureResult
+		err     error
+	)
+	if !v.Migrated {
+		// EnsureImageInto holds the per-image lock across the ensure and the clone
+		// so a concurrent ensure cannot overwrite the cache file between the digest
+		// verify and the clone (audit R2-L5).
+		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
+		if err != nil {
+			var ce *ChecksumMismatchError
+			switch {
+			case errors.As(err, &ce):
+				log.Error("ensure image (checksum mismatch)", "err", err)
+				m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
+			case errors.Is(err, ErrCloneFailed):
+				log.Error("clone image", "err", err)
+				m.failTask(taskID, v.ID, "clone_failed", err.Error())
+			default:
+				log.Error("ensure image", "err", err)
+				m.failTask(taskID, v.ID, "image_unavailable", err.Error())
+			}
+			return
 		}
-		return
 	}
 
 	virtualSize, diskSize, failCode, failMsg := m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
@@ -1496,6 +1507,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		CreatedAt:     v.CreatedAt,
 		UpdatedAt:     v.UpdatedAt,
 		NICs:          nicsToMeta(v.NICs),
+		Migrated:      v.Migrated,
 	}
 	return state.WriteMeta(filepath.Join(m.stateDir, v.ID.String()), meta)
 }
