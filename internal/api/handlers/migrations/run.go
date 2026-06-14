@@ -562,6 +562,7 @@ func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migrat
 	}
 
 	return agentapi.VMSpec{
+		VMUUID:       vm.ID,
 		Name:         vm.Name,
 		Architecture: agentapi.VMSpecArchitecture(vm.Architecture),
 		CPUCores:     int(vm.CpuCores),

@@ -79,6 +79,8 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		BindHost:       h.migrationHost,
 	})
 	if err != nil {
+		h.log.ErrorContext(r.Context(), "start incoming migration failed",
+			"migration_id", req.MigrationID.String(), "vm", req.VMSpec.Name, "error", err)
 		mapIncomingError(w, r, err)
 		return
 	}
