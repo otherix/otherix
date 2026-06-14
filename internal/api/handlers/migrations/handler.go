@@ -5,6 +5,7 @@ package migrations
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -32,6 +33,7 @@ type Store interface {
 	NodeByName(ctx context.Context, name string) (store.Node, error)
 	CreateMigration(ctx context.Context, p store.CreateMigrationParams, args queue.JobArgs) (store.Migration, error)
 	MigrationByID(ctx context.Context, id uuid.UUID) (store.Migration, error)
+	MigrationsByIDPrefix(ctx context.Context, prefix string) ([]store.Migration, error)
 	ListMigrations(ctx context.Context, p store.ListMigrationsParams) ([]store.Migration, error)
 	CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error)
 }
@@ -63,8 +65,11 @@ func New(s Store, log *slog.Logger) *Handler {
 type migrationView struct {
 	ID               string  `json:"id"`
 	VMID             string  `json:"vm_id"`
+	VMName           string  `json:"vm_name"`
 	SourceNodeID     *string `json:"source_node_id"`
+	SourceNodeName   *string `json:"source_node_name"`
 	TargetNodeID     *string `json:"target_node_id"`
+	TargetNodeName   *string `json:"target_node_name"`
 	Reason           string  `json:"reason"`
 	Phase            string  `json:"phase"`
 	ProgressPercent  int     `json:"progress_percent"`
@@ -115,6 +120,50 @@ func toView(m store.Migration) migrationView {
 		UpdatedAt:         m.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	return v
+}
+
+// viewWithNames projects a store.Migration onto its public migrationView and
+// resolves the operator-facing names the bare toView cannot: the VM name and the
+// source / target node names. The id fields toView already set stay authoritative;
+// the names are a best-effort display overlay.
+//
+// vm_name should always resolve (a migration cannot exist without its VM); a
+// lookup error is logged and leaves vm_name empty rather than failing the request,
+// so a transient store hiccup never turns a poll into a 500. Node names are
+// nullable, mirroring the nullable ids: a nil id stays nil, and a node row that
+// was force-deleted out from under a historical migration (id present, row gone)
+// surfaces as a null name while the id is preserved.
+func (h *Handler) viewWithNames(ctx context.Context, m store.Migration) migrationView {
+	v := toView(m)
+	if vm, err := h.store.VMByID(ctx, m.VmID); err != nil {
+		h.log.WarnContext(ctx, "migrations: resolve vm name",
+			"migration_id", m.ID.String(), "vm_id", m.VmID.String(), "error", err)
+	} else {
+		v.VMName = vm.Name
+	}
+	v.SourceNodeName = h.nodeName(ctx, m.SourceNodeID)
+	v.TargetNodeName = h.nodeName(ctx, m.TargetNodeID)
+	return v
+}
+
+// nodeName resolves a *uuid.UUID node id to its *string name for the migration
+// view, preserving nil for an unset id and returning nil when the node row is
+// gone (force-deleted). A non-ErrNotFound store error is logged and rendered as a
+// nil name rather than failing the request - the id still carries the reference.
+func (h *Handler) nodeName(ctx context.Context, id *uuid.UUID) *string {
+	if id == nil {
+		return nil
+	}
+	node, err := h.store.NodeByID(ctx, *id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			h.log.WarnContext(ctx, "migrations: resolve node name",
+				"node_id", id.String(), "error", err)
+		}
+		return nil
+	}
+	n := node.Name
+	return &n
 }
 
 // uuidPtrString renders a *uuid.UUID as a *string, preserving nil.

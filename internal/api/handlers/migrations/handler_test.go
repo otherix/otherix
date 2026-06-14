@@ -456,3 +456,165 @@ func TestMigrationCancel_Unknown404(t *testing.T) {
 		t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
 	}
 }
+
+// --- short-id prefix resolution + resolved names ---
+
+// seedMigrationWithID seeds an explicit-target migration with a chosen id (the
+// prefix resolver keys off the id) on its own VM, returning the migration row.
+func seedMigrationWithID(t *testing.T, s *etcdstore.Store, id, vmID, source, target uuid.UUID) store.Migration {
+	t.Helper()
+	src := source
+	tgt := target
+	taskID := uuid.New()
+	resID := id
+	p := store.CreateMigrationParams{
+		ID:           id,
+		VmID:         vmID,
+		SourceNodeID: &src,
+		TargetNodeID: &tgt,
+		Reason:       store.MigrationReasonManual,
+		Live:         true,
+		Task: store.CreateTaskParams{
+			ID: taskID, Type: "vm.migrate", Status: store.TaskStatusPending,
+			ResourceType: "migration", ResourceID: &resID, MaxAttempts: 25,
+		},
+	}
+	m, err := s.CreateMigration(context.Background(), p, migrationJobArgsStub{TaskID: taskID, MigrationID: id})
+	if err != nil {
+		t.Fatalf("CreateMigration(%s): %v", id, err)
+	}
+	return m
+}
+
+func mustParseUUID(t *testing.T, s string) uuid.UUID {
+	t.Helper()
+	id, err := uuid.Parse(s)
+	if err != nil {
+		t.Fatalf("parse uuid %q: %v", s, err)
+	}
+	return id
+}
+
+func TestMigrationGet_ResolvesFullUUIDAndUniquePrefix(t *testing.T) {
+	s, cli := freshStore(t)
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	owner := uuid.New()
+	vm := ownedVM(t, cli, nodeA.ID, owner)
+	id := mustParseUUID(t, "abcd1234-0000-4000-8000-000000000001")
+	m := seedMigrationWithID(t, s, id, vm.ID, nodeA.ID, nodeB.ID)
+
+	h := newHandler(s)
+
+	// Full UUID resolves.
+	recFull := httptest.NewRecorder()
+	h.Get(recFull, getRequest(operator(owner), m.ID.String()))
+	if recFull.Code != http.StatusOK {
+		t.Fatalf("full-uuid status = %d, want 200 (body=%s)", recFull.Code, recFull.Body.String())
+	}
+
+	// A unique short prefix resolves to the SAME migration.
+	recPrefix := httptest.NewRecorder()
+	h.Get(recPrefix, getRequest(operator(owner), "abcd1234"))
+	if recPrefix.Code != http.StatusOK {
+		t.Fatalf("prefix status = %d, want 200 (body=%s)", recPrefix.Code, recPrefix.Body.String())
+	}
+
+	var full, prefix struct {
+		ID             string  `json:"id"`
+		VMName         string  `json:"vm_name"`
+		SourceNodeName *string `json:"source_node_name"`
+		TargetNodeName *string `json:"target_node_name"`
+	}
+	if err := json.Unmarshal(recFull.Body.Bytes(), &full); err != nil {
+		t.Fatalf("decode full: %v", err)
+	}
+	if err := json.Unmarshal(recPrefix.Body.Bytes(), &prefix); err != nil {
+		t.Fatalf("decode prefix: %v", err)
+	}
+	if full.ID != m.ID.String() || prefix.ID != m.ID.String() {
+		t.Errorf("ids = full %q / prefix %q, want both %s", full.ID, prefix.ID, m.ID)
+	}
+
+	// The view carries resolved names.
+	if full.VMName != vm.Name {
+		t.Errorf("vm_name = %q, want %q", full.VMName, vm.Name)
+	}
+	if full.SourceNodeName == nil || *full.SourceNodeName != nodeA.Name {
+		t.Errorf("source_node_name = %v, want %q", full.SourceNodeName, nodeA.Name)
+	}
+	if full.TargetNodeName == nil || *full.TargetNodeName != nodeB.Name {
+		t.Errorf("target_node_name = %v, want %q", full.TargetNodeName, nodeB.Name)
+	}
+}
+
+func TestMigrationGet_AmbiguousPrefix409(t *testing.T) {
+	s, cli := freshStore(t)
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	owner := uuid.New()
+	vm1 := ownedVM(t, cli, nodeA.ID, owner)
+	vm2 := ownedVM(t, cli, nodeA.ID, owner)
+	// Two migrations sharing the "deadbeef" prefix.
+	seedMigrationWithID(t, s, mustParseUUID(t, "deadbeef-0000-4000-8000-000000000001"), vm1.ID, nodeA.ID, nodeB.ID)
+	seedMigrationWithID(t, s, mustParseUUID(t, "deadbeef-0000-4000-8000-000000000002"), vm2.ID, nodeA.ID, nodeB.ID)
+
+	h := newHandler(s)
+	rec := httptest.NewRecorder()
+	h.Get(rec, getRequest(operator(owner), "deadbeef"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMigrationGet_TooShortPrefix400(t *testing.T) {
+	s, _ := freshStore(t)
+	h := newHandler(s)
+	rec := httptest.NewRecorder()
+	// 7 hex chars: shorter than the 8-char minimum, and not a UUID.
+	h.Get(rec, getRequest(operator(uuid.New()), "abcdef0"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMigrationGet_UnknownPrefix404(t *testing.T) {
+	s, _ := freshStore(t)
+	h := newHandler(s)
+	rec := httptest.NewRecorder()
+	// 8 hex chars, no rows -> 404.
+	h.Get(rec, getRequest(operator(uuid.New()), "abcdef01"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMigrationCancel_ResolvesUniquePrefix(t *testing.T) {
+	s, cli := freshStore(t)
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	owner := uuid.New()
+	vm := ownedVM(t, cli, nodeA.ID, owner)
+	id := mustParseUUID(t, "feed0001-0000-4000-8000-000000000001")
+	seedMigrationWithID(t, s, id, vm.ID, nodeA.ID, nodeB.ID)
+
+	h := newHandler(s)
+	rec := httptest.NewRecorder()
+	h.Cancel(rec, cancelRequest(operator(owner), "feed0001"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ID != id.String() {
+		t.Errorf("id = %q, want %s", body.ID, id)
+	}
+	if body.Phase != string(store.MigrationPhaseCancelled) {
+		t.Errorf("phase = %q, want cancelled", body.Phase)
+	}
+}

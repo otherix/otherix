@@ -1109,3 +1109,87 @@ func TestActiveMigrationForVM_ReturnsNonTerminal(t *testing.T) {
 		t.Errorf("ActiveMigrationForVM(after cancel) = (%v, %v), want (zero, false)", got.ID, ok)
 	}
 }
+
+// mustUUID parses a UUID string in a test, failing on error.
+func mustUUID(t *testing.T, s string) uuid.UUID {
+	t.Helper()
+	id, err := uuid.Parse(s)
+	if err != nil {
+		t.Fatalf("parse uuid %q: %v", s, err)
+	}
+	return id
+}
+
+// createMigrationWithID seeds a migration with an explicit id (the prefix
+// resolver keys off the id), reusing migrationParams for the rest of the shape.
+func createMigrationWithID(t *testing.T, s *etcdstore.Store, id, vmID, source, target uuid.UUID) {
+	t.Helper()
+	p := migrationParams(vmID, source, target)
+	p.ID = id
+	args := migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID}
+	if _, err := s.CreateMigration(context.Background(), p, args); err != nil {
+		t.Fatalf("CreateMigration(%s): %v", id, err)
+	}
+}
+
+func TestMigrationsByIDPrefix(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	src := nodeParams(uniqueNodeName("src"))
+	tgt := nodeParams(uniqueNodeName("tgt"))
+	if _, err := s.CreateNode(ctx, src); err != nil {
+		t.Fatalf("CreateNode(src): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, tgt); err != nil {
+		t.Fatalf("CreateNode(tgt): %v", err)
+	}
+
+	// Two migrations sharing the leading "aaaaaaaa" prefix, one with a distinct
+	// "bbbbbbbb" prefix. Each migration is on its own VM (one active per VM).
+	idA1 := mustUUID(t, "aaaaaaaa-0000-4000-8000-000000000001")
+	idA2 := mustUUID(t, "aaaaaaaa-0000-4000-8000-000000000002")
+	idB := mustUUID(t, "bbbbbbbb-0000-4000-8000-000000000003")
+	createMigrationWithID(t, s, idA1, uuid.New(), src.ID, tgt.ID)
+	createMigrationWithID(t, s, idA2, uuid.New(), src.ID, tgt.ID)
+	createMigrationWithID(t, s, idB, uuid.New(), src.ID, tgt.ID)
+
+	// A prefix unique to idB -> exactly that one.
+	got, err := s.MigrationsByIDPrefix(ctx, "bbbbbbbb")
+	if err != nil {
+		t.Fatalf("MigrationsByIDPrefix(unique): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("unique prefix matches = %d, want 1", len(got))
+	}
+	if got[0].ID != idB {
+		t.Errorf("unique prefix id = %v, want %v", got[0].ID, idB)
+	}
+
+	// A prefix shared by the two "aaaaaaaa" rows -> multiple (capped at 2).
+	got, err = s.MigrationsByIDPrefix(ctx, "aaaaaaaa")
+	if err != nil {
+		t.Fatalf("MigrationsByIDPrefix(shared): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("shared prefix matches = %d, want 2", len(got))
+	}
+
+	// A fully-disambiguating prefix into one of the shared pair -> exactly one.
+	got, err = s.MigrationsByIDPrefix(ctx, "aaaaaaaa-0000-4000-8000-000000000001")
+	if err != nil {
+		t.Fatalf("MigrationsByIDPrefix(full): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != idA1 {
+		t.Fatalf("full prefix = %v, want exactly idA1", got)
+	}
+
+	// An absent prefix -> empty.
+	got, err = s.MigrationsByIDPrefix(ctx, "cccccccc")
+	if err != nil {
+		t.Fatalf("MigrationsByIDPrefix(absent): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("absent prefix matches = %d, want 0", len(got))
+	}
+}

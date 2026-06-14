@@ -2917,11 +2917,15 @@ paths:
       - name: id
         in: path
         required: true
-        schema: { type: string, format: uuid }
+        description: |
+          A migration id: either the full UUID or a unique short hex
+          prefix of it (git/docker style). A prefix must be at least 8
+          hex characters; an ambiguous prefix returns 409.
+        schema: { type: string }
     get:
       operationId: migrations.get
       tags: [vm-migrations]
-      summary: Get a migration by id (status, progress, ETA).
+      summary: Get a migration by id or unique short prefix.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -2932,8 +2936,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Migration"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/migrations/{id}/cancel:
@@ -2941,7 +2947,11 @@ paths:
       - name: id
         in: path
         required: true
-        schema: { type: string, format: uuid }
+        description: |
+          A migration id: either the full UUID or a unique short hex
+          prefix of it (git/docker style). A prefix must be at least 8
+          hex characters; an ambiguous prefix returns 409.
+        schema: { type: string }
     post:
       operationId: migrations.cancel
       tags: [vm-migrations]
@@ -2964,6 +2974,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Migration"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -6526,6 +6537,7 @@ components:
       required:
         - id
         - vm_id
+        - vm_name
         - reason
         - phase
         - progress_percent
@@ -6539,6 +6551,11 @@ components:
       properties:
         id: { type: string, format: uuid }
         vm_id: { type: string, format: uuid }
+        vm_name:
+          type: string
+          description: |
+            Resolved name of the migrated VM (display convenience so
+            clients need not re-resolve `vm_id`).
         source_node_id:
           type: [string, "null"]
           format: uuid
@@ -6547,6 +6564,13 @@ components:
             node is later force-deleted (FK `ON DELETE SET NULL`) —
             historical migration rows are preserved for audit but
             lose their node reference.
+        source_node_name:
+          type: [string, "null"]
+          description: |
+            Resolved name of the source node. `null` whenever
+            `source_node_id` is `null`, or when the source node row was
+            force-deleted out from under a historical migration (the id
+            is preserved, the name can no longer be resolved).
         target_node_id:
           type: [string, "null"]
           format: uuid
@@ -6555,6 +6579,12 @@ components:
             scheduler-placed migration has not bound a target yet, and
             after the node is force-deleted (same nullability rules as
             `source_node_id`).
+        target_node_name:
+          type: [string, "null"]
+          description: |
+            Resolved name of the target node. `null` whenever
+            `target_node_id` is `null` (no target bound yet, or node
+            force-deleted), mirroring `source_node_name`.
         reason:
           type: string
           enum: [manual, drain, rebalance, evacuation]

@@ -565,3 +565,32 @@ func (s *Store) migrationsByPrimaryPrefix(ctx context.Context) ([]store.Migratio
 	}
 	return out, nil
 }
+
+// MigrationsByIDPrefix range-scans the migration primary keyspace for rows whose
+// id begins with prefix (a lowercase hex string), decoding each match. It backs
+// the get/cancel short-id resolver: the handler maps len 0 -> 404, len 1 ->
+// resolved, len > 1 -> 409 ambiguous. The migration primary keyspace
+// (/otherix/migrations/<id> -> row JSON) holds only row keys - the secondary
+// indexes live under /otherix/index/migrations/... - so every key under the
+// "migrations/<prefix>" range is a row and is decoded directly, mirroring
+// migrationsByPrimaryPrefix. The scan caps at two matches: the caller only needs
+// to distinguish 0 / 1 / many, so stopping at the second match bounds the work a
+// broad (short) prefix can do.
+func (s *Store) MigrationsByIDPrefix(ctx context.Context, prefix string) ([]store.Migration, error) {
+	items, err := s.c.Range(ctx, etcd.Key("migrations")+"/"+prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Migration, 0, 2)
+	for _, kv := range items {
+		var m store.Migration
+		if err := json.Unmarshal(kv.Value, &m); err != nil {
+			return nil, fmt.Errorf("unmarshal migration %q: %v", kv.Key, err)
+		}
+		out = append(out, m)
+		if len(out) == 2 {
+			break
+		}
+	}
+	return out, nil
+}
