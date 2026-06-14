@@ -61,7 +61,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 func printMigrationText(cmd *cobra.Command, m cpclient.Migration) {
 	printf(cmd, "id: %s\n", shortID(m.ID))
 	printf(cmd, "vm: %s\n", vmLabel(m))
-	printf(cmd, "phase: %s\n", m.Phase)
+	printf(cmd, "status: %s\n", m.Phase)
 	printf(cmd, "progress: %d%%\n", m.ProgressPercent)
 	printf(cmd, "source_node: %s\n", nodeLabel(m.SourceNodeName, m.SourceNodeID))
 	printf(cmd, "target_node: %s\n", nodeLabel(m.TargetNodeName, m.TargetNodeID))

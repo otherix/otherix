@@ -91,14 +91,14 @@ func runList(cmd *cobra.Command, _ []string) error {
 }
 
 // printMigrationTable renders an aligned table to stdout. Columns: ID VM SOURCE
-// TARGET PHASE PROGRESS AGE — ID is the short migration id (the CP resolves the
+// TARGET STATUS PROGRESS AGE — ID is the short migration id (the CP resolves the
 // prefix back), VM/SOURCE/TARGET show human names (falling back to the id, then
 // "-", for a node-less / not-yet-scheduled / force-deleted-node migration). The
 // bottom hint prints next_cursor when populated so operators can chain the next
 // page. Full ids remain available via --output json.
 func printMigrationTable(cmd *cobra.Command, migrations []cpclient.Migration, next string) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ID\tVM\tSOURCE\tTARGET\tPHASE\tPROGRESS\tAGE")
+	_, _ = fmt.Fprintln(tw, "ID\tVM\tSOURCE\tTARGET\tSTATUS\tPROGRESS\tAGE")
 	for _, m := range migrations {
 		progress := fmt.Sprintf("%d%%", m.ProgressPercent)
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",

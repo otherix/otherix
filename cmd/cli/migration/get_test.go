@@ -47,7 +47,7 @@ func TestPrintMigrationTextPendingWaiting(t *testing.T) {
 	if _, ok := lineFor(out, "error"); ok {
 		t.Errorf("error line present for a pending migration, want absent")
 	}
-	if got, ok := lineFor(out, "phase"); !ok || got != "pending" {
+	if got, ok := lineFor(out, "status"); !ok || got != "pending" {
 		t.Errorf("phase line = %q (present=%v), want pending", got, ok)
 	}
 }

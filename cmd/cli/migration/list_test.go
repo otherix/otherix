@@ -41,8 +41,8 @@ func TestPrintMigrationTableNamesAndShortID(t *testing.T) {
 		},
 	}, "")
 
-	if !strings.Contains(out, "ID\tVM\tSOURCE\tTARGET\tPHASE\tPROGRESS\tAGE") &&
-		!headerHasColumns(out, "ID", "VM", "SOURCE", "TARGET", "PHASE", "PROGRESS", "AGE") {
+	if !strings.Contains(out, "ID\tVM\tSOURCE\tTARGET\tSTATUS\tPROGRESS\tAGE") &&
+		!headerHasColumns(out, "ID", "VM", "SOURCE", "TARGET", "STATUS", "PROGRESS", "AGE") {
 		t.Errorf("table header missing name columns:\n%s", out)
 	}
 	// tabwriter pads with spaces, so assert on substrings of the data row.
