@@ -41,6 +41,16 @@ func NBDServerArgs(s NBDServerSpec) []string {
 		"--object", fmt.Sprintf("authz-simple,id=%s,identity=%s", migAuthzID, s.SourceIdentity),
 		"--tls-creds", migTLSCredsID,
 		"--tls-authz", migAuthzID,
+		// --persistent keeps the server up across multiple data connections so
+		// the source side is free to parallelize the transfer (qemu-img -m /
+		// NBD multi-conn now, blockdev-mirror + multifd in the live slice).
+		// qemu-nbd holds an exclusive write lock on the disk while it runs, so
+		// the CP tears it down (process kill) on the target AFTER cutover and
+		// BEFORE the migrated VM boots - deterministic regardless of how many
+		// connections the transfer used. A non-persistent server would release
+		// the lock by self-exiting after one connection, but that would cap the
+		// transfer at a single connection; persistent + explicit teardown keeps
+		// both correctness and parallelism.
 		"--persistent",
 		"-f", "qcow2",
 		"-x", s.Export,

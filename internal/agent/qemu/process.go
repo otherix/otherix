@@ -93,3 +93,19 @@ func Kill(pid int) error {
 	}
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
+
+// StopNBD stops a qemu-nbd server gracefully: SIGTERM (lets it close the
+// export, flush, and release the disk write lock), then SIGKILL if it does
+// not exit within grace. A no-op for a pid that is already gone.
+func StopNBD(pid int, grace time.Duration) error {
+	if pid <= 0 || !IsAlive(pid) {
+		return nil
+	}
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if err := WaitGone(ctx, pid, grace); err == nil {
+		return nil
+	}
+	return Kill(pid) // SIGKILL fallback
+}

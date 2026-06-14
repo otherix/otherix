@@ -83,6 +83,25 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 // Migrations returns the agent's in-memory migration record store.
 func (m *Manager) Migrations() *migration.Store { return m.migrations }
 
+// releaseIncomingNBD tears down any TARGET-side migration qemu-nbd holding
+// vmID's disk: it stops the server (releasing the exclusive write lock) and
+// frees the reserved ingress port. Called from the start path before spawning
+// qemu on a just-migrated VM. A no-op when no migration targeted this VM.
+func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
+	rec, ok := m.migrations.TakeTargetByVM(vmID)
+	if !ok {
+		return
+	}
+	if rec.NBDPid > 0 {
+		if err := qemu.StopNBD(rec.NBDPid, 5*time.Second); err != nil {
+			m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "pid", rec.NBDPid, "err", err)
+		}
+	}
+	if rec.Port > 0 {
+		m.migPorts.Release(rec.Port)
+	}
+}
+
 // IncomingSpec parameterizes target-side migration preparation.
 //
 // DiskSizeBytes carries the source disk's virtual size (the VMSpec boot
@@ -124,6 +143,15 @@ type IncomingResult struct {
 // partial is GC'd. No migration record is stored until every step succeeds,
 // so an early failure leaves nothing in m.migrations to delete.
 func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingResult, error) {
+	// Idempotent resume: the CP re-drives the migration task on transient
+	// failure, so a second StartIncoming for the same migration must NOT
+	// re-reserve a port or re-adopt the VM (which would fail "already
+	// present"). If this node already prepared this migration, return the
+	// endpoint + token it minted the first time.
+	if rec, ok := m.migrations.Get(s.MigrationID); ok && rec.Role == migration.RoleTarget {
+		return IncomingResult{ListenEndpoint: rec.ListenEndpt, AuthToken: rec.AuthToken}, nil
+	}
+
 	port, err := m.migPorts.Reserve()
 	if err != nil {
 		// %w so the handler can errors.Is(ErrNoFreePort) and surface a
@@ -242,14 +270,21 @@ func (m *Manager) runOutgoing(ctx context.Context, taskID uuid.UUID, s OutgoingS
 
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
-	// 1. Stop the VM if running (offline move).
+	// 1. Power off the VM if running (offline move). Use a forced poweroff
+	//    (QMP quit -> SIGKILL fallback), NOT a graceful ACPI stop. An offline
+	//    migration is a stop-copy-start power cycle and must be deterministic:
+	//    a graceful Stop depends on the guest honouring ACPI system_powerdown
+	//    (minimal cloud images often do not) and FAILS after the grace window
+	//    rather than forcing, which would make every such migration fail.
+	//    Poweroff flushes the qcow2 (consistent at the block level; the guest
+	//    journal-recovers on restart) and always terminates the qemu process.
 	if v, err := m.Get(s.VMUUID); err == nil && v.Status == StatusRunning {
-		if _, err := m.Stop(ctx, s.VMName); err != nil {
-			fail("stop_failed", fmt.Sprintf("stop vm before migrate: %v", err))
+		if _, err := m.Poweroff(ctx, s.VMName); err != nil {
+			fail("poweroff_failed", fmt.Sprintf("poweroff vm before migrate: %v", err))
 			return
 		}
 		if err := m.waitStopped(ctx, s.VMUUID, 90*time.Second); err != nil {
-			fail("stop_failed", fmt.Sprintf("wait vm stopped: %v", err))
+			fail("poweroff_failed", fmt.Sprintf("wait vm stopped: %v", err))
 			return
 		}
 	}

@@ -66,3 +66,37 @@ func TestStoreUpdateMissing(t *testing.T) {
 		t.Errorf("Update(missing) = true, want false")
 	}
 }
+
+func TestTakeTargetByVM(t *testing.T) {
+	s := NewStore()
+	targetVM := uuid.New()
+	sourceVM := uuid.New()
+	targetMig := uuid.New()
+	sourceMig := uuid.New()
+
+	s.Put(&Record{MigrationID: targetMig, VMID: targetVM, Role: RoleTarget, Port: 49152, NBDPid: 4242})
+	s.Put(&Record{MigrationID: sourceMig, VMID: sourceVM, Role: RoleSource})
+
+	rec, ok := s.TakeTargetByVM(targetVM)
+	if !ok {
+		t.Fatalf("TakeTargetByVM(%s) = false, want true", targetVM)
+	}
+	if rec.MigrationID != targetMig || rec.Port != 49152 || rec.NBDPid != 4242 {
+		t.Errorf("TakeTargetByVM returned %+v, want target record (mig=%s port=49152 pid=4242)", rec, targetMig)
+	}
+	// Removed on take: a second call finds nothing.
+	if _, ok := s.TakeTargetByVM(targetVM); ok {
+		t.Errorf("TakeTargetByVM(%s) second call = true, want false (record removed)", targetVM)
+	}
+	if _, ok := s.Get(targetMig); ok {
+		t.Errorf("Get(%s) after take = found, want absent", targetMig)
+	}
+
+	// A source-role record is never returned (and stays put).
+	if _, ok := s.TakeTargetByVM(sourceVM); ok {
+		t.Errorf("TakeTargetByVM(%s) = true for source-role record, want false", sourceVM)
+	}
+	if _, ok := s.Get(sourceMig); !ok {
+		t.Errorf("source record removed by TakeTargetByVM; want left in place")
+	}
+}

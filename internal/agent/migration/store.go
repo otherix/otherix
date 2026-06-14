@@ -128,3 +128,19 @@ func (s *Store) Delete(id uuid.UUID) {
 	defer s.mu.Unlock()
 	delete(s.recs, id)
 }
+
+// TakeTargetByVM finds and REMOVES the in-flight TARGET migration record for
+// vmID (there is at most one), returning it. Used to release the migration's
+// qemu-nbd when the migrated VM is started on this node.
+func (s *Store) TakeTargetByVM(vmID uuid.UUID) (Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, r := range s.recs {
+		if r.VMID == vmID && r.Role == RoleTarget {
+			cp := *r
+			delete(s.recs, id)
+			return cp, true
+		}
+	}
+	return Record{}, false
+}

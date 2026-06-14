@@ -945,6 +945,14 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 		m.failTask(taskID, vmID, "internal", err.Error())
 		return
 	}
+
+	// A post-cutover start of a just-migrated VM must release the incoming
+	// migration's qemu-nbd before qemu opens the disk: that server holds an
+	// exclusive write lock and would make the spawn fail with "Failed to get
+	// write lock". Deterministic regardless of how many connections the
+	// transfer used; a no-op for a normal (non-migration) start.
+	m.releaseIncomingNBD(vmID)
+
 	if code, err := m.spawnAndVerify(log, v); err != nil {
 		m.failTask(taskID, vmID, code, err.Error())
 		return
