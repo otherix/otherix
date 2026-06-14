@@ -219,6 +219,8 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 // source has been released) and records the failure on the migration record and
 // the tracking task.
 func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg string) {
+	m.log.Error("incoming resume failed",
+		"vm_id", vmID.String(), "migration_id", migrationID.String(), "err", msg)
 	m.transitionVM(vmID, StatusFailed, msg)
 	_ = m.persistVM(vmID)
 	m.migrations.Update(migrationID, func(r *migration.Record) {
