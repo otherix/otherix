@@ -30,3 +30,17 @@ func newTestManager(t *testing.T) *Manager {
 func (m *Manager) defaultTestPool() string {
 	return "default"
 }
+
+// defaultTestPoolRoot returns the on-disk root of the pool newTestManager
+// registers, read back from the live registry so tests can pin the per-VM
+// path formula against the same root Create / AdoptForMigration derive from.
+func (m *Manager) defaultTestPoolRoot(t *testing.T) string {
+	t.Helper()
+	for _, p := range m.ListPools() {
+		if p.Name == m.defaultTestPool() {
+			return p.Root
+		}
+	}
+	t.Fatalf("default test pool %q not registered", m.defaultTestPool())
+	return ""
+}

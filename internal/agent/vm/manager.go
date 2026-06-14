@@ -455,6 +455,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 
 	arch := qemu.HostArch()
 
+	disk, qmp, console, pid := m.vmPaths(p.root, vmID)
 	v := &VM{
 		ID:            vmID,
 		Name:          spec.Name,
@@ -465,10 +466,10 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		Status:        StatusPending,
 		CreatedAt:     time.Now().UTC(),
 		UpdatedAt:     time.Now().UTC(),
-		DiskPath:      filepath.Join(p.root, "vms", vmID.String(), "disk.qcow2"),
-		QMPSocket:     filepath.Join(m.stateDir, vmID.String(), "qmp.sock"),
-		ConsoleSocket: filepath.Join(m.stateDir, vmID.String(), "console.sock"),
-		PIDFile:       filepath.Join(m.stateDir, vmID.String(), "qemu.pid"),
+		DiskPath:      disk,
+		QMPSocket:     qmp,
+		ConsoleSocket: console,
+		PIDFile:       pid,
 		NICs:          spec.NICs,
 	}
 	if needsCidata(spec) {
@@ -1484,6 +1485,18 @@ func (m *Manager) transitionVM(id uuid.UUID, status Status, _ string) {
 	}
 	v.Status = status
 	v.UpdatedAt = time.Now().UTC()
+}
+
+// vmPaths returns the on-disk paths for a VM with id in pool root poolRoot:
+// the per-VM disk under the pool, and the qmp / console / pid sockets under
+// the agent state dir. Create and AdoptForMigration share it so a
+// destination-side adopt can never derive a path the create flow would not.
+func (m *Manager) vmPaths(poolRoot string, id uuid.UUID) (disk, qmp, console, pid string) {
+	disk = filepath.Join(poolRoot, "vms", id.String(), "disk.qcow2")
+	qmp = filepath.Join(m.stateDir, id.String(), "qmp.sock")
+	console = filepath.Join(m.stateDir, id.String(), "console.sock")
+	pid = filepath.Join(m.stateDir, id.String(), "qemu.pid")
+	return
 }
 
 func (m *Manager) persistVM(id uuid.UUID) error {

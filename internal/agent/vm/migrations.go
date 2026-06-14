@@ -5,7 +5,6 @@ package vm
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +40,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 	}
 
 	now := time.Now().UTC()
+	disk, qmp, console, pid := m.vmPaths(p.root, spec.UUID)
 	v := &VM{
 		ID:            spec.UUID,
 		Name:          spec.Name,
@@ -51,10 +51,10 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		Status:        StatusStopped,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-		DiskPath:      filepath.Join(p.root, "vms", spec.UUID.String(), "disk.qcow2"),
-		QMPSocket:     filepath.Join(m.stateDir, spec.UUID.String(), "qmp.sock"),
-		ConsoleSocket: filepath.Join(m.stateDir, spec.UUID.String(), "console.sock"),
-		PIDFile:       filepath.Join(m.stateDir, spec.UUID.String(), "qemu.pid"),
+		DiskPath:      disk,
+		QMPSocket:     qmp,
+		ConsoleSocket: console,
+		PIDFile:       pid,
 		Migrated:      true,
 	}
 

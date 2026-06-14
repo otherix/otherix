@@ -31,8 +31,9 @@ func TestAdoptForMigrationCreatesStoppedMigratedVM(t *testing.T) {
 	if !v.Migrated {
 		t.Errorf("adopted Migrated = false, want true")
 	}
-	if v.DiskPath == "" || filepath.Base(v.DiskPath) == "" {
-		t.Errorf("adopted DiskPath empty")
+	wantDisk := filepath.Join(m.defaultTestPoolRoot(t), "vms", id.String(), "disk.qcow2")
+	if v.DiskPath != wantDisk {
+		t.Errorf("DiskPath = %q, want %q", v.DiskPath, wantDisk)
 	}
 	got, err := m.Get(id)
 	if err != nil || got.ID != id {
