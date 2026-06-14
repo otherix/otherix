@@ -20,9 +20,9 @@ const (
 	migAuthzID    = "migauthz"
 )
 
-// QemuNBDServerSpec parameterizes the target-side NBD server that receives
+// NBDServerSpec parameterizes the target-side NBD server that receives
 // a pushed disk over mutually-authenticated TLS.
-type QemuNBDServerSpec struct {
+type NBDServerSpec struct {
 	CredsDir       string // tls-creds-x509 server dir
 	SourceIdentity string // "CN=node-<source>"; pins the connecting source DN
 	BindHost       string // migration ingress host (ADR 0013)
@@ -31,11 +31,11 @@ type QemuNBDServerSpec struct {
 	DiskPath       string // destination disk (already created, writable)
 }
 
-// QemuNBDServerArgs builds the qemu-nbd argument vector for a writable,
+// NBDServerArgs builds the qemu-nbd argument vector for a writable,
 // TLS-mutual-auth NBD server. Fail-closed: endpoint=server, verify-peer=on,
 // and a tls-authz object pinning the source DN. Writable (no -r) so the
 // source can push allocated blocks in.
-func QemuNBDServerArgs(s QemuNBDServerSpec) []string {
+func NBDServerArgs(s NBDServerSpec) []string {
 	return []string{
 		"--object", fmt.Sprintf("tls-creds-x509,id=%s,endpoint=server,dir=%s,verify-peer=on", migTLSCredsID, s.CredsDir),
 		"--object", fmt.Sprintf("authz-simple,id=%s,identity=%s", migAuthzID, s.SourceIdentity),
@@ -50,9 +50,9 @@ func QemuNBDServerArgs(s QemuNBDServerSpec) []string {
 	}
 }
 
-// QemuImgPushSpec parameterizes the source-side push of a stopped disk into
+// ImgPushSpec parameterizes the source-side push of a stopped disk into
 // the target's NBD server.
-type QemuImgPushSpec struct {
+type ImgPushSpec struct {
 	CredsDir       string // tls-creds-x509 client dir
 	SourceDisk     string // local qcow2 to push (VM stopped)
 	TargetHost     string // target ingress host
@@ -61,13 +61,13 @@ type QemuImgPushSpec struct {
 	Export         string // NBD export name = auth_token
 }
 
-// QemuImgPushArgs builds the qemu-img convert argument vector that pushes a
+// ImgPushArgs builds the qemu-img convert argument vector that pushes a
 // stopped qcow2 into the target's NBD export over TLS. The NBD endpoint is
 // the *target* (--target-image-opts); -n skips target creation (the target
 // pre-created the disk). Sparse-aware: convert queries NBD block-status and
 // skips unallocated regions. Fail-closed via endpoint=client,verify-peer=on
 // and a non-empty tls-hostname.
-func QemuImgPushArgs(s QemuImgPushSpec) []string {
+func ImgPushArgs(s ImgPushSpec) []string {
 	imgOpts := strings.Join([]string{
 		"driver=nbd",
 		"server.type=inet",
@@ -96,6 +96,7 @@ func CreateDisk(ctx context.Context, path string, virtualBytes int64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %v", filepath.Dir(path), err)
 	}
+	// #nosec G204 -- the command is a fixed qemu binary; the args are server-constructed migration parameters (paths/ports/identities resolved by the CP and this agent), never raw user input.
 	out, err := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", path, strconv.FormatInt(virtualBytes, 10)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("qemu-img create %s: %v (%s)", path, err, strings.TrimSpace(string(out)))
@@ -107,6 +108,7 @@ func CreateDisk(ctx context.Context, path string, virtualBytes int64) error {
 // not daemonize by default; we start it and let it run until torn down. The
 // caller tracks the pid in the migration record for teardown.
 func SpawnQemuNBD(ctx context.Context, args []string) (int, error) {
+	// #nosec G204 -- the command is a fixed qemu binary; the args are server-constructed migration parameters (paths/ports/identities resolved by the CP and this agent), never raw user input.
 	cmd := exec.Command("qemu-nbd", args...)
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start qemu-nbd: %v", err)
@@ -117,6 +119,7 @@ func SpawnQemuNBD(ctx context.Context, args []string) (int, error) {
 // RunQemuImgConvert runs qemu-img convert to completion (a blocking push).
 // stderr is captured into the returned error on failure.
 func RunQemuImgConvert(ctx context.Context, args []string) error {
+	// #nosec G204 -- the command is a fixed qemu binary; the args are server-constructed migration parameters (paths/ports/identities resolved by the CP and this agent), never raw user input.
 	out, err := exec.CommandContext(ctx, "qemu-img", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("qemu-img convert: %v (%s)", err, strings.TrimSpace(string(out)))

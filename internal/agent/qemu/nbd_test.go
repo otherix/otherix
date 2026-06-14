@@ -9,7 +9,7 @@ import (
 )
 
 func TestQemuNBDServerArgs(t *testing.T) {
-	args := QemuNBDServerArgs(QemuNBDServerSpec{
+	args := NBDServerArgs(NBDServerSpec{
 		CredsDir:       "/run/mig/tls",
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
@@ -33,21 +33,21 @@ func TestQemuNBDServerArgs(t *testing.T) {
 	}
 	for _, w := range wants {
 		if !strings.Contains(joined, w) {
-			t.Errorf("QemuNBDServerArgs missing %q in:\n%s", w, joined)
+			t.Errorf("NBDServerArgs missing %q in:\n%s", w, joined)
 		}
 	}
 	// Writable: must NOT contain the read-only flag.
 	if strings.Contains(joined, "--read-only") || containsArg(args, "-r") {
-		t.Errorf("QemuNBDServerArgs is read-only; need writable for a push target")
+		t.Errorf("NBDServerArgs is read-only; need writable for a push target")
 	}
 	// Fail-closed: never plaintext.
 	if strings.Contains(joined, "verify-peer=off") {
-		t.Errorf("QemuNBDServerArgs disables peer verification")
+		t.Errorf("NBDServerArgs disables peer verification")
 	}
 }
 
 func TestQemuImgPushArgs(t *testing.T) {
-	args := QemuImgPushArgs(QemuImgPushSpec{
+	args := ImgPushArgs(ImgPushSpec{
 		CredsDir:       "/run/mig/tls",
 		SourceDisk:     "/var/lib/otherix/vms/v1/disk.qcow2",
 		TargetHost:     "10.0.0.2",
@@ -74,7 +74,7 @@ func TestQemuImgPushArgs(t *testing.T) {
 	}
 	for _, w := range wants {
 		if !strings.Contains(joined, w) {
-			t.Errorf("QemuImgPushArgs missing %q in:\n%s", w, joined)
+			t.Errorf("ImgPushArgs missing %q in:\n%s", w, joined)
 		}
 	}
 	// Source disk (positional) must precede the target image-opts blob.

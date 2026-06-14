@@ -13,6 +13,7 @@ import (
 // Role is the agent's side of a migration.
 type Role string
 
+// Role values.
 const (
 	RoleSource Role = "source"
 	RoleTarget Role = "target"
@@ -21,6 +22,7 @@ const (
 // Mode mirrors the agent-API migration mode.
 type Mode string
 
+// Mode values.
 const (
 	ModeLive    Mode = "live"
 	ModeOffline Mode = "offline"
@@ -31,6 +33,7 @@ const (
 // is reserved for slice 2c.
 type Phase string
 
+// Phase values.
 const (
 	PhaseSetup     Phase = "setup"
 	PhaseActive    Phase = "active"

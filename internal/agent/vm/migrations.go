@@ -163,7 +163,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 
 	token := s.MigrationID.String()
-	nbdPid, err := m.migSpawnNBD(ctx, qemu.QemuNBDServerArgs(qemu.QemuNBDServerSpec{
+	nbdPid, err := m.migSpawnNBD(ctx, qemu.NBDServerArgs(qemu.NBDServerSpec{
 		CredsDir: credsDir, SourceIdentity: s.SourceIdentity, BindHost: s.BindHost,
 		Port: port, Export: token, DiskPath: v.DiskPath,
 	}))
@@ -211,6 +211,7 @@ func (m *Manager) StartOutgoing(ctx context.Context, s OutgoingSpec) (*AgentTask
 	})
 	// Detach from the request context: the push outlives the HTTP call (202
 	// semantics), so a request-scoped cancel must not abort the migration.
+	// #nosec G118 -- the disk push intentionally outlives the 202 request (fire-and-converge); a cancelled HTTP request must not abort an in-flight guest migration. The CP re-drives on failure.
 	go m.runOutgoing(context.Background(), task.ID, s, v.DiskPath)
 	return task, nil
 }
@@ -269,7 +270,7 @@ func (m *Manager) runOutgoing(ctx context.Context, taskID uuid.UUID, s OutgoingS
 		return
 	}
 	port, _ := strconv.Atoi(portStr)
-	if err := m.migRunConvert(ctx, qemu.QemuImgPushArgs(qemu.QemuImgPushSpec{
+	if err := m.migRunConvert(ctx, qemu.ImgPushArgs(qemu.ImgPushSpec{
 		CredsDir: credsDir, SourceDisk: srcDisk, TargetHost: host, TargetPort: port,
 		TargetIdentity: s.TargetIdentity, Export: s.AuthToken,
 	})); err != nil {
