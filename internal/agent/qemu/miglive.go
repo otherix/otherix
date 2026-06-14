@@ -41,6 +41,8 @@ type LiveSourceConn interface {
 
 var _ LiveSourceConn = (*QMPClient)(nil)
 
+var _ LiveTargetConn = (*QMPClient)(nil)
+
 // LiveSourceSpec parameterizes the source side of a live migration.
 type LiveSourceSpec struct {
 	// Disk mirror.
@@ -208,6 +210,62 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 	// stale NBD client blockdev is best-effort cleanup - a failure here
 	// does not undo a completed migration.
 	_ = conn.BlockdevDel(s.NBDNode)
+	return nil
+}
+
+// LiveTargetConn is the QMP surface RunLiveTarget drives on the target side
+// after the incoming RAM stream completes. *QMPClient satisfies it.
+type LiveTargetConn interface {
+	Events(ctx context.Context) (<-chan qmp.Event, error)
+	BlockExportDel(id string) error
+	NBDServerStop() error
+	Cont() error
+	Close() error
+}
+
+// LiveTargetSpec parameterizes the target-side resume.
+type LiveTargetSpec struct {
+	ExportID        string        // block-export-add id to remove (LiveIncomingSpec.ExportID)
+	IncomingTimeout time.Duration // fail-closed bound on the incoming wait; default liveDefaultIncomingTimeout
+}
+
+// liveDefaultIncomingTimeout bounds the wait for the incoming migration to
+// complete on the target. It covers the whole RAM transfer, so it is generous.
+const liveDefaultIncomingTimeout = 30 * time.Minute
+
+// RunLiveTarget drives the target side of a live migration to a resumed guest
+// or fails closed. It waits for the incoming MIGRATION to reach "completed",
+// removes the writable NBD disk export, and issues cont - which, under the
+// late-block-activate capability, activates the destination disk and resumes
+// the guest from the transferred RAM. It MUST be called (and reach the wait)
+// before the source reaches pre-switchover, so the completed event is observed
+// without adding to switchover downtime. Once the incoming migration completes
+// there is no fall-back to the source; any failure here is terminal for the
+// guest on this node and the caller marks the VM failed.
+func RunLiveTarget(ctx context.Context, conn LiveTargetConn, s LiveTargetSpec) error {
+	rawCh, err := conn.Events(ctx)
+	if err != nil {
+		return fmt.Errorf("open qmp events: %w", err)
+	}
+	drainCtx, stopDrain := context.WithCancel(context.Background())
+	defer stopDrain()
+	ch := fanoutEvents(drainCtx, rawCh)
+
+	timeout := durationOr(s.IncomingTimeout, liveDefaultIncomingTimeout)
+	if err := waitMigrationStatusTimeout(ctx, ch, "completed", []string{"failed"}, timeout); err != nil {
+		return fmt.Errorf("wait incoming completed: %w", err)
+	}
+	// Order is load-bearing: drop the writable export before the guest takes
+	// the disk, so no external NBD writer can touch it once cont activates it.
+	if err := conn.BlockExportDel(s.ExportID); err != nil {
+		return fmt.Errorf("remove nbd export: %w", err)
+	}
+	if err := conn.NBDServerStop(); err != nil {
+		return fmt.Errorf("stop nbd server: %w", err)
+	}
+	if err := conn.Cont(); err != nil {
+		return fmt.Errorf("resume guest: %w", err)
+	}
 	return nil
 }
 

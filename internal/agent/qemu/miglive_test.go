@@ -475,6 +475,55 @@ func TestRunLiveSource_DiskMirrorStallFailsClosed(t *testing.T) {
 	}
 }
 
+// fakeTargetConn is a LiveTargetConn test double that records the ordered
+// call sequence and serves events from a pre-loaded channel.
+type fakeTargetConn struct {
+	mu     sync.Mutex
+	calls  []string
+	events chan qmp.Event
+}
+
+func (f *fakeTargetConn) rec(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.Unlock() }
+func (f *fakeTargetConn) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+func (f *fakeTargetConn) Events(context.Context) (<-chan qmp.Event, error) { return f.events, nil }
+func (f *fakeTargetConn) BlockExportDel(id string) error                   { f.rec("block-export-del"); return nil }
+func (f *fakeTargetConn) NBDServerStop() error                             { f.rec("nbd-server-stop"); return nil }
+func (f *fakeTargetConn) Cont() error                                      { f.rec("cont"); return nil }
+func (f *fakeTargetConn) Close() error                                     { return nil }
+
+func TestRunLiveTarget_HappyPathOrder(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1)}
+	f.events <- migrationEvent("completed")
+
+	spec := LiveTargetSpec{ExportID: "exp0", IncomingTimeout: 2 * time.Second}
+	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
+		t.Fatalf("RunLiveTarget() = %v, want nil", err)
+	}
+	want := []string{"block-export-del", "nbd-server-stop", "cont"}
+	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Errorf("call order = %v, want %v", got, want)
+	}
+}
+
+func TestRunLiveTarget_FailClosedOnIncomingFailed(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1)}
+	f.events <- migrationEvent("failed")
+	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportID: "exp0", IncomingTimeout: time.Second}); err == nil {
+		t.Fatal("RunLiveTarget() = nil, want error on incoming failed")
+	}
+}
+
+func TestRunLiveTarget_FailClosedOnTimeout(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1)} // no event ever
+	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportID: "exp0", IncomingTimeout: 100 * time.Millisecond}); err == nil {
+		t.Fatal("RunLiveTarget() = nil, want error on incoming timeout")
+	}
+}
+
 func contains(s []string, v string) bool { return indexOf(s, v) >= 0 }
 
 func indexOf(s []string, v string) int {
