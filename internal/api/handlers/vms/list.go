@@ -214,7 +214,8 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 			return nil, err
 		}
 		_, deleting := deletingSet[vm.ID]
-		view := toView(vm, runtime, names, deleting, callerCanReadVMSecrets(ctx, vm.OwnerID))
+		view := toView(vm, runtime, names, deleting,
+			callerCanReadVMSecrets(ctx, vm.OwnerID), h.activeMigration(ctx, vm.ID))
 		if statusFilter != "" && view.Status.Phase != statusFilter {
 			continue
 		}

@@ -43,6 +43,33 @@ var (
 	ErrJoinNodeNameMismatch  = errors.New("store: node name does not match token binding")
 	ErrJoinNodeNameTaken     = errors.New("store: node already has an active cert")
 
+	// ErrMigrationActiveExists is returned by CreateMigration when the VM already
+	// has a non-terminal migration: the per-VM active guard key is present, so a
+	// second concurrent migration for the same VM loses the create CAS.
+	ErrMigrationActiveExists = errors.New("active migration already exists for vm")
+
+	// ErrConcurrentUpdate is returned by a CAS-guarded store update (e.g.
+	// CommitMigrationCutover, UpdateMigrationProgress) when the migration or VM
+	// row changed between the read and the commit: the ModRevision compare lost.
+	// The caller re-reads and retries (the worker reconciles).
+	ErrConcurrentUpdate = errors.New("store: row changed concurrently")
+
+	// ErrMigrationTerminal is returned by an update path when the migration is
+	// already in a terminal phase (completed/failed/cancelled) and cannot be
+	// advanced further.
+	ErrMigrationTerminal = errors.New("store: migration is terminal")
+
+	// ErrMigrationNotCancelable is returned by CancelMigration when the migration
+	// is already in a terminal phase (completed/failed/cancelled): cancel is valid
+	// only pre-cutover (spec D5), so a terminal migration cannot be cancelled.
+	ErrMigrationNotCancelable = errors.New("store: migration is not cancelable")
+
+	// ErrMigrationTargetConflict is returned by BindMigrationTarget when the
+	// migration already has a target node that differs from the one being bound:
+	// a node-less migration binds its scheduler-picked target exactly once, and a
+	// second writer must not re-point it. Re-binding the same target is a no-op.
+	ErrMigrationTargetConflict = errors.New("store: migration already bound to a different target")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")

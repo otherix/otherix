@@ -14,6 +14,7 @@ import (
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
+	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
@@ -52,6 +53,7 @@ type RouterStore interface {
 	firmwareshandlers.Store
 	taskshandlers.Store
 	vmshandlers.Store
+	migrationshandlers.Store
 	heartbeathandlers.Store
 	middleware.IdempotencyStore
 	health.Pinger

@@ -12,6 +12,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -192,6 +193,24 @@ func vmDiskIndexOps(d store.VMDisk) []clientv3.Op {
 		clientv3.OpPut(etcd.Key("index", "vm_disks", "vm", d.VmID.String(), d.ID.String()), d.ID.String()),
 		clientv3.OpPut(etcd.Key("index", "vm_disks", "pool", d.StoragePoolID.String(), d.ID.String()), d.ID.String()),
 	}
+}
+
+// PlacementQuerier returns the store's scheduler read surface, so a caller that
+// runs SchedulePlacement OUTSIDE the placement-locked bind transaction (the
+// migration worker, which never re-pins the VM at placement time - spec D3) can
+// score candidates against live cluster state. The returned Querier is a thin
+// read view over the store; it holds no lock and commits nothing.
+func (s *Store) PlacementQuerier() scheduler.Querier { return placementReader{s: s} }
+
+// AcquirePlacementLock acquires the cluster-wide advisory lock named by lockKey.
+// It is the standalone entry the migration worker takes around its placement ->
+// bind window (placeAndBind), which spans two separate store calls (SchedulePlacement
+// then BindMigrationTarget) rather than a single transaction the way vm.create does.
+// On the single-node default this is a no-op (etcd writes are linearizable); the HA
+// path will take an etcd lock keyed by lockKey. It delegates to the placementReader
+// so create and migrate share one lock implementation.
+func (s *Store) AcquirePlacementLock(ctx context.Context, lockKey int64) error {
+	return placementReader{s: s}.AcquirePlacementLock(ctx, lockKey)
 }
 
 // placementReader is the etcd-backed scheduler read surface handed to the plan

@@ -1396,3 +1396,85 @@ func TestSchedulePlacement_NoNetworkRequested(t *testing.T) {
 		t.Errorf("winner = %s, want node-a", got.Node.Name)
 	}
 }
+
+// ----- Task 8: exclude-current-node placement (migration, spec D2) -----
+
+// TestSchedulePlacement_ExcludesCurrentNode confirms ExcludeNodeID drops
+// the current node from the eligible set so a node-less migrate never
+// re-pins onto the source. Two equally-fitting nodes A and B; excluding A
+// makes B the only survivor, regardless of any scoring nondeterminism.
+func TestSchedulePlacement_ExcludesCurrentNode(t *testing.T) {
+	cpuTotalA, cpuAvailA, memTotalA, memAvailA := metrics(8, 8, 16384, 16384)
+	cpuTotalB, cpuAvailB, memTotalB, memAvailB := metrics(8, 8, 16384, 16384)
+	a := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "node-a", nameOverride: true,
+		cpuTotal: cpuTotalA, cpuAvailable: cpuAvailA,
+		memTotalMib: memTotalA, memAvailMib: memAvailA,
+	})
+	b := makeRow(nodeFixture{
+		uuidSuffix: 2, name: "node-b", nameOverride: true,
+		cpuTotal: cpuTotalB, cpuAvailable: cpuAvailB,
+		memTotalMib: memTotalB, memAvailMib: memAvailB,
+	})
+	q := &fakeQuerier{eligible: []store.ListEligiblePoolsByNameRow{a, b}}
+	excludeA := a.NodeEffectiveAvailability.ID
+
+	got, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512, ExcludeNodeID: &excludeA},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if err != nil {
+		t.Fatalf("SchedulePlacement err = %v, want nil", err)
+	}
+	if got.Node.ID != b.NodeEffectiveAvailability.ID {
+		t.Errorf("winner = %s, want node-b (node-a excluded)", got.Node.Name)
+	}
+}
+
+// TestSchedulePlacement_ExcludeOnlyNodeEmptyEligible confirms that
+// excluding the sole eligible node empties the candidate set and routes
+// through the same empty-eligible diagnosis path the zero-candidates case
+// uses — a retryable ErrNoEligibleNodes, not a panic.
+func TestSchedulePlacement_ExcludeOnlyNodeEmptyEligible(t *testing.T) {
+	a := makeRow(nodeFixture{uuidSuffix: 1, name: "node-a", nameOverride: true})
+	q := &fakeQuerier{
+		eligible: []store.ListEligiblePoolsByNameRow{a},
+		allPools: []store.StoragePool{toStoragePool(a)},
+	}
+	excludeA := a.NodeEffectiveAvailability.ID
+
+	_, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512, ExcludeNodeID: &excludeA},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if !errors.Is(err, ErrNoEligibleNodes) {
+		t.Fatalf("err = %v, want errors.Is ErrNoEligibleNodes", err)
+	}
+}
+
+// TestSchedulePlacement_NoExcludeUnchanged confirms a nil ExcludeNodeID is
+// a no-op: the resource-aware happy path still picks the least-utilized
+// node exactly as before Task 8.
+func TestSchedulePlacement_NoExcludeUnchanged(t *testing.T) {
+	busyCPUTotal, busyCPUAvail, busyMemTotal, busyMemAvail := metrics(8, 1, 16384, 2048)
+	spareCPUTotal, spareCPUAvail, spareMemTotal, spareMemAvail := metrics(8, 6, 16384, 12288)
+	busy := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "node-busy", nameOverride: true,
+		cpuTotal: busyCPUTotal, cpuAvailable: busyCPUAvail,
+		memTotalMib: busyMemTotal, memAvailMib: busyMemAvail,
+	})
+	spare := makeRow(nodeFixture{
+		uuidSuffix: 2, name: "node-spare", nameOverride: true,
+		cpuTotal: spareCPUTotal, cpuAvailable: spareCPUAvail,
+		memTotalMib: spareMemTotal, memAvailMib: spareMemAvail,
+	})
+	q := &fakeQuerier{eligible: []store.ListEligiblePoolsByNameRow{busy, spare}}
+
+	got, err := SchedulePlacement(context.Background(), q,
+		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 512},
+		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: defaultResources()})
+	if err != nil {
+		t.Fatalf("SchedulePlacement err = %v, want nil", err)
+	}
+	if got.Node.ID != spare.NodeEffectiveAvailability.ID {
+		t.Errorf("winner = %s, want node-spare (nil exclude must be a no-op)", got.Node.Name)
+	}
+}

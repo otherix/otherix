@@ -2193,42 +2193,45 @@ paths:
       - $ref: "#/components/parameters/VMName"
     post:
       operationId: vms.migrate
-      tags: [vms]
+      tags: [vm-migrations]
       summary: Migrate a VM to another node (asynchronous).
       description: |
-        Triggers a VM migration to another hypervisor node. If
-        `target_node_id` is omitted, the scheduler picks a target.
-
-        Mode semantics:
-          - `live` — the VM keeps running during the transfer
-            (peer-to-peer QMP migrate between agents). Requires the VM
-            to be in `status.phase = "running"` or `"paused"`.
-          - `offline` — the VM is stopped on the source, its disks are
-            transferred, and it is started on the target. Requires the
-            VM to be in `status.phase = "stopped"`.
-
-        Mode/state mismatches return 409 with
-        `details.reason = "vm_state_invalid_for_migrate"` plus
-        `details.current_phase`. Architecture mismatches against
-        `target_node_id` return 409 with
-        `details.reason = "architecture_mismatch"`.
+        Triggers a VM migration to another hypervisor node. When
+        `target_node` is omitted, the scheduler picks a target
+        compatible with the VM's architecture; `target_pool` optionally
+        constrains the destination storage pool. `live` (default true)
+        selects an online peer-to-peer QMP transfer; `allow_postcopy`
+        (default false) permits the migration to switch to post-copy if
+        precopy fails to converge.
 
         The created `Migration` row is addressable as
-        `/v1/migrations/{id}` once the task moves past the `setup`
-        phase. Read its id from `Task.resource_id` after the first
-        poll of `/v1/tasks/{task_id}`.
+        `/v1/migrations/{id}` for status polling. Read its id from
+        `Task.resource_id` after the first poll of
+        `/v1/tasks/{task_id}`, or from `status.migration.id` on the VM.
+
+        When the requested `target_node` already hosts the VM, no
+        migration is started and the call returns 200 with a
+        `MigrateNoOp` body instead of 202.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/VMMigrateRequest"
+              $ref: "#/components/schemas/MigrateRequest"
       responses:
+        "200":
+          description: |
+            The VM already runs on the requested target node; no
+            migration was started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrateNoOp"
         "202":
           description: Migration accepted.
           content:
@@ -2241,10 +2244,9 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            VM has another active migration, the requested mode does
-            not match the VM's current phase, or the requested target
-            node has an incompatible architecture. Also covers
-            idempotency-key mismatch.
+            The VM already has an active migration, or the request
+            replays an `Idempotency-Key` with a different body
+            (`idempotency_key_mismatch`).
           content:
             application/json:
               schema:
@@ -2872,35 +2874,33 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/vms/{id}/migrations:
-    parameters:
-      - $ref: "#/components/parameters/VMName"
+  /v1/migrations:
     get:
-      operationId: vmMigrations.list
+      operationId: migrations.list
       tags: [vm-migrations]
-      summary: List migrations of a VM (history + current).
+      summary: List migrations (history + current).
+      description: |
+        Lists migration records visible to the caller, newest first.
+        Optionally filter by VM (`vm`) or by the node that is either
+        the source or target of the migration (`node`).
       security:
         - bearerAuth: []
         - apiKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
-        - name: phase
+        - name: vm
           in: query
           required: false
-          schema:
-            type: string
-            enum: [setup, active, postcopy_active, completed, failed, cancelled]
-        - name: started_after
+          schema: { type: string, format: uuid }
+          description: Only return migrations of this VM.
+        - name: node
           in: query
           required: false
-          schema: { type: string, format: date-time }
-          description: Only return migrations with `started_at >= started_after`.
-        - name: started_before
-          in: query
-          required: false
-          schema: { type: string, format: date-time }
-          description: Only return migrations with `started_at < started_before`.
+          schema: { type: string, format: uuid }
+          description: |
+            Only return migrations whose source or target node is this
+            node.
       responses:
         "200":
           description: List of migrations, newest first.
@@ -2908,8 +2908,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MigrationList"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
-        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/migrations/{id}:
@@ -2945,40 +2945,29 @@ paths:
     post:
       operationId: migrations.cancel
       tags: [vm-migrations]
-      summary: Cancel a migration (asynchronous, best-effort).
+      summary: Cancel a migration (best-effort).
       description: |
-        Best-effort cancellation. Cancellation is reliable while the
-        migration is in `setup` or `active`; once the migration enters
-        `postcopy_active`, the source VM has already begun delegating
-        memory pages to the target, and aborting may leave the VM
-        unable to continue on either node. In that case the request
-        is rejected with 409 (`details.reason =
-        "migration_past_point_of_no_return"`). Migrations already in
-        a terminal phase (`completed`, `failed`, `cancelled`) return
-        409 (`details.reason = "migration_already_terminal"`).
+        Best-effort cancellation. A migration still in a cancelable
+        phase is moved toward `cancelled`; one that is already in a
+        terminal phase (`completed`, `failed`, `cancelled`) is returned
+        unchanged. Either way the current `Migration` is returned with
+        200 — poll `GET /v1/migrations/{id}` for the converged phase.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "202":
-          description: Cancellation accepted.
+        "200":
+          description: Current migration record.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AsyncTaskAccepted"
+                $ref: "#/components/schemas/Migration"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: |
-            Migration cannot be cancelled — already terminal, past
-            point of no return, or idempotency-key mismatch.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/tasks:
@@ -5808,6 +5797,31 @@ components:
               description: |
                 Human-readable detail for the current phase. Omitted
                 when there is nothing to explain.
+            migration:
+              type: [object, "null"]
+              description: |
+                Compact summary of the VM's in-flight migration, so an
+                operator inspecting the VM sees the destination and
+                progress without first knowing the migration id. Null
+                (or omitted) when no migration is active; the full
+                record lives at `GET /v1/migrations/{id}`.
+              required: [id, phase, progress_percent]
+              properties:
+                id: { type: string, format: uuid }
+                phase:
+                  type: string
+                  enum: [pending, setup, active, postcopy_active, completed, failed, cancelled]
+                progress_percent:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                target_node_id:
+                  type: [string, "null"]
+                  format: uuid
+                  description: |
+                    Target node of the migration. `null` while a
+                    scheduler-placed migration has not bound a target
+                    yet.
         desired_phase:
           type: string
           enum: [running, stopped, deleted]
@@ -6033,27 +6047,38 @@ components:
             `status = "ready"`. Mismatch returns 409
             (`details.reason = "snapshot_vm_mismatch"`).
 
-    VMMigrateRequest:
+    MigrateRequest:
       type: object
-      required: [mode]
+      description: |
+        VM migration request. Every field is optional; an empty body
+        triggers a live, scheduler-placed migration in the VM's
+        current pool.
+      additionalProperties: false
       properties:
-        target_node_id:
-          type: [string, "null"]
-          format: uuid
-          description: |
-            Specific target node. When `null`, the scheduler picks a
-            target compatible with the VM's architecture.
-        mode:
+        target_node:
           type: string
-          enum: [live, offline]
-          default: live
-        max_downtime_ms:
-          type: [integer, "null"]
-          minimum: 0
           description: |
-            Optional. Maximum acceptable downtime during precopy
-            convergence (live mode). When omitted, the agent uses its
-            default (typically 100ms).
+            Destination node name. When omitted, the scheduler picks a
+            target compatible with the VM's architecture. When it names
+            the VM's current node, the call is a no-op (200
+            `MigrateNoOp`).
+        target_pool:
+          type: string
+          description: |
+            Destination storage pool name. When omitted, the source
+            pool is reused.
+        live:
+          type: boolean
+          default: true
+          description: |
+            Online (running-VM) migration when true; offline transfer
+            when false.
+        allow_postcopy:
+          type: boolean
+          default: false
+          description: |
+            Permit the migration to switch to post-copy if precopy
+            fails to converge.
         max_bandwidth_bytes:
           type: [integer, "null"]
           format: int64
@@ -6062,6 +6087,30 @@ components:
             Optional bandwidth cap in bytes/second (matches the SQL
             column `migrations.max_bandwidth_bytes`). When omitted, the
             agent uses its default policy.
+        max_downtime_ms:
+          type: [integer, "null"]
+          format: int32
+          minimum: 0
+          description: |
+            Optional. Maximum acceptable downtime during precopy
+            convergence (live mode). When omitted, the agent uses its
+            default (typically 100ms).
+
+    MigrateNoOp:
+      type: object
+      description: |
+        Returned (200) by `POST /v1/vms/{id}/migrate` when the
+        requested `target_node` already hosts the VM, so no migration
+        was started.
+      required: [status, current_node_id]
+      properties:
+        status:
+          type: string
+          enum: [already_on_target]
+        current_node_id:
+          type: string
+          format: uuid
+          description: The node the VM already runs on.
 
     VMConsoleResponse:
       type: object
@@ -6481,6 +6530,10 @@ components:
         - phase
         - progress_percent
         - bytes_transferred
+        - live
+        - allow_postcopy
+        - target_pool_name
+        - stalled
         - created_at
         - updated_at
       properties:
@@ -6498,22 +6551,20 @@ components:
           type: [string, "null"]
           format: uuid
           description: |
-            Target node of the migration. Same nullability rules as
-            `source_node_id`.
-        initiated_by_user_id:
-          type: [string, "null"]
-          format: uuid
-          description: |
-            User who triggered the migration. `null` for
-            scheduler-initiated migrations (drain, rebalance,
-            evacuation) and after the user is hard-deleted (FK
-            ON DELETE SET NULL).
+            Target node of the migration. `null` while a
+            scheduler-placed migration has not bound a target yet, and
+            after the node is force-deleted (same nullability rules as
+            `source_node_id`).
         reason:
           type: string
           enum: [manual, drain, rebalance, evacuation]
+          description: |
+            What triggered the migration. `manual` for an operator
+            request; `drain` / `rebalance` / `evacuation` for the
+            scheduler-initiated flows.
         phase:
           type: string
-          enum: [setup, active, postcopy_active, completed, failed, cancelled]
+          enum: [pending, setup, active, postcopy_active, completed, failed, cancelled]
         progress_percent:
           type: integer
           minimum: 0
@@ -6527,35 +6578,53 @@ components:
         bytes_remaining:
           type: [integer, "null"]
           format: int64
-        pages_total:
-          type: [integer, "null"]
-          format: int64
-        pages_transferred:
-          type: [integer, "null"]
-          format: int64
-        downtime_ms:
-          type: [integer, "null"]
-          description: Observed downtime once the migration completes.
-        setup_time_ms:
-          type: [integer, "null"]
-        max_bandwidth_bytes:
-          type: [integer, "null"]
-          format: int64
-          description: Configured bandwidth cap in bytes/second.
-        max_downtime_ms:
-          type: [integer, "null"]
-        started_at:
+        scheduling_reason:
           type: [string, "null"]
-          format: date-time
-        completed_at:
-          type: [string, "null"]
-          format: date-time
+          description: |
+            Machine-readable reason the migration is waiting on the
+            scheduler (e.g. target selection pending). `null` once a
+            target is bound or when scheduling never blocked. Distinct
+            from `error_message`, which carries terminal failure detail.
         error_message:
           type: [string, "null"]
           description: |
             Plain string error description set when `phase = "failed"`.
             Distinct from the standard `Error` envelope — migrations
             don't carry a structured error code in the SQL row.
+        live:
+          type: boolean
+          description: |
+            True for an online (running-VM) migration; false for an
+            offline transfer.
+        allow_postcopy:
+          type: boolean
+          description: |
+            Whether the migration is permitted to switch to post-copy
+            if precopy fails to converge.
+        target_pool_name:
+          type: string
+          description: |
+            Destination storage pool name. Empty when the source pool
+            is reused.
+        stalled:
+          type: boolean
+          description: |
+            Derived signal — true when a live migration's transfer
+            progress is flat while the record keeps updating. Always
+            false until the progress watchdog lands.
+        max_bandwidth_bytes:
+          type: [integer, "null"]
+          format: int64
+          description: Configured bandwidth cap in bytes/second.
+        max_downtime_ms:
+          type: [integer, "null"]
+          format: int32
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

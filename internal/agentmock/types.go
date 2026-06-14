@@ -135,6 +135,34 @@ type VMLifecycleResult struct {
 	Delay     time.Duration
 }
 
+// MigrationResult is the queued synthetic outcome the mock applies to
+// the next VMMigrationsStartOutgoing invocation against the matching
+// source VM name. Tests seed a per-name FIFO queue via
+// AddMigrationResult; an empty queue yields a default success that
+// converges to the completed phase after defaultPoolScanDelay.
+//
+// Delay is the total time-to-terminal: pollers see the outgoing task
+// pending for the first half, running for the second half, and the
+// terminal status thereafter (lazy projection at tasks.get time). The
+// migration record's phase advances in lockstep — setup for the first
+// half, active for the second half, then FinalPhase.
+//
+// FinalPhase is the phase GetMigration reports once Delay elapses;
+// empty defaults to "completed". A test stages a STALL by combining a
+// Delay longer than the poll window with FinalPhase="active" so the
+// migration never converges. On Status="failed" the outgoing task
+// surfaces the Error envelope and the migration phase reports
+// "failed".
+//
+// Status accepts "success" or "failed"; empty defaults to "success"
+// (or "failed" when Error is non-nil).
+type MigrationResult struct {
+	Status     string
+	FinalPhase string // phase reported on terminal-success; "" → "completed"
+	Error      *ErrorEnvelope
+	Delay      time.Duration
+}
+
 // MigrationCapability describes the inter-agent migration ingress
 // advertised by the mock. Default is host=127.0.0.1 with the
 // canonical 49152-49251 range.

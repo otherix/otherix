@@ -147,7 +147,7 @@ func TestToView_PendingSurfacesReasonAndSpec(t *testing.T) {
 		SchedulingMessage: &msg, SchedulingSpec: spec, Labels: []byte(`{}`),
 		ImageFormat: store.ImageFormatQcow2, Architecture: store.CpuArchAmd64,
 	}
-	v := toView(vm, nil, vmViewNames{}, false /* deleting */, true /* includeSecrets */)
+	v := toView(vm, nil, vmViewNames{}, false /* deleting */, true /* includeSecrets */, nil /* activeMig */)
 	if v.Status.Phase != statusPending || v.Status.Reason != reason {
 		t.Errorf("status = %+v, want phase=pending reason=%q", v.Status, reason)
 	}
@@ -159,6 +159,58 @@ func TestToView_PendingSurfacesReasonAndSpec(t *testing.T) {
 	}
 	if len(v.Networks) != 1 || v.Networks[0] != "lan" {
 		t.Errorf("networks = %v, want [lan]", v.Networks)
+	}
+}
+
+// TestToView_MigrationSummary locks the status.migration summary: when an
+// active migration is threaded in, status.migration carries the compact
+// {id, phase, progress_percent, target_node_id} shape; when nil it is omitted.
+// current_node_id (rendered via names.node) stays = source - toView never
+// flips it from the migration.
+func TestToView_MigrationSummary(t *testing.T) {
+	t.Parallel()
+
+	vm := store.VM{
+		ID: uuid.New(), Name: "m", OwnerID: uuid.New(),
+		SchedulingStatus: store.VMSchedulingScheduled, Labels: []byte(`{}`),
+		ImageFormat: store.ImageFormatQcow2, Architecture: store.CpuArchAmd64,
+	}
+	source := "node-source"
+	names := vmViewNames{node: &source}
+
+	// No active migration -> status.migration omitted.
+	v := toView(vm, &store.VMRuntime{Phase: store.VmPhaseRunning}, names, false, true, nil)
+	if v.Status.Migration != nil {
+		t.Errorf("status.migration = %+v, want nil (no active migration)", v.Status.Migration)
+	}
+
+	// Active migration -> compact summary, current_node still source.
+	target := uuid.New()
+	mig := &store.Migration{
+		ID:              uuid.New(),
+		VmID:            vm.ID,
+		TargetNodeID:    &target,
+		Phase:           store.MigrationPhaseActive,
+		ProgressPercent: 47,
+	}
+	v = toView(vm, &store.VMRuntime{Phase: store.VmPhaseRunning}, names, false, true, mig)
+	if v.Status.Migration == nil {
+		t.Fatalf("status.migration = nil, want summary")
+	}
+	if v.Status.Migration.ID != mig.ID.String() {
+		t.Errorf("status.migration.id = %q, want %q", v.Status.Migration.ID, mig.ID)
+	}
+	if v.Status.Migration.Phase != "active" {
+		t.Errorf("status.migration.phase = %q, want active", v.Status.Migration.Phase)
+	}
+	if v.Status.Migration.ProgressPercent != 47 {
+		t.Errorf("status.migration.progress_percent = %d, want 47", v.Status.Migration.ProgressPercent)
+	}
+	if v.Status.Migration.TargetNodeID == nil || *v.Status.Migration.TargetNodeID != target.String() {
+		t.Errorf("status.migration.target_node_id = %v, want %q", v.Status.Migration.TargetNodeID, target)
+	}
+	if v.Node == nil || *v.Node != source {
+		t.Errorf("node (current_node) = %v, want source %q (unchanged during migration)", v.Node, source)
 	}
 }
 

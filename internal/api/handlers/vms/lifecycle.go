@@ -170,7 +170,8 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 	}
 	response.WriteJSON(w, r, http.StatusOK,
 		toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID),
-			callerCanReadVMSecrets(r.Context(), vm.OwnerID)))
+			callerCanReadVMSecrets(r.Context(), vm.OwnerID),
+			h.activeMigration(r.Context(), vm.ID)))
 }
 
 // dispatchSyncOp dispatches to the correct agentclient method based

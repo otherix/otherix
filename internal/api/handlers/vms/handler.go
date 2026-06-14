@@ -96,6 +96,13 @@ type Store interface {
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 	ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
+	// ActiveMigrationForVM returns the VM's in-flight (non-terminal)
+	// migration: read by the VM status.migration summary and by the
+	// stop/delete lifecycle-precedence path. CancelMigration ends that
+	// migration (cancelled) before stop/delete enqueues - the desired
+	// lifecycle outranks "I want it on another node" (spec D5).
+	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error)
+	CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -207,6 +214,44 @@ type vmStatusView struct {
 	Phase   string `json:"phase"`
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Migration is the compact summary of an in-flight migration for this
+	// VM (Observability surface 3): an operator inspecting the VM sees
+	// "migrating -> target, 47%" without first knowing the migration id.
+	// Omitted when no migration is active. current_node_id (rendered as
+	// the top-level `node` field) stays = source until cutover, so the
+	// summary's target_node_id is the only forward-looking signal here.
+	Migration *vmMigrationSummary `json:"migration,omitempty"`
+}
+
+// vmMigrationSummary is the compact in-flight-migration view embedded under
+// status.migration. It mirrors the four fields spec Observability surface 3
+// names (id, phase, progress_percent, target_node) - the full record lives at
+// GET /v1/migrations/{id}. target_node_id is nil for a node-less (scheduler-
+// placed) migration that has not bound a target yet.
+type vmMigrationSummary struct {
+	ID              string  `json:"id"`
+	Phase           string  `json:"phase"`
+	ProgressPercent int     `json:"progress_percent"`
+	TargetNodeID    *string `json:"target_node_id"`
+}
+
+// migrationSummary projects an active store.Migration onto its compact
+// status.migration view, or returns nil when m is nil.
+func migrationSummary(m *store.Migration) *vmMigrationSummary {
+	if m == nil {
+		return nil
+	}
+	var target *string
+	if m.TargetNodeID != nil {
+		s := m.TargetNodeID.String()
+		target = &s
+	}
+	return &vmMigrationSummary{
+		ID:              m.ID.String(),
+		Phase:           string(m.Phase),
+		ProgressPercent: int(m.ProgressPercent),
+		TargetNodeID:    target,
+	}
 }
 
 // vmViewNames bundles the resolved name lookups that response
@@ -248,8 +293,12 @@ type vmViewNames struct {
 // values so the omitempty wire fields render absent. Callers compute it
 // per-VM via callerCanReadVMSecrets(ctx, vm.OwnerID) - vm:console on
 // this VM is the access signal (audit R2-H1).
-func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool) vmView {
-	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting)}
+//
+// activeMig is the VM's in-flight (non-terminal) migration, or nil. When
+// non-nil it populates status.migration (Observability surface 3); it never
+// changes names.node - current_node_id stays = source until cutover.
+func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool, activeMig *store.Migration) vmView {
+	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting), Migration: migrationSummary(activeMig)}
 	pool := names.pool
 	nets := names.networks
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {

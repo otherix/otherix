@@ -31,13 +31,22 @@ import (
 // candidate node where a requested network's per-(node, network)
 // reconciliation_status is not "ready" (or has no status record at all).
 // Empty NetworkIDs makes the filter a no-op.
+// ExcludeNodeID is the optional migration-source exclusion (spec D2): a
+// node-less `vm migrate` reuses the initial-placement path but must land
+// on a node other than the VM's current one. When non-nil, the scheduler
+// drops every candidate whose node id matches before scoring; if that
+// empties the eligible set the request fails through the same
+// empty-eligible diagnosis path as a fully-drained pool. Composable with
+// NodeHint — exclude wins (a hint pinning the excluded node empties the
+// set rather than returning the source).
 type PlacementRequest struct {
-	PoolName   string
-	NodeHint   *string
-	VCPUs      int
-	MemoryMiB  int
-	DiskBytes  int64
-	NetworkIDs []uuid.UUID
+	PoolName      string
+	NodeHint      *string
+	ExcludeNodeID *uuid.UUID
+	VCPUs         int
+	MemoryMiB     int
+	DiskBytes     int64
+	NetworkIDs    []uuid.UUID
 }
 
 // PlacementDecision is the scheduler's verdict: the chosen node row
@@ -408,6 +417,19 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 		eligible = filtered
 	}
 
+	// Migration source exclusion (spec D2). Drop the current node so a
+	// node-less migrate re-pins elsewhere. Exclude wins over NodeHint: a
+	// hint pinning the excluded node empties the set here rather than
+	// returning the source. An emptied set routes through the same
+	// empty-eligible diagnosis path the zero-candidates case uses, so the
+	// caller gets a retryable no-eligible-target result, not a panic.
+	if req.ExcludeNodeID != nil {
+		eligible = excludeNode(eligible, *req.ExcludeNodeID)
+		if len(eligible) == 0 {
+			return PlacementDecision{}, diagnoseEmptyEligible(ctx, q, req.PoolName)
+		}
+	}
+
 	considered := len(eligible)
 	fits, rejected := filterByResources(eligible, req, cfg.Resources)
 	if len(fits) == 0 {
@@ -492,6 +514,22 @@ func filterByNodeHint(rows []store.ListEligiblePoolsByNameRow, hint string) ([]s
 		}
 	}
 	return nil, ErrPoolNotOnNode
+}
+
+// excludeNode drops every candidate whose node id matches excludeID,
+// preserving input order. It backs the migration-source exclusion (spec
+// D2): a node-less `vm migrate` reuses the placement path but must land
+// somewhere other than the VM's current node. An empty result is the
+// caller's signal to route through diagnoseEmptyEligible.
+func excludeNode(rows []store.ListEligiblePoolsByNameRow, excludeID uuid.UUID) []store.ListEligiblePoolsByNameRow {
+	out := rows[:0:0]
+	for _, r := range rows {
+		if r.NodeEffectiveAvailability.ID == excludeID {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // candidate carries the per-row scheduler state through the pipeline.
