@@ -397,6 +397,13 @@ func (c *QMPClient) QueryMigrate() (MigrateInfo, error) {
 	return resp.Return, nil
 }
 
+// Events returns the multiplexed QMP event channel for the underlying
+// socket monitor. go-qemu fans every asynchronous event out over this
+// single channel, so one Events call serves a whole migration run.
+func (c *QMPClient) Events(ctx context.Context) (<-chan qmp.Event, error) {
+	return c.monitor.Events(ctx)
+}
+
 // waitMigrationStatus reads MIGRATION events from ch until one reports
 // status==want (returned) or a status listed in failStates is seen
 // (returned as an error). A closed channel or a cancelled ctx before
