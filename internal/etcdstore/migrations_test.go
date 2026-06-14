@@ -9,6 +9,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -290,6 +291,201 @@ func TestUpdateMigrationProgress_FailReleasesGuard(t *testing.T) {
 	}
 	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
 		t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
+func TestCommitMigrationCutover_FailedStaysFailed(t *testing.T) {
+	cases := []struct {
+		name  string
+		phase store.MigrationPhase
+	}{
+		{"failed", store.MigrationPhaseFailed},
+		{"cancelled", store.MigrationPhaseCancelled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cli := startStore(t)
+			ctx := context.Background()
+
+			nodeA := nodeParams(uniqueNodeName("a"))
+			nodeB := nodeParams(uniqueNodeName("b"))
+			if _, err := s.CreateNode(ctx, nodeA); err != nil {
+				t.Fatalf("CreateNode(A): %v", err)
+			}
+			if _, err := s.CreateNode(ctx, nodeB); err != nil {
+				t.Fatalf("CreateNode(B): %v", err)
+			}
+
+			vm := seedPinnedVM(t, cli, nodeA.ID)
+			m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+			// Drive the migration to its terminal phase via the progress path.
+			phase := tc.phase
+			msg := "target_unreachable"
+			if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &phase, ErrorMessage: &msg}); err != nil {
+				t.Fatalf("UpdateMigrationProgress(%s): %v", tc.phase, err)
+			}
+
+			// Cutover on a terminal-failed/cancelled migration must refuse and never
+			// re-pin (fail-safe-to-source, spec D3).
+			if err := s.CommitMigrationCutover(ctx, m.ID); !errors.Is(err, store.ErrMigrationTerminal) {
+				t.Errorf("CommitMigrationCutover(%s) = %v, want store.ErrMigrationTerminal", tc.phase, err)
+			}
+
+			gotVM, err := s.VMByID(ctx, vm.ID)
+			if err != nil {
+				t.Fatalf("VMByID: %v", err)
+			}
+			if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+				t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v (failed migration never moves the pin)", gotVM.PinnedNodeID, nodeA.ID)
+			}
+		})
+	}
+}
+
+func TestCommitMigrationCutover_IdempotentCompleted(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover(first): %v", err)
+	}
+
+	// Second cutover on a now-completed migration is a no-op idempotent reconcile:
+	// returns nil, leaves the pin on nodeB, the migration completed, and does not
+	// churn the pinned_node index.
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Errorf("CommitMigrationCutover(second) = %v, want nil (idempotent)", err)
+	}
+
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeB.ID {
+		t.Errorf("PinnedNodeID = %v, want nodeB %v", gotVM.PinnedNodeID, nodeB.ID)
+	}
+
+	gotM, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if gotM.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed", gotM.Phase)
+	}
+	if gotM.ProgressPercent != 100 {
+		t.Errorf("ProgressPercent = %d, want 100", gotM.ProgressPercent)
+	}
+
+	// pinned_node index did not churn: exactly one entry under nodeB, none under nodeA.
+	bIdx, err := cli.Range(ctx, etcd.Key("index", "vms", "pinned_node", nodeB.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(B pinned index): %v", err)
+	}
+	if len(bIdx) != 1 || string(bIdx[0].Value) != vm.ID.String() {
+		t.Errorf("nodeB pinned_node index = %+v, want exactly one entry valued %s", bIdx, vm.ID)
+	}
+	aIdx, err := cli.Range(ctx, etcd.Key("index", "vms", "pinned_node", nodeA.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(A pinned index): %v", err)
+	}
+	if len(aIdx) != 0 {
+		t.Errorf("nodeA pinned_node index = %+v, want zero entries (moved to nodeB)", aIdx)
+	}
+}
+
+// TestCommitMigrationCutover_ConcurrentConverges drives two concurrent cutover
+// calls at the same active migration and asserts the system converges to a
+// single clean re-pin regardless of interleaving. This is a CONVERGENCE test
+// rather than a deterministic stale-ModRevision injection: CommitMigrationCutover
+// reads the migration and VM revisions internally and commits in one Txn, with no
+// production test-seam to wedge a competing write between its read and its commit
+// (by design - we will not add one). So we exercise the CAS through real
+// concurrency: exactly one caller wins the Txn (PinnedNodeID flips to nodeB,
+// migration completes, pinned_node index moves once); the loser either re-reads
+// the now-completed row and returns nil (idempotent reconcile) or loses the CAS
+// and returns store.ErrConcurrentUpdate. No other error and no panic is allowed.
+func TestCommitMigrationCutover_ConcurrentConverges(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	const workers = 2
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			// Never t.Fatal from a worker goroutine: collect into errs and assert
+			// after wg.Wait() on the main goroutine (Google style).
+			errs[idx] = s.CommitMigrationCutover(ctx, m.ID)
+		}(i)
+	}
+	wg.Wait()
+
+	// Each worker either did the work / observed it done (nil) or lost the CAS
+	// (ErrConcurrentUpdate). Any other error means a non-converging interleaving.
+	for i, err := range errs {
+		if err != nil && !errors.Is(err, store.ErrConcurrentUpdate) {
+			t.Errorf("worker %d err = %v, want nil or store.ErrConcurrentUpdate", i, err)
+		}
+	}
+
+	// VM pinned to nodeB exactly once - never split, never double-claimed.
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeB.ID {
+		t.Errorf("PinnedNodeID = %v, want nodeB %v", gotVM.PinnedNodeID, nodeB.ID)
+	}
+
+	gotM, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if gotM.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed", gotM.Phase)
+	}
+
+	// pinned_node index converged: exactly one entry under nodeB, none under nodeA.
+	bIdx, err := cli.Range(ctx, etcd.Key("index", "vms", "pinned_node", nodeB.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(B pinned index): %v", err)
+	}
+	if len(bIdx) != 1 || string(bIdx[0].Value) != vm.ID.String() {
+		t.Errorf("nodeB pinned_node index = %+v, want exactly one entry valued %s (no double-claim)", bIdx, vm.ID)
+	}
+	aIdx, err := cli.Range(ctx, etcd.Key("index", "vms", "pinned_node", nodeA.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("Range(A pinned index): %v", err)
+	}
+	if len(aIdx) != 0 {
+		t.Errorf("nodeA pinned_node index = %+v, want zero entries (no leak)", aIdx)
 	}
 }
 
