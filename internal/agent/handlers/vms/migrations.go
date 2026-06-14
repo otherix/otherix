@@ -198,8 +198,9 @@ func (h *Handler) poolNameForPath(path string) (string, bool) {
 
 // mapIncomingError translates StartIncoming failures to the standard
 // envelope. ErrNoFreePort is a retryable capacity condition (every
-// migration port in range is in use) and surfaces as 409 no_capacity;
-// everything else is an internal failure.
+// migration port in range is in use) and surfaces as 409 conflict; an
+// unknown pool (TOCTOU: removed after the handler's path lookup) is a 400
+// validation_failed; everything else is an internal failure.
 func mapIncomingError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, migration.ErrNoFreePort):
