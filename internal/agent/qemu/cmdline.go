@@ -166,12 +166,22 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		return nil, err
 	}
 
+	// Under TCG, run each vCPU in its own thread (MTTCG) so the QEMU main loop
+	// - which drives block jobs (the live-migration blockdev-mirror) and QMP -
+	// is not starved by round-robin vCPU emulation monopolizing the process.
+	// Without this, a live migration's disk mirror and BLOCK_JOB_READY event
+	// stall under TCG (the main loop never gets time). KVM ignores thread mode
+	// (vCPUs run on hardware threads), so only the tcg path is affected.
+	accel := spec.Accelerator
+	if spec.Accelerator == "tcg" {
+		accel = "tcg,thread=multi"
+	}
 	args := []string{
 		"-name", spec.Name,
 		"-uuid", spec.UUID.String(),
 		"-smp", strconv.Itoa(spec.VCPUs),
 		"-m", strconv.Itoa(spec.MemoryMB),
-		"-accel", spec.Accelerator,
+		"-accel", accel,
 	}
 	if !spec.OmitBootDisk {
 		args = append(args,
