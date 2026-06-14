@@ -156,6 +156,14 @@ func TestVMs_Reconcile_TableDriven(t *testing.T) {
 			declared: []heartbeat.DeclaredVM{{Name: "vm-8", DesiredPhase: "stopped", Generation: 1}},
 		},
 		{
+			// Live-migration target post-cutover: the adopted VM is
+			// StatusMigratingIncoming, not StatusStopped, so the reconciler
+			// must NOT cold-start it (the resume driver flips it to running).
+			name:     "observed migrating_incoming desired=running → skip (no cold start)",
+			observed: []*vm.VM{makeVM("vm-11", vm.StatusMigratingIncoming)},
+			declared: []heartbeat.DeclaredVM{{Name: "vm-11", DesiredPhase: "running", Generation: 1}},
+		},
+		{
 			name:     "observed-but-not-declared → no corrective op",
 			observed: []*vm.VM{makeVM("vm-9", vm.StatusRunning)},
 			declared: nil,

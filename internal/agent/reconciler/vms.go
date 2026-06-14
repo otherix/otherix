@@ -267,6 +267,8 @@ func mapPhase(s vm.Status) string {
 		return "paused"
 	case vm.StatusStopping, vm.StatusStopped, vm.StatusDeleting:
 		return "stopped"
+	case vm.StatusMigratingIncoming:
+		return "pending"
 	case vm.StatusFailed:
 		return "error"
 	default:

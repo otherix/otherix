@@ -94,6 +94,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	v, err := m.AdoptForMigration(AdoptSpec{
 		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMB: s.MemoryMB,
 		PoolName: s.PoolName, Architecture: s.Architecture,
+		InitialStatus: StatusMigratingIncoming,
 	})
 	if err != nil {
 		cleanup()

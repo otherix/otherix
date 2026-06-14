@@ -39,6 +39,13 @@ const (
 	StatusStopped  Status = "stopped"
 	StatusFailed   Status = "failed"
 	StatusDeleting Status = "deleting"
+	// StatusMigratingIncoming is the transitional status of a live-migration
+	// target after the disk+RAM are adopted but before the resume driver
+	// flips it to running. The VM reconciler and the status probe both leave
+	// it alone (it falls in their default skip arms), so the adopted target
+	// is never cold-started post-cutover. Resume transitions it to
+	// StatusRunning.
+	StatusMigratingIncoming Status = "migrating_incoming"
 )
 
 // VM is the agent's in-memory view of a managed virtual machine. The

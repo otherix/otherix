@@ -19,9 +19,10 @@ import (
 )
 
 // AdoptSpec describes a VM whose disk is being migrated in from another
-// node. The target adopts a stopped, Migrated record plus a destination
-// disk path; the disk file itself is created and filled by the migration
-// flow (Task 8), not by this method.
+// node. The target adopts a Migrated record (StatusStopped for offline
+// migration, StatusMigratingIncoming for live targets, per InitialStatus)
+// plus a destination disk path; the disk file itself is created and filled
+// by the migration flow (Task 8), not by this method.
 type AdoptSpec struct {
 	UUID         uuid.UUID
 	Name         string
@@ -29,14 +30,21 @@ type AdoptSpec struct {
 	MemoryMB     int
 	PoolName     string
 	Architecture qemu.Architecture
+	// InitialStatus is the status the adopted VM record starts in. The zero
+	// value ("") means StatusStopped (offline migration: a later start boots
+	// the copied disk). Live targets pass StatusMigratingIncoming so the
+	// reconciler does not cold-start the VM before the resume driver runs.
+	InitialStatus Status
 }
 
-// AdoptForMigration registers a stopped, Migrated VM on this (target) node
-// and returns it. It computes the destination disk path inside the named
-// pool, mirroring the create flow, and persists meta.json so a later start
-// boots the copied disk without cloning. It does not touch QEMU or create
-// the disk file. The pool must already be registered (reconciled from
-// desired state); an unknown pool returns ErrPoolUnknown.
+// AdoptForMigration registers a Migrated VM on this (target) node and
+// returns it, in the initial status resolved from spec.InitialStatus
+// (StatusStopped for offline migration, StatusMigratingIncoming for live
+// targets). It computes the destination disk path inside the named pool,
+// mirroring the create flow, and persists meta.json so a later start or
+// resume boots the copied disk without cloning. It does not touch QEMU or
+// create the disk file. The pool must already be registered (reconciled
+// from desired state); an unknown pool returns ErrPoolUnknown.
 func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 	m.poolsMu.RLock()
 	p, ok := m.pools[spec.PoolName]
@@ -54,7 +62,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		MemoryMB:      spec.MemoryMB,
 		PoolName:      spec.PoolName,
 		Architecture:  spec.Architecture,
-		Status:        StatusStopped,
+		Status:        adoptStatus(spec.InitialStatus),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		DiskPath:      disk,
@@ -79,6 +87,16 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		return nil, fmt.Errorf("persist adopted vm: %v", err)
 	}
 	return v, nil
+}
+
+// adoptStatus resolves the adopted VM's initial status: the zero value ("")
+// defaults to StatusStopped (offline migration), otherwise the caller's
+// explicit status (live targets pass StatusMigratingIncoming).
+func adoptStatus(s Status) Status {
+	if s == "" {
+		return StatusStopped
+	}
+	return s
 }
 
 // removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
