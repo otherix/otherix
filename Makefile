@@ -169,13 +169,17 @@ smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otheri
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh
 
+.PHONY: smoke-vm-migration
+smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline` across two nodes (run after local-dev-start)
+	bash dev/smoke/vm-migration/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
 # separately.
 .PHONY: smoke-all
 smoke-all: ## Run all stack-dependent smokes in sequence (run after local-dev-start; excludes smoke-ha)
-	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-network-config; do \
+	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-network-config; do \
 	  echo ">> smoke: $$s"; \
 	  bash dev/smoke/$$s/run.sh || { echo "✗ smoke-$$s failed"; exit 1; }; \
 	done
