@@ -116,6 +116,11 @@ tags:
     description: |
       **Executional** tasks tracked in the agent's local state.
       Distinct from Control-Plane saga tasks — see schema description.
+  - name: heartbeat
+    description: |
+      Heartbeat control endpoints. The CP fast-pushes a nudge after a
+      migration cutover so this node re-pulls its declared state without
+      waiting for the next heartbeat interval tick.
 
 paths:
   /v1/health:
@@ -157,6 +162,14 @@ paths:
                 $ref: "#/components/schemas/NodeInfo"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/heartbeat/nudge:
+    post:
+      operationId: heartbeat.nudge
+      summary: Trigger an immediate heartbeat (CP fast-push after a migration cutover).
+      tags: [heartbeat]
+      responses:
+        "204": { description: Nudge accepted; an immediate heartbeat will be sent. }
 
   /v1/vms:
     get:

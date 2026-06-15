@@ -47,6 +47,7 @@ type injectionState struct {
 var operationIDs = map[string]struct{}{
 	"health.check":               {},
 	"info.get":                   {},
+	"heartbeat.nudge":            {},
 	"networks.list":              {},
 	"networks.configure":         {},
 	"networks.get":               {},

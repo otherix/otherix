@@ -24,6 +24,7 @@ import (
 	"github.com/otherix/otherix/internal/agent/console"
 	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/dnsproxy"
+	heartbeatHandlers "github.com/otherix/otherix/internal/agent/handlers/heartbeat"
 	storagepoolshandlers "github.com/otherix/otherix/internal/agent/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/agent/handlers/vms"
@@ -166,7 +167,18 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	consoleTokens := console.NewTokenStore()
 	consoleTokens.Start(ctx)
 
-	router := buildRouter(cfg, nodeName, log, manager, consoleTokens)
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat()
+
+	// Build the heartbeat sender BEFORE the router so the same live Sender
+	// the agent posts heartbeats with backs POST /v1/heartbeat/nudge. A nil
+	// Sender means heartbeats are disabled (misconfiguration); the router
+	// then mounts a no-op nudger so the endpoint still answers 204 without a
+	// nil-pointer panic. startHeartbeat below launches the goroutine that
+	// drives this same Sender's loop.
+	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
+
+	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, nudgerFor(sender))
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -176,9 +188,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
-	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
-	defer stopHeartbeat()
-	heartbeatDone := startHeartbeat(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
+	heartbeatDone := startHeartbeat(heartbeatCtx, sender, log)
 
 	reconcilerDone := runReconciler(heartbeatCtx, "pool reconciler", poolReconciler.Run, log)
 	netReconcilerDone := runReconciler(heartbeatCtx, "network reconciler", netReconciler.Run, log)
@@ -380,26 +390,21 @@ func (a poolImageAdapter) PoolImages(pool string) ([]heartbeat.PoolImageReport, 
 	return out, true
 }
 
-// startHeartbeat wires up the agent → CP heartbeat sender alongside
-// the HTTPS server. Returns a channel that is closed when the
-// goroutine exits (so Run can wait for clean shutdown before
-// returning). Returns a never-closed-but-immediately-closed channel
-// if the heartbeat path cannot be initialised: heartbeats are
-// fire-and-forget from the agent's perspective; misconfiguration must
-// not block the rest of the agent (vm lifecycle, console, etc.)
-// from running.
-func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) <-chan struct{} {
-	done := make(chan struct{})
-
+// buildSender constructs the agent → CP heartbeat sender. It returns nil
+// (logging a WARN) when the heartbeat path cannot be initialised:
+// heartbeats are fire-and-forget from the agent's perspective, so
+// misconfiguration must not block the rest of the agent (vm lifecycle,
+// console, etc.) from running. The returned Sender is the single live
+// instance — it backs both the heartbeat loop (startHeartbeat) and the
+// POST /v1/heartbeat/nudge handler (no second Sender is constructed).
+func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) *heartbeat.Sender {
 	if nodeName == "" {
 		log.Warn("heartbeat disabled: node_name is empty (cert CN parse failed upstream)")
-		close(done)
-		return done
+		return nil
 	}
 	if cfg.ControlPlane.URL == "" {
 		log.Warn("heartbeat disabled: control_plane.url is empty")
-		close(done)
-		return done
+		return nil
 	}
 
 	collector, err := heartbeat.NewLinux(heartbeat.CollectorDeps{
@@ -414,8 +419,7 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 	})
 	if err != nil {
 		log.Warn("heartbeat disabled: collector init failed", "error", err.Error())
-		close(done)
-		return done
+		return nil
 	}
 
 	client, err := heartbeat.NewClient(heartbeat.ClientConfig{
@@ -425,8 +429,7 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 	})
 	if err != nil {
 		log.Warn("heartbeat disabled: client init failed", "error", err.Error())
-		close(done)
-		return done
+		return nil
 	}
 
 	// MultiResponseHandler fans the heartbeat response to every
@@ -436,16 +439,25 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 	// declared_wireguard_peers. Each ignores the others' payload without
 	// needing to know about it.
 	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec, wgRec}
-	sender := heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
+	return heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
 		Interval: cfg.ControlPlane.HeartbeatInterval,
 	}, log)
+}
+
+// startHeartbeat launches the heartbeat loop for sender alongside the
+// HTTPS server. Returns a channel that is closed when the goroutine exits
+// (so Run can wait for clean shutdown before returning). A nil sender
+// (heartbeat disabled by buildSender) yields an already-closed channel.
+func startHeartbeat(ctx context.Context, sender *heartbeat.Sender, log *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	if sender == nil {
+		close(done)
+		return done
+	}
 
 	go func() {
 		defer close(done)
-		log.Info("heartbeat sender starting",
-			"cp_endpoint", cfg.ControlPlane.URL,
-			"interval", cfg.ControlPlane.HeartbeatInterval,
-		)
+		log.Info("heartbeat sender starting")
 		if err := sender.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("heartbeat sender stopped with error", "error", err.Error())
 		}
@@ -453,6 +465,25 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 	}()
 	return done
 }
+
+// nudgerFor returns the live Sender as the route's Nudger, or a no-op when
+// the heartbeat sender could not be built (heartbeat disabled). Either way
+// POST /v1/heartbeat/nudge answers 204; with no loop there is simply
+// nothing to nudge.
+func nudgerFor(sender *heartbeat.Sender) heartbeatHandlers.Nudger {
+	if sender == nil {
+		return noopNudger{}
+	}
+	return sender
+}
+
+// noopNudger satisfies heartbeatHandlers.Nudger when the heartbeat sender
+// could not be built. The endpoint still answers 204; there is simply no
+// loop to nudge, so the call is a harmless no-op.
+type noopNudger struct{}
+
+// Nudge does nothing.
+func (noopNudger) Nudge() {}
 
 // buildRouter constructs the chi router with the standard middleware
 // chain (mirrors CP-side `internal/api.NewRouter`): RequestID first so
@@ -463,7 +494,7 @@ func startHeartbeat(ctx context.Context, cfg *config.AgentConfig, nodeName strin
 // goroutines inherit r.Context() and would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
 // below opts back in via a Group.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, heartbeatNudger heartbeatHandlers.Nudger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -498,6 +529,7 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			r.Route("/vms", vmsHandler.Mount)
 			r.Route("/tasks", tasksHandler.Mount)
 			r.Route("/storage-pools", storagePoolsHandler.Mount)
+			r.Post("/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
 		})
 	})
 

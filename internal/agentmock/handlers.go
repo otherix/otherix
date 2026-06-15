@@ -355,8 +355,16 @@ func (m *Mock) TasksGet(w http.ResponseWriter, r *http.Request, taskID uuid.UUID
 }
 
 // ---------------------------------------------------------------------
-// Stub-501 handlers (38). Each delegates to respondNotImplemented.
+// Stub-501 handlers (39). Each delegates to respondNotImplemented.
 // ---------------------------------------------------------------------
+
+func (m *Mock) HeartbeatNudge(w http.ResponseWriter, r *http.Request) {
+	const opID = "heartbeat.nudge"
+	if m.preDispatch(w, r, opID) {
+		return
+	}
+	m.respondNotImplemented(w, r, opID)
+}
 
 func (m *Mock) NetworksList(w http.ResponseWriter, r *http.Request, _ agentapi.NetworksListParams) {
 	const opID = "networks.list"

@@ -14,7 +14,7 @@
 //
 // Six functional endpoints are implemented (health, info,
 // storage-pools list/get, storage-images list, tasks.get always-404)
-// out of forty-four; the remaining thirty-eight are mounted as 501
+// out of forty-five; the remaining thirty-nine are mounted as 501
 // stubs so the contract is compile-time-covered without runtime
 // reach. The Test API (see Mock.Start, Mock.AddStoragePool,
 // Mock.SetPoolCapacity, Mock.InjectError, Mock.SendHeartbeatNow,
