@@ -382,6 +382,38 @@ func (c *QMPClient) MigrateContinue() error {
 	return nil
 }
 
+// AnnounceParameters tunes a QEMU self-announce: the retry schedule (all
+// milliseconds) QEMU uses to repeat the announcement so it survives small frame
+// loss. These mirror QEMU's own migration-announce defaults.
+type AnnounceParameters struct {
+	Initial int // delay before the first announce
+	Max     int // cap on the per-round delay
+	Rounds  int // number of announcements
+	Step    int // per-round delay increment
+}
+
+// announceSelfCmd builds announce-self with the given retry schedule.
+func announceSelfCmd(p AnnounceParameters) []byte {
+	return mustCmd("announce-self", map[string]any{
+		"initial": p.Initial,
+		"max":     p.Max,
+		"rounds":  p.Rounds,
+		"step":    p.Step,
+	})
+}
+
+// AnnounceSelf issues QMP announce-self: QEMU emits self-announcement (RARP,
+// MAC-only, IP-independent) frames from each guest NIC's tap so the physical
+// switch / learning bridge relearns the MAC on this node's port after a live
+// migration. Best-effort at the call site - a missed announce degrades to the
+// switch's MAC-aging timeout, never fails the resume.
+func (c *QMPClient) AnnounceSelf(p AnnounceParameters) error {
+	if _, err := c.monitor.Run(announceSelfCmd(p)); err != nil {
+		return fmt.Errorf("announce-self: %w", err)
+	}
+	return nil
+}
+
 // migrateCancelCmd builds migrate_cancel. Note the UNDERSCORE: this is
 // the one migration verb QEMU spells with an underscore.
 func migrateCancelCmd() []byte {

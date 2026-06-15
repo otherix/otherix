@@ -83,6 +83,24 @@ func TestMigrateCancelCmd_Underscore(t *testing.T) {
 	}
 }
 
+func TestAnnounceSelfCmd_Schedule(t *testing.T) {
+	var m map[string]any
+	if err := json.Unmarshal(announceSelfCmd(AnnounceParameters{Initial: 50, Max: 550, Rounds: 5, Step: 100}), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["execute"] != "announce-self" {
+		t.Errorf("execute = %v, want announce-self", m["execute"])
+	}
+	args := m["arguments"].(map[string]any)
+	// JSON numbers decode to float64.
+	want := map[string]float64{"initial": 50, "max": 550, "rounds": 5, "step": 100}
+	for k, v := range want {
+		if got := args[k].(float64); got != v {
+			t.Errorf("arguments.%s = %v, want %v", k, got, v)
+		}
+	}
+}
+
 func TestWaitMigrationStatus_ReturnsOnMatch(t *testing.T) {
 	ch := make(chan qmp.Event, 3)
 	ch <- qmp.Event{Event: "MIGRATION", Data: map[string]any{"status": "active"}}

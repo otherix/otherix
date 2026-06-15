@@ -739,7 +739,11 @@ func (f *fakeTargetConn) BlockExportDel(id string) error {
 }
 func (f *fakeTargetConn) NBDServerStop() error { f.rec("nbd-server-stop"); return nil }
 func (f *fakeTargetConn) Cont() error          { f.rec("cont"); return nil }
-func (f *fakeTargetConn) Close() error         { return nil }
+func (f *fakeTargetConn) AnnounceSelf(AnnounceParameters) error {
+	f.rec("announce-self")
+	return nil
+}
+func (f *fakeTargetConn) Close() error { return nil }
 
 // TestRunLiveTarget_HappyPathOrder drives a 2-export target resume and asserts
 // EVERY writable export is deleted, in index order, BEFORE nbd-server-stop and

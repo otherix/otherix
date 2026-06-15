@@ -340,6 +340,17 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 
 	m.transitionVM(v.ID, StatusRunning, "")
 
+	// Tell the L2 segment the guest moved here: QEMU self-announce (RARP, MAC-only,
+	// IP-independent) so a physical switch / learning bridge relearns the port on
+	// this node. The PRIMARY cutover for type=bridge NICs; harmless belt-and-
+	// suspenders for overlay (whose authoritative convergence is the CP FDB
+	// fast-push). Best-effort - a failure degrades to the switch's MAC-aging
+	// timeout and must not fail the resume (the guest is already running).
+	if err := conn.AnnounceSelf(qemu.AnnounceParameters{Initial: 50, Max: 550, Rounds: 5, Step: 100}); err != nil {
+		m.log.WarnContext(ctx, "post-resume announce-self failed",
+			slog.String("vm", v.ID.String()), slog.String("error", err.Error()))
+	}
+
 	// Announce the VM's new location to the L2 segment: one gratuitous ARP per
 	// NIC with an IPv4. Best-effort - a failure degrades to FDB/heartbeat
 	// convergence and must not fail the resume (the guest is already running).

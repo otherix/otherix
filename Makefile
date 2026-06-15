@@ -181,6 +181,10 @@ smoke-vm-migration-live: ## Live VM migration smoke: `otherix vm migrate` (live)
 smoke-vm-migration-live-overlay: ## Live VM migration + overlay smoke: live-migrate an overlay-attached VM, asserts cross-node overlay connectivity follows the guest at cutover (run after local-dev-start)
 	bash dev/smoke/vm-migration-live-overlay/run.sh
 
+.PHONY: smoke-vm-migration-live-bridge
+smoke-vm-migration-live-bridge: ## Live VM migration + bridge smoke: live-migrate a type=bridge-attached VM, asserts L2 connectivity follows the guest at cutover via announce-self (run after local-dev-start)
+	bash dev/smoke/vm-migration-live-bridge/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

@@ -234,6 +234,7 @@ type LiveTargetConn interface {
 	BlockExportDel(id string) error
 	NBDServerStop() error
 	Cont() error
+	AnnounceSelf(p AnnounceParameters) error
 	Close() error
 }
 

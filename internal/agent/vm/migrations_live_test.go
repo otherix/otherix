@@ -563,6 +563,7 @@ func (stubTargetConn) Events(ctx context.Context) (<-chan qmp.Event, error) { re
 func (stubTargetConn) BlockExportDel(id string) error                       { return nil }
 func (stubTargetConn) NBDServerStop() error                                 { return nil }
 func (stubTargetConn) Cont() error                                          { return nil }
+func (stubTargetConn) AnnounceSelf(qemu.AnnounceParameters) error           { return nil }
 func (stubTargetConn) Close() error                                         { return nil }
 
 // waitStatus polls the raw in-map VM status (not m.Get, which probes the
@@ -852,6 +853,70 @@ func TestRunIncomingResumeSendsGARP(t *testing.T) {
 	got := calls[0]
 	if got.Bridge != "otb100" || got.MAC != "52:54:00:00:00:01" || got.IP != netip.MustParseAddr("10.42.0.5") {
 		t.Errorf("SendGARP call = %+v, want bridge=otb100 mac=52:54:00:00:00:01 ip=10.42.0.5", got)
+	}
+}
+
+// announceRecorderConn is a stubTargetConn that records announce-self calls so a
+// test can assert the post-resume QMP announce-self fired on the live conn.
+type announceRecorderConn struct {
+	stubTargetConn
+	announced int
+	params    qemu.AnnounceParameters
+}
+
+func (c *announceRecorderConn) AnnounceSelf(p qemu.AnnounceParameters) error {
+	c.announced++
+	c.params = p
+	return nil
+}
+
+// TestRunIncomingResumeAnnouncesSelf is the teeth for slice 3b Task 2: after the
+// target resumes the live-migrated guest (StatusRunning), the agent issues one
+// QMP announce-self on the same live conn so a learning bridge / switch relearns
+// the guest's MAC on this node's port. Drives the real resume path (the detached
+// goroutine startIncomingLive spawns) with migDialQMPTarget overridden to return
+// the recording conn; resumeWG.Wait awaits the resume finishing.
+func TestRunIncomingResumeAnnouncesSelf(t *testing.T) {
+	m, _ := newTestManagerWithFabric(t)
+	m.migLaunchIncoming = func(context.Context, *VM, qemu.LiveIncomingSpec) error { return nil }
+	m.migDialQMP = func(string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	m.migCreateDisk = func(context.Context, string, int64) error { return nil }
+
+	rec := &announceRecorderConn{}
+	m.migDialQMPTarget = func(string) (qemu.LiveTargetConn, error) { return rec, nil }
+
+	vmUUID := uuid.New()
+	spec := IncomingSpec{
+		MigrationID:    uuid.New(),
+		VMUUID:         vmUUID,
+		VMName:         "announcevm",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+		NICs: []netfabric.NIC{{
+			ID: uuid.New(), Bridge: "otb100", MAC: "52:54:00:00:00:01",
+			Model: "virtio", MTU: 1390, DeviceOrder: 0,
+			IPv4: netip.MustParseAddr("10.42.0.5"),
+		}},
+	}
+
+	if _, err := m.startIncomingLive(context.Background(), spec); err != nil {
+		t.Fatalf("startIncomingLive: %v", err)
+	}
+	waitStatus(t, m, vmUUID, StatusRunning)
+	m.resumeWG.Wait()
+
+	if rec.announced != 1 {
+		t.Errorf("announce-self calls = %d, want 1", rec.announced)
+	}
+	if rec.params.Rounds == 0 {
+		t.Errorf("announce params not passed: %+v", rec.params)
 	}
 }
 
