@@ -487,6 +487,15 @@ func TestStartIncoming_LiveFailedPrepDoesNotPoisonRetry(t *testing.T) {
 		}
 		return &fakeLiveConn{}, nil
 	}
+	// The successful second attempt spawns the fire-and-forget resume goroutine
+	// (go runIncomingResume on context.Background()). Stub the target-side seams
+	// so it drives deterministically to StatusRunning; the test waits for that
+	// below so the goroutine finishes its persistVM write before t.TempDir
+	// cleanup runs (otherwise the write races RemoveAll: "directory not empty").
+	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
+	m.migRunLiveTarget = func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error {
+		return nil
+	}
 
 	migID := uuid.New()
 	vmUUID := uuid.New()
@@ -535,6 +544,11 @@ func TestStartIncoming_LiveFailedPrepDoesNotPoisonRetry(t *testing.T) {
 	if rec.Role != migration.RoleTarget {
 		t.Errorf("record Role = %q, want target", rec.Role)
 	}
+
+	// Wait for the spawned resume goroutine to finish (it drives the VM to
+	// StatusRunning via the stubbed target seams) before the test returns, so
+	// its persistVM write does not race t.TempDir's RemoveAll cleanup.
+	waitStatus(t, m, vmUUID, StatusRunning)
 }
 
 // stubTargetConn is a no-op qemu.LiveTargetConn used to exercise the
