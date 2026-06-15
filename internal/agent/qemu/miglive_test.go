@@ -78,6 +78,8 @@ func (f *fakeLiveConn) ObjectAddAuthz(id, identity string) error {
 	return nil
 }
 
+func (f *fakeLiveConn) ObjectDel(id string) error { f.rec("object-del:" + id); return nil }
+
 func (f *fakeLiveConn) NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error {
 	f.rec("nbd-server-start")
 	return nil
@@ -211,6 +213,7 @@ func TestRunLiveSource_HappyPathOrder(t *testing.T) {
 		"block-job-cancel:false",
 		"migrate-continue",
 		"blockdev-del",
+		"object-del:migtls",
 	}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
@@ -356,6 +359,40 @@ func TestRunLiveSource_AbortOnRAMFailureBeforeSwitchover(t *testing.T) {
 	}
 }
 
+// TestRunLiveSource_DeletesMigtlsOnSuccess asserts the client TLS-creds object
+// "migtls" is removed on the success tail, so a guest that later returns to this
+// node can re-add it without a "duplicate property 'migtls'" failure.
+func TestRunLiveSource_DeletesMigtlsOnSuccess(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 4)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+	f.events <- migrationEvent("pre-switchover")
+	f.events <- blockJobEvent("BLOCK_JOB_COMPLETED", "mirror0")
+	f.events <- migrationEvent("completed")
+
+	if err := RunLiveSource(context.Background(), f, testSpec(), nil); err != nil {
+		t.Fatalf("RunLiveSource() = %v, want nil", err)
+	}
+	if got := f.snapshot(); countCall(got, "object-del:migtls") != 1 {
+		t.Errorf("calls = %v, want exactly one object-del:migtls", got)
+	}
+}
+
+// TestRunLiveSource_DeletesMigtlsOnAbort asserts the client TLS-creds object
+// "migtls" is removed even when the migration aborts: a guest that STAYS on the
+// source must not keep "migtls", or its NEXT migration fails to add it.
+func TestRunLiveSource_DeletesMigtlsOnAbort(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 2)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+	f.events <- migrationEvent("failed")
+
+	if err := RunLiveSource(context.Background(), f, testSpec(), nil); err == nil {
+		t.Fatal("RunLiveSource() = nil, want error on abort")
+	}
+	if got := f.snapshot(); countCall(got, "object-del:migtls") != 1 {
+		t.Errorf("calls = %v, want object-del:migtls on abort path", got)
+	}
+}
+
 func TestRunLiveSource_WatchdogAbortsOnStall(t *testing.T) {
 	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
 	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
@@ -400,7 +437,7 @@ func TestSetupLiveIncoming_Order(t *testing.T) {
 	err := SetupLiveIncoming(f, LiveIncomingSpec{
 		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
 		Disks: []LiveIncomingDisk{
-			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "tok-0", ExportID: "exp0", Format: "qcow2"},
+			{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Export: "tok-0", ExportID: "exp0", Format: "qcow2"},
 		},
 	})
 	if err != nil {
@@ -426,8 +463,8 @@ func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 	err := SetupLiveIncoming(f, LiveIncomingSpec{
 		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
 		Disks: []LiveIncomingDisk{
-			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "mig-0", ExportID: "exp0", Format: "qcow2"},
-			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
+			{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Export: "mig-0", ExportID: "exp0", Format: "qcow2"},
+			{Node: "virtio1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
 		},
 	})
 	if err != nil {
@@ -446,7 +483,7 @@ func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 	}
 	// Only the writable boot disk is exported; the read-only cidata is skipped.
 	wantExports := []exportAddCall{
-		{id: "exp0", node: "target-disk0", name: "mig-0", writable: true},
+		{id: "exp0", node: "virtio0", name: "mig-0", writable: true},
 	}
 	if diff := cmp.Diff(wantExports, f.exportAdds, cmp.AllowUnexported(exportAddCall{})); diff != "" {
 		t.Errorf("export-add calls mismatch (-want +got):\n%s", diff)
@@ -455,13 +492,13 @@ func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 
 func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
-		Disks: []LiveIncomingDisk{{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
+		Disks: []LiveIncomingDisk{{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
 	})
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-incoming") || !strings.Contains(joined, "defer") {
 		t.Errorf("LiveIncomingArgs missing -incoming defer: %v", args)
 	}
-	if !strings.Contains(joined, "target-disk0") || !strings.Contains(joined, "/pool/vm/disk.qcow2") {
+	if !strings.Contains(joined, "virtio0") || !strings.Contains(joined, "/pool/vm/disk.qcow2") {
 		t.Errorf("LiveIncomingArgs missing disk node-name/path: %v", args)
 	}
 }
@@ -472,7 +509,7 @@ func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
 // from launchIncomingQemu.
 func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
-		Disks: []LiveIncomingDisk{{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
+		Disks: []LiveIncomingDisk{{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
 	})
 	joined := strings.Join(args, " ")
 	if got := countArg(args, "-blockdev"); got != 1 {
@@ -484,8 +521,8 @@ func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 	if got := countArg(args, "-incoming"); got != 1 {
 		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") {
-		t.Errorf("missing boot -device virtio-blk-pci,drive=target-disk0: %v", args)
+	if !strings.Contains(joined, "virtio-blk-pci,drive=virtio0") {
+		t.Errorf("missing boot -device virtio-blk-pci,drive=virtio0: %v", args)
 	}
 	if strings.Contains(joined, "read-only=on") {
 		t.Errorf("boot device must not be read-only: %v", args)
@@ -500,8 +537,8 @@ func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
 		Disks: []LiveIncomingDisk{
-			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"},
-			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
+			{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"},
+			{Node: "virtio1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
 		},
 	})
 	joined := strings.Join(args, " ")
@@ -515,18 +552,18 @@ func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
 	}
 	// Boot disk: writable blockdev (no read-only), plain device.
-	if !strings.Contains(joined, "driver=qcow2,node-name=target-disk0") {
-		t.Errorf("missing boot blockdev driver=qcow2,node-name=target-disk0: %v", args)
+	if !strings.Contains(joined, "driver=qcow2,node-name=virtio0") {
+		t.Errorf("missing boot blockdev driver=qcow2,node-name=virtio0: %v", args)
 	}
-	if bootBD := blockdevFor(args, "target-disk0"); strings.Contains(bootBD, "read-only=on") {
+	if bootBD := blockdevFor(args, "virtio0"); strings.Contains(bootBD, "read-only=on") {
 		t.Errorf("boot blockdev must NOT be read-only: %q", bootBD)
 	}
 	// cidata: read-only=on on the BLOCKDEV (so the guest sees VIRTIO_BLK_F_RO),
 	// NOT auto-read-only (the rebuilt cidata is a static file, never mirrored).
-	if !strings.Contains(joined, "driver=raw,node-name=target-disk1") {
-		t.Errorf("missing cidata blockdev driver=raw,node-name=target-disk1: %v", args)
+	if !strings.Contains(joined, "driver=raw,node-name=virtio1") {
+		t.Errorf("missing cidata blockdev driver=raw,node-name=virtio1: %v", args)
 	}
-	cidataBD := blockdevFor(args, "target-disk1")
+	cidataBD := blockdevFor(args, "virtio1")
 	if !strings.Contains(cidataBD, "read-only=on") {
 		t.Errorf("cidata blockdev must carry read-only=on: %q", cidataBD)
 	}
@@ -534,14 +571,14 @@ func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 		t.Errorf("cidata blockdev must use read-only=on, not auto-read-only: %q", cidataBD)
 	}
 	// NEITHER device carries read-only=on (the property does not exist).
-	if strings.Contains(joined, "read-only=on,") || strings.Contains(joined, "drive=target-disk0,read-only=on") || strings.Contains(joined, "drive=target-disk1,read-only=on") {
+	if strings.Contains(joined, "read-only=on,") || strings.Contains(joined, "drive=virtio0,read-only=on") || strings.Contains(joined, "drive=virtio1,read-only=on") {
 		t.Errorf("no -device may carry read-only=on: %v", args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") {
-		t.Errorf("missing plain boot device virtio-blk-pci,drive=target-disk0: %v", args)
+	if !strings.Contains(joined, "virtio-blk-pci,drive=virtio0") {
+		t.Errorf("missing plain boot device virtio-blk-pci,drive=virtio0: %v", args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk1") {
-		t.Errorf("missing plain cidata device virtio-blk-pci,drive=target-disk1: %v", args)
+	if !strings.Contains(joined, "virtio-blk-pci,drive=virtio1") {
+		t.Errorf("missing plain cidata device virtio-blk-pci,drive=virtio1: %v", args)
 	}
 }
 
@@ -614,6 +651,7 @@ func (c *coupledLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error {
 	return nil
 }
 func (c *coupledLiveConn) ObjectAddAuthz(string, string) error { c.rec("object-add:authz"); return nil }
+func (c *coupledLiveConn) ObjectDel(id string) error           { c.rec("object-del:" + id); return nil }
 func (c *coupledLiveConn) BlockdevAddNBD(n, h string, p int, e, cr, hn string) error {
 	c.rec("blockdev-add")
 	return nil
@@ -737,8 +775,9 @@ func (f *fakeTargetConn) BlockExportDel(id string) error {
 	f.rec("block-export-del:" + id)
 	return nil
 }
-func (f *fakeTargetConn) NBDServerStop() error { f.rec("nbd-server-stop"); return nil }
-func (f *fakeTargetConn) Cont() error          { f.rec("cont"); return nil }
+func (f *fakeTargetConn) ObjectDel(id string) error { f.rec("object-del:" + id); return nil }
+func (f *fakeTargetConn) NBDServerStop() error      { f.rec("nbd-server-stop"); return nil }
+func (f *fakeTargetConn) Cont() error               { f.rec("cont"); return nil }
 func (f *fakeTargetConn) AnnounceSelf(AnnounceParameters) error {
 	f.rec("announce-self")
 	return nil
@@ -756,7 +795,7 @@ func TestRunLiveTarget_HappyPathOrder(t *testing.T) {
 	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
 		t.Fatalf("RunLiveTarget() = %v, want nil", err)
 	}
-	want := []string{"block-export-del:exp0", "block-export-del:exp1", "nbd-server-stop", "cont"}
+	want := []string{"block-export-del:exp0", "block-export-del:exp1", "nbd-server-stop", "cont", "object-del:migtls", "object-del:migauthz"}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
 	}
@@ -774,6 +813,31 @@ func TestRunLiveTarget_FailClosedOnTimeout(t *testing.T) {
 	f := &fakeTargetConn{events: make(chan qmp.Event, 1)} // no event ever
 	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportIDs: []string{"exp0"}, IncomingTimeout: 100 * time.Millisecond}); err == nil {
 		t.Fatal("RunLiveTarget() = nil, want error on incoming timeout")
+	}
+}
+
+// TestRunLiveTarget_DeletesMigtlsAndAuthzAfterCont asserts the resumed target
+// removes both migration TLS objects ("migtls" server creds + "migauthz") AFTER
+// cont, so this qemu can later migrate AS A SOURCE without a "duplicate property
+// 'migtls'" failure. The dels MUST come after cont (best-effort cleanup of a
+// guest that has already resumed).
+func TestRunLiveTarget_DeletesMigtlsAndAuthzAfterCont(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1)}
+	f.events <- migrationEvent("completed")
+
+	spec := LiveTargetSpec{ExportIDs: []string{"exp0", "exp1"}, IncomingTimeout: 2 * time.Second}
+	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
+		t.Fatalf("RunLiveTarget: %v", err)
+	}
+	calls := f.snapshot()
+	contIdx := indexOf(calls, "cont")
+	delTLS := indexOf(calls, "object-del:migtls")
+	delAuthz := indexOf(calls, "object-del:migauthz")
+	if contIdx < 0 || delTLS < 0 || delAuthz < 0 {
+		t.Fatalf("calls = %v, want cont + object-del:migtls + object-del:migauthz", calls)
+	}
+	if delTLS < contIdx || delAuthz < contIdx {
+		t.Errorf("calls = %v, object-del must come AFTER cont", calls)
 	}
 }
 

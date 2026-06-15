@@ -21,6 +21,7 @@ import (
 type LiveSourceConn interface {
 	ObjectAddTLSCreds(id, dir, endpoint string) error
 	ObjectAddAuthz(id, identity string) error
+	ObjectDel(id string) error
 	BlockdevAddNBD(nodeName, host string, port int, export, tlsCreds, tlsHostname string) error
 	BlockdevMirror(jobID, device, target string) error
 	NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error
@@ -146,6 +147,11 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		abortLiveSource(conn, s)
 		return fmt.Errorf("add client tls creds: %w", err)
 	}
+	// Remove the client TLS-creds object on every return below (success tail and
+	// every abort): a guest that stays on the source after an abort must not keep
+	// "migtls", or its NEXT migration fails "duplicate property 'migtls'".
+	// Best-effort - on success the guest is already on the target.
+	defer func() { _ = conn.ObjectDel(migTLSCredsID) }()
 	// Mirror EVERY source disk to its matching target export so the device
 	// topology matches. The boot disk and the cidata disk each get an NBD
 	// client blockdev + a blockdev-mirror; both must reach READY before the RAM
@@ -232,6 +238,7 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 type LiveTargetConn interface {
 	Events(ctx context.Context) (<-chan qmp.Event, error)
 	BlockExportDel(id string) error
+	ObjectDel(id string) error
 	NBDServerStop() error
 	Cont() error
 	AnnounceSelf(p AnnounceParameters) error
@@ -284,6 +291,12 @@ func RunLiveTarget(ctx context.Context, conn LiveTargetConn, s LiveTargetSpec) e
 	if err := conn.Cont(); err != nil {
 		return fmt.Errorf("resume guest: %w", err)
 	}
+	// The guest is now running on this node. Remove the migration TLS objects so
+	// this qemu can migrate AGAIN later without "duplicate property 'migtls'".
+	// Best-effort: the guest is already resumed, so a del failure must NOT fail
+	// the resume (it only degrades to the prior leak, blocking the NEXT migration).
+	_ = conn.ObjectDel(migTLSCredsID)
+	_ = conn.ObjectDel(migAuthzID)
 	return nil
 }
 
@@ -467,7 +480,7 @@ type LiveIncomingSpec struct {
 // NOT exported and NOT mirrored. The read-only blockdev makes the guest see the
 // disk read-only, matching the source's VIRTIO_BLK_F_RO.
 type LiveIncomingDisk struct {
-	Node     string // blockdev node-name, "target-disk<i>"
+	Node     string // blockdev node-name, "virtio<i>"
 	Path     string // destination file path
 	Export   string // NBD export name, "<migrationID>-<i>"; empty for read-only disks (not exported)
 	ExportID string // block-export-add id, "exp<i>"; empty for read-only disks (not exported)

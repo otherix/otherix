@@ -106,17 +106,33 @@ func adoptStatus(s Status) Status {
 }
 
 // removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
-// record and removes the per-VM state directory (meta.json, sockets, pidfile)
-// under stateDir, mirroring runDelete's state-dir removal. It does NOT remove
-// the pool disk dir, which may be shared. The RemoveAll error is best-effort:
-// logged and ignored so a stale directory never blocks rollback. Used by the
-// live incoming prep to leave nothing behind when a later step fails.
+// record, removes the per-VM state directory (meta.json, sockets, pidfile)
+// under stateDir (mirroring runDelete's state-dir removal), and removes the
+// per-VM destination disk dir. The disk-dir removal is SAFE for every caller:
+// the TARGET-side callers (the startIncomingLive rollback and
+// teardownIncomingTarget) are strictly pre-cutover, where the destination disk
+// is empty / not the live copy; the SOURCE-side caller (teardownDepartedSource)
+// runs only after a completed live migrate, where the disk is the now-stale
+// departed copy (the live copy is on the target). The target-side post-cutover
+// path (failIncomingResume) intentionally does NOT call this - there the
+// destination disk is the ONLY live copy. The RemoveAll errors are best-effort:
+// logged and ignored so a stale directory never blocks teardown.
 func (m *Manager) removeAdoptedVM(id uuid.UUID) {
 	m.mu.Lock()
+	v := m.vms[id]
 	delete(m.vms, id)
 	m.mu.Unlock()
 	if err := os.RemoveAll(filepath.Join(m.stateDir, id.String())); err != nil {
 		m.log.Warn("removeAdoptedVM: remove agent state dir", "vm_id", id.String(), "err", err)
+	}
+	// Also remove the per-VM destination disk dir. SAFE: every caller is
+	// pre-cutover (the startIncomingLive rollback and teardownIncomingTarget),
+	// where this disk is empty / not the live copy. The post-cutover path
+	// (failIncomingResume) intentionally does NOT call removeAdoptedVM.
+	if v != nil && v.DiskPath != "" {
+		if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
+			m.log.Warn("removeAdoptedVM: remove disk dir", "vm_id", id.String(), "err", err)
+		}
 	}
 }
 
@@ -125,7 +141,7 @@ func (m *Manager) Migrations() *migration.Store { return m.migrations }
 
 // releaseIncomingNBD tears down any TARGET-side migration qemu-nbd holding
 // vmID's disk: it stops the server (releasing the exclusive write lock) and
-// frees the reserved ingress port. Called from the start path before spawning
+// frees both reserved ingress ports of the pair. Called from the start path before spawning
 // qemu on a just-migrated VM. A no-op when no migration targeted this VM.
 func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
 	rec, ok := m.migrations.TakeTargetByVM(vmID)
@@ -137,9 +153,10 @@ func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
 			m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "pid", rec.NBDPid, "err", err)
 		}
 	}
-	if rec.Port > 0 {
-		m.migPorts.Release(rec.Port)
-	}
+	// Free BOTH ports of the pair (offline records carry NBDPort==0, which
+	// ReleasePair ignores). Releasing only rec.Port leaked the NBD port on the
+	// cold-live edge.
+	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
 }
 
 // IncomingSpec parameterizes target-side migration preparation.

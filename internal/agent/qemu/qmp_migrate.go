@@ -186,6 +186,21 @@ func (c *QMPClient) BlockExportDel(id string) error {
 	return nil
 }
 
+// ObjectDel removes a QOM object previously added with object-add (the
+// migration TLS-creds / authz objects). Used at every terminal outcome so a
+// long-lived guest qemu does not carry a stale "migtls" object that would make
+// its NEXT migration fail "duplicate property 'migtls'".
+func (c *QMPClient) ObjectDel(id string) error {
+	if _, err := c.monitor.Run(objectDelCmd(id)); err != nil {
+		return fmt.Errorf("object-del: %w", err)
+	}
+	return nil
+}
+
+func objectDelCmd(id string) []byte {
+	return mustCmd("object-del", map[string]any{"id": id})
+}
+
 // blockdevAddNBDCmd builds blockdev-add driver=nbd. server is the FLAT
 // SocketAddress form ({type:inet,host,port}) with port a STRING (no
 // nested data); reconnect-delay is pinned to 30s.

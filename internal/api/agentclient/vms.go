@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -437,8 +438,19 @@ func (c *Client) StartVMOnTarget(ctx context.Context, endpoint, vmName string) e
 // discarded; a non-nil error signals a leaked source disk, never a destroyed
 // wanted VM (this is only ever called after the cutover committed). Thin
 // wrapper over DeleteVM.
+//
+// A 404 not_found from the agent is treated as success: after a successful
+// outgoing-live migration the source agent tears its own departed VM down before
+// reporting completion, so the CP's slower async delete usually arrives to a VM
+// that is already gone. That is exactly the idempotent already-deleted outcome we
+// want, not a leaked disk - swallowing it avoids a false "disk leaked" WARN. Any
+// other agent error still propagates so a real leak is logged.
 func (c *Client) DeleteVMOnSource(ctx context.Context, endpoint, vmName string) error {
 	_, err := c.DeleteVM(ctx, endpoint, vmName, "")
+	var ae *AgentError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return nil
+	}
 	return err
 }
 

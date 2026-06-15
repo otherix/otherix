@@ -28,11 +28,17 @@ import (
 // always the first if=virtio drive and the source VM always launches with it
 // (never OmitBootDisk). The auto node-name (#blockNNN) is unstable and must
 // NOT be hardcoded. Verified via query-block on a running guest.
+//
+// virtio0 is now the INVARIANT boot-disk handle for BOTH a created VM (the
+// if=virtio BlockBackend virtio0) AND a migrated-in VM (the explicit
+// `-blockdev node-name=virtio0` set by replicateIncomingDisks/LiveIncomingArgs),
+// so a second outgoing migration off a migrated-in guest resolves the boot disk
+// identically with no special-casing.
 const liveSourceDiskNode = "virtio0"
 
 // liveExportID is the block-export-add handle for the boot (index 0)
 // destination disk. The target replicates every manifest disk under the
-// "target-disk<i>" node-name / "exp<i>" export-id convention and the resume
+// "virtio<i>" node-name / "exp<i>" export-id convention and the resume
 // dels every export the migration record carries (ExportIDs). liveExportID is
 // the defensive boot-export fallback used only when the record carries no
 // ExportIDs, so an unexpectedly-empty record still tears down the boot export
@@ -235,7 +241,7 @@ func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingS
 				return nil, nil, err
 			}
 			incomingDisks = append(incomingDisks, qemu.LiveIncomingDisk{
-				Node:     fmt.Sprintf("target-disk%d", d.Index),
+				Node:     fmt.Sprintf("virtio%d", d.Index),
 				Path:     path,
 				Format:   d.Format,
 				ReadOnly: true,
@@ -270,7 +276,7 @@ func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingS
 		}
 
 		incomingDisks = append(incomingDisks, qemu.LiveIncomingDisk{
-			Node:     fmt.Sprintf("target-disk%d", d.Index),
+			Node:     fmt.Sprintf("virtio%d", d.Index),
 			Path:     path,
 			Export:   fmt.Sprintf("%s-%d", token, d.Index),
 			ExportID: fmt.Sprintf("exp%d", d.Index),
@@ -378,12 +384,45 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
 }
 
-// failIncomingResume marks the target VM failed (no source fall-back after the
-// source has been released) and records the failure on the migration record and
-// the tracking task.
+// failIncomingResume handles a target-side resume failure (Outcome C). This path
+// can be POST-cutover (a cont failure after the source already completed and the CP
+// committed the cutover - where the source copy is gone and this disk is the ONLY
+// copy), so it is conservative: it stops the leak (kill the incoming qemu, free the
+// port pair) but NEVER deletes the destination disk or the VM record - it marks the
+// VM StatusFailed. Recovery of a post-cutover failure (cold-start from the intact
+// migrated disk) is the operator's / CP reconcile's job, per the existing
+// no-fall-back-to-source terminal semantics.
+//
+// If the record is already terminal, a racing teardownIncomingTarget (the CP
+// failure/cancel trigger) already reaped everything - killing the qemu closed the
+// QMP socket and unblocked this resume goroutine into here - so only finalize the
+// tracking task and return, without touching the (already-reaped) VM / ports.
 func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg string) {
 	m.log.Error("incoming resume failed",
 		"vm_id", vmID.String(), "migration_id", migrationID.String(), "err", msg)
+
+	if rec, ok := m.migrations.Get(migrationID); ok && rec.Terminal() {
+		// Already reaped by a concurrent teardown; just finalize the task.
+		m.tasks.Update(taskID, func(t *AgentTask) {
+			t.Status = TaskStatusFailed
+			t.Error = &TaskError{Code: "resume_failed", Message: msg}
+		})
+		return
+	}
+
+	// Stop the leak without destroying data: kill the incoming qemu + free the pair.
+	var ram, nbd int
+	if rec, ok := m.migrations.Get(migrationID); ok {
+		ram, nbd = rec.Port, rec.NBDPort
+	}
+	if v, err := m.Get(vmID); err == nil {
+		m.killQEMU(v)
+		m.teardownNICs(v.NICs)
+	}
+	if ram > 0 || nbd > 0 {
+		m.migPorts.ReleasePair(ram, nbd)
+	}
+
 	m.transitionVM(vmID, StatusFailed, msg)
 	_ = m.persistVM(vmID)
 	m.migrations.Update(migrationID, func(r *migration.Record) {
@@ -494,11 +533,37 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		return
 	}
 
+	// The guest is now running on the target. Tear down the departed source VM
+	// NOW (before reporting success) so a reverse migration back to this node
+	// adopts cleanly instead of racing the CP's slow async DeleteVMOnSource.
+	m.teardownDepartedSource(v)
+
 	m.migrations.Update(s.MigrationID, func(r *migration.Record) {
 		r.Phase = migration.PhaseCompleted
 		r.CompletedAt = time.Now().UTC()
 	})
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+}
+
+// teardownDepartedSource removes a source VM that has just completed a successful
+// outgoing LIVE migration: the guest is now irrevocably on the target, so the
+// postmigrate source qemu and the stale source disk are garbage. It force-kills the
+// qemu (no graceful wait - the postmigrate guest will never honour ACPI powerdown),
+// tears down the source NICs, and removes the in-memory record + per-VM disk dir +
+// state. Done synchronously at the end of runOutgoingLive (before the task is marked
+// success) so that "migration completed" implies "source released" - a reverse
+// migration back to this node then adopts cleanly instead of racing the CP's slow
+// async DeleteVMOnSource. Safe pre-cutover: the heartbeat path is purely additive
+// (omitting the VM is a no-op) and the cutover Txn is the sole writer of
+// current_node_id; a completed live migrate is the same signal the CP already trusts
+// to delete the source.
+func (m *Manager) teardownDepartedSource(v *VM) {
+	if v == nil {
+		return
+	}
+	m.killQEMU(v)
+	m.teardownNICs(v.NICs)
+	m.removeAdoptedVM(v.ID)
 }
 
 // liveProgressReporter returns the periodic LiveProgress callback handed to
@@ -566,6 +631,33 @@ func liveBootDiskJob(jobs []qemu.BlockJobInfo) (qemu.BlockJobInfo, bool) {
 	return qemu.BlockJobInfo{}, false
 }
 
+// teardownIncomingTarget fully reaps a target-side live-migration incoming setup
+// at a PRE-CUTOVER terminal outcome (failure or cancel), where the real guest is
+// still safe on the source. Order is load-bearing: kill the incoming qemu FIRST
+// (which drops its NBD server, exports, TLS objects, and PORT BINDINGS with the
+// process), then release the pair - releasing before the kill would hand a still-
+// bound port back to the allocator (the "address already in use" bug). It then
+// removes the adopted VM + its destination disk dir (safe: pre-cutover the disk is
+// empty / not the live copy) and reaps the migration record. Idempotent: a missing
+// VM, unknown ports, and an already-terminal record are all no-ops, so it is safe
+// to call twice (the CP trigger racing the resume goroutine).
+func (m *Manager) teardownIncomingTarget(migrationID, vmID uuid.UUID, ram, nbd int, phase migration.Phase, reason string) {
+	if v, err := m.Get(vmID); err == nil {
+		m.killQEMU(v)
+		m.teardownNICs(v.NICs)
+		m.removeAdoptedVM(vmID)
+	}
+	m.migPorts.ReleasePair(ram, nbd)
+	m.migrations.Update(migrationID, func(r *migration.Record) {
+		if r.Terminal() {
+			return
+		}
+		r.Phase = phase
+		r.ErrorMessage = reason
+		r.CompletedAt = time.Now().UTC()
+	})
+}
+
 // cancelLive aborts a pre-cutover live migration best-effort: cancel the RAM
 // migration and the disk mirror on the source guest, release the reserved
 // ports, and pin phase=cancelled. Idempotent; a terminal record is returned
@@ -576,19 +668,26 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 		return m.GetMigration(id)
 	}
 
-	// Best-effort QMP abort. Only the source holds the live mirror + RAM
-	// stream; the target side is reclaimed by the CP re-driving as failed.
-	if rec.Role == migration.RoleSource {
-		if v, err := m.Get(rec.VMID); err == nil {
-			if conn, err := m.migDialQMP(v.QMPSocket); err == nil {
-				_ = conn.MigrateCancel()
-				if rec.BlockJobID != "" {
-					_ = conn.BlockJobCancel(rec.BlockJobID, true)
-				}
-			}
-		}
+	if rec.Role == migration.RoleTarget {
+		// Full pre-cutover reap: kill the incoming qemu, free the pair, remove the
+		// adopted VM, reap the record. (The previous body released the ports while
+		// the incoming qemu still held them - the "address already in use" leak.)
+		m.teardownIncomingTarget(id, rec.VMID, rec.Port, rec.NBDPort, migration.PhaseCancelled, "cancelled")
+		return m.GetMigration(id)
 	}
 
+	// Source: best-effort QMP abort of the live mirror + RAM stream; the guest
+	// stays running on this node (fail-safe). object-del migtls is handled by
+	// RunLiveSource's deferred cleanup when the in-flight run unwinds.
+	if v, err := m.Get(rec.VMID); err == nil {
+		if conn, err := m.migDialQMP(v.QMPSocket); err == nil {
+			_ = conn.MigrateCancel()
+			if rec.BlockJobID != "" {
+				_ = conn.BlockJobCancel(rec.BlockJobID, true)
+			}
+			_ = conn.Close()
+		}
+	}
 	if rec.Port > 0 || rec.NBDPort > 0 {
 		m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
 	}
@@ -607,7 +706,7 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 // omit the OS disk drive (OmitBootDisk) to avoid expressing the boot disk
 // twice; the per-disk node-named blockdevs + virtio-blk devices from
 // LiveIncomingArgs supply every disk. SMOKE MUST VALIDATE the resulting cmdline
-// boots and the exports + boot devices agree on the "target-disk<i>" nodes.
+// boots and the exports + boot devices agree on the "virtio<i>" nodes.
 func (m *Manager) launchIncomingQemu(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error {
 	binary, err := qemu.Binary(v.Architecture)
 	if err != nil {

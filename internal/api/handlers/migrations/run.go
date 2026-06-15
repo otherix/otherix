@@ -85,6 +85,9 @@ type MigrationAgentClient interface {
 	// VM fetches the agent's view of a VM (used to read the source boot disk's
 	// real virtual size for destination sizing).
 	VM(ctx context.Context, endpoint, vmName string) (agentclient.AgentVM, error)
+	// CancelMigration tells an agent (the bound TARGET on a terminal-failure /
+	// cancel of a live migration) to reap its incoming setup. Best-effort.
+	CancelMigration(ctx context.Context, endpoint, vmName, migrationID string) (agentapi.Migration, error)
 }
 
 // Placer is the placement seam (spec D2): a node-less migrate scores a target
@@ -160,7 +163,7 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		// already finalized never reaches here - no double-finalize. A failed task is
 		// NOT committed-terminal, so it does reach here; finalizing it to match the
 		// migration is the correction.
-		return finalizeForTerminalMigration(ctx, st, log, taskID, m)
+		return finalizeForTerminalMigration(ctx, st, agent, log, taskID, m)
 	}
 	if m.SourceNodeID == nil {
 		// A migration with no source is malformed - it can never be driven. Fail
@@ -351,9 +354,25 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 		convergePostCutover(ctx, st, agent, log, m.ID, vm, source, target, m.Live)
 		return nil
 	case "failed", "cancelled":
+		cancelTargetIncoming(ctx, agent, log, m, vm, target)
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
 	default:
 		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", terminal.Status))
+	}
+}
+
+// cancelTargetIncoming best-effort tells the bound TARGET to reap its live-migration
+// incoming setup when the migration ends pre-cutover (source-task failure / cancel).
+// Only for live migrations with a bound target; offline targets have no autonomous
+// resume goroutine to unblock. A failure degrades to the target's own 30-minute
+// incoming timeout backstop and must NOT change the migration outcome.
+func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, m store.Migration, vm store.VM, target store.Node) {
+	if !m.Live || m.TargetNodeID == nil {
+		return
+	}
+	if _, err := agent.CancelMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String()); err != nil {
+		log.WarnContext(ctx, "target incoming teardown failed; relying on agent timeout backstop",
+			slog.String("migration_id", m.ID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
 }
 
@@ -577,7 +596,22 @@ func failMigration(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 // only finalize on this delivery, never a double-finalize. Returns nil so the
 // dispatcher CompleteJob-deletes the job; a finalize-write error is wrapped and
 // returned (retryable) so the envelope eventually persists.
-func finalizeForTerminalMigration(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID uuid.UUID, m store.Migration) error {
+func finalizeForTerminalMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID uuid.UUID, m store.Migration) error {
+	// Reap the bound target's live incoming setup for a pre-cutover terminal
+	// outcome (operator cancel / crash-failed). NOT for completed - a completed
+	// migration's target IS the running VM. Best-effort; never fails the reconcile.
+	if m.Live && m.TargetNodeID != nil &&
+		(m.Phase == store.MigrationPhaseFailed || m.Phase == store.MigrationPhaseCancelled) {
+		if target, err := st.NodeByID(ctx, *m.TargetNodeID); err == nil {
+			if vm, verr := st.VMByID(ctx, m.VmID); verr == nil {
+				if _, cerr := agent.CancelMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String()); cerr != nil {
+					log.WarnContext(ctx, "reconcile: target incoming teardown failed; agent timeout backstop",
+						slog.String("migration_id", m.ID.String()), slog.String("error", cerr.Error()))
+				}
+			}
+		}
+	}
+
 	switch m.Phase {
 	case store.MigrationPhaseCompleted:
 		result := []byte(fmt.Sprintf(`{"migration_id":%q}`, m.ID.String()))

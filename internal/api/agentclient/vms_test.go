@@ -354,6 +354,52 @@ func TestDeleteVM_404IsAgentError(t *testing.T) {
 	}
 }
 
+// TestDeleteVMOnSource_404IsSuccess asserts the post-cutover source cleanup
+// wrapper treats an already-deleted source VM (HTTP 404 not_found) as success:
+// the source agent now usually tears its departed VM down itself at the end of a
+// successful outgoing-live migration, so the CP's slower async delete arrives to a
+// VM that is already gone - which is exactly the success we want, not a "disk
+// leaked" WARN. Other agent errors still propagate.
+func TestDeleteVMOnSource_404IsSuccess(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/vms/", func(w http.ResponseWriter, r *http.Request) {
+		jsonWrite(t, w, http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "not_found", "message": "vm not found"},
+		})
+	})
+	_, baseURL := startAgentTLSServer(t, mux)
+
+	if err := newClientAutoDir(t).DeleteVMOnSource(context.Background(), baseURL, "gone-vm"); err != nil {
+		t.Errorf("DeleteVMOnSource on already-gone source = %v, want nil (idempotently already deleted)", err)
+	}
+}
+
+// TestDeleteVMOnSource_500Propagates is the revert-confirm: a non-404 agent error
+// (e.g. a 500) is NOT swallowed - it still surfaces so the worker logs the real
+// leak. Only the already-deleted 404 is treated as success.
+func TestDeleteVMOnSource_500Propagates(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/vms/", func(w http.ResponseWriter, r *http.Request) {
+		jsonWrite(t, w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{"code": "internal", "message": "boom"},
+		})
+	})
+	_, baseURL := startAgentTLSServer(t, mux)
+
+	err := newClientAutoDir(t).DeleteVMOnSource(context.Background(), baseURL, "some-vm")
+	if err == nil {
+		t.Fatalf("DeleteVMOnSource on 500 = nil, want error (non-404 must propagate)")
+	}
+	var ae *agentclient.AgentError
+	if !errors.As(err, &ae) || ae.Status != http.StatusInternalServerError {
+		t.Fatalf("err = %v; want AgentError 500", err)
+	}
+}
+
 func TestPostVMCreate_ConnectionRefused(t *testing.T) {
 	t.Parallel()
 

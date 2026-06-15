@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ type fakeLiveConn struct {
 
 func (f *fakeLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error { return nil }
 func (f *fakeLiveConn) ObjectAddAuthz(id, identity string) error         { return nil }
+func (f *fakeLiveConn) ObjectDel(id string) error                        { return nil }
 func (f *fakeLiveConn) BlockdevAddNBD(nodeName, host string, port int, export, tlsCreds, tlsHostname string) error {
 	return nil
 }
@@ -236,8 +238,8 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 	}
 
 	wantDisks := []qemu.LiveIncomingDisk{
-		{Node: "target-disk0", Path: v.DiskPath, Export: migID.String() + "-0", ExportID: "exp0", Format: "qcow2", ReadOnly: false},
-		{Node: "target-disk1", Path: cidataPath, Format: "raw", ReadOnly: true},
+		{Node: "virtio0", Path: v.DiskPath, Export: migID.String() + "-0", ExportID: "exp0", Format: "qcow2", ReadOnly: false},
+		{Node: "virtio1", Path: cidataPath, Format: "raw", ReadOnly: true},
 	}
 	if diff := cmp.Diff(wantDisks, gotSpec.Disks); diff != "" {
 		t.Errorf("LiveIncomingSpec.Disks mismatch (-want +got):\n%s", diff)
@@ -394,15 +396,14 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 		t.Errorf("spec.Disks[0] = %+v, want %+v", gotSpec.Disks[0], wantBoot)
 	}
 
-	// Assert the raw persisted status: live migration must NOT power off the
-	// source guest. (m.Get probes the pidfile, which is absent under the unit
-	// fake, so read the in-map status directly to isolate the no-poweroff
-	// invariant from the liveness probe.)
+	// On success the departed source VM is torn down (the guest is now on the
+	// target). It must be gone from the manager - never left powered-off-but-
+	// present (the old graceful-poweroff path) and never still present at all.
 	m.mu.Lock()
-	rawStatus := m.vms[v.ID].Status
+	_, present := m.vms[v.ID]
 	m.mu.Unlock()
-	if rawStatus != StatusRunning {
-		t.Errorf("live source VM status = %q, want running (must NOT be powered off)", rawStatus)
+	if present {
+		t.Errorf("live source VM still present after success; want torn down (departed source)")
 	}
 
 	tk := m.tasks.Get(task.ID)
@@ -561,6 +562,7 @@ type stubTargetConn struct{}
 
 func (stubTargetConn) Events(ctx context.Context) (<-chan qmp.Event, error) { return nil, nil }
 func (stubTargetConn) BlockExportDel(id string) error                       { return nil }
+func (stubTargetConn) ObjectDel(id string) error                            { return nil }
 func (stubTargetConn) NBDServerStop() error                                 { return nil }
 func (stubTargetConn) Cont() error                                          { return nil }
 func (stubTargetConn) AnnounceSelf(qemu.AnnounceParameters) error           { return nil }
@@ -917,6 +919,90 @@ func TestRunIncomingResumeAnnouncesSelf(t *testing.T) {
 	}
 	if rec.params.Rounds == 0 {
 		t.Errorf("announce params not passed: %+v", rec.params)
+	}
+}
+
+// TestTeardownDepartedSource_RemovesVMAndDisk is the unit test for the helper:
+// after a successful outgoing LIVE migration the source VM is garbage (the guest
+// is now on the target), so teardownDepartedSource must drop the in-memory record
+// and remove the per-VM disk dir.
+func TestTeardownDepartedSource_RemovesVMAndDisk(t *testing.T) {
+	m := newTestManager(t)
+	vmID := uuid.New()
+	v, err := m.AdoptForMigration(AdoptSpec{
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
+	})
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	diskDir := filepath.Dir(v.DiskPath)
+	if err := os.MkdirAll(diskDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(diskDir, "disk.qcow2"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m.teardownDepartedSource(v)
+	if _, err := m.Get(vmID); err == nil {
+		t.Errorf("source vm still present after teardownDepartedSource")
+	}
+	if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
+		t.Errorf("source disk dir still present: %v", err)
+	}
+}
+
+// TestRunOutgoingLive_SuccessTearsDownSource is the seam test: it drives the REAL
+// runOutgoingLive success path (migRunLiveSource stubbed to nil) and asserts the
+// source VM was torn down BEFORE the task is marked success - so "migration
+// completed" implies "source released" and a reverse migration adopts cleanly
+// instead of racing the CP's slow async DeleteVMOnSource. Mirrors the stubbing in
+// TestRunOutgoingLive_NoPoweroff_DrivesToCompleted (seedRunningVM + migRunLiveSource
+// + migDialQMP -> fakeLiveConn).
+func TestRunOutgoingLive_SuccessTearsDownSource(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
+		return nil
+	}
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+
+	migID := uuid.New()
+	task, err := m.StartOutgoing(context.Background(), OutgoingSpec{
+		MigrationID:    migID,
+		VMUUID:         v.ID,
+		VMName:         v.Name,
+		Mode:           "live",
+		TargetEndpoint: "10.0.0.2:49152",
+		NBDEndpoint:    "10.0.0.2:49153",
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		AuthToken:      migID.String(),
+	})
+	if err != nil {
+		t.Fatalf("StartOutgoing(live) error = %v", err)
+	}
+
+	waitPhase(t, m, migID, "completed")
+
+	// The source VM must be gone from the manager (torn down on success).
+	if _, err := m.Get(v.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after outgoing-live success, Get(%s) = %v, want ErrNotFound (source VM must be torn down)", v.ID, err)
+	}
+	// And its per-VM disk dir removed.
+	if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
+		t.Errorf("source disk dir still present after outgoing-live success: %v", err)
+	}
+
+	// The tracking task must be success and the record completed.
+	tk := m.tasks.Get(task.ID)
+	if tk == nil || tk.Status != TaskStatusSuccess {
+		t.Errorf("task = %v, want status success", tk)
+	}
+	rec, ok := m.Migrations().Get(migID)
+	if !ok || rec.Phase != migration.PhaseCompleted {
+		t.Errorf("record = %+v, want phase completed", rec)
 	}
 }
 
