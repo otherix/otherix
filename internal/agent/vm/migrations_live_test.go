@@ -409,12 +409,14 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 	}
 }
 
-// TestRunOutgoingLive_WithCidata_BuildsTwoDiskSpec asserts that when the source
-// VM carries a cidata disk (v.CidataPath != "") the outgoing spec mirrors BOTH
-// disks: index 0 the boot disk (virtio0 -> <token>-0) and index 1 the cidata
-// disk (virtio1 -> <token>-1). The export names must byte-match the target's
-// per-disk export names <migrationID>-<i> (s.AuthToken == migrationID.String()).
-func TestRunOutgoingLive_WithCidata_BuildsTwoDiskSpec(t *testing.T) {
+// TestRunOutgoingLive_WithCidata_MirrorsBootOnly asserts that even when the
+// source VM carries a cidata disk (v.CidataPath != "") the outgoing spec
+// mirrors ONLY the writable boot disk (virtio0 -> <token>-0). The read-only
+// cidata disk is rebuilt read-only on the target, not transferred over NBD, so
+// the source must never append a cidata mirror. The single boot export name
+// must byte-match the target's only export <migrationID>-0 (s.AuthToken ==
+// migrationID.String()).
+func TestRunOutgoingLive_WithCidata_MirrorsBootOnly(t *testing.T) {
 	m := newTestManager(t)
 	v := m.seedRunningVM(t, "demo")
 	m.mu.Lock()
@@ -446,7 +448,6 @@ func TestRunOutgoingLive_WithCidata_BuildsTwoDiskSpec(t *testing.T) {
 
 	want := []qemu.LiveSourceDisk{
 		{SrcNode: "virtio0", JobID: "mirror-disk0", NBDNode: "mirror-target0", Export: migID.String() + "-0"},
-		{SrcNode: "virtio1", JobID: "mirror-disk1", NBDNode: "mirror-target1", Export: migID.String() + "-1"},
 	}
 	if diff := cmp.Diff(want, gotSpec.Disks); diff != "" {
 		t.Errorf("spec.Disks mismatch (-want +got):\n%s", diff)
