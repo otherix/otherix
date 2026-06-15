@@ -106,17 +106,31 @@ func adoptStatus(s Status) Status {
 }
 
 // removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
-// record and removes the per-VM state directory (meta.json, sockets, pidfile)
-// under stateDir, mirroring runDelete's state-dir removal. It does NOT remove
-// the pool disk dir, which may be shared. The RemoveAll error is best-effort:
-// logged and ignored so a stale directory never blocks rollback. Used by the
-// live incoming prep to leave nothing behind when a later step fails.
+// record, removes the per-VM state directory (meta.json, sockets, pidfile)
+// under stateDir (mirroring runDelete's state-dir removal), and removes the
+// per-VM destination disk dir. The disk-dir removal is SAFE because every
+// caller is strictly pre-cutover (the startIncomingLive rollback and
+// teardownIncomingTarget), where the destination disk is empty / not the live
+// copy; the post-cutover path (failIncomingResume) intentionally does NOT call
+// this. The RemoveAll errors are best-effort: logged and ignored so a stale
+// directory never blocks rollback. Used by the live incoming prep to leave
+// nothing behind when a later step fails.
 func (m *Manager) removeAdoptedVM(id uuid.UUID) {
 	m.mu.Lock()
+	v := m.vms[id]
 	delete(m.vms, id)
 	m.mu.Unlock()
 	if err := os.RemoveAll(filepath.Join(m.stateDir, id.String())); err != nil {
 		m.log.Warn("removeAdoptedVM: remove agent state dir", "vm_id", id.String(), "err", err)
+	}
+	// Also remove the per-VM destination disk dir. SAFE: every caller is
+	// pre-cutover (the startIncomingLive rollback and teardownIncomingTarget),
+	// where this disk is empty / not the live copy. The post-cutover path
+	// (failIncomingResume) intentionally does NOT call removeAdoptedVM.
+	if v != nil && v.DiskPath != "" {
+		if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
+			m.log.Warn("removeAdoptedVM: remove disk dir", "vm_id", id.String(), "err", err)
+		}
 	}
 }
 
