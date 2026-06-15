@@ -1200,6 +1200,86 @@ func TestRunMigration_FinalizesDanglingTaskFailed(t *testing.T) {
 	}
 }
 
+// TestFinalizeForTerminal_CancelledLiveReapsTarget pins Task 10 for the operator-
+// cancel path: an already-terminal CANCELLED live migration with a bound target
+// reaches finalizeForTerminalMigration on the worker's next delivery (the HTTP
+// cancel only marks etcd). The worker must reap the target's incoming setup
+// (CancelMigration) so it does not leak until the agent's 30-minute timeout.
+func TestFinalizeForTerminal_CancelledLiveReapsTarget(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	// Bound LIVE migration, then driven terminal-cancelled via the store, leaving
+	// the backing task un-finalized (the worker reconciles on next delivery).
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+	cancelled := store.MigrationPhaseCancelled
+	msg := "operator cancelled"
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &cancelled, ErrorMessage: &msg}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(cancelled): %v", err)
+	}
+
+	agent := &fakeMigrationAgent{}
+	placer := &fakePlacer{}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(cancelled-reconcile) = %v, want nil", err)
+	}
+
+	if len(agent.cancelCalls) != 1 {
+		t.Fatalf("cancelCalls = %v, want one for cancelled live migration", agent.cancelCalls)
+	}
+	call := agent.cancelCalls[0]
+	if call.endpoint != nodeB.AdvertisedEndpoint || call.vmName != vm.Name || call.migID != m.ID.String() {
+		t.Errorf("cancel call = %+v, want {endpoint:%q vmName:%q migID:%q}", call, nodeB.AdvertisedEndpoint, vm.Name, m.ID.String())
+	}
+	// The dangling task is still reconciled to cancelled.
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusCancelled {
+		t.Errorf("task status = %q, want cancelled", task.Status)
+	}
+}
+
+// TestFinalizeForTerminal_CompletedDoesNotReapTarget is the destructive-seam
+// guard for Task 10: a COMPLETED live migration's target IS the running guest.
+// The reconcile arm must NOT cancel it - reaping would destroy the live VM.
+func TestFinalizeForTerminal_CompletedDoesNotReapTarget(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
+
+	// Bind + commit the cutover so the migration is terminal-completed with a bound
+	// target, leaving the task un-finalized (the crash-reconcile window).
+	if err := s.BindMigrationTarget(ctx, m.ID, nodeB.ID, "default"); err != nil {
+		t.Fatalf("BindMigrationTarget: %v", err)
+	}
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	agent := &fakeMigrationAgent{}
+	placer := &fakePlacer{}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(completed-reconcile) = %v, want nil", err)
+	}
+
+	if len(agent.cancelCalls) != 0 {
+		t.Errorf("cancelCalls = %v, want none for completed (target IS the live VM)", agent.cancelCalls)
+	}
+}
+
 // TestRunMigration_ResumesWithoutDoublePost pins the agent_task_id resumption
 // (R2-M2 analogue): a redelivered job whose task already carries an agent task id
 // must NOT re-run the two-phase handshake (no double incoming/outgoing POST); it
