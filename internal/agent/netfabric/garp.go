@@ -38,5 +38,3 @@ func buildGratuitousARP(mac net.HardwareAddr, ip netip.Addr) ([]byte, error) {
 	copy(f[38:42], v4[:])
 	return f, nil
 }
-
-func htons(v uint16) uint16 { return (v<<8)&0xff00 | v>>8 }

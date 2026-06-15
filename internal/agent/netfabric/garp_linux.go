@@ -47,3 +47,7 @@ func (f *linuxFabric) SendGARP(bridge string, mac string, ip netip.Addr) error {
 	}
 	return nil
 }
+
+// htons converts a uint16 from host to network byte order for the AF_PACKET
+// socket address protocol field.
+func htons(v uint16) uint16 { return (v<<8)&0xff00 | v>>8 }

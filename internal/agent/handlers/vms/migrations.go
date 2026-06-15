@@ -133,7 +133,7 @@ func incomingNICs(req agentapi.MigrationIncomingRequest) []netfabric.NIC {
 	out := make([]netfabric.NIC, 0, len(*req.Nics))
 	for _, n := range *req.Nics {
 		nic := netfabric.NIC{
-			ID:          uuid.UUID(n.ID),
+			ID:          n.ID,
 			Bridge:      n.BridgeName,
 			MAC:         n.MacAddress,
 			Model:       string(n.Model),

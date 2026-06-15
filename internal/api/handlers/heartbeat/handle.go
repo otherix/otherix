@@ -1075,49 +1075,58 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 				slog.String("vm_uuid", r.VMUUID.String()))
 			continue
 		}
-		var lastStarted *time.Time
-		if r.LastStartedAt != nil {
-			t, err := time.Parse(time.RFC3339Nano, *r.LastStartedAt)
-			if err != nil {
-				h.log.WarnContext(ctx, "heartbeat vm last_started_at not RFC3339; skipping field",
-					slog.String("node_id", nodeID.String()),
-					slog.String("vm_uuid", r.VMUUID.String()),
-					slog.String("value", *r.LastStartedAt))
-			} else {
-				ts := t.UTC()
-				lastStarted = &ts
-			}
+		if err := h.applyVMReport(ctx, hp, nodeID, r); err != nil {
+			return err
 		}
-		obsGen := int64(0)
-		if r.ObservedGeneration != nil {
-			obsGen = *r.ObservedGeneration
+	}
+	return nil
+}
+
+// applyVMReport upserts a single VM runtime row from one heartbeat vmReport. The
+// caller has already gated the report through the known/pinned placement checks.
+func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, r vmReport) error {
+	var lastStarted *time.Time
+	if r.LastStartedAt != nil {
+		t, err := time.Parse(time.RFC3339Nano, *r.LastStartedAt)
+		if err != nil {
+			h.log.WarnContext(ctx, "heartbeat vm last_started_at not RFC3339; skipping field",
+				slog.String("node_id", nodeID.String()),
+				slog.String("vm_uuid", r.VMUUID.String()),
+				slog.String("value", *r.LastStartedAt))
+		} else {
+			ts := t.UTC()
+			lastStarted = &ts
 		}
-		// Epoch fence (ADR 0035 req 1+3): while a VM has an active migration,
-		// current_node_id MUST NOT be moved by the heartbeat path - it stays at
-		// the migration source until CommitMigrationCutover flips it. Both the
-		// source and the target are admitted by the placement gate during a
-		// move, so without this freeze their two heartbeats race last-writer-wins
-		// and flap the FDB key. The cutover Txn is the sole writer that advances
-		// current_node_id to the target.
-		claimNode := nodeID
-		if mig, active, err := hp.ActiveMigrationForVM(ctx, r.VMUUID); err != nil {
-			return fmt.Errorf("active migration lookup: %v", err)
-		} else if active && mig.SourceNodeID != nil {
-			claimNode = *mig.SourceNodeID
-		}
-		nodeIDCopy := claimNode
-		params := store.UpsertVMRuntimeParams{
-			VmID:               r.VMUUID,
-			CurrentNodeID:      &nodeIDCopy,
-			Phase:              store.VMPhase(r.Phase),
-			ObservedGeneration: obsGen,
-			QEMUPID:            r.QEMUPID,
-			LastStartedAt:      lastStarted,
-			LastErrorMessage:   r.LastErrorMessage,
-		}
-		if err := hp.UpsertVMRuntime(ctx, params); err != nil {
-			return fmt.Errorf("upsert vm_runtime: %v", err)
-		}
+	}
+	obsGen := int64(0)
+	if r.ObservedGeneration != nil {
+		obsGen = *r.ObservedGeneration
+	}
+	// Epoch fence (ADR 0035 req 1+3): while a VM has an active migration,
+	// current_node_id MUST NOT be moved by the heartbeat path - it stays at
+	// the migration source until CommitMigrationCutover flips it. Both the
+	// source and the target are admitted by the placement gate during a
+	// move, so without this freeze their two heartbeats race last-writer-wins
+	// and flap the FDB key. The cutover Txn is the sole writer that advances
+	// current_node_id to the target.
+	claimNode := nodeID
+	if mig, active, err := hp.ActiveMigrationForVM(ctx, r.VMUUID); err != nil {
+		return fmt.Errorf("active migration lookup: %v", err)
+	} else if active && mig.SourceNodeID != nil {
+		claimNode = *mig.SourceNodeID
+	}
+	nodeIDCopy := claimNode
+	params := store.UpsertVMRuntimeParams{
+		VmID:               r.VMUUID,
+		CurrentNodeID:      &nodeIDCopy,
+		Phase:              store.VMPhase(r.Phase),
+		ObservedGeneration: obsGen,
+		QEMUPID:            r.QEMUPID,
+		LastStartedAt:      lastStarted,
+		LastErrorMessage:   r.LastErrorMessage,
+	}
+	if err := hp.UpsertVMRuntime(ctx, params); err != nil {
+		return fmt.Errorf("upsert vm_runtime: %v", err)
 	}
 	return nil
 }

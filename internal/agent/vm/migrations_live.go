@@ -143,17 +143,9 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		return IncomingResult{}, fmt.Errorf("launch incoming qemu: %v", err)
 	}
 	launched = true
-	conn, err := m.migDialQMP(v.QMPSocket)
-	if err != nil {
+	if err := m.dialAndSetupIncoming(v, ls); err != nil {
 		cleanup()
-		return IncomingResult{}, fmt.Errorf("dial target qmp: %v", err)
-	}
-	// Closing the QMP client closes only the monitoring socket, NOT the
-	// launched qemu process, so it is safe to close after setup.
-	defer func() { _ = conn.Close() }()
-	if err := qemu.SetupLiveIncoming(conn, ls); err != nil {
-		cleanup()
-		return IncomingResult{}, fmt.Errorf("setup live incoming: %v", err)
+		return IncomingResult{}, err
 	}
 
 	ramEndpoint := net.JoinHostPort(s.BindHost, strconv.Itoa(ram))
@@ -184,6 +176,23 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	}()
 
 	return IncomingResult{ListenEndpoint: ramEndpoint, NBDEndpoint: nbdEndpoint, AuthToken: token}, nil
+}
+
+// dialAndSetupIncoming dials the just-launched -incoming qemu's QMP monitor and
+// arms the incoming transport (NBD export + RAM channel). It closes the setup
+// conn before returning: closing the QMP client closes only the monitoring
+// socket, NOT the launched qemu process, so the paused -incoming qemu keeps
+// running.
+func (m *Manager) dialAndSetupIncoming(v *VM, ls qemu.LiveIncomingSpec) error {
+	conn, err := m.migDialQMP(v.QMPSocket)
+	if err != nil {
+		return fmt.Errorf("dial target qmp: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := qemu.SetupLiveIncoming(conn, ls); err != nil {
+		return fmt.Errorf("setup live incoming: %v", err)
+	}
+	return nil
 }
 
 // replicateIncomingDisks materializes one destination disk per manifest entry,
