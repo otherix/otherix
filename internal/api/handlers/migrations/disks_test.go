@@ -88,6 +88,58 @@ func TestMigrationDisks(t *testing.T) {
 	}
 }
 
+// TestMigrationCloudInit asserts the blobs the target needs to rebuild the
+// read-only cidata ISO are returned EXACTLY when vmHasCidata is true (the same
+// source of truth as the cidata disk in the manifest), and (nil, nil) otherwise.
+func TestMigrationCloudInit(t *testing.T) {
+	tests := []struct {
+		name        string
+		vm          store.VM
+		wantUser    *string
+		wantNetwork *string
+	}{
+		{
+			name:     "userdata set, enabled",
+			vm:       store.VM{UserData: strPtr("#cloud-config")},
+			wantUser: strPtr("#cloud-config"),
+		},
+		{
+			name:        "networkconfig set, enabled",
+			vm:          store.VM{NetworkConfig: strPtr("version: 2")},
+			wantNetwork: strPtr("version: 2"),
+		},
+		{
+			name:        "both set, enabled",
+			vm:          store.VM{UserData: strPtr("#cloud-config"), NetworkConfig: strPtr("version: 2")},
+			wantUser:    strPtr("#cloud-config"),
+			wantNetwork: strPtr("version: 2"),
+		},
+		{
+			name: "disabled even with userdata",
+			vm:   store.VM{UserData: strPtr("#cloud-config"), CloudInitDisabled: true},
+		},
+		{
+			name: "both nil",
+			vm:   store.VM{},
+		},
+		{
+			name: "userdata pointer to empty",
+			vm:   store.VM{UserData: strPtr("")},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotUser, gotNetwork := migrationCloudInit(tc.vm)
+			if diff := cmp.Diff(tc.wantUser, gotUser); diff != "" {
+				t.Errorf("migrationCloudInit() user_data mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.wantNetwork, gotNetwork); diff != "" {
+				t.Errorf("migrationCloudInit() network_config mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 // TestCidataDefaultDiskSizeNoDrift is the drift guard: the control-plane copy of
 // the cidata ISO size MUST equal the agent builder's DefaultDiskSize so a future
 // change to the agent's ISO size can never silently desync the manifest.

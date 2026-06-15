@@ -374,12 +374,15 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 	if !m.Live {
 		mode = agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeOffline)
 	}
+	userData, networkConfig := migrationCloudInit(vm)
 	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
 		MigrationID:        m.ID,
 		Mode:               mode,
 		SourceNodeIdentity: ptrString(sourceIdentity(source.Name)),
 		VMSpec:             spec,
 		Disks:              &disks,
+		UserData:           userData,
+		NetworkConfig:      networkConfig,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)
@@ -620,6 +623,18 @@ func vmHasCidata(vm store.VM) bool {
 	}
 	return (vm.UserData != nil && *vm.UserData != "") ||
 		(vm.NetworkConfig != nil && *vm.NetworkConfig != "")
+}
+
+// migrationCloudInit returns the cloud-init blobs the target needs to rebuild
+// the read-only cidata ISO, or (nil, nil) when the VM has no cidata seed. The
+// gate MUST match vmHasCidata (the same source of truth as the cidata disk in
+// the manifest): when the VM has cidata, vm.UserData / vm.NetworkConfig hold the
+// resolved blobs the agent built the seed from at create time.
+func migrationCloudInit(vm store.VM) (userData, networkConfig *string) {
+	if !vmHasCidata(vm) {
+		return nil, nil
+	}
+	return vm.UserData, vm.NetworkConfig
 }
 
 // migrationDisks builds the ordered disk manifest the target replicates: the
