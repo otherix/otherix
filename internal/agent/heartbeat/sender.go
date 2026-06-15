@@ -54,6 +54,7 @@ type Sender struct {
 	responseHandler ResponseHandler
 	interval        time.Duration
 	logger          *slog.Logger
+	nudge           chan struct{}
 }
 
 // NewSender constructs a Sender. Collector / poster / logger are
@@ -70,6 +71,17 @@ func NewSender(collector Collector, poster Poster, handler ResponseHandler, cfg 
 		responseHandler: handler,
 		interval:        interval,
 		logger:          logger,
+		nudge:           make(chan struct{}, 1),
+	}
+}
+
+// Nudge requests an immediate heartbeat (e.g. CP fast-push after a migration
+// cutover). Non-blocking and coalescing: a buffer of one means many nudges in a
+// window collapse to a single extra tick - no amplification.
+func (s *Sender) Nudge() {
+	select {
+	case s.nudge <- struct{}{}:
+	default:
 	}
 }
 
@@ -86,11 +98,23 @@ func (s *Sender) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
+	// nudgeFloor caps how fast a flood of nudges can drive the loop: a
+	// burst collapses to at most one extra tick per floor window. The
+	// zero lastNudge means the first nudge always passes the floor.
+	const nudgeFloor = time.Second
+	var lastNudge time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			s.tick(ctx)
+		case <-s.nudge:
+			if time.Since(lastNudge) < nudgeFloor {
+				continue
+			}
+			lastNudge = time.Now()
 			s.tick(ctx)
 		}
 	}

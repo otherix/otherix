@@ -66,6 +66,50 @@ func TestSender_FirstTickFiresImmediately(t *testing.T) {
 	<-done
 }
 
+// TestSender_NudgeTriggersImmediateTick confirms Nudge() forces a
+// heartbeat well before the configured interval. The interval is set
+// to an hour, so the only way a second post arrives is via the nudge.
+func TestSender_NudgeTriggersImmediateTick(t *testing.T) {
+	collector := &stubCollector{report: Report{AgentVersion: "test"}}
+	poster := &stubPoster{status: 200}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	s := NewSender(collector, poster, nil, SenderConfig{Interval: time.Hour}, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_ = s.Run(ctx)
+		close(done)
+	}()
+
+	// The first immediate tick fires on Run start; wait for it.
+	waitPosts(t, poster, 1)
+
+	s.Nudge()
+	// A second post should arrive well before the 1h interval.
+	waitPosts(t, poster, 2)
+
+	cancel()
+	<-done
+}
+
+// waitPosts polls the poster's recorded-post count up to a short
+// deadline and fails the test if the target count is not reached.
+func waitPosts(t *testing.T, poster *stubPoster, want int64) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for poster.count.Load() < want {
+		select {
+		case <-deadline:
+			t.Fatalf("waitPosts: got %d posts, want %d", poster.count.Load(), want)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
 // TestSender_ContinuesAfterPostError confirms the loop does not bail
 // when the POST fails. Heartbeat is fire-and-forget from the agent's
 // side; transient CP unavailability must not crash the agent.
