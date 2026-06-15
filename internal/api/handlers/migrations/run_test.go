@@ -772,6 +772,63 @@ func (st commitCutoverFailStore) CommitMigrationCutover(ctx context.Context, mig
 	return st.MigrationWorkerStore.CommitMigrationCutover(ctx, migID)
 }
 
+// overlayPeersStub wraps a real MigrationWorkerStore and returns a settable
+// peer-node slice from OverlayPeerNodesForVM, so a worker test can assert the
+// post-cutover fast-push nudges those peers (plus the target) without seeding a
+// full overlay NIC topology. Every other method delegates to the embedded store.
+type overlayPeersStub struct {
+	migrations.MigrationWorkerStore
+	peers []store.Node
+}
+
+func (st overlayPeersStub) OverlayPeerNodesForVM(_ context.Context, _ uuid.UUID) ([]store.Node, error) {
+	return st.peers, nil
+}
+
+// TestConvergePostCutoverNudgesOverlayPeers pins the fast-push (ADR 0035 / NL8):
+// on the committed-cutover success arm, the worker nudges the computed overlay
+// peer set AND the target so they re-pull their FDB immediately. It drives the
+// full happy path (convergePostCutover is unexported), injecting the peer set
+// through an overlayPeersStub.
+func TestConvergePostCutoverNudgesOverlayPeers(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443") // target
+	peer := seedReadyNode(t, s, "node-peer", "https://node-peer:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, false)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	st := overlayPeersStub{MigrationWorkerStore: s, peers: []store.Node{peer}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+
+	h := migrations.MigrateHandler(st, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(happy) = %v, want nil", err)
+	}
+
+	agent.mu.Lock()
+	nudged := map[string]bool{}
+	for _, ep := range agent.nudged {
+		nudged[ep] = true
+	}
+	agent.mu.Unlock()
+	if !nudged[nodeB.AdvertisedEndpoint] {
+		t.Errorf("target endpoint %q not nudged; nudged=%v", nodeB.AdvertisedEndpoint, nudged)
+	}
+	if !nudged[peer.AdvertisedEndpoint] {
+		t.Errorf("overlay peer endpoint %q not nudged; nudged=%v", peer.AdvertisedEndpoint, nudged)
+	}
+}
+
 // TestRunMigration_CommitFailsAfterSuccessKeepsSource pins the destructive-seam
 // guard: the source outgoing task polls SUCCESS, but CommitMigrationCutover then
 // ERRORS (CAS loss / store fault). The cutover never committed, so the worker

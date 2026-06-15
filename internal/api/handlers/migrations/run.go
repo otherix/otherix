@@ -56,6 +56,10 @@ type MigrationWorkerStore interface {
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
+	// OverlayPeerNodesForVM returns the nodes with a local VM on any overlay VNI
+	// this VM is attached to, excluding the VM's own current node - the FDB peer
+	// set the worker nudges after a cutover (ADR 0035 / NL8 fast-push).
+	OverlayPeerNodesForVM(ctx context.Context, vmID uuid.UUID) ([]store.Node, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 }
@@ -319,7 +323,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 		// the already-committed migration. DeleteVMOnSource is unreachable on any
 		// failed / aborted / pending path - it lives strictly on the success arm
 		// after the commit.
-		convergePostCutover(ctx, agent, log, m.ID, vm, source, target, m.Live)
+		convergePostCutover(ctx, st, agent, log, m.ID, vm, source, target, m.Live)
 		return nil
 	case "failed", "cancelled":
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
@@ -345,7 +349,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 // (still holding the disk write lock) are reclaimed lazily on the VM's first
 // start or on agent restart. A leak, never a destroy; acceptable for this slice
 // since offline migration overwhelmingly targets running VMs.
-func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node, live bool) {
+func convergePostCutover(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node, live bool) {
 	if vm.DesiredPhase == store.VmDesiredPhaseRunning && !live {
 		if err := agent.StartVMOnTarget(ctx, target.AdvertisedEndpoint, vm.Name); err != nil {
 			log.WarnContext(ctx, "post-cutover start on target failed",
@@ -355,6 +359,27 @@ func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *s
 	if err := agent.DeleteVMOnSource(ctx, source.AdvertisedEndpoint, vm.Name); err != nil {
 		log.WarnContext(ctx, "post-cutover source cleanup failed (disk leaked)",
 			slog.String("migration_id", migID.String()), slog.String("source", source.AdvertisedEndpoint), slog.String("error", err.Error()))
+	}
+
+	// Fast-push (ADR 0035 / NL8): the cutover re-pointed current_node_id, so the
+	// overlay peers' declared_fdb changed. Nudge them (and the target) to re-pull
+	// immediately instead of waiting up to a heartbeat interval. Best-effort: a
+	// failed lookup or nudge degrades to the heartbeat backstop and must NOT fail
+	// the already-committed migration.
+	peers, err := st.OverlayPeerNodesForVM(ctx, vm.ID)
+	if err != nil {
+		log.WarnContext(ctx, "post-cutover peer lookup failed; relying on heartbeat backstop",
+			slog.String("migration_id", migID.String()), slog.String("error", err.Error()))
+	}
+	endpoints := map[string]struct{}{target.AdvertisedEndpoint: {}}
+	for _, p := range peers {
+		endpoints[p.AdvertisedEndpoint] = struct{}{}
+	}
+	for ep := range endpoints {
+		if err := agent.NudgeHeartbeat(ctx, ep); err != nil {
+			log.WarnContext(ctx, "post-cutover heartbeat nudge failed; heartbeat backstop will converge",
+				slog.String("migration_id", migID.String()), slog.String("endpoint", ep), slog.String("error", err.Error()))
+		}
 	}
 }
 
