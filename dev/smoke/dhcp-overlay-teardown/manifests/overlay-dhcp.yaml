@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Andrei Taranik
+#
+# A dhcp-enabled overlay network (type=overlay + egress=nat + subnet +
+# dhcp=true) with NO VM. Creating it opens a per-node DHCP responder socket on
+# the otb<vni> bridge; with no VM the bridge is quiet, so the responder's recv
+# parks immediately. Deleting it deregisters that responder - the exact path
+# that used to wedge the agent network reconciler. The dhcp-overlay-teardown
+# smoke applies/deletes this repeatedly and asserts reconciliation keeps working.
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: dhcp-teardown
+spec:
+  type: overlay
+  egress: nat
+  subnet: 10.83.0.0/24
+  dhcp: true

@@ -197,6 +197,10 @@ smoke-vm-migration-live-cleanup: ## Real-agent smoke: repeated live migration (1
 smoke-vm-migration-live-logs: ## Live VM migration + logs smoke: `vm logs -f` must follow the VM across cutover with a gapless SEQ stream (run after local-dev-start)
 	@dev/smoke/vm-migration-live-logs/run.sh
 
+.PHONY: smoke-dhcp-overlay-teardown
+smoke-dhcp-overlay-teardown: ## DHCP-overlay teardown smoke: repeated create/delete of a dhcp overlay must never wedge the agent network reconciler (run after local-dev-start)
+	@dev/smoke/dhcp-overlay-teardown/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

@@ -4,13 +4,16 @@
 package dhcp4
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -406,6 +409,141 @@ func TestRegisterBridgeRenameDrainsOldServer(t *testing.T) {
 	// The old socket is dead and serves nothing.
 	if got := len(old.recordedSends()); got != 0 {
 		t.Fatalf("old bridge recorded %d sends after rename, want 0", got)
+	}
+}
+
+// lockedBuffer is a mutex-guarded bytes.Buffer: the serve loop logs from its
+// own goroutine while the test reads the buffer, so writes and reads must be
+// synchronised.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestServeRecvTimeoutIsBenign proves a receive timeout (errRecvTimeout, what
+// the real socket returns when SO_RCVTIMEO elapses with no frame) is treated as
+// a benign idle signal: serve must NOT log it as a recv error or trip the
+// backoff, and must keep serving. Without the special-case, every ~1s idle tick
+// on a quiet bridge would warn-spam and back the loop off. The teeth: the
+// asserted absence of "dhcp recv error" fails if serve counts the timeout.
+func TestServeRecvTimeoutIsBenign(t *testing.T) {
+	buf := &lockedBuffer{}
+	conns := make(map[string]*fakeConn)
+	var mu sync.Mutex
+	r, err := New(Config{Log: slog.New(slog.NewTextHandler(buf, nil))})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	r.newConn = func(bridge string) (packetConn, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		c := newFakeConn(bridge)
+		conns[bridge] = c
+		return c, nil
+	}
+	runResponder(t, r)
+
+	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
+	if err := r.RegisterNetwork(NetworkConfig{
+		NetworkID:    "net-1",
+		Bridge:       "otb100",
+		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
+		Reservations: []Reservation{res},
+	}); err != nil {
+		t.Fatalf("RegisterNetwork() = %v", err)
+	}
+
+	c := conns["otb100"]
+	// A run of benign receive timeouts must not be counted as recv errors. The
+	// DISCOVER queued behind them must still be served promptly.
+	for i := 0; i < 5; i++ {
+		feedRecvError(c, errRecvTimeout)
+	}
+	feedDiscover(t, c, res.MAC)
+	waitSend(t, c)
+
+	if got := buf.String(); strings.Contains(got, "dhcp recv error") {
+		t.Errorf("serve logged a recv error for a benign receive timeout; want none:\n%s", got)
+	}
+}
+
+// blockingConn models the raw AF_PACKET bug faithfully: recv blocks until the
+// test explicitly releases it, and close() does NOT unblock it (closing a raw
+// fd cannot wake an in-progress Recvfrom). It is the input that wedged the
+// reconciler before the drain bound.
+type blockingConn struct {
+	release <-chan struct{}
+	closed  *atomic.Bool
+}
+
+func (c *blockingConn) recv() ([]byte, error) {
+	<-c.release
+	return nil, io.EOF
+}
+
+func (c *blockingConn) send([]byte, net.HardwareAddr) error { return nil }
+
+func (c *blockingConn) close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+// TestStopServerDrainBounded is the reliability teeth: teardown must return even
+// when the read-loop is stuck in a recv that close() cannot unblock. The drain
+// wait is bounded, so a wedged read-loop can never permanently dark the network
+// reconciler (DeregisterNetwork -> stopServer -> reconcile). Without the bound,
+// DeregisterNetwork blocks forever and this test times out.
+func TestStopServerDrainBounded(t *testing.T) {
+	prev := stopServerDrainTimeout
+	stopServerDrainTimeout = 100 * time.Millisecond
+	defer func() { stopServerDrainTimeout = prev }()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	var closed atomic.Bool
+	r, err := New(Config{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	r.newConn = func(string) (packetConn, error) {
+		return &blockingConn{release: release, closed: &closed}, nil
+	}
+	runResponder(t, r)
+
+	if err := r.RegisterNetwork(NetworkConfig{
+		NetworkID:    "net-1",
+		Bridge:       "otb100",
+		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
+		Reservations: []Reservation{reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")},
+	}); err != nil {
+		t.Fatalf("RegisterNetwork() = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- r.DeregisterNetwork("net-1") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("DeregisterNetwork() = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DeregisterNetwork did not return: teardown wedged on a recv that close cannot unblock")
+	}
+	if !closed.Load() {
+		t.Error("stopServer did not close the socket before giving up on the drain")
 	}
 }
 
