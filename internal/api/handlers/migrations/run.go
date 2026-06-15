@@ -365,7 +365,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 
 	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseSetup)
 
-	spec, err := incomingVMSpec(ctx, st, m, vm)
+	spec, disks, err := incomingVMSpec(ctx, st, m, vm)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -379,6 +379,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		Mode:               mode,
 		SourceNodeIdentity: ptrString(sourceIdentity(source.Name)),
 		VMSpec:             spec,
+		Disks:              &disks,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)
@@ -561,22 +562,22 @@ func advancePhase(ctx context.Context, st MigrationWorkerStore, log *slog.Logger
 // migration's TargetPoolName + TargetNodeID resolve that path. The disk's
 // virtual size is the VM's boot-disk row size; the guest itself comes up from
 // the in-band migration stream, not from this spec.
-func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migration, vm store.VM) (agentapi.VMSpec, error) {
+func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migration, vm store.VM) (agentapi.VMSpec, []agentapi.MigrationDisk, error) {
 	disks, err := st.ListVMDisksByVM(ctx, vm.ID)
 	if err != nil {
-		return agentapi.VMSpec{}, fmt.Errorf("list vm disks: %v", err)
+		return agentapi.VMSpec{}, nil, fmt.Errorf("list vm disks: %v", err)
 	}
 	if len(disks) == 0 {
-		return agentapi.VMSpec{}, fmt.Errorf("vm %s has no boot disk", vm.ID)
+		return agentapi.VMSpec{}, nil, fmt.Errorf("vm %s has no boot disk", vm.ID)
 	}
 	boot := disks[0]
 
 	poolPath, err := targetPoolPath(ctx, st, m)
 	if err != nil {
-		return agentapi.VMSpec{}, err
+		return agentapi.VMSpec{}, nil, err
 	}
 
-	return agentapi.VMSpec{
+	spec := agentapi.VMSpec{
 		VMUUID:       vm.ID,
 		Name:         vm.Name,
 		Architecture: agentapi.VMSpecArchitecture(vm.Architecture),
@@ -590,7 +591,58 @@ func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migrat
 			StoragePoolPath: poolPath,
 			Source:          agentapi.VMSpecDiskSource{Kind: agentapi.VMSpecDiskSourceKind(boot.SourceKind)},
 		}},
-	}, nil
+	}
+	manifest := migrationDisks(vm, int64(boot.SizeGib)*gibBytes, string(boot.Format))
+	return spec, manifest, nil
+}
+
+// gibBytes is the GiB->bytes multiplier. The boot disk row advertises its size
+// in GiB; the migration manifest size_bytes is the virtual byte size. Matches
+// the agent handler's gibBytes (internal/agent/handlers/vms/migrations.go) so
+// the manifest size and the target's boot-disk sizing agree.
+const gibBytes = 1 << 30
+
+// cloudinitDefaultDiskSize is the fixed virtual size of every NoCloud cidata
+// ISO. It MUST equal cloudinit.DefaultDiskSize (the agent's builder always
+// creates the ISO at this size and the VM-create path never overrides it); a
+// drift-guard test asserts the equality. Duplicated as a const here to avoid a
+// control-plane -> agent package import.
+const cloudinitDefaultDiskSize int64 = 10 * 1024 * 1024
+
+// vmHasCidata reports whether the VM has a NoCloud cidata ISO disk. It MUST
+// mirror resolveCloudInitUserData / resolveCloudInitNetworkConfig in package
+// internal/api/handlers/vms (the create-time source of truth the agent's
+// needsCidata consumes): cidata exists iff cloud-init is enabled and at least
+// one channel is set. If those resolvers change, change this too.
+func vmHasCidata(vm store.VM) bool {
+	if vm.CloudInitDisabled {
+		return false
+	}
+	return (vm.UserData != nil && *vm.UserData != "") ||
+		(vm.NetworkConfig != nil && *vm.NetworkConfig != "")
+}
+
+// migrationDisks builds the ordered disk manifest the target replicates: the
+// boot disk (index 0, the VM's real boot-disk format and size), then the
+// fixed-size raw cidata ISO (index 1) when the VM has cloud-init. The set is
+// deterministic from desired config, mirroring how the agent builds a VM's
+// disks at create time.
+func migrationDisks(vm store.VM, bootSizeBytes int64, bootFormat string) []agentapi.MigrationDisk {
+	disks := []agentapi.MigrationDisk{{
+		Index:     0,
+		SizeBytes: bootSizeBytes,
+		Format:    agentapi.MigrationDiskFormat(bootFormat),
+		ReadOnly:  false,
+	}}
+	if vmHasCidata(vm) {
+		disks = append(disks, agentapi.MigrationDisk{
+			Index:     1,
+			SizeBytes: cloudinitDefaultDiskSize,
+			Format:    agentapi.MigrationDiskFormat("raw"),
+			ReadOnly:  true,
+		})
+	}
+	return disks
 }
 
 // targetPoolPath resolves the bound migration's TargetPoolName to the storage
