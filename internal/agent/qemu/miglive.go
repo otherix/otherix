@@ -454,24 +454,40 @@ type LiveIncomingSpec struct {
 	Disks          []LiveIncomingDisk // destination disks, in boot-first index order
 }
 
-// LiveIncomingDisk is one destination disk the target creates, exports
-// writable, and boots in index order. ReadOnly marks the guest-facing device
-// read-only (cidata) while the underlying blockdev stays writable to receive
-// the mirror.
+// LiveIncomingDisk is one destination disk the target boots in index order.
+//
+// A WRITABLE disk (ReadOnly false, e.g. the boot disk) is created empty and
+// NBD-exported (Export/ExportID set) so the source live-mirrors it.
+//
+// A READ-ONLY disk (ReadOnly true, the cidata ISO) cannot be live block-mirrored
+// (the guest's VIRTIO_BLK_F_RO forces the blockdev read-only, but an NBD mirror
+// needs a writable target). It is instead rebuilt locally from the migrated VM's
+// cloud-init inputs and attached read-only - Export/ExportID are empty, it is
+// NOT exported and NOT mirrored. The read-only blockdev makes the guest see the
+// disk read-only, matching the source's VIRTIO_BLK_F_RO.
 type LiveIncomingDisk struct {
 	Node     string // blockdev node-name, "target-disk<i>"
 	Path     string // destination file path
-	Export   string // NBD export name, "<migrationID>-<i>"
-	ExportID string // block-export-add id, "exp<i>"
+	Export   string // NBD export name, "<migrationID>-<i>"; empty for read-only disks (not exported)
+	ExportID string // block-export-add id, "exp<i>"; empty for read-only disks (not exported)
 	Format   string // "qcow2" | "raw"
 	ReadOnly bool
 }
 
 // SetupLiveIncoming configures a just-launched (-incoming defer) target QEMU to
 // receive a live migration: install server TLS creds + the source-DN authz pin,
-// start the in-process NBD server and export the destination disk writable, then
-// arm the deferred incoming RAM channel. The order matters - the NBD export and
-// TLS objects must exist before migrate-incoming opens the socket.
+// start the in-process NBD server and export the WRITABLE destination disks
+// writable, then arm the deferred incoming RAM channel. The order matters - the
+// NBD exports and TLS objects must exist before migrate-incoming opens the socket.
+//
+// Read-only disks (cidata) are rebuilt locally and attached read-only, NOT
+// exported/mirrored, so they are skipped here. Only writable disks are exported.
+//
+// NOTE: NBDServerStart's max-connections is currently 1, which is correct because
+// today exactly one WRITABLE disk (boot) is exported. When multiple writable data
+// disks are exported in future, max-connections must grow to the writable count,
+// else the 2nd mirror connection blocks (a real hang observed when the read-only
+// cidata was wrongly exported + mirrored).
 func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
 	if err := conn.ObjectAddTLSCreds(migTLSCredsID, s.CredsDir, "server"); err != nil {
 		return fmt.Errorf("add server tls creds: %w", err)
@@ -482,9 +498,14 @@ func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
 	if err := conn.NBDServerStart(s.BindHost, s.NBDPort, migTLSCredsID, migAuthzID); err != nil {
 		return fmt.Errorf("start nbd server: %w", err)
 	}
-	// Export every destination disk writable (all must receive the mirror),
-	// in boot-first index order, before arming the incoming RAM channel.
+	// Export every WRITABLE destination disk writable (each must receive the
+	// mirror), in boot-first index order, before arming the incoming RAM
+	// channel. A disk is writable iff !d.ReadOnly (equivalently d.ExportID != "");
+	// read-only disks (cidata) are rebuilt locally, never exported, so skip them.
 	for _, d := range s.Disks {
+		if d.ReadOnly {
+			continue
+		}
 		if err := conn.BlockExportAdd(d.ExportID, d.Node, d.Export, true); err != nil {
 			return fmt.Errorf("export destination disk %s: %w", d.Node, err)
 		}
@@ -525,8 +546,14 @@ func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
 // each migration disk is expressed instead as an explicit two-layer -blockdev
 // (format node over a file protocol node) whose top node-name matches the
 // export node-name SetupLiveIncoming references, paired with a virtio-blk-pci
-// device bound to that node. A read-only disk (cidata) gets read-only=on on the
-// guest-facing device while the blockdev stays writable to receive the mirror.
+// device bound to that node.
+//
+// A read-only disk (cidata) gets read-only=on on the -blockdev (so the guest
+// sees the disk read-only, matching the source's VIRTIO_BLK_F_RO). It is NOT
+// auto-read-only - the rebuilt cidata is a static file that is never mirrored.
+// Its -device is PLAIN: virtio-blk-pci has no device-level read-only property,
+// and -device ...,read-only=on makes qemu refuse to launch. A writable disk gets
+// neither (writable blockdev, plain device) so it can receive the NBD mirror.
 func LiveIncomingArgs(s LiveIncomingSpec) []string {
 	args := make([]string, 0, len(s.Disks)*4+2)
 	for _, d := range s.Disks {
@@ -536,15 +563,18 @@ func LiveIncomingArgs(s LiveIncomingSpec) []string {
 		// writing runs of literal zeros. A sync=full mirror otherwise copies
 		// every zero cluster byte-for-byte, which under slow emulation wedges
 		// the transfer; this keeps it to the disk's real data.
-		args = append(args, "-blockdev", fmt.Sprintf(
+		blockdev := fmt.Sprintf(
 			"driver=%s,node-name=%s,discard=unmap,detect-zeroes=unmap,file.driver=file,file.filename=%s",
 			d.Format, d.Node, d.Path,
-		))
-		device := fmt.Sprintf("virtio-blk-pci,drive=%s", d.Node)
+		)
 		if d.ReadOnly {
-			device += ",read-only=on"
+			blockdev += ",read-only=on"
 		}
-		args = append(args, "-device", device)
+		args = append(args, "-blockdev", blockdev)
+		// Plain device for every disk: virtio-blk-pci carries no read-only
+		// property (read-only=on here makes qemu refuse to launch); the guest's
+		// read-only view comes from the blockdev above.
+		args = append(args, "-device", fmt.Sprintf("virtio-blk-pci,drive=%s", d.Node))
 	}
 	args = append(args, "-incoming", "defer")
 	return args

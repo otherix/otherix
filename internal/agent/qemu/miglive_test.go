@@ -416,17 +416,18 @@ func TestSetupLiveIncoming_Order(t *testing.T) {
 	}
 }
 
-// TestSetupLiveIncoming_MultiDiskExportsAllWritableInOrder asserts a 2-disk
-// spec yields exactly ONE nbd-server-start and one block-export-add per disk,
-// both writable (they must receive the mirror) and in index order, before the
-// caps/params/migrate-incoming arming.
-func TestSetupLiveIncoming_MultiDiskExportsAllWritableInOrder(t *testing.T) {
+// TestSetupLiveIncoming_ExportsOnlyWritableDisks asserts a 2-disk spec (writable
+// boot + read-only cidata) yields exactly ONE nbd-server-start and exports ONLY
+// the writable boot disk. The read-only cidata is rebuilt locally and attached
+// read-only, never NBD-exported, so it carries an empty Export/ExportID and must
+// NOT produce a block-export-add (the source never mirrors it).
+func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
 	err := SetupLiveIncoming(f, LiveIncomingSpec{
 		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
 		Disks: []LiveIncomingDisk{
 			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "mig-0", ExportID: "exp0", Format: "qcow2"},
-			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Export: "mig-1", ExportID: "exp1", Format: "raw", ReadOnly: true},
+			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
 		},
 	})
 	if err != nil {
@@ -434,7 +435,7 @@ func TestSetupLiveIncoming_MultiDiskExportsAllWritableInOrder(t *testing.T) {
 	}
 	want := []string{
 		"object-add:server", "object-add:authz", "nbd-server-start",
-		"block-export-add:writable", "block-export-add:writable",
+		"block-export-add:writable",
 		"set-caps:events,late-block-activate", "set-params", "migrate-incoming",
 	}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
@@ -443,9 +444,9 @@ func TestSetupLiveIncoming_MultiDiskExportsAllWritableInOrder(t *testing.T) {
 	if n := strings.Count(strings.Join(f.snapshot(), " "), "nbd-server-start"); n != 1 {
 		t.Errorf("nbd-server-start count = %d, want 1", n)
 	}
+	// Only the writable boot disk is exported; the read-only cidata is skipped.
 	wantExports := []exportAddCall{
 		{id: "exp0", node: "target-disk0", name: "mig-0", writable: true},
-		{id: "exp1", node: "target-disk1", name: "mig-1", writable: true},
 	}
 	if diff := cmp.Diff(wantExports, f.exportAdds, cmp.AllowUnexported(exportAddCall{})); diff != "" {
 		t.Errorf("export-add calls mismatch (-want +got):\n%s", diff)
@@ -492,8 +493,10 @@ func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 }
 
 // TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice asserts a 2-disk
-// spec emits per-disk -blockdev (correct driver) + -device (read-only=on only
-// for the cidata device) and exactly one -incoming defer.
+// spec emits per-disk -blockdev (correct driver, read-only=on on the cidata
+// BLOCKDEV only) + a PLAIN -device for each (no read-only=on on any device -
+// that virtio-blk-pci property does not exist and makes qemu refuse to launch)
+// and exactly one -incoming defer.
 func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
 		Disks: []LiveIncomingDisk{
@@ -511,18 +514,46 @@ func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 	if got := countArg(args, "-incoming"); got != 1 {
 		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
 	}
+	// Boot disk: writable blockdev (no read-only), plain device.
 	if !strings.Contains(joined, "driver=qcow2,node-name=target-disk0") {
 		t.Errorf("missing boot blockdev driver=qcow2,node-name=target-disk0: %v", args)
 	}
+	if bootBD := blockdevFor(args, "target-disk0"); strings.Contains(bootBD, "read-only=on") {
+		t.Errorf("boot blockdev must NOT be read-only: %q", bootBD)
+	}
+	// cidata: read-only=on on the BLOCKDEV (so the guest sees VIRTIO_BLK_F_RO),
+	// NOT auto-read-only (the rebuilt cidata is a static file, never mirrored).
 	if !strings.Contains(joined, "driver=raw,node-name=target-disk1") {
 		t.Errorf("missing cidata blockdev driver=raw,node-name=target-disk1: %v", args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") || strings.Contains(joined, "virtio-blk-pci,drive=target-disk0,read-only=on") {
-		t.Errorf("boot device wrong (want no read-only): %v", args)
+	cidataBD := blockdevFor(args, "target-disk1")
+	if !strings.Contains(cidataBD, "read-only=on") {
+		t.Errorf("cidata blockdev must carry read-only=on: %q", cidataBD)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk1,read-only=on") {
-		t.Errorf("cidata device must be read-only=on: %v", args)
+	if strings.Contains(cidataBD, "auto-read-only") {
+		t.Errorf("cidata blockdev must use read-only=on, not auto-read-only: %q", cidataBD)
 	}
+	// NEITHER device carries read-only=on (the property does not exist).
+	if strings.Contains(joined, "read-only=on,") || strings.Contains(joined, "drive=target-disk0,read-only=on") || strings.Contains(joined, "drive=target-disk1,read-only=on") {
+		t.Errorf("no -device may carry read-only=on: %v", args)
+	}
+	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") {
+		t.Errorf("missing plain boot device virtio-blk-pci,drive=target-disk0: %v", args)
+	}
+	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk1") {
+		t.Errorf("missing plain cidata device virtio-blk-pci,drive=target-disk1: %v", args)
+	}
+}
+
+// blockdevFor returns the -blockdev argument string whose node-name matches
+// node, or "" if absent. Used to assert blockdev-level read-only placement.
+func blockdevFor(args []string, node string) string {
+	for i, a := range args {
+		if a == "-blockdev" && i+1 < len(args) && strings.Contains(args[i+1], "node-name="+node) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // countArg counts occurrences of a flag token in an arg slice.

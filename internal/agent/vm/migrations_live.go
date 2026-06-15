@@ -168,10 +168,22 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 
 // replicateIncomingDisks materializes one destination disk per manifest entry,
 // in boot-first index order, and returns the per-disk LiveIncomingSpec entries
-// plus their export ids ("exp<i>"). Index 0 is the boot disk at v.DiskPath
-// (sized max(SizeBytes, ExpectedSize) to preserve the under-size guard); a raw
-// read-only entry is the cidata ISO (recorded on v.CidataPath so a later cold
-// restart reproduces the device); any other i>=1 entry lands at disk<i>.img.
+// plus the export ids ("exp<i>") of the WRITABLE disks only.
+//
+// Writable disks (boot at v.DiskPath, sized max(SizeBytes, ExpectedSize) to
+// preserve the under-size guard; future data disks at disk<i>.img) are created
+// empty and NBD-exported so the source live-mirrors them; each gets an
+// Export/ExportID and is appended to exportIDs.
+//
+// A read-only disk (the cidata ISO) CANNOT be live block-mirrored (an NBD mirror
+// needs a writable target node, but the guest's VIRTIO_BLK_F_RO forces the target
+// blockdev read-only). It is instead REBUILT locally from the migrated VM's
+// cloud-init inputs (deterministic; the guest reads cidata once at boot) and
+// attached read-only. It is NOT exported and NOT added to exportIDs, so the
+// source never mirrors it and the resume never dels a non-existent export. Its
+// path is recorded on v.CidataPath (by incomingDiskPath) so a later cold restart
+// reproduces the device.
+//
 // The manifest is guaranteed non-empty (the handler falls back to a single boot
 // disk); an absent manifest is treated defensively as a boot-only disk.
 func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingSpec, token string) ([]qemu.LiveIncomingDisk, []string, error) {
@@ -184,12 +196,30 @@ func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingS
 	for _, d := range disks {
 		path := m.incomingDiskPath(v, d)
 
-		// Destination disk virtual size must be >= the source's (see the
-		// offline StartIncoming for the full rationale). The boot disk
+		if d.ReadOnly {
+			// Read-only cidata: rebuild it locally instead of creating an empty
+			// disk + NBD-exporting it. No size handling (the build is a fixed
+			// 10 MiB ISO). It carries an empty Export/ExportID - it still gets a
+			// LiveIncomingDisk entry so LiveIncomingArgs emits its read-only
+			// blockdev+device for topology match, but it is never exported.
+			if err := m.migBuildCidata(path, v.Name, []byte(s.UserData), []byte(s.NetworkConfig)); err != nil {
+				return nil, nil, err
+			}
+			incomingDisks = append(incomingDisks, qemu.LiveIncomingDisk{
+				Node:     fmt.Sprintf("target-disk%d", d.Index),
+				Path:     path,
+				Format:   d.Format,
+				ReadOnly: true,
+			})
+			continue
+		}
+
+		// Writable disk. Destination virtual size must be >= the source's (see
+		// the offline StartIncoming for the full rationale). The boot disk
 		// (index 0) is sized max(d.SizeBytes, ExpectedSize) regardless of the
 		// manifest size, preserving the offline under-size guard; every other
-		// disk (e.g. the cidata ISO at index 1) keeps its exact manifest size
-		// and is never inflated by ExpectedSize.
+		// writable disk keeps its exact manifest size and is never inflated by
+		// ExpectedSize.
 		virtualBytes := d.SizeBytes
 		if d.Index == 0 && s.ExpectedSize > virtualBytes {
 			virtualBytes = s.ExpectedSize
@@ -216,7 +246,7 @@ func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingS
 			Export:   fmt.Sprintf("%s-%d", token, d.Index),
 			ExportID: fmt.Sprintf("exp%d", d.Index),
 			Format:   d.Format,
-			ReadOnly: d.ReadOnly,
+			ReadOnly: false,
 		})
 		exportIDs = append(exportIDs, fmt.Sprintf("exp%d", d.Index))
 	}

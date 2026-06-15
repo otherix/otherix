@@ -115,19 +115,30 @@ func TestStartIncoming_LiveReservesPairAndReturnsBothEndpoints(t *testing.T) {
 	}
 }
 
+// cidataBuild records one migBuildCidata invocation so the manifest test can
+// assert the cidata is REBUILT locally (hostname + cloud-init bytes) rather than
+// created empty + NBD-exported.
+type cidataBuild struct {
+	path        string
+	hostname    string
+	userData    []byte
+	networkData []byte
+}
+
 // TestStartIncoming_LiveMultiDiskReplicatesManifest asserts the target builds a
-// destination disk per manifest entry (boot via migCreateDisk, cidata via
-// migCreateRawDisk), records the cidata path on the VM, passes a per-disk
-// LiveIncomingSpec to the launch, and persists the per-disk export ids on the
-// migration record.
+// destination disk per manifest entry: the writable boot disk via migCreateDisk
+// (created + exported), and the read-only cidata REBUILT locally via
+// migBuildCidata (NOT via migCreateRawDisk, NOT NBD-exported). It records the
+// cidata path on the VM, passes a per-disk LiveIncomingSpec to the launch (cidata
+// entry carries empty Export/ExportID + ReadOnly true), and persists ONLY the
+// writable boot export id on the migration record.
 func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 	m := newTestManager(t)
 
 	// Capture (path, virtualBytes) per create seam so the size guard and the
 	// cidata-not-inflated invariant are GUARDED: the boot disk must be created
-	// at max(DiskSizeBytes, ExpectedSize), the cidata disk at its exact manifest
-	// size (never inflated to ExpectedSize). Dropping the `d.Index == 0`
-	// condition on the production guard must make the cidata size assertion fail.
+	// at max(DiskSizeBytes, ExpectedSize). The read-only cidata must NOT touch
+	// migCreateRawDisk at all - it is rebuilt via migBuildCidata.
 	qcowSizes := map[string]int64{}
 	rawSizes := map[string]int64{}
 	m.migCreateDisk = func(_ context.Context, path string, virtualBytes int64) error {
@@ -136,6 +147,11 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 	}
 	m.migCreateRawDisk = func(_ context.Context, path string, virtualBytes int64) error {
 		rawSizes[path] = virtualBytes
+		return nil
+	}
+	var builds []cidataBuild
+	m.migBuildCidata = func(path, hostname string, userData, networkData []byte) error {
+		builds = append(builds, cidataBuild{path: path, hostname: hostname, userData: userData, networkData: networkData})
 		return nil
 	}
 	var gotSpec qemu.LiveIncomingSpec
@@ -168,6 +184,8 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 		DiskSizeBytes:  bootManifestSize,
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
+		UserData:       "#cloud-config\nusers: []\n",
+		NetworkConfig:  "version: 2\n",
 		Disks: []MigrationDisk{
 			{Index: 0, SizeBytes: bootManifestSize, Format: "qcow2", ReadOnly: false},
 			{Index: 1, SizeBytes: cidataSize, Format: "raw", ReadOnly: true},
@@ -193,13 +211,23 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 	if got := qcowSizes[v.DiskPath]; got != int64(expectedSize) {
 		t.Errorf("boot disk virtualBytes = %d, want %d (max(DiskSizeBytes, ExpectedSize))", got, int64(expectedSize))
 	}
-	if len(rawSizes) != 1 {
-		t.Errorf("raw creates = %v, want exactly one at %s", rawSizes, cidataPath)
+	// The read-only cidata is REBUILT, not created via migCreateRawDisk.
+	if len(rawSizes) != 0 {
+		t.Errorf("raw creates = %v, want none (cidata is rebuilt via migBuildCidata)", rawSizes)
 	}
-	// cidata disk: created at its EXACT manifest size, never inflated to
-	// ExpectedSize. This is the teeth for the `d.Index == 0` guard condition.
-	if got := rawSizes[cidataPath]; got != int64(cidataSize) {
-		t.Errorf("cidata disk virtualBytes = %d, want %d (exact manifest size, not inflated)", got, int64(cidataSize))
+	// cidata rebuilt exactly once, with v.Name as hostname and the IncomingSpec
+	// cloud-init bytes.
+	if len(builds) != 1 {
+		t.Fatalf("migBuildCidata calls = %d, want 1 (%v)", len(builds), builds)
+	}
+	wantBuild := cidataBuild{
+		path:        cidataPath,
+		hostname:    "demo",
+		userData:    []byte("#cloud-config\nusers: []\n"),
+		networkData: []byte("version: 2\n"),
+	}
+	if diff := cmp.Diff(wantBuild, builds[0], cmp.AllowUnexported(cidataBuild{})); diff != "" {
+		t.Errorf("migBuildCidata call mismatch (-want +got):\n%s", diff)
 	}
 	if v.CidataPath != cidataPath {
 		t.Errorf("v.CidataPath = %q, want %q", v.CidataPath, cidataPath)
@@ -207,7 +235,7 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 
 	wantDisks := []qemu.LiveIncomingDisk{
 		{Node: "target-disk0", Path: v.DiskPath, Export: migID.String() + "-0", ExportID: "exp0", Format: "qcow2", ReadOnly: false},
-		{Node: "target-disk1", Path: cidataPath, Export: migID.String() + "-1", ExportID: "exp1", Format: "raw", ReadOnly: true},
+		{Node: "target-disk1", Path: cidataPath, Format: "raw", ReadOnly: true},
 	}
 	if diff := cmp.Diff(wantDisks, gotSpec.Disks); diff != "" {
 		t.Errorf("LiveIncomingSpec.Disks mismatch (-want +got):\n%s", diff)
@@ -217,7 +245,8 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("no migration record stored")
 	}
-	if diff := cmp.Diff([]string{"exp0", "exp1"}, rec.ExportIDs); diff != "" {
+	// Only the writable boot export is persisted; the cidata is not exported.
+	if diff := cmp.Diff([]string{"exp0"}, rec.ExportIDs); diff != "" {
 		t.Errorf("record ExportIDs mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -551,6 +580,7 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
 	m.migCreateDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
 	m.migCreateRawDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
+	m.migBuildCidata = func(path, hostname string, userData, networkData []byte) error { return nil }
 	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
 	var (
 		ranTarget bool
@@ -584,8 +614,8 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 		DiskSizeBytes:  1 << 30,
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
-		// Two-disk manifest (boot qcow2 + cidata raw read-only): the resume
-		// must tear down BOTH exports, not just the boot export.
+		// Two-disk manifest (boot qcow2 + cidata raw read-only): only the
+		// writable boot disk is exported, so the resume tears down exp0 only.
 		Disks: []MigrationDisk{
 			{Index: 0, SizeBytes: 1 << 30, Format: "qcow2"},
 			{Index: 1, SizeBytes: 1 << 20, Format: "raw", ReadOnly: true},
@@ -602,8 +632,10 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 	if !ranTarget {
 		t.Errorf("migRunLiveTarget was not invoked")
 	}
-	// The resume must delete EVERY export the record carries, in index order.
-	if diff := cmp.Diff([]string{"exp0", "exp1"}, gotSpec.ExportIDs); diff != "" {
+	// The resume must delete every WRITABLE export the record carries. The
+	// read-only cidata is rebuilt locally, never exported, so only the boot
+	// export (exp0) is torn down.
+	if diff := cmp.Diff([]string{"exp0"}, gotSpec.ExportIDs); diff != "" {
 		t.Errorf("LiveTargetSpec.ExportIDs mismatch (-want +got):\n%s", diff)
 	}
 

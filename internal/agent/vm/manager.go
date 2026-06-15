@@ -164,9 +164,15 @@ type Manager struct {
 	// tests. Default to the real qemu.* helpers in New.
 	migCreateDisk    func(ctx context.Context, path string, virtualBytes int64) error
 	migCreateRawDisk func(ctx context.Context, path string, virtualBytes int64) error
-	migSpawnNBD      func(ctx context.Context, args []string) (int, error)
-	migRunConvert    func(ctx context.Context, args []string) error
-	migWaitNBDReady  func(ctx context.Context, endpoint string) error
+	// migBuildCidata rebuilds the read-only cidata ISO locally from the
+	// migrated VM's cloud-init inputs (a read-only disk cannot be live
+	// block-mirrored). cidata is deterministic and read once at boot, so the
+	// target reconstructs it instead of NBD-exporting + mirroring it. Defaults
+	// to the cloudinit.Builder in New; stubbed in tests.
+	migBuildCidata  func(path, hostname string, userData, networkData []byte) error
+	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
+	migRunConvert   func(ctx context.Context, args []string) error
+	migWaitNBDReady func(ctx context.Context, endpoint string) error
 
 	// Live-migration seams. migLaunchIncoming boots a paused -incoming
 	// qemu for an adopted target VM and waits until its QMP socket is
@@ -268,6 +274,11 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
 	m.migCreateDisk = qemu.CreateDisk
 	m.migCreateRawDisk = qemu.CreateRawDisk
+	m.migBuildCidata = func(path, hostname string, userData, networkData []byte) error {
+		b := &cloudinit.Builder{Hostname: hostname, UserData: userData, NetworkData: networkData}
+		_, err := b.Build(path)
+		return err
+	}
 	m.migSpawnNBD = qemu.SpawnQemuNBD
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
