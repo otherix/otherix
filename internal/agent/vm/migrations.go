@@ -108,13 +108,15 @@ func adoptStatus(s Status) Status {
 // removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
 // record, removes the per-VM state directory (meta.json, sockets, pidfile)
 // under stateDir (mirroring runDelete's state-dir removal), and removes the
-// per-VM destination disk dir. The disk-dir removal is SAFE because every
-// caller is strictly pre-cutover (the startIncomingLive rollback and
-// teardownIncomingTarget), where the destination disk is empty / not the live
-// copy; the post-cutover path (failIncomingResume) intentionally does NOT call
-// this. The RemoveAll errors are best-effort: logged and ignored so a stale
-// directory never blocks rollback. Used by the live incoming prep to leave
-// nothing behind when a later step fails.
+// per-VM destination disk dir. The disk-dir removal is SAFE for every caller:
+// the TARGET-side callers (the startIncomingLive rollback and
+// teardownIncomingTarget) are strictly pre-cutover, where the destination disk
+// is empty / not the live copy; the SOURCE-side caller (teardownDepartedSource)
+// runs only after a completed live migrate, where the disk is the now-stale
+// departed copy (the live copy is on the target). The target-side post-cutover
+// path (failIncomingResume) intentionally does NOT call this - there the
+// destination disk is the ONLY live copy. The RemoveAll errors are best-effort:
+// logged and ignored so a stale directory never blocks teardown.
 func (m *Manager) removeAdoptedVM(id uuid.UUID) {
 	m.mu.Lock()
 	v := m.vms[id]

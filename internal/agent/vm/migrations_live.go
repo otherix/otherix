@@ -527,11 +527,37 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		return
 	}
 
+	// The guest is now running on the target. Tear down the departed source VM
+	// NOW (before reporting success) so a reverse migration back to this node
+	// adopts cleanly instead of racing the CP's slow async DeleteVMOnSource.
+	m.teardownDepartedSource(v)
+
 	m.migrations.Update(s.MigrationID, func(r *migration.Record) {
 		r.Phase = migration.PhaseCompleted
 		r.CompletedAt = time.Now().UTC()
 	})
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+}
+
+// teardownDepartedSource removes a source VM that has just completed a successful
+// outgoing LIVE migration: the guest is now irrevocably on the target, so the
+// postmigrate source qemu and the stale source disk are garbage. It force-kills the
+// qemu (no graceful wait - the postmigrate guest will never honour ACPI powerdown),
+// tears down the source NICs, and removes the in-memory record + per-VM disk dir +
+// state. Done synchronously at the end of runOutgoingLive (before the task is marked
+// success) so that "migration completed" implies "source released" - a reverse
+// migration back to this node then adopts cleanly instead of racing the CP's slow
+// async DeleteVMOnSource. Safe pre-cutover: the heartbeat path is purely additive
+// (omitting the VM is a no-op) and the cutover Txn is the sole writer of
+// current_node_id; a completed live migrate is the same signal the CP already trusts
+// to delete the source.
+func (m *Manager) teardownDepartedSource(v *VM) {
+	if v == nil {
+		return
+	}
+	m.killQEMU(v)
+	m.teardownNICs(v.NICs)
+	m.removeAdoptedVM(v.ID)
 }
 
 // liveProgressReporter returns the periodic LiveProgress callback handed to
