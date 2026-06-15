@@ -163,12 +163,11 @@ func migrationEvent(status string) qmp.Event {
 
 func testSpec() LiveSourceSpec {
 	return LiveSourceSpec{
-		SrcDiskNode:        "disk0",
-		JobID:              "mirror0",
-		NBDNode:            "nbd0",
+		Disks: []LiveSourceDisk{
+			{SrcNode: "disk0", JobID: "mirror0", NBDNode: "nbd0", Export: "tok"},
+		},
 		TargetHost:         "10.0.0.2",
 		NBDPort:            10000,
-		Export:             "tok",
 		CredsDir:           "/tmp/creds",
 		TargetIdentity:     "node-t.agents.otherix.local",
 		RAMHost:            "10.0.0.2",
@@ -177,6 +176,18 @@ func testSpec() LiveSourceSpec {
 		MaxBandwidthBytes:  0,
 		ConvergenceTimeout: 5 * time.Second,
 	}
+}
+
+// twoDiskSpec is a 2-disk source spec (boot virtio0 + cidata virtio1) whose
+// per-disk job ids and export names match the target convention
+// (mirror-disk<i> / <token>-<i>).
+func twoDiskSpec() LiveSourceSpec {
+	s := testSpec()
+	s.Disks = []LiveSourceDisk{
+		{SrcNode: "virtio0", JobID: "mirror-disk0", NBDNode: "mirror-target0", Export: "tok-0"},
+		{SrcNode: "virtio1", JobID: "mirror-disk1", NBDNode: "mirror-target1", Export: "tok-1"},
+	}
+	return s
 }
 
 func TestRunLiveSource_HappyPathOrder(t *testing.T) {
@@ -203,6 +214,82 @@ func TestRunLiveSource_HappyPathOrder(t *testing.T) {
 	}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
+	}
+}
+
+// TestRunLiveSource_MultiDiskMirrorsBothOutOfOrderReady drives a 2-disk live
+// migration. It asserts RunLiveSource adds an NBD blockdev + starts a mirror for
+// BOTH disks, waits READY for BOTH even though the cidata (mirror-disk1) READY
+// arrives BEFORE the boot (mirror-disk0) READY, then at switchover issues
+// block-job-cancel(force=false) for BOTH and waits COMPLETED for BOTH before
+// migrate-continue, and finally dels BOTH client blockdevs. The out-of-order
+// READY is the deterministic seam the single-job waiter would mishandle.
+func TestRunLiveSource_MultiDiskMirrorsBothOutOfOrderReady(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 8)}
+	// cidata READY BEFORE boot READY (out of order on purpose).
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk1")
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk0")
+	f.events <- migrationEvent("pre-switchover")
+	// COMPLETED also out of order (cidata first).
+	f.events <- blockJobEvent("BLOCK_JOB_COMPLETED", "mirror-disk1")
+	f.events <- blockJobEvent("BLOCK_JOB_COMPLETED", "mirror-disk0")
+	f.events <- migrationEvent("completed")
+
+	if err := RunLiveSource(context.Background(), f, twoDiskSpec(), nil); err != nil {
+		t.Fatalf("RunLiveSource() = %v, want nil", err)
+	}
+
+	got := f.snapshot()
+	// One TLS creds, then per-disk blockdev-add + blockdev-mirror (2 each).
+	if n := countCall(got, "blockdev-add"); n != 2 {
+		t.Errorf("blockdev-add count = %d, want 2 (one per disk)", n)
+	}
+	if n := countCall(got, "blockdev-mirror"); n != 2 {
+		t.Errorf("blockdev-mirror count = %d, want 2 (one per disk)", n)
+	}
+	if n := countCall(got, "object-add:client"); n != 1 {
+		t.Errorf("object-add:client count = %d, want 1 (single TLS creds)", n)
+	}
+	// Finalize issues block-job-cancel(force=false) for BOTH disks.
+	if n := countCall(got, "block-job-cancel:false"); n != 2 {
+		t.Errorf("block-job-cancel:false count = %d, want 2 (finalize both mirrors)", n)
+	}
+	// Both client blockdevs dropped on completion.
+	if n := countCall(got, "blockdev-del"); n != 2 {
+		t.Errorf("blockdev-del count = %d, want 2 (one per disk)", n)
+	}
+	// Both mirrors started before any RAM migrate; both finalized before continue.
+	migrateIdx := indexOf(got, "migrate")
+	if c := lastIndexOf(got, "blockdev-mirror"); c >= 0 && migrateIdx >= 0 && c > migrateIdx {
+		t.Errorf("call order = %v, both mirrors must start before RAM migrate", got)
+	}
+	contIdx := indexOf(got, "migrate-continue")
+	if c := lastIndexOf(got, "block-job-cancel:false"); c >= 0 && contIdx >= 0 && c > contIdx {
+		t.Errorf("call order = %v, both mirrors must be finalized before migrate-continue", got)
+	}
+}
+
+// TestRunLiveSource_MultiDiskAbortCancelsAllDisks asserts a RAM failure aborts
+// BOTH disk mirrors (force cancel + del each) and still cancels the RAM once.
+func TestRunLiveSource_MultiDiskAbortCancelsAllDisks(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 4)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk1")
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk0")
+	f.events <- migrationEvent("failed")
+
+	if err := RunLiveSource(context.Background(), f, twoDiskSpec(), nil); err == nil {
+		t.Fatal("RunLiveSource() = nil, want error on RAM failure")
+	}
+
+	got := f.snapshot()
+	if n := countCall(got, "migrate_cancel"); n != 1 {
+		t.Errorf("migrate_cancel count = %d, want 1 (RAM cancelled once)", n)
+	}
+	if n := countCall(got, "block-job-cancel:true"); n != 2 {
+		t.Errorf("block-job-cancel:true count = %d, want 2 (force-abort both mirrors)", n)
+	}
+	if contains(got, "migrate-continue") {
+		t.Errorf("call order = %v, must NOT contain migrate-continue after failure", got)
 	}
 }
 
@@ -658,4 +745,109 @@ func indexOf(s []string, v string) int {
 		}
 	}
 	return -1
+}
+
+// lastIndexOf returns the index of the last occurrence of v in s, or -1.
+func lastIndexOf(s []string, v string) int {
+	idx := -1
+	for i, x := range s {
+		if x == v {
+			idx = i
+		}
+	}
+	return idx
+}
+
+// countCall counts occurrences of v in the recorded call slice.
+func countCall(s []string, v string) int {
+	n := 0
+	for _, x := range s {
+		if x == v {
+			n++
+		}
+	}
+	return n
+}
+
+// TestWaitBlockJobsTimeout_OutOfOrderReady is the seam test: the tiny cidata
+// mirror (mirror-disk1) reaches BLOCK_JOB_READY BEFORE the multi-GiB boot disk
+// (mirror-disk0). A naive sequential single-job waiter would DISCARD the cidata
+// READY while waiting on the boot job, then block on cidata forever. The
+// set-based waiter must consume both in a single pass regardless of order.
+func TestWaitBlockJobsTimeout_OutOfOrderReady(t *testing.T) {
+	// Unbuffered channel + goroutine so the test controls event ordering and
+	// can observe whether the waiter has returned. Feed cidata (mirror-disk1)
+	// READY FIRST, assert the waiter is STILL blocked (it must wait for the
+	// whole set, not return after the first match), then feed boot
+	// (mirror-disk0) READY and assert it returns nil.
+	ch := make(chan qmp.Event)
+	done := make(chan error, 1)
+	go func() {
+		done <- waitBlockJobsTimeout(context.Background(), ch, "BLOCK_JOB_READY",
+			[]string{"mirror-disk0", "mirror-disk1"}, time.Second)
+	}()
+
+	// First match: cidata READY. A correct waiter consumes it and keeps waiting.
+	ch <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk1")
+
+	// The waiter must NOT have returned yet: only one of two jobs is READY.
+	// A "return after the first matching event" mutation returns here and fails.
+	select {
+	case err := <-done:
+		t.Fatalf("waitBlockJobsTimeout() returned %v after only mirror-disk1 READY; want it still blocked for mirror-disk0", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Second match: boot READY. Now the set is satisfied and the waiter returns.
+	ch <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk0")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waitBlockJobsTimeout() = %v, want nil (both jobs reached READY out of order)", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waitBlockJobsTimeout() did not return after both jobs reached READY")
+	}
+}
+
+// TestWaitBlockJobsTimeout_TeethOneJobNeverReady proves the waiter fails closed:
+// if one job in the set never emits, the deadline fires and the waiter returns
+// an error rather than blocking forever.
+func TestWaitBlockJobsTimeout_TeethOneJobNeverReady(t *testing.T) {
+	ch := make(chan qmp.Event, 1)
+	ch <- blockJobEvent("BLOCK_JOB_READY", "mirror-disk1") // boot job never emits
+
+	err := waitBlockJobsTimeout(context.Background(), ch, "BLOCK_JOB_READY",
+		[]string{"mirror-disk0", "mirror-disk1"}, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitBlockJobsTimeout() = nil, want timeout error when one job never reaches READY")
+	}
+}
+
+// TestWaitBlockJobsTimeout_SurfacesJobError asserts a terminal event carrying a
+// non-empty "error" for a set member fails closed.
+func TestWaitBlockJobsTimeout_SurfacesJobError(t *testing.T) {
+	ch := make(chan qmp.Event, 1)
+	ch <- qmp.Event{Event: "BLOCK_JOB_COMPLETED", Data: map[string]interface{}{
+		"device": "mirror-disk0", "error": "No space left on device",
+	}}
+
+	err := waitBlockJobsTimeout(context.Background(), ch, "BLOCK_JOB_COMPLETED",
+		[]string{"mirror-disk0"}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "No space left") {
+		t.Fatalf("waitBlockJobsTimeout() = %v, want error surfacing the job error", err)
+	}
+}
+
+// TestWaitBlockJobsTimeout_ClosedChannel asserts a closed channel before the set
+// is satisfied is an error (fail-closed end-of-stream).
+func TestWaitBlockJobsTimeout_ClosedChannel(t *testing.T) {
+	ch := make(chan qmp.Event)
+	close(ch)
+	err := waitBlockJobsTimeout(context.Background(), ch, "BLOCK_JOB_READY",
+		[]string{"mirror-disk0"}, time.Second)
+	if err == nil {
+		t.Fatal("waitBlockJobsTimeout() = nil, want error on closed channel")
+	}
 }

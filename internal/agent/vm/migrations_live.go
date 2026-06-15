@@ -364,13 +364,31 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 	// but never owns it.
 	defer func() { _ = conn.Close() }()
 
+	// Mirror EVERY source disk to its matching target export so the device
+	// topology matches the -incoming target. Index 0 is always the boot disk
+	// (virtio0). Index 1, present iff the source carries a cidata disk, is the
+	// cidata disk (virtio1): the source guest launches the boot drive then the
+	// cidata drive in if=virtio cmdline order, so QEMU names them virtio0,
+	// virtio1 by that ordering (see liveSourceDiskNode at the top of this file;
+	// the same ordering extends to virtio1). The per-disk export name
+	// s.AuthToken+"-<i>" byte-matches the target's <migrationID>-<i> because the
+	// target set its record.AuthToken = migrationID.String() and the CP relays
+	// it as the outgoing auth_token.
+	disks := []qemu.LiveSourceDisk{{
+		SrcNode: liveSourceDiskNode, JobID: liveMirrorJobID,
+		NBDNode: "mirror-target0", Export: s.AuthToken + "-0",
+	}}
+	if v.CidataPath != "" {
+		disks = append(disks, qemu.LiveSourceDisk{
+			SrcNode: "virtio1", JobID: "mirror-disk1",
+			NBDNode: "mirror-target1", Export: s.AuthToken + "-1",
+		})
+	}
+
 	spec := qemu.LiveSourceSpec{
-		SrcDiskNode:          liveSourceDiskNode,
-		JobID:                liveMirrorJobID,
-		NBDNode:              "mirror-target",
+		Disks:                disks,
 		TargetHost:           nbdHost,
 		NBDPort:              nbdPort,
-		Export:               s.AuthToken,
 		CredsDir:             credsDir,
 		TargetIdentity:       s.TargetIdentity,
 		RAMHost:              ramHost,

@@ -43,15 +43,21 @@ var _ LiveSourceConn = (*QMPClient)(nil)
 
 var _ LiveTargetConn = (*QMPClient)(nil)
 
+// LiveSourceDisk is one source disk mirrored to a matching target NBD export.
+type LiveSourceDisk struct {
+	SrcNode string // running guest BlockBackend device name (blockdev-mirror device=), "virtio<i>"
+	JobID   string // blockdev-mirror job-id, "mirror-disk<i>"
+	NBDNode string // local NBD client blockdev node-name, "mirror-target<i>"
+	Export  string // target NBD export name, "<migrationID>-<i>"
+}
+
 // LiveSourceSpec parameterizes the source side of a live migration.
 type LiveSourceSpec struct {
-	// Disk mirror.
-	SrcDiskNode    string // the running guest's source disk node-name (blockdev-mirror device=)
-	JobID          string // blockdev-mirror job-id
-	NBDNode        string // local NBD client node-name (blockdev-add target)
+	// Disk mirrors: every source disk mirrored to its matching target export,
+	// in boot-first index order. Disks[0] is the boot disk the reporter tracks.
+	Disks          []LiveSourceDisk
 	TargetHost     string // target NBD host
 	NBDPort        int    // target NBD port
-	Export         string // NBD export name (the migration auth token)
 	CredsDir       string // client TLS creds dir
 	TargetIdentity string // tls-hostname pin (node-<target>.agents.otherix.local)
 	// RAM stream.
@@ -140,17 +146,22 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		abortLiveSource(conn, s)
 		return fmt.Errorf("add client tls creds: %w", err)
 	}
-	if err := conn.BlockdevAddNBD(s.NBDNode, s.TargetHost, s.NBDPort, s.Export, migTLSCredsID, s.TargetIdentity); err != nil {
+	// Mirror EVERY source disk to its matching target export so the device
+	// topology matches. The boot disk and the cidata disk each get an NBD
+	// client blockdev + a blockdev-mirror; both must reach READY before the RAM
+	// migrate.
+	jobIDs, err := startDiskMirrors(conn, s)
+	if err != nil {
 		abortLiveSource(conn, s)
-		return fmt.Errorf("add nbd client blockdev: %w", err)
+		return err
 	}
-	if err := conn.BlockdevMirror(s.JobID, s.SrcDiskNode, s.NBDNode); err != nil {
+	// Wait for ALL mirrors to reach READY in a single pass. The tiny cidata
+	// mirror reaches READY long before the boot disk, so this MUST be a
+	// set-based wait that does not discard the early event (a sequential
+	// single-job wait per disk would block forever - see waitBlockJobsEvent).
+	if err := waitBlockJobsTimeout(ctx, ch, "BLOCK_JOB_READY", jobIDs, diskMirrorTimeout); err != nil {
 		abortLiveSource(conn, s)
-		return fmt.Errorf("start disk mirror: %w", err)
-	}
-	if err := waitBlockJobTimeout(ctx, ch, "BLOCK_JOB_READY", s.JobID, diskMirrorTimeout); err != nil {
-		abortLiveSource(conn, s)
-		return fmt.Errorf("wait mirror ready: %w", err)
+		return fmt.Errorf("wait mirrors ready: %w", err)
 	}
 
 	caps := map[string]bool{
@@ -186,16 +197,17 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		return fmt.Errorf("wait pre-switchover: %w", err)
 	}
 
-	// Finalize the disk mirror WHILE paused at pre-switchover, then
-	// release the source. This order is load-bearing and must not be
-	// reordered.
-	if err := conn.BlockJobCancel(s.JobID, false); err != nil {
+	// Finalize EVERY disk mirror WHILE paused at pre-switchover, then release
+	// the source. This order is load-bearing and must not be reordered. Issue
+	// all the graceful cancels BEFORE waiting the COMPLETED set, mirroring the
+	// READY phase, so no completed event is missed.
+	if err := finalizeDiskMirrors(conn, s); err != nil {
 		abortLiveSource(conn, s)
-		return fmt.Errorf("finalize disk mirror: %w", err)
+		return err
 	}
-	if err := waitBlockJobTimeout(ctx, ch, "BLOCK_JOB_COMPLETED", s.JobID, switchoverTimeout); err != nil {
+	if err := waitBlockJobsTimeout(ctx, ch, "BLOCK_JOB_COMPLETED", jobIDs, switchoverTimeout); err != nil {
 		abortLiveSource(conn, s)
-		return fmt.Errorf("wait mirror completed: %w", err)
+		return fmt.Errorf("wait mirrors completed: %w", err)
 	}
 	if err := conn.MigrateContinue(); err != nil {
 		abortLiveSource(conn, s)
@@ -207,9 +219,11 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 	}
 
 	// The migration has completed; the guest now runs on the target. The
-	// stale NBD client blockdev is best-effort cleanup - a failure here
+	// stale NBD client blockdevs are best-effort cleanup - a failure here
 	// does not undo a completed migration.
-	_ = conn.BlockdevDel(s.NBDNode)
+	for _, d := range s.Disks {
+		_ = conn.BlockdevDel(d.NBDNode)
+	}
 	return nil
 }
 
@@ -323,13 +337,21 @@ func durationOr(v, def time.Duration) time.Duration {
 	return def
 }
 
-// waitBlockJobTimeout wraps waitBlockJobEvent with a fail-closed deadline so a
-// block-job event that never arrives (a stuck mirror) aborts the migration
-// instead of blocking forever on the only other escape, parent-ctx cancel.
-func waitBlockJobTimeout(ctx context.Context, ch <-chan qmp.Event, eventName, device string, timeout time.Duration) error {
+// waitBlockJobsTimeout waits until eventName has arrived for EVERY job id in
+// jobIDs (in any order), reading the single fanned-out event channel once. It
+// must not discard an event for a still-pending job in the set - the cidata
+// mirror reaches READY long before the boot disk, so events arrive out of
+// order. A matching terminal event carrying a non-empty "error" fails closed.
+// One deadline context bounds the whole set so a job whose event never arrives
+// (a stuck mirror) aborts the migration instead of blocking forever.
+func waitBlockJobsTimeout(ctx context.Context, ch <-chan qmp.Event, eventName string, jobIDs []string, timeout time.Duration) error {
+	remaining := make(map[string]bool, len(jobIDs))
+	for _, id := range jobIDs {
+		remaining[id] = true
+	}
 	wctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return waitBlockJobEvent(wctx, ch, eventName, device)
+	return waitBlockJobsEvent(wctx, ch, eventName, remaining)
 }
 
 // waitMigrationStatusTimeout wraps waitMigrationStatus with a fail-closed
@@ -525,13 +547,45 @@ func LiveIncomingArgs(s LiveIncomingSpec) []string {
 	return args
 }
 
+// startDiskMirrors adds an NBD client blockdev and starts a blockdev-mirror for
+// every source disk, returning the started job ids in order. On the first error
+// it returns a wrapped error; the caller aborts. The caller waits the returned
+// job ids for BLOCK_JOB_READY as a set.
+func startDiskMirrors(conn LiveSourceConn, s LiveSourceSpec) ([]string, error) {
+	jobIDs := make([]string, 0, len(s.Disks))
+	for _, d := range s.Disks {
+		if err := conn.BlockdevAddNBD(d.NBDNode, s.TargetHost, s.NBDPort, d.Export, migTLSCredsID, s.TargetIdentity); err != nil {
+			return nil, fmt.Errorf("add nbd client blockdev %q: %w", d.NBDNode, err)
+		}
+		if err := conn.BlockdevMirror(d.JobID, d.SrcNode, d.NBDNode); err != nil {
+			return nil, fmt.Errorf("start disk mirror %q: %w", d.JobID, err)
+		}
+		jobIDs = append(jobIDs, d.JobID)
+	}
+	return jobIDs, nil
+}
+
+// finalizeDiskMirrors issues the graceful block-job-cancel (force=false) for
+// every disk mirror. All cancels are issued before the caller waits the
+// COMPLETED set, so no completed event is missed.
+func finalizeDiskMirrors(conn LiveSourceConn, s LiveSourceSpec) error {
+	for _, d := range s.Disks {
+		if err := conn.BlockJobCancel(d.JobID, false); err != nil {
+			return fmt.Errorf("finalize disk mirror %q: %w", d.JobID, err)
+		}
+	}
+	return nil
+}
+
 // abortLiveSource fails the source side closed: it cancels the RAM
-// migration, force-aborts the disk mirror, and removes the NBD client
+// migration, force-aborts every disk mirror, and removes every NBD client
 // blockdev. Each step is best-effort; an error in one does not stop the
 // others, because the goal is to return the guest to a clean running
 // state on the source no matter which step originally failed.
 func abortLiveSource(conn LiveSourceConn, s LiveSourceSpec) {
 	_ = conn.MigrateCancel()
-	_ = conn.BlockJobCancel(s.JobID, true)
-	_ = conn.BlockdevDel(s.NBDNode)
+	for _, d := range s.Disks {
+		_ = conn.BlockJobCancel(d.JobID, true)
+		_ = conn.BlockdevDel(d.NBDNode)
+	}
 }

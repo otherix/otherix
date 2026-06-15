@@ -353,8 +353,14 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 	// virtio0. The wrong value (virtio-disk0) is what the smoke caught: real
 	// qemu replied "Cannot find device='virtio-disk0'". This is the teeth the
 	// prior tests lacked.
-	if gotSpec.SrcDiskNode != "virtio0" {
-		t.Errorf("spec.SrcDiskNode = %q, want %q", gotSpec.SrcDiskNode, "virtio0")
+	if len(gotSpec.Disks) != 1 {
+		t.Fatalf("spec.Disks len = %d, want 1 (boot disk only, no cidata)", len(gotSpec.Disks))
+	}
+	wantBoot := qemu.LiveSourceDisk{
+		SrcNode: "virtio0", JobID: "mirror-disk0", NBDNode: "mirror-target0", Export: migID.String() + "-0",
+	}
+	if gotSpec.Disks[0] != wantBoot {
+		t.Errorf("spec.Disks[0] = %+v, want %+v", gotSpec.Disks[0], wantBoot)
 	}
 
 	// Assert the raw persisted status: live migration must NOT power off the
@@ -371,6 +377,50 @@ func TestRunOutgoingLive_NoPoweroff_DrivesToCompleted(t *testing.T) {
 	tk := m.tasks.Get(task.ID)
 	if tk == nil || tk.Status != TaskStatusSuccess {
 		t.Errorf("task = %v, want status success", tk)
+	}
+}
+
+// TestRunOutgoingLive_WithCidata_BuildsTwoDiskSpec asserts that when the source
+// VM carries a cidata disk (v.CidataPath != "") the outgoing spec mirrors BOTH
+// disks: index 0 the boot disk (virtio0 -> <token>-0) and index 1 the cidata
+// disk (virtio1 -> <token>-1). The export names must byte-match the target's
+// per-disk export names <migrationID>-<i> (s.AuthToken == migrationID.String()).
+func TestRunOutgoingLive_WithCidata_BuildsTwoDiskSpec(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedRunningVM(t, "demo")
+	m.mu.Lock()
+	v.CidataPath = filepath.Join(filepath.Dir(v.DiskPath), "cidata.iso")
+	m.mu.Unlock()
+
+	var gotSpec qemu.LiveSourceSpec
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
+		gotSpec = spec
+		return nil
+	}
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+
+	migID := uuid.New()
+	if _, err := m.StartOutgoing(context.Background(), OutgoingSpec{
+		MigrationID:    migID,
+		VMUUID:         v.ID,
+		VMName:         v.Name,
+		Mode:           "live",
+		TargetEndpoint: "10.0.0.2:49152",
+		NBDEndpoint:    "10.0.0.2:49153",
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		AuthToken:      migID.String(),
+	}); err != nil {
+		t.Fatalf("StartOutgoing(live) error = %v", err)
+	}
+
+	waitPhase(t, m, migID, "completed")
+
+	want := []qemu.LiveSourceDisk{
+		{SrcNode: "virtio0", JobID: "mirror-disk0", NBDNode: "mirror-target0", Export: migID.String() + "-0"},
+		{SrcNode: "virtio1", JobID: "mirror-disk1", NBDNode: "mirror-target1", Export: migID.String() + "-1"},
+	}
+	if diff := cmp.Diff(want, gotSpec.Disks); diff != "" {
+		t.Errorf("spec.Disks mismatch (-want +got):\n%s", diff)
 	}
 }
 
