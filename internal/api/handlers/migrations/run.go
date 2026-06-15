@@ -85,6 +85,9 @@ type MigrationAgentClient interface {
 	// VM fetches the agent's view of a VM (used to read the source boot disk's
 	// real virtual size for destination sizing).
 	VM(ctx context.Context, endpoint, vmName string) (agentclient.AgentVM, error)
+	// CancelMigration tells an agent (the bound TARGET on a terminal-failure /
+	// cancel of a live migration) to reap its incoming setup. Best-effort.
+	CancelMigration(ctx context.Context, endpoint, vmName, migrationID string) (agentapi.Migration, error)
 }
 
 // Placer is the placement seam (spec D2): a node-less migrate scores a target
@@ -351,9 +354,25 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 		convergePostCutover(ctx, st, agent, log, m.ID, vm, source, target, m.Live)
 		return nil
 	case "failed", "cancelled":
+		cancelTargetIncoming(ctx, agent, log, m, vm, target)
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
 	default:
 		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", terminal.Status))
+	}
+}
+
+// cancelTargetIncoming best-effort tells the bound TARGET to reap its live-migration
+// incoming setup when the migration ends pre-cutover (source-task failure / cancel).
+// Only for live migrations with a bound target; offline targets have no autonomous
+// resume goroutine to unblock. A failure degrades to the target's own 30-minute
+// incoming timeout backstop and must NOT change the migration outcome.
+func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, m store.Migration, vm store.VM, target store.Node) {
+	if !m.Live || m.TargetNodeID == nil {
+		return
+	}
+	if _, err := agent.CancelMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String()); err != nil {
+		log.WarnContext(ctx, "target incoming teardown failed; relying on agent timeout backstop",
+			slog.String("migration_id", m.ID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
 }
 
