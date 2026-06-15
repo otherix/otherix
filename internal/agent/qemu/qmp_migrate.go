@@ -514,10 +514,13 @@ func waitMigrationStatus(ctx context.Context, ch <-chan qmp.Event, want string, 
 // mirrors reach their event out of order (the tiny cidata mirror reaches
 // BLOCK_JOB_READY long before the multi-GiB boot disk), and a single-job waiter
 // that discarded the early event would then block on it forever. It crosses off
-// each matching id and returns when the set is empty. A matching terminal event
-// carrying a non-empty "error" fails closed. A closed channel or cancelled ctx
-// before the set is satisfied is an error. Events for ids not in the set are
-// ignored (there are none in this flow).
+// each matching id and returns when the set is empty. It fails fast on a job
+// error event for a watched device (BLOCK_JOB_ERROR, an errored
+// BLOCK_JOB_COMPLETED, or a clean COMPLETED arriving while we still wait for
+// READY) rather than blocking until the disk-mirror timeout - a different event
+// name than eventName, so the naive matcher would skip it. A closed channel or
+// cancelled ctx before the set is satisfied is an error. Events for ids not in
+// the set are ignored (there are none in this flow).
 func waitBlockJobsEvent(ctx context.Context, ch <-chan qmp.Event, eventName string, remaining map[string]bool) error {
 	for len(remaining) > 0 {
 		select {
@@ -528,11 +531,32 @@ func waitBlockJobsEvent(ctx context.Context, ch <-chan qmp.Event, eventName stri
 				return fmt.Errorf("qmp event stream closed before %s for all jobs", eventName)
 			}
 			dev, _ := ev.Data["device"].(string)
-			if !remaining[dev] || ev.Event != eventName {
+			if !remaining[dev] {
 				continue
 			}
+			// A failed mirror emits BLOCK_JOB_ERROR (and/or an errored
+			// BLOCK_JOB_COMPLETED), a different event name than the one we wait
+			// for. Treat any error for a watched device as terminal so a failed
+			// mirror aborts fast (fail-safe-to-source) instead of blocking until
+			// the disk-mirror timeout.
+			if ev.Event == "BLOCK_JOB_ERROR" {
+				msg, _ := ev.Data["error"].(string)
+				if msg == "" {
+					msg = "block job error"
+				}
+				return fmt.Errorf("block job %q failed before %s: %s", dev, eventName, msg)
+			}
 			if msg, _ := ev.Data["error"].(string); msg != "" {
-				return fmt.Errorf("%s for %q reported error: %s", eventName, dev, msg)
+				return fmt.Errorf("%s for %q reported error: %s", ev.Event, dev, msg)
+			}
+			// While waiting for READY, a clean BLOCK_JOB_COMPLETED for a watched
+			// job is abnormal (the mirror vanished without becoming READY) - fail
+			// closed rather than wait out the deadline.
+			if eventName == "BLOCK_JOB_READY" && ev.Event == "BLOCK_JOB_COMPLETED" {
+				return fmt.Errorf("block job %q completed before reaching %s", dev, eventName)
+			}
+			if ev.Event != eventName {
+				continue
 			}
 			delete(remaining, dev)
 		}

@@ -108,6 +108,11 @@ type AgentVM struct {
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// BootDiskVirtualSizeBytes is the agent-reported actual virtual size of the
+	// on-disk boot qcow2 (qemu-img info -U), independent of the requested
+	// disk_gib. The CP uses it to size a live-migration destination disk to the
+	// real source size. 0 means the agent could not probe it (treat as unknown).
+	BootDiskVirtualSizeBytes int64 `json:"boot_disk_virtual_size_bytes"`
 }
 
 // agentVMListResponse mirrors the agent's listResponse wire shape

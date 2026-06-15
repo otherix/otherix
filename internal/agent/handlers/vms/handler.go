@@ -84,18 +84,23 @@ type vmView struct {
 	Status       string `json:"status"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
+	// BootDiskVirtualSizeBytes is the actual virtual size of the on-disk boot
+	// qcow2 (qemu-img info -U), independent of the requested disk_gib. The CP
+	// reads it to size a migration destination disk to the real source size.
+	BootDiskVirtualSizeBytes int64 `json:"boot_disk_virtual_size_bytes"`
 }
 
-func toView(v *vm.VM) vmView {
+func toView(v *vm.VM, bootDiskVirtualSize int64) vmView {
 	return vmView{
-		ID:           v.ID.String(),
-		Name:         v.Name,
-		VCPUs:        v.VCPUs,
-		MemoryMB:     v.MemoryMB,
-		Pool:         v.PoolName,
-		Architecture: string(v.Architecture),
-		Status:       string(v.Status),
-		CreatedAt:    v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    v.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:                       v.ID.String(),
+		Name:                     v.Name,
+		VCPUs:                    v.VCPUs,
+		MemoryMB:                 v.MemoryMB,
+		Pool:                     v.PoolName,
+		Architecture:             string(v.Architecture),
+		Status:                   string(v.Status),
+		CreatedAt:                v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:                v.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		BootDiskVirtualSizeBytes: bootDiskVirtualSize,
 	}
 }

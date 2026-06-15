@@ -48,6 +48,24 @@ func ImgInfoOf(ctx context.Context, path string) (ImgInfo, error) {
 	return parseImgInfo(out)
 }
 
+// ImgVirtualSizeShared returns the virtual size in bytes of the qcow2/raw at
+// path, read with `-U` (force-share) so it succeeds even while a running qemu
+// holds the image's write-lock - virtual size is static qcow2-header metadata,
+// safe to read shared. Used to size a live-migration destination disk to the
+// running source disk's real virtual size.
+func ImgVirtualSizeShared(ctx context.Context, path string) (int64, error) {
+	// #nosec G204 -- path is an agent-owned pool file, not user input.
+	out, err := exec.CommandContext(ctx, "qemu-img", "info", "--output=json", "-U", path).Output()
+	if err != nil {
+		return 0, fmt.Errorf("qemu-img info -U %s: %v", path, err)
+	}
+	info, err := parseImgInfo(out)
+	if err != nil {
+		return 0, err
+	}
+	return info.VirtualSize, nil
+}
+
 // ResizeImg grows the qcow2 at path to sizeBytes via `qemu-img resize`.
 // qemu-img resize only grows here (the caller rejects shrink before calling).
 func ResizeImg(ctx context.Context, path string, sizeBytes int64) error {

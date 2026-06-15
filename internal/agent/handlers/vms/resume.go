@@ -26,5 +26,5 @@ func (h *Handler) Resume(w http.ResponseWriter, r *http.Request) {
 		mapLifecycleError(w, r, err)
 		return
 	}
-	response.WriteJSON(w, r, http.StatusOK, toView(v))
+	response.WriteJSON(w, r, http.StatusOK, toView(v, 0))
 }
