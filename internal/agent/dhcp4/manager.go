@@ -227,6 +227,24 @@ func (r *responder) startServerLocked(srv *bridgeServer) error {
 	return nil
 }
 
+// errRecvTimeout is returned by a packetConn.recv when the receive deadline
+// elapsed with no frame (or the syscall was interrupted). It is a benign idle
+// signal, NOT a socket failure: the serve loop uses it only as a chance to
+// observe ctx cancellation and must not count it toward the recv-error backoff.
+// The bounded receive deadline is what makes teardown observable at all - a raw
+// AF_PACKET Recvfrom cannot be unblocked by closing its fd, so the read-loop can
+// only react to cancellation between recv calls.
+var errRecvTimeout = errors.New("dhcp4: recv timeout")
+
+// stopServerDrainTimeout bounds how long stopServer waits for a read-loop to
+// drain after cancel+close. With the bounded receive deadline a loop always
+// exits within one deadline; this cap is pure defense in depth so a
+// hypothetically stuck read-loop can never permanently wedge the network
+// reconciler (DeregisterNetwork -> stopServer -> reconcile). A leaked socket and
+// goroutine are strictly better than darking all network reconciliation. It is a
+// var (not const) only so tests can shorten it.
+var stopServerDrainTimeout = 5 * time.Second
+
 // stopServer cancels srv's read-loop, closes its socket, and waits for the loop
 // to drain. Safe to call without holding r.mu.
 func (r *responder) stopServer(srv *bridgeServer) {
@@ -237,14 +255,23 @@ func (r *responder) stopServer(srv *bridgeServer) {
 		_ = srv.conn.close()
 	}
 	if srv.done != nil {
-		<-srv.done
+		select {
+		case <-srv.done:
+		case <-time.After(stopServerDrainTimeout):
+			// The read-loop did not drain in time. Proceed anyway: leaking a
+			// socket and goroutine is far better than blocking the reconciler
+			// forever. With the bounded receive deadline this path should never
+			// fire; it exists so a future regression cannot dark reconciliation.
+			r.log.Error("dhcp read-loop drain timed out; proceeding with leaked socket", "bridge", srv.bridge, "timeout", stopServerDrainTimeout.String())
+		}
 	}
 }
 
 // serveErrBackoffThreshold is the number of consecutive recv errors tolerated
-// at full speed before the loop starts backing off. A transient blip (EINTR,
-// ENOBUFS) clears well under this; a wedged fd (e.g. ifindex removed, recv
-// erroring every call without blocking) trips it into a slow poll.
+// at full speed before the loop starts backing off. A transient blip (ENOBUFS
+// under flood) clears well under this; a wedged fd (e.g. ifindex removed, recv
+// erroring every call without blocking) trips it into a slow poll. Benign
+// receive-deadline ticks (errRecvTimeout) are not counted here.
 const serveErrBackoffThreshold = 4
 
 // serveErrBackoffBase and serveErrBackoffMax bound the backoff: once the loop is
@@ -259,13 +286,14 @@ const (
 // current snapshot, builds a reply for known MACs, and sends it.
 //
 // The only fatal path is ctx cancel (deregister/shutdown, which also closes the
-// socket via stopServer): on it serve returns cleanly. Every other recv error
-// is transient (EINTR from async-preemption/signals, ENOBUFS under flood) and
-// must NOT dark the bridge: serve logs, counts it, and continues. A genuinely
-// removed bridge is reaped by the reconciler's DeregisterNetwork (ctx cancel),
-// not by serve closing its own socket - closing here without reopening would
-// re-dark a live bridge. To avoid hot-spinning on a persistent error state, the
-// loop backs off (ctx-interruptibly) once errors run consecutive.
+// socket via stopServer): on it serve returns cleanly. A receive-deadline tick
+// (errRecvTimeout, the quiet-bridge idle path) is benign: serve just loops so it
+// can re-check ctx. Every other recv error is transient (ENOBUFS under flood)
+// and must NOT dark the bridge: serve logs, counts it, and continues. A
+// genuinely removed bridge is reaped by the reconciler's DeregisterNetwork (ctx
+// cancel), not by serve closing its own socket - closing here without reopening
+// would re-dark a live bridge. To avoid hot-spinning on a persistent error
+// state, the loop backs off (ctx-interruptibly) once errors run consecutive.
 func (r *responder) serve(ctx context.Context, srv *bridgeServer) {
 	defer close(srv.done)
 	consecErrs := 0
@@ -276,6 +304,14 @@ func (r *responder) serve(ctx context.Context, srv *bridgeServer) {
 				// Deregister/shutdown cancelled the ctx (and closed the socket);
 				// this is the only fatal path.
 				return
+			}
+			if errors.Is(err, errRecvTimeout) {
+				// The receive deadline elapsed with no frame (or recv was
+				// interrupted). This is the normal idle path on a quiet bridge:
+				// the socket is healthy, so reset the error run and loop. The
+				// ctx check above already gave teardown its exit window.
+				consecErrs = 0
+				continue
 			}
 			consecErrs++
 			r.log.Warn("dhcp recv error", "bridge", srv.bridge, "error", err.Error(), "consecutive_errors", consecErrs)

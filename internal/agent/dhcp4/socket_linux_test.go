@@ -8,9 +8,36 @@ package dhcp4
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"net"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestRecvErrIsTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "eagain", err: unix.EAGAIN, want: true},
+		{name: "ewouldblock", err: unix.EWOULDBLOCK, want: true},
+		{name: "eintr", err: unix.EINTR, want: true},
+		{name: "wrapped_eagain", err: fmt.Errorf("recvfrom: %w", unix.EAGAIN), want: true},
+		{name: "ebadf", err: unix.EBADF, want: false},
+		{name: "enetdown", err: unix.ENETDOWN, want: false},
+		{name: "generic", err: errors.New("boom"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recvErrIsTimeout(tc.err); got != tc.want {
+				t.Errorf("recvErrIsTimeout(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestIPChecksumKnownVector(t *testing.T) {
 	// RFC 1071-style worked example header (checksum field zeroed) from the

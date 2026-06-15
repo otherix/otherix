@@ -8,8 +8,10 @@ package dhcp4
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -33,6 +35,14 @@ const (
 	dhcpServerPort = 67
 	dhcpClientPort = 68
 )
+
+// recvTimeout bounds a single blocking Recvfrom (via SO_RCVTIMEO) so the
+// read-loop wakes to check ctx cancellation at least this often. Closing a raw
+// AF_PACKET fd does not unblock an in-progress Recvfrom (the fd is not in Go's
+// netpoller), so without a deadline a quiet bridge would park the read-loop
+// forever and any teardown would wedge the network reconciler. One second is a
+// prompt teardown bound without meaningfully busying an idle bridge.
+const recvTimeout = time.Second
 
 // openAFPacket opens a raw AF_PACKET socket bound to the named bridge. The
 // socket captures only IPv4 frames (ETH_P_IP); recv further filters to UDP/67.
@@ -64,16 +74,32 @@ func openAFPacket(bridge string) (packetConn, error) {
 		return nil, fmt.Errorf("dhcp4: attach filter %s: %w", bridge, err)
 	}
 
+	// Bound the blocking Recvfrom so the read-loop can observe ctx cancellation
+	// between receives. Without this a quiet bridge parks recv forever and
+	// teardown (which cannot unblock a raw recv by closing the fd) wedges the
+	// reconciler. Fail closed: a socket whose deadline could not be set would
+	// reintroduce the unbounded-block teardown deadlock.
+	tv := unix.NsecToTimeval(recvTimeout.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("dhcp4: set recv timeout %s: %w", bridge, err)
+	}
+
 	return &afpacketConn{fd: fd, ifindex: iface.Index, srcMAC: iface.HardwareAddr}, nil
 }
 
 // recv reads frames until it sees a UDP datagram to port 67, returning the UDP
-// payload. Non-DHCP frames are skipped.
+// payload. Non-DHCP frames are skipped. A receive that hits the SO_RCVTIMEO
+// deadline with no frame (or an interrupted syscall) returns errRecvTimeout so
+// the serve loop can check for cancellation, rather than blocking indefinitely.
 func (c *afpacketConn) recv() ([]byte, error) {
 	buf := make([]byte, 1500)
 	for {
 		n, _, err := unix.Recvfrom(c.fd, buf, 0)
 		if err != nil {
+			if recvErrIsTimeout(err) {
+				return nil, errRecvTimeout
+			}
 			return nil, err
 		}
 		payload, ok := parseDHCPFrame(buf[:n])
@@ -82,6 +108,17 @@ func (c *afpacketConn) recv() ([]byte, error) {
 		}
 		return payload, nil
 	}
+}
+
+// recvErrIsTimeout reports whether a Recvfrom error is the benign "no frame
+// before the receive deadline" signal rather than a real socket failure.
+// EAGAIN/EWOULDBLOCK come from the SO_RCVTIMEO deadline; EINTR from async
+// preemption or a delivered signal. All three mean "retry", so the serve loop
+// treats them as an idle tick and checks ctx instead of counting an error.
+func recvErrIsTimeout(err error) bool {
+	return errors.Is(err, unix.EAGAIN) ||
+		errors.Is(err, unix.EWOULDBLOCK) ||
+		errors.Is(err, unix.EINTR)
 }
 
 // send frames payload as Ethernet/IPv4/UDP from the overlay gateway
