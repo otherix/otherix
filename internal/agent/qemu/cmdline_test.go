@@ -42,7 +42,7 @@ func TestBuildArgs_AMD64(t *testing.T) {
 		"-uuid 11111111-2222-3333-4444-555555555555",
 		"-smp 2",
 		"-m 2048",
-		"-accel tcg",
+		"-accel tcg,thread=multi",
 		"-cpu host",
 		"-daemonize",
 		"-display none",
@@ -78,7 +78,7 @@ func TestBuildArgs_ARM64(t *testing.T) {
 		"-machine virt",
 		"-cpu max",
 		"-bios /usr/share/AAVMF/AAVMF_CODE.fd",
-		"-accel tcg",
+		"-accel tcg,thread=multi",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("arm64 args missing %q: %s", want, joined)

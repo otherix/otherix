@@ -162,10 +162,45 @@ type Manager struct {
 
 	// QEMU side-effect seams for the migration path, overridable in
 	// tests. Default to the real qemu.* helpers in New.
-	migCreateDisk   func(ctx context.Context, path string, virtualBytes int64) error
+	migCreateDisk    func(ctx context.Context, path string, virtualBytes int64) error
+	migCreateRawDisk func(ctx context.Context, path string, virtualBytes int64) error
+	// migBuildCidata rebuilds the read-only cidata ISO locally from the
+	// migrated VM's cloud-init inputs (a read-only disk cannot be live
+	// block-mirrored). cidata is deterministic and read once at boot, so the
+	// target reconstructs it instead of NBD-exporting + mirroring it. Defaults
+	// to the cloudinit.Builder in New; stubbed in tests.
+	migBuildCidata  func(path, hostname string, userData, networkData []byte) error
 	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
 	migRunConvert   func(ctx context.Context, args []string) error
 	migWaitNBDReady func(ctx context.Context, endpoint string) error
+
+	// Live-migration seams. migLaunchIncoming boots a paused -incoming
+	// qemu for an adopted target VM and waits until its QMP socket is
+	// reachable; migDialQMP dials a VM's QMP socket as a LiveSourceConn;
+	// migRunLiveSource drives the source sequencer. Default to the real
+	// impls in New; tests inject no-op / recording fakes.
+	migLaunchIncoming func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error
+	migDialQMP        func(socket string) (qemu.LiveSourceConn, error)
+	migRunLiveSource  func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error
+
+	// Target-side resume seams. migDialQMPTarget dials a paused -incoming
+	// qemu's QMP socket as a LiveTargetConn; migRunLiveTarget drives the
+	// target sequencer (wait incoming completed -> drop the writable export
+	// -> cont). Default to the real impls in New; tests inject stub conns and
+	// a recording run.
+	migDialQMPTarget func(socket string) (qemu.LiveTargetConn, error)
+	migRunLiveTarget func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error
+
+	// resumeWG tracks the fire-and-forget runIncomingResume goroutines
+	// startIncomingLive spawns (each detached on context.Background so it
+	// outlives the 202 request). Production never waits on it; tests Wait at
+	// teardown so a resume's persistVM write cannot race t.TempDir cleanup.
+	resumeWG sync.WaitGroup
+
+	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
+	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard
+	// (a zero timeout would make the watchdog fire instantly).
+	migConvergenceTimeout time.Duration
 }
 
 // inFlightAcquire records a new in-flight operation for name. Returns
@@ -244,10 +279,29 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
 	m.migCreateDisk = qemu.CreateDisk
+	m.migCreateRawDisk = qemu.CreateRawDisk
+	m.migBuildCidata = func(path, hostname string, userData, networkData []byte) error {
+		b := &cloudinit.Builder{Hostname: hostname, UserData: userData, NetworkData: networkData}
+		_, err := b.Build(path)
+		return err
+	}
 	m.migSpawnNBD = qemu.SpawnQemuNBD
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
 		return qemu.WaitNBDListening(ctx, endpoint, 15*time.Second)
+	}
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		return qemu.DialQMP(socket, 5*time.Second)
+	}
+	m.migLaunchIncoming = m.launchIncomingQemu
+	m.migRunLiveSource = qemu.RunLiveSource
+	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) {
+		return qemu.DialQMP(socket, 5*time.Second)
+	}
+	m.migRunLiveTarget = qemu.RunLiveTarget
+	m.migConvergenceTimeout = cfg.Migration.ConvergenceTimeout
+	if m.migConvergenceTimeout <= 0 {
+		m.migConvergenceTimeout = 10 * time.Minute
 	}
 
 	metas, err := state.ScanState(cfg.StatePath, log)

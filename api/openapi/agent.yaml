@@ -2231,6 +2231,46 @@ components:
             The source node leaf-cert Distinguished Name ("CN=node-<source>").
             The target builds a tls-authz object from it to pin the connecting
             source identity before accepting the NBD/migration stream.
+        user_data:
+          type: [string, "null"]
+          description: |
+            CP-resolved cloud-init user-data, sent only when the VM has a
+            cloud-init seed. The target rebuilds the read-only cidata ISO from
+            this (and network_config) so the migrated guest keeps an identical
+            read-only cidata device. Absent/null when the VM has no cloud-init.
+        network_config:
+          type: [string, "null"]
+          description: |
+            CP-resolved cloud-init network-config (NoCloud /network-config),
+            paired with user_data for the target cidata rebuild. Absent/null
+            when none was supplied.
+        disks:
+          type: array
+          description: |
+            Ordered disk manifest the CP builds from the VM's desired config.
+            The target creates and NBD-exports one destination disk per entry,
+            in this order, so the device topology matches the source for live
+            migration. Index 0 is the boot disk; later entries are cidata or
+            data disks. Empty or absent on legacy requests (boot-only fallback).
+          items:
+            $ref: "#/components/schemas/MigrationDisk"
+
+    MigrationDisk:
+      type: object
+      required: [index, size_bytes, format, read_only]
+      properties:
+        index:
+          type: integer
+          description: virtio device order, 0 is the boot disk.
+        size_bytes:
+          type: integer
+          format: int64
+          description: destination disk virtual size in bytes.
+        format:
+          type: string
+          enum: [qcow2, raw]
+        read_only:
+          type: boolean
 
     MigrationIncomingResponse:
       type: object
@@ -2250,6 +2290,13 @@ components:
             opening the migration channel. Bound to this
             `migration_id`. Returned exactly once; the target
             stores only its hash.
+        nbd_endpoint:
+          description: >-
+            For live migrations only: the target's NBD disk-export listener
+            (host:port), distinct from the RAM listener in listen_endpoint /
+            target_endpoint. Empty for offline migrations, which reuse the single
+            endpoint as the qemu-nbd server.
+          type: [string, "null"]
 
     MigrationOutgoingRequest:
       type: object
@@ -2288,6 +2335,13 @@ components:
             The target node SAN name ("node-<target>.agents.otherix.local").
             The source sets tls-hostname to it so QEMU validates the target
             server cert identity, pinning the destination.
+        nbd_endpoint:
+          description: >-
+            For live migrations only: the target's NBD disk-export listener
+            (host:port), distinct from the RAM listener in listen_endpoint /
+            target_endpoint. Empty for offline migrations, which reuse the single
+            endpoint as the qemu-nbd server.
+          type: [string, "null"]
 
     Migration:
       type: object

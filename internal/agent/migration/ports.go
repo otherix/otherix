@@ -55,3 +55,27 @@ func (a *PortAllocator) Release(port int) {
 	defer a.mu.Unlock()
 	delete(a.used, port)
 }
+
+// ReservePair reserves two distinct ports (RAM stream + NBD disk export) for a
+// single live migration. If the second reservation fails the first is rolled
+// back, so a partial pair never leaks. Returns ErrNoFreePort when the range
+// cannot satisfy both.
+func (a *PortAllocator) ReservePair() (ram, nbd int, err error) {
+	ram, err = a.Reserve()
+	if err != nil {
+		return 0, 0, err
+	}
+	nbd, err = a.Reserve()
+	if err != nil {
+		a.Release(ram)
+		return 0, 0, err
+	}
+	return ram, nbd, nil
+}
+
+// ReleasePair returns both ports of a live migration to the pool. Zero ports
+// are ignored (Release already no-ops on unknown ports).
+func (a *PortAllocator) ReleasePair(ram, nbd int) {
+	a.Release(ram)
+	a.Release(nbd)
+}

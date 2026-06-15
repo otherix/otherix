@@ -6,6 +6,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMigrationConfigValidate(t *testing.T) {
@@ -59,5 +60,19 @@ func TestMigrationConfigValidate(t *testing.T) {
 				t.Errorf("MigrationConfig.Validate() = %q, want substring %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestMigrationConfig_ConvergenceTimeoutDefault(t *testing.T) {
+	c := defaultAgentConfig().Migration
+	if c.ConvergenceTimeout != 10*time.Minute {
+		t.Errorf("ConvergenceTimeout default = %v, want 10m", c.ConvergenceTimeout)
+	}
+}
+
+func TestMigrationConfig_RejectsNegativeConvergenceTimeout(t *testing.T) {
+	c := MigrationConfig{Host: "10.0.0.1", PortRangeStart: 49152, PortRangeEnd: 49251, ConvergenceTimeout: -1}
+	if err := c.Validate(); err == nil {
+		t.Error("Validate() with negative ConvergenceTimeout = nil, want error")
 	}
 }

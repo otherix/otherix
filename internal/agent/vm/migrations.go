@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -18,9 +19,10 @@ import (
 )
 
 // AdoptSpec describes a VM whose disk is being migrated in from another
-// node. The target adopts a stopped, Migrated record plus a destination
-// disk path; the disk file itself is created and filled by the migration
-// flow (Task 8), not by this method.
+// node. The target adopts a Migrated record (StatusStopped for offline
+// migration, StatusMigratingIncoming for live targets, per InitialStatus)
+// plus a destination disk path; the disk file itself is created and filled
+// by the migration flow (Task 8), not by this method.
 type AdoptSpec struct {
 	UUID         uuid.UUID
 	Name         string
@@ -28,14 +30,21 @@ type AdoptSpec struct {
 	MemoryMB     int
 	PoolName     string
 	Architecture qemu.Architecture
+	// InitialStatus is the status the adopted VM record starts in. The zero
+	// value ("") means StatusStopped (offline migration: a later start boots
+	// the copied disk). Live targets pass StatusMigratingIncoming so the
+	// reconciler does not cold-start the VM before the resume driver runs.
+	InitialStatus Status
 }
 
-// AdoptForMigration registers a stopped, Migrated VM on this (target) node
-// and returns it. It computes the destination disk path inside the named
-// pool, mirroring the create flow, and persists meta.json so a later start
-// boots the copied disk without cloning. It does not touch QEMU or create
-// the disk file. The pool must already be registered (reconciled from
-// desired state); an unknown pool returns ErrPoolUnknown.
+// AdoptForMigration registers a Migrated VM on this (target) node and
+// returns it, in the initial status resolved from spec.InitialStatus
+// (StatusStopped for offline migration, StatusMigratingIncoming for live
+// targets). It computes the destination disk path inside the named pool,
+// mirroring the create flow, and persists meta.json so a later start or
+// resume boots the copied disk without cloning. It does not touch QEMU or
+// create the disk file. The pool must already be registered (reconciled
+// from desired state); an unknown pool returns ErrPoolUnknown.
 func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 	m.poolsMu.RLock()
 	p, ok := m.pools[spec.PoolName]
@@ -53,7 +62,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		MemoryMB:      spec.MemoryMB,
 		PoolName:      spec.PoolName,
 		Architecture:  spec.Architecture,
-		Status:        StatusStopped,
+		Status:        adoptStatus(spec.InitialStatus),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		DiskPath:      disk,
@@ -78,6 +87,31 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		return nil, fmt.Errorf("persist adopted vm: %v", err)
 	}
 	return v, nil
+}
+
+// adoptStatus resolves the adopted VM's initial status: the zero value ("")
+// defaults to StatusStopped (offline migration), otherwise the caller's
+// explicit status (live targets pass StatusMigratingIncoming).
+func adoptStatus(s Status) Status {
+	if s == "" {
+		return StatusStopped
+	}
+	return s
+}
+
+// removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
+// record and removes the per-VM state directory (meta.json, sockets, pidfile)
+// under stateDir, mirroring runDelete's state-dir removal. It does NOT remove
+// the pool disk dir, which may be shared. The RemoveAll error is best-effort:
+// logged and ignored so a stale directory never blocks rollback. Used by the
+// live incoming prep to leave nothing behind when a later step fails.
+func (m *Manager) removeAdoptedVM(id uuid.UUID) {
+	m.mu.Lock()
+	delete(m.vms, id)
+	m.mu.Unlock()
+	if err := os.RemoveAll(filepath.Join(m.stateDir, id.String())); err != nil {
+		m.log.Warn("removeAdoptedVM: remove agent state dir", "vm_id", id.String(), "err", err)
+	}
 }
 
 // Migrations returns the agent's in-memory migration record store.
@@ -120,15 +154,32 @@ type IncomingSpec struct {
 	Mode           string
 	ExpectedSize   int64
 	DiskSizeBytes  int64
+	Disks          []MigrationDisk
 	SourceIdentity string
 	BindHost       string
+	UserData       string
+	NetworkConfig  string
+}
+
+// MigrationDisk is one entry of the ordered disk manifest the target
+// replicates: its virtio index, virtual size, on-disk format, and whether the
+// guest sees it read-only (cidata).
+type MigrationDisk struct {
+	Index     int
+	SizeBytes int64
+	Format    string
+	ReadOnly  bool
 }
 
 // IncomingResult is returned to the agent-API handler, which serializes it
 // back to the CP; the CP then relays the endpoint + token to the source.
 type IncomingResult struct {
 	ListenEndpoint string
-	AuthToken      string
+	// NBDEndpoint is the target's writable NBD disk listener (live only).
+	// Empty for offline migrations. The CP relays it to the source, which
+	// dials it for blockdev-mirror.
+	NBDEndpoint string
+	AuthToken   string
 }
 
 // StartIncoming prepares this node to receive a migrated VM: reserve a
@@ -143,6 +194,9 @@ type IncomingResult struct {
 // partial is GC'd. No migration record is stored until every step succeeds,
 // so an early failure leaves nothing in m.migrations to delete.
 func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingResult, error) {
+	if migration.Mode(s.Mode) == migration.ModeLive {
+		return m.startIncomingLive(ctx, s)
+	}
 	// Idempotent resume: the CP re-drives the migration task on transient
 	// failure, so a second StartIncoming for the same migration must NOT
 	// re-reserve a port or re-adopt the VM (which would fail "already
@@ -230,6 +284,9 @@ type OutgoingSpec struct {
 	VMName         string
 	Mode           string
 	TargetEndpoint string
+	// NBDEndpoint is the target's NBD disk listener (live only). The source
+	// dials it for blockdev-mirror. Empty for offline migrations.
+	NBDEndpoint    string
 	TargetIdentity string
 	AuthToken      string
 }
@@ -269,6 +326,10 @@ func (m *Manager) StartOutgoing(ctx context.Context, s OutgoingSpec) (*AgentTask
 // acceptable: cancel is best-effort, an uninterruptible push runs to completion
 // or the migration fails, and either way the VM stays on the source.
 func (m *Manager) runOutgoing(ctx context.Context, taskID uuid.UUID, s OutgoingSpec, srcDisk string) {
+	if migration.Mode(s.Mode) == migration.ModeLive {
+		m.runOutgoingLive(ctx, taskID, s)
+		return
+	}
 	fail := func(code, msg string) {
 		m.migrations.Update(s.MigrationID, func(r *migration.Record) {
 			r.Phase = migration.PhaseFailed
@@ -419,6 +480,9 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 	rec, ok := m.migrations.Get(id)
 	if !ok {
 		return MigrationView{}, false
+	}
+	if rec.Mode == migration.ModeLive {
+		return m.cancelLive(id, rec)
 	}
 	if !rec.Terminal() {
 		if rec.NBDPid > 0 {

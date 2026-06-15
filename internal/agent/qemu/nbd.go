@@ -148,6 +148,21 @@ func CreateDisk(ctx context.Context, path string, virtualBytes int64) error {
 	return nil
 }
 
+// CreateRawDisk creates an empty raw image of virtualBytes at path (mkdir -p
+// the parent first), used for the cidata ISO destination of a live migration
+// (the source mirrors the real bytes in; only the container is pre-created).
+func CreateRawDisk(ctx context.Context, path string, virtualBytes int64) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	// #nosec G204 -- the command is a fixed qemu binary; the args are server-constructed migration parameters (paths/ports/identities resolved by the CP and this agent), never raw user input.
+	out, err := exec.CommandContext(ctx, "qemu-img", "create", "-f", "raw", path, strconv.FormatInt(virtualBytes, 10)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qemu-img create %s: %v (%s)", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // SpawnQemuNBD starts qemu-nbd detached and returns its pid. qemu-nbd does
 // not daemonize by default; we start it and let it run until torn down. The
 // caller tracks the pid in the migration record for teardown.

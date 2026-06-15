@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
 // newTestManager builds a Manager over a temp state dir with a single
@@ -33,6 +34,16 @@ func newTestManager(t *testing.T) *Manager {
 	// default it to immediate success. StartIncoming tests inject the fake
 	// spawn/create seams separately.
 	m.migWaitNBDReady = func(context.Context, string) error { return nil }
+	// Default the target-side resume seams to fast no-op stubs so the
+	// fire-and-forget runIncomingResume goroutine startIncomingLive spawns
+	// drives to StatusRunning instantly instead of blocking on a real DialQMP.
+	// Tests that exercise the resume override these.
+	m.migDialQMPTarget = func(string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
+	m.migRunLiveTarget = func(context.Context, qemu.LiveTargetConn, qemu.LiveTargetSpec) error { return nil }
+	// Await any spawned resume goroutine before the test's t.TempDir is removed
+	// (registered after newTestConfig's t.TempDir, so LIFO runs it first), so a
+	// resume's persistVM write cannot race RemoveAll ("directory not empty").
+	t.Cleanup(m.resumeWG.Wait)
 	return m
 }
 
@@ -87,6 +98,18 @@ func (m *Manager) seedStoppedVM(t *testing.T, name string) *VM {
 	}
 	m.mu.Lock()
 	m.vms[id] = v
+	m.mu.Unlock()
+	return v
+}
+
+// seedRunningVM registers a VM in StatusRunning in the default test pool with a
+// stub disk on disk, used by the live-migration tests that assert the source
+// guest is NOT powered off (live moves the running guest in place).
+func (m *Manager) seedRunningVM(t *testing.T, name string) *VM {
+	t.Helper()
+	v := m.seedStoppedVM(t, name)
+	m.mu.Lock()
+	v.Status = StatusRunning
 	m.mu.Unlock()
 	return v
 }

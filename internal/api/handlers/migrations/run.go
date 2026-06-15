@@ -313,7 +313,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 		// the already-committed migration. DeleteVMOnSource is unreachable on any
 		// failed / aborted / pending path - it lives strictly on the success arm
 		// after the commit.
-		convergePostCutover(ctx, agent, log, m.ID, vm, source, target)
+		convergePostCutover(ctx, agent, log, m.ID, vm, source, target, m.Live)
 		return nil
 	case "failed", "cancelled":
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
@@ -323,11 +323,15 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 }
 
 // convergePostCutover runs the best-effort post-cutover steps: start the guest
-// on the target when its desired phase is running, then delete the source's
-// stale copy. Both are best-effort and reached ONLY after a committed cutover;
-// neither failure fails the (already committed) migration - a start failure
-// leaves the guest stopped on target, a delete failure leaks the source disk.
-// Leak, never destroy.
+// on the target when its desired phase is running AND the migration was offline,
+// then delete the source's stale copy. Both are best-effort and reached ONLY
+// after a committed cutover; neither failure fails the (already committed)
+// migration - a start failure leaves the guest stopped on target, a delete
+// failure leaks the source disk. Leak, never destroy.
+// The start is gated on !live: for a LIVE migration the target QEMU already
+// resumed the guest itself at switchover, so a start here would be a
+// no-op-or-error. For an OFFLINE migration the target adopted a stopped VM and
+// the CP starts it.
 // Known limitation: when the migrated VM's desired phase is NOT running (a cold
 // migration that stays stopped on the target), no start is dispatched, so the
 // agent's start-path teardown of the incoming qemu-nbd (releaseIncomingNBD) does
@@ -335,8 +339,8 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 // (still holding the disk write lock) are reclaimed lazily on the VM's first
 // start or on agent restart. A leak, never a destroy; acceptable for this slice
 // since offline migration overwhelmingly targets running VMs.
-func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node) {
-	if vm.DesiredPhase == store.VmDesiredPhaseRunning {
+func convergePostCutover(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node, live bool) {
+	if vm.DesiredPhase == store.VmDesiredPhaseRunning && !live {
 		if err := agent.StartVMOnTarget(ctx, target.AdvertisedEndpoint, vm.Name); err != nil {
 			log.WarnContext(ctx, "post-cutover start on target failed",
 				slog.String("migration_id", migID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
@@ -361,7 +365,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 
 	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseSetup)
 
-	spec, err := incomingVMSpec(ctx, st, m, vm)
+	spec, disks, err := incomingVMSpec(ctx, st, m, vm)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -370,11 +374,15 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 	if !m.Live {
 		mode = agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeOffline)
 	}
+	userData, networkConfig := migrationCloudInit(vm)
 	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
 		MigrationID:        m.ID,
 		Mode:               mode,
 		SourceNodeIdentity: ptrString(sourceIdentity(source.Name)),
 		VMSpec:             spec,
+		Disks:              &disks,
+		UserData:           userData,
+		NetworkConfig:      networkConfig,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)
@@ -392,6 +400,10 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		AuthToken:          incoming.AuthToken,
 		MaxBandwidthBytes:  m.MaxBandwidthBytes,
 		MaxDowntimeMs:      int32PtrToInt(m.MaxDowntimeMs),
+		// Relay the target's NBD disk-export listener to the source so a live push
+		// dials the right endpoint. Nil for offline migrations (the target leaves it
+		// unset and the single RAM endpoint doubles as the qemu-nbd server).
+		NbdEndpoint: incoming.NbdEndpoint,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start outgoing migration: %v", err)
@@ -553,22 +565,22 @@ func advancePhase(ctx context.Context, st MigrationWorkerStore, log *slog.Logger
 // migration's TargetPoolName + TargetNodeID resolve that path. The disk's
 // virtual size is the VM's boot-disk row size; the guest itself comes up from
 // the in-band migration stream, not from this spec.
-func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migration, vm store.VM) (agentapi.VMSpec, error) {
+func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migration, vm store.VM) (agentapi.VMSpec, []agentapi.MigrationDisk, error) {
 	disks, err := st.ListVMDisksByVM(ctx, vm.ID)
 	if err != nil {
-		return agentapi.VMSpec{}, fmt.Errorf("list vm disks: %v", err)
+		return agentapi.VMSpec{}, nil, fmt.Errorf("list vm disks: %v", err)
 	}
 	if len(disks) == 0 {
-		return agentapi.VMSpec{}, fmt.Errorf("vm %s has no boot disk", vm.ID)
+		return agentapi.VMSpec{}, nil, fmt.Errorf("vm %s has no boot disk", vm.ID)
 	}
 	boot := disks[0]
 
 	poolPath, err := targetPoolPath(ctx, st, m)
 	if err != nil {
-		return agentapi.VMSpec{}, err
+		return agentapi.VMSpec{}, nil, err
 	}
 
-	return agentapi.VMSpec{
+	spec := agentapi.VMSpec{
 		VMUUID:       vm.ID,
 		Name:         vm.Name,
 		Architecture: agentapi.VMSpecArchitecture(vm.Architecture),
@@ -582,7 +594,70 @@ func incomingVMSpec(ctx context.Context, st MigrationWorkerStore, m store.Migrat
 			StoragePoolPath: poolPath,
 			Source:          agentapi.VMSpecDiskSource{Kind: agentapi.VMSpecDiskSourceKind(boot.SourceKind)},
 		}},
-	}, nil
+	}
+	manifest := migrationDisks(vm, int64(boot.SizeGib)*gibBytes, string(boot.Format))
+	return spec, manifest, nil
+}
+
+// gibBytes is the GiB->bytes multiplier. The boot disk row advertises its size
+// in GiB; the migration manifest size_bytes is the virtual byte size. Matches
+// the agent handler's gibBytes (internal/agent/handlers/vms/migrations.go) so
+// the manifest size and the target's boot-disk sizing agree.
+const gibBytes = 1 << 30
+
+// cloudinitDefaultDiskSize is the fixed virtual size of every NoCloud cidata
+// ISO. It MUST equal cloudinit.DefaultDiskSize (the agent's builder always
+// creates the ISO at this size and the VM-create path never overrides it); a
+// drift-guard test asserts the equality. Duplicated as a const here to avoid a
+// control-plane -> agent package import.
+const cloudinitDefaultDiskSize int64 = 10 * 1024 * 1024
+
+// vmHasCidata reports whether the VM has a NoCloud cidata ISO disk. It MUST
+// mirror resolveCloudInitUserData / resolveCloudInitNetworkConfig in package
+// internal/api/handlers/vms (the create-time source of truth the agent's
+// needsCidata consumes): cidata exists iff cloud-init is enabled and at least
+// one channel is set. If those resolvers change, change this too.
+func vmHasCidata(vm store.VM) bool {
+	if vm.CloudInitDisabled {
+		return false
+	}
+	return (vm.UserData != nil && *vm.UserData != "") ||
+		(vm.NetworkConfig != nil && *vm.NetworkConfig != "")
+}
+
+// migrationCloudInit returns the cloud-init blobs the target needs to rebuild
+// the read-only cidata ISO, or (nil, nil) when the VM has no cidata seed. The
+// gate MUST match vmHasCidata (the same source of truth as the cidata disk in
+// the manifest): when the VM has cidata, vm.UserData / vm.NetworkConfig hold the
+// resolved blobs the agent built the seed from at create time.
+func migrationCloudInit(vm store.VM) (userData, networkConfig *string) {
+	if !vmHasCidata(vm) {
+		return nil, nil
+	}
+	return vm.UserData, vm.NetworkConfig
+}
+
+// migrationDisks builds the ordered disk manifest the target replicates: the
+// boot disk (index 0, the VM's real boot-disk format and size), then the
+// fixed-size raw cidata ISO (index 1) when the VM has cloud-init. The set is
+// deterministic from desired config, mirroring how the agent builds a VM's
+// disks at create time.
+func migrationDisks(vm store.VM, bootSizeBytes int64, bootFormat string) []agentapi.MigrationDisk {
+	disks := []agentapi.MigrationDisk{{
+		Index:     0,
+		SizeBytes: bootSizeBytes,
+		Format:    agentapi.MigrationDiskFormat(bootFormat),
+		ReadOnly:  false,
+	}}
+	if vmHasCidata(vm) {
+		disks = append(disks, agentapi.MigrationDisk{
+			Index:     1,
+			SizeBytes: cloudinitDefaultDiskSize,
+			Format:    agentapi.MigrationDiskFormat("raw"),
+			ReadOnly:  true,
+		})
+	}
+	return disks
 }
 
 // targetPoolPath resolves the bound migration's TargetPoolName to the storage

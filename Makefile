@@ -173,13 +173,17 @@ smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.cr
 smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline` across two nodes (run after local-dev-start)
 	bash dev/smoke/vm-migration/run.sh
 
+.PHONY: smoke-vm-migration-live
+smoke-vm-migration-live: ## Live VM migration smoke: `otherix vm migrate` (live) across two nodes, asserts console-heartbeat continuity (run after local-dev-start)
+	bash dev/smoke/vm-migration-live/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
 # separately.
 .PHONY: smoke-all
 smoke-all: ## Run all stack-dependent smokes in sequence (run after local-dev-start; excludes smoke-ha)
-	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-network-config; do \
+	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-migration-live vm-network-config; do \
 	  echo ">> smoke: $$s"; \
 	  bash dev/smoke/$$s/run.sh || { echo "✗ smoke-$$s failed"; exit 1; }; \
 	done

@@ -222,8 +222,9 @@ func defaultAgentConfig() AgentConfig {
 			HeartbeatInterval: 30 * time.Second,
 		},
 		Migration: MigrationConfig{
-			PortRangeStart: 49152,
-			PortRangeEnd:   49251,
+			PortRangeStart:     49152,
+			PortRangeEnd:       49251,
+			ConvergenceTimeout: 10 * time.Minute,
 		},
 		QEMU: QEMUConfig{
 			AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd",
