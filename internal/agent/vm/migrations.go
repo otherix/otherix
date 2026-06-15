@@ -125,7 +125,7 @@ func (m *Manager) Migrations() *migration.Store { return m.migrations }
 
 // releaseIncomingNBD tears down any TARGET-side migration qemu-nbd holding
 // vmID's disk: it stops the server (releasing the exclusive write lock) and
-// frees the reserved ingress port. Called from the start path before spawning
+// frees both reserved ingress ports of the pair. Called from the start path before spawning
 // qemu on a just-migrated VM. A no-op when no migration targeted this VM.
 func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
 	rec, ok := m.migrations.TakeTargetByVM(vmID)
@@ -137,9 +137,10 @@ func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
 			m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "pid", rec.NBDPid, "err", err)
 		}
 	}
-	if rec.Port > 0 {
-		m.migPorts.Release(rec.Port)
-	}
+	// Free BOTH ports of the pair (offline records carry NBDPort==0, which
+	// ReleasePair ignores). Releasing only rec.Port leaked the NBD port on the
+	// cold-live edge.
+	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
 }
 
 // IncomingSpec parameterizes target-side migration preparation.
