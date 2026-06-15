@@ -191,6 +191,12 @@ type Manager struct {
 	migDialQMPTarget func(socket string) (qemu.LiveTargetConn, error)
 	migRunLiveTarget func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error
 
+	// resumeWG tracks the fire-and-forget runIncomingResume goroutines
+	// startIncomingLive spawns (each detached on context.Background so it
+	// outlives the 202 request). Production never waits on it; tests Wait at
+	// teardown so a resume's persistVM write cannot race t.TempDir cleanup.
+	resumeWG sync.WaitGroup
+
 	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
 	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard
 	// (a zero timeout would make the watchdog fire instantly).

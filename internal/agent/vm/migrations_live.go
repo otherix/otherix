@@ -160,8 +160,14 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	// Detach from the request context: the resume outlives the StartIncoming
 	// call (202 semantics) and must observe the incoming-completed event well
 	// after the request returns, so a request-scoped cancel must not abort it.
+	// resumeWG lets tests await this detached goroutine at teardown (production
+	// never waits) so its persistVM write cannot race t.TempDir cleanup.
+	m.resumeWG.Add(1)
 	// #nosec G118 -- the target resume intentionally outlives the request (fire-and-converge); a cancelled HTTP request must not abort an in-flight guest resume. The CP re-drives on failure.
-	go m.runIncomingResume(context.Background(), task.ID, s.MigrationID, v.ID, ram, nbd)
+	go func() {
+		defer m.resumeWG.Done()
+		m.runIncomingResume(context.Background(), task.ID, s.MigrationID, v.ID, ram, nbd)
+	}()
 
 	return IncomingResult{ListenEndpoint: ramEndpoint, NBDEndpoint: nbdEndpoint, AuthToken: token}, nil
 }
