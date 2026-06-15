@@ -193,6 +193,10 @@ smoke-vm-migration-live-default-disk: ## Real-agent smoke: live-migrate an image
 smoke-vm-migration-live-cleanup: ## Real-agent smoke: repeated live migration (1->2->1->2) validates the migtls + port-leak cleanup fix (run after local-dev-start)
 	@dev/smoke/vm-migration-live-cleanup/run.sh
 
+.PHONY: smoke-vm-migration-live-logs
+smoke-vm-migration-live-logs: ## Live VM migration + logs smoke: `vm logs -f` must follow the VM across cutover with a gapless SEQ stream (run after local-dev-start)
+	@dev/smoke/vm-migration-live-logs/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
