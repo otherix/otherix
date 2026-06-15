@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -318,5 +319,57 @@ func TestWaitForFlip_DeadlineReturnsFalse(t *testing.T) {
 	_, ok := h.waitForFlip(ctx, stub.vm.Name, nodeA, 60*time.Millisecond, 10*time.Millisecond)
 	if ok {
 		t.Errorf("waitForFlip ok = true, want false on a node that never flips")
+	}
+}
+
+// authedLogsRequest builds a GET /logs request with a principal that owns
+// the VM, so CheckOwnership passes and Logs reaches the relay.
+func authedLogsRequest(t *testing.T, owner uuid.UUID, vmName, rawQuery string) *http.Request {
+	t.Helper()
+	target := "/v1/vms/" + vmName + "/logs"
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", vmName)
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	ctx = auth.WithUser(ctx, &auth.User{ID: owner, Role: auth.RoleAdmin, Type: auth.TypeJWT})
+	return req.WithContext(ctx)
+}
+
+// TestLogs_NonFollowSingleShot locks the single-shot contract: a request
+// WITHOUT follow=true streams once and returns even though the store would
+// report a node flip - the reconnect loop is not entered.
+func TestLogs_NonFollowSingleShot(t *testing.T) {
+	t.Parallel()
+
+	owner := uuid.New()
+	nodeA, nodeB := uuid.New(), uuid.New()
+	agentA := newLogsAgent(t, "A-line\n")
+	agentB := newLogsAgent(t, "B-line\n")
+
+	stub := &logsStoreStub{
+		vm:          logsTestVM(t, owner, nodeA),
+		pinSequence: []uuid.UUID{nodeA, nodeB}, // would flip if the loop ran
+		nodes: map[uuid.UUID]store.Node{
+			nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL},
+			nodeB: {ID: nodeB, AdvertisedEndpoint: agentB.srv.URL},
+		},
+	}
+	stub.vm.OwnerID = owner
+	h := logsFollowHandler(stub)
+
+	rec := httptest.NewRecorder()
+	h.Logs(rec, authedLogsRequest(t, owner, stub.vm.Name, "tail=10"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "A-line") || strings.Contains(got, "B-line") {
+		t.Errorf("body = %q, want A-line only (no reconnect)", got)
+	}
+	if c := agentB.dialCount(); c != 0 {
+		t.Errorf("node B dialed %d times, want 0 (single-shot must not reconnect)", c)
 	}
 }
