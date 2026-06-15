@@ -805,6 +805,56 @@ func TestStartIncomingLiveMaterializesNICs(t *testing.T) {
 	}
 }
 
+// TestRunIncomingResumeSendsGARP is the teeth for Task 8: after the target
+// resumes the live-migrated guest (StatusRunning), the agent emits one
+// gratuitous ARP per NIC with an IPv4 on the NIC's bridge, to refresh neighbor
+// ARP caches. The resume runs in the detached goroutine startIncomingLive
+// spawns; resumeWG.Wait (registered by newTestManagerWithFabric) awaits it.
+func TestRunIncomingResumeSendsGARP(t *testing.T) {
+	m, fab := newTestManagerWithFabric(t)
+	m.migLaunchIncoming = func(context.Context, *VM, qemu.LiveIncomingSpec) error { return nil }
+	m.migDialQMP = func(string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	m.migCreateDisk = func(context.Context, string, int64) error { return nil }
+
+	vmUUID := uuid.New()
+	spec := IncomingSpec{
+		MigrationID:    uuid.New(),
+		VMUUID:         vmUUID,
+		VMName:         "garpvm",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+		NICs: []netfabric.NIC{{
+			ID: uuid.New(), Bridge: "otb100", MAC: "52:54:00:00:00:01",
+			Model: "virtio", MTU: 1390, DeviceOrder: 0,
+			IPv4: netip.MustParseAddr("10.42.0.5"),
+		}},
+	}
+
+	if _, err := m.startIncomingLive(context.Background(), spec); err != nil {
+		t.Fatalf("startIncomingLive: %v", err)
+	}
+	// Await the detached resume reaching StatusRunning (and, via resumeWG at
+	// cleanup, fully finishing) so the post-resume GARP has been issued.
+	waitStatus(t, m, vmUUID, StatusRunning)
+	m.resumeWG.Wait()
+
+	calls := fab.SendGARPCalls
+	if len(calls) != 1 {
+		t.Fatalf("GARPs sent = %d, want 1", len(calls))
+	}
+	got := calls[0]
+	if got.Bridge != "otb100" || got.MAC != "52:54:00:00:00:01" || got.IP != netip.MustParseAddr("10.42.0.5") {
+		t.Errorf("SendGARP call = %+v, want bridge=otb100 mac=52:54:00:00:00:01 ip=10.42.0.5", got)
+	}
+}
+
 func TestCancelLive_SetsCancelledAndReleasesPorts(t *testing.T) {
 	m := newTestManager(t)
 	v := m.seedRunningVM(t, "demo")

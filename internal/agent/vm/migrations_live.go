@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -329,6 +330,20 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 	}
 
 	m.transitionVM(v.ID, StatusRunning, "")
+
+	// Announce the VM's new location to the L2 segment: one gratuitous ARP per
+	// NIC with an IPv4. Best-effort - a failure degrades to FDB/heartbeat
+	// convergence and must not fail the resume (the guest is already running).
+	for _, nic := range v.NICs {
+		if !nic.IPv4.IsValid() {
+			continue
+		}
+		if err := m.fabric.SendGARP(nic.Bridge, nic.MAC, nic.IPv4); err != nil {
+			m.log.WarnContext(ctx, "post-resume gratuitous ARP failed",
+				slog.String("vm", v.ID.String()), slog.String("bridge", nic.Bridge), slog.String("error", err.Error()))
+		}
+	}
+
 	if persistErr := m.persistVM(v.ID); persistErr != nil {
 		m.log.Warn("incoming resume: persist meta failed", "vm", v.Name, "err", persistErr)
 	}
