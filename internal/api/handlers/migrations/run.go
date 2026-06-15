@@ -82,6 +82,9 @@ type MigrationAgentClient interface {
 	// (CP fast-push after an overlay cutover so peers re-pull their FDB without
 	// waiting for the next periodic tick). Best-effort.
 	NudgeHeartbeat(ctx context.Context, endpoint string) error
+	// VM fetches the agent's view of a VM (used to read the source boot disk's
+	// real virtual size for destination sizing).
+	VM(ctx context.Context, endpoint, vmName string) (agentclient.AgentVM, error)
 }
 
 // Placer is the placement seam (spec D2): a node-less migrate scores a target
@@ -432,6 +435,22 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 	if err != nil {
 		return uuid.Nil, err
 	}
+	// Size the destination disk from the SOURCE VM's real boot-disk virtual size.
+	// This runs BEFORE StartIncoming, while the source VM is still running and its
+	// disk is readable via the agent's `-U` probe. A VM created without --disk-gib
+	// has SizeGib=0, so without this the manifest sends size_bytes=0 and the target
+	// makes a 0-byte disk. Threading ExpectedSizeBytes lets the target's
+	// max(SizeBytes, ExpectedSize) guard size it correctly (fixes live AND offline -
+	// they share this incoming-request literal). A fetch failure or zero size is a
+	// RETRYABLE error: the VM stays on source, fail-safe-to-source.
+	srcVM, err := agent.VM(ctx, source.AdvertisedEndpoint, vm.Name)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("fetch source vm for disk size: %v", err)
+	}
+	if srcVM.BootDiskVirtualSizeBytes <= 0 {
+		return uuid.Nil, fmt.Errorf("source vm %s reported no boot disk size; cannot size destination", vm.Name)
+	}
+	expected := srcVM.BootDiskVirtualSizeBytes
 	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
 		MigrationID:        m.ID,
 		Mode:               mode,
@@ -441,6 +460,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		Nics:               &nics,
 		UserData:           userData,
 		NetworkConfig:      networkConfig,
+		ExpectedSizeBytes:  &expected,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)

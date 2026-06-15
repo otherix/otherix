@@ -140,6 +140,11 @@ type fakeMigrationAgent struct {
 
 	// agentTaskID is the id StartOutgoingMigration returns (and PollTask echoes).
 	agentTaskID uuid.UUID
+
+	// sourceVM is what VM(...) returns - the worker reads its
+	// BootDiskVirtualSizeBytes to size the destination disk. Default to a sane
+	// non-zero size so existing tests clear the worker's zero-size guard.
+	sourceVM agentclient.AgentVM
 }
 
 func (f *fakeMigrationAgent) StartIncomingMigration(_ context.Context, _, _ string, req agentapi.MigrationIncomingRequest) (agentapi.MigrationIncomingResponse, error) {
@@ -188,6 +193,18 @@ func (f *fakeMigrationAgent) DeleteVMOnSource(_ context.Context, _, _ string) er
 	defer f.mu.Unlock()
 	f.deleteSourceCalls++
 	return f.deleteSourceErr
+}
+
+func (f *fakeMigrationAgent) VM(_ context.Context, _, _ string) (agentclient.AgentVM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vm := f.sourceVM
+	if vm.BootDiskVirtualSizeBytes == 0 {
+		// Default to a sane non-zero size so tests that don't care about disk
+		// sizing clear the worker's zero-size guard.
+		vm.BootDiskVirtualSizeBytes = 10 * 1024 * 1024 * 1024
+	}
+	return vm, nil
 }
 
 func (f *fakeMigrationAgent) NudgeHeartbeat(_ context.Context, endpoint string) error {
@@ -1209,6 +1226,47 @@ func TestRunMigration_AcquiresPlacementLockBeforeBind(t *testing.T) {
 	}
 	if len(spy.lockKeys) == 0 || spy.lockKeys[0] != store.LockKeyPlacement {
 		t.Errorf("lock key = %v, want first acquire on store.LockKeyPlacement (%d)", spy.lockKeys, store.LockKeyPlacement)
+	}
+}
+
+// TestStartOrResumeSetsExpectedSizeFromSource pins Fix A: the worker fetches the
+// SOURCE VM's real boot-disk virtual size (via agent.VM) and threads it onto the
+// incoming request's ExpectedSizeBytes, so the target's max(SizeBytes, ExpectedSize)
+// guard sizes the destination disk correctly even when the VM was created without
+// --disk-gib (SizeGib=0). Driven through the REAL worker entry (MigrateHandler).
+func TestStartOrResumeSetsExpectedSizeFromSource(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "src-pool", "/var/lib/otherix/pools/src-pool-on-a")
+	// Boot disk row carries SizeGib=0 (image-sized VM, no --disk-gib): the manifest
+	// would otherwise send a 0-byte destination disk. ExpectedSizeBytes is the fix.
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 0)
+	seedPool(t, s, nodeB.ID, "src-pool", "/var/lib/otherix/pools/src-pool-on-b")
+
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "", true)
+
+	const srcSize int64 = 3758096384 // 3.5 GiB, the source's real virtual size.
+	agent := &fakeMigrationAgent{
+		terminal: agentclient.TaskTerminal{Status: "success"},
+		sourceVM: agentclient.AgentVM{BootDiskVirtualSizeBytes: srcSize},
+	}
+	placer := &fakePlacer{}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(expected-size) = %v, want nil", err)
+	}
+
+	got := agent.incomingReq.ExpectedSizeBytes
+	if got == nil {
+		t.Fatalf("incoming ExpectedSizeBytes = nil, want %d (sourced from agent.VM boot disk size)", srcSize)
+	}
+	if *got != srcSize {
+		t.Errorf("incoming ExpectedSizeBytes = %d, want %d (the source's real virtual size)", *got, srcSize)
 	}
 }
 
