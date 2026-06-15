@@ -199,7 +199,11 @@ func TestWaitBlockJobsEvent_FailsOnErroredCompleted(t *testing.T) {
 	ch <- qmp.Event{Event: "BLOCK_JOB_COMPLETED", Data: map[string]any{"device": "mirror-disk0", "error": "Input/output error"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := waitBlockJobsEvent(ctx, ch, "BLOCK_JOB_READY", map[string]bool{"mirror-disk0": true}); err == nil {
+	err := waitBlockJobsEvent(ctx, ch, "BLOCK_JOB_READY", map[string]bool{"mirror-disk0": true})
+	if err == nil {
 		t.Fatalf("want error on errored BLOCK_JOB_COMPLETED while waiting for READY, got nil")
+	}
+	if ctx.Err() != nil {
+		t.Errorf("returned via context timeout, not the job error: %v", ctx.Err())
 	}
 }
