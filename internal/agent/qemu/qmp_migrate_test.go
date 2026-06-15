@@ -6,7 +6,9 @@ package qemu
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitalocean/go-qemu/qmp"
 )
@@ -148,5 +150,56 @@ func TestWaitBlockJobEvent_SurfacesJobError(t *testing.T) {
 	close(ch)
 	if err := waitBlockJobEvent(context.Background(), ch, "BLOCK_JOB_COMPLETED", "mirror-disk0"); err == nil {
 		t.Fatal("waitBlockJobEvent with job error = nil, want error surfaced")
+	}
+}
+
+func TestWaitBlockJobsEvent_ReadyForAll(t *testing.T) {
+	ch := make(chan qmp.Event, 3)
+	ch <- qmp.Event{Event: "BLOCK_JOB_READY", Data: map[string]any{"device": "mirror-cidata"}}
+	ch <- qmp.Event{Event: "BLOCK_JOB_READY", Data: map[string]any{"device": "mirror-disk0"}}
+	close(ch)
+	err := waitBlockJobsEvent(context.Background(), ch, "BLOCK_JOB_READY",
+		map[string]bool{"mirror-cidata": true, "mirror-disk0": true})
+	if err != nil {
+		t.Errorf("waitBlockJobsEvent READY for all error = %v", err)
+	}
+}
+
+func TestWaitBlockJobsEvent_CompletedForAll(t *testing.T) {
+	ch := make(chan qmp.Event, 3)
+	ch <- qmp.Event{Event: "BLOCK_JOB_COMPLETED", Data: map[string]any{"device": "mirror-cidata"}}
+	ch <- qmp.Event{Event: "BLOCK_JOB_COMPLETED", Data: map[string]any{"device": "mirror-disk0"}}
+	close(ch)
+	err := waitBlockJobsEvent(context.Background(), ch, "BLOCK_JOB_COMPLETED",
+		map[string]bool{"mirror-cidata": true, "mirror-disk0": true})
+	if err != nil {
+		t.Errorf("waitBlockJobsEvent COMPLETED for all error = %v", err)
+	}
+}
+
+func TestWaitBlockJobsEvent_FailsFastOnBlockJobError(t *testing.T) {
+	ch := make(chan qmp.Event, 2)
+	ch <- qmp.Event{Event: "BLOCK_JOB_ERROR", Data: map[string]any{"device": "mirror-disk0", "error": "No space left on device"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := waitBlockJobsEvent(ctx, ch, "BLOCK_JOB_READY", map[string]bool{"mirror-disk0": true})
+	if err == nil {
+		t.Fatalf("want error on BLOCK_JOB_ERROR, got nil")
+	}
+	if ctx.Err() != nil {
+		t.Errorf("returned via context timeout, not the job error: %v", ctx.Err())
+	}
+	if !strings.Contains(err.Error(), "mirror-disk0") {
+		t.Errorf("error should name the device: %v", err)
+	}
+}
+
+func TestWaitBlockJobsEvent_FailsOnErroredCompleted(t *testing.T) {
+	ch := make(chan qmp.Event, 2)
+	ch <- qmp.Event{Event: "BLOCK_JOB_COMPLETED", Data: map[string]any{"device": "mirror-disk0", "error": "Input/output error"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := waitBlockJobsEvent(ctx, ch, "BLOCK_JOB_READY", map[string]bool{"mirror-disk0": true}); err == nil {
+		t.Fatalf("want error on errored BLOCK_JOB_COMPLETED while waiting for READY, got nil")
 	}
 }
