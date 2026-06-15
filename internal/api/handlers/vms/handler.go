@@ -295,10 +295,12 @@ type vmViewNames struct {
 // this VM is the access signal (audit R2-H1).
 //
 // activeMig is the VM's in-flight (non-terminal) migration, or nil. When
-// non-nil it populates status.migration (Observability surface 3); it never
-// changes names.node - current_node_id stays = source until cutover.
+// non-nil it populates status.migration (Observability surface 3). The
+// displayed node is pinned to the migration's source node while a migration
+// is in flight (the target agent overwrites current_node_id to itself before
+// cutover); that override is enforced in resolveViewNames, not here.
 func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool, activeMig *store.Migration) vmView {
-	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting), Migration: migrationSummary(activeMig)}
+	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting, activeMig != nil), Migration: migrationSummary(activeMig)}
 	pool := names.pool
 	nets := names.networks
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {

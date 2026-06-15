@@ -31,8 +31,8 @@ func newListCommand() *cobra.Command {
 		Short: "List VMs visible to the caller.",
 		Long: `Cursor-paginated list. Server-side filters: pool (name or uuid),
 node (name or uuid — filters by the agent-reported current location,
-not by pinned intent), status (creating/running/paused/stopped/error/
-gone/orphaned). The next page's cursor lives in the JSON envelope's
+not by pinned intent), status (creating/running/migrating/paused/stopped/
+error/gone/orphaned). The next page's cursor lives in the JSON envelope's
 meta.next_cursor and is opaque — re-pass with --cursor.`,
 		RunE: runList,
 	}

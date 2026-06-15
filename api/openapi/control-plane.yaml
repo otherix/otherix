@@ -5786,6 +5786,7 @@ components:
                 - pending
                 - creating
                 - running
+                - migrating
                 - paused
                 - stopped
                 - deleting
@@ -5796,7 +5797,10 @@ components:
                 Projected lifecycle phase. `deleting` is the in-flight
                 delete window: a non-terminal `vm.delete` task targets the
                 VM but the soft-delete tombstone has not landed yet (after
-                which the VM returns 404).
+                which the VM returns 404). `migrating` is shown while a
+                non-terminal migration targets the VM; it dominates the
+                observed runtime phase so the status does not flicker
+                creating/running while the VM moves between nodes.
             reason:
               type: string
               description: |

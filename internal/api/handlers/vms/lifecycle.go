@@ -163,15 +163,15 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 		writeVMLoadError(w, r, err)
 		return
 	}
-	names, err := h.resolveViewNames(r.Context(), vm, runtime, disk, callerCanReadUsers(r.Context()))
+	activeMig := h.activeMigration(r.Context(), vm.ID)
+	names, err := h.resolveViewNames(r.Context(), vm, runtime, disk, callerCanReadUsers(r.Context()), activeMig)
 	if err != nil {
 		writeVMLoadError(w, r, err)
 		return
 	}
 	response.WriteJSON(w, r, http.StatusOK,
 		toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID),
-			callerCanReadVMSecrets(r.Context(), vm.OwnerID),
-			h.activeMigration(r.Context(), vm.ID)))
+			callerCanReadVMSecrets(r.Context(), vm.OwnerID), activeMig))
 }
 
 // dispatchSyncOp dispatches to the correct agentclient method based

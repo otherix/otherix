@@ -19,11 +19,12 @@ func TestProjectStatus(t *testing.T) {
 
 	deleted := time.Now().UTC()
 	cases := []struct {
-		name     string
-		vm       store.VM
-		runtime  *store.VMRuntime
-		deleting bool
-		want     string
+		name      string
+		vm        store.VM
+		runtime   *store.VMRuntime
+		deleting  bool
+		migrating bool
+		want      string
 	}{
 		{
 			name: "deleted vm overrides runtime",
@@ -47,6 +48,28 @@ func TestProjectStatus(t *testing.T) {
 			runtime:  &store.VMRuntime{Phase: store.VmPhaseStopped},
 			deleting: true,
 			want:     statusGone,
+		},
+		{
+			name:      "active migration overrides running runtime",
+			vm:        store.VM{ID: uuid.New(), SchedulingStatus: store.VMSchedulingScheduled},
+			runtime:   &store.VMRuntime{Phase: store.VmPhaseRunning},
+			migrating: true,
+			want:      statusMigrating,
+		},
+		{
+			name:      "active migration overrides nil runtime",
+			vm:        store.VM{ID: uuid.New(), SchedulingStatus: store.VMSchedulingScheduled},
+			runtime:   nil,
+			migrating: true,
+			want:      statusMigrating,
+		},
+		{
+			name:      "active delete task wins over an active migration",
+			vm:        store.VM{ID: uuid.New(), SchedulingStatus: store.VMSchedulingScheduled},
+			runtime:   &store.VMRuntime{Phase: store.VmPhaseRunning},
+			deleting:  true,
+			migrating: true,
+			want:      statusDeleting,
 		},
 		{
 			name:    "nil runtime → creating",
@@ -101,7 +124,7 @@ func TestProjectStatus(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := projectStatus(tc.vm, tc.runtime, tc.deleting)
+			got := projectStatus(tc.vm, tc.runtime, tc.deleting, tc.migrating)
 			if got != tc.want {
 				t.Errorf("projectStatus(%s) = %q, want %q", tc.name, got, tc.want)
 			}
@@ -117,13 +140,13 @@ func TestProjectStatus_Pending(t *testing.T) {
 
 	reason := store.SchedReasonPoolNotReady
 	vm := store.VM{SchedulingStatus: store.VMSchedulingUnscheduled, SchedulingReason: &reason}
-	if got := projectStatus(vm, nil, false); got != statusPending {
+	if got := projectStatus(vm, nil, false, false); got != statusPending {
 		t.Errorf("projectStatus(unscheduled) = %q, want %q", got, statusPending)
 	}
 
 	// Scheduled but no runtime yet -> creating (agent task running).
 	vm2 := store.VM{SchedulingStatus: store.VMSchedulingScheduled}
-	if got := projectStatus(vm2, nil, false); got != statusCreating {
+	if got := projectStatus(vm2, nil, false, false); got != statusCreating {
 		t.Errorf("projectStatus(scheduled,no-runtime) = %q, want %q", got, statusCreating)
 	}
 }
