@@ -272,12 +272,12 @@ write_files:
   - path: /usr/local/bin/otherix-overlay-probe.sh
     permissions: '0755'
     content: |
-      #!/bin/sh
+      #!/bin/bash
       SC=/dev/ttyS0
       [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
       n=0
       while :; do
-        if timeout 3 sh -c "echo > /dev/tcp/@@PEER@@/22" 2>/dev/null; then
+        if timeout 3 bash -c "echo > /dev/tcp/@@PEER@@/22" 2>/dev/null; then
           n=$((n+1))
           echo "OVERLAY_PING_OK $n @@SELF@@->@@PEER@@" > "$SC"
         else
