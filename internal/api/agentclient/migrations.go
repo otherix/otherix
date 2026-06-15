@@ -128,6 +128,24 @@ func (c *Client) GetMigration(
 	return m, nil
 }
 
+// PostHeartbeatNudge triggers an immediate heartbeat on the agent at
+// endpoint (CP fast-push after a migration cutover so overlay peers
+// re-pull their FDB without waiting for the next periodic tick). The
+// agent endpoint returns 204 with no body; best-effort at the call site.
+//
+// The agent endpoint is fixed (`POST /v1/heartbeat/nudge`).
+func (c *Client) PostHeartbeatNudge(ctx context.Context, endpoint string) error {
+	target, _ := url.JoinPath(endpoint, "/v1/heartbeat/nudge")
+	req, err := newRequest(ctx, http.MethodPost, target, nil)
+	if err != nil {
+		return err
+	}
+	if _, _, err := c.do(req); err != nil {
+		return fmt.Errorf("agentclient: post heartbeat nudge: %w", err)
+	}
+	return nil
+}
+
 // CancelMigration requests best-effort cancellation of an in-flight
 // migration. The agent acts synchronously: 200 returns the refreshed
 // Migration view (phase typically `cancelled` once the abort lands);

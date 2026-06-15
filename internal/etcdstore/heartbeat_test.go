@@ -578,3 +578,56 @@ func TestFilterVMIDsPinnedToNode_AdmitsActiveMigrationTarget(t *testing.T) {
 		t.Fatalf("RunHeartbeatProjection (post-cutover): %v", err)
 	}
 }
+
+func TestHeartbeatProjectionActiveMigrationForVM(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	source := nodeParams(uniqueNodeName("src"))
+	if _, err := s.CreateNode(ctx, source); err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	target := nodeParams(uniqueNodeName("tgt"))
+	if _, err := s.CreateNode(ctx, target); err != nil {
+		t.Fatalf("CreateNode target: %v", err)
+	}
+	vm := vmRow(uniqueNodeName("migvm"))
+	vm.PinnedNodeID = &source.ID
+	seedVM(t, cli, vm)
+
+	// No migration yet -> not found.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		_, found, err := hp.ActiveMigrationForVM(ctx, vm.ID)
+		if err != nil {
+			t.Fatalf("ActiveMigrationForVM: %v", err)
+		}
+		if found {
+			t.Errorf("found = true, want false (no migration)")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+
+	p := migrationParams(vm.ID, source.ID, target.ID)
+	mig, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		got, found, err := hp.ActiveMigrationForVM(ctx, vm.ID)
+		if err != nil {
+			t.Fatalf("ActiveMigrationForVM: %v", err)
+		}
+		if !found {
+			t.Fatalf("found = false, want true (active migration)")
+		}
+		if got.ID != mig.ID || got.SourceNodeID == nil || *got.SourceNodeID != source.ID {
+			t.Errorf("ActiveMigrationForVM = (%s, src %v), want (%s, src %s)", got.ID, got.SourceNodeID, mig.ID, source.ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+}

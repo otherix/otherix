@@ -12,6 +12,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +31,76 @@ import (
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+func mustParseMAC(t *testing.T, s string) net.HardwareAddr {
+	t.Helper()
+	mac, err := net.ParseMAC(s)
+	if err != nil {
+		t.Fatalf("ParseMAC(%q): %v", s, err)
+	}
+	return mac
+}
+
+func mustParseAddr(t *testing.T, s string) *netip.Addr {
+	t.Helper()
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		t.Fatalf("ParseAddr(%q): %v", s, err)
+	}
+	return &a
+}
+
+// TestMigrationNicsFromVM proves each (vm_nic, network) pair maps to a
+// MigrationNic carrying bridge / mac / model / mtu / device_order, with ipv4
+// included only when the NIC has a static address. Bridge name and MTU come
+// from the resolved network (the vm_nic row does not carry them).
+func TestMigrationNicsFromVM(t *testing.T) {
+	vmID := uuid.New()
+	pairs := []migrations.NicNetworkPair{
+		{
+			Nic: store.VMNic{
+				ID:          uuid.New(),
+				VmID:        vmID,
+				MacAddress:  mustParseMAC(t, "52:54:00:00:00:01"),
+				Model:       store.NicModelVirtio,
+				DeviceOrder: 0,
+				Ipv4Address: mustParseAddr(t, "10.42.0.5"),
+			},
+			Network: store.Network{BridgeName: "otb100", Mtu: 1390},
+		},
+		{
+			Nic: store.VMNic{
+				ID:          uuid.New(),
+				VmID:        vmID,
+				MacAddress:  mustParseMAC(t, "52:54:00:00:00:02"),
+				Model:       store.NicModelVirtio,
+				DeviceOrder: 1,
+			},
+			Network: store.Network{BridgeName: "vmbr0", Mtu: 1500},
+		},
+	}
+
+	got := migrations.MigrationNics(pairs)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].BridgeName != "otb100" || got[0].MacAddress != "52:54:00:00:00:01" ||
+		got[0].Model != agentapi.MigrationNicModelVirtio || got[0].DeviceOrder != 0 {
+		t.Errorf("nic0 = %+v, want bridge otb100 mac ...01 virtio order 0", got[0])
+	}
+	if got[0].Mtu == nil || *got[0].Mtu != 1390 {
+		t.Errorf("nic0 mtu = %v, want 1390", got[0].Mtu)
+	}
+	if got[0].Ipv4Address == nil || *got[0].Ipv4Address != "10.42.0.5" {
+		t.Errorf("nic0 ipv4 = %v, want 10.42.0.5", got[0].Ipv4Address)
+	}
+	if got[1].BridgeName != "vmbr0" || got[1].Mtu == nil || *got[1].Mtu != 1500 {
+		t.Errorf("nic1 = %+v, want bridge vmbr0 mtu 1500", got[1])
+	}
+	if got[1].Ipv4Address != nil {
+		t.Errorf("nic1 ipv4 = %v, want nil", got[1].Ipv4Address)
+	}
+}
+
 // fakeMigrationAgent is the agent seam double. It records every call so the
 // pending path can prove the agent was NOT contacted, and replays a staged
 // outgoing-task terminal so the success / failure branches converge
@@ -42,6 +114,10 @@ type fakeMigrationAgent struct {
 
 	startTargetCalls  int
 	deleteSourceCalls int
+
+	// nudged records every endpoint NudgeHeartbeat was called with (Task 12
+	// asserts the worker fast-pushes to the computed overlay peer set).
+	nudged []string
 
 	// incomingReq / outgoingReq capture the last requests so a test can assert the
 	// threaded identities + disk spec.
@@ -112,6 +188,13 @@ func (f *fakeMigrationAgent) DeleteVMOnSource(_ context.Context, _, _ string) er
 	defer f.mu.Unlock()
 	f.deleteSourceCalls++
 	return f.deleteSourceErr
+}
+
+func (f *fakeMigrationAgent) NudgeHeartbeat(_ context.Context, endpoint string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nudged = append(f.nudged, endpoint)
+	return nil
 }
 
 // fakePlacer is the placement seam double. It returns a fixed decision or a
@@ -687,6 +770,63 @@ func (st commitCutoverFailStore) CommitMigrationCutover(ctx context.Context, mig
 		return st.commitCutoverErr
 	}
 	return st.MigrationWorkerStore.CommitMigrationCutover(ctx, migID)
+}
+
+// overlayPeersStub wraps a real MigrationWorkerStore and returns a settable
+// peer-node slice from OverlayPeerNodesForVM, so a worker test can assert the
+// post-cutover fast-push nudges those peers (plus the target) without seeding a
+// full overlay NIC topology. Every other method delegates to the embedded store.
+type overlayPeersStub struct {
+	migrations.MigrationWorkerStore
+	peers []store.Node
+}
+
+func (st overlayPeersStub) OverlayPeerNodesForVM(_ context.Context, _ uuid.UUID) ([]store.Node, error) {
+	return st.peers, nil
+}
+
+// TestConvergePostCutoverNudgesOverlayPeers pins the fast-push (ADR 0035 / NL8):
+// on the committed-cutover success arm, the worker nudges the computed overlay
+// peer set AND the target so they re-pull their FDB immediately. It drives the
+// full happy path (convergePostCutover is unexported), injecting the peer set
+// through an overlayPeersStub.
+func TestConvergePostCutoverNudgesOverlayPeers(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443") // target
+	peer := seedReadyNode(t, s, "node-peer", "https://node-peer:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, false)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	st := overlayPeersStub{MigrationWorkerStore: s, peers: []store.Node{peer}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+
+	h := migrations.MigrateHandler(st, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(happy) = %v, want nil", err)
+	}
+
+	agent.mu.Lock()
+	nudged := map[string]bool{}
+	for _, ep := range agent.nudged {
+		nudged[ep] = true
+	}
+	agent.mu.Unlock()
+	if !nudged[nodeB.AdvertisedEndpoint] {
+		t.Errorf("target endpoint %q not nudged; nudged=%v", nodeB.AdvertisedEndpoint, nudged)
+	}
+	if !nudged[peer.AdvertisedEndpoint] {
+		t.Errorf("overlay peer endpoint %q not nudged; nudged=%v", peer.AdvertisedEndpoint, nudged)
+	}
 }
 
 // TestRunMigration_CommitFailsAfterSuccessKeepsSource pins the destructive-seam

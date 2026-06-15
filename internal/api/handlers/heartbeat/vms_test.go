@@ -33,6 +33,11 @@ type vmRuntimeSpy struct {
 	gotPinnedIDs    []uuid.UUID
 	// upserts records UpsertVMRuntime calls in order.
 	upserts []store.UpsertVMRuntimeParams
+	// activeMigrations maps a vm id to the active (non-terminal) migration the
+	// epoch fence consults. A vm absent from the map has no active migration, so
+	// ActiveMigrationForVM reports (zero, false, nil) and applyVMs claims the
+	// reporting node as usual.
+	activeMigrations map[uuid.UUID]store.Migration
 }
 
 func (s *vmRuntimeSpy) FilterExistingVMIDs(_ context.Context, _ []uuid.UUID) ([]uuid.UUID, error) {
@@ -48,6 +53,11 @@ func (s *vmRuntimeSpy) FilterVMIDsPinnedToNode(_ context.Context, nodeID uuid.UU
 func (s *vmRuntimeSpy) UpsertVMRuntime(_ context.Context, arg store.UpsertVMRuntimeParams) error {
 	s.upserts = append(s.upserts, arg)
 	return nil
+}
+
+func (s *vmRuntimeSpy) ActiveMigrationForVM(_ context.Context, vmID uuid.UUID) (store.Migration, bool, error) {
+	mig, ok := s.activeMigrations[vmID]
+	return mig, ok, nil
 }
 
 // TestApplyVMsPlacementGate verifies the placement-authority seam of the
@@ -153,5 +163,55 @@ func TestApplyVMsPlacementGate(t *testing.T) {
 				t.Errorf("applyVMs FilterVMIDsPinnedToNode ids mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestApplyVMsFreezesCurrentNodeIDDuringMigration asserts the epoch fence (ADR
+// 0035 req 1): while a VM has an active migration, a heartbeat from the TARGET
+// node must NOT move current_node_id off the source. The placement gate admits
+// the migration target (FilterVMIDsPinnedToNode returns it), so the target's
+// report reaches applyVMs; without the fence its UpsertVMRuntime would set
+// current_node_id to the target and flap the overlay FDB. Phase and the rest of
+// the runtime row must still update from the target's report - only the node is
+// frozen to the migration source.
+func TestApplyVMsFreezesCurrentNodeIDDuringMigration(t *testing.T) {
+	source := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	target := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	vmID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+
+	pid := int32(9001)
+	gen := int64(3)
+
+	spy := &vmRuntimeSpy{
+		existing: []uuid.UUID{vmID},
+		// The placement gate admits the migration target during a move.
+		pinned: []uuid.UUID{vmID},
+		activeMigrations: map[uuid.UUID]store.Migration{
+			vmID: {SourceNodeID: &source},
+		},
+	}
+	h := newQuietHandler()
+
+	// The TARGET node reports the incoming VM as "migrating".
+	reports := []vmReport{{
+		VMUUID:             vmID,
+		Phase:              string(store.VMPhase("migrating")),
+		ObservedGeneration: &gen,
+		QEMUPID:            &pid,
+	}}
+	if err := h.applyVMs(context.Background(), spy, target, reports); err != nil {
+		t.Fatalf("applyVMs(...) = %v, want nil", err)
+	}
+
+	want := []store.UpsertVMRuntimeParams{{
+		VmID: vmID,
+		// Frozen to the migration source, NOT the reporting (target) node.
+		CurrentNodeID:      &source,
+		Phase:              store.VMPhase("migrating"),
+		ObservedGeneration: gen,
+		QEMUPID:            &pid,
+	}}
+	if diff := cmp.Diff(want, spy.upserts); diff != "" {
+		t.Errorf("applyVMs(...) UpsertVMRuntime calls mismatch (-want +got):\n%s", diff)
 	}
 }

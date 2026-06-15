@@ -344,3 +344,64 @@ func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network
 	}
 	return out, nil
 }
+
+// OverlayPeerNodesForVM returns the nodes that have a local VM on any overlay VNI
+// the given VM is attached to, excluding the VM's own current node. These are the
+// nodes whose declared_fdb changes when the VM moves, so the CP nudges them to
+// re-pull after a cutover (ADR 0035 / NL8 fast-push). It reuses the cluster-wide
+// overlay placement projection, identifies the VM's own VNIs + node by its NIC
+// MACs, then collects the distinct other nodes on those VNIs. A node that has
+// since gone is skipped rather than failing the lookup (this feeds a best-effort
+// nudge). The result is sorted by node id for determinism.
+func (s *Store) OverlayPeerNodesForVM(ctx context.Context, vmID uuid.UUID) ([]store.Node, error) {
+	placements, _, err := s.ListOverlayNICPlacementsPinned(ctx)
+	if err != nil {
+		return nil, err
+	}
+	macs, err := s.vmOverlayMACs(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	vmVNIs := make(map[int32]struct{})
+	var ownNode uuid.UUID
+	for _, p := range placements {
+		if _, mine := macs[p.Mac.String()]; mine {
+			vmVNIs[p.VNI] = struct{}{}
+			ownNode = p.NodeID
+		}
+	}
+	peers := make(map[uuid.UUID]struct{})
+	for _, p := range placements {
+		if _, on := vmVNIs[p.VNI]; !on {
+			continue
+		}
+		if p.NodeID == ownNode {
+			continue
+		}
+		peers[p.NodeID] = struct{}{}
+	}
+	out := make([]store.Node, 0, len(peers))
+	for id := range peers {
+		n, err := s.NodeByID(ctx, id)
+		if err != nil {
+			continue // node gone; skip (best-effort nudge target)
+		}
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, nil
+}
+
+// vmOverlayMACs returns the set of the VM's NIC MAC strings. Only overlay NICs
+// end up matching overlay placements, so listing every NIC is fine.
+func (s *Store) vmOverlayMACs(ctx context.Context, vmID uuid.UUID) (map[string]struct{}, error) {
+	nics, err := s.ListVMNicsByVM(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	macs := make(map[string]struct{}, len(nics))
+	for _, n := range nics {
+		macs[n.MacAddress.String()] = struct{}{}
+	}
+	return macs, nil
+}

@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -75,9 +76,13 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	// and launched track how far execution got.
 	var adopted *VM
 	launched := false
+	nicsMaterialised := false
 	cleanup := func() {
 		if launched && adopted != nil {
 			m.killQEMU(adopted)
+		}
+		if nicsMaterialised && adopted != nil {
+			m.teardownNICs(adopted.NICs)
 		}
 		if adopted != nil {
 			m.removeAdoptedVM(adopted.ID)
@@ -95,6 +100,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMB: s.MemoryMB,
 		PoolName: s.PoolName, Architecture: s.Architecture,
 		InitialStatus: StatusMigratingIncoming,
+		NICs:          s.NICs,
 	})
 	if err != nil {
 		cleanup()
@@ -120,6 +126,14 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		Disks:          incomingDisks,
 	}
 
+	// Materialize the migrated VM's NIC taps before launching the incoming
+	// qemu, so -netdev tap binds ready taps and the resumed guest has network.
+	if err := m.materialiseNICs(v.NICs); err != nil {
+		cleanup()
+		return IncomingResult{}, fmt.Errorf("materialise migrated nics: %v", err)
+	}
+	nicsMaterialised = true
+
 	// Launch the paused -incoming qemu, then dial it and arm the incoming
 	// transport (NBD export + RAM channel) over QMP. The launched qemu keeps
 	// running; the setup conn is closed once setup completes (it only carries
@@ -129,17 +143,9 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		return IncomingResult{}, fmt.Errorf("launch incoming qemu: %v", err)
 	}
 	launched = true
-	conn, err := m.migDialQMP(v.QMPSocket)
-	if err != nil {
+	if err := m.dialAndSetupIncoming(v, ls); err != nil {
 		cleanup()
-		return IncomingResult{}, fmt.Errorf("dial target qmp: %v", err)
-	}
-	// Closing the QMP client closes only the monitoring socket, NOT the
-	// launched qemu process, so it is safe to close after setup.
-	defer func() { _ = conn.Close() }()
-	if err := qemu.SetupLiveIncoming(conn, ls); err != nil {
-		cleanup()
-		return IncomingResult{}, fmt.Errorf("setup live incoming: %v", err)
+		return IncomingResult{}, err
 	}
 
 	ramEndpoint := net.JoinHostPort(s.BindHost, strconv.Itoa(ram))
@@ -170,6 +176,23 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	}()
 
 	return IncomingResult{ListenEndpoint: ramEndpoint, NBDEndpoint: nbdEndpoint, AuthToken: token}, nil
+}
+
+// dialAndSetupIncoming dials the just-launched -incoming qemu's QMP monitor and
+// arms the incoming transport (NBD export + RAM channel). It closes the setup
+// conn before returning: closing the QMP client closes only the monitoring
+// socket, NOT the launched qemu process, so the paused -incoming qemu keeps
+// running.
+func (m *Manager) dialAndSetupIncoming(v *VM, ls qemu.LiveIncomingSpec) error {
+	conn, err := m.migDialQMP(v.QMPSocket)
+	if err != nil {
+		return fmt.Errorf("dial target qmp: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := qemu.SetupLiveIncoming(conn, ls); err != nil {
+		return fmt.Errorf("setup live incoming: %v", err)
+	}
+	return nil
 }
 
 // replicateIncomingDisks materializes one destination disk per manifest entry,
@@ -316,6 +339,20 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 	}
 
 	m.transitionVM(v.ID, StatusRunning, "")
+
+	// Announce the VM's new location to the L2 segment: one gratuitous ARP per
+	// NIC with an IPv4. Best-effort - a failure degrades to FDB/heartbeat
+	// convergence and must not fail the resume (the guest is already running).
+	for _, nic := range v.NICs {
+		if !nic.IPv4.IsValid() {
+			continue
+		}
+		if err := m.fabric.SendGARP(nic.Bridge, nic.MAC, nic.IPv4); err != nil {
+			m.log.WarnContext(ctx, "post-resume gratuitous ARP failed",
+				slog.String("vm", v.ID.String()), slog.String("bridge", nic.Bridge), slog.String("error", err.Error()))
+		}
+	}
+
 	if persistErr := m.persistVM(v.ID); persistErr != nil {
 		m.log.Warn("incoming resume: persist meta failed", "vm", v.Name, "err", persistErr)
 	}

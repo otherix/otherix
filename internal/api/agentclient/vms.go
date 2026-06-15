@@ -436,3 +436,11 @@ func (c *Client) DeleteVMOnSource(ctx context.Context, endpoint, vmName string) 
 	_, err := c.DeleteVM(ctx, endpoint, vmName, "")
 	return err
 }
+
+// NudgeHeartbeat triggers an immediate heartbeat on the agent at endpoint after
+// an overlay cutover. Thin wrapper over PostHeartbeatNudge that lets
+// *Client satisfy migrations.MigrationAgentClient structurally; best-effort, a
+// non-nil error is logged by the worker, never fails the committed migration.
+func (c *Client) NudgeHeartbeat(ctx context.Context, endpoint string) error {
+	return c.PostHeartbeatNudge(ctx, endpoint)
+}

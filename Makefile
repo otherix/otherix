@@ -177,6 +177,10 @@ smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline
 smoke-vm-migration-live: ## Live VM migration smoke: `otherix vm migrate` (live) across two nodes, asserts console-heartbeat continuity (run after local-dev-start)
 	bash dev/smoke/vm-migration-live/run.sh
 
+.PHONY: smoke-vm-migration-live-overlay
+smoke-vm-migration-live-overlay: ## Live VM migration + overlay smoke: live-migrate an overlay-attached VM, asserts cross-node overlay connectivity follows the guest at cutover (run after local-dev-start)
+	bash dev/smoke/vm-migration-live-overlay/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

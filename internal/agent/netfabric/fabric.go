@@ -148,6 +148,12 @@ type Fabric interface {
 	// completed handshake report a zero LastHandshake. Distinct from
 	// WireGuardPeers, which returns the configured peer set (no handshake).
 	WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, error)
+
+	// SendGARP broadcasts a gratuitous ARP for mac/ip on the named bridge,
+	// announcing the VM's location after a live-migration cutover so the L2
+	// segment (physical switch / learning bridge) and neighbor ARP caches
+	// relearn the port. ip must be IPv4; callers skip NICs without one.
+	SendGARP(bridge string, mac string, ip netip.Addr) error
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
@@ -215,6 +221,11 @@ type NIC struct {
 	Model       string
 	MTU         int
 	DeviceOrder int
+
+	// IPv4 is the NIC's configured IPv4 address, used only to source a
+	// post-migration gratuitous ARP. Zero (invalid) when the NIC has no static
+	// address; GARP is then skipped. Not persisted.
+	IPv4 netip.Addr
 }
 
 // TapName returns the deterministic host tap interface name for the NIC:

@@ -39,7 +39,7 @@ func TestBuildRouterPinsCPIdentity(t *testing.T) {
 	cfg := &config.AgentConfig{}
 	cfg.Server.ReadTimeout = 5 * time.Second
 
-	handler := buildRouter(cfg, "node-test", log, nil, nil)
+	handler := buildRouter(cfg, "node-test", log, nil, nil, noopNudger{})
 
 	tests := []struct {
 		name       string
@@ -74,7 +74,7 @@ func TestBuildRouterRejectsNodeCertOnConsoleStream(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.AgentConfig{}
 	cfg.Server.ReadTimeout = 5 * time.Second
-	handler := buildRouter(cfg, "node-test", log, nil, nil)
+	handler := buildRouter(cfg, "node-test", log, nil, nil, noopNudger{})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/vms/some-vm/console-stream?token=x", nil)
 	req.TLS = cpIdentityTLSState("node-evil")

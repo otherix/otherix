@@ -100,6 +100,8 @@ type FakeFabric struct {
 
 	WGPeerSetCalls      []WGPeerSetCall
 	WireGuardPeersCalls []string
+
+	SendGARPCalls []SendGARPCall
 }
 
 // BridgeCall records one EnsureBridge invocation.
@@ -151,6 +153,13 @@ type AnycastGatewayCall struct {
 	Bridge string
 	Addr   netip.Addr
 	MAC    string
+}
+
+// SendGARPCall records one SendGARP invocation.
+type SendGARPCall struct {
+	Bridge string
+	MAC    string
+	IP     netip.Addr
 }
 
 func (f *FakeFabric) err(method string) error {
@@ -384,6 +393,12 @@ func (f *FakeFabric) WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, er
 		return nil, err
 	}
 	return f.WireGuardPeerHandshakesResult, nil
+}
+
+// SendGARP records the call and returns the configured Errs["SendGARP"].
+func (f *FakeFabric) SendGARP(bridge string, mac string, ip netip.Addr) error {
+	f.SendGARPCalls = append(f.SendGARPCalls, SendGARPCall{Bridge: bridge, MAC: mac, IP: ip})
+	return f.err("SendGARP")
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.
