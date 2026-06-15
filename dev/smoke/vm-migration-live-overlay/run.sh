@@ -222,21 +222,39 @@ trap cleanup EXIT
 # --- the per-VM cloud-config (static overlay IP + every-second peer probe) ---
 # gen_userdata SELF_IP PEER_IP -> a #cloud-config that:
 #   - statically configures the single overlay NIC (en* glob) to SELF_IP (no DHCP
-#     on a plain overlay), with a belt-and-suspenders `ip addr replace` fallback;
-#   - runs a long-lived loop that TCP-probes PEER_IP:22 over the overlay once a
-#     second and, on a successful connect, writes "OVERLAY_PING_OK <n>" to the
-#     arch-correct serial console (ttyS0 on amd64, ttyAMA0 on arm64) with a
-#     monotonically incrementing <n>. The agent captures that console into
-#     serial.log. The loop is ONE long-lived process launched DETACHED (setsid +
-#     nohup) so it survives cloud-init exiting AND a LIVE migration: the counter
-#     CONTINUES on the target after the cutover (the continuity this smoke keys
-#     on). The minimal cloudimg ships no ping/nc, hence bash /dev/tcp.
+#     on a plain overlay) via BOTH a netplan file AND a belt-and-suspenders
+#     `ip addr replace` in runcmd that does NOT depend on netplan/networkd
+#     succeeding (the proven overlay-vm pattern: netplan alone has been observed
+#     to leave the NIC with only a link-local IPv6 and no overlay IPv4, which
+#     blackholes the smoke at baseline). A SMOKE_NET diagnostic line (interface +
+#     `ip -br addr show`) is emitted to the serial console so a future failure
+#     shows the real interface state;
+#   - writes a long-lived probe script that TCP-probes PEER_IP:22 over the overlay
+#     once a second and, on a successful connect, writes "OVERLAY_PING_OK <n>" to
+#     the arch-correct serial console (ttyS0 on amd64, ttyAMA0 on arm64) with a
+#     monotonically incrementing <n>; on a failed connect it writes a distinct
+#     "OVERLAY_PROBE_FAIL <self>-><peer>:22" line so failures are visible. The
+#     agent captures that console into serial.log. The probe is ONE long-lived
+#     process launched DETACHED (setsid + nohup) so it survives cloud-init exiting
+#     AND a LIVE migration: the counter CONTINUES on the target after the cutover
+#     (the continuity this smoke keys on). The minimal cloudimg ships no ping/nc,
+#     hence bash/sh /dev/tcp.
 # Quoted heredoc -> the @@SELF@@/@@PEER@@ placeholders are substituted by sed; the
 # guest's own shell vars ($SC, $IF, $n) stay literal.
 gen_userdata() {
   local self="$1" peer="$2"
   sed -e "s|@@SELF@@|${self}|g" -e "s|@@PEER@@|${peer}|g" <<'EOF'
 #cloud-config
+users:
+  - name: otherix
+    plain_text_passwd: otherix
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: [sudo]
+    shell: /bin/bash
+chpasswd:
+  expire: false
+ssh_pwauth: true
 write_files:
   - path: /etc/netplan/50-cloud-init.yaml
     permissions: '0600'
@@ -257,9 +275,6 @@ write_files:
       #!/bin/sh
       SC=/dev/ttyS0
       [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
-      IF=$(ls /sys/class/net | grep -E '^en' | head -1)
-      ip addr replace @@SELF@@/24 dev "$IF" 2>/dev/null || true
-      ip link set "$IF" up 2>/dev/null || true
       n=0
       while :; do
         if timeout 3 sh -c "echo > /dev/tcp/@@PEER@@/22" 2>/dev/null; then
@@ -272,6 +287,14 @@ write_files:
       done
 runcmd:
   - netplan apply || true
+  - sleep 2
+  - |
+    SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
+    IF=$(ls /sys/class/net | grep -E '^en' | head -1)
+    ip addr replace @@SELF@@/24 dev "$IF" 2>/dev/null || true
+    ip link set "$IF" up 2>/dev/null || true
+    sleep 2
+    { echo "SMOKE_NET if=$IF serial=$SC"; ip -br addr show; } > "$SC" 2>&1 || true
   - [ sh, -c, "setsid nohup /usr/local/bin/otherix-overlay-probe.sh >/dev/null 2>&1 < /dev/null &" ]
 EOF
 }
