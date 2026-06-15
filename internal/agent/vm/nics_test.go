@@ -5,9 +5,11 @@ package vm
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/netfabric"
@@ -107,7 +109,7 @@ func TestNICMetaRoundTrip(t *testing.T) {
 	}
 
 	got := metaToNICs(metas)
-	if diff := cmp.Diff(want, got); diff != "" {
+	if diff := cmp.Diff(want, got, cmpopts.EquateComparable(netip.Addr{})); diff != "" {
 		t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
 	}
 }
