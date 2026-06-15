@@ -78,6 +78,8 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		Disks:          incomingDisks(req, int64(boot.SizeGib)*gibBytes),
 		SourceIdentity: deref(req.SourceNodeIdentity),
 		BindHost:       h.migrationHost,
+		UserData:       deref(req.UserData),
+		NetworkConfig:  deref(req.NetworkConfig),
 	})
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "start incoming migration failed",

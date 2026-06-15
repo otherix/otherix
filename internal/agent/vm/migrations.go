@@ -157,6 +157,8 @@ type IncomingSpec struct {
 	Disks          []MigrationDisk
 	SourceIdentity string
 	BindHost       string
+	UserData       string
+	NetworkConfig  string
 }
 
 // MigrationDisk is one entry of the ordered disk manifest the target

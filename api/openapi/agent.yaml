@@ -2231,6 +2231,19 @@ components:
             The source node leaf-cert Distinguished Name ("CN=node-<source>").
             The target builds a tls-authz object from it to pin the connecting
             source identity before accepting the NBD/migration stream.
+        user_data:
+          type: [string, "null"]
+          description: |
+            CP-resolved cloud-init user-data, sent only when the VM has a
+            cloud-init seed. The target rebuilds the read-only cidata ISO from
+            this (and network_config) so the migrated guest keeps an identical
+            read-only cidata device. Absent/null when the VM has no cloud-init.
+        network_config:
+          type: [string, "null"]
+          description: |
+            CP-resolved cloud-init network-config (NoCloud /network-config),
+            paired with user_data for the target cidata rebuild. Absent/null
+            when none was supplied.
         disks:
           type: array
           description: |
