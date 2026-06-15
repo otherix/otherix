@@ -75,9 +75,13 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	// and launched track how far execution got.
 	var adopted *VM
 	launched := false
+	nicsMaterialised := false
 	cleanup := func() {
 		if launched && adopted != nil {
 			m.killQEMU(adopted)
+		}
+		if nicsMaterialised && adopted != nil {
+			m.teardownNICs(adopted.NICs)
 		}
 		if adopted != nil {
 			m.removeAdoptedVM(adopted.ID)
@@ -95,6 +99,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMB: s.MemoryMB,
 		PoolName: s.PoolName, Architecture: s.Architecture,
 		InitialStatus: StatusMigratingIncoming,
+		NICs:          s.NICs,
 	})
 	if err != nil {
 		cleanup()
@@ -119,6 +124,14 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		RAMPort:        ram,
 		Disks:          incomingDisks,
 	}
+
+	// Materialize the migrated VM's NIC taps before launching the incoming
+	// qemu, so -netdev tap binds ready taps and the resumed guest has network.
+	if err := m.materialiseNICs(v.NICs); err != nil {
+		cleanup()
+		return IncomingResult{}, fmt.Errorf("materialise migrated nics: %v", err)
+	}
+	nicsMaterialised = true
 
 	// Launch the paused -incoming qemu, then dial it and arm the incoming
 	// transport (NBD export + RAM channel) over QMP. The launched qemu keeps

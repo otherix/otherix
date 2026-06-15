@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/migration"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/agentapi"
@@ -80,6 +82,7 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		BindHost:       h.migrationHost,
 		UserData:       deref(req.UserData),
 		NetworkConfig:  deref(req.NetworkConfig),
+		NICs:           incomingNICs(req),
 	})
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "start incoming migration failed",
@@ -116,6 +119,35 @@ func incomingDisks(req agentapi.MigrationIncomingRequest, bootSizeBytes int64) [
 			Format:    string(d.Format),
 			ReadOnly:  d.ReadOnly,
 		})
+	}
+	return out
+}
+
+// incomingNICs maps the wire NIC manifest to the manager's NIC list so the
+// target materializes a host tap per NIC before launching the incoming qemu.
+// An absent manifest yields nil (the migrated VM had no NICs).
+func incomingNICs(req agentapi.MigrationIncomingRequest) []netfabric.NIC {
+	if req.Nics == nil {
+		return nil
+	}
+	out := make([]netfabric.NIC, 0, len(*req.Nics))
+	for _, n := range *req.Nics {
+		nic := netfabric.NIC{
+			ID:          uuid.UUID(n.ID),
+			Bridge:      n.BridgeName,
+			MAC:         n.MacAddress,
+			Model:       string(n.Model),
+			DeviceOrder: n.DeviceOrder,
+		}
+		if n.Mtu != nil {
+			nic.MTU = *n.Mtu
+		}
+		if n.Ipv4Address != nil {
+			if ip, err := netip.ParseAddr(*n.Ipv4Address); err == nil {
+				nic.IPv4 = ip
+			}
+		}
+		out = append(out, nic)
 	}
 	return out
 }

@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/migration"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
@@ -736,6 +738,71 @@ func TestStartIncoming_LiveResumeFailureMarksVMFailed(t *testing.T) {
 
 	waitStatus(t, m, vmUUID, StatusFailed)
 	waitPhase(t, m, migID, "failed")
+}
+
+// newTestManagerWithFabric mirrors newTestManager but retains the spy fabric so
+// a test can assert which host taps were created/attached. The resume seams are
+// stubbed to fast no-ops (as newTestManager does) so the detached
+// runIncomingResume goroutine drives to StatusRunning without a real QMP dial.
+func newTestManagerWithFabric(t *testing.T) (*Manager, *netfabric.FakeFabric) {
+	t.Helper()
+	cfg, poolRoot, poolName := newTestConfig(t)
+	fab := &netfabric.FakeFabric{}
+	m, err := New(cfg, fab, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool(%s): %v", poolName, err)
+	}
+	m.migWaitNBDReady = func(context.Context, string) error { return nil }
+	m.migDialQMPTarget = func(string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
+	m.migRunLiveTarget = func(context.Context, qemu.LiveTargetConn, qemu.LiveTargetSpec) error { return nil }
+	t.Cleanup(m.resumeWG.Wait)
+	return m, fab
+}
+
+// TestStartIncomingLiveMaterializesNICs is the teeth for Task 7: the target must
+// create the migrated VM's NIC taps (attached to the overlay bridge) BEFORE
+// launching the incoming qemu, so the resumed guest has network. Before the fix
+// AdoptForMigration never set v.NICs and startIncomingLive never materialized
+// taps, so the fabric saw zero CreateTap calls.
+func TestStartIncomingLiveMaterializesNICs(t *testing.T) {
+	m, fab := newTestManagerWithFabric(t)
+	m.migLaunchIncoming = func(context.Context, *VM, qemu.LiveIncomingSpec) error { return nil }
+	m.migDialQMP = func(string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	m.migCreateDisk = func(context.Context, string, int64) error { return nil }
+
+	spec := IncomingSpec{
+		MigrationID:    uuid.New(),
+		VMUUID:         uuid.New(),
+		VMName:         "demo",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+		NICs: []netfabric.NIC{{
+			ID: uuid.New(), Bridge: "otb100", MAC: "52:54:00:00:00:01",
+			Model: "virtio", MTU: 1390, DeviceOrder: 0,
+			IPv4: netip.MustParseAddr("10.42.0.5"),
+		}},
+	}
+
+	if _, err := m.startIncomingLive(context.Background(), spec); err != nil {
+		t.Fatalf("startIncomingLive: %v", err)
+	}
+
+	if got := len(fab.CreateTapCalls); got != 1 {
+		t.Errorf("created taps = %d, want 1 (migrated NIC not materialized)", got)
+	}
+	if len(fab.AttachTapCalls) != 1 || fab.AttachTapCalls[0].Bridge != "otb100" {
+		t.Errorf("attached bridges = %v, want one attach to otb100", fab.AttachTapCalls)
+	}
 }
 
 func TestCancelLive_SetsCancelledAndReleasesPorts(t *testing.T) {

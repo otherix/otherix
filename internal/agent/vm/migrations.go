@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/migration"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
@@ -35,6 +36,10 @@ type AdoptSpec struct {
 	// the copied disk). Live targets pass StatusMigratingIncoming so the
 	// reconciler does not cold-start the VM before the resume driver runs.
 	InitialStatus Status
+	// NICs is the migrated VM's NIC manifest, carried so the adopted in-memory
+	// VM materializes its host taps (and the resumed guest later sources a
+	// gratuitous ARP) on this node.
+	NICs []netfabric.NIC
 }
 
 // AdoptForMigration registers a Migrated VM on this (target) node and
@@ -70,6 +75,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		ConsoleSocket: console,
 		PIDFile:       pid,
 		Migrated:      true,
+		NICs:          spec.NICs,
 	}
 
 	m.mu.Lock()
@@ -159,6 +165,10 @@ type IncomingSpec struct {
 	BindHost       string
 	UserData       string
 	NetworkConfig  string
+	// NICs is the migrated VM's NIC manifest relayed by the CP. The target
+	// materializes a host tap per NIC (attached to its overlay bridge) before
+	// launching the incoming qemu, so the resumed guest has network.
+	NICs []netfabric.NIC
 }
 
 // MigrationDisk is one entry of the ordered disk manifest the target
