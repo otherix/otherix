@@ -168,13 +168,14 @@ const (
 type VMPhase string
 
 const (
-	VmPhasePending  VMPhase = "pending"
-	VmPhaseRunning  VMPhase = "running"
-	VmPhasePaused   VMPhase = "paused"
-	VmPhaseStopped  VMPhase = "stopped"
-	VmPhaseError    VMPhase = "error"
-	VmPhaseGone     VMPhase = "gone"
-	VmPhaseOrphaned VMPhase = "orphaned"
+	VmPhasePending   VMPhase = "pending"
+	VmPhaseRunning   VMPhase = "running"
+	VmPhaseMigrating VMPhase = "migrating"
+	VmPhasePaused    VMPhase = "paused"
+	VmPhaseStopped   VMPhase = "stopped"
+	VmPhaseError     VMPhase = "error"
+	VmPhaseGone      VMPhase = "gone"
+	VmPhaseOrphaned  VMPhase = "orphaned"
 )
 
 type VMStateAtSnapshot string

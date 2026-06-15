@@ -32,6 +32,9 @@ const (
 //	scheduling_status == unscheduled → pending   (awaiting placement)
 //	runtime nil              → creating  (worker hasn't upserted yet)
 //	runtime.phase == pending → creating  (agent task still in flight)
+//	runtime.phase == migrating → migrating (post-cutover tail: the
+//	    activeMigration overlay is off but the target still reports the
+//	    incoming VM as migrating)
 //	runtime.phase == running → running
 //	runtime.phase == paused  → paused
 //	runtime.phase == stopped → stopped
@@ -77,6 +80,12 @@ func projectStatus(vm store.VM, runtime *store.VMRuntime, deleting, migrating bo
 	switch runtime.Phase {
 	case store.VmPhasePending:
 		return statusCreating
+	case store.VmPhaseMigrating:
+		// Post-cutover tail: cutover committed so the activeMigration
+		// overlay is off (the migrating bit checked above is false), but
+		// the target still reports the incoming VM as migrating. Project
+		// migrating, not creating.
+		return statusMigrating
 	case store.VmPhaseRunning:
 		return statusRunning
 	case store.VmPhasePaused:

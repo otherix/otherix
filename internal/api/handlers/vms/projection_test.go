@@ -119,6 +119,17 @@ func TestProjectStatus(t *testing.T) {
 			runtime: &store.VMRuntime{Phase: store.VmPhaseOrphaned},
 			want:    statusOrphaned,
 		},
+		{
+			// Tail window: cutover committed so the activeMigration
+			// overlay is off (migrating-bit=false), but the target still
+			// reports the incoming VM as a migrating runtime phase. The
+			// runtime switch must project migrating, not creating.
+			name:      "runtime migrating, overlay off → migrating",
+			vm:        store.VM{ID: uuid.New(), SchedulingStatus: store.VMSchedulingScheduled},
+			runtime:   &store.VMRuntime{Phase: store.VmPhaseMigrating},
+			migrating: false,
+			want:      statusMigrating,
+		},
 	}
 
 	for _, tc := range cases {

@@ -171,7 +171,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [pending, running, paused, stopped, error, gone]
+            enum: [pending, running, migrating, paused, stopped, error, gone]
           description: Filter by observed phase.
       responses:
         "200":
@@ -1976,7 +1976,7 @@ components:
         name: { type: string }
         phase:
           type: string
-          enum: [pending, running, paused, stopped, error, gone]
+          enum: [pending, running, migrating, paused, stopped, error, gone]
         generation:
           type: integer
           format: int64
@@ -2051,7 +2051,7 @@ components:
         name: { type: string }
         phase:
           type: string
-          enum: [pending, running, paused, stopped, error, gone]
+          enum: [pending, running, migrating, paused, stopped, error, gone]
         generation:
           type: integer
           format: int64
