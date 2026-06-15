@@ -437,7 +437,7 @@ func TestSetupLiveIncoming_Order(t *testing.T) {
 	err := SetupLiveIncoming(f, LiveIncomingSpec{
 		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
 		Disks: []LiveIncomingDisk{
-			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "tok-0", ExportID: "exp0", Format: "qcow2"},
+			{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Export: "tok-0", ExportID: "exp0", Format: "qcow2"},
 		},
 	})
 	if err != nil {
@@ -463,8 +463,8 @@ func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 	err := SetupLiveIncoming(f, LiveIncomingSpec{
 		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
 		Disks: []LiveIncomingDisk{
-			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "mig-0", ExportID: "exp0", Format: "qcow2"},
-			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
+			{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Export: "mig-0", ExportID: "exp0", Format: "qcow2"},
+			{Node: "virtio1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
 		},
 	})
 	if err != nil {
@@ -483,7 +483,7 @@ func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 	}
 	// Only the writable boot disk is exported; the read-only cidata is skipped.
 	wantExports := []exportAddCall{
-		{id: "exp0", node: "target-disk0", name: "mig-0", writable: true},
+		{id: "exp0", node: "virtio0", name: "mig-0", writable: true},
 	}
 	if diff := cmp.Diff(wantExports, f.exportAdds, cmp.AllowUnexported(exportAddCall{})); diff != "" {
 		t.Errorf("export-add calls mismatch (-want +got):\n%s", diff)
@@ -492,13 +492,13 @@ func TestSetupLiveIncoming_ExportsOnlyWritableDisks(t *testing.T) {
 
 func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
-		Disks: []LiveIncomingDisk{{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
+		Disks: []LiveIncomingDisk{{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
 	})
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-incoming") || !strings.Contains(joined, "defer") {
 		t.Errorf("LiveIncomingArgs missing -incoming defer: %v", args)
 	}
-	if !strings.Contains(joined, "target-disk0") || !strings.Contains(joined, "/pool/vm/disk.qcow2") {
+	if !strings.Contains(joined, "virtio0") || !strings.Contains(joined, "/pool/vm/disk.qcow2") {
 		t.Errorf("LiveIncomingArgs missing disk node-name/path: %v", args)
 	}
 }
@@ -509,7 +509,7 @@ func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
 // from launchIncomingQemu.
 func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
-		Disks: []LiveIncomingDisk{{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
+		Disks: []LiveIncomingDisk{{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
 	})
 	joined := strings.Join(args, " ")
 	if got := countArg(args, "-blockdev"); got != 1 {
@@ -521,8 +521,8 @@ func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 	if got := countArg(args, "-incoming"); got != 1 {
 		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") {
-		t.Errorf("missing boot -device virtio-blk-pci,drive=target-disk0: %v", args)
+	if !strings.Contains(joined, "virtio-blk-pci,drive=virtio0") {
+		t.Errorf("missing boot -device virtio-blk-pci,drive=virtio0: %v", args)
 	}
 	if strings.Contains(joined, "read-only=on") {
 		t.Errorf("boot device must not be read-only: %v", args)
@@ -537,8 +537,8 @@ func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
 func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 	args := LiveIncomingArgs(LiveIncomingSpec{
 		Disks: []LiveIncomingDisk{
-			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"},
-			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
+			{Node: "virtio0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"},
+			{Node: "virtio1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
 		},
 	})
 	joined := strings.Join(args, " ")
@@ -552,18 +552,18 @@ func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
 	}
 	// Boot disk: writable blockdev (no read-only), plain device.
-	if !strings.Contains(joined, "driver=qcow2,node-name=target-disk0") {
-		t.Errorf("missing boot blockdev driver=qcow2,node-name=target-disk0: %v", args)
+	if !strings.Contains(joined, "driver=qcow2,node-name=virtio0") {
+		t.Errorf("missing boot blockdev driver=qcow2,node-name=virtio0: %v", args)
 	}
-	if bootBD := blockdevFor(args, "target-disk0"); strings.Contains(bootBD, "read-only=on") {
+	if bootBD := blockdevFor(args, "virtio0"); strings.Contains(bootBD, "read-only=on") {
 		t.Errorf("boot blockdev must NOT be read-only: %q", bootBD)
 	}
 	// cidata: read-only=on on the BLOCKDEV (so the guest sees VIRTIO_BLK_F_RO),
 	// NOT auto-read-only (the rebuilt cidata is a static file, never mirrored).
-	if !strings.Contains(joined, "driver=raw,node-name=target-disk1") {
-		t.Errorf("missing cidata blockdev driver=raw,node-name=target-disk1: %v", args)
+	if !strings.Contains(joined, "driver=raw,node-name=virtio1") {
+		t.Errorf("missing cidata blockdev driver=raw,node-name=virtio1: %v", args)
 	}
-	cidataBD := blockdevFor(args, "target-disk1")
+	cidataBD := blockdevFor(args, "virtio1")
 	if !strings.Contains(cidataBD, "read-only=on") {
 		t.Errorf("cidata blockdev must carry read-only=on: %q", cidataBD)
 	}
@@ -571,14 +571,14 @@ func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
 		t.Errorf("cidata blockdev must use read-only=on, not auto-read-only: %q", cidataBD)
 	}
 	// NEITHER device carries read-only=on (the property does not exist).
-	if strings.Contains(joined, "read-only=on,") || strings.Contains(joined, "drive=target-disk0,read-only=on") || strings.Contains(joined, "drive=target-disk1,read-only=on") {
+	if strings.Contains(joined, "read-only=on,") || strings.Contains(joined, "drive=virtio0,read-only=on") || strings.Contains(joined, "drive=virtio1,read-only=on") {
 		t.Errorf("no -device may carry read-only=on: %v", args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") {
-		t.Errorf("missing plain boot device virtio-blk-pci,drive=target-disk0: %v", args)
+	if !strings.Contains(joined, "virtio-blk-pci,drive=virtio0") {
+		t.Errorf("missing plain boot device virtio-blk-pci,drive=virtio0: %v", args)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk1") {
-		t.Errorf("missing plain cidata device virtio-blk-pci,drive=target-disk1: %v", args)
+	if !strings.Contains(joined, "virtio-blk-pci,drive=virtio1") {
+		t.Errorf("missing plain cidata device virtio-blk-pci,drive=virtio1: %v", args)
 	}
 }
 

@@ -480,7 +480,7 @@ type LiveIncomingSpec struct {
 // NOT exported and NOT mirrored. The read-only blockdev makes the guest see the
 // disk read-only, matching the source's VIRTIO_BLK_F_RO.
 type LiveIncomingDisk struct {
-	Node     string // blockdev node-name, "target-disk<i>"
+	Node     string // blockdev node-name, "virtio<i>"
 	Path     string // destination file path
 	Export   string // NBD export name, "<migrationID>-<i>"; empty for read-only disks (not exported)
 	ExportID string // block-export-add id, "exp<i>"; empty for read-only disks (not exported)

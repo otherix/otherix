@@ -238,8 +238,8 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 	}
 
 	wantDisks := []qemu.LiveIncomingDisk{
-		{Node: "target-disk0", Path: v.DiskPath, Export: migID.String() + "-0", ExportID: "exp0", Format: "qcow2", ReadOnly: false},
-		{Node: "target-disk1", Path: cidataPath, Format: "raw", ReadOnly: true},
+		{Node: "virtio0", Path: v.DiskPath, Export: migID.String() + "-0", ExportID: "exp0", Format: "qcow2", ReadOnly: false},
+		{Node: "virtio1", Path: cidataPath, Format: "raw", ReadOnly: true},
 	}
 	if diff := cmp.Diff(wantDisks, gotSpec.Disks); diff != "" {
 		t.Errorf("LiveIncomingSpec.Disks mismatch (-want +got):\n%s", diff)

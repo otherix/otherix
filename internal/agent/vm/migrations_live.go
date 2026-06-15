@@ -28,11 +28,17 @@ import (
 // always the first if=virtio drive and the source VM always launches with it
 // (never OmitBootDisk). The auto node-name (#blockNNN) is unstable and must
 // NOT be hardcoded. Verified via query-block on a running guest.
+//
+// virtio0 is now the INVARIANT boot-disk handle for BOTH a created VM (the
+// if=virtio BlockBackend virtio0) AND a migrated-in VM (the explicit
+// `-blockdev node-name=virtio0` set by replicateIncomingDisks/LiveIncomingArgs),
+// so a second outgoing migration off a migrated-in guest resolves the boot disk
+// identically with no special-casing.
 const liveSourceDiskNode = "virtio0"
 
 // liveExportID is the block-export-add handle for the boot (index 0)
 // destination disk. The target replicates every manifest disk under the
-// "target-disk<i>" node-name / "exp<i>" export-id convention and the resume
+// "virtio<i>" node-name / "exp<i>" export-id convention and the resume
 // dels every export the migration record carries (ExportIDs). liveExportID is
 // the defensive boot-export fallback used only when the record carries no
 // ExportIDs, so an unexpectedly-empty record still tears down the boot export
@@ -235,7 +241,7 @@ func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingS
 				return nil, nil, err
 			}
 			incomingDisks = append(incomingDisks, qemu.LiveIncomingDisk{
-				Node:     fmt.Sprintf("target-disk%d", d.Index),
+				Node:     fmt.Sprintf("virtio%d", d.Index),
 				Path:     path,
 				Format:   d.Format,
 				ReadOnly: true,
@@ -270,7 +276,7 @@ func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingS
 		}
 
 		incomingDisks = append(incomingDisks, qemu.LiveIncomingDisk{
-			Node:     fmt.Sprintf("target-disk%d", d.Index),
+			Node:     fmt.Sprintf("virtio%d", d.Index),
 			Path:     path,
 			Export:   fmt.Sprintf("%s-%d", token, d.Index),
 			ExportID: fmt.Sprintf("exp%d", d.Index),
@@ -700,7 +706,7 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 // omit the OS disk drive (OmitBootDisk) to avoid expressing the boot disk
 // twice; the per-disk node-named blockdevs + virtio-blk devices from
 // LiveIncomingArgs supply every disk. SMOKE MUST VALIDATE the resulting cmdline
-// boots and the exports + boot devices agree on the "target-disk<i>" nodes.
+// boots and the exports + boot devices agree on the "virtio<i>" nodes.
 func (m *Manager) launchIncomingQemu(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error {
 	binary, err := qemu.Binary(v.Architecture)
 	if err != nil {
