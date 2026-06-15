@@ -14,15 +14,26 @@ import (
 	"time"
 
 	"github.com/digitalocean/go-qemu/qmp"
+	"github.com/google/go-cmp/cmp"
 )
 
 // fakeLiveConn is a LiveSourceConn test double that records the ordered
 // call sequence and serves events from a pre-loaded channel.
 type fakeLiveConn struct {
-	mu      sync.Mutex
-	calls   []string
-	events  chan qmp.Event
-	migInfo MigrateInfo
+	mu         sync.Mutex
+	calls      []string
+	events     chan qmp.Event
+	migInfo    MigrateInfo
+	exportAdds []exportAddCall
+}
+
+// exportAddCall records one BlockExportAdd invocation so multi-disk tests can
+// assert the per-disk export id / node / writability in order.
+type exportAddCall struct {
+	id       string
+	node     string
+	name     string
+	writable bool
 }
 
 func (f *fakeLiveConn) rec(s string) {
@@ -74,6 +85,9 @@ func (f *fakeLiveConn) NBDServerStart(host string, port int, tlsCreds, tlsAuthz 
 
 func (f *fakeLiveConn) BlockExportAdd(id, nodeName, name string, writable bool) error {
 	f.rec(fmt.Sprintf("block-export-add:%s", writabilityLabel(writable)))
+	f.mu.Lock()
+	f.exportAdds = append(f.exportAdds, exportAddCall{id: id, node: nodeName, name: name, writable: writable})
+	f.mu.Unlock()
 	return nil
 }
 
@@ -297,8 +311,10 @@ func TestWatchdogErrorMentionsTimeout(t *testing.T) {
 func TestSetupLiveIncoming_Order(t *testing.T) {
 	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
 	err := SetupLiveIncoming(f, LiveIncomingSpec{
-		CredsDir: "/c", SourceIdentity: "CN=node-a", DiskNode: "target-disk0",
-		Export: "tok", ExportID: "exp0", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
+		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
+		Disks: []LiveIncomingDisk{
+			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "tok-0", ExportID: "exp0", Format: "qcow2"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("SetupLiveIncoming error = %v", err)
@@ -313,8 +329,46 @@ func TestSetupLiveIncoming_Order(t *testing.T) {
 	}
 }
 
+// TestSetupLiveIncoming_MultiDiskExportsAllWritableInOrder asserts a 2-disk
+// spec yields exactly ONE nbd-server-start and one block-export-add per disk,
+// both writable (they must receive the mirror) and in index order, before the
+// caps/params/migrate-incoming arming.
+func TestSetupLiveIncoming_MultiDiskExportsAllWritableInOrder(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 1)}
+	err := SetupLiveIncoming(f, LiveIncomingSpec{
+		CredsDir: "/c", SourceIdentity: "CN=node-a", BindHost: "0.0.0.0", NBDPort: 49153, RAMPort: 49200,
+		Disks: []LiveIncomingDisk{
+			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Export: "mig-0", ExportID: "exp0", Format: "qcow2"},
+			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Export: "mig-1", ExportID: "exp1", Format: "raw", ReadOnly: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetupLiveIncoming error = %v", err)
+	}
+	want := []string{
+		"object-add:server", "object-add:authz", "nbd-server-start",
+		"block-export-add:writable", "block-export-add:writable",
+		"set-caps:events,late-block-activate", "set-params", "migrate-incoming",
+	}
+	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Errorf("setup order =\n %v\nwant\n %v", got, want)
+	}
+	if n := strings.Count(strings.Join(f.snapshot(), " "), "nbd-server-start"); n != 1 {
+		t.Errorf("nbd-server-start count = %d, want 1", n)
+	}
+	wantExports := []exportAddCall{
+		{id: "exp0", node: "target-disk0", name: "mig-0", writable: true},
+		{id: "exp1", node: "target-disk1", name: "mig-1", writable: true},
+	}
+	if diff := cmp.Diff(wantExports, f.exportAdds, cmp.AllowUnexported(exportAddCall{})); diff != "" {
+		t.Errorf("export-add calls mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
-	args := LiveIncomingArgs(LiveIncomingSpec{DiskNode: "target-disk0", DiskPath: "/pool/vm/disk.qcow2"})
+	args := LiveIncomingArgs(LiveIncomingSpec{
+		Disks: []LiveIncomingDisk{{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
+	})
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-incoming") || !strings.Contains(joined, "defer") {
 		t.Errorf("LiveIncomingArgs missing -incoming defer: %v", args)
@@ -322,6 +376,77 @@ func TestLiveIncomingArgs_HasDeferAndDiskNode(t *testing.T) {
 	if !strings.Contains(joined, "target-disk0") || !strings.Contains(joined, "/pool/vm/disk.qcow2") {
 		t.Errorf("LiveIncomingArgs missing disk node-name/path: %v", args)
 	}
+}
+
+// TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer asserts the
+// boot-only case still produces exactly one -blockdev, one -device (no
+// read-only), and one -incoming defer after the hardcoded device was removed
+// from launchIncomingQemu.
+func TestLiveIncomingArgs_SingleDiskEmitsOneBlockdevDeviceDefer(t *testing.T) {
+	args := LiveIncomingArgs(LiveIncomingSpec{
+		Disks: []LiveIncomingDisk{{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"}},
+	})
+	joined := strings.Join(args, " ")
+	if got := countArg(args, "-blockdev"); got != 1 {
+		t.Errorf("-blockdev count = %d, want 1 (%v)", got, args)
+	}
+	if got := countArg(args, "-device"); got != 1 {
+		t.Errorf("-device count = %d, want 1 (%v)", got, args)
+	}
+	if got := countArg(args, "-incoming"); got != 1 {
+		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
+	}
+	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") {
+		t.Errorf("missing boot -device virtio-blk-pci,drive=target-disk0: %v", args)
+	}
+	if strings.Contains(joined, "read-only=on") {
+		t.Errorf("boot device must not be read-only: %v", args)
+	}
+}
+
+// TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice asserts a 2-disk
+// spec emits per-disk -blockdev (correct driver) + -device (read-only=on only
+// for the cidata device) and exactly one -incoming defer.
+func TestLiveIncomingArgs_MultiDiskEmitsPerDiskBlockdevAndDevice(t *testing.T) {
+	args := LiveIncomingArgs(LiveIncomingSpec{
+		Disks: []LiveIncomingDisk{
+			{Node: "target-disk0", Path: "/pool/vm/disk.qcow2", Format: "qcow2"},
+			{Node: "target-disk1", Path: "/pool/vm/cidata.iso", Format: "raw", ReadOnly: true},
+		},
+	})
+	joined := strings.Join(args, " ")
+	if got := countArg(args, "-blockdev"); got != 2 {
+		t.Errorf("-blockdev count = %d, want 2 (%v)", got, args)
+	}
+	if got := countArg(args, "-device"); got != 2 {
+		t.Errorf("-device count = %d, want 2 (%v)", got, args)
+	}
+	if got := countArg(args, "-incoming"); got != 1 {
+		t.Errorf("-incoming count = %d, want 1 (%v)", got, args)
+	}
+	if !strings.Contains(joined, "driver=qcow2,node-name=target-disk0") {
+		t.Errorf("missing boot blockdev driver=qcow2,node-name=target-disk0: %v", args)
+	}
+	if !strings.Contains(joined, "driver=raw,node-name=target-disk1") {
+		t.Errorf("missing cidata blockdev driver=raw,node-name=target-disk1: %v", args)
+	}
+	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk0") || strings.Contains(joined, "virtio-blk-pci,drive=target-disk0,read-only=on") {
+		t.Errorf("boot device wrong (want no read-only): %v", args)
+	}
+	if !strings.Contains(joined, "virtio-blk-pci,drive=target-disk1,read-only=on") {
+		t.Errorf("cidata device must be read-only=on: %v", args)
+	}
+}
+
+// countArg counts occurrences of a flag token in an arg slice.
+func countArg(args []string, flag string) int {
+	n := 0
+	for _, a := range args {
+		if a == flag {
+			n++
+		}
+	}
+	return n
 }
 
 // assertAbortBoth asserts the abort cancelled both the RAM migration and

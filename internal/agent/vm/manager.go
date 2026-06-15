@@ -162,10 +162,11 @@ type Manager struct {
 
 	// QEMU side-effect seams for the migration path, overridable in
 	// tests. Default to the real qemu.* helpers in New.
-	migCreateDisk   func(ctx context.Context, path string, virtualBytes int64) error
-	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
-	migRunConvert   func(ctx context.Context, args []string) error
-	migWaitNBDReady func(ctx context.Context, endpoint string) error
+	migCreateDisk    func(ctx context.Context, path string, virtualBytes int64) error
+	migCreateRawDisk func(ctx context.Context, path string, virtualBytes int64) error
+	migSpawnNBD      func(ctx context.Context, args []string) (int, error)
+	migRunConvert    func(ctx context.Context, args []string) error
+	migWaitNBDReady  func(ctx context.Context, endpoint string) error
 
 	// Live-migration seams. migLaunchIncoming boots a paused -incoming
 	// qemu for an adopted target VM and waits until its QMP socket is
@@ -266,6 +267,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
 	m.migCreateDisk = qemu.CreateDisk
+	m.migCreateRawDisk = qemu.CreateRawDisk
 	m.migSpawnNBD = qemu.SpawnQemuNBD
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {

@@ -6,10 +6,12 @@ package vm
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/digitalocean/go-qemu/qmp"
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/migration"
@@ -110,6 +112,168 @@ func TestStartIncoming_LiveReservesPairAndReturnsBothEndpoints(t *testing.T) {
 	}
 	if rec.NBDPort == 0 {
 		t.Errorf("record NBDPort not set")
+	}
+}
+
+// TestStartIncoming_LiveMultiDiskReplicatesManifest asserts the target builds a
+// destination disk per manifest entry (boot via migCreateDisk, cidata via
+// migCreateRawDisk), records the cidata path on the VM, passes a per-disk
+// LiveIncomingSpec to the launch, and persists the per-disk export ids on the
+// migration record.
+func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
+	m := newTestManager(t)
+
+	// Capture (path, virtualBytes) per create seam so the size guard and the
+	// cidata-not-inflated invariant are GUARDED: the boot disk must be created
+	// at max(DiskSizeBytes, ExpectedSize), the cidata disk at its exact manifest
+	// size (never inflated to ExpectedSize). Dropping the `d.Index == 0`
+	// condition on the production guard must make the cidata size assertion fail.
+	qcowSizes := map[string]int64{}
+	rawSizes := map[string]int64{}
+	m.migCreateDisk = func(_ context.Context, path string, virtualBytes int64) error {
+		qcowSizes[path] = virtualBytes
+		return nil
+	}
+	m.migCreateRawDisk = func(_ context.Context, path string, virtualBytes int64) error {
+		rawSizes[path] = virtualBytes
+		return nil
+	}
+	var gotSpec qemu.LiveIncomingSpec
+	m.migLaunchIncoming = func(_ context.Context, _ *VM, ls qemu.LiveIncomingSpec) error {
+		gotSpec = ls
+		return nil
+	}
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+
+	migID := uuid.New()
+	vmUUID := uuid.New()
+	// ExpectedSize > DiskSizeBytes so the index-0 under-size guard is actually
+	// exercised: the boot disk must be created at ExpectedSize (3 GiB), not the
+	// 2 GiB manifest size.
+	const (
+		bootManifestSize = 2 << 30
+		expectedSize     = 3 << 30
+		cidataSize       = 10 << 20
+	)
+	res, err := m.startIncomingLive(context.Background(), IncomingSpec{
+		MigrationID:    migID,
+		VMUUID:         vmUUID,
+		VMName:         "demo",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   expectedSize,
+		DiskSizeBytes:  bootManifestSize,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+		Disks: []MigrationDisk{
+			{Index: 0, SizeBytes: bootManifestSize, Format: "qcow2", ReadOnly: false},
+			{Index: 1, SizeBytes: cidataSize, Format: "raw", ReadOnly: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("startIncomingLive error = %v", err)
+	}
+	if res.NBDEndpoint == "" {
+		t.Fatalf("NBD endpoint empty: %+v", res)
+	}
+
+	v, err := m.Get(vmUUID)
+	if err != nil {
+		t.Fatalf("Get(vm) = %v", err)
+	}
+	cidataPath := filepath.Join(filepath.Dir(v.DiskPath), "cidata.iso")
+
+	if len(qcowSizes) != 1 {
+		t.Errorf("qcow creates = %v, want exactly one at %s", qcowSizes, v.DiskPath)
+	}
+	// Boot disk: created at max(DiskSizeBytes, ExpectedSize) = ExpectedSize.
+	if got := qcowSizes[v.DiskPath]; got != int64(expectedSize) {
+		t.Errorf("boot disk virtualBytes = %d, want %d (max(DiskSizeBytes, ExpectedSize))", got, int64(expectedSize))
+	}
+	if len(rawSizes) != 1 {
+		t.Errorf("raw creates = %v, want exactly one at %s", rawSizes, cidataPath)
+	}
+	// cidata disk: created at its EXACT manifest size, never inflated to
+	// ExpectedSize. This is the teeth for the `d.Index == 0` guard condition.
+	if got := rawSizes[cidataPath]; got != int64(cidataSize) {
+		t.Errorf("cidata disk virtualBytes = %d, want %d (exact manifest size, not inflated)", got, int64(cidataSize))
+	}
+	if v.CidataPath != cidataPath {
+		t.Errorf("v.CidataPath = %q, want %q", v.CidataPath, cidataPath)
+	}
+
+	wantDisks := []qemu.LiveIncomingDisk{
+		{Node: "target-disk0", Path: v.DiskPath, Export: migID.String() + "-0", ExportID: "exp0", Format: "qcow2", ReadOnly: false},
+		{Node: "target-disk1", Path: cidataPath, Export: migID.String() + "-1", ExportID: "exp1", Format: "raw", ReadOnly: true},
+	}
+	if diff := cmp.Diff(wantDisks, gotSpec.Disks); diff != "" {
+		t.Errorf("LiveIncomingSpec.Disks mismatch (-want +got):\n%s", diff)
+	}
+
+	rec, ok := m.Migrations().Get(migID)
+	if !ok {
+		t.Fatalf("no migration record stored")
+	}
+	if diff := cmp.Diff([]string{"exp0", "exp1"}, rec.ExportIDs); diff != "" {
+		t.Errorf("record ExportIDs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestStartIncoming_LiveUnsupportedDiskFormatFailsClosed asserts an
+// unrecognized manifest disk format is rejected (fail-closed) rather than
+// silently defaulting to raw, and that the failure runs cleanup: no qemu is
+// launched and the reserved port pair is released.
+func TestStartIncoming_LiveUnsupportedDiskFormatFailsClosed(t *testing.T) {
+	m := newTestManager(t)
+
+	launched := false
+	m.migLaunchIncoming = func(_ context.Context, _ *VM, _ qemu.LiveIncomingSpec) error {
+		launched = true
+		return nil
+	}
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	m.migCreateDisk = func(_ context.Context, _ string, _ int64) error { return nil }
+	m.migCreateRawDisk = func(_ context.Context, _ string, _ int64) error { return nil }
+
+	migID := uuid.New()
+	vmUUID := uuid.New()
+	_, err := m.startIncomingLive(context.Background(), IncomingSpec{
+		MigrationID:    migID,
+		VMUUID:         vmUUID,
+		VMName:         "demo",
+		VCPUs:          1,
+		MemoryMB:       512,
+		PoolName:       m.defaultTestPool(),
+		Architecture:   "amd64",
+		Mode:           "live",
+		ExpectedSize:   1 << 30,
+		DiskSizeBytes:  1 << 30,
+		SourceIdentity: "CN=node-src",
+		BindHost:       "10.0.0.2",
+		Disks: []MigrationDisk{
+			{Index: 0, SizeBytes: 1 << 30, Format: "vmdk", ReadOnly: false},
+		},
+	})
+	if err == nil {
+		t.Fatalf("startIncomingLive with unsupported format: want error, got nil")
+	}
+
+	// Cleanup must have run: no qemu launched, VM record rolled back, no record
+	// stored, and the reserved port pair released.
+	if launched {
+		t.Errorf("migLaunchIncoming called despite unsupported disk format")
+	}
+	if _, err := m.Get(vmUUID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after format failure, Get(%s) = %v, want ErrNotFound", vmUUID, err)
+	}
+	if _, ok := m.Migrations().Get(migID); ok {
+		t.Errorf("migration record stored despite unsupported disk format")
+	}
+	if _, _, err := m.migPorts.ReservePair(); err != nil {
+		t.Errorf("ports not released after format failure: %v", err)
 	}
 }
 

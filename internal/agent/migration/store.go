@@ -60,6 +60,10 @@ type Record struct {
 	NBDPid      int    // qemu-nbd pid (target only)
 	ListenEndpt string // host:port advertised to the source
 	AuthToken   string // correlation id + NBD export name
+	// ExportIDs are the per-disk block-export-add ids ("exp0", "exp1", ...)
+	// the live target created, in boot-first index order, so the resume can
+	// del every writable export at switchover (live target only).
+	ExportIDs []string
 
 	// Source side.
 	PeerEndpoint string // target host:port

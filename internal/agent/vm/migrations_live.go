@@ -29,13 +29,10 @@ import (
 // NOT be hardcoded. Verified via query-block on a running guest.
 const liveSourceDiskNode = "virtio0"
 
-// liveTargetDiskNode is the node-name the migration target assigns to its
-// destination disk blockdev (LiveIncomingArgs emits it, SetupLiveIncoming
-// NBD-exports it, and the booting guest attaches it). Kept stable so the
-// export handle and the boot device agree.
-const liveTargetDiskNode = "target-disk0"
-
-// liveExportID is the block-export-add handle for the destination disk.
+// liveExportID is the block-export-add handle for the boot (index 0)
+// destination disk. The target replicates every manifest disk under the
+// "target-disk<i>" node-name / "exp<i>" export-id convention; the resume
+// currently dels only the boot export (Task 5 generalizes it to ExportIDs).
 const liveExportID = "exp0"
 
 // liveMirrorJobID is the blockdev-mirror job-id on the source side.
@@ -102,28 +99,22 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	}
 	adopted = v
 
-	// Destination disk virtual size must be >= the source's (see the offline
-	// StartIncoming for the full rationale): max(DiskSizeBytes, ExpectedSize).
-	virtualBytes := s.DiskSizeBytes
-	if s.ExpectedSize > virtualBytes {
-		virtualBytes = s.ExpectedSize
-	}
-	if err := m.migCreateDisk(ctx, v.DiskPath, virtualBytes); err != nil {
+	// Replicate every manifest disk in boot-first index order so the
+	// -incoming qemu's device topology matches the source.
+	token := s.MigrationID.String()
+	incomingDisks, exportIDs, err := m.replicateIncomingDisks(ctx, v, s, token)
+	if err != nil {
 		cleanup()
 		return IncomingResult{}, err
 	}
 
-	token := s.MigrationID.String()
 	ls := qemu.LiveIncomingSpec{
 		CredsDir:       credsDir,
 		SourceIdentity: s.SourceIdentity,
-		DiskNode:       liveTargetDiskNode,
-		DiskPath:       v.DiskPath,
-		Export:         token,
-		ExportID:       liveExportID,
 		BindHost:       s.BindHost,
 		NBDPort:        nbd,
 		RAMPort:        ram,
+		Disks:          incomingDisks,
 	}
 
 	// Launch the paused -incoming qemu, then dial it and arm the incoming
@@ -154,7 +145,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		MigrationID: s.MigrationID, VMID: s.VMUUID, VMName: s.VMName,
 		Role: migration.RoleTarget, Mode: migration.ModeLive, Phase: migration.PhaseSetup,
 		Port: ram, NBDPort: nbd, ListenEndpt: ramEndpoint, AuthToken: token,
-		CredsDir: credsDir, CreatedAt: time.Now().UTC(),
+		CredsDir: credsDir, ExportIDs: exportIDs, CreatedAt: time.Now().UTC(),
 	})
 
 	// Drive the target-side resume autonomously: wait for the incoming RAM
@@ -170,6 +161,82 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	go m.runIncomingResume(context.Background(), task.ID, s.MigrationID, v.ID, liveExportID, ram, nbd)
 
 	return IncomingResult{ListenEndpoint: ramEndpoint, NBDEndpoint: nbdEndpoint, AuthToken: token}, nil
+}
+
+// replicateIncomingDisks materializes one destination disk per manifest entry,
+// in boot-first index order, and returns the per-disk LiveIncomingSpec entries
+// plus their export ids ("exp<i>"). Index 0 is the boot disk at v.DiskPath
+// (sized max(SizeBytes, ExpectedSize) to preserve the under-size guard); a raw
+// read-only entry is the cidata ISO (recorded on v.CidataPath so a later cold
+// restart reproduces the device); any other i>=1 entry lands at disk<i>.img.
+// The manifest is guaranteed non-empty (the handler falls back to a single boot
+// disk); an absent manifest is treated defensively as a boot-only disk.
+func (m *Manager) replicateIncomingDisks(ctx context.Context, v *VM, s IncomingSpec, token string) ([]qemu.LiveIncomingDisk, []string, error) {
+	disks := s.Disks
+	if len(disks) == 0 {
+		disks = []MigrationDisk{{Index: 0, SizeBytes: s.DiskSizeBytes, Format: "qcow2"}}
+	}
+	incomingDisks := make([]qemu.LiveIncomingDisk, 0, len(disks))
+	exportIDs := make([]string, 0, len(disks))
+	for _, d := range disks {
+		path := m.incomingDiskPath(v, d)
+
+		// Destination disk virtual size must be >= the source's (see the
+		// offline StartIncoming for the full rationale). The boot disk
+		// (index 0) is sized max(d.SizeBytes, ExpectedSize) regardless of the
+		// manifest size, preserving the offline under-size guard; every other
+		// disk (e.g. the cidata ISO at index 1) keeps its exact manifest size
+		// and is never inflated by ExpectedSize.
+		virtualBytes := d.SizeBytes
+		if d.Index == 0 && s.ExpectedSize > virtualBytes {
+			virtualBytes = s.ExpectedSize
+		}
+		// Validate the format explicitly rather than silently defaulting an
+		// unrecognized format to raw: the same string is passed verbatim into
+		// `-blockdev driver=<Format>`, so an unknown value must fail closed.
+		var create func(context.Context, string, int64) error
+		switch d.Format {
+		case "qcow2":
+			create = m.migCreateDisk
+		case "raw":
+			create = m.migCreateRawDisk
+		default:
+			return nil, nil, fmt.Errorf("unsupported migration disk format %q for disk %d", d.Format, d.Index)
+		}
+		if err := create(ctx, path, virtualBytes); err != nil {
+			return nil, nil, err
+		}
+
+		incomingDisks = append(incomingDisks, qemu.LiveIncomingDisk{
+			Node:     fmt.Sprintf("target-disk%d", d.Index),
+			Path:     path,
+			Export:   fmt.Sprintf("%s-%d", token, d.Index),
+			ExportID: fmt.Sprintf("exp%d", d.Index),
+			Format:   d.Format,
+			ReadOnly: d.ReadOnly,
+		})
+		exportIDs = append(exportIDs, fmt.Sprintf("exp%d", d.Index))
+	}
+	return incomingDisks, exportIDs, nil
+}
+
+// incomingDiskPath resolves the destination file path for one manifest disk and
+// records the cidata path on v when the entry is the read-only raw cidata ISO.
+func (m *Manager) incomingDiskPath(v *VM, d MigrationDisk) string {
+	switch {
+	case d.Index == 0:
+		return v.DiskPath
+	case d.Format == "raw" && d.ReadOnly:
+		// The cidata ISO: use the codebase cidata convention and record it on
+		// the VM so a later cold restart reproduces the device.
+		path := filepath.Join(filepath.Dir(v.DiskPath), "cidata.iso")
+		m.mu.Lock()
+		v.CidataPath = path
+		m.mu.Unlock()
+		return path
+	default:
+		return filepath.Join(filepath.Dir(v.DiskPath), fmt.Sprintf("disk%d.img", d.Index))
+	}
 }
 
 // runIncomingResume drives the target-side live-migration resume: it dials the
@@ -427,12 +494,12 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 
 // launchIncomingQemu is the production migLaunchIncoming: it boots a paused
 // -incoming qemu for the adopted target VM v, booting the node-named
-// destination disk (so SetupLiveIncoming can NBD-export it) instead of the base
-// `-drive`, and returns once the QMP socket answers. The base args omit the OS
-// disk drive (OmitBootDisk) to avoid expressing the boot disk twice; the
-// node-named blockdev from LiveIncomingArgs plus an explicit virtio-blk device
-// supply it. SMOKE MUST VALIDATE the resulting cmdline boots and the export +
-// boot device agree on liveTargetDiskNode.
+// destination disks (so SetupLiveIncoming can NBD-export each one) instead of
+// the base `-drive`, and returns once the QMP socket answers. The base args
+// omit the OS disk drive (OmitBootDisk) to avoid expressing the boot disk
+// twice; the per-disk node-named blockdevs + virtio-blk devices from
+// LiveIncomingArgs supply every disk. SMOKE MUST VALIDATE the resulting cmdline
+// boots and the exports + boot devices agree on the "target-disk<i>" nodes.
 func (m *Manager) launchIncomingQemu(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error {
 	binary, err := qemu.Binary(v.Architecture)
 	if err != nil {
@@ -456,10 +523,10 @@ func (m *Manager) launchIncomingQemu(ctx context.Context, v *VM, ls qemu.LiveInc
 	if err != nil {
 		return fmt.Errorf("build qemu args: %v", err)
 	}
-	// Append the migration disk as a node-named blockdev + boot device, and
-	// -incoming defer (LiveIncomingArgs supplies both blockdev and -incoming).
+	// Append every migration disk as a node-named blockdev + virtio-blk
+	// device, and -incoming defer. LiveIncomingArgs supplies the blockdevs,
+	// the devices, and -incoming for every disk in the spec.
 	args = append(args, qemu.LiveIncomingArgs(ls)...)
-	args = append(args, "-device", fmt.Sprintf("virtio-blk-pci,drive=%s", ls.DiskNode))
 
 	spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

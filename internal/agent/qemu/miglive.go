@@ -421,15 +421,25 @@ func waitPreSwitchoverWithWatchdog(ctx context.Context, conn LiveSourceConn, ch 
 
 // LiveIncomingSpec parameterizes the target side of a live migration.
 type LiveIncomingSpec struct {
-	CredsDir       string // server TLS creds dir
-	SourceIdentity string // "CN=node-<source>"; pins the connecting source DN
-	DiskNode       string // node-name of the destination disk blockdev (exported + booted)
-	DiskPath       string // destination disk file path (for LiveIncomingArgs -blockdev)
-	Export         string // NBD export name (the migration auth token)
-	ExportID       string // block-export-add id (handle for teardown)
-	BindHost       string // migration ingress bind host
-	NBDPort        int    // NBD disk-export ingress port
-	RAMPort        int    // RAM migrate-incoming ingress port
+	CredsDir       string             // server TLS creds dir
+	SourceIdentity string             // "CN=node-<source>"; pins the connecting source DN
+	BindHost       string             // migration ingress bind host
+	NBDPort        int                // NBD disk-export ingress port
+	RAMPort        int                // RAM migrate-incoming ingress port
+	Disks          []LiveIncomingDisk // destination disks, in boot-first index order
+}
+
+// LiveIncomingDisk is one destination disk the target creates, exports
+// writable, and boots in index order. ReadOnly marks the guest-facing device
+// read-only (cidata) while the underlying blockdev stays writable to receive
+// the mirror.
+type LiveIncomingDisk struct {
+	Node     string // blockdev node-name, "target-disk<i>"
+	Path     string // destination file path
+	Export   string // NBD export name, "<migrationID>-<i>"
+	ExportID string // block-export-add id, "exp<i>"
+	Format   string // "qcow2" | "raw"
+	ReadOnly bool
 }
 
 // SetupLiveIncoming configures a just-launched (-incoming defer) target QEMU to
@@ -447,8 +457,12 @@ func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
 	if err := conn.NBDServerStart(s.BindHost, s.NBDPort, migTLSCredsID, migAuthzID); err != nil {
 		return fmt.Errorf("start nbd server: %w", err)
 	}
-	if err := conn.BlockExportAdd(s.ExportID, s.DiskNode, s.Export, true); err != nil {
-		return fmt.Errorf("export destination disk: %w", err)
+	// Export every destination disk writable (all must receive the mirror),
+	// in boot-first index order, before arming the incoming RAM channel.
+	for _, d := range s.Disks {
+		if err := conn.BlockExportAdd(d.ExportID, d.Node, d.Export, true); err != nil {
+			return fmt.Errorf("export destination disk %s: %w", d.Node, err)
+		}
 	}
 	// late-block-activate defers VM-level disk activation to switchover so
 	// the booting guest does not lock the disk while the NBD receive writes
@@ -475,30 +489,40 @@ func SetupLiveIncoming(conn LiveSourceConn, s LiveIncomingSpec) error {
 }
 
 // LiveIncomingArgs returns the migration-specific QEMU flags the target launch
-// appends to the base VM cmdline: the destination disk as a node-named blockdev
-// (so SetupLiveIncoming can NBD-export it and the guest can boot it) and
-// -incoming defer (start paused, defer the transport so TLS can be set over QMP
-// before the socket accepts).
+// appends to the base VM cmdline: each destination disk as a node-named
+// blockdev plus its guest virtio-blk device (so SetupLiveIncoming can
+// NBD-export each one and the guest boots them in index order) and -incoming
+// defer (start paused, defer the transport so TLS can be set over QMP before
+// the socket accepts).
 //
 // The base cmdline (cmdline.go) expresses the OS disk as `-drive ...,if=virtio`,
 // which carries no node-name. block-export-add needs a node-name to export, so
-// the migration disk is expressed instead as an explicit two-layer -blockdev
-// (qcow2 format node over a file protocol node) whose top node-name matches the
-// export node-name SetupLiveIncoming references.
+// each migration disk is expressed instead as an explicit two-layer -blockdev
+// (format node over a file protocol node) whose top node-name matches the
+// export node-name SetupLiveIncoming references, paired with a virtio-blk-pci
+// device bound to that node. A read-only disk (cidata) gets read-only=on on the
+// guest-facing device while the blockdev stays writable to receive the mirror.
 func LiveIncomingArgs(s LiveIncomingSpec) []string {
-	return []string{
+	args := make([]string, 0, len(s.Disks)*4+2)
+	for _, d := range s.Disks {
 		// discard=unmap + detect-zeroes=unmap so the WRITE_ZEROES the source
 		// mirror sends (for the disk's allocated-but-zero and unallocated
 		// clusters) land as cheap hole punches instead of allocating and
 		// writing runs of literal zeros. A sync=full mirror otherwise copies
 		// every zero cluster byte-for-byte, which under slow emulation wedges
 		// the transfer; this keeps it to the disk's real data.
-		"-blockdev", fmt.Sprintf(
-			"driver=qcow2,node-name=%s,discard=unmap,detect-zeroes=unmap,file.driver=file,file.filename=%s",
-			s.DiskNode, s.DiskPath,
-		),
-		"-incoming", "defer",
+		args = append(args, "-blockdev", fmt.Sprintf(
+			"driver=%s,node-name=%s,discard=unmap,detect-zeroes=unmap,file.driver=file,file.filename=%s",
+			d.Format, d.Node, d.Path,
+		))
+		device := fmt.Sprintf("virtio-blk-pci,drive=%s", d.Node)
+		if d.ReadOnly {
+			device += ",read-only=on"
+		}
+		args = append(args, "-device", device)
 	}
+	args = append(args, "-incoming", "defer")
+	return args
 }
 
 // abortLiveSource fails the source side closed: it cancels the RAM
