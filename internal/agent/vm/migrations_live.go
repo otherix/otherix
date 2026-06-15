@@ -31,8 +31,11 @@ const liveSourceDiskNode = "virtio0"
 
 // liveExportID is the block-export-add handle for the boot (index 0)
 // destination disk. The target replicates every manifest disk under the
-// "target-disk<i>" node-name / "exp<i>" export-id convention; the resume
-// currently dels only the boot export (Task 5 generalizes it to ExportIDs).
+// "target-disk<i>" node-name / "exp<i>" export-id convention and the resume
+// dels every export the migration record carries (ExportIDs). liveExportID is
+// the defensive boot-export fallback used only when the record carries no
+// ExportIDs, so an unexpectedly-empty record still tears down the boot export
+// rather than leaking it.
 const liveExportID = "exp0"
 
 // liveMirrorJobID is the blockdev-mirror job-id on the source side.
@@ -158,7 +161,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	// call (202 semantics) and must observe the incoming-completed event well
 	// after the request returns, so a request-scoped cancel must not abort it.
 	// #nosec G118 -- the target resume intentionally outlives the request (fire-and-converge); a cancelled HTTP request must not abort an in-flight guest resume. The CP re-drives on failure.
-	go m.runIncomingResume(context.Background(), task.ID, s.MigrationID, v.ID, liveExportID, ram, nbd)
+	go m.runIncomingResume(context.Background(), task.ID, s.MigrationID, v.ID, ram, nbd)
 
 	return IncomingResult{ListenEndpoint: ramEndpoint, NBDEndpoint: nbdEndpoint, AuthToken: token}, nil
 }
@@ -241,18 +244,27 @@ func (m *Manager) incomingDiskPath(v *VM, d MigrationDisk) string {
 
 // runIncomingResume drives the target-side live-migration resume: it dials the
 // paused -incoming qemu and runs RunLiveTarget (wait incoming completed -> drop
-// the writable export -> cont). On success the guest is running from the
+// every writable export -> cont). On success the guest is running from the
 // transferred RAM: flip the VM to StatusRunning, attach the serial mux so the
 // resumed console persists, release the migration port pair, and mark the
 // record completed. On failure there is no fall-back to the source (it is
 // already released): mark the VM StatusFailed and the record failed.
-func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vmID uuid.UUID, exportID string, ram, nbd int) {
+func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vmID uuid.UUID, ram, nbd int) {
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
 	v, err := m.Get(vmID)
 	if err != nil {
 		m.failIncomingResume(taskID, migrationID, vmID, fmt.Sprintf("vm %s: %v", vmID, err))
 		return
+	}
+
+	// The per-disk export ids were persisted on the record at startIncomingLive.
+	// Fall back to the boot export alone if the record is missing or carries
+	// none, so an unexpectedly-empty record still tears down the boot export
+	// rather than leaking it.
+	exportIDs := []string{liveExportID}
+	if rec, ok := m.migrations.Get(migrationID); ok && len(rec.ExportIDs) > 0 {
+		exportIDs = rec.ExportIDs
 	}
 
 	conn, err := m.migDialQMPTarget(v.QMPSocket)
@@ -262,7 +274,7 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := m.migRunLiveTarget(ctx, conn, qemu.LiveTargetSpec{ExportID: exportID}); err != nil {
+	if err := m.migRunLiveTarget(ctx, conn, qemu.LiveTargetSpec{ExportIDs: exportIDs}); err != nil {
 		m.failIncomingResume(taskID, migrationID, vmID, fmt.Sprintf("resume: %v", err))
 		return
 	}

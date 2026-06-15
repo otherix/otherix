@@ -550,10 +550,15 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 	m.migLaunchIncoming = func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error { return nil }
 	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
 	m.migCreateDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
+	m.migCreateRawDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
 	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
-	var ranTarget bool
+	var (
+		ranTarget bool
+		gotSpec   qemu.LiveTargetSpec
+	)
 	m.migRunLiveTarget = func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error {
 		ranTarget = true
+		gotSpec = spec
 		return nil
 	}
 
@@ -579,6 +584,12 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 		DiskSizeBytes:  1 << 30,
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
+		// Two-disk manifest (boot qcow2 + cidata raw read-only): the resume
+		// must tear down BOTH exports, not just the boot export.
+		Disks: []MigrationDisk{
+			{Index: 0, SizeBytes: 1 << 30, Format: "qcow2"},
+			{Index: 1, SizeBytes: 1 << 20, Format: "raw", ReadOnly: true},
+		},
 	})
 	if err != nil {
 		t.Fatalf("startIncomingLive error = %v", err)
@@ -591,6 +602,10 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 	if !ranTarget {
 		t.Errorf("migRunLiveTarget was not invoked")
 	}
+	// The resume must delete EVERY export the record carries, in index order.
+	if diff := cmp.Diff([]string{"exp0", "exp1"}, gotSpec.ExportIDs); diff != "" {
+		t.Errorf("LiveTargetSpec.ExportIDs mismatch (-want +got):\n%s", diff)
+	}
 
 	waitPhase(t, m, migID, "completed")
 
@@ -601,6 +616,41 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 	// ErrNoFreePort.
 	if _, _, err := m.migPorts.ReservePair(); err != nil {
 		t.Errorf("ports not released after resume: %v", err)
+	}
+}
+
+// TestRunIncomingResume_FallbackToBootExportOnEmptyRecord proves the defensive
+// fallback: a migration record carrying no ExportIDs (unexpected, e.g. a legacy
+// or partially-written record) still tears down the boot export ["exp0"] rather
+// than leaking it. Drives runIncomingResume directly with the empty-ExportIDs
+// record so the fallback branch is the only thing under test.
+func TestRunIncomingResume_FallbackToBootExportOnEmptyRecord(t *testing.T) {
+	m := newTestManager(t)
+	m.migDialQMPTarget = func(socket string) (qemu.LiveTargetConn, error) { return stubTargetConn{}, nil }
+	var gotSpec qemu.LiveTargetSpec
+	m.migRunLiveTarget = func(ctx context.Context, conn qemu.LiveTargetConn, spec qemu.LiveTargetSpec) error {
+		gotSpec = spec
+		return nil
+	}
+
+	v := m.seedRunningVM(t, "demo")
+	migID := uuid.New()
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair: %v", err)
+	}
+	// Record with an empty ExportIDs slice: the fallback must kick in.
+	m.migrations.Put(&migration.Record{
+		MigrationID: migID, VMID: v.ID, VMName: v.Name,
+		Role: migration.RoleTarget, Mode: migration.ModeLive, Phase: migration.PhaseSetup,
+		Port: ram, NBDPort: nbd, ExportIDs: nil, CreatedAt: time.Now().UTC(),
+	})
+
+	task := m.tasks.Create(TaskKindVMMigrate, v.ID)
+	m.runIncomingResume(context.Background(), task.ID, migID, v.ID, ram, nbd)
+
+	if diff := cmp.Diff([]string{"exp0"}, gotSpec.ExportIDs); diff != "" {
+		t.Errorf("fallback LiveTargetSpec.ExportIDs mismatch (-want +got):\n%s", diff)
 	}
 }
 

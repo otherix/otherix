@@ -702,20 +702,26 @@ func (f *fakeTargetConn) snapshot() []string {
 	return append([]string(nil), f.calls...)
 }
 func (f *fakeTargetConn) Events(context.Context) (<-chan qmp.Event, error) { return f.events, nil }
-func (f *fakeTargetConn) BlockExportDel(id string) error                   { f.rec("block-export-del"); return nil }
-func (f *fakeTargetConn) NBDServerStop() error                             { f.rec("nbd-server-stop"); return nil }
-func (f *fakeTargetConn) Cont() error                                      { f.rec("cont"); return nil }
-func (f *fakeTargetConn) Close() error                                     { return nil }
+func (f *fakeTargetConn) BlockExportDel(id string) error {
+	f.rec("block-export-del:" + id)
+	return nil
+}
+func (f *fakeTargetConn) NBDServerStop() error { f.rec("nbd-server-stop"); return nil }
+func (f *fakeTargetConn) Cont() error          { f.rec("cont"); return nil }
+func (f *fakeTargetConn) Close() error         { return nil }
 
+// TestRunLiveTarget_HappyPathOrder drives a 2-export target resume and asserts
+// EVERY writable export is deleted, in index order, BEFORE nbd-server-stop and
+// cont (so no external NBD writer can touch a disk once the guest takes it).
 func TestRunLiveTarget_HappyPathOrder(t *testing.T) {
 	f := &fakeTargetConn{events: make(chan qmp.Event, 1)}
 	f.events <- migrationEvent("completed")
 
-	spec := LiveTargetSpec{ExportID: "exp0", IncomingTimeout: 2 * time.Second}
+	spec := LiveTargetSpec{ExportIDs: []string{"exp0", "exp1"}, IncomingTimeout: 2 * time.Second}
 	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
 		t.Fatalf("RunLiveTarget() = %v, want nil", err)
 	}
-	want := []string{"block-export-del", "nbd-server-stop", "cont"}
+	want := []string{"block-export-del:exp0", "block-export-del:exp1", "nbd-server-stop", "cont"}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
 	}
@@ -724,14 +730,14 @@ func TestRunLiveTarget_HappyPathOrder(t *testing.T) {
 func TestRunLiveTarget_FailClosedOnIncomingFailed(t *testing.T) {
 	f := &fakeTargetConn{events: make(chan qmp.Event, 1)}
 	f.events <- migrationEvent("failed")
-	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportID: "exp0", IncomingTimeout: time.Second}); err == nil {
+	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportIDs: []string{"exp0"}, IncomingTimeout: time.Second}); err == nil {
 		t.Fatal("RunLiveTarget() = nil, want error on incoming failed")
 	}
 }
 
 func TestRunLiveTarget_FailClosedOnTimeout(t *testing.T) {
 	f := &fakeTargetConn{events: make(chan qmp.Event, 1)} // no event ever
-	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportID: "exp0", IncomingTimeout: 100 * time.Millisecond}); err == nil {
+	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportIDs: []string{"exp0"}, IncomingTimeout: 100 * time.Millisecond}); err == nil {
 		t.Fatal("RunLiveTarget() = nil, want error on incoming timeout")
 	}
 }

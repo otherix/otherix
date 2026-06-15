@@ -239,7 +239,7 @@ type LiveTargetConn interface {
 
 // LiveTargetSpec parameterizes the target-side resume.
 type LiveTargetSpec struct {
-	ExportID        string        // block-export-add id to remove (LiveIncomingSpec.ExportID)
+	ExportIDs       []string      // block-export-add ids to remove, in index order (one per LiveIncomingSpec.Disks entry)
 	IncomingTimeout time.Duration // fail-closed bound on the incoming wait; default liveDefaultIncomingTimeout
 }
 
@@ -249,8 +249,8 @@ const liveDefaultIncomingTimeout = 30 * time.Minute
 
 // RunLiveTarget drives the target side of a live migration to a resumed guest
 // or fails closed. It waits for the incoming MIGRATION to reach "completed",
-// removes the writable NBD disk export, and issues cont - which, under the
-// late-block-activate capability, activates the destination disk and resumes
+// removes every writable NBD disk export, and issues cont - which, under the
+// late-block-activate capability, activates the destination disks and resumes
 // the guest from the transferred RAM. It MUST be called (and reach the wait)
 // before the source reaches pre-switchover, so the completed event is observed
 // without adding to switchover downtime. Once the incoming migration completes
@@ -269,10 +269,13 @@ func RunLiveTarget(ctx context.Context, conn LiveTargetConn, s LiveTargetSpec) e
 	if err := waitMigrationStatusTimeout(ctx, ch, "completed", []string{"failed"}, timeout); err != nil {
 		return fmt.Errorf("wait incoming completed: %w", err)
 	}
-	// Order is load-bearing: drop the writable export before the guest takes
-	// the disk, so no external NBD writer can touch it once cont activates it.
-	if err := conn.BlockExportDel(s.ExportID); err != nil {
-		return fmt.Errorf("remove nbd export: %w", err)
+	// Order is load-bearing: drop EVERY writable export before the guest takes
+	// the disks, so no external NBD writer can touch a disk once cont activates
+	// it.
+	for _, id := range s.ExportIDs {
+		if err := conn.BlockExportDel(id); err != nil {
+			return fmt.Errorf("remove nbd export %q: %w", id, err)
+		}
 	}
 	if err := conn.NBDServerStop(); err != nil {
 		return fmt.Errorf("stop nbd server: %w", err)
