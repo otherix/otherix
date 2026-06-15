@@ -2254,6 +2254,15 @@ components:
             data disks. Empty or absent on legacy requests (boot-only fallback).
           items:
             $ref: "#/components/schemas/MigrationDisk"
+        nics:
+          type: array
+          description: |
+            Ordered NIC manifest the CP builds from the VM's NICs. The target
+            creates one tap per entry, attaches it to bridge_name, and (after
+            resume) emits a gratuitous ARP per NIC with an ipv4_address. Empty or
+            absent on legacy requests (no overlay/bridge NIC cutover).
+          items:
+            $ref: "#/components/schemas/MigrationNic"
 
     MigrationDisk:
       type: object
@@ -2271,6 +2280,34 @@ components:
           enum: [qcow2, raw]
         read_only:
           type: boolean
+
+    MigrationNic:
+      type: object
+      description: |
+        One NIC of the migrating VM, sent by the CP to the target so it can
+        create the matching tap, attach it to the resolved bridge, and emit a
+        post-cutover gratuitous ARP. Self-contained (unlike VMSpecNic it carries
+        the NIC id needed for the deterministic tap name).
+      required: [id, mac_address, bridge_name, model, device_order]
+      properties:
+        id: { type: string, format: uuid }
+        mac_address:
+          type: string
+          pattern: "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
+        bridge_name: { type: string }
+        model:
+          type: string
+          enum: [virtio, e1000, e1000e, rtl8139]
+        mtu:
+          type: [integer, "null"]
+          minimum: 68
+        device_order:
+          type: integer
+          minimum: 0
+        ipv4_address:
+          type: [string, "null"]
+          format: ipv4
+          description: Configured IPv4, used only to source the post-cutover gratuitous ARP.
 
     MigrationIncomingResponse:
       type: object
