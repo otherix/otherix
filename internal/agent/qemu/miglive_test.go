@@ -795,7 +795,7 @@ func TestRunLiveTarget_HappyPathOrder(t *testing.T) {
 	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
 		t.Fatalf("RunLiveTarget() = %v, want nil", err)
 	}
-	want := []string{"block-export-del:exp0", "block-export-del:exp1", "nbd-server-stop", "cont"}
+	want := []string{"block-export-del:exp0", "block-export-del:exp1", "nbd-server-stop", "cont", "object-del:migtls", "object-del:migauthz"}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
 	}
@@ -813,6 +813,31 @@ func TestRunLiveTarget_FailClosedOnTimeout(t *testing.T) {
 	f := &fakeTargetConn{events: make(chan qmp.Event, 1)} // no event ever
 	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportIDs: []string{"exp0"}, IncomingTimeout: 100 * time.Millisecond}); err == nil {
 		t.Fatal("RunLiveTarget() = nil, want error on incoming timeout")
+	}
+}
+
+// TestRunLiveTarget_DeletesMigtlsAndAuthzAfterCont asserts the resumed target
+// removes both migration TLS objects ("migtls" server creds + "migauthz") AFTER
+// cont, so this qemu can later migrate AS A SOURCE without a "duplicate property
+// 'migtls'" failure. The dels MUST come after cont (best-effort cleanup of a
+// guest that has already resumed).
+func TestRunLiveTarget_DeletesMigtlsAndAuthzAfterCont(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1)}
+	f.events <- migrationEvent("completed")
+
+	spec := LiveTargetSpec{ExportIDs: []string{"exp0", "exp1"}, IncomingTimeout: 2 * time.Second}
+	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
+		t.Fatalf("RunLiveTarget: %v", err)
+	}
+	calls := f.snapshot()
+	contIdx := indexOf(calls, "cont")
+	delTLS := indexOf(calls, "object-del:migtls")
+	delAuthz := indexOf(calls, "object-del:migauthz")
+	if contIdx < 0 || delTLS < 0 || delAuthz < 0 {
+		t.Fatalf("calls = %v, want cont + object-del:migtls + object-del:migauthz", calls)
+	}
+	if delTLS < contIdx || delAuthz < contIdx {
+		t.Errorf("calls = %v, object-del must come AFTER cont", calls)
 	}
 }
 

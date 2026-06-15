@@ -291,6 +291,12 @@ func RunLiveTarget(ctx context.Context, conn LiveTargetConn, s LiveTargetSpec) e
 	if err := conn.Cont(); err != nil {
 		return fmt.Errorf("resume guest: %w", err)
 	}
+	// The guest is now running on this node. Remove the migration TLS objects so
+	// this qemu can migrate AGAIN later without "duplicate property 'migtls'".
+	// Best-effort: the guest is already resumed, so a del failure must NOT fail
+	// the resume (it only degrades to the prior leak, blocking the NEXT migration).
+	_ = conn.ObjectDel(migTLSCredsID)
+	_ = conn.ObjectDel(migAuthzID)
 	return nil
 }
 
