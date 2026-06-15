@@ -181,6 +181,22 @@ func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) err
 		return err
 	}
 
+	// Read the runtime row so the cutover can move current_node_id in the same
+	// Txn. Guard its ModRevision so a racing heartbeat upsert loses.
+	rtResp, err := s.c.Raw().Get(ctx, vmRuntimeKey(m.VmID))
+	if err != nil {
+		return err
+	}
+	var rt store.VMRuntime
+	rtFound := len(rtResp.Kvs) > 0
+	var rtRev int64
+	if rtFound {
+		rtRev = rtResp.Kvs[0].ModRevision
+		if err := json.Unmarshal(rtResp.Kvs[0].Value, &rt); err != nil {
+			return err
+		}
+	}
+
 	now := time.Now().UTC()
 	old := vm.PinnedNodeID
 	target := *m.TargetNodeID
@@ -207,11 +223,21 @@ func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) err
 		clientv3.OpPut(migrationKey(m.ID), string(mVal)),
 	}
 	ops = append(ops, pinnedNodeIndexOps(old, target, vm.ID)...)
+	rtOps, err := cutoverRuntimeOps(rt, rtFound, old, target)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, rtOps...)
 	ops = append(ops, terminalCleanupOps(m)...)
 
 	conds := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", mRev),
 		clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", vRev),
+	}
+	if rtFound {
+		conds = append(conds, clientv3.Compare(clientv3.ModRevision(vmRuntimeKey(m.VmID)), "=", rtRev))
+	} else {
+		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(vmRuntimeKey(m.VmID)), "=", 0))
 	}
 
 	resp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
@@ -241,6 +267,28 @@ func pinnedNodeIndexOps(old *uuid.UUID, target, vmID uuid.UUID) []clientv3.Op {
 		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "pinned_node", old.String(), vmID.String())))
 	}
 	return append(ops, clientv3.OpPut(etcd.Key("index", "vms", "pinned_node", target.String(), vmID.String()), vmID.String()))
+}
+
+// cutoverRuntimeOps moves vm_runtime.current_node_id source->target and the
+// vm_runtime-by-node secondary index, preserving every other runtime field.
+// It is part of the cutover Txn so the FDB-keying field flips atomically with
+// PinnedNodeID (ADR 0035 req 3). A missing runtime row (VM never reported) means
+// nothing to move - returns no ops.
+func cutoverRuntimeOps(rt store.VMRuntime, found bool, source *uuid.UUID, target uuid.UUID) ([]clientv3.Op, error) {
+	if !found {
+		return nil, nil
+	}
+	rt.CurrentNodeID = &target
+	val, err := etcd.Marshal(rt)
+	if err != nil {
+		return nil, err
+	}
+	ops := []clientv3.Op{clientv3.OpPut(vmRuntimeKey(rt.VmID), string(val))}
+	if source != nil && *source != target {
+		ops = append(ops, clientv3.OpDelete(vmRuntimeNodeIndexKey(*source, rt.VmID)))
+	}
+	ops = append(ops, clientv3.OpPut(vmRuntimeNodeIndexKey(target, rt.VmID), rt.VmID.String()))
+	return ops, nil
 }
 
 // applyMigrationProgress copies the non-nil fields of upd onto m. SchedulingReason

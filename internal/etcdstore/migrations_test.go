@@ -242,6 +242,72 @@ func TestCommitMigrationCutover_FlipsPin(t *testing.T) {
 	}
 }
 
+// vmRuntimeNodeIndexKeyT mirrors the package-private vmRuntimeNodeIndexKey
+// (heartbeat.go) for the external test package: the by-node index leaf for a
+// vm_runtime row.
+func vmRuntimeNodeIndexKeyT(node, vmID uuid.UUID) string {
+	return etcd.Key("index", "vm_runtime", "node", node.String(), vmID.String())
+}
+
+// indexExists reports whether key has a present value in etcd.
+func indexExists(t *testing.T, cli *etcd.Client, key string) bool {
+	t.Helper()
+	_, found, err := cli.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", key, err)
+	}
+	return found
+}
+
+// TestCommitMigrationCutoverFlipsCurrentNodeID asserts the cutover Txn advances
+// vm_runtime.current_node_id source->target atomically with PinnedNodeID, so the
+// overlay FDB projection re-points at the same revision (ADR 0035 req 3).
+func TestCommitMigrationCutoverFlipsCurrentNodeID(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	// running on source: project a vm_runtime row pinned at nodeA, which also
+	// writes the vm_runtime-by-node index under nodeA.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vm.ID, CurrentNodeID: &nodeA.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1,
+		})
+	}); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	rt, err := s.VMRuntimeByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMRuntimeByID: %v", err)
+	}
+	if rt.CurrentNodeID == nil || *rt.CurrentNodeID != nodeB.ID {
+		t.Errorf("current_node_id = %v, want target %s", rt.CurrentNodeID, nodeB.ID)
+	}
+	// the vm_runtime-by-node index must have moved too.
+	if has := indexExists(t, cli, vmRuntimeNodeIndexKeyT(nodeA.ID, vm.ID)); has {
+		t.Errorf("source vm_runtime node index still present after cutover")
+	}
+	if has := indexExists(t, cli, vmRuntimeNodeIndexKeyT(nodeB.ID, vm.ID)); !has {
+		t.Errorf("target vm_runtime node index missing after cutover")
+	}
+}
+
 func TestUpdateMigrationProgress_FailReleasesGuard(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
