@@ -185,6 +185,10 @@ smoke-vm-migration-live-overlay: ## Live VM migration + overlay smoke: live-migr
 smoke-vm-migration-live-bridge: ## Live VM migration + bridge smoke: live-migrate a type=bridge-attached VM, asserts L2 connectivity follows the guest at cutover via announce-self (run after local-dev-start)
 	bash dev/smoke/vm-migration-live-bridge/run.sh
 
+.PHONY: smoke-vm-migration-live-default-disk
+smoke-vm-migration-live-default-disk: ## Real-agent smoke: live-migrate an image-sized (no --disk-gib) VM
+	@bash dev/smoke/vm-migration-live-default-disk/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
