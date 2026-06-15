@@ -437,20 +437,28 @@ func TestPollTask_BackoffProgression(t *testing.T) {
 	g1, g2, g3 := gap(0), gap(1), gap(2)
 	t.Logf("backoff gaps: %v %v %v", g1, g2, g3)
 
-	// Lower-bound sanity: each gap is at least the configured initial
-	// interval (10ms) — minus 2ms scheduling slack.
-	if g1 < 8*time.Millisecond {
-		t.Errorf("gap1 = %v, want >= 8ms (~PollInterval)", g1)
+	// Assert each gap against a LOWER bound only, never by comparing two
+	// measured gaps. sleepCtx waits at least its delay, and roundtrip /
+	// scheduler jitter can only ADD to a gap, never pull it below the timer
+	// floor - so a per-gap lower bound is jitter-safe, whereas the old
+	// monotonicity check (gap2 >= gap1) flaked when a slow first roundtrip
+	// inflated gap1 above the (correct) gap2. The floors are the backoff curve's
+	// delays (PollInterval, doubled, doubled again, each capped at
+	// PollMaxInterval); the exact doubling/cap is verified deterministically in
+	// the internal TestNextDelay, so here we only confirm PollTask actually
+	// sleeps with the growing delays. 2ms slack absorbs timer rounding.
+	const slack = 2 * time.Millisecond
+	d1 := cfg.PollInterval
+	d2 := min(2*d1, cfg.PollMaxInterval)
+	d3 := min(4*d1, cfg.PollMaxInterval)
+	if g1 < d1-slack {
+		t.Errorf("gap1 = %v, want >= %v (~PollInterval)", g1, d1)
 	}
-	// Growth direction: g2 >= g1 (non-strict — ms ties on loaded CI are
-	// not regressions), g3 >= g2/2 (cap clamping and overhead jitter can
-	// pull g3 below g2; halving threshold keeps "backoff didn't collapse"
-	// signal without being wall-clock-strict).
-	if g2 < g1 {
-		t.Errorf("gap2 (%v) < gap1 (%v) — backoff regressed", g2, g1)
+	if g2 < d2-slack {
+		t.Errorf("gap2 = %v, want >= %v (backoff did not double)", g2, d2)
 	}
-	if g3 < g2/2 {
-		t.Errorf("gap3 (%v) collapsed below half of gap2 (%v)", g3, g2)
+	if g3 < d3-slack {
+		t.Errorf("gap3 = %v, want >= %v (backoff did not double again)", g3, d3)
 	}
 }
 
