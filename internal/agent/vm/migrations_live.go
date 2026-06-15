@@ -566,6 +566,33 @@ func liveBootDiskJob(jobs []qemu.BlockJobInfo) (qemu.BlockJobInfo, bool) {
 	return qemu.BlockJobInfo{}, false
 }
 
+// teardownIncomingTarget fully reaps a target-side live-migration incoming setup
+// at a PRE-CUTOVER terminal outcome (failure or cancel), where the real guest is
+// still safe on the source. Order is load-bearing: kill the incoming qemu FIRST
+// (which drops its NBD server, exports, TLS objects, and PORT BINDINGS with the
+// process), then release the pair - releasing before the kill would hand a still-
+// bound port back to the allocator (the "address already in use" bug). It then
+// removes the adopted VM + its destination disk dir (safe: pre-cutover the disk is
+// empty / not the live copy) and reaps the migration record. Idempotent: a missing
+// VM, unknown ports, and an already-terminal record are all no-ops, so it is safe
+// to call twice (the CP trigger racing the resume goroutine).
+func (m *Manager) teardownIncomingTarget(migrationID, vmID uuid.UUID, ram, nbd int, phase migration.Phase, reason string) {
+	if v, err := m.Get(vmID); err == nil {
+		m.killQEMU(v)
+		m.teardownNICs(v.NICs)
+		m.removeAdoptedVM(vmID)
+	}
+	m.migPorts.ReleasePair(ram, nbd)
+	m.migrations.Update(migrationID, func(r *migration.Record) {
+		if r.Terminal() {
+			return
+		}
+		r.Phase = phase
+		r.ErrorMessage = reason
+		r.CompletedAt = time.Now().UTC()
+	})
+}
+
 // cancelLive aborts a pre-cutover live migration best-effort: cancel the RAM
 // migration and the disk mirror on the source guest, release the reserved
 // ports, and pin phase=cancelled. Idempotent; a terminal record is returned
