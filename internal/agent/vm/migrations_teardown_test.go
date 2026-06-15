@@ -4,6 +4,8 @@
 package vm
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/uuid"
@@ -84,5 +86,77 @@ func TestCancelLive_TargetReapsQemuAndPorts(t *testing.T) {
 	}
 	if _, _, err := m.migPorts.ReservePair(); err != nil {
 		t.Errorf("ReservePair after cancelLive: %v (port leaked)", err)
+	}
+}
+
+func TestFailIncomingResume_KeepsDiskAndVM(t *testing.T) {
+	m := newTestManager(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49153)
+	migID, vmID := uuid.New(), uuid.New()
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair: %v", err)
+	}
+	v, err := m.AdoptForMigration(AdoptSpec{
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
+		InitialStatus: StatusMigratingIncoming,
+	})
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	diskDir := filepath.Dir(v.DiskPath)
+	if err := os.MkdirAll(diskDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(diskDir, "disk.qcow2"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m.migrations.Put(&migration.Record{
+		MigrationID: migID, VMID: vmID, Role: migration.RoleTarget,
+		Mode: migration.ModeLive, Phase: migration.PhaseActive, Port: ram, NBDPort: nbd,
+	})
+	taskID := m.tasks.Create(TaskKindVMMigrate, vmID).ID
+
+	m.failIncomingResume(taskID, migID, vmID, "resume: boom")
+
+	// Disk preserved (never destroy a possibly-post-cutover only-copy).
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("disk dir removed by failIncomingResume: %v", err)
+	}
+	// VM kept, marked failed.
+	got, err := m.Get(vmID)
+	if err != nil {
+		t.Fatalf("vm removed by failIncomingResume: %v", err)
+	}
+	if got.Status != StatusFailed {
+		t.Errorf("status = %v, want failed", got.Status)
+	}
+	// Ports freed.
+	if _, _, err := m.migPorts.ReservePair(); err != nil {
+		t.Errorf("ReservePair after fail: %v (leak)", err)
+	}
+}
+
+func TestFailIncomingResume_NoOpWhenRecordAlreadyTerminal(t *testing.T) {
+	m := newTestManager(t)
+	migID, vmID := uuid.New(), uuid.New()
+	// Record already reaped by a racing teardown (cancelled). No VM registered.
+	m.migrations.Put(&migration.Record{
+		MigrationID: migID, VMID: vmID, Role: migration.RoleTarget,
+		Mode: migration.ModeLive, Phase: migration.PhaseCancelled,
+	})
+	taskID := m.tasks.Create(TaskKindVMMigrate, vmID).ID
+
+	m.failIncomingResume(taskID, migID, vmID, "resume: boom")
+
+	// Record stays cancelled (not flipped to failed); task finalized failed.
+	rec, _ := m.migrations.Get(migID)
+	if rec.Phase != migration.PhaseCancelled {
+		t.Errorf("phase = %v, want cancelled (untouched)", rec.Phase)
+	}
+	task := m.tasks.Get(taskID)
+	if task == nil || task.Status != TaskStatusFailed {
+		t.Errorf("task = %v, want status failed", task)
 	}
 }

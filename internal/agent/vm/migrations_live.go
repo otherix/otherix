@@ -378,12 +378,45 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
 }
 
-// failIncomingResume marks the target VM failed (no source fall-back after the
-// source has been released) and records the failure on the migration record and
-// the tracking task.
+// failIncomingResume handles a target-side resume failure (Outcome C). This path
+// can be POST-cutover (a cont failure after the source already completed and the CP
+// committed the cutover - where the source copy is gone and this disk is the ONLY
+// copy), so it is conservative: it stops the leak (kill the incoming qemu, free the
+// port pair) but NEVER deletes the destination disk or the VM record - it marks the
+// VM StatusFailed. Recovery of a post-cutover failure (cold-start from the intact
+// migrated disk) is the operator's / CP reconcile's job, per the existing
+// no-fall-back-to-source terminal semantics.
+//
+// If the record is already terminal, a racing teardownIncomingTarget (the CP
+// failure/cancel trigger) already reaped everything - killing the qemu closed the
+// QMP socket and unblocked this resume goroutine into here - so only finalize the
+// tracking task and return, without touching the (already-reaped) VM / ports.
 func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg string) {
 	m.log.Error("incoming resume failed",
 		"vm_id", vmID.String(), "migration_id", migrationID.String(), "err", msg)
+
+	if rec, ok := m.migrations.Get(migrationID); ok && rec.Terminal() {
+		// Already reaped by a concurrent teardown; just finalize the task.
+		m.tasks.Update(taskID, func(t *AgentTask) {
+			t.Status = TaskStatusFailed
+			t.Error = &TaskError{Code: "resume_failed", Message: msg}
+		})
+		return
+	}
+
+	// Stop the leak without destroying data: kill the incoming qemu + free the pair.
+	var ram, nbd int
+	if rec, ok := m.migrations.Get(migrationID); ok {
+		ram, nbd = rec.Port, rec.NBDPort
+	}
+	if v, err := m.Get(vmID); err == nil {
+		m.killQEMU(v)
+		m.teardownNICs(v.NICs)
+	}
+	if ram > 0 || nbd > 0 {
+		m.migPorts.ReleasePair(ram, nbd)
+	}
+
 	m.transitionVM(vmID, StatusFailed, msg)
 	_ = m.persistVM(vmID)
 	m.migrations.Update(migrationID, func(r *migration.Record) {
