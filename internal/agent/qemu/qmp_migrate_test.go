@@ -13,6 +13,23 @@ import (
 	"github.com/digitalocean/go-qemu/qmp"
 )
 
+func TestObjectDelCmd_Shape(t *testing.T) {
+	got := objectDelCmd("migtls")
+	var cmd struct {
+		Execute   string         `json:"execute"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal(got, &cmd); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cmd.Execute != "object-del" {
+		t.Errorf("execute = %q, want object-del", cmd.Execute)
+	}
+	if cmd.Arguments["id"] != "migtls" {
+		t.Errorf("arguments.id = %v, want migtls", cmd.Arguments["id"])
+	}
+}
+
 func TestNBDServerStartCmd_LegacyAddrShape(t *testing.T) {
 	got := nbdServerStartCmd("0.0.0.0", 49153, "tls0", "authz0")
 	var m map[string]any

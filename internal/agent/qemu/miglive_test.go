@@ -78,6 +78,8 @@ func (f *fakeLiveConn) ObjectAddAuthz(id, identity string) error {
 	return nil
 }
 
+func (f *fakeLiveConn) ObjectDel(id string) error { f.rec("object-del:" + id); return nil }
+
 func (f *fakeLiveConn) NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error {
 	f.rec("nbd-server-start")
 	return nil
@@ -614,6 +616,7 @@ func (c *coupledLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error {
 	return nil
 }
 func (c *coupledLiveConn) ObjectAddAuthz(string, string) error { c.rec("object-add:authz"); return nil }
+func (c *coupledLiveConn) ObjectDel(id string) error           { c.rec("object-del:" + id); return nil }
 func (c *coupledLiveConn) BlockdevAddNBD(n, h string, p int, e, cr, hn string) error {
 	c.rec("blockdev-add")
 	return nil
@@ -737,8 +740,9 @@ func (f *fakeTargetConn) BlockExportDel(id string) error {
 	f.rec("block-export-del:" + id)
 	return nil
 }
-func (f *fakeTargetConn) NBDServerStop() error { f.rec("nbd-server-stop"); return nil }
-func (f *fakeTargetConn) Cont() error          { f.rec("cont"); return nil }
+func (f *fakeTargetConn) ObjectDel(id string) error { f.rec("object-del:" + id); return nil }
+func (f *fakeTargetConn) NBDServerStop() error      { f.rec("nbd-server-stop"); return nil }
+func (f *fakeTargetConn) Cont() error               { f.rec("cont"); return nil }
 func (f *fakeTargetConn) AnnounceSelf(AnnounceParameters) error {
 	f.rec("announce-self")
 	return nil

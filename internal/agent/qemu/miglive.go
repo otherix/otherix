@@ -21,6 +21,7 @@ import (
 type LiveSourceConn interface {
 	ObjectAddTLSCreds(id, dir, endpoint string) error
 	ObjectAddAuthz(id, identity string) error
+	ObjectDel(id string) error
 	BlockdevAddNBD(nodeName, host string, port int, export, tlsCreds, tlsHostname string) error
 	BlockdevMirror(jobID, device, target string) error
 	NBDServerStart(host string, port int, tlsCreds, tlsAuthz string) error
@@ -232,6 +233,7 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 type LiveTargetConn interface {
 	Events(ctx context.Context) (<-chan qmp.Event, error)
 	BlockExportDel(id string) error
+	ObjectDel(id string) error
 	NBDServerStop() error
 	Cont() error
 	AnnounceSelf(p AnnounceParameters) error
