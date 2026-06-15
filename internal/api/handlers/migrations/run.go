@@ -54,6 +54,8 @@ type MigrationWorkerStore interface {
 	UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error
 	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
+	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
+	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 }
@@ -375,12 +377,17 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		mode = agentapi.MigrationIncomingRequestMode(agentapi.MigrationModeOffline)
 	}
 	userData, networkConfig := migrationCloudInit(vm)
+	nics, err := resolveMigrationNics(ctx, st, vm.ID)
+	if err != nil {
+		return uuid.Nil, err
+	}
 	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
 		MigrationID:        m.ID,
 		Mode:               mode,
 		SourceNodeIdentity: ptrString(sourceIdentity(source.Name)),
 		VMSpec:             spec,
 		Disks:              &disks,
+		Nics:               &nics,
 		UserData:           userData,
 		NetworkConfig:      networkConfig,
 	})
@@ -658,6 +665,62 @@ func migrationDisks(vm store.VM, bootSizeBytes int64, bootFormat string) []agent
 		})
 	}
 	return disks
+}
+
+// NicNetworkPair couples a VM NIC with its resolved network. Bridge name and MTU
+// live on the network (not the vm_nic row), so MigrationNics needs both to build
+// the target-facing manifest.
+type NicNetworkPair struct {
+	Nic     store.VMNic
+	Network store.Network
+}
+
+// MigrationNics builds the ordered MigrationNic manifest the target uses to
+// materialize taps and drive the post-cutover gratuitous ARP. Bridge name and
+// MTU come from the resolved network; mac / model / device order from the NIC.
+// ipv4 is included only when the NIC carries a static address.
+func MigrationNics(pairs []NicNetworkPair) []agentapi.MigrationNic {
+	out := make([]agentapi.MigrationNic, 0, len(pairs))
+	for _, p := range pairs {
+		m := agentapi.MigrationNic{
+			ID:          p.Nic.ID,
+			MacAddress:  p.Nic.MacAddress.String(),
+			BridgeName:  p.Network.BridgeName,
+			Model:       agentapi.MigrationNicModel(p.Nic.Model),
+			DeviceOrder: int(p.Nic.DeviceOrder),
+		}
+		if p.Network.Mtu != 0 {
+			mtu := int(p.Network.Mtu)
+			m.Mtu = &mtu
+		}
+		if p.Nic.Ipv4Address != nil {
+			ip := p.Nic.Ipv4Address.String()
+			m.Ipv4Address = &ip
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// resolveMigrationNics loads the VM's NICs and resolves each against its network
+// (mirroring resolveCreateNICs in package vms: bridge / MTU from the network,
+// mac / model / order from the vm_nic), then builds the target-facing manifest.
+// A missing network is an internal inconsistency (the row is created atomically
+// with the NIC) and is propagated.
+func resolveMigrationNics(ctx context.Context, st MigrationWorkerStore, vmID uuid.UUID) ([]agentapi.MigrationNic, error) {
+	nics, err := st.ListVMNicsByVM(ctx, vmID)
+	if err != nil {
+		return nil, fmt.Errorf("list vm nics: %v", err)
+	}
+	pairs := make([]NicNetworkPair, 0, len(nics))
+	for _, n := range nics {
+		net, err := st.NetworkByID(ctx, n.NetworkID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve network %s for nic %s: %v", n.NetworkID, n.ID, err)
+		}
+		pairs = append(pairs, NicNetworkPair{Nic: n, Network: net})
+	}
+	return MigrationNics(pairs), nil
 }
 
 // targetPoolPath resolves the bound migration's TargetPoolName to the storage

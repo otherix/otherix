@@ -12,6 +12,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +30,76 @@ import (
 )
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func mustParseMAC(t *testing.T, s string) net.HardwareAddr {
+	t.Helper()
+	mac, err := net.ParseMAC(s)
+	if err != nil {
+		t.Fatalf("ParseMAC(%q): %v", s, err)
+	}
+	return mac
+}
+
+func mustParseAddr(t *testing.T, s string) *netip.Addr {
+	t.Helper()
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		t.Fatalf("ParseAddr(%q): %v", s, err)
+	}
+	return &a
+}
+
+// TestMigrationNicsFromVM proves each (vm_nic, network) pair maps to a
+// MigrationNic carrying bridge / mac / model / mtu / device_order, with ipv4
+// included only when the NIC has a static address. Bridge name and MTU come
+// from the resolved network (the vm_nic row does not carry them).
+func TestMigrationNicsFromVM(t *testing.T) {
+	vmID := uuid.New()
+	pairs := []migrations.NicNetworkPair{
+		{
+			Nic: store.VMNic{
+				ID:          uuid.New(),
+				VmID:        vmID,
+				MacAddress:  mustParseMAC(t, "52:54:00:00:00:01"),
+				Model:       store.NicModelVirtio,
+				DeviceOrder: 0,
+				Ipv4Address: mustParseAddr(t, "10.42.0.5"),
+			},
+			Network: store.Network{BridgeName: "otb100", Mtu: 1390},
+		},
+		{
+			Nic: store.VMNic{
+				ID:          uuid.New(),
+				VmID:        vmID,
+				MacAddress:  mustParseMAC(t, "52:54:00:00:00:02"),
+				Model:       store.NicModelVirtio,
+				DeviceOrder: 1,
+			},
+			Network: store.Network{BridgeName: "vmbr0", Mtu: 1500},
+		},
+	}
+
+	got := migrations.MigrationNics(pairs)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].BridgeName != "otb100" || got[0].MacAddress != "52:54:00:00:00:01" ||
+		got[0].Model != agentapi.MigrationNicModelVirtio || got[0].DeviceOrder != 0 {
+		t.Errorf("nic0 = %+v, want bridge otb100 mac ...01 virtio order 0", got[0])
+	}
+	if got[0].Mtu == nil || *got[0].Mtu != 1390 {
+		t.Errorf("nic0 mtu = %v, want 1390", got[0].Mtu)
+	}
+	if got[0].Ipv4Address == nil || *got[0].Ipv4Address != "10.42.0.5" {
+		t.Errorf("nic0 ipv4 = %v, want 10.42.0.5", got[0].Ipv4Address)
+	}
+	if got[1].BridgeName != "vmbr0" || got[1].Mtu == nil || *got[1].Mtu != 1500 {
+		t.Errorf("nic1 = %+v, want bridge vmbr0 mtu 1500", got[1])
+	}
+	if got[1].Ipv4Address != nil {
+		t.Errorf("nic1 ipv4 = %v, want nil", got[1].Ipv4Address)
+	}
+}
 
 // fakeMigrationAgent is the agent seam double. It records every call so the
 // pending path can prove the agent was NOT contacted, and replays a staged
