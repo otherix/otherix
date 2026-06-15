@@ -4073,7 +4073,7 @@ components:
           description: Matches `vms.id`.
         phase:
           type: string
-          enum: [pending, running, paused, stopped, error, gone]
+          enum: [pending, running, migrating, paused, stopped, error, gone]
           description: Observed runtime phase.
         observed_generation:
           type: [integer, "null"]

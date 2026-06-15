@@ -246,6 +246,34 @@ func TestVMs_VMReports_SortedAndSnapshotted(t *testing.T) {
 	}
 }
 
+// TestMapPhase locks the agent-side vm.Status -> wire heartbeat phase
+// mapping. The migrating_incoming case in particular reports the new
+// migrating wire phase so the CP projection shows migrating (not
+// creating) during the post-cutover tail while the target still holds
+// the incoming VM.
+func TestMapPhase(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   vm.Status
+		want string
+	}{
+		{vm.StatusPending, "pending"},
+		{vm.StatusCreating, "pending"},
+		{vm.StatusRunning, "running"},
+		{vm.StatusPaused, "paused"},
+		{vm.StatusStopping, "stopped"},
+		{vm.StatusStopped, "stopped"},
+		{vm.StatusDeleting, "stopped"},
+		{vm.StatusMigratingIncoming, "migrating"},
+		{vm.StatusFailed, "error"},
+	}
+	for _, tc := range cases {
+		if got := mapPhase(tc.in); got != tc.want {
+			t.Errorf("mapPhase(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

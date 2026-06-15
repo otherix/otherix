@@ -110,8 +110,8 @@ func validateMigration(m *migrationCapability) *validationFailure {
 
 func validVMPhase(p string) bool {
 	switch store.VMPhase(p) {
-	case store.VmPhasePending, store.VmPhaseRunning, store.VmPhasePaused,
-		store.VmPhaseStopped, store.VmPhaseError, store.VmPhaseGone:
+	case store.VmPhasePending, store.VmPhaseRunning, store.VmPhaseMigrating,
+		store.VmPhasePaused, store.VmPhaseStopped, store.VmPhaseError, store.VmPhaseGone:
 		return true
 	}
 	return false

@@ -254,9 +254,11 @@ func vmReport(v *vm.VM) heartbeat.VMReport {
 
 // mapPhase coerces an agent-side vm.Status string to the wire enum
 // values declared in HeartbeatVMReport.phase (pending, running,
-// paused, stopped, error, gone). Internal-only phases (creating,
-// stopping, deleting) collapse to the closest user-visible phase to
-// keep the wire enum stable.
+// migrating, paused, stopped, error, gone). Internal-only phases
+// (creating, stopping, deleting) collapse to the closest user-visible
+// phase to keep the wire enum stable. StatusMigratingIncoming maps to
+// migrating so the CP projection shows migrating (not creating) during
+// the post-cutover tail while the target still holds the incoming VM.
 func mapPhase(s vm.Status) string {
 	switch s {
 	case vm.StatusPending, vm.StatusCreating:
@@ -268,7 +270,7 @@ func mapPhase(s vm.Status) string {
 	case vm.StatusStopping, vm.StatusStopped, vm.StatusDeleting:
 		return "stopped"
 	case vm.StatusMigratingIncoming:
-		return "pending"
+		return "migrating"
 	case vm.StatusFailed:
 		return "error"
 	default:
