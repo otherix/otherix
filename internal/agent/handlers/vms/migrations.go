@@ -75,6 +75,7 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		Mode:           string(req.Mode),
 		ExpectedSize:   deref64(req.ExpectedSizeBytes),
 		DiskSizeBytes:  int64(boot.SizeGib) * gibBytes,
+		Disks:          incomingDisks(req, int64(boot.SizeGib)*gibBytes),
 		SourceIdentity: deref(req.SourceNodeIdentity),
 		BindHost:       h.migrationHost,
 	})
@@ -90,6 +91,31 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		NbdEndpoint:    strPtrOrNil(res.NBDEndpoint),
 		AuthToken:      res.AuthToken,
 	})
+}
+
+// incomingDisks maps the wire disk manifest to the manager's disk list. When
+// the CP sends no manifest (legacy or boot-only), it falls back to a single
+// boot disk derived from the boot VMSpec disk so the target still replicates
+// the boot device.
+func incomingDisks(req agentapi.MigrationIncomingRequest, bootSizeBytes int64) []vm.MigrationDisk {
+	if req.Disks == nil || len(*req.Disks) == 0 {
+		return []vm.MigrationDisk{{
+			Index:     0,
+			SizeBytes: bootSizeBytes,
+			Format:    "qcow2",
+			ReadOnly:  false,
+		}}
+	}
+	out := make([]vm.MigrationDisk, 0, len(*req.Disks))
+	for _, d := range *req.Disks {
+		out = append(out, vm.MigrationDisk{
+			Index:     d.Index,
+			SizeBytes: d.SizeBytes,
+			Format:    string(d.Format),
+			ReadOnly:  d.ReadOnly,
+		})
+	}
+	return out
 }
 
 // StartOutgoing handles POST /v1/vms/{vm_name}/migrations/outgoing -

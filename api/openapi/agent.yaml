@@ -2231,6 +2231,33 @@ components:
             The source node leaf-cert Distinguished Name ("CN=node-<source>").
             The target builds a tls-authz object from it to pin the connecting
             source identity before accepting the NBD/migration stream.
+        disks:
+          type: array
+          description: |
+            Ordered disk manifest the CP builds from the VM's desired config.
+            The target creates and NBD-exports one destination disk per entry,
+            in this order, so the device topology matches the source for live
+            migration. Index 0 is the boot disk; later entries are cidata or
+            data disks. Empty or absent on legacy requests (boot-only fallback).
+          items:
+            $ref: "#/components/schemas/MigrationDisk"
+
+    MigrationDisk:
+      type: object
+      required: [index, size_bytes, format, read_only]
+      properties:
+        index:
+          type: integer
+          description: virtio device order, 0 is the boot disk.
+        size_bytes:
+          type: integer
+          format: int64
+          description: destination disk virtual size in bytes.
+        format:
+          type: string
+          enum: [qcow2, raw]
+        read_only:
+          type: boolean
 
     MigrationIncomingResponse:
       type: object

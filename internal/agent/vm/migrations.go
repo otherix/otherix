@@ -154,8 +154,19 @@ type IncomingSpec struct {
 	Mode           string
 	ExpectedSize   int64
 	DiskSizeBytes  int64
+	Disks          []MigrationDisk
 	SourceIdentity string
 	BindHost       string
+}
+
+// MigrationDisk is one entry of the ordered disk manifest the target
+// replicates: its virtio index, virtual size, on-disk format, and whether the
+// guest sees it read-only (cidata).
+type MigrationDisk struct {
+	Index     int
+	SizeBytes int64
+	Format    string
+	ReadOnly  bool
 }
 
 // IncomingResult is returned to the agent-API handler, which serializes it

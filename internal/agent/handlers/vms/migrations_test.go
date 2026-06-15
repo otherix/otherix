@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/console"
@@ -330,5 +331,46 @@ func TestStartOutgoingRequestThreadsNbdEndpoint(t *testing.T) {
 	spec := vm.OutgoingSpec{NBDEndpoint: deref(req.NbdEndpoint)}
 	if spec.NBDEndpoint != "h:49153" {
 		t.Errorf("OutgoingSpec.NBDEndpoint = %q, want %q", spec.NBDEndpoint, "h:49153")
+	}
+}
+
+func TestIncomingDisks(t *testing.T) {
+	const bootSizeBytes = 10 * gibBytes
+
+	cases := []struct {
+		name string
+		req  agentapi.MigrationIncomingRequest
+		want []vm.MigrationDisk
+	}{
+		{
+			name: "nil manifest falls back to boot disk",
+			req:  agentapi.MigrationIncomingRequest{Disks: nil},
+			want: []vm.MigrationDisk{{Index: 0, SizeBytes: bootSizeBytes, Format: "qcow2", ReadOnly: false}},
+		},
+		{
+			name: "empty manifest falls back to boot disk",
+			req:  agentapi.MigrationIncomingRequest{Disks: &[]agentapi.MigrationDisk{}},
+			want: []vm.MigrationDisk{{Index: 0, SizeBytes: bootSizeBytes, Format: "qcow2", ReadOnly: false}},
+		},
+		{
+			name: "two-entry manifest maps one to one",
+			req: agentapi.MigrationIncomingRequest{Disks: &[]agentapi.MigrationDisk{
+				{Index: 0, SizeBytes: bootSizeBytes, Format: agentapi.MigrationDiskFormatQcow2, ReadOnly: false},
+				{Index: 1, SizeBytes: 1 << 20, Format: agentapi.MigrationDiskFormatRaw, ReadOnly: true},
+			}},
+			want: []vm.MigrationDisk{
+				{Index: 0, SizeBytes: bootSizeBytes, Format: "qcow2", ReadOnly: false},
+				{Index: 1, SizeBytes: 1 << 20, Format: "raw", ReadOnly: true},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := incomingDisks(tc.req, bootSizeBytes)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("incomingDisks(...) mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
