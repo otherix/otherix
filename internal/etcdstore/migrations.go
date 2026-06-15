@@ -206,10 +206,7 @@ func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) err
 		clientv3.OpPut(vmKey(vm.ID), string(vmVal)),
 		clientv3.OpPut(migrationKey(m.ID), string(mVal)),
 	}
-	if old != nil {
-		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "pinned_node", old.String(), vm.ID.String())))
-	}
-	ops = append(ops, clientv3.OpPut(etcd.Key("index", "vms", "pinned_node", target.String(), vm.ID.String()), vm.ID.String()))
+	ops = append(ops, pinnedNodeIndexOps(old, target, vm.ID)...)
 	ops = append(ops, terminalCleanupOps(m)...)
 
 	conds := []clientv3.Cmp{
@@ -225,6 +222,25 @@ func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) err
 		return store.ErrConcurrentUpdate
 	}
 	return nil
+}
+
+// pinnedNodeIndexOps returns the secondary-index mutations that move a VM's
+// pinned_node entry from old (when set) to target. It OMITS the delete when
+// old == target so the enclosing Txn never carries two operations on the same
+// index key: a concurrent cutover can produce a torn read (the migration Get
+// sees the migration still non-terminal while the VM Get already sees it pinned
+// to target by a prior winner), and an unconditional delete+put on one key
+// makes etcd reject the whole Txn with "duplicate key given in txn request" - a
+// raw error leaking out before the CAS conditions are evaluated, instead of the
+// ErrConcurrentUpdate the stale-ModRevision compare would return. The put alone
+// is idempotent, so skipping the redundant delete keeps the index correct and
+// lets the CAS decide the outcome.
+func pinnedNodeIndexOps(old *uuid.UUID, target, vmID uuid.UUID) []clientv3.Op {
+	var ops []clientv3.Op
+	if old != nil && *old != target {
+		ops = append(ops, clientv3.OpDelete(etcd.Key("index", "vms", "pinned_node", old.String(), vmID.String())))
+	}
+	return append(ops, clientv3.OpPut(etcd.Key("index", "vms", "pinned_node", target.String(), vmID.String()), vmID.String()))
 }
 
 // applyMigrationProgress copies the non-nil fields of upd onto m. SchedulingReason
