@@ -10,15 +10,16 @@ import "github.com/otherix/otherix/internal/store"
 // intent) and store.VMPhase (agent-observed runtime) — this is the
 // projected union the API exposes.
 const (
-	statusPending  = "pending"
-	statusCreating = "creating"
-	statusRunning  = "running"
-	statusPaused   = "paused"
-	statusStopped  = "stopped"
-	statusError    = "error"
-	statusGone     = "gone"
-	statusOrphaned = "orphaned"
-	statusDeleting = "deleting"
+	statusPending   = "pending"
+	statusCreating  = "creating"
+	statusRunning   = "running"
+	statusPaused    = "paused"
+	statusStopped   = "stopped"
+	statusError     = "error"
+	statusGone      = "gone"
+	statusOrphaned  = "orphaned"
+	statusDeleting  = "deleting"
+	statusMigrating = "migrating"
 )
 
 // projectStatus maps the (vms row, vm_runtime row) pair plus the
@@ -27,6 +28,7 @@ const (
 //
 //	deleted_at not null              → gone
 //	active vm.delete task            → deleting  (teardown in flight, pre-tombstone)
+//	active migration                 → migrating (move in flight, masks runtime flicker)
 //	scheduling_status == unscheduled → pending   (awaiting placement)
 //	runtime nil              → creating  (worker hasn't upserted yet)
 //	runtime.phase == pending → creating  (agent task still in flight)
@@ -43,16 +45,28 @@ const (
 // agent tears qemu down). The caller supplies deleting from a live
 // vm.delete task lookup (no desired-state write — see delete.go).
 //
+// migrating sits just below deleting and above the unscheduled/runtime
+// branches: a delete in flight (terminal user intent) dominates;
+// otherwise an active migration dominates the observed runtime flicker
+// (the move drives the target heartbeat through pending->running, which
+// would otherwise project creating->running mid-move). A migrating VM is
+// always scheduled and running, so this branch never masks a genuine
+// unscheduled/creating state. The caller supplies migrating from the
+// in-flight (non-terminal) migration lookup it already performs.
+//
 // Pure function: callers pass the vm row, a (possibly nil) runtime
-// pointer, and the deleting bit. Tested independently of the GET
-// handler — the truth table is the single source of behavioural truth
-// for the wire `status` field.
-func projectStatus(vm store.VM, runtime *store.VMRuntime, deleting bool) string {
+// pointer, and the deleting + migrating bits. Tested independently of
+// the GET handler — the truth table is the single source of behavioural
+// truth for the wire `status` field.
+func projectStatus(vm store.VM, runtime *store.VMRuntime, deleting, migrating bool) string {
 	if vm.DeletedAt != nil {
 		return statusGone
 	}
 	if deleting {
 		return statusDeleting
+	}
+	if migrating {
+		return statusMigrating
 	}
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
 		return statusPending

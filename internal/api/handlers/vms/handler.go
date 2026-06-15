@@ -298,7 +298,7 @@ type vmViewNames struct {
 // non-nil it populates status.migration (Observability surface 3); it never
 // changes names.node - current_node_id stays = source until cutover.
 func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool, activeMig *store.Migration) vmView {
-	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting), Migration: migrationSummary(activeMig)}
+	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting, activeMig != nil), Migration: migrationSummary(activeMig)}
 	pool := names.pool
 	nets := names.networks
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
