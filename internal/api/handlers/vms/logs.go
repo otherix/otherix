@@ -23,6 +23,16 @@ import (
 // relaying chunks downstream.
 const logsStreamBufSize = 4096
 
+// migrationWaitDeadline bounds how long the follow loop waits for the cutover
+// Txn to flip PinnedNodeID when the upstream breaks (or a re-dial returns 409)
+// while a migration is still in flight. migrationPollInterval is the flip poll
+// cadence. Both are a multiple of the typical sub-second cutover window;
+// tolerant of slow convergence.
+const (
+	migrationWaitDeadline = 60 * time.Second
+	migrationPollInterval = 500 * time.Millisecond
+)
+
 // logsNode is the resolved owning node for a follow stream: the node id
 // (to detect a cutover flip) and the agent host (to dial).
 type logsNode struct {
@@ -294,9 +304,61 @@ func (h *Handler) relayLogsFollowing(w http.ResponseWriter, r *http.Request, vm 
 			continue
 		}
 
-		// same node, no migration -> clean end (Task 2 inserts the migrating
-		// safety net here).
+		// Same node. A migration still in flight means the break (or a
+		// mid-handoff 409) raced ahead of the cutover Txn flipping
+		// PinnedNodeID - wait a bounded time for the flip rather than guess.
+		_, migrating, err := h.store.ActiveMigrationForVM(r.Context(), vm.ID)
+		if err != nil {
+			h.log.WarnContext(r.Context(), "vms.logs reattach migration scan",
+				"vm", vmName, "error", err.Error())
+			return
+		}
+		if migrating {
+			target, ok := h.waitForFlip(r.Context(), vmName, current.id,
+				migrationWaitDeadline, migrationPollInterval)
+			if !ok {
+				return
+			}
+			h.log.InfoContext(r.Context(), "vms.logs reattach",
+				"vm", vmName, "from_node", current.id, "to_node", target.id)
+			current = target
+			continue
+		}
+
+		// Same node, no migration -> clean end (today's behaviour).
 		return
+	}
+}
+
+// waitForFlip polls the VM's PinnedNodeID until it moves off fromNode (the
+// cutover committed) or deadline elapses. It returns the new owning node on
+// a flip, or ok=false on deadline / context cancellation / store error. An
+// unresolvable endpoint mid-poll is transient (the target may not have
+// advertised yet) and keeps polling until the deadline.
+func (h *Handler) waitForFlip(ctx context.Context, vmName string, fromNode uuid.UUID, deadline, pollInterval time.Duration) (logsNode, bool) {
+	timeout := time.NewTimer(deadline)
+	defer timeout.Stop()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return logsNode{}, false
+		case <-timeout.C:
+			return logsNode{}, false
+		case <-ticker.C:
+			fresh, err := h.store.VMByName(ctx, vmName)
+			if err != nil {
+				return logsNode{}, false
+			}
+			n, err := h.resolveLogsNode(ctx, fresh)
+			if err != nil {
+				continue
+			}
+			if n.id != fromNode {
+				return n, true
+			}
+		}
 	}
 }
 

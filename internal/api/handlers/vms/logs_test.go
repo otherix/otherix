@@ -229,3 +229,94 @@ func TestRelayLogsFollowing_CleanEnd(t *testing.T) {
 		t.Errorf("agent A dialed %d times, want 1 (no re-dial of a stopped VM)", c)
 	}
 }
+
+// flipAfterStub flips PinnedNodeID from `from` to `to` on the Nth VMByName
+// call (1-based), modelling a cutover that commits a couple of polls after
+// the upstream broke. It reports migrating=true until the flip.
+type flipAfterStub struct {
+	logsStoreStub
+	from, to uuid.UUID
+	flipOn   int
+}
+
+func (s *flipAfterStub) VMByName(context.Context, string) (store.VM, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vmCalls++
+	pin := s.from
+	if s.vmCalls >= s.flipOn {
+		pin = s.to
+	}
+	v := s.vm
+	v.PinnedNodeID = &pin
+	return v, nil
+}
+
+func (s *flipAfterStub) ActiveMigrationForVM(context.Context, uuid.UUID) (store.Migration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vmCalls >= s.flipOn {
+		return store.Migration{}, false, nil
+	}
+	return store.Migration{}, true, nil
+}
+
+// TestRelayLogsFollowing_WaitsForFlip drives the safety net: the upstream
+// breaks while the node is unchanged but a migration is active; after a few
+// polls the store flips to node B and the loop must reattach to B.
+func TestRelayLogsFollowing_WaitsForFlip(t *testing.T) {
+	t.Parallel()
+
+	owner := uuid.New()
+	nodeA, nodeB := uuid.New(), uuid.New()
+	agentA := newLogsAgent(t, "A-line\n")
+	agentB := newLogsAgent(t, "B-line\n")
+
+	stub := &flipAfterStub{
+		logsStoreStub: logsStoreStub{
+			vm: logsTestVM(t, owner, nodeA),
+			nodes: map[uuid.UUID]store.Node{
+				nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL},
+				nodeB: {ID: nodeB, AdvertisedEndpoint: agentB.srv.URL},
+			},
+		},
+		from: nodeA, to: nodeB, flipOn: 3, // flips on the 3rd VMByName call
+	}
+
+	hh := New(stub,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		LifecycleDeps{},
+		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"})
+
+	rec := httptest.NewRecorder()
+	req, cancel := followRequest(t, stub.vm.Name)
+	defer cancel()
+	hh.relayLogsFollowing(rec, req, stub.vm)
+
+	got := rec.Body.String()
+	if !strings.Contains(got, "B-line") {
+		t.Errorf("body = %q, want B-line after wait-for-flip", got)
+	}
+}
+
+// TestWaitForFlip_DeadlineReturnsFalse drives waitForFlip directly with a
+// tiny deadline against a store that never flips -> it must return false.
+func TestWaitForFlip_DeadlineReturnsFalse(t *testing.T) {
+	t.Parallel()
+
+	owner := uuid.New()
+	nodeA := uuid.New()
+	agentA := newLogsAgent(t, "x\n")
+	stub := &logsStoreStub{
+		vm:          logsTestVM(t, owner, nodeA),
+		pinSequence: []uuid.UUID{nodeA},
+		nodes:       map[uuid.UUID]store.Node{nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL}},
+	}
+	h := logsFollowHandler(stub)
+
+	ctx := context.Background()
+	_, ok := h.waitForFlip(ctx, stub.vm.Name, nodeA, 60*time.Millisecond, 10*time.Millisecond)
+	if ok {
+		t.Errorf("waitForFlip ok = true, want false on a node that never flips")
+	}
+}
