@@ -73,6 +73,8 @@ type HeartbeatProjection interface {
 	// The FDB projection threads that revision into ListAgentWireguardAtRev and
 	// NodeByIDAtRev so the whole join sees one consistent etcd snapshot.
 	ListOverlayNICPlacementsPinned(ctx context.Context) ([]OverlayNICPlacement, int64, error)
+	// ActiveMigrationForVM returns the non-terminal migration for vmID, if any.
+	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (Migration, bool, error)
 }
 
 // OverlayNICPlacement is one NIC attached to a type=overlay network whose owning
