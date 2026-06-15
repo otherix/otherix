@@ -603,19 +603,26 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 		return m.GetMigration(id)
 	}
 
-	// Best-effort QMP abort. Only the source holds the live mirror + RAM
-	// stream; the target side is reclaimed by the CP re-driving as failed.
-	if rec.Role == migration.RoleSource {
-		if v, err := m.Get(rec.VMID); err == nil {
-			if conn, err := m.migDialQMP(v.QMPSocket); err == nil {
-				_ = conn.MigrateCancel()
-				if rec.BlockJobID != "" {
-					_ = conn.BlockJobCancel(rec.BlockJobID, true)
-				}
-			}
-		}
+	if rec.Role == migration.RoleTarget {
+		// Full pre-cutover reap: kill the incoming qemu, free the pair, remove the
+		// adopted VM, reap the record. (The previous body released the ports while
+		// the incoming qemu still held them - the "address already in use" leak.)
+		m.teardownIncomingTarget(id, rec.VMID, rec.Port, rec.NBDPort, migration.PhaseCancelled, "cancelled")
+		return m.GetMigration(id)
 	}
 
+	// Source: best-effort QMP abort of the live mirror + RAM stream; the guest
+	// stays running on this node (fail-safe). object-del migtls is handled by
+	// RunLiveSource's deferred cleanup when the in-flight run unwinds.
+	if v, err := m.Get(rec.VMID); err == nil {
+		if conn, err := m.migDialQMP(v.QMPSocket); err == nil {
+			_ = conn.MigrateCancel()
+			if rec.BlockJobID != "" {
+				_ = conn.BlockJobCancel(rec.BlockJobID, true)
+			}
+			_ = conn.Close()
+		}
+	}
 	if rec.Port > 0 || rec.NBDPort > 0 {
 		m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
 	}
