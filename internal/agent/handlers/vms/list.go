@@ -24,7 +24,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	vms := h.manager.List()
 	views := make([]vmView, 0, len(vms))
 	for _, v := range vms {
-		views = append(views, toView(v))
+		views = append(views, toView(v, 0))
 	}
 	response.WriteJSON(w, r, http.StatusOK, listResponse{
 		Data: views,

@@ -2089,6 +2089,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Condition"
+        boot_disk_virtual_size_bytes:
+          type: integer
+          format: int64
+          description: |
+            Actual virtual size of the on-disk boot qcow2 (qemu-img info -U),
+            independent of the requested disk_gib. Used to size a migration
+            destination disk to the real source size.
         spec:
           $ref: "#/components/schemas/VMSpec"
         runtime:

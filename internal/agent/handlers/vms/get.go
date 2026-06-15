@@ -5,10 +5,12 @@ package vms
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/api/response"
 )
@@ -32,5 +34,14 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "internal error", nil)
 		return
 	}
-	response.WriteJSON(w, r, http.StatusOK, toView(v))
+	var bootDiskVirtualSize int64
+	if v.DiskPath != "" {
+		if sz, err := qemu.ImgVirtualSizeShared(r.Context(), v.DiskPath); err != nil {
+			h.log.WarnContext(r.Context(), "vm get: boot disk virtual size probe failed",
+				slog.String("vm", v.Name), slog.String("error", err.Error()))
+		} else {
+			bootDiskVirtualSize = sz
+		}
+	}
+	response.WriteJSON(w, r, http.StatusOK, toView(v, bootDiskVirtualSize))
 }
