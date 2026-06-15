@@ -74,6 +74,10 @@ type MigrationAgentClient interface {
 	// cutover. Best-effort: a failure leaks a disk (recoverable), never destroys
 	// a wanted VM.
 	DeleteVMOnSource(ctx context.Context, endpoint, vmName string) error
+	// NudgeHeartbeat triggers an immediate heartbeat on the agent at endpoint
+	// (CP fast-push after an overlay cutover so peers re-pull their FDB without
+	// waiting for the next periodic tick). Best-effort.
+	NudgeHeartbeat(ctx context.Context, endpoint string) error
 }
 
 // Placer is the placement seam (spec D2): a node-less migrate scores a target

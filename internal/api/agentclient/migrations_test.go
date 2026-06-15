@@ -255,3 +255,22 @@ func TestCancelMigration_Conflict409(t *testing.T) {
 		t.Fatalf("err = %v; want AgentError 409", err)
 	}
 }
+
+func TestPostHeartbeatNudge(t *testing.T) {
+	t.Parallel()
+
+	var gotPath, gotMethod string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/heartbeat/nudge", func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		w.WriteHeader(http.StatusNoContent)
+	})
+	_, baseURL := startAgentTLSServer(t, mux)
+
+	if err := newClientAutoDir(t).PostHeartbeatNudge(context.Background(), baseURL); err != nil {
+		t.Fatalf("PostHeartbeatNudge: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/heartbeat/nudge" {
+		t.Errorf("got %s %s, want POST /v1/heartbeat/nudge", gotMethod, gotPath)
+	}
+}

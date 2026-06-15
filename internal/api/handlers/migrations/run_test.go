@@ -115,6 +115,10 @@ type fakeMigrationAgent struct {
 	startTargetCalls  int
 	deleteSourceCalls int
 
+	// nudged records every endpoint NudgeHeartbeat was called with (Task 12
+	// asserts the worker fast-pushes to the computed overlay peer set).
+	nudged []string
+
 	// incomingReq / outgoingReq capture the last requests so a test can assert the
 	// threaded identities + disk spec.
 	incomingReq agentapi.MigrationIncomingRequest
@@ -184,6 +188,13 @@ func (f *fakeMigrationAgent) DeleteVMOnSource(_ context.Context, _, _ string) er
 	defer f.mu.Unlock()
 	f.deleteSourceCalls++
 	return f.deleteSourceErr
+}
+
+func (f *fakeMigrationAgent) NudgeHeartbeat(_ context.Context, endpoint string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nudged = append(f.nudged, endpoint)
+	return nil
 }
 
 // fakePlacer is the placement seam double. It returns a fixed decision or a
