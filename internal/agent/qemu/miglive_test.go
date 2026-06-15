@@ -213,6 +213,7 @@ func TestRunLiveSource_HappyPathOrder(t *testing.T) {
 		"block-job-cancel:false",
 		"migrate-continue",
 		"blockdev-del",
+		"object-del:migtls",
 	}
 	if got := f.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("call order = %v, want %v", got, want)
@@ -355,6 +356,40 @@ func TestRunLiveSource_AbortOnRAMFailureBeforeSwitchover(t *testing.T) {
 	assertAbortBoth(t, got)
 	if contains(got, "migrate-continue") {
 		t.Errorf("call order = %v, must NOT contain migrate-continue after failure", got)
+	}
+}
+
+// TestRunLiveSource_DeletesMigtlsOnSuccess asserts the client TLS-creds object
+// "migtls" is removed on the success tail, so a guest that later returns to this
+// node can re-add it without a "duplicate property 'migtls'" failure.
+func TestRunLiveSource_DeletesMigtlsOnSuccess(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 4)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+	f.events <- migrationEvent("pre-switchover")
+	f.events <- blockJobEvent("BLOCK_JOB_COMPLETED", "mirror0")
+	f.events <- migrationEvent("completed")
+
+	if err := RunLiveSource(context.Background(), f, testSpec(), nil); err != nil {
+		t.Fatalf("RunLiveSource() = %v, want nil", err)
+	}
+	if got := f.snapshot(); countCall(got, "object-del:migtls") != 1 {
+		t.Errorf("calls = %v, want exactly one object-del:migtls", got)
+	}
+}
+
+// TestRunLiveSource_DeletesMigtlsOnAbort asserts the client TLS-creds object
+// "migtls" is removed even when the migration aborts: a guest that STAYS on the
+// source must not keep "migtls", or its NEXT migration fails to add it.
+func TestRunLiveSource_DeletesMigtlsOnAbort(t *testing.T) {
+	f := &fakeLiveConn{events: make(chan qmp.Event, 2)}
+	f.events <- blockJobEvent("BLOCK_JOB_READY", "mirror0")
+	f.events <- migrationEvent("failed")
+
+	if err := RunLiveSource(context.Background(), f, testSpec(), nil); err == nil {
+		t.Fatal("RunLiveSource() = nil, want error on abort")
+	}
+	if got := f.snapshot(); countCall(got, "object-del:migtls") != 1 {
+		t.Errorf("calls = %v, want object-del:migtls on abort path", got)
 	}
 }
 

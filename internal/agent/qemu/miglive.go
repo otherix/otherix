@@ -147,6 +147,11 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 		abortLiveSource(conn, s)
 		return fmt.Errorf("add client tls creds: %w", err)
 	}
+	// Remove the client TLS-creds object on every return below (success tail and
+	// every abort): a guest that stays on the source after an abort must not keep
+	// "migtls", or its NEXT migration fails "duplicate property 'migtls'".
+	// Best-effort - on success the guest is already on the target.
+	defer func() { _ = conn.ObjectDel(migTLSCredsID) }()
 	// Mirror EVERY source disk to its matching target export so the device
 	// topology matches. The boot disk and the cidata disk each get an NBD
 	// client blockdev + a blockdev-mirror; both must reach READY before the RAM
