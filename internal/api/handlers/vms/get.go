@@ -61,15 +61,15 @@ func (h *Handler) renderVMRow(w http.ResponseWriter, r *http.Request, vm store.V
 		writeVMLoadError(w, r, err)
 		return
 	}
-	names, err := h.resolveViewNames(r.Context(), vm, runtime, disk, callerCanReadUsers(r.Context()))
+	activeMig := h.activeMigration(r.Context(), vm.ID)
+	names, err := h.resolveViewNames(r.Context(), vm, runtime, disk, callerCanReadUsers(r.Context()), activeMig)
 	if err != nil {
 		writeVMLoadError(w, r, err)
 		return
 	}
 	response.WriteJSON(w, r, statusCode,
 		toView(vm, runtime, names, h.vmDeleting(r.Context(), vm.ID),
-			callerCanReadVMSecrets(r.Context(), vm.OwnerID),
-			h.activeMigration(r.Context(), vm.ID)))
+			callerCanReadVMSecrets(r.Context(), vm.OwnerID), activeMig))
 }
 
 // activeMigration returns the VM's in-flight (non-terminal) migration, or nil.

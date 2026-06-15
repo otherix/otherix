@@ -209,13 +209,14 @@ func (h *Handler) projectPage(ctx context.Context, rows []store.VM, statusFilter
 		default:
 			continue
 		}
-		names, err := h.resolveViewNames(ctx, vm, runtime, disk, includeOwner)
+		activeMig := h.activeMigration(ctx, vm.ID)
+		names, err := h.resolveViewNames(ctx, vm, runtime, disk, includeOwner, activeMig)
 		if err != nil {
 			return nil, err
 		}
 		_, deleting := deletingSet[vm.ID]
 		view := toView(vm, runtime, names, deleting,
-			callerCanReadVMSecrets(ctx, vm.OwnerID), h.activeMigration(ctx, vm.ID))
+			callerCanReadVMSecrets(ctx, vm.OwnerID), activeMig)
 		if statusFilter != "" && view.Status.Phase != statusFilter {
 			continue
 		}

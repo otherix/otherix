@@ -29,7 +29,7 @@ import (
 // the caller decides how to handle. Currently every caller surfaces such
 // inconsistencies as 500 - they should not happen against the live
 // schema.
-func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *store.VMRuntime, disk store.VMDisk, includeOwner bool) (vmViewNames, error) {
+func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *store.VMRuntime, disk store.VMDisk, includeOwner bool, activeMig *store.Migration) (vmViewNames, error) {
 	names := vmViewNames{}
 
 	// An unscheduled (pending) VM has no disk row yet, so disk is the
@@ -57,7 +57,15 @@ func (h *Handler) resolveViewNames(ctx context.Context, vm store.VM, runtime *st
 		}
 	}
 
-	if nodeID := observedNodeID(vm, runtime); nodeID != nil {
+	nodeID := observedNodeID(vm, runtime)
+	if activeMig != nil && activeMig.SourceNodeID != nil {
+		// A VM in flight stays displayed on its source node (where the guest
+		// runs until cutover); the target agent overwrites vm_runtime.current_node_id
+		// to itself before cutover, so observedNodeID would otherwise show the
+		// target early. The migration record holds the authoritative source.
+		nodeID = activeMig.SourceNodeID
+	}
+	if nodeID != nil {
 		node, err := h.store.NodeByID(ctx, *nodeID)
 		switch {
 		case err == nil:
