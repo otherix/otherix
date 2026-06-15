@@ -363,6 +363,44 @@ func seedBootDiskInPool(t *testing.T, cli *etcd.Client, vmID, poolID uuid.UUID, 
 	return d
 }
 
+// seedBridgeNetwork creates a cluster-wide bridge network row so a NIC can
+// reference it and the placement network-readiness filter can be exercised.
+func seedBridgeNetwork(t *testing.T, s *etcdstore.Store, name, bridge string) store.Network {
+	t.Helper()
+	n, err := s.CreateNetwork(context.Background(), store.CreateNetworkParams{
+		ID:         uuid.New(),
+		Name:       name,
+		Type:       store.NetworkTypeBridge,
+		BridgeName: bridge,
+		Mtu:        1500,
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork(%s): %v", name, err)
+	}
+	return n
+}
+
+// seedVMNic writes a device-order-0 NIC for vm on networkID via the raw client
+// (mirroring the vm_nic row + per-vm index ListVMNicsByVM reads), so
+// placeAndBind's ListVMNicsByVM resolves the VM's network ids.
+func seedVMNic(t *testing.T, cli *etcd.Client, vmID, networkID uuid.UUID, mac string) store.VMNic {
+	t.Helper()
+	ctx := context.Background()
+	n := store.VMNic{
+		ID: uuid.New(), VmID: vmID, NetworkID: networkID,
+		DeviceOrder: 0, Model: store.NicModelVirtio,
+		MacAddress: mustParseMAC(t, mac),
+		CreatedAt:  time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_nics", n.ID.String()), n); err != nil {
+		t.Fatalf("seed vm nic: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vm_nics", "vm", vmID.String(), n.ID.String()), []byte(n.ID.String())); err != nil {
+		t.Fatalf("seed vm nic index: %v", err)
+	}
+	return n
+}
+
 // TestRunMigration_DefaultsTargetPoolToSourcePool pins correction A: an explicit
 // --node migration with an EMPTY TargetPoolName defaults the target pool to the
 // SOURCE VM's pool NAME (not the cluster default). The source boot disk lives in
@@ -694,6 +732,81 @@ func TestRunMigration_PendingSingleNode(t *testing.T) {
 	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 || agent.pollCalls != 0 {
 		t.Errorf("agent contacted on the pending path: incoming=%d outgoing=%d poll=%d, want 0/0/0",
 			agent.incomingCalls, agent.outgoingCalls, agent.pollCalls)
+	}
+}
+
+// TestPlaceAndBindRefusesNetworkUnreadyTarget pins Task 3 (slice 3b): a node-less
+// migration must honor the scheduler's network-readiness filter (ADR 0034 NL18)
+// exactly as vm create does. The only resource-eligible target (nodeB) has the
+// VM's bridge network in a NON-ready state, so placeAndBind must pass the VM's
+// NetworkIDs to the placer and the candidate is excluded - the migration stays
+// PENDING, binds NO target, and the agent is NEVER contacted. It drives the REAL
+// placer (NewSchedulerPlacer over the store) so the network filter actually runs;
+// a fakePlacer would bypass the filter entirely.
+func TestPlaceAndBindRefusesNetworkUnreadyTarget(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+
+	// Source pool on A (empty-pool path resolves the source pool name); nodeB has
+	// the same pool name so it is a resource-eligible candidate.
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default-on-b")
+
+	// The VM has a NIC on bridge network N. nodeB's per-(node, network) status for
+	// N is NOT ready (pending) -> the network filter must exclude nodeB, the only
+	// candidate (nodeA is the excluded source).
+	net := seedBridgeNetwork(t, s, "br-net", "otb0")
+	seedVMNic(t, cli, vm.ID, net.ID, "52:54:00:00:00:01")
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: nodeB.ID, ReconciliationStatus: "pending",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus(nodeB pending): %v", err)
+	}
+
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
+
+	agent := &fakeMigrationAgent{}
+	// REAL placer: the scheduler runs filterByNetworkReadiness against the seeded
+	// per-(node, network) status. Zero-value Resources keeps the resource fit a
+	// pass-through so the candidate reaches the network filter.
+	placer := migrations.NewSchedulerPlacer(s.PlacementQuerier(), scheduler.PlacementConfig{})
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	err := h(ctx, jobArgs(t, taskID, m.ID))
+	if err == nil {
+		t.Fatalf("MigrateHandler(network-unready) = nil, want a retryable error so the dispatcher requeues")
+	}
+
+	got, err2 := s.MigrationByID(ctx, m.ID)
+	if err2 != nil {
+		t.Fatalf("MigrationByID: %v", err2)
+	}
+	if got.Phase != store.MigrationPhasePending {
+		t.Errorf("migration phase = %q, want pending (network filter excluded the only candidate)", got.Phase)
+	}
+	if got.TargetNodeID != nil {
+		t.Errorf("TargetNodeID = %v, want nil (must NOT cut over to the network-unready node)", got.TargetNodeID)
+	}
+	if got.SchedulingReason == nil || *got.SchedulingReason != migrations.ReasonNoEligibleTarget {
+		t.Errorf("scheduling_reason = %v, want %q", got.SchedulingReason, migrations.ReasonNoEligibleTarget)
+	}
+	// The agent was NEVER contacted: nothing durable moved, VM stays on source.
+	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 || agent.pollCalls != 0 {
+		t.Errorf("agent contacted on the network-unready pending path: incoming=%d outgoing=%d poll=%d, want 0/0/0",
+			agent.incomingCalls, agent.outgoingCalls, agent.pollCalls)
+	}
+	// PinnedNodeID unchanged: the VM is still on its source.
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (pending, no cutover)", gotVM.PinnedNodeID, nodeA.ID)
 	}
 }
 

@@ -221,11 +221,33 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 	// runMigration; placeAndBind no longer falls back to cfg.DefaultPoolName.
 	poolName := m.TargetPoolName
 	src := *m.SourceNodeID
+
+	// Pass the VM's network ids so the scheduler's network-readiness filter
+	// (ADR 0034 NL18) excludes any candidate where a requested bridge network is
+	// not reconciled-ready, exactly as vm create does. Otherwise a node-less
+	// migration could land on a node whose bridge is not ready and materialiseNICs
+	// would fail on the target. Empty netIDs (a NIC-less VM) keeps the filter a
+	// no-op, so such migrations are unaffected.
+	vmNics, err := st.ListVMNicsByVM(ctx, vm.ID)
+	if err != nil {
+		return store.Migration{}, fmt.Errorf("list vm nics: %v", err)
+	}
+	seen := make(map[uuid.UUID]struct{}, len(vmNics))
+	netIDs := make([]uuid.UUID, 0, len(vmNics))
+	for _, n := range vmNics {
+		if _, ok := seen[n.NetworkID]; ok {
+			continue
+		}
+		seen[n.NetworkID] = struct{}{}
+		netIDs = append(netIDs, n.NetworkID)
+	}
+
 	decision, perr := placer.Place(ctx, scheduler.PlacementRequest{
 		PoolName:      poolName,
 		ExcludeNodeID: &src,
 		VCPUs:         int(vm.CpuCores),
 		MemoryMiB:     int(vm.MemoryMib),
+		NetworkIDs:    netIDs,
 	})
 	if perr != nil {
 		// RETRYABLE: record the pending envelope and return the cause so the
