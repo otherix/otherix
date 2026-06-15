@@ -32,6 +32,7 @@ type fakeLiveConn struct {
 
 func (f *fakeLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error { return nil }
 func (f *fakeLiveConn) ObjectAddAuthz(id, identity string) error         { return nil }
+func (f *fakeLiveConn) ObjectDel(id string) error                        { return nil }
 func (f *fakeLiveConn) BlockdevAddNBD(nodeName, host string, port int, export, tlsCreds, tlsHostname string) error {
 	return nil
 }
@@ -561,6 +562,7 @@ type stubTargetConn struct{}
 
 func (stubTargetConn) Events(ctx context.Context) (<-chan qmp.Event, error) { return nil, nil }
 func (stubTargetConn) BlockExportDel(id string) error                       { return nil }
+func (stubTargetConn) ObjectDel(id string) error                            { return nil }
 func (stubTargetConn) NBDServerStop() error                                 { return nil }
 func (stubTargetConn) Cont() error                                          { return nil }
 func (stubTargetConn) AnnounceSelf(qemu.AnnounceParameters) error           { return nil }
