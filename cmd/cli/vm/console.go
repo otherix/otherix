@@ -31,6 +31,21 @@ const escapeByte byte = 0x1D
 // memory.
 const stdinBufSize = 4096
 
+// consoleMigratedCloseCodeCLI mirrors console_stream.go's
+// consoleMigratedCloseCode (the CP's "console moved during migration"
+// application close code). The CLI deliberately does not import server
+// packages (it re-declares the error envelope too); keep these in sync.
+const consoleMigratedCloseCodeCLI = websocket.StatusCode(4002)
+
+// consoleCloseHint returns an operator-facing hint for a WS close code,
+// or "" when no special handling applies.
+func consoleCloseHint(code websocket.StatusCode) string {
+	if code == consoleMigratedCloseCodeCLI {
+		return "console moved during migration; reconnect with 'otherix vm console <vm>'"
+	}
+	return ""
+}
+
 // newConsoleCommand returns `otherix vm console <vm-name>`. The
 // subcommand drops the operator into the VM's serial console via a
 // WebSocket session opened against the CP's `vms.console` ticket.
@@ -106,14 +121,31 @@ func runConsole(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
+	var wsErrMu sync.Mutex
+	var wsErr error
+	reportWSErr := func(err error) {
+		wsErrMu.Lock()
+		if wsErr == nil {
+			wsErr = err
+		}
+		wsErrMu.Unlock()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pumpWebSocketToStdout(ctx, &wg, cancel, wsConn)
+	go pumpWebSocketToStdout(ctx, &wg, cancel, wsConn, reportWSErr)
 	go pumpStdinToWebSocket(ctx, &wg, cancel, wsConn, fd, oldState, restore, stderr)
 
 	wg.Wait()
 	_ = wsConn.Close(websocket.StatusNormalClosure, "")
 	restore()
+	wsErrMu.Lock()
+	finalErr := wsErr
+	wsErrMu.Unlock()
+	if hint := consoleCloseHint(websocket.CloseStatus(finalErr)); hint != "" {
+		_, _ = fmt.Fprintln(stderr, hint)
+		return fmt.Errorf("console session moved during migration")
+	}
 	_, _ = fmt.Fprintln(stderr, "session ended.")
 	return nil
 }
@@ -204,15 +236,17 @@ func newTerminalRestorer(fd int, oldState *term.State) func() {
 // pumpWebSocketToStdout copies binary frames received from the
 // WebSocket to stdout. First failure cancels the shared context so
 // the stdin pump unwinds promptly.
-func pumpWebSocketToStdout(ctx context.Context, wg *sync.WaitGroup, cancel context.CancelFunc, wsConn *websocket.Conn) {
+func pumpWebSocketToStdout(ctx context.Context, wg *sync.WaitGroup, cancel context.CancelFunc, wsConn *websocket.Conn, report func(error)) {
 	defer wg.Done()
 	defer cancel()
 	for {
 		_, data, err := wsConn.Read(ctx)
 		if err != nil {
+			report(err)
 			return
 		}
 		if _, werr := os.Stdout.Write(data); werr != nil {
+			report(werr)
 			return
 		}
 	}
