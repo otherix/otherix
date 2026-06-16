@@ -151,6 +151,42 @@ func TestRecoverIncoming_Paused(t *testing.T) {
 	}
 }
 
+// TestRecoverIncoming_PreResumeStatesReaped reaps an orphaned incoming in ANY
+// definitive pre-resume qemu run-state, not just "paused". A target agent killed
+// mid-incoming leaves the qemu in "inmigrate" (still receiving the RAM stream) -
+// the common real orphan - which must be reaped exactly like "paused"; only
+// "running" (the resumed post-cutover guest) is promoted. Confirmed empirically:
+// an -incoming qemu reports run-state "inmigrate" until cont flips it to
+// "running".
+func TestRecoverIncoming_PreResumeStatesReaped(t *testing.T) {
+	for _, runState := range []string{"inmigrate", "paused", "prelaunch", "finish-migrate"} {
+		t.Run(runState, func(t *testing.T) {
+			cfg, poolRoot, _ := newTestConfig(t)
+			withProbeIncoming(t, func(string, string) incomingProbe {
+				return incomingProbe{alive: true, queried: true, runState: runState}
+			})
+			id, diskDir := seedIncomingMeta(t, cfg.StatePath, poolRoot, nil)
+			kills := withKillSpy(t)
+
+			m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			if got, ok := rawStatus(t, m, id); !ok || got != StatusFailed {
+				t.Errorf("run_state=%q: status = %v (present=%v), want failed", runState, got, ok)
+			}
+			gotKills := kills()
+			if len(gotKills) != 1 || gotKills[0] != id {
+				t.Errorf("run_state=%q: killIncoming calls = %v, want exactly [%s] (orphan must be reaped)", runState, gotKills, id)
+			}
+			if _, err := os.Stat(diskDir); err != nil {
+				t.Errorf("run_state=%q: disk dir removed on recovery: %v (must never delete)", runState, err)
+			}
+		})
+	}
+}
+
 // TestRecoverIncoming_Running promotes a post-cutover resumed guest whose status
 // write was lost: the VM goes StatusRunning, killIncoming is NOT called, and the
 // meta is persisted StatusRunning.

@@ -608,6 +608,22 @@ func (m *Manager) observedStatus(v *VM) Status {
 	}
 }
 
+// preResumeIncomingRunStates are the qemu query-status run-states that mean a
+// recovered -incoming target never resumed: the guest CPUs are stopped while the
+// migration is mid-flight or awaiting cont, so the qemu is a safe orphan to reap.
+// A target killed mid-incoming reports "inmigrate" (still receiving the RAM
+// stream) - the common real orphan; after the stream completes but before cont
+// it reports "paused". The ONLY state meaning a live resumed guest (which must be
+// promoted, never killed) is "running"; any successfully-queried state outside
+// this set (e.g. "suspended") is treated as inconclusive and left alone (fail
+// toward inaction).
+var preResumeIncomingRunStates = map[string]bool{
+	"inmigrate":      true,
+	"paused":         true,
+	"prelaunch":      true,
+	"finish-migrate": true,
+}
+
 // reconcileRecoveredIncoming reconciles one orphaned StatusMigratingIncoming VM
 // replayed at agent startup. It probes the adopted -incoming qemu and branches
 // fail-closed:
@@ -615,16 +631,17 @@ func (m *Manager) observedStatus(v *VM) Status {
 //   - qemu alive AND running: a post-cutover guest whose StatusRunning write did
 //     not survive the crash. PROMOTE - re-attach the mux and persist
 //     StatusRunning. NEVER kill (it may be the only copy and it is live).
-//   - qemu alive AND paused: a genuine orphaned incoming that never resumed. Reap
-//     the LEAK only - kill the qemu (frees the RAM + NBD ingress ports its
-//     in-process exports held) and tear down the host taps, then mark
-//     StatusFailed. LEAK the destination disk for operator / CP recovery.
+//   - qemu alive AND a pre-resume run-state (inmigrate / paused / prelaunch /
+//     finish-migrate): a genuine orphaned incoming that never resumed. Reap the
+//     LEAK only - kill the qemu (frees the RAM + NBD ingress ports its in-process
+//     exports held) and tear down the host taps, then mark StatusFailed. LEAK the
+//     destination disk for operator / CP recovery.
 //   - qemu dead / dial fails / pidfile missing: orphaned, process already gone.
 //     Tear down taps, mark StatusFailed. No qemu to kill. Leak the disk.
-//   - INCONCLUSIVE (alive, queried, but an unexpected run-state): do NOT kill.
-//     Mark StatusFailed without killing and log loudly - killing requires a
-//     POSITIVE `paused` signal or a confirmed-dead process (fail toward
-//     inaction).
+//   - INCONCLUSIVE (alive, queried, but a run-state outside the sets above, or the
+//     query failed): do NOT kill. Mark StatusFailed without killing and log
+//     loudly - killing requires a POSITIVE pre-resume signal or a confirmed-dead
+//     process (fail toward inaction).
 //
 // It NEVER calls removeAdoptedVM: deleting the destination disk on recovery
 // could destroy the only copy of a post-cutover guest. Runs inside New before
@@ -649,11 +666,11 @@ func (m *Manager) reconcileRecoveredIncoming(log *slog.Logger, v *VM) {
 				"vm", v.Name, "err", err.Error())
 		}
 
-	case probe.alive && probe.queried && probe.runState == "paused":
-		// Genuine orphaned incoming: reap the leaked paused qemu, never touch
-		// the disk.
-		log.Warn("recover: reaping orphaned paused live-migration target",
-			"vm", v.Name, "vm_id", v.ID.String(),
+	case probe.alive && probe.queried && preResumeIncomingRunStates[probe.runState]:
+		// Genuine orphaned incoming (never resumed): reap the leaked qemu, never
+		// touch the disk.
+		log.Warn("recover: reaping orphaned pre-resume live-migration target",
+			"vm", v.Name, "vm_id", v.ID.String(), "run_state", probe.runState,
 			"reason", "recovered orphaned incoming live migration")
 		m.killIncoming(v)
 		m.teardownNICs(v.NICs)
