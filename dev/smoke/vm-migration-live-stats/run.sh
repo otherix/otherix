@@ -155,9 +155,14 @@ echo "=== step 2: migrate $VM (live) $SOURCE -> $TARGET ==="
 otx vm migrate "$VM" --node "$TARGET" \
   --wait --wait-timeout "${MIGRATE_WAIT}s" \
   || fail "vm migrate (live) did not complete within ${MIGRATE_WAIT}s"
+# The cutover committed: the VM is re-pinned to the target node. This smoke's
+# subject is the STATS capture path, so it gates on the migration record +
+# stats (steps 3-4), not on guest liveness after resume - the dedicated
+# vm-migration-live smoke owns the "guest kept running" (heartbeat continuity)
+# assertion. Gating phase=running here would couple this stats smoke to the
+# target-resume path, which is a separate concern.
 assert_node "$VM" "$TARGET"
-assert_phase "$VM" running
-pass "VM migrated: current node changed to $TARGET, phase running"
+pass "VM migrated: current node changed to $TARGET (cutover committed)"
 
 # --- step 3: the migration record reached completed (live=true) --------
 echo "=== step 3: migration record -> completed (live) ==="
