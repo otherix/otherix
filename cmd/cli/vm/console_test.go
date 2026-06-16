@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/coder/websocket"
 )
 
 func TestClassifyConsoleDialError(t *testing.T) {
@@ -105,6 +107,16 @@ func TestClassifyConsoleDialError(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConsoleMigratedCloseHint(t *testing.T) {
+	t.Parallel()
+	if got := consoleCloseHint(consoleMigratedCloseCodeCLI); got == "" {
+		t.Errorf("consoleCloseHint(4002) = empty, want a reconnect hint")
+	}
+	if got := consoleCloseHint(websocket.StatusNormalClosure); got != "" {
+		t.Errorf("consoleCloseHint(normal) = %q, want empty", got)
 	}
 }
 
