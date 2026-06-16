@@ -16,6 +16,32 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
+// humanBytes renders a byte count in IEC binary units (KiB / MiB / GiB /
+// TiB). Parallels the node / pool package helpers but takes a value (the
+// migration stats counters are non-nullable int64). Used by the `migration
+// get` statistics section so operators see "2.1GiB" rather than the raw byte
+// count; the JSON output keeps the raw bytes.
+func humanBytes(n int64) string {
+	const (
+		kib int64 = 1024
+		mib       = kib * 1024
+		gib       = mib * 1024
+		tib       = gib * 1024
+	)
+	switch {
+	case n >= tib:
+		return fmt.Sprintf("%.1fTiB", float64(n)/float64(tib))
+	case n >= gib:
+		return fmt.Sprintf("%.1fGiB", float64(n)/float64(gib))
+	case n >= mib:
+		return fmt.Sprintf("%.1fMiB", float64(n)/float64(mib))
+	case n >= kib:
+		return fmt.Sprintf("%.1fKiB", float64(n)/float64(kib))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
+}
+
 const (
 	flagOutput = "output"
 	flagVM     = "vm"

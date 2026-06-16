@@ -132,14 +132,33 @@ func TestPrintMigrationText_StatsSection(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"statistics:",
-		"ram:  transferred=10737418240 total=10737418240 dirty_pages_rate=7",
-		"disk: transferred=5368709120 total=5368709120",
+		"ram:  transferred=10.0GiB total=10.0GiB dirty_pages_rate=7",
+		"disk: transferred=5.0GiB total=5.0GiB",
 		"total_time_ms: 45125",
 		"downtime_ms: 150",
 		"setup_time_ms: 1200",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0B"},
+		{512, "512B"},
+		{1024, "1.0KiB"},
+		{29021639, "27.7MiB"},
+		{5368709120, "5.0GiB"},
+		{10737418240, "10.0GiB"},
+	}
+	for _, c := range cases {
+		if got := humanBytes(c.in); got != c.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
