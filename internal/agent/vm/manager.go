@@ -219,17 +219,19 @@ type Manager struct {
 // incomingProbe is the result of probing a replayed StatusMigratingIncoming
 // VM's qemu during recovery. It is the fail-closed input to the kill decision
 // in reconcileRecoveredIncoming: the guest is reaped ONLY on a positive
-// `paused` run-state (alive && dialed && runState=="paused") or a confirmed-dead
+// `paused` run-state (alive && queried && runState=="paused") or a confirmed-dead
 // process; every other shape (running -> promote; dial/query failure or an
 // unexpected run-state -> inconclusive) must NOT kill.
 type incomingProbe struct {
 	// alive is true when the pidfile parsed and the process answers signal 0.
 	alive bool
-	// dialed is true when the QMP socket dial succeeded (only meaningful when
-	// alive). A false dialed with alive=true marks an inconclusive probe.
-	dialed bool
+	// queried is true when the QMP socket dial AND query-status both succeeded
+	// (only meaningful when alive). It is false if the dial failed OR query-status
+	// errored even though the socket dialed; a false queried with alive=true marks
+	// an inconclusive probe.
+	queried bool
 	// runState is the qemu query-status run-state ("running", "paused", ...),
-	// set only when dialed is true.
+	// set only when queried is true.
 	runState string
 }
 
@@ -247,14 +249,14 @@ var probeRecoveredIncoming = func(qmpSocket, pidFile string) incomingProbe {
 	if err != nil {
 		// Process alive but its QMP socket is unreachable: inconclusive. The
 		// caller must NOT kill on this - it lacks a positive paused signal.
-		return incomingProbe{alive: true, dialed: false}
+		return incomingProbe{alive: true, queried: false}
 	}
 	defer func() { _ = conn.Close() }()
 	runState, err := conn.QueryStatus()
 	if err != nil {
-		return incomingProbe{alive: true, dialed: false}
+		return incomingProbe{alive: true, queried: false}
 	}
-	return incomingProbe{alive: true, dialed: true, runState: runState}
+	return incomingProbe{alive: true, queried: true, runState: runState}
 }
 
 // killRecoveredIncoming terminates the leaked paused -incoming qemu of a
@@ -619,7 +621,7 @@ func (m *Manager) observedStatus(v *VM) Status {
 //     StatusFailed. LEAK the destination disk for operator / CP recovery.
 //   - qemu dead / dial fails / pidfile missing: orphaned, process already gone.
 //     Tear down taps, mark StatusFailed. No qemu to kill. Leak the disk.
-//   - INCONCLUSIVE (alive, dialed, but an unexpected run-state): do NOT kill.
+//   - INCONCLUSIVE (alive, queried, but an unexpected run-state): do NOT kill.
 //     Mark StatusFailed without killing and log loudly - killing requires a
 //     POSITIVE `paused` signal or a confirmed-dead process (fail toward
 //     inaction).
@@ -633,7 +635,7 @@ func (m *Manager) reconcileRecoveredIncoming(log *slog.Logger, v *VM) {
 	probe := m.probeIncoming(v.QMPSocket, v.PIDFile)
 
 	switch {
-	case probe.alive && probe.dialed && probe.runState == "running":
+	case probe.alive && probe.queried && probe.runState == "running":
 		// Promote: a resumed guest whose status write was lost.
 		log.Info("recover: promoting resumed live-migration target to running",
 			"vm", v.Name, "vm_id", v.ID.String())
@@ -647,14 +649,15 @@ func (m *Manager) reconcileRecoveredIncoming(log *slog.Logger, v *VM) {
 				"vm", v.Name, "err", err.Error())
 		}
 
-	case probe.alive && probe.dialed && probe.runState == "paused":
+	case probe.alive && probe.queried && probe.runState == "paused":
 		// Genuine orphaned incoming: reap the leaked paused qemu, never touch
 		// the disk.
 		log.Warn("recover: reaping orphaned paused live-migration target",
-			"vm", v.Name, "vm_id", v.ID.String())
+			"vm", v.Name, "vm_id", v.ID.String(),
+			"reason", "recovered orphaned incoming live migration")
 		m.killIncoming(v)
 		m.teardownNICs(v.NICs)
-		m.transitionVM(v.ID, StatusFailed, "recovered orphaned incoming live migration")
+		m.transitionVM(v.ID, StatusFailed, "")
 		if err := m.persistVM(v.ID); err != nil {
 			log.Warn("recover: persist reaped target meta",
 				"vm", v.Name, "err", err.Error())
@@ -664,9 +667,10 @@ func (m *Manager) reconcileRecoveredIncoming(log *slog.Logger, v *VM) {
 		// Process already gone: nothing to kill. Tear down taps, mark failed,
 		// leak the disk for recovery.
 		log.Warn("recover: orphaned live-migration target qemu already gone",
-			"vm", v.Name, "vm_id", v.ID.String())
+			"vm", v.Name, "vm_id", v.ID.String(),
+			"reason", "recovered orphaned incoming live migration; qemu gone")
 		m.teardownNICs(v.NICs)
-		m.transitionVM(v.ID, StatusFailed, "recovered orphaned incoming live migration; qemu gone")
+		m.transitionVM(v.ID, StatusFailed, "")
 		if err := m.persistVM(v.ID); err != nil {
 			log.Warn("recover: persist gone target meta",
 				"vm", v.Name, "err", err.Error())
@@ -679,8 +683,9 @@ func (m *Manager) reconcileRecoveredIncoming(log *slog.Logger, v *VM) {
 		// investigates the half-recovered qemu.
 		log.Error("recover: inconclusive probe of orphaned live-migration target; NOT killing",
 			"vm", v.Name, "vm_id", v.ID.String(),
-			"alive", probe.alive, "dialed", probe.dialed, "run_state", probe.runState)
-		m.transitionVM(v.ID, StatusFailed, "recovered orphaned incoming live migration; inconclusive probe")
+			"alive", probe.alive, "queried", probe.queried, "run_state", probe.runState,
+			"reason", "recovered orphaned incoming live migration; inconclusive probe")
+		m.transitionVM(v.ID, StatusFailed, "")
 		if err := m.persistVM(v.ID); err != nil {
 			log.Warn("recover: persist inconclusive target meta",
 				"vm", v.Name, "err", err.Error())

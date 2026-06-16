@@ -46,7 +46,9 @@ func (c *QMPClient) Close() error {
 }
 
 // QueryStatus issues query-status and returns the run-state string
-// reported by qemu (e.g. "running", "paused", "shutdown").
+// reported by qemu (e.g. "running", "paused", "shutdown"). The token is
+// qemu's lowercase RunState verbatim, so callers may equality-compare it
+// against the known run states (running/paused/shutdown/...).
 func (c *QMPClient) QueryStatus() (string, error) {
 	raw, err := c.monitor.Run([]byte(`{"execute":"query-status"}`))
 	if err != nil {

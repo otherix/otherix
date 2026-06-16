@@ -17,9 +17,20 @@ import (
 	"github.com/otherix/otherix/internal/agent/state"
 )
 
+// LOAD-BEARING INVARIANT (read before touching this package's tests):
+// withProbeIncoming and withKillSpy mutate the PACKAGE-LEVEL seams
+// probeRecoveredIncoming / killRecoveredIncoming, which New copies into the
+// Manager during construction. This is parallel-safe ONLY because no test in
+// internal/agent/vm/ calls t.Parallel(): any parallel test reaching New would
+// race the swap and restore, which previously produced a -race CI flake. Do NOT
+// add t.Parallel() to any test in this package without first converting these
+// seams to per-Manager injection (e.g. functional options passed to New).
+
 // withProbeIncoming swaps the package-level probe hook for the duration of a
 // test and restores it. The replay loop consults this hook inside New, so a
-// recovery test must script it BEFORE constructing the Manager.
+// recovery test must script it BEFORE constructing the Manager. Mutates a
+// package-level seam - see the LOAD-BEARING INVARIANT note above (no
+// t.Parallel() in this package).
 func withProbeIncoming(t *testing.T, fn func(qmpSocket, pidFile string) incomingProbe) {
 	t.Helper()
 	prev := probeRecoveredIncoming
@@ -67,7 +78,8 @@ func seedIncomingMeta(t *testing.T, stateDir, poolRoot string, nics []state.NICM
 // withKillSpy swaps the package-level killRecoveredIncoming hook for a recording
 // spy and restores it. The replay loop binds m.killIncoming to this hook inside
 // New, so a recovery test must install the spy BEFORE constructing the Manager.
-// Returns a func reporting the recorded kill ids.
+// Returns a func reporting the recorded kill ids. Mutates a package-level seam -
+// see the LOAD-BEARING INVARIANT note above (no t.Parallel() in this package).
 func withKillSpy(t *testing.T) func() []uuid.UUID {
 	t.Helper()
 	var mu sync.Mutex
@@ -104,7 +116,7 @@ func rawStatus(t *testing.T, m *Manager, id uuid.UUID) (Status, bool) {
 func TestRecoverIncoming_Paused(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
 	withProbeIncoming(t, func(string, string) incomingProbe {
-		return incomingProbe{alive: true, dialed: true, runState: "paused"}
+		return incomingProbe{alive: true, queried: true, runState: "paused"}
 	})
 
 	nicID := uuid.New()
@@ -145,7 +157,7 @@ func TestRecoverIncoming_Paused(t *testing.T) {
 func TestRecoverIncoming_Running(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
 	withProbeIncoming(t, func(string, string) incomingProbe {
-		return incomingProbe{alive: true, dialed: true, runState: "running"}
+		return incomingProbe{alive: true, queried: true, runState: "running"}
 	})
 
 	id, diskDir := seedIncomingMeta(t, cfg.StatePath, poolRoot, nil)
@@ -222,8 +234,8 @@ func TestRecoverIncoming_Dead(t *testing.T) {
 func TestRecoverIncoming_Inconclusive(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
 	withProbeIncoming(t, func(string, string) incomingProbe {
-		// Alive, but query-status failed (dialed=false) - inconclusive.
-		return incomingProbe{alive: true, dialed: false}
+		// Alive, but query-status failed (queried=false) - inconclusive.
+		return incomingProbe{alive: true, queried: false}
 	})
 
 	id, diskDir := seedIncomingMeta(t, cfg.StatePath, poolRoot, nil)
