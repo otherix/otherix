@@ -532,18 +532,38 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 // already completed it (the cutover landed), treat as success. Then finalize the
 // task success.
 func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID, migID uuid.UUID, terminal agentclient.TaskTerminal) error {
+	// Auditability for the auto-complete-vs-cancel race: if the migration was
+	// already cancelled when the source reported success, the cutover OVERRIDES the
+	// cancel (the source already handed off; the live copy is on the target). Log
+	// the supersede so the cancelled->completed transition is not surprising. A
+	// reload error here is non-fatal - it only affects this log line, not the
+	// commit.
+	if prior, perr := st.MigrationByID(ctx, migID); perr == nil && prior.Phase == store.MigrationPhaseCancelled {
+		log.WarnContext(ctx, "cutover superseded a cancel (source already handed off; completing to target)",
+			slog.String("migration_id", migID.String()))
+	}
+
 	err := st.CommitMigrationCutover(ctx, migID)
 	if errors.Is(err, store.ErrConcurrentUpdate) {
 		reloaded, rerr := st.MigrationByID(ctx, migID)
 		if rerr != nil {
 			return fmt.Errorf("reload migration after cutover CAS loss: %v", rerr)
 		}
-		if reloaded.Phase != store.MigrationPhaseCompleted {
-			// Lost the CAS to a non-completing writer (progress update). Retry the
-			// whole drive: the migration is still mid-flight on source.
+		switch reloaded.Phase {
+		case store.MigrationPhaseCompleted:
+			// Already completed by a concurrent commit: idempotent success.
+		case store.MigrationPhaseFailed:
+			// A genuinely-failed migration must never complete; surface and stop.
+			return fmt.Errorf("cutover CAS lost to a failed migration %s; not completing", migID)
+		default:
+			// Lost the CAS to a non-completing writer - a progress update OR a
+			// too-late cancel that landed between loadCutoverState and the Txn. Retry
+			// the whole drive: the source already succeeded, so the next delivery
+			// re-enters the success arm and re-commits. loadCutoverState now lets a
+			// cancelled (or still-active) phase proceed, so the retry converges to a
+			// completed cutover (no orphaned running target).
 			return fmt.Errorf("cutover CAS lost for migration %s (phase %q); retry", migID, reloaded.Phase)
 		}
-		// Already completed by a concurrent commit: idempotent success.
 	} else if err != nil {
 		// A non-CAS cutover error (terminal migration, store fault) is retryable so
 		// the worker reconciles on the next delivery.

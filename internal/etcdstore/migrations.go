@@ -166,7 +166,20 @@ func (s *Store) loadCutoverState(ctx context.Context, migID uuid.UUID) (cutoverS
 	if cs.m.Phase == store.MigrationPhaseCompleted {
 		return cs, true, nil // idempotent reconcile: cutover already committed.
 	}
-	if isTerminalMigration(cs.m.Phase) {
+	// Point-of-no-return override. CommitMigrationCutover has exactly one caller:
+	// the source outgoing-task poll's "success" arm (handlers/migrations/run.go).
+	// A cutover is therefore committed ONLY after the source agent reported
+	// SUCCESS = the source HANDED OFF the guest (paused on source, RAM/disk
+	// transferred, target auto-resuming). Past that point the live copy is on the
+	// target and there is no source copy to roll back to. So we refuse ONLY a
+	// genuinely-FAILED migration (the source-failure path is the only writer of
+	// phase=failed; a failed push means the guest never handed off, so completing
+	// it would re-pin to a target that never received the guest). A CANCELLED
+	// migration is OVERRIDDEN and proceeds: a cancel that raced the source-success
+	// lost the race - the target is already (or imminently) running, and refusing
+	// the cutover would strand a RUNNING target while the CP records cancelled
+	// (split-brain risk). Completing to the target is the only safe outcome.
+	if cs.m.Phase == store.MigrationPhaseFailed {
 		return cs, false, store.ErrMigrationTerminal
 	}
 	if cs.m.TargetNodeID == nil {
@@ -209,8 +222,10 @@ func (s *Store) loadCutoverState(ctx context.Context, migID uuid.UUID) (cutoverS
 // store.ErrConcurrentUpdate (the worker re-reads and retries). The pinned_node
 // index move byte-matches buildBindTxn's leaf form. Terminal locks are released
 // via terminalCleanupOps. A migration already completed is a no-op (idempotent
-// reconcile); any other terminal phase, or a nil target, is an error - a
-// terminal-failed/cancelled migration must never re-pin (fail-safe-to-source).
+// reconcile); a terminal-FAILED migration, or a nil target, is an error - a
+// failed migration must never re-pin. A CANCELLED migration is OVERRIDDEN here
+// (loadCutoverState): the sole caller commits only post-source-success, so the
+// source already handed off and a cancel that raced it is too late to roll back.
 func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error {
 	cs, done, err := s.loadCutoverState(ctx, migID)
 	if err != nil {

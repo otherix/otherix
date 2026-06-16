@@ -360,52 +360,101 @@ func TestUpdateMigrationProgress_FailReleasesGuard(t *testing.T) {
 	}
 }
 
+// TestCommitMigrationCutover_FailedStaysFailed proves a genuinely-FAILED
+// migration is still refused by the cutover path and never re-pins the VM. Only
+// the source-FAILURE path sets phase=failed, and a failed source push means the
+// guest never handed off; completing it would re-pin to a target that never
+// received the guest. Cancelled is deliberately NOT covered here - a cancel that
+// raced a source-success cutover IS overridden (the source already handed off);
+// see TestCommitMigrationCutover_OverridesCancelled.
 func TestCommitMigrationCutover_FailedStaysFailed(t *testing.T) {
-	cases := []struct {
-		name  string
-		phase store.MigrationPhase
-	}{
-		{"failed", store.MigrationPhaseFailed},
-		{"cancelled", store.MigrationPhaseCancelled},
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, cli := startStore(t)
-			ctx := context.Background()
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
 
-			nodeA := nodeParams(uniqueNodeName("a"))
-			nodeB := nodeParams(uniqueNodeName("b"))
-			if _, err := s.CreateNode(ctx, nodeA); err != nil {
-				t.Fatalf("CreateNode(A): %v", err)
-			}
-			if _, err := s.CreateNode(ctx, nodeB); err != nil {
-				t.Fatalf("CreateNode(B): %v", err)
-			}
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
 
-			vm := seedPinnedVM(t, cli, nodeA.ID)
-			m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+	// Drive the migration to failed via the progress path.
+	failed := store.MigrationPhaseFailed
+	msg := "target_unreachable"
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &failed, ErrorMessage: &msg}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+	}
 
-			// Drive the migration to its terminal phase via the progress path.
-			phase := tc.phase
-			msg := "target_unreachable"
-			if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &phase, ErrorMessage: &msg}); err != nil {
-				t.Fatalf("UpdateMigrationProgress(%s): %v", tc.phase, err)
-			}
+	// Cutover on a terminal-FAILED migration must refuse and never re-pin
+	// (fail-safe-to-source, spec D3).
+	if err := s.CommitMigrationCutover(ctx, m.ID); !errors.Is(err, store.ErrMigrationTerminal) {
+		t.Errorf("CommitMigrationCutover(failed) = %v, want store.ErrMigrationTerminal", err)
+	}
 
-			// Cutover on a terminal-failed/cancelled migration must refuse and never
-			// re-pin (fail-safe-to-source, spec D3).
-			if err := s.CommitMigrationCutover(ctx, m.ID); !errors.Is(err, store.ErrMigrationTerminal) {
-				t.Errorf("CommitMigrationCutover(%s) = %v, want store.ErrMigrationTerminal", tc.phase, err)
-			}
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v (failed migration never moves the pin)", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
 
-			gotVM, err := s.VMByID(ctx, vm.ID)
-			if err != nil {
-				t.Fatalf("VMByID: %v", err)
-			}
-			if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
-				t.Errorf("PinnedNodeID = %v, want unchanged nodeA %v (failed migration never moves the pin)", gotVM.PinnedNodeID, nodeA.ID)
-			}
-		})
+// TestCommitMigrationCutover_OverridesCancelled is the core of the
+// auto-complete-vs-cancel race fix. The cutover's sole caller commits ONLY after
+// the source agent task reports SUCCESS - the point of no return where the source
+// has handed off the guest (paused on source, RAM/disk transferred, target
+// resuming). If an operator cancel raced into that window (migration->cancelled),
+// the live copy is already on the target; refusing the cutover would strand a
+// RUNNING target with the CP recording cancelled (split-brain risk). So a cutover
+// OVERRIDES a cancelled migration: it completes to the target. A genuine
+// pre-switchover cancel is unaffected (the source task reports failed/cancelled,
+// the worker never reaches the success arm, no cutover happens).
+func TestCommitMigrationCutover_OverridesCancelled(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+
+	// A too-late operator cancel lands while the target is already resuming.
+	if _, err := s.CancelMigration(ctx, m.ID, "operator_cancel"); err != nil {
+		t.Fatalf("CancelMigration: %v", err)
+	}
+
+	// The source-success cutover must OVERRIDE the cancel and complete to target.
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover(cancelled) = %v, want nil (override the too-late cancel)", err)
+	}
+
+	gotM, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if gotM.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed (cutover overrides cancel)", gotM.Phase)
+	}
+
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeB.ID {
+		t.Errorf("PinnedNodeID = %v, want target nodeB %v (no orphaned running target)", gotVM.PinnedNodeID, nodeB.ID)
 	}
 }
 

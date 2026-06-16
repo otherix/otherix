@@ -132,6 +132,12 @@ type fakeMigrationAgent struct {
 	terminal agentclient.TaskTerminal
 	pollErr  error
 
+	// pollHook, when set, runs inside PollTask (before it returns terminal) so a
+	// test can inject a mid-flight state change between drive-start and the
+	// source-success cutover - e.g. a too-late operator cancel that races the
+	// auto-resume of the target. Runs OUTSIDE the agent's lock.
+	pollHook func()
+
 	// startTargetErr / deleteSourceErr stage post-cutover convergence failures so a
 	// test can prove the worker logs-and-continues (never fails the committed migration).
 	startTargetErr  error
@@ -177,12 +183,18 @@ func (f *fakeMigrationAgent) StartOutgoingMigration(_ context.Context, _, _ stri
 
 func (f *fakeMigrationAgent) PollTask(_ context.Context, _ string, _ uuid.UUID) (agentclient.TaskTerminal, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.pollCalls++
-	if f.pollErr != nil {
-		return agentclient.TaskTerminal{}, f.pollErr
+	pollErr := f.pollErr
+	hook := f.pollHook
+	terminal := f.terminal
+	f.mu.Unlock()
+	if pollErr != nil {
+		return agentclient.TaskTerminal{}, pollErr
 	}
-	return f.terminal, nil
+	if hook != nil {
+		hook()
+	}
+	return terminal, nil
 }
 
 func (f *fakeMigrationAgent) StartVMOnTarget(_ context.Context, _, _ string) error {
@@ -633,6 +645,67 @@ func TestRunMigration_HappyNodeless(t *testing.T) {
 	}
 	if agent.deleteSourceCalls != 1 {
 		t.Errorf("DeleteVMOnSource calls = %d, want 1 (post-cutover cleanup)", agent.deleteSourceCalls)
+	}
+}
+
+// TestRunMigration_SourceSuccessOverridesRacedCancel proves the
+// auto-complete-vs-cancel race fix at the WORKER seam (the real drive sequence).
+// A live migration's target QEMU auto-resumes the guest the instant the RAM
+// stream completes - autonomously, before the CP commits the cutover. If an
+// operator `migration cancel` lands in that window (here injected via pollHook,
+// firing right before the source reports SUCCESS), the migration is marked
+// cancelled. The source-success cutover MUST override the cancel and complete to
+// the target, otherwise the VM is left RUNNING on the target while the CP records
+// cancelled (split-brain risk). Assert: migration -> completed, VM re-pinned to
+// the target, the source's stale copy deleted (post-cutover convergence ran).
+func TestRunMigration_SourceSuccessOverridesRacedCancel(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	// The too-late cancel: it lands while the target is already (auto-)resuming,
+	// just before the source push reports success. After this, the migration is
+	// terminal-cancelled - but the source has already handed off.
+	agent.pollHook = func() {
+		if _, err := s.CancelMigration(ctx, m.ID, "operator_cancel"); err != nil {
+			t.Errorf("CancelMigration(raced): %v", err)
+		}
+	}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(raced-cancel) = %v, want nil (cutover overrides the too-late cancel)", err)
+	}
+
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("migration phase = %q, want completed (cutover overrides the raced cancel)", got.Phase)
+	}
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeB.ID {
+		t.Errorf("PinnedNodeID = %v, want target %v (no orphaned running target)", gotVM.PinnedNodeID, nodeB.ID)
+	}
+	// Post-cutover convergence ran: the source's stale copy is deleted.
+	if agent.deleteSourceCalls != 1 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 1 (committed cutover converges)", agent.deleteSourceCalls)
 	}
 }
 
