@@ -92,8 +92,8 @@ func printNodeTable(cmd *cobra.Command, nodes cpclient.NodeList, showIDs bool) {
 		}
 	}
 	_ = tw.Flush()
-	if nodes.Meta.NextCursor != nil && *nodes.Meta.NextCursor != "" {
-		printf(cmd, "next_cursor: %s\n", *nodes.Meta.NextCursor)
+	if nodes.Meta.NextCursor != nil {
+		printNextCursor(cmd, *nodes.Meta.NextCursor)
 	}
 }
 

@@ -106,8 +106,8 @@ func printPoolTable(cmd *cobra.Command, pools cpclient.PoolList, showIDs bool) {
 		}
 	}
 	_ = tw.Flush()
-	if pools.Meta.NextCursor != nil && *pools.Meta.NextCursor != "" {
-		printf(cmd, "next_cursor: %s\n", *pools.Meta.NextCursor)
+	if pools.Meta.NextCursor != nil {
+		printNextCursor(cmd, *pools.Meta.NextCursor)
 	}
 }
 

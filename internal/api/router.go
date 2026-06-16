@@ -193,7 +193,13 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
 	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.VMLifecycle, deps.VMConsole)
-	migH := migrationshandlers.New(deps.Store, deps.Logger)
+	// The sync-lifecycle agent client (production: *agentclient.Client) also
+	// satisfies the migrations cancel seam; assert to it so a CP-side cancel
+	// best-effort propagates to the source + target agents. A nil / non-matching
+	// client (agent router passes a zero LifecycleDeps) yields nil, which the
+	// handler treats as "skip propagation" (the cancel still succeeds).
+	migCancelClient, _ := deps.VMLifecycle.AgentClient.(migrationshandlers.MigrationCancelClient)
+	migH := migrationshandlers.New(deps.Store, migCancelClient, deps.Logger)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)

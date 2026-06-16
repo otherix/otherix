@@ -34,6 +34,9 @@ type JobSource interface {
 	// RequeueJob returns a running job to pending without an attempt bump, used
 	// on the graceful-shutdown path (a deploy is not a real failure).
 	RequeueJob(ctx context.Context, id int64) error
+	// RenewJobLease refreshes a running job's lease; false means the renewer must
+	// stop (the job is gone, no longer running, or lost a compare race).
+	RenewJobLease(ctx context.Context, id int64) (bool, error)
 }
 
 // bookkeepingTimeout bounds the post-handler queue bookkeeping run on a context
@@ -58,12 +61,13 @@ type registration struct {
 // pool. Handlers may block for a long time (agent polling), so jobs run
 // concurrently; the pool cap bounds in-flight work.
 type Dispatcher struct {
-	src      JobSource
-	log      *slog.Logger
-	interval time.Duration
-	handlers map[string]registration
-	sem      chan struct{}
-	wg       sync.WaitGroup
+	src           JobSource
+	log           *slog.Logger
+	interval      time.Duration
+	renewInterval time.Duration
+	handlers      map[string]registration
+	sem           chan struct{}
+	wg            sync.WaitGroup
 }
 
 // NewDispatcher constructs a Dispatcher polling src every interval, running at
@@ -77,11 +81,12 @@ func NewDispatcher(src JobSource, log *slog.Logger, interval time.Duration, maxC
 		maxConcurrent = 16
 	}
 	return &Dispatcher{
-		src:      src,
-		log:      log,
-		interval: interval,
-		handlers: make(map[string]registration),
-		sem:      make(chan struct{}, maxConcurrent),
+		src:           src,
+		log:           log,
+		interval:      interval,
+		renewInterval: etcdstore.JobLeaseRenewInterval,
+		handlers:      make(map[string]registration),
+		sem:           make(chan struct{}, maxConcurrent),
 	}
 }
 
@@ -160,6 +165,10 @@ func (d *Dispatcher) drain(ctx context.Context) {
 // these writes land. The bg context is bounded by bookkeepingTimeout so teardown
 // is not blocked indefinitely.
 func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registration) {
+	done := make(chan struct{})
+	defer close(done)
+	d.startRenewer(ctx, j.ID, done)
+
 	herr := reg.handler(ctx, j.Args)
 	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer cancel()
@@ -186,4 +195,36 @@ func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registrat
 			d.log.ErrorContext(bg, "worker dispatcher: complete failed", "job_id", j.ID, "error", err)
 		}
 	}
+}
+
+// startRenewer spawns a goroutine that renews job id's lease every renewInterval
+// while the handler runs, keeping crash-reclaim time independent of handler
+// duration (a long migration never crosses the lease). The renew runs on
+// context.WithoutCancel(ctx) so a graceful-shutdown cancel does not stop renewing
+// an in-flight job (mirroring the post-handler bookkeeping). The goroutine stops
+// when done closes (handler returned) or RenewJobLease reports the lease is no
+// longer ours. It is tracked on the WaitGroup so it cannot outlive shutdown.
+func (d *Dispatcher) startRenewer(ctx context.Context, id int64, done <-chan struct{}) {
+	renewCtx := context.WithoutCancel(ctx)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		t := time.NewTicker(d.renewInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				ok, err := d.src.RenewJobLease(renewCtx, id)
+				if err != nil {
+					d.log.WarnContext(renewCtx, "worker dispatcher: renew lease failed", "job_id", id, "error", err)
+					continue
+				}
+				if !ok {
+					return
+				}
+			}
+		}
+	}()
 }

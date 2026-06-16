@@ -150,8 +150,8 @@ func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {
 		}
 	}
 	_ = tw.Flush()
-	if vms.Meta.NextCursor != nil && *vms.Meta.NextCursor != "" {
-		printf(cmd, "next_cursor: %s\n", *vms.Meta.NextCursor)
+	if vms.Meta.NextCursor != nil {
+		printNextCursor(cmd, *vms.Meta.NextCursor)
 	}
 }
 

@@ -85,7 +85,7 @@ func printJoinTokenTable(cmd *cobra.Command, tokens cpclient.JoinTokenList) {
 		)
 	}
 	_ = tw.Flush()
-	if tokens.Meta.NextCursor != nil && *tokens.Meta.NextCursor != "" {
-		printf(cmd, "next_cursor: %s\n", *tokens.Meta.NextCursor)
+	if tokens.Meta.NextCursor != nil {
+		printNextCursor(cmd, *tokens.Meta.NextCursor)
 	}
 }

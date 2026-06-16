@@ -8,7 +8,9 @@ package etcdstore_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
@@ -87,6 +89,10 @@ func TestJobRetryAndFail(t *testing.T) {
 	if len(again) != 1 || again[0].Attempts != 1 {
 		t.Fatalf("after retry pending = %+v, want one with attempts=1", again)
 	}
+	// A requeued (pending) row carries no live lease.
+	if again[0].ClaimedAt != nil {
+		t.Errorf("requeued job ClaimedAt = %v, want nil", again[0].ClaimedAt)
+	}
 
 	// Claim + retry again: attempts reaches 2 == max => failed, not pending.
 	if _, err := s.ClaimJob(ctx, job.ID); err != nil {
@@ -124,6 +130,10 @@ func TestRequeueJob(t *testing.T) {
 			found = true
 			if j.Attempts != 0 {
 				t.Errorf("attempts bumped on requeue: %d, want 0", j.Attempts)
+			}
+			// A requeued (pending) row carries no live lease.
+			if j.ClaimedAt != nil {
+				t.Errorf("requeued job ClaimedAt = %v, want nil", j.ClaimedAt)
 			}
 		}
 	}
@@ -208,6 +218,97 @@ func TestPendingJobsQuarantinesUndecodableKey(t *testing.T) {
 	}
 	if len(resp.Kvs) != 1 {
 		t.Errorf("poison key count = %d, want 1 (must not be deleted)", len(resp.Kvs))
+	}
+}
+
+// TestClaimJobStampsClaimedAt pins that ClaimJob records a recent ClaimedAt when
+// it flips a pending job to running - the timestamp the lease reaper reads.
+func TestClaimJobStampsClaimedAt(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+	job := mustPending(t, s)[0]
+	if job.ClaimedAt != nil {
+		t.Errorf("pending job ClaimedAt = %v, want nil", job.ClaimedAt)
+	}
+
+	before := time.Now().UTC()
+	if ok, err := s.ClaimJob(ctx, job.ID); err != nil || !ok {
+		t.Fatalf("ClaimJob = (%v, %v), want claimed", ok, err)
+	}
+
+	var got etcdstore.Job
+	if _, err := cli.GetJSON(ctx, etcd.Key("jobs", fmt.Sprintf("%020d", job.ID)), &got); err != nil {
+		t.Fatalf("read claimed job: %v", err)
+	}
+	if got.ClaimedAt == nil {
+		t.Fatalf("claimed job ClaimedAt = nil, want a recent timestamp")
+	}
+	if got.ClaimedAt.Before(before) || got.ClaimedAt.After(time.Now().UTC().Add(time.Minute)) {
+		t.Errorf("claimed job ClaimedAt = %v, want ~now", got.ClaimedAt)
+	}
+}
+
+// TestRenewJobLease pins the worker-side lease renewal: a running job's ClaimedAt
+// advances and the call returns true; a pending/un-claimed job and a missing job
+// both return false (the renewer must stop).
+func TestRenewJobLease(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	readClaimedAt := func(id int64) *time.Time {
+		var j etcdstore.Job
+		if _, err := cli.GetJSON(ctx, etcd.Key("jobs", fmt.Sprintf("%020d", id)), &j); err != nil {
+			t.Fatalf("read job %d: %v", id, err)
+		}
+		return j.ClaimedAt
+	}
+
+	p := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, p, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+	job := mustPending(t, s)[0]
+
+	// Pending (un-claimed) job: renew is a no-op, returns false.
+	ok, err := s.RenewJobLease(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("RenewJobLease(pending) error = %v", err)
+	}
+	if ok {
+		t.Errorf("RenewJobLease(pending) = true, want false")
+	}
+
+	// Missing job: returns false.
+	ok, err = s.RenewJobLease(ctx, 9_999_999)
+	if err != nil {
+		t.Fatalf("RenewJobLease(missing) error = %v", err)
+	}
+	if ok {
+		t.Errorf("RenewJobLease(missing) = true, want false")
+	}
+
+	// Claim it (stamps ClaimedAt), then renew advances ClaimedAt and returns true.
+	if claimed, err := s.ClaimJob(ctx, job.ID); err != nil || !claimed {
+		t.Fatalf("ClaimJob = (%v, %v), want claimed", claimed, err)
+	}
+	first := readClaimedAt(job.ID)
+	if first == nil {
+		t.Fatal("ClaimedAt nil after claim")
+	}
+	time.Sleep(5 * time.Millisecond)
+	ok, err = s.RenewJobLease(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("RenewJobLease(running) error = %v", err)
+	}
+	if !ok {
+		t.Errorf("RenewJobLease(running) = false, want true")
+	}
+	second := readClaimedAt(job.ID)
+	if second == nil || !second.After(*first) {
+		t.Errorf("ClaimedAt did not advance: first=%v second=%v", first, second)
 	}
 }
 

@@ -310,10 +310,11 @@ func (m *Manager) incomingDiskPath(v *VM, d MigrationDisk) string {
 // runIncomingResume drives the target-side live-migration resume: it dials the
 // paused -incoming qemu and runs RunLiveTarget (wait incoming completed -> drop
 // every writable export -> cont). On success the guest is running from the
-// transferred RAM: flip the VM to StatusRunning, attach the serial mux so the
-// resumed console persists, release the migration port pair, and mark the
-// record completed. On failure there is no fall-back to the source (it is
-// already released): mark the VM StatusFailed and the record failed.
+// transferred RAM: flip the VM to StatusRunning, mark the record completed at
+// cont success (closing the post-cont cancel window), then announce/GARP the new
+// location, persist meta, attach the serial mux so the resumed console persists,
+// and release the migration port pair. On failure there is no fall-back to the
+// source (it is already released): mark the VM StatusFailed and the record failed.
 func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vmID uuid.UUID, ram, nbd int) {
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
@@ -346,6 +347,17 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 
 	m.transitionVM(v.ID, StatusRunning, "")
 
+	// Stamp the record completed at cont success: the guest is now running from
+	// the transferred RAM, so the migration IS done - the steps below
+	// (announce/GARP/persist/mux) are best-effort decorations. Marking terminal
+	// here closes the post-cont cancel window: a CancelMigration arriving after
+	// the guest resumed finds Terminal()==true and cancelLive no-ops, instead of
+	// taking the pre-cutover reap arm that would kill the now-live guest.
+	m.migrations.Update(migrationID, func(r *migration.Record) {
+		r.Phase = migration.PhaseCompleted
+		r.CompletedAt = time.Now().UTC()
+	})
+
 	// Tell the L2 segment the guest moved here: QEMU self-announce (RARP, MAC-only,
 	// IP-independent) so a physical switch / learning bridge relearns the port on
 	// this node. The PRIMARY cutover for type=bridge NICs; harmless belt-and-
@@ -377,10 +389,6 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 		m.log.Warn("incoming resume: attach mux failed", "vm", v.Name, "err", err)
 	}
 	m.migPorts.ReleasePair(ram, nbd)
-	m.migrations.Update(migrationID, func(r *migration.Record) {
-		r.Phase = migration.PhaseCompleted
-		r.CompletedAt = time.Now().UTC()
-	})
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
 }
 
@@ -541,6 +549,21 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		return
 	}
 
+	// Fail-safe defense-in-depth before the IRREVERSIBLE source teardown: the
+	// source qemu is the ONLY copy of the VM until the target takes over, so a
+	// false completion (a RunLiveSource completion-detection bug - it keys on the
+	// QMP MIGRATION status EVENT) would force-kill the only copy and LOSE the VM.
+	// Independently confirm convergence with a direct query-migrate on the still-
+	// open source conn. If it is not "completed" (or the query errors), DO NOT
+	// tear down the source: fail the migration so the source qemu + VM SURVIVE
+	// (fail-safe-to-source; the VM is never lost). A healthy migration is
+	// "completed" here (the common case) and is unaffected.
+	info, qerr := conn.QueryMigrate()
+	if qerr != nil || info.Status != "completed" {
+		fail("convergence_failed", fmt.Sprintf("post-migration query-migrate not 'completed' (status=%q, err=%v); keeping source qemu (never destroy the only copy)", info.Status, qerr))
+		return
+	}
+
 	// The guest is now running on the target. Tear down the departed source VM
 	// NOW (before reporting success) so a reverse migration back to this node
 	// adopts cleanly instead of racing the CP's slow async DeleteVMOnSource.
@@ -685,6 +708,32 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 	}
 
 	if rec.Role == migration.RoleTarget {
+		// Defense-in-depth on the TRUE invariant ("never reap a running guest"):
+		// CancelMigration passes a STALE record snapshot, and the P1b stamp-move
+		// only narrows the window where that snapshot's Terminal() is false while
+		// the resume goroutine has already cont'd the guest. Read the IN-MEMORY
+		// status (not m.Get, which probes the pidfile and would misreport under
+		// fakes / supervision races) and refuse the reap when the incoming guest is
+		// already StatusRunning - the cont happened, so this is a post-cutover guest
+		// whose dest disk may be the only copy. Fix Risk Gate: killing it is
+		// irreversible; a no-op refusal of a wrongly-timed cancel is recoverable via
+		// normal VM lifecycle. This does NOT block a legitimate pre-cont cancel: an
+		// adopted incoming VM sits at StatusMigratingIncoming (paused) until
+		// transitionVM flips it to StatusRunning AFTER cont, so a real pre-cutover
+		// target is never StatusRunning here.
+		//
+		// KNOWN RESIDUAL (accepted, follow-up): this reads the CACHED status, which
+		// lags the qemu cont by a sub-microsecond, no-I/O window in runIncomingResume
+		// (cont inside migRunLiveTarget -> transitionVM(StatusRunning)). A cancel that
+		// executes this read in that exact gap sees StatusMigratingIncoming and reaps a
+		// guest qemu has already resumed - theoretical VM loss if the source already
+		// self-destroyed. Astronomically narrow and PRE-EXISTING (not the CP-side
+		// auto-complete-vs-cancel race, which is closed at the control plane). To fully
+		// eliminate, make this guard read the LIVE qemu run-state (query-status) rather
+		// than the cached status.
+		if st, ok := m.vmStatus(rec.VMID); ok && st == StatusRunning {
+			return m.GetMigration(id)
+		}
 		// Full pre-cutover reap: kill the incoming qemu, free the pair, remove the
 		// adopted VM, reap the record. (The previous body released the ports while
 		// the incoming qemu still held them - the "address already in use" leak.)

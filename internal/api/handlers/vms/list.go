@@ -5,8 +5,6 @@ package vms
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -15,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
+	"github.com/otherix/otherix/internal/api/pagination"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -284,32 +283,23 @@ type cursorParams struct {
 // parseCursor decodes the opaque cursor from ?cursor. Empty cursor
 // returns zero-valued cursorParams (first page).
 func parseCursor(w http.ResponseWriter, r *http.Request) (cursorParams, bool) {
-	raw := r.URL.Query().Get("cursor")
-	if raw == "" {
-		return cursorParams{}, true
-	}
-	bytes, err := base64.URLEncoding.DecodeString(raw)
+	cur, err := pagination.Decode(r.URL.Query().Get("cursor"))
 	if err != nil {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "cursor is not valid base64", nil)
-		return cursorParams{}, false
-	}
-	var c listCursor
-	if err := json.Unmarshal(bytes, &c); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "cursor is malformed", nil)
 		return cursorParams{}, false
 	}
-	ts := c.CreatedAt
-	id := c.ID
+	if cur == nil {
+		return cursorParams{}, true
+	}
+	ts := cur.CreatedAt
+	id := cur.ID
 	return cursorParams{cursorTs: &ts, cursorID: &id}, true
 }
 
-// encodeCursor base64-URL-encodes a JSON cursor.
+// encodeCursor base64url-encodes the compact (created_at, id) cursor via the
+// shared pagination codec. The error return is kept for the caller's existing
+// signature; pagination.Encode never fails.
 func encodeCursor(c listCursor) (string, error) {
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(raw), nil
+	return pagination.Encode(&pagination.Cursor{CreatedAt: c.CreatedAt, ID: c.ID}), nil
 }

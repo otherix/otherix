@@ -57,6 +57,27 @@ func TestPrintMigrationTableNamesAndShortID(t *testing.T) {
 	}
 }
 
+// TestPrintMigrationTableNextCursorHint covers the paginated footer: a non-empty
+// cursor renders a copy-pasteable next-page command (NOT a bare "next_cursor:
+// <blob>"), and the last page (empty cursor) prints no footer.
+func TestPrintMigrationTableNextCursorHint(t *testing.T) {
+	const cursor = "eyJjcmVhdGVkX2F0IjoiMjAyNiJ9"
+	withCursor := renderMigrationTable(t, []cpclient.Migration{{ID: "abcdef0123456789", Phase: "completed"}}, cursor)
+	if strings.Contains(withCursor, "next_cursor:") {
+		t.Errorf("table still prints the raw 'next_cursor:' blob:\n%s", withCursor)
+	}
+	for _, want := range []string{"More results", "--cursor " + cursor} {
+		if !strings.Contains(withCursor, want) {
+			t.Errorf("next-page hint missing %q:\n%s", want, withCursor)
+		}
+	}
+
+	lastPage := renderMigrationTable(t, []cpclient.Migration{{ID: "abcdef0123456789", Phase: "completed"}}, "")
+	if strings.Contains(lastPage, "More results") || strings.Contains(lastPage, "--cursor") {
+		t.Errorf("last page (empty cursor) must print no next-page hint:\n%s", lastPage)
+	}
+}
+
 // headerHasColumns checks the first output line contains every column label,
 // tolerant of tabwriter space padding.
 func headerHasColumns(out string, cols ...string) bool {

@@ -31,6 +31,14 @@ import (
 type fakeLiveConn struct {
 	migrateCancelled bool
 	blockJobCancels  []string
+	// migrateStatus is what QueryMigrate reports. The zero value ("") is
+	// interpreted as "completed" so a bare &fakeLiveConn{} models a healthy,
+	// converged migration; a test exercising the post-migration convergence
+	// guard sets a non-completed status (e.g. "active", "failed") explicitly.
+	migrateStatus string
+	// queryMigrateErr, when set, makes QueryMigrate fail (the guard treats a
+	// query error the same as a non-completed status: keep the source).
+	queryMigrateErr error
 }
 
 func (f *fakeLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error { return nil }
@@ -57,8 +65,18 @@ func (f *fakeLiveConn) MigrateCancel() error {
 	f.migrateCancelled = true
 	return nil
 }
-func (f *fakeLiveConn) BlockdevDel(nodeName string) error       { return nil }
-func (f *fakeLiveConn) QueryMigrate() (qemu.MigrateInfo, error) { return qemu.MigrateInfo{}, nil }
+func (f *fakeLiveConn) BlockdevDel(nodeName string) error { return nil }
+func (f *fakeLiveConn) QueryMigrate() (qemu.MigrateInfo, error) {
+	if f.queryMigrateErr != nil {
+		return qemu.MigrateInfo{}, f.queryMigrateErr
+	}
+	status := f.migrateStatus
+	if status == "" {
+		status = "completed"
+	}
+	return qemu.MigrateInfo{Status: status}, nil
+}
+
 func (f *fakeLiveConn) QueryBlockJobs() ([]qemu.BlockJobInfo, error) {
 	return []qemu.BlockJobInfo{}, nil
 }
@@ -1071,6 +1089,254 @@ func TestRunOutgoingLive_SuccessTearsDownSource(t *testing.T) {
 	rec, ok := m.Migrations().Get(migID)
 	if !ok || rec.Phase != migration.PhaseCompleted {
 		t.Errorf("record = %+v, want phase completed", rec)
+	}
+}
+
+// TestRunOutgoingLive_GuardConfirmsCompletedBeforeTeardown is the happy-path
+// teeth for the convergence guard: migRunLiveSource returns nil AND the direct
+// query-migrate reports "completed", so the guard passes and the departed source
+// is torn down (VM gone, disk dir removed), the task reaches success. This proves
+// the common case is unaffected by the guard. (The unit-fake killQEMU is a quiet
+// no-op on the missing pidfile, so source teardown is observed via the VM record
+// being removed + the disk dir gone, exactly as the existing teardown tests do.)
+func TestRunOutgoingLive_GuardConfirmsCompletedBeforeTeardown(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
+		return nil
+	}
+	// Explicit "completed" status from the post-migration query-migrate.
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		return &fakeLiveConn{migrateStatus: "completed"}, nil
+	}
+
+	migID := uuid.New()
+	task, err := m.StartOutgoing(context.Background(), OutgoingSpec{
+		MigrationID:    migID,
+		VMUUID:         v.ID,
+		VMName:         v.Name,
+		Mode:           "live",
+		TargetEndpoint: "10.0.0.2:49152",
+		NBDEndpoint:    "10.0.0.2:49153",
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		AuthToken:      migID.String(),
+	})
+	if err != nil {
+		t.Fatalf("StartOutgoing(live) error = %v", err)
+	}
+
+	waitPhase(t, m, migID, "completed")
+
+	// Guard passed: the departed source was torn down (VM gone, disk removed).
+	if _, err := m.Get(v.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after confirmed completion, Get(%s) = %v, want ErrNotFound (source torn down)", v.ID, err)
+	}
+	if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
+		t.Errorf("source disk dir still present after confirmed completion: %v (want torn down)", err)
+	}
+
+	tk := m.tasks.Get(task.ID)
+	if tk == nil || tk.Status != TaskStatusSuccess {
+		t.Errorf("task = %v, want status success", tk)
+	}
+}
+
+// TestRunOutgoingLive_GuardKeepsSourceOnFalseCompletion is the never-lose-the-VM
+// teeth: migRunLiveSource returns nil (claims success) BUT the direct
+// query-migrate reports a non-completed status. The guard must REFUSE to tear
+// down the source - the source VM record + disk must survive - and the task must
+// be finalized FAILED (fail-safe-to-source). Revert-to-confirm: removing the
+// guard from runOutgoingLive makes this test see the source torn down (VM gone,
+// disk removed) and the task success.
+func TestRunOutgoingLive_GuardKeepsSourceOnFalseCompletion(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	// RunLiveSource claims success (nil) - the completion-detection bug case.
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
+		return nil
+	}
+	// But the independent query-migrate disagrees: status is "active", not
+	// "completed". The guard must keep the source.
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		return &fakeLiveConn{migrateStatus: "active"}, nil
+	}
+
+	migID := uuid.New()
+	task, err := m.StartOutgoing(context.Background(), OutgoingSpec{
+		MigrationID:    migID,
+		VMUUID:         v.ID,
+		VMName:         v.Name,
+		Mode:           "live",
+		TargetEndpoint: "10.0.0.2:49152",
+		NBDEndpoint:    "10.0.0.2:49153",
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		AuthToken:      migID.String(),
+	})
+	if err != nil {
+		t.Fatalf("StartOutgoing(live) error = %v", err)
+	}
+
+	waitPhase(t, m, migID, "failed")
+
+	// The source VM must SURVIVE - this is the never-destroy-the-only-copy
+	// invariant. It must still be present in the manager and its disk dir intact.
+	if _, err := m.Get(v.ID); err != nil {
+		t.Errorf("source VM removed on false completion: Get(%s) = %v, want it kept (the only copy must not be destroyed)", v.ID, err)
+	}
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("source disk dir removed on false completion: %v (must be kept)", err)
+	}
+
+	// The task must be finalized FAILED.
+	tk := m.tasks.Get(task.ID)
+	if tk == nil || tk.Status != TaskStatusFailed {
+		t.Errorf("task = %v, want status failed (fail-safe-to-source)", tk)
+	}
+}
+
+// cancelInWindowConn fires a cancel from inside AnnounceSelf, which
+// runIncomingResume calls AFTER it flips the guest to StatusRunning but (in the
+// pre-fix ordering) BEFORE it stamps the record terminal. This deterministically
+// lands a CancelMigration inside the post-cont window the P1b fix closes.
+type cancelInWindowConn struct {
+	stubTargetConn
+	cancel func()
+}
+
+func (c *cancelInWindowConn) AnnounceSelf(qemu.AnnounceParameters) error {
+	c.cancel()
+	return nil
+}
+
+// TestRunIncomingResume_PostContCancelNoOps is the teeth for P1b: a cancel that
+// arrives AFTER the target guest resumed (cont done, VM StatusRunning) must
+// no-op, never reap the now-live guest. It drives the REAL runIncomingResume and
+// the REAL CancelMigration entry; the cancel is fired from inside the post-resume
+// AnnounceSelf step, landing in the exact window. Pre-fix the record is not yet
+// terminal at that point, so cancelLive takes the target reap arm
+// (teardownIncomingTarget -> killQEMU + removeAdoptedVM) and destroys the live
+// guest: the VM disappears (Get returns ErrNotFound) and its disk dir is removed.
+// Post-fix the record is already PhaseCompleted, so cancelLive no-ops.
+func TestRunIncomingResume_PostContCancelNoOps(t *testing.T) {
+	m := newTestManager(t)
+
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	migID := uuid.New()
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair: %v", err)
+	}
+	m.migrations.Put(&migration.Record{
+		MigrationID: migID, VMID: v.ID, VMName: v.Name,
+		Role: migration.RoleTarget, Mode: migration.ModeLive, Phase: migration.PhaseSetup,
+		Port: ram, NBDPort: nbd, ExportIDs: []string{"exp0"}, CreatedAt: time.Now().UTC(),
+	})
+
+	conn := &cancelInWindowConn{cancel: func() { m.CancelMigration(migID) }}
+	m.migDialQMPTarget = func(string) (qemu.LiveTargetConn, error) { return conn, nil }
+	m.migRunLiveTarget = func(context.Context, qemu.LiveTargetConn, qemu.LiveTargetSpec) error {
+		return nil
+	}
+
+	task := m.tasks.Create(TaskKindVMMigrate, v.ID)
+	m.runIncomingResume(context.Background(), task.ID, migID, v.ID, ram, nbd)
+
+	// The just-resumed guest must survive the in-window cancel: still present,
+	// still running, disk intact. Read the raw in-map record (m.Get probes the
+	// absent pidfile and would report stopped under the unit fake).
+	m.mu.Lock()
+	got, present := m.vms[v.ID]
+	var gotStatus Status
+	if present {
+		gotStatus = got.Status
+	}
+	m.mu.Unlock()
+	if !present {
+		t.Fatalf("VM %s removed by in-window cancel; want the resumed guest kept", v.ID)
+	}
+	if gotStatus != StatusRunning {
+		t.Errorf("status = %v, want running (cancel must not stop a resumed guest)", gotStatus)
+	}
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("disk dir removed by in-window cancel: %v (removeAdoptedVM must not run post-cont)", err)
+	}
+
+	// The migration reports completed, not cancelled: the cancel no-ops because
+	// the record was stamped terminal at cont success.
+	view, ok := m.GetMigration(migID)
+	if !ok {
+		t.Fatalf("GetMigration(%s) ok=false", migID)
+	}
+	if view.Phase != string(migration.PhaseCompleted) {
+		t.Errorf("phase = %q, want completed (post-cont cancel must no-op)", view.Phase)
+	}
+}
+
+// TestCancelLive_RunningGuestRefusesReap is the teeth for the residual
+// stamp-move TOCTOU (guard (b), "never reap a running guest"). CancelMigration
+// snapshots the record and passes that STALE snapshot to cancelLive; if the
+// snapshot was read a hair before the resume goroutine stamps PhaseCompleted,
+// the snapshot's Terminal() is still false and the RoleTarget arm would proceed
+// to teardownIncomingTarget -> killQEMU + removeAdoptedVM on a guest that just
+// went LIVE (irreversible: the dest disk is the only copy post-cutover).
+//
+// We simulate the race directly: a target VM already at StatusRunning plus a
+// NON-terminal record. cancelLive must refuse the reap on the in-memory
+// StatusRunning signal and no-op: the VM stays present, its disk dir intact, and
+// the record is NOT cancelled.
+func TestCancelLive_RunningGuestRefusesReap(t *testing.T) {
+	m := newTestManager(t)
+
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair: %v", err)
+	}
+	migID := uuid.New()
+	// A non-terminal record simulates the stale snapshot CancelMigration read a
+	// hair before the resume goroutine stamped PhaseCompleted.
+	stale := migration.Record{
+		MigrationID: migID, VMID: v.ID, VMName: v.Name,
+		Role: migration.RoleTarget, Mode: migration.ModeLive, Phase: migration.PhaseActive,
+		Port: ram, NBDPort: nbd, CreatedAt: time.Now().UTC(),
+	}
+	m.migrations.Put(&stale)
+
+	view, ok := m.cancelLive(migID, stale)
+	if !ok {
+		t.Fatalf("cancelLive returned ok=false")
+	}
+
+	// The running guest must survive: still present, still running, disk intact.
+	m.mu.Lock()
+	got, present := m.vms[v.ID]
+	var gotStatus Status
+	if present {
+		gotStatus = got.Status
+	}
+	m.mu.Unlock()
+	if !present {
+		t.Fatalf("VM %s removed by cancel of a running guest; want it kept", v.ID)
+	}
+	if gotStatus != StatusRunning {
+		t.Errorf("status = %v, want running (cancel must not reap a running guest)", gotStatus)
+	}
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("disk dir removed by cancel of a running guest: %v (removeAdoptedVM must not run)", err)
+	}
+
+	// The record must NOT be flipped to cancelled: the guard refuses the reap and
+	// leaves the record untouched.
+	if view.Phase == string(migration.PhaseCancelled) {
+		t.Errorf("phase = %q, want not-cancelled (running guest must not be cancel-reaped)", view.Phase)
 	}
 }
 

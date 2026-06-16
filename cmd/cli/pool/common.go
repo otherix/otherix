@@ -37,6 +37,17 @@ func printf(cmd *cobra.Command, format string, args ...any) {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), format, args...)
 }
 
+// printNextCursor prints a copy-pasteable next-page hint for a cursor-paginated
+// table listing. The cursor is opaque base64, so framing it as the exact next
+// command reads far better than a bare "next_cursor: <blob>". No-op when there
+// is no next page (the last page prints nothing).
+func printNextCursor(cmd *cobra.Command, next string) {
+	if next == "" {
+		return
+	}
+	printf(cmd, "\nMore results - next page (re-add any filters):\n  %s --cursor %s\n", cmd.CommandPath(), next)
+}
+
 // printJSON writes raw server JSON to the command's stdout, re-indented two
 // spaces. Used by `--output json` so the CLI echoes exactly what the CP
 // returned (absent-vs-null is the server's choice), never a lossy re-marshal

@@ -94,7 +94,11 @@ func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog
 		ID:           uuid.New(),
 		Email:        email,
 		PasswordHash: hash,
-		Role:         string(auth.RoleAdmin),
+		// Seed a human-readable display name so audit surfaces (e.g. the
+		// migration cancel record's "cancelled by <name>") show "admin" rather
+		// than the bootstrap email (PII) or the opaque user id.
+		DisplayName: "admin",
+		Role:        string(auth.RoleAdmin),
 	})
 	if err != nil {
 		// A unique violation here means a concurrent process beat us
