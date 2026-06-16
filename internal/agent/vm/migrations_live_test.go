@@ -6,6 +6,8 @@ package vm
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -949,6 +951,72 @@ func TestTeardownDepartedSource_RemovesVMAndDisk(t *testing.T) {
 	}
 	if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
 		t.Errorf("source disk dir still present: %v", err)
+	}
+}
+
+// TestTeardownDepartedSource_ClosesMux is the seam test for the logs/console
+// hang after a live migration. When the source VM departs, its serial
+// multiplexer must be Close'd so every attached logs/console subscriber sees
+// Done(). That Done is exactly what makes the source agent's /logs streamLogs
+// loop return -> the HTTP body EOFs -> the CP-side follow relay observes the
+// upstream break and reattaches to the target. Without detachMux the mux is
+// leaked open (pump goroutine + log file handle never released) and the stream
+// hangs forever: the operator's `vm logs -f` freezes at cutover until a manual
+// reconnect. The teeth: with the detachMux call removed, sub.Done() never fires
+// and this test times out.
+func TestTeardownDepartedSource_ClosesMux(t *testing.T) {
+	m := newTestManager(t)
+
+	// A fake qemu serial socket so attachMux can dial a real multiplexer. The
+	// short /tmp path avoids the ~104-char sun_path limit on the state dir.
+	sockDir, err := os.MkdirTemp("/tmp", "oxsock")
+	if err != nil {
+		t.Skipf("cannot create short socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "c.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", sockPath, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(conn net.Conn) { _, _ = io.Copy(io.Discard, conn) }(c)
+		}
+	}()
+
+	vmID := uuid.New()
+	v, err := m.AdoptForMigration(AdoptSpec{
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
+	})
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	v.ConsoleSocket = sockPath
+	if err := m.attachMux(discardLogger(), v); err != nil {
+		t.Fatalf("attachMux: %v", err)
+	}
+	mux := m.GetMux("ex")
+	if mux == nil {
+		t.Fatal("GetMux(ex) = nil after attachMux")
+	}
+	sub := mux.SubscribeLogs(0, true) // follow, no history
+
+	m.teardownDepartedSource(v)
+
+	select {
+	case <-sub.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber Done() did not fire: teardownDepartedSource left the mux open (logs/console hang after migration)")
+	}
+	if m.GetMux("ex") != nil {
+		t.Error("GetMux(ex) != nil after teardownDepartedSource: mux not detached")
 	}
 }
 
