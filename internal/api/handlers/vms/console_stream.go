@@ -134,7 +134,11 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "load vm", nil)
 		return
 	}
-	nodeID, err := h.resolveNodeForVM(r.Context(), vm)
+	// Resolve the owning node ONCE on the happy path: its host builds the
+	// upstream URL and the same consoleNode is handed to relayConsoleFollow
+	// (which re-resolves only on a re-attach). A resolve failure here is
+	// pre-upgrade, so it keeps the 500 envelope shape.
+	current, err := h.resolveConsoleNode(r.Context(), vm)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "vms.consoleStream resolve node",
 			"vm_id", vm.ID, "error", err.Error())
@@ -142,24 +146,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "resolve node", nil)
 		return
 	}
-	node, err := h.store.NodeByID(r.Context(), nodeID)
-	if err != nil {
-		h.log.ErrorContext(r.Context(), "vms.consoleStream load node",
-			"node_id", nodeID, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "load node", nil)
-		return
-	}
-
-	agentHost, err := stripScheme(node.AdvertisedEndpoint)
-	if err != nil {
-		h.log.ErrorContext(r.Context(), "vms.consoleStream agent endpoint shape",
-			"endpoint", node.AdvertisedEndpoint, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "agent endpoint malformed", nil)
-		return
-	}
-	agentURL := buildAgentConsoleURL(agentHost, vmName, token)
+	agentURL := buildAgentConsoleURL(current.host, vmName, token)
 
 	// Dial the agent's WebSocket using the agentclient's mTLS-configured
 	// HTTP client. Agent validates the token before completing the
@@ -204,7 +191,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = downstream.Close(websocket.StatusInternalError, "") }()
 
-	h.relayConsoleFrames(r.Context(), vmName, downstream, upstream)
+	h.relayConsoleFollow(r.Context(), vm, current, downstream, upstream)
 }
 
 // buildAgentConsoleURL composes the wss:// URL of the owning agent's
@@ -251,43 +238,91 @@ func (h *Handler) relayUpstreamDialError(w http.ResponseWriter, r *http.Request,
 		response.CodeAgentUnreachable, "console relay dial failed", nil)
 }
 
-// relayConsoleFrames pumps binary WebSocket frames in both directions
-// between downstream (operator) and upstream (agent). First close on
-// either side cancels the shared context and the other pump unwinds.
-// Frame types pass through verbatim.
-func (h *Handler) relayConsoleFrames(parent context.Context, vmName string, downstream, upstream *websocket.Conn) {
+// Re-attach tuning for the console follow loop. The window is
+// deliberately short (vs the logs slice's 60s): per the keystroke
+// policy a slow cutover drops the session rather than buffer for a
+// minute. See the design doc.
+const (
+	consoleReattachWindow       = 8 * time.Second
+	consoleReattachPollInterval = 250 * time.Millisecond
+	consoleInboundBufferLimit   = 32 * 1024
+)
+
+// consoleMigratedCloseCode is the application WebSocket close code the CP
+// sends the operator when a re-attach gives up (window/overflow/no-flip).
+// In the coder/websocket application range (4000-4999). The CLI maps it to
+// a reconnect hint - keep this value in sync with cmd/cli/vm/console.go.
+const (
+	consoleMigratedCloseCode   = websocket.StatusCode(4002)
+	consoleMigratedCloseReason = "console moved during migration; reconnect"
+)
+
+// relayConsoleFollow bridges the operator (downstream) and agent
+// (upstream) console WebSockets and FOLLOWS the VM across a live
+// migration. The downstream connection and its reader/keepalive live for
+// the whole session; the upstream is swapped per attempt. On an upstream
+// break the loop consults trustworthy store signals (decideReattach) and
+// either re-attaches to the new owner, ends cleanly, or drops the session
+// with consoleMigratedCloseCode.
+func (h *Handler) relayConsoleFollow(parent context.Context, vm store.VM, current consoleNode, downstream, upstream *websocket.Conn) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(4)
-
-	// keepalive both legs: pinging downstream detects a dead/half-open
-	// operator (the case the agent cannot see - it would otherwise keep
-	// the single-console slot held), pinging upstream detects a dead
-	// agent. Either failure cancels the relay and closes both sides.
-	go func() {
-		defer wg.Done()
-		wskeepalive.Run(ctx, cancel, downstream, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
-	}()
-	go func() {
-		defer wg.Done()
-		wskeepalive.Run(ctx, cancel, upstream, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
-	}()
+	buf := newConsoleInboundBuffer(consoleInboundBufferLimit)
+	defer buf.close()
 
 	go func() {
-		defer wg.Done()
 		defer cancel()
 		for {
-			typ, data, err := downstream.Read(ctx)
+			_, data, err := downstream.Read(ctx)
 			if err != nil {
 				return
 			}
-			if werr := upstream.Write(ctx, typ, data); werr != nil {
+			if !buf.append(data) {
 				return
 			}
 		}
 	}()
+	go wskeepalive.Run(ctx, cancel, downstream, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
+
+	for {
+		h.bridgeAttempt(ctx, vm.Name, downstream, upstream, buf)
+		_ = upstream.Close(websocket.StatusInternalError, "")
+
+		if ctx.Err() != nil {
+			_ = downstream.Close(websocket.StatusNormalClosure, "")
+			return
+		}
+
+		next, decision := h.decideReattach(ctx, vm, current, buf)
+		switch decision {
+		case reattachOK:
+			h.log.InfoContext(ctx, "vms.consoleStream reattach",
+				"vm", vm.Name, "from_node", current.id, "to_node", next.node.id)
+			current = next.node
+			upstream = next.upstream
+			continue
+		case reattachGiveUp:
+			_ = downstream.Close(consoleMigratedCloseCode, consoleMigratedCloseReason)
+			return
+		default: // reattachClean
+			_ = downstream.Close(websocket.StatusNormalClosure, "")
+			return
+		}
+	}
+}
+
+// bridgeAttempt pumps frames between downstream and the CURRENT upstream
+// until the upstream breaks (read or write error) or the session ctx is
+// cancelled. The drain pump replays the buffer (anything typed during a
+// gap) and then live keystrokes to upstream. It does NOT close either
+// conn - the caller owns lifecycle.
+func (h *Handler) bridgeAttempt(sessionCtx context.Context, vmName string, downstream, upstream *websocket.Conn, buf *consoleInboundBuffer) {
+	ctx, cancel := context.WithCancel(sessionCtx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -302,9 +337,50 @@ func (h *Handler) relayConsoleFrames(parent context.Context, vmName string, down
 			}
 		}
 	}()
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		for {
+			frame, ok := buf.take()
+			if !ok {
+				select {
+				case <-ctx.Done():
+					return
+				case <-buf.signal():
+					continue
+				}
+			}
+			if werr := upstream.Write(ctx, websocket.MessageBinary, frame); werr != nil {
+				buf.unshift(frame)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		wskeepalive.Run(ctx, cancel, upstream, wskeepalive.DefaultInterval, wskeepalive.DefaultTimeout)
+	}()
 
 	wg.Wait()
-	_ = upstream.Close(websocket.StatusNormalClosure, "")
-	_ = downstream.Close(websocket.StatusNormalClosure, "")
-	h.log.Info("vms.consoleStream relay closed", "vm", vmName)
+}
+
+// reattachDecision is the outcome of decideReattach.
+type reattachDecision int
+
+const (
+	reattachClean  reattachDecision = iota // same node, no migration: clean end
+	reattachOK                             // re-attached to a new owner
+	reattachGiveUp                         // window/overflow/no-flip: drop session
+)
+
+// reattachResult carries the new owner + dialed upstream on reattachOK.
+type reattachResult struct {
+	node     consoleNode
+	upstream *websocket.Conn
+}
+
+// decideReattach is a STUB in Task 3 (always clean end); Task 4 replaces
+// it with the windowed re-attach decision tree.
+func (h *Handler) decideReattach(context.Context, store.VM, consoleNode, *consoleInboundBuffer) (reattachResult, reattachDecision) {
+	return reattachResult{}, reattachClean
 }

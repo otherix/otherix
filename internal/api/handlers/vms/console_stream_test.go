@@ -5,6 +5,7 @@ package vms
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,8 +13,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 
+	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -200,5 +203,202 @@ func TestResolveConsoleNodeSplitsHostAndEndpoint(t *testing.T) {
 	}
 	if got.endpoint != "https://agent.example.com:9090" {
 		t.Errorf("endpoint = %q, want https://agent.example.com:9090", got.endpoint)
+	}
+}
+
+// --- WS seam-test harness (shared by Task 3 and Task 4) ---
+
+// wsAgentServer is a TLS httptest server standing in for an agent's
+// console-stream endpoint. It accepts a WS, optionally echoes the first
+// byte it reads, records bytes it receives, and closes when told.
+type wsAgentServer struct {
+	srv    *httptest.Server
+	mu     sync.Mutex
+	got    []byte
+	accept chan struct{} // closed once a connection is accepted
+	closed chan struct{} // close it to make the handler drop the upstream
+}
+
+func newWSAgentServer(t *testing.T, echo bool) *wsAgentServer {
+	t.Helper()
+	a := &wsAgentServer{accept: make(chan struct{}), closed: make(chan struct{})}
+	a.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+		closeOnce(a.accept)
+		ctx := r.Context()
+		go func() {
+			for {
+				typ, data, err := c.Read(ctx)
+				if err != nil {
+					return
+				}
+				a.mu.Lock()
+				a.got = append(a.got, data...)
+				a.mu.Unlock()
+				if echo {
+					_ = c.Write(ctx, typ, data)
+				}
+			}
+		}()
+		select {
+		case <-a.closed:
+		case <-ctx.Done():
+		}
+	}))
+	t.Cleanup(a.srv.Close)
+	return a
+}
+
+func (a *wsAgentServer) host() string { return a.srv.Listener.Addr().String() }
+
+func (a *wsAgentServer) received() []byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]byte, len(a.got))
+	copy(out, a.got)
+	return out
+}
+
+func closeOnce(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+// followStoreStub is a flippable store: VMByName returns the VM with
+// PinnedNodeID = nodes[idx], advancing idx by one per call up to the
+// last (so the first read sees node A, later reads see node B). It also
+// drives ActiveMigrationForVM.
+type followStoreStub struct {
+	Store
+	mu        sync.Mutex
+	vm        store.VM
+	nodes     []store.Node
+	idx       int
+	migrating bool
+}
+
+func (s *followStoreStub) VMByName(context.Context, string) (store.VM, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.nodes[s.idx]
+	if s.idx < len(s.nodes)-1 {
+		s.idx++
+	}
+	vm := s.vm
+	id := n.ID
+	vm.PinnedNodeID = &id
+	return vm, nil
+}
+
+func (s *followStoreStub) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, n := range s.nodes {
+		if n.ID == id {
+			return n, nil
+		}
+	}
+	return store.Node{}, store.ErrNotFound
+}
+
+func (s *followStoreStub) ActiveMigrationForVM(context.Context, uuid.UUID) (store.Migration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return store.Migration{}, s.migrating, nil
+}
+
+// recordingConsoleClient routes IssueConsoleToken to a recorded endpoint
+// and returns a fixed token; HTTPClient is an InsecureSkipVerify client
+// so the CP can dial the TLS agent test servers.
+type recordingConsoleClient struct {
+	mu        sync.Mutex
+	endpoints []string
+	token     string
+	issueErr  error
+}
+
+func (c *recordingConsoleClient) IssueConsoleToken(_ context.Context, endpoint, _, _ string) (agentclient.IssueConsoleTokenResponse, error) {
+	c.mu.Lock()
+	c.endpoints = append(c.endpoints, endpoint)
+	err := c.issueErr
+	c.mu.Unlock()
+	if err != nil {
+		return agentclient.IssueConsoleTokenResponse{}, err
+	}
+	return agentclient.IssueConsoleTokenResponse{Token: c.token, Protocol: "serial"}, nil
+}
+
+func (c *recordingConsoleClient) mintedEndpoints() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.endpoints...)
+}
+
+func (c *recordingConsoleClient) HTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test client
+	}}
+}
+
+func newFollowHandler(s Store, c consoleClient) *Handler {
+	return New(s, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		LifecycleDeps{}, ConsoleDeps{AgentClient: c, AccessMode: "proxy"})
+}
+
+func cpConsoleServer(t *testing.T, h *Handler) *httptest.Server {
+	t.Helper()
+	r := chi.NewRouter()
+	r.Get("/v1/vms/{id}/console-stream", h.ConsoleStream)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func dialOperator(t *testing.T, cp *httptest.Server, vmName, token string) *websocket.Conn {
+	t.Helper()
+	u := "ws" + cp.URL[len("http"):] + "/v1/vms/" + vmName + "/console-stream?token=" + token
+	c, _, err := websocket.Dial(context.Background(), u, nil)
+	if err != nil {
+		t.Fatalf("operator dial: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close(websocket.StatusNormalClosure, "") })
+	return c
+}
+
+// TestConsoleRelayBridgesAndClosesCleanly is the Task 3 seam test: agent
+// A echoes a byte over the bridge, then A closes the upstream; with no
+// flip and no migration the operator WS closes normally (no re-attach).
+func TestConsoleRelayBridgesAndClosesCleanly(t *testing.T) {
+	t.Parallel()
+	agentA := newWSAgentServer(t, true)
+	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	st := &followStoreStub{vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA}}
+	cl := &recordingConsoleClient{token: "tok"}
+	cp := cpConsoleServer(t, newFollowHandler(st, cl))
+
+	op := dialOperator(t, cp, "demo", "tok")
+	if err := op.Write(context.Background(), websocket.MessageBinary, []byte("p")); err != nil {
+		t.Fatalf("operator write: %v", err)
+	}
+	typ, data, err := op.Read(context.Background())
+	if err != nil || typ != websocket.MessageBinary || string(data) != "p" {
+		t.Fatalf("echo read = %q,%v,%v, want p", data, typ, err)
+	}
+	if got := agentA.received(); string(got) != "p" {
+		t.Errorf("agent received = %q, want p", got)
+	}
+	if eps := cl.mintedEndpoints(); len(eps) != 0 {
+		t.Errorf("minted endpoints = %v, want none (no re-attach on first attempt)", eps)
+	}
+	closeOnce(agentA.closed)
+	if _, _, err := op.Read(context.Background()); err == nil {
+		t.Errorf("operator read after clean close = nil err, want close")
 	}
 }
