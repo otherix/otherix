@@ -630,10 +630,49 @@ func (m *Manager) teardownDepartedSource(v *VM) {
 // block job offset/len; once the RAM phase has started (migrate status
 // non-empty and not "none") they come from the query-migrate RAM counters.
 //
-// NOTE: surfacing the FULL query-migrate breakdown through the CP
-// `migration get` API (new Migration schema fields) is a deliberate follow-up,
-// out of scope here - this puts the full detail in the AGENT LOG and the
-// coarse bytes-progress on the existing record/API.
+// NOTE: the reporter surfaces only the coarse bytes-progress on the record
+// plus the full INFO-log breakdown. The FINAL query-migrate statistics are
+// captured at completion in runOutgoingLive and surfaced through the CP
+// `migration get` stats section.
+func (m *Manager) liveProgressReporter(migrationID uuid.UUID) func(qemu.LiveProgress) {
+	return func(p qemu.LiveProgress) {
+		bootJob, hasBootJob := liveBootDiskJob(p.BlockJobs)
+		ramStarted := p.Migrate.Status != "" && p.Migrate.Status != "none"
+
+		log := m.log.With("migration_id", migrationID.String())
+		if hasBootJob {
+			log = log.With(
+				"block_job_device", bootJob.Device,
+				"block_job_offset", bootJob.Offset,
+				"block_job_len", bootJob.Len,
+				"block_job_ready", bootJob.Ready,
+				"block_job_status", bootJob.Status,
+			)
+		} else {
+			log = log.With("block_jobs", len(p.BlockJobs))
+		}
+		log.Info("live migration progress",
+			"migrate_status", p.Migrate.Status,
+			"ram_remaining", p.Migrate.RAM.Remaining,
+			"ram_transferred", p.Migrate.RAM.Transferred,
+			"ram_total", p.Migrate.RAM.Total,
+			"ram_dirty_pages_rate", p.Migrate.RAM.DirtyPagesRate,
+		)
+
+		m.migrations.Update(migrationID, func(r *migration.Record) {
+			r.DiskBytesTotal, r.DiskBytesTransferred = peakDiskBytes(r.DiskBytesTotal, r.DiskBytesTransferred, p.BlockJobs)
+			switch {
+			case ramStarted:
+				r.BytesTotal = p.Migrate.RAM.Total
+				r.BytesTransferred = p.Migrate.RAM.Transferred
+			case hasBootJob:
+				r.BytesTotal = bootJob.Len
+				r.BytesTransferred = bootJob.Offset
+			}
+		})
+	}
+}
+
 // peakDiskBytes folds one live-progress block-job snapshot into the running
 // peak disk totals. Maxima are tracked independently because a finished mirror
 // job disappears from query-block-jobs: len gives the device size (constant
@@ -672,45 +711,6 @@ func buildLiveMigrationStats(info qemu.MigrateInfo, diskTransferred, diskTotal i
 		"total_time_ms": info.TotalTimeMs,
 		"downtime_ms":   info.DowntimeMs,
 		"setup_time_ms": info.SetupTimeMs,
-	}
-}
-
-func (m *Manager) liveProgressReporter(migrationID uuid.UUID) func(qemu.LiveProgress) {
-	return func(p qemu.LiveProgress) {
-		bootJob, hasBootJob := liveBootDiskJob(p.BlockJobs)
-		ramStarted := p.Migrate.Status != "" && p.Migrate.Status != "none"
-
-		log := m.log.With("migration_id", migrationID.String())
-		if hasBootJob {
-			log = log.With(
-				"block_job_device", bootJob.Device,
-				"block_job_offset", bootJob.Offset,
-				"block_job_len", bootJob.Len,
-				"block_job_ready", bootJob.Ready,
-				"block_job_status", bootJob.Status,
-			)
-		} else {
-			log = log.With("block_jobs", len(p.BlockJobs))
-		}
-		log.Info("live migration progress",
-			"migrate_status", p.Migrate.Status,
-			"ram_remaining", p.Migrate.RAM.Remaining,
-			"ram_transferred", p.Migrate.RAM.Transferred,
-			"ram_total", p.Migrate.RAM.Total,
-			"ram_dirty_pages_rate", p.Migrate.RAM.DirtyPagesRate,
-		)
-
-		m.migrations.Update(migrationID, func(r *migration.Record) {
-			r.DiskBytesTotal, r.DiskBytesTransferred = peakDiskBytes(r.DiskBytesTotal, r.DiskBytesTransferred, p.BlockJobs)
-			switch {
-			case ramStarted:
-				r.BytesTotal = p.Migrate.RAM.Total
-				r.BytesTransferred = p.Migrate.RAM.Transferred
-			case hasBootJob:
-				r.BytesTotal = bootJob.Len
-				r.BytesTransferred = bootJob.Offset
-			}
-		})
 	}
 }
 
