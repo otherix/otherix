@@ -103,8 +103,12 @@ make smoke-vm-network-config # static guest IP delivered via --network-config (n
 make smoke-all              # all stack-dependent smokes in sequence (excludes smoke-ha)
 ```
 
-Live migration is not yet implemented and is therefore not part of the Linux dev
-smoke.
+Live migration has dedicated smokes that run two real agents and move a running
+VM between them - `make smoke-vm-migration-live` (live cutover with console
+heartbeat continuity), plus `smoke-vm-migration-live-logs`,
+`smoke-vm-migration-live-console`, `smoke-vm-migration-live-overlay`,
+`smoke-vm-migration-live-bridge`, `smoke-vm-migration-live-stats`, and
+`smoke-vm-migration-cancel`.
 
 ## Smoke: overlay egress (manual, static-addressed VM)
 

@@ -79,7 +79,17 @@ Unlike `vm console`, `vm logs` does **not** contend for the single
 console-session slot: you can tail logs while another operator (or you)
 holds an interactive console on the same VM.
 
+## Both survive live migration
+
+Neither session breaks when the VM moves to another node. A `vm logs --follow`
+stream and an interactive `vm console` both **follow the VM across a live
+migration** - the control plane transparently reconnects the stream (and re-mints
+the console token) to the new owning agent at cutover. You keep watching logs, or
+keep typing at the console, through the move and after the VM lands on the other
+node. See [Live migration](live-migration.md).
+
 ## See also
 
+- [Live migration](live-migration.md)
 - [Create and manage VMs](create-and-manage-vms.md)
 - [Join a node](join-a-node.md)
