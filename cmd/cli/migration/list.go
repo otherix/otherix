@@ -108,7 +108,5 @@ func printMigrationTable(cmd *cobra.Command, migrations []cpclient.Migration, ne
 			m.Phase, progress, humanAge(m.CreatedAt))
 	}
 	_ = tw.Flush()
-	if next != "" {
-		printf(cmd, "next_cursor: %s\n", next)
-	}
+	printNextCursor(cmd, next)
 }

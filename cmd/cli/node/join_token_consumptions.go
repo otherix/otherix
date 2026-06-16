@@ -84,7 +84,7 @@ func printConsumptionsTable(cmd *cobra.Command, list cpclient.JoinTokenConsumpti
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", c.ID, nodeID, c.ConsumedAt, sourceIP)
 	}
 	_ = tw.Flush()
-	if list.Meta.NextCursor != nil && *list.Meta.NextCursor != "" {
-		printf(cmd, "next_cursor: %s\n", *list.Meta.NextCursor)
+	if list.Meta.NextCursor != nil {
+		printNextCursor(cmd, *list.Meta.NextCursor)
 	}
 }

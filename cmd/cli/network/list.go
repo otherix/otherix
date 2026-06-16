@@ -99,7 +99,7 @@ func printNetworkTable(cmd *cobra.Command, networks cpclient.NetworkList, showID
 		}
 	}
 	_ = tw.Flush()
-	if networks.Meta.NextCursor != nil && *networks.Meta.NextCursor != "" {
-		printf(cmd, "next_cursor: %s\n", *networks.Meta.NextCursor)
+	if networks.Meta.NextCursor != nil {
+		printNextCursor(cmd, *networks.Meta.NextCursor)
 	}
 }
