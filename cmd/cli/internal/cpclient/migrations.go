@@ -71,6 +71,29 @@ type Migration struct {
 	CompletedAt       *string `json:"completed_at"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
+
+	Stats *MigrationStats `json:"stats"`
+}
+
+// MigrationStats mirrors the nested stats object the CP serves on a completed
+// live migration. nil for offline / incomplete migrations.
+type MigrationStats struct {
+	RAM         MigrationRAMStats  `json:"ram"`
+	Disk        MigrationDiskStats `json:"disk"`
+	TotalTimeMs int64              `json:"total_time_ms"`
+	DowntimeMs  int64              `json:"downtime_ms"`
+	SetupTimeMs int64              `json:"setup_time_ms"`
+}
+
+type MigrationRAMStats struct {
+	Transferred    int64 `json:"transferred"`
+	Total          int64 `json:"total"`
+	DirtyPagesRate int64 `json:"dirty_pages_rate"`
+}
+
+type MigrationDiskStats struct {
+	Transferred int64 `json:"transferred"`
+	Total       int64 `json:"total"`
 }
 
 // MigrationList is the {data, meta} envelope GET /v1/migrations serves.

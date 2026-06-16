@@ -40,6 +40,11 @@ type MigrateInfo struct {
 		DirtyPagesRate int64 `json:"dirty-pages-rate"`
 		DirtySyncCount int64 `json:"dirty-sync-count"`
 	} `json:"ram"`
+	// Top-level timing counters, populated by QEMU once the migration has
+	// progressed/completed (milliseconds). Surfaced as final migration stats.
+	TotalTimeMs int64 `json:"total-time"`
+	DowntimeMs  int64 `json:"downtime"`
+	SetupTimeMs int64 `json:"setup-time"`
 }
 
 // BlockJobInfo is the decoded query-block-jobs entry the live-migration

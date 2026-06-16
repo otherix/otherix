@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agentapi"
@@ -1061,6 +1062,17 @@ func (st commitCutoverFailStore) CommitMigrationCutover(ctx context.Context, mig
 	return st.MigrationWorkerStore.CommitMigrationCutover(ctx, migID)
 }
 
+// statsErrStore wraps a real MigrationWorkerStore and forces UpdateMigrationStats
+// to fail, exercising the fail-open path (a stats store error must not fail a
+// committed cutover).
+type statsErrStore struct {
+	migrations.MigrationWorkerStore
+}
+
+func (statsErrStore) UpdateMigrationStats(ctx context.Context, migID uuid.UUID, stats store.MigrationStats) error {
+	return errors.New("stats store boom")
+}
+
 // overlayPeersStub wraps a real MigrationWorkerStore and returns a settable
 // peer-node slice from OverlayPeerNodesForVM, so a worker test can assert the
 // post-cutover fast-push nudges those peers (plus the target) without seeding a
@@ -1165,6 +1177,147 @@ func TestRunMigration_CommitFailsAfterSuccessKeepsSource(t *testing.T) {
 	}
 	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
 		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (commit failed)", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
+// TestRunMigration_PersistsStatsFromTaskResult drives the full live happy path
+// and pins that, on a committed cutover, the worker parses the final live-
+// migration stats out of the terminal task Result and persists them on the
+// migration row. The agent terminal carries the locked stats wire shape.
+func TestRunMigration_PersistsStatsFromTaskResult(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{
+		Status: "success",
+		Result: map[string]any{
+			"migration_id": "ignored",
+			"stats": map[string]any{
+				"ram":           map[string]any{"transferred": 10737418240.0, "total": 10737418240.0, "dirty_pages_rate": 7.0},
+				"disk":          map[string]any{"transferred": 5368709120.0, "total": 5368709120.0},
+				"total_time_ms": 45125.0, "downtime_ms": 150.0, "setup_time_ms": 1200.0,
+			},
+		},
+	}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(happy) = %v, want nil", err)
+	}
+
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Stats == nil {
+		t.Fatalf("Stats = nil, want populated")
+	}
+	want := store.MigrationStats{
+		RAMTransferred: 10737418240, RAMTotal: 10737418240, RAMDirtyPagesRate: 7,
+		DiskTransferred: 5368709120, DiskTotal: 5368709120,
+		TotalTimeMs: 45125, DowntimeMs: 150, SetupTimeMs: 1200,
+	}
+	if diff := cmp.Diff(want, *got.Stats); diff != "" {
+		t.Errorf("Stats mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestRunMigration_FailOpenOnMissingStats pins the fail-open invariant for the
+// common case (offline migration / old agent): the terminal Result carries no
+// "stats" object. The migration must still complete and Stats must stay nil.
+func TestRunMigration_FailOpenOnMissingStats(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{
+		Status: "success",
+		Result: map[string]any{"migration_id": "ignored"},
+	}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(no-stats) = %v, want nil", err)
+	}
+
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Stats != nil {
+		t.Errorf("Stats = %+v, want nil (no stats in result)", got.Stats)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed", got.Phase)
+	}
+}
+
+// TestRunMigration_FailOpenOnStatsStoreError pins the fail-open invariant for a
+// store fault: the committed cutover already landed, then UpdateMigrationStats
+// errors. The handler must still return nil and the migration must stay
+// completed - stats are observability only and never block a committed cutover.
+func TestRunMigration_FailOpenOnStatsStoreError(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, true)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{
+		Status: "success",
+		Result: map[string]any{
+			"stats": map[string]any{
+				"ram":           map[string]any{"transferred": 10737418240.0, "total": 10737418240.0, "dirty_pages_rate": 7.0},
+				"disk":          map[string]any{"transferred": 5368709120.0, "total": 5368709120.0},
+				"total_time_ms": 45125.0, "downtime_ms": 150.0, "setup_time_ms": 1200.0,
+			},
+		},
+	}}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+	st := statsErrStore{MigrationWorkerStore: s}
+
+	h := migrations.MigrateHandler(st, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(stats-store-error) = %v, want nil (stats store error must not fail cutover)", err)
+	}
+
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed (stats store error must not fail cutover)", got.Phase)
 	}
 }
 

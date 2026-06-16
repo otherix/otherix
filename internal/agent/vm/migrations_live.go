@@ -5,6 +5,7 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -569,11 +570,26 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 	// adopts cleanly instead of racing the CP's slow async DeleteVMOnSource.
 	m.teardownDepartedSource(v)
 
+	var diskTransferred, diskTotal int64
 	m.migrations.Update(s.MigrationID, func(r *migration.Record) {
+		diskTransferred, diskTotal = r.DiskBytesTransferred, r.DiskBytesTotal
 		r.Phase = migration.PhaseCompleted
 		r.CompletedAt = time.Now().UTC()
 	})
-	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+
+	// Final live-migration stats ride the task Result back to the CP. Fail-open:
+	// a marshal failure leaves Result unset (the CP treats absent stats as "none")
+	// and NEVER blocks the success transition - stats are observability only.
+	result, merr := json.Marshal(map[string]any{
+		"migration_id": s.MigrationID.String(),
+		"stats":        buildLiveMigrationStats(info, diskTransferred, diskTotal),
+	})
+	m.tasks.Update(taskID, func(t *AgentTask) {
+		t.Status = TaskStatusSuccess
+		if merr == nil {
+			t.Result = result
+		}
+	})
 }
 
 // teardownDepartedSource removes a source VM that has just completed a successful
@@ -614,10 +630,10 @@ func (m *Manager) teardownDepartedSource(v *VM) {
 // block job offset/len; once the RAM phase has started (migrate status
 // non-empty and not "none") they come from the query-migrate RAM counters.
 //
-// NOTE: surfacing the FULL query-migrate breakdown through the CP
-// `migration get` API (new Migration schema fields) is a deliberate follow-up,
-// out of scope here - this puts the full detail in the AGENT LOG and the
-// coarse bytes-progress on the existing record/API.
+// NOTE: the reporter surfaces only the coarse bytes-progress on the record
+// plus the full INFO-log breakdown. The FINAL query-migrate statistics are
+// captured at completion in runOutgoingLive and surfaced through the CP
+// `migration get` stats section.
 func (m *Manager) liveProgressReporter(migrationID uuid.UUID) func(qemu.LiveProgress) {
 	return func(p qemu.LiveProgress) {
 		bootJob, hasBootJob := liveBootDiskJob(p.BlockJobs)
@@ -644,6 +660,7 @@ func (m *Manager) liveProgressReporter(migrationID uuid.UUID) func(qemu.LiveProg
 		)
 
 		m.migrations.Update(migrationID, func(r *migration.Record) {
+			r.DiskBytesTotal, r.DiskBytesTransferred = peakDiskBytes(r.DiskBytesTotal, r.DiskBytesTransferred, p.BlockJobs)
 			switch {
 			case ramStarted:
 				r.BytesTotal = p.Migrate.RAM.Total
@@ -653,6 +670,47 @@ func (m *Manager) liveProgressReporter(migrationID uuid.UUID) func(qemu.LiveProg
 				r.BytesTransferred = bootJob.Offset
 			}
 		})
+	}
+}
+
+// peakDiskBytes folds one live-progress block-job snapshot into the running
+// peak disk totals. Maxima are tracked independently because a finished mirror
+// job disappears from query-block-jobs: len gives the device size (constant
+// while the job exists), offset converges up to len. At full mirror both equal
+// the summed disk virtual size.
+func peakDiskBytes(total, transferred int64, jobs []qemu.BlockJobInfo) (int64, int64) {
+	var sumLen, sumOff int64
+	for _, j := range jobs {
+		sumLen += j.Len
+		sumOff += j.Offset
+	}
+	if sumLen > total {
+		total = sumLen
+	}
+	if sumOff > transferred {
+		transferred = sumOff
+	}
+	return total, transferred
+}
+
+// buildLiveMigrationStats assembles the final live-migration stats payload
+// attached to the outgoing-live task Result on success. The JSON keys are the
+// locked wire contract the CP commitCutover parses; do not rename without
+// updating internal/api/handlers/migrations/run.go and the control-plane spec.
+func buildLiveMigrationStats(info qemu.MigrateInfo, diskTransferred, diskTotal int64) map[string]any {
+	return map[string]any{
+		"ram": map[string]any{
+			"transferred":      info.RAM.Transferred,
+			"total":            info.RAM.Total,
+			"dirty_pages_rate": info.RAM.DirtyPagesRate,
+		},
+		"disk": map[string]any{
+			"transferred": diskTransferred,
+			"total":       diskTotal,
+		},
+		"total_time_ms": info.TotalTimeMs,
+		"downtime_ms":   info.DowntimeMs,
+		"setup_time_ms": info.SetupTimeMs,
 	}
 }
 

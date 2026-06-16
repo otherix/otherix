@@ -53,6 +53,7 @@ type MigrationWorkerStore interface {
 	BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error
 	UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error
 	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
+	UpdateMigrationStats(ctx context.Context, migID uuid.UUID, stats store.MigrationStats) error
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
@@ -583,8 +584,60 @@ func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON}); err != nil {
 		return fmt.Errorf("finalize task success: %v", err)
 	}
+	// Best-effort, fail-open: persist final live-migration stats AFTER the
+	// safety-critical cutover Txn has committed. A parse miss or a store error
+	// is logged and ignored - the migration stays completed; stats are
+	// observability only and must never fail or block a committed cutover.
+	if stats, ok := parseMigrationStats(terminal.Result); ok {
+		if serr := st.UpdateMigrationStats(ctx, migID, stats); serr != nil {
+			log.WarnContext(ctx, "persist migration stats failed (migration stays completed)",
+				slog.String("migration_id", migID.String()), slog.String("error", serr.Error()))
+		}
+	}
+
 	log.InfoContext(ctx, "migration completed (cutover committed)", slog.String("migration_id", migID.String()))
 	return nil
+}
+
+// parseMigrationStats extracts the final live-migration stats from a terminal
+// task result. Returns (_, false) when the result carries no "stats" object -
+// the common case for offline migrations and old agents. JSON numbers in a
+// map[string]any decode as float64; asInt64 normalises them.
+func parseMigrationStats(result map[string]any) (store.MigrationStats, bool) {
+	raw, ok := result["stats"].(map[string]any)
+	if !ok {
+		return store.MigrationStats{}, false
+	}
+	ram, _ := raw["ram"].(map[string]any)
+	disk, _ := raw["disk"].(map[string]any)
+	return store.MigrationStats{
+		RAMTransferred:    asInt64(ram["transferred"]),
+		RAMTotal:          asInt64(ram["total"]),
+		RAMDirtyPagesRate: asInt64(ram["dirty_pages_rate"]),
+		DiskTransferred:   asInt64(disk["transferred"]),
+		DiskTotal:         asInt64(disk["total"]),
+		TotalTimeMs:       asInt64(raw["total_time_ms"]),
+		DowntimeMs:        asInt64(raw["downtime_ms"]),
+		SetupTimeMs:       asInt64(raw["setup_time_ms"]),
+	}, true
+}
+
+// asInt64 coerces a decoded-JSON numeric (float64 / json.Number / int) to int64,
+// defaulting to 0 for any other / missing value.
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	default:
+		return 0
+	}
 }
 
 // failMigration marks the migration failed from the source task's terminal-failure

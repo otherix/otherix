@@ -81,6 +81,16 @@ func printMigrationText(cmd *cobra.Command, m cpclient.Migration) {
 	if m.CompletedAt != nil {
 		printf(cmd, "completed_at: %s\n", *m.CompletedAt)
 	}
+	if m.Stats != nil {
+		printf(cmd, "statistics:\n")
+		printf(cmd, "  ram:  transferred=%s total=%s dirty_pages_rate=%d\n",
+			humanBytes(m.Stats.RAM.Transferred), humanBytes(m.Stats.RAM.Total), m.Stats.RAM.DirtyPagesRate)
+		printf(cmd, "  disk: transferred=%s total=%s\n",
+			humanBytes(m.Stats.Disk.Transferred), humanBytes(m.Stats.Disk.Total))
+		printf(cmd, "  total_time_ms: %d\n", m.Stats.TotalTimeMs)
+		printf(cmd, "  downtime_ms: %d\n", m.Stats.DowntimeMs)
+		printf(cmd, "  setup_time_ms: %d\n", m.Stats.SetupTimeMs)
+	}
 }
 
 func boolYesNo(b bool) string {

@@ -13,6 +13,35 @@ import (
 	"github.com/digitalocean/go-qemu/qmp"
 )
 
+func TestMigrateInfo_ParsesTimingFields(t *testing.T) {
+	const reply = `{
+		"status": "completed",
+		"ram": {"transferred": 10737418240, "total": 10737418240, "dirty-pages-rate": 7},
+		"total-time": 45125,
+		"downtime": 150,
+		"setup-time": 1200
+	}`
+	var got MigrateInfo
+	if err := json.Unmarshal([]byte(reply), &got); err != nil {
+		t.Fatalf("Unmarshal(query-migrate reply) error: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("Status = %q, want %q", got.Status, "completed")
+	}
+	if got.RAM.DirtyPagesRate != 7 {
+		t.Errorf("RAM.DirtyPagesRate = %d, want 7", got.RAM.DirtyPagesRate)
+	}
+	if got.TotalTimeMs != 45125 {
+		t.Errorf("TotalTimeMs = %d, want 45125", got.TotalTimeMs)
+	}
+	if got.DowntimeMs != 150 {
+		t.Errorf("DowntimeMs = %d, want 150", got.DowntimeMs)
+	}
+	if got.SetupTimeMs != 1200 {
+		t.Errorf("SetupTimeMs = %d, want 1200", got.SetupTimeMs)
+	}
+}
+
 func TestObjectDelCmd_Shape(t *testing.T) {
 	got := objectDelCmd("migtls")
 	var cmd struct {

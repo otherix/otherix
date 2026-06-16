@@ -430,8 +430,26 @@ type Migration struct {
 	// LastScheduleAttemptAt records the last target-selection attempt while
 	// pending; nil before the first attempt. Mirrors VM.LastScheduleAttemptAt.
 	LastScheduleAttemptAt *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// Stats is the final live-migration statistics snapshot, captured on the
+	// source agent at completion and persisted once at cutover. nil until a live
+	// migration completes (always nil for offline / failed / cancelled).
+	Stats     *MigrationStats
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// MigrationStats is the final live-migration statistics snapshot, captured on
+// the source agent at completion and persisted once at cutover. Bytes for
+// RAM/disk, milliseconds for timings, pages/s for the RAM dirty rate.
+type MigrationStats struct {
+	RAMTransferred    int64
+	RAMTotal          int64
+	RAMDirtyPagesRate int64
+	DiskTransferred   int64
+	DiskTotal         int64
+	TotalTimeMs       int64
+	DowntimeMs        int64
+	SetupTimeMs       int64
 }
 
 type Network struct {

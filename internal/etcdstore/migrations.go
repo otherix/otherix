@@ -429,6 +429,46 @@ func (s *Store) UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, up
 	return nil
 }
 
+// UpdateMigrationStats persists the final live-migration statistics on an
+// existing migration row. Unlike UpdateMigrationProgress it is explicitly
+// allowed on a terminal (completed) migration - stats are captured at cutover,
+// after the phase is already completed. It mutates only Stats + UpdatedAt under
+// a single ModRevision CAS and touches no phase, index, or guard. Best-effort
+// by contract: the caller logs and ignores errors so stats never affect a
+// migration's outcome.
+func (s *Store) UpdateMigrationStats(ctx context.Context, migID uuid.UUID, stats store.MigrationStats) error {
+	resp, err := s.c.Raw().Get(ctx, migrationKey(migID))
+	if err != nil {
+		return err
+	}
+	if len(resp.Kvs) == 0 {
+		return store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var m store.Migration
+	if err := json.Unmarshal(resp.Kvs[0].Value, &m); err != nil {
+		return err
+	}
+	m.Stats = &stats
+	m.UpdatedAt = time.Now().UTC()
+
+	val, err := etcd.Marshal(m)
+	if err != nil {
+		return err
+	}
+	txResp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", rev)).
+		Then(clientv3.OpPut(migrationKey(m.ID), string(val))).
+		Commit()
+	if err != nil {
+		return err
+	}
+	if !txResp.Succeeded {
+		return store.ErrConcurrentUpdate
+	}
+	return nil
+}
+
 // CancelMigration marks a non-terminal migration cancelled with the audit
 // reason under a single ModRevision CAS. Cancel is valid only pre-cutover (spec
 // D5): a migration already in a terminal phase (completed/failed/cancelled) is
