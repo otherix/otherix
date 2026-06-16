@@ -105,6 +105,32 @@ type migrationView struct {
 	CompletedAt       *string `json:"completed_at"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
+	// Stats is the final live-migration statistics snapshot. nil (omitted /
+	// JSON null) until a live migration completes; absent for offline /
+	// failed / cancelled migrations.
+	Stats *migrationStatsView `json:"stats"`
+}
+
+// migrationStatsView mirrors the nested stats object in
+// components/schemas/Migration: RAM / disk byte counters, the RAM dirty-page
+// rate (pages/s), and the cutover timings (milliseconds).
+type migrationStatsView struct {
+	RAM         migrationRAMStatsView  `json:"ram"`
+	Disk        migrationDiskStatsView `json:"disk"`
+	TotalTimeMs int64                  `json:"total_time_ms"`
+	DowntimeMs  int64                  `json:"downtime_ms"`
+	SetupTimeMs int64                  `json:"setup_time_ms"`
+}
+
+type migrationRAMStatsView struct {
+	Transferred    int64 `json:"transferred"`
+	Total          int64 `json:"total"`
+	DirtyPagesRate int64 `json:"dirty_pages_rate"`
+}
+
+type migrationDiskStatsView struct {
+	Transferred int64 `json:"transferred"`
+	Total       int64 `json:"total"`
 }
 
 // toView projects a store.Migration onto its public migrationView. Nullable
@@ -134,6 +160,22 @@ func toView(m store.Migration) migrationView {
 		CompletedAt:       timePtrString(m.CompletedAt),
 		CreatedAt:         m.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         m.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if m.Stats != nil {
+		v.Stats = &migrationStatsView{
+			RAM: migrationRAMStatsView{
+				Transferred:    m.Stats.RAMTransferred,
+				Total:          m.Stats.RAMTotal,
+				DirtyPagesRate: m.Stats.RAMDirtyPagesRate,
+			},
+			Disk: migrationDiskStatsView{
+				Transferred: m.Stats.DiskTransferred,
+				Total:       m.Stats.DiskTotal,
+			},
+			TotalTimeMs: m.Stats.TotalTimeMs,
+			DowntimeMs:  m.Stats.DowntimeMs,
+			SetupTimeMs: m.Stats.SetupTimeMs,
+		}
 	}
 	return v
 }

@@ -6661,6 +6661,30 @@ components:
           format: date-time
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        stats:
+          type: [object, "null"]
+          description: >-
+            Final live-migration statistics, present only after a live
+            migration completes. Bytes for RAM/disk, milliseconds for timings,
+            pages/s for the RAM dirty rate.
+          properties:
+            ram:
+              type: object
+              properties:
+                transferred: { type: integer, format: int64 }
+                total: { type: integer, format: int64 }
+                dirty_pages_rate: { type: integer, format: int64 }
+              required: [transferred, total, dirty_pages_rate]
+            disk:
+              type: object
+              properties:
+                transferred: { type: integer, format: int64 }
+                total: { type: integer, format: int64 }
+              required: [transferred, total]
+            total_time_ms: { type: integer, format: int64 }
+            downtime_ms: { type: integer, format: int64 }
+            setup_time_ms: { type: integer, format: int64 }
+          required: [ram, disk, total_time_ms, downtime_ms, setup_time_ms]
 
     MigrationList:
       type: object
