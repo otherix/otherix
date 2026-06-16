@@ -42,6 +42,26 @@ func humanBytes(n int64) string {
 	}
 }
 
+// humanDuration renders a millisecond count as a human-readable duration with
+// one decimal place: 0ms / 26ms / 1.2s / 1.5m / 1.5h. The minimum granularity is
+// ms (sub-second values stay in whole ms; zero is "0ms"). Used by the `migration
+// get` statistics section (total_time / downtime / setup_time) so operators see
+// "3.7s" rather than a raw ms count; the JSON output keeps the raw milliseconds.
+func humanDuration(ms int64) string {
+	switch {
+	case ms <= 0:
+		return "0ms"
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60_000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	case ms < 3_600_000:
+		return fmt.Sprintf("%.1fm", float64(ms)/60_000)
+	default:
+		return fmt.Sprintf("%.1fh", float64(ms)/3_600_000)
+	}
+}
+
 const (
 	flagOutput = "output"
 	flagVM     = "vm"
