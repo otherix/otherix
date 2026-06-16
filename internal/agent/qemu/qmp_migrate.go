@@ -178,15 +178,33 @@ func (c *QMPClient) BlockExportAdd(id, nodeName, name string, writable bool) err
 	return nil
 }
 
-// blockExportDelCmd builds block-export-del for the export id.
-func blockExportDelCmd(id string) []byte {
-	return mustCmd("block-export-del", map[string]any{"id": id})
+// blockExportDelCmd builds block-export-del for the export id. An empty mode uses
+// the QEMU default ("safe": remove only if no client is connected); "hard" drops
+// all client connections immediately and removes the export.
+func blockExportDelCmd(id, mode string) []byte {
+	args := map[string]any{"id": id}
+	if mode != "" {
+		args["mode"] = mode
+	}
+	return mustCmd("block-export-del", args)
 }
 
-// BlockExportDel removes an NBD block export (see blockExportDelCmd).
+// BlockExportDel removes an NBD block export in safe mode: it fails if a client
+// is still connected (see blockExportDelCmd).
 func (c *QMPClient) BlockExportDel(id string) error {
-	if _, err := c.monitor.Run(blockExportDelCmd(id)); err != nil {
+	if _, err := c.monitor.Run(blockExportDelCmd(id, "")); err != nil {
 		return fmt.Errorf("block-export-del: %w", err)
+	}
+	return nil
+}
+
+// BlockExportDelHard removes an NBD block export in hard mode: it drops any
+// connected client and removes the export unconditionally. Used as a last-resort
+// fallback at live-migration switchover when the source's now-idle mirror client
+// will not disconnect (see delExportFreeingClient).
+func (c *QMPClient) BlockExportDelHard(id string) error {
+	if _, err := c.monitor.Run(blockExportDelCmd(id, "hard")); err != nil {
+		return fmt.Errorf("block-export-del (hard): %w", err)
 	}
 	return nil
 }

@@ -762,6 +762,19 @@ type fakeTargetConn struct {
 	mu     sync.Mutex
 	calls  []string
 	events chan qmp.Event
+
+	// safeDelFailsPerID is the number of leading safe-mode block-export-del
+	// attempts (per id) that fail "still in use" before succeeding. It models the
+	// source's NBD mirror client still being briefly attached at switchover.
+	safeDelFailsPerID int
+	// safeDelAlwaysFails makes every safe-mode delete fail (the source never
+	// disconnects, e.g. it crashed mid-cutover), forcing the hard-mode fallback.
+	safeDelAlwaysFails bool
+	// hardDelFails makes the hard-mode force-drop fail too (terminal).
+	hardDelFails bool
+
+	safeDelSeen map[string]int // per-id safe-mode attempt counter
+	hardDelSeen map[string]int // per-id hard-mode attempt counter
 }
 
 func (f *fakeTargetConn) rec(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.Unlock() }
@@ -772,7 +785,30 @@ func (f *fakeTargetConn) snapshot() []string {
 }
 func (f *fakeTargetConn) Events(context.Context) (<-chan qmp.Event, error) { return f.events, nil }
 func (f *fakeTargetConn) BlockExportDel(id string) error {
-	f.rec("block-export-del:" + id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.safeDelSeen == nil {
+		f.safeDelSeen = map[string]int{}
+	}
+	f.safeDelSeen[id]++
+	f.calls = append(f.calls, "block-export-del:"+id)
+	if f.safeDelAlwaysFails || f.safeDelSeen[id] <= f.safeDelFailsPerID {
+		return fmt.Errorf("block-export-del: export '%s' still in use", id)
+	}
+	return nil
+}
+
+func (f *fakeTargetConn) BlockExportDelHard(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hardDelSeen == nil {
+		f.hardDelSeen = map[string]int{}
+	}
+	f.hardDelSeen[id]++
+	f.calls = append(f.calls, "block-export-del-hard:"+id)
+	if f.hardDelFails {
+		return fmt.Errorf("block-export-del (hard): export '%s' del failed", id)
+	}
 	return nil
 }
 func (f *fakeTargetConn) ObjectDel(id string) error { f.rec("object-del:" + id); return nil }
@@ -813,6 +849,95 @@ func TestRunLiveTarget_FailClosedOnTimeout(t *testing.T) {
 	f := &fakeTargetConn{events: make(chan qmp.Event, 1)} // no event ever
 	if err := RunLiveTarget(context.Background(), f, LiveTargetSpec{ExportIDs: []string{"exp0"}, IncomingTimeout: 100 * time.Millisecond}); err == nil {
 		t.Fatal("RunLiveTarget() = nil, want error on incoming timeout")
+	}
+}
+
+// TestRunLiveTarget_RetriesExportDelWhileSourceStillAttached asserts the target
+// tolerates the benign switchover race: while the source's NBD mirror client is
+// still briefly attached, safe-mode block-export-del fails "still in use"; the
+// target retries until the source disconnects and never resorts to a force-drop.
+func TestRunLiveTarget_RetriesExportDelWhileSourceStillAttached(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1), safeDelFailsPerID: 2}
+	f.events <- migrationEvent("completed")
+
+	spec := LiveTargetSpec{
+		ExportIDs:         []string{"exp0"},
+		IncomingTimeout:   2 * time.Second,
+		ExportDelAttempts: 5,
+		ExportDelBackoff:  time.Millisecond,
+	}
+	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
+		t.Fatalf("RunLiveTarget() = %v, want nil after safe-mode retries", err)
+	}
+
+	f.mu.Lock()
+	safe, hard := f.safeDelSeen["exp0"], f.hardDelSeen["exp0"]
+	f.mu.Unlock()
+	if safe != 3 { // 2 "still in use" failures + 1 success
+		t.Errorf("safe-mode block-export-del attempts = %d, want 3", safe)
+	}
+	if hard != 0 {
+		t.Errorf("hard-mode attempts = %d, want 0 (cooperative path must not force-drop)", hard)
+	}
+}
+
+// TestRunLiveTarget_HardFallbackWhenSourceNeverDisconnects asserts that when the
+// source never releases its NBD client (e.g. it crashed mid-cutover), the target
+// exhausts safe-mode retries and force-drops the now-idle client with a single
+// hard-mode delete, then resumes the guest - saving the VM instead of losing it.
+func TestRunLiveTarget_HardFallbackWhenSourceNeverDisconnects(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1), safeDelAlwaysFails: true}
+	f.events <- migrationEvent("completed")
+
+	spec := LiveTargetSpec{
+		ExportIDs:         []string{"exp0"},
+		IncomingTimeout:   2 * time.Second,
+		ExportDelAttempts: 3,
+		ExportDelBackoff:  time.Millisecond,
+	}
+	if err := RunLiveTarget(context.Background(), f, spec); err != nil {
+		t.Fatalf("RunLiveTarget() = %v, want nil via hard-mode fallback", err)
+	}
+
+	f.mu.Lock()
+	safe, hard := f.safeDelSeen["exp0"], f.hardDelSeen["exp0"]
+	calls := append([]string(nil), f.calls...)
+	f.mu.Unlock()
+	if safe != 3 {
+		t.Errorf("safe-mode attempts = %d, want 3 (full budget before fallback)", safe)
+	}
+	if hard != 1 {
+		t.Errorf("hard-mode attempts = %d, want 1 (single force-drop fallback)", hard)
+	}
+	// The guest must resume (cont) and only AFTER the export is force-dropped.
+	hardIdx, contIdx := indexOf(calls, "block-export-del-hard:exp0"), indexOf(calls, "cont")
+	if hardIdx < 0 || contIdx < 0 || hardIdx > contIdx {
+		t.Errorf("call order = %v, want hard-del before cont", calls)
+	}
+}
+
+// TestRunLiveTarget_FailsClosedWhenHardFallbackAlsoFails asserts that if even the
+// hard-mode force-drop fails, the resume fails closed (no cont) - never resuming a
+// guest whose disk could still be touched by an external NBD writer.
+func TestRunLiveTarget_FailsClosedWhenHardFallbackAlsoFails(t *testing.T) {
+	f := &fakeTargetConn{events: make(chan qmp.Event, 1), safeDelAlwaysFails: true, hardDelFails: true}
+	f.events <- migrationEvent("completed")
+
+	spec := LiveTargetSpec{
+		ExportIDs:         []string{"exp0"},
+		IncomingTimeout:   2 * time.Second,
+		ExportDelAttempts: 2,
+		ExportDelBackoff:  time.Millisecond,
+	}
+	if err := RunLiveTarget(context.Background(), f, spec); err == nil {
+		t.Fatal("RunLiveTarget() = nil, want error when both safe and hard deletes fail")
+	}
+
+	f.mu.Lock()
+	calls := append([]string(nil), f.calls...)
+	f.mu.Unlock()
+	if indexOf(calls, "cont") >= 0 {
+		t.Fatalf("cont issued despite an undeleteable export - must fail closed before resuming; calls=%v", calls)
 	}
 }
 

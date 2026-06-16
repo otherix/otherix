@@ -237,7 +237,11 @@ func RunLiveSource(ctx context.Context, conn LiveSourceConn, s LiveSourceSpec, r
 // after the incoming RAM stream completes. *QMPClient satisfies it.
 type LiveTargetConn interface {
 	Events(ctx context.Context) (<-chan qmp.Event, error)
+	// BlockExportDel removes a writable NBD export in safe mode: it fails if a
+	// client is still connected. BlockExportDelHard force-drops any connected
+	// client and removes the export unconditionally.
 	BlockExportDel(id string) error
+	BlockExportDelHard(id string) error
 	ObjectDel(id string) error
 	NBDServerStop() error
 	Cont() error
@@ -249,11 +253,28 @@ type LiveTargetConn interface {
 type LiveTargetSpec struct {
 	ExportIDs       []string      // block-export-add ids to remove, in index order (one per LiveIncomingSpec.Disks entry)
 	IncomingTimeout time.Duration // fail-closed bound on the incoming wait; default liveDefaultIncomingTimeout
+	// ExportDelAttempts bounds the safe-mode block-export-del retries that absorb
+	// the benign switchover race (the source's NBD mirror client is still briefly
+	// attached). <=0 uses liveDefaultExportDelAttempts.
+	ExportDelAttempts int
+	// ExportDelBackoff is the wait between safe-mode block-export-del attempts.
+	// <=0 uses liveDefaultExportDelBackoff.
+	ExportDelBackoff time.Duration
 }
 
 // liveDefaultIncomingTimeout bounds the wait for the incoming migration to
 // complete on the target. It covers the whole RAM transfer, so it is generous.
 const liveDefaultIncomingTimeout = 30 * time.Minute
+
+// liveDefaultExportDelAttempts and liveDefaultExportDelBackoff bound the
+// cooperative safe-mode block-export-del retry at switchover. The product
+// (~2s) is the longest the target waits for the source's NBD mirror client to
+// disconnect before force-dropping it; the common race resolves in one or two
+// attempts.
+const (
+	liveDefaultExportDelAttempts = 40
+	liveDefaultExportDelBackoff  = 50 * time.Millisecond
+)
 
 // RunLiveTarget drives the target side of a live migration to a resumed guest
 // or fails closed. It waits for the incoming MIGRATION to reach "completed",
@@ -279,9 +300,17 @@ func RunLiveTarget(ctx context.Context, conn LiveTargetConn, s LiveTargetSpec) e
 	}
 	// Order is load-bearing: drop EVERY writable export before the guest takes
 	// the disks, so no external NBD writer can touch a disk once cont activates
-	// it.
+	// it. The source's NBD mirror client disconnects asynchronously right after
+	// the migration completes, so safe-mode block-export-del can transiently fail
+	// "still in use"; delExportFreeingClient retries, then force-drops the now-idle
+	// client as a last resort.
+	attempts := s.ExportDelAttempts
+	if attempts <= 0 {
+		attempts = liveDefaultExportDelAttempts
+	}
+	backoff := durationOr(s.ExportDelBackoff, liveDefaultExportDelBackoff)
 	for _, id := range s.ExportIDs {
-		if err := conn.BlockExportDel(id); err != nil {
+		if err := delExportFreeingClient(ctx, conn, id, attempts, backoff); err != nil {
 			return fmt.Errorf("remove nbd export %q: %w", id, err)
 		}
 	}
@@ -297,6 +326,40 @@ func RunLiveTarget(ctx context.Context, conn LiveTargetConn, s LiveTargetSpec) e
 	// the resume (it only degrades to the prior leak, blocking the NEXT migration).
 	_ = conn.ObjectDel(migTLSCredsID)
 	_ = conn.ObjectDel(migAuthzID)
+	return nil
+}
+
+// delExportFreeingClient removes one writable NBD export, tolerating the benign
+// switchover race in which the SOURCE's NBD mirror client is still briefly
+// attached. Safe-mode block-export-del fails "still in use" while a client is
+// connected, so it retries (attempts/backoff) to give the source time to
+// disconnect cooperatively. Only if the cooperative path is exhausted - e.g. the
+// source crashed mid-cutover and will never disconnect - does it force-drop the
+// client with a single hard-mode delete. The disk mirror reached
+// BLOCK_JOB_COMPLETED before migrate-continue, so the lingering client carries no
+// in-flight writes: the force-drop cannot lose data, it only enforces the
+// load-bearing "no external writer before cont" invariant when the source will
+// not yield. A failing hard-mode delete is terminal - the caller fails closed and
+// never resumes the guest.
+func delExportFreeingClient(ctx context.Context, conn LiveTargetConn, id string, attempts int, backoff time.Duration) error {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		err := conn.BlockExportDel(id)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	if err := conn.BlockExportDelHard(id); err != nil {
+		return fmt.Errorf("safe-mode retries exhausted (%v); hard-mode force-drop failed: %v", lastErr, err)
+	}
 	return nil
 }
 

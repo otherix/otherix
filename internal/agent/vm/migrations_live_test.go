@@ -582,6 +582,7 @@ type stubTargetConn struct{}
 
 func (stubTargetConn) Events(ctx context.Context) (<-chan qmp.Event, error) { return nil, nil }
 func (stubTargetConn) BlockExportDel(id string) error                       { return nil }
+func (stubTargetConn) BlockExportDelHard(id string) error                   { return nil }
 func (stubTargetConn) ObjectDel(id string) error                            { return nil }
 func (stubTargetConn) NBDServerStop() error                                 { return nil }
 func (stubTargetConn) Cont() error                                          { return nil }
