@@ -52,6 +52,31 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEncodeCompactAndRoundTripsMicros pins the compact form (a 24-byte payload
+// -> 32 base64url chars, far shorter than the former JSON token) and confirms a
+// real microsecond-precision UTC timestamp round-trips to the same instant - the
+// precision the keyset comparison relies on.
+func TestEncodeCompactAndRoundTripsMicros(t *testing.T) {
+	c := &pagination.Cursor{
+		CreatedAt: time.Date(2026, 6, 16, 17, 0, 48, 558338000, time.UTC), // micros
+		ID:        uuid.MustParse("e5cb61a9-8293-46a7-b68d-7471bba5cd37"),
+	}
+	enc := pagination.Encode(c)
+	if len(enc) != 32 {
+		t.Errorf("compact cursor length = %d, want 32 (24-byte payload, base64url no pad): %q", len(enc), enc)
+	}
+	got, err := pagination.Decode(enc)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !got.CreatedAt.Equal(c.CreatedAt) {
+		t.Errorf("CreatedAt round-trip = %v, want %v", got.CreatedAt, c.CreatedAt)
+	}
+	if got.ID != c.ID {
+		t.Errorf("ID round-trip = %v, want %v", got.ID, c.ID)
+	}
+}
+
 func TestEncodeNilEmptyString(t *testing.T) {
 	if got := pagination.Encode(nil); got != "" {
 		t.Errorf("Encode(nil) = %q, want \"\"", got)
