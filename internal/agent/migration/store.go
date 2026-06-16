@@ -75,7 +75,12 @@ type Record struct {
 	// Progress.
 	BytesTotal       int64
 	BytesTransferred int64
-	ErrorMessage     string
+	// Peak disk-mirror totals observed across live-progress ticks (bytes).
+	// Captured as independent maxima because a finished block job vanishes
+	// from query-block-jobs; at full mirror DiskBytesTransferred == DiskBytesTotal.
+	DiskBytesTotal       int64
+	DiskBytesTransferred int64
+	ErrorMessage         string
 
 	CreatedAt   time.Time
 	StartedAt   time.Time
