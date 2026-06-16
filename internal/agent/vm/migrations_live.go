@@ -418,6 +418,14 @@ func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg st
 	if v, err := m.Get(vmID); err == nil {
 		m.killQEMU(v)
 		m.teardownNICs(v.NICs)
+		// Defensive: close any serial mux so logs/console subscribers see
+		// Done() instead of hanging on a dead qemu. Today this path is always
+		// reached BEFORE the target attaches its mux (attachMux runs only on
+		// resume success), so this is a no-op; it guards the implicit
+		// pre-attachMux invariant against a future change that streams during
+		// resume. Idempotent - a no-op when no mux is registered. Mirrors the
+		// teardownDepartedSource fix on the source side.
+		m.detachMux(v.Name)
 	}
 	if ram > 0 || nbd > 0 {
 		m.migPorts.ReleasePair(ram, nbd)
