@@ -134,9 +134,9 @@ func TestPrintMigrationText_StatsSection(t *testing.T) {
 		"statistics:",
 		"ram:  transferred=10.0GiB total=10.0GiB dirty_pages_rate=7",
 		"disk: transferred=5.0GiB total=5.0GiB",
-		"total_time_ms: 45125",
-		"downtime_ms: 150",
-		"setup_time_ms: 1200",
+		"total_time: 45.1s",
+		"downtime: 150ms",
+		"setup_time: 1.2s",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- got ---\n%s", want, out)
@@ -159,6 +159,33 @@ func TestHumanBytes(t *testing.T) {
 	for _, c := range cases {
 		if got := humanBytes(c.in); got != c.want {
 			t.Errorf("humanBytes(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestHumanDuration(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0ms"},
+		{1, "1ms"},
+		{26, "26ms"},
+		{150, "150ms"},
+		{999, "999ms"},
+		{1000, "1.0s"},
+		{1200, "1.2s"},
+		{3733, "3.7s"},
+		{45125, "45.1s"},
+		{59999, "60.0s"},
+		{60000, "1.0m"},
+		{90000, "1.5m"},
+		{3600000, "1.0h"},
+		{5400000, "1.5h"},
+	}
+	for _, c := range cases {
+		if got := humanDuration(c.in); got != c.want {
+			t.Errorf("humanDuration(%d) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

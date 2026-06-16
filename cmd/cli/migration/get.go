@@ -87,9 +87,9 @@ func printMigrationText(cmd *cobra.Command, m cpclient.Migration) {
 			humanBytes(m.Stats.RAM.Transferred), humanBytes(m.Stats.RAM.Total), m.Stats.RAM.DirtyPagesRate)
 		printf(cmd, "  disk: transferred=%s total=%s\n",
 			humanBytes(m.Stats.Disk.Transferred), humanBytes(m.Stats.Disk.Total))
-		printf(cmd, "  total_time_ms: %d\n", m.Stats.TotalTimeMs)
-		printf(cmd, "  downtime_ms: %d\n", m.Stats.DowntimeMs)
-		printf(cmd, "  setup_time_ms: %d\n", m.Stats.SetupTimeMs)
+		printf(cmd, "  total_time: %s\n", humanDuration(m.Stats.TotalTimeMs))
+		printf(cmd, "  downtime: %s\n", humanDuration(m.Stats.DowntimeMs))
+		printf(cmd, "  setup_time: %s\n", humanDuration(m.Stats.SetupTimeMs))
 	}
 }
 
