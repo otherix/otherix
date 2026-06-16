@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
@@ -401,4 +402,161 @@ func TestConsoleRelayBridgesAndClosesCleanly(t *testing.T) {
 	if _, _, err := op.Read(context.Background()); err == nil {
 		t.Errorf("operator read after clean close = nil err, want close")
 	}
+}
+
+// TestConsoleFollowReattachesAtCutover is the headline seam test: agent
+// A echoes, then drops the upstream (cutover); the store flips
+// PinnedNodeID A -> B; the CP must mint a token against B's endpoint,
+// re-dial B, and echo a byte written AFTER the cutover on the SAME
+// operator WS.
+func TestConsoleFollowReattachesAtCutover(t *testing.T) {
+	t.Parallel()
+	agentA := newWSAgentServer(t, true)
+	agentB := newWSAgentServer(t, true)
+	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeB := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentB.host()}
+	st := &followStoreStub{
+		vm:    store.VM{ID: uuid.New(), Name: "demo"},
+		nodes: []store.Node{nodeA, nodeB},
+	}
+	cl := &recordingConsoleClient{token: "tok"}
+	cp := cpConsoleServer(t, newFollowHandler(st, cl))
+
+	op := dialOperator(t, cp, "demo", "tok")
+	_ = op.Write(context.Background(), websocket.MessageBinary, []byte("a"))
+	if _, data, err := op.Read(context.Background()); err != nil || string(data) != "a" {
+		t.Fatalf("pre-cutover echo = %q,%v, want a", data, err)
+	}
+	closeOnce(agentA.closed)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var echoed bool
+	for time.Now().Before(deadline) {
+		_ = op.Write(context.Background(), websocket.MessageBinary, []byte("b"))
+		typ, data, err := op.Read(context.Background())
+		if err == nil && typ == websocket.MessageBinary && string(data) == "b" {
+			echoed = true
+			break
+		}
+		if err != nil {
+			t.Fatalf("post-cutover read error before reattach: %v", err)
+		}
+	}
+	if !echoed {
+		t.Errorf("post-cutover byte never echoed from B")
+	}
+	if eps := cl.mintedEndpoints(); len(eps) == 0 || eps[len(eps)-1] != nodeB.AdvertisedEndpoint {
+		t.Errorf("minted endpoints = %v, want last == %q", eps, nodeB.AdvertisedEndpoint)
+	}
+}
+
+// TestConsoleFollowBuffersKeystrokesDuringGap: bytes written while B has
+// not yet accepted are buffered and delivered to B in order on reattach.
+func TestConsoleFollowBuffersKeystrokesDuringGap(t *testing.T) {
+	t.Parallel()
+	agentA := newWSAgentServer(t, false)
+	agentB := newWSAgentServer(t, false)
+	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeB := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentB.host()}
+	st := &followStoreStub{vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA, nodeB}}
+	cp := cpConsoleServer(t, newFollowHandler(st, &recordingConsoleClient{token: "tok"}))
+
+	op := dialOperator(t, cp, "demo", "tok")
+	<-agentA.accept
+	closeOnce(agentA.closed)
+	_ = op.Write(context.Background(), websocket.MessageBinary, []byte("buffered"))
+
+	<-agentB.accept
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if string(agentB.received()) == "buffered" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("agentB received %q, want buffered", agentB.received())
+}
+
+// TestConsoleFollowGivesUpOnWindowExpiry: ActiveMigrationForVM stays true
+// but PinnedNodeID never flips -> the loop gives up at the (shrunk)
+// window and closes with consoleMigratedCloseCode.
+func TestConsoleFollowGivesUpOnWindowExpiry(t *testing.T) {
+	t.Parallel()
+	defer shrinkConsoleReattach(t, 300*time.Millisecond, 50*time.Millisecond)()
+
+	agentA := newWSAgentServer(t, false)
+	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	st := &followStoreStub{
+		vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA}, migrating: true,
+	}
+	cp := cpConsoleServer(t, newFollowHandler(st, &recordingConsoleClient{token: "tok"}))
+
+	op := dialOperator(t, cp, "demo", "tok")
+	<-agentA.accept
+	closeOnce(agentA.closed)
+
+	_, _, err := op.Read(context.Background())
+	if websocket.CloseStatus(err) != consoleMigratedCloseCode {
+		t.Errorf("close status = %v, want %v (err=%v)", websocket.CloseStatus(err), consoleMigratedCloseCode, err)
+	}
+}
+
+// TestConsoleFollowTransientThenSuccess: B's IssueConsoleToken errors for
+// the first polls (target Running-before-attachMux race) then succeeds;
+// the loop retries within the window and re-bridges.
+func TestConsoleFollowTransientThenSuccess(t *testing.T) {
+	t.Parallel()
+	agentB := newWSAgentServer(t, true)
+	agentA := newWSAgentServer(t, true)
+	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeB := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentB.host()}
+	st := &followStoreStub{vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA, nodeB}}
+	cl := &flakyConsoleClient{recordingConsoleClient: recordingConsoleClient{token: "tok"}, failFirst: 2}
+	cp := cpConsoleServer(t, newFollowHandler(st, cl))
+
+	op := dialOperator(t, cp, "demo", "tok")
+	<-agentA.accept
+	closeOnce(agentA.closed)
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = op.Write(context.Background(), websocket.MessageBinary, []byte("z"))
+		if _, data, err := op.Read(context.Background()); err == nil && string(data) == "z" {
+			return
+		} else if err != nil {
+			t.Fatalf("read before reattach: %v", err)
+		}
+	}
+	t.Errorf("never re-bridged after transient mint failures")
+}
+
+// flakyConsoleClient fails IssueConsoleToken failFirst times (per the
+// target Running-before-attachMux race) then behaves like its embedded
+// recording client.
+type flakyConsoleClient struct {
+	recordingConsoleClient
+	mu        sync.Mutex
+	failFirst int
+}
+
+func (c *flakyConsoleClient) IssueConsoleToken(ctx context.Context, endpoint, vm, proto string) (agentclient.IssueConsoleTokenResponse, error) {
+	c.mu.Lock()
+	fail := c.failFirst > 0
+	if fail {
+		c.failFirst--
+	}
+	c.mu.Unlock()
+	if fail {
+		return agentclient.IssueConsoleTokenResponse{}, errors.New("vm_not_running")
+	}
+	return c.recordingConsoleClient.IssueConsoleToken(ctx, endpoint, vm, proto)
+}
+
+// shrinkConsoleReattach swaps the package-level reattach tunables to fast
+// test values and returns a restore func.
+func shrinkConsoleReattach(t *testing.T, window, poll time.Duration) func() {
+	t.Helper()
+	ow, op := consoleReattachWindowVar, consoleReattachPollVar
+	consoleReattachWindowVar, consoleReattachPollVar = window, poll
+	return func() { consoleReattachWindowVar, consoleReattachPollVar = ow, op }
 }

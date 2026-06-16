@@ -238,14 +238,15 @@ func (h *Handler) relayUpstreamDialError(w http.ResponseWriter, r *http.Request,
 		response.CodeAgentUnreachable, "console relay dial failed", nil)
 }
 
-// Re-attach tuning for the console follow loop. The window is
-// deliberately short (vs the logs slice's 60s): per the keystroke
-// policy a slow cutover drops the session rather than buffer for a
-// minute. See the design doc.
-const (
-	consoleReattachWindow       = 8 * time.Second
-	consoleReattachPollInterval = 250 * time.Millisecond
-	consoleInboundBufferLimit   = 32 * 1024
+const consoleInboundBufferLimit = 32 * 1024
+
+// Re-attach tuning (vars so tests can shrink them; production defaults
+// per the design doc). The window is deliberately short (vs logs' 60s):
+// per the keystroke policy a slow cutover drops the session rather than
+// buffer for a minute.
+var (
+	consoleReattachWindowVar = 8 * time.Second
+	consoleReattachPollVar   = 250 * time.Millisecond
 )
 
 // consoleMigratedCloseCode is the application WebSocket close code the CP
@@ -340,20 +341,44 @@ func (h *Handler) bridgeAttempt(sessionCtx context.Context, vmName string, downs
 	go func() {
 		defer wg.Done()
 		defer cancel()
+		// inflight is the most recently written-but-unconfirmed frame. A
+		// frame is committed (left dropped) only AFTER the NEXT frame writes
+		// successfully - a confirmed follow-up write proves the upstream
+		// actually processed the prior one. The last frame written before an
+		// upstream break is therefore never confirmed, so on teardown it is
+		// unshifted back to the buffer head and the next bridge re-delivers
+		// it across the swap. This closes the lost-keystroke window: a frame
+		// written into a concurrently-closing upstream can be silently
+		// dropped even though Write returns nil, and a (possibly
+		// non-echoing) console gives no app-level ACK to confirm delivery
+		// any other way. At-least-once: the swap can duplicate the last
+		// pre-break keystroke, which is harmless on a console; losing it is
+		// not.
+		var inflight []byte
 		for {
 			frame, ok := buf.take()
 			if !ok {
 				select {
 				case <-ctx.Done():
+					if inflight != nil {
+						buf.unshift(inflight)
+					}
 					return
 				case <-buf.signal():
 					continue
 				}
 			}
 			if werr := upstream.Write(ctx, websocket.MessageBinary, frame); werr != nil {
+				// frame never landed; re-buffer it (and the prior
+				// unconfirmed frame) at the head for the next bridge, head
+				// order preserved by unshifting frame after inflight.
 				buf.unshift(frame)
+				if inflight != nil {
+					buf.unshift(inflight)
+				}
 				return
 			}
+			inflight = frame
 		}
 	}()
 	go func() {
@@ -379,8 +404,85 @@ type reattachResult struct {
 	upstream *websocket.Conn
 }
 
-// decideReattach is a STUB in Task 3 (always clean end); Task 4 replaces
-// it with the windowed re-attach decision tree.
-func (h *Handler) decideReattach(context.Context, store.VM, consoleNode, *consoleInboundBuffer) (reattachResult, reattachDecision) {
-	return reattachResult{}, reattachClean
+// decideReattach runs after an upstream break (downstream still alive).
+// Same node + no migration is a clean end (the VM was stopped / the agent
+// closed the console). Otherwise it re-mints a fresh token against the
+// current owner and re-dials within consoleReattachWindowVar, retrying
+// transient mint/dial failures (the target Running-before-attachMux race
+// and a brief console_in_use). Buffer overflow or a never-converging
+// migration -> give up. It performs no destructive action: on
+// overflow/window/uncertainty it closes the operator session, never
+// mutating VM or qemu state.
+func (h *Handler) decideReattach(ctx context.Context, vm store.VM, current consoleNode, buf *consoleInboundBuffer) (reattachResult, reattachDecision) {
+	fresh, err := h.store.VMByName(ctx, vm.Name)
+	if err != nil {
+		return reattachResult{}, reattachClean
+	}
+	owner, err := h.resolveConsoleNode(ctx, fresh)
+	if err == nil && owner.id == current.id {
+		if _, migrating, merr := h.store.ActiveMigrationForVM(ctx, vm.ID); merr != nil || !migrating {
+			return reattachResult{}, reattachClean
+		}
+	}
+
+	deadline := time.Now().Add(consoleReattachWindowVar)
+	ticker := time.NewTicker(consoleReattachPollVar)
+	defer ticker.Stop()
+	for {
+		if buf.overflowed() {
+			return reattachResult{}, reattachGiveUp
+		}
+		owner, err := h.resolveConsoleNode(ctx, h.reReadVM(ctx, vm.Name))
+		switch {
+		case err != nil:
+			// Transient resolve failure: keep polling.
+		case owner.id == current.id:
+			if _, migrating, _ := h.store.ActiveMigrationForVM(ctx, vm.ID); !migrating {
+				return reattachResult{}, reattachClean
+			}
+		default:
+			if up, ok := h.dialReattach(ctx, owner, vm.Name); ok {
+				return reattachResult{node: owner, upstream: up}, reattachOK
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return reattachResult{}, reattachGiveUp
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				return reattachResult{}, reattachGiveUp
+			}
+		}
+	}
+}
+
+// dialReattach mints a fresh serial token against owner and dials its
+// console-stream. Any failure is transient (target not Running yet, mux
+// not attached, brief console_in_use) -> ok=false, the caller retries. A
+// successful dial returns a live upstream the caller (relayConsoleFollow)
+// owns and closes; dialReattach never closes it.
+func (h *Handler) dialReattach(ctx context.Context, owner consoleNode, vmName string) (*websocket.Conn, bool) {
+	tok, err := h.consoleDeps.AgentClient.IssueConsoleToken(ctx, owner.endpoint, vmName, "serial")
+	if err != nil {
+		return nil, false
+	}
+	up, _, err := websocket.Dial(ctx, buildAgentConsoleURL(owner.host, vmName, tok.Token), &websocket.DialOptions{
+		HTTPClient: h.consoleDeps.AgentClient.HTTPClient(),
+	})
+	if err != nil {
+		return nil, false
+	}
+	return up, true
+}
+
+// reReadVM re-reads the VM by name. On error it returns a zero VM whose
+// resolve fails, which decideReattach treats as a transient (it keeps
+// polling rather than ending the loop early on a re-read error while a
+// migration is in flight).
+func (h *Handler) reReadVM(ctx context.Context, name string) store.VM {
+	vm, err := h.store.VMByName(ctx, name)
+	if err != nil {
+		return store.VM{}
+	}
+	return vm
 }
