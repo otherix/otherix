@@ -51,7 +51,17 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.CancelMigration(r.Context(), m.ID, "cancelled by "+caller.ID.String())
+	// Record WHO cancelled in a human-readable form: the caller's display name,
+	// not the opaque principal UUID (JWTs carry only the user id, so resolve it)
+	// and not the email (PII that would be exposed on the migration record to
+	// every reader). Fall back to the id when the display name is unset or the
+	// user vanished (soft-deleted mid-request) - the cancel must not fail on a
+	// cosmetic lookup.
+	cancelledBy := caller.ID.String()
+	if u, uerr := h.store.UserByID(r.Context(), caller.ID); uerr == nil && u.DisplayName != "" {
+		cancelledBy = u.DisplayName
+	}
+	updated, err := h.store.CancelMigration(r.Context(), m.ID, "cancelled by "+cancelledBy)
 	if err != nil {
 		if errors.Is(err, store.ErrMigrationNotCancelable) {
 			// Already terminal: best-effort, return the current row unchanged at 200.

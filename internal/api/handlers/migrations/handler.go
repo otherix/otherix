@@ -29,6 +29,7 @@ type Store interface {
 	resolver.Querier
 
 	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
+	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	NodeByName(ctx context.Context, name string) (store.Node, error)
 	CreateMigration(ctx context.Context, p store.CreateMigrationParams, args queue.JobArgs) (store.Migration, error)
