@@ -563,6 +563,14 @@ func (m *Manager) teardownDepartedSource(v *VM) {
 	}
 	m.killQEMU(v)
 	m.teardownNICs(v.NICs)
+	// Close the serial multiplexer so every attached logs/console subscriber
+	// sees Done(). That Done is what makes a streaming /logs handler return,
+	// which is the upstream break the CP-side follow relay reattaches on - so a
+	// `vm logs -f` follows the guest to the target instead of hanging on the
+	// dead source mux. Also releases the pump goroutine + log file handle that
+	// would otherwise leak on every live migration. Before removeAdoptedVM so
+	// the log file is closed before its state dir is removed (ADR 0029 L16).
+	m.detachMux(v.Name)
 	m.removeAdoptedVM(v.ID)
 }
 
