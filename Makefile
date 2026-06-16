@@ -213,6 +213,10 @@ smoke-chaos-cp-crash-migrate: ## Chaos: SIGKILL the CP mid vm.migrate; the lease
 smoke-chaos-target-crash-incoming: ## Chaos: crash the target agent mid-incoming; recovery reaps the orphaned inmigrate qemu (no leak), the source stays safe (P1a; run after local-dev-start)
 	@bash dev/smoke/chaos-target-crash-incoming/run.sh
 
+.PHONY: smoke-vm-migration-cancel
+smoke-vm-migration-cancel: ## Migration cancel propagation: `otherix migration cancel` aborts the source + reaps the target PROMPTLY (no agent timeout); task finalizes cancelled, source stays running (run after local-dev-start)
+	@bash dev/smoke/vm-migration-cancel/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
