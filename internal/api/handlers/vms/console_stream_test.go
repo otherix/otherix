@@ -481,7 +481,11 @@ func TestConsoleFollowBuffersKeystrokesDuringGap(t *testing.T) {
 // but PinnedNodeID never flips -> the loop gives up at the (shrunk)
 // window and closes with consoleMigratedCloseCode.
 func TestConsoleFollowGivesUpOnWindowExpiry(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel: shrinkConsoleReattach mutates the package-level
+	// consoleReattachWindowVar/consoleReattachPollVar that the other
+	// (parallel) ConsoleFollow tests read via decideReattach. Running this
+	// writer sequentially keeps its mutate+restore in the non-parallel
+	// phase, before the parallel readers resume - no data race on the vars.
 	defer shrinkConsoleReattach(t, 300*time.Millisecond, 50*time.Millisecond)()
 
 	agentA := newWSAgentServer(t, false)
