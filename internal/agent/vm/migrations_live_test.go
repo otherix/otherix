@@ -1074,6 +1074,86 @@ func TestRunOutgoingLive_SuccessTearsDownSource(t *testing.T) {
 	}
 }
 
+// cancelInWindowConn fires a cancel from inside AnnounceSelf, which
+// runIncomingResume calls AFTER it flips the guest to StatusRunning but (in the
+// pre-fix ordering) BEFORE it stamps the record terminal. This deterministically
+// lands a CancelMigration inside the post-cont window the P1b fix closes.
+type cancelInWindowConn struct {
+	stubTargetConn
+	cancel func()
+}
+
+func (c *cancelInWindowConn) AnnounceSelf(qemu.AnnounceParameters) error {
+	c.cancel()
+	return nil
+}
+
+// TestRunIncomingResume_PostContCancelNoOps is the teeth for P1b: a cancel that
+// arrives AFTER the target guest resumed (cont done, VM StatusRunning) must
+// no-op, never reap the now-live guest. It drives the REAL runIncomingResume and
+// the REAL CancelMigration entry; the cancel is fired from inside the post-resume
+// AnnounceSelf step, landing in the exact window. Pre-fix the record is not yet
+// terminal at that point, so cancelLive takes the target reap arm
+// (teardownIncomingTarget -> killQEMU + removeAdoptedVM) and destroys the live
+// guest: the VM disappears (Get returns ErrNotFound) and its disk dir is removed.
+// Post-fix the record is already PhaseCompleted, so cancelLive no-ops.
+func TestRunIncomingResume_PostContCancelNoOps(t *testing.T) {
+	m := newTestManager(t)
+
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	migID := uuid.New()
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair: %v", err)
+	}
+	m.migrations.Put(&migration.Record{
+		MigrationID: migID, VMID: v.ID, VMName: v.Name,
+		Role: migration.RoleTarget, Mode: migration.ModeLive, Phase: migration.PhaseSetup,
+		Port: ram, NBDPort: nbd, ExportIDs: []string{"exp0"}, CreatedAt: time.Now().UTC(),
+	})
+
+	conn := &cancelInWindowConn{cancel: func() { m.CancelMigration(migID) }}
+	m.migDialQMPTarget = func(string) (qemu.LiveTargetConn, error) { return conn, nil }
+	m.migRunLiveTarget = func(context.Context, qemu.LiveTargetConn, qemu.LiveTargetSpec) error {
+		return nil
+	}
+
+	task := m.tasks.Create(TaskKindVMMigrate, v.ID)
+	m.runIncomingResume(context.Background(), task.ID, migID, v.ID, ram, nbd)
+
+	// The just-resumed guest must survive the in-window cancel: still present,
+	// still running, disk intact. Read the raw in-map record (m.Get probes the
+	// absent pidfile and would report stopped under the unit fake).
+	m.mu.Lock()
+	got, present := m.vms[v.ID]
+	var gotStatus Status
+	if present {
+		gotStatus = got.Status
+	}
+	m.mu.Unlock()
+	if !present {
+		t.Fatalf("VM %s removed by in-window cancel; want the resumed guest kept", v.ID)
+	}
+	if gotStatus != StatusRunning {
+		t.Errorf("status = %v, want running (cancel must not stop a resumed guest)", gotStatus)
+	}
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("disk dir removed by in-window cancel: %v (removeAdoptedVM must not run post-cont)", err)
+	}
+
+	// The migration reports completed, not cancelled: the cancel no-ops because
+	// the record was stamped terminal at cont success.
+	view, ok := m.GetMigration(migID)
+	if !ok {
+		t.Fatalf("GetMigration(%s) ok=false", migID)
+	}
+	if view.Phase != string(migration.PhaseCompleted) {
+		t.Errorf("phase = %q, want completed (post-cont cancel must no-op)", view.Phase)
+	}
+}
+
 func TestCancelLive_SetsCancelledAndReleasesPorts(t *testing.T) {
 	m := newTestManager(t)
 	v := m.seedRunningVM(t, "demo")

@@ -346,6 +346,17 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 
 	m.transitionVM(v.ID, StatusRunning, "")
 
+	// Stamp the record completed at cont success: the guest is now running from
+	// the transferred RAM, so the migration IS done - the steps below
+	// (announce/GARP/persist/mux) are best-effort decorations. Marking terminal
+	// here closes the post-cont cancel window: a CancelMigration arriving after
+	// the guest resumed finds Terminal()==true and cancelLive no-ops, instead of
+	// taking the pre-cutover reap arm that would kill the now-live guest.
+	m.migrations.Update(migrationID, func(r *migration.Record) {
+		r.Phase = migration.PhaseCompleted
+		r.CompletedAt = time.Now().UTC()
+	})
+
 	// Tell the L2 segment the guest moved here: QEMU self-announce (RARP, MAC-only,
 	// IP-independent) so a physical switch / learning bridge relearns the port on
 	// this node. The PRIMARY cutover for type=bridge NICs; harmless belt-and-
@@ -377,10 +388,6 @@ func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vm
 		m.log.Warn("incoming resume: attach mux failed", "vm", v.Name, "err", err)
 	}
 	m.migPorts.ReleasePair(ram, nbd)
-	m.migrations.Update(migrationID, func(r *migration.Record) {
-		r.Phase = migration.PhaseCompleted
-		r.CompletedAt = time.Now().UTC()
-	})
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
 }
 
