@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agentapi"
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
@@ -39,17 +40,31 @@ type Store interface {
 	CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error)
 }
 
+// MigrationCancelClient is the narrow agent-call seam the cancel handler uses to
+// best-effort propagate a CP-side cancel to the source (abort its outgoing push)
+// and, for a live migration, the target (reap its incoming setup). It is purely
+// additive teardown acceleration on top of the already-cancelled (fail-safe)
+// migration: the cancel outcome NEVER depends on agent reachability.
+// *agentclient.Client satisfies it structurally; tests inject a fake.
+type MigrationCancelClient interface {
+	CancelMigration(ctx context.Context, endpoint, vmName, migrationID string) (agentapi.Migration, error)
+}
+
 // Handler bundles the dependencies for the /v1/vms/{id}/migrate +
 // /v1/migrations/* routes.
 type Handler struct {
 	store Store
+	agent MigrationCancelClient
 	log   *slog.Logger
 }
 
 // New constructs a Handler. It takes the Store interface so any
-// conforming backend can be wired in; production passes *etcdstore.Store.
-func New(s Store, log *slog.Logger) *Handler {
-	return &Handler{store: s, log: log}
+// conforming backend can be wired in; production passes *etcdstore.Store. The
+// agent seam is nil-safe: a nil MigrationCancelClient disables best-effort
+// cancel propagation (the cancel still succeeds), so the agent router and tests
+// may pass nil.
+func New(s Store, agent MigrationCancelClient, log *slog.Logger) *Handler {
+	return &Handler{store: s, agent: agent, log: log}
 }
 
 // migrationView mirrors components/schemas/Migration in

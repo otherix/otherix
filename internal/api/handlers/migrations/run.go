@@ -354,6 +354,18 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 		convergePostCutover(ctx, st, agent, log, m.ID, vm, source, target, m.Live)
 		return nil
 	case "failed", "cancelled":
+		// The source task went terminal. Distinguish two causes by reloading the
+		// migration: a CP-side operator cancel (we aborted the source, so the
+		// migration is ALREADY terminal-cancelled) vs a genuine source failure (the
+		// migration is still non-terminal). For the already-terminal case,
+		// failMigration would call UpdateMigrationProgress(failed) -> ErrMigrationTerminal
+		// -> a wasted retry and a misleading "migration failed" log; instead finalize
+		// the backing task to MATCH the terminal migration (cancelled -> cancelled) and
+		// reap the bound target's incoming (idempotent). Only a still-non-terminal
+		// migration takes the genuine-failure path (fail-safe-to-source).
+		if reloaded, rerr := st.MigrationByID(ctx, m.ID); rerr == nil && isTerminalPhase(reloaded.Phase) {
+			return finalizeForTerminalMigration(ctx, st, agent, log, taskID, reloaded)
+		}
 		cancelTargetIncoming(ctx, agent, log, m, vm, target)
 		return failMigration(ctx, st, log, taskID, m.ID, terminal)
 	default:

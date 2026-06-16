@@ -25,9 +25,10 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// newHandler builds a migrations.Handler over the real etcdstore.
+// newHandler builds a migrations.Handler over the real etcdstore with a nil
+// agent seam (propagation disabled; the cancel path still succeeds).
 func newHandler(s *etcdstore.Store) *migrations.Handler {
-	return migrations.New(s, discardLogger())
+	return migrations.New(s, nil, discardLogger())
 }
 
 // ownedVM seeds a pinned VM owned by owner so ownership checks resolve.

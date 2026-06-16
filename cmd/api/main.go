@@ -42,6 +42,13 @@ const componentName = "api"
 // vm.create / vm.delete / vm.* lifecycle / storage_pool.scan.
 const workerMaxAttempts = 25
 
+// The migrations cancel handler reaches its agent seam through a runtime
+// type assertion on the shared lifecycle agent client (router.go). That assertion
+// is satisfied only because *agentclient.Client carries CancelMigration; this
+// compile-time guard turns a future drift of that method into a build break
+// rather than a silent prod regression to "skip propagation".
+var _ migrationshandlers.MigrationCancelClient = (*agentclient.Client)(nil)
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -1436,6 +1436,114 @@ func TestStartOrResumeSetsExpectedSizeFromSource(t *testing.T) {
 	}
 }
 
+// cancelWhilePollingStore wraps a real MigrationWorkerStore and, the FIRST time
+// PollTask-equivalent terminal handling is about to run, drives the migration to
+// terminal-cancelled via the embedded store. It models the operator CP-side
+// cancel landing while the worker is blocked in PollTask: by the time the source
+// task returns terminal, the migration is already cancelled (the authoritative
+// state). It hooks NodeByID (called immediately before the terminal switch in
+// driveHandshake) is too early; instead it hooks the cutover-irrelevant
+// UpdateMigrationProgress to observe the advancePhase->active call and arm a
+// one-shot cancel right after, so the subsequent PollTask terminal lands on an
+// already-cancelled migration. Every other method delegates to the real store.
+type cancelWhilePollingStore struct {
+	migrations.MigrationWorkerStore
+	migID    uuid.UUID
+	armed    bool
+	cancelFn func()
+}
+
+func (st *cancelWhilePollingStore) UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error {
+	// Let the real advance to active happen, then cancel the migration once so the
+	// next terminal handling sees an already-cancelled (terminal) migration.
+	err := st.MigrationWorkerStore.UpdateMigrationProgress(ctx, migID, upd)
+	if !st.armed && upd.Phase != nil && *upd.Phase == store.MigrationPhaseActive && st.cancelFn != nil {
+		st.armed = true
+		st.cancelFn()
+	}
+	return err
+}
+
+// TestDriveHandshake_CancelledDuringPollFinalizesCancelled pins Change 2: when
+// the operator cancels the migration (CP-side, store -> cancelled) while the
+// worker is driving the handshake, the source outgoing task subsequently returns
+// terminal. The worker must NOT try failMigration (that would hit
+// ErrMigrationTerminal and burn a retry with a misleading "migration failed"
+// log); instead it reloads the migration, sees it is terminal-cancelled, and
+// finalizes the backing task to CANCELLED (not failed) while reaping the bound
+// target's incoming. The handler returns nil (no requeue).
+func TestDriveHandshake_CancelledDuringPollFinalizesCancelled(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	// Explicit (bound) LIVE migration so the bound target is known and skips placement.
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	// The source task reports terminal-failed (the agent's source-side abort surfaces
+	// the in-flight migration as a failed/cancelled outgoing task). Because the
+	// migration is already cancelled by the time we reach the terminal switch, the
+	// worker must map to a CANCELLED task, not a FAILED one.
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{
+		Status: "failed",
+		Error:  &agentclient.AgentError{Status: 500, Code: migrations.ErrCodeConvergenceFailed, Message: "aborted by source"},
+	}}
+	placer := &fakePlacer{} // must NOT be called: already bound.
+
+	st := &cancelWhilePollingStore{MigrationWorkerStore: s, migID: m.ID}
+	st.cancelFn = func() {
+		if _, err := s.CancelMigration(ctx, m.ID, "operator cancelled mid-flight"); err != nil {
+			t.Fatalf("mid-flight CancelMigration: %v", err)
+		}
+	}
+
+	h := migrations.MigrateHandler(st, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(cancelled-during-poll) = %v, want nil (terminal-cancelled, not requeued)", err)
+	}
+
+	// The migration stays cancelled (never overwritten to failed).
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("migration phase = %q, want cancelled (must NOT be overwritten to failed)", got.Phase)
+	}
+
+	// The backing task is finalized CANCELLED, matching the migration, not failed.
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusCancelled {
+		t.Errorf("task status = %q, want cancelled (cancelled migration -> cancelled task, not failed)", task.Status)
+	}
+
+	// The bound target's incoming was reaped (best-effort).
+	if len(agent.cancelCalls) != 1 {
+		t.Fatalf("cancelCalls = %v, want one target reap for the cancelled live migration", agent.cancelCalls)
+	}
+	call := agent.cancelCalls[0]
+	if call.endpoint != nodeB.AdvertisedEndpoint || call.vmName != vm.Name || call.migID != m.ID.String() {
+		t.Errorf("cancel call = %+v, want {endpoint:%q vmName:%q migID:%q}", call, nodeB.AdvertisedEndpoint, vm.Name, m.ID.String())
+	}
+
+	// The VM stays on its source: a cancelled migration never re-pins.
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (cancel never cuts over)", gotVM.PinnedNodeID, nodeA.ID)
+	}
+}
+
 func jobArgs(t *testing.T, taskID, migID uuid.UUID) []byte {
 	t.Helper()
 	b, err := json.Marshal(migrations.MigrationRunArgs{TaskID: taskID, MigrationID: migID})
