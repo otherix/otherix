@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
@@ -164,5 +165,40 @@ func TestBuildAgentConsoleURLEscapesNameAndToken(t *testing.T) {
 	want := "wss://agent.example.com:9090/v1/vms/demo%20vm/console-stream?token=a+b%2Bc%2Fd%3D%3D"
 	if got != want {
 		t.Errorf("buildAgentConsoleURL = %q, want %q", got, want)
+	}
+}
+
+// resolveConsoleNodeStoreStub returns a fixed node for NodeByID so
+// resolveConsoleNode can be exercised without etcd. VMByName is not
+// called by resolveConsoleNode (the caller passes the vm in).
+type resolveConsoleNodeStoreStub struct {
+	Store
+	node store.Node
+}
+
+func (s *resolveConsoleNodeStoreStub) NodeByID(context.Context, uuid.UUID) (store.Node, error) {
+	return s.node, nil
+}
+
+func TestResolveConsoleNodeSplitsHostAndEndpoint(t *testing.T) {
+	t.Parallel()
+	nid := uuid.New()
+	h := consoleStreamHandler(&resolveConsoleNodeStoreStub{
+		node: store.Node{ID: nid, AdvertisedEndpoint: "https://agent.example.com:9090"},
+	})
+	vm := store.VM{ID: uuid.New(), PinnedNodeID: &nid}
+
+	got, err := h.resolveConsoleNode(context.Background(), vm)
+	if err != nil {
+		t.Fatalf("resolveConsoleNode: %v", err)
+	}
+	if got.id != nid {
+		t.Errorf("id = %v, want %v", got.id, nid)
+	}
+	if got.host != "agent.example.com:9090" {
+		t.Errorf("host = %q, want agent.example.com:9090", got.host)
+	}
+	if got.endpoint != "https://agent.example.com:9090" {
+		t.Errorf("endpoint = %q, want https://agent.example.com:9090", got.endpoint)
 	}
 }

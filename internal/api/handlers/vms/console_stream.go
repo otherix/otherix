@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/store"
@@ -27,6 +28,36 @@ import (
 // any divergence between them hands an unauthenticated caller a
 // VM-name enumeration oracle.
 const consoleSessionRejectedMsg = "invalid or expired console session"
+
+// consoleNode is the resolved owning node for a console session: the
+// node id (to detect a cutover flip), the scheme-stripped host (to dial
+// the agent console-stream via buildAgentConsoleURL), and the full
+// advertised endpoint (to mint a fresh token via IssueConsoleToken on
+// re-attach).
+type consoleNode struct {
+	id       uuid.UUID
+	host     string
+	endpoint string
+}
+
+// resolveConsoleNode resolves vm -> owning node -> {id, host, endpoint}.
+// It prefers PinnedNodeID (flipped by the cutover Txn), falling back to
+// the storage pool's node via resolveNodeForVM.
+func (h *Handler) resolveConsoleNode(ctx context.Context, vm store.VM) (consoleNode, error) {
+	nodeID, err := h.resolveNodeForVM(ctx, vm)
+	if err != nil {
+		return consoleNode{}, fmt.Errorf("resolve node: %w", err)
+	}
+	node, err := h.store.NodeByID(ctx, nodeID)
+	if err != nil {
+		return consoleNode{}, fmt.Errorf("load node: %w", err)
+	}
+	host, err := stripScheme(node.AdvertisedEndpoint)
+	if err != nil {
+		return consoleNode{}, fmt.Errorf("agent endpoint malformed: %w", err)
+	}
+	return consoleNode{id: nodeID, host: host, endpoint: node.AdvertisedEndpoint}, nil
+}
 
 // ConsoleStream implements GET /v1/vms/{id}/console-stream — the
 // CP-side proxy WebSocket relay for proxy mode.
