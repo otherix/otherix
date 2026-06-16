@@ -175,6 +175,77 @@ Stream a VM's serial console output (kubectl-style).
 otherix vm logs web-1 --tail 100 --follow
 ```
 
+### vm migrate
+
+Live-migrate a VM to another node (async). Every migration is a **full storage
+migration** (the disks cross the wire); the default is a live cutover, `--offline`
+stops the VM, copies it cold, and starts it on the target. With no `--node` the
+scheduler picks a different eligible node. Returns a task and a first-class
+migration resource - poll it with [`otherix migration get`](#migration-get). See
+the [Live migration guide](../guides/live-migration.md).
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--node` | (scheduler picks a different node) | Target node name. |
+| `--pool` | cluster default pool | Target storage pool name on the target node. |
+| `--offline` | `false` | Stop+copy+start instead of a live cutover. |
+| `--bandwidth` | (uncapped) | Transfer-rate cap, e.g. `100m`, `1g`, or raw bytes/s. |
+| `--max-downtime` | (server default) | Live-cutover downtime budget in milliseconds. |
+| `--allow-postcopy` | `false` | Allow post-copy escalation if pre-copy will not converge. |
+| `--wait` | `false` | Block until the backing task reaches terminal status (client-side bound only; the migration runs server-side regardless). |
+| `--wait-timeout` | `10m` | Max wait when `--wait` is set. |
+
+```bash
+otherix vm migrate web-1                 # live, scheduler picks the target
+otherix vm migrate web-1 --node node-3   # live, to a specific node
+otherix vm migrate web-1 --offline       # stop, move cold, start on target
+```
+
+---
+
+## otherix migration
+
+Inspect VM migrations (CP `/v1/migrations` surface). Migrations are **created by
+[`otherix vm migrate`](#vm-migrate)**, never here; this group is read-only plus a
+best-effort cancel.
+
+### migration list
+
+Cursor-paginated list of migrations visible to the caller.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--vm` | (none) | Filter by VM uuid. |
+| `--node` | (none) | Filter by node uuid (source or target). |
+| `--limit` | `20` | Page size (1..200). |
+| `--cursor` | (none) | Opaque cursor from a previous page. |
+| `-o, --output` | `table` | `table|json|yaml`. |
+
+```bash
+otherix migration list --vm <vm-uuid>
+```
+
+### migration get
+
+Show a migration's projection (`<id>` positional). After a live migration this
+includes a `statistics:` section - ram / disk bytes and `total_time` / `downtime`
+/ `setup_time`. `-o text|json|yaml` (default `text`); text renders human units,
+JSON keeps raw bytes and milliseconds.
+
+```bash
+otherix migration get <migration-id>
+```
+
+### migration cancel
+
+Cancel a migration, best-effort (`<id>` positional). Returns the current task
+state; leaves the VM safely on one node or the other, never split across both. No
+flags beyond the globals.
+
+```bash
+otherix migration cancel <migration-id>
+```
+
 ---
 
 ## otherix pool
