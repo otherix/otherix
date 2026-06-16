@@ -721,6 +721,16 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 		// adopted incoming VM sits at StatusMigratingIncoming (paused) until
 		// transitionVM flips it to StatusRunning AFTER cont, so a real pre-cutover
 		// target is never StatusRunning here.
+		//
+		// KNOWN RESIDUAL (accepted, follow-up): this reads the CACHED status, which
+		// lags the qemu cont by a sub-microsecond, no-I/O window in runIncomingResume
+		// (cont inside migRunLiveTarget -> transitionVM(StatusRunning)). A cancel that
+		// executes this read in that exact gap sees StatusMigratingIncoming and reaps a
+		// guest qemu has already resumed - theoretical VM loss if the source already
+		// self-destroyed. Astronomically narrow and PRE-EXISTING (not the CP-side
+		// auto-complete-vs-cancel race, which is closed at the control plane). To fully
+		// eliminate, make this guard read the LIVE qemu run-state (query-status) rather
+		// than the cached status.
 		if st, ok := m.vmStatus(rec.VMID); ok && st == StatusRunning {
 			return m.GetMigration(id)
 		}
