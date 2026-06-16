@@ -78,6 +78,7 @@ nav:
       - Declarative manifests: guides/declarative-manifests.md
       - Storage pools: guides/storage-pools.md
       - Networks: guides/networks.md
+      - Live migration: guides/live-migration.md
       - Users and RBAC: guides/users-and-rbac.md
       - Console and logs: guides/console-and-logs.md
   - Operations:

@@ -68,6 +68,26 @@ Bridge networks can request managed egress with the **`nat`** mode, which instal
 an nftables masquerade rule for the network's subnet. VMs then reach external
 networks through the host's address.
 
+## Live migration: the network follows the VM
+
+When a VM live-migrates to another node it keeps its MAC and IP, and the fabric is
+updated so traffic redirects to the new location promptly - without a
+flood-and-learn cycle. How that happens differs by network type:
+
+- **Overlay.** VXLAN address learning is off and the control plane owns the FDB, so
+  a migration is just an FDB update. The CP recomputes "this MAC now sits behind the
+  target node's VTEP" and **fast-pushes** it: it nudges the overlay peers (and the
+  target) to re-pull their FDB immediately, rather than waiting for the next
+  heartbeat tick. The MAC re-points between VTEPs deterministically - the data plane
+  is *told* where the VM went, never left to flood-and-learn it.
+- **Bridge.** As soon as the guest resumes on the target, that node's agent
+  announces the VM to the segment - a QEMU self-announce (RARP, MAC-only) plus a
+  **gratuitous ARP** for each IPv4 NIC - so the physical switches relearn the port
+  immediately, instead of waiting out a MAC-aging timeout.
+
+See the [Live migration guide](../guides/live-migration.md) for the operator-facing
+view of a move.
+
 ## Host device names
 
 So you can recognise Otherix-managed interfaces on a node, the agent uses
