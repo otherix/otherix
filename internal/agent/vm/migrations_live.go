@@ -310,10 +310,11 @@ func (m *Manager) incomingDiskPath(v *VM, d MigrationDisk) string {
 // runIncomingResume drives the target-side live-migration resume: it dials the
 // paused -incoming qemu and runs RunLiveTarget (wait incoming completed -> drop
 // every writable export -> cont). On success the guest is running from the
-// transferred RAM: flip the VM to StatusRunning, attach the serial mux so the
-// resumed console persists, release the migration port pair, and mark the
-// record completed. On failure there is no fall-back to the source (it is
-// already released): mark the VM StatusFailed and the record failed.
+// transferred RAM: flip the VM to StatusRunning, mark the record completed at
+// cont success (closing the post-cont cancel window), then announce/GARP the new
+// location, persist meta, attach the serial mux so the resumed console persists,
+// and release the migration port pair. On failure there is no fall-back to the
+// source (it is already released): mark the VM StatusFailed and the record failed.
 func (m *Manager) runIncomingResume(ctx context.Context, taskID, migrationID, vmID uuid.UUID, ram, nbd int) {
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
@@ -692,6 +693,22 @@ func (m *Manager) cancelLive(id uuid.UUID, rec migration.Record) (MigrationView,
 	}
 
 	if rec.Role == migration.RoleTarget {
+		// Defense-in-depth on the TRUE invariant ("never reap a running guest"):
+		// CancelMigration passes a STALE record snapshot, and the P1b stamp-move
+		// only narrows the window where that snapshot's Terminal() is false while
+		// the resume goroutine has already cont'd the guest. Read the IN-MEMORY
+		// status (not m.Get, which probes the pidfile and would misreport under
+		// fakes / supervision races) and refuse the reap when the incoming guest is
+		// already StatusRunning - the cont happened, so this is a post-cutover guest
+		// whose dest disk may be the only copy. Fix Risk Gate: killing it is
+		// irreversible; a no-op refusal of a wrongly-timed cancel is recoverable via
+		// normal VM lifecycle. This does NOT block a legitimate pre-cont cancel: an
+		// adopted incoming VM sits at StatusMigratingIncoming (paused) until
+		// transitionVM flips it to StatusRunning AFTER cont, so a real pre-cutover
+		// target is never StatusRunning here.
+		if st, ok := m.vmStatus(rec.VMID); ok && st == StatusRunning {
+			return m.GetMigration(id)
+		}
 		// Full pre-cutover reap: kill the incoming qemu, free the pair, remove the
 		// adopted VM, reap the record. (The previous body released the ports while
 		// the incoming qemu still held them - the "address already in use" leak.)

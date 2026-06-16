@@ -1567,6 +1567,21 @@ func (m *Manager) snapshotVM(id uuid.UUID) (*VM, error) {
 	return &cp, nil
 }
 
+// vmStatus returns the in-memory Status of the VM with id under the manager
+// lock, and whether such a VM is tracked. Unlike Get it does NOT run an
+// observedStatus pidfile probe: callers that need the raw recorded status (e.g.
+// the cancel-reap guard distinguishing a paused -incoming target from a cont'd
+// running guest) must not have that signal clouded by process supervision.
+func (m *Manager) vmStatus(id uuid.UUID) (Status, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.vms[id]
+	if !ok {
+		return "", false
+	}
+	return v.Status, true
+}
+
 func (m *Manager) transitionVM(id uuid.UUID, status Status, _ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

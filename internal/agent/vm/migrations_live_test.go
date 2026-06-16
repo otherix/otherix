@@ -1154,6 +1154,68 @@ func TestRunIncomingResume_PostContCancelNoOps(t *testing.T) {
 	}
 }
 
+// TestCancelLive_RunningGuestRefusesReap is the teeth for the residual
+// stamp-move TOCTOU (guard (b), "never reap a running guest"). CancelMigration
+// snapshots the record and passes that STALE snapshot to cancelLive; if the
+// snapshot was read a hair before the resume goroutine stamps PhaseCompleted,
+// the snapshot's Terminal() is still false and the RoleTarget arm would proceed
+// to teardownIncomingTarget -> killQEMU + removeAdoptedVM on a guest that just
+// went LIVE (irreversible: the dest disk is the only copy post-cutover).
+//
+// We simulate the race directly: a target VM already at StatusRunning plus a
+// NON-terminal record. cancelLive must refuse the reap on the in-memory
+// StatusRunning signal and no-op: the VM stays present, its disk dir intact, and
+// the record is NOT cancelled.
+func TestCancelLive_RunningGuestRefusesReap(t *testing.T) {
+	m := newTestManager(t)
+
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair: %v", err)
+	}
+	migID := uuid.New()
+	// A non-terminal record simulates the stale snapshot CancelMigration read a
+	// hair before the resume goroutine stamped PhaseCompleted.
+	stale := migration.Record{
+		MigrationID: migID, VMID: v.ID, VMName: v.Name,
+		Role: migration.RoleTarget, Mode: migration.ModeLive, Phase: migration.PhaseActive,
+		Port: ram, NBDPort: nbd, CreatedAt: time.Now().UTC(),
+	}
+	m.migrations.Put(&stale)
+
+	view, ok := m.cancelLive(migID, stale)
+	if !ok {
+		t.Fatalf("cancelLive returned ok=false")
+	}
+
+	// The running guest must survive: still present, still running, disk intact.
+	m.mu.Lock()
+	got, present := m.vms[v.ID]
+	var gotStatus Status
+	if present {
+		gotStatus = got.Status
+	}
+	m.mu.Unlock()
+	if !present {
+		t.Fatalf("VM %s removed by cancel of a running guest; want it kept", v.ID)
+	}
+	if gotStatus != StatusRunning {
+		t.Errorf("status = %v, want running (cancel must not reap a running guest)", gotStatus)
+	}
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("disk dir removed by cancel of a running guest: %v (removeAdoptedVM must not run)", err)
+	}
+
+	// The record must NOT be flipped to cancelled: the guard refuses the reap and
+	// leaves the record untouched.
+	if view.Phase == string(migration.PhaseCancelled) {
+		t.Errorf("phase = %q, want not-cancelled (running guest must not be cancel-reaped)", view.Phase)
+	}
+}
+
 func TestCancelLive_SetsCancelledAndReleasesPorts(t *testing.T) {
 	m := newTestManager(t)
 	v := m.seedRunningVM(t, "demo")
