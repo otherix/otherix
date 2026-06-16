@@ -31,6 +31,14 @@ import (
 type fakeLiveConn struct {
 	migrateCancelled bool
 	blockJobCancels  []string
+	// migrateStatus is what QueryMigrate reports. The zero value ("") is
+	// interpreted as "completed" so a bare &fakeLiveConn{} models a healthy,
+	// converged migration; a test exercising the post-migration convergence
+	// guard sets a non-completed status (e.g. "active", "failed") explicitly.
+	migrateStatus string
+	// queryMigrateErr, when set, makes QueryMigrate fail (the guard treats a
+	// query error the same as a non-completed status: keep the source).
+	queryMigrateErr error
 }
 
 func (f *fakeLiveConn) ObjectAddTLSCreds(id, dir, endpoint string) error { return nil }
@@ -57,8 +65,18 @@ func (f *fakeLiveConn) MigrateCancel() error {
 	f.migrateCancelled = true
 	return nil
 }
-func (f *fakeLiveConn) BlockdevDel(nodeName string) error       { return nil }
-func (f *fakeLiveConn) QueryMigrate() (qemu.MigrateInfo, error) { return qemu.MigrateInfo{}, nil }
+func (f *fakeLiveConn) BlockdevDel(nodeName string) error { return nil }
+func (f *fakeLiveConn) QueryMigrate() (qemu.MigrateInfo, error) {
+	if f.queryMigrateErr != nil {
+		return qemu.MigrateInfo{}, f.queryMigrateErr
+	}
+	status := f.migrateStatus
+	if status == "" {
+		status = "completed"
+	}
+	return qemu.MigrateInfo{Status: status}, nil
+}
+
 func (f *fakeLiveConn) QueryBlockJobs() ([]qemu.BlockJobInfo, error) {
 	return []qemu.BlockJobInfo{}, nil
 }
@@ -1071,6 +1089,112 @@ func TestRunOutgoingLive_SuccessTearsDownSource(t *testing.T) {
 	rec, ok := m.Migrations().Get(migID)
 	if !ok || rec.Phase != migration.PhaseCompleted {
 		t.Errorf("record = %+v, want phase completed", rec)
+	}
+}
+
+// TestRunOutgoingLive_GuardConfirmsCompletedBeforeTeardown is the happy-path
+// teeth for the convergence guard: migRunLiveSource returns nil AND the direct
+// query-migrate reports "completed", so the guard passes and the departed source
+// is torn down (VM gone, disk dir removed), the task reaches success. This proves
+// the common case is unaffected by the guard. (The unit-fake killQEMU is a quiet
+// no-op on the missing pidfile, so source teardown is observed via the VM record
+// being removed + the disk dir gone, exactly as the existing teardown tests do.)
+func TestRunOutgoingLive_GuardConfirmsCompletedBeforeTeardown(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
+		return nil
+	}
+	// Explicit "completed" status from the post-migration query-migrate.
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		return &fakeLiveConn{migrateStatus: "completed"}, nil
+	}
+
+	migID := uuid.New()
+	task, err := m.StartOutgoing(context.Background(), OutgoingSpec{
+		MigrationID:    migID,
+		VMUUID:         v.ID,
+		VMName:         v.Name,
+		Mode:           "live",
+		TargetEndpoint: "10.0.0.2:49152",
+		NBDEndpoint:    "10.0.0.2:49153",
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		AuthToken:      migID.String(),
+	})
+	if err != nil {
+		t.Fatalf("StartOutgoing(live) error = %v", err)
+	}
+
+	waitPhase(t, m, migID, "completed")
+
+	// Guard passed: the departed source was torn down (VM gone, disk removed).
+	if _, err := m.Get(v.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after confirmed completion, Get(%s) = %v, want ErrNotFound (source torn down)", v.ID, err)
+	}
+	if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
+		t.Errorf("source disk dir still present after confirmed completion: %v (want torn down)", err)
+	}
+
+	tk := m.tasks.Get(task.ID)
+	if tk == nil || tk.Status != TaskStatusSuccess {
+		t.Errorf("task = %v, want status success", tk)
+	}
+}
+
+// TestRunOutgoingLive_GuardKeepsSourceOnFalseCompletion is the never-lose-the-VM
+// teeth: migRunLiveSource returns nil (claims success) BUT the direct
+// query-migrate reports a non-completed status. The guard must REFUSE to tear
+// down the source - the source VM record + disk must survive - and the task must
+// be finalized FAILED (fail-safe-to-source). Revert-to-confirm: removing the
+// guard from runOutgoingLive makes this test see the source torn down (VM gone,
+// disk removed) and the task success.
+func TestRunOutgoingLive_GuardKeepsSourceOnFalseCompletion(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedRunningVM(t, "demo")
+	diskDir := filepath.Dir(v.DiskPath)
+
+	// RunLiveSource claims success (nil) - the completion-detection bug case.
+	m.migRunLiveSource = func(ctx context.Context, conn qemu.LiveSourceConn, spec qemu.LiveSourceSpec, report func(qemu.LiveProgress)) error {
+		return nil
+	}
+	// But the independent query-migrate disagrees: status is "active", not
+	// "completed". The guard must keep the source.
+	m.migDialQMP = func(socket string) (qemu.LiveSourceConn, error) {
+		return &fakeLiveConn{migrateStatus: "active"}, nil
+	}
+
+	migID := uuid.New()
+	task, err := m.StartOutgoing(context.Background(), OutgoingSpec{
+		MigrationID:    migID,
+		VMUUID:         v.ID,
+		VMName:         v.Name,
+		Mode:           "live",
+		TargetEndpoint: "10.0.0.2:49152",
+		NBDEndpoint:    "10.0.0.2:49153",
+		TargetIdentity: "node-tgt.agents.otherix.local",
+		AuthToken:      migID.String(),
+	})
+	if err != nil {
+		t.Fatalf("StartOutgoing(live) error = %v", err)
+	}
+
+	waitPhase(t, m, migID, "failed")
+
+	// The source VM must SURVIVE - this is the never-destroy-the-only-copy
+	// invariant. It must still be present in the manager and its disk dir intact.
+	if _, err := m.Get(v.ID); err != nil {
+		t.Errorf("source VM removed on false completion: Get(%s) = %v, want it kept (the only copy must not be destroyed)", v.ID, err)
+	}
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("source disk dir removed on false completion: %v (must be kept)", err)
+	}
+
+	// The task must be finalized FAILED.
+	tk := m.tasks.Get(task.ID)
+	if tk == nil || tk.Status != TaskStatusFailed {
+		t.Errorf("task = %v, want status failed (fail-safe-to-source)", tk)
 	}
 }
 

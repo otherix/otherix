@@ -549,6 +549,21 @@ func (m *Manager) runOutgoingLive(ctx context.Context, taskID uuid.UUID, s Outgo
 		return
 	}
 
+	// Fail-safe defense-in-depth before the IRREVERSIBLE source teardown: the
+	// source qemu is the ONLY copy of the VM until the target takes over, so a
+	// false completion (a RunLiveSource completion-detection bug - it keys on the
+	// QMP MIGRATION status EVENT) would force-kill the only copy and LOSE the VM.
+	// Independently confirm convergence with a direct query-migrate on the still-
+	// open source conn. If it is not "completed" (or the query errors), DO NOT
+	// tear down the source: fail the migration so the source qemu + VM SURVIVE
+	// (fail-safe-to-source; the VM is never lost). A healthy migration is
+	// "completed" here (the common case) and is unaffected.
+	info, qerr := conn.QueryMigrate()
+	if qerr != nil || info.Status != "completed" {
+		fail("convergence_failed", fmt.Sprintf("post-migration query-migrate not 'completed' (status=%q, err=%v); keeping source qemu (never destroy the only copy)", info.Status, qerr))
+		return
+	}
+
 	// The guest is now running on the target. Tear down the departed source VM
 	// NOW (before reporting success) so a reverse migration back to this node
 	// adopts cleanly instead of racing the CP's slow async DeleteVMOnSource.
