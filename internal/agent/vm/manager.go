@@ -218,10 +218,11 @@ type Manager struct {
 
 // incomingProbe is the result of probing a replayed StatusMigratingIncoming
 // VM's qemu during recovery. It is the fail-closed input to the kill decision
-// in reconcileRecoveredIncoming: the guest is reaped ONLY on a positive
-// `paused` run-state (alive && queried && runState=="paused") or a confirmed-dead
-// process; every other shape (running -> promote; dial/query failure or an
-// unexpected run-state -> inconclusive) must NOT kill.
+// in reconcileRecoveredIncoming: the qemu is killed ONLY on a positive
+// pre-resume run-state (alive && queried && preResumeIncomingRunStates, e.g.
+// inmigrate/paused); every other shape (running -> promote; dead -> mark failed,
+// nothing to kill; dial/query failure or an unexpected run-state -> inconclusive,
+// no kill) must NOT kill.
 type incomingProbe struct {
 	// alive is true when the pidfile parsed and the process answers signal 0.
 	alive bool
@@ -259,7 +260,7 @@ var probeRecoveredIncoming = func(qmpSocket, pidFile string) incomingProbe {
 	return incomingProbe{alive: true, queried: true, runState: runState}
 }
 
-// killRecoveredIncoming terminates the leaked paused -incoming qemu of a
+// killRecoveredIncoming terminates the leaked pre-resume -incoming qemu of a
 // recovered orphaned target. Package-level so a recovery test can spy the kill
 // before calling New (the replay loop binds m.killIncoming to it). Defaults to
 // the manager's best-effort killQEMU.
