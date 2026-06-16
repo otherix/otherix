@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
@@ -239,6 +240,48 @@ func TestCommitMigrationCutover_FlipsPin(t *testing.T) {
 	}
 	if !foundB {
 		t.Errorf("pinned_node index for vm not under nodeB, want moved")
+	}
+}
+
+func TestUpdateMigrationStats_PersistsOnCompletedMigration(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	nodeA := nodeParams(uniqueNodeName("a"))
+	nodeB := nodeParams(uniqueNodeName("b"))
+	if _, err := s.CreateNode(ctx, nodeA); err != nil {
+		t.Fatalf("CreateNode(A): %v", err)
+	}
+	if _, err := s.CreateNode(ctx, nodeB); err != nil {
+		t.Fatalf("CreateNode(B): %v", err)
+	}
+
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	m := seedActiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+	if err := s.CommitMigrationCutover(ctx, m.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	want := store.MigrationStats{
+		RAMTransferred: 10737418240, RAMTotal: 10737418240, RAMDirtyPagesRate: 7,
+		DiskTransferred: 5368709120, DiskTotal: 5368709120,
+		TotalTimeMs: 45125, DowntimeMs: 150, SetupTimeMs: 1200,
+	}
+	if err := s.UpdateMigrationStats(ctx, m.ID, want); err != nil {
+		t.Fatalf("UpdateMigrationStats: %v", err)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Stats == nil {
+		t.Fatalf("Stats = nil, want populated")
+	}
+	if diff := cmp.Diff(want, *got.Stats); diff != "" {
+		t.Errorf("Stats mismatch (-want +got):\n%s", diff)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("Phase = %q, want completed (stats write must not change phase)", got.Phase)
 	}
 }
 
