@@ -115,6 +115,46 @@ func TestPrintMigrationTextNodeLabelFallback(t *testing.T) {
 	}
 }
 
+func TestPrintMigrationText_StatsSection(t *testing.T) {
+	m := cpclient.Migration{
+		ID: "abcd1234", VMName: "vm1", Phase: "completed", Reason: "manual",
+		CreatedAt: "2026-06-16T00:00:00Z",
+		Stats: &cpclient.MigrationStats{
+			RAM:         cpclient.MigrationRAMStats{Transferred: 10737418240, Total: 10737418240, DirtyPagesRate: 7},
+			Disk:        cpclient.MigrationDiskStats{Transferred: 5368709120, Total: 5368709120},
+			TotalTimeMs: 45125, DowntimeMs: 150, SetupTimeMs: 1200,
+		},
+	}
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printMigrationText(cmd, m)
+	out := buf.String()
+	for _, want := range []string{
+		"statistics:",
+		"ram:  transferred=10737418240 total=10737418240 dirty_pages_rate=7",
+		"disk: transferred=5368709120 total=5368709120",
+		"total_time_ms: 45125",
+		"downtime_ms: 150",
+		"setup_time_ms: 1200",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintMigrationText_NoStatsSectionWhenNil(t *testing.T) {
+	m := cpclient.Migration{ID: "abcd1234", VMName: "vm1", Phase: "pending", Reason: "manual", CreatedAt: "2026-06-16T00:00:00Z"}
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printMigrationText(cmd, m)
+	if strings.Contains(buf.String(), "statistics:") {
+		t.Errorf("unexpected statistics section for nil Stats:\n%s", buf.String())
+	}
+}
+
 // TestPrintMigrationTextFailed covers a failed migration: the error_message is
 // surfaced on an `error:` line.
 func TestPrintMigrationTextFailed(t *testing.T) {
