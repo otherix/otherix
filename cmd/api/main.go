@@ -564,6 +564,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 
 	s.Register("jobs.cleanup", time.Hour, false, etcdstore.JobsCleanupFunc(st, log))
 
+	s.Register("jobs.reclaim", etcdstore.JobLeaseRenewInterval, false,
+		etcdstore.ReclaimStaleJobsFunc(st, etcdstore.JobLease, log))
+
 	if cfg.Workers.StoragePoolScan.Enabled {
 		s.Register("storage_pool.scan_trigger", positiveOr(cfg.Workers.StoragePoolScan.Interval, 15*time.Minute), false,
 			storagepoolshandlers.ScanTriggerFunc(st, log))

@@ -53,6 +53,8 @@ func (s *Store) ClaimJob(ctx context.Context, id int64) (bool, error) {
 		return false, nil
 	}
 	job.State = JobStateRunning
+	now := time.Now().UTC()
+	job.ClaimedAt = &now
 	val, err := etcd.Marshal(job)
 	if err != nil {
 		return false, err
@@ -63,6 +65,34 @@ func (s *Store) ClaimJob(ctx context.Context, id int64) (bool, error) {
 		Commit()
 	if err != nil {
 		return false, fmt.Errorf("claim job %d: %v", id, err)
+	}
+	return resp.Succeeded, nil
+}
+
+// RenewJobLease refreshes a running job's lease (ClaimedAt = now) under a
+// mod-revision compare, so it never stomps a concurrent reclaim or completion.
+// Returns true when the lease was renewed; false (the renewer must stop) when the
+// job is missing, no longer running, or the compare lost the race.
+func (s *Store) RenewJobLease(ctx context.Context, id int64) (bool, error) {
+	job, modRev, found, err := s.jobWithRev(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !found || job.State != JobStateRunning {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	job.ClaimedAt = &now
+	val, err := etcd.Marshal(job)
+	if err != nil {
+		return false, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(jobKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(jobKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return false, fmt.Errorf("renew job lease %d: %v", id, err)
 	}
 	return resp.Succeeded, nil
 }

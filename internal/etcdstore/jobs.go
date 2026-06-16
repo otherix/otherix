@@ -36,13 +36,19 @@ const (
 )
 
 // Job is the persisted unit of background work consumed by the worker runtime.
+//
+// ClaimedAt is the lease timestamp: ClaimJob stamps it when a job goes running,
+// the worker renews it via RenewJobLease while the handler runs, and the reaper
+// (ReclaimStaleRunningJobs) returns a running job to pending when ClaimedAt is
+// missing or older than the lease - the signal that its worker crashed.
 type Job struct {
-	ID       int64      `json:"id"`
-	Kind     string     `json:"kind"`
-	Args     []byte     `json:"args"`
-	State    JobState   `json:"state"`
-	Attempts int32      `json:"attempts"`
-	FailedAt *time.Time `json:"failed_at,omitempty"`
+	ID        int64      `json:"id"`
+	Kind      string     `json:"kind"`
+	Args      []byte     `json:"args"`
+	State     JobState   `json:"state"`
+	Attempts  int32      `json:"attempts"`
+	FailedAt  *time.Time `json:"failed_at,omitempty"`
+	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
 }
 
 func jobSeqKey() string { return etcd.Key("seq", "jobs") }

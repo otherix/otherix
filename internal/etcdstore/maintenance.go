@@ -187,6 +187,84 @@ func (s *Store) DeleteFailedJobs(ctx context.Context, olderThan time.Time) (int6
 	return deleted, nil
 }
 
+// Job lease constants govern crash-orphan reclaim. A worker renews its running
+// job's lease every JobLeaseRenewInterval; the reaper reclaims a running job
+// whose lease is older than JobLease. JobLease is 3x the renew interval, so a
+// healthy long-running job (a live migration renews every 30s) never crosses the
+// lease, while a crashed worker's job is reclaimed within ~JobLease of the crash.
+const (
+	JobLeaseRenewInterval = 30 * time.Second
+	JobLease              = 90 * time.Second
+)
+
+// ReclaimStaleRunningJobs returns crash-orphaned running jobs to pending. A
+// running job is presumed orphaned when its ClaimedAt lease is missing (a
+// legacy/pre-upgrade row with no live renewer) or older than olderThan (its
+// worker stopped renewing). Each reclaim re-reads the job's mod-revision and
+// commits its OWN compare-and-set transaction (ModRevision compare), so it can
+// never stomp a renewal or a completion landing in the same sweep. Attempts is
+// left UNCHANGED - a crash is not a real failure and must not consume the retry
+// budget. Returns the number of jobs reclaimed.
+func (s *Store) ReclaimStaleRunningJobs(ctx context.Context, olderThan time.Time) (int64, error) {
+	items, err := s.c.Range(ctx, jobsPrefix())
+	if err != nil {
+		return 0, err
+	}
+	var reclaimed int64
+	for _, kv := range items {
+		var j Job
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &j, "job") {
+			continue
+		}
+		if j.State != JobStateRunning {
+			continue
+		}
+		if j.ClaimedAt != nil && !j.ClaimedAt.Before(olderThan) {
+			continue
+		}
+		job, modRev, found, rerr := s.jobWithRev(ctx, j.ID)
+		if rerr != nil {
+			return reclaimed, rerr
+		}
+		if !found || job.State != JobStateRunning {
+			continue
+		}
+		job.State = JobStatePending
+		job.ClaimedAt = nil
+		val, merr := etcd.Marshal(job)
+		if merr != nil {
+			return reclaimed, merr
+		}
+		resp, cerr := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(jobKey(j.ID)), "=", modRev)).
+			Then(clientv3.OpPut(jobKey(j.ID), string(val))).
+			Commit()
+		if cerr != nil {
+			return reclaimed, fmt.Errorf("reclaim job %d: %v", j.ID, cerr)
+		}
+		if resp.Succeeded {
+			reclaimed++
+		}
+	}
+	return reclaimed, nil
+}
+
+// ReclaimStaleJobsFunc returns a periodic function that reclaims crash-orphaned
+// running jobs whose lease is older than lease. The scheduler logs any returned
+// error, so this only logs the reclaimed count.
+func ReclaimStaleJobsFunc(st *Store, lease time.Duration, log *slog.Logger) func(context.Context) error {
+	return func(ctx context.Context) error {
+		n, err := st.ReclaimStaleRunningJobs(ctx, time.Now().UTC().Add(-lease))
+		if err != nil {
+			return fmt.Errorf("reclaim stale running jobs: %v", err)
+		}
+		if n > 0 {
+			log.InfoContext(ctx, "jobs.reclaim", "reclaimed", n)
+		}
+		return nil
+	}
+}
+
 // JobsCleanupFunc returns a periodic function that sweeps failed job rows older
 // than FailedJobRetention. The scheduler logs any returned error, so this only
 // logs the swept count.

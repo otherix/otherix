@@ -168,6 +168,83 @@ func TestDeleteFailedJobsRespectsStateAndAge(t *testing.T) {
 	}
 }
 
+// TestReclaimStaleRunningJobs seeds five job rows directly and runs the reaper
+// with an olderThan cutoff: a running job with an old ClaimedAt and a running job
+// with a nil ClaimedAt (legacy/pre-upgrade) are both reclaimed to pending with
+// Attempts UNCHANGED and ClaimedAt cleared; a running job with a recent
+// ClaimedAt, a pending job, and a failed job are all left untouched.
+func TestReclaimStaleRunningJobs(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	jobKey := func(id int64) string { return etcd.Key("jobs", fmt.Sprintf("%020d", id)) }
+	seedJob := func(id int64, state etcdstore.JobState, claimedAt *time.Time, attempts int32) {
+		j := etcdstore.Job{ID: id, Kind: "test.job", State: state, Attempts: attempts, ClaimedAt: claimedAt}
+		if err := cli.PutJSON(ctx, jobKey(id), j); err != nil {
+			t.Fatalf("seed job %d: %v", id, err)
+		}
+	}
+	readJob := func(id int64) etcdstore.Job {
+		var j etcdstore.Job
+		found, err := cli.GetJSON(ctx, jobKey(id), &j)
+		if err != nil {
+			t.Fatalf("get job %d: %v", id, err)
+		}
+		if !found {
+			t.Fatalf("job %d missing", id)
+		}
+		return j
+	}
+
+	now := time.Now().UTC()
+	old := now.Add(-5 * time.Minute)
+	recent := now.Add(-10 * time.Second)
+	cutoff := now.Add(-time.Minute)
+
+	seedJob(1, etcdstore.JobStateRunning, &old, 2)    // reclaim (stale)
+	seedJob(2, etcdstore.JobStateRunning, &recent, 0) // keep (fresh lease)
+	seedJob(3, etcdstore.JobStateRunning, nil, 1)     // reclaim (legacy nil)
+	seedJob(4, etcdstore.JobStatePending, nil, 0)     // keep (pending)
+	seedJob(5, etcdstore.JobStateFailed, nil, 3)      // keep (failed)
+
+	n, err := s.ReclaimStaleRunningJobs(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("ReclaimStaleRunningJobs: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("reclaimed = %d, want 2", n)
+	}
+
+	// Reclaimed: pending, ClaimedAt cleared, Attempts UNCHANGED.
+	if j := readJob(1); j.State != etcdstore.JobStatePending || j.ClaimedAt != nil || j.Attempts != 2 {
+		t.Errorf("job 1 = %+v, want pending/nil-ClaimedAt/attempts=2", j)
+	}
+	if j := readJob(3); j.State != etcdstore.JobStatePending || j.ClaimedAt != nil || j.Attempts != 1 {
+		t.Errorf("job 3 = %+v, want pending/nil-ClaimedAt/attempts=1", j)
+	}
+
+	// Untouched.
+	if j := readJob(2); j.State != etcdstore.JobStateRunning || j.ClaimedAt == nil {
+		t.Errorf("job 2 = %+v, want running with fresh ClaimedAt", j)
+	}
+	if j := readJob(4); j.State != etcdstore.JobStatePending {
+		t.Errorf("job 4 = %+v, want pending", j)
+	}
+	if j := readJob(5); j.State != etcdstore.JobStateFailed {
+		t.Errorf("job 5 = %+v, want failed", j)
+	}
+
+	// The reclaimed jobs are visible via PendingJobs.
+	pending, _ := s.PendingJobs(ctx)
+	seen := make(map[int64]bool)
+	for _, j := range pending {
+		seen[j.ID] = true
+	}
+	if !seen[1] || !seen[3] || !seen[4] {
+		t.Errorf("PendingJobs = %+v, want ids 1,3,4 present", pending)
+	}
+}
+
 func TestPromoteHealthyNodes(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
