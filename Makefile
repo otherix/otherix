@@ -205,6 +205,14 @@ smoke-vm-migration-live-console: ## Live VM migration + console smoke: an open `
 smoke-dhcp-overlay-teardown: ## DHCP-overlay teardown smoke: repeated create/delete of a dhcp overlay must never wedge the agent network reconciler (run after local-dev-start)
 	@dev/smoke/dhcp-overlay-teardown/run.sh
 
+.PHONY: smoke-chaos-cp-crash-migrate
+smoke-chaos-cp-crash-migrate: ## Chaos: SIGKILL the CP mid vm.migrate; the lease reaper reclaims the stranded job, the migration recovers, the VM is migratable again (P0; run after local-dev-start)
+	@bash dev/smoke/chaos-cp-crash-migrate/run.sh
+
+.PHONY: smoke-chaos-target-crash-incoming
+smoke-chaos-target-crash-incoming: ## Chaos: crash the target agent mid-incoming; recovery reaps the orphaned inmigrate qemu (no leak), the source stays safe (P1a; run after local-dev-start)
+	@bash dev/smoke/chaos-target-crash-incoming/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
