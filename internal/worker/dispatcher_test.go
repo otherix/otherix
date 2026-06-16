@@ -165,6 +165,89 @@ func TestExecuteRenewsLeaseWhileBlocked(t *testing.T) {
 	}
 }
 
+// renewStopSourceFake is a JobSource whose RenewJobLease returns false after the
+// first call (modelling a concurrent reclaim that won the job out from under the
+// renewer). Every renew call is signalled on renewCh so the test can synchronise
+// without sleeps. Only the renewer surface is exercised here; the other methods
+// satisfy the interface and are unused.
+type renewStopSourceFake struct {
+	mu      sync.Mutex
+	calls   int
+	renewCh chan struct{}
+}
+
+func (f *renewStopSourceFake) PendingJobs(context.Context) ([]etcdstore.Job, error) {
+	return nil, nil
+}
+func (f *renewStopSourceFake) ClaimJob(context.Context, int64) (bool, error) { return false, nil }
+func (f *renewStopSourceFake) CompleteJob(context.Context, int64) error      { return nil }
+func (f *renewStopSourceFake) RetryJob(context.Context, int64, int32) (bool, error) {
+	return false, nil
+}
+func (f *renewStopSourceFake) RequeueJob(context.Context, int64) error { return nil }
+
+func (f *renewStopSourceFake) RenewJobLease(_ context.Context, _ int64) (bool, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	f.mu.Unlock()
+	f.renewCh <- struct{}{}
+	// First renew succeeds; every later one reports the lease is no longer ours,
+	// which must stop the renewer.
+	return n == 1, nil
+}
+
+// TestExecuteRenewerStopsOnLostLease drives the REAL execute path and pins the
+// renewer's stop-on-RenewJobLease==false branch: when a renew reports the lease
+// is no longer ours (a concurrent reclaim won the job), the renewer must STOP
+// calling RenewJobLease even though the handler has not returned yet.
+func TestExecuteRenewerStopsOnLostLease(t *testing.T) {
+	src := &renewStopSourceFake{renewCh: make(chan struct{}, 1)}
+
+	release := make(chan struct{})
+	reg := registration{
+		handler: func(context.Context, []byte) error {
+			<-release // block until the test has observed the renewer stop
+			return nil
+		},
+		maxAttempts: 5,
+	}
+
+	d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
+	d.renewInterval = time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		d.execute(context.Background(), etcdstore.Job{ID: 30, Kind: "test.job"}, reg)
+		close(done)
+	}()
+
+	// First renew fires and succeeds.
+	<-src.renewCh
+	// Second renew fires and returns false -> the renewer must stop. After
+	// draining it, no further renew call may ever arrive while the handler is
+	// still blocked.
+	<-src.renewCh
+
+	// The handler is still blocked (renewInterval is far shorter than this wait),
+	// so any third renew would land here. None must.
+	select {
+	case <-src.renewCh:
+		t.Fatalf("RenewJobLease called again after reporting the lease was lost; renewer did not stop")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	src.mu.Lock()
+	calls := src.calls
+	src.mu.Unlock()
+	if calls != 2 {
+		t.Errorf("RenewJobLease call count = %d, want 2 (renewer stopped after the false return)", calls)
+	}
+
+	close(release)
+	<-done
+}
+
 // TestExecuteRequeuesOnShutdown drives the REAL execute path with a cancelled
 // run ctx (the graceful-shutdown signal): a handler that aborts because of the
 // cancel must REQUEUE the job (RequeueJob), NOT RetryJob it (no attempt bump). A

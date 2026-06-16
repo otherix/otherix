@@ -201,10 +201,15 @@ const (
 // running job is presumed orphaned when its ClaimedAt lease is missing (a
 // legacy/pre-upgrade row with no live renewer) or older than olderThan (its
 // worker stopped renewing). Each reclaim re-reads the job's mod-revision and
-// commits its OWN compare-and-set transaction (ModRevision compare), so it can
-// never stomp a renewal or a completion landing in the same sweep. Attempts is
-// left UNCHANGED - a crash is not a real failure and must not consume the retry
-// budget. Returns the number of jobs reclaimed.
+// commits its OWN compare-and-set transaction (ModRevision compare). On the
+// authoritative re-read it re-validates BOTH the running state AND the lease age
+// before the CAS, so a job whose lease was renewed (or that completed) between
+// the snapshot scan and the per-job read is left untouched: the per-job CAS only
+// guards against writes landing after the read, so without the re-read predicate
+// a renewal landing between Range and Get would carry a fresh mod-revision that
+// the CAS accepts, bouncing a healthy just-renewed job back to pending. Attempts
+// is left UNCHANGED - a crash is not a real failure and must not consume the
+// retry budget. Returns the number of jobs reclaimed.
 func (s *Store) ReclaimStaleRunningJobs(ctx context.Context, olderThan time.Time) (int64, error) {
 	items, err := s.c.Range(ctx, jobsPrefix())
 	if err != nil {
@@ -227,6 +232,13 @@ func (s *Store) ReclaimStaleRunningJobs(ctx context.Context, olderThan time.Time
 			return reclaimed, rerr
 		}
 		if !found || job.State != JobStateRunning {
+			continue
+		}
+		// Re-validate the lease age on the authoritative re-read (fail-safe): a
+		// renewal landing between the Range snapshot and this Get carries a fresh
+		// ClaimedAt and a new mod-revision the CAS would otherwise accept, bouncing
+		// a healthy just-renewed job back to pending. Respect the renewal instead.
+		if job.ClaimedAt != nil && !job.ClaimedAt.Before(olderThan) {
 			continue
 		}
 		job.State = JobStatePending

@@ -89,6 +89,10 @@ func TestJobRetryAndFail(t *testing.T) {
 	if len(again) != 1 || again[0].Attempts != 1 {
 		t.Fatalf("after retry pending = %+v, want one with attempts=1", again)
 	}
+	// A requeued (pending) row carries no live lease.
+	if again[0].ClaimedAt != nil {
+		t.Errorf("requeued job ClaimedAt = %v, want nil", again[0].ClaimedAt)
+	}
 
 	// Claim + retry again: attempts reaches 2 == max => failed, not pending.
 	if _, err := s.ClaimJob(ctx, job.ID); err != nil {
@@ -126,6 +130,10 @@ func TestRequeueJob(t *testing.T) {
 			found = true
 			if j.Attempts != 0 {
 				t.Errorf("attempts bumped on requeue: %d, want 0", j.Attempts)
+			}
+			// A requeued (pending) row carries no live lease.
+			if j.ClaimedAt != nil {
+				t.Errorf("requeued job ClaimedAt = %v, want nil", j.ClaimedAt)
 			}
 		}
 	}

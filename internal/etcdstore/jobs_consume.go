@@ -128,6 +128,7 @@ func (s *Store) RetryJob(ctx context.Context, id int64, maxAttempts int32) (bool
 	requeued := job.Attempts < maxAttempts
 	if requeued {
 		job.State = JobStatePending
+		job.ClaimedAt = nil // a pending row carries no live lease
 	} else {
 		job.State = JobStateFailed
 		now := time.Now().UTC()
@@ -155,6 +156,7 @@ func (s *Store) RequeueJob(ctx context.Context, id int64) error {
 		return nil
 	}
 	job.State = JobStatePending
+	job.ClaimedAt = nil // a pending row carries no live lease
 	if err := s.c.PutJSON(ctx, jobKey(id), job); err != nil {
 		return fmt.Errorf("requeue job %d: %v", id, err)
 	}
