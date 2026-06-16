@@ -177,6 +177,10 @@ smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline
 smoke-vm-migration-live: ## Live VM migration smoke: `otherix vm migrate` (live) across two nodes, asserts console-heartbeat continuity (run after local-dev-start)
 	bash dev/smoke/vm-migration-live/run.sh
 
+.PHONY: smoke-vm-migration-live-stats
+smoke-vm-migration-live-stats: ## Live VM migration stats smoke: live-migrate, assert `migration get` shows the statistics section with sane ram.total/total_time_ms (run after local-dev-start)
+	bash dev/smoke/vm-migration-live-stats/run.sh
+
 .PHONY: smoke-vm-migration-live-overlay
 smoke-vm-migration-live-overlay: ## Live VM migration + overlay smoke: live-migrate an overlay-attached VM, asserts cross-node overlay connectivity follows the guest at cutover (run after local-dev-start)
 	bash dev/smoke/vm-migration-live-overlay/run.sh
