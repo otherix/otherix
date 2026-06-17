@@ -229,6 +229,14 @@ type Manager struct {
 	// verbatim copy so the capture path runs on darwin without qemu-img.
 	snapshotConvert convertFunc
 
+	// snapshotDiskDevices enumerates a VM's disks in virtio-index order for
+	// the snapshot capture loop. Production is the package snapshotDiskDevices
+	// (slice A: a single boot disk at index 0); the test injects a multi-disk
+	// fixture to pin the manifest's deterministic index ordering. The field is
+	// a test-only seam: slice A's enumerator cannot yield 2 disks, so there is
+	// no other way to drive runSnapshotCreate's index sort.
+	snapshotDiskDevices func(*VM) []snapshotDiskDevice
+
 	// snapshotInFlight serialises concurrent snapshot captures on the same
 	// (vmName, snapshotName): a redelivered create whose capture is still
 	// running returns the original *AgentTask instead of starting a second
@@ -372,6 +380,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	}
 	m.diskCapturer = qmpDiskCapturer{}
 	m.snapshotConvert = qemu.ConvertTo
+	m.snapshotDiskDevices = snapshotDiskDevices
 	m.migrations = migration.NewStore()
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath

@@ -453,7 +453,7 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 	}
 
 	disks := make([]snapshotManifestDisk, 0)
-	for _, dev := range snapshotDiskDevices(v) {
+	for _, dev := range m.snapshotDiskDevices(v) {
 		// Pre-create the backup target file the capturer's blockdev-add opens,
 		// then capture device into it; produceBlob converts that backup into the
 		// content-addressed standalone blob (hash/rename/sidecar).

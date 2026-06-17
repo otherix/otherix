@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -161,6 +162,212 @@ func TestCreateSnapshot_WithMemory_Rejected(t *testing.T) {
 	_, err := m.CreateSnapshot(context.Background(), v.Name, SnapshotSpec{Name: "snap1", WithMemory: withMem})
 	if err == nil {
 		t.Fatal("CreateSnapshot(with_memory=true) returned nil error, want rejection")
+	}
+}
+
+// writeManifestOnDisk writes a snapshot manifest plus a content-addressed
+// blob (+ sidecar) file for each referenced digest under the pool's
+// snapshots/ layout, mirroring exactly what a settled CreateSnapshot leaves
+// behind. It is the lower-friction way to construct a precise
+// shared-vs-unique blob-reference state that drives the REAL DeleteSnapshot
+// survivor scan, instead of orchestrating multiple capture runs.
+func (m *Manager) writeManifestOnDisk(t *testing.T, poolRoot string, v *VM, name string, digests ...string) {
+	t.Helper()
+	disks := make([]snapshotManifestDisk, 0, len(digests))
+	for i, sha := range digests {
+		disks = append(disks, snapshotManifestDisk{
+			Index:     i,
+			Device:    fmt.Sprintf("virtio%d", i),
+			SHA256:    sha,
+			SizeBytes: 8,
+			Format:    "qcow2",
+		})
+		snapshotsDir := filepath.Join(poolRoot, "snapshots")
+		if err := os.MkdirAll(snapshotsDir, 0o750); err != nil {
+			t.Fatalf("mkdir snapshots dir: %v", err)
+		}
+		blobPath := filepath.Join(snapshotsDir, sha+".qcow2")
+		if err := os.WriteFile(blobPath, qcow2Body(0x22), 0o600); err != nil {
+			t.Fatalf("write blob %s: %v", sha, err)
+		}
+		if err := os.WriteFile(blobPath+".sha256", []byte(sha), 0o644); err != nil {
+			t.Fatalf("write sidecar %s: %v", sha, err)
+		}
+	}
+	man := snapshotManifest{
+		Name:              name,
+		VMUUID:            v.ID,
+		VMName:            v.Name,
+		Architecture:      string(v.Architecture),
+		VMStateAtSnapshot: "stopped",
+		CreatedAt:         time.Now().UTC(),
+		Disks:             disks,
+	}
+	if err := writeSnapshotManifest(poolRoot, man); err != nil {
+		t.Fatalf("write manifest %s: %v", name, err)
+	}
+}
+
+// blobExists reports whether the content-addressed blob (and its sidecar) for
+// digest sha is present under the pool's snapshots/ dir.
+func blobExists(poolRoot, sha string) bool {
+	blobPath := filepath.Join(poolRoot, "snapshots", sha+".qcow2")
+	if _, err := os.Stat(blobPath); err != nil {
+		return false
+	}
+	return true
+}
+
+// manifestExists reports whether the named snapshot's manifest is present.
+func manifestExists(poolRoot, name string) bool {
+	if _, err := os.Stat(snapshotManifestPath(poolRoot, name)); err != nil {
+		return false
+	}
+	return true
+}
+
+// TestDeleteSnapshot_KeepsBlobSharedByAnotherManifest pins the fail-closed
+// blob GC: deleting snapshot A removes A's manifest and A's UNIQUE blob, but
+// leaves the SHARED blob (still referenced by surviving snapshot B) and all of
+// B's state intact. Breaking the survivor scan in production (deleting all of
+// A's blobs unconditionally) MUST fail this test.
+func TestDeleteSnapshot_KeepsBlobSharedByAnotherManifest(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedStoppedVM(t, "snapvm")
+	root := m.defaultTestPoolRoot(t)
+
+	shared := shaHex([]byte("shared-blob-content"))
+	uniqueA := shaHex([]byte("unique-A-content"))
+	uniqueB := shaHex([]byte("unique-B-content"))
+
+	m.writeManifestOnDisk(t, root, v, "snapA", shared, uniqueA)
+	m.writeManifestOnDisk(t, root, v, "snapB", shared, uniqueB)
+
+	task, err := m.DeleteSnapshot(context.Background(), v.Name, "snapA")
+	if err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+	done := m.awaitTask(t, task.ID)
+	if done.Status != TaskStatusSuccess {
+		t.Fatalf("delete task status = %q, want success (err=%+v)", done.Status, done.Error)
+	}
+
+	if manifestExists(root, "snapA") {
+		t.Error("snapA manifest still present after delete, want removed")
+	}
+	if blobExists(root, uniqueA) {
+		t.Error("snapA unique blob still present, want removed (no surviving reference)")
+	}
+	if !blobExists(root, shared) {
+		t.Error("shared blob removed, want KEPT (snapB still references it)")
+	}
+	if !manifestExists(root, "snapB") {
+		t.Error("snapB manifest removed, want intact")
+	}
+	if !blobExists(root, uniqueB) {
+		t.Error("snapB unique blob removed, want intact")
+	}
+}
+
+// TestDeleteSnapshot_EnumerationError_LeaksNothingDeleted pins the fail-closed
+// leak contract: when the manifest layer errors (here: the manifests dir is
+// chmod 0000, so both the target read and the survivor enumeration fail with a
+// non-fs.ErrNotExist error), DeleteSnapshot must delete ZERO blobs - leak
+// rather than risk removing one still in use. runSnapshotDelete reads the
+// target manifest before it ever reaches the blob-removal loop, so any
+// manifest-layer error short-circuits before a single os.Remove of a blob; the
+// assertion below proves the orphan blob survives. We trigger the error at the
+// manifests dir (the cleanest deterministic seam-free route); the chmod-0000
+// approach is skipped on filesystems / uids that do not enforce it.
+func TestDeleteSnapshot_EnumerationError_LeaksNothingDeleted(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("chmod 0000 does not deny root; this trigger needs an unprivileged uid")
+	}
+	m := newTestManager(t)
+	v := m.seedStoppedVM(t, "leakvm")
+	root := m.defaultTestPoolRoot(t)
+
+	orphan := shaHex([]byte("orphan-blob-content"))
+	m.writeManifestOnDisk(t, root, v, "snapA", orphan)
+
+	manifestsDir := filepath.Join(root, "snapshots", "manifests")
+	if err := os.Chmod(manifestsDir, 0o000); err != nil {
+		t.Fatalf("chmod manifests dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(manifestsDir, 0o750) })
+	// Probe whether 0000 actually denies access on this fs; if not, skip.
+	if _, err := os.ReadDir(manifestsDir); err == nil {
+		t.Skip("filesystem does not enforce chmod 0000 on directory reads; cannot trigger the error")
+	}
+
+	task, err := m.DeleteSnapshot(context.Background(), v.Name, "snapA")
+	if err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+	_ = m.awaitTask(t, task.ID)
+
+	// Restore access so we can inspect the blob, then assert it was NOT removed.
+	if err := os.Chmod(manifestsDir, 0o750); err != nil {
+		t.Fatalf("restore manifests dir perms: %v", err)
+	}
+	if !blobExists(root, orphan) {
+		t.Error("blob removed on manifest-layer error, want LEAKED (fail-closed: delete nothing)")
+	}
+}
+
+// TestCreateSnapshot_MultiDisk_ManifestOrderedByIndex pins the manifest's
+// deterministic disk ordering: a VM yielding two disks in REVERSE discovery
+// order (virtio1 before virtio0) must produce a manifest whose disks are sorted
+// ascending by index [(0,virtio0),(1,virtio1)]. Removing runSnapshotCreate's
+// sort.Slice(...byIndex) MUST fail this test. Slice A's enumerator only yields
+// a single boot disk, so the two-disk fixture is injected through the
+// snapshotDiskDevices seam.
+func TestCreateSnapshot_MultiDisk_ManifestOrderedByIndex(t *testing.T) {
+	m := newTestManager(t)
+	cap := &fakeCapturer{}
+	m.diskCapturer = cap
+	m.snapshotConvert = copyConvert
+
+	v := m.seedStoppedVMWithQcow2(t, "multidiskvm")
+
+	// A second disk with distinct content so its blob hashes distinctly.
+	disk1 := filepath.Join(filepath.Dir(v.DiskPath), "disk1.qcow2")
+	if err := os.WriteFile(disk1, qcow2Body(0x33), 0o600); err != nil {
+		t.Fatalf("write second disk: %v", err)
+	}
+	// Capturer copies the right source per device.
+	cap.srcOverride = map[string]string{"virtio0": v.DiskPath, "virtio1": disk1}
+
+	// Inject a two-disk enumerator that returns them in REVERSE index order, so
+	// only the production sort can put the manifest back in ascending order.
+	m.snapshotDiskDevices = func(vm *VM) []snapshotDiskDevice {
+		return []snapshotDiskDevice{
+			{index: 1, device: "virtio1", src: disk1},
+			{index: 0, device: "virtio0", src: vm.DiskPath},
+		}
+	}
+
+	task, err := m.CreateSnapshot(context.Background(), v.Name, SnapshotSpec{Name: "multi"})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	done := m.awaitTask(t, task.ID)
+	if done.Status != TaskStatusSuccess {
+		t.Fatalf("task status = %q, want success (err=%+v)", done.Status, done.Error)
+	}
+
+	var snap agentapi.Snapshot
+	if err := json.Unmarshal(done.Result, &snap); err != nil {
+		t.Fatalf("decode result: %v (raw=%s)", err, done.Result)
+	}
+	if len(snap.Disks) != 2 {
+		t.Fatalf("len(disks) = %d, want 2", len(snap.Disks))
+	}
+	if snap.Disks[0].Index != 0 || snap.Disks[0].Device != "virtio0" {
+		t.Errorf("disk[0] = (index=%d, device=%q), want (0, virtio0)", snap.Disks[0].Index, snap.Disks[0].Device)
+	}
+	if snap.Disks[1].Index != 1 || snap.Disks[1].Device != "virtio1" {
+		t.Errorf("disk[1] = (index=%d, device=%q), want (1, virtio1)", snap.Disks[1].Index, snap.Disks[1].Device)
 	}
 }
 
