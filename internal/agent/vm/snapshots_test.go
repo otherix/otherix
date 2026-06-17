@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+// sameFileIno asserts that two FileInfos refer to the same on-disk file
+// (same inode), proving a blob was reused in place rather than re-renamed
+// over. os.SameFile compares device + inode, which is exactly the "did the
+// file get replaced" signal we need.
+func sameFileIno(a, b os.FileInfo) bool {
+	return os.SameFile(a, b)
+}
+
 // copyConvert is a test stand-in for qemu.ConvertTo: it copies src to dst
 // verbatim (no format change), exercising produceBlob's hash/rename/sidecar
 // tail without shelling out to qemu-img.
@@ -65,6 +73,17 @@ func TestProduceBlob_HashesAndAtomicRenamesWithSidecar(t *testing.T) {
 		t.Errorf(".staging has leftovers: %v", entries)
 	}
 
+	// Idempotency teeth: capture the blob's identity (inode, via FileInfo)
+	// BEFORE the re-run so we can prove the 2nd call REUSED the existing blob
+	// rather than re-staging and renaming a fresh file over it. A digest/path
+	// match alone is too weak - re-writing identical content yields the same
+	// digest/path/size, so it stays green even if the reuse short-circuit is
+	// removed. Inode identity is the signal that catches that regression.
+	preInfo, err := os.Stat(wantPath)
+	if err != nil {
+		t.Fatalf("stat blob before re-run: %v", err)
+	}
+
 	// Idempotent re-run: same content -> same digest, no error, blob still there.
 	res2, err := produceBlob(context.Background(), src, snapshotsDir, copyConvert)
 	if err != nil {
@@ -75,6 +94,65 @@ func TestProduceBlob_HashesAndAtomicRenamesWithSidecar(t *testing.T) {
 	}
 	if res2.SizeBytes != int64(len(body)) {
 		t.Errorf("re-run SizeBytes = %d, want %d", res2.SizeBytes, len(body))
+	}
+
+	// The blob on disk must be the SAME file (same inode) as before the
+	// re-run: reuse means we never rename a fresh staging file over it.
+	postInfo, err := os.Stat(wantPath)
+	if err != nil {
+		t.Fatalf("stat blob after re-run: %v", err)
+	}
+	if !sameFileIno(preInfo, postInfo) {
+		t.Errorf("re-run replaced the blob (inode changed); want reuse of the existing file")
+	}
+	// Reuse must also leave no staging file behind: the staging copy is
+	// dropped (by the deferred remove) rather than renamed into place.
+	if entries, err := os.ReadDir(staging); err == nil && len(entries) != 0 {
+		t.Errorf(".staging has leftovers after reuse re-run: %v", entries)
+	}
+}
+
+// TestProduceBlob_SidecarNeverPrecedesBlob pins the durability ordering
+// invariant: a {sha}.qcow2.sha256 sidecar must NEVER exist on disk pointing at
+// a missing blob - the sidecar is written strictly AFTER the blob lands via
+// the atomic rename. We force the rename to fail (its target path is occupied
+// by a directory) and then assert that no sidecar was left behind. With the
+// production order (rename then sidecar) the rename fails first, so the sidecar
+// is never written. If a regression moved the sidecar write BEFORE the rename,
+// the sidecar would already be on disk when the rename fails, and this test
+// catches it.
+func TestProduceBlob_SidecarNeverPrecedesBlob(t *testing.T) {
+	dir := t.TempDir()
+	snapshotsDir := filepath.Join(dir, "snapshots")
+	if err := os.MkdirAll(snapshotsDir, 0o750); err != nil {
+		t.Fatalf("mkdir snapshots: %v", err)
+	}
+
+	src := filepath.Join(dir, "src-disk0.qcow2")
+	body := qcow2Body(0x42)
+	if err := os.WriteFile(src, body, 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	wantSHA := shaHex(body)
+
+	// Occupy the content-addressed blob path with a directory so the atomic
+	// rename of the staging file fails. readCachedImage treats a directory as
+	// "not present", so the reuse short-circuit is skipped and produceBlob
+	// proceeds to the rename. (A non-empty directory cannot be the rename
+	// target, so os.Rename returns an error.)
+	blobPath := filepath.Join(snapshotsDir, wantSHA+".qcow2")
+	if err := os.MkdirAll(filepath.Join(blobPath, "occupied"), 0o750); err != nil {
+		t.Fatalf("occupy blob path with dir: %v", err)
+	}
+	sidecarPath := blobPath + ".sha256"
+
+	if _, err := produceBlob(context.Background(), src, snapshotsDir, copyConvert); err == nil {
+		t.Fatal("produceBlob with occupied rename target = nil error, want failure")
+	}
+
+	// The invariant: no sidecar may exist pointing at the (still missing) blob.
+	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
+		t.Errorf("sidecar exists at %q after rename failure (err=%v); a sidecar must never precede its blob", sidecarPath, err)
 	}
 }
 
