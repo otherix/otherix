@@ -23,6 +23,7 @@ import (
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
+	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
@@ -200,6 +201,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	// handler treats as "skip propagation" (the cancel still succeeds).
 	migCancelClient, _ := deps.VMLifecycle.AgentClient.(migrationshandlers.MigrationCancelClient)
 	migH := migrationshandlers.New(deps.Store, migCancelClient, deps.Logger)
+	snapH := snapshotshandlers.New(deps.Store, deps.Logger)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)
@@ -343,6 +345,23 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// handler. Migration is a VM sub-resource action (ADR
 				// 0009) — created here, polled via /v1/migrations/{id}.
 				r.With(middleware.RequirePermission(auth.PermVMMigrate, deps.Logger)).Post("/{id}/migrate", migH.Start)
+				// vms.snapshots — snapshot is a VM sub-resource (ADR
+				// 0009). List/create live under the VM; the snapshot
+				// record's own GET-by-id + delete live under
+				// /v1/snapshots/{id}. snapshot:read gates list,
+				// snapshot:create gates create; ownership scope is
+				// enforced inside the handlers (cross-owner -> 404).
+				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/{id}/snapshots", snapH.List)
+				r.With(middleware.RequirePermission(auth.PermSnapshotCreate, deps.Logger)).Post("/{id}/snapshots", snapH.Create)
+			})
+
+			// /v1/snapshots surface. The snapshot record's own
+			// GET-by-id (status polling) + delete. Snapshots are never
+			// CREATED through this subtree — only through POST
+			// /v1/vms/{id}/snapshots (ADR 0009).
+			r.Route("/snapshots", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/{id}", snapH.Get)
+				r.With(middleware.RequirePermission(auth.PermSnapshotDelete, deps.Logger)).Delete("/{id}", snapH.Delete)
 			})
 
 			// /v1/migrations surface. The migration record's own
