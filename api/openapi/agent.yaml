@@ -89,8 +89,9 @@ tags:
     description: Per-VM NIC hot-attach / hot-detach / reconfiguration.
   - name: vm-snapshots
     description: |
-      Per-VM internal snapshots (qcow2 / qemu native), addressed by
-      `(vm_uuid, name)`.
+      Per-VM content-addressed, disk-only snapshots. Each disk is
+      captured as a full-copy blob keyed by its sha256 digest; the
+      agent returns a manifest. Addressed by name within a VM.
   - name: vm-migrations
     description: |
       Live and offline migrations. The Control Plane drives the saga
@@ -494,6 +495,12 @@ paths:
       operationId: vms.revert
       tags: [vms]
       summary: Revert VM to a snapshot (asynchronous).
+      description: |
+        In-place revert is not implemented in slice A. The agent returns
+        `501 not_implemented`. Restore is recreate-from-snapshot: the
+        Control Plane creates a fresh VM from a snapshot manifest via
+        `vm create --from-snapshot`. The path is retained so a later
+        slice can implement in-place revert without an API break.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -512,6 +519,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/vms/{vm_name}/disks:
@@ -1357,6 +1365,7 @@ components:
         - network_config_conflict
         - network_in_use
         - protocol_not_available
+        - not_implemented
       description: |
         Stable machine-readable error code. Endpoint-specific codes
         beyond this enum may be returned for narrow cases; clients
@@ -2171,16 +2180,19 @@ components:
     Snapshot:
       type: object
       description: |
-        QEMU internal snapshot, addressed by `(vm_uuid, name)`. Field
-        names align with the Control Plane's `VmSnapshot` for direct
-        round-tripping; `id` is omitted because snapshots on the
-        agent are keyed by name within a VM, not by a separate UUID.
+        A content-addressed, disk-only VM snapshot produced by the agent.
+        The agent captures each VM disk as a full-copy blob keyed by its
+        sha256 digest under `{poolRoot}/snapshots/{digest}.qcow2` and
+        returns a manifest. Disk-only and crash-consistent; RAM is not
+        captured. Field names align with the Control Plane's `VmSnapshot`
+        for direct round-tripping; `id` is omitted because snapshots on
+        the agent are keyed by name within a VM, not by a separate UUID.
       required:
         - vm_uuid
         - name
         - status
-        - with_memory
         - vm_state_at_snapshot
+        - disks
         - created_at
       properties:
         vm_uuid: { type: string, format: uuid }
@@ -2192,18 +2204,32 @@ components:
           default: ""
         status:
           type: string
-          enum: [creating, ready, restoring, deleting, error]
-        with_memory:
-          type: boolean
+          enum: [creating, ready, deleting, error]
         vm_state_at_snapshot:
           type: string
           enum: [running, paused, stopped]
-        disk_size_bytes:
-          type: [integer, "null"]
-          format: int64
-        memory_size_bytes:
-          type: [integer, "null"]
-          format: int64
+        disks:
+          type: array
+          description: |
+            Per-disk blob descriptors, ordered by disk index
+            (virtio0, virtio1, ...).
+          items:
+            type: object
+            required: [index, device, sha256, size_bytes, format]
+            properties:
+              index: { type: integer }
+              device:
+                type: string
+                description: "virtio<i>"
+              sha256:
+                type: string
+                description: hex sha256 of the blob
+              size_bytes:
+                type: integer
+                format: int64
+              format:
+                type: string
+                enum: [qcow2]
         error_message:
           type: [string, "null"]
         created_at:
@@ -2224,6 +2250,9 @@ components:
         with_memory:
           type: boolean
           default: false
+          description: |
+            RAM capture is unsupported in slice A; only `false` is
+            honored. The field is retained for forward compatibility.
 
     MigrationIncomingRequest:
       type: object
@@ -2811,6 +2840,15 @@ components:
 
     Internal:
       description: Unhandled server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotImplemented:
+      description: |
+        Endpoint is not implemented on this surface. The error body
+        carries `code: not_implemented`.
       content:
         application/json:
           schema:
