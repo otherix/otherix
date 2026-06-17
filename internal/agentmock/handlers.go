@@ -344,6 +344,7 @@ func (m *Mock) TasksGet(w http.ResponseWriter, r *http.Request, taskID uuid.UUID
 		m.materializeVMCreateLocked(&snapshot, now)
 		m.materializeVMDeleteLocked(&snapshot, now)
 		m.materializeVMLifecycleLocked(&snapshot, now)
+		m.materializeSnapshotCreateLocked(&snapshot, now)
 	}
 	m.state.mu.Unlock()
 
@@ -635,38 +636,6 @@ func (m *Mock) VMNicsDetach(w http.ResponseWriter, r *http.Request, _ agentapi.V
 
 func (m *Mock) VMNicsUpdate(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.DeviceOrder, _ agentapi.VMNicsUpdateParams) {
 	const opID = "vmNics.update"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMSnapshotsList(w http.ResponseWriter, r *http.Request, _ agentapi.VMName) {
-	const opID = "vmSnapshots.list"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMSnapshotsCreate(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.VMSnapshotsCreateParams) {
-	const opID = "vmSnapshots.create"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMSnapshotsGet(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.SnapshotName) {
-	const opID = "vmSnapshots.get"
-	if m.preDispatch(w, r, opID) {
-		return
-	}
-	m.respondNotImplemented(w, r, opID)
-}
-
-func (m *Mock) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, _ agentapi.VMName, _ agentapi.SnapshotName, _ agentapi.VMSnapshotsDeleteParams) {
-	const opID = "vmSnapshots.delete"
 	if m.preDispatch(w, r, opID) {
 		return
 	}

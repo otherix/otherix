@@ -99,6 +99,17 @@ type state struct {
 	migrations       map[uuid.UUID]*migrationRecord
 	migrationResults map[string][]MigrationResult
 
+	// Snapshot create / delete simulation. `snapshots` is keyed by
+	// (vmName -> snapshotName) and holds the materialised manifest the
+	// list / get surface returns; a create task's terminal-success
+	// projection both reports the Snapshot result map (decoded by the
+	// CP worker's agent_executor.go) and stages the entry here.
+	// `snapshotDeleteAsks` records, per (vmName, snapshotName), the
+	// orphaned digests the CP asked the agent to GC so a test can assert
+	// the fail-closed delete set propagated over the wire.
+	snapshots          map[string]map[string]mockSnapshot
+	snapshotDeleteAsks map[snapshotKey][]string
+
 	// Test fixture machinery (no wire surface).
 	requests []RequestRecord
 	inject   injectionState

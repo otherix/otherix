@@ -79,6 +79,17 @@ type agentTask struct {
 	// "vm.migrate".
 	migrationResult *MigrationResult
 	migrationID     uuid.UUID
+
+	// vm.snapshot.create / vm.snapshot.delete async tasks.
+	// snapshotManifest carries the deterministic content-addressed
+	// manifest the create-task terminal projection reports (the CP
+	// worker's agent_executor.go decodes it from task.result) and the
+	// materialise hook stages into state.snapshots. snapshotDeleteResult
+	// is a presence marker for a delete task (always success); the
+	// orphaned-digest set is recorded in state.snapshotDeleteAsks at
+	// handler time, not here.
+	snapshotManifest     *mockSnapshot
+	snapshotDeleteResult *struct{}
 }
 
 // AddPoolScanResult queues a synthetic outcome for the next
@@ -176,6 +187,10 @@ func projectAgentTask(t *agentTask, now time.Time) agentapi.Task {
 		projectVMLifecycleTerminal(&task, t)
 	case "vm.migrate":
 		projectVMMigrateTerminal(&task, t)
+	case "vm.snapshot.create":
+		projectSnapshotCreateTerminal(&task, t)
+	case "vm.snapshot.delete":
+		projectSnapshotDeleteTerminal(&task)
 	default:
 		// "storage_pool.scan" and any future scan-shaped task type
 		// fall through to the scan projection.

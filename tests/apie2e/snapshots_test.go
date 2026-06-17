@@ -8,13 +8,21 @@ package apie2e
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agentmock"
+	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/handlers/snapshots"
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
@@ -362,3 +370,195 @@ func TestSnapshotCreate_RecordsSourceArchAndFirmware(t *testing.T) {
 type fakeJobArgs struct{}
 
 func (fakeJobArgs) Kind() string { return "vm.snapshot.create" }
+
+// newMockAgentClient builds a real agentclient.Client over the agentmock TLS
+// material (CP-side leaf cert + cluster CA), so the snapshot worker drives the
+// SAME production agent_executor.go decode path against the mock that it would
+// against a real agent. Fast poll intervals keep the end-to-end loop sub-second.
+func newMockAgentClient(t *testing.T) *agentclient.Client {
+	t.Helper()
+	dir := t.TempDir()
+	caPEM, err := agentmock.CACertPEM()
+	if err != nil {
+		t.Fatalf("agentmock.CACertPEM: %v", err)
+	}
+	cpCertPEM, err := agentmock.ControlPlaneCertPEM()
+	if err != nil {
+		t.Fatalf("agentmock.ControlPlaneCertPEM: %v", err)
+	}
+	cpKeyPEM, err := agentmock.ControlPlaneKeyPEM()
+	if err != nil {
+		t.Fatalf("agentmock.ControlPlaneKeyPEM: %v", err)
+	}
+	for _, w := range []struct {
+		name  string
+		bytes []byte
+	}{
+		{"ca.crt", caPEM},
+		{"tls.crt", cpCertPEM},
+		{"tls.key", cpKeyPEM},
+	} {
+		if err := os.WriteFile(filepath.Join(dir, w.name), w.bytes, 0o600); err != nil {
+			t.Fatalf("write %s: %v", w.name, err)
+		}
+	}
+	cert, ca, err := agentclient.LoadMaterialFromFiles(
+		filepath.Join(dir, "tls.crt"),
+		filepath.Join(dir, "tls.key"),
+		filepath.Join(dir, "ca.crt"),
+	)
+	if err != nil {
+		t.Fatalf("LoadMaterialFromFiles: %v", err)
+	}
+	cli, err := agentclient.New(config.AgentClientConfig{
+		Enabled:         true,
+		Timeout:         5 * time.Second,
+		PollInterval:    10 * time.Millisecond,
+		PollMaxInterval: 200 * time.Millisecond,
+	}, cert, ca)
+	if err != nil {
+		t.Fatalf("agentclient.New: %v", err)
+	}
+	return cli
+}
+
+// seedRunningVMOnNode seeds a VM owned by ownerID with a vm_runtime row pinned to
+// node, so the snapshot worker resolves snapshot -> VM -> node and reaches the
+// agent at node.AdvertisedEndpoint. The node's advertised endpoint is the mock
+// agent's TLS URL.
+func seedRunningVMOnNode(t *testing.T, s *etcdstore.Store, ownerID uuid.UUID, agentURL string) (vmName string, vmID, nodeID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	node, err := s.CreateNode(ctx, store.CreateNodeParams{
+		ID:                      uuid.New(),
+		Name:                    "snap-node-" + uuid.NewString()[:8],
+		Architecture:            store.CpuArchAmd64,
+		AdvertisedEndpoint:      agentURL,
+		MigrationHost:           "10.0.0.7",
+		MigrationPortRangeStart: 49152,
+		MigrationPortRangeEnd:   49251,
+		Status:                  store.NodeStatusReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	spec, err := store.MarshalSchedulingSpec(store.SchedulingSpec{PoolName: "default"})
+	if err != nil {
+		t.Fatalf("MarshalSchedulingSpec: %v", err)
+	}
+	pinned := node.ID
+	vm := store.VM{
+		ID: uuid.New(), OwnerID: ownerID, Name: "snap-run-" + uuid.NewString()[:8],
+		DesiredPhase: store.VmDesiredPhaseRunning, Architecture: store.CpuArchAmd64,
+		SchedulingStatus: store.VMSchedulingScheduled, SchedulingSpec: spec,
+		PinnedNodeID: &pinned,
+		CpuCores:     2, MemoryMib: 2048,
+		Labels: []byte(`{}`), ImageFormat: store.ImageFormatQcow2,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	cli := sharedEtcdClient
+	if err := cli.PutJSON(ctx, etcd.Key("vms", vm.ID.String()), vm); err != nil {
+		t.Fatalf("seed vm: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("uniq", "vms", "name", vm.Name), []byte(vm.ID.String())); err != nil {
+		t.Fatalf("seed vm name guard: %v", err)
+	}
+	// A vm_runtime row pinned to the node is what resolveSnapshotNode reads to
+	// find the agent endpoint - without it the worker fails with no-current-node.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vm.ID, CurrentNodeID: &node.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1,
+		})
+	}); err != nil {
+		t.Fatalf("UpsertVMRuntime: %v", err)
+	}
+	return vm.Name, vm.ID, node.ID
+}
+
+// TestSnapshotCreate_EndToEnd_ReachesReady drives the FULL CP seam against the
+// mock agent: a developer snapshots their own VM (202 + create task), the
+// snapshot worker POSTs to the mock agent and polls the agent task to terminal,
+// projects the mock's deterministic two-disk content-addressed manifest, and the
+// snapshot row reaches status=ready. This is the seam that historically passed on
+// mock but 404'd on real agent - the mock now speaks the new content-addressed
+// contract through the SAME agent_executor.go decode path the real agent will use.
+func TestSnapshotCreate_EndToEnd_ReachesReady(t *testing.T) {
+	h := newE2E(t)
+	devToken, devID := loginAs(t, h, auth.RoleDeveloper)
+	ctx := context.Background()
+
+	mock := agentmock.Start(t, agentmock.Options{TLS: agentmock.TLSEnabled, Architecture: "amd64"})
+
+	vmName, vmID, _ := seedRunningVMOnNode(t, h.store, devID, mock.URL())
+
+	// Owner create -> 202 + pending task carrying the create task id.
+	resp := h.do(t, http.MethodPost, "/v1/vms/"+vmName+"/snapshots",
+		map[string]any{"name": "daily"}, devToken, map[string]string{
+			"Idempotency-Key": "snap-e2e-" + uuid.NewString(),
+		})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status = %d, want 202", resp.StatusCode)
+	}
+	var accepted asyncAccepted
+	decodeJSON(t, resp, &accepted)
+	taskID, err := uuid.Parse(accepted.TaskID)
+	if err != nil {
+		t.Fatalf("parse accepted.task_id %q: %v", accepted.TaskID, err)
+	}
+	sid := snapshotIDForVM(t, h.store, vmID)
+
+	// Drive the snapshot worker against the mock agent through the production
+	// agent_executor.go: PostSnapshot -> PollTask -> decodeSnapshotResult ->
+	// SnapshotManifestApplied -> finalize task success.
+	exec := snapshots.NewAgentSnapshotExecutor(newMockAgentClient(t))
+	handler := snapshots.CreateHandler(h.store, exec, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	rawArgs, err := json.Marshal(snapshots.SnapshotCreateArgs{TaskID: taskID, SnapshotID: sid})
+	if err != nil {
+		t.Fatalf("marshal SnapshotCreateArgs: %v", err)
+	}
+	if err := handler(ctx, rawArgs); err != nil {
+		t.Fatalf("snapshot create worker: %v", err)
+	}
+
+	// The backing task reached success.
+	task, err := h.store.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusSuccess {
+		t.Fatalf("task status = %q, want success", task.Status)
+	}
+
+	// The snapshot row reached ready with the mock's deterministic two-disk
+	// content-addressed manifest and vm_state_at_snapshot set.
+	got, err := h.store.SnapshotByID(ctx, sid)
+	if err != nil {
+		t.Fatalf("SnapshotByID: %v", err)
+	}
+	if got.Status != store.SnapshotStatusReady {
+		t.Fatalf("snapshot status = %q, want ready", got.Status)
+	}
+	if got.VMStateAtSnapshot != store.VmStateAtSnapshotStopped {
+		t.Errorf("vm_state_at_snapshot = %q, want stopped", got.VMStateAtSnapshot)
+	}
+	if len(got.Disks) != 2 {
+		t.Fatalf("manifest disks = %d, want 2", len(got.Disks))
+	}
+	wantSHA := map[string]string{"virtio0": mockSnapshotDiskSHA0, "virtio1": mockSnapshotDiskSHA1}
+	for _, d := range got.Disks {
+		if want, ok := wantSHA[d.Device]; !ok || d.SHA256 != want {
+			t.Errorf("disk %q sha256 = %q, want %q", d.Device, d.SHA256, want)
+		}
+		if d.SizeBytes <= 0 {
+			t.Errorf("disk %q size_bytes = %d, want > 0", d.Device, d.SizeBytes)
+		}
+	}
+}
+
+// mockSnapshotDiskSHA0/SHA1 are the deterministic fixed digests the mock agent
+// reports for the two-disk content-addressed manifest. Mirrored here so the
+// end-to-end test asserts wire-shape parity with the mock.
+const (
+	mockSnapshotDiskSHA0 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	mockSnapshotDiskSHA1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
