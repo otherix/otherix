@@ -76,3 +76,16 @@ func ResizeImg(ctx context.Context, path string, sizeBytes int64) error {
 	}
 	return nil
 }
+
+// ConvertTo writes a fresh, standalone qcow2 copy of src into dst via
+// `qemu-img convert -O qcow2`. The output is self-contained (no backing
+// file), the form the content-addressed snapshot blob requires. src and dst
+// are agent-owned pool paths.
+func ConvertTo(ctx context.Context, src, dst string) error {
+	// #nosec G204 -- src/dst are agent-owned pool paths, not user input.
+	out, err := exec.CommandContext(ctx, "qemu-img", "convert", "-O", "qcow2", src, dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qemu-img convert %s -> %s: %v (%s)", src, dst, err, out)
+	}
+	return nil
+}
