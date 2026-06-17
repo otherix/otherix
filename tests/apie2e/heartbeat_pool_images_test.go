@@ -139,3 +139,72 @@ func TestHeartbeatImagesUnavailablePreservesInventory(t *testing.T) {
 		t.Fatalf("inventory after genuine-empty = %+v, want cleared (zero images)", inv)
 	}
 }
+
+// TestHeartbeatSnapshotsFieldAccepted pins the agent->CP heartbeat-acceptance
+// seam for the snapshots[] inventory field (vm-snapshots slice A). The CP
+// heartbeat decoder uses DisallowUnknownFields(), so an upgraded agent that
+// reports a pool's snapshot-blob cache via pools[].snapshots[] (plus
+// snapshots_unavailable) would 400 validation_failed unless the CP receiver
+// struct declares the matching fields. This drives the REAL HTTP decode path
+// (raw wire map -> json.Decoder.DisallowUnknownFields) and asserts the body is
+// accepted (2xx), not rejected. Removing Snapshots/SnapshotsUnavailable from the
+// CP receiver struct must make this test 400.
+func TestHeartbeatSnapshotsFieldAccepted(t *testing.T) {
+	h := newE2E(t)
+
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+	ag := wgSeedAgent(t, h, caCert, caKey, "node-snappool")
+
+	// A pool entry carrying snapshots[] + snapshots_unavailable:false. No pool
+	// row is seeded: the snapshot inventory is not yet projected CP-side (slice A
+	// only reports it), so acceptance must hold on the decode seam alone.
+	pool := map[string]any{
+		"name":                  "pool-snappool",
+		"reconciliation_status": "ready",
+		"snapshots": []map[string]any{{
+			"sha256":     "0000000000000000000000000000000000000000000000000000000000000000",
+			"size_bytes": 123,
+		}},
+		"snapshots_unavailable": false,
+	}
+	body := map[string]any{
+		"agent_version": "test-0.1.0",
+		"architecture":  "amd64",
+		"capabilities": map[string]any{
+			"cpu_model":        "test-cpu",
+			"cpu_flags":        []string{},
+			"cpu_cores_total":  4,
+			"memory_total_mib": 8192,
+			"kernel_version":   "test",
+			"qemu_version":     "test",
+		},
+		"resources": map[string]any{
+			"cpu_cores_available":  4,
+			"memory_available_mib": 8000,
+		},
+		"vms":      []any{},
+		"networks": []any{},
+		"pools":    []any{pool},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal heartbeat: %v", err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		agentSrv.URL+"/v1/nodes/"+ag.name+"/heartbeat", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("new heartbeat request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ag.client.Do(req)
+	if err != nil {
+		t.Fatalf("heartbeat Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("heartbeat with snapshots[] status = %d, want 2xx (DisallowUnknownFields must accept the field); body=%s",
+			resp.StatusCode, string(b))
+	}
+}
