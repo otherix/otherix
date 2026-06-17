@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/google/uuid"
+
 	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
@@ -23,13 +25,19 @@ var _ snapshotshandlers.WorkerStore = (*etcdstore.Store)(nil)
 
 // stubCreateExec is a SnapshotExecutor double returning a fixed two-disk manifest;
 // the run handler drives it against the REAL store so the seam test covers the
-// manifest projection + task finalize, not a direct method call.
+// manifest projection + task finalize + agent_task_id persistence, not a direct
+// method call. Post returns a fixed agent task id (the worker persists it before
+// polling); Poll returns the fixed manifest.
 type stubCreateExec struct {
 	res snapshotshandlers.CreateExecResult
 	err error
 }
 
-func (s stubCreateExec) Create(context.Context, snapshotshandlers.CreateExecArgs) (snapshotshandlers.CreateExecResult, error) {
+func (s stubCreateExec) Post(context.Context, snapshotshandlers.CreateExecArgs) (uuid.UUID, error) {
+	return uuid.New(), nil
+}
+
+func (s stubCreateExec) Poll(context.Context, string, uuid.UUID) (snapshotshandlers.CreateExecResult, error) {
 	return s.res, s.err
 }
 
@@ -87,5 +95,10 @@ func TestSnapshotCreateRunHandler(t *testing.T) {
 	tk, _ := s.TaskByID(ctx, task.ID)
 	if tk.Status != store.TaskStatusSuccess {
 		t.Errorf("task = %v, want success", tk.Status)
+	}
+	// The agent task id was persisted on the real store before polling: a crash
+	// mid-poll resumes Poll rather than re-POSTing a second capture.
+	if tk.AgentTaskID == nil {
+		t.Errorf("task.AgentTaskID = nil after create; want the persisted agent task id (resume seam)")
 	}
 }

@@ -25,11 +25,13 @@ type agentClient interface {
 }
 
 // agentSnapshotExecutor is the production SnapshotExecutor: it translates a
-// CreateExecArgs / DeleteExecArgs into the agent calls over mTLS. Create is the
-// two-step PostSnapshot + PollTask saga; Delete is a single best-effort agent
-// delete of the orphaned blobs. Errors flow through verbatim (wrapped with phase
-// context) so the worker's failTask path renders the originating layer; retry
-// classification is the queue's MaxAttempts/backoff, not pre-empted here.
+// CreateExecArgs / DeleteExecArgs into the agent calls over mTLS. Create is split
+// into Post (the one-shot PostSnapshot) and Poll (the resumable PollTask), so the
+// worker persists the returned agent task id between them and never re-POSTs on a
+// redelivery; Delete is a single best-effort agent delete of the orphaned blobs.
+// Errors flow through verbatim (wrapped with phase context) so the worker's
+// failTask path renders the originating layer; retry classification is the queue's
+// MaxAttempts/backoff, not pre-empted here.
 type agentSnapshotExecutor struct {
 	client agentClient
 }
@@ -42,12 +44,11 @@ func NewAgentSnapshotExecutor(client agentClient) SnapshotExecutor {
 	return &agentSnapshotExecutor{client: client}
 }
 
-// Create drives one snapshot: POST /v1/vms/{vm_name}/snapshots against
-// a.AdvertisedEndpoint, then poll the returned agent task id until terminal. A
-// terminal success decodes the agent's reported manifest (disks[] +
-// vm_state_at_snapshot) into CreateExecResult; failed/cancelled surface as errors
-// the worker writes into tasks.error.
-func (e *agentSnapshotExecutor) Create(ctx context.Context, a CreateExecArgs) (CreateExecResult, error) {
+// Post submits POST /v1/vms/{vm_name}/snapshots against a.AdvertisedEndpoint and
+// returns the agent task id driving the capture. The worker persists this id
+// (UpdateTaskAgentTaskID) before polling, so a redelivery resumes Poll instead of
+// re-POSTing a second blockdev-backup.
+func (e *agentSnapshotExecutor) Post(ctx context.Context, a CreateExecArgs) (uuid.UUID, error) {
 	desc := a.Description
 	body := agentapi.SnapshotCreateRequest{Name: a.SnapshotName}
 	if desc != "" {
@@ -56,10 +57,17 @@ func (e *agentSnapshotExecutor) Create(ctx context.Context, a CreateExecArgs) (C
 
 	agentTaskID, err := e.client.PostSnapshot(ctx, a.AdvertisedEndpoint, a.VMName, body)
 	if err != nil {
-		return CreateExecResult{}, fmt.Errorf("post snapshot: %w", err)
+		return uuid.Nil, fmt.Errorf("post snapshot: %w", err)
 	}
+	return agentTaskID, nil
+}
 
-	terminal, err := e.client.PollTask(ctx, a.AdvertisedEndpoint, agentTaskID)
+// Poll drives the agent task at agentTaskID to terminal against endpoint. A
+// terminal success decodes the agent's reported manifest (disks[] +
+// vm_state_at_snapshot) into CreateExecResult; failed/cancelled surface as errors
+// the worker writes into tasks.error. Safe to resume across redeliveries.
+func (e *agentSnapshotExecutor) Poll(ctx context.Context, endpoint string, agentTaskID uuid.UUID) (CreateExecResult, error) {
+	terminal, err := e.client.PollTask(ctx, endpoint, agentTaskID)
 	if err != nil {
 		return CreateExecResult{}, fmt.Errorf("poll task: %w", err)
 	}
@@ -86,7 +94,7 @@ func (e *agentSnapshotExecutor) Delete(ctx context.Context, a DeleteExecArgs) er
 	return nil
 }
 
-// agentSnapshotResult is the typed projection of the agent's create-task result.
+// decodeSnapshotResult is the typed projection of the agent's create-task result.
 // The agent task result carries the produced Snapshot manifest; we re-marshal the
 // terminal result map and unmarshal into agentapi.Snapshot rather than hand-walking
 // the map[string]any so the disk array decodes cleanly.

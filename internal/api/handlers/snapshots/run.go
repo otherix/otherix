@@ -31,6 +31,14 @@ import (
 type WorkerStore interface {
 	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
+	// TaskByID reads the backing task so the create worker can resume on a
+	// persisted agent_task_id instead of re-POSTing on a redelivery.
+	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
+	// UpdateTaskAgentTaskID stamps the agent-side task id onto the task after the
+	// one-shot PostSnapshot, before polling: a crash mid-poll resumes Poll on the
+	// persisted id rather than re-POSTing a second capture (the resume seam,
+	// mirroring the migrations worker).
+	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	// SnapshotByIDIncludingDeleted reads a snapshot row even when soft-deleted - the
 	// delete worker runs AFTER the row is soft-deleted CP-side, so it needs the
@@ -93,7 +101,12 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeNodeUnreachable, err)
 	}
 
-	res, execErr := exec.Create(ctx, CreateExecArgs{
+	task, err := st.TaskByID(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("reload task: %v", err)
+	}
+
+	res, execErr := startOrResumeCapture(ctx, st, exec, taskID, task, CreateExecArgs{
 		VMName:             vmName,
 		AdvertisedEndpoint: endpoint,
 		SnapshotName:       snap.Name,
@@ -120,6 +133,35 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 		return fmt.Errorf("finalize task success: %v", err)
 	}
 	return nil
+}
+
+// startOrResumeCapture drives the agent capture with agent_task_id resumption,
+// mirroring the migrations worker's startOrResume. When the task already carries
+// an agent task id (a redelivery while the capture is still running - worker crash
+// mid-poll or a finalize-failed retry), it SKIPS the agent POST and resumes Poll
+// on the persisted id; a redelivered job must not double-POST a second full-disk
+// blockdev-backup (which, if the disk changed, would yield different blob digests
+// and orphan the first attempt's refs). Otherwise it POSTs once, persists the
+// returned id BEFORE polling (so a crash mid-poll resumes rather than re-POSTs),
+// then polls.
+//
+// Residual window: a crash between PostSnapshot returning the id and
+// UpdateTaskAgentTaskID committing it leaves the task without a persisted id, so a
+// redelivery re-POSTs. That CP-side window is closed agent-side by (vm,
+// snapshot_name) capture idempotency (Task 10).
+func startOrResumeCapture(ctx context.Context, st WorkerStore, exec SnapshotExecutor, taskID uuid.UUID, task store.Task, args CreateExecArgs) (CreateExecResult, error) {
+	if task.AgentTaskID != nil {
+		return exec.Poll(ctx, args.AdvertisedEndpoint, *task.AgentTaskID)
+	}
+
+	agentTaskID, err := exec.Post(ctx, args)
+	if err != nil {
+		return CreateExecResult{}, err
+	}
+	if err := st.UpdateTaskAgentTaskID(ctx, store.UpdateTaskAgentTaskIDParams{ID: taskID, AgentTaskID: &agentTaskID}); err != nil {
+		return CreateExecResult{}, fmt.Errorf("persist agent_task_id: %v", err)
+	}
+	return exec.Poll(ctx, args.AdvertisedEndpoint, agentTaskID)
 }
 
 func runSnapshotDelete(ctx context.Context, st WorkerStore, exec SnapshotExecutor, log *slog.Logger, args SnapshotDeleteArgs) error {

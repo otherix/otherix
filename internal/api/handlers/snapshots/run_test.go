@@ -25,6 +25,11 @@ import (
 type snapWorkerStoreStub struct {
 	taskTerminal bool
 
+	// task is the row TaskByID returns (the create worker reads its AgentTaskID
+	// to decide POST-vs-resume). The zero value (nil AgentTaskID) is the first-run
+	// case; a test sets task.AgentTaskID to drive the redelivery-resume branch.
+	task store.Task
+
 	snapshot store.Snapshot
 	vm       store.VM
 	runtime  store.VMRuntime
@@ -34,6 +39,11 @@ type snapWorkerStoreStub struct {
 	manifestDisks   []store.SnapshotDisk
 	manifestVMState store.VMStateAtSnapshot
 	manifestApplied bool
+
+	// recorded agent_task_id persistence (the resume seam): the id stamped on the
+	// task after the first PostSnapshot, before polling.
+	persistedAgentTaskID *uuid.UUID
+	agentTaskIDPersisted bool
 
 	// recorded delete-path calls
 	dereferenceDigests []string
@@ -46,6 +56,16 @@ type snapWorkerStoreStub struct {
 
 func (s *snapWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
 	return s.taskTerminal, nil
+}
+
+func (s *snapWorkerStoreStub) TaskByID(context.Context, uuid.UUID) (store.Task, error) {
+	return s.task, nil
+}
+
+func (s *snapWorkerStoreStub) UpdateTaskAgentTaskID(_ context.Context, arg store.UpdateTaskAgentTaskIDParams) error {
+	s.agentTaskIDPersisted = true
+	s.persistedAgentTaskID = arg.AgentTaskID
+	return nil
 }
 
 func (s *snapWorkerStoreStub) UpdateTaskFinalized(_ context.Context, arg store.UpdateTaskFinalizedParams) error {
@@ -86,22 +106,36 @@ func (s *snapWorkerStoreStub) DereferenceSnapshotBlobs(_ context.Context, _ uuid
 	return s.orphanedReturn, nil
 }
 
-// fakeSnapshotExecutor is the SnapshotExecutor double. createResult / createErr
-// drive Create; deleteBlobs records the orphaned set handed to the agent so the
-// fail-closed-GC test can assert ONLY orphaned digests are passed.
+// fakeSnapshotExecutor is the SnapshotExecutor double. Create is split into Post
+// (the one-shot agent POST that returns the agent task id) and Poll (resumable
+// against a persisted id), mirroring the migrations agent_task_id resume seam.
+// postCalled records whether a NEW agent POST was issued - the resume test asserts
+// it stays false on a redelivery that already carries an agent task id; pollTaskID
+// records which id Poll ran against.
 type fakeSnapshotExecutor struct {
-	createCalled bool
-	createResult CreateExecResult
-	createErr    error
+	postCalled    bool
+	postAgentTask uuid.UUID
+	postErr       error
+
+	pollCalled bool
+	pollTaskID uuid.UUID
+	pollResult CreateExecResult
+	pollErr    error
 
 	deleteCalled bool
 	deleteBlobs  []string
 	deleteErr    error
 }
 
-func (e *fakeSnapshotExecutor) Create(context.Context, CreateExecArgs) (CreateExecResult, error) {
-	e.createCalled = true
-	return e.createResult, e.createErr
+func (e *fakeSnapshotExecutor) Post(context.Context, CreateExecArgs) (uuid.UUID, error) {
+	e.postCalled = true
+	return e.postAgentTask, e.postErr
+}
+
+func (e *fakeSnapshotExecutor) Poll(_ context.Context, endpoint string, agentTaskID uuid.UUID) (CreateExecResult, error) {
+	e.pollCalled = true
+	e.pollTaskID = agentTaskID
+	return e.pollResult, e.pollErr
 }
 
 func (e *fakeSnapshotExecutor) Delete(_ context.Context, a DeleteExecArgs) error {
@@ -129,22 +163,38 @@ func runningRuntimeStore() *snapWorkerStoreStub {
 // the task SUCCESS.
 func TestRunSnapshotCreate_ProjectsManifestAndFinalizes(t *testing.T) {
 	st := runningRuntimeStore()
-	exec := &fakeSnapshotExecutor{createResult: CreateExecResult{
-		Disks: []store.SnapshotDisk{
-			{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
-			{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
+	agentTaskID := uuid.New()
+	exec := &fakeSnapshotExecutor{
+		postAgentTask: agentTaskID,
+		pollResult: CreateExecResult{
+			Disks: []store.SnapshotDisk{
+				{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+				{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
+			},
+			VMStateAtSnapshot: store.VmStateAtSnapshotRunning,
 		},
-		VMStateAtSnapshot: store.VmStateAtSnapshotRunning,
-	}}
+	}
 
 	taskID := uuid.New()
+	st.task = store.Task{ID: taskID} // first run: no AgentTaskID yet
 	raw, _ := json.Marshal(SnapshotCreateArgs{TaskID: taskID, SnapshotID: st.snapshot.ID})
 	if err := CreateHandler(st, exec, discardLogger())(context.Background(), raw); err != nil {
 		t.Fatalf("CreateHandler run = %v, want nil", err)
 	}
 
-	if !exec.createCalled {
-		t.Errorf("executor Create not called on a non-terminal task")
+	if !exec.postCalled {
+		t.Errorf("executor Post not called on a first-run non-terminal task")
+	}
+	// The agent task id is persisted BEFORE polling so a crash mid-poll resumes
+	// rather than re-POSTs (the resume seam).
+	if !st.agentTaskIDPersisted {
+		t.Errorf("UpdateTaskAgentTaskID not called after the first PostSnapshot; a crash mid-poll would re-POST")
+	}
+	if st.persistedAgentTaskID == nil || *st.persistedAgentTaskID != agentTaskID {
+		t.Errorf("persisted agent_task_id = %v, want %v", st.persistedAgentTaskID, agentTaskID)
+	}
+	if !exec.pollCalled || exec.pollTaskID != agentTaskID {
+		t.Errorf("Poll called=%v on id %v, want true on %v", exec.pollCalled, exec.pollTaskID, agentTaskID)
 	}
 	if !st.manifestApplied {
 		t.Fatalf("SnapshotManifestApplied not called on agent success")
@@ -160,16 +210,58 @@ func TestRunSnapshotCreate_ProjectsManifestAndFinalizes(t *testing.T) {
 	}
 }
 
+// TestRunSnapshotCreate_ResumesPollNotRepost_OnRedeliveryWithAgentTaskID is the
+// seam-B regression: a task that ALREADY carries an agent_task_id (a redelivery
+// while the agent capture is still running - worker crash mid-poll, or a
+// finalize-failed retry) must RESUME polling the persisted id, NOT re-POST a
+// second agent capture. A re-POST would trigger a second full-disk blockdev-backup
+// whose blobs (if the disk changed) overwrite the manifest and orphan the first
+// attempt's blob refs. Assert: zero new PostSnapshot, Poll resumes on the
+// persisted agent task id, manifest projected, task finalized success.
+func TestRunSnapshotCreate_ResumesPollNotRepost_OnRedeliveryWithAgentTaskID(t *testing.T) {
+	st := runningRuntimeStore()
+	resumedID := uuid.New()
+	taskID := uuid.New()
+	st.task = store.Task{ID: taskID, AgentTaskID: &resumedID} // redelivery: id already persisted
+
+	exec := &fakeSnapshotExecutor{
+		pollResult: CreateExecResult{
+			Disks:             []store.SnapshotDisk{{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"}},
+			VMStateAtSnapshot: store.VmStateAtSnapshotRunning,
+		},
+	}
+
+	raw, _ := json.Marshal(SnapshotCreateArgs{TaskID: taskID, SnapshotID: st.snapshot.ID})
+	if err := CreateHandler(st, exec, discardLogger())(context.Background(), raw); err != nil {
+		t.Fatalf("CreateHandler run = %v, want nil", err)
+	}
+
+	if exec.postCalled {
+		t.Errorf("PostSnapshot issued on a redelivery that already carries an agent_task_id; must resume, not re-POST a second capture")
+	}
+	if !exec.pollCalled || exec.pollTaskID != resumedID {
+		t.Errorf("Poll resumed on id %v (called=%v), want resume on the persisted %v", exec.pollTaskID, exec.pollCalled, resumedID)
+	}
+	if !st.manifestApplied {
+		t.Errorf("SnapshotManifestApplied not called on resumed-poll success")
+	}
+	if !st.finalized || st.finalizedStatus != store.TaskStatusSuccess {
+		t.Errorf("task finalized = (%v, %q), want (true, success)", st.finalized, st.finalizedStatus)
+	}
+}
+
 // TestRunSnapshotCreate_ExecutorError_FailsTask: an executor error finalizes the
 // task FAILED and the run returns the cause (so the dispatcher requeues against the
 // attempt budget).
 func TestRunSnapshotCreate_ExecutorError_FailsTask(t *testing.T) {
 	st := runningRuntimeStore()
 	cause := errors.New("agent blew up")
-	exec := &fakeSnapshotExecutor{createErr: cause}
+	taskID := uuid.New()
+	st.task = store.Task{ID: taskID}
+	exec := &fakeSnapshotExecutor{postErr: cause}
 
 	err := runSnapshotCreate(context.Background(), st, exec, discardLogger(),
-		SnapshotCreateArgs{TaskID: uuid.New(), SnapshotID: st.snapshot.ID})
+		SnapshotCreateArgs{TaskID: taskID, SnapshotID: st.snapshot.ID})
 	if !errors.Is(err, cause) {
 		t.Errorf("runSnapshotCreate err = %v, want the executor cause", err)
 	}
@@ -194,8 +286,8 @@ func TestRunSnapshotCreate_Redelivery_NoAgentCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSnapshotCreate(terminal task) = %v, want nil", err)
 	}
-	if exec.createCalled {
-		t.Errorf("agent Create attempted on a committed-terminal task; must abort without contacting the agent")
+	if exec.postCalled || exec.pollCalled {
+		t.Errorf("agent contacted on a committed-terminal task; must abort without POST or Poll")
 	}
 	if st.manifestApplied {
 		t.Errorf("manifest projected on a committed-terminal task; the abort path must not project")

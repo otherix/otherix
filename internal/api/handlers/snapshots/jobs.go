@@ -71,14 +71,26 @@ type DeleteExecArgs struct {
 // SnapshotExecutor is the per-task-type agent seam. The production implementation
 // is agentSnapshotExecutor over the agentclient package; tests pass an in-package
 // fake.
+//
+// Create is split into Post + Poll so the worker can drive the agent_task_id
+// resume seam (mirroring the migrations StartOutgoingMigration + PollTask split):
+// Post issues the one-shot agent POST and returns the agent task id (which the
+// worker persists BEFORE polling); Poll resumes against that id. On a redelivery
+// while the capture is still running, the worker reads the persisted id and calls
+// Poll directly, never re-POSTing a second blockdev-backup.
 type SnapshotExecutor interface {
-	Create(ctx context.Context, a CreateExecArgs) (CreateExecResult, error)
+	// Post submits the snapshot-create request to the agent and returns the agent
+	// task id driving the capture. Idempotency is the worker's responsibility: it
+	// calls Post exactly once (when the task carries no agent_task_id yet).
+	Post(ctx context.Context, a CreateExecArgs) (agentTaskID uuid.UUID, err error)
+	// Poll drives the agent task at agentTaskID to terminal and decodes the
+	// agent-reported manifest. Safe to resume across redeliveries.
+	Poll(ctx context.Context, endpoint string, agentTaskID uuid.UUID) (CreateExecResult, error)
 	Delete(ctx context.Context, a DeleteExecArgs) error
 }
 
 // Failure code constants for the task `error` JSONB envelope.
 const (
-	errCodeVMNotFound      = "vm_not_found"
 	errCodeNodeUnreachable = "node_unreachable"
 	errCodeSnapshotFailed  = "snapshot_failed"
 )
