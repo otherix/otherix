@@ -68,7 +68,14 @@ type poolReport struct {
 	// ImagesUnavailable is true when the agent could not enumerate this pool's
 	// image cache this tick (a transient ListImages error). The CP then
 	// preserves the prior inventory rather than clearing it (audit R2-L11).
-	ImagesUnavailable bool `json:"images_unavailable,omitempty"`
+	ImagesUnavailable bool                 `json:"images_unavailable,omitempty"`
+	Snapshots         []poolSnapshotReport `json:"snapshots,omitempty"`
+	// SnapshotsUnavailable mirrors ImagesUnavailable for the snapshot blob
+	// inventory. Accepted but NOT yet consumed CP-side (vm-snapshots slice A only
+	// reports it; observed-state projection lands in a later slice). The field is
+	// declared here so DisallowUnknownFields does not 400 an upgraded agent's
+	// heartbeat.
+	SnapshotsUnavailable bool `json:"snapshots_unavailable,omitempty"`
 }
 
 // poolImageReport mirrors one entry of HeartbeatPoolReport.images — the agent's
@@ -83,6 +90,16 @@ type poolImageReport struct {
 	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
 	Format           string `json:"format"`
 	ImportedAt       string `json:"imported_at"`
+}
+
+// poolSnapshotReport mirrors one entry of HeartbeatPoolReport.snapshots — the
+// agent's observed per-pool snapshot-blob cache (content-addressed). Accepted
+// but NOT yet projected onto observed state in vm-snapshots slice A; declared
+// here so DisallowUnknownFields accepts an upgraded agent's heartbeat. Mirrors
+// poolImageReport.
+type poolSnapshotReport struct {
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 // networkReport mirrors HeartbeatNetworkReport — the agent's per-network

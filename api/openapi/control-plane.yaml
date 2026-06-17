@@ -4292,6 +4292,25 @@ components:
             transient producer error does not wipe observed state. Absent or
             false means the images array is authoritative (an empty array
             clears the inventory).
+        snapshots:
+          type: array
+          description: |
+            Agent-observed cached snapshot-blob inventory for this pool (the
+            content-addressed snapshot cache). Absent or empty with
+            snapshots_unavailable=false means the pool has no cached snapshot
+            blobs; see snapshots_unavailable for the could-not-enumerate case.
+            Reported in vm-snapshots slice A; CP-side consumption is deferred to
+            a later slice.
+          items:
+            $ref: "#/components/schemas/HeartbeatPoolSnapshot"
+        snapshots_unavailable:
+          type: boolean
+          description: |
+            True when the agent could not enumerate this pool's snapshot blob
+            cache this tick (a transient error). Mirrors images_unavailable: the
+            CP then PRESERVES the previously-reported inventory instead of
+            clearing it. Absent or false means the snapshots array is
+            authoritative (an empty array clears the inventory).
 
     HeartbeatPoolImage:
       type: object
@@ -4327,6 +4346,24 @@ components:
             When the agent imported the image into the cache (RFC 3339). A
             malformed value degrades to zero time CP-side, never dropping the
             image (identity is basename+sha256).
+
+    HeartbeatPoolSnapshot:
+      type: object
+      description: |
+        One cached snapshot blob the agent observed in a pool's snapshots
+        directory (content-addressed cache). Carried inside
+        HeartbeatPoolReport.snapshots. Reported in vm-snapshots slice A; the CP
+        stores it as observed pool state in a later slice. The on-node blob path
+        is intentionally not surfaced; identity is the sha256.
+      required: [sha256]
+      properties:
+        sha256:
+          type: string
+          description: Content-address (SHA-256) of the cached snapshot blob.
+        size_bytes:
+          type: integer
+          format: int64
+          description: On-disk size of the cached snapshot blob in bytes.
 
     HeartbeatNetworkReport:
       type: object

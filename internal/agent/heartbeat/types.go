@@ -75,7 +75,13 @@ type PoolReport struct {
 	// ImagesUnavailable is true when the agent could not enumerate this pool's
 	// image cache this tick (a transient ListImages error). The CP then preserves
 	// the prior inventory rather than clearing it (audit R2-L11, fail-closed).
-	ImagesUnavailable bool `json:"images_unavailable,omitempty"`
+	ImagesUnavailable bool                 `json:"images_unavailable,omitempty"`
+	Snapshots         []PoolSnapshotReport `json:"snapshots,omitempty"`
+	// SnapshotsUnavailable is true when the agent could not enumerate this pool's
+	// snapshot blob cache this tick (a transient ListSnapshots error). The CP then
+	// preserves the prior inventory rather than clearing it (fail-closed, mirrors
+	// ImagesUnavailable).
+	SnapshotsUnavailable bool `json:"snapshots_unavailable,omitempty"`
 }
 
 // PoolImageReport is one cached image the agent observed in a pool's image
@@ -88,6 +94,16 @@ type PoolImageReport struct {
 	VirtualSizeBytes int64  `json:"virtual_size_bytes"`
 	Format           string `json:"format"`
 	ImportedAt       string `json:"imported_at"`
+}
+
+// PoolSnapshotReport is one cached snapshot blob the agent observed in a pool's
+// snapshots directory (content-addressed cache). Carried inside
+// PoolReport.Snapshots; the CP stores it as observed pool state. Mirrors
+// PoolImageReport. The on-node blob path is intentionally omitted (observed
+// state never surfaces on-node file paths); identity is the sha256.
+type PoolSnapshotReport struct {
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 // NetworkReport mirrors HeartbeatNetworkReport — one entry per network

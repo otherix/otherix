@@ -290,6 +290,20 @@ func ListSnapshots(snapshotsDir string) ([]SnapshotBlob, error) {
 	return blobs, nil
 }
 
+// ListSnapshots resolves poolName to its registered root and returns the
+// inventory of content-addressed snapshot blobs under {pool.root}/snapshots/.
+// Mirrors Manager.ListImages: returns ErrPoolUnknown for unknown pools, and
+// a nil slice with nil error when the snapshots dir is absent.
+func (m *Manager) ListSnapshots(_ context.Context, poolName string) ([]SnapshotBlob, error) {
+	m.poolsMu.RLock()
+	p, ok := m.pools[poolName]
+	m.poolsMu.RUnlock()
+	if !ok {
+		return nil, ErrPoolUnknown
+	}
+	return ListSnapshots(filepath.Join(p.root, snapshotsSubdir))
+}
+
 // snapshotManifestPath returns the on-disk manifest path for (pool root,
 // snapshot name): {root}/snapshots/manifests/{name}.json.
 func snapshotManifestPath(poolRoot, name string) string {

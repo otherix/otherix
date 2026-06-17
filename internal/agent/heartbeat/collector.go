@@ -54,6 +54,18 @@ type PoolImageLister interface {
 	PoolImages(pool string) ([]PoolImageReport, bool)
 }
 
+// PoolSnapshotLister returns the per-pool cached snapshot-blob inventory the
+// collector folds into each PoolReport.Snapshots, plus a known flag. known is
+// false when the agent could not enumerate the pool this tick (a transient
+// error); the collector then marks PoolReport.SnapshotsUnavailable so the CP
+// preserves the prior inventory rather than clearing it. Implemented by an
+// adapter over vm.Manager.ListSnapshots in the agent serve assembly; nil is
+// allowed (yields no snapshot inventory) for test paths and the legacy wiring.
+// Mirrors PoolImageLister.
+type PoolSnapshotLister interface {
+	PoolSnapshots(pool string) ([]PoolSnapshotReport, bool)
+}
+
 // VMReporter returns the per-VM observed-state slice the collector
 // folds into HeartbeatRequest.vms. Implemented by the VM reconciler
 // per L3 D3 — single ownership of observed VM state mirrors the
@@ -83,18 +95,19 @@ type WireGuardReporter interface {
 // VM list. Designed for Linux (the only supported agent platform);
 // other platforms fail-fast in New rather than at Collect time.
 type LinuxCollector struct {
-	procPath     string
-	vms          VMLister
-	vmReporter   VMReporter
-	pools        PoolReporter
-	poolImages   PoolImageLister
-	networks     NetworkReporter
-	wireguard    WireGuardReporter
-	migration    config.MigrationConfig
-	qemu         config.QEMUConfig
-	agentVersion string
-	architecture string
-	hostName     string
+	procPath      string
+	vms           VMLister
+	vmReporter    VMReporter
+	pools         PoolReporter
+	poolImages    PoolImageLister
+	poolSnapshots PoolSnapshotLister
+	networks      NetworkReporter
+	wireguard     WireGuardReporter
+	migration     config.MigrationConfig
+	qemu          config.QEMUConfig
+	agentVersion  string
+	architecture  string
+	hostName      string
 }
 
 // CollectorDeps bundles the collector's construction-time inputs.
@@ -105,15 +118,16 @@ type LinuxCollector struct {
 // for resource accounting (sumRunningVMs). When nil, the collector
 // falls back to VMs.List() for backward compatibility with tests.
 type CollectorDeps struct {
-	ProcPath   string
-	VMs        VMLister
-	VMReporter VMReporter
-	Pools      PoolReporter
-	PoolImages PoolImageLister
-	Networks   NetworkReporter
-	WireGuard  WireGuardReporter
-	Migration  config.MigrationConfig
-	QEMU       config.QEMUConfig
+	ProcPath      string
+	VMs           VMLister
+	VMReporter    VMReporter
+	Pools         PoolReporter
+	PoolImages    PoolImageLister
+	PoolSnapshots PoolSnapshotLister
+	Networks      NetworkReporter
+	WireGuard     WireGuardReporter
+	Migration     config.MigrationConfig
+	QEMU          config.QEMUConfig
 }
 
 // NewLinux constructs a LinuxCollector. Returns an error on non-Linux
@@ -132,18 +146,19 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 	}
 	host, _ := os.Hostname()
 	return &LinuxCollector{
-		procPath:     procPath,
-		vms:          deps.VMs,
-		vmReporter:   deps.VMReporter,
-		pools:        deps.Pools,
-		poolImages:   deps.PoolImages,
-		networks:     deps.Networks,
-		wireguard:    deps.WireGuard,
-		migration:    deps.Migration,
-		qemu:         deps.QEMU,
-		agentVersion: version.Current().Version,
-		architecture: archFromGo(runtime.GOARCH),
-		hostName:     host,
+		procPath:      procPath,
+		vms:           deps.VMs,
+		vmReporter:    deps.VMReporter,
+		pools:         deps.Pools,
+		poolImages:    deps.PoolImages,
+		poolSnapshots: deps.PoolSnapshots,
+		networks:      deps.Networks,
+		wireguard:     deps.WireGuard,
+		migration:     deps.Migration,
+		qemu:          deps.QEMU,
+		agentVersion:  version.Current().Version,
+		architecture:  archFromGo(runtime.GOARCH),
+		hostName:      host,
 	}, nil
 }
 
@@ -228,6 +243,15 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 				imgs, known := c.poolImages.PoolImages(report.Pools[i].Name)
 				report.Pools[i].Images = imgs
 				report.Pools[i].ImagesUnavailable = !known
+			}
+		}
+		if c.poolSnapshots != nil {
+			// Snapshot inventory is a separate observation merged in per pool
+			// name, exactly like the image inventory above.
+			for i := range report.Pools {
+				snaps, known := c.poolSnapshots.PoolSnapshots(report.Pools[i].Name)
+				report.Pools[i].Snapshots = snaps
+				report.Pools[i].SnapshotsUnavailable = !known
 			}
 		}
 	}
