@@ -70,6 +70,16 @@ var (
 	// second writer must not re-point it. Re-binding the same target is a no-op.
 	ErrMigrationTargetConflict = errors.New("store: migration already bound to a different target")
 
+	// ErrSnapshotNameExists is returned by CreateSnapshot when the VM already has
+	// a non-deleted snapshot of the same name: the per-VM name guard key is
+	// present, so a second create for the same (vm, name) loses the create CAS.
+	ErrSnapshotNameExists = errors.New("store: snapshot name already exists for this vm")
+
+	// ErrSnapshotHasChildren is returned by DeleteSnapshot when the snapshot still
+	// has a non-deleted child (another snapshot whose ParentSnapshotID points at
+	// it): delete is fail-closed and refuses until the children are removed first.
+	ErrSnapshotHasChildren = errors.New("store: snapshot has non-deleted children")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
