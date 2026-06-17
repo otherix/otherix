@@ -86,6 +86,11 @@ const (
 	CodeConsoleInUse         ErrorCode = "console_in_use"
 	CodeProtocolNotAvailable ErrorCode = "protocol_not_available"
 
+	// CodeNotImplemented marks an agent surface that is bound but not yet
+	// functional (e.g. in-place snapshot revert, deferred to a later slice).
+	// Returned with HTTP 501.
+	CodeNotImplemented ErrorCode = "not_implemented"
+
 	CodeInternal ErrorCode = "internal"
 )
 

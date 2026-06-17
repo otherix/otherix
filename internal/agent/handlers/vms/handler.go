@@ -67,6 +67,11 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Post("/{vm_name}/migrations/outgoing", h.StartOutgoing)
 	r.Get("/{vm_name}/migrations/{migration_id}", h.GetMigration)
 	r.Post("/{vm_name}/migrations/{migration_id}/cancel", h.CancelMigration)
+	r.Get("/{vm_name}/snapshots", h.SnapshotsList)
+	r.Post("/{vm_name}/snapshots", h.SnapshotCreate)
+	r.Get("/{vm_name}/snapshots/{snapshot_name}", h.SnapshotGet)
+	r.Delete("/{vm_name}/snapshots/{snapshot_name}", h.SnapshotDelete)
+	r.Post("/{vm_name}/revert", h.Revert)
 }
 
 // vmView is the wire shape returned for a single VM. The wire field

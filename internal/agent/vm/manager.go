@@ -214,6 +214,37 @@ type Manager struct {
 	// here BEFORE the replay loop.
 	probeIncoming func(qmpSocket, pidFile string) incomingProbe
 	killIncoming  func(v *VM)
+
+	// diskCapturer captures one VM disk device into a destination backup
+	// file. Production dials the VM's QMP socket and runs qemu
+	// blockdev-backup (qmpDiskCapturer); the snapshot manager test injects a
+	// fake that copies a fixture qcow2 so CreateSnapshot is unit-testable on
+	// darwin without real qemu. The seam mirrors the migration path's
+	// migDialQMP / migRunLiveSource injection.
+	diskCapturer diskCapturer
+
+	// snapshotConvert materializes a standalone qcow2 copy of a captured
+	// backup into a content-addressed blob (produceBlob's convertFunc seam).
+	// Production is qemu.ConvertTo; the snapshot manager test injects a
+	// verbatim copy so the capture path runs on darwin without qemu-img.
+	snapshotConvert convertFunc
+
+	// snapshotInFlight serialises concurrent snapshot captures on the same
+	// (vmName, snapshotName): a redelivered create whose capture is still
+	// running returns the original *AgentTask instead of starting a second
+	// blockdev-backup. Keyed by snapshotInFlightKey, value *AgentTask. Cleared
+	// by the capture goroutine on completion. The on-disk manifest closes the
+	// window after the task settles; this map closes it while it runs.
+	snapshotInFlightMu sync.Mutex
+	snapshotInFlight   map[snapshotInFlightKey]*AgentTask
+}
+
+// snapshotInFlightKey identifies an in-progress snapshot capture by the VM
+// name and the snapshot name (the agent's defense-in-depth idempotency key
+// closing the CP-side worker-redelivery residual window).
+type snapshotInFlightKey struct {
+	vmName       string
+	snapshotName string
 }
 
 // incomingProbe is the result of probing a replayed StatusMigratingIncoming
@@ -337,7 +368,10 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		tasks:            NewTaskStore(),
 		createTasks:      map[uuid.UUID]uuid.UUID{},
 		muxes:            map[string]*serialmux.Multiplexer{},
+		snapshotInFlight: map[snapshotInFlightKey]*AgentTask{},
 	}
+	m.diskCapturer = qmpDiskCapturer{}
+	m.snapshotConvert = qemu.ConvertTo
 	m.migrations = migration.NewStore()
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
@@ -517,6 +551,9 @@ func ensurePoolSubdirs(root string) error {
 	for _, sub := range []string{
 		filepath.Join(root, imagesSubdir),
 		filepath.Join(root, "scratch", "import"),
+		filepath.Join(root, snapshotsSubdir),
+		filepath.Join(root, snapshotsSubdir, snapshotsStagingSubdir),
+		filepath.Join(root, snapshotsSubdir, snapshotManifestsSubdir),
 	} {
 		if err := os.MkdirAll(sub, 0o750); err != nil {
 			return fmt.Errorf("mkdir %s: %w", sub, err)

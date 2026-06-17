@@ -36,6 +36,12 @@ const (
 	TaskKindVMPoweroff TaskKind = "vm.poweroff"
 	TaskKindVMReboot   TaskKind = "vm.reboot"
 	TaskKindVMMigrate  TaskKind = "vm.migrate"
+	// TaskKindVMSnapshotCreate / TaskKindVMSnapshotDelete track the agent-side
+	// snapshot lifecycle (capture content-addressed disk blobs + manifest /
+	// fail-closed local blob GC). The TaskStore.Create call carries the VM's
+	// UUID through `vmID`.
+	TaskKindVMSnapshotCreate TaskKind = "vm.snapshot.create"
+	TaskKindVMSnapshotDelete TaskKind = "vm.snapshot.delete"
 	// TaskKindStoragePoolScan tracks a POST /v1/storage-pools/{id}/scan
 	// task. The TaskStore.Create call carries the pool's UUID through
 	// the `vmID` parameter — transitional reuse pending the broader
