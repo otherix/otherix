@@ -74,6 +74,8 @@ type vmSnapshotView struct {
 	Status            string               `json:"status"`
 	WithMemory        bool                 `json:"with_memory"`
 	VMStateAtSnapshot string               `json:"vm_state_at_snapshot"`
+	Architecture      string               `json:"architecture"`
+	FirmwareID        *string              `json:"firmware_id"`
 	DiskSizeBytes     *int64               `json:"disk_size_bytes"`
 	Disks             []vmSnapshotDiskView `json:"disks"`
 	ErrorMessage      *string              `json:"error_message"`
@@ -112,6 +114,12 @@ func toView(s store.Snapshot) vmSnapshotView {
 		size = &sum
 	}
 
+	var firmwareID *string
+	if s.SourceFirmwareID != nil {
+		fw := s.SourceFirmwareID.String()
+		firmwareID = &fw
+	}
+
 	return vmSnapshotView{
 		ID:                s.ID.String(),
 		VMID:              s.VmID.String(),
@@ -121,6 +129,8 @@ func toView(s store.Snapshot) vmSnapshotView {
 		Status:            string(s.Status),
 		WithMemory:        s.WithMemory,
 		VMStateAtSnapshot: string(s.VMStateAtSnapshot),
+		Architecture:      string(s.SourceArchitecture),
+		FirmwareID:        firmwareID,
 		DiskSizeBytes:     size,
 		Disks:             disks,
 		ErrorMessage:      s.ErrorMessage,

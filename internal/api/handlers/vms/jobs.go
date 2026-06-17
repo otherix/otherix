@@ -32,6 +32,11 @@ type VMCreateArgs struct {
 	VMID   uuid.UUID `json:"vm_id"`
 	PoolID uuid.UUID `json:"pool_id"`
 	NodeID uuid.UUID `json:"node_id"`
+	// SourceSnapshotID is the snapshot the VM is recreated from
+	// (`vm create --from-snapshot`), or nil for an image-sourced VM. The agent
+	// worker (slice A Task 12) materializes the VM disks from the snapshot blobs
+	// when this is set. Threaded from the VM row at bind time.
+	SourceSnapshotID *uuid.UUID `json:"source_snapshot_id,omitempty"`
 }
 
 // Kind names the job kind. Mirrors the OpenAPI Task.type value surfaced through

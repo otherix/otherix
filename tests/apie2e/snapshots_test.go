@@ -303,6 +303,60 @@ func TestSnapshotDelete_FailsClosedChildren(t *testing.T) {
 	}
 }
 
+// TestSnapshotCreate_RecordsSourceArchAndFirmware locks the manifest-completeness
+// contract: a snapshot created of a VM records that VM's architecture and
+// firmware_id at capture time, so recreate-from-snapshot is self-describing. The
+// source VM here carries an explicit firmware id and arm64 architecture.
+func TestSnapshotCreate_RecordsSourceArchAndFirmware(t *testing.T) {
+	h := newE2E(t)
+	devToken, devID := loginAs(t, h, auth.RoleDeveloper)
+	ctx := context.Background()
+
+	fwID := uuid.New()
+	// Seed a VM with arm64 + an explicit firmware id directly so the snapshot
+	// handler reads them off the resolved VM row.
+	spec, err := store.MarshalSchedulingSpec(store.SchedulingSpec{PoolName: "default"})
+	if err != nil {
+		t.Fatalf("MarshalSchedulingSpec: %v", err)
+	}
+	vm := store.VM{
+		ID: uuid.New(), OwnerID: devID, Name: "snap-arm-" + uuid.NewString()[:8],
+		DesiredPhase: store.VmDesiredPhaseRunning, Architecture: store.CpuArchArm64,
+		FirmwareID:       &fwID,
+		SchedulingStatus: store.VMSchedulingUnscheduled, SchedulingSpec: spec,
+		CpuCores: 2, MemoryMib: 2048, Labels: []byte(`{}`), ImageFormat: store.ImageFormatQcow2,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	cli := sharedEtcdClient
+	if err := cli.PutJSON(ctx, etcd.Key("vms", vm.ID.String()), vm); err != nil {
+		t.Fatalf("seed vm: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("uniq", "vms", "name", vm.Name), []byte(vm.ID.String())); err != nil {
+		t.Fatalf("seed vm name guard: %v", err)
+	}
+
+	resp := h.do(t, http.MethodPost, "/v1/vms/"+vm.Name+"/snapshots",
+		map[string]any{"name": "captured"}, devToken, map[string]string{
+			"Idempotency-Key": "snap-arch-" + uuid.NewString(),
+		})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status = %d, want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	sid := snapshotIDForVM(t, h.store, vm.ID)
+	got, err := h.store.SnapshotByID(ctx, sid)
+	if err != nil {
+		t.Fatalf("SnapshotByID: %v", err)
+	}
+	if got.SourceArchitecture != store.CpuArchArm64 {
+		t.Errorf("snapshot SourceArchitecture = %q, want arm64", got.SourceArchitecture)
+	}
+	if got.SourceFirmwareID == nil || *got.SourceFirmwareID != fwID {
+		t.Errorf("snapshot SourceFirmwareID = %v, want %s", got.SourceFirmwareID, fwID)
+	}
+}
+
 // fakeJobArgs is a no-op queue.JobArgs for store-seeded snapshots in the list /
 // get / delete tests (the worker is not driven in apie2e).
 type fakeJobArgs struct{}

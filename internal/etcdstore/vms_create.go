@@ -121,6 +121,15 @@ func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.Placement
 // row carries the self-describing image fields (url/sha256/format) the create
 // request resolved, replacing the former template reference.
 func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
+	imageURL := p.ImageURL
+	imageSHA := p.ImageSHA256
+	if p.SourceSnapshotID != nil {
+		// A snapshot-sourced VM has no image lineage - the disk is the snapshot
+		// state, not a base image. Carrying the base image fields would be a lie,
+		// so the store drops them regardless of what the params carry.
+		imageURL = ""
+		imageSHA = nil
+	}
 	return store.VM{
 		ID:                p.ID,
 		OwnerID:           p.OwnerID,
@@ -128,14 +137,15 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		Description:       p.Description,
 		DesiredPhase:      store.VmDesiredPhaseRunning,
 		Architecture:      p.Architecture,
-		ImageURL:          p.ImageURL,
-		ImageSHA256:       p.ImageSHA256,
+		ImageURL:          imageURL,
+		ImageSHA256:       imageSHA,
 		ImageFormat:       p.ImageFormat,
 		CpuCores:          p.CpuCores,
 		MemoryMib:         p.MemoryMib,
 		CPUModel:          p.CPUModel,
 		MachineType:       p.MachineType,
 		FirmwareID:        p.FirmwareID,
+		SourceSnapshotID:  p.SourceSnapshotID,
 		PinnedNodeID:      p.PinnedNodeID,
 		UserData:          p.UserData,
 		CloudInitDisabled: p.CloudInitDisabled,

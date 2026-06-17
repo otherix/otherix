@@ -613,13 +613,18 @@ type Snapshot struct {
 	Status            SnapshotStatus
 	WithMemory        bool
 	VMStateAtSnapshot VMStateAtSnapshot
-	DiskSizeBytes     *int64
-	Disks             []SnapshotDisk
-	MemorySizeBytes   *int64
-	ErrorMessage      *string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	DeletedAt         *time.Time
+	// SourceArchitecture and SourceFirmwareID record the source VM's
+	// architecture and firmware at capture time so recreate-from-snapshot is
+	// self-describing.
+	SourceArchitecture CPUArch
+	SourceFirmwareID   *uuid.UUID
+	DiskSizeBytes      *int64
+	Disks              []SnapshotDisk
+	MemorySizeBytes    *int64
+	ErrorMessage       *string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          *time.Time
 }
 
 type StoragePool struct {
@@ -677,20 +682,25 @@ type User struct {
 }
 
 type VM struct {
-	ID                uuid.UUID
-	OwnerID           uuid.UUID
-	Name              string
-	Description       string
-	DesiredPhase      VMDesiredPhase
-	Architecture      CPUArch
-	ImageURL          string
-	ImageSHA256       []byte
-	ImageFormat       ImageFormat
-	CpuCores          int32
-	MemoryMib         int32
-	CPUModel          string
-	MachineType       string
-	FirmwareID        *uuid.UUID
+	ID           uuid.UUID
+	OwnerID      uuid.UUID
+	Name         string
+	Description  string
+	DesiredPhase VMDesiredPhase
+	Architecture CPUArch
+	ImageURL     string
+	ImageSHA256  []byte
+	ImageFormat  ImageFormat
+	CpuCores     int32
+	MemoryMib    int32
+	CPUModel     string
+	MachineType  string
+	FirmwareID   *uuid.UUID
+	// SourceSnapshotID is the snapshot this VM was recreated from
+	// (`vm create --from-snapshot`), or nil for an image-sourced VM. When set,
+	// ImageURL is empty and ImageSHA256 is nil (no image lineage on a
+	// snapshot-sourced VM); the disk is the snapshot state.
+	SourceSnapshotID  *uuid.UUID
 	PinnedNodeID      *uuid.UUID
 	SchedulerHints    []byte
 	UserData          *string

@@ -6465,6 +6465,7 @@ components:
         - status
         - with_memory
         - vm_state_at_snapshot
+        - architecture
         - disks
         - created_at
         - updated_at
@@ -6500,6 +6501,22 @@ components:
           type: string
           enum: [running, paused, stopped]
           description: VM phase at the moment of capture.
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+          description: |
+            Source VM architecture captured at snapshot time. A qcow2 blob
+            is architecture-agnostic but a recreated VM is not, so the
+            manifest records the source `architecture` and `firmware_id` so
+            recreate-from-snapshot (`POST /v1/vms` with `source_snapshot_id`)
+            is self-describing.
+        firmware_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            Source VM firmware row captured at snapshot time, or `null`
+            when the source VM had no firmware pinned. Consumed by
+            recreate-from-snapshot.
         disks:
           type: array
           description: |

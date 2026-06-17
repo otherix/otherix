@@ -69,16 +69,18 @@ func blobRefPrefix(digest string) string {
 func (s *Store) CreateSnapshot(ctx context.Context, p store.CreateSnapshotParams, args queue.JobArgs) (store.Snapshot, error) {
 	now := time.Now().UTC()
 	snap := store.Snapshot{
-		ID:                p.ID,
-		VmID:              p.VmID,
-		OwnerID:           p.OwnerID,
-		Name:              p.Name,
-		Description:       p.Description,
-		Status:            store.SnapshotStatusCreating,
-		WithMemory:        p.WithMemory,
-		VMStateAtSnapshot: p.VMStateAtSnapshot,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                 p.ID,
+		VmID:               p.VmID,
+		OwnerID:            p.OwnerID,
+		Name:               p.Name,
+		Description:        p.Description,
+		Status:             store.SnapshotStatusCreating,
+		WithMemory:         p.WithMemory,
+		VMStateAtSnapshot:  p.VMStateAtSnapshot,
+		SourceArchitecture: p.SourceArchitecture,
+		SourceFirmwareID:   p.SourceFirmwareID,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	val, err := etcd.Marshal(snap)
 	if err != nil {

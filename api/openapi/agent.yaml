@@ -2192,6 +2192,7 @@ components:
         - name
         - status
         - vm_state_at_snapshot
+        - architecture
         - disks
         - created_at
       properties:
@@ -2208,6 +2209,18 @@ components:
         vm_state_at_snapshot:
           type: string
           enum: [running, paused, stopped]
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+          description: |
+            Source VM architecture captured at snapshot time, recorded in
+            the manifest so recreate-from-snapshot is self-describing.
+        firmware_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            Source VM firmware row captured at snapshot time, or `null`
+            when no firmware was pinned.
         disks:
           type: array
           description: |

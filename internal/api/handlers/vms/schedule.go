@@ -141,11 +141,15 @@ func planBind(ctx context.Context, pr store.PlacementReader, vm store.VM, spec s
 	taskID := uuid.New()
 	resID := vm.ID
 	owner := vm.OwnerID
-	argsJSON, _ := json.Marshal(map[string]any{
+	argsMap := map[string]any{
 		"vm_id":   vm.ID.String(),
 		"pool_id": decision.PoolInstance.ID.String(),
 		"node_id": decision.Node.ID.String(),
-	})
+	}
+	if vm.SourceSnapshotID != nil {
+		argsMap["source_snapshot_id"] = vm.SourceSnapshotID.String()
+	}
+	argsJSON, _ := json.Marshal(argsMap)
 
 	return store.VMBindWrites{
 		PinnedNodeID: decision.Node.ID,
@@ -161,7 +165,10 @@ func planBind(ctx context.Context, pr store.PlacementReader, vm store.VM, spec s
 			ResourceType: "vm", ResourceID: &resID, Args: argsJSON,
 			MaxAttempts: 25, CreatedBy: &owner,
 		},
-		Job: VMCreateArgs{TaskID: taskID, VMID: vm.ID, PoolID: decision.PoolInstance.ID, NodeID: decision.Node.ID},
+		Job: VMCreateArgs{
+			TaskID: taskID, VMID: vm.ID, PoolID: decision.PoolInstance.ID, NodeID: decision.Node.ID,
+			SourceSnapshotID: vm.SourceSnapshotID,
+		},
 	}, nil
 }
 

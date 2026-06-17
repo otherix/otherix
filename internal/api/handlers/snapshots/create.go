@@ -77,12 +77,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	createdBy := caller.ID
 
 	params := store.CreateSnapshotParams{
-		ID:                snapshotID,
-		VmID:              vm.ID,
-		OwnerID:           vm.OwnerID,
-		Name:              body.Name,
-		Description:       derefString(body.Description),
-		VMStateAtSnapshot: h.vmStateAtSnapshot(r.Context(), vm.ID),
+		ID:                 snapshotID,
+		VmID:               vm.ID,
+		OwnerID:            vm.OwnerID,
+		Name:               body.Name,
+		Description:        derefString(body.Description),
+		VMStateAtSnapshot:  h.vmStateAtSnapshot(r.Context(), vm.ID),
+		SourceArchitecture: vm.Architecture,
+		SourceFirmwareID:   vm.FirmwareID,
 		Task: store.CreateTaskParams{
 			ID:           taskID,
 			Type:         "vm.snapshot.create",

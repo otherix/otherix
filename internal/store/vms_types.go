@@ -13,19 +13,24 @@ import (
 )
 
 type CreateVMParams struct {
-	ID                uuid.UUID
-	OwnerID           uuid.UUID
-	Name              string
-	Description       string
-	Architecture      CPUArch
-	ImageURL          string
-	ImageSHA256       []byte
-	ImageFormat       ImageFormat
-	CpuCores          int32
-	MemoryMib         int32
-	CPUModel          string
-	MachineType       string
-	FirmwareID        *uuid.UUID
+	ID           uuid.UUID
+	OwnerID      uuid.UUID
+	Name         string
+	Description  string
+	Architecture CPUArch
+	ImageURL     string
+	ImageSHA256  []byte
+	ImageFormat  ImageFormat
+	CpuCores     int32
+	MemoryMib    int32
+	CPUModel     string
+	MachineType  string
+	FirmwareID   *uuid.UUID
+	// SourceSnapshotID is set when the VM is recreated from a snapshot
+	// (`vm create --from-snapshot`). CreateUnscheduledVM persists it and, when
+	// set, forces ImageURL="" / ImageSHA256=nil (no image lineage on a
+	// snapshot-sourced VM).
+	SourceSnapshotID  *uuid.UUID
 	PinnedNodeID      *uuid.UUID
 	UserData          *string
 	CloudInitDisabled bool
