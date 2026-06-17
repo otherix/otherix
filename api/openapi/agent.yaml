@@ -1723,12 +1723,18 @@ components:
         required (the VM is self-describing; the agent materializes the
         image into the destination pool's cache on first use). When
         `blank`, all three must be absent - the agent allocates an
-        empty image of `size_gib` instead.
+        empty image of `size_gib` instead. When `snapshot`,
+        `snapshot_sha256` is required and the agent clones the
+        content-addressed snapshot blob at
+        `{poolRoot}/snapshots/{snapshot_sha256}.qcow2` into the disk
+        (recreate-from-snapshot); `image_url` must be absent. The CP
+        resolves the snapshot manifest (ordered disk digests) before
+        send, so the agent never needs Control-Plane store access.
       required: [kind]
       properties:
         kind:
           type: string
-          enum: [image, blank]
+          enum: [image, blank, snapshot]
         image_url:
           type: [string, "null"]
           format: uri
@@ -1745,6 +1751,14 @@ components:
           type: [string, "null"]
           enum: [qcow2, raw, null]
           description: Required when `kind = "image"`.
+        snapshot_sha256:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Required when `kind = "snapshot"`. Lowercase hex sha256 of
+            the content-addressed snapshot disk blob the agent clones
+            from the destination pool's `snapshots/` cache. Mutually
+            exclusive with `image_url`.
 
     VMSpecDisk:
       type: object

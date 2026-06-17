@@ -58,9 +58,36 @@ type createRequest struct {
 	// NetworkConfig carries the CP-supplied cloud-init network-config
 	// blob (NoCloud /network-config). Optional; passed through verbatim.
 	NetworkConfig string `json:"network_config,omitempty"`
+	// CloudInitDisabled is the explicit opt-out: when true the agent skips the
+	// NoCloud seed entirely. Otherwise every create gets at least a minimal
+	// name-as-hostname seed (always-on cidata) - so empty user_data no longer
+	// implies "no seed", and the CP must forward this flag.
+	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
+	// SourceSnapshot recreates the VM's disks from a snapshot's
+	// content-addressed blobs instead of downloading an image. Mutually
+	// exclusive with image_url; the CP resolves the manifest's ordered disk
+	// digests and sets exactly one. Absent means image-sourced.
+	SourceSnapshot *sourceSnapshotReq `json:"source_snapshot,omitempty"`
 	// Nics are the CP-declared network interfaces to attach. Absent or
 	// empty means legacy SLIRP user-mode networking.
 	Nics []nicReq `json:"nics,omitempty"`
+}
+
+// sourceSnapshotReq is the disk source for a recreate-from-snapshot create: the
+// pool whose snapshots/ subdir holds the blobs plus the ordered per-disk blob
+// digests the agent clones (virtio<i> order). Mirrors the agentclient
+// VMCreateSourceSnapshot wire shape.
+type sourceSnapshotReq struct {
+	Pool  string                  `json:"pool"`
+	Disks []sourceSnapshotDiskReq `json:"disks"`
+}
+
+// sourceSnapshotDiskReq is one disk in a sourceSnapshotReq: virtio index, the
+// wire device name, and the content-addressed blob sha256.
+type sourceSnapshotDiskReq struct {
+	Index  int    `json:"index"`
+	Device string `json:"device"`
+	SHA256 string `json:"sha256"`
 }
 
 type asyncAccepted struct {
@@ -136,18 +163,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, err := h.manager.Create(r.Context(), vm.CreateSpec{
-		UUID:           vmID,
-		Name:           req.Name,
-		VCPUs:          req.VCPUs,
-		MemoryMB:       req.MemoryMB,
-		PoolName:       req.Pool,
-		ImageURL:       req.ImageURL,
-		ExpectedSHA256: req.ExpectedSHA256,
-		Format:         format,
-		DiskGiB:        req.DiskGiB,
-		UserData:       []byte(req.UserData),
-		NetworkData:    []byte(req.NetworkConfig),
-		NICs:           nics,
+		UUID:              vmID,
+		Name:              req.Name,
+		VCPUs:             req.VCPUs,
+		MemoryMB:          req.MemoryMB,
+		PoolName:          req.Pool,
+		ImageURL:          req.ImageURL,
+		ExpectedSHA256:    req.ExpectedSHA256,
+		Format:            format,
+		DiskGiB:           req.DiskGiB,
+		UserData:          []byte(req.UserData),
+		NetworkData:       []byte(req.NetworkConfig),
+		CloudInitDisabled: req.CloudInitDisabled,
+		SourceSnapshot:    sourceSnapshotSpec(req.SourceSnapshot),
+		NICs:              nics,
 	})
 	if err != nil {
 		mapCreateError(w, r, err)
@@ -159,6 +188,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Status: string(task.Status),
 		Links:  map[string]any{"self": "/v1/tasks/" + task.ID.String()},
 	})
+}
+
+// sourceSnapshotSpec maps the wire source_snapshot object onto the manager's
+// SnapshotRef, preserving disk order (the manager re-sorts by index defensively
+// before cloning). Returns nil when the request is image-sourced.
+func sourceSnapshotSpec(req *sourceSnapshotReq) *vm.SnapshotRef {
+	if req == nil {
+		return nil
+	}
+	disks := make([]vm.SnapshotDiskRef, 0, len(req.Disks))
+	for _, d := range req.Disks {
+		disks = append(disks, vm.SnapshotDiskRef{Index: d.Index, Device: d.Device, SHA256: d.SHA256})
+	}
+	return &vm.SnapshotRef{Pool: req.Pool, Disks: disks}
 }
 
 // maxDeviceOrder bounds the per-VM NIC slot index. The guest exposes a

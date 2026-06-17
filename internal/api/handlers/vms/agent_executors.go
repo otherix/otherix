@@ -150,18 +150,20 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 	}
 	idemKey := args.TaskID.String()
 	body := agentclient.VMCreateRequest{
-		UUID:           args.VM.ID,
-		Name:           args.VM.Name,
-		VCPUs:          int(args.VM.CpuCores),
-		MemoryMB:       int(args.VM.MemoryMib),
-		Pool:           args.Pool.Name,
-		ImageURL:       args.ImageURL,
-		ExpectedSHA256: args.ImageSHA256,
-		Format:         args.Format,
-		DiskGiB:        args.DiskGiB,
-		UserData:       resolveCloudInitUserData(args.VM),
-		NetworkConfig:  resolveCloudInitNetworkConfig(args.VM),
-		Nics:           args.NICs,
+		UUID:              args.VM.ID,
+		Name:              args.VM.Name,
+		VCPUs:             int(args.VM.CpuCores),
+		MemoryMB:          int(args.VM.MemoryMib),
+		Pool:              args.Pool.Name,
+		ImageURL:          args.ImageURL,
+		ExpectedSHA256:    args.ImageSHA256,
+		Format:            args.Format,
+		DiskGiB:           args.DiskGiB,
+		UserData:          resolveCloudInitUserData(args.VM),
+		NetworkConfig:     resolveCloudInitNetworkConfig(args.VM),
+		CloudInitDisabled: args.VM.CloudInitDisabled,
+		SourceSnapshot:    args.SourceSnapshot,
+		Nics:              args.NICs,
 	}
 	agentTaskID, err := e.client.PostVMCreate(ctx, args.Node.AdvertisedEndpoint, idemKey, body)
 	if err != nil {

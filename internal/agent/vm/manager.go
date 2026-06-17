@@ -24,6 +24,7 @@ import (
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/state"
+	"github.com/otherix/otherix/internal/agent/storage"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -169,10 +170,16 @@ type Manager struct {
 	// block-mirrored). cidata is deterministic and read once at boot, so the
 	// target reconstructs it instead of NBD-exporting + mirroring it. Defaults
 	// to the cloudinit.Builder in New; stubbed in tests.
-	migBuildCidata  func(path, hostname string, userData, networkData []byte) error
-	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
-	migRunConvert   func(ctx context.Context, args []string) error
-	migWaitNBDReady func(ctx context.Context, endpoint string) error
+	migBuildCidata func(path, hostname string, userData, networkData []byte) error
+	// createBuildCidata builds the always-on NoCloud seed during runCreate.
+	// Same shape as migBuildCidata so both paths share the cloudinit.Builder
+	// wiring; split into its own seam so a create/recreate test can spy the
+	// hostname passed without a real ISO build. Defaults to the
+	// cloudinit.Builder in New.
+	createBuildCidata func(path, hostname string, userData, networkData []byte) error
+	migSpawnNBD       func(ctx context.Context, args []string) (int, error)
+	migRunConvert     func(ctx context.Context, args []string) error
+	migWaitNBDReady   func(ctx context.Context, endpoint string) error
 
 	// Live-migration seams. migLaunchIncoming boots a paused -incoming
 	// qemu for an adopted target VM and waits until its QMP socket is
@@ -387,6 +394,11 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.migCreateDisk = qemu.CreateDisk
 	m.migCreateRawDisk = qemu.CreateRawDisk
 	m.migBuildCidata = func(path, hostname string, userData, networkData []byte) error {
+		b := &cloudinit.Builder{Hostname: hostname, UserData: userData, NetworkData: networkData}
+		_, err := b.Build(path)
+		return err
+	}
+	m.createBuildCidata = func(path, hostname string, userData, networkData []byte) error {
 		b := &cloudinit.Builder{Hostname: hostname, UserData: userData, NetworkData: networkData}
 		_, err := b.Build(path)
 		return err
@@ -903,6 +915,93 @@ func (m *Manager) sizeCreatedDisk(ctx context.Context, diskPath string, diskGiB 
 	return info.VirtualSize, diskSize, "", ""
 }
 
+// materialiseCreateDisk prepares the per-VM boot disk for a fresh create,
+// branching on the disk source:
+//
+//   - Migrated VM: the disk was copied in from the source node and is already
+//     authoritative - re-cloning would clobber the migrated state, so skip
+//     everything (ensured stays zero, sizes 0).
+//   - Recreate-from-snapshot (spec.SourceSnapshot != nil): clone each referenced
+//     content-addressed blob from {poolRoot}/snapshots/{sha}.qcow2 in disk-index
+//     order; no image download. The blob is the disk at its captured size, so no
+//     qemu-img resize/info is performed (DiskGiB is not honored on recreate).
+//   - Image source: EnsureImageInto (basename-keyed IfNotPresent cache) clones
+//     the base image into the per-VM disk, then sizeCreatedDisk applies DiskGiB.
+//
+// It returns the resolved base-image ensure result (zero for the migrated and
+// snapshot branches), the image virtual size and resulting disk size (0 on the
+// non-image branches), and a (failCode, failMsg) pair - failCode is "" on
+// success, otherwise the task-failure code the caller surfaces.
+func (m *Manager) materialiseCreateDisk(ctx context.Context, v *VM, spec CreateSpec) (ensured EnsureResult, virtualSize, diskSize int64, failCode, failMsg string) {
+	switch {
+	case v.Migrated:
+		return EnsureResult{}, 0, 0, "", ""
+	case spec.SourceSnapshot != nil:
+		if failCode, failMsg = m.materialiseFromSnapshot(v, spec.SourceSnapshot); failCode != "" {
+			return EnsureResult{}, 0, 0, failCode, failMsg
+		}
+		return EnsureResult{}, 0, 0, "", ""
+	default:
+		// EnsureImageInto holds the per-image lock across the ensure and the clone
+		// so a concurrent ensure cannot overwrite the cache file between the digest
+		// verify and the clone (audit R2-L5).
+		var err error
+		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
+		if err != nil {
+			var ce *ChecksumMismatchError
+			switch {
+			case errors.As(err, &ce):
+				return EnsureResult{}, 0, 0, "checksum_mismatch", ce.Error()
+			case errors.Is(err, ErrCloneFailed):
+				return EnsureResult{}, 0, 0, "clone_failed", err.Error()
+			default:
+				return EnsureResult{}, 0, 0, "image_unavailable", err.Error()
+			}
+		}
+		virtualSize, diskSize, failCode, failMsg = m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
+		return ensured, virtualSize, diskSize, failCode, failMsg
+	}
+}
+
+// materialiseFromSnapshot clones every disk in ref from the pool's snapshots/
+// subdir into the per-VM disk path, in virtio-index order. Each blob must exist
+// (the CP resolved these digests from the snapshot manifest; a missing blob is a
+// placement/replication gap surfaced as snapshot_blob_missing). Slice A VMs
+// carry a single boot disk: index 0 clones into v.DiskPath (the boot disk the
+// qemu command line attaches); any higher-index disk clones alongside it as
+// disk{i}.qcow2 to preserve content even though the slice-A guest attaches only
+// the boot disk. Returns a (failCode, failMsg) pair - failCode is "" on success.
+func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, failMsg string) {
+	poolRoot, err := m.poolRoot(v.PoolName)
+	if err != nil {
+		return "pool_not_found", fmt.Sprintf("resolve pool %q: %v", v.PoolName, err)
+	}
+	if len(ref.Disks) == 0 {
+		return "snapshot_blob_missing", "snapshot has no disks to materialise"
+	}
+	snapshotsDir := filepath.Join(poolRoot, snapshotsSubdir)
+
+	ordered := make([]SnapshotDiskRef, len(ref.Disks))
+	copy(ordered, ref.Disks)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+
+	for n, d := range ordered {
+		blobPath := filepath.Join(snapshotsDir, d.SHA256+".qcow2")
+		if _, err := os.Stat(blobPath); err != nil {
+			return "snapshot_blob_missing",
+				fmt.Sprintf("snapshot blob %s (disk %d) not present on pool %q: %v", d.SHA256, d.Index, v.PoolName, err)
+		}
+		dst := v.DiskPath
+		if n > 0 {
+			dst = filepath.Join(filepath.Dir(v.DiskPath), fmt.Sprintf("disk%d.qcow2", n))
+		}
+		if err := storage.CloneImage(blobPath, dst); err != nil {
+			return "clone_failed", fmt.Sprintf("clone snapshot blob %s into %s: %v", d.SHA256, dst, err)
+		}
+	}
+	return "", ""
+}
+
 func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 	// The create work outlives the HTTP request that spawned it (the task
 	// surface is how clients track progress), so it runs on a fresh
@@ -925,50 +1024,15 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	// A migrated VM's disk was copied in from the source node, so it is
-	// already the authoritative copy - re-cloning from the base image
-	// would overwrite the migrated state. Skip the ensure/clone entirely;
-	// ensured stays zero-valued (no base image was resolved).
-	var (
-		ensured EnsureResult
-		err     error
-	)
-	if !v.Migrated {
-		// EnsureImageInto holds the per-image lock across the ensure and the clone
-		// so a concurrent ensure cannot overwrite the cache file between the digest
-		// verify and the clone (audit R2-L5).
-		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
-		if err != nil {
-			var ce *ChecksumMismatchError
-			switch {
-			case errors.As(err, &ce):
-				log.Error("ensure image (checksum mismatch)", "err", err)
-				m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
-			case errors.Is(err, ErrCloneFailed):
-				log.Error("clone image", "err", err)
-				m.failTask(taskID, v.ID, "clone_failed", err.Error())
-			default:
-				log.Error("ensure image", "err", err)
-				m.failTask(taskID, v.ID, "image_unavailable", err.Error())
-			}
-			return
-		}
-	}
-
-	virtualSize, diskSize, failCode, failMsg := m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
+	ensured, virtualSize, diskSize, failCode, failMsg := m.materialiseCreateDisk(ctx, v, spec)
 	if failCode != "" {
-		log.Error("size disk", "code", failCode, "err", failMsg)
+		log.Error("materialise disk", "code", failCode, "err", failMsg)
 		m.failTask(taskID, v.ID, failCode, failMsg)
 		return
 	}
 
 	if v.CidataPath != "" {
-		builder := &cloudinit.Builder{
-			Hostname:    v.Name,
-			UserData:    spec.UserData,
-			NetworkData: spec.NetworkData,
-		}
-		if _, err := builder.Build(v.CidataPath); err != nil {
+		if err := m.createBuildCidata(v.CidataPath, v.Name, spec.UserData, spec.NetworkData); err != nil {
 			log.Error("build cidata iso", "err", err)
 			m.failTask(taskID, v.ID, "cloudinit_failed", err.Error())
 			return

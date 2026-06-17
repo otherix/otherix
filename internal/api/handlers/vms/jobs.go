@@ -112,14 +112,19 @@ type CreateArgs struct {
 	// executor hands to the agent. ImageSHA256 is the hex-encoded digest
 	// (empty when unpinned). The worker reads these off the self-describing VM
 	// and disk rows.
-	ImageURL      string
-	ImageSHA256   string
-	Format        string
-	DiskGiB       int
-	Pool          store.StoragePool
-	Node          store.Node
-	NICs          []agentclient.VMCreateNIC
-	OnAgentTaskID func(ctx context.Context, agentTaskID uuid.UUID) error
+	ImageURL    string
+	ImageSHA256 string
+	Format      string
+	DiskGiB     int
+	// SourceSnapshot, when non-nil, is the resolved recreate-from-snapshot disk
+	// source the worker loaded from the snapshot manifest (ordered blob digests
+	// + the pool the blobs live on). When set, the executor sends it to the
+	// agent instead of the image fields; ImageURL is empty.
+	SourceSnapshot *agentclient.VMCreateSourceSnapshot
+	Pool           store.StoragePool
+	Node           store.Node
+	NICs           []agentclient.VMCreateNIC
+	OnAgentTaskID  func(ctx context.Context, agentTaskID uuid.UUID) error
 }
 
 // CreateResult is the create executor's output. Surfaced into the task's

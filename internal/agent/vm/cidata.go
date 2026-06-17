@@ -4,8 +4,12 @@
 package vm
 
 // needsCidata reports whether a CreateSpec requires a NoCloud cidata ISO.
-// The seed is built when the operator supplied either cloud-init channel
-// (user-data or network-config); an all-empty spec boots without a seed.
+// Every VM gets a minimal seed unless cloud-init was explicitly disabled, so a
+// name-only VM (no user-data, no network-config) still gets instance-id +
+// local-hostname = its name and the guest hostname reliably follows the VM
+// name. CloudInitDisabled is the single, explicit opt-out (the operator's
+// --no-cloud-init). This is a deliberate behavior change from the prior
+// "seed only when user-data or network-config was supplied" rule.
 func needsCidata(spec CreateSpec) bool {
-	return len(spec.UserData) > 0 || len(spec.NetworkData) > 0
+	return !spec.CloudInitDisabled
 }
