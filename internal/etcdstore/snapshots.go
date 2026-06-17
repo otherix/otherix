@@ -233,7 +233,6 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 	if p.Description != nil {
 		updated.Description = *p.Description
 	}
-	rename := p.Name != nil && *p.Name != existing.Name
 	if p.Name != nil {
 		updated.Name = *p.Name
 	}
@@ -244,15 +243,20 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 		return store.Snapshot{}, err
 	}
 
-	if !rename {
+	// Detect a true rename by guard inequality (the guard is lowercased), not by
+	// a raw name compare: a case-only change ("daily" -> "Daily") yields the same
+	// guard key, so it must take the plain-put branch rather than a guard-move
+	// txn that would OpPut+OpDelete the same key (etcd rejects that as a duplicate
+	// key). The plain put still persists the new display-case name.
+	oldGuard := snapshotVMNameGuard(existing.VmID, existing.Name)
+	newGuard := snapshotVMNameGuard(existing.VmID, updated.Name)
+	if oldGuard == newGuard {
 		if err := s.c.Put(ctx, snapshotKey(p.ID), val); err != nil {
 			return store.Snapshot{}, err
 		}
 		return updated, nil
 	}
 
-	oldGuard := snapshotVMNameGuard(existing.VmID, existing.Name)
-	newGuard := snapshotVMNameGuard(existing.VmID, updated.Name)
 	resp, err := s.c.Raw().Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
 		Then(

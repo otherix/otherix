@@ -148,6 +148,36 @@ func TestUpdateSnapshotMeta_Rename(t *testing.T) {
 	}
 }
 
+func TestUpdateSnapshotMeta_CaseOnlyRename(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapcase")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-case-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "daily")
+	// A case-only rename "daily" -> "Daily" lowercases to the same guard key;
+	// it must take the plain-put branch (not a guard-move txn that would issue
+	// OpPut+OpDelete on one key and be rejected as a duplicate key).
+	newName := "Daily"
+	updated, err := s.UpdateSnapshotMeta(ctx, store.UpdateSnapshotMetaParams{ID: snap.ID, Name: &newName})
+	if err != nil {
+		t.Fatalf("UpdateSnapshotMeta case-only rename: %v", err)
+	}
+	if updated.Name != "Daily" {
+		t.Errorf("renamed name = %q, want Daily (new display case persisted)", updated.Name)
+	}
+	read, err := s.SnapshotByID(ctx, snap.ID)
+	if err != nil || read.Name != "Daily" {
+		t.Fatalf("SnapshotByID after case-only rename = (%+v, %v); want name Daily", read, err)
+	}
+}
+
 func TestDeleteSnapshot_FailsClosedWithChildren(t *testing.T) {
 	s, cl := startStore(t)
 	ctx := context.Background()
