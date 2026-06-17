@@ -265,7 +265,7 @@ func TestSnapshotManifestApplied_FillsDisksReadyAndRefgraph(t *testing.T) {
 		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
 		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
 	}
-	if err := s.SnapshotManifestApplied(ctx, snap.ID, disks); err != nil {
+	if err := s.SnapshotManifestApplied(ctx, snap.ID, disks, store.VmStateAtSnapshotRunning); err != nil {
 		t.Fatalf("SnapshotManifestApplied: %v", err)
 	}
 
@@ -275,6 +275,9 @@ func TestSnapshotManifestApplied_FillsDisksReadyAndRefgraph(t *testing.T) {
 	}
 	if got.Status != store.SnapshotStatusReady {
 		t.Errorf("status = %q, want ready", got.Status)
+	}
+	if got.VMStateAtSnapshot != store.VmStateAtSnapshotRunning {
+		t.Errorf("vm_state_at_snapshot = %q, want running (agent-authoritative report)", got.VMStateAtSnapshot)
 	}
 	if len(got.Disks) != 2 || got.Disks[0].SHA256 != "aa" || got.Disks[1].SHA256 != "bb" {
 		t.Errorf("Disks = %+v, want the two reported disks", got.Disks)
@@ -289,6 +292,64 @@ func TestSnapshotManifestApplied_FillsDisksReadyAndRefgraph(t *testing.T) {
 		if len(items) != 1 || string(items[0].Value) != snap.ID.String() {
 			t.Errorf("blob_refs[%q] = %v, want one entry -> %v", d.SHA256, items, snap.ID)
 		}
+	}
+}
+
+// TestDereferenceSnapshotBlobs_OnlyOrphansUnreferenced proves the fail-closed GC
+// orphan computation: two snapshots both reference blob "bb" (content-addressed
+// dedup); only snap1 references blob "aa". Dereferencing snap1 must orphan ONLY
+// "aa" (its sole ref now gone) and NEVER "bb" (snap2 still references it). The
+// blobRef entry for ("bb", snap1) is removed; ("bb", snap2) survives.
+func TestDereferenceSnapshotBlobs_OnlyOrphansUnreferenced(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapderef")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-deref-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap1 := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "s1")
+	snap2 := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "s2")
+
+	// snap1: blobs aa (sole) + bb (shared). snap2: blob bb (shared).
+	if err := s.SnapshotManifestApplied(ctx, snap1.ID, []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
+	}, store.VmStateAtSnapshotStopped); err != nil {
+		t.Fatalf("SnapshotManifestApplied snap1: %v", err)
+	}
+	if err := s.SnapshotManifestApplied(ctx, snap2.ID, []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
+	}, store.VmStateAtSnapshotStopped); err != nil {
+		t.Fatalf("SnapshotManifestApplied snap2: %v", err)
+	}
+
+	orphaned, err := s.DereferenceSnapshotBlobs(ctx, snap1.ID, []string{"aa", "bb"})
+	if err != nil {
+		t.Fatalf("DereferenceSnapshotBlobs: %v", err)
+	}
+	if len(orphaned) != 1 || orphaned[0] != "aa" {
+		t.Errorf("orphaned = %v, want only [aa] (bb still referenced by snap2)", orphaned)
+	}
+
+	// aa has no refs left; bb retains snap2's ref (snap1's ref was removed).
+	aaRefs, err := cl.Range(ctx, etcd.Key("index", "blob_refs", "aa")+"/")
+	if err != nil {
+		t.Fatalf("Range blob_refs aa: %v", err)
+	}
+	if len(aaRefs) != 0 {
+		t.Errorf("blob_refs[aa] = %v, want empty after dereference", aaRefs)
+	}
+	bbRefs, err := cl.Range(ctx, etcd.Key("index", "blob_refs", "bb")+"/")
+	if err != nil {
+		t.Fatalf("Range blob_refs bb: %v", err)
+	}
+	if len(bbRefs) != 1 || string(bbRefs[0].Value) != snap2.ID.String() {
+		t.Errorf("blob_refs[bb] = %v, want exactly snap2's ref %v", bbRefs, snap2.ID)
 	}
 }
 

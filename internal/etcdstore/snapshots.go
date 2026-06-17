@@ -321,19 +321,38 @@ func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID) (store.Snapsho
 	return existing, nil
 }
 
+// SnapshotByIDIncludingDeleted returns the snapshot row with the given id even
+// when it is soft-deleted, or store.ErrNotFound only when the key is absent. The
+// blob-GC worker runs AFTER DeleteSnapshot soft-deletes the row, so it reads the
+// manifest digests off the deleted row through this method (SnapshotByID would
+// return ErrNotFound on a soft-deleted snapshot).
+func (s *Store) SnapshotByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (store.Snapshot, error) {
+	var snap store.Snapshot
+	found, err := s.c.GetJSON(ctx, snapshotKey(id), &snap)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	if !found {
+		return store.Snapshot{}, store.ErrNotFound
+	}
+	return snap, nil
+}
+
 // SnapshotManifestApplied is the worker's success callback: it fills the
-// manifest Disks, flips status to ready, bumps updated_at, and writes one
-// blobRefKey reference-graph entry per disk (value = the snapshot id) - all in
-// one transaction. The refgraph entries are the authoritative, fail-closed input
-// to blob GC: a future GC may delete a blob only when no blobRef entries remain
-// under its digest, so this write is the seam that keeps GC from deleting a
-// still-referenced blob.
-func (s *Store) SnapshotManifestApplied(ctx context.Context, id uuid.UUID, disks []store.SnapshotDisk) error {
+// manifest Disks, sets vm_state_at_snapshot from the agent report (the agent is
+// authoritative for what was actually captured), flips status to ready, bumps
+// updated_at, and writes one blobRefKey reference-graph entry per disk (value =
+// the snapshot id) - all in one transaction. The refgraph entries are the
+// authoritative, fail-closed input to blob GC: a future GC may delete a blob only
+// when no blobRef entries remain under its digest, so this write is the seam that
+// keeps GC from deleting a still-referenced blob.
+func (s *Store) SnapshotManifestApplied(ctx context.Context, id uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error {
 	existing, err := s.SnapshotByID(ctx, id)
 	if err != nil {
 		return err
 	}
 	existing.Disks = disks
+	existing.VMStateAtSnapshot = vmState
 	existing.Status = store.SnapshotStatusReady
 	existing.UpdatedAt = time.Now().UTC()
 	val, err := etcd.Marshal(existing)
@@ -349,4 +368,35 @@ func (s *Store) SnapshotManifestApplied(ctx context.Context, id uuid.UUID, disks
 		return fmt.Errorf("snapshot manifest applied txn: %v", err)
 	}
 	return nil
+}
+
+// DereferenceSnapshotBlobs removes the snapshot's reference-graph entries for the
+// given digests and returns ONLY the digests left with zero remaining references
+// (the orphaned set safe to GC). It is the authoritative, fail-closed input to
+// blob GC: for each digest it deletes blobRefKey(digest, snapshotID) and then reads
+// blobRefPrefix(digest); a digest whose only remaining ref is this snapshot's
+// entry (now deleted) is orphaned, while a digest still referenced by ANY other
+// snapshot is never returned. The orphan decision reads the authoritative refgraph
+// AFTER the delete commits, so a blob shared by content-addressed dedup is never
+// handed to the agent for removal.
+func (s *Store) DereferenceSnapshotBlobs(ctx context.Context, snapshotID uuid.UUID, digests []string) ([]string, error) {
+	var orphaned []string
+	for _, digest := range digests {
+		if _, err := s.c.Raw().Txn(ctx).
+			Then(clientv3.OpDelete(blobRefKey(digest, snapshotID))).
+			Commit(); err != nil {
+			return nil, fmt.Errorf("dereference blob %q: %v", digest, err)
+		}
+		// Read the authoritative refgraph AFTER the delete: any entry remaining under
+		// the digest is another snapshot still referencing the blob (fail-closed - the
+		// blob stays). Zero entries means the blob is now orphaned and safe to GC.
+		items, err := s.c.Range(ctx, blobRefPrefix(digest))
+		if err != nil {
+			return nil, fmt.Errorf("read blob refs %q: %v", digest, err)
+		}
+		if len(items) == 0 {
+			orphaned = append(orphaned, digest)
+		}
+	}
+	return orphaned, nil
 }
