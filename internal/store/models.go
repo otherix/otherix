@@ -614,6 +614,7 @@ type Snapshot struct {
 	WithMemory        bool
 	VMStateAtSnapshot VMStateAtSnapshot
 	DiskSizeBytes     *int64
+	Disks             []SnapshotDisk
 	MemorySizeBytes   *int64
 	ErrorMessage      *string
 	CreatedAt         time.Time
