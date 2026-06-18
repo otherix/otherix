@@ -52,6 +52,19 @@ func TestArtifactPoolCRUD(t *testing.T) {
 		t.Errorf("replication_factor = %v, want \"all\"", allView.ReplicationFactor)
 	}
 
+	// Omitted replication_factor defaults to 1 (OpenAPI default: 1).
+	resp = h.post(t, "/v1/artifact-pools", map[string]any{"name": "silver"}, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("omitted-rf create status = %d, want 201", resp.StatusCode)
+	}
+	var silver struct {
+		ReplicationFactor any `json:"replication_factor"`
+	}
+	decodeJSON(t, resp, &silver)
+	if f, _ := silver.ReplicationFactor.(float64); f != 1 {
+		t.Errorf("omitted replication_factor = %v, want 1", silver.ReplicationFactor)
+	}
+
 	resp = h.post(t, "/v1/artifact-pools", map[string]any{"name": "bad", "replication_factor": 0}, admin)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("zero-K status = %d, want 400", resp.StatusCode)

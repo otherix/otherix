@@ -10,9 +10,9 @@ import (
 )
 
 type createRequest struct {
-	Name              string                  `json:"name"`
-	ReplicationFactor store.ReplicationFactor `json:"replication_factor"`
-	Membership        *membershipBody         `json:"membership,omitempty"`
+	Name              string                   `json:"name"`
+	ReplicationFactor *store.ReplicationFactor `json:"replication_factor"`
+	Membership        *membershipBody          `json:"membership,omitempty"`
 }
 
 type membershipBody struct {

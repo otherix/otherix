@@ -29,7 +29,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			response.CodeValidationFailed, err.Error(), nil)
 		return
 	}
-	if err := validation.ValidateReplicationFactor(req.ReplicationFactor); err != nil {
+	rf := store.ReplicationFactor{Count: 1}
+	if req.ReplicationFactor != nil {
+		rf = *req.ReplicationFactor
+	}
+	if err := validation.ValidateReplicationFactor(rf); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
@@ -43,7 +47,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ap, err := h.store.CreateArtifactPool(r.Context(), store.CreateArtifactPoolParams{
 		ID:                uuid.New(),
 		Name:              req.Name,
-		ReplicationFactor: req.ReplicationFactor,
+		ReplicationFactor: rf,
 		Membership:        membership,
 	})
 	if err != nil {
