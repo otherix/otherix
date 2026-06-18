@@ -124,7 +124,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// Slice-C1 blob transport (artifact store + serve/pull control handler). Runs
 	// the one-time relocation sweep and fails closed if the production artifact
 	// store is absent (artifacts.root is mandatory in production config).
-	artStore, blobsHandler, err := setupBlobTransport(cfg, manager, tlsCfg, log)
+	artStore, blobsHandler, blobServeMgr, err := setupBlobTransport(cfg, manager, tlsCfg, log)
 	if err != nil {
 		return fmt.Errorf("blob transport: %w", err)
 	}
@@ -209,11 +209,21 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	case err := <-errc:
 		stopHeartbeat()
 		drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
+		if cerr := blobServeMgr.Close(); cerr != nil {
+			log.Warn("blob serve manager close failed", "error", cerr.Error())
+		}
 		return err
 	}
 
 	stopHeartbeat()
 	drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
+
+	// Tear down any in-flight peer blob serve listeners alongside the main
+	// server: each is a separate listener+goroutine not in the reconciler drain
+	// set, so without this they would be abandoned at shutdown. Best-effort.
+	if cerr := blobServeMgr.Close(); cerr != nil {
+		log.Warn("blob serve manager close failed", "error", cerr.Error())
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()

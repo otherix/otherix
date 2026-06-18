@@ -137,6 +137,27 @@ func TestServe_BadRequestOnMissingDigest(t *testing.T) {
 	}
 }
 
+func TestServe_BadRequestOnMissingConsumerNodeID(t *testing.T) {
+	srv := &serveSpy{}
+	h := New(srv, &pullSpy{}, discardLogger())
+	router := mountTestRouter(h)
+
+	body, _ := json.Marshal(map[string]any{
+		"digest": strings.Repeat("a", 64),
+		"token":  "tok-123",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/serve", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if srv.calls != 0 {
+		t.Errorf("Serve calls = %d, want 0 (handler must reject before dispatch)", srv.calls)
+	}
+}
+
 func TestServe_MalformedJSON(t *testing.T) {
 	h := New(&serveSpy{}, &pullSpy{}, discardLogger())
 	router := mountTestRouter(h)

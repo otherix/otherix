@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/agentapi"
 	"github.com/otherix/otherix/internal/api/response"
 )
@@ -30,6 +32,14 @@ func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) {
 	if req.Digest == "" || req.Token == "" {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "digest and token are required", nil)
+		return
+	}
+	// consumer_node_id is a required field of BlobServeRequest. It stays
+	// advisory in C1 (Serve ignores its value), but honour the published
+	// contract: a request omitting it gets 400, not 200.
+	if req.ConsumerNodeID == uuid.Nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "consumer_node_id is required", nil)
 		return
 	}
 

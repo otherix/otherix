@@ -29,7 +29,8 @@ const serveTokenTTL = 10 * time.Minute
 // Serve it reserves a port from the artifacts range, opens a peer-facing
 // mutual-TLS listener (NODE-leaf client auth, NOT the CP-only identity) that
 // streams the requested blob by digest, and returns the reachable endpoint plus
-// an expiry. One listener per active serve; released on TTL.
+// an expiry. One listener per active serve; released on TTL expiry or earlier
+// when Close tears the manager down at agent shutdown.
 //
 // SECURITY: the listener's tls.Config sets ClientAuth =
 // RequireAndVerifyClientCert with the cluster CA pool, so a peer without a valid
@@ -46,6 +47,25 @@ type blobServeManager struct {
 	log       *slog.Logger
 
 	verifier *serveTokenStore
+
+	// mu guards active and closed. Every live serve registers an entry in
+	// active keyed by its reserved port; whichever of Close or the per-serve
+	// TTL teardown runs first removes the entry and releases the port, and the
+	// loser sees the entry already gone (no double-close / double-release).
+	mu     sync.Mutex
+	active map[int]*activeServe
+	closed bool
+}
+
+// activeServe tracks one live peer serve listener so Close (agent shutdown) and
+// the per-serve TTL teardown can each tear it down exactly once. tearDown is
+// guarded by the manager mutex via the active map: the entry is removed before
+// tearDown runs, so only one caller ever reaches it for a given serve.
+type activeServe struct {
+	srv   *http.Server
+	port  int
+	token string
+	timer *time.Timer
 }
 
 // newBlobServeManager builds a serve manager. baseTLS is the *tls.Config the
@@ -69,6 +89,7 @@ func newBlobServeManager(store *artifactstore.Store, ports *migration.PortAlloca
 		ttl:       serveTokenTTL,
 		log:       log,
 		verifier:  newServeTokenStore(),
+		active:    map[int]*activeServe{},
 	}, nil
 }
 
@@ -78,6 +99,13 @@ func newBlobServeManager(store *artifactstore.Store, ports *migration.PortAlloca
 // cluster-CA node leaves (RequireAndVerifyClientCert + the cluster CA pool); the
 // per-op token gates which blob may be streamed.
 func (m *blobServeManager) Serve(digest, token, _ string) (string, string, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return "", "", fmt.Errorf("blob serve: manager is closed")
+	}
+	m.mu.Unlock()
+
 	port, err := m.ports.Reserve()
 	if err != nil {
 		return "", "", fmt.Errorf("blob serve: reserve port: %w", err)
@@ -104,28 +132,94 @@ func (m *blobServeManager) Serve(digest, token, _ string) (string, string, error
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Register the live serve so Close and the TTL teardown share one
+	// map-guarded entry; whichever fires first removes it and tears the
+	// listener down, the other finds nothing. The timer fires the TTL path.
+	as := &activeServe{srv: srv, port: port, token: token}
+	as.timer = time.AfterFunc(m.ttl, func() {
+		if m.takeServe(port) == nil {
+			return // Close (or an earlier teardown) already claimed this serve.
+		}
+		m.tearDown(as)
+		m.log.Info("blob serve listener expired", "port", port, "digest", digest)
+	})
+
+	m.mu.Lock()
+	if m.closed {
+		// Lost the race with Close between the guard above and here: undo the
+		// listener we just opened rather than leaking it past shutdown.
+		m.mu.Unlock()
+		as.timer.Stop()
+		_ = srv.Close()
+		_ = ln.Close()
+		m.ports.Release(port)
+		m.verifier.drop(token)
+		return "", "", fmt.Errorf("blob serve: manager is closed")
+	}
+	m.active[port] = as
+	m.mu.Unlock()
+
 	go func() {
 		if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
 			m.log.Warn("blob serve listener stopped with error", "port", port, "err", err)
 		}
 	}()
 
-	// Schedule teardown on TTL: close the server, release the port, drop the
-	// primed token so a replay after expiry finds nothing.
-	go func() {
-		timer := time.NewTimer(m.ttl)
-		defer timer.Stop()
-		<-timer.C
-		_ = srv.Close()
-		m.ports.Release(port)
-		m.verifier.drop(token)
-		m.log.Info("blob serve listener expired", "port", port, "digest", digest)
-	}()
-
 	expiresAt := time.Now().Add(m.ttl).UTC().Format(time.RFC3339)
 	endpoint := "https://" + net.JoinHostPort(m.serveHost, strconv.Itoa(port))
 	m.log.Info("blob serve listener opened", "endpoint", endpoint, "digest", digest, "expires_at", expiresAt)
 	return endpoint, expiresAt, nil
+}
+
+// takeServe removes and returns the active serve for port under the mutex, or
+// nil if it is already gone. It is the single claim point shared by the TTL
+// teardown and Close: the caller that gets a non-nil entry owns tearing it down.
+func (m *blobServeManager) takeServe(port int) *activeServe {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	as, ok := m.active[port]
+	if !ok {
+		return nil
+	}
+	delete(m.active, port)
+	return as
+}
+
+// tearDown closes one serve's listener, releases its port, drops its primed
+// token, and stops its TTL timer. It runs at most once per serve: the caller
+// must first have claimed the entry via takeServe (or removed it under the
+// mutex in Close), so the TTL path and Close never both reach it.
+func (m *blobServeManager) tearDown(as *activeServe) {
+	as.timer.Stop()
+	_ = as.srv.Close()
+	m.ports.Release(as.port)
+	m.verifier.drop(as.token)
+}
+
+// Close tears down every still-active serve listener: it closes each server,
+// releases its reserved port, drops its primed token, and stops its TTL timer.
+// It is wired into the agent's graceful shutdown so in-flight peer serve
+// listeners are not abandoned. Close is idempotent (a second call is a no-op)
+// and race-safe with the per-serve TTL teardown: both claim a serve through the
+// shared active map under the mutex, so each serve is torn down exactly once.
+func (m *blobServeManager) Close() error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
+	taken := make([]*activeServe, 0, len(m.active))
+	for port, as := range m.active {
+		taken = append(taken, as)
+		delete(m.active, port)
+	}
+	m.mu.Unlock()
+
+	for _, as := range taken {
+		m.tearDown(as)
+	}
+	return nil
 }
 
 // serveTokenStore is the in-agent TokenVerifier primed by Serve: it maps a

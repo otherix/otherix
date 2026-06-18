@@ -23,21 +23,23 @@ import (
 // setupBlobTransport brings the slice-C1 blob transport online: it asserts the
 // production artifact store is present (fail closed), runs the one-time
 // relocation sweep, and builds the serve/pull control handler. Returns the
-// shared store (for the heartbeat blob inventory) and the handler.
-func setupBlobTransport(cfg *config.AgentConfig, manager *vm.Manager, baseTLS *tls.Config, log *slog.Logger) (*artifactstore.Store, *blobshandlers.Handler, error) {
+// shared store (for the heartbeat blob inventory), the handler, and the serve
+// manager (so Run can Close it during graceful shutdown, tearing down any live
+// peer serve listeners).
+func setupBlobTransport(cfg *config.AgentConfig, manager *vm.Manager, baseTLS *tls.Config, log *slog.Logger) (*artifactstore.Store, *blobshandlers.Handler, *blobServeManager, error) {
 	artStore := manager.ArtifactStore()
 	if artStore == nil {
-		return nil, nil, fmt.Errorf("artifact store required in production (artifacts.root unset?)")
+		return nil, nil, nil, fmt.Errorf("artifact store required in production (artifacts.root unset?)")
 	}
 	// One-time, best-effort relocation of disk-pool-resident snapshot blobs into
 	// the artifact store. Fail-open: errors are logged inside, never fatal.
 	manager.RelocateSnapshotsToStore()
 
-	handler, err := buildBlobsHandler(cfg, manager, artStore, baseTLS, log)
+	handler, serveMgr, err := buildBlobsHandler(cfg, manager, artStore, baseTLS, log)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return artStore, handler, nil
+	return artStore, handler, serveMgr, nil
 }
 
 // buildBlobsHandler wires the slice-C1 blob control handler: the holder-side
@@ -47,17 +49,17 @@ func setupBlobTransport(cfg *config.AgentConfig, manager *vm.Manager, baseTLS *t
 // advertised host (the address a peer can reach this node on). Both control
 // endpoints are mounted on the CP-only main server (only the CP calls serve /
 // pull); the blob DATA path is the separate blobpeer listener.
-func buildBlobsHandler(cfg *config.AgentConfig, manager *vm.Manager, artStore *artifactstore.Store, baseTLS *tls.Config, log *slog.Logger) (*blobshandlers.Handler, error) {
+func buildBlobsHandler(cfg *config.AgentConfig, manager *vm.Manager, artStore *artifactstore.Store, baseTLS *tls.Config, log *slog.Logger) (*blobshandlers.Handler, *blobServeManager, error) {
 	blobPorts := migration.NewPortAllocator(cfg.Artifacts.PortRangeStart, cfg.Artifacts.PortRangeEnd)
 	serveMgr, err := newBlobServeManager(artStore, blobPorts, cfg.Migration.Host, baseTLS, log)
 	if err != nil {
-		return nil, fmt.Errorf("serve manager: %w", err)
+		return nil, nil, fmt.Errorf("serve manager: %w", err)
 	}
 	pullClient, err := newBlobPullClient(cfg.TLS)
 	if err != nil {
-		return nil, fmt.Errorf("pull client: %w", err)
+		return nil, nil, fmt.Errorf("pull client: %w", err)
 	}
-	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, log), nil
+	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, log), serveMgr, nil
 }
 
 // blobPuller is the consumer-side half of the slice-C1 blob pull: it runs

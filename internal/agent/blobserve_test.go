@@ -4,16 +4,25 @@
 package agent
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"io"
 	"log/slog"
+	"math/big"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/migration"
 )
 
 // sha256Hex returns the lowercase hex sha256 of b.
@@ -46,6 +55,99 @@ func TestServeTokenStore_VerifyScopesToPrimedDigest(t *testing.T) {
 	s.drop("tok-1")
 	if _, ok := s.Verify("tok-1", digestA); ok {
 		t.Errorf("Verify(tok-1, A) after drop = ok, want dropped token rejected")
+	}
+}
+
+// newTestServeManager builds a blobServeManager over a single-port allocator
+// and a self-signed node leaf, with a long TTL so the per-serve TTL teardown
+// never fires during the test (Close is the path under test). It returns the
+// manager and the single port the allocator hands out.
+func newTestServeManager(t *testing.T) (*blobServeManager, int) {
+	t.Helper()
+	store, err := artifactstore.NewForTesting(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatalf("NewForTesting: %v", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "node-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	nodeCert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
+
+	port := 49500
+	m := &blobServeManager{
+		store:     store,
+		ports:     migration.NewPortAllocator(port, port),
+		serveHost: "127.0.0.1",
+		nodeCert:  nodeCert,
+		clientCAs: &tls.Config{ClientCAs: pool, MinVersion: tls.VersionTLS13},
+		ttl:       time.Hour,
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		verifier:  newServeTokenStore(),
+		active:    map[int]*activeServe{},
+	}
+	return m, port
+}
+
+// TestBlobServeManager_CloseReleasesAndIsIdempotent pins Fix 1: Close tears down
+// a live serve listener (releasing its port back to the allocator and dropping
+// its primed token), and a second Close is a no-op. With a one-port allocator,
+// the only proof the port was released is that a fresh Reserve hands the same
+// port back.
+func TestBlobServeManager_CloseReleasesAndIsIdempotent(t *testing.T) {
+	m, port := newTestServeManager(t)
+
+	if _, _, err := m.Serve(strings.Repeat("a", 64), "tok-1", ""); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	// Port is reserved (allocator exhausted) and the token is primed.
+	if _, err := m.ports.Reserve(); err == nil {
+		t.Fatalf("Reserve succeeded while serve active, want exhausted")
+	}
+	if _, ok := m.verifier.Verify("tok-1", strings.Repeat("a", 64)); !ok {
+		t.Fatalf("token not primed during active serve")
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Port re-reservable (released) and token dropped.
+	got, err := m.ports.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve after Close: %v, want port released", err)
+	}
+	if got != port {
+		t.Errorf("Reserve after Close = %d, want %d (the released port)", got, port)
+	}
+	m.ports.Release(got)
+	if _, ok := m.verifier.Verify("tok-1", strings.Repeat("a", 64)); ok {
+		t.Errorf("token still primed after Close, want dropped")
+	}
+
+	// Second Close is a no-op.
+	if err := m.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil (idempotent)", err)
+	}
+
+	// Serve after Close is rejected (manager closed).
+	if _, _, err := m.Serve(strings.Repeat("b", 64), "tok-2", ""); err == nil {
+		t.Errorf("Serve after Close = nil error, want rejected")
 	}
 }
 
