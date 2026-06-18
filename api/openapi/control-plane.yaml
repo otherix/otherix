@@ -3421,7 +3421,7 @@ paths:
       tags: [cluster]
       summary: Clear the cluster default artifact-pool reference (admin only).
       description: |
-        Idempotent — clearing an already-null reference returns 204.
+        Idempotent - clearing an already-null reference returns 204.
 
         **Required permission:** `cluster:manage` (admin only).
       security:
