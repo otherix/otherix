@@ -1985,14 +1985,29 @@ func validateCreateSpec(s CreateSpec) error {
 	if s.PoolName == "" {
 		return fmt.Errorf("pool is required")
 	}
-	if s.ImageURL == "" {
-		return fmt.Errorf("image_url is required")
+	if err := validateDiskSource(s); err != nil {
+		return err
 	}
 	if s.ExpectedSHA256 != "" && len(s.ExpectedSHA256) != 64 {
 		return fmt.Errorf("expected_sha256 must be a 64-char sha256 hex digest")
 	}
 	if s.DiskGiB < 0 || s.DiskGiB > maxAgentDiskGiB {
 		return fmt.Errorf("disk_gib must be in [0, %d]", maxAgentDiskGiB)
+	}
+	return nil
+}
+
+// validateDiskSource enforces exactly one disk source on a create spec: an image
+// URL to download, or a recreate-from-snapshot ref whose content-addressed blobs
+// the agent clones. The CP also enforces this; reaching the agent with neither
+// or both is defense in depth - but the agent MUST accept source_snapshot, else
+// a snapshot-sourced create is wrongly rejected as "image_url is required".
+func validateDiskSource(s CreateSpec) error {
+	switch {
+	case s.ImageURL == "" && s.SourceSnapshot == nil:
+		return fmt.Errorf("exactly one of image_url or source_snapshot is required")
+	case s.ImageURL != "" && s.SourceSnapshot != nil:
+		return fmt.Errorf("image_url and source_snapshot are mutually exclusive")
 	}
 	return nil
 }

@@ -890,3 +890,36 @@ func TestValidateCreateSpecDiskGiB(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateCreateSpec_ImageXorSnapshot verifies the agent accepts exactly one
+// disk source - an image URL OR a recreate-from-snapshot ref. The real-agent
+// recreate smoke caught this seam: runCreate's materialize branch handled
+// SourceSnapshot, but validateCreateSpec still demanded image_url and 400'd a
+// snapshot-sourced create ("image_url is required") before reaching it.
+func TestValidateCreateSpec_ImageXorSnapshot(t *testing.T) {
+	base := func() CreateSpec {
+		return CreateSpec{Name: "web-01", VCPUs: 2, MemoryMB: 1024, PoolName: "default"}
+	}
+	snap := &SnapshotRef{Pool: "default", Disks: []SnapshotDiskRef{{Index: 0, Device: "virtio0", SHA256: "aa"}}}
+	cases := []struct {
+		name     string
+		imageURL string
+		source   *SnapshotRef
+		wantErr  bool
+	}{
+		{"image only", "https://x/i.img", nil, false},
+		{"snapshot only", "", snap, false},
+		{"neither", "", nil, true},
+		{"both", "https://x/i.img", snap, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base()
+			s.ImageURL = tc.imageURL
+			s.SourceSnapshot = tc.source
+			if err := validateCreateSpec(s); (err != nil) != tc.wantErr {
+				t.Errorf("validateCreateSpec(image=%q, snapshot=%v) err = %v, wantErr = %v", tc.imageURL, tc.source != nil, err, tc.wantErr)
+			}
+		})
+	}
+}
