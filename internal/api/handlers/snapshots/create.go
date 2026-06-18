@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -24,9 +25,10 @@ import (
 // required (1..255); description is optional. with_memory is accepted for
 // forward-compat but rejected in slice A (disk-only).
 type snapshotCreateRequest struct {
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
-	WithMemory  *bool   `json:"with_memory"`
+	Name         string  `json:"name"`
+	Description  *string `json:"description"`
+	WithMemory   *bool   `json:"with_memory"`
+	ArtifactPool *string `json:"artifact_pool"`
 }
 
 // Create implements POST /v1/vms/{id}/snapshots - async per spec (202 +
@@ -75,6 +77,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	artifactPool, ok := h.resolveArtifactPool(w, r, body.ArtifactPool)
+	if !ok {
+		return
+	}
+
 	taskID := uuid.New()
 	snapshotID := uuid.New()
 	resID := snapshotID
@@ -90,6 +97,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		SourceVMName:       vm.Name,
 		SourceArchitecture: vm.Architecture,
 		SourceFirmwareID:   vm.FirmwareID,
+		ArtifactPoolName:   &artifactPool,
 		Task: store.CreateTaskParams{
 			ID:           taskID,
 			Type:         "vm.snapshot.create",
@@ -119,6 +127,56 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Status: string(store.TaskStatusPending),
 		Links:  response.AsyncTaskLinks{Self: "/v1/tasks/" + taskID.String()},
 	})
+}
+
+// resolveArtifactPool determines the artifact pool a snapshot belongs to: the
+// request override when set, else the cluster default. It validates the resolved
+// name is a real artifact pool. The boolean mirrors the decode helpers'
+// short-circuit signal (false = a response was already written).
+func (h *Handler) resolveArtifactPool(w http.ResponseWriter, r *http.Request, override *string) (string, bool) {
+	name := ""
+	if override != nil {
+		name = strings.TrimSpace(*override)
+	}
+	if name == "" {
+		settings, err := h.store.ClusterSettings(r.Context())
+		if err != nil {
+			response.WriteError(w, r, http.StatusInternalServerError, response.CodeInternal, "load cluster settings", nil)
+			return "", false
+		}
+		if settings.DefaultArtifactPoolName == nil {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeDefaultArtifactPoolNotSet,
+				"no artifact pool specified and no cluster default artifact pool configured", nil)
+			return "", false
+		}
+		name = *settings.DefaultArtifactPoolName
+	}
+	ap, err := h.store.ArtifactPoolByName(r.Context(), name)
+	if err == nil {
+		return ap.Name, true
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		response.WriteError(w, r, http.StatusInternalServerError, response.CodeInternal, "load artifact pool", nil)
+		return "", false
+	}
+	// Not an artifact pool. If the name is a disk pool, it is the wrong kind
+	// (400). When the name came from the cluster default (no override), the
+	// default points at a since-deleted pool (artifact_pool_required). Else the
+	// overridden name is simply unknown (404).
+	if disk, derr := h.store.StoragePoolsByName(r.Context(), name); derr == nil && len(disk) > 0 {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "named pool is a storage pool, not an artifact pool", nil)
+		return "", false
+	}
+	if override == nil || strings.TrimSpace(*override) == "" {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeArtifactPoolRequired, "cluster default artifact pool no longer exists", nil)
+		return "", false
+	}
+	response.WriteError(w, r, http.StatusNotFound,
+		response.CodeNotFound, "artifact pool not found", nil)
+	return "", false
 }
 
 // decodeCreateBody decodes the request body. A missing body is a 400 (name is

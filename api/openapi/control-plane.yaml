@@ -6897,6 +6897,11 @@ components:
         error_message:
           type: [string, "null"]
           description: Set when `status = "error"`.
+        artifact_pool_name:
+          type: [string, "null"]
+          description: |
+            Artifact pool this snapshot belongs to (slice B). Null for snapshots
+            created before slice B.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -6919,6 +6924,14 @@ components:
             `400 validation_failed` with `details.reason =
             "with_memory_unsupported"`. The field is retained for forward
             compatibility.
+        artifact_pool:
+          type: [string, "null"]
+          description: |
+            Artifact pool the snapshot belongs to. Omitted means the cluster
+            default artifact pool; an unresolvable value returns 409
+            (default_artifact_pool_not_set / artifact_pool_required), 400 (the
+            name is a storage pool), or 404 (unknown). The blob still lives in
+            the source VM disk pool dir in slice B; this records ownership.
 
     VmSnapshotUpdate:
       type: object

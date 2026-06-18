@@ -41,6 +41,7 @@ type Store interface {
 
 	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
 	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
+	ArtifactPoolByName(ctx context.Context, name string) (store.ArtifactPool, error)
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 	CreateSnapshot(ctx context.Context, p store.CreateSnapshotParams, args queue.JobArgs) (store.Snapshot, error)
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
@@ -77,14 +78,15 @@ type vmSnapshotView struct {
 	// VMName is the source VM name captured at snapshot time, denormalised onto
 	// the snapshot so it survives the source VM's deletion (provenance). Empty
 	// only for legacy rows created before the field existed.
-	VMName        string               `json:"vm_name"`
-	Architecture  string               `json:"architecture"`
-	FirmwareID    *string              `json:"firmware_id"`
-	DiskSizeBytes *int64               `json:"disk_size_bytes"`
-	Disks         []vmSnapshotDiskView `json:"disks"`
-	ErrorMessage  *string              `json:"error_message"`
-	CreatedAt     string               `json:"created_at"`
-	UpdatedAt     string               `json:"updated_at"`
+	VMName           string               `json:"vm_name"`
+	Architecture     string               `json:"architecture"`
+	FirmwareID       *string              `json:"firmware_id"`
+	DiskSizeBytes    *int64               `json:"disk_size_bytes"`
+	Disks            []vmSnapshotDiskView `json:"disks"`
+	ErrorMessage     *string              `json:"error_message"`
+	ArtifactPoolName *string              `json:"artifact_pool_name"`
+	CreatedAt        string               `json:"created_at"`
+	UpdatedAt        string               `json:"updated_at"`
 }
 
 // vmSnapshotDiskView mirrors the per-disk blob descriptor in the manifest.
@@ -139,6 +141,7 @@ func toView(s store.Snapshot) vmSnapshotView {
 		DiskSizeBytes:     size,
 		Disks:             disks,
 		ErrorMessage:      s.ErrorMessage,
+		ArtifactPoolName:  s.ArtifactPoolName,
 		CreatedAt:         s.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         s.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
