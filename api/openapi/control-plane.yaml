@@ -3383,6 +3383,9 @@ components:
         - console_in_use
         - protocol_not_available
         - not_implemented
+        - pool_role_invalid
+        - artifact_pool_required
+        - default_artifact_pool_not_set
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
