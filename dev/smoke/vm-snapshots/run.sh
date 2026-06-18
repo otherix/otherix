@@ -142,6 +142,16 @@ trap cleanup EXIT
 # file already exists on the disk that came off the snapshot, so the `[ -f ]`
 # guard skips it and the original value is preserved. Quoted heredoc -> the guest
 # shell vars stay literal (not expanded here).
+#
+# CRASH-CONSISTENCY: the snapshot is a crash-consistent blockdev-backup of the
+# block device, NOT the guest page cache - recent writes that have not been
+# flushed to the virtual disk are NOT captured. So the oneshot runs `sync` BEFORE
+# it echoes, and the runcmd ends with `sync`: because step 2 gates on seeing the
+# echo, "echo seen" implies the sentinel + the service unit + its enable symlink
+# are flushed to disk, so the snapshot (taken after step 2) captures them and the
+# recreate boots the oneshot. Without the sync the recreate disk is missing the
+# just-written files and step 6 fails - which is the real crash-consistency
+# limitation, surfaced here as a test-harness requirement, not a product bug.
 read -r -d '' CLOUD_INIT <<'EOF' || true
 #cloud-config
 write_files:
@@ -153,7 +163,7 @@ write_files:
       After=multi-user.target
       [Service]
       Type=oneshot
-      ExecStart=/bin/sh -c 'echo "OTHERIX_SENTINEL $(cat /var/lib/otherix-smoke/sentinel 2>/dev/null || echo MISSING)" > /dev/console; echo "OTHERIX_HOSTNAME $(hostname)" > /dev/console'
+      ExecStart=/bin/sh -c 'sync; echo "OTHERIX_SENTINEL $(cat /var/lib/otherix-smoke/sentinel 2>/dev/null || echo MISSING)" > /dev/console; echo "OTHERIX_HOSTNAME $(hostname)" > /dev/console'
       [Install]
       WantedBy=multi-user.target
 runcmd:
@@ -161,6 +171,7 @@ runcmd:
   - [ sh, -c, '[ -f /var/lib/otherix-smoke/sentinel ] || hostname > /var/lib/otherix-smoke/sentinel' ]
   - [ systemctl, daemon-reload ]
   - [ systemctl, enable, --now, otherix-snap-sentinel.service ]
+  - [ sync ]
 EOF
 [ -n "$CLOUD_INIT" ] || fail "internal: cloud-config came out empty"
 
