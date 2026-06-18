@@ -208,6 +208,7 @@ func vmCreateOp(d Document) (CreateOp, error) {
 	req := cpclient.CreateVMRequest{
 		Name:              d.Name,
 		ImageURL:          s.ImageURL,
+		SourceSnapshotID:  s.SourceSnapshotID,
 		ImageSHA256:       s.ImageSHA256,
 		Arch:              s.Arch,
 		Firmware:          s.Firmware,

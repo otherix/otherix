@@ -12,18 +12,32 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// outDoc is the manifest projection shape. Server-assigned fields (id,
-// timestamps, status, owner, reconciliation) are intentionally absent
-// so the output is directly re-appliable via `create -f`.
+// outDoc is the manifest projection shape. Server-assigned identity fields
+// (id, timestamps, owner, reconciliation) are intentionally absent so the
+// output is directly re-appliable via `create -f`. Status is the one
+// observed-state block we DO surface: it sits top-level (k8s-style, a
+// sibling of spec, not a create input) so `create -f` -- which reads only
+// spec -- ignores it on re-apply.
 type outDoc struct {
 	APIVersion string         `yaml:"apiVersion"`
 	Kind       string         `yaml:"kind"`
 	Metadata   outMetadata    `yaml:"metadata"`
 	Spec       map[string]any `yaml:"spec"`
+	Status     *outVMStatus   `yaml:"status,omitempty"`
 }
 
 type outMetadata struct {
 	Name string `yaml:"name"`
+}
+
+// outVMStatus is the projected, system-reported VM status. It mirrors the
+// fields the cpclient.VMStatus view carries (phase / reason / message);
+// reason and message are emitted only when set. It is informational output
+// only -- the create/apply path reads spec, never status.
+type outVMStatus struct {
+	Phase   string `yaml:"phase"`
+	Reason  string `yaml:"reason,omitempty"`
+	Message string `yaml:"message,omitempty"`
 }
 
 // encodeDoc marshals one outDoc with two-space indentation.
@@ -217,10 +231,26 @@ func ProjectVM(v cpclient.VM) ([]byte, error) {
 	if v.NetworkConfig != nil && *v.NetworkConfig != "" {
 		spec["networkConfig"] = *v.NetworkConfig
 	}
+	if v.SourceSnapshotID != nil && *v.SourceSnapshotID != "" {
+		spec["sourceSnapshotID"] = *v.SourceSnapshotID
+	}
+	// status is observed state, projected top-level (sibling of spec) so a
+	// re-apply -- which reads only spec -- ignores it. Emit it only when the
+	// VM has a reported phase, so a freshly-created VM with no status yet does
+	// not carry a noisy empty block.
+	var status *outVMStatus
+	if v.Status.Phase != "" {
+		status = &outVMStatus{
+			Phase:   v.Status.Phase,
+			Reason:  v.Status.Reason,
+			Message: v.Status.Message,
+		}
+	}
 	return encodeDoc(outDoc{
 		APIVersion: APIVersionV1,
 		Kind:       KindVM,
 		Metadata:   outMetadata{Name: v.Name},
 		Spec:       spec,
+		Status:     status,
 	})
 }

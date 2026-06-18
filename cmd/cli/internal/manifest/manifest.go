@@ -64,7 +64,13 @@ type StoragePoolSpec struct {
 // payload (maps to network_config); both are mutually exclusive with
 // CloudInitDisabled.
 type VMSpec struct {
-	ImageURL          string `yaml:"imageURL"`
+	ImageURL string `yaml:"imageURL"`
+	// SourceSnapshotID recreates the VM from a snapshot instead of an image
+	// (the snapshot-source create mode). Mutually exclusive with imageURL;
+	// when set, architecture / format / firmware come from the snapshot
+	// manifest. Surfaced so a snapshot-sourced VM's `get -o yaml` round-trips
+	// its origin instead of collapsing to an empty imageURL.
+	SourceSnapshotID  string `yaml:"sourceSnapshotID"`
 	ImageSHA256       string `yaml:"imageSHA256"`
 	Arch              string `yaml:"arch"`
 	Firmware          string `yaml:"firmware"`

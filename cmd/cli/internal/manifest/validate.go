@@ -109,10 +109,11 @@ func DecodeStoragePoolSpec(d Document) (StoragePoolSpec, error) {
 }
 
 var vmSpecKeys = map[string]bool{
-	"imageURL": true, "imageSHA256": true, "arch": true, "firmware": true,
-	"firmwareID": true, "format": true, "diskGiB": true, "vcpus": true,
-	"memoryMB": true, "pool": true, "network": true, "node": true,
-	"userData": true, "networkConfig": true, "cloudInitDisabled": true,
+	"imageURL": true, "sourceSnapshotID": true, "imageSHA256": true,
+	"arch": true, "firmware": true, "firmwareID": true, "format": true,
+	"diskGiB": true, "vcpus": true, "memoryMB": true, "pool": true,
+	"network": true, "node": true, "userData": true, "networkConfig": true,
+	"cloudInitDisabled": true,
 }
 
 // DecodeVMSpec decodes and validates a VM document's spec. imageURL and
