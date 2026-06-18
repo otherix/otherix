@@ -212,6 +212,15 @@ const (
 	errCodeVMDeleteFailed     = "vm_delete_failed"
 	errCodeVMImageUnavailable = "image_unavailable"
 	errCodeVMChecksumMismatch = "checksum_mismatch"
+	// errCodeVMBlobUnavailable is the recreate-from-snapshot failure envelope
+	// when no live peer reports holding a required snapshot blob in observed
+	// inventory. It is RETRYABLE (surfaced via failRun, not failTerminal):
+	// holder discovery reads observed node-blob inventory, which lags the
+	// snapshot by one heartbeat, so a recreate issued seconds after a snapshot
+	// can legitimately see no holder yet. The dispatcher requeues; a later
+	// attempt finds the holder once the producing node's inventory propagates.
+	// Only after the attempt budget is exhausted does this surface terminally.
+	errCodeVMBlobUnavailable = "blob_unavailable"
 )
 
 // Failure codes specific to the L2 async lifecycle surface. Pass-through agent

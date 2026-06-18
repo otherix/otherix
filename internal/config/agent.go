@@ -28,6 +28,7 @@ type AgentConfig struct {
 	ControlPlane ControlPlaneConfig `koanf:"control_plane"`
 	TLS          TLSConfig          `koanf:"tls"`
 	Migration    MigrationConfig    `koanf:"migration"`
+	Artifacts    ArtifactsConfig    `koanf:"artifacts"`
 	QEMU         QEMUConfig         `koanf:"qemu"`
 	WireGuard    WireGuardConfig    `koanf:"wireguard"`
 }
@@ -226,6 +227,11 @@ func defaultAgentConfig() AgentConfig {
 			PortRangeEnd:       49251,
 			ConvergenceTimeout: 10 * time.Minute,
 		},
+		Artifacts: ArtifactsConfig{
+			Root:           "/var/lib/otherix/artifacts",
+			PortRangeStart: 49252,
+			PortRangeEnd:   49351,
+		},
 		QEMU: QEMUConfig{
 			AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd",
 		},
@@ -248,5 +254,8 @@ func (c AgentConfig) Validate() error {
 	if c.ControlPlane.URL == "" {
 		return errors.New("control_plane.url is required")
 	}
-	return c.Migration.Validate()
+	if err := c.Migration.Validate(); err != nil {
+		return err
+	}
+	return c.Artifacts.Validate()
 }

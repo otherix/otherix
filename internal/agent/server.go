@@ -21,9 +21,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/console"
 	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/dnsproxy"
+	blobshandlers "github.com/otherix/otherix/internal/agent/handlers/blobs"
 	heartbeatHandlers "github.com/otherix/otherix/internal/agent/handlers/heartbeat"
 	storagepoolshandlers "github.com/otherix/otherix/internal/agent/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
@@ -119,45 +121,23 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("vm manager: %w", err)
 	}
 
-	// Pool reconciler. Consumes desired_pools from heartbeat responses
-	// and mutates manager's pool registry. Same instance plugs into the
-	// heartbeat sender as both ResponseHandler and PoolReporter.
-	poolReconciler, err := reconciler.NewPools(manager, log, 0)
+	// Slice-C1 blob transport (artifact store + serve/pull control handler). Runs
+	// the one-time relocation sweep and fails closed if the production artifact
+	// store is absent (artifacts.root is mandatory in production config).
+	artStore, blobsHandler, blobServeMgr, err := setupBlobTransport(cfg, manager, tlsCfg, log)
 	if err != nil {
-		return fmt.Errorf("pool reconciler: %w", err)
+		return fmt.Errorf("blob transport: %w", err)
 	}
 
-	// Network reconciler. Consumes declared_networks from heartbeat
-	// responses and materialises node-local bridges + NAT via the same
-	// fabric the VM manager uses. Plugs into the sender as both
-	// ResponseHandler and NetworkReporter.
-	netReconciler, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0)
+	// Per-resource reconcilers (pool / network / vm / wireguard). Each plugs
+	// into the heartbeat sender as both a ResponseHandler (consumes its
+	// declared_* slice) and a reporter (publishes observed state).
+	rec, err := buildReconcilers(cfg, manager, fabric, dhcpResponder, log)
 	if err != nil {
-		return fmt.Errorf("network reconciler: %w", err)
+		return err
 	}
-
-	// VM reconciler. Mirrors the pool reconciler shape - single
-	// ownership of observed VM state (heartbeat.VMReporter) and
-	// desired-vs-observed convergence (heartbeat.ResponseHandler).
-	vmReconciler, err := reconciler.NewVMs(manager, log, 0)
-	if err != nil {
-		return fmt.Errorf("vm reconciler: %w", err)
-	}
-
-	// WireGuard reconciler. The key is generated lazily on first serve and
-	// reused thereafter; its pubkey is reported up the heartbeat
-	// independent of whether otwg0 exists, so the CP can allocate the
-	// overlay address before the interface comes up. Plugs into the sender
-	// as both ResponseHandler (self_overlay_ip + declared peers) and
-	// WireGuardReporter.
-	wgKey, err := wgkey.LoadOrGenerateKey(cfg.WireGuard.PrivateKeyPath)
-	if err != nil {
-		return fmt.Errorf("wireguard key: %w", err)
-	}
-	wgReconciler, err := reconciler.NewWireGuard(fabric, wgKey, cfg.WireGuard, log, 0)
-	if err != nil {
-		return fmt.Errorf("wireguard reconciler: %w", err)
-	}
+	poolReconciler, netReconciler := rec.pools, rec.networks
+	vmReconciler, wgReconciler := rec.vms, rec.wireGuard
 
 	// Console token store - in-memory, lifecycle bound to the agent
 	// process; restart drops the tokens alongside the QEMU `-serial`
@@ -176,9 +156,9 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// then mounts a no-op nudger so the endpoint still answers 204 without a
 	// nil-pointer panic. startHeartbeat below launches the goroutine that
 	// drives this same Sender's loop.
-	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
+	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
 
-	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, nudgerFor(sender))
+	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, nudgerFor(sender), blobsHandler)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -229,11 +209,21 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	case err := <-errc:
 		stopHeartbeat()
 		drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
+		if cerr := blobServeMgr.Close(); cerr != nil {
+			log.Warn("blob serve manager close failed", "error", cerr.Error())
+		}
 		return err
 	}
 
 	stopHeartbeat()
 	drainReconcilers(dones, cfg.Server.ShutdownGrace, log)
+
+	// Tear down any in-flight peer blob serve listeners alongside the main
+	// server: each is a separate listener+goroutine not in the reconciler drain
+	// set, so without this they would be abandoned at shutdown. Best-effort.
+	if cerr := blobServeMgr.Close(); cerr != nil {
+		log.Warn("blob serve manager close failed", "error", cerr.Error())
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
@@ -241,6 +231,42 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// agentReconcilers bundles the four per-resource reconcilers the agent runs.
+type agentReconcilers struct {
+	pools     *reconciler.Pools
+	networks  *reconciler.Networks
+	vms       *reconciler.VMs
+	wireGuard *reconciler.WireGuard
+}
+
+// buildReconcilers constructs the per-resource reconcilers. Each consumes its
+// declared_* slice from heartbeat responses and publishes observed state back;
+// see the field comments on agentReconcilers. Any construction failure is
+// fatal - the agent cannot converge without its reconcilers.
+func buildReconcilers(cfg *config.AgentConfig, manager *vm.Manager, fabric netfabric.Fabric, dhcpResponder dhcp4.Responder, log *slog.Logger) (agentReconcilers, error) {
+	pools, err := reconciler.NewPools(manager, log, 0)
+	if err != nil {
+		return agentReconcilers{}, fmt.Errorf("pool reconciler: %w", err)
+	}
+	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0)
+	if err != nil {
+		return agentReconcilers{}, fmt.Errorf("network reconciler: %w", err)
+	}
+	vms, err := reconciler.NewVMs(manager, log, 0)
+	if err != nil {
+		return agentReconcilers{}, fmt.Errorf("vm reconciler: %w", err)
+	}
+	wgKey, err := wgkey.LoadOrGenerateKey(cfg.WireGuard.PrivateKeyPath)
+	if err != nil {
+		return agentReconcilers{}, fmt.Errorf("wireguard key: %w", err)
+	}
+	wireGuard, err := reconciler.NewWireGuard(fabric, wgKey, cfg.WireGuard, log, 0)
+	if err != nil {
+		return agentReconcilers{}, fmt.Errorf("wireguard reconciler: %w", err)
+	}
+	return agentReconcilers{pools: pools, networks: networks, vms: vms, wireGuard: wireGuard}, nil
 }
 
 // overlayService is the runtime contract shared by the DNS forwarder and the
@@ -430,7 +456,7 @@ func (a poolSnapshotAdapter) PoolSnapshots(pool string) ([]heartbeat.PoolSnapsho
 // console, etc.) from running. The returned Sender is the single live
 // instance — it backs both the heartbeat loop (startHeartbeat) and the
 // POST /v1/heartbeat/nudge handler (no second Sender is constructed).
-func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) *heartbeat.Sender {
+func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, artStore *artifactstore.Store, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) *heartbeat.Sender {
 	if nodeName == "" {
 		log.Warn("heartbeat disabled: node_name is empty (cert CN parse failed upstream)")
 		return nil
@@ -446,6 +472,7 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 		Pools:         poolRec,
 		PoolImages:    poolImageAdapter{ctx: ctx, manager: manager, log: log},
 		PoolSnapshots: poolSnapshotAdapter{ctx: ctx, manager: manager, log: log},
+		Blobs:         blobInventoryAdapter{store: artStore, log: log},
 		Networks:      netRec,
 		WireGuard:     wgRec,
 		Migration:     cfg.Migration,
@@ -528,7 +555,7 @@ func (noopNudger) Nudge() {}
 // goroutines inherit r.Context() and would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
 // below opts back in via a Group.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, heartbeatNudger heartbeatHandlers.Nudger) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -563,6 +590,10 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			r.Route("/vms", vmsHandler.Mount)
 			r.Route("/tasks", tasksHandler.Mount)
 			r.Route("/storage-pools", storagePoolsHandler.Mount)
+			// CP-driven blob pull control endpoints (slice C1). Same CP-only
+			// RequireCPIdentity group: only the CP calls serve / pull. The blob
+			// DATA path is the separate blobpeer listener (peer node certs).
+			r.Route("/blobs", blobsHandler.Mount)
 			r.Post("/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
 			// Node-level snapshot delete keyed on the immutable vm_id (NOT the live
 			// VM): the blob GC must outlive the source VM, so it is mounted here

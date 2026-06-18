@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -45,6 +46,21 @@ type WorkerStore interface {
 	ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams, imageSHA256 []byte) error
 	ProjectVMDeleteSuccess(ctx context.Context, vm store.VM, fin store.UpdateTaskFinalizedParams) error
 	ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error
+	// NodeBlobInventory returns the target node's OBSERVED artifact-store blob
+	// inventory (heartbeat-fed). The recreate-from-snapshot path reads it to
+	// decide which snapshot blobs the target already holds (skip the pull) vs
+	// must be pulled from a peer before materialize.
+	NodeBlobInventory(ctx context.Context, nodeID uuid.UUID) ([]store.NodeBlob, error)
+}
+
+// SnapshotBlobBroker is the CP-side pull-saga seam the recreate-from-snapshot
+// worker drives: it makes the blob identified by digest present on the target
+// node by pulling it from a live holder, blocking until the pull is terminal.
+// Production is *blobbroker.Broker; tests use a spy. A no-holder digest surfaces
+// as blobbroker.ErrBlobUnavailable, which the worker classifies RETRYABLE (the
+// holder inventory is observed state that lags the snapshot by one heartbeat).
+type SnapshotBlobBroker interface {
+	BrokerPull(ctx context.Context, digest string, node uuid.UUID) error
 }
 
 // defaultStaleGrace is the fallback heartbeat-staleness window used by the
@@ -59,7 +75,7 @@ const defaultStaleGrace = 5 * time.Minute
 // window past which an owning node is treated as terminally dead (the create
 // then fails fast and terminally rather than burning the retry budget); it
 // defaults to 5 minutes when <= 0.
-func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
+func CreateHandler(st WorkerStore, exec CreateExecutor, broker SnapshotBlobBroker, log *slog.Logger, staleGrace time.Duration) func(context.Context, []byte) error {
 	if staleGrace <= 0 {
 		staleGrace = defaultStaleGrace
 	}
@@ -68,11 +84,11 @@ func CreateHandler(st WorkerStore, exec CreateExecutor, log *slog.Logger, staleG
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unmarshal vm.create args: %v", err)
 		}
-		return runCreate(ctx, st, exec, log, args, staleGrace)
+		return runCreate(ctx, st, exec, broker, log, args, staleGrace)
 	}
 }
 
-func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
+func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, broker SnapshotBlobBroker, log *slog.Logger, args VMCreateArgs, staleGrace time.Duration) error {
 	taskID := args.TaskID
 	alreadyTerminal, err := st.UpdateTaskRunning(ctx, taskID)
 	if err != nil {
@@ -117,7 +133,7 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	// digests) so the agent can clone the disks from the pool's snapshots/ cache
 	// instead of downloading an image. This is the SEAM - the agent has no CP
 	// store access, so the worker MUST hand it the resolved digests.
-	sourceSnapshot, handled, snapErr := loadCreateSourceSnapshot(ctx, st, log, taskID, args.SourceSnapshotID, pool.Name)
+	sourceSnapshot, handled, snapErr := loadCreateSourceSnapshot(ctx, st, broker, log, taskID, args.SourceSnapshotID, args.NodeID, pool.Name)
 	if handled {
 		return snapErr
 	}
@@ -228,19 +244,69 @@ func resolveCreateNICs(ctx context.Context, st WorkerStore, vmID uuid.UUID) ([]a
 // returned so the dispatcher requeues). handled=true is the authoritative
 // stop-signal even when the propagated error is nil, so the create never
 // silently falls back to a sourceless (empty-image) dispatch.
-func loadCreateSourceSnapshot(ctx context.Context, st WorkerStore, log *slog.Logger, taskID uuid.UUID, snapshotID *uuid.UUID, poolName string) (src *agentclient.VMCreateSourceSnapshot, handled bool, runErr error) {
+func loadCreateSourceSnapshot(ctx context.Context, st WorkerStore, broker SnapshotBlobBroker, log *slog.Logger, taskID uuid.UUID, snapshotID *uuid.UUID, targetNodeID uuid.UUID, poolName string) (src *agentclient.VMCreateSourceSnapshot, handled bool, runErr error) {
 	if snapshotID == nil {
 		return nil, false, nil
 	}
 	src, err := resolveSourceSnapshot(ctx, st, *snapshotID, poolName)
-	if err == nil {
-		return src, false, nil
+	if err != nil {
+		cause := fmt.Errorf("resolve source snapshot: %v", err)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, true, failTerminal(ctx, st, log, "vms.create", taskID, "snapshot_not_found", cause)
+		}
+		return nil, true, failRun(ctx, st, log, "vms.create", taskID, "internal", cause)
 	}
-	cause := fmt.Errorf("resolve source snapshot: %v", err)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil, true, failTerminal(ctx, st, log, "vms.create", taskID, "snapshot_not_found", cause)
+	// Pull each snapshot blob the TARGET node does not already hold from a live
+	// peer BEFORE the agent materializes from it (the C1 cross-node seam). The
+	// broker call is awaited on the worker's own ctx (no short timeout wrapper -
+	// the await is already bounded by agent_client.timeout) so a full blob
+	// transfer completes.
+	if pullErr := ensureSnapshotBlobsLocal(ctx, st, broker, targetNodeID, src.Disks); pullErr != nil {
+		if errors.Is(pullErr, blobbroker.ErrBlobUnavailable) {
+			// No live holder yet. Holder discovery reads OBSERVED inventory, which
+			// lags the snapshot by one heartbeat, so this is transient and
+			// self-healing: classify RETRYABLE (failRun returns the cause so the
+			// dispatcher requeues) rather than terminal. A later attempt finds the
+			// holder once the producing node's inventory propagates.
+			return nil, true, failRun(ctx, st, log, "vms.create", taskID, errCodeVMBlobUnavailable,
+				fmt.Errorf("pull snapshot blobs to target: %w", pullErr))
+		}
+		// A real serve/pull transport failure (the broker already failed the
+		// saga). Retryable per the existing convention.
+		return nil, true, failRun(ctx, st, log, "vms.create", taskID, errCodeVMCreateFailed,
+			fmt.Errorf("pull snapshot blobs to target: %v", pullErr))
 	}
-	return nil, true, failRun(ctx, st, log, "vms.create", taskID, "internal", cause)
+	return src, false, nil
+}
+
+// ensureSnapshotBlobsLocal makes every snapshot disk blob present on the target
+// node before materialize. It reads the target's OBSERVED node-blob inventory,
+// builds a have-set, and for each disk digest NOT already held calls
+// broker.BrokerPull(ctx, digest, targetNodeID) and awaits it. A digest the
+// target already holds (the slice-A K=1 same-node case: the producing node IS
+// the target) is skipped, so no pull happens and current behavior is preserved
+// exactly. A no-holder digest surfaces as blobbroker.ErrBlobUnavailable, which
+// the caller classifies RETRYABLE.
+func ensureSnapshotBlobsLocal(ctx context.Context, st WorkerStore, broker SnapshotBlobBroker, targetNodeID uuid.UUID, disks []agentclient.VMCreateSourceSnapshotDisk) error {
+	inventory, err := st.NodeBlobInventory(ctx, targetNodeID)
+	if err != nil {
+		return fmt.Errorf("read target blob inventory: %v", err)
+	}
+	have := make(map[string]struct{}, len(inventory))
+	for _, b := range inventory {
+		have[b.Digest] = struct{}{}
+	}
+	for _, d := range disks {
+		if _, held := have[d.SHA256]; held {
+			continue
+		}
+		if err := broker.BrokerPull(ctx, d.SHA256, targetNodeID); err != nil {
+			return fmt.Errorf("pull blob %s: %w", d.SHA256, err)
+		}
+		// Mark held so a snapshot referencing the same blob twice pulls once.
+		have[d.SHA256] = struct{}{}
+	}
+	return nil
 }
 
 // resolveSourceSnapshot loads the snapshot and projects its manifest disks onto

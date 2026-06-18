@@ -18,6 +18,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api"
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
@@ -500,8 +501,13 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *config.APIConfig, log *slog.Logger) *worker.Dispatcher {
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 
+	// The snapshot-blob pull broker pulls a recreate's snapshot blobs from a live
+	// peer to the target node before the agent materializes from them (slice C1).
+	// It reuses the etcd store (holder discovery + saga) and the agentclient
+	// (serve/pull data path).
+	blobBroker := blobbroker.New(st, blobbroker.NewClientExecutor(agentClient), log)
 	d.Register("vm.create", workerMaxAttempts,
-		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), blobBroker, log, cfg.Workers.Heartbeat.GoneGrace))
 	d.Register("vm.delete", workerMaxAttempts,
 		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
 

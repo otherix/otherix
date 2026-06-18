@@ -4494,6 +4494,25 @@ components:
             observability. `reconciliation_status` /
             `reconciliation_error` surface the outcome of the WG
             reconciler's last pass.
+        blobs:
+          type: array
+          description: |
+            Agent-observed content-addressed blob inventory from the node's
+            dedicated artifact store (slice C1). Reported once per node, NOT per
+            pool. Full snapshot: the CP replaces the node_blobs observed
+            inventory with this list. The CP uses it as the holder-discovery
+            source for the cross-node pull saga. Absent or empty with
+            blobs_unavailable=false means the node holds no blobs.
+          items:
+            $ref: "#/components/schemas/HeartbeatBlob"
+        blobs_unavailable:
+          type: boolean
+          description: |
+            True when the agent could not enumerate its artifact store this tick
+            (a transient error). The CP then PRESERVES the previously-reported
+            node_blobs inventory instead of clearing it, so a transient producer
+            error does not wipe observed state. Absent or false means the blobs
+            array is authoritative (an empty array clears the inventory).
 
     HeartbeatWireGuardReport:
       type: object
@@ -4674,6 +4693,23 @@ components:
           type: integer
           format: int64
           description: On-disk size of the cached snapshot blob in bytes.
+
+    HeartbeatBlob:
+      type: object
+      description: |
+        One content-addressed blob the agent holds in its per-node artifact
+        store (slice C1). Carried in HeartbeatRequest.blobs; the CP stores it as
+        the observed node_blobs inventory (the holder-discovery source). The
+        on-node path is intentionally absent; identity is the digest.
+      required: [digest, size_bytes]
+      properties:
+        digest:
+          type: string
+          description: The blob's sha256 content address (64-char lowercase hex).
+        size_bytes:
+          type: integer
+          format: int64
+          description: The blob's byte size on disk.
 
     HeartbeatNetworkReport:
       type: object

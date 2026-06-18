@@ -122,6 +122,13 @@ tags:
       Heartbeat control endpoints. The CP fast-pushes a nudge after a
       migration cutover so this node re-pulls its declared state without
       waiting for the next heartbeat interval tick.
+  - name: blobs
+    description: |
+      CP-driven control endpoints for the cross-node blob pull saga
+      (slice C1). The CP calls `serve` on a holder to open a peer-facing
+      blob listener and `pull` on a consumer to fetch a blob from that
+      holder. The blob bytes flow consumer<-holder over a separate
+      peer-to-peer mutual-TLS listener and are not described by REST.
 
 paths:
   /v1/health:
@@ -1226,6 +1233,73 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/blobs/serve:
+    post:
+      operationId: blobs.serve
+      tags: [blobs]
+      summary: Open a peer-facing blob serve listener (synchronous).
+      description: |
+        Called by the Control Plane on the **holder** node - an agent
+        observed to already hold the blob in its artifact store. The
+        agent reserves a port from its artifacts range, starts a
+        peer-facing mutual-TLS listener that streams the blob by digest,
+        and returns the reachable `serve_endpoint` plus an `expires_at`.
+        The listener is torn down when the token TTL elapses.
+
+        The endpoint is synchronous: opening the listener is bounded and
+        quick. The transfer itself is peer-to-peer between the consumer
+        and this holder and is not described by REST. The `token` is a
+        CP-minted single-use per-op bearer the consumer must present.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobServeRequest"
+      responses:
+        "200":
+          description: Serve listener opened.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobServeResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/blobs/pull:
+    post:
+      operationId: blobs.pull
+      tags: [blobs]
+      summary: Pull a blob from a holder peer (asynchronous).
+      description: |
+        Called by the Control Plane on the **consumer** node - an agent
+        that needs a blob it does not yet hold. The agent opens a
+        mutual-TLS client to the holder's `holder_endpoint`, streams the
+        blob by digest presenting the CP-minted `token`, and lands it in
+        its local artifact store (digest-verified on the way). The work
+        runs as a local agent task; the CP polls `/v1/tasks/{task_id}`
+        for terminal status.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobPullRequest"
+      responses:
+        "202":
+          description: Pull accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/networks:
     get:
       operationId: networks.list
@@ -2313,6 +2387,78 @@ components:
           description: |
             RAM capture is unsupported in slice A; only `false` is
             honored. The field is retained for forward compatibility.
+
+    BlobServeRequest:
+      type: object
+      description: |
+        Sent by the CP to a **holder** agent to open a peer-facing blob
+        serve listener. `digest` is the content address to serve;
+        `token` is the CP-minted single-use per-op bearer the consumer
+        must present; `consumer_node_id` scopes the serve to the
+        intended consumer.
+      required: [digest, token, consumer_node_id]
+      properties:
+        digest:
+          type: string
+          description: Lowercase hex sha256 content address of the blob to serve.
+        token:
+          type: string
+          description: CP-minted single-use per-op bearer the consumer presents.
+        consumer_node_id:
+          type: string
+          format: uuid
+          description: Node id of the intended consumer (serve scoping).
+
+    BlobServeResponse:
+      type: object
+      description: |
+        Returned by a holder agent after it opens the peer-facing blob
+        serve listener.
+      required: [serve_endpoint, expires_at]
+      properties:
+        serve_endpoint:
+          type: string
+          description: |
+            `https://host:port` base URL the consumer connects to. The
+            host is the holder's reachable migration/advertised address;
+            the port was reserved from the artifacts range.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            RFC 3339 instant at which the serve listener is torn down
+            (the per-op token TTL).
+
+    BlobPullRequest:
+      type: object
+      description: |
+        Sent by the CP to a **consumer** agent to pull a blob from a
+        holder peer. `digest` is the content address to fetch; `token`
+        is the CP-minted single-use per-op bearer presented to the
+        holder; `holder_endpoint` is the holder's serve base URL.
+      required: [digest, token, holder_endpoint]
+      properties:
+        digest:
+          type: string
+          description: Lowercase hex sha256 content address of the blob to pull.
+        token:
+          type: string
+          description: CP-minted single-use per-op bearer presented to the holder.
+        holder_endpoint:
+          type: string
+          description: |
+            `https://host:port` base URL of the holder's serve listener
+            (the `serve_endpoint` the holder returned from `blobs.serve`).
+        holder_identity:
+          type: string
+          description: |
+            The holder's node identity SAN
+            ("node-<name>.agents.otherix.local") the consumer pins TLS
+            verification against. The consumer dials the holder by its
+            inter-node IP, but the holder's node leaf cert carries this
+            identity SAN, not the dialed IP - mirrors the migration
+            target_node_identity pin. Absent: no pinning, the consumer
+            verifies the holder cert against the dialed host.
 
     MigrationIncomingRequest:
       type: object

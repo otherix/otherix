@@ -66,6 +66,17 @@ type PoolSnapshotLister interface {
 	PoolSnapshots(pool string) ([]PoolSnapshotReport, bool)
 }
 
+// BlobLister is the node-level seam the collector uses to enumerate the
+// artifact store's blob inventory. Mirrors the pool snapshot lister but is NOT
+// pool-scoped. NodeBlobs returns the inventory and true on success (including a
+// genuinely empty store), or nil and false when the store could not be
+// enumerated this tick (the CP then preserves the prior inventory, fail-closed).
+// Implemented by an adapter over the artifact store in the agent serve assembly;
+// nil is allowed (yields no blob inventory) for test paths and the legacy wiring.
+type BlobLister interface {
+	NodeBlobs() ([]BlobReport, bool)
+}
+
 // VMReporter returns the per-VM observed-state slice the collector
 // folds into HeartbeatRequest.vms. Implemented by the VM reconciler
 // per L3 D3 — single ownership of observed VM state mirrors the
@@ -101,6 +112,7 @@ type LinuxCollector struct {
 	pools         PoolReporter
 	poolImages    PoolImageLister
 	poolSnapshots PoolSnapshotLister
+	blobs         BlobLister
 	networks      NetworkReporter
 	wireguard     WireGuardReporter
 	migration     config.MigrationConfig
@@ -124,6 +136,7 @@ type CollectorDeps struct {
 	Pools         PoolReporter
 	PoolImages    PoolImageLister
 	PoolSnapshots PoolSnapshotLister
+	Blobs         BlobLister
 	Networks      NetworkReporter
 	WireGuard     WireGuardReporter
 	Migration     config.MigrationConfig
@@ -152,6 +165,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		pools:         deps.Pools,
 		poolImages:    deps.PoolImages,
 		poolSnapshots: deps.PoolSnapshots,
+		blobs:         deps.Blobs,
 		networks:      deps.Networks,
 		wireguard:     deps.WireGuard,
 		migration:     deps.Migration,
@@ -234,6 +248,16 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 		Resources:    resources,
 		VMs:          c.buildVMReports(),
 	}
+	c.foldObservedInventory(&report)
+	return report, nil
+}
+
+// foldObservedInventory merges the optional reconciler-owned observation
+// seams (pools + their per-pool image/snapshot inventories, the node-level
+// artifact-store blobs, networks, WireGuard) into the report. Each seam is
+// nil-tolerant for test / legacy paths. Split out of Collect to keep that
+// method's cyclomatic complexity in check.
+func (c *LinuxCollector) foldObservedInventory(report *Report) {
 	if c.pools != nil {
 		report.Pools = c.pools.PoolReports()
 		if c.poolImages != nil {
@@ -255,13 +279,22 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 			}
 		}
 	}
+	if c.blobs != nil {
+		// The artifact store is node-level, so blobs are reported once per node
+		// (not folded into per-pool reports). known=false marks the store
+		// unenumerable this tick so the CP preserves the prior inventory.
+		if blobs, known := c.blobs.NodeBlobs(); known {
+			report.Blobs = blobs
+		} else {
+			report.BlobsUnavailable = true
+		}
+	}
 	if c.networks != nil {
 		report.Networks = c.networks.NetworkReports()
 	}
 	if c.wireguard != nil {
 		report.WireGuard = c.wireguard.WireGuardReport()
 	}
-	return report, nil
 }
 
 // buildVMReports prefers the reconciler-owned cache when supplied and

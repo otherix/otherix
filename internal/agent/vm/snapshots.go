@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agentapi"
 )
@@ -297,6 +298,54 @@ func produceBlob(ctx context.Context, srcDisk, snapshotsDir string, convert conv
 	return BlobResult{SHA256: sha, Path: blobPath, SizeBytes: size}, nil
 }
 
+// produceBlobToStore materializes srcDisk (a backup-target qcow2) into the
+// dedicated content-addressed artifact store (slice C1), mirroring produceBlob's
+// convert + validate + hash tail but landing the blob in the per-node store
+// instead of the disk pool's snapshots/ dir:
+//
+//  1. convert srcDisk into a fresh standalone qcow2 in a private temp dir;
+//  2. validate its qcow2 magic and hash it;
+//  3. hand the staged file to store.Put, which re-hashes the stream, rejects a
+//     digest mismatch, and atomically renames it into blobs/{sha} (idempotent: an
+//     identical blob already present is a no-op).
+//
+// The blob is never visible under blobs/{sha} until it validates (store.Put's
+// contract), and the temp dir is removed on the way out, so a crash leaves no
+// partial blob. This is the additive C1 transport copy; the disk-pool produceBlob
+// copy stays authoritative for slice-A idempotency/list/delete.
+func produceBlobToStore(ctx context.Context, srcDisk string, store *artifactstore.Store, convert convertFunc) (BlobResult, error) {
+	tmpDir, err := os.MkdirTemp("", "otherix-blob-")
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("create blob temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	staged := filepath.Join(tmpDir, uuid.NewString()+".qcow2")
+
+	if err := convert(ctx, srcDisk, staged); err != nil {
+		return BlobResult{}, fmt.Errorf("convert %s into staging blob: %v", srcDisk, err)
+	}
+	if err := validateQcow2Magic(staged); err != nil {
+		return BlobResult{}, fmt.Errorf("qcow2_header_invalid: %v", err)
+	}
+	sha, err := hashFile(staged)
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("hash staging blob: %v", err)
+	}
+	info, err := os.Stat(staged)
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("stat staging blob: %v", err)
+	}
+	f, err := os.Open(staged) //nolint:gosec // staged is a fresh temp file produced above
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("open staging blob: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := store.Put(sha, f); err != nil {
+		return BlobResult{}, fmt.Errorf("put blob into artifact store: %v", err)
+	}
+	return BlobResult{SHA256: sha, Path: store.Root(), SizeBytes: info.Size()}, nil
+}
+
 // ListSnapshots walks snapshotsDir and returns the inventory of content-
 // addressed snapshot blobs: every {sha}.qcow2 file paired with the digest
 // read from its sidecar. Mirrors ListImages: files lacking a well-formed
@@ -540,12 +589,26 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 			return
 		}
 		blob, err := produceBlob(ctx, backup, snapshotsDir, m.snapshotConvert)
-		_ = os.Remove(backup)
 		if err != nil {
+			_ = os.Remove(backup)
 			log.Error("produce blob", "device", dev.device, "err", err)
 			m.failSnapshotTask(taskID, "snapshot_blob_failed", err.Error())
 			return
 		}
+		// Additive C1 dual-write: ALSO land the blob in the dedicated per-node
+		// artifact store. The disk-pool produceBlob copy above stays AUTHORITATIVE
+		// for slice-A idempotency/list/delete; this store copy is the additive C1
+		// transport copy. Nil-guarded so a half-wired test path cannot panic;
+		// production always has the store set (New fails closed otherwise).
+		if m.artifactStore != nil {
+			if _, err := produceBlobToStore(ctx, backup, m.artifactStore, m.snapshotConvert); err != nil {
+				_ = os.Remove(backup)
+				log.Error("produce blob into artifact store", "device", dev.device, "err", err)
+				m.failSnapshotTask(taskID, "snapshot_blob_failed", err.Error())
+				return
+			}
+		}
+		_ = os.Remove(backup)
 		disks = append(disks, snapshotManifestDisk{
 			Index:     dev.index,
 			Device:    dev.device,
@@ -570,6 +633,27 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 		log.Error("write manifest", "err", err)
 		m.failSnapshotTask(taskID, "internal", err.Error())
 		return
+	}
+
+	// Additive C1 manifest dual-write: ALSO write the snapshot manifest into the
+	// artifact store, keyed by EACH disk's blob digest, so a peer that pulls any
+	// one blob can recover the snapshot's disk set without the disk-pool copy. The
+	// disk-pool writeSnapshotManifest above stays AUTHORITATIVE for slice-A
+	// list/idempotency/delete; this is the additive C1 transport copy. Same manifest
+	// JSON the disk-pool copy carries (json.MarshalIndent of snapshotManifest).
+	// Nil-guarded; fail-open per disk - a store-side manifest write failure must not
+	// fail an already-durable slice-A capture (the disk-pool copy is the source of
+	// truth), so it logs and continues.
+	if m.artifactStore != nil {
+		if manJSON, err := json.MarshalIndent(man, "", "  "); err != nil {
+			log.Warn("encode artifact-store manifest", "err", err)
+		} else {
+			for _, d := range disks {
+				if err := m.artifactStore.WriteManifest(d.SHA256, manJSON); err != nil {
+					log.Warn("write artifact-store manifest", "digest", d.SHA256, "err", err)
+				}
+			}
+		}
 	}
 
 	result, err := json.Marshal(man.toAPI())
@@ -735,6 +819,137 @@ func removeBlobIfPresent(log *slog.Logger, snapshotsDir, digest string) {
 	}
 	if err := os.Remove(blobPath + ".sha256"); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Warn("remove orphan blob sidecar", "sha256", digest, "err", err)
+	}
+}
+
+// relocateSnapshotsToStore is a one-time, best-effort, fail-open sweep that moves
+// existing disk-pool-resident snapshot blobs (and manifests) into the dedicated
+// artifact store (slice C1 section 7). For each {poolRoot}/snapshots/{sha}.qcow2
+// it streams the blob into store.Put (which re-verifies the digest from the
+// FILENAME and atomically lands it); the old copy is removed ONLY after the blob
+// is confirmed present (Has) in the store. Any error leaks the old copy (left
+// readable for the dual-read transition) rather than deleting it - blobs are
+// immutable and content-addressed, so a failed move costs a redundant copy or a
+// re-pull, never data loss. Manifests are copied likewise (fail-open); the
+// disk-pool copies stay for slice-A idempotency/list/delete (their removal is C3).
+//
+// The digest handed to store.Put is taken from the blob FILENAME, NOT the
+// sidecar, so store.Put's re-hash is the verification gate: a corrupt blob whose
+// content does not hash to its filename digest is rejected and its old copy is
+// left intact (fail-open). The old blob+sidecar are removed only after store.Has
+// confirms the blob is durably present in the store.
+func relocateSnapshotsToStore(log *slog.Logger, poolRoots []string, store *artifactstore.Store) {
+	if store == nil {
+		return
+	}
+	for _, root := range poolRoots {
+		snapshotsDir := filepath.Join(root, snapshotsSubdir)
+		relocateSnapshotsInPool(log, snapshotsDir, root, store)
+	}
+}
+
+// relocateSnapshotsInPool relocates every content-addressed blob (and the
+// snapshot manifests) under one pool's snapshots dir into the store, fail-open.
+func relocateSnapshotsInPool(log *slog.Logger, snapshotsDir, poolRoot string, store *artifactstore.Store) {
+	entries, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Warn("relocate: read snapshots dir; skipping pool (fail-open)", "snapshots_dir", snapshotsDir, "err", err)
+		}
+		return // absent snapshots dir is the common case (no snapshots in this pool)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".qcow2") {
+			continue // sidecars and other files
+		}
+		// The digest is the FILENAME (minus .qcow2); store.Put re-hashes the
+		// content and rejects a mismatch, so a corrupt blob never lands and its
+		// old copy is left intact. A non-hex filename is skipped (scratch/garbage).
+		digest := strings.TrimSuffix(name, ".qcow2")
+		if !isHexSHA256Lower(digest) {
+			continue
+		}
+		relocateBlob(log, snapshotsDir, digest, store)
+	}
+	relocateManifestsToStore(log, poolRoot, store)
+}
+
+// relocateBlob moves one content-addressed blob into the store, fail-open. The
+// old blob+sidecar are removed ONLY after store.Has confirms the store copy is
+// durably present (digest-verified by store.Put). On ANY error the old copy is
+// left readable (leak over delete-before-verify).
+func relocateBlob(log *slog.Logger, snapshotsDir, digest string, store *artifactstore.Store) {
+	blobPath := filepath.Join(snapshotsDir, digest+".qcow2")
+
+	// Already present (verified by a prior sweep or a dual-write capture): the
+	// store copy is digest-confirmed, so drop the old copy.
+	if store.Has(digest) {
+		removeRelocatedBlob(log, snapshotsDir, digest)
+		return
+	}
+
+	f, err := os.Open(blobPath) //nolint:gosec // agent-owned pool path; digest is validated hex
+	if err != nil {
+		log.Warn("relocate: open blob; leaking (fail-open)", "sha256", digest, "err", err)
+		return
+	}
+	putErr := store.Put(digest, f)
+	_ = f.Close()
+	if putErr != nil {
+		// Digest mismatch (corrupt blob) or any I/O error: never remove the old
+		// copy. store.Put discards the staging file on mismatch, so nothing
+		// partial is left in the store.
+		log.Warn("relocate: put blob; leaking (fail-open)", "sha256", digest, "err", putErr)
+		return
+	}
+	if !store.Has(digest) {
+		// Put reported success but the blob is not visible: do not trust it,
+		// leak the old copy.
+		log.Warn("relocate: blob absent after put; leaking (fail-open)", "sha256", digest)
+		return
+	}
+	removeRelocatedBlob(log, snapshotsDir, digest)
+}
+
+// removeRelocatedBlob deletes the old disk-pool blob + sidecar for digest. Called
+// ONLY after store.Has(digest) confirms the store copy is durably present. A
+// removal error logs and leaves the file (a harmless leak, reclaimed by C3).
+func removeRelocatedBlob(log *slog.Logger, snapshotsDir, digest string) {
+	blobPath := filepath.Join(snapshotsDir, digest+".qcow2")
+	if err := os.Remove(blobPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("relocate: remove old blob", "sha256", digest, "err", err)
+	}
+	if err := os.Remove(blobPath + ".sha256"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("relocate: remove old blob sidecar", "sha256", digest, "err", err)
+	}
+}
+
+// relocateManifestsToStore copies each disk-pool snapshot manifest into the
+// store, keyed by EACH referenced disk digest (mirroring the C1 capture-time
+// dual-write), so a peer pulling any one blob can recover the snapshot's disk
+// set. Fail-open: a manifest that cannot be read/encoded/written is skipped; the
+// disk-pool copy stays authoritative and is left intact (manifest removal is C3).
+func relocateManifestsToStore(log *slog.Logger, poolRoot string, store *artifactstore.Store) {
+	mans, err := listManifests(poolRoot)
+	if err != nil {
+		log.Warn("relocate: list manifests; skipping (fail-open)", "pool_root", poolRoot, "err", err)
+		return
+	}
+	for _, man := range mans {
+		body, err := json.MarshalIndent(man, "", "  ")
+		if err != nil {
+			log.Warn("relocate: encode manifest; skipping (fail-open)", "snapshot", man.Name, "err", err)
+			continue
+		}
+		for _, d := range man.Disks {
+			if err := store.WriteManifest(d.SHA256, body); err != nil {
+				log.Warn("relocate: write manifest; leaking (fail-open)", "digest", d.SHA256, "err", err)
+			}
+		}
 	}
 }
 

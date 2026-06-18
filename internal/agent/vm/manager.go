@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/cloudinit"
 	"github.com/otherix/otherix/internal/agent/migration"
 	"github.com/otherix/otherix/internal/agent/netfabric"
@@ -34,6 +35,11 @@ var (
 	ErrNotFound    = errors.New("vm not found")
 	ErrPoolUnknown = errors.New("pool name does not match a configured pool")
 	ErrInvalidSpec = errors.New("invalid create spec")
+
+	// ErrNoArtifactStore is returned by PullBlob when the node has no artifact
+	// store configured (an empty cfg.Artifacts.Root): a pulled blob has nowhere
+	// to land. Production always configures the store; this guards the test path.
+	ErrNoArtifactStore = errors.New("node has no artifact store configured")
 
 	// ErrInvalidState is returned by sync lifecycle ops (Pause /
 	// Resume / Reset) when the VM is not in a phase that accepts
@@ -236,6 +242,15 @@ type Manager struct {
 	// verbatim copy so the capture path runs on darwin without qemu-img.
 	snapshotConvert convertFunc
 
+	// artifactStore is the dedicated per-node content-addressed artifact store
+	// (slice C1). Snapshot capture dual-writes the blob + manifest here ADDITIVELY
+	// alongside the disk-pool copy: the disk-pool copy stays AUTHORITATIVE for
+	// slice-A idempotency/list/delete; this store copy is the additive C1 transport
+	// copy that later C1 tasks (heartbeat inventory, peer pull, recreate) consume.
+	// Removing the disk-pool copy is C3, not C1. Set from cfg.Artifacts.Root in New;
+	// nil-guarded at the capture site so a half-wired test path cannot panic.
+	artifactStore *artifactstore.Store
+
 	// snapshotDiskDevices enumerates a VM's disks in virtio-index order for
 	// the snapshot capture loop. Production is the package snapshotDiskDevices
 	// (slice A: a single boot disk at index 0); the test injects a multi-disk
@@ -388,6 +403,19 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.diskCapturer = qmpDiskCapturer{}
 	m.snapshotConvert = qemu.ConvertTo
 	m.snapshotDiskDevices = snapshotDiskDevices
+	// Dedicated per-node artifact store (slice C1). Snapshot capture dual-writes
+	// blob + manifest here additively (the disk-pool copy stays authoritative for
+	// slice-A). Built from cfg.Artifacts.Root, which production config always
+	// defaults to a valid /var/lib/otherix/ path (config Validate rejects empty).
+	// An empty root means an unconfigured/test path: leave the store nil and let
+	// the capture site skip the additive write rather than failing construction.
+	if cfg.Artifacts.Root != "" {
+		artifactStore, err := artifactstore.New(cfg.Artifacts.Root)
+		if err != nil {
+			return nil, fmt.Errorf("init artifact store: %w", err)
+		}
+		m.artifactStore = artifactStore
+	}
 	m.migrations = migration.NewStore()
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
@@ -963,14 +991,21 @@ func (m *Manager) materialiseCreateDisk(ctx context.Context, v *VM, spec CreateS
 	}
 }
 
-// materialiseFromSnapshot clones every disk in ref from the pool's snapshots/
-// subdir into the per-VM disk path, in virtio-index order. Each blob must exist
-// (the CP resolved these digests from the snapshot manifest; a missing blob is a
-// placement/replication gap surfaced as snapshot_blob_missing). Slice A VMs
+// materialiseFromSnapshot clones every disk in ref into the per-VM disk path, in
+// virtio-index order, dual-reading the content-addressed blob from BOTH possible
+// locations: the dedicated per-node artifact store (where a slice-C1 cross-node
+// pull lands the blob) is preferred, falling back to the disk-pool snapshots/
+// subdir ({poolRoot}/snapshots/{sha}.qcow2 - the slice-A / pre-relocation path).
+// Each blob must exist in at least one (the CP resolved these digests from the
+// snapshot manifest AND pulled any not already local; a blob missing from both
+// is a placement/replication gap surfaced as snapshot_blob_missing). Slice A VMs
 // carry a single boot disk: index 0 clones into v.DiskPath (the boot disk the
 // qemu command line attaches); any higher-index disk clones alongside it as
 // disk{i}.qcow2 to preserve content even though the slice-A guest attaches only
 // the boot disk. Returns a (failCode, failMsg) pair - failCode is "" on success.
+//
+// GOOS=linux: this runs only on the agent (the agent is Linux-only); the store
+// and disk-pool blobs are agent-local files.
 func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, failMsg string) {
 	poolRoot, err := m.poolRoot(v.PoolName)
 	if err != nil {
@@ -986,16 +1021,16 @@ func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, fa
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
 
 	for n, d := range ordered {
-		blobPath := filepath.Join(snapshotsDir, d.SHA256+".qcow2")
-		if _, err := os.Stat(blobPath); err != nil {
+		blobPath, ok := m.resolveSnapshotBlobPath(snapshotsDir, d.SHA256)
+		if !ok {
 			return "snapshot_blob_missing",
-				fmt.Sprintf("snapshot blob %s (disk %d) not present on pool %q: %v", d.SHA256, d.Index, v.PoolName, err)
+				fmt.Sprintf("snapshot blob %s (disk %d) not present in the artifact store or on pool %q", d.SHA256, d.Index, v.PoolName)
 		}
 		// Verify the blob's content against its content-address before booting it as a
 		// guest disk. The filename IS the claimed digest, but on-disk corruption (or a
 		// blob not written by produceBlob) could leave the bytes not matching the name;
 		// cloning that into a fresh VM's boot disk would boot unverified content.
-		// Re-hash and fail closed on mismatch.
+		// Re-hash and fail closed on mismatch - on whichever source was resolved.
 		actual, err := hashFile(blobPath)
 		if err != nil {
 			return "clone_failed", fmt.Sprintf("hash snapshot blob %s (disk %d): %v", d.SHA256, d.Index, err)
@@ -1013,6 +1048,25 @@ func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, fa
 		}
 	}
 	return "", ""
+}
+
+// resolveSnapshotBlobPath returns the on-disk path of the content-addressed blob
+// for sha, preferring the dedicated artifact store (where a C1 cross-node pull
+// lands it) and falling back to the disk-pool snapshots dir (the slice-A /
+// pre-relocation copy). Returns ok=false when the blob is in neither. The caller
+// re-hashes the returned path before cloning, so the source is always verified
+// regardless of which location supplied it.
+func (m *Manager) resolveSnapshotBlobPath(snapshotsDir, sha string) (string, bool) {
+	if m.artifactStore != nil && m.artifactStore.Has(sha) {
+		if p, err := m.artifactStore.BlobPath(sha); err == nil {
+			return p, true
+		}
+	}
+	poolBlob := filepath.Join(snapshotsDir, sha+".qcow2")
+	if _, err := os.Stat(poolBlob); err == nil {
+		return poolBlob, true
+	}
+	return "", false
 }
 
 func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {

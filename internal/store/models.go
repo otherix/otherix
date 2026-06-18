@@ -851,3 +851,47 @@ type PoolImage struct {
 	Format           string
 	ImportedAt       time.Time
 }
+
+// NodeBlob is one content-addressed blob a node holds in its artifact store
+// (slice C1 observed state). The heartbeat path writes the per-node list; the
+// pull-saga holder discovery reads it. Identity is the digest; SizeBytes is
+// observability.
+type NodeBlob struct {
+	Digest    string `json:"digest"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// ArtifactPullSaga is the CP-owned record of one cross-node blob pull (slice
+// C1): the digest, the consumer node that needs it, the chosen holder node, the
+// holder's serve endpoint (filled once the holder opens its listener), and the
+// phase. Mirrors the live-migration saga reversed (the consumer pulls).
+type ArtifactPullSaga struct {
+	ID            uuid.UUID     `json:"id"`
+	Digest        string        `json:"digest"`
+	ConsumerNode  uuid.UUID     `json:"consumer_node"`
+	HolderNode    uuid.UUID     `json:"holder_node"`
+	ServeEndpoint string        `json:"serve_endpoint"`
+	Phase         PullSagaPhase `json:"phase"`
+	CreatedAt     time.Time     `json:"created_at"`
+}
+
+// CreatePullSagaParams is the input to Store.CreatePullSaga.
+type CreatePullSagaParams struct {
+	ID           uuid.UUID
+	Digest       string
+	ConsumerNode uuid.UUID
+	HolderNode   uuid.UUID
+	TokenTTL     time.Duration
+}
+
+// PullSagaPhase is the lifecycle phase of a cross-node blob pull saga (slice C1).
+type PullSagaPhase string
+
+// Pull-saga phases.
+const (
+	PullSagaPhasePending  PullSagaPhase = "pending"
+	PullSagaPhaseServing  PullSagaPhase = "serving"
+	PullSagaPhasePulling  PullSagaPhase = "pulling"
+	PullSagaPhaseComplete PullSagaPhase = "complete"
+	PullSagaPhaseFailed   PullSagaPhase = "failed"
+)

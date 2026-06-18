@@ -20,6 +20,21 @@ type requestBody struct {
 	Pools        []poolReport           `json:"pools,omitempty"`
 	Networks     []networkReport        `json:"networks"`
 	WireGuard    *wireGuardReport       `json:"wireguard,omitempty"`
+	Blobs        []blobReport           `json:"blobs,omitempty"`
+	// BlobsUnavailable is true when the agent could not enumerate its artifact
+	// store this tick (a transient List error). The CP then preserves the prior
+	// node_blobs inventory rather than clearing it (fail-closed, mirrors
+	// ImagesUnavailable).
+	BlobsUnavailable bool `json:"blobs_unavailable,omitempty"`
+}
+
+// blobReport mirrors HeartbeatBlob (the agent up-channel node-level blob entry).
+// The CP persists the per-node list as the observed node_blobs inventory, the
+// holder-discovery source for the cross-node pull saga (slice C1). Identity is
+// the digest; SizeBytes is observability.
+type blobReport struct {
+	Digest    string `json:"digest"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 // wireGuardReport mirrors the agent's observed WG state. public_key + endpoint

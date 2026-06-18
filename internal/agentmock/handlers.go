@@ -442,6 +442,67 @@ func (m *Mock) StoragePoolsScan(w http.ResponseWriter, r *http.Request, poolName
 	m.respondJSON(w, r, opID, http.StatusAccepted, body)
 }
 
+// BlobsServe implements POST /v1/blobs/serve (slice C1). The mock holder opens
+// no real listener; it echoes back a synthetic serve_endpoint + expiry so a
+// CP-side test can drive the serve->pull control flow against the OpenAPI
+// contract. Decodes the request for body-shape validation only.
+func (m *Mock) BlobsServe(w http.ResponseWriter, r *http.Request) {
+	const opID = "blobs.serve"
+	if m.preDispatch(w, r, opID) {
+		return
+	}
+	var body agentapi.BlobServeRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "invalid JSON")
+		return
+	}
+	if body.Digest == "" || body.Token == "" {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "digest and token are required")
+		return
+	}
+	m.respondJSON(w, r, opID, http.StatusOK, agentapi.BlobServeResponse{
+		ServeEndpoint: "https://127.0.0.1:49252",
+		ExpiresAt:     time.Now().Add(10 * time.Minute).UTC(),
+	})
+}
+
+// BlobsPull implements POST /v1/blobs/pull (slice C1). The mock consumer records
+// an agent task and returns 202; no real transfer runs. Decodes the request for
+// body-shape validation only.
+func (m *Mock) BlobsPull(w http.ResponseWriter, r *http.Request, _ agentapi.BlobsPullParams) {
+	const opID = "blobs.pull"
+	if m.preDispatch(w, r, opID) {
+		return
+	}
+	var body agentapi.BlobPullRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "invalid JSON")
+		return
+	}
+	if body.Digest == "" || body.Token == "" || body.HolderEndpoint == "" {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed",
+			"digest, token and holder_endpoint are required")
+		return
+	}
+
+	agentTaskID := uuid.New()
+	m.state.mu.Lock()
+	m.state.tasks[agentTaskID] = &agentTask{
+		id:        agentTaskID,
+		taskType:  "blob.pull",
+		createdAt: time.Now().UTC(),
+	}
+	m.state.mu.Unlock()
+
+	m.respondJSON(w, r, opID, http.StatusAccepted, agentapi.AsyncTaskAccepted{
+		TaskID: agentTaskID,
+		Status: agentapi.AsyncTaskAcceptedStatus("pending"),
+		Links: struct {
+			Self string `json:"self"`
+		}{Self: "/v1/tasks/" + agentTaskID.String()},
+	})
+}
+
 // VmsList implements GET /v1/vms — Phase A vertical slice. Delegates
 // to vmList for the inventory snapshot.
 func (m *Mock) VmsList(w http.ResponseWriter, r *http.Request, _ agentapi.VmsListParams) {

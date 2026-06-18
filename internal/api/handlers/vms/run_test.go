@@ -122,6 +122,10 @@ func (s *deleteWorkerStoreStub) ProjectVMLifecycleSuccess(context.Context, uuid.
 	panic("unexpected ProjectVMLifecycleSuccess")
 }
 
+func (s *deleteWorkerStoreStub) NodeBlobInventory(context.Context, uuid.UUID) ([]store.NodeBlob, error) {
+	panic("unexpected NodeBlobInventory")
+}
+
 // spyDeleteExecutor records whether the agent teardown was attempted and
 // returns a canned outcome.
 type spyDeleteExecutor struct {
@@ -313,6 +317,17 @@ func (s *createLifecycleWorkerStoreStub) ProjectVMLifecycleSuccess(context.Conte
 	return nil
 }
 
+func (s *createLifecycleWorkerStoreStub) NodeBlobInventory(context.Context, uuid.UUID) ([]store.NodeBlob, error) {
+	return nil, nil
+}
+
+// noopBroker is the SnapshotBlobBroker double for the create/lifecycle tests
+// whose VMs are image-sourced (the broker is never reached) or whose snapshot
+// blobs need no real pull. BrokerPull always succeeds.
+type noopBroker struct{}
+
+func (noopBroker) BrokerPull(context.Context, string, uuid.UUID) error { return nil }
+
 // spyCreateExecutor records whether the agent create was attempted, the image
 // source the worker handed it, and a canned result/error to surface back.
 type spyCreateExecutor struct {
@@ -399,7 +414,7 @@ func TestRunCreateTerminallyDeadNode(t *testing.T) {
 			st := &createLifecycleWorkerStoreStub{vm: baseVM, node: node, disk: disk, nodeErr: tc.nodeErr}
 			exec := &spyCreateExecutor{}
 
-			err := runCreate(context.Background(), st, exec, discardLog(),
+			err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 				VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, staleGrace)
 
 			if (err != nil) != tc.wantErr {
@@ -437,7 +452,7 @@ func TestRunCreateAbortsOnTerminalTask(t *testing.T) {
 	}
 	exec := &spyCreateExecutor{}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("runCreate(terminal task) = %v, want nil", err)
@@ -510,7 +525,7 @@ func TestRunCreateExecErrorRetryable(t *testing.T) {
 	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
 	exec := &spyCreateExecutor{err: errors.New("agent boom")}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err == nil {
 		t.Fatalf("runCreate = nil, want non-nil (retryable exec error)")
@@ -533,7 +548,7 @@ func TestRunCreateClearsAgentTaskIDOn404(t *testing.T) {
 	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
 	exec := &spyCreateExecutor{err: &agentclient.AgentError{Status: 404, Code: "not_found"}}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err == nil {
 		t.Fatalf("runCreate = nil, want non-nil (retryable after clear)")
@@ -553,7 +568,7 @@ func TestRunCreateDoesNotClearOnNon404(t *testing.T) {
 	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
 	exec := &spyCreateExecutor{err: &agentclient.AgentError{Status: 500, Code: "internal"}}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err == nil {
 		t.Fatalf("runCreate = nil, want non-nil (retryable)")
@@ -623,7 +638,7 @@ func TestRunCreateHandsImageSourceFromVMRow(t *testing.T) {
 	st := &createLifecycleWorkerStoreStub{vm: vm, node: node, disk: disk}
 	exec := &spyCreateExecutor{}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("runCreate err = %v, want nil", err)
@@ -667,7 +682,7 @@ func TestRunCreateSurfacesAgentResolvedResult(t *testing.T) {
 		VirtualSizeBytes: 456,
 	}}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("runCreate err = %v, want nil", err)
@@ -719,7 +734,7 @@ func TestRunCreateResolvesSourceSnapshotSeam(t *testing.T) {
 	}
 	exec := &spyCreateExecutor{}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID, SourceSnapshotID: &snapID}, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("runCreate err = %v, want nil", err)
@@ -761,7 +776,7 @@ func TestRunCreateFailsWhenSourceSnapshotMissing(t *testing.T) {
 	}
 	exec := &spyCreateExecutor{}
 
-	err := runCreate(context.Background(), st, exec, discardLog(),
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
 		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID, SourceSnapshotID: &snapID}, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("runCreate err = %v, want nil (failure is finalized, not propagated)", err)

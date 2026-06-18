@@ -49,6 +49,11 @@ const (
 	// `vm_id` → `resource_id`) tracked under contract-test parity in
 	// ROADMAP.
 	TaskKindStoragePoolScan TaskKind = "storage_pool.scan"
+	// TaskKindBlobPull tracks a POST /v1/blobs/pull task: streaming a
+	// content-addressed blob from a holder peer into the node's artifact store
+	// (slice C1). It is not VM-scoped; the TaskStore.Create call passes the nil
+	// UUID for vmID (the blob is node-level, not a VM resource).
+	TaskKindBlobPull TaskKind = "blob.pull"
 )
 
 // TaskError mirrors the agent error envelope when a task fails. Code
