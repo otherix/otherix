@@ -38,6 +38,14 @@ const snapshotsStagingSubdir = ".staging"
 // blob GC on delete.
 const snapshotManifestsSubdir = "manifests"
 
+// snapshotCaptureTimeout is the outer fail-closed bound on a whole snapshot
+// capture (all disks plus the qemu-img create/convert steps). A capture that
+// runs past it makes the task FAIL instead of wedging in "creating" forever.
+// It is generous - a full-copy backup transfers the whole disk and is slow
+// under TCG - and sits above the per-disk backupCompletionTimeout so a single
+// stuck disk surfaces through BackupDiskToFile's own bound first.
+const snapshotCaptureTimeout = 45 * time.Minute
+
 // SnapshotSpec is the post-validation create request the manager acts on.
 // Slice A is disk-only: WithMemory is rejected (RAM capture is out of scope).
 type SnapshotSpec struct {
@@ -474,7 +482,15 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 		m.snapshotInFlightMu.Unlock()
 	}()
 
-	ctx := context.Background()
+	// Bound the whole capture so a stuck/slow-beyond-limit backup fails the
+	// snapshot task (snapshot_capture_failed) rather than wedging it in
+	// "creating" forever. BackupDiskToFile is itself internally bounded
+	// (backupCompletionTimeout per disk); this outer deadline is the
+	// belt-and-suspenders cap across all disks and the non-QMP steps (qemu-img
+	// create/convert) and propagates cancellation into them. It is generous:
+	// each disk's full-copy backup is slow under TCG.
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotCaptureTimeout)
+	defer cancel()
 	log := m.log.With("vm_id", v.ID.String(), "task_id", taskID.String(), "snapshot", spec.Name)
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 

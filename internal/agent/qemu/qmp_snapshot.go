@@ -6,7 +6,17 @@ package qemu
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/digitalocean/go-qemu/qmp"
 )
+
+// backupCompletionTimeout bounds the wait for a single disk backup's
+// BLOCK_JOB_COMPLETED. It is generous because a full-copy backup transfers the
+// whole disk, and under TCG (no KVM, e.g. the Lima dev stack) the copy is slow;
+// a stuck job must still fail the snapshot task rather than wedge it forever.
+// Mirrors the live-migration disk-copy bound (liveDefaultDiskMirrorTimeout).
+const backupCompletionTimeout = 30 * time.Minute
 
 // blockdevBackupCmd builds blockdev-backup: a full-sync point-in-time copy
 // of device into target (a separately-added target node). sync=full so the
@@ -57,30 +67,67 @@ func (c *QMPClient) BlockdevAddQcow2File(nodeName, filename string) error {
 	return nil
 }
 
+// BackupConn is the QMP surface runBackup drives for one disk backup. It
+// exposes the multiplexed event channel directly so the package-private
+// fan-out + block-job waiter (shared with the live-migration path) are reused
+// unchanged. *QMPClient satisfies it.
+type BackupConn interface {
+	Events(ctx context.Context) (<-chan qmp.Event, error)
+	BlockdevAddQcow2File(nodeName, filename string) error
+	BlockdevBackup(jobID, device, target string) error
+	BlockdevDel(nodeName string) error
+}
+
+var _ BackupConn = (*QMPClient)(nil)
+
 // BackupDiskToFile runs one full-copy disk backup end to end: add the qcow2
 // file target node, start the blockdev-backup job, await BLOCK_JOB_COMPLETED,
 // then drop the target node from the block graph. nodeName and jobID are
 // caller-unique per disk. The qcow2 file at filename must already exist. The
 // completed file is a standalone, point-in-time copy of device suitable for
-// content-addressed hashing.
+// content-addressed hashing. The wait is bounded by backupCompletionTimeout so
+// a stuck job fails the snapshot rather than hanging forever.
 func (c *QMPClient) BackupDiskToFile(ctx context.Context, jobID, nodeName, device, filename string) error {
-	ch, err := c.Events(ctx)
+	return runBackup(ctx, c, jobID, nodeName, device, filename, backupCompletionTimeout)
+}
+
+// runBackup drives one disk backup to completion or fails closed. It mirrors
+// the live-migration event handling that solved the same QMP-event-loss
+// problem: go-qemu demultiplexes command responses AND async events out of ONE
+// goroutine over an unbuffered channel, so a blockdev-backup whose
+// BLOCK_JOB_COMPLETED reaches the wire before its own command reply wedges the
+// listener unless the event channel is continuously drained. fanoutEvents
+// buffers events from the moment we subscribe (before issuing the commands), so
+// the completion event cannot be lost while the commands run; waitBlockJobsTimeout
+// then waits with a fail-closed deadline and surfaces a BLOCK_JOB_ERROR / errored
+// BLOCK_JOB_COMPLETED instead of waiting it out. The target node is dropped (best
+// effort) on every failure path.
+func runBackup(ctx context.Context, conn BackupConn, jobID, nodeName, device, filename string, timeout time.Duration) error {
+	rawCh, err := conn.Events(ctx)
 	if err != nil {
 		return fmt.Errorf("subscribe events: %w", err)
 	}
-	if err := c.BlockdevAddQcow2File(nodeName, filename); err != nil {
+	// Drain rawCh into an in-memory buffer for the lifetime of this backup so
+	// the completion event the commands below trigger is never dropped between
+	// subscription and the wait. Its lifetime is an independent drainCtx
+	// cancelled by the deferred stopDrain.
+	drainCtx, stopDrain := context.WithCancel(context.Background())
+	defer stopDrain()
+	ch := fanoutEvents(drainCtx, rawCh)
+
+	if err := conn.BlockdevAddQcow2File(nodeName, filename); err != nil {
 		return err
 	}
-	if err := c.BlockdevBackup(jobID, device, nodeName); err != nil {
+	if err := conn.BlockdevBackup(jobID, device, nodeName); err != nil {
 		// Best-effort cleanup of the orphaned target node.
-		_ = c.BlockdevDel(nodeName)
+		_ = conn.BlockdevDel(nodeName)
 		return err
 	}
-	if err := waitBlockJobEvent(ctx, ch, "BLOCK_JOB_COMPLETED", jobID); err != nil {
-		_ = c.BlockdevDel(nodeName)
+	if err := waitBlockJobsTimeout(ctx, ch, "BLOCK_JOB_COMPLETED", []string{jobID}, timeout); err != nil {
+		_ = conn.BlockdevDel(nodeName)
 		return fmt.Errorf("await backup completion: %w", err)
 	}
-	if err := c.BlockdevDel(nodeName); err != nil {
+	if err := conn.BlockdevDel(nodeName); err != nil {
 		return fmt.Errorf("drop backup target node: %w", err)
 	}
 	return nil
