@@ -97,6 +97,10 @@ type Store interface {
 	// --from-snapshot; returns store.ErrNotFound when absent or soft-deleted.
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
+	// ArtifactPoolByName resolves an artifact pool by name; returns
+	// store.ErrNotFound when absent. Used by vm create to enforce role
+	// separation (an artifact pool name cannot host VM disks).
+	ArtifactPoolByName(ctx context.Context, name string) (store.ArtifactPool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 	ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
 	// ActiveMigrationForVM returns the VM's in-flight (non-terminal)

@@ -609,6 +609,20 @@ func (h *Handler) resolvePoolName(w http.ResponseWriter, r *http.Request, reques
 // with deferred name resolution. The boolean return mirrors the resolve*
 // helpers' short-circuit signal.
 func (h *Handler) checkPoolWritableBestEffort(w http.ResponseWriter, r *http.Request, poolName string) bool {
+	// Role separation: a name that belongs to an artifact pool cannot host VM
+	// disks. Names are unique across the disk/artifact namespaces, so this is
+	// unambiguous. A transient read error is NOT treated as a rejection - defer
+	// to bind rather than spuriously failing a legitimate disk-pool create.
+	if _, err := h.store.ArtifactPoolByName(r.Context(), poolName); err == nil {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodePoolRoleInvalid,
+			"pool is an artifact pool, cannot host VM disks",
+			map[string]any{"pool": poolName})
+		return false
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+
 	pools, err := h.store.StoragePoolsByName(r.Context(), poolName)
 	if err != nil || len(pools) == 0 {
 		// Unknown / not-yet-created (or a transient read error) -> defer to bind.
