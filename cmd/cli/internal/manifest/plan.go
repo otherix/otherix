@@ -207,19 +207,26 @@ func vmCreateOp(d Document) (CreateOp, error) {
 	}
 	req := cpclient.CreateVMRequest{
 		Name:              d.Name,
-		ImageURL:          s.ImageURL,
-		SourceSnapshotID:  s.SourceSnapshotID,
-		ImageSHA256:       s.ImageSHA256,
-		Arch:              s.Arch,
-		Firmware:          s.Firmware,
-		FirmwareID:        s.FirmwareID,
-		Format:            s.Format,
-		DiskGiB:           s.DiskGiB,
 		Pool:              s.Pool,
 		Network:           s.Network,
 		VCPUs:             vcpus,
 		MemoryMB:          memoryMB,
 		CloudInitDisabled: s.CloudInitDisabled,
+	}
+	if s.SourceSnapshotID != "" {
+		// Snapshot-sourced: the snapshot manifest is authoritative for
+		// architecture / firmware / format / image digest, and the server rejects
+		// them in the request (field_from_snapshot). Drop them so a `vm get -o yaml`
+		// round-trip (which emits arch) applies cleanly.
+		req.SourceSnapshotID = s.SourceSnapshotID
+	} else {
+		req.ImageURL = s.ImageURL
+		req.ImageSHA256 = s.ImageSHA256
+		req.Arch = s.Arch
+		req.Firmware = s.Firmware
+		req.FirmwareID = s.FirmwareID
+		req.Format = s.Format
+		req.DiskGiB = s.DiskGiB
 	}
 	if s.Node != "" {
 		node := s.Node
