@@ -29,17 +29,17 @@ type fakeCapturer struct {
 	srcOverride map[string]string
 }
 
-func (f *fakeCapturer) Capture(_ context.Context, v *VM, device, dest string) error {
+func (f *fakeCapturer) Capture(_ context.Context, _ *VM, device, src, dest string) error {
 	atomic.AddInt32(&f.calls, 1)
 	f.mu.Lock()
-	src := v.DiskPath
+	from := src
 	if f.srcOverride != nil {
 		if o, ok := f.srcOverride[device]; ok {
-			src = o
+			from = o
 		}
 	}
 	f.mu.Unlock()
-	b, err := os.ReadFile(src) //nolint:gosec // test-local path
+	b, err := os.ReadFile(from) //nolint:gosec // test-local path
 	if err != nil {
 		return err
 	}

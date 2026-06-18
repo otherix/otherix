@@ -55,20 +55,31 @@ var ErrSnapshotWithMemory = errors.New("snapshot with_memory is unsupported (dis
 // backup file. The production impl dials the VM's QMP socket and runs
 // blockdev-backup; tests inject a fake that copies a fixture qcow2. It is the
 // seam that keeps CreateSnapshot unit-testable on darwin without real qemu.
+// src is the on-disk source path (used to size the backup target); device is
+// the qemu block device name (virtio<i>) that blockdev-backup reads.
 type diskCapturer interface {
-	Capture(ctx context.Context, v *VM, device, dest string) error
+	Capture(ctx context.Context, v *VM, device, src, dest string) error
 }
 
-// qmpDiskCapturer is the production diskCapturer: it dials the VM's QMP socket
-// and runs a full-copy blockdev-backup of device into dest (a fresh qcow2 the
-// caller pre-creates is NOT required - BackupDiskToFile's blockdev-add opens
-// the file, so the caller must create it first). It is crash-consistent and
-// disk-only.
+// qmpDiskCapturer is the production diskCapturer: it creates the backup target
+// qcow2, dials the VM's QMP socket, and runs a full-copy blockdev-backup of
+// device into that target. Crash-consistent and disk-only.
 type qmpDiskCapturer struct{}
 
-// Capture backs up device into dest via QMP. The dest qcow2 must already exist
-// (qemu blockdev-add opens, does not create); the caller pre-creates it.
-func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, dest string) error {
+// Capture creates the backup target as a real qcow2 sized to the source, then
+// backs up device into it via QMP. blockdev-add OPENS the target (it does not
+// create it) and qemu rejects a zero/non-qcow2 file ("Unsupported qcow2 version
+// 0"), so the target must be a valid qcow2 of the source's virtual size first.
+// The source size is read with -U force-share since the running VM holds the
+// disk write lock.
+func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, src, dest string) error {
+	size, err := qemu.ImgVirtualSizeShared(ctx, src)
+	if err != nil {
+		return fmt.Errorf("source disk size %s: %v", src, err)
+	}
+	if err := qemu.CreateDisk(ctx, dest, size); err != nil {
+		return fmt.Errorf("create backup target: %v", err)
+	}
 	client, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial qmp: %v", err)
@@ -477,16 +488,11 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 
 	disks := make([]snapshotManifestDisk, 0)
 	for _, dev := range m.snapshotDiskDevices(v) {
-		// Pre-create the backup target file the capturer's blockdev-add opens,
-		// then capture device into it; produceBlob converts that backup into the
-		// content-addressed standalone blob (hash/rename/sidecar).
+		// Capture device into a backup file (the capturer creates the target
+		// qcow2 sized to the source), then produceBlob converts that backup into
+		// the content-addressed standalone blob (hash/rename/sidecar).
 		backup := filepath.Join(stagingDir, fmt.Sprintf("backup-%s-%s.qcow2", spec.Name, dev.device))
-		if err := os.WriteFile(backup, qcow2Magic[:], 0o600); err != nil {
-			log.Error("create backup target", "device", dev.device, "err", err)
-			m.failSnapshotTask(taskID, "internal", err.Error())
-			return
-		}
-		if err := m.diskCapturer.Capture(ctx, v, dev.device, backup); err != nil {
+		if err := m.diskCapturer.Capture(ctx, v, dev.device, dev.src, backup); err != nil {
 			_ = os.Remove(backup)
 			log.Error("capture disk", "device", dev.device, "err", err)
 			m.failSnapshotTask(taskID, "snapshot_capture_failed", err.Error())
