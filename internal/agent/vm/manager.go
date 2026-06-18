@@ -258,7 +258,7 @@ type Manager struct {
 // name and the snapshot name (the agent's defense-in-depth idempotency key
 // closing the CP-side worker-redelivery residual window).
 type snapshotInFlightKey struct {
-	vmName       string
+	vmUUID       uuid.UUID
 	snapshotName string
 }
 

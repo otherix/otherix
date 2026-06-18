@@ -332,10 +332,13 @@ func (m *Manager) ListSnapshots(_ context.Context, poolName string) ([]SnapshotB
 	return ListSnapshots(filepath.Join(p.root, snapshotsSubdir))
 }
 
-// snapshotManifestPath returns the on-disk manifest path for (pool root,
-// snapshot name): {root}/snapshots/manifests/{name}.json.
-func snapshotManifestPath(poolRoot, name string) string {
-	return filepath.Join(poolRoot, snapshotsSubdir, snapshotManifestsSubdir, name+".json")
+// snapshotManifestPath returns the on-disk manifest path, scoped by VM so two
+// different VMs (or a reused VM name) cannot collide on the same snapshot name:
+// {root}/snapshots/manifests/{vm_uuid}__{name}.json. Snapshot names are unique
+// only per-VM (the CP enforces that), so a pool-global name-only path would let
+// one VM's snapshot overwrite or be returned for another's.
+func snapshotManifestPath(poolRoot string, vmUUID uuid.UUID, name string) string {
+	return filepath.Join(poolRoot, snapshotsSubdir, snapshotManifestsSubdir, vmUUID.String()+"__"+name+".json")
 }
 
 // readSnapshotManifest loads the manifest at path. Returns (man, false, nil)
@@ -371,7 +374,7 @@ func writeSnapshotManifest(poolRoot string, man snapshotManifest) error {
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil { //nolint:gosec // manifest is non-secret metadata
 		return fmt.Errorf("write staging manifest: %v", err)
 	}
-	if err := os.Rename(tmp, snapshotManifestPath(poolRoot, man.Name)); err != nil {
+	if err := os.Rename(tmp, snapshotManifestPath(poolRoot, man.VMUUID, man.Name)); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("atomic rename manifest: %v", err)
 	}
@@ -427,7 +430,7 @@ func (m *Manager) CreateSnapshot(ctx context.Context, vmName string, spec Snapsh
 		return nil, err
 	}
 
-	key := snapshotInFlightKey{vmName: vmName, snapshotName: spec.Name}
+	key := snapshotInFlightKey{vmUUID: v.ID, snapshotName: spec.Name}
 
 	// Single critical section over both idempotency gates so two concurrent
 	// first attempts cannot both launch a capture: (1) an in-flight capture
@@ -438,7 +441,7 @@ func (m *Manager) CreateSnapshot(ctx context.Context, vmName string, spec Snapsh
 		m.snapshotInFlightMu.Unlock()
 		return existing, nil
 	}
-	man, present, err := readSnapshotManifest(snapshotManifestPath(poolRoot, spec.Name))
+	man, present, err := readSnapshotManifest(snapshotManifestPath(poolRoot, v.ID, spec.Name))
 	if err != nil {
 		m.snapshotInFlightMu.Unlock()
 		return nil, err
@@ -601,15 +604,15 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, vmName, snapshotName strin
 	}
 	task := m.tasks.Create(TaskKindVMSnapshotDelete, v.ID)
 	// #nosec G118 -- async task work intentionally outlives the HTTP request.
-	go m.runSnapshotDelete(task.ID, poolRoot, snapshotName)
+	go m.runSnapshotDelete(task.ID, poolRoot, v.ID, snapshotName)
 	return task, nil
 }
 
-func (m *Manager) runSnapshotDelete(taskID uuid.UUID, poolRoot, snapshotName string) {
+func (m *Manager) runSnapshotDelete(taskID uuid.UUID, poolRoot string, vmUUID uuid.UUID, snapshotName string) {
 	log := m.log.With("task_id", taskID.String(), "snapshot", snapshotName)
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
-	manPath := snapshotManifestPath(poolRoot, snapshotName)
+	manPath := snapshotManifestPath(poolRoot, vmUUID, snapshotName)
 	target, present, err := readSnapshotManifest(manPath)
 	if err != nil {
 		log.Error("read manifest for delete", "err", err)
@@ -702,7 +705,7 @@ func (m *Manager) VMSnapshot(vmName, snapshotName string) (agentapi.Snapshot, bo
 	if err != nil {
 		return agentapi.Snapshot{}, false, err
 	}
-	man, present, err := readSnapshotManifest(snapshotManifestPath(poolRoot, snapshotName))
+	man, present, err := readSnapshotManifest(snapshotManifestPath(poolRoot, v.ID, snapshotName))
 	if err != nil {
 		return agentapi.Snapshot{}, false, err
 	}

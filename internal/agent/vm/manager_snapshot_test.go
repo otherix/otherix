@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/agentapi"
 )
 
@@ -125,9 +127,9 @@ func TestCreateSnapshot_ReturnsTaskAndManifest(t *testing.T) {
 		t.Errorf("disk[0].Sha256 = %q, want %q", d0.Sha256, wantSHA)
 	}
 
-	// Manifest JSON landed under snapshots/manifests/.
+	// Manifest JSON landed under snapshots/manifests/, VM-scoped by uuid.
 	root := m.defaultTestPoolRoot(t)
-	manPath := filepath.Join(root, "snapshots", "manifests", "snap1.json")
+	manPath := snapshotManifestPath(root, v.ID, "snap1")
 	if _, err := os.Stat(manPath); err != nil {
 		t.Errorf("manifest not written at %q: %v", manPath, err)
 	}
@@ -162,6 +164,60 @@ func TestCreateSnapshot_WithMemory_Rejected(t *testing.T) {
 	_, err := m.CreateSnapshot(context.Background(), v.Name, SnapshotSpec{Name: "snap1", WithMemory: withMem})
 	if err == nil {
 		t.Fatal("CreateSnapshot(with_memory=true) returned nil error, want rejection")
+	}
+}
+
+// TestCreateSnapshot_SameNameDifferentVMs_NoCollision pins the real-agent bug
+// the recreate smoke caught: snapshot names are unique only per-VM, so two VMs
+// snapshotting with the same name "s1" must produce two INDEPENDENT manifests
+// and blobs - the second must NOT hit the (vm, name) idempotency of the first
+// and return its stale blob. Manifests are VM-scoped ({vm_uuid}__{name}.json).
+func TestCreateSnapshot_SameNameDifferentVMs_NoCollision(t *testing.T) {
+	m := newTestManager(t)
+	m.diskCapturer = &fakeCapturer{}
+	m.snapshotConvert = copyConvert
+	root := m.defaultTestPoolRoot(t)
+
+	vA := m.seedStoppedVM(t, "vm-a")
+	if err := os.WriteFile(vA.DiskPath, qcow2Body(0xA1), 0o600); err != nil {
+		t.Fatalf("write vm-a disk: %v", err)
+	}
+	vB := m.seedStoppedVM(t, "vm-b")
+	if err := os.WriteFile(vB.DiskPath, qcow2Body(0xB2), 0o600); err != nil {
+		t.Fatalf("write vm-b disk: %v", err)
+	}
+	shaA := shaHex(qcow2Body(0xA1))
+	shaB := shaHex(qcow2Body(0xB2))
+
+	for _, vm := range []*VM{vA, vB} {
+		task, err := m.CreateSnapshot(context.Background(), vm.Name, SnapshotSpec{Name: "s1"})
+		if err != nil {
+			t.Fatalf("CreateSnapshot(%s): %v", vm.Name, err)
+		}
+		if done := m.awaitTask(t, task.ID); done.Status != TaskStatusSuccess {
+			t.Fatalf("%s snapshot status = %q, want success (err=%+v)", vm.Name, done.Status, done.Error)
+		}
+	}
+
+	// Both manifests exist independently (no name-only collision).
+	if !manifestExists(root, vA.ID, "s1") || !manifestExists(root, vB.ID, "s1") {
+		t.Fatal("expected an independent s1 manifest for each VM")
+	}
+	// Each VM's snapshot references its OWN disk's blob, not the other's.
+	for _, tc := range []struct {
+		vm      *VM
+		wantSHA string
+	}{{vA, shaA}, {vB, shaB}} {
+		snap, ok, err := m.VMSnapshot(tc.vm.Name, "s1")
+		if err != nil || !ok {
+			t.Fatalf("VMSnapshot(%s, s1) ok=%v err=%v", tc.vm.Name, ok, err)
+		}
+		if len(snap.Disks) != 1 || snap.Disks[0].Sha256 != tc.wantSHA {
+			t.Errorf("%s s1 disk sha = %v, want %q (got someone else's blob = collision)", tc.vm.Name, snap.Disks, tc.wantSHA)
+		}
+	}
+	if shaA == shaB {
+		t.Fatal("test setup: vm-a and vm-b disks must differ")
 	}
 }
 
@@ -218,9 +274,10 @@ func blobExists(poolRoot, sha string) bool {
 	return true
 }
 
-// manifestExists reports whether the named snapshot's manifest is present.
-func manifestExists(poolRoot, name string) bool {
-	if _, err := os.Stat(snapshotManifestPath(poolRoot, name)); err != nil {
+// manifestExists reports whether the named snapshot's manifest is present for
+// the given VM (manifests are VM-scoped: {vm_uuid}__{name}.json).
+func manifestExists(poolRoot string, vmUUID uuid.UUID, name string) bool {
+	if _, err := os.Stat(snapshotManifestPath(poolRoot, vmUUID, name)); err != nil {
 		return false
 	}
 	return true
@@ -252,7 +309,7 @@ func TestDeleteSnapshot_KeepsBlobSharedByAnotherManifest(t *testing.T) {
 		t.Fatalf("delete task status = %q, want success (err=%+v)", done.Status, done.Error)
 	}
 
-	if manifestExists(root, "snapA") {
+	if manifestExists(root, v.ID, "snapA") {
 		t.Error("snapA manifest still present after delete, want removed")
 	}
 	if blobExists(root, uniqueA) {
@@ -261,7 +318,7 @@ func TestDeleteSnapshot_KeepsBlobSharedByAnotherManifest(t *testing.T) {
 	if !blobExists(root, shared) {
 		t.Error("shared blob removed, want KEPT (snapB still references it)")
 	}
-	if !manifestExists(root, "snapB") {
+	if !manifestExists(root, v.ID, "snapB") {
 		t.Error("snapB manifest removed, want intact")
 	}
 	if !blobExists(root, uniqueB) {
