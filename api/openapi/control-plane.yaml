@@ -3345,6 +3345,97 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/cluster/default-artifact-pool:
+    get:
+      operationId: cluster.getDefaultArtifactPool
+      tags: [cluster]
+      summary: Get the cluster default artifact-pool name.
+      description: |
+        Returns the cluster default artifact-pool reference held in the
+        `cluster_settings` singleton. The cluster default applies when a
+        snapshot or other artifact-backed request omits the artifact pool.
+
+        **Required permission:** `cluster:read` (every role).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Cluster default artifact-pool reference.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDefaultPool"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: Cluster default artifact pool is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      operationId: cluster.setDefaultArtifactPool
+      tags: [cluster]
+      summary: Set the cluster default artifact-pool name (admin only).
+      description: |
+        The supplied `name` must resolve to an existing artifact pool;
+        unknown names (including disk-pool names, which are not artifact
+        pools) return 400 `validation_failed`. The server persists the
+        canonical-case spelling so subsequent GET responses are stable.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDefaultPoolRequest"
+      responses:
+        "200":
+          description: Cluster default artifact-pool reference set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDefaultPool"
+        "400":
+          description: |
+            Either the request body is malformed or the supplied `name`
+            does not match any existing artifact pool. The error `code`
+            is `validation_failed`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: cluster.clearDefaultArtifactPool
+      tags: [cluster]
+      summary: Clear the cluster default artifact-pool reference (admin only).
+      description: |
+        Idempotent — clearing an already-null reference returns 204.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Cluster default artifact-pool reference cleared.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/cluster/members:
     get:
       operationId: cluster.listMembers

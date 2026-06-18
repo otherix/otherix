@@ -414,6 +414,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-pool", clusterH.SetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-pool", clusterH.ClearDefaultPool)
 
+				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-artifact-pool", clusterH.GetDefaultArtifactPool)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-artifact-pool", clusterH.SetDefaultArtifactPool)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-artifact-pool", clusterH.ClearDefaultArtifactPool)
+
 				// etcd cluster membership admin. cluster:manage gates both
 				// the inspection read and the member eviction - the routes
 				// surface raw etcd topology, an operator-only concern.

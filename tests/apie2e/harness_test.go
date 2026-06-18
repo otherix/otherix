@@ -280,6 +280,10 @@ func (h *harness) patch(t *testing.T, path string, body any, bearer string) *htt
 	return h.do(t, http.MethodPatch, path, body, bearer, nil)
 }
 
+func (h *harness) put(t *testing.T, path string, body any, bearer string) *http.Response {
+	return h.do(t, http.MethodPut, path, body, bearer, nil)
+}
+
 func (h *harness) delete(t *testing.T, path, bearer string) *http.Response {
 	return h.do(t, http.MethodDelete, path, nil, bearer, nil)
 }
