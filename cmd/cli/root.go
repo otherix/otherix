@@ -13,6 +13,7 @@ import (
 	networkcmd "github.com/otherix/otherix/cmd/cli/network"
 	nodecmd "github.com/otherix/otherix/cmd/cli/node"
 	poolcmd "github.com/otherix/otherix/cmd/cli/pool"
+	snapshotcmd "github.com/otherix/otherix/cmd/cli/snapshot"
 	"github.com/otherix/otherix/cmd/cli/vm"
 	"github.com/otherix/otherix/internal/version"
 )
@@ -50,6 +51,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(vm.NewCommand())
 	root.AddCommand(migrationcmd.NewCommand())
+	root.AddCommand(snapshotcmd.NewCommand())
 	root.AddCommand(poolcmd.NewCommand())
 	root.AddCommand(networkcmd.NewCommand())
 	root.AddCommand(nodecmd.NewCommand())

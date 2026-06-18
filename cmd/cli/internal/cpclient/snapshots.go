@@ -54,18 +54,35 @@ type Snapshot struct {
 	UpdatedAt         string         `json:"updated_at"`
 }
 
-// SnapshotList is the {data, meta} envelope GET /v1/vms/{id}/snapshots serves.
+// SnapshotListItem is the global-list projection GET /v1/snapshots serves: the
+// base Snapshot view plus the operator-facing vm_name + owner_display_name the
+// CP resolves server-side. Both pointers are nil only when the referenced row is
+// gone (force-deleted VM / user); the id fields stay authoritative. Mirrors the
+// server's snapshotListItemView.
+type SnapshotListItem struct {
+	Snapshot
+	VMName           *string `json:"vm_name"`
+	OwnerDisplayName *string `json:"owner_display_name"`
+}
+
+// SnapshotList is the {data, meta} envelope GET /v1/snapshots serves.
 type SnapshotList struct {
-	Data []Snapshot `json:"data"`
+	Data []SnapshotListItem `json:"data"`
 	Meta struct {
 		NextCursor *string `json:"next_cursor"`
 	} `json:"meta"`
 }
 
-// ListSnapshotsParams bundles the cursor-pagination query for the list
-// endpoint. Empty fields are omitted from the URL so the server defaults
-// (limit=50, first page) take over.
+// ListSnapshotsParams bundles the cursor-pagination query for the global list
+// endpoint GET /v1/snapshots. Empty fields are omitted from the URL so the
+// server defaults (limit=50, first page, no filter) take over. VM and Owner are
+// UUIDs (the server rejects non-UUIDs with 400) — the CLI forwards the raw
+// operator string and lets the server validate. Status filters on the snapshot
+// status enum.
 type ListSnapshotsParams struct {
+	VM     string
+	Status string
+	Owner  string
 	Limit  int
 	Cursor string
 }
@@ -112,11 +129,22 @@ func (c *Client) Snapshot(ctx context.Context, id string) (Snapshot, json.RawMes
 	return out, json.RawMessage(body), nil
 }
 
-// ListSnapshots fetches GET /v1/vms/{vmIdentifier}/snapshots with the supplied
-// cursor-pagination params. Returns the decoded rows plus the opaque next-page
-// cursor ("" when the page is the last). Non-2xx surfaces as *APIError.
-func (c *Client) ListSnapshots(ctx context.Context, vmIdentifier string, params ListSnapshotsParams) ([]Snapshot, string, error) {
+// ListSnapshotsGlobal fetches GET /v1/snapshots, the global snapshot
+// collection, with the supplied cursor-pagination params and optional
+// vm / status / owner filters. Returns the decoded rows (each carrying the
+// resolved vm_name + owner_display_name) plus the opaque next-page cursor ("" on
+// the last page). Non-2xx surfaces as *APIError. Mirrors ListMigrations.
+func (c *Client) ListSnapshotsGlobal(ctx context.Context, params ListSnapshotsParams) ([]SnapshotListItem, string, error) {
 	q := url.Values{}
+	if params.VM != "" {
+		q.Set("vm", params.VM)
+	}
+	if params.Status != "" {
+		q.Set("status", params.Status)
+	}
+	if params.Owner != "" {
+		q.Set("owner", params.Owner)
+	}
 	if params.Limit > 0 {
 		q.Set("limit", strconv.Itoa(params.Limit))
 	}
@@ -124,7 +152,7 @@ func (c *Client) ListSnapshots(ctx context.Context, vmIdentifier string, params 
 		q.Set("cursor", params.Cursor)
 	}
 
-	path := "/v1/vms/" + url.PathEscape(vmIdentifier) + "/snapshots"
+	path := "/v1/snapshots"
 	if encoded := q.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
