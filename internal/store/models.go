@@ -337,14 +337,15 @@ type AgentWireguard struct {
 }
 
 type ClusterSetting struct {
-	ID              int32
-	DefaultPoolName *string
-	OverlaySupernet *string // cluster overlay supernet CIDR; seeded once at boot, immutable
-	VNIMin          *int32  // overlay VNI range floor; seeded once at boot, immutable
-	VNIMax          *int32  // overlay VNI range ceiling; seeded once at boot, immutable
-	UnderlayMTU     *int32  // physical underlay MTU; seeded once at boot, immutable (overlay/otwg0 MTUs derive from it)
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                      int32
+	DefaultPoolName         *string
+	DefaultArtifactPoolName *string // cluster-wide default artifact pool (slice B); operator-set, no boot seed
+	OverlaySupernet         *string // cluster overlay supernet CIDR; seeded once at boot, immutable
+	VNIMin                  *int32  // overlay VNI range floor; seeded once at boot, immutable
+	VNIMax                  *int32  // overlay VNI range ceiling; seeded once at boot, immutable
+	UnderlayMTU             *int32  // physical underlay MTU; seeded once at boot, immutable (overlay/otwg0 MTUs derive from it)
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type Firmware struct {
@@ -450,6 +451,21 @@ type MigrationStats struct {
 	TotalTimeMs       int64
 	DowntimeMs        int64
 	SetupTimeMs       int64
+}
+
+// ArtifactPool is a cluster-level content-addressed artifact store concept
+// (slice B): a name, a durability target (ReplicationFactor), and advisory
+// membership. It is NOT a per-node storage_pools instance and has no node/path
+// in slice B - per-node backing, replication, and reconcile are sub-project C.
+// Names are unique across BOTH the artifact-pool and storage-pool namespaces.
+type ArtifactPool struct {
+	ID                uuid.UUID
+	Name              string
+	ReplicationFactor ReplicationFactor
+	Membership        ArtifactPoolMembership
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	DeletedAt         *time.Time
 }
 
 type Network struct {
@@ -622,13 +638,18 @@ type Snapshot struct {
 	// self-describing.
 	SourceArchitecture CPUArch
 	SourceFirmwareID   *uuid.UUID
-	DiskSizeBytes      *int64
-	Disks              []SnapshotDisk
-	MemorySizeBytes    *int64
-	ErrorMessage       *string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	DeletedAt          *time.Time
+	// ArtifactPoolName is the artifact pool this snapshot belongs to (slice B).
+	// The blob still lives physically in the source VM's disk pool dir; this tag
+	// records logical ownership and feeds fail-closed artifact-pool delete. Nil
+	// for snapshots created before slice B.
+	ArtifactPoolName *string
+	DiskSizeBytes    *int64
+	Disks            []SnapshotDisk
+	MemorySizeBytes  *int64
+	ErrorMessage     *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DeletedAt        *time.Time
 }
 
 type StoragePool struct {

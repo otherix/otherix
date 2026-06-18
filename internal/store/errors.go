@@ -21,8 +21,14 @@ var ErrCACertActiveExists = errors.New("store: active CA cert already exists")
 // to a uniqueness or precondition guard the backend enforces; handlers match
 // them with errors.Is to produce the 409 conflict envelopes.
 var (
-	ErrUserEmailExists       = errors.New("store: user email already in use")
-	ErrNetworkNameExists     = errors.New("store: network name already in use")
+	ErrUserEmailExists   = errors.New("store: user email already in use")
+	ErrNetworkNameExists = errors.New("store: network name already in use")
+	// ErrArtifactPoolNameExists is returned by CreateArtifactPool when a live
+	// artifact pool already owns the (case-insensitive) name.
+	ErrArtifactPoolNameExists = errors.New("store: artifact pool name already in use")
+	// ErrPoolNameConflict is returned when a pool name collides across the
+	// artifact-pool and storage-pool namespaces (a name denotes exactly one kind).
+	ErrPoolNameConflict      = errors.New("store: pool name already used by a pool of the other kind")
 	ErrNodeNameExists        = errors.New("store: node name already in use")
 	ErrStoragePoolNameExists = errors.New("store: storage pool name already in use on node")
 	ErrTaskNotCancellable    = errors.New("store: task not cancellable")
