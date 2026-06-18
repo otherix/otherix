@@ -822,6 +822,137 @@ func removeBlobIfPresent(log *slog.Logger, snapshotsDir, digest string) {
 	}
 }
 
+// relocateSnapshotsToStore is a one-time, best-effort, fail-open sweep that moves
+// existing disk-pool-resident snapshot blobs (and manifests) into the dedicated
+// artifact store (slice C1 section 7). For each {poolRoot}/snapshots/{sha}.qcow2
+// it streams the blob into store.Put (which re-verifies the digest from the
+// FILENAME and atomically lands it); the old copy is removed ONLY after the blob
+// is confirmed present (Has) in the store. Any error leaks the old copy (left
+// readable for the dual-read transition) rather than deleting it - blobs are
+// immutable and content-addressed, so a failed move costs a redundant copy or a
+// re-pull, never data loss. Manifests are copied likewise (fail-open); the
+// disk-pool copies stay for slice-A idempotency/list/delete (their removal is C3).
+//
+// The digest handed to store.Put is taken from the blob FILENAME, NOT the
+// sidecar, so store.Put's re-hash is the verification gate: a corrupt blob whose
+// content does not hash to its filename digest is rejected and its old copy is
+// left intact (fail-open). The old blob+sidecar are removed only after store.Has
+// confirms the blob is durably present in the store.
+func relocateSnapshotsToStore(log *slog.Logger, poolRoots []string, store *artifactstore.Store) {
+	if store == nil {
+		return
+	}
+	for _, root := range poolRoots {
+		snapshotsDir := filepath.Join(root, snapshotsSubdir)
+		relocateSnapshotsInPool(log, snapshotsDir, root, store)
+	}
+}
+
+// relocateSnapshotsInPool relocates every content-addressed blob (and the
+// snapshot manifests) under one pool's snapshots dir into the store, fail-open.
+func relocateSnapshotsInPool(log *slog.Logger, snapshotsDir, poolRoot string, store *artifactstore.Store) {
+	entries, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Warn("relocate: read snapshots dir; skipping pool (fail-open)", "snapshots_dir", snapshotsDir, "err", err)
+		}
+		return // absent snapshots dir is the common case (no snapshots in this pool)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".qcow2") {
+			continue // sidecars and other files
+		}
+		// The digest is the FILENAME (minus .qcow2); store.Put re-hashes the
+		// content and rejects a mismatch, so a corrupt blob never lands and its
+		// old copy is left intact. A non-hex filename is skipped (scratch/garbage).
+		digest := strings.TrimSuffix(name, ".qcow2")
+		if !isHexSHA256Lower(digest) {
+			continue
+		}
+		relocateBlob(log, snapshotsDir, digest, store)
+	}
+	relocateManifestsToStore(log, poolRoot, store)
+}
+
+// relocateBlob moves one content-addressed blob into the store, fail-open. The
+// old blob+sidecar are removed ONLY after store.Has confirms the store copy is
+// durably present (digest-verified by store.Put). On ANY error the old copy is
+// left readable (leak over delete-before-verify).
+func relocateBlob(log *slog.Logger, snapshotsDir, digest string, store *artifactstore.Store) {
+	blobPath := filepath.Join(snapshotsDir, digest+".qcow2")
+
+	// Already present (verified by a prior sweep or a dual-write capture): the
+	// store copy is digest-confirmed, so drop the old copy.
+	if store.Has(digest) {
+		removeRelocatedBlob(log, snapshotsDir, digest)
+		return
+	}
+
+	f, err := os.Open(blobPath) //nolint:gosec // agent-owned pool path; digest is validated hex
+	if err != nil {
+		log.Warn("relocate: open blob; leaking (fail-open)", "sha256", digest, "err", err)
+		return
+	}
+	putErr := store.Put(digest, f)
+	_ = f.Close()
+	if putErr != nil {
+		// Digest mismatch (corrupt blob) or any I/O error: never remove the old
+		// copy. store.Put discards the staging file on mismatch, so nothing
+		// partial is left in the store.
+		log.Warn("relocate: put blob; leaking (fail-open)", "sha256", digest, "err", putErr)
+		return
+	}
+	if !store.Has(digest) {
+		// Put reported success but the blob is not visible: do not trust it,
+		// leak the old copy.
+		log.Warn("relocate: blob absent after put; leaking (fail-open)", "sha256", digest)
+		return
+	}
+	removeRelocatedBlob(log, snapshotsDir, digest)
+}
+
+// removeRelocatedBlob deletes the old disk-pool blob + sidecar for digest. Called
+// ONLY after store.Has(digest) confirms the store copy is durably present. A
+// removal error logs and leaves the file (a harmless leak, reclaimed by C3).
+func removeRelocatedBlob(log *slog.Logger, snapshotsDir, digest string) {
+	blobPath := filepath.Join(snapshotsDir, digest+".qcow2")
+	if err := os.Remove(blobPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("relocate: remove old blob", "sha256", digest, "err", err)
+	}
+	if err := os.Remove(blobPath + ".sha256"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("relocate: remove old blob sidecar", "sha256", digest, "err", err)
+	}
+}
+
+// relocateManifestsToStore copies each disk-pool snapshot manifest into the
+// store, keyed by EACH referenced disk digest (mirroring the C1 capture-time
+// dual-write), so a peer pulling any one blob can recover the snapshot's disk
+// set. Fail-open: a manifest that cannot be read/encoded/written is skipped; the
+// disk-pool copy stays authoritative and is left intact (manifest removal is C3).
+func relocateManifestsToStore(log *slog.Logger, poolRoot string, store *artifactstore.Store) {
+	mans, err := listManifests(poolRoot)
+	if err != nil {
+		log.Warn("relocate: list manifests; skipping (fail-open)", "pool_root", poolRoot, "err", err)
+		return
+	}
+	for _, man := range mans {
+		body, err := json.MarshalIndent(man, "", "  ")
+		if err != nil {
+			log.Warn("relocate: encode manifest; skipping (fail-open)", "snapshot", man.Name, "err", err)
+			continue
+		}
+		for _, d := range man.Disks {
+			if err := store.WriteManifest(d.SHA256, body); err != nil {
+				log.Warn("relocate: write manifest; leaking (fail-open)", "digest", d.SHA256, "err", err)
+			}
+		}
+	}
+}
+
 // VMSnapshots lists the materialized snapshots for the named VM, projected
 // onto the agentapi.Snapshot wire shape and ordered by created-at. Used by the
 // list handler and (Task 11) the heartbeat inventory.
