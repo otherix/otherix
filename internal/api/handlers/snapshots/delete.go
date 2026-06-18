@@ -55,7 +55,22 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.store.DeleteSnapshot(r.Context(), id); err != nil {
+	// Soft-delete the row AND enqueue the blob-GC task+job in ONE transaction
+	// (store-side), so a CP crash cannot leave a soft-deleted snapshot whose blobs
+	// have no reclaimer (a retried DELETE would 404 on the already-deleted row).
+	taskID := uuid.New()
+	resID := id
+	createdBy := caller.ID
+	taskParams := store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "vm.snapshot.delete",
+		Status:       store.TaskStatusPending,
+		ResourceType: "snapshot",
+		ResourceID:   &resID,
+		MaxAttempts:  25,
+		CreatedBy:    &createdBy,
+	}
+	if _, err := h.store.DeleteSnapshot(r.Context(), id, taskParams, SnapshotDeleteArgs{TaskID: taskID, SnapshotID: id}); err != nil {
 		if errors.Is(err, store.ErrSnapshotHasChildren) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "snapshot has non-deleted children",
@@ -70,27 +85,6 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			"snapshot_id", id.String(), "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "delete snapshot", nil)
-		return
-	}
-
-	taskID := uuid.New()
-	resID := id
-	createdBy := caller.ID
-	if _, err := h.store.EnqueueTask(r.Context(), store.CreateTaskParams{
-		ID:           taskID,
-		Type:         "vm.snapshot.delete",
-		Status:       store.TaskStatusPending,
-		ResourceType: "snapshot",
-		ResourceID:   &resID,
-		MaxAttempts:  25,
-		CreatedBy:    &createdBy,
-	}, SnapshotDeleteArgs{TaskID: taskID, SnapshotID: id}); err != nil {
-		// The row is already soft-deleted (fail-closed); a failed GC enqueue
-		// leaves the blobs to a future sweep rather than failing the delete.
-		h.log.ErrorContext(r.Context(), "snapshots.delete enqueue gc failed",
-			"snapshot_id", id.String(), "error", err)
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "enqueue snapshot delete", nil)
 		return
 	}
 

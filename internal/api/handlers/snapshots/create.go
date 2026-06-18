@@ -15,6 +15,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -65,9 +66,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"reason": "with_memory_unsupported"})
 		return
 	}
-	if l := len(body.Name); l < 1 || l > 255 {
+	// Strict name validation: the name is later concatenated into an agent-side
+	// filesystem path ({vm_uuid}__{name}.json), so a path-traversal name must be
+	// rejected at the edge (the agent re-validates as defense in depth).
+	if err := validation.ValidateSnapshotName(body.Name); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "name must be 1..255 characters", nil)
+			response.CodeValidationFailed, err.Error(), nil)
 		return
 	}
 

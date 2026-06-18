@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -59,6 +60,23 @@ type SnapshotSpec struct {
 // Slice A captures disks only; the CP already rejects this, so reaching the
 // agent is defense in depth. Handlers map it to 400 validation_failed.
 var ErrSnapshotWithMemory = errors.New("snapshot with_memory is unsupported (disk-only)")
+
+// snapshotNamePattern mirrors internal/api/validation.ValidateSnapshotName. The
+// snapshot name is concatenated into agent filesystem paths
+// ({vm_uuid}__{name}.json + the per-blob files), so the agent re-validates it
+// here as defense in depth: it must not trust the CP to have rejected a
+// path-traversal name. The class excludes '/' and '\', making `../` segment
+// traversal unrepresentable.
+var snapshotNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$`)
+
+// validSnapshotName reports whether name is safe to embed in an agent path.
+func validSnapshotName(name string) bool { return snapshotNamePattern.MatchString(name) }
+
+// maxOrphanedDigests bounds the per-request orphaned-blob list the CP may hand
+// the agent to GC. A real snapshot references one blob per disk; a list this far
+// above any plausible disk count is anomalous (resource amplification or a bug)
+// and is rejected rather than walked.
+const maxOrphanedDigests = 4096
 
 // diskCapturer captures one running/stopped VM disk device into a destination
 // backup file. The production impl dials the VM's QMP socket and runs
@@ -418,6 +436,9 @@ func (m *Manager) CreateSnapshot(ctx context.Context, vmName string, spec Snapsh
 	if spec.Name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrInvalidSpec)
 	}
+	if !validSnapshotName(spec.Name) {
+		return nil, fmt.Errorf("%w: invalid snapshot name", ErrInvalidSpec)
+	}
 	if spec.WithMemory {
 		return nil, ErrSnapshotWithMemory
 	}
@@ -599,9 +620,29 @@ func (m *Manager) failSnapshotTask(taskID uuid.UUID, code, message string) {
 // the orphans the CP already proved unreferenced. Returns the agent task
 // tracking the async work.
 func (m *Manager) DeleteSnapshotByID(_ context.Context, vmUUID uuid.UUID, snapshotName string, orphaned []string) (*AgentTask, error) {
+	// Re-validate at the agent edge (defense in depth): snapshotName and every
+	// digest are concatenated into filesystem paths, so a path-traversal name or a
+	// non-hex digest must never reach os.Remove. The agent does not trust the CP to
+	// have rejected them.
+	if !validSnapshotName(snapshotName) {
+		return nil, fmt.Errorf("%w: invalid snapshot name", ErrInvalidSpec)
+	}
+	if len(orphaned) > maxOrphanedDigests {
+		return nil, fmt.Errorf("%w: too many orphaned digests (%d)", ErrInvalidSpec, len(orphaned))
+	}
+	// Drop any non-content-address digest rather than acting on it (a malformed or
+	// traversal-shaped digest is a bug/attack signal; fail toward inaction).
+	safe := make([]string, 0, len(orphaned))
+	for _, d := range orphaned {
+		if isHexSHA256Lower(d) {
+			safe = append(safe, d)
+		} else {
+			m.log.Warn("snapshot delete: dropping non-hex orphaned digest", "digest", d)
+		}
+	}
 	task := m.tasks.Create(TaskKindVMSnapshotDelete, vmUUID)
 	// #nosec G118 -- async task work intentionally outlives the HTTP request.
-	go m.runSnapshotDelete(task.ID, vmUUID, snapshotName, orphaned)
+	go m.runSnapshotDelete(task.ID, vmUUID, snapshotName, safe)
 	return task, nil
 }
 

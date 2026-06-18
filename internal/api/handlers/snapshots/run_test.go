@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -56,6 +57,7 @@ type snapWorkerStoreStub struct {
 	// task after the first PostSnapshot, before polling.
 	persistedAgentTaskID *uuid.UUID
 	agentTaskIDPersisted bool
+	agentTaskIDCleared   bool
 
 	// recorded delete-path calls
 	dereferenceDigests []string
@@ -77,6 +79,11 @@ func (s *snapWorkerStoreStub) TaskByID(context.Context, uuid.UUID) (store.Task, 
 func (s *snapWorkerStoreStub) UpdateTaskAgentTaskID(_ context.Context, arg store.UpdateTaskAgentTaskIDParams) error {
 	s.agentTaskIDPersisted = true
 	s.persistedAgentTaskID = arg.AgentTaskID
+	return nil
+}
+
+func (s *snapWorkerStoreStub) ClearTaskAgentTaskID(context.Context, uuid.UUID) error {
+	s.agentTaskIDCleared = true
 	return nil
 }
 
@@ -320,6 +327,32 @@ func TestRunSnapshotCreate_Redelivery_NoAgentCall(t *testing.T) {
 	}
 	if st.manifestApplied {
 		t.Errorf("manifest projected on a committed-terminal task; the abort path must not project")
+	}
+}
+
+// TestRunSnapshotCreate_AgentTask404_ClearsIDForRePost is the agent-restart resume
+// regression: a redelivery resumes Poll on the persisted agent_task_id, but the
+// agent restarted and lost that task, so Poll returns a permanent 404. The worker
+// must CLEAR the persisted agent_task_id (so the NEXT redelivery re-POSTs and the
+// agent's (vm,name) idempotency reconciles) before failing the task - not leave the
+// stale id to be polled to a hard failure forever.
+func TestRunSnapshotCreate_AgentTask404_ClearsIDForRePost(t *testing.T) {
+	st := runningRuntimeStore()
+	resumedID := uuid.New()
+	taskID := uuid.New()
+	st.task = store.Task{ID: taskID, AgentTaskID: &resumedID} // redelivery: resume path
+	exec := &fakeSnapshotExecutor{pollErr: &agentclient.AgentError{Status: 404, Code: "not_found"}}
+
+	err := runSnapshotCreate(context.Background(), st, exec, discardLogger(),
+		SnapshotCreateArgs{TaskID: taskID, SnapshotID: st.snapshot.ID})
+	if err == nil {
+		t.Fatalf("runSnapshotCreate = nil, want the poll-404 error")
+	}
+	if !st.agentTaskIDCleared {
+		t.Errorf("agent_task_id NOT cleared on a permanent 404; the redelivery would re-poll the vanished task forever instead of re-POSTing")
+	}
+	if !st.finalized || st.finalizedStatus != store.TaskStatusFailed {
+		t.Errorf("task finalized = (%v, %q), want (true, failed)", st.finalized, st.finalizedStatus)
 	}
 }
 

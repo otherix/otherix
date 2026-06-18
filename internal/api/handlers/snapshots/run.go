@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -40,6 +41,11 @@ type WorkerStore interface {
 	// persisted id rather than re-POSTing a second capture (the resume seam,
 	// mirroring the migrations worker).
 	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
+	// ClearTaskAgentTaskID nils the persisted agent task id so the next redelivery
+	// re-POSTs instead of polling a vanished agent task forever. Used when Poll
+	// returns a permanent 404 (the agent restarted and lost its in-memory task);
+	// the agent's (vm, snapshot_name) capture idempotency reconciles the re-POST.
+	ClearTaskAgentTaskID(ctx context.Context, id uuid.UUID) error
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	// SnapshotByIDIncludingDeleted reads a snapshot row even when soft-deleted - the
 	// delete worker runs AFTER the row is soft-deleted CP-side, so it needs the
@@ -121,6 +127,16 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 		Description:        snap.Description,
 	})
 	if execErr != nil {
+		// A permanent agent-task 404 means the agent restarted and lost the in-memory
+		// task we were polling. Clear the persisted agent_task_id so the redelivery
+		// re-POSTs (the agent's (vm, snapshot_name) capture idempotency reconciles it)
+		// instead of polling a vanished task to a hard failure forever. Mirrors the
+		// vm.create worker's clearAgentTaskIDIfGone (R2-M2).
+		if agentTaskGone(execErr) {
+			if cerr := st.ClearTaskAgentTaskID(ctx, taskID); cerr != nil {
+				return fmt.Errorf("clear agent_task_id: %v", cerr)
+			}
+		}
 		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeSnapshotFailed, execErr)
 	}
 
@@ -312,6 +328,14 @@ func orphansOnNode(orphaned []string, placements map[string][]uuid.UUID, nodeID 
 		}
 	}
 	return out
+}
+
+// agentTaskGone reports whether err is a permanent agent-task 404 (the agent
+// restarted and lost the in-memory task), the signal to clear the persisted
+// agent_task_id and re-POST on redelivery. Mirrors the vm-worker's isAgentTaskGone.
+func agentTaskGone(err error) bool {
+	var ae *agentclient.AgentError
+	return errors.As(err, &ae) && ae.Status == 404
 }
 
 // resolveSnapshotNode resolves the VM the snapshot belongs to and the node it

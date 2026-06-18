@@ -991,6 +991,19 @@ func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, fa
 			return "snapshot_blob_missing",
 				fmt.Sprintf("snapshot blob %s (disk %d) not present on pool %q: %v", d.SHA256, d.Index, v.PoolName, err)
 		}
+		// Verify the blob's content against its content-address before booting it as a
+		// guest disk. The filename IS the claimed digest, but on-disk corruption (or a
+		// blob not written by produceBlob) could leave the bytes not matching the name;
+		// cloning that into a fresh VM's boot disk would boot unverified content.
+		// Re-hash and fail closed on mismatch.
+		actual, err := hashFile(blobPath)
+		if err != nil {
+			return "clone_failed", fmt.Sprintf("hash snapshot blob %s (disk %d): %v", d.SHA256, d.Index, err)
+		}
+		if actual != d.SHA256 {
+			return "snapshot_blob_corrupt",
+				fmt.Sprintf("snapshot blob %s (disk %d) content digest is %s; refusing to clone corrupt blob", d.SHA256, d.Index, actual)
+		}
 		dst := v.DiskPath
 		if n > 0 {
 			dst = filepath.Join(filepath.Dir(v.DiskPath), fmt.Sprintf("disk%d.qcow2", n))

@@ -116,6 +116,14 @@ func decodeSnapshotResult(result map[string]any) (CreateExecResult, error) {
 
 	disks := make([]store.SnapshotDisk, 0, len(snap.Disks))
 	for _, d := range snap.Disks {
+		// The agent is authoritative for what it captured, but its reported digest
+		// becomes a reference-graph / placement-map key and later flows back out as an
+		// `orphaned` delete param: a malformed digest would be a permanent bad key and
+		// (without the agent-side hex guard) a path-injection sink. Reject the whole
+		// result if any digest is not a 64-char lowercase hex content address.
+		if !isHexSHA256Lower(d.Sha256) {
+			return CreateExecResult{}, fmt.Errorf("agent reported a non-hex blob digest %q", d.Sha256)
+		}
 		disks = append(disks, store.SnapshotDisk{
 			Index:     clampInt32(d.Index),
 			Device:    d.Device,
@@ -128,6 +136,21 @@ func decodeSnapshotResult(result map[string]any) (CreateExecResult, error) {
 		Disks:             disks,
 		VMStateAtSnapshot: store.VMStateAtSnapshot(snap.VMStateAtSnapshot),
 	}, nil
+}
+
+// isHexSHA256Lower reports whether s is a 64-char lowercase hex string (a
+// content-address digest). Mirrors the agent-side guard; used to reject malformed
+// agent-reported digests before they become reference-graph keys.
+func isHexSHA256Lower(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // clampInt32 narrows the agent-reported disk index (a small ordinal: virtio0,

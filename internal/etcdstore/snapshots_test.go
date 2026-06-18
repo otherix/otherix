@@ -152,7 +152,7 @@ func TestSnapshotByID_NotFoundWhenDeleted(t *testing.T) {
 	seedVM(t, cl, vm)
 
 	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "doomed")
-	if _, err := s.DeleteSnapshot(ctx, snap.ID); err != nil {
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
 		t.Fatalf("DeleteSnapshot: %v", err)
 	}
 	if _, err := s.SnapshotByID(ctx, snap.ID); !errors.Is(err, store.ErrNotFound) {
@@ -247,7 +247,7 @@ func TestDeleteSnapshot_FailsClosedWithChildren(t *testing.T) {
 		t.Fatalf("patch child ParentSnapshotID: %v", err)
 	}
 
-	if _, err := s.DeleteSnapshot(ctx, parent.ID); !errors.Is(err, store.ErrSnapshotHasChildren) {
+	if _, err := s.DeleteSnapshot(ctx, parent.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); !errors.Is(err, store.ErrSnapshotHasChildren) {
 		t.Fatalf("DeleteSnapshot(parent) = %v, want store.ErrSnapshotHasChildren", err)
 	}
 	// Fail-closed: the parent row is NOT soft-deleted.
@@ -273,7 +273,7 @@ func TestDeleteSnapshot_SoftDeletesAndDropsOwnerIndex(t *testing.T) {
 	seedVM(t, cl, vm)
 
 	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "daily")
-	if _, err := s.DeleteSnapshot(ctx, snap.ID); err != nil {
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
 		t.Fatalf("DeleteSnapshot: %v", err)
 	}
 

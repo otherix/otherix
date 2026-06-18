@@ -32,11 +32,10 @@ import (
 // identifier-resolution contract (resolver.Querier, used to resolve the {id}
 // path param to a VM), the VM-runtime read used to resolve vm_state_at_snapshot,
 // and the snapshot domain methods (atomic create-with-task, by-id, list,
-// fail-closed delete) plus the EnqueueTask producer seam the delete handler uses
-// for the async blob GC. *etcdstore.Store satisfies it; depending on the
-// interface narrows the dependency to what the handlers use and lets tests
-// substitute a fake. The vm.snapshot.* workers (run.go, Task 6) are
-// consumer-side and hold the concrete store.
+// fail-closed delete that enqueues the blob-GC task+job in the SAME transaction).
+// *etcdstore.Store satisfies it; depending on the interface narrows the dependency
+// to what the handlers use and lets tests substitute a fake. The vm.snapshot.*
+// workers (run.go, Task 6) are consumer-side and hold the concrete store.
 type Store interface {
 	resolver.Querier
 
@@ -46,8 +45,7 @@ type Store interface {
 	CreateSnapshot(ctx context.Context, p store.CreateSnapshotParams, args queue.JobArgs) (store.Snapshot, error)
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	ListSnapshots(ctx context.Context, p store.ListSnapshotsParams) ([]store.Snapshot, error)
-	DeleteSnapshot(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
-	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
+	DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams store.CreateTaskParams, args queue.JobArgs) (store.Snapshot, error)
 }
 
 // Handler bundles the dependencies for the /v1/vms/{id}/snapshots +

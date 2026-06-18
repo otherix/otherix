@@ -5,6 +5,8 @@ package vm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -362,6 +364,85 @@ func TestDeleteSnapshotByID_VMUnregistered_StillDeletes(t *testing.T) {
 	}
 	if blobExists(root, orphan) {
 		t.Error("ghost orphan blob still present after delete, want removed (content-addressed, no VM)")
+	}
+}
+
+// TestMaterialiseFromSnapshot_RejectsCorruptBlob pins the recreate integrity gate:
+// a blob whose on-disk CONTENT no longer matches its content-address filename must
+// be refused (snapshot_blob_corrupt) and never cloned into the new VM's boot disk.
+// Removing the hashFile-verify in materialiseFromSnapshot MUST fail this test.
+func TestMaterialiseFromSnapshot_RejectsCorruptBlob(t *testing.T) {
+	m := newTestManager(t)
+	poolName := m.defaultTestPool()
+	root := m.defaultTestPoolRoot(t)
+
+	// Name the blob with the digest of bodyA, but write bodyB into it (corruption /
+	// tamper): content hash != filename digest.
+	bodyA := qcow2Body(0x11)
+	sumA := sha256.Sum256(bodyA)
+	claimed := hex.EncodeToString(sumA[:])
+	dir := filepath.Join(root, "snapshots")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir snapshots: %v", err)
+	}
+	blobPath := filepath.Join(dir, claimed+".qcow2")
+	if err := os.WriteFile(blobPath, qcow2Body(0x22), 0o600); err != nil { // wrong content
+		t.Fatalf("write corrupt blob: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "boot.qcow2")
+	v := &VM{ID: uuid.New(), Name: "victim", PoolName: poolName, DiskPath: dst, Architecture: qemu.HostArch()}
+	failCode, _ := m.materialiseFromSnapshot(v, &SnapshotRef{
+		Pool:  poolName,
+		Disks: []SnapshotDiskRef{{Index: 0, Device: "virtio0", SHA256: claimed}},
+	})
+	if failCode != "snapshot_blob_corrupt" {
+		t.Errorf("failCode = %q, want snapshot_blob_corrupt (corrupt blob must not be cloned)", failCode)
+	}
+	if _, err := os.Stat(dst); err == nil {
+		t.Errorf("boot disk was created from a corrupt blob; want no clone")
+	}
+}
+
+// TestDeleteSnapshotByID_RejectsTraversalName pins the agent-edge path-traversal
+// guard: a snapshot name containing a path separator must be rejected before any
+// filesystem path is built (defense in depth; the agent does not trust the CP).
+func TestDeleteSnapshotByID_RejectsTraversalName(t *testing.T) {
+	m := newTestManager(t)
+	if _, err := m.DeleteSnapshotByID(context.Background(), uuid.New(), "x/../../etc/passwd", nil); err == nil {
+		t.Errorf("DeleteSnapshotByID accepted a traversal snapshot name; want rejection")
+	}
+}
+
+// TestDeleteSnapshotByID_DropsNonHexDigests pins the agent-edge digest guard: a
+// non-content-address (traversal-shaped) orphaned digest must be DROPPED, never fed
+// to os.Remove. A decoy file reachable only via the traversal digest must survive.
+// Removing the isHexSHA256Lower filter MUST fail this test (the decoy gets deleted).
+func TestDeleteSnapshotByID_DropsNonHexDigests(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedStoppedVM(t, "delvm")
+	root := m.defaultTestPoolRoot(t)
+
+	// A real orphaned blob (valid digest) the agent SHOULD remove.
+	good := shaHex([]byte("good-orphan"))
+	m.writeManifestOnDisk(t, root, v, "snapX", good)
+	// A decoy at {poolRoot}/evil.qcow2, reachable from snapshots/ via "../evil".
+	decoy := filepath.Join(root, "evil.qcow2")
+	if err := os.WriteFile(decoy, []byte("do not delete"), 0o600); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+
+	task, err := m.DeleteSnapshotByID(context.Background(), v.ID, "snapX", []string{good, "../evil"})
+	if err != nil {
+		t.Fatalf("DeleteSnapshotByID: %v", err)
+	}
+	_ = m.awaitTask(t, task.ID)
+
+	if _, err := os.Stat(decoy); err != nil {
+		t.Errorf("decoy evil.qcow2 was removed via a traversal digest; the non-hex filter must drop it")
+	}
+	if blobExists(root, good) {
+		t.Errorf("valid orphaned blob %s not removed; the GC should still act on hex digests", good)
 	}
 }
 

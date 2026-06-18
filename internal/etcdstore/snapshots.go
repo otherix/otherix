@@ -318,10 +318,14 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 // names this snapshot as its parent, mutating nothing in that case (a delete
 // must fail toward inaction so a still-referenced base is never destroyed). When
 // no children exist it stamps deleted_at + status=deleting, drops the per-VM
-// name guard and the owner index (so CountUserResources falls) in one
-// transaction. It does NOT delete the disk blobs or their blobRef entries - blob
-// GC is the agent's job later, gated on the reference graph remaining empty.
-func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID) (store.Snapshot, error) {
+// name guard and the owner index (so CountUserResources falls), AND enqueues the
+// blob-GC task+job - all in ONE transaction. Enqueuing the GC job atomically with
+// the soft-delete (the same pattern CreateSnapshot uses) closes a crash window: a
+// CP crash between a separate soft-delete and a separate enqueue would leave a
+// soft-deleted row whose blobs never get a reclaimer (the retried DELETE 404s on
+// the already-deleted row). It does NOT delete the disk blobs or their blobRef
+// entries - that is the enqueued GC task's job, gated on the reference graph.
+func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams store.CreateTaskParams, args queue.JobArgs) (store.Snapshot, error) {
 	existing, err := s.SnapshotByID(ctx, id)
 	if err != nil {
 		return store.Snapshot{}, err
@@ -348,12 +352,27 @@ func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID) (store.Snapsho
 		return store.Snapshot{}, err
 	}
 
+	seq, jobOp, err := s.enqueueJobOp(ctx, args)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	task := taskFromParams(taskParams, seq)
+	taskVal, err := etcd.Marshal(task)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+
+	ops := []clientv3.Op{
+		clientv3.OpPut(snapshotKey(id), string(val)),
+		clientv3.OpDelete(snapshotVMNameGuard(existing.VmID, existing.Name)),
+		clientv3.OpDelete(snapshotOwnerIndexKey(existing.OwnerID, id)),
+		clientv3.OpPut(taskKey(task.ID), string(taskVal)),
+		jobOp,
+	}
+	ops = append(ops, taskIndexOps(task)...)
+
 	if _, err := s.c.Raw().Txn(ctx).
-		Then(
-			clientv3.OpPut(snapshotKey(id), string(val)),
-			clientv3.OpDelete(snapshotVMNameGuard(existing.VmID, existing.Name)),
-			clientv3.OpDelete(snapshotOwnerIndexKey(existing.OwnerID, id)),
-		).
+		Then(ops...).
 		Commit(); err != nil {
 		return store.Snapshot{}, fmt.Errorf("delete snapshot txn: %v", err)
 	}
@@ -454,19 +473,25 @@ func (s *Store) BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID,
 func (s *Store) DereferenceSnapshotBlobs(ctx context.Context, snapshotID uuid.UUID, digests []string) ([]string, error) {
 	var orphaned []string
 	for _, digest := range digests {
-		if _, err := s.c.Raw().Txn(ctx).
-			Then(clientv3.OpDelete(blobRefKey(digest, snapshotID))).
-			Commit(); err != nil {
+		// Delete this snapshot's ref AND read the remaining refs in ONE transaction so
+		// the orphan decision is linearizable: the OpGet executes after the OpDelete at
+		// the same revision, and a concurrent sibling delete of a shared (dedup'd) blob
+		// either commits before this txn (its ref is gone from our read) or after (its
+		// ref is still present, so we keep the blob). A delete-then-separate-range would
+		// let two racing deletes both observe zero refs; the single txn forbids that.
+		resp, err := s.c.Raw().Txn(ctx).
+			Then(
+				clientv3.OpDelete(blobRefKey(digest, snapshotID)),
+				clientv3.OpGet(blobRefPrefix(digest), clientv3.WithPrefix()),
+			).
+			Commit()
+		if err != nil {
 			return nil, fmt.Errorf("dereference blob %q: %v", digest, err)
 		}
-		// Read the authoritative refgraph AFTER the delete: any entry remaining under
-		// the digest is another snapshot still referencing the blob (fail-closed - the
-		// blob stays). Zero entries means the blob is now orphaned and safe to GC.
-		items, err := s.c.Range(ctx, blobRefPrefix(digest))
-		if err != nil {
-			return nil, fmt.Errorf("read blob refs %q: %v", digest, err)
-		}
-		if len(items) == 0 {
+		// Responses[1] is the post-delete range: zero entries means no other snapshot
+		// references the blob, so it is orphaned and safe to GC. Any remaining entry is
+		// another snapshot still holding the ref (fail-closed - the blob stays).
+		if rng := resp.Responses[1].GetResponseRange(); rng == nil || len(rng.Kvs) == 0 {
 			orphaned = append(orphaned, digest)
 		}
 	}
