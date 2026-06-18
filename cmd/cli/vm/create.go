@@ -16,6 +16,7 @@ import (
 
 const (
 	flagImageURL         = "image-url"
+	flagFromSnapshot     = "from-snapshot"
 	flagImageSHA256      = "image-sha256"
 	flagArch             = "arch"
 	flagFirmware         = "firmware"
@@ -50,11 +51,15 @@ unique). A CP-side reconcile loop binds the VM to a (node, pool) once
 its dependencies are ready; pass --wait to block until the VM is
 running. The VM uuid is minted on the CP and reused by the agent.
 
-The VM is created directly from an image source — there is no template
-entity. --image-url and --arch are required; the server downloads and
-caches the image into the target pool. --image-sha256 pins the expected
-digest, --firmware / --firmware-id select firmware (name or uuid),
---format and --disk-gib size the root disk.
+The VM is created from one of two disk sources (exactly one of
+--image-url / --from-snapshot is required). With --image-url the server
+downloads and caches the image into the target pool; --image-sha256 pins
+the expected digest, --firmware / --firmware-id select firmware (name or
+uuid), --format and --disk-gib size the root disk. With --from-snapshot
+<id> the VM is recreated from a snapshot's disks instead: architecture,
+format, and firmware come from the snapshot manifest, so --arch and the
+image flags are not supplied in that mode. --arch is required only in the
+--image-url mode.
 
 Example:
   otherix vm create web-1 --image-url https://example.com/ubuntu.qcow2 \
@@ -84,9 +89,10 @@ and the agent falls back to legacy SLIRP networking.`,
 		RunE: runCreate,
 	}
 
-	cmd.Flags().String(flagImageURL, "", "source image URL to download and boot from (required)")
+	cmd.Flags().String(flagImageURL, "", "source image URL to download and boot from (mutually exclusive with --from-snapshot)")
+	cmd.Flags().String(flagFromSnapshot, "", "recreate from a snapshot uuid instead of an image (mutually exclusive with --image-url)")
 	cmd.Flags().String(flagImageSHA256, "", "expected sha256 of the image (optional; verified after download)")
-	cmd.Flags().String(flagArch, "", "VM architecture: amd64 or arm64 (required)")
+	cmd.Flags().String(flagArch, "", "VM architecture: amd64 or arm64 (required with --image-url)")
 	cmd.Flags().String(flagFirmware, "", "firmware name (optional; mutually exclusive with --firmware-id)")
 	cmd.Flags().String(flagFirmwareID, "", "firmware uuid (optional; mutually exclusive with --firmware)")
 	cmd.Flags().String(flagFormat, "", "image disk format, e.g. qcow2 or raw (optional; server default applies)")
@@ -105,6 +111,11 @@ and the agent falls back to legacy SLIRP networking.`,
 	cmd.Flags().Bool(flagWait, false, "block until the VM reaches the running phase")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
+	// Exactly-one-of image source. cobra rejects both being set; the missing
+	// case is enforced in parseImageFlags (clearer error than a generic
+	// "one of the flags is required" message).
+	cmd.MarkFlagsMutuallyExclusive(flagImageURL, flagFromSnapshot)
+
 	return cmd
 }
 
@@ -114,6 +125,7 @@ and the agent falls back to legacy SLIRP networking.`,
 type createFlags struct {
 	name              string
 	imageURL          string
+	fromSnapshot      string
 	imageSHA256       string
 	arch              string
 	firmware          string
@@ -165,17 +177,32 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 	return f, nil
 }
 
-// parseImageFlags reads the image-source flags onto f. --image-url and
-// --arch are required; --firmware / --firmware-id are mutually
-// exclusive. Extracted from parseCreateFlags to keep that orchestrator
-// inside the gocyclo cap.
+// parseImageFlags reads the disk-source flags onto f. Exactly one of
+// --image-url / --from-snapshot is required (cobra already rejects both
+// set). In the image-source mode --image-url and --arch are required; in
+// the snapshot-source mode they come from the manifest and must not be
+// supplied. --firmware / --firmware-id are mutually exclusive. Extracted
+// from parseCreateFlags to keep that orchestrator inside the gocyclo cap.
 func parseImageFlags(cmd *cobra.Command, f *createFlags) error {
 	var err error
-	if f.imageURL, err = requireStringFlag(cmd, flagImageURL); err != nil {
+	if f.fromSnapshot, err = cmd.Flags().GetString(flagFromSnapshot); err != nil {
 		return err
 	}
-	if f.arch, err = requireStringFlag(cmd, flagArch); err != nil {
+	if f.imageURL, err = cmd.Flags().GetString(flagImageURL); err != nil {
 		return err
+	}
+	if f.arch, err = cmd.Flags().GetString(flagArch); err != nil {
+		return err
+	}
+	if f.fromSnapshot == "" {
+		// Image-source mode: --image-url and --arch are required (the
+		// snapshot-source path takes both from the manifest).
+		if f.imageURL == "" {
+			return fmt.Errorf("exactly one of --%s or --%s is required", flagImageURL, flagFromSnapshot)
+		}
+		if f.arch == "" {
+			return fmt.Errorf("--%s is required", flagArch)
+		}
 	}
 	if f.imageSHA256, err = cmd.Flags().GetString(flagImageSHA256); err != nil {
 		return err
@@ -274,13 +301,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	req := cpclient.CreateVMRequest{
 		Name:              f.name,
-		ImageURL:          f.imageURL,
-		ImageSHA256:       f.imageSHA256,
-		Arch:              f.arch,
-		Firmware:          f.firmware,
-		FirmwareID:        f.firmwareID,
-		Format:            f.format,
-		DiskGiB:           f.diskGiB,
 		Pool:              f.pool,
 		Network:           f.network,
 		VCPUs:             f.vcpus,
@@ -288,6 +308,19 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		UserData:          f.userData,
 		NetworkConfig:     f.networkConfig,
 		CloudInitDisabled: f.cloudInitDisabled,
+	}
+	if f.fromSnapshot != "" {
+		// Snapshot-source mode: forward only the provenance; architecture /
+		// format / firmware / image come from the snapshot manifest CP-side.
+		req.SourceSnapshotID = f.fromSnapshot
+	} else {
+		req.ImageURL = f.imageURL
+		req.ImageSHA256 = f.imageSHA256
+		req.Arch = f.arch
+		req.Firmware = f.firmware
+		req.FirmwareID = f.firmwareID
+		req.Format = f.format
+		req.DiskGiB = f.diskGiB
 	}
 	if f.node != "" {
 		req.Node = &f.node
