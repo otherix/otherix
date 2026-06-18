@@ -13,7 +13,7 @@
 #   <disk state>            -> a write-once runcmd records the ORIGINAL hostname
 #                             (snap-src) into /var/lib/otherix-smoke/sentinel on
 #                             the guest disk, on the FIRST boot only
-#   vm snapshot create s1   -> ready      (disk-only, content-addressed blobs)
+#   vm snapshot <vm> --name s1 -> ready      (disk-only, content-addressed blobs)
 #   vm delete snap-src      -> gone
 #   vm create snap-restored --from-snapshot <s1> -> running (no image download)
 #   ASSERT disk survived    -> the restored guest still reports the ORIGINAL
@@ -221,15 +221,16 @@ pass "disk sentinel committed on $SRC_VM (value=$SRC_VM)"
 
 # --- step 3: snapshot -> ready -----------------------------------------
 echo "=== step 3: snapshot $SRC_VM --name $SNAP_NAME -> ready ==="
-otx vm snapshot create "$SRC_VM" --name "$SNAP_NAME" --wait --wait-timeout "${SNAP_WAIT}s" \
-  || fail "vm snapshot create did not finish within ${SNAP_WAIT}s"
+otx vm snapshot "$SRC_VM" --name "$SNAP_NAME" --wait --wait-timeout "${SNAP_WAIT}s" \
+  || fail "vm snapshot did not finish within ${SNAP_WAIT}s"
 
 # Resolve the snapshot id and confirm it reached ready (the create --wait already
-# blocked on the task, but assert the resource status explicitly).
+# blocked on the task, but assert the resource status explicitly). The global
+# `snapshot list --vm <id>` is the operator path; filter to this VM by uuid.
 SNAP_ID=""; SNAP_STATUS=""
 deadline=$(( SECONDS + PHASE_WAIT ))
 while (( SECONDS < deadline )); do
-  read -r SNAP_ID SNAP_STATUS < <(otx vm snapshot list "$SRC_VM" --output json 2>/dev/null \
+  read -r SNAP_ID SNAP_STATUS < <(otx snapshot list --vm "$SRC_ID" --output json 2>/dev/null \
     | jq -r --arg n "$SNAP_NAME" 'first(.data[]? | select(.name==$n)) | "\(.id) \(.status)"' 2>/dev/null) || true
   [[ "$SNAP_STATUS" == "ready" ]] && break
   sleep 2
@@ -281,7 +282,7 @@ pass "hostname re-applied: restored guest hostname is '$DST_VM'"
 echo "=== step 7: cleanup ==="
 otx vm delete "$DST_VM" --wait --force --wait-timeout "${OP_WAIT}s" || fail "vm delete $DST_VM failed"
 assert_gone "$DST_VM"
-otx vm snapshot delete "$SNAP_ID" --wait --wait-timeout "${OP_WAIT}s" >/dev/null 2>&1 || true
+otx snapshot delete "$SNAP_ID" --wait --wait-timeout "${OP_WAIT}s" >/dev/null 2>&1 || true
 pass "cleanup complete"
 
 trap - EXIT
