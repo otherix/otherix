@@ -267,7 +267,7 @@ fi
 # may already exist; `|| true` keeps re-runs non-fatal).
 ARTIFACT_POOL_NAME="artifacts"
 echo ""
-echo ">> Step 4 — seeding cluster default artifact pool '${ARTIFACT_POOL_NAME}'"
+echo ">> Step 4 - seeding cluster default artifact pool '${ARTIFACT_POOL_NAME}'"
 "${CLI}" artifact-pool create "${ARTIFACT_POOL_NAME}" \
     --replication-factor 1 --members all || true
 "${CLI}" cluster set-default-artifact-pool "${ARTIFACT_POOL_NAME}" || true
