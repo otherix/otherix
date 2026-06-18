@@ -116,10 +116,11 @@ var vmSpecKeys = map[string]bool{
 	"cloudInitDisabled": true,
 }
 
-// DecodeVMSpec decodes and validates a VM document's spec. imageURL and
-// arch are required; firmware/firmwareID are mutually exclusive, and
-// userData and networkConfig are each mutually exclusive with
-// cloudInitDisabled.
+// DecodeVMSpec decodes and validates a VM document's spec. Exactly one
+// of imageURL or sourceSnapshotID must be set; arch is required only on
+// the image path (the snapshot manifest is authoritative for arch).
+// firmware/firmwareID are mutually exclusive, and userData and
+// networkConfig are each mutually exclusive with cloudInitDisabled.
 func DecodeVMSpec(d Document) (VMSpec, error) {
 	if err := rejectUnknownKeys(d, vmSpecKeys); err != nil {
 		return VMSpec{}, err
@@ -134,10 +135,17 @@ func DecodeVMSpec(d Document) (VMSpec, error) {
 	s.Node = strings.TrimSpace(s.Node)
 	s.Pool = strings.TrimSpace(s.Pool)
 	s.Network = strings.TrimSpace(s.Network)
-	if s.ImageURL == "" {
-		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.imageURL is required", d.Index, d.Name)
+	// Exactly one of imageURL / sourceSnapshotID (mirrors the server's
+	// image_xor_snapshot admission). For the image path arch is required; for
+	// the snapshot path architecture/firmware/format come from the snapshot
+	// manifest and must NOT be supplied (the server rejects them), so they are
+	// dropped at request-build time (see vmCreateOp).
+	hasImage := s.ImageURL != ""
+	hasSnapshot := s.SourceSnapshotID != ""
+	if hasImage == hasSnapshot {
+		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec: exactly one of imageURL or sourceSnapshotID is required", d.Index, d.Name)
 	}
-	if s.Arch == "" {
+	if hasImage && s.Arch == "" {
 		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.arch is required", d.Index, d.Name)
 	}
 	if s.Firmware != "" && s.FirmwareID != "" {

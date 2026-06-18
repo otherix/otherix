@@ -96,6 +96,43 @@ func TestDecodeVMSpecRequiresImageAndArch(t *testing.T) {
 	}
 }
 
+func TestDecodeVMSpec_ImageXorSnapshot(t *testing.T) {
+	// snapshot-only: no imageURL, no arch -> decodes cleanly with the
+	// snapshot id set (arch comes from the snapshot manifest, not the spec).
+	snapOnly := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { sourceSnapshotID: snap-1 }\n")
+	got, err := manifest.DecodeVMSpec(snapOnly)
+	if err != nil {
+		t.Fatalf("DecodeVMSpec(snapshot-only) error = %v, want nil", err)
+	}
+	if got.SourceSnapshotID != "snap-1" {
+		t.Errorf("DecodeVMSpec(snapshot-only) SourceSnapshotID = %q, want snap-1", got.SourceSnapshotID)
+	}
+
+	// both imageURL and sourceSnapshotID -> rejected (exactly one).
+	both := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, sourceSnapshotID: snap-1 }\n")
+	if _, err := manifest.DecodeVMSpec(both); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Errorf("DecodeVMSpec(both) error = %v, want 'exactly one'", err)
+	}
+
+	// neither imageURL nor sourceSnapshotID -> rejected (exactly one).
+	neither := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { vcpus: 2 }\n")
+	if _, err := manifest.DecodeVMSpec(neither); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Errorf("DecodeVMSpec(neither) error = %v, want 'exactly one'", err)
+	}
+
+	// image-sourced with arch -> OK (unchanged).
+	img := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64 }\n")
+	if _, err := manifest.DecodeVMSpec(img); err != nil {
+		t.Errorf("DecodeVMSpec(image+arch) error = %v, want nil", err)
+	}
+
+	// image-sourced without arch -> rejected (arch still required for image path).
+	imgNoArch := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2 }\n")
+	if _, err := manifest.DecodeVMSpec(imgNoArch); err == nil || !strings.Contains(err.Error(), "arch is required") {
+		t.Errorf("DecodeVMSpec(image, no arch) error = %v, want 'arch is required'", err)
+	}
+}
+
 func TestDecodeVMSpecUserDataMutualExclusion(t *testing.T) {
 	d := parseOne(t, "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  userData: \"#cloud-config\"\n  cloudInitDisabled: true\n")
 	if _, err := manifest.DecodeVMSpec(d); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
