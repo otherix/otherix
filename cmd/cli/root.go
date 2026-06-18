@@ -6,6 +6,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
+	artifactpoolcmd "github.com/otherix/otherix/cmd/cli/artifactpool"
 	clustercmd "github.com/otherix/otherix/cmd/cli/cluster"
 	configcmd "github.com/otherix/otherix/cmd/cli/config"
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
@@ -53,6 +54,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(migrationcmd.NewCommand())
 	root.AddCommand(snapshotcmd.NewCommand())
 	root.AddCommand(poolcmd.NewCommand())
+	root.AddCommand(artifactpoolcmd.NewCommand())
 	root.AddCommand(networkcmd.NewCommand())
 	root.AddCommand(nodecmd.NewCommand())
 	root.AddCommand(clustercmd.NewCommand())
