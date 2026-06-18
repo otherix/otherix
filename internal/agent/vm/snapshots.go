@@ -74,12 +74,21 @@ func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, dest string) 
 		return fmt.Errorf("dial qmp: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	jobID := "snap-" + uuid.NewString()
-	nodeName := "snaptgt-" + uuid.NewString()
+	jobID, nodeName := qemuBackupIDs()
 	if err := client.BackupDiskToFile(ctx, jobID, nodeName, device, dest); err != nil {
 		return fmt.Errorf("backup disk %s: %v", device, err)
 	}
 	return nil
+}
+
+// qemuBackupIDs returns a (jobID, nodeName) pair for one transient
+// blockdev-backup. Both stay within QEMU's 31-char node-name limit: an 8-hex
+// suffix is unique enough for identifiers that live only for the duration of a
+// single backup in one VM's block graph. A full uuid (36 chars) overflows the
+// limit and qemu rejects blockdev-add with "Node name too long".
+func qemuBackupIDs() (jobID, nodeName string) {
+	s := uuid.NewString()[:8]
+	return "snap-" + s, "snaptgt-" + s
 }
 
 // snapshotDiskDevice is one VM disk to capture: its virtio index, the wire

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode"
 )
 
 // sameFileIno asserts that two FileInfos refer to the same on-disk file
@@ -209,6 +210,29 @@ func TestListSnapshots_PairsBlobsWithSidecars(t *testing.T) {
 		}
 		if b.SizeBytes != int64(len(qcow2Body(0x01))) {
 			t.Errorf("blob SizeBytes = %d, want %d", b.SizeBytes, len(qcow2Body(0x01)))
+		}
+	}
+}
+
+// TestQemuBackupIDs_WithinNodeNameLimit pins the QEMU block-node-name constraint
+// that the real-agent smoke caught: blockdev-add rejects a node-name longer than
+// 31 chars ("Node name too long"), and a full uuid suffix (36 chars) overflowed
+// it. Both the job-id and the node-name must stay within the limit and start
+// with a letter (a valid qemu identifier).
+func TestQemuBackupIDs_WithinNodeNameLimit(t *testing.T) {
+	const qemuNodeNameMax = 31
+	for i := 0; i < 100; i++ {
+		jobID, nodeName := qemuBackupIDs()
+		for _, id := range []struct{ kind, val string }{{"jobID", jobID}, {"nodeName", nodeName}} {
+			if len(id.val) > qemuNodeNameMax {
+				t.Errorf("%s = %q, len %d > qemu limit %d", id.kind, id.val, len(id.val), qemuNodeNameMax)
+			}
+			if id.val == "" || !unicode.IsLetter(rune(id.val[0])) {
+				t.Errorf("%s = %q must start with a letter", id.kind, id.val)
+			}
+		}
+		if jobID == nodeName {
+			t.Errorf("jobID and nodeName must differ, both %q", jobID)
 		}
 	}
 }
