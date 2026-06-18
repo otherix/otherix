@@ -26,12 +26,19 @@ func TestVMGetOutputYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get -o yaml error = %v", err)
 	}
-	for _, want := range []string{"apiVersion: otherix/v1", "kind: VM", "name: vm-dev", "imageURL: https://img.example/noble.qcow2"} {
+	for _, want := range []string{
+		"apiVersion: otherix/v1", "kind: VM", "name: vm-dev",
+		"imageURL: https://img.example/noble.qcow2",
+		// status is observed state surfaced top-level (sibling of spec) so the
+		// operator sees the live phase; create -f reads only spec and ignores it.
+		"status:", "phase: running",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("yaml output missing %q:\n%s", want, stdout)
 		}
 	}
-	if strings.Contains(stdout, "status") || strings.Contains(stdout, "id:") || strings.Contains(stdout, "owner") {
+	// Server identity / owner fields must never leak into the apply-ready clone.
+	if strings.Contains(stdout, "id:") || strings.Contains(stdout, "owner") {
 		t.Errorf("yaml output leaked server fields:\n%s", stdout)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
@@ -163,6 +165,103 @@ func TestProjectVMRoundTrips(t *testing.T) {
 	}
 	if _, err := manifest.BuildCreatePlan(docs); err != nil {
 		t.Fatalf("projected VM is not apply-ready: %v", err)
+	}
+}
+
+// TestProjectVM_StatusAndSourceSnapshot guards that `vm get -o yaml`
+// surfaces the two pieces the server already returns but the projection
+// historically dropped: the system-reported status (top-level, k8s-style,
+// sibling of spec) and the source_snapshot_id of a snapshot-restored VM
+// (inside spec, a create input). status must NOT land inside spec (it is
+// observed state, not a create input), and sourceSnapshotID must.
+func TestProjectVM_StatusAndSourceSnapshot(t *testing.T) {
+	snapID := "11111111-2222-3333-4444-555555555555"
+	v := cpclient.VM{
+		Name:             "vm-from-snap",
+		Architecture:     "amd64",
+		VCPUs:            2,
+		MemoryMB:         2048,
+		SourceSnapshotID: &snapID,
+		Status:           cpclient.VMStatus{Phase: "running"},
+	}
+	out, err := manifest.ProjectVM(v)
+	if err != nil {
+		t.Fatalf("ProjectVM() error = %v", err)
+	}
+	got := string(out)
+
+	// Decode the projection to inspect structure precisely (top-level
+	// status, sourceSnapshotID under spec).
+	var doc struct {
+		Status struct {
+			Phase string `yaml:"phase"`
+		} `yaml:"status"`
+		Spec struct {
+			SourceSnapshotID string `yaml:"sourceSnapshotID"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal projection: %v\n%s", err, got)
+	}
+	if doc.Status.Phase != "running" {
+		t.Errorf("top-level status.phase = %q, want running\n%s", doc.Status.Phase, got)
+	}
+	if doc.Spec.SourceSnapshotID != snapID {
+		t.Errorf("spec.sourceSnapshotID = %q, want %q\n%s", doc.Spec.SourceSnapshotID, snapID, got)
+	}
+	// status must be a sibling of spec, never nested inside it: a spec
+	// block carrying status would feed observed state into a create input.
+	// A top-level status key sits at column 0; a nested one would be
+	// indented. Decoding into a typed doc also independently confirms the
+	// placement (doc.Spec has no status field), but assert on the text too
+	// so a regression to nesting is caught directly.
+	if !strings.Contains(got, "\nstatus:\n") {
+		t.Errorf("status must be a top-level key (column 0):\n%s", got)
+	}
+}
+
+// TestVMManifestWithStatusStillApplies confirms a projected VM manifest
+// carrying a top-level status block is still apply-ready: the create/apply
+// path (Parse -> BuildCreatePlan) reads spec only and ignores status, so a
+// `vm get -o yaml | create -f` round-trip does not break on the status block.
+func TestVMManifestWithStatusStillApplies(t *testing.T) {
+	v := cpclient.VM{
+		Name: "vm-applied", ImageURL: "http://x/i.qcow2", Architecture: "amd64",
+		VCPUs: 2, MemoryMB: 1024, Status: cpclient.VMStatus{Phase: "running"},
+	}
+	out, err := manifest.ProjectVM(v)
+	if err != nil {
+		t.Fatalf("ProjectVM() error = %v", err)
+	}
+	if !strings.Contains(string(out), "status:") {
+		t.Fatalf("expected a status block in the projection:\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse projection with status: %v\n%s", err, out)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("manifest with status is not apply-ready: %v\n%s", err, out)
+	}
+	if len(plan) != 1 || plan[0].VM == nil {
+		t.Fatalf("plan = %+v, want 1 vm op", plan)
+	}
+}
+
+// TestProjectVMOmitsStatusWhenPhaseEmpty guards that a VM with no reported
+// phase does not emit a noisy empty status block.
+func TestProjectVMOmitsStatusWhenPhaseEmpty(t *testing.T) {
+	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512}
+	out, err := manifest.ProjectVM(v)
+	if err != nil {
+		t.Fatalf("ProjectVM() error = %v", err)
+	}
+	if strings.Contains(string(out), "status:") {
+		t.Errorf("projection must omit status when phase is empty:\n%s", out)
+	}
+	if strings.Contains(string(out), "sourceSnapshotID") {
+		t.Errorf("projection must omit sourceSnapshotID when unset:\n%s", out)
 	}
 }
 

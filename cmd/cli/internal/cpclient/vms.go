@@ -92,22 +92,28 @@ type CreateVMRequest struct {
 // operator), nil otherwise. Architecture stays a string here
 // (the CLI does not need the typed CpuArch enum for output formatting).
 type VM struct {
-	ID           string         `json:"id"`
-	Name         string         `json:"name"`
-	OwnerID      string         `json:"owner_id"`
-	Owner        *string        `json:"owner"`
-	ImageURL     string         `json:"image_url"`
-	ImageSHA256  string         `json:"image_sha256,omitempty"`
-	Format       string         `json:"format"`
-	Pool         string         `json:"pool"`
-	Node         *string        `json:"node"`
-	Networks     []string       `json:"networks"`
-	Architecture string         `json:"architecture"`
-	VCPUs        int            `json:"vcpus"`
-	MemoryMB     int            `json:"memory_mb"`
-	Status       VMStatus       `json:"status"`
-	DesiredPhase string         `json:"desired_phase"`
-	Labels       map[string]any `json:"labels"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	OwnerID      string   `json:"owner_id"`
+	Owner        *string  `json:"owner"`
+	ImageURL     string   `json:"image_url"`
+	ImageSHA256  string   `json:"image_sha256,omitempty"`
+	Format       string   `json:"format"`
+	Pool         string   `json:"pool"`
+	Node         *string  `json:"node"`
+	Networks     []string `json:"networks"`
+	Architecture string   `json:"architecture"`
+	VCPUs        int      `json:"vcpus"`
+	MemoryMB     int      `json:"memory_mb"`
+	Status       VMStatus `json:"status"`
+	DesiredPhase string   `json:"desired_phase"`
+	// SourceSnapshotID is the snapshot a VM was restored from, when it was
+	// created in the snapshot-source mode (nil for image-sourced VMs). The
+	// server surfaces it on GET /v1/vms/{id}; `vm get -o yaml` round-trips it
+	// into spec.sourceSnapshotID so a snapshot-sourced VM manifest is not
+	// reduced to an empty imageURL with no trace of its origin.
+	SourceSnapshotID *string        `json:"source_snapshot_id"`
+	Labels           map[string]any `json:"labels"`
 	// UserData and NetworkConfig echo the cloud-init payloads supplied at
 	// create time, verbatim (nil when unset). Set once at create and
 	// immutable for the VM's lifetime. `vm get -o yaml` round-trips them
