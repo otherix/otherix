@@ -26,6 +26,10 @@ import (
 // listener carries no oracle.
 var ErrPullTokenInvalid = errors.New("etcdstore: pull token invalid, consumed, expired, or mis-bound")
 
+// pullTokenPrefix is the plaintext prefix of a single-use blob-pull bearer token,
+// mirroring the otx_-prefixed form of the other opaque tokens.
+const pullTokenPrefix = "otx_pull_"
+
 func pullSagaKey(id uuid.UUID) string { return etcd.Key("artifact_pull_saga", id.String()) }
 
 // pullTokenKey maps to artifact_pull_token/<sha256hex(plaintext)> -> JSON token
@@ -68,7 +72,7 @@ func (s *Store) CreatePullSaga(ctx context.Context, p store.CreatePullSagaParams
 	if _, err := rand.Read(raw); err != nil {
 		return store.ArtifactPullSaga{}, "", fmt.Errorf("mint pull token: %v", err)
 	}
-	plaintext := "otx_pull_" + base64.RawURLEncoding.EncodeToString(raw)
+	plaintext := pullTokenPrefix + base64.RawURLEncoding.EncodeToString(raw)
 	rec := pullTokenRecord{Digest: p.Digest, ConsumerNode: p.ConsumerNode, ExpiresAt: now.Add(p.TokenTTL)}
 	recVal, err := etcd.Marshal(rec)
 	if err != nil {
@@ -98,7 +102,10 @@ func (s *Store) PullSagaByID(ctx context.Context, id uuid.UUID) (store.ArtifactP
 }
 
 // UpdatePullSagaServeEndpoint records the holder's serve endpoint and advances
-// the phase to serving. Best-effort metadata; not gated.
+// the phase to serving. Best-effort metadata; not gated. This is a
+// read-modify-write (last-writer-wins) that assumes a single writer per saga (the
+// C1 broker mutates a saga sequentially from one goroutine); concurrent mutators
+// would need a ModRevision CAS.
 func (s *Store) UpdatePullSagaServeEndpoint(ctx context.Context, id uuid.UUID, endpoint string) error {
 	saga, err := s.PullSagaByID(ctx, id)
 	if err != nil {
@@ -109,8 +116,11 @@ func (s *Store) UpdatePullSagaServeEndpoint(ctx context.Context, id uuid.UUID, e
 	return s.c.PutJSON(ctx, pullSagaKey(id), saga)
 }
 
-// SetPullSagaPhase advances the saga phase (pulling / complete / failed).
-func (s *Store) SetPullSagaPhase(ctx context.Context, id uuid.UUID, phase string) error {
+// SetPullSagaPhase advances the saga phase (pulling / complete / failed). This is
+// a read-modify-write (last-writer-wins) that assumes a single writer per saga
+// (the C1 broker mutates a saga sequentially from one goroutine); concurrent
+// mutators would need a ModRevision CAS.
+func (s *Store) SetPullSagaPhase(ctx context.Context, id uuid.UUID, phase store.PullSagaPhase) error {
 	saga, err := s.PullSagaByID(ctx, id)
 	if err != nil {
 		return err

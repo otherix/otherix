@@ -866,13 +866,13 @@ type NodeBlob struct {
 // holder's serve endpoint (filled once the holder opens its listener), and the
 // phase. Mirrors the live-migration saga reversed (the consumer pulls).
 type ArtifactPullSaga struct {
-	ID            uuid.UUID `json:"id"`
-	Digest        string    `json:"digest"`
-	ConsumerNode  uuid.UUID `json:"consumer_node"`
-	HolderNode    uuid.UUID `json:"holder_node"`
-	ServeEndpoint string    `json:"serve_endpoint"`
-	Phase         string    `json:"phase"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            uuid.UUID     `json:"id"`
+	Digest        string        `json:"digest"`
+	ConsumerNode  uuid.UUID     `json:"consumer_node"`
+	HolderNode    uuid.UUID     `json:"holder_node"`
+	ServeEndpoint string        `json:"serve_endpoint"`
+	Phase         PullSagaPhase `json:"phase"`
+	CreatedAt     time.Time     `json:"created_at"`
 }
 
 // CreatePullSagaParams is the input to Store.CreatePullSaga.
@@ -884,11 +884,14 @@ type CreatePullSagaParams struct {
 	TokenTTL     time.Duration
 }
 
+// PullSagaPhase is the lifecycle phase of a cross-node blob pull saga (slice C1).
+type PullSagaPhase string
+
 // Pull-saga phases.
 const (
-	PullSagaPhasePending  = "pending"
-	PullSagaPhaseServing  = "serving"
-	PullSagaPhasePulling  = "pulling"
-	PullSagaPhaseComplete = "complete"
-	PullSagaPhaseFailed   = "failed"
+	PullSagaPhasePending  PullSagaPhase = "pending"
+	PullSagaPhaseServing  PullSagaPhase = "serving"
+	PullSagaPhasePulling  PullSagaPhase = "pulling"
+	PullSagaPhaseComplete PullSagaPhase = "complete"
+	PullSagaPhaseFailed   PullSagaPhase = "failed"
 )
