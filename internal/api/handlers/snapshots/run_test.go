@@ -30,14 +30,26 @@ type snapWorkerStoreStub struct {
 	// case; a test sets task.AgentTaskID to drive the redelivery-resume branch.
 	task store.Task
 
-	snapshot store.Snapshot
-	vm       store.VM
-	runtime  store.VMRuntime
-	node     store.Node
+	snapshot  store.Snapshot
+	vm        store.VM
+	vmByIDErr error
+	runtime   store.VMRuntime
+	node      store.Node
+
+	// placement map the delete path reads to resolve holder nodes WITHOUT a VM
+	// lookup (digest -> holder node ids).
+	placements map[string][]uuid.UUID
+
+	// NodeByID resolution: a per-id error (nodeErrByID) wins, else a per-id row
+	// (nodesByID), else the shared s.node. Lets a multi-holder test give one node a
+	// gone (ErrNotFound) or transient error while another resolves normally.
+	nodesByID   map[uuid.UUID]store.Node
+	nodeErrByID map[uuid.UUID]error
 
 	// recorded create-path calls
 	manifestDisks   []store.SnapshotDisk
 	manifestVMState store.VMStateAtSnapshot
+	manifestNodeID  uuid.UUID
 	manifestApplied bool
 
 	// recorded agent_task_id persistence (the resume seam): the id stamped on the
@@ -83,27 +95,38 @@ func (s *snapWorkerStoreStub) SnapshotByIDIncludingDeleted(context.Context, uuid
 }
 
 func (s *snapWorkerStoreStub) VMByID(context.Context, uuid.UUID) (store.VM, error) {
-	return s.vm, nil
+	return s.vm, s.vmByIDErr
 }
 
 func (s *snapWorkerStoreStub) VMRuntimeByID(context.Context, uuid.UUID) (store.VMRuntime, error) {
 	return s.runtime, nil
 }
 
-func (s *snapWorkerStoreStub) NodeByID(context.Context, uuid.UUID) (store.Node, error) {
+func (s *snapWorkerStoreStub) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
+	if err, ok := s.nodeErrByID[id]; ok {
+		return store.Node{}, err
+	}
+	if n, ok := s.nodesByID[id]; ok {
+		return n, nil
+	}
 	return s.node, nil
 }
 
-func (s *snapWorkerStoreStub) SnapshotManifestApplied(_ context.Context, _ uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error {
+func (s *snapWorkerStoreStub) SnapshotManifestApplied(_ context.Context, _, nodeID uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error {
 	s.manifestApplied = true
 	s.manifestDisks = disks
 	s.manifestVMState = vmState
+	s.manifestNodeID = nodeID
 	return nil
 }
 
 func (s *snapWorkerStoreStub) DereferenceSnapshotBlobs(_ context.Context, _ uuid.UUID, digests []string) ([]string, error) {
 	s.dereferenceDigests = digests
 	return s.orphanedReturn, nil
+}
+
+func (s *snapWorkerStoreStub) BlobPlacements(_ context.Context, digest string) ([]uuid.UUID, error) {
+	return s.placements[digest], nil
 }
 
 // fakeSnapshotExecutor is the SnapshotExecutor double. Create is split into Post
@@ -122,9 +145,12 @@ type fakeSnapshotExecutor struct {
 	pollResult CreateExecResult
 	pollErr    error
 
-	deleteCalled bool
-	deleteBlobs  []string
-	deleteErr    error
+	deleteCalled    bool
+	deleteBlobs     []string
+	deleteVMID      uuid.UUID
+	deleteEndpoint  string
+	deleteCallCount int
+	deleteErr       error
 }
 
 func (e *fakeSnapshotExecutor) Post(context.Context, CreateExecArgs) (uuid.UUID, error) {
@@ -140,7 +166,10 @@ func (e *fakeSnapshotExecutor) Poll(_ context.Context, endpoint string, agentTas
 
 func (e *fakeSnapshotExecutor) Delete(_ context.Context, a DeleteExecArgs) error {
 	e.deleteCalled = true
+	e.deleteCallCount++
 	e.deleteBlobs = a.OrphanedBlobs
+	e.deleteVMID = a.VMID
+	e.deleteEndpoint = a.AdvertisedEndpoint
 	return e.deleteErr
 }
 
@@ -298,7 +327,9 @@ func TestRunSnapshotCreate_Redelivery_NoAgentCall(t *testing.T) {
 // the snapshot's manifest references two blobs ("aa" sole-referenced, "bb" still
 // referenced by another snapshot). DereferenceSnapshotBlobs returns only the
 // orphaned ["aa"]; the executor Delete must be handed ONLY ["aa"], never the
-// shared "bb". Task finalized success.
+// shared "bb". The holder node is resolved through the PLACEMENT map (not the VM),
+// the agent Delete is keyed on the snapshot's vm_id, the orphaned placement entry
+// is dropped, and the task is finalized success.
 func TestRunSnapshotDelete_GCsOnlyOrphanedBlobs(t *testing.T) {
 	st := runningRuntimeStore()
 	st.snapshot.DeletedAt = ptrNow()
@@ -307,6 +338,7 @@ func TestRunSnapshotDelete_GCsOnlyOrphanedBlobs(t *testing.T) {
 		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
 	}
 	st.orphanedReturn = []string{"aa"} // bb stays referenced by another snapshot
+	st.placements = map[string][]uuid.UUID{"aa": {st.node.ID}, "bb": {st.node.ID}}
 
 	exec := &fakeSnapshotExecutor{}
 	err := runSnapshotDelete(context.Background(), st, exec, discardLogger(),
@@ -321,8 +353,136 @@ func TestRunSnapshotDelete_GCsOnlyOrphanedBlobs(t *testing.T) {
 	if !exec.deleteCalled {
 		t.Fatalf("executor Delete not called")
 	}
+	if exec.deleteVMID != st.snapshot.VmID {
+		t.Errorf("agent Delete vm_id = %v, want the snapshot's vm_id %v", exec.deleteVMID, st.snapshot.VmID)
+	}
+	if exec.deleteEndpoint != st.node.AdvertisedEndpoint {
+		t.Errorf("agent Delete endpoint = %q, want the placement holder's %q", exec.deleteEndpoint, st.node.AdvertisedEndpoint)
+	}
 	if got, want := exec.deleteBlobs, []string{"aa"}; !sameStrings(got, want) {
 		t.Errorf("agent Delete orphaned blobs = %v, want ONLY the orphaned %v (shared bb must never be GC'd)", got, want)
+	}
+	if !st.finalized || st.finalizedStatus != store.TaskStatusSuccess {
+		t.Errorf("task finalized = (%v, %q), want (true, success)", st.finalized, st.finalizedStatus)
+	}
+}
+
+// TestRunSnapshotDelete_VMDeleted_StillDeletesViaPlacement is the core regression
+// for the standalone-snapshot promise: the source VM is GONE (VMByID errors), yet
+// the delete must still locate the blob's holder node through the placement map and
+// drive the agent GC. A delete path that resolves the node via the VM (the bug)
+// fails here; the placement path succeeds.
+func TestRunSnapshotDelete_VMDeleted_StillDeletesViaPlacement(t *testing.T) {
+	st := runningRuntimeStore()
+	st.vmByIDErr = errors.New("store: not found") // VM already deleted
+	st.snapshot.DeletedAt = ptrNow()
+	st.snapshot.Disks = []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+	}
+	st.orphanedReturn = []string{"aa"}
+	st.placements = map[string][]uuid.UUID{"aa": {st.node.ID}}
+
+	exec := &fakeSnapshotExecutor{}
+	if err := runSnapshotDelete(context.Background(), st, exec, discardLogger(),
+		SnapshotDeleteArgs{TaskID: uuid.New(), SnapshotID: st.snapshot.ID}); err != nil {
+		t.Fatalf("runSnapshotDelete with deleted VM = %v, want nil (placement path is VM-independent)", err)
+	}
+	if !exec.deleteCalled || exec.deleteVMID != st.snapshot.VmID {
+		t.Errorf("agent Delete called=%v vm_id=%v, want true on the snapshot vm_id %v", exec.deleteCalled, exec.deleteVMID, st.snapshot.VmID)
+	}
+	if !st.finalized || st.finalizedStatus != store.TaskStatusSuccess {
+		t.Errorf("task finalized = (%v, %q), want (true, success)", st.finalized, st.finalizedStatus)
+	}
+}
+
+// TestRunSnapshotDelete_HolderNodeGone_SkipsAndContinues pins the fail-toward-
+// inaction skip: of two holder nodes, one's row is GONE (NodeByID -> ErrNotFound,
+// a permanently decommissioned node). The worker must SKIP it (its blob is
+// unreachable - a recoverable leak), still drive the agent delete on the reachable
+// holder, and finalize success. It must NOT wedge or fail the task.
+func TestRunSnapshotDelete_HolderNodeGone_SkipsAndContinues(t *testing.T) {
+	st := runningRuntimeStore()
+	st.snapshot.DeletedAt = ptrNow()
+	st.snapshot.Disks = []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
+	}
+	st.orphanedReturn = []string{"aa", "bb"}
+	liveNode := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://live:9443"}
+	goneNode := uuid.New()
+	st.nodesByID = map[uuid.UUID]store.Node{liveNode.ID: liveNode}
+	st.nodeErrByID = map[uuid.UUID]error{goneNode: store.ErrNotFound}
+	st.placements = map[string][]uuid.UUID{"aa": {liveNode.ID}, "bb": {goneNode}}
+
+	exec := &fakeSnapshotExecutor{}
+	if err := runSnapshotDelete(context.Background(), st, exec, discardLogger(),
+		SnapshotDeleteArgs{TaskID: uuid.New(), SnapshotID: st.snapshot.ID}); err != nil {
+		t.Fatalf("runSnapshotDelete = %v, want nil (gone holder is skipped, not fatal)", err)
+	}
+	if exec.deleteCallCount != 1 {
+		t.Errorf("agent Delete call count = %d, want 1 (only the reachable holder; the gone node is skipped)", exec.deleteCallCount)
+	}
+	if exec.deleteEndpoint != liveNode.AdvertisedEndpoint {
+		t.Errorf("agent Delete endpoint = %q, want the reachable holder %q", exec.deleteEndpoint, liveNode.AdvertisedEndpoint)
+	}
+	if got, want := exec.deleteBlobs, []string{"aa"}; !sameStrings(got, want) {
+		t.Errorf("reachable holder orphans = %v, want only its own digest %v", got, want)
+	}
+	if !st.finalized || st.finalizedStatus != store.TaskStatusSuccess {
+		t.Errorf("task finalized = (%v, %q), want (true, success)", st.finalized, st.finalizedStatus)
+	}
+}
+
+// TestRunSnapshotDelete_HolderNodeTransientError_FailsTask pins the retry path: a
+// holder whose NodeByID errors with a NON-ErrNotFound (transient) cause must FAIL
+// the task so the dispatcher retries - not be silently skipped (that would leak a
+// blob on a node that is merely temporarily unresolvable).
+func TestRunSnapshotDelete_HolderNodeTransientError_FailsTask(t *testing.T) {
+	st := runningRuntimeStore()
+	st.snapshot.DeletedAt = ptrNow()
+	st.snapshot.Disks = []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+	}
+	st.orphanedReturn = []string{"aa"}
+	flaky := uuid.New()
+	st.nodeErrByID = map[uuid.UUID]error{flaky: errors.New("etcd timeout")}
+	st.placements = map[string][]uuid.UUID{"aa": {flaky}}
+
+	exec := &fakeSnapshotExecutor{}
+	err := runSnapshotDelete(context.Background(), st, exec, discardLogger(),
+		SnapshotDeleteArgs{TaskID: uuid.New(), SnapshotID: st.snapshot.ID})
+	if err == nil {
+		t.Fatalf("runSnapshotDelete = nil, want the node-resolution error (task must fail and retry)")
+	}
+	if exec.deleteCalled {
+		t.Errorf("agent Delete called despite an unresolved holder node; want no agent contact")
+	}
+	if !st.finalized || st.finalizedStatus != store.TaskStatusFailed {
+		t.Errorf("task finalized = (%v, %q), want (true, failed)", st.finalized, st.finalizedStatus)
+	}
+}
+
+// TestRunSnapshotDelete_NoPlacement_FailsOpen pins the fail-toward-inaction branch:
+// a snapshot with NO placement entries (a pre-placement-map row, or a zero-disk
+// row) cannot have its holder resolved VM-independently. The worker must NOT wedge
+// (or contact any agent) - it finalizes success, leaking any blob for a later
+// sweep, because wedging the task forever is worse than a recoverable leak.
+func TestRunSnapshotDelete_NoPlacement_FailsOpen(t *testing.T) {
+	st := runningRuntimeStore()
+	st.snapshot.DeletedAt = ptrNow()
+	st.snapshot.Disks = []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+	}
+	st.orphanedReturn = []string{"aa"}
+	st.placements = nil // no placement seed
+
+	exec := &fakeSnapshotExecutor{}
+	if err := runSnapshotDelete(context.Background(), st, exec, discardLogger(),
+		SnapshotDeleteArgs{TaskID: uuid.New(), SnapshotID: st.snapshot.ID}); err != nil {
+		t.Fatalf("runSnapshotDelete = %v, want nil (fail-open on missing placement)", err)
+	}
+	if exec.deleteCalled {
+		t.Errorf("agent Delete called with no resolvable holder; want no agent contact")
 	}
 	if !st.finalized || st.finalizedStatus != store.TaskStatusSuccess {
 		t.Errorf("task finalized = (%v, %q), want (true, success)", st.finalized, st.finalizedStatus)

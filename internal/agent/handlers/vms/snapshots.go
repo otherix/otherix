@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/agentapi"
@@ -93,15 +94,24 @@ func (h *Handler) SnapshotGet(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusOK, snap)
 }
 
-// SnapshotDelete handles DELETE /v1/vms/{vm_name}/snapshots/{snapshot_name} -
-// async (202). The manager removes the manifest and fail-closed GCs the blobs
-// no other local manifest references. The CP-passed `orphaned` query params
-// are advisory only: the agent's local reference scan is authoritative for
-// what it owns and never deletes a blob still referenced locally.
-func (h *Handler) SnapshotDelete(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "vm_name")
+// SnapshotDeleteByID handles DELETE /v1/snapshots/{vm_id}/{snapshot_name} -
+// async (202). The route is node-level and keyed on the immutable vm_id (NOT the
+// live VM): the manager locates the manifest by vm_uuid across registered pools
+// and removes the content-addressed blobs by digest, so deletion works after the
+// source VM is gone. The CP-passed `orphaned` query params are the fail-closed-GC
+// set (digests the CP refgraph proved unreferenced cluster-wide); the agent
+// removes only those, additionally gated by its own local reference scan.
+func (h *Handler) SnapshotDeleteByID(w http.ResponseWriter, r *http.Request) {
+	vmID, err := uuid.Parse(chi.URLParam(r, "vm_id"))
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "vm_id must be a uuid", nil)
+		return
+	}
 	snapName := chi.URLParam(r, "snapshot_name")
-	task, err := h.manager.DeleteSnapshot(r.Context(), name, snapName)
+	orphaned := r.URL.Query()["orphaned"]
+
+	task, err := h.manager.DeleteSnapshotByID(r.Context(), vmID, snapName, orphaned)
 	if err != nil {
 		mapSnapshotError(w, r, err)
 		return

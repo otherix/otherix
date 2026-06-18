@@ -20,7 +20,7 @@ import (
 // fake without importing the production client at all.
 type agentClient interface {
 	PostSnapshot(ctx context.Context, endpoint, vmName string, body agentapi.SnapshotCreateRequest) (uuid.UUID, error)
-	DeleteSnapshot(ctx context.Context, endpoint, vmName, snapshotName string, orphaned []string) error
+	DeleteSnapshot(ctx context.Context, endpoint string, vmID uuid.UUID, snapshotName string, orphaned []string) error
 	PollTask(ctx context.Context, endpoint string, agentTaskID uuid.UUID) (agentclient.TaskTerminal, error)
 }
 
@@ -88,7 +88,7 @@ func (e *agentSnapshotExecutor) Poll(ctx context.Context, endpoint string, agent
 // manifest. A delete error is returned so the worker fails the task and the
 // dispatcher retries (the row stays soft-deleted; orphaned blobs leak meanwhile).
 func (e *agentSnapshotExecutor) Delete(ctx context.Context, a DeleteExecArgs) error {
-	if err := e.client.DeleteSnapshot(ctx, a.AdvertisedEndpoint, a.VMName, a.SnapshotName, a.OrphanedBlobs); err != nil {
+	if err := e.client.DeleteSnapshot(ctx, a.AdvertisedEndpoint, a.VMID, a.SnapshotName, a.OrphanedBlobs); err != nil {
 		return fmt.Errorf("delete snapshot: %w", err)
 	}
 	return nil

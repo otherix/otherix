@@ -80,7 +80,7 @@ var operationIDs = map[string]struct{}{
 	"vmSnapshots.list":           {},
 	"vmSnapshots.create":         {},
 	"vmSnapshots.get":            {},
-	"vmSnapshots.delete":         {},
+	"snapshots.delete":           {},
 	"vmMigrations.startIncoming": {},
 	"vmMigrations.startOutgoing": {},
 	"vmMigrations.get":           {},

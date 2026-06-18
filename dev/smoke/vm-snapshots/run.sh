@@ -114,6 +114,19 @@ serial_count() {
   printf '%s' "$n"
 }
 
+# wait_file_gone PATH TIMEOUT -> block until PATH no longer exists on node-1.
+# The agent's snapshot delete is async (fire-and-forget: the CP task finalizes
+# once the agent ACCEPTS), so the blob/manifest unlink lands shortly AFTER the
+# CLI --wait returns; poll rather than assert once to avoid racing it.
+wait_file_gone() {
+  local path="$1" to="$2" deadline; deadline=$(( SECONDS + to ))
+  while (( SECONDS < deadline )); do
+    run_on "$SMOKE_HANDLE_1" sudo test -f "$path" 2>/dev/null || return 0
+    sleep 2
+  done
+  return 1
+}
+
 # wait_serial VMID PATTERN TIMEOUT -> block until PATTERN appears in the VM's
 # serial.log; returns non-zero on timeout.
 wait_serial() {
@@ -278,12 +291,46 @@ wait_serial "$DST_ID" "OTHERIX_HOSTNAME ${DST_VM}" "$GUEST_WAIT" \
        fail "restored guest hostname is not '$DST_VM' - the cidata seed did not apply the new VM name"; }
 pass "hostname re-applied: restored guest hostname is '$DST_VM'"
 
-# --- step 7: cleanup ----------------------------------------------------
-echo "=== step 7: cleanup ==="
+# --- step 7: delete the standalone snapshot AFTER its source VM is gone --
+# This is the regression gate for the placement-map blob GC: SRC_VM (the snapshot's
+# source) was deleted back in step 4, so the snapshot is now fully standalone. The
+# old GC resolved the holder node via the VM and failed (node_unreachable: load vm:
+# store: not found), leaking the blob; the placement-map fix must (a) finish the
+# delete task SUCCESSfully and (b) physically remove the content-addressed blob +
+# manifest on node-1. Delete DST_VM first so the snapshot's blob is unshared.
+echo "=== step 7: delete $DST_VM, then the standalone snapshot (source VM already gone) ==="
 otx vm delete "$DST_VM" --wait --force --wait-timeout "${OP_WAIT}s" || fail "vm delete $DST_VM failed"
 assert_gone "$DST_VM"
-otx snapshot delete "$SNAP_ID" --wait --wait-timeout "${OP_WAIT}s" >/dev/null 2>&1 || true
-pass "cleanup complete"
+
+# Locate the snapshot's agent-side manifest ({vm_uuid}__{name}.json) and its blob
+# digests on node-1 BEFORE the delete, so we can assert they are physically gone
+# AFTER. The manifest is keyed by the (now-deleted) SRC_VM's uuid - exactly the
+# state the fix must handle.
+MAN_PATH="$(run_on "$SMOKE_HANDLE_1" sudo find "$(smoke_state 1)" -path "*/snapshots/manifests/${SRC_ID}__${SNAP_NAME}.json" 2>/dev/null | head -1 || true)"
+[ -n "$MAN_PATH" ] || fail "snapshot manifest ${SRC_ID}__${SNAP_NAME}.json not found on $NODE1 (snapshot was never materialized?)"
+SNAP_DIR="$(dirname "$(dirname "$MAN_PATH")")"   # .../snapshots
+DIGESTS="$(run_on "$SMOKE_HANDLE_1" sudo cat "$MAN_PATH" 2>/dev/null | jq -r '.disks[].sha256' || true)"
+[ -n "$DIGESTS" ] || fail "could not read blob digests from $MAN_PATH on $NODE1"
+for d in $DIGESTS; do
+  run_on "$SMOKE_HANDLE_1" sudo test -f "$SNAP_DIR/${d}.qcow2" \
+    || fail "blob $d.qcow2 missing on $NODE1 before delete (snapshot not materialized as expected)"
+done
+info "snapshot $SNAP_NAME blobs present on $NODE1: $(echo "$DIGESTS" | tr '\n' ' ')"
+
+# The delete MUST succeed even though SRC_VM is gone (the bug failed here).
+otx snapshot delete "$SNAP_ID" --wait --wait-timeout "${OP_WAIT}s" \
+  || fail "snapshot delete failed after source VM deleted (placement-map GC regression)"
+pass "snapshot delete succeeded with source VM already gone"
+
+# The manifest and every blob must be physically reclaimed on node-1 (the agent
+# unlink is async, so poll for absence rather than assert once).
+wait_file_gone "$MAN_PATH" "$OP_WAIT" \
+  || fail "snapshot manifest still present on $NODE1 ${OP_WAIT}s after delete: $MAN_PATH"
+for d in $DIGESTS; do
+  wait_file_gone "$SNAP_DIR/${d}.qcow2" "$OP_WAIT" \
+    || fail "orphaned blob $d.qcow2 LEAKED on $NODE1 ${OP_WAIT}s after delete - placement-map GC did not reclaim it"
+done
+pass "snapshot blobs + manifest reclaimed on $NODE1 (no leak)"
 
 trap - EXIT
 echo

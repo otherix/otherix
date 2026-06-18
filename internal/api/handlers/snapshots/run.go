@@ -6,6 +6,7 @@ package snapshots
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -48,13 +49,20 @@ type WorkerStore interface {
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	// SnapshotManifestApplied projects the agent-reported manifest (disks +
-	// vm_state_at_snapshot) and writes the blob reference-graph entries in one Txn.
-	SnapshotManifestApplied(ctx context.Context, id uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error
+	// vm_state_at_snapshot), writes the blob reference-graph entries, and seeds the
+	// placement map under nodeID (the producing node) in one Txn.
+	SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error
 	// DereferenceSnapshotBlobs removes this snapshot's reference-graph entries for
 	// the given digests and returns ONLY the digests left with zero remaining refs
 	// (the orphaned set safe to GC). Fail-closed: a digest still referenced by
 	// another snapshot is never returned.
 	DereferenceSnapshotBlobs(ctx context.Context, snapshotID uuid.UUID, digests []string) (orphaned []string, err error)
+	// BlobPlacements returns the node ids holding the blob with the given digest. The
+	// delete worker resolves a snapshot's holder node(s) through it - NOT through the
+	// source VM - so deletion works after the VM is gone. Entries are durable (no
+	// remove path): the best-effort delete cannot confirm a blob is physically gone,
+	// so pruning the map is slice C's reconcile-loop job, not the delete path's.
+	BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error)
 }
 
 // CreateHandler returns the dispatcher handler for vm.snapshot.create jobs.
@@ -96,7 +104,7 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 	if err != nil {
 		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeSnapshotFailed, fmt.Errorf("load snapshot: %v", err))
 	}
-	endpoint, vmName, err := resolveSnapshotNode(ctx, st, snap.VmID)
+	endpoint, vmName, nodeID, err := resolveSnapshotNode(ctx, st, snap.VmID)
 	if err != nil {
 		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeNodeUnreachable, err)
 	}
@@ -120,7 +128,7 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 	// write the blob reference-graph entries, then finalize the task success. The
 	// projection runs first: a finalize without the manifest would leave a "success"
 	// task pointing at an empty-manifest snapshot.
-	if err := st.SnapshotManifestApplied(ctx, args.SnapshotID, res.Disks, res.VMStateAtSnapshot); err != nil {
+	if err := st.SnapshotManifestApplied(ctx, args.SnapshotID, nodeID, res.Disks, res.VMStateAtSnapshot); err != nil {
 		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeSnapshotFailed, fmt.Errorf("apply manifest: %v", err))
 	}
 	result, err := json.Marshal(struct {
@@ -194,50 +202,141 @@ func runSnapshotDelete(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 		return failTask(ctx, st, log, "snapshots.delete", taskID, errCodeSnapshotFailed, fmt.Errorf("dereference blobs: %v", err))
 	}
 
-	endpoint, vmName, err := resolveSnapshotNode(ctx, st, snap.VmID)
+	// Resolve the snapshot's holder node(s) through the PLACEMENT map, NOT the source
+	// VM: a standalone snapshot must stay deletable after its VM is gone. Discover
+	// over ALL the snapshot's digests (not just the orphaned ones) so the manifest's
+	// producing node - which holds every digest - is always contacted to drop the
+	// manifest, even when every blob is shared (nothing orphaned).
+	placements, holders, err := resolveSnapshotHolders(ctx, st, digests)
 	if err != nil {
-		return failTask(ctx, st, log, "snapshots.delete", taskID, errCodeNodeUnreachable, err)
-	}
-
-	if err := exec.Delete(ctx, DeleteExecArgs{
-		VMName:             vmName,
-		AdvertisedEndpoint: endpoint,
-		SnapshotName:       snap.Name,
-		OrphanedBlobs:      orphaned,
-	}); err != nil {
-		// The row stays soft-deleted; orphaned blobs leak (recoverable, reclaimable
-		// by a future sweep). Fail the task so the dispatcher retries the GC.
 		return failTask(ctx, st, log, "snapshots.delete", taskID, errCodeSnapshotFailed, err)
 	}
+	if len(holders) == 0 {
+		// No placement seed (a pre-placement-map snapshot, or a zero-disk row): the
+		// holder node cannot be resolved VM-independently. Fail toward inaction - the
+		// row is already soft-deleted; any blob leak is recoverable by a future sweep,
+		// and wedging the task forever is worse than the leak.
+		log.WarnContext(ctx, "snapshot delete: no placement entries; cannot locate blobs, leaking (fail-open)",
+			"task_id", taskID, "snapshot_id", args.SnapshotID, "vm_id", snap.VmID)
+		if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{}`)}); err != nil {
+			return fmt.Errorf("finalize task success: %v", err)
+		}
+		return nil
+	}
 
+	if err := deleteSnapshotOnHolders(ctx, st, exec, log, taskID, snap, orphaned, placements, holders); err != nil {
+		return err
+	}
+
+	// Placement entries are intentionally NOT removed here. The agent delete is
+	// best-effort and fire-and-forget (and fail-closed-leaks on any uncertainty),
+	// so an unconfirmed "success" cannot prove the blob is gone; dropping the entry
+	// would discard the only VM-independent pointer to a possibly-leaked blob. The
+	// map stays as a conservative reclamation index that slice C's reconcile loop
+	// (ADR 0027 pattern) prunes after verifying blob absence per node.
 	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{}`)}); err != nil {
 		return fmt.Errorf("finalize task success: %v", err)
 	}
 	return nil
 }
 
+// deleteSnapshotOnHolders drives the per-holder-node agent delete (manifest + the
+// orphaned blobs that node holds). A holder whose node row is gone (NodeByID
+// ErrNotFound = permanently decommissioned) is unreachable - skip it (recoverable
+// leak; its placement entry stays as a reclamation pointer), do not wedge. A
+// reachable node whose agent delete fails transiently fails the task so the
+// dispatcher retries (the agent delete is idempotent: a re-run over an
+// already-removed manifest/blob succeeds). Returns a failTask result (terminal
+// already written) on failure, or nil when every holder was handled.
+func deleteSnapshotOnHolders(ctx context.Context, st WorkerStore, exec SnapshotExecutor, log *slog.Logger, taskID uuid.UUID, snap store.Snapshot, orphaned []string, placements map[string][]uuid.UUID, holders []uuid.UUID) error {
+	for _, nodeID := range holders {
+		node, nerr := st.NodeByID(ctx, nodeID)
+		if nerr != nil {
+			if errors.Is(nerr, store.ErrNotFound) {
+				log.WarnContext(ctx, "snapshot delete: holder node gone; skipping (blobs unreachable, leaked)",
+					"task_id", taskID, "snapshot_id", snap.ID, "node_id", nodeID)
+				continue
+			}
+			return failTask(ctx, st, log, "snapshots.delete", taskID, errCodeNodeUnreachable, fmt.Errorf("load node %s: %v", nodeID, nerr))
+		}
+		if err := exec.Delete(ctx, DeleteExecArgs{
+			VMID:               snap.VmID,
+			AdvertisedEndpoint: node.AdvertisedEndpoint,
+			SnapshotName:       snap.Name,
+			OrphanedBlobs:      orphansOnNode(orphaned, placements, nodeID),
+		}); err != nil {
+			// The row stays soft-deleted; orphaned blobs leak (recoverable, reclaimable
+			// by a future sweep). Fail the task so the dispatcher retries the GC.
+			return failTask(ctx, st, log, "snapshots.delete", taskID, errCodeSnapshotFailed, err)
+		}
+	}
+	return nil
+}
+
+// resolveSnapshotHolders reads the placement map for every digest the snapshot
+// references and returns (per-digest holders, deduped holder-node union). The union
+// drives the per-node agent deletes; the per-digest map lets orphansOnNode hand each
+// node only the orphaned digests it actually holds. It never touches the source VM.
+func resolveSnapshotHolders(ctx context.Context, st WorkerStore, digests []string) (map[string][]uuid.UUID, []uuid.UUID, error) {
+	placements := make(map[string][]uuid.UUID, len(digests))
+	var holders []uuid.UUID
+	seen := map[uuid.UUID]bool{}
+	for _, digest := range digests {
+		nodes, err := st.BlobPlacements(ctx, digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read placement %q: %v", digest, err)
+		}
+		placements[digest] = nodes
+		for _, n := range nodes {
+			if !seen[n] {
+				seen[n] = true
+				holders = append(holders, n)
+			}
+		}
+	}
+	return placements, holders, nil
+}
+
+// orphansOnNode returns the orphaned digests held on nodeID, so a holder node is
+// asked to GC only the blobs it actually stores (at K=1 every orphan maps to the
+// single producing node; the filter generalises to the dedup-induced multi-holder
+// case without changing the K=1 behaviour).
+func orphansOnNode(orphaned []string, placements map[string][]uuid.UUID, nodeID uuid.UUID) []string {
+	var out []string
+	for _, digest := range orphaned {
+		for _, n := range placements[digest] {
+			if n == nodeID {
+				out = append(out, digest)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // resolveSnapshotNode resolves the VM the snapshot belongs to and the node it
-// currently runs on, returning the node's advertised endpoint and the VM name the
-// agent calls are keyed on. A VM with no runtime row (never started) or no current
-// node has no agent to snapshot - an unreachable-node error, retryable against the
-// attempt budget.
-func resolveSnapshotNode(ctx context.Context, st WorkerStore, vmID uuid.UUID) (endpoint, vmName string, err error) {
+// currently runs on, returning the node's advertised endpoint, the VM name the
+// agent calls are keyed on, and the node id (recorded in the placement map). A VM
+// with no runtime row (never started) or no current node has no agent to snapshot -
+// an unreachable-node error, retryable against the attempt budget. Used by the
+// CREATE path only; delete resolves the node through the placement map instead.
+func resolveSnapshotNode(ctx context.Context, st WorkerStore, vmID uuid.UUID) (endpoint, vmName string, nodeID uuid.UUID, err error) {
 	vm, err := st.VMByID(ctx, vmID)
 	if err != nil {
-		return "", "", fmt.Errorf("load vm: %v", err)
+		return "", "", uuid.Nil, fmt.Errorf("load vm: %v", err)
 	}
 	rt, err := st.VMRuntimeByID(ctx, vmID)
 	if err != nil {
-		return "", "", fmt.Errorf("load vm runtime: %v", err)
+		return "", "", uuid.Nil, fmt.Errorf("load vm runtime: %v", err)
 	}
 	if rt.CurrentNodeID == nil {
-		return "", "", fmt.Errorf("vm %s has no current node; cannot snapshot", vm.Name)
+		return "", "", uuid.Nil, fmt.Errorf("vm %s has no current node; cannot snapshot", vm.Name)
 	}
 	node, err := st.NodeByID(ctx, *rt.CurrentNodeID)
 	if err != nil {
-		return "", "", fmt.Errorf("load node: %v", err)
+		return "", "", uuid.Nil, fmt.Errorf("load node: %v", err)
 	}
-	return node.AdvertisedEndpoint, vm.Name, nil
+	return node.AdvertisedEndpoint, vm.Name, node.ID, nil
 }
 
 // failTask writes the terminal failed envelope and returns cause so the dispatcher

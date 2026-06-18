@@ -38,4 +38,10 @@ func TestSnapshotKeySchema(t *testing.T) {
 	if got, want := blobRefPrefix("abc123"), "/otherix/index/blob_refs/abc123/"; got != want {
 		t.Errorf("blobRefPrefix = %q, want %q", got, want)
 	}
+	if got, want := placementKey("abc123", vid), "/otherix/placement/abc123/"+vid.String(); got != want {
+		t.Errorf("placementKey = %q, want %q", got, want)
+	}
+	if got, want := placementPrefix("abc123"), "/otherix/placement/abc123/"; got != want {
+		t.Errorf("placementPrefix = %q, want %q", got, want)
+	}
 }

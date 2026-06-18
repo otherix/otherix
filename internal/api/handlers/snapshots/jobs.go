@@ -57,12 +57,14 @@ type CreateExecResult struct {
 	VMStateAtSnapshot store.VMStateAtSnapshot
 }
 
-// DeleteExecArgs is the per-task input the delete executor receives. OrphanedBlobs
-// is the fail-closed-GC set: ONLY digests the CP reference graph proved are no
-// longer referenced by any other snapshot. The agent removes exactly these blobs
-// (and the snapshot's local manifest); a still-shared blob is never in this set.
+// DeleteExecArgs is the per-task input the delete executor receives. VMID keys the
+// agent's content-addressed delete (the agent locates the manifest by vm_uuid, not
+// the live VM, so deletion works after the VM is gone). OrphanedBlobs is the
+// fail-closed-GC set: ONLY digests the CP reference graph proved are no longer
+// referenced by any other snapshot. The agent removes exactly these blobs (and the
+// snapshot's local manifest); a still-shared blob is never in this set.
 type DeleteExecArgs struct {
-	VMName             string
+	VMID               uuid.UUID
 	AdvertisedEndpoint string
 	SnapshotName       string
 	OrphanedBlobs      []string

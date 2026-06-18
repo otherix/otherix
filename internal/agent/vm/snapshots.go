@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -587,59 +588,81 @@ func (m *Manager) failSnapshotTask(taskID uuid.UUID, code, message string) {
 	})
 }
 
-// DeleteSnapshot removes the named snapshot's manifest and then GCs the blobs
-// it referenced that NO OTHER local manifest references. Fail-closed: a blob
-// still referenced by another manifest is never removed; on any uncertainty
-// the blob is leaked, never deleted (the CP refgraph is authoritative
-// cluster-side - this is best-effort agent-local cleanup of orphans the agent
-// owns). Returns the agent task tracking the async work.
-func (m *Manager) DeleteSnapshot(ctx context.Context, vmName, snapshotName string) (*AgentTask, error) {
-	v, err := m.ByName(vmName)
-	if err != nil {
-		return nil, err
-	}
-	poolRoot, err := m.poolRoot(v.PoolName)
-	if err != nil {
-		return nil, err
-	}
-	task := m.tasks.Create(TaskKindVMSnapshotDelete, v.ID)
+// DeleteSnapshotByID removes the snapshot named snapshotName captured from the
+// VM with id vmUUID: its manifest (located by vm_uuid across the agent's
+// registered pools, NOT via the live VM, so the source VM may already be gone)
+// and the content-addressed blobs the CP marked orphaned that no surviving
+// local manifest still references. Fail-closed: a blob referenced by another
+// manifest, a blob not in the CP-authoritative orphaned set, or a pool whose
+// manifest layer errors is never touched (leak over wrongful delete). The CP
+// refgraph is authoritative cluster-side; this is the agent-local execution of
+// the orphans the CP already proved unreferenced. Returns the agent task
+// tracking the async work.
+func (m *Manager) DeleteSnapshotByID(_ context.Context, vmUUID uuid.UUID, snapshotName string, orphaned []string) (*AgentTask, error) {
+	task := m.tasks.Create(TaskKindVMSnapshotDelete, vmUUID)
 	// #nosec G118 -- async task work intentionally outlives the HTTP request.
-	go m.runSnapshotDelete(task.ID, poolRoot, v.ID, snapshotName)
+	go m.runSnapshotDelete(task.ID, vmUUID, snapshotName, orphaned)
 	return task, nil
 }
 
-func (m *Manager) runSnapshotDelete(taskID uuid.UUID, poolRoot string, vmUUID uuid.UUID, snapshotName string) {
-	log := m.log.With("task_id", taskID.String(), "snapshot", snapshotName)
+func (m *Manager) runSnapshotDelete(taskID, vmUUID uuid.UUID, snapshotName string, orphaned []string) {
+	log := m.log.With("task_id", taskID.String(), "vm_id", vmUUID.String(), "snapshot", snapshotName)
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
+	orphanSet := make(map[string]bool, len(orphaned))
+	for _, d := range orphaned {
+		orphanSet[d] = true
+	}
+
+	// Snapshot manifests/blobs are content-addressed under each pool's snapshots/
+	// dir; the source VM (hence its pool) may be gone, so sweep every registered
+	// pool and act wherever the manifest/blobs physically live.
+	m.poolsMu.RLock()
+	roots := make([]string, 0, len(m.pools))
+	for _, p := range m.pools {
+		roots = append(roots, p.root)
+	}
+	m.poolsMu.RUnlock()
+
+	for _, root := range roots {
+		m.gcSnapshotInPool(log, root, vmUUID, snapshotName, orphanSet)
+	}
+
+	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+	log.Info("snapshot deleted")
+}
+
+// gcSnapshotInPool removes the snapshot's manifest (if present in this pool) and
+// then GCs the orphaned blobs this pool holds that no SURVIVING manifest
+// references. Fail-closed: any manifest-layer error leaks the whole pool (touches
+// nothing), and a blob either still locally referenced or absent from the
+// CP-authoritative orphaned set is never removed.
+func (m *Manager) gcSnapshotInPool(log *slog.Logger, poolRoot string, vmUUID uuid.UUID, snapshotName string, orphanSet map[string]bool) {
 	manPath := snapshotManifestPath(poolRoot, vmUUID, snapshotName)
-	target, present, err := readSnapshotManifest(manPath)
+	_, present, err := readSnapshotManifest(manPath)
 	if err != nil {
-		log.Error("read manifest for delete", "err", err)
-		m.failSnapshotTask(taskID, "internal", err.Error())
+		log.Warn("read manifest for delete; leaking pool (fail-closed)", "pool_root", poolRoot, "err", err)
 		return
 	}
-	if !present {
-		// Already gone: delete is idempotent, report success.
-		m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
-		return
-	}
-
-	// Remove the manifest FIRST so the surviving-reference scan below cannot
-	// count the snapshot being deleted as a live reference to its own blobs.
-	if err := os.Remove(manPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		log.Error("remove manifest", "err", err)
-		m.failSnapshotTask(taskID, "internal", err.Error())
-		return
+	// Remove the manifest FIRST so the surviving-reference scan below cannot count
+	// the snapshot being deleted as a live reference to its own blobs.
+	if present {
+		if err := os.Remove(manPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Warn("remove manifest; leaking pool (fail-closed)", "pool_root", poolRoot, "err", err)
+			return
+		}
 	}
 
-	// Build the set of digests still referenced by ANY remaining manifest.
+	if len(orphanSet) == 0 {
+		return // manifest-only cleanup (every referenced blob is shared)
+	}
+
+	// Build the set of digests still referenced by ANY surviving manifest.
 	// Fail-closed: if the surviving manifests cannot be enumerated, leak every
 	// blob (delete nothing) rather than risk removing one still in use.
 	survivors, err := listManifests(poolRoot)
 	if err != nil {
-		log.Warn("list surviving manifests; leaking blobs (fail-closed)", "err", err)
-		m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
+		log.Warn("list surviving manifests; leaking blobs (fail-closed)", "pool_root", poolRoot, "err", err)
 		return
 	}
 	referenced := map[string]bool{}
@@ -650,21 +673,28 @@ func (m *Manager) runSnapshotDelete(taskID uuid.UUID, poolRoot string, vmUUID uu
 	}
 
 	snapshotsDir := filepath.Join(poolRoot, snapshotsSubdir)
-	for _, d := range target.Disks {
-		if referenced[d.SHA256] {
-			continue // still in use by another snapshot - never delete.
+	for digest := range orphanSet {
+		if referenced[digest] {
+			continue // still referenced by a surviving manifest - never delete.
 		}
-		blobPath := filepath.Join(snapshotsDir, d.SHA256+".qcow2")
-		if err := os.Remove(blobPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Warn("remove orphan blob", "sha256", d.SHA256, "err", err)
-		}
-		if err := os.Remove(blobPath + ".sha256"); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Warn("remove orphan blob sidecar", "sha256", d.SHA256, "err", err)
-		}
+		removeBlobIfPresent(log, snapshotsDir, digest)
 	}
+}
 
-	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusSuccess })
-	log.Info("snapshot deleted")
+// removeBlobIfPresent deletes the content-addressed blob (and its sidecar) for
+// digest under snapshotsDir, if present. Absence means the blob lives in another
+// pool (or was already removed): a no-op, not an error.
+func removeBlobIfPresent(log *slog.Logger, snapshotsDir, digest string) {
+	blobPath := filepath.Join(snapshotsDir, digest+".qcow2")
+	if _, statErr := os.Stat(blobPath); statErr != nil {
+		return // blob not in this pool
+	}
+	if err := os.Remove(blobPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("remove orphan blob", "sha256", digest, "err", err)
+	}
+	if err := os.Remove(blobPath + ".sha256"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("remove orphan blob sidecar", "sha256", digest, "err", err)
+	}
 }
 
 // VMSnapshots lists the materialized snapshots for the named VM, projected

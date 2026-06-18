@@ -36,7 +36,7 @@ func seedReadySnapshot(t *testing.T, s *etcdstore.Store, vmID, ownerID uuid.UUID
 	}, fakeJobArgs{}); err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
-	if err := s.SnapshotManifestApplied(ctx, sid, []store.SnapshotDisk{
+	if err := s.SnapshotManifestApplied(ctx, sid, uuid.New(), []store.SnapshotDisk{
 		{Index: 0, Device: "virtio0", SHA256: "deadbeef", SizeBytes: 1 << 20, Format: "qcow2"},
 	}, store.VmStateAtSnapshotStopped); err != nil {
 		t.Fatalf("SnapshotManifestApplied: %v", err)

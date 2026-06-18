@@ -307,12 +307,13 @@ func TestSnapshotManifestApplied_FillsDisksReadyAndRefgraph(t *testing.T) {
 	vm.OwnerID = owner.ID
 	seedVM(t, cl, vm)
 
+	nodeID := uuid.New()
 	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "daily")
 	disks := []store.SnapshotDisk{
 		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
 		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
 	}
-	if err := s.SnapshotManifestApplied(ctx, snap.ID, disks, store.VmStateAtSnapshotRunning); err != nil {
+	if err := s.SnapshotManifestApplied(ctx, snap.ID, nodeID, disks, store.VmStateAtSnapshotRunning); err != nil {
 		t.Fatalf("SnapshotManifestApplied: %v", err)
 	}
 
@@ -340,6 +341,60 @@ func TestSnapshotManifestApplied_FillsDisksReadyAndRefgraph(t *testing.T) {
 			t.Errorf("blob_refs[%q] = %v, want one entry -> %v", d.SHA256, items, snap.ID)
 		}
 	}
+
+	// The placement seed that lets blob GC find the holder node WITHOUT a VM lookup
+	// must exist: one entry per disk under the producing node.
+	for _, d := range disks {
+		holders, err := s.BlobPlacements(ctx, d.SHA256)
+		if err != nil {
+			t.Fatalf("BlobPlacements %q: %v", d.SHA256, err)
+		}
+		if len(holders) != 1 || holders[0] != nodeID {
+			t.Errorf("placement[%q] = %v, want [%v] (the producing node)", d.SHA256, holders, nodeID)
+		}
+	}
+}
+
+// TestBlobPlacements_SeedAndRead proves the placement map round-trip the
+// VM-independent blob GC depends on: SnapshotManifestApplied seeds an entry under
+// the producing node, BlobPlacements reads the holder back, and an unseeded digest
+// reads back empty (not an error). Placement entries are intentionally durable (no
+// remove path) - they are the reclamation index slice C prunes, not the delete path.
+func TestBlobPlacements_SeedAndRead(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapplacement")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-placement-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	nodeID := uuid.New()
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "daily")
+	if err := s.SnapshotManifestApplied(ctx, snap.ID, nodeID, []store.SnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
+	}, store.VmStateAtSnapshotStopped); err != nil {
+		t.Fatalf("SnapshotManifestApplied: %v", err)
+	}
+
+	holders, err := s.BlobPlacements(ctx, "aa")
+	if err != nil {
+		t.Fatalf("BlobPlacements: %v", err)
+	}
+	if len(holders) != 1 || holders[0] != nodeID {
+		t.Fatalf("BlobPlacements(aa) = %v, want [%v]", holders, nodeID)
+	}
+
+	none, err := s.BlobPlacements(ctx, "no-such-digest")
+	if err != nil {
+		t.Fatalf("BlobPlacements(unseeded): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("BlobPlacements(unseeded) = %v, want empty", none)
+	}
 }
 
 // TestDereferenceSnapshotBlobs_OnlyOrphansUnreferenced proves the fail-closed GC
@@ -363,13 +418,14 @@ func TestDereferenceSnapshotBlobs_OnlyOrphansUnreferenced(t *testing.T) {
 	snap2 := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "s2")
 
 	// snap1: blobs aa (sole) + bb (shared). snap2: blob bb (shared).
-	if err := s.SnapshotManifestApplied(ctx, snap1.ID, []store.SnapshotDisk{
+	nodeID := uuid.New()
+	if err := s.SnapshotManifestApplied(ctx, snap1.ID, nodeID, []store.SnapshotDisk{
 		{Index: 0, Device: "virtio0", SHA256: "aa", SizeBytes: 10, Format: "qcow2"},
 		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
 	}, store.VmStateAtSnapshotStopped); err != nil {
 		t.Fatalf("SnapshotManifestApplied snap1: %v", err)
 	}
-	if err := s.SnapshotManifestApplied(ctx, snap2.ID, []store.SnapshotDisk{
+	if err := s.SnapshotManifestApplied(ctx, snap2.ID, nodeID, []store.SnapshotDisk{
 		{Index: 0, Device: "virtio0", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
 	}, store.VmStateAtSnapshotStopped); err != nil {
 		t.Fatalf("SnapshotManifestApplied snap2: %v", err)

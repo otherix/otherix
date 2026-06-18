@@ -70,7 +70,6 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Get("/{vm_name}/snapshots", h.SnapshotsList)
 	r.Post("/{vm_name}/snapshots", h.SnapshotCreate)
 	r.Get("/{vm_name}/snapshots/{snapshot_name}", h.SnapshotGet)
-	r.Delete("/{vm_name}/snapshots/{snapshot_name}", h.SnapshotDelete)
 	r.Post("/{vm_name}/revert", h.Revert)
 }
 

@@ -796,11 +796,43 @@ paths:
                 $ref: "#/components/schemas/Snapshot"
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/snapshots/{vm_id}/{snapshot_name}:
+    parameters:
+      - name: vm_id
+        in: path
+        required: true
+        description: |
+          UUID of the VM the snapshot was captured from. The route is
+          node-level and keyed on the IMMUTABLE vm_id, not the live VM:
+          the agent locates the manifest by vm_uuid across its pools and
+          removes the content-addressed blobs by digest, so deletion
+          works after the source VM is already gone.
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/SnapshotName"
     delete:
-      operationId: vmSnapshots.delete
+      operationId: snapshots.delete
       tags: [vm-snapshots]
-      summary: Delete a snapshot (asynchronous).
+      summary: Delete a snapshot by VM id (asynchronous, VM-independent).
+      description: |
+        Called by the Control Plane to GC a (soft-deleted) snapshot's
+        manifest and blobs. The `orphaned` query params are the
+        fail-closed-GC set: digests the CP reference graph proved are no
+        longer referenced by any other snapshot cluster-wide. The agent
+        removes only those blobs (additionally gated by its own local
+        reference scan) plus the snapshot's manifest. Idempotent: a
+        re-run over an already-removed manifest/blob still returns 202.
       parameters:
+        - name: orphaned
+          in: query
+          required: false
+          description: |
+            Repeated content-addressed blob digests safe to remove
+            (the CP fail-closed-GC set). Absent means manifest-only
+            cleanup (every referenced blob is still shared).
+          schema:
+            type: array
+            items: { type: string }
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "202":
@@ -809,6 +841,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }

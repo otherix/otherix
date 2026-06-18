@@ -58,6 +58,21 @@ func blobRefPrefix(digest string) string {
 	return etcd.Key("index", "blob_refs", digest) + "/"
 }
 
+// placementKey records that the blob with the given digest is held on a node. It
+// is the K=1 seed of the §3/§5 placement map (replicated-artifact-store design):
+// the snapshot-create success callback writes one entry per disk under the
+// producing node, and blob GC reads it to find a blob's holder node(s) WITHOUT a
+// VM lookup - so a snapshot stays deletable after its source VM is gone. Slice C
+// grows the map from {1 node} to {K nodes} + a reconcile loop; the key schema and
+// the GC's read are unchanged.
+func placementKey(digest string, nodeID uuid.UUID) string {
+	return etcd.Key("placement", digest, nodeID.String())
+}
+
+func placementPrefix(digest string) string {
+	return etcd.Key("placement", digest) + "/"
+}
+
 // CreateSnapshot writes a creating snapshot row, its per-VM name guard, the
 // owner and per-VM secondary indexes, and the backing task+job in one
 // transaction (the direct analog of CreateMigration). The CAS on the name
@@ -365,12 +380,14 @@ func (s *Store) SnapshotByIDIncludingDeleted(ctx context.Context, id uuid.UUID) 
 // SnapshotManifestApplied is the worker's success callback: it fills the
 // manifest Disks, sets vm_state_at_snapshot from the agent report (the agent is
 // authoritative for what was actually captured), flips status to ready, bumps
-// updated_at, and writes one blobRefKey reference-graph entry per disk (value =
-// the snapshot id) - all in one transaction. The refgraph entries are the
-// authoritative, fail-closed input to blob GC: a future GC may delete a blob only
-// when no blobRef entries remain under its digest, so this write is the seam that
-// keeps GC from deleting a still-referenced blob.
-func (s *Store) SnapshotManifestApplied(ctx context.Context, id uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error {
+// updated_at, writes one blobRefKey reference-graph entry per disk (value = the
+// snapshot id), and seeds the placement map with one placementKey entry per disk
+// under nodeID (the node that produced the blobs) - all in one transaction. The
+// refgraph entries are the authoritative, fail-closed input to blob GC (a blob may
+// be deleted only when no blobRef entries remain under its digest). The placement
+// entries let blob GC find a blob's holder node WITHOUT a VM lookup, so the
+// snapshot stays deletable after its source VM is gone.
+func (s *Store) SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error {
 	existing, err := s.SnapshotByID(ctx, id)
 	if err != nil {
 		return err
@@ -384,14 +401,45 @@ func (s *Store) SnapshotManifestApplied(ctx context.Context, id uuid.UUID, disks
 		return err
 	}
 
+	// 1 row put + 2 ops per disk (blobRef + placement). Slice A is single-disk (3
+	// ops); a future multi-disk path must chunk via commitInChunks before it nears
+	// etcd's 128-op/txn limit (~63 disks), which no real VM approaches.
 	ops := []clientv3.Op{clientv3.OpPut(snapshotKey(id), string(val))}
 	for _, d := range disks {
 		ops = append(ops, clientv3.OpPut(blobRefKey(d.SHA256, id), id.String()))
+		ops = append(ops, clientv3.OpPut(placementKey(d.SHA256, nodeID), nodeID.String()))
 	}
 	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return fmt.Errorf("snapshot manifest applied txn: %v", err)
 	}
 	return nil
+}
+
+// BlobPlacements returns the node ids holding the blob with the given digest, read
+// from the placement map (the K=1 seed of the §3/§5 design). Blob GC uses it to
+// resolve a snapshot's holder node(s) WITHOUT loading the source VM, so deletion
+// works after the VM is gone. The order is unspecified.
+//
+// Placement entries are NOT pruned by the best-effort delete path: a fire-and-forget
+// agent delete cannot confirm a blob is physically gone, so removing the entry on an
+// unconfirmed "success" could discard the only VM-independent pointer to a blob the
+// agent fail-closed-leaked. The map is therefore a durable, conservative reclamation
+// index; pruning it (and reclaiming leaked blobs) is the slice-C reconcile loop's
+// job (ADR 0027 pattern), which can actually verify blob presence per node.
+func (s *Store) BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error) {
+	items, err := s.c.Range(ctx, placementPrefix(digest))
+	if err != nil {
+		return nil, fmt.Errorf("read placement %q: %v", digest, err)
+	}
+	out := make([]uuid.UUID, 0, len(items))
+	for _, kv := range items {
+		nodeID, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return nil, fmt.Errorf("corrupt placement entry %q: %v", kv.Key, perr)
+		}
+		out = append(out, nodeID)
+	}
+	return out, nil
 }
 
 // DereferenceSnapshotBlobs removes the snapshot's reference-graph entries for the

@@ -564,6 +564,10 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			r.Route("/tasks", tasksHandler.Mount)
 			r.Route("/storage-pools", storagePoolsHandler.Mount)
 			r.Post("/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
+			// Node-level snapshot delete keyed on the immutable vm_id (NOT the live
+			// VM): the blob GC must outlive the source VM, so it is mounted here
+			// rather than under /vms/{vm_name}.
+			r.Delete("/snapshots/{vm_id}/{snapshot_name}", vmsHandler.SnapshotDeleteByID)
 		})
 	})
 

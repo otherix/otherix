@@ -57,19 +57,24 @@ func (c *Client) PostSnapshot(
 	return accepted.TaskID, nil
 }
 
-// DeleteSnapshot requests deletion of vmName's snapshot snapshotName on the agent
-// (`DELETE /v1/vms/{vm_name}/snapshots/{snapshot_name}`). The orphaned digests -
-// the fail-closed-GC set the CP reference graph proved are no longer referenced by
-// any other snapshot - are passed as repeated `orphaned` query params so the agent
+// DeleteSnapshot requests deletion of the snapshot snapshotName captured from VM
+// vmID on the agent (`DELETE /v1/snapshots/{vm_id}/{snapshot_name}`). The endpoint
+// is node-level and keyed on the immutable vm_id (NOT the live VM): the agent
+// locates the manifest by vm_uuid and removes the content-addressed blobs by digest,
+// so deletion works after the source VM is gone. The orphaned digests - the
+// fail-closed-GC set the CP reference graph proved are no longer referenced by any
+// other snapshot - are passed as repeated `orphaned` query params so the agent
 // removes exactly those local blobs (a still-shared blob is never in the set). The
 // agent responds 202 (async); a non-terminal poll is not awaited here (the agent
 // removal is bounded). Non-2xx surfaces as *AgentError.
 func (c *Client) DeleteSnapshot(
 	ctx context.Context,
-	endpoint, vmName, snapshotName string,
+	endpoint string,
+	vmID uuid.UUID,
+	snapshotName string,
 	orphaned []string,
 ) error {
-	target, _ := url.JoinPath(endpoint, "/v1/vms/"+url.PathEscape(vmName)+"/snapshots/"+url.PathEscape(snapshotName))
+	target, _ := url.JoinPath(endpoint, "/v1/snapshots/"+url.PathEscape(vmID.String())+"/"+url.PathEscape(snapshotName))
 	if len(orphaned) > 0 {
 		q := url.Values{}
 		for _, d := range orphaned {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agentapi"
 )
 
@@ -300,9 +301,10 @@ func TestDeleteSnapshot_KeepsBlobSharedByAnotherManifest(t *testing.T) {
 	m.writeManifestOnDisk(t, root, v, "snapA", shared, uniqueA)
 	m.writeManifestOnDisk(t, root, v, "snapB", shared, uniqueB)
 
-	task, err := m.DeleteSnapshot(context.Background(), v.Name, "snapA")
+	// The CP refgraph orphans only A's unique blob (shared still referenced by B).
+	task, err := m.DeleteSnapshotByID(context.Background(), v.ID, "snapA", []string{uniqueA})
 	if err != nil {
-		t.Fatalf("DeleteSnapshot: %v", err)
+		t.Fatalf("DeleteSnapshotByID: %v", err)
 	}
 	done := m.awaitTask(t, task.ID)
 	if done.Status != TaskStatusSuccess {
@@ -323,6 +325,43 @@ func TestDeleteSnapshot_KeepsBlobSharedByAnotherManifest(t *testing.T) {
 	}
 	if !blobExists(root, uniqueB) {
 		t.Error("snapB unique blob removed, want intact")
+	}
+}
+
+// TestDeleteSnapshotByID_VMUnregistered_StillDeletes is the agent-side regression
+// for the standalone-snapshot promise: a snapshot whose source VM is NOT registered
+// on the agent (the VM was deleted) must still have its manifest + orphaned blob
+// removed. DeleteSnapshotByID locates the manifest by vm_uuid across the registered
+// pools and removes the content-addressed blob by digest, never calling ByName. A
+// delete path keyed on the live VM (the bug) cannot serve this and would leave the
+// blob leaked forever.
+func TestDeleteSnapshotByID_VMUnregistered_StillDeletes(t *testing.T) {
+	m := newTestManager(t)
+	root := m.defaultTestPoolRoot(t)
+
+	// A "ghost" VM: a manifest + blob exist on disk, but the VM is NOT registered
+	// (m.ByName(ghost.Name) would fail) - exactly the post-VM-delete state.
+	ghost := &VM{ID: uuid.New(), Name: "ghost", Architecture: qemu.HostArch()}
+	if _, err := m.ByName(ghost.Name); err == nil {
+		t.Fatal("test setup: ghost VM must NOT be registered")
+	}
+	orphan := shaHex([]byte("ghost-orphan-content"))
+	m.writeManifestOnDisk(t, root, ghost, "snapG", orphan)
+
+	task, err := m.DeleteSnapshotByID(context.Background(), ghost.ID, "snapG", []string{orphan})
+	if err != nil {
+		t.Fatalf("DeleteSnapshotByID: %v", err)
+	}
+	done := m.awaitTask(t, task.ID)
+	if done.Status != TaskStatusSuccess {
+		t.Fatalf("delete task status = %q, want success (err=%+v)", done.Status, done.Error)
+	}
+
+	if manifestExists(root, ghost.ID, "snapG") {
+		t.Error("ghost snapshot manifest still present after delete, want removed (VM-independent)")
+	}
+	if blobExists(root, orphan) {
+		t.Error("ghost orphan blob still present after delete, want removed (content-addressed, no VM)")
 	}
 }
 
@@ -357,9 +396,9 @@ func TestDeleteSnapshot_EnumerationError_LeaksNothingDeleted(t *testing.T) {
 		t.Skip("filesystem does not enforce chmod 0000 on directory reads; cannot trigger the error")
 	}
 
-	task, err := m.DeleteSnapshot(context.Background(), v.Name, "snapA")
+	task, err := m.DeleteSnapshotByID(context.Background(), v.ID, "snapA", []string{orphan})
 	if err != nil {
-		t.Fatalf("DeleteSnapshot: %v", err)
+		t.Fatalf("DeleteSnapshotByID: %v", err)
 	}
 	_ = m.awaitTask(t, task.ID)
 

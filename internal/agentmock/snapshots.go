@@ -213,13 +213,16 @@ func (m *Mock) VMSnapshotsGet(w http.ResponseWriter, r *http.Request, vmName age
 	m.respondJSON(w, r, opID, http.StatusOK, s.toAPI())
 }
 
-// VMSnapshotsDelete implements DELETE /v1/vms/{vm_name}/snapshots/{snapshot_name}.
-// Records the orphaned blob digests the CP asked the agent to GC (the
-// fail-closed delete set, passed as repeated `orphaned` query params) so a test
-// can assert the set propagated, removes the materialised entry, mints a
-// snapshot-delete agent task that polls to success, and returns 202.
-func (m *Mock) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, snapshotName agentapi.SnapshotName, _ agentapi.VMSnapshotsDeleteParams) {
-	const opID = "vmSnapshots.delete"
+// SnapshotsDelete implements DELETE /v1/snapshots/{vm_id}/{snapshot_name}. The
+// route is node-level and keyed on the immutable vm_id (NOT the live VM), so the
+// delete works after the source VM is gone - the mock reverse-resolves vm_id to a
+// VM name only for its name-keyed introspection bookkeeping. Records the orphaned
+// blob digests the CP asked the agent to GC (the fail-closed delete set, passed as
+// repeated `orphaned` query params) so a test can assert the set propagated,
+// removes the materialised entry, mints a snapshot-delete agent task that polls to
+// success, and returns 202.
+func (m *Mock) SnapshotsDelete(w http.ResponseWriter, r *http.Request, vmID uuid.UUID, snapshotName agentapi.SnapshotName, _ agentapi.SnapshotsDeleteParams) {
+	const opID = "snapshots.delete"
 	if m.preDispatch(w, r, opID) {
 		return
 	}
@@ -229,17 +232,25 @@ func (m *Mock) VMSnapshotsDelete(w http.ResponseWriter, r *http.Request, vmName 
 	now := time.Now().UTC()
 
 	m.state.mu.Lock()
-	var resourceID uuid.UUID
-	if s, ok := m.state.snapshots[vmName][snapshotName]; ok {
-		resourceID = s.vmUUID
-		delete(m.state.snapshots[vmName], snapshotName)
+	// Reverse-resolve vm_id -> vm name to drop the name-keyed materialised entry and
+	// record the introspection ask. The VM may already be gone (the whole point of
+	// the by-id route); a miss just leaves nothing to drop, keyed by vm_id.
+	vmName := vmID.String()
+	for name, vm := range m.state.storedVMs {
+		if vm.ID == vmID {
+			vmName = name
+			break
+		}
+	}
+	if bucket, ok := m.state.snapshots[vmName]; ok {
+		delete(bucket, snapshotName)
 	}
 	m.state.snapshotDeleteAsks[snapshotKey{VMName: vmName, SnapshotName: snapshotName}] = orphaned
 	m.state.tasks[agentTaskID] = &agentTask{
 		id:                   agentTaskID,
 		taskType:             "vm.snapshot.delete",
 		resourceType:         "snapshot",
-		resourceID:           resourceID,
+		resourceID:           vmID,
 		createdAt:            now,
 		delay:                defaultPoolScanDelay,
 		snapshotDeleteResult: &struct{}{},
@@ -306,7 +317,7 @@ func (m *Mock) materializeSnapshotCreateLocked(snapshot *agentTask, now time.Tim
 }
 
 // SnapshotDeleteAsk returns the orphaned blob digests the CP asked the agent to
-// GC for (vmName, snapshotName) through VMSnapshotsDelete. The second return is
+// GC for (vmName, snapshotName) through SnapshotsDelete. The second return is
 // false when no delete was recorded. Test introspection only.
 func (m *Mock) SnapshotDeleteAsk(vmName, snapshotName string) ([]string, bool) {
 	m.state.mu.Lock()
