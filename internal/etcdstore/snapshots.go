@@ -95,6 +95,7 @@ func (s *Store) CreateSnapshot(ctx context.Context, p store.CreateSnapshotParams
 		SourceVMName:       p.SourceVMName,
 		SourceArchitecture: p.SourceArchitecture,
 		SourceFirmwareID:   p.SourceFirmwareID,
+		ArtifactPoolName:   p.ArtifactPoolName,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -496,4 +497,25 @@ func (s *Store) DereferenceSnapshotBlobs(ctx context.Context, snapshotID uuid.UU
 		}
 	}
 	return orphaned, nil
+}
+
+// CountSnapshotsInArtifactPool counts non-deleted snapshots tagged with the
+// given artifact pool name (case-insensitive). The authoritative input to
+// fail-closed artifact-pool delete. Scans the snapshot primary prefix (the
+// artifact-pool delete is a rare admin op; no dedicated index in slice B).
+func (s *Store) CountSnapshotsInArtifactPool(ctx context.Context, name string) (int64, error) {
+	snaps, err := s.snapshotsByPrimaryPrefix(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, snap := range snaps {
+		if snap.DeletedAt != nil {
+			continue
+		}
+		if snap.ArtifactPoolName != nil && strings.EqualFold(*snap.ArtifactPoolName, name) {
+			count++
+		}
+	}
+	return count, nil
 }

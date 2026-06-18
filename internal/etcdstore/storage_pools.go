@@ -102,6 +102,15 @@ func (s *Store) StoragePoolsByName(ctx context.Context, name string) ([]store.St
 // the primary + per-node guard + cluster name index atomically. A per-node name
 // collision returns store.ErrStoragePoolNameExists.
 func (s *Store) CreateStoragePool(ctx context.Context, arg store.CreateStoragePoolParams) (store.StoragePool, error) {
+	// Cross-namespace pre-check: the name must not belong to an artifact pool
+	// (a pool name denotes exactly one kind). The rare concurrent cross-namespace
+	// create of the same name is an accepted, documented race.
+	if _, err := s.ArtifactPoolByName(ctx, arg.Name); err == nil {
+		return store.StoragePool{}, store.ErrPoolNameConflict
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return store.StoragePool{}, err
+	}
+
 	now := time.Now().UTC()
 	p := store.StoragePool{
 		ID:                   arg.ID,
