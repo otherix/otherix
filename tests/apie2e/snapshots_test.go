@@ -365,6 +365,195 @@ func TestSnapshotCreate_RecordsSourceArchAndFirmware(t *testing.T) {
 	}
 }
 
+// snapshotListAllItem is the apie2e projection of GET /v1/snapshots items: the
+// snapshot view plus the server-resolved vm_name + owner_display_name.
+type snapshotListAllItem struct {
+	ID               string  `json:"id"`
+	VMID             string  `json:"vm_id"`
+	OwnerID          string  `json:"owner_id"`
+	Status           string  `json:"status"`
+	VMName           *string `json:"vm_name"`
+	OwnerDisplayName *string `json:"owner_display_name"`
+}
+
+type snapshotListAllResponse struct {
+	Data []snapshotListAllItem `json:"data"`
+	Meta struct {
+		NextCursor *string `json:"next_cursor"`
+	} `json:"meta"`
+}
+
+// seedDeveloperWithDisplayName seeds a developer user with an explicit display
+// name (so the resolution assertions can tell two developers apart) and logs in,
+// returning the access token, the user id, and the display name.
+func seedDeveloperWithDisplayName(t *testing.T, h *harness, displayName string) (token string, userID uuid.UUID) {
+	t.Helper()
+	const pw = "correct-horse-battery-staple"
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	id := uuid.New()
+	email := "e2e-dev-" + uuid.NewString()[:8] + "@example.test"
+	if _, err := h.store.CreateUser(context.Background(), store.CreateUserParams{
+		ID: id, Email: email, PasswordHash: hash, DisplayName: displayName, Role: string(auth.RoleDeveloper),
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", resp.StatusCode)
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	decodeJSON(t, resp, &out)
+	return out.AccessToken, id
+}
+
+// seedSnapshotRow seeds a ready snapshot owned by ownerID for vmID directly via
+// the store, returning its id.
+func seedSnapshotRow(t *testing.T, s *etcdstore.Store, vmID, ownerID uuid.UUID, name string) uuid.UUID {
+	t.Helper()
+	sid := uuid.New()
+	if _, err := s.CreateSnapshot(context.Background(), store.CreateSnapshotParams{
+		ID: sid, VmID: vmID, OwnerID: ownerID, Name: name,
+		VMStateAtSnapshot: store.VmStateAtSnapshotStopped,
+		Task: store.CreateTaskParams{
+			ID: uuid.New(), Type: "vm.snapshot.create", Status: store.TaskStatusPending,
+			ResourceType: "snapshot", ResourceID: &sid, MaxAttempts: 25, CreatedBy: &ownerID,
+		},
+	}, fakeJobArgs{}); err != nil {
+		t.Fatalf("CreateSnapshot %q: %v", name, err)
+	}
+	return sid
+}
+
+// TestSnapshotListAll_RBACScopeAndResolve locks the global GET /v1/snapshots
+// contract. Seeds two developers (A, B) each owning a VM with one snapshot, plus
+// an admin. Asserts:
+//   - admin (snapshot:read = any) sees both snapshots, each with vm_name +
+//     owner_display_name resolved server-side;
+//   - developer A (snapshot:read = own) sees only A's snapshot, never B's - the
+//     own-scope seam must not leak another owner's snapshot;
+//   - developer A passing ?owner=<B> cannot widen scope: 403 permission_denied;
+//   - ?status=ready filters to ready snapshots;
+//   - ?vm=<A's vm id> filters to that VM's snapshot.
+func TestSnapshotListAll_RBACScopeAndResolve(t *testing.T) {
+	h := newE2E(t)
+	adminToken, _ := loginAs(t, h, auth.RoleAdmin)
+	devAToken, devAID := seedDeveloperWithDisplayName(t, h, "Developer Alpha")
+	devBToken, devBID := seedDeveloperWithDisplayName(t, h, "Developer Beta")
+
+	vmAName, vmAID := seedOwnedVM(t, h.store, devAID)
+	_, vmBID := seedOwnedVM(t, h.store, devBID)
+
+	sidA := seedSnapshotRow(t, h.store, vmAID, devAID, "snap-a")
+	sidB := seedSnapshotRow(t, h.store, vmBID, devBID, "snap-b")
+
+	// Admin (any scope) -> sees BOTH, with vm_name + owner_display_name resolved.
+	resp := h.get(t, "/v1/snapshots", adminToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin list status = %d, want 200", resp.StatusCode)
+	}
+	var adminList snapshotListAllResponse
+	decodeJSON(t, resp, &adminList)
+	byID := map[string]snapshotListAllItem{}
+	for _, it := range adminList.Data {
+		byID[it.ID] = it
+	}
+	if len(byID) != 2 {
+		t.Fatalf("admin list = %d snapshots, want 2 (%+v)", len(byID), adminList.Data)
+	}
+	itA, ok := byID[sidA.String()]
+	if !ok {
+		t.Fatalf("admin list missing snapshot A %s", sidA)
+	}
+	if itA.VMName == nil || *itA.VMName != vmAName {
+		t.Errorf("snapshot A vm_name = %v, want %q", itA.VMName, vmAName)
+	}
+	if itA.OwnerDisplayName == nil || *itA.OwnerDisplayName != "Developer Alpha" {
+		t.Errorf("snapshot A owner_display_name = %v, want %q", itA.OwnerDisplayName, "Developer Alpha")
+	}
+	itB, ok := byID[sidB.String()]
+	if !ok {
+		t.Fatalf("admin list missing snapshot B %s", sidB)
+	}
+	if itB.OwnerDisplayName == nil || *itB.OwnerDisplayName != "Developer Beta" {
+		t.Errorf("snapshot B owner_display_name = %v, want %q", itB.OwnerDisplayName, "Developer Beta")
+	}
+
+	// Developer A (own scope) -> sees ONLY A's snapshot, never B's.
+	resp = h.get(t, "/v1/snapshots", devAToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev A list status = %d, want 200", resp.StatusCode)
+	}
+	var devAList snapshotListAllResponse
+	decodeJSON(t, resp, &devAList)
+	if len(devAList.Data) != 1 || devAList.Data[0].ID != sidA.String() {
+		t.Fatalf("dev A list = %+v, want only snapshot A %s", devAList.Data, sidA)
+	}
+	for _, it := range devAList.Data {
+		if it.OwnerID != devAID.String() {
+			t.Errorf("dev A saw foreign-owned snapshot owner=%s", it.OwnerID)
+		}
+	}
+
+	// Developer A cannot widen via ?owner=<B> -> 403 permission_denied.
+	resp = h.get(t, "/v1/snapshots?owner="+devBID.String(), devAToken)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("dev A ?owner=B status = %d, want 403", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "permission_denied" {
+		t.Errorf("dev A ?owner=B code = %q, want permission_denied", env.Error.Code)
+	}
+
+	// Developer B sees only B's snapshot (confirms scope is per-caller).
+	resp = h.get(t, "/v1/snapshots", devBToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev B list status = %d, want 200", resp.StatusCode)
+	}
+	var devBList snapshotListAllResponse
+	decodeJSON(t, resp, &devBList)
+	if len(devBList.Data) != 1 || devBList.Data[0].ID != sidB.String() {
+		t.Fatalf("dev B list = %+v, want only snapshot B %s", devBList.Data, sidB)
+	}
+
+	// ?status=ready filters (both seeded snapshots are status=creating, so a
+	// ready filter yields zero; a creating filter yields the owned one).
+	resp = h.get(t, "/v1/snapshots?status=ready", devAToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev A ?status=ready status = %d, want 200", resp.StatusCode)
+	}
+	var readyList snapshotListAllResponse
+	decodeJSON(t, resp, &readyList)
+	if len(readyList.Data) != 0 {
+		t.Errorf("dev A ?status=ready = %d snapshots, want 0", len(readyList.Data))
+	}
+	resp = h.get(t, "/v1/snapshots?status=creating", devAToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev A ?status=creating status = %d, want 200", resp.StatusCode)
+	}
+	var creatingList snapshotListAllResponse
+	decodeJSON(t, resp, &creatingList)
+	if len(creatingList.Data) != 1 || creatingList.Data[0].ID != sidA.String() {
+		t.Errorf("dev A ?status=creating = %+v, want snapshot A", creatingList.Data)
+	}
+
+	// ?vm=<A's vm id> filters to that VM's snapshot (admin scope, by VM id).
+	resp = h.get(t, "/v1/snapshots?vm="+vmAID.String(), adminToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin ?vm=A status = %d, want 200", resp.StatusCode)
+	}
+	var vmFiltered snapshotListAllResponse
+	decodeJSON(t, resp, &vmFiltered)
+	if len(vmFiltered.Data) != 1 || vmFiltered.Data[0].ID != sidA.String() {
+		t.Errorf("admin ?vm=A = %+v, want only snapshot A %s", vmFiltered.Data, sidA)
+	}
+}
+
 // fakeJobArgs is a no-op queue.JobArgs for store-seeded snapshots in the list /
 // get / delete tests (the worker is not driven in apie2e).
 type fakeJobArgs struct{}

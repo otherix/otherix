@@ -40,6 +40,8 @@ import (
 type Store interface {
 	resolver.Querier
 
+	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
+	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 	CreateSnapshot(ctx context.Context, p store.CreateSnapshotParams, args queue.JobArgs) (store.Snapshot, error)
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)

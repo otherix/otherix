@@ -2878,6 +2878,66 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/snapshots:
+    get:
+      operationId: vmSnapshots.listAll
+      tags: [vm-snapshots]
+      summary: List all snapshots across VMs (global).
+      description: |
+        Lists snapshot records visible to the caller, newest first, across
+        all VMs. The per-item `vm_name` and `owner_display_name` are resolved
+        server-side so an operator can scan every snapshot with its VM and
+        owner in one table. Mirrors `GET /v1/migrations` (a read-only global
+        collection; the per-VM `GET /v1/vms/{id}/snapshots` remains the
+        scoped list).
+
+        RBAC scope: a caller whose `snapshot:read` is `any` (admin, operator)
+        sees every snapshot; a caller whose `snapshot:read` is `own`
+        (developer) sees only snapshots they own - foreign snapshots are
+        excluded, never leaked. An `own`-scope caller may not pass `owner`
+        (it can only ever be their own id); doing so returns 403
+        `permission_denied`.
+
+        Optionally filter by VM (`vm`), snapshot lifecycle `status`, or, for
+        `any`-scope callers, by `owner`.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: vm
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: Only return snapshots of this VM (by VM id).
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [creating, ready, deleting, error]
+          description: Only return snapshots in this lifecycle status.
+        - name: owner
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: |
+            Only return snapshots owned by this user. Available to
+            `any`-scope callers (admin, operator) only; an `own`-scope
+            caller passing `owner` gets 403 `permission_denied`.
+      responses:
+        "200":
+          description: List of snapshots, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotListAll"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/migrations:
     get:
       operationId: migrations.list
@@ -6622,6 +6682,41 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VmSnapshot"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    SnapshotListItem:
+      description: |
+        A snapshot as projected by the global list `GET /v1/snapshots`: the
+        full `VmSnapshot` shape plus the server-resolved `vm_name` and
+        `owner_display_name` so an operator table needs no extra lookups.
+        A name renders as `null` only when its referenced row is gone
+        (e.g. the source VM was force-deleted) - the id field stays
+        authoritative.
+      allOf:
+        - $ref: "#/components/schemas/VmSnapshot"
+        - type: object
+          required: [vm_name, owner_display_name]
+          properties:
+            vm_name:
+              type: [string, "null"]
+              description: |
+                Name of the VM the snapshot was taken from, resolved from
+                `vm_id`. `null` when the VM row is gone.
+            owner_display_name:
+              type: [string, "null"]
+              description: |
+                Display name of the owner, resolved from `owner_id`. `null`
+                when the user row is gone.
+
+    SnapshotListAll:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotListItem"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 

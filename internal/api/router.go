@@ -360,6 +360,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			// CREATED through this subtree — only through POST
 			// /v1/vms/{id}/snapshots (ADR 0009).
 			r.Route("/snapshots", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/", snapH.ListAll)
 				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/{id}", snapH.Get)
 				r.With(middleware.RequirePermission(auth.PermSnapshotDelete, deps.Logger)).Delete("/{id}", snapH.Delete)
 			})
