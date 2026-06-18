@@ -9,6 +9,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -95,6 +97,46 @@ func (c MigrationConfig) Validate() error {
 	}
 	if c.ConvergenceTimeout < 0 {
 		return fmt.Errorf("convergence_timeout must be >= 0, got %s", c.ConvergenceTimeout)
+	}
+	return nil
+}
+
+// ArtifactsConfig describes the per-node content-addressed artifact store and
+// the peer-facing blob-transport listener used for on-demand cross-node blob
+// pulls (slice C1). Root holds the immutable blobs + manifests; the port range
+// supports parallel peer serves on a single node and is intentionally distinct
+// from MigrationConfig's range so blob serves never contend for migration
+// ingress ports. The listener reuses the node leaf cert (same trust as
+// CP<->agent mTLS) - no cert material is configured here.
+type ArtifactsConfig struct {
+	Root           string `koanf:"root"`
+	PortRangeStart int    `koanf:"port_range_start"`
+	PortRangeEnd   int    `koanf:"port_range_end"`
+}
+
+// artifactsRootAllowedPrefix is the fixed allowlist prefix Root must sit under,
+// mirroring storage_pools.allowed_path_prefixes (default /var/lib/otherix/pools/).
+// A Root outside it is rejected so a misconfigured agent never reads/writes
+// blobs from an arbitrary filesystem location.
+const artifactsRootAllowedPrefix = "/var/lib/otherix/"
+
+// Validate checks Root is non-empty and under the fixed allowlist prefix, and
+// that both ports are in [1024, 65535] with PortRangeEnd >= PortRangeStart.
+func (c ArtifactsConfig) Validate() error {
+	if c.Root == "" {
+		return errors.New("artifacts.root is required")
+	}
+	if !strings.HasPrefix(filepath.Clean(c.Root)+"/", artifactsRootAllowedPrefix) {
+		return fmt.Errorf("artifacts.root %q must be under %s", c.Root, artifactsRootAllowedPrefix)
+	}
+	if c.PortRangeStart < 1024 || c.PortRangeStart > 65535 {
+		return fmt.Errorf("artifacts.port_range_start must be in [1024, 65535], got %d", c.PortRangeStart)
+	}
+	if c.PortRangeEnd < 1024 || c.PortRangeEnd > 65535 {
+		return fmt.Errorf("artifacts.port_range_end must be in [1024, 65535], got %d", c.PortRangeEnd)
+	}
+	if c.PortRangeEnd < c.PortRangeStart {
+		return errors.New("artifacts.port_range_end must be >= artifacts.port_range_start")
 	}
 	return nil
 }

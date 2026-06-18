@@ -173,6 +173,7 @@ func TestAgentConfigValidate_RuntimeMinimumOK(t *testing.T) {
 		Server:       ServerConfig{Listen: "0.0.0.0:9443"},
 		ControlPlane: ControlPlaneConfig{URL: "https://cp:8443"},
 		Migration:    MigrationConfig{Host: "10.0.0.1", PortRangeStart: 49152, PortRangeEnd: 49251},
+		Artifacts:    ArtifactsConfig{Root: "/var/lib/otherix/artifacts", PortRangeStart: 49252, PortRangeEnd: 49351},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("AgentConfig.Validate() = %v, want nil", err)
