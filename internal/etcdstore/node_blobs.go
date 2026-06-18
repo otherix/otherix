@@ -5,7 +5,6 @@ package etcdstore
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 	"strings"
 
@@ -71,7 +70,7 @@ func (s *Store) BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, er
 			continue
 		}
 		var blobs []store.NodeBlob
-		if uerr := json.Unmarshal(kv.Value, &blobs); uerr != nil {
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &blobs, "node_blob") {
 			continue
 		}
 		for _, b := range blobs {
