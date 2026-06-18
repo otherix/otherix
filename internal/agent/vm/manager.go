@@ -36,6 +36,11 @@ var (
 	ErrPoolUnknown = errors.New("pool name does not match a configured pool")
 	ErrInvalidSpec = errors.New("invalid create spec")
 
+	// ErrNoArtifactStore is returned by PullBlob when the node has no artifact
+	// store configured (an empty cfg.Artifacts.Root): a pulled blob has nowhere
+	// to land. Production always configures the store; this guards the test path.
+	ErrNoArtifactStore = errors.New("node has no artifact store configured")
+
 	// ErrInvalidState is returned by sync lifecycle ops (Pause /
 	// Resume / Reset) when the VM is not in a phase that accepts
 	// the requested transition (e.g. resume-when-running,
