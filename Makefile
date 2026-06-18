@@ -225,6 +225,10 @@ smoke-vm-migration-cancel: ## Migration cancel propagation: `otherix migration c
 smoke-vm-snapshots: ## VM snapshot smoke: `otherix vm snapshot create` then `vm create --from-snapshot`; asserts the source's post-boot disk state survives the snapshot -> recreate and the restored guest hostname is the new VM name (run after local-dev-start)
 	@bash dev/smoke/vm-snapshots/run.sh
 
+.PHONY: smoke-artifact-pool
+smoke-artifact-pool: ## Artifact-pool concept smoke (slice B): create pool, assert `vm create --pool <artifact>` -> pool_role_invalid, snapshot into the pool carries artifact_pool_name, recreate boots, fail-closed delete blocked by referencing snapshots (run after local-dev-start)
+	@bash dev/smoke/artifact-pool/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

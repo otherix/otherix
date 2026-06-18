@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	flagSnapshotName        = "name"
-	flagSnapshotDescription = "description"
+	flagSnapshotName         = "name"
+	flagSnapshotDescription  = "description"
+	flagSnapshotArtifactPool = "artifact-pool"
 )
 
 // newSnapshotCommand wires `otherix vm snapshot <vm>` - take a disk-only,
@@ -46,6 +47,7 @@ List / get / delete snapshots through the top-level 'otherix snapshot' group.`,
 	}
 	cmd.Flags().String(flagSnapshotName, "", "snapshot name, unique within the VM (default: snap<unix_seconds>)")
 	cmd.Flags().String(flagSnapshotDescription, "", "optional free-text description")
+	cmd.Flags().String(flagSnapshotArtifactPool, "", "artifact pool for the snapshot (default: cluster default artifact pool)")
 	cmd.Flags().Bool(flagWait, false, "block until the snapshot task reaches terminal status")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 	return cmd
@@ -61,6 +63,10 @@ func runSnapshot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	description, err := cmd.Flags().GetString(flagSnapshotDescription)
+	if err != nil {
+		return err
+	}
+	artifactPool, err := cmd.Flags().GetString(flagSnapshotArtifactPool)
 	if err != nil {
 		return err
 	}
@@ -81,8 +87,9 @@ func runSnapshot(cmd *cobra.Command, args []string) error {
 	}
 
 	res, err := c.CreateSnapshot(cmd.Context(), args[0], cpclient.SnapshotCreateBody{
-		Name:        name,
-		Description: description,
+		Name:         name,
+		Description:  description,
+		ArtifactPool: artifactPool,
 	})
 	if err != nil {
 		return classifyError(err)

@@ -123,6 +123,23 @@ func (s *Store) writeClusterSettings(ctx context.Context, name *string) error {
 	})
 }
 
+// SetDefaultArtifactPoolName writes the cluster-wide default artifact pool name
+// on the singleton. The caller validates the name resolves to an existing
+// artifact pool before calling.
+func (s *Store) SetDefaultArtifactPoolName(ctx context.Context, name *string) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.DefaultArtifactPoolName = name
+	})
+}
+
+// ClearDefaultArtifactPoolName nulls the cluster-wide default artifact pool
+// name. Idempotent.
+func (s *Store) ClearDefaultArtifactPoolName(ctx context.Context) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.DefaultArtifactPoolName = nil
+	})
+}
+
 // SeedDefaultPoolName writes the cluster-wide default pool name on the singleton
 // first-writer-wins: it sets the name only when none exists, so a re-boot or a
 // second replica observing an existing value (or an operator-set default) no-ops.

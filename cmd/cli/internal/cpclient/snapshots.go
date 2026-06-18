@@ -17,9 +17,10 @@ import (
 // (RAM capture unsupported). omitempty keeps Description / WithMemory off the
 // wire when unset so the server defaults apply.
 type SnapshotCreateBody struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	WithMemory  bool   `json:"with_memory,omitempty"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	WithMemory   bool   `json:"with_memory,omitempty"`
+	ArtifactPool string `json:"artifact_pool,omitempty"`
 }
 
 // SnapshotDisk is one content-addressed disk blob descriptor in a snapshot

@@ -35,6 +35,7 @@ type CreateSnapshotParams struct {
 	SourceVMName       string
 	SourceArchitecture CPUArch
 	SourceFirmwareID   *uuid.UUID
+	ArtifactPoolName   *string
 	Task               CreateTaskParams
 }
 

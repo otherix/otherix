@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	apitokenshandlers "github.com/otherix/otherix/internal/api/handlers/apitokens"
+	artifactpoolshandlers "github.com/otherix/otherix/internal/api/handlers/artifactpools"
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
@@ -189,6 +190,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
 	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.StoragePools, deps.Logger)
+	artifactPoolsH := artifactpoolshandlers.New(deps.Store, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
@@ -396,6 +398,13 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// were removed with the template entity.
 			})
 
+			r.Route("/artifact-pools", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermStoragePoolRead, deps.Logger)).Get("/", artifactPoolsH.List)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolRead, deps.Logger)).Get("/{id}", artifactPoolsH.Get)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Post("/", artifactPoolsH.Create)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Delete("/{id}", artifactPoolsH.Delete)
+			})
+
 			// /v1/cluster surface. Default-pool reference is the only
 			// setting today; the route group anchors future
 			// default-network and similar knobs to the same
@@ -404,6 +413,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-pool", clusterH.GetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-pool", clusterH.SetDefaultPool)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-pool", clusterH.ClearDefaultPool)
+
+				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/default-artifact-pool", clusterH.GetDefaultArtifactPool)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-artifact-pool", clusterH.SetDefaultArtifactPool)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-artifact-pool", clusterH.ClearDefaultArtifactPool)
 
 				// etcd cluster membership admin. cluster:manage gates both
 				// the inspection read and the member eviction - the routes

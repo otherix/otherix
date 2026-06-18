@@ -173,6 +173,27 @@ func TestVMCreate_OneOfImageOrSnapshot(t *testing.T) {
 	}
 }
 
+// TestVMCreate_ArtifactPoolRejected locks role separation: vm create against an
+// artifact pool name returns 409 pool_role_invalid (artifact pools cannot host
+// VM disks).
+func TestVMCreate_ArtifactPoolRejected(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	h.post(t, "/v1/artifact-pools", map[string]any{"name": "gold", "replication_factor": 1}, admin).Body.Close()
+
+	body := vmCreateBody(map[string]any{"pool": "gold"})
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "pool_role_invalid" {
+		t.Errorf("code = %q, want pool_role_invalid", env.Error.Code)
+	}
+}
+
 // TestVMCreate_FromSnapshot_CrossOwner404 locks the cross-user provenance
 // boundary: a caller who holds snapshot:read but does not own the snapshot must
 // see 404 (not 403) when trying to recreate from it - existence is not leaked.

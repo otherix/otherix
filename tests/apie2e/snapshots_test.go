@@ -81,6 +81,27 @@ func seedOwnedVM(t *testing.T, s *etcdstore.Store, ownerID uuid.UUID) (vmName st
 	return vm.Name, vm.ID
 }
 
+// seedDefaultArtifactPool creates an artifact pool and sets it as the cluster
+// default directly via the store, so a snapshot create through the HTTP handler
+// resolves an artifact pool (slice B requirement) without each test having to
+// pass an explicit artifact_pool override. Used by the create-through-HTTP
+// tests whose subject is NOT artifact-pool resolution.
+func seedDefaultArtifactPool(t *testing.T, s *etcdstore.Store) {
+	t.Helper()
+	ctx := context.Background()
+	name := "default-artifacts"
+	if _, err := s.CreateArtifactPool(ctx, store.CreateArtifactPoolParams{
+		ID: uuid.New(), Name: name,
+		ReplicationFactor: store.ReplicationFactor{Count: 1},
+		Membership:        store.ArtifactPoolMembership{AllNodes: true},
+	}); err != nil {
+		t.Fatalf("CreateArtifactPool: %v", err)
+	}
+	if err := s.SetDefaultArtifactPoolName(ctx, &name); err != nil {
+		t.Fatalf("SetDefaultArtifactPoolName: %v", err)
+	}
+}
+
 // snapshotIDForVM resolves the (single) snapshot created for vmID via the store,
 // so the test can poll GET /v1/snapshots/{id} without depending on the 202
 // envelope carrying the snapshot id (it carries only the task id).
@@ -107,6 +128,7 @@ func TestSnapshotCreate_202AndOwnership(t *testing.T) {
 	devToken, devID := loginAs(t, h, auth.RoleDeveloper)
 	otherToken, _ := loginAs(t, h, auth.RoleDeveloper)
 
+	seedDefaultArtifactPool(t, h.store)
 	vmName, vmID := seedOwnedVM(t, h.store, devID)
 
 	// Owner create -> 202 + pending task.
@@ -320,6 +342,7 @@ func TestSnapshotCreate_RecordsSourceArchAndFirmware(t *testing.T) {
 	devToken, devID := loginAs(t, h, auth.RoleDeveloper)
 	ctx := context.Background()
 
+	seedDefaultArtifactPool(t, h.store)
 	fwID := uuid.New()
 	// Seed a VM with arm64 + an explicit firmware id directly so the snapshot
 	// handler reads them off the resolved VM row.
@@ -567,6 +590,34 @@ func TestSnapshotListAll_RBACScopeAndResolve(t *testing.T) {
 	}
 }
 
+// TestSnapshotCreate_ArtifactPoolResolution locks the artifact-pool retarget:
+// no pool + no default -> 409 default_artifact_pool_not_set; a valid override
+// -> 202.
+func TestSnapshotCreate_ArtifactPoolResolution(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	vmName, _ := seedOwnedVM(t, h.store, adminID)
+
+	// No artifact pool, no default -> 409 default_artifact_pool_not_set.
+	resp := h.post(t, "/v1/vms/"+vmName+"/snapshots", map[string]any{"name": "s1"}, admin)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("no-pool status = %d, want 409", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "default_artifact_pool_not_set" {
+		t.Errorf("code = %q, want default_artifact_pool_not_set", env.Error.Code)
+	}
+
+	// Override with a valid artifact pool -> 202.
+	h.post(t, "/v1/artifact-pools", map[string]any{"name": "gold", "replication_factor": 1}, admin).Body.Close()
+	resp = h.post(t, "/v1/vms/"+vmName+"/snapshots", map[string]any{"name": "s2", "artifact_pool": "gold"}, admin)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("override status = %d, want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 // fakeJobArgs is a no-op queue.JobArgs for store-seeded snapshots in the list /
 // get / delete tests (the worker is not driven in apie2e).
 type fakeJobArgs struct{}
@@ -691,6 +742,7 @@ func TestSnapshotCreate_EndToEnd_ReachesReady(t *testing.T) {
 
 	mock := agentmock.Start(t, agentmock.Options{TLS: agentmock.TLSEnabled, Architecture: "amd64"})
 
+	seedDefaultArtifactPool(t, h.store)
 	vmName, vmID, _ := seedRunningVMOnNode(t, h.store, devID, mock.URL())
 
 	// Owner create -> 202 + pending task carrying the create task id.
@@ -767,6 +819,7 @@ func TestSnapshotListAll_RetainsSourceVMNameAfterVMDeleted(t *testing.T) {
 	h := newE2E(t)
 	devToken, devID := loginAs(t, h, auth.RoleDeveloper)
 
+	seedDefaultArtifactPool(t, h.store)
 	vmName, vmID := seedOwnedVM(t, h.store, devID)
 
 	// Create the snapshot through the HTTP handler so the create path captures
