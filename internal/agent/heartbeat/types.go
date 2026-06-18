@@ -24,6 +24,12 @@ type Report struct {
 	Pools        []PoolReport     `json:"pools,omitempty"`
 	Networks     []NetworkReport  `json:"networks,omitempty"`
 	WireGuard    *WireGuardReport `json:"wireguard,omitempty"`
+	Blobs        []BlobReport     `json:"blobs,omitempty"`
+	// BlobsUnavailable is true when the agent could not enumerate its artifact
+	// store this tick (a transient List error). The CP then preserves the prior
+	// node_blobs inventory rather than clearing it (fail-closed, mirrors
+	// ImagesUnavailable / SnapshotsUnavailable).
+	BlobsUnavailable bool `json:"blobs_unavailable,omitempty"`
 }
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat
@@ -103,6 +109,17 @@ type PoolImageReport struct {
 // state never surfaces on-node file paths); identity is the sha256.
 type PoolSnapshotReport struct {
 	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// BlobReport is one content-addressed blob the agent holds in its dedicated
+// per-node artifact store (slice C1). Reported once per NODE (not per pool):
+// the artifact store is node-level, independent of disk pools. The CP ingests
+// the list into the observed node_blobs inventory, the holder-discovery source
+// for the cross-node pull saga. The on-node path is intentionally omitted
+// (observed state never surfaces file paths); identity is the digest.
+type BlobReport struct {
+	Digest    string `json:"digest"`
 	SizeBytes int64  `json:"size_bytes"`
 }
 

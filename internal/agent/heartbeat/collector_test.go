@@ -285,6 +285,90 @@ func TestCollect_PoolSnapshotsUnavailable(t *testing.T) {
 	}
 }
 
+type fakeBlobLister struct {
+	blobs []BlobReport
+	// unavailable reports known=false (the agent could not enumerate the store).
+	unavailable bool
+}
+
+func (f fakeBlobLister) NodeBlobs() ([]BlobReport, bool) {
+	if f.unavailable {
+		return nil, false
+	}
+	return f.blobs, true
+}
+
+// TestCollect_IncludesBlobs confirms the collector folds the node-level
+// artifact-store blob inventory (from the BlobLister seam) into
+// Report.Blobs for the heartbeat. Reported once per node, not per pool;
+// mirrors TestCollect_IncludesPoolSnapshots.
+func TestCollect_IncludesBlobs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	blob := BlobReport{
+		Digest:    "abc123",
+		SizeBytes: 4096,
+	}
+	c := &LinuxCollector{
+		procPath:     dir,
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		blobs:        fakeBlobLister{blobs: []BlobReport{blob}},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if diff := cmp.Diff([]BlobReport{blob}, rep.Blobs); diff != "" {
+		t.Errorf("Blobs mismatch (-want +got):\n%s", diff)
+	}
+	// A successful enumeration sets BlobsUnavailable = false; the inventory is
+	// authoritative.
+	if rep.BlobsUnavailable {
+		t.Errorf("BlobsUnavailable = true, want false (enumeration succeeded)")
+	}
+}
+
+// TestCollect_BlobsUnavailable confirms the fail-closed contract: a
+// BlobLister that returns known=false (the agent could not enumerate the
+// artifact store) makes the collector set BlobsUnavailable = true with no
+// blobs, so the CP preserves the prior inventory rather than clearing it.
+// Mirrors TestCollect_PoolSnapshotsUnavailable.
+func TestCollect_BlobsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	c := &LinuxCollector{
+		procPath:     dir,
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		blobs:        fakeBlobLister{unavailable: true},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if !rep.BlobsUnavailable {
+		t.Errorf("BlobsUnavailable = false, want true (enumeration failed)")
+	}
+	if len(rep.Blobs) != 0 {
+		t.Errorf("Blobs = %+v, want empty when unavailable", rep.Blobs)
+	}
+}
+
 // TestMapVMStatus pins the agent→server phase mapping. The CP-side
 // validator rejects anything outside the supported VmPhase enum, so
 // drift here surfaces as a run-time 400.
