@@ -7,6 +7,7 @@ import (
 	"context"
 
 	apitokenshandlers "github.com/otherix/otherix/internal/api/handlers/apitokens"
+	artifactpoolshandlers "github.com/otherix/otherix/internal/api/handlers/artifactpools"
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
@@ -50,6 +51,7 @@ type RouterStore interface {
 	jointokenshandlers.Store
 	networkshandlers.Store
 	storagepoolshandlers.Store
+	artifactpoolshandlers.Store
 	clusterhandlers.Store
 	firmwareshandlers.Store
 	taskshandlers.Store

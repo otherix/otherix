@@ -36,6 +36,8 @@ tags:
       UEFI/BIOS firmwares known to the cluster.
   - name: storage-pools
     description: Per-node storage pools.
+  - name: artifact-pools
+    description: Cluster-level artifact pools (slice B).
   - name: networks
     description: Cluster-wide networks.
   - name: vms
@@ -1502,6 +1504,104 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/artifact-pools:
+    get:
+      operationId: artifactPools.list
+      tags: [artifact-pools]
+      summary: List artifact pools.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: List of artifact pools.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactPoolList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: artifactPools.create
+      tags: [artifact-pools]
+      summary: Create a cluster-level artifact pool (admin only).
+      description: |
+        **Required permission:** `storage_pool:manage`. Names are unique across
+        both the artifact-pool and storage-pool namespaces; a collision returns
+        `409 conflict`.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactPoolCreate" }
+      responses:
+        "201":
+          description: Artifact pool created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactPool" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/artifact-pools/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Artifact pool UUID or name (names are globally unique).
+    get:
+      operationId: artifactPools.get
+      tags: [artifact-pools]
+      summary: Get an artifact pool by id or name.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Artifact pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactPool" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: artifactPools.delete
+      tags: [artifact-pools]
+      summary: Delete an artifact pool (admin only).
+      description: |
+        **Required permission:** `storage_pool:manage`. Refused with `409
+        conflict` + `details.blocking_resources` while any snapshot references the
+        pool; no force-delete.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Cannot delete: snapshots still reference the pool.
+            `details.blocking_resources` carries `{"snapshots": <count>}`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/networks:
@@ -3409,6 +3509,62 @@ components:
               additionalProperties: true
               description: Code-specific structured payload. Optional.
 
+    ReplicationFactor:
+      oneOf:
+        - type: integer
+          minimum: 1
+          description: Fixed number of durable copies.
+        - type: string
+          enum: [all]
+          description: Every current and future member node.
+      description: |
+        Durability target K. Not enforced in slice B (no transport; observed
+        replicas stay 1); the reconcile loop that maintains K is sub-project C.
+    ArtifactPoolMembership:
+      type: object
+      required: [all_nodes]
+      description: |
+        Which nodes are intended to back the pool. Advisory metadata in slice B
+        (nothing is materialised); sub-project C materialises and reconciles it.
+      properties:
+        all_nodes:
+          type: boolean
+          description: When true, every current and future node is a member.
+        nodes:
+          type: array
+          items: { type: string }
+          description: Explicit node names; present only when all_nodes is false.
+    ArtifactPool:
+      type: object
+      required: [id, name, replication_factor, membership, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, maxLength: 255 }
+        replication_factor: { $ref: "#/components/schemas/ReplicationFactor" }
+        membership: { $ref: "#/components/schemas/ArtifactPoolMembership" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ArtifactPoolCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        replication_factor:
+          allOf:
+            - $ref: "#/components/schemas/ReplicationFactor"
+          default: 1
+        membership:
+          allOf:
+            - $ref: "#/components/schemas/ArtifactPoolMembership"
+          description: Defaults to all_nodes=true when omitted.
+    ArtifactPoolList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ArtifactPool" }
+        meta: { $ref: "#/components/schemas/PaginationMeta" }
     PaginationMeta:
       type: object
       required: [next_cursor]

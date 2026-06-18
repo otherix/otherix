@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	apitokenshandlers "github.com/otherix/otherix/internal/api/handlers/apitokens"
+	artifactpoolshandlers "github.com/otherix/otherix/internal/api/handlers/artifactpools"
 	authhandlers "github.com/otherix/otherix/internal/api/handlers/auth"
 	cahandlers "github.com/otherix/otherix/internal/api/handlers/ca"
 	clusterhandlers "github.com/otherix/otherix/internal/api/handlers/cluster"
@@ -189,6 +190,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
 	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.StoragePools, deps.Logger)
+	artifactPoolsH := artifactpoolshandlers.New(deps.Store, deps.Logger)
 	clusterH := clusterhandlers.New(deps.Store, deps.Logger)
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
@@ -394,6 +396,13 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// response (storage_pool:read). The former
 				// GET/DELETE `/{pool_id}/images[/{image_id}]` endpoints
 				// were removed with the template entity.
+			})
+
+			r.Route("/artifact-pools", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermStoragePoolRead, deps.Logger)).Get("/", artifactPoolsH.List)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolRead, deps.Logger)).Get("/{id}", artifactPoolsH.Get)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Post("/", artifactPoolsH.Create)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Delete("/{id}", artifactPoolsH.Delete)
 			})
 
 			// /v1/cluster surface. Default-pool reference is the only
