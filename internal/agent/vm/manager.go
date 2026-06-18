@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/cloudinit"
 	"github.com/otherix/otherix/internal/agent/migration"
 	"github.com/otherix/otherix/internal/agent/netfabric"
@@ -236,6 +237,15 @@ type Manager struct {
 	// verbatim copy so the capture path runs on darwin without qemu-img.
 	snapshotConvert convertFunc
 
+	// artifactStore is the dedicated per-node content-addressed artifact store
+	// (slice C1). Snapshot capture dual-writes the blob + manifest here ADDITIVELY
+	// alongside the disk-pool copy: the disk-pool copy stays AUTHORITATIVE for
+	// slice-A idempotency/list/delete; this store copy is the additive C1 transport
+	// copy that later C1 tasks (heartbeat inventory, peer pull, recreate) consume.
+	// Removing the disk-pool copy is C3, not C1. Set from cfg.Artifacts.Root in New;
+	// nil-guarded at the capture site so a half-wired test path cannot panic.
+	artifactStore *artifactstore.Store
+
 	// snapshotDiskDevices enumerates a VM's disks in virtio-index order for
 	// the snapshot capture loop. Production is the package snapshotDiskDevices
 	// (slice A: a single boot disk at index 0); the test injects a multi-disk
@@ -388,6 +398,19 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.diskCapturer = qmpDiskCapturer{}
 	m.snapshotConvert = qemu.ConvertTo
 	m.snapshotDiskDevices = snapshotDiskDevices
+	// Dedicated per-node artifact store (slice C1). Snapshot capture dual-writes
+	// blob + manifest here additively (the disk-pool copy stays authoritative for
+	// slice-A). Built from cfg.Artifacts.Root, which production config always
+	// defaults to a valid /var/lib/otherix/ path (config Validate rejects empty).
+	// An empty root means an unconfigured/test path: leave the store nil and let
+	// the capture site skip the additive write rather than failing construction.
+	if cfg.Artifacts.Root != "" {
+		artifactStore, err := artifactstore.New(cfg.Artifacts.Root)
+		if err != nil {
+			return nil, fmt.Errorf("init artifact store: %w", err)
+		}
+		m.artifactStore = artifactStore
+	}
 	m.migrations = migration.NewStore()
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath

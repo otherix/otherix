@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agentapi"
 )
@@ -297,6 +298,54 @@ func produceBlob(ctx context.Context, srcDisk, snapshotsDir string, convert conv
 	return BlobResult{SHA256: sha, Path: blobPath, SizeBytes: size}, nil
 }
 
+// produceBlobToStore materializes srcDisk (a backup-target qcow2) into the
+// dedicated content-addressed artifact store (slice C1), mirroring produceBlob's
+// convert + validate + hash tail but landing the blob in the per-node store
+// instead of the disk pool's snapshots/ dir:
+//
+//  1. convert srcDisk into a fresh standalone qcow2 in a private temp dir;
+//  2. validate its qcow2 magic and hash it;
+//  3. hand the staged file to store.Put, which re-hashes the stream, rejects a
+//     digest mismatch, and atomically renames it into blobs/{sha} (idempotent: an
+//     identical blob already present is a no-op).
+//
+// The blob is never visible under blobs/{sha} until it validates (store.Put's
+// contract), and the temp dir is removed on the way out, so a crash leaves no
+// partial blob. This is the additive C1 transport copy; the disk-pool produceBlob
+// copy stays authoritative for slice-A idempotency/list/delete.
+func produceBlobToStore(ctx context.Context, srcDisk string, store *artifactstore.Store, convert convertFunc) (BlobResult, error) {
+	tmpDir, err := os.MkdirTemp("", "otherix-blob-")
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("create blob temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	staged := filepath.Join(tmpDir, uuid.NewString()+".qcow2")
+
+	if err := convert(ctx, srcDisk, staged); err != nil {
+		return BlobResult{}, fmt.Errorf("convert %s into staging blob: %v", srcDisk, err)
+	}
+	if err := validateQcow2Magic(staged); err != nil {
+		return BlobResult{}, fmt.Errorf("qcow2_header_invalid: %v", err)
+	}
+	sha, err := hashFile(staged)
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("hash staging blob: %v", err)
+	}
+	info, err := os.Stat(staged)
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("stat staging blob: %v", err)
+	}
+	f, err := os.Open(staged) //nolint:gosec // staged is a fresh temp file produced above
+	if err != nil {
+		return BlobResult{}, fmt.Errorf("open staging blob: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := store.Put(sha, f); err != nil {
+		return BlobResult{}, fmt.Errorf("put blob into artifact store: %v", err)
+	}
+	return BlobResult{SHA256: sha, Path: store.Root(), SizeBytes: info.Size()}, nil
+}
+
 // ListSnapshots walks snapshotsDir and returns the inventory of content-
 // addressed snapshot blobs: every {sha}.qcow2 file paired with the digest
 // read from its sidecar. Mirrors ListImages: files lacking a well-formed
@@ -540,12 +589,26 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 			return
 		}
 		blob, err := produceBlob(ctx, backup, snapshotsDir, m.snapshotConvert)
-		_ = os.Remove(backup)
 		if err != nil {
+			_ = os.Remove(backup)
 			log.Error("produce blob", "device", dev.device, "err", err)
 			m.failSnapshotTask(taskID, "snapshot_blob_failed", err.Error())
 			return
 		}
+		// Additive C1 dual-write: ALSO land the blob in the dedicated per-node
+		// artifact store. The disk-pool produceBlob copy above stays AUTHORITATIVE
+		// for slice-A idempotency/list/delete; this store copy is the additive C1
+		// transport copy. Nil-guarded so a half-wired test path cannot panic;
+		// production always has the store set (New fails closed otherwise).
+		if m.artifactStore != nil {
+			if _, err := produceBlobToStore(ctx, backup, m.artifactStore, m.snapshotConvert); err != nil {
+				_ = os.Remove(backup)
+				log.Error("produce blob into artifact store", "device", dev.device, "err", err)
+				m.failSnapshotTask(taskID, "snapshot_blob_failed", err.Error())
+				return
+			}
+		}
+		_ = os.Remove(backup)
 		disks = append(disks, snapshotManifestDisk{
 			Index:     dev.index,
 			Device:    dev.device,
@@ -570,6 +633,27 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 		log.Error("write manifest", "err", err)
 		m.failSnapshotTask(taskID, "internal", err.Error())
 		return
+	}
+
+	// Additive C1 manifest dual-write: ALSO write the snapshot manifest into the
+	// artifact store, keyed by EACH disk's blob digest, so a peer that pulls any
+	// one blob can recover the snapshot's disk set without the disk-pool copy. The
+	// disk-pool writeSnapshotManifest above stays AUTHORITATIVE for slice-A
+	// list/idempotency/delete; this is the additive C1 transport copy. Same manifest
+	// JSON the disk-pool copy carries (json.MarshalIndent of snapshotManifest).
+	// Nil-guarded; fail-open per disk - a store-side manifest write failure must not
+	// fail an already-durable slice-A capture (the disk-pool copy is the source of
+	// truth), so it logs and continues.
+	if m.artifactStore != nil {
+		if manJSON, err := json.MarshalIndent(man, "", "  "); err != nil {
+			log.Warn("encode artifact-store manifest", "err", err)
+		} else {
+			for _, d := range disks {
+				if err := m.artifactStore.WriteManifest(d.SHA256, manJSON); err != nil {
+					log.Warn("write artifact-store manifest", "digest", d.SHA256, "err", err)
+				}
+			}
+		}
 	}
 
 	result, err := json.Marshal(man.toAPI())
