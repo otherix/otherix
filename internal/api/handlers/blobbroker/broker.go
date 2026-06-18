@@ -80,6 +80,14 @@ func New(st Store, exec AgentExecutor, log *slog.Logger) *Broker {
 // the holder serve listener, drives the consumer pull to terminal, then tears
 // the serve listener down. Returns nil only when the consumer pull completed
 // successfully; the saga phase mirrors the outcome.
+//
+// The consumer pull is awaited to terminal, and that await is bounded by BOTH
+// the caller's ctx deadline AND the agent client's configured timeout
+// (agent_client.timeout, default 5 minutes). The caller (Task 13 recreate
+// worker) must therefore pass a ctx whose deadline accommodates a full blob
+// transfer, and operators sizing very large blobs may need to raise
+// agent_client.timeout; a transfer exceeding either bound surfaces as a timeout
+// that fails the saga, not a broker bug.
 func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID uuid.UUID) error {
 	holders, err := b.store.BlobHolders(ctx, digest)
 	if err != nil {
@@ -110,14 +118,21 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 		return fmt.Errorf("create pull saga: %v", err)
 	}
 
+	// ServeBlob discards expiresAt: C1 does not act on the serve expiry. The
+	// holder's serve listener self-expires on its token TTL (and is torn down by
+	// the agent on shutdown), so the broker relies on that self-expiry rather
+	// than tracking the deadline.
 	serveEndpoint, _, err := b.exec.ServeBlob(ctx, holder.AdvertisedEndpoint, digest, token, consumerNodeID.String())
 	if err != nil {
+		// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
 		return fmt.Errorf("holder serve: %v", err)
 	}
 	// Records the serve endpoint and advances the saga to serving.
+	// best-effort: saga endpoint is non-authoritative metadata; a write failure must not abort an in-progress pull.
 	_ = b.store.UpdatePullSagaServeEndpoint(ctx, saga.ID, serveEndpoint)
 
+	// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 	_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhasePulling)
 	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint)
 
@@ -129,6 +144,7 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	}
 
 	if pullErr != nil {
+		// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
 		return fmt.Errorf("consumer pull: %v", pullErr)
 	}
