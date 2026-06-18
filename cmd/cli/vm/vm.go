@@ -48,6 +48,7 @@ endpoint resolution flow through the root-level --endpoint /
 	cmd.AddCommand(newConsoleCommand())
 	cmd.AddCommand(newLogsCommand())
 	cmd.AddCommand(newMigrateCommand())
+	cmd.AddCommand(newSnapshotCommand())
 
 	return cmd
 }

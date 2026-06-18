@@ -194,6 +194,97 @@ func TestCollectPoolImagesUnavailable(t *testing.T) {
 	}
 }
 
+type fakePoolSnapshotLister struct {
+	snapshots map[string][]PoolSnapshotReport
+	// unavailable pools report known=false (the agent could not enumerate them).
+	unavailable map[string]bool
+}
+
+func (f fakePoolSnapshotLister) PoolSnapshots(pool string) ([]PoolSnapshotReport, bool) {
+	if f.unavailable[pool] {
+		return nil, false
+	}
+	return f.snapshots[pool], true
+}
+
+// TestCollect_IncludesPoolSnapshots confirms the collector folds the per-pool
+// snapshot-blob inventory (from the PoolSnapshotLister seam) into the matching
+// PoolReport.Snapshots for the heartbeat. Mirrors TestCollectPoolImages.
+func TestCollect_IncludesPoolSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	snap := PoolSnapshotReport{
+		SHA256:    "abc123",
+		SizeBytes: 2048,
+	}
+	c := &LinuxCollector{
+		procPath:      dir,
+		vms:           stubLister{},
+		agentVersion:  "test",
+		architecture:  "amd64",
+		pools:         stubPoolReporter{reports: []PoolReport{{Name: "default", ReconciliationStatus: "ready"}}},
+		poolSnapshots: fakePoolSnapshotLister{snapshots: map[string][]PoolSnapshotReport{"default": {snap}}},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := len(rep.Pools); got != 1 {
+		t.Fatalf("pools count = %d, want 1", got)
+	}
+	if diff := cmp.Diff([]PoolSnapshotReport{snap}, rep.Pools[0].Snapshots); diff != "" {
+		t.Errorf("Pools[0].Snapshots mismatch (-want +got):\n%s", diff)
+	}
+	// A successful enumeration sets SnapshotsUnavailable = false; the inventory is
+	// authoritative.
+	if rep.Pools[0].SnapshotsUnavailable {
+		t.Errorf("Pools[0].SnapshotsUnavailable = true, want false (enumeration succeeded)")
+	}
+}
+
+// TestCollect_PoolSnapshotsUnavailable confirms the tri-state fail-closed
+// contract: a PoolSnapshotLister that returns known=false (the agent could not
+// enumerate the pool) makes the collector set SnapshotsUnavailable = true with no
+// snapshots, so the CP preserves the prior inventory rather than clearing it.
+// Mirrors TestCollectPoolImagesUnavailable.
+func TestCollect_PoolSnapshotsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	c := &LinuxCollector{
+		procPath:      dir,
+		vms:           stubLister{},
+		agentVersion:  "test",
+		architecture:  "amd64",
+		pools:         stubPoolReporter{reports: []PoolReport{{Name: "default", ReconciliationStatus: "ready"}}},
+		poolSnapshots: fakePoolSnapshotLister{unavailable: map[string]bool{"default": true}},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := len(rep.Pools); got != 1 {
+		t.Fatalf("pools count = %d, want 1", got)
+	}
+	if !rep.Pools[0].SnapshotsUnavailable {
+		t.Errorf("Pools[0].SnapshotsUnavailable = false, want true (enumeration failed)")
+	}
+	if len(rep.Pools[0].Snapshots) != 0 {
+		t.Errorf("Pools[0].Snapshots = %+v, want empty when unavailable", rep.Pools[0].Snapshots)
+	}
+}
+
 // TestMapVMStatus pins the agent→server phase mapping. The CP-side
 // validator rejects anything outside the supported VmPhase enum, so
 // drift here surfaces as a run-time 400.

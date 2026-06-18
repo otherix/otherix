@@ -67,6 +67,42 @@ func TestCreateVMRoundTripsNetworkConfig(t *testing.T) {
 	}
 }
 
+// TestCreateVM_FromSnapshot_SetsProvenanceEmptyImage locks the recreate
+// provenance invariant at the store seam: a VM created with SourceSnapshotID set
+// persists SourceSnapshotID != nil and carries no image lineage (ImageURL == ""
+// and ImageSHA256 == nil), even if the params carried image fields - a
+// snapshot-sourced VM's disk is the snapshot state, not a base image.
+func TestCreateVM_FromSnapshot_SetsProvenanceEmptyImage(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	snapID := uuid.New()
+	p := mkUnscheduledParams(t, "vm-from-snap")
+	p.SourceSnapshotID = &snapID
+	// Defense in depth: even if the handler left these populated, the store must
+	// drop them for a snapshot-sourced VM.
+	p.ImageURL = "https://example.com/base.qcow2"
+	p.ImageSHA256 = []byte{0xde, 0xad, 0xbe, 0xef}
+
+	id, err := st.CreateUnscheduledVM(ctx, p)
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+	vm, err := st.VMByID(ctx, id)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if vm.SourceSnapshotID == nil || *vm.SourceSnapshotID != snapID {
+		t.Errorf("SourceSnapshotID = %v, want %v", vm.SourceSnapshotID, snapID)
+	}
+	if vm.ImageURL != "" {
+		t.Errorf("ImageURL = %q, want empty (snapshot-sourced)", vm.ImageURL)
+	}
+	if vm.ImageSHA256 != nil {
+		t.Errorf("ImageSHA256 = %v, want nil (snapshot-sourced)", vm.ImageSHA256)
+	}
+}
+
 func TestCreateUnscheduledVM(t *testing.T) {
 	st, _ := etcdstore.FreshStore(t)
 	ctx := context.Background()

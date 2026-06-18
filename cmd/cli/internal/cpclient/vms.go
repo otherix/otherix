@@ -20,11 +20,14 @@ import (
 // columns (cpu_cores / memory_mib) — the handler boundary owns the
 // translation.
 //
-// The VM is created directly from an image source (the template entity
-// is gone). `ImageURL` and `Arch` are required; the server downloads /
-// caches the image into the target pool. `ImageSHA256` pins the
-// expected digest; `Firmware` / `FirmwareID` select firmware by name or
-// uuid; `Format` and `DiskGiB` size the root disk. `pool` stays
+// The VM is created from one of two disk sources (the template entity is
+// gone): exactly one of `ImageURL` or `SourceSnapshotID` is set. In the
+// image-source mode `ImageURL` and `Arch` are required; the server
+// downloads / caches the image into the target pool, `ImageSHA256` pins
+// the expected digest, `Firmware` / `FirmwareID` select firmware by name
+// or uuid, and `Format` / `DiskGiB` size the root disk. In the
+// snapshot-source mode `SourceSnapshotID` is set and architecture /
+// format / firmware come from the snapshot manifest. `pool` stays
 // polymorphic per the multi-instance carve-out (either a pool name or a
 // per-instance UUID literal). CLI callers pass operator-friendly names.
 //
@@ -48,8 +51,14 @@ type CreateVMRequest struct {
 	DiskGiB     int     `json:"disk_gib,omitempty"`
 	Pool        string  `json:"pool,omitempty"`
 	Node        *string `json:"node,omitempty"`
-	VCPUs       int     `json:"vcpus"`
-	MemoryMB    int     `json:"memory_mb"`
+	// SourceSnapshotID recreates the VM from a snapshot instead of an image.
+	// Exactly one of ImageURL / SourceSnapshotID must be set. When set, the
+	// server takes architecture / format / firmware from the snapshot manifest
+	// and the resulting VM carries empty image fields. omitempty keeps it off
+	// the wire for the image-sourced path.
+	SourceSnapshotID string `json:"source_snapshot_id,omitempty"`
+	VCPUs            int    `json:"vcpus"`
+	MemoryMB         int    `json:"memory_mb"`
 	// Network is the optional bridge network (name or uuid) to attach a
 	// single NIC to. Omitted leaves the VM with no NIC (the agent falls
 	// back to legacy SLIRP networking). The server rejects non-bridge

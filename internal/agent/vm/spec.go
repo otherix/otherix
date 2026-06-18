@@ -124,8 +124,42 @@ type CreateSpec struct {
 	// passed through verbatim. Empty means cloud-init falls back to
 	// DHCP discovery. Independent of UserData - either or both may be set.
 	NetworkData []byte
+	// CloudInitDisabled is the explicit opt-out (operator --no-cloud-init).
+	// When true the agent skips the NoCloud seed entirely; otherwise every
+	// create gets at least the minimal name-as-hostname seed (always-on
+	// cidata). The CP persists this on the VM row and forwards it so empty
+	// user-data no longer implies "no seed".
+	CloudInitDisabled bool
+	// SourceSnapshot, when non-nil, recreates the VM's disks from a snapshot's
+	// content-addressed blobs instead of downloading an image. Mutually
+	// exclusive with ImageURL: the CP vm.create worker resolves the snapshot
+	// manifest (ordered disk digests) and sets exactly one of the two. The
+	// agent clones each referenced blob from {poolRoot}/snapshots/{sha}.qcow2
+	// in disk-index order; ImageURL is empty in this case.
+	SourceSnapshot *SnapshotRef
 	// NICs are the CP-declared network interfaces to materialise. Empty
 	// means legacy SLIRP user-mode networking (curl-driven smoke tests
 	// and pre-networking callers that omit the field).
 	NICs []netfabric.NIC
+}
+
+// SnapshotRef is the resolved disk source for a recreate-from-snapshot create.
+// Pool names the pool whose snapshots/ subdir holds the blobs (slice A K=1: the
+// VM's own create pool); Disks lists every VM disk to materialize, ordered by
+// virtio index, each carrying the content-addressed blob digest the agent
+// clones. The CP worker resolves these from the snapshot manifest so the agent
+// never needs CP store access.
+type SnapshotRef struct {
+	Pool  string
+	Disks []SnapshotDiskRef
+}
+
+// SnapshotDiskRef is one disk in a SnapshotRef: its virtio index, the wire
+// device name (virtio<i>), and the sha256 of the content-addressed blob under
+// {poolRoot}/snapshots/{sha}.qcow2. Ordering by Index is the virtio<i>
+// invariant the migration data-path and the Task-10 manifest also rely on.
+type SnapshotDiskRef struct {
+	Index  int
+	Device string
+	SHA256 string
 }

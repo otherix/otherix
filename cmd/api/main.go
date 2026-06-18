@@ -22,6 +22,7 @@ import (
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
+	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
@@ -512,6 +513,12 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
 		storagepoolshandlers.ScanHandler(st, storagepoolshandlers.NewAgentScanExecutor(agentClient), cfg.Placement.Pressure.Disk, log))
+
+	snapshotExec := snapshotshandlers.NewAgentSnapshotExecutor(agentClient)
+	d.Register("vm.snapshot.create", workerMaxAttempts,
+		snapshotshandlers.CreateHandler(st, snapshotExec, log))
+	d.Register("vm.snapshot.delete", workerMaxAttempts,
+		snapshotshandlers.DeleteHandler(st, snapshotExec, log))
 
 	// vm.migrate drives the live-migration saga (placement / two-phase handshake /
 	// atomic cutover). The placer reuses SchedulePlacement over the store's

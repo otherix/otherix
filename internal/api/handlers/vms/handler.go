@@ -93,6 +93,9 @@ type Store interface {
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
 	CreateUnscheduledVM(ctx context.Context, p store.CreateVMParams) (uuid.UUID, error)
 	DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error
+	// SnapshotByID resolves the recreate source for vm create
+	// --from-snapshot; returns store.ErrNotFound when absent or soft-deleted.
+	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 	ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
@@ -166,19 +169,23 @@ type vmView struct {
 	// for callers without vm:console on this VM. ImageSHA256 and Format are
 	// inventory (a digest and a format string reveal no secret) and stay
 	// visible to every vm:read holder.
-	ImageURL     string          `json:"image_url,omitempty"`
-	ImageSHA256  string          `json:"image_sha256,omitempty"`
-	Format       string          `json:"format"`
-	Pool         string          `json:"pool"`
-	Node         *string         `json:"node"`
-	Networks     []string        `json:"networks"`
-	Nics         []nicView       `json:"nics"`
-	Architecture string          `json:"architecture"`
-	VCPUs        int             `json:"vcpus"`
-	MemoryMB     int             `json:"memory_mb"`
-	Status       vmStatusView    `json:"status"`
-	DesiredPhase string          `json:"desired_phase"`
-	Labels       json.RawMessage `json:"labels"`
+	ImageURL    string `json:"image_url,omitempty"`
+	ImageSHA256 string `json:"image_sha256,omitempty"`
+	// SourceSnapshotID is the snapshot this VM was recreated from (vm create
+	// --from-snapshot), or null for an image-sourced VM. Provenance, not a
+	// secret: always visible to every vm:read holder (unlike ImageURL).
+	SourceSnapshotID *string         `json:"source_snapshot_id"`
+	Format           string          `json:"format"`
+	Pool             string          `json:"pool"`
+	Node             *string         `json:"node"`
+	Networks         []string        `json:"networks"`
+	Nics             []nicView       `json:"nics"`
+	Architecture     string          `json:"architecture"`
+	VCPUs            int             `json:"vcpus"`
+	MemoryMB         int             `json:"memory_mb"`
+	Status           vmStatusView    `json:"status"`
+	DesiredPhase     string          `json:"desired_phase"`
+	Labels           json.RawMessage `json:"labels"`
 	// UserData and NetworkConfig echo the cloud-init payloads the VM was
 	// created with, verbatim - but ONLY to callers holding vm:console on
 	// this VM (owner for developer scope=own; any VM for admin / operator).
@@ -319,28 +326,34 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, 
 			}
 		}
 	}
+	var sourceSnapshotID *string
+	if vm.SourceSnapshotID != nil {
+		s := vm.SourceSnapshotID.String()
+		sourceSnapshotID = &s
+	}
 	v := vmView{
-		ID:            vm.ID.String(),
-		Name:          vm.Name,
-		OwnerID:       vm.OwnerID.String(),
-		Owner:         names.owner,
-		ImageURL:      vm.ImageURL,
-		ImageSHA256:   hex.EncodeToString(vm.ImageSHA256),
-		Format:        string(vm.ImageFormat),
-		Pool:          pool,
-		Node:          names.node,
-		Networks:      networksOrEmpty(nets),
-		Nics:          nicsOrEmpty(names.nics),
-		Architecture:  string(vm.Architecture),
-		VCPUs:         int(vm.CpuCores),
-		MemoryMB:      int(vm.MemoryMib),
-		Status:        status,
-		DesiredPhase:  string(vm.DesiredPhase),
-		Labels:        rawJSONOrEmpty(vm.Labels),
-		UserData:      vm.UserData,
-		NetworkConfig: vm.NetworkConfig,
-		CreatedAt:     vm.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:     vm.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:               vm.ID.String(),
+		Name:             vm.Name,
+		OwnerID:          vm.OwnerID.String(),
+		Owner:            names.owner,
+		ImageURL:         vm.ImageURL,
+		ImageSHA256:      hex.EncodeToString(vm.ImageSHA256),
+		SourceSnapshotID: sourceSnapshotID,
+		Format:           string(vm.ImageFormat),
+		Pool:             pool,
+		Node:             names.node,
+		Networks:         networksOrEmpty(nets),
+		Nics:             nicsOrEmpty(names.nics),
+		Architecture:     string(vm.Architecture),
+		VCPUs:            int(vm.CpuCores),
+		MemoryMB:         int(vm.MemoryMib),
+		Status:           status,
+		DesiredPhase:     string(vm.DesiredPhase),
+		Labels:           rawJSONOrEmpty(vm.Labels),
+		UserData:         vm.UserData,
+		NetworkConfig:    vm.NetworkConfig,
+		CreatedAt:        vm.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:        vm.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if !includeSecrets {
 		v.ImageURL = ""

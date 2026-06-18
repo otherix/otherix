@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +39,7 @@ type WorkerStore interface {
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
+	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams, imageSHA256 []byte) error
@@ -111,43 +113,57 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, log *sl
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, "internal", err)
 	}
+	// Recreate-from-snapshot: resolve the snapshot manifest (ordered blob
+	// digests) so the agent can clone the disks from the pool's snapshots/ cache
+	// instead of downloading an image. This is the SEAM - the agent has no CP
+	// store access, so the worker MUST hand it the resolved digests.
+	sourceSnapshot, handled, snapErr := loadCreateSourceSnapshot(ctx, st, log, taskID, args.SourceSnapshotID, pool.Name)
+	if handled {
+		return snapErr
+	}
+
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("reload task: %v", err)
 	}
 
 	result, execErr := exec.Execute(ctx, CreateArgs{
-		TaskID:        taskID,
-		AgentTaskID:   task.AgentTaskID,
-		VM:            vm,
-		Disk:          disk,
-		ImageURL:      vm.ImageURL,
-		ImageSHA256:   hex.EncodeToString(vm.ImageSHA256),
-		Format:        string(vm.ImageFormat),
-		DiskGiB:       int(disk.SizeGib),
-		Pool:          pool,
-		Node:          node,
-		NICs:          nics,
-		OnAgentTaskID: onAgentTaskID(st, taskID),
+		TaskID:         taskID,
+		AgentTaskID:    task.AgentTaskID,
+		VM:             vm,
+		Disk:           disk,
+		ImageURL:       vm.ImageURL,
+		ImageSHA256:    hex.EncodeToString(vm.ImageSHA256),
+		Format:         string(vm.ImageFormat),
+		DiskGiB:        int(disk.SizeGib),
+		SourceSnapshot: sourceSnapshot,
+		Pool:           pool,
+		Node:           node,
+		NICs:           nics,
+		OnAgentTaskID:  onAgentTaskID(st, taskID),
 	})
 	if execErr != nil {
 		return failCreateExec(ctx, st, log, taskID, execErr)
 	}
+	return projectCreateSuccess(ctx, st, log, taskID, args.VMID, args.NodeID, result)
+}
 
+// projectCreateSuccess commits a successful vm.create: it marshals the agent
+// result into the task result, decodes the agent-resolved content digest (a
+// malformed digest degrades to no stamp rather than failing the committed
+// create), and runs the runtime-row + task-finalize projection in one store
+// call. Split out of runCreate to keep it under gocyclo.
+func projectCreateSuccess(ctx context.Context, st WorkerStore, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, result CreateResult) error {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("marshal create result: %v", err))
 	}
-	nodeID := args.NodeID
-	// Decode the agent-resolved hex digest so the projection can stamp it onto
-	// the VM row. A malformed digest (never expected from a successful agent
-	// task) degrades to no stamp rather than failing the committed create.
 	resolvedDigest, decErr := hex.DecodeString(result.ImageSHA256)
 	if decErr != nil {
 		resolvedDigest = nil
 	}
 	if err := st.ProjectVMCreateSuccess(ctx,
-		store.UpsertVMRuntimeParams{VmID: args.VMID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
 		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: resultJSON},
 		resolvedDigest,
 	); err != nil {
@@ -201,6 +217,57 @@ func resolveCreateNICs(ctx context.Context, st WorkerStore, vmID uuid.UUID) ([]a
 		})
 	}
 	return out, nil
+}
+
+// loadCreateSourceSnapshot resolves the recreate-from-snapshot disk source when
+// snapshotID is set. Returns (nil, false, nil) for an image-sourced create. On a
+// resolution failure it finalizes the task itself and returns handled=true plus
+// the runCreate return value the caller must propagate verbatim: a missing
+// snapshot is terminal (fail closed, no retry - it will not reappear, so the
+// finalized return is nil); a transient store error is retryable (the cause is
+// returned so the dispatcher requeues). handled=true is the authoritative
+// stop-signal even when the propagated error is nil, so the create never
+// silently falls back to a sourceless (empty-image) dispatch.
+func loadCreateSourceSnapshot(ctx context.Context, st WorkerStore, log *slog.Logger, taskID uuid.UUID, snapshotID *uuid.UUID, poolName string) (src *agentclient.VMCreateSourceSnapshot, handled bool, runErr error) {
+	if snapshotID == nil {
+		return nil, false, nil
+	}
+	src, err := resolveSourceSnapshot(ctx, st, *snapshotID, poolName)
+	if err == nil {
+		return src, false, nil
+	}
+	cause := fmt.Errorf("resolve source snapshot: %v", err)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, true, failTerminal(ctx, st, log, "vms.create", taskID, "snapshot_not_found", cause)
+	}
+	return nil, true, failRun(ctx, st, log, "vms.create", taskID, "internal", cause)
+}
+
+// resolveSourceSnapshot loads the snapshot and projects its manifest disks onto
+// the agent-facing VMCreateSourceSnapshot, ordered by disk index (the virtio<i>
+// invariant the agent clones in). poolName is the recreate VM's target pool -
+// in slice A (K=1) the blobs live under that pool's snapshots/ subdir on the
+// same node, so the agent resolves {poolRoot}/snapshots/{sha}.qcow2 from its own
+// registry. A snapshot with no manifest disks is an inconsistency (the worker
+// only fills Disks on a successful capture) and fails the create.
+func resolveSourceSnapshot(ctx context.Context, st WorkerStore, snapshotID uuid.UUID, poolName string) (*agentclient.VMCreateSourceSnapshot, error) {
+	snap, err := st.SnapshotByID(ctx, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("load snapshot %s: %w", snapshotID, err)
+	}
+	if len(snap.Disks) == 0 {
+		return nil, fmt.Errorf("snapshot %s has no manifest disks", snapshotID)
+	}
+	disks := make([]agentclient.VMCreateSourceSnapshotDisk, 0, len(snap.Disks))
+	for _, d := range snap.Disks {
+		disks = append(disks, agentclient.VMCreateSourceSnapshotDisk{
+			Index:  int(d.Index),
+			Device: d.Device,
+			SHA256: d.SHA256,
+		})
+	}
+	sort.Slice(disks, func(i, j int) bool { return disks[i].Index < disks[j].Index })
+	return &agentclient.VMCreateSourceSnapshot{Pool: poolName, Disks: disks}, nil
 }
 
 // DeleteHandler returns the dispatcher handler for vm.delete jobs. staleGrace is

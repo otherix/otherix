@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
@@ -103,6 +104,10 @@ func (s *deleteWorkerStoreStub) ListVMNicsByVM(context.Context, uuid.UUID) ([]st
 
 func (s *deleteWorkerStoreStub) NetworkByID(context.Context, uuid.UUID) (store.Network, error) {
 	panic("unexpected NetworkByID")
+}
+
+func (s *deleteWorkerStoreStub) SnapshotByID(context.Context, uuid.UUID) (store.Snapshot, error) {
+	panic("unexpected SnapshotByID")
 }
 
 func (s *deleteWorkerStoreStub) StoragePoolByID(context.Context, uuid.UUID) (store.StoragePool, error) {
@@ -218,10 +223,15 @@ type createLifecycleWorkerStoreStub struct {
 	vm      store.VM
 	node    store.Node
 	disk    store.VMDisk
+	pool    store.StoragePool
 	nodeErr error
 	// taskTerminal makes UpdateTaskRunning report the task already
 	// committed-terminal (success/cancelled), so the handler must abort.
 	taskTerminal bool
+	// snapshotByID, when set, serves the recreate-from-snapshot manifest read so
+	// the SEAM test can assert the worker resolves args.SourceSnapshotID into the
+	// agent request's source_snapshot before dispatch.
+	snapshotByID func(id uuid.UUID) (store.Snapshot, error)
 
 	finalizedFailed    bool
 	finalizedError     []byte // the error envelope of the last failed finalize
@@ -278,8 +288,15 @@ func (s *createLifecycleWorkerStoreStub) NetworkByID(context.Context, uuid.UUID)
 	panic("unexpected NetworkByID")
 }
 
+func (s *createLifecycleWorkerStoreStub) SnapshotByID(_ context.Context, id uuid.UUID) (store.Snapshot, error) {
+	if s.snapshotByID != nil {
+		return s.snapshotByID(id)
+	}
+	panic("unexpected SnapshotByID")
+}
+
 func (s *createLifecycleWorkerStoreStub) StoragePoolByID(context.Context, uuid.UUID) (store.StoragePool, error) {
-	return store.StoragePool{}, nil
+	return s.pool, nil
 }
 
 func (s *createLifecycleWorkerStoreStub) ProjectVMCreateSuccess(context.Context, store.UpsertVMRuntimeParams, store.UpdateTaskFinalizedParams, []byte) error {
@@ -668,6 +685,92 @@ func TestRunCreateSurfacesAgentResolvedResult(t *testing.T) {
 	// digest on the VM view).
 	if gotDigest := hex.EncodeToString(st.finalDigest); gotDigest != "deadbeef" {
 		t.Errorf("projected image digest = %q, want %q", gotDigest, "deadbeef")
+	}
+}
+
+// TestRunCreateResolvesSourceSnapshotSeam pins the worker->agent SEAM for
+// recreate-from-snapshot: when VMCreateArgs.SourceSnapshotID is set, the worker
+// loads the snapshot manifest and hands the agent the resolved, index-ordered
+// blob digests (the agent has no CP store access, so it can only materialize
+// from what the worker resolves). A regression where the worker forgets to
+// populate source_snapshot would leave CreateArgs.SourceSnapshot nil and silently
+// fall back to an (empty) image - this asserts the digests travel.
+func TestRunCreateResolvesSourceSnapshotSeam(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	snapID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	// Manifest disks intentionally out of index order so the test proves the
+	// worker sorts them into virtio<i> order before sending.
+	snap := store.Snapshot{
+		ID: snapID,
+		Disks: []store.SnapshotDisk{
+			{Index: 1, Device: "virtio1", SHA256: "bbbb", SizeBytes: 2},
+			{Index: 0, Device: "virtio0", SHA256: "aaaa", SizeBytes: 1},
+		},
+	}
+	st := &createLifecycleWorkerStoreStub{
+		vm:           store.VM{ID: vmID, SourceSnapshotID: &snapID},
+		node:         node,
+		disk:         store.VMDisk{VmID: vmID},
+		pool:         store.StoragePool{Name: "pool-a"},
+		snapshotByID: func(uuid.UUID) (store.Snapshot, error) { return snap, nil },
+	}
+	exec := &spyCreateExecutor{}
+
+	err := runCreate(context.Background(), st, exec, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID, SourceSnapshotID: &snapID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil", err)
+	}
+	if !exec.called {
+		t.Fatalf("agent create not attempted")
+	}
+	got := exec.gotArgs.SourceSnapshot
+	if got == nil {
+		t.Fatalf("CreateArgs.SourceSnapshot = nil, want resolved snapshot blobs (SEAM regression)")
+	}
+	if got.Pool != "pool-a" {
+		t.Errorf("SourceSnapshot.Pool = %q, want pool-a", got.Pool)
+	}
+	want := []agentclient.VMCreateSourceSnapshotDisk{
+		{Index: 0, Device: "virtio0", SHA256: "aaaa"},
+		{Index: 1, Device: "virtio1", SHA256: "bbbb"},
+	}
+	if diff := cmp.Diff(want, got.Disks); diff != "" {
+		t.Errorf("SourceSnapshot.Disks mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestRunCreateFailsWhenSourceSnapshotMissing pins the fail-closed side of the
+// SEAM: a recreate whose snapshot id cannot be resolved must FAIL the create
+// rather than silently dispatch a sourceless (empty-image) create to the agent.
+func TestRunCreateFailsWhenSourceSnapshotMissing(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	snapID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{
+		vm:           store.VM{ID: vmID, SourceSnapshotID: &snapID},
+		node:         node,
+		disk:         store.VMDisk{VmID: vmID},
+		pool:         store.StoragePool{Name: "pool-a"},
+		snapshotByID: func(uuid.UUID) (store.Snapshot, error) { return store.Snapshot{}, store.ErrNotFound },
+	}
+	exec := &spyCreateExecutor{}
+
+	err := runCreate(context.Background(), st, exec, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID, SourceSnapshotID: &snapID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil (failure is finalized, not propagated)", err)
+	}
+	if exec.called {
+		t.Errorf("executor was called despite unresolvable snapshot; recreate must fail closed")
+	}
+	if !st.finalizedFailed {
+		t.Errorf("create not finalized failed on unresolvable snapshot")
 	}
 }
 

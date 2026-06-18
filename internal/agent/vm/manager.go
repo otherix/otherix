@@ -24,6 +24,7 @@ import (
 	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/serialmux"
 	"github.com/otherix/otherix/internal/agent/state"
+	"github.com/otherix/otherix/internal/agent/storage"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -169,10 +170,16 @@ type Manager struct {
 	// block-mirrored). cidata is deterministic and read once at boot, so the
 	// target reconstructs it instead of NBD-exporting + mirroring it. Defaults
 	// to the cloudinit.Builder in New; stubbed in tests.
-	migBuildCidata  func(path, hostname string, userData, networkData []byte) error
-	migSpawnNBD     func(ctx context.Context, args []string) (int, error)
-	migRunConvert   func(ctx context.Context, args []string) error
-	migWaitNBDReady func(ctx context.Context, endpoint string) error
+	migBuildCidata func(path, hostname string, userData, networkData []byte) error
+	// createBuildCidata builds the always-on NoCloud seed during runCreate.
+	// Same shape as migBuildCidata so both paths share the cloudinit.Builder
+	// wiring; split into its own seam so a create/recreate test can spy the
+	// hostname passed without a real ISO build. Defaults to the
+	// cloudinit.Builder in New.
+	createBuildCidata func(path, hostname string, userData, networkData []byte) error
+	migSpawnNBD       func(ctx context.Context, args []string) (int, error)
+	migRunConvert     func(ctx context.Context, args []string) error
+	migWaitNBDReady   func(ctx context.Context, endpoint string) error
 
 	// Live-migration seams. migLaunchIncoming boots a paused -incoming
 	// qemu for an adopted target VM and waits until its QMP socket is
@@ -214,6 +221,45 @@ type Manager struct {
 	// here BEFORE the replay loop.
 	probeIncoming func(qmpSocket, pidFile string) incomingProbe
 	killIncoming  func(v *VM)
+
+	// diskCapturer captures one VM disk device into a destination backup
+	// file. Production dials the VM's QMP socket and runs qemu
+	// blockdev-backup (qmpDiskCapturer); the snapshot manager test injects a
+	// fake that copies a fixture qcow2 so CreateSnapshot is unit-testable on
+	// darwin without real qemu. The seam mirrors the migration path's
+	// migDialQMP / migRunLiveSource injection.
+	diskCapturer diskCapturer
+
+	// snapshotConvert materializes a standalone qcow2 copy of a captured
+	// backup into a content-addressed blob (produceBlob's convertFunc seam).
+	// Production is qemu.ConvertTo; the snapshot manager test injects a
+	// verbatim copy so the capture path runs on darwin without qemu-img.
+	snapshotConvert convertFunc
+
+	// snapshotDiskDevices enumerates a VM's disks in virtio-index order for
+	// the snapshot capture loop. Production is the package snapshotDiskDevices
+	// (slice A: a single boot disk at index 0); the test injects a multi-disk
+	// fixture to pin the manifest's deterministic index ordering. The field is
+	// a test-only seam: slice A's enumerator cannot yield 2 disks, so there is
+	// no other way to drive runSnapshotCreate's index sort.
+	snapshotDiskDevices func(*VM) []snapshotDiskDevice
+
+	// snapshotInFlight serialises concurrent snapshot captures on the same
+	// (vmName, snapshotName): a redelivered create whose capture is still
+	// running returns the original *AgentTask instead of starting a second
+	// blockdev-backup. Keyed by snapshotInFlightKey, value *AgentTask. Cleared
+	// by the capture goroutine on completion. The on-disk manifest closes the
+	// window after the task settles; this map closes it while it runs.
+	snapshotInFlightMu sync.Mutex
+	snapshotInFlight   map[snapshotInFlightKey]*AgentTask
+}
+
+// snapshotInFlightKey identifies an in-progress snapshot capture by the VM
+// name and the snapshot name (the agent's defense-in-depth idempotency key
+// closing the CP-side worker-redelivery residual window).
+type snapshotInFlightKey struct {
+	vmUUID       uuid.UUID
+	snapshotName string
 }
 
 // incomingProbe is the result of probing a replayed StatusMigratingIncoming
@@ -337,13 +383,22 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		tasks:            NewTaskStore(),
 		createTasks:      map[uuid.UUID]uuid.UUID{},
 		muxes:            map[string]*serialmux.Multiplexer{},
+		snapshotInFlight: map[snapshotInFlightKey]*AgentTask{},
 	}
+	m.diskCapturer = qmpDiskCapturer{}
+	m.snapshotConvert = qemu.ConvertTo
+	m.snapshotDiskDevices = snapshotDiskDevices
 	m.migrations = migration.NewStore()
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)
 	m.tlsCA, m.tlsCert, m.tlsKey = cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath
 	m.migCreateDisk = qemu.CreateDisk
 	m.migCreateRawDisk = qemu.CreateRawDisk
 	m.migBuildCidata = func(path, hostname string, userData, networkData []byte) error {
+		b := &cloudinit.Builder{Hostname: hostname, UserData: userData, NetworkData: networkData}
+		_, err := b.Build(path)
+		return err
+	}
+	m.createBuildCidata = func(path, hostname string, userData, networkData []byte) error {
 		b := &cloudinit.Builder{Hostname: hostname, UserData: userData, NetworkData: networkData}
 		_, err := b.Build(path)
 		return err
@@ -517,6 +572,9 @@ func ensurePoolSubdirs(root string) error {
 	for _, sub := range []string{
 		filepath.Join(root, imagesSubdir),
 		filepath.Join(root, "scratch", "import"),
+		filepath.Join(root, snapshotsSubdir),
+		filepath.Join(root, snapshotsSubdir, snapshotsStagingSubdir),
+		filepath.Join(root, snapshotsSubdir, snapshotManifestsSubdir),
 	} {
 		if err := os.MkdirAll(sub, 0o750); err != nil {
 			return fmt.Errorf("mkdir %s: %w", sub, err)
@@ -857,6 +915,106 @@ func (m *Manager) sizeCreatedDisk(ctx context.Context, diskPath string, diskGiB 
 	return info.VirtualSize, diskSize, "", ""
 }
 
+// materialiseCreateDisk prepares the per-VM boot disk for a fresh create,
+// branching on the disk source:
+//
+//   - Migrated VM: the disk was copied in from the source node and is already
+//     authoritative - re-cloning would clobber the migrated state, so skip
+//     everything (ensured stays zero, sizes 0).
+//   - Recreate-from-snapshot (spec.SourceSnapshot != nil): clone each referenced
+//     content-addressed blob from {poolRoot}/snapshots/{sha}.qcow2 in disk-index
+//     order; no image download. The blob is the disk at its captured size, so no
+//     qemu-img resize/info is performed (DiskGiB is not honored on recreate).
+//   - Image source: EnsureImageInto (basename-keyed IfNotPresent cache) clones
+//     the base image into the per-VM disk, then sizeCreatedDisk applies DiskGiB.
+//
+// It returns the resolved base-image ensure result (zero for the migrated and
+// snapshot branches), the image virtual size and resulting disk size (0 on the
+// non-image branches), and a (failCode, failMsg) pair - failCode is "" on
+// success, otherwise the task-failure code the caller surfaces.
+func (m *Manager) materialiseCreateDisk(ctx context.Context, v *VM, spec CreateSpec) (ensured EnsureResult, virtualSize, diskSize int64, failCode, failMsg string) {
+	switch {
+	case v.Migrated:
+		return EnsureResult{}, 0, 0, "", ""
+	case spec.SourceSnapshot != nil:
+		if failCode, failMsg = m.materialiseFromSnapshot(v, spec.SourceSnapshot); failCode != "" {
+			return EnsureResult{}, 0, 0, failCode, failMsg
+		}
+		return EnsureResult{}, 0, 0, "", ""
+	default:
+		// EnsureImageInto holds the per-image lock across the ensure and the clone
+		// so a concurrent ensure cannot overwrite the cache file between the digest
+		// verify and the clone (audit R2-L5).
+		var err error
+		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
+		if err != nil {
+			var ce *ChecksumMismatchError
+			switch {
+			case errors.As(err, &ce):
+				return EnsureResult{}, 0, 0, "checksum_mismatch", ce.Error()
+			case errors.Is(err, ErrCloneFailed):
+				return EnsureResult{}, 0, 0, "clone_failed", err.Error()
+			default:
+				return EnsureResult{}, 0, 0, "image_unavailable", err.Error()
+			}
+		}
+		virtualSize, diskSize, failCode, failMsg = m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
+		return ensured, virtualSize, diskSize, failCode, failMsg
+	}
+}
+
+// materialiseFromSnapshot clones every disk in ref from the pool's snapshots/
+// subdir into the per-VM disk path, in virtio-index order. Each blob must exist
+// (the CP resolved these digests from the snapshot manifest; a missing blob is a
+// placement/replication gap surfaced as snapshot_blob_missing). Slice A VMs
+// carry a single boot disk: index 0 clones into v.DiskPath (the boot disk the
+// qemu command line attaches); any higher-index disk clones alongside it as
+// disk{i}.qcow2 to preserve content even though the slice-A guest attaches only
+// the boot disk. Returns a (failCode, failMsg) pair - failCode is "" on success.
+func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, failMsg string) {
+	poolRoot, err := m.poolRoot(v.PoolName)
+	if err != nil {
+		return "pool_not_found", fmt.Sprintf("resolve pool %q: %v", v.PoolName, err)
+	}
+	if len(ref.Disks) == 0 {
+		return "snapshot_blob_missing", "snapshot has no disks to materialise"
+	}
+	snapshotsDir := filepath.Join(poolRoot, snapshotsSubdir)
+
+	ordered := make([]SnapshotDiskRef, len(ref.Disks))
+	copy(ordered, ref.Disks)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+
+	for n, d := range ordered {
+		blobPath := filepath.Join(snapshotsDir, d.SHA256+".qcow2")
+		if _, err := os.Stat(blobPath); err != nil {
+			return "snapshot_blob_missing",
+				fmt.Sprintf("snapshot blob %s (disk %d) not present on pool %q: %v", d.SHA256, d.Index, v.PoolName, err)
+		}
+		// Verify the blob's content against its content-address before booting it as a
+		// guest disk. The filename IS the claimed digest, but on-disk corruption (or a
+		// blob not written by produceBlob) could leave the bytes not matching the name;
+		// cloning that into a fresh VM's boot disk would boot unverified content.
+		// Re-hash and fail closed on mismatch.
+		actual, err := hashFile(blobPath)
+		if err != nil {
+			return "clone_failed", fmt.Sprintf("hash snapshot blob %s (disk %d): %v", d.SHA256, d.Index, err)
+		}
+		if actual != d.SHA256 {
+			return "snapshot_blob_corrupt",
+				fmt.Sprintf("snapshot blob %s (disk %d) content digest is %s; refusing to clone corrupt blob", d.SHA256, d.Index, actual)
+		}
+		dst := v.DiskPath
+		if n > 0 {
+			dst = filepath.Join(filepath.Dir(v.DiskPath), fmt.Sprintf("disk%d.qcow2", n))
+		}
+		if err := storage.CloneImage(blobPath, dst); err != nil {
+			return "clone_failed", fmt.Sprintf("clone snapshot blob %s into %s: %v", d.SHA256, dst, err)
+		}
+	}
+	return "", ""
+}
+
 func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 	// The create work outlives the HTTP request that spawned it (the task
 	// surface is how clients track progress), so it runs on a fresh
@@ -879,50 +1037,15 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	// A migrated VM's disk was copied in from the source node, so it is
-	// already the authoritative copy - re-cloning from the base image
-	// would overwrite the migrated state. Skip the ensure/clone entirely;
-	// ensured stays zero-valued (no base image was resolved).
-	var (
-		ensured EnsureResult
-		err     error
-	)
-	if !v.Migrated {
-		// EnsureImageInto holds the per-image lock across the ensure and the clone
-		// so a concurrent ensure cannot overwrite the cache file between the digest
-		// verify and the clone (audit R2-L5).
-		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
-		if err != nil {
-			var ce *ChecksumMismatchError
-			switch {
-			case errors.As(err, &ce):
-				log.Error("ensure image (checksum mismatch)", "err", err)
-				m.failTask(taskID, v.ID, "checksum_mismatch", ce.Error())
-			case errors.Is(err, ErrCloneFailed):
-				log.Error("clone image", "err", err)
-				m.failTask(taskID, v.ID, "clone_failed", err.Error())
-			default:
-				log.Error("ensure image", "err", err)
-				m.failTask(taskID, v.ID, "image_unavailable", err.Error())
-			}
-			return
-		}
-	}
-
-	virtualSize, diskSize, failCode, failMsg := m.sizeCreatedDisk(ctx, v.DiskPath, spec.DiskGiB)
+	ensured, virtualSize, diskSize, failCode, failMsg := m.materialiseCreateDisk(ctx, v, spec)
 	if failCode != "" {
-		log.Error("size disk", "code", failCode, "err", failMsg)
+		log.Error("materialise disk", "code", failCode, "err", failMsg)
 		m.failTask(taskID, v.ID, failCode, failMsg)
 		return
 	}
 
 	if v.CidataPath != "" {
-		builder := &cloudinit.Builder{
-			Hostname:    v.Name,
-			UserData:    spec.UserData,
-			NetworkData: spec.NetworkData,
-		}
-		if _, err := builder.Build(v.CidataPath); err != nil {
+		if err := m.createBuildCidata(v.CidataPath, v.Name, spec.UserData, spec.NetworkData); err != nil {
 			log.Error("build cidata iso", "err", err)
 			m.failTask(taskID, v.ID, "cloudinit_failed", err.Error())
 			return
@@ -1875,14 +1998,29 @@ func validateCreateSpec(s CreateSpec) error {
 	if s.PoolName == "" {
 		return fmt.Errorf("pool is required")
 	}
-	if s.ImageURL == "" {
-		return fmt.Errorf("image_url is required")
+	if err := validateDiskSource(s); err != nil {
+		return err
 	}
 	if s.ExpectedSHA256 != "" && len(s.ExpectedSHA256) != 64 {
 		return fmt.Errorf("expected_sha256 must be a 64-char sha256 hex digest")
 	}
 	if s.DiskGiB < 0 || s.DiskGiB > maxAgentDiskGiB {
 		return fmt.Errorf("disk_gib must be in [0, %d]", maxAgentDiskGiB)
+	}
+	return nil
+}
+
+// validateDiskSource enforces exactly one disk source on a create spec: an image
+// URL to download, or a recreate-from-snapshot ref whose content-addressed blobs
+// the agent clones. The CP also enforces this; reaching the agent with neither
+// or both is defense in depth - but the agent MUST accept source_snapshot, else
+// a snapshot-sourced create is wrongly rejected as "image_url is required".
+func validateDiskSource(s CreateSpec) error {
+	switch {
+	case s.ImageURL == "" && s.SourceSnapshot == nil:
+		return fmt.Errorf("exactly one of image_url or source_snapshot is required")
+	case s.ImageURL != "" && s.SourceSnapshot != nil:
+		return fmt.Errorf("image_url and source_snapshot are mutually exclusive")
 	}
 	return nil
 }

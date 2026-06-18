@@ -43,10 +43,15 @@ import (
 //   - `node` is an optional placement hint stashed on the SchedulingSpec;
 //     the vms.schedule loop restricts the candidate list to that node.
 type vmCreateRequest struct {
-	Name         string `json:"name"`
-	ImageURL     string `json:"image_url"`
-	ImageSHA256  string `json:"image_sha256,omitempty"`
-	Architecture string `json:"arch"`
+	Name        string `json:"name"`
+	ImageURL    string `json:"image_url"`
+	ImageSHA256 string `json:"image_sha256,omitempty"`
+	// SourceSnapshotID recreates the VM from a snapshot instead of an image
+	// (`vm create --from-snapshot`). Exactly one of ImageURL / SourceSnapshotID
+	// must be set. When set, architecture / firmware come from the snapshot
+	// manifest and must not be supplied on the request.
+	SourceSnapshotID *string `json:"source_snapshot_id,omitempty"`
+	Architecture     string  `json:"arch"`
 	// Firmware selects the firmware type for the default-firmware lookup:
 	// "bios" or "uefi" (default uefi). Ignored when FirmwareID is set.
 	Firmware string `json:"firmware,omitempty"`
@@ -142,7 +147,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	firmwareID, ok := h.resolveFirmwareForRequest(w, r, req)
+	src, ok := h.resolveImageSource(w, r, caller, req)
 	if !ok {
 		return
 	}
@@ -176,32 +181,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var imageSHA []byte
-	if req.ImageSHA256 != "" {
-		// Validated 64-char lowercase hex at the API edge, so DecodeString
-		// cannot fail; the error is dropped (defense-in-depth: an empty digest
-		// degrades to name-keyed cache reuse).
-		imageSHA, _ = hex.DecodeString(req.ImageSHA256)
-	}
-	arch := store.CPUArch(req.Architecture)
-	format := store.ImageFormatQcow2
-	if req.Format != "" {
-		format = store.ImageFormat(req.Format)
-	}
-
 	vmID, err := h.store.CreateUnscheduledVM(r.Context(), store.CreateVMParams{
 		ID:                uuid.New(),
 		OwnerID:           caller.ID,
 		Name:              req.Name,
-		Architecture:      arch,
-		ImageURL:          req.ImageURL,
-		ImageSHA256:       imageSHA,
-		ImageFormat:       format,
+		Architecture:      src.arch,
+		ImageURL:          src.imageURL,
+		ImageSHA256:       src.imageSHA,
+		ImageFormat:       src.format,
 		CpuCores:          int32(req.VCPUs),    //nolint:gosec // bounded 1..128 by validateCreateRequest
 		MemoryMib:         int32(req.MemoryMB), //nolint:gosec // bounded 128..524288 by validateCreateRequest
 		CPUModel:          "host",
-		MachineType:       machineTypeFor(arch),
-		FirmwareID:        firmwareID,
+		MachineType:       machineTypeFor(src.arch),
+		FirmwareID:        src.firmwareID,
+		SourceSnapshotID:  src.sourceSnapshotID,
 		UserData:          req.UserData,
 		CloudInitDisabled: req.CloudInitDisabled,
 		NetworkConfig:     req.NetworkConfig,
@@ -298,8 +291,16 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			response.CodeValidationFailed, err.Error(), nil)
 		return false
 	}
-	if !validateCreateImageFields(w, r, req) {
+	// Exactly one of image_url / source_snapshot_id selects the disk source.
+	// The snapshot path takes architecture / firmware from the manifest, so it
+	// skips the image-field validation; the image path validates them.
+	if !validateImageSourceExclusivity(w, r, req) {
 		return false
+	}
+	if !snapshotSourced(req) {
+		if !validateCreateImageFields(w, r, req) {
+			return false
+		}
 	}
 	if req.VCPUs < 1 || req.VCPUs > 128 {
 		response.WriteError(w, r, http.StatusBadRequest,
@@ -348,6 +349,137 @@ func validateCloudInitExclusivity(w http.ResponseWriter, r *http.Request, req vm
 		return false
 	}
 	return true
+}
+
+// snapshotSourced reports whether the request asks to recreate from a snapshot
+// (source_snapshot_id set and non-empty) rather than from an image.
+func snapshotSourced(req vmCreateRequest) bool {
+	return req.SourceSnapshotID != nil && *req.SourceSnapshotID != ""
+}
+
+// validateImageSourceExclusivity enforces the exactly-one-of contract: exactly
+// one of image_url / source_snapshot_id must be set. Both-set or neither-set is
+// 400 validation_failed with details.reason="image_xor_snapshot".
+func validateImageSourceExclusivity(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
+	if (req.ImageURL != "") == snapshotSourced(req) {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"exactly one of image_url or source_snapshot_id must be set",
+			map[string]any{"reason": "image_xor_snapshot"})
+		return false
+	}
+	return true
+}
+
+// imageSource is the resolved disk source for a create: the architecture,
+// format, firmware, image fields, and recreate provenance the VM row is built
+// from. For an image-sourced create it carries the request's image fields; for a
+// snapshot-sourced create it carries the snapshot's architecture / firmware,
+// empty image fields, and the source snapshot id.
+type imageSource struct {
+	arch             store.CPUArch
+	format           store.ImageFormat
+	firmwareID       *uuid.UUID
+	imageURL         string
+	imageSHA         []byte
+	sourceSnapshotID *uuid.UUID
+}
+
+// resolveImageSource resolves the disk source for the create. For a
+// snapshot-sourced create it loads the snapshot (404 on missing / cross-owner -
+// existence is not leaked), requires status=ready (409 snapshot_not_ready),
+// rejects a caller-supplied architecture / firmware (400 field_from_snapshot -
+// these come from the manifest), and takes architecture / firmware from the
+// manifest with empty image fields. For an image-sourced create it resolves
+// firmware from the request and carries the request's image fields. It writes the
+// wire envelope and returns ok=false on any failure.
+func (h *Handler) resolveImageSource(w http.ResponseWriter, r *http.Request, caller *auth.User, req vmCreateRequest) (imageSource, bool) {
+	if snapshotSourced(req) {
+		return h.resolveSnapshotSource(w, r, caller, req)
+	}
+	return h.resolveImageSourceFromRequest(w, r, req)
+}
+
+// resolveImageSourceFromRequest builds the image-sourced disk source from the
+// request fields (the legacy image path). Firmware is resolved from
+// firmware/firmware_id; image fields come straight off the validated request.
+func (h *Handler) resolveImageSourceFromRequest(w http.ResponseWriter, r *http.Request, req vmCreateRequest) (imageSource, bool) {
+	firmwareID, ok := h.resolveFirmwareForRequest(w, r, req)
+	if !ok {
+		return imageSource{}, false
+	}
+	var imageSHA []byte
+	if req.ImageSHA256 != "" {
+		// Validated 64-char lowercase hex at the API edge, so DecodeString
+		// cannot fail; the error is dropped (defense-in-depth: an empty digest
+		// degrades to name-keyed cache reuse).
+		imageSHA, _ = hex.DecodeString(req.ImageSHA256)
+	}
+	format := store.ImageFormatQcow2
+	if req.Format != "" {
+		format = store.ImageFormat(req.Format)
+	}
+	return imageSource{
+		arch:       store.CPUArch(req.Architecture),
+		format:     format,
+		firmwareID: firmwareID,
+		imageURL:   req.ImageURL,
+		imageSHA:   imageSHA,
+	}, true
+}
+
+// resolveSnapshotSource builds the recreate disk source from a snapshot manifest.
+// It enforces the cross-owner 404, the ready-status 409, and the
+// must-not-supply-architecture/firmware 400 before taking the architecture /
+// firmware from the manifest.
+func (h *Handler) resolveSnapshotSource(w http.ResponseWriter, r *http.Request, caller *auth.User, req vmCreateRequest) (imageSource, bool) {
+	snapID, err := uuid.Parse(*req.SourceSnapshotID)
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "source_snapshot_id is not a valid uuid", nil)
+		return imageSource{}, false
+	}
+	// Architecture / firmware are taken from the snapshot manifest; a
+	// conflicting request value is rejected rather than silently ignored.
+	if req.Architecture != "" || req.FirmwareID != "" || req.Firmware != "" {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"architecture and firmware come from the snapshot and must not be supplied",
+			map[string]any{"reason": "field_from_snapshot"})
+		return imageSource{}, false
+	}
+
+	snap, err := h.store.SnapshotByID(r.Context(), snapID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			response.WriteError(w, r, http.StatusNotFound,
+				response.CodeNotFound, "snapshot not found", nil)
+			return imageSource{}, false
+		}
+		h.log.ErrorContext(r.Context(), "load source snapshot", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "create vm", nil)
+		return imageSource{}, false
+	}
+	// Cross-owner visibility is a 404 (never 403) - leaking existence leaks data.
+	if err := auth.CheckOwnership(caller, &snap.OwnerID, auth.PermSnapshotRead); err != nil {
+		response.WriteError(w, r, http.StatusNotFound,
+			response.CodeNotFound, "snapshot not found", nil)
+		return imageSource{}, false
+	}
+	if snap.Status != store.SnapshotStatusReady {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "snapshot is not ready",
+			map[string]any{"reason": "snapshot_not_ready"})
+		return imageSource{}, false
+	}
+
+	return imageSource{
+		arch:             snap.SourceArchitecture,
+		format:           store.ImageFormatQcow2,
+		firmwareID:       snap.SourceFirmwareID,
+		sourceSnapshotID: &snapID,
+	}, true
 }
 
 // resolveFirmwareForRequest resolves the firmware id for a create request and

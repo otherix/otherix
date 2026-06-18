@@ -50,10 +50,12 @@ tags:
     description: Per-VM network interfaces (sub-resource of a VM).
   - name: vm-snapshots
     description: |
-      VM snapshots. Created via `POST /v1/vms/{id}/snapshots`; addressable
-      individually as `/v1/snapshots/{id}` (get / patch metadata / delete).
-      Restoring from a snapshot is `POST /v1/vms/{id}/revert`, NOT a
-      snapshot-level action.
+      Content-addressed, disk-only VM snapshots. Created via
+      `POST /v1/vms/{id}/snapshots`; addressable individually as
+      `/v1/snapshots/{id}` (get / patch metadata / delete). Restore is
+      recreate-from-snapshot: `POST /v1/vms` with `source_snapshot_id`
+      (`vm create --from-snapshot`). In-place `POST /v1/vms/{id}/revert`
+      is not implemented and returns `501 not_implemented`.
   - name: vm-migrations
     description: |
       Live and offline VM migrations. Initiated via
@@ -2137,21 +2139,13 @@ paths:
       tags: [vms]
       summary: Revert a VM to a snapshot (asynchronous).
       description: |
-        Restores VM disks (and memory, if `with_memory` is true on the
-        snapshot) from the given snapshot. The snapshot must belong to
-        this VM.
-
-        VM state requirements:
-          - For snapshots with `with_memory = false`, the VM must be
-            `stopped` or `paused`. After revert it remains in the same
-            phase it was in before.
-          - For snapshots with `with_memory = true`, the VM may be in
-            any state. After revert the VM ends up in the runtime
-            phase recorded in `vm_state_at_snapshot` (`running`,
-            `paused`, or `stopped`).
-
-        Violations return 409 with `details.reason` ∈
-        {`snapshot_vm_mismatch`, `vm_state_invalid_for_revert`}.
+        In-place revert is not implemented in slice A. This endpoint
+        returns `501` with `code: not_implemented`. Restore is
+        recreate-from-snapshot: create a fresh, independent VM from a
+        snapshot via `POST /v1/vms` with `source_snapshot_id`
+        (`vm create --from-snapshot`). The path and request body are
+        retained so a later slice can implement in-place revert without
+        an API break.
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -2182,6 +2176,16 @@ paths:
             (`snapshot_vm_mismatch` / `vm_state_invalid_for_revert`)
             and `details.current_phase` reports the observed phase when
             applicable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: |
+            In-place revert is not implemented in slice A. The error
+            payload carries `code: not_implemented`. Use
+            recreate-from-snapshot (`POST /v1/vms` with
+            `source_snapshot_id`) instead.
           content:
             application/json:
               schema:
@@ -2874,6 +2878,66 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/snapshots:
+    get:
+      operationId: vmSnapshots.listAll
+      tags: [vm-snapshots]
+      summary: List all snapshots across VMs (global).
+      description: |
+        Lists snapshot records visible to the caller, newest first, across
+        all VMs. The per-item `vm_name` and `owner_display_name` are resolved
+        server-side so an operator can scan every snapshot with its VM and
+        owner in one table. Mirrors `GET /v1/migrations` (a read-only global
+        collection; the per-VM `GET /v1/vms/{id}/snapshots` remains the
+        scoped list).
+
+        RBAC scope: a caller whose `snapshot:read` is `any` (admin, operator)
+        sees every snapshot; a caller whose `snapshot:read` is `own`
+        (developer) sees only snapshots they own - foreign snapshots are
+        excluded, never leaked. An `own`-scope caller may not pass `owner`
+        (it can only ever be their own id); doing so returns 403
+        `permission_denied`.
+
+        Optionally filter by VM (`vm`), snapshot lifecycle `status`, or, for
+        `any`-scope callers, by `owner`.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: vm
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: Only return snapshots of this VM (by VM id).
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [creating, ready, deleting, error]
+          description: Only return snapshots in this lifecycle status.
+        - name: owner
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: |
+            Only return snapshots owned by this user. Available to
+            `any`-scope callers (admin, operator) only; an `own`-scope
+            caller passing `owner` gets 403 `permission_denied`.
+      responses:
+        "200":
+          description: List of snapshots, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotListAll"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/migrations:
     get:
       operationId: migrations.list
@@ -3318,6 +3382,7 @@ components:
         - vm_not_running
         - console_in_use
         - protocol_not_available
+        - not_implemented
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
@@ -4287,6 +4352,25 @@ components:
             transient producer error does not wipe observed state. Absent or
             false means the images array is authoritative (an empty array
             clears the inventory).
+        snapshots:
+          type: array
+          description: |
+            Agent-observed cached snapshot-blob inventory for this pool (the
+            content-addressed snapshot cache). Absent or empty with
+            snapshots_unavailable=false means the pool has no cached snapshot
+            blobs; see snapshots_unavailable for the could-not-enumerate case.
+            Reported in vm-snapshots slice A; CP-side consumption is deferred to
+            a later slice.
+          items:
+            $ref: "#/components/schemas/HeartbeatPoolSnapshot"
+        snapshots_unavailable:
+          type: boolean
+          description: |
+            True when the agent could not enumerate this pool's snapshot blob
+            cache this tick (a transient error). Mirrors images_unavailable: the
+            CP then PRESERVES the previously-reported inventory instead of
+            clearing it. Absent or false means the snapshots array is
+            authoritative (an empty array clears the inventory).
 
     HeartbeatPoolImage:
       type: object
@@ -4322,6 +4406,24 @@ components:
             When the agent imported the image into the cache (RFC 3339). A
             malformed value degrades to zero time CP-side, never dropping the
             image (identity is basename+sha256).
+
+    HeartbeatPoolSnapshot:
+      type: object
+      description: |
+        One cached snapshot blob the agent observed in a pool's snapshots
+        directory (content-addressed cache). Carried inside
+        HeartbeatPoolReport.snapshots. Reported in vm-snapshots slice A; the CP
+        stores it as observed pool state in a later slice. The on-node blob path
+        is intentionally not surfaced; identity is the sha256.
+      required: [sha256]
+      properties:
+        sha256:
+          type: string
+          description: Content-address (SHA-256) of the cached snapshot blob.
+        size_bytes:
+          type: integer
+          format: int64
+          description: On-disk size of the cached snapshot blob in bytes.
 
     HeartbeatNetworkReport:
       type: object
@@ -5710,6 +5812,14 @@ components:
           description: |
             Resolved/pinned SHA-256 of the source image, lowercase hex.
             Omitted when the VM row carries no content pin.
+        source_snapshot_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            Provenance for a VM recreated from a snapshot. Set when the
+            VM was created via `source_snapshot_id` instead of an image;
+            `null` for an image-sourced VM. When set, `image_url` and
+            `image_sha256` are empty (the disk is the snapshot state).
         format:
           type: string
           enum: [qcow2, raw]
@@ -5870,9 +5980,14 @@ components:
     VMCreate:
       type: object
       description: |
-        VM creation body. The image source is supplied directly
-        (`image_url` + optional `image_sha256` content pin + `format`):
-        the VM row is self-describing, there is no template entity.
+        VM creation body. The disk source is supplied as exactly one of
+        `image_url` or `source_snapshot_id`. With `image_url` (+ optional
+        `image_sha256` content pin + `format`) the VM row is
+        self-describing, there is no template entity. With
+        `source_snapshot_id` the VM is recreated from a snapshot manifest
+        and `architecture`/`format`/firmware are taken from the snapshot
+        (they must not be supplied). Supplying both, or neither, returns
+        400 `validation_failed` (`details.reason = "image_xor_snapshot"`).
 
         Placement model: `pool` is optional — when omitted the cluster
         default-pool (cluster_settings.default_pool_name, set via
@@ -5888,7 +6003,7 @@ components:
         Firmware is resolved from `firmware` ("bios" | "uefi", default
         uefi) for the (arch, type) default, or from an explicit
         `firmware_id` uuid escape hatch (which wins over `firmware`).
-      required: [name, image_url, arch, vcpus, memory_mb]
+      required: [name, arch, vcpus, memory_mb]
       properties:
         name:
           type: string
@@ -5903,7 +6018,18 @@ components:
         image_url:
           type: string
           format: uri
-          description: Source image URL the root disk is materialised from.
+          description: |
+            Source image URL the root disk is materialised from. Exactly
+            one of `image_url` or `source_snapshot_id` must be set.
+        source_snapshot_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            Recreate the VM from this snapshot instead of an image. Exactly
+            one of `image_url` or `source_snapshot_id` must be set. When set,
+            `architecture`/`format`/firmware are taken from the snapshot
+            manifest and must not be supplied; `image_url`/`image_sha256` are
+            empty on the resulting VM.
         image_sha256:
           type: string
           minLength: 64
@@ -6422,9 +6548,11 @@ components:
     VmSnapshot:
       type: object
       description: |
-        A point-in-time snapshot of a VM (`snapshots` SQL row).
-        `with_memory`, `vm_state_at_snapshot`, sizes, and parent are
-        facts about the moment of capture and are immutable.
+        A content-addressed, disk-only snapshot of a VM (`snapshots` SQL
+        row). The snapshot captures each VM disk as a full-copy blob keyed
+        by its sha256 digest; `disks` is the manifest. `vm_state_at_snapshot`
+        and parent are facts about the moment of capture and are immutable.
+        RAM is not captured (disk-only, crash-consistent).
       required:
         - id
         - vm_id
@@ -6434,6 +6562,9 @@ components:
         - status
         - with_memory
         - vm_state_at_snapshot
+        - vm_name
+        - architecture
+        - disks
         - created_at
         - updated_at
       properties:
@@ -6455,32 +6586,64 @@ components:
         description: { type: string }
         status:
           type: string
-          enum: [creating, ready, restoring, deleting, error]
+          enum: [creating, ready, deleting, error]
           description: |
-            Lifecycle status of the snapshot itself. `restoring` means
-            the snapshot is currently being used by an active revert
-            (`POST /v1/vms/{id}/revert`). Distinct from
+            Lifecycle status of the snapshot itself. Distinct from
             `vm_state_at_snapshot` which is a captured property.
         with_memory:
           type: boolean
-          description: Whether the snapshot includes memory state.
+          description: |
+            Always `false` in slice A; RAM capture is unsupported. The
+            field is retained for forward compatibility.
         vm_state_at_snapshot:
           type: string
           enum: [running, paused, stopped]
+          description: VM phase at the moment of capture.
+        vm_name:
+          type: string
           description: |
-            VM phase at the moment of capture. Determines the resulting
-            VM phase after revert when `with_memory = true`.
+            Name of the source VM at the moment of capture, denormalised onto
+            the snapshot so it survives the source VM's deletion (a snapshot is
+            a standalone artifact). Empty only for legacy rows created before
+            this field existed.
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+          description: |
+            Source VM architecture captured at snapshot time. A qcow2 blob
+            is architecture-agnostic but a recreated VM is not, so the
+            manifest records the source `architecture` and `firmware_id` so
+            recreate-from-snapshot (`POST /v1/vms` with `source_snapshot_id`)
+            is self-describing.
+        firmware_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            Source VM firmware row captured at snapshot time, or `null`
+            when the source VM had no firmware pinned. Consumed by
+            recreate-from-snapshot.
+        disks:
+          type: array
+          description: |
+            Per-disk content-addressed blob descriptors, ordered by disk
+            index (virtio0, virtio1, ...). Empty until the agent reports
+            the manifest (by the time `status = "ready"`).
+          items:
+            type: object
+            required: [index, device, sha256, size_bytes]
+            properties:
+              index: { type: integer }
+              device: { type: string }
+              sha256: { type: string }
+              size_bytes:
+                type: integer
+                format: int64
         disk_size_bytes:
           type: [integer, "null"]
           format: int64
           description: |
-            Disk-state size in bytes. `null` until measured (typically
-            by the time `status = "ready"`).
-        memory_size_bytes:
-          type: [integer, "null"]
-          format: int64
-          description: |
-            Memory-state size in bytes. `null` when `with_memory = false`.
+            Summed size in bytes of the disk blobs. `null` until measured
+            (typically by the time `status = "ready"`).
         error_message:
           type: [string, "null"]
           description: Set when `status = "error"`.
@@ -6502,8 +6665,10 @@ components:
           type: boolean
           default: false
           description: |
-            When true, the snapshot includes the VM's RAM. The VM is
-            briefly paused while memory is captured (live snapshot).
+            RAM capture is unsupported in slice A. Sending `true` returns
+            `400 validation_failed` with `details.reason =
+            "with_memory_unsupported"`. The field is retained for forward
+            compatibility.
 
     VmSnapshotUpdate:
       type: object
@@ -6525,6 +6690,38 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VmSnapshot"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    SnapshotListItem:
+      description: |
+        A snapshot as projected by the global list `GET /v1/snapshots`: the
+        full `VmSnapshot` shape plus the server-resolved `owner_display_name`
+        so an operator table needs no extra lookups. `vm_name` (inherited from
+        `VmSnapshot`) prefers the live current VM name (reflecting a rename) and
+        falls back to the name captured at snapshot time when the source VM row
+        is gone, so it is always populated; `owner_display_name` renders as
+        `null` only when the owner row is gone - the id field stays
+        authoritative.
+      allOf:
+        - $ref: "#/components/schemas/VmSnapshot"
+        - type: object
+          required: [owner_display_name]
+          properties:
+            owner_display_name:
+              type: [string, "null"]
+              description: |
+                Display name of the owner, resolved from `owner_id`. `null`
+                when the user row is gone.
+
+    SnapshotListAll:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotListItem"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 

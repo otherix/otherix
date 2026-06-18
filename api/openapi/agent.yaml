@@ -89,8 +89,9 @@ tags:
     description: Per-VM NIC hot-attach / hot-detach / reconfiguration.
   - name: vm-snapshots
     description: |
-      Per-VM internal snapshots (qcow2 / qemu native), addressed by
-      `(vm_uuid, name)`.
+      Per-VM content-addressed, disk-only snapshots. Each disk is
+      captured as a full-copy blob keyed by its sha256 digest; the
+      agent returns a manifest. Addressed by name within a VM.
   - name: vm-migrations
     description: |
       Live and offline migrations. The Control Plane drives the saga
@@ -494,6 +495,12 @@ paths:
       operationId: vms.revert
       tags: [vms]
       summary: Revert VM to a snapshot (asynchronous).
+      description: |
+        In-place revert is not implemented in slice A. The agent returns
+        `501 not_implemented`. Restore is recreate-from-snapshot: the
+        Control Plane creates a fresh VM from a snapshot manifest via
+        `vm create --from-snapshot`. The path is retained so a later
+        slice can implement in-place revert without an API break.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -512,6 +519,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/vms/{vm_name}/disks:
@@ -788,11 +796,43 @@ paths:
                 $ref: "#/components/schemas/Snapshot"
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/snapshots/{vm_id}/{snapshot_name}:
+    parameters:
+      - name: vm_id
+        in: path
+        required: true
+        description: |
+          UUID of the VM the snapshot was captured from. The route is
+          node-level and keyed on the IMMUTABLE vm_id, not the live VM:
+          the agent locates the manifest by vm_uuid across its pools and
+          removes the content-addressed blobs by digest, so deletion
+          works after the source VM is already gone.
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/SnapshotName"
     delete:
-      operationId: vmSnapshots.delete
+      operationId: snapshots.delete
       tags: [vm-snapshots]
-      summary: Delete a snapshot (asynchronous).
+      summary: Delete a snapshot by VM id (asynchronous, VM-independent).
+      description: |
+        Called by the Control Plane to GC a (soft-deleted) snapshot's
+        manifest and blobs. The `orphaned` query params are the
+        fail-closed-GC set: digests the CP reference graph proved are no
+        longer referenced by any other snapshot cluster-wide. The agent
+        removes only those blobs (additionally gated by its own local
+        reference scan) plus the snapshot's manifest. Idempotent: a
+        re-run over an already-removed manifest/blob still returns 202.
       parameters:
+        - name: orphaned
+          in: query
+          required: false
+          description: |
+            Repeated content-addressed blob digests safe to remove
+            (the CP fail-closed-GC set). Absent means manifest-only
+            cleanup (every referenced blob is still shared).
+          schema:
+            type: array
+            items: { type: string }
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "202":
@@ -801,6 +841,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
@@ -1357,6 +1398,7 @@ components:
         - network_config_conflict
         - network_in_use
         - protocol_not_available
+        - not_implemented
       description: |
         Stable machine-readable error code. Endpoint-specific codes
         beyond this enum may be returned for narrow cases; clients
@@ -1714,12 +1756,18 @@ components:
         required (the VM is self-describing; the agent materializes the
         image into the destination pool's cache on first use). When
         `blank`, all three must be absent - the agent allocates an
-        empty image of `size_gib` instead.
+        empty image of `size_gib` instead. When `snapshot`,
+        `snapshot_sha256` is required and the agent clones the
+        content-addressed snapshot blob at
+        `{poolRoot}/snapshots/{snapshot_sha256}.qcow2` into the disk
+        (recreate-from-snapshot); `image_url` must be absent. The CP
+        resolves the snapshot manifest (ordered disk digests) before
+        send, so the agent never needs Control-Plane store access.
       required: [kind]
       properties:
         kind:
           type: string
-          enum: [image, blank]
+          enum: [image, blank, snapshot]
         image_url:
           type: [string, "null"]
           format: uri
@@ -1736,6 +1784,14 @@ components:
           type: [string, "null"]
           enum: [qcow2, raw, null]
           description: Required when `kind = "image"`.
+        snapshot_sha256:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Required when `kind = "snapshot"`. Lowercase hex sha256 of
+            the content-addressed snapshot disk blob the agent clones
+            from the destination pool's `snapshots/` cache. Mutually
+            exclusive with `image_url`.
 
     VMSpecDisk:
       type: object
@@ -2171,16 +2227,20 @@ components:
     Snapshot:
       type: object
       description: |
-        QEMU internal snapshot, addressed by `(vm_uuid, name)`. Field
-        names align with the Control Plane's `VmSnapshot` for direct
-        round-tripping; `id` is omitted because snapshots on the
-        agent are keyed by name within a VM, not by a separate UUID.
+        A content-addressed, disk-only VM snapshot produced by the agent.
+        The agent captures each VM disk as a full-copy blob keyed by its
+        sha256 digest under `{poolRoot}/snapshots/{digest}.qcow2` and
+        returns a manifest. Disk-only and crash-consistent; RAM is not
+        captured. Field names align with the Control Plane's `VmSnapshot`
+        for direct round-tripping; `id` is omitted because snapshots on
+        the agent are keyed by name within a VM, not by a separate UUID.
       required:
         - vm_uuid
         - name
         - status
-        - with_memory
         - vm_state_at_snapshot
+        - architecture
+        - disks
         - created_at
       properties:
         vm_uuid: { type: string, format: uuid }
@@ -2192,18 +2252,44 @@ components:
           default: ""
         status:
           type: string
-          enum: [creating, ready, restoring, deleting, error]
-        with_memory:
-          type: boolean
+          enum: [creating, ready, deleting, error]
         vm_state_at_snapshot:
           type: string
           enum: [running, paused, stopped]
-        disk_size_bytes:
-          type: [integer, "null"]
-          format: int64
-        memory_size_bytes:
-          type: [integer, "null"]
-          format: int64
+        architecture:
+          type: string
+          enum: [amd64, arm64]
+          description: |
+            Source VM architecture captured at snapshot time, recorded in
+            the manifest so recreate-from-snapshot is self-describing.
+        firmware_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            Source VM firmware row captured at snapshot time, or `null`
+            when no firmware was pinned.
+        disks:
+          type: array
+          description: |
+            Per-disk blob descriptors, ordered by disk index
+            (virtio0, virtio1, ...).
+          items:
+            type: object
+            required: [index, device, sha256, size_bytes, format]
+            properties:
+              index: { type: integer }
+              device:
+                type: string
+                description: "virtio<i>"
+              sha256:
+                type: string
+                description: hex sha256 of the blob
+              size_bytes:
+                type: integer
+                format: int64
+              format:
+                type: string
+                enum: [qcow2]
         error_message:
           type: [string, "null"]
         created_at:
@@ -2224,6 +2310,9 @@ components:
         with_memory:
           type: boolean
           default: false
+          description: |
+            RAM capture is unsupported in slice A; only `false` is
+            honored. The field is retained for forward compatibility.
 
     MigrationIncomingRequest:
       type: object
@@ -2811,6 +2900,15 @@ components:
 
     Internal:
       description: Unhandled server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotImplemented:
+      description: |
+        Endpoint is not implemented on this surface. The error body
+        carries `code: not_implemented`.
       content:
         application/json:
           schema:

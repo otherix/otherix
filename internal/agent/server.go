@@ -390,6 +390,39 @@ func (a poolImageAdapter) PoolImages(pool string) ([]heartbeat.PoolImageReport, 
 	return out, true
 }
 
+// poolSnapshotAdapter implements heartbeat.PoolSnapshotLister over
+// vm.Manager.ListSnapshots. It maps each vm.SnapshotBlob to the heartbeat
+// PoolSnapshotReport wire shape (the on-node blob path is dropped — observed
+// state never surfaces on-node file paths; identity is the sha256). A
+// ListSnapshots error (e.g. an unknown pool name mid-reconcile) yields nil +
+// false for that pool so the heartbeat liveness signal is never blocked on
+// inventory, and the CP preserves the prior inventory rather than clearing it
+// (fail-closed). Mirrors poolImageAdapter.
+type poolSnapshotAdapter struct {
+	ctx     context.Context
+	manager *vm.Manager
+	log     *slog.Logger
+}
+
+// PoolSnapshots returns the cached snapshot-blob inventory for pool and true on
+// success (including a genuinely empty inventory), or nil and false when the
+// pool could not be enumerated this tick.
+func (a poolSnapshotAdapter) PoolSnapshots(pool string) ([]heartbeat.PoolSnapshotReport, bool) {
+	blobs, err := a.manager.ListSnapshots(a.ctx, pool)
+	if err != nil {
+		a.log.Warn("heartbeat: pool snapshot inventory unavailable", "pool", pool, "error", err.Error())
+		return nil, false
+	}
+	out := make([]heartbeat.PoolSnapshotReport, 0, len(blobs))
+	for _, b := range blobs {
+		out = append(out, heartbeat.PoolSnapshotReport{
+			SHA256:    b.SHA256,
+			SizeBytes: b.SizeBytes,
+		})
+	}
+	return out, true
+}
+
 // buildSender constructs the agent → CP heartbeat sender. It returns nil
 // (logging a WARN) when the heartbeat path cannot be initialised:
 // heartbeats are fire-and-forget from the agent's perspective, so
@@ -408,14 +441,15 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 	}
 
 	collector, err := heartbeat.NewLinux(heartbeat.CollectorDeps{
-		VMs:        manager,
-		VMReporter: vmRec,
-		Pools:      poolRec,
-		PoolImages: poolImageAdapter{ctx: ctx, manager: manager, log: log},
-		Networks:   netRec,
-		WireGuard:  wgRec,
-		Migration:  cfg.Migration,
-		QEMU:       cfg.QEMU,
+		VMs:           manager,
+		VMReporter:    vmRec,
+		Pools:         poolRec,
+		PoolImages:    poolImageAdapter{ctx: ctx, manager: manager, log: log},
+		PoolSnapshots: poolSnapshotAdapter{ctx: ctx, manager: manager, log: log},
+		Networks:      netRec,
+		WireGuard:     wgRec,
+		Migration:     cfg.Migration,
+		QEMU:          cfg.QEMU,
 	})
 	if err != nil {
 		log.Warn("heartbeat disabled: collector init failed", "error", err.Error())
@@ -530,6 +564,10 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			r.Route("/tasks", tasksHandler.Mount)
 			r.Route("/storage-pools", storagePoolsHandler.Mount)
 			r.Post("/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
+			// Node-level snapshot delete keyed on the immutable vm_id (NOT the live
+			// VM): the blob GC must outlive the source VM, so it is mounted here
+			// rather than under /vms/{vm_name}.
+			r.Delete("/snapshots/{vm_id}/{snapshot_name}", vmsHandler.SnapshotDeleteByID)
 		})
 	})
 

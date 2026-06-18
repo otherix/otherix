@@ -58,12 +58,40 @@ type VMCreateRequest struct {
 	// network-config blob (NoCloud /network-config), passed through
 	// verbatim. Empty means the agent writes no /network-config.
 	NetworkConfig string `json:"network_config,omitempty"`
+	// CloudInitDisabled is the explicit opt-out forwarded from the VM row. The
+	// agent attaches a minimal always-on NoCloud seed unless this is true, so
+	// empty UserData no longer implies "no seed" - the flag must travel.
+	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
+	// SourceSnapshot, when non-nil, tells the agent to recreate the VM's disks
+	// from a snapshot's content-addressed blobs instead of downloading ImageURL.
+	// The CP-side worker resolves the snapshot manifest (ordered disk digests +
+	// the pool the blobs live on) and sets this; ImageURL is empty in that case.
+	// This is the SEAM: the agent has no Control-Plane store access, so it can
+	// only materialize from the resolved digests the worker hands it.
+	SourceSnapshot *VMCreateSourceSnapshot `json:"source_snapshot,omitempty"`
 	// Nics are the fully-resolved network interfaces to attach. The
 	// CP-side worker resolves each vm_nic row against its network
 	// (bridge_name + mtu come from the network; mac/model/order from
 	// the vm_nic). Absent or empty means legacy SLIRP user-mode
 	// networking on the agent.
 	Nics []VMCreateNIC `json:"nics,omitempty"`
+}
+
+// VMCreateSourceSnapshot is the resolved snapshot disk source in a
+// VMCreateRequest: the pool whose snapshots/ subdir holds the blobs plus the
+// ordered per-disk blob digests the agent clones (virtio<i> order).
+type VMCreateSourceSnapshot struct {
+	Pool  string                       `json:"pool"`
+	Disks []VMCreateSourceSnapshotDisk `json:"disks"`
+}
+
+// VMCreateSourceSnapshotDisk is one disk in a VMCreateSourceSnapshot: virtio
+// index, the wire device name (virtio<i>), and the content-addressed blob
+// sha256 the agent clones from the pool's snapshots/ cache.
+type VMCreateSourceSnapshotDisk struct {
+	Index  int    `json:"index"`
+	Device string `json:"device"`
+	SHA256 string `json:"sha256"`
 }
 
 // VMCreateNIC is one resolved network interface in a VMCreateRequest. The

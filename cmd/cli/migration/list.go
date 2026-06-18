@@ -83,6 +83,9 @@ func runList(cmd *cobra.Command, _ []string) error {
 		if mErr != nil {
 			return fmt.Errorf("marshal json: %v", mErr)
 		}
+		if format == "yaml" {
+			return printYAML(cmd, raw)
+		}
 		printf(cmd, "%s\n", raw)
 	default:
 		printMigrationTable(cmd, migrations, next)

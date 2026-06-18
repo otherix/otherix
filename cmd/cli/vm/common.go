@@ -218,22 +218,6 @@ func humanAge(rfc3339 string) string {
 	}
 }
 
-// requireStringFlag fetches a string flag and rejects empty values as
-// usage errors. The CLI forwards the raw string and the server
-// resolves it (name-only for VM/Node; polymorphic for
-// storage pools). Format validation happens at the resolver layer,
-// not the CLI edge.
-func requireStringFlag(cmd *cobra.Command, name string) (string, error) {
-	raw, err := cmd.Flags().GetString(name)
-	if err != nil {
-		return "", err
-	}
-	if raw == "" {
-		return "", fmt.Errorf("--%s is required", name)
-	}
-	return raw, nil
-}
-
 // outputFormat reads the --output flag (default defaultFormat). The base
 // formats text/json/table are always accepted; extra lists additional
 // formats a command opts into (yaml, only on get/list, which project a
