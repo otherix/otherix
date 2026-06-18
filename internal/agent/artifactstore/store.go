@@ -268,3 +268,15 @@ func (s *Store) List() ([]BlobEntry, error) {
 
 // Root returns the store's root path (used by the relocation sweep and tests).
 func (s *Store) Root() string { return s.root }
+
+// BlobPath returns the on-disk path of the blob for digest WITHOUT checking
+// presence. The recreate dual-read uses it (after Has) to re-hash + full-copy
+// clone the store-resident blob into a fresh VM disk, reusing the same
+// verify-then-clone path the disk-pool source takes. Returns ErrInvalidDigest
+// for a malformed digest so a bad key is never concatenated into a path.
+func (s *Store) BlobPath(digest string) (string, error) {
+	if !isHexSHA256(digest) {
+		return "", ErrInvalidDigest
+	}
+	return s.blobPath(digest), nil
+}
