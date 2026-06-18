@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
 	"github.com/otherix/otherix/cmd/cli/internal/clierr"
@@ -101,6 +102,20 @@ func printJSON(cmd *cobra.Command, raw json.RawMessage) error {
 		return fmt.Errorf("indent json: %v", err)
 	}
 	printf(cmd, "%s\n", buf.String())
+	return nil
+}
+
+// printYAML writes the raw server JSON re-rendered as YAML to stdout. Used by
+// `--output yaml`. JSONToYAML preserves the server's field names and value types
+// (integers stay integers, not floats) and emits a trailing newline, so the
+// output is a faithful, stable YAML view of the same projection `--output json`
+// echoes.
+func printYAML(cmd *cobra.Command, raw json.RawMessage) error {
+	out, err := yaml.JSONToYAML(raw)
+	if err != nil {
+		return fmt.Errorf("convert json to yaml: %v", err)
+	}
+	printf(cmd, "%s", out)
 	return nil
 }
 

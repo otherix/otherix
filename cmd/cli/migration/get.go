@@ -42,10 +42,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	switch format {
-	case "json", "yaml":
-		// The migration view is flat JSON; yaml and json both echo the server
-		// projection verbatim (no manifest projection exists for migrations,
-		// they are not apply-able resources).
+	case "yaml":
+		// No manifest projection exists for migrations (they are not apply-able
+		// resources), so yaml is a faithful JSON->YAML render of the same server
+		// projection json echoes.
+		return printYAML(cmd, raw)
+	case "json":
 		return printJSON(cmd, raw)
 	default:
 		printMigrationText(cmd, m)

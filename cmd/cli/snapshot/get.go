@@ -44,7 +44,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	switch format {
-	case "json", "yaml":
+	case "yaml":
+		return printYAML(cmd, raw)
+	case "json":
 		return printJSON(cmd, raw)
 	default:
 		printSnapshotText(cmd, s)
