@@ -52,27 +52,28 @@ func (m *Manager) RelocateSnapshotsToStore() {
 // while writing into the store (fail-closed - a wrong-bytes holder never
 // materializes a blob), so a verification failure fails the task rather than
 // landing a corrupt blob.
-func (m *Manager) PullBlob(ctx context.Context, client *http.Client, digest, token, holderEndpoint string) (*AgentTask, error) {
+func (m *Manager) PullBlob(ctx context.Context, client *http.Client, digest, token, holderEndpoint, holderIdentity string) (*AgentTask, error) {
 	if m.artifactStore == nil {
 		return nil, ErrNoArtifactStore
 	}
 	task := m.tasks.Create(TaskKindBlobPull, uuid.Nil)
-	go m.runPullBlob(context.WithoutCancel(ctx), task.ID, client, digest, token, holderEndpoint)
+	go m.runPullBlob(context.WithoutCancel(ctx), task.ID, client, digest, token, holderEndpoint, holderIdentity)
 	return task, nil
 }
 
 // runPullBlob is the goroutine body for PullBlob: transition to running, run the
 // pull, and record terminal status. context.WithoutCancel keeps the transfer
 // alive past the triggering HTTP request's context.
-func (m *Manager) runPullBlob(ctx context.Context, taskID uuid.UUID, client *http.Client, digest, token, holderEndpoint string) {
+func (m *Manager) runPullBlob(ctx context.Context, taskID uuid.UUID, client *http.Client, digest, token, holderEndpoint, holderIdentity string) {
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
 	err := blobpeer.Pull(ctx, blobpeer.PullArgs{
-		Endpoint:  holderEndpoint,
-		Digest:    digest,
-		Token:     token,
-		Store:     m.artifactStore,
-		TLSClient: client,
+		Endpoint:       holderEndpoint,
+		Digest:         digest,
+		Token:          token,
+		Store:          m.artifactStore,
+		TLSClient:      client,
+		HolderIdentity: holderIdentity,
 	})
 	if err != nil {
 		m.log.Error("blob pull task failed",

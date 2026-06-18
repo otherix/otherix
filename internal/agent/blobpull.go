@@ -74,9 +74,10 @@ type blobPuller struct {
 
 // Pull starts a tracked agent task streaming the blob for digest from
 // holderEndpoint into the local artifact store and returns the task id
-// immediately. It implements blobs.BlobPuller.
-func (p blobPuller) Pull(digest, token, holderEndpoint string) (string, error) {
-	task, err := p.manager.PullBlob(context.Background(), p.client, digest, token, holderEndpoint)
+// immediately. holderIdentity (when non-empty) pins TLS verification to the
+// holder's node identity SAN. It implements blobs.BlobPuller.
+func (p blobPuller) Pull(digest, token, holderEndpoint, holderIdentity string) (string, error) {
+	task, err := p.manager.PullBlob(context.Background(), p.client, digest, token, holderEndpoint, holderIdentity)
 	if err != nil {
 		return "", err
 	}

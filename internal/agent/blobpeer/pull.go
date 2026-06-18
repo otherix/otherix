@@ -5,6 +5,7 @@ package blobpeer
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -23,12 +24,22 @@ var ErrBlobVerifyFailed = errors.New("blobpeer: pulled blob failed digest verifi
 // (https://host:port); Digest the requested content address; Token the per-op
 // bearer token; Store the local artifact store to land the blob in; TLSClient an
 // *http.Client carrying the node leaf cert (mTLS) and trusting the cluster CA.
+//
+// HolderIdentity, when non-empty, pins the TLS ServerName the consumer verifies
+// the holder's cert against (the holder's node identity SAN,
+// "node-<name>.agents.otherix.local"). The consumer dials the holder by its
+// inter-node IP, but the holder's cluster-CA node leaf cert carries that
+// identity SAN, NOT the dialed IP - so without this pin Go fails the handshake
+// with "certificate is valid for <SAN>, not <IP>". This mirrors the live
+// migration data path's tls-hostname pin (internal/agent/qemu/nbd.go). Empty
+// preserves the default behavior (verify against the dialed host).
 type PullArgs struct {
-	Endpoint  string
-	Digest    string
-	Token     string
-	Store     *artifactstore.Store
-	TLSClient *http.Client
+	Endpoint       string
+	Digest         string
+	Token          string
+	Store          *artifactstore.Store
+	TLSClient      *http.Client
+	HolderIdentity string
 }
 
 // Pull streams the blob from the holder's peer listener over mTLS HTTPS and
@@ -48,7 +59,25 @@ func Pull(ctx context.Context, a PullArgs) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+a.Token)
 
-	resp, err := a.TLSClient.Do(req)
+	client := a.TLSClient
+	if a.HolderIdentity != "" {
+		// Pin TLS verification to the holder's node identity SAN rather than the
+		// dialed IP, without mutating the shared client: clone the transport and
+		// set ServerName on a copy of its TLS config. InsecureSkipVerify stays
+		// false and RootCAs (cluster CA) is preserved by the clone - only
+		// ServerName is overridden. A non-*http.Transport client (a test double)
+		// is used as-is.
+		if tr, ok := a.TLSClient.Transport.(*http.Transport); ok {
+			cloned := tr.Clone()
+			if cloned.TLSClientConfig == nil {
+				cloned.TLSClientConfig = &tls.Config{} //nolint:gosec // G402: MinVersion unset only when the source transport had no TLS config; the production puller always supplies one.
+			}
+			cloned.TLSClientConfig.ServerName = a.HolderIdentity
+			client = &http.Client{Transport: cloned, Timeout: a.TLSClient.Timeout}
+		}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("blobpeer: pull request: %v", err)
 	}

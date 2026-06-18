@@ -55,8 +55,9 @@ type AgentExecutor interface {
 	ServeBlob(ctx context.Context, holderEndpoint, digest, token, consumerNodeID string) (serveEndpoint, expiresAt string, err error)
 	// PullBlobAndAwait tells the consumer to pull from the holder's serve
 	// endpoint and blocks until the consumer pull task reaches a terminal
-	// status, returning an error on any non-success terminal.
-	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint string) error
+	// status, returning an error on any non-success terminal. holderIdentity is
+	// the holder's node identity SAN the consumer pins TLS verification against.
+	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string) error
 	// StopServe tears the holder's serve listener down. Best-effort: the
 	// listener also self-expires on the token TTL.
 	StopServe(ctx context.Context, holderEndpoint, digest string) error
@@ -134,7 +135,11 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 
 	// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 	_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhasePulling)
-	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint)
+	// Pin the consumer's TLS verification of the holder to the holder's node
+	// identity SAN, not the dialed inter-node IP (the holder's node leaf cert
+	// carries the identity, not the IP). Mirrors migration's target_node_identity.
+	hid := holderIdentity(holder.Name)
+	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid)
 
 	// Teardown is best-effort and ALWAYS runs: a stop failure logs but never
 	// fails a pull that otherwise succeeded (the listener self-expires on TTL).
@@ -150,6 +155,14 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	}
 	return b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseComplete)
 }
+
+// holderIdentity is the holder node's SAN name the consumer pins TLS
+// verification against ("node-<name>.agents.otherix.local"). It mirrors the
+// migration target_node_identity helper (internal/auth/csr.go SignCSR puts this
+// SAN on every node leaf cert), so the consumer can dial the holder by its
+// inter-node IP yet verify the cert against the identity the cert actually
+// carries.
+func holderIdentity(nodeName string) string { return "node-" + nodeName + ".agents.otherix.local" }
 
 // ClientExecutor adapts *agentclient.Client to the AgentExecutor seam. It is the
 // production wiring used by the worker that drives BrokerPull (Task 13); the
@@ -184,12 +197,16 @@ func (e *ClientExecutor) ServeBlob(ctx context.Context, holderEndpoint, digest, 
 // the consumer agent's task to terminal, mirroring the migration await. A
 // non-success terminal (a verify failure on the agent surfaces as a failed task)
 // returns an error so the broker fails the saga.
-func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint string) error {
-	taskID, err := e.c.PullBlob(ctx, consumerEndpoint, agentapi.BlobPullRequest{
+func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string) error {
+	req := agentapi.BlobPullRequest{
 		Digest:         digest,
 		HolderEndpoint: holderEndpoint,
 		Token:          token,
-	})
+	}
+	if holderIdentity != "" {
+		req.HolderIdentity = &holderIdentity
+	}
+	taskID, err := e.c.PullBlob(ctx, consumerEndpoint, req)
 	if err != nil {
 		return err
 	}

@@ -50,15 +50,17 @@ type pullSpy struct {
 	digest         string
 	token          string
 	holderEndpoint string
+	holderIdentity string
 	taskID         string
 	returnErr      error
 }
 
-func (s *pullSpy) Pull(digest, token, holderEndpoint string) (string, error) {
+func (s *pullSpy) Pull(digest, token, holderEndpoint, holderIdentity string) (string, error) {
 	s.calls++
 	s.digest = digest
 	s.token = token
 	s.holderEndpoint = holderEndpoint
+	s.holderIdentity = holderIdentity
 	if s.returnErr != nil {
 		return "", s.returnErr
 	}
@@ -201,6 +203,7 @@ func TestPull_HappyPath(t *testing.T) {
 		"digest":          digest,
 		"token":           "tok-456",
 		"holder_endpoint": "https://10.0.0.3:49252",
+		"holder_identity": "node-holder.agents.otherix.local",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/pull", strings.NewReader(string(body)))
 	rec := httptest.NewRecorder()
@@ -214,6 +217,9 @@ func TestPull_HappyPath(t *testing.T) {
 	}
 	if pull.digest != digest || pull.token != "tok-456" || pull.holderEndpoint != "https://10.0.0.3:49252" {
 		t.Errorf("Pull(%q,%q,%q)", pull.digest, pull.token, pull.holderEndpoint)
+	}
+	if pull.holderIdentity != "node-holder.agents.otherix.local" {
+		t.Errorf("Pull holderIdentity = %q, want %q", pull.holderIdentity, "node-holder.agents.otherix.local")
 	}
 	var resp asyncAccepted
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {

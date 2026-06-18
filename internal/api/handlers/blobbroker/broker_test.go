@@ -23,6 +23,7 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 type storeStub struct {
 	holders  []uuid.UUID
 	nodeEndp map[uuid.UUID]string
+	nodeName map[uuid.UUID]string
 	phases   []store.PullSagaPhase
 	token    string
 }
@@ -32,7 +33,7 @@ func (s *storeStub) BlobHolders(_ context.Context, _ string) ([]uuid.UUID, error
 }
 
 func (s *storeStub) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
-	return store.Node{ID: id, AdvertisedEndpoint: s.nodeEndp[id]}, nil
+	return store.Node{ID: id, Name: s.nodeName[id], AdvertisedEndpoint: s.nodeEndp[id]}, nil
 }
 
 func (s *storeStub) CreatePullSaga(_ context.Context, p store.CreatePullSagaParams) (store.ArtifactPullSaga, string, error) {
@@ -50,8 +51,9 @@ func (s *storeStub) SetPullSagaPhase(_ context.Context, _ uuid.UUID, phase store
 
 // agentSpy records the order of serve/pull/stop calls (the seam under test).
 type agentSpy struct {
-	calls     []string
-	serveEndp string
+	calls          []string
+	serveEndp      string
+	pullHolderIdty string
 }
 
 func (a *agentSpy) ServeBlob(_ context.Context, holderEndpoint, _, _, _ string) (string, string, error) {
@@ -59,8 +61,9 @@ func (a *agentSpy) ServeBlob(_ context.Context, holderEndpoint, _, _, _ string) 
 	return a.serveEndp, "2030-01-01T00:00:00Z", nil
 }
 
-func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, holderEndpoint string) error {
+func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, holderEndpoint, holderIdentity string) error {
 	a.calls = append(a.calls, "pull:"+consumerEndpoint+"<-"+holderEndpoint)
+	a.pullHolderIdty = holderIdentity
 	return nil
 }
 
@@ -74,6 +77,7 @@ func TestBrokerPullSequencing(t *testing.T) {
 	st := &storeStub{
 		holders:  []uuid.UUID{holder},
 		nodeEndp: map[uuid.UUID]string{holder: "https://holder:9443", consumer: "https://consumer:9443"},
+		nodeName: map[uuid.UUID]string{holder: "node-1", consumer: "node-2"},
 		token:    "otx_pull_x",
 	}
 	spy := &agentSpy{serveEndp: "https://holder:49252"}
@@ -95,6 +99,12 @@ func TestBrokerPullSequencing(t *testing.T) {
 		if spy.calls[i] != want[i] {
 			t.Errorf("call[%d] = %q, want %q", i, spy.calls[i], want[i])
 		}
+	}
+
+	// The consumer pull pins TLS to the holder's node identity SAN, derived
+	// from the holder node name (mirrors migration target_node_identity).
+	if want := "node-node-1.agents.otherix.local"; spy.pullHolderIdty != want {
+		t.Errorf("pull holder identity = %q, want %q", spy.pullHolderIdty, want)
 	}
 
 	// The saga must reach complete via serving (UpdatePullSagaServeEndpoint

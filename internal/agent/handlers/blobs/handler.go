@@ -32,10 +32,11 @@ type BlobServer interface {
 
 // BlobPuller is the seam the pull handler drives: start an agent task that
 // streams the blob for digest from holderEndpoint (presenting token) into the
-// local artifact store, and return the task id immediately. Production wraps a
-// blobpeer.Pull adapter (server.go); tests pass a spy.
+// local artifact store, and return the task id immediately. holderIdentity
+// (when non-empty) pins TLS verification to the holder's node identity SAN.
+// Production wraps a blobpeer.Pull adapter (server.go); tests pass a spy.
 type BlobPuller interface {
-	Pull(digest, token, holderEndpoint string) (taskID string, err error)
+	Pull(digest, token, holderEndpoint, holderIdentity string) (taskID string, err error)
 }
 
 // Handler bundles the serve / pull seams and the logger. All state (the serve

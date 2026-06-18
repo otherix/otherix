@@ -2449,6 +2449,16 @@ components:
           description: |
             `https://host:port` base URL of the holder's serve listener
             (the `serve_endpoint` the holder returned from `blobs.serve`).
+        holder_identity:
+          type: string
+          description: |
+            The holder's node identity SAN
+            ("node-<name>.agents.otherix.local") the consumer pins TLS
+            verification against. The consumer dials the holder by its
+            inter-node IP, but the holder's node leaf cert carries this
+            identity SAN, not the dialed IP - mirrors the migration
+            target_node_identity pin. Absent: no pinning, the consumer
+            verifies the holder cert against the dialed host.
 
     MigrationIncomingRequest:
       type: object

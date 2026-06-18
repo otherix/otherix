@@ -35,7 +35,11 @@ func (h *Handler) Pull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	taskID, err := h.puller.Pull(req.Digest, req.Token, req.HolderEndpoint)
+	var holderIdentity string
+	if req.HolderIdentity != nil {
+		holderIdentity = *req.HolderIdentity
+	}
+	taskID, err := h.puller.Pull(req.Digest, req.Token, req.HolderEndpoint, holderIdentity)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "blob pull failed",
 			"digest", req.Digest, "holder_endpoint", req.HolderEndpoint, "err", err)
