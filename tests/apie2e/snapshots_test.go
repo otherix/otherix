@@ -510,6 +510,19 @@ func TestSnapshotListAll_RBACScopeAndResolve(t *testing.T) {
 		t.Errorf("dev A ?owner=B code = %q, want permission_denied", env.Error.Code)
 	}
 
+	// Developer A passing ?vm=<B's VM id> cannot widen scope: the own-scope owner
+	// pin must AND the VM filter in the store, so A sees an EMPTY list (B's VM is
+	// not A's), never B's snapshot.
+	resp = h.get(t, "/v1/snapshots?vm="+vmBID.String(), devAToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev A ?vm=B status = %d, want 200", resp.StatusCode)
+	}
+	var devAForeignVM snapshotListAllResponse
+	decodeJSON(t, resp, &devAForeignVM)
+	if len(devAForeignVM.Data) != 0 {
+		t.Errorf("dev A ?vm=B = %+v, want 0 snapshots (own-scope owner pin must not widen via ?vm)", devAForeignVM.Data)
+	}
+
 	// Developer B sees only B's snapshot (confirms scope is per-caller).
 	resp = h.get(t, "/v1/snapshots", devBToken)
 	if resp.StatusCode != http.StatusOK {

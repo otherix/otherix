@@ -135,9 +135,13 @@ func (s *Store) SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot,
 }
 
 // ListSnapshots returns non-deleted snapshots newest-first by (created_at, id),
-// applying the optional VM or owner filter (VM takes precedence), an optional
-// Status filter, then the DESC cursor and LimitCount. It mirrors ListMigrations:
-// the handler passes LimitCount+1 for next-page detection.
+// applying every provided filter (VmID, OwnerID, Status) CONJUNCTIVELY, then the
+// DESC cursor and LimitCount. The chosen index (per-VM if VmID set, else per-owner
+// if OwnerID set, else the primary prefix) is only an iteration choice for
+// efficiency: it never relaxes a filter. A row is kept only when it matches ALL
+// set filters, so OwnerID still scopes a ScopeOwn caller even when VmID is also
+// set (a developer cannot widen own-scope by passing another owner's VM id). It
+// mirrors ListMigrations: the handler passes LimitCount+1 for next-page detection.
 func (s *Store) ListSnapshots(ctx context.Context, p store.ListSnapshotsParams) ([]store.Snapshot, error) {
 	var snaps []store.Snapshot
 	var err error
@@ -158,7 +162,7 @@ func (s *Store) ListSnapshots(ctx context.Context, p store.ListSnapshotsParams) 
 		if snap.DeletedAt != nil {
 			continue
 		}
-		if p.Status != nil && snap.Status != *p.Status {
+		if !snapshotMatchesFilters(snap, p) {
 			continue
 		}
 		if !beforeCursor(snap.CreatedAt, snap.ID, p.CursorCreatedAt, p.CursorID) {
@@ -176,6 +180,23 @@ func (s *Store) ListSnapshots(ctx context.Context, p store.ListSnapshotsParams) 
 		out = out[:n]
 	}
 	return out, nil
+}
+
+// snapshotMatchesFilters ANDs every set filter (VmID, OwnerID, Status) against the
+// row. The index chosen in ListSnapshots is only an iteration choice, so this
+// predicate is what actually scopes the result: it keeps a ScopeOwn caller's
+// OwnerID pin in force even when VmID is also set (no own-scope widening via ?vm).
+func snapshotMatchesFilters(snap store.Snapshot, p store.ListSnapshotsParams) bool {
+	if p.VmID != nil && snap.VmID != *p.VmID {
+		return false
+	}
+	if p.OwnerID != nil && snap.OwnerID != *p.OwnerID {
+		return false
+	}
+	if p.Status != nil && snap.Status != *p.Status {
+		return false
+	}
+	return true
 }
 
 // snapshotsByIndex resolves each snapshot referenced by a secondary index prefix

@@ -92,6 +92,53 @@ func TestListSnapshots_CursorDescByVM(t *testing.T) {
 	}
 }
 
+// TestListSnapshots_OwnerAndVMConjunctive proves the owner pin and the VM filter
+// are ANDed, so a developer (ScopeOwn -> OwnerID pinned to caller.ID) cannot widen
+// scope by passing another owner's VM id. Two owners A and B each own a VM with one
+// snapshot. ListSnapshots{VmID: &vmB, OwnerID: &ownerA} must return ZERO rows (B's
+// VM is not A's), and ListSnapshots{VmID: &vmA, OwnerID: &ownerA} returns A's.
+func TestListSnapshots_OwnerAndVMConjunctive(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	ownerA, err := s.CreateUser(ctx, userParams(uniqueEmail("snapconj-a")))
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	ownerB, err := s.CreateUser(ctx, userParams(uniqueEmail("snapconj-b")))
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	vmA := vmRow("snap-conj-a")
+	vmA.OwnerID = ownerA.ID
+	seedVM(t, cl, vmA)
+	vmB := vmRow("snap-conj-b")
+	vmB.OwnerID = ownerB.ID
+	seedVM(t, cl, vmB)
+
+	snapA := seedSnapshot(t, s, ctx, vmA.ID, ownerA.ID, "snap-a")
+	seedSnapshot(t, s, ctx, vmB.ID, ownerB.ID, "snap-b")
+
+	// Owner A pinned + B's VM: the VM index drives iteration but the owner filter
+	// must still apply, so A sees ZERO of B's snapshots (no own-scope widening).
+	foreign, err := s.ListSnapshots(ctx, store.ListSnapshotsParams{VmID: &vmB.ID, OwnerID: &ownerA.ID, LimitCount: 50})
+	if err != nil {
+		t.Fatalf("ListSnapshots{vmB, ownerA}: %v", err)
+	}
+	if len(foreign) != 0 {
+		t.Errorf("ListSnapshots{vmB, ownerA} = %d snapshots, want 0 (owner filter must AND the vm filter)", len(foreign))
+	}
+
+	// Owner A pinned + A's own VM: returns A's snapshot.
+	own, err := s.ListSnapshots(ctx, store.ListSnapshotsParams{VmID: &vmA.ID, OwnerID: &ownerA.ID, LimitCount: 50})
+	if err != nil {
+		t.Fatalf("ListSnapshots{vmA, ownerA}: %v", err)
+	}
+	if len(own) != 1 || own[0].ID != snapA.ID {
+		t.Errorf("ListSnapshots{vmA, ownerA} = %+v, want only snapshot A %v", own, snapA.ID)
+	}
+}
+
 func TestSnapshotByID_NotFoundWhenDeleted(t *testing.T) {
 	s, cl := startStore(t)
 	ctx := context.Background()
