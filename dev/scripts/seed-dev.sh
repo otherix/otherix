@@ -257,6 +257,21 @@ else
     bootstrap_node_native 2
 fi
 
+# --- Step 4: seed the cluster default artifact pool --------------------------
+# Snapshot create REQUIRES a resolvable artifact pool (an explicit
+# --artifact-pool override or the cluster default), else it 409s with
+# default_artifact_pool_not_set. The dev stack therefore needs a cluster-default
+# artifact pool so plain `vm snapshot` works (and so smoke-vm-snapshots, which
+# snapshots without an override, stays green). Create the pool `artifacts` and
+# set it as the cluster default. Both steps are idempotent on re-seed (the pool
+# may already exist; `|| true` keeps re-runs non-fatal).
+ARTIFACT_POOL_NAME="artifacts"
+echo ""
+echo ">> Step 4 — seeding cluster default artifact pool '${ARTIFACT_POOL_NAME}'"
+"${CLI}" artifact-pool create "${ARTIFACT_POOL_NAME}" \
+    --replication-factor 1 --members all || true
+"${CLI}" cluster set-default-artifact-pool "${ARTIFACT_POOL_NAME}" || true
+
 # --- Done --------------------------------------------------------------------
 # There is no template step: a VM is created directly from an image URL. The
 # cluster default pool (${POOL_NAME}) is auto-provisioned by the CP on every
@@ -268,7 +283,8 @@ echo ""
 echo ">> seed-dev complete"
 echo "   node 1   : ${NODE_NAME_1}"
 echo "   node 2   : ${NODE_NAME_2}"
-echo "   pool     : ${POOL_NAME} (cluster default, CP-auto-provisioned on ready nodes)"
+echo "   pool     : ${POOL_NAME} (cluster default disk pool, CP-auto-provisioned on ready nodes)"
+echo "   artifacts: ${ARTIFACT_POOL_NAME} (cluster default artifact pool, seeded above)"
 echo ""
 echo "next steps:"
 echo "  ${CLI} node list"
