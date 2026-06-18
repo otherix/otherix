@@ -52,6 +52,11 @@ type HeartbeatProjection interface {
 	// An empty slice clears it so a pool that dropped all images reports empty,
 	// not stale.
 	UpsertPoolImageInventory(ctx context.Context, poolID uuid.UUID, images []PoolImage) error
+	// UpsertNodeBlobInventory replaces the observed per-node artifact-store blob
+	// inventory. An empty slice clears it; the heartbeat handler skips the call
+	// entirely on blobs_unavailable so a transient agent enumerate-failure
+	// preserves the prior inventory (the holder-discovery source).
+	UpsertNodeBlobInventory(ctx context.Context, nodeID uuid.UUID, blobs []NodeBlob) error
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
 	UpsertNetworkNodeStatus(ctx context.Context, arg UpsertNetworkNodeStatusParams) error
 	ListNetworks(ctx context.Context) ([]Network, error)

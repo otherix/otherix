@@ -252,6 +252,9 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyPoolReports(ctx, hp, agent.NodeID, body.Pools); err != nil {
 			return err
 		}
+		if err := h.applyBlobInventory(ctx, hp, agent.NodeID, body); err != nil {
+			return err
+		}
 		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
 			return err
 		}
@@ -421,6 +424,29 @@ func (h *Handler) applyPoolImageInventory(ctx context.Context, hp store.Heartbea
 	}
 	if err := hp.UpsertPoolImageInventory(ctx, poolID, images); err != nil {
 		return fmt.Errorf("upsert pool image inventory: %v", err)
+	}
+	return nil
+}
+
+// applyBlobInventory persists the agent-reported per-node artifact-store blob
+// inventory as observed state (the holder-discovery source for the cross-node
+// pull saga, slice C1). Fail-closed: on blobs_unavailable the agent could not
+// enumerate its store this tick, so the CP PRESERVES the prior inventory (skip
+// the upsert) rather than clearing it - a transient producer error must not wipe
+// the holder-discovery source (mirrors the images_unavailable handling, audit
+// R2-L11). Otherwise the reported list is authoritative (an empty list clears
+// the inventory). Unlike pool image inventory, blobs are node-level, not
+// pool-scoped, so there is no (node_id, name) resolution step.
+func (h *Handler) applyBlobInventory(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
+	if body.BlobsUnavailable {
+		return nil
+	}
+	blobs := make([]store.NodeBlob, 0, len(body.Blobs))
+	for _, b := range body.Blobs {
+		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: b.SizeBytes})
+	}
+	if err := hp.UpsertNodeBlobInventory(ctx, nodeID, blobs); err != nil {
+		return fmt.Errorf("upsert node blob inventory: %v", err)
 	}
 	return nil
 }

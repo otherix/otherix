@@ -851,3 +851,12 @@ type PoolImage struct {
 	Format           string
 	ImportedAt       time.Time
 }
+
+// NodeBlob is one content-addressed blob a node holds in its artifact store
+// (slice C1 observed state). The heartbeat path writes the per-node list; the
+// pull-saga holder discovery reads it. Identity is the digest; SizeBytes is
+// observability.
+type NodeBlob struct {
+	Digest    string `json:"digest"`
+	SizeBytes int64  `json:"size_bytes"`
+}
