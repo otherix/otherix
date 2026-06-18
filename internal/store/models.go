@@ -613,6 +613,10 @@ type Snapshot struct {
 	Status            SnapshotStatus
 	WithMemory        bool
 	VMStateAtSnapshot VMStateAtSnapshot
+	// SourceVMName records the name of the VM this snapshot was captured from,
+	// denormalised at create time so the snapshot remembers its provenance even
+	// after the source VM is deleted (a snapshot is a standalone artifact).
+	SourceVMName string
 	// SourceArchitecture and SourceFirmwareID record the source VM's
 	// architecture and firmware at capture time so recreate-from-snapshot is
 	// self-describing.

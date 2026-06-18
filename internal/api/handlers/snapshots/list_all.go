@@ -141,22 +141,32 @@ func (h *Handler) ListAll(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveListItems projects the page of snapshot rows onto the global-list view,
-// resolving vm_name and owner_display_name once per unique VM / user id (a small
-// per-page cache, so a page of N snapshots of one VM owned by one user is two
-// lookups, not 2N). A failed or absent lookup leaves the name nil rather than
-// failing the request - the id field stays authoritative, mirroring the
-// migrations list's best-effort name overlay.
+// resolving owner_display_name once per unique user id (a small per-page cache).
+// vm_name prefers the live current VM name (so a rename is reflected) and falls
+// back to the snapshot's stored SourceVMName when the source VM row is gone, so
+// the column is always non-empty: a snapshot is a standalone artifact that
+// remembers the VM it was captured from even after that VM is force-deleted. The
+// live lookup is cached once per unique VM id (a page of N snapshots of one VM
+// is one lookup, not N).
 func (h *Handler) resolveListItems(ctx context.Context, rows []store.Snapshot) []snapshotListItemView {
-	vmNames := map[uuid.UUID]*string{}
+	liveVMNames := map[uuid.UUID]*string{}
 	ownerNames := map[uuid.UUID]*string{}
 
 	views := make([]snapshotListItemView, 0, len(rows))
 	for _, s := range rows {
-		vmName, ok := vmNames[s.VmID]
+		live, ok := liveVMNames[s.VmID]
 		if !ok {
-			vmName = h.vmName(ctx, s.VmID)
-			vmNames[s.VmID] = vmName
+			live = h.vmName(ctx, s.VmID)
+			liveVMNames[s.VmID] = live
 		}
+		// Prefer the live current name (reflects a rename); fall back to the
+		// provenance-at-capture name stored on the snapshot when the VM is gone.
+		vmName := live
+		if vmName == nil {
+			captured := s.SourceVMName
+			vmName = &captured
+		}
+
 		ownerName, ok := ownerNames[s.OwnerID]
 		if !ok {
 			ownerName = h.ownerDisplayName(ctx, s.OwnerID)

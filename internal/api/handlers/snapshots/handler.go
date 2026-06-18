@@ -68,21 +68,25 @@ func New(s Store, log *slog.Logger) *Handler {
 // row: identity + ownership, the disk-only manifest (disks[] + the summed
 // disk_size_bytes), the captured VM state, and timestamps. No secret fields.
 type vmSnapshotView struct {
-	ID                string               `json:"id"`
-	VMID              string               `json:"vm_id"`
-	OwnerID           string               `json:"owner_id"`
-	Name              string               `json:"name"`
-	Description       string               `json:"description"`
-	Status            string               `json:"status"`
-	WithMemory        bool                 `json:"with_memory"`
-	VMStateAtSnapshot string               `json:"vm_state_at_snapshot"`
-	Architecture      string               `json:"architecture"`
-	FirmwareID        *string              `json:"firmware_id"`
-	DiskSizeBytes     *int64               `json:"disk_size_bytes"`
-	Disks             []vmSnapshotDiskView `json:"disks"`
-	ErrorMessage      *string              `json:"error_message"`
-	CreatedAt         string               `json:"created_at"`
-	UpdatedAt         string               `json:"updated_at"`
+	ID                string `json:"id"`
+	VMID              string `json:"vm_id"`
+	OwnerID           string `json:"owner_id"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	Status            string `json:"status"`
+	WithMemory        bool   `json:"with_memory"`
+	VMStateAtSnapshot string `json:"vm_state_at_snapshot"`
+	// VMName is the source VM name captured at snapshot time, denormalised onto
+	// the snapshot so it survives the source VM's deletion (provenance). Empty
+	// only for legacy rows created before the field existed.
+	VMName        string               `json:"vm_name"`
+	Architecture  string               `json:"architecture"`
+	FirmwareID    *string              `json:"firmware_id"`
+	DiskSizeBytes *int64               `json:"disk_size_bytes"`
+	Disks         []vmSnapshotDiskView `json:"disks"`
+	ErrorMessage  *string              `json:"error_message"`
+	CreatedAt     string               `json:"created_at"`
+	UpdatedAt     string               `json:"updated_at"`
 }
 
 // vmSnapshotDiskView mirrors the per-disk blob descriptor in the manifest.
@@ -131,6 +135,7 @@ func toView(s store.Snapshot) vmSnapshotView {
 		Status:            string(s.Status),
 		WithMemory:        s.WithMemory,
 		VMStateAtSnapshot: string(s.VMStateAtSnapshot),
+		VMName:            s.SourceVMName,
 		Architecture:      string(s.SourceArchitecture),
 		FirmwareID:        firmwareID,
 		DiskSizeBytes:     size,

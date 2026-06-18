@@ -83,6 +83,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Name:               body.Name,
 		Description:        derefString(body.Description),
 		VMStateAtSnapshot:  h.vmStateAtSnapshot(r.Context(), vm.ID),
+		SourceVMName:       vm.Name,
 		SourceArchitecture: vm.Architecture,
 		SourceFirmwareID:   vm.FirmwareID,
 		Task: store.CreateTaskParams{

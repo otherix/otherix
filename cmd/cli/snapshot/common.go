@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +36,52 @@ const (
 
 func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
 	return cliauth.BuildClient(cmd)
+}
+
+// resolveSnapshotID turns the operator-supplied id argument into a full snapshot
+// uuid. A full uuid is used verbatim (no list call). Anything else is treated as
+// the short id the `snapshot list` table prints (the leading hex of the uuid):
+// the global list is paged through (every snapshot the caller can see) and the
+// snapshot whose full id has the given prefix is resolved. Exactly one match ->
+// its full uuid; zero matches -> a "no snapshot with id prefix" error; two or
+// more -> an "ambiguous id prefix" error so the operator re-runs with the full
+// id. The prefix is matched case-insensitively against the canonical lowercase
+// uuid the server returns.
+func resolveSnapshotID(ctx context.Context, c *cpclient.Client, arg string) (string, error) {
+	if _, err := uuid.Parse(arg); err == nil {
+		return arg, nil
+	}
+
+	prefix := strings.ToLower(arg)
+	var matches []string
+	cursor := ""
+	for {
+		page, next, err := c.ListSnapshotsGlobal(ctx, cpclient.ListSnapshotsParams{
+			Limit:  200,
+			Cursor: cursor,
+		})
+		if err != nil {
+			return "", classifyError(err)
+		}
+		for _, s := range page {
+			if strings.HasPrefix(strings.ToLower(s.ID), prefix) {
+				matches = append(matches, s.ID)
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("not_found: no snapshot with id prefix %q", arg)
+	default:
+		return "", fmt.Errorf("validation_failed: ambiguous id prefix %q, use the full id", arg)
+	}
 }
 
 func printf(cmd *cobra.Command, format string, args ...any) {

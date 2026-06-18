@@ -77,6 +77,7 @@ func (s *Store) CreateSnapshot(ctx context.Context, p store.CreateSnapshotParams
 		Status:             store.SnapshotStatusCreating,
 		WithMemory:         p.WithMemory,
 		VMStateAtSnapshot:  p.VMStateAtSnapshot,
+		SourceVMName:       p.SourceVMName,
 		SourceArchitecture: p.SourceArchitecture,
 		SourceFirmwareID:   p.SourceFirmwareID,
 		CreatedAt:          now,

@@ -44,6 +44,7 @@ type Snapshot struct {
 	Description       string         `json:"description"`
 	Status            string         `json:"status"`
 	WithMemory        bool           `json:"with_memory"`
+	VMName            string         `json:"vm_name"`
 	VMStateAtSnapshot string         `json:"vm_state_at_snapshot"`
 	Architecture      string         `json:"architecture"`
 	FirmwareID        *string        `json:"firmware_id"`

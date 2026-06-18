@@ -45,7 +45,12 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	res, err := c.DeleteSnapshot(cmd.Context(), args[0])
+	id, err := resolveSnapshotID(cmd.Context(), c, args[0])
+	if err != nil {
+		return err
+	}
+
+	res, err := c.DeleteSnapshot(cmd.Context(), id)
 	if err != nil {
 		return classifyError(err)
 	}
@@ -53,7 +58,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	// An empty task id is the synchronous-delete case (the snapshot never
 	// reached the agent): nothing to poll.
 	if res.TaskID == "" {
-		printf(cmd, "snapshot %s deleted\n", args[0])
+		printf(cmd, "snapshot %s deleted\n", id)
 		return nil
 	}
 

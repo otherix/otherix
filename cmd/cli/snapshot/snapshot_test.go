@@ -199,6 +199,167 @@ func TestGet_Text(t *testing.T) {
 	}
 }
 
+// listEnvelope wraps one or more snapshot items in the global-list {data, meta}
+// envelope the CLI's ListSnapshotsGlobal decodes.
+func listEnvelope(items ...map[string]any) []byte {
+	data := make([]map[string]any, 0, len(items))
+	data = append(data, items...)
+	raw, _ := json.Marshal(map[string]any{
+		"data": data,
+		"meta": map[string]any{"next_cursor": nil},
+	})
+	return raw
+}
+
+// TestGet_ShortIDResolves drives `snapshot get <8-char-prefix>`: the CLI must
+// page the global list, find the one snapshot whose full id has that prefix, and
+// GET the full uuid.
+func TestGet_ShortIDResolves(t *testing.T) {
+	t.Parallel()
+	var listed bool
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots":
+			listed = true
+			_, _ = w.Write(listEnvelope(snapshotJSON(testSnapshotID, "daily", "ready")))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots/"+testSnapshotID:
+			gotPath = r.URL.Path
+			raw, _ := json.Marshal(snapshotJSON(testSnapshotID, "daily", "ready"))
+			_, _ = w.Write(raw)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, stderr, err := runSnapshotCmd(t, srv.URL, []string{"get", testSnapshotID[:8]})
+	if err != nil {
+		t.Fatalf("get <short> err = %v (stderr=%s)", err, stderr)
+	}
+	if !listed {
+		t.Errorf("short-id resolution did not page the global list")
+	}
+	if gotPath != "/v1/snapshots/"+testSnapshotID {
+		t.Errorf("GET hit %q, want the resolved full uuid path", gotPath)
+	}
+	if !strings.Contains(stdout, "name: daily") {
+		t.Errorf("text view missing resolved snapshot:\n%s", stdout)
+	}
+}
+
+// TestGet_FullUUIDSkipsList: a full uuid arg is used directly, never paging the
+// list.
+func TestGet_FullUUIDSkipsList(t *testing.T) {
+	t.Parallel()
+	var listed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots":
+			listed = true
+			_, _ = w.Write(listEnvelope())
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots/"+testSnapshotID:
+			raw, _ := json.Marshal(snapshotJSON(testSnapshotID, "daily", "ready"))
+			_, _ = w.Write(raw)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	_, stderr, err := runSnapshotCmd(t, srv.URL, []string{"get", testSnapshotID})
+	if err != nil {
+		t.Fatalf("get <full> err = %v (stderr=%s)", err, stderr)
+	}
+	if listed {
+		t.Errorf("full uuid must NOT page the global list")
+	}
+}
+
+// TestGet_UnknownShortID: a prefix matching no snapshot is a clear error, and
+// no GET is attempted.
+func TestGet_UnknownShortID(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots" {
+			_, _ = w.Write(listEnvelope(snapshotJSON(testSnapshotID, "daily", "ready")))
+			return
+		}
+		t.Errorf("unexpected %s %s (no GET should follow an unknown prefix)", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, _, err := runSnapshotCmd(t, srv.URL, []string{"get", "deadbeef"})
+	if err == nil {
+		t.Fatalf("unknown short id must error")
+	}
+	if !strings.Contains(err.Error(), "deadbeef") {
+		t.Errorf("error %q must name the unknown prefix", err)
+	}
+}
+
+// TestGet_AmbiguousShortID: a prefix matching two snapshots errors as ambiguous
+// without attempting a GET.
+func TestGet_AmbiguousShortID(t *testing.T) {
+	t.Parallel()
+	const (
+		idA = "abcd1234-1111-1111-1111-111111111111"
+		idB = "abcd1234-2222-2222-2222-222222222222"
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots" {
+			_, _ = w.Write(listEnvelope(
+				snapshotJSON(idA, "a", "ready"),
+				snapshotJSON(idB, "b", "ready"),
+			))
+			return
+		}
+		t.Errorf("unexpected %s %s (no GET should follow an ambiguous prefix)", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, _, err := runSnapshotCmd(t, srv.URL, []string{"get", "abcd1234"})
+	if err == nil {
+		t.Fatalf("ambiguous short id must error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error %q must say ambiguous", err)
+	}
+}
+
+// TestDelete_ShortIDResolves: `snapshot delete <short>` resolves to the full
+// uuid before issuing the DELETE.
+func TestDelete_ShortIDResolves(t *testing.T) {
+	t.Parallel()
+	var deletedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots":
+			_, _ = w.Write(listEnvelope(snapshotJSON(testSnapshotID, "daily", "ready")))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+testSnapshotID:
+			deletedPath = r.URL.Path
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"task_id":"` + testTaskID + `","status":"pending","links":{"self":"/v1/tasks/` + testTaskID + `"}}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	_, stderr, err := runSnapshotCmd(t, srv.URL, []string{"delete", testSnapshotID[:8]})
+	if err != nil {
+		t.Fatalf("delete <short> err = %v (stderr=%s)", err, stderr)
+	}
+	if deletedPath != "/v1/snapshots/"+testSnapshotID {
+		t.Errorf("DELETE hit %q, want the resolved full uuid path", deletedPath)
+	}
+}
+
 // TestDelete_Wait covers `snapshot delete <id> --wait`: DELETE then poll.
 func TestDelete_Wait(t *testing.T) {
 	t.Parallel()

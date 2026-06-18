@@ -757,6 +757,65 @@ func TestSnapshotCreate_EndToEnd_ReachesReady(t *testing.T) {
 	}
 }
 
+// TestSnapshotListAll_RetainsSourceVMNameAfterVMDeleted locks the provenance
+// invariant: a snapshot remembers the name of the VM it was captured from even
+// after that VM is gone. It creates the snapshot through the real create handler
+// (which denormalises vm.Name onto the row), then deletes the source VM's etcd
+// keys out from under the snapshot, and asserts the global list still surfaces
+// vm_name = the original VM name rather than an empty / null cell.
+func TestSnapshotListAll_RetainsSourceVMNameAfterVMDeleted(t *testing.T) {
+	h := newE2E(t)
+	devToken, devID := loginAs(t, h, auth.RoleDeveloper)
+
+	vmName, vmID := seedOwnedVM(t, h.store, devID)
+
+	// Create the snapshot through the HTTP handler so the create path captures
+	// the source VM name onto the row.
+	resp := h.do(t, http.MethodPost, "/v1/vms/"+vmName+"/snapshots",
+		map[string]any{"name": "provenance"}, devToken, map[string]string{
+			"Idempotency-Key": "snap-prov-" + uuid.NewString(),
+		})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status = %d, want 202", resp.StatusCode)
+	}
+	sid := snapshotIDForVM(t, h.store, vmID)
+
+	// Delete the source VM out from under the snapshot (primary row + name
+	// guard), so the live VMByID lookup returns ErrNotFound.
+	ctx := context.Background()
+	cli := sharedEtcdClient
+	if _, err := cli.Raw().Delete(ctx, etcd.Key("vms", vmID.String())); err != nil {
+		t.Fatalf("delete vm row: %v", err)
+	}
+	if _, err := cli.Raw().Delete(ctx, etcd.Key("uniq", "vms", "name", vmName)); err != nil {
+		t.Fatalf("delete vm name guard: %v", err)
+	}
+	if _, err := h.store.VMByID(ctx, vmID); err == nil {
+		t.Fatalf("VMByID still resolves after delete; test precondition broken")
+	}
+
+	// The global list still resolves vm_name to the captured source name.
+	resp = h.get(t, "/v1/snapshots", devToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", resp.StatusCode)
+	}
+	var list snapshotListAllResponse
+	decodeJSON(t, resp, &list)
+	var found *snapshotListAllItem
+	for i := range list.Data {
+		if list.Data[i].ID == sid.String() {
+			found = &list.Data[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("snapshot %s missing from list %+v", sid, list.Data)
+	}
+	if found.VMName == nil || *found.VMName != vmName {
+		t.Errorf("vm_name after vm deletion = %v, want %q (snapshot must retain source vm name)", found.VMName, vmName)
+	}
+}
+
 // mockSnapshotDiskSHA0/SHA1 are the deterministic fixed digests the mock agent
 // reports for the two-disk content-addressed manifest. Mirrored here so the
 // end-to-end test asserts wire-shape parity with the mock.

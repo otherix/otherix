@@ -32,6 +32,7 @@ type CreateSnapshotParams struct {
 	Description        string
 	WithMemory         bool
 	VMStateAtSnapshot  VMStateAtSnapshot
+	SourceVMName       string
 	SourceArchitecture CPUArch
 	SourceFirmwareID   *uuid.UUID
 	Task               CreateTaskParams

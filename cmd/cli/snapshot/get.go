@@ -33,7 +33,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	s, raw, err := c.Snapshot(cmd.Context(), args[0])
+	id, err := resolveSnapshotID(cmd.Context(), c, args[0])
+	if err != nil {
+		return err
+	}
+
+	s, raw, err := c.Snapshot(cmd.Context(), id)
 	if err != nil {
 		return classifyError(err)
 	}
@@ -54,6 +59,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 func printSnapshotText(cmd *cobra.Command, s cpclient.Snapshot) {
 	printf(cmd, "id: %s\n", s.ID)
 	printf(cmd, "vm_id: %s\n", s.VMID)
+	if s.VMName != "" {
+		printf(cmd, "vm_name: %s\n", s.VMName)
+	}
 	printf(cmd, "name: %s\n", s.Name)
 	printf(cmd, "status: %s\n", s.Status)
 	printf(cmd, "vm_state_at_snapshot: %s\n", s.VMStateAtSnapshot)

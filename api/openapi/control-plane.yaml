@@ -6562,6 +6562,7 @@ components:
         - status
         - with_memory
         - vm_state_at_snapshot
+        - vm_name
         - architecture
         - disks
         - created_at
@@ -6598,6 +6599,13 @@ components:
           type: string
           enum: [running, paused, stopped]
           description: VM phase at the moment of capture.
+        vm_name:
+          type: string
+          description: |
+            Name of the source VM at the moment of capture, denormalised onto
+            the snapshot so it survives the source VM's deletion (a snapshot is
+            a standalone artifact). Empty only for legacy rows created before
+            this field existed.
         architecture:
           type: string
           enum: [amd64, arm64]
@@ -6688,21 +6696,18 @@ components:
     SnapshotListItem:
       description: |
         A snapshot as projected by the global list `GET /v1/snapshots`: the
-        full `VmSnapshot` shape plus the server-resolved `vm_name` and
-        `owner_display_name` so an operator table needs no extra lookups.
-        A name renders as `null` only when its referenced row is gone
-        (e.g. the source VM was force-deleted) - the id field stays
+        full `VmSnapshot` shape plus the server-resolved `owner_display_name`
+        so an operator table needs no extra lookups. `vm_name` (inherited from
+        `VmSnapshot`) prefers the live current VM name (reflecting a rename) and
+        falls back to the name captured at snapshot time when the source VM row
+        is gone, so it is always populated; `owner_display_name` renders as
+        `null` only when the owner row is gone - the id field stays
         authoritative.
       allOf:
         - $ref: "#/components/schemas/VmSnapshot"
         - type: object
-          required: [vm_name, owner_display_name]
+          required: [owner_display_name]
           properties:
-            vm_name:
-              type: [string, "null"]
-              description: |
-                Name of the VM the snapshot was taken from, resolved from
-                `vm_id`. `null` when the VM row is gone.
             owner_display_name:
               type: [string, "null"]
               description: |
