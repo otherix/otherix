@@ -147,3 +147,25 @@ func (a blobInventoryAdapter) NodeBlobs() ([]heartbeat.BlobReport, bool) {
 	}
 	return out, true
 }
+
+// imageInventoryAdapter reports the node-level pinned-image cache tier as the
+// heartbeat image_blobs inventory. Same shape as blobInventoryAdapter over a
+// different store; kept distinct so the two tiers report through distinct
+// heartbeat fields.
+type imageInventoryAdapter struct {
+	store *artifactstore.Store
+	log   *slog.Logger
+}
+
+func (a imageInventoryAdapter) NodeBlobs() ([]heartbeat.BlobReport, bool) {
+	entries, err := a.store.List()
+	if err != nil {
+		a.log.Warn("heartbeat: image cache inventory unavailable", "error", err.Error())
+		return nil, false
+	}
+	out := make([]heartbeat.BlobReport, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, heartbeat.BlobReport{Digest: e.Digest, SizeBytes: e.SizeBytes})
+	}
+	return out, true
+}

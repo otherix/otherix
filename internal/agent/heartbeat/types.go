@@ -30,6 +30,14 @@ type Report struct {
 	// node_blobs inventory rather than clearing it (fail-closed, mirrors
 	// ImagesUnavailable / SnapshotsUnavailable).
 	BlobsUnavailable bool `json:"blobs_unavailable,omitempty"`
+	// ImageBlobs is the node-level pinned-image cache tier inventory, reported
+	// through a distinct field from Blobs so the CP keys it into the image_blobs
+	// family rather than node_blobs.
+	ImageBlobs []BlobReport `json:"image_blobs,omitempty"`
+	// ImageBlobsUnavailable is true when the agent could not enumerate its
+	// image cache tier this tick; the CP then preserves the prior image_blobs
+	// inventory (fail-closed, mirrors BlobsUnavailable).
+	ImageBlobsUnavailable bool `json:"image_blobs_unavailable,omitempty"`
 }
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat

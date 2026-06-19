@@ -369,6 +369,74 @@ func TestCollect_BlobsUnavailable(t *testing.T) {
 	}
 }
 
+// TestCollectorFoldsImageBlobs confirms the collector folds the node-level
+// image cache tier inventory (from the ImageBlobs seam) into Report.ImageBlobs.
+// Reported once per node through a distinct field from Report.Blobs; mirrors
+// TestCollect_IncludesBlobs.
+func TestCollectorFoldsImageBlobs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	blob := BlobReport{
+		Digest:    "img123",
+		SizeBytes: 8192,
+	}
+	c := &LinuxCollector{
+		procPath:     dir,
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		imageBlobs:   fakeBlobLister{blobs: []BlobReport{blob}},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if diff := cmp.Diff([]BlobReport{blob}, rep.ImageBlobs); diff != "" {
+		t.Errorf("ImageBlobs mismatch (-want +got):\n%s", diff)
+	}
+	if rep.ImageBlobsUnavailable {
+		t.Errorf("ImageBlobsUnavailable = true, want false (enumeration succeeded)")
+	}
+}
+
+// TestCollectorImageBlobsUnavailable confirms the fail-closed contract for the
+// image cache tier: an ImageBlobs seam that returns known=false makes the
+// collector set ImageBlobsUnavailable = true with no blobs, so the CP preserves
+// the prior image_blobs inventory. Mirrors TestCollect_BlobsUnavailable.
+func TestCollectorImageBlobsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	c := &LinuxCollector{
+		procPath:     dir,
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		imageBlobs:   fakeBlobLister{unavailable: true},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if !rep.ImageBlobsUnavailable {
+		t.Errorf("ImageBlobsUnavailable = false, want true (enumeration failed)")
+	}
+	if len(rep.ImageBlobs) != 0 {
+		t.Errorf("ImageBlobs = %+v, want empty when unavailable", rep.ImageBlobs)
+	}
+}
+
 // TestMapVMStatus pins the agent→server phase mapping. The CP-side
 // validator rejects anything outside the supported VmPhase enum, so
 // drift here surfaces as a run-time 400.
