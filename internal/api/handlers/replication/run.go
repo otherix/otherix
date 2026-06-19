@@ -26,6 +26,7 @@ type Broker interface {
 type ReplicateWorkerStore interface {
 	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
+	EndReplicate(ctx context.Context, digest string, nodeID uuid.UUID) error
 }
 
 const errCodeReplicateFailed = "replicate_failed"
@@ -53,9 +54,15 @@ func runReplicate(ctx context.Context, st ReplicateWorkerStore, broker Broker, l
 	}
 	if alreadyTerminal {
 		// A lost-ACK redelivery or a cancel that won the CAS: do not pull. Return
-		// nil so the dispatcher deletes the job.
+		// nil so the dispatcher deletes the job. This path owns no in-flight marker.
 		return nil
 	}
+	defer func() {
+		if err := st.EndReplicate(ctx, args.Digest, args.TargetNodeID); err != nil {
+			log.WarnContext(ctx, "artifact.replicate: clear in-flight marker failed",
+				slog.String("digest", args.Digest), slog.String("node_id", args.TargetNodeID.String()), slog.Any("error", err))
+		}
+	}()
 	if err := broker.BrokerPull(ctx, args.Digest, args.TargetNodeID); err != nil {
 		return failReplicate(ctx, st, log, args.TaskID, err)
 	}

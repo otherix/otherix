@@ -19,6 +19,10 @@ import (
 type replicateStoreSpy struct {
 	alreadyTerminal bool
 	finalized       []store.UpdateTaskFinalizedParams
+	ended           []struct {
+		digest string
+		node   uuid.UUID
+	}
 }
 
 func (s *replicateStoreSpy) UpdateTaskRunning(_ context.Context, _ uuid.UUID) (bool, error) {
@@ -27,6 +31,14 @@ func (s *replicateStoreSpy) UpdateTaskRunning(_ context.Context, _ uuid.UUID) (b
 
 func (s *replicateStoreSpy) UpdateTaskFinalized(_ context.Context, p store.UpdateTaskFinalizedParams) error {
 	s.finalized = append(s.finalized, p)
+	return nil
+}
+
+func (s *replicateStoreSpy) EndReplicate(_ context.Context, digest string, node uuid.UUID) error {
+	s.ended = append(s.ended, struct {
+		digest string
+		node   uuid.UUID
+	}{digest, node})
 	return nil
 }
 
@@ -67,12 +79,16 @@ func TestReplicateHandlerSuccess(t *testing.T) {
 	if len(st.finalized) != 1 || st.finalized[0].Status != store.TaskStatusSuccess {
 		t.Errorf("finalized = %+v, want one success", st.finalized)
 	}
+	if len(st.ended) != 1 || st.ended[0].digest != "d0" || st.ended[0].node != target {
+		t.Errorf("EndReplicate = %+v, want one clear of (d0,%s) on success", st.ended, target)
+	}
 }
 
 func TestReplicateHandlerPullFailureFailsTask(t *testing.T) {
 	st := &replicateStoreSpy{}
 	br := &brokerStub{err: errors.New("no holder")}
-	args := mustJSON(t, ReplicateArgs{TaskID: uuid.New(), Digest: "d0", TargetNodeID: uuid.New()})
+	target := uuid.New()
+	args := mustJSON(t, ReplicateArgs{TaskID: uuid.New(), Digest: "d0", TargetNodeID: target})
 
 	err := ReplicateHandler(st, br, discardLog())(context.Background(), args)
 	if err == nil {
@@ -80,6 +96,9 @@ func TestReplicateHandlerPullFailureFailsTask(t *testing.T) {
 	}
 	if len(st.finalized) != 1 || st.finalized[0].Status != store.TaskStatusFailed {
 		t.Errorf("finalized = %+v, want one failed", st.finalized)
+	}
+	if len(st.ended) != 1 || st.ended[0].digest != "d0" || st.ended[0].node != target {
+		t.Errorf("EndReplicate = %+v, want one clear of (d0,%s) on failure", st.ended, target)
 	}
 }
 
@@ -96,5 +115,8 @@ func TestReplicateHandlerAlreadyTerminalSkipsPull(t *testing.T) {
 	}
 	if len(st.finalized) != 0 {
 		t.Errorf("already-terminal finalized = %+v, want none", st.finalized)
+	}
+	if len(st.ended) != 0 {
+		t.Errorf("already-terminal EndReplicate = %+v, want none (it owns no marker)", st.ended)
 	}
 }
