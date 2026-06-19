@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -59,4 +60,51 @@ func TestPullSagaLifecycle(t *testing.T) {
 	if err != nil || got.Phase != store.PullSagaPhaseComplete {
 		t.Fatalf("after SetPullSagaPhase = %+v, %v", got, err)
 	}
+}
+
+func TestDeleteExpiredPullSagas(t *testing.T) {
+	st, _ := startStore(t)
+	ctx := context.Background()
+
+	oldTerminal := seedPullSaga(t, st, ctx, store.PullSagaPhaseComplete, time.Now().Add(-2*time.Hour))
+	freshTerminal := seedPullSaga(t, st, ctx, store.PullSagaPhaseFailed, time.Now())
+	oldPending := seedPullSaga(t, st, ctx, store.PullSagaPhasePulling, time.Now().Add(-2*time.Hour))
+
+	cutoff := time.Now().Add(-time.Hour)
+	deleted, err := st.DeleteExpiredPullSagas(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("DeleteExpiredPullSagas = %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("DeleteExpiredPullSagas deleted = %d, want 1 (only terminal+old)", deleted)
+	}
+	if _, err := st.PullSagaByID(ctx, oldTerminal); err == nil {
+		t.Errorf("terminal+old saga still present, want deleted")
+	}
+	if _, err := st.PullSagaByID(ctx, freshTerminal); err != nil {
+		t.Errorf("terminal+fresh saga deleted, want kept: %v", err)
+	}
+	if _, err := st.PullSagaByID(ctx, oldPending); err != nil {
+		t.Errorf("non-terminal+old saga deleted, want kept (stuck saga is not retention's job): %v", err)
+	}
+}
+
+// seedPullSaga creates a saga at the given phase and CreatedAt by constructing
+// the value and writing it through the store's test-only put helper (the public
+// create path stamps CreatedAt itself, so a chosen timestamp needs the seam).
+func seedPullSaga(t *testing.T, st *etcdstore.Store, ctx context.Context, phase store.PullSagaPhase, createdAt time.Time) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	saga := store.ArtifactPullSaga{
+		ID:           id,
+		Digest:       "abababababababababababababababababababababababababababababababab",
+		ConsumerNode: uuid.New(),
+		HolderNode:   uuid.New(),
+		Phase:        phase,
+		CreatedAt:    createdAt,
+	}
+	if err := st.PutPullSagaForTest(ctx, saga); err != nil {
+		t.Fatalf("PutPullSagaForTest = %v", err)
+	}
+	return id
 }
