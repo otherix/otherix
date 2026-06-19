@@ -215,6 +215,42 @@ func TestBlobServeManager_StopByTokenReleasesAndIsIdempotent(t *testing.T) {
 	m.StopByToken("never-served")
 }
 
+// TestBlobServeManager_StopByTokenDoesNotTearDownAReusedPort pins the
+// token-keyed claim: a stale token whose serve was already torn down must never
+// tear down a NEW serve that has since reclaimed the same port under a different
+// token. The one-port allocator forces the port reuse, so this exercises the
+// scan-then-claim window the token match closes.
+func TestBlobServeManager_StopByTokenDoesNotTearDownAReusedPort(t *testing.T) {
+	m, port := newTestServeManager(t)
+
+	if _, _, err := m.Serve(strings.Repeat("a", 64), "tok-old", ""); err != nil {
+		t.Fatalf("Serve old: %v", err)
+	}
+	// Tear the first serve down, freeing the single port.
+	m.StopByToken("tok-old")
+
+	// A fresh serve reclaims the same port under a different token.
+	if _, _, err := m.Serve(strings.Repeat("b", 64), "tok-new", ""); err != nil {
+		t.Fatalf("Serve new: %v", err)
+	}
+
+	// A late StopByToken for the stale token must not touch the new serve.
+	m.StopByToken("tok-old")
+	if _, err := m.ports.Reserve(); err == nil {
+		t.Errorf("port released by stale-token stop, want new serve still holding it")
+	}
+	if _, ok := m.verifier.Verify("tok-new", strings.Repeat("b", 64)); !ok {
+		t.Errorf("new serve token dropped by stale-token stop, want still primed")
+	}
+
+	// The matching token tears the new serve down.
+	m.StopByToken("tok-new")
+	got, err := m.ports.Reserve()
+	if err != nil || got != port {
+		t.Errorf("Reserve after matching stop = (%d, %v), want (%d, nil)", got, err, port)
+	}
+}
+
 // TestBlobInventoryAdapter_NodeBlobs confirms the heartbeat BlobLister adapter
 // maps the artifact store's blob entries to heartbeat.BlobReport and reports
 // ok=true (including the empty inventory case).

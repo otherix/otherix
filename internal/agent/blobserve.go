@@ -198,21 +198,30 @@ func (m *blobServeManager) takeServe(port int) *activeServe {
 // with the per-serve TTL teardown - both contend for the same single-claim
 // active-map entry, so each serve is torn down exactly once.
 func (m *blobServeManager) StopByToken(token string) {
-	m.mu.Lock()
-	port := -1
-	for p, as := range m.active {
-		if as.token == token {
-			port = p
-			break
-		}
-	}
-	m.mu.Unlock()
-	if port < 0 {
+	as := m.takeServeByToken(token)
+	if as == nil {
 		return
 	}
-	if as := m.takeServe(port); as != nil {
-		m.tearDown(as)
+	m.tearDown(as)
+}
+
+// takeServeByToken finds and removes the active serve whose per-op token matches
+// under a single hold of the mutex, returning it (or nil if none matches). Match
+// and claim are atomic so the result is keyed strictly on the token: there is no
+// window in which the TTL teardown could free the matched serve's port and a
+// fresh Serve re-reserve it for a different token before the claim lands. It is
+// the token-keyed sibling of takeServe (which claims by port) and shares the
+// same single-claim contract with the TTL teardown and Close.
+func (m *blobServeManager) takeServeByToken(token string) *activeServe {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for port, as := range m.active {
+		if as.token == token {
+			delete(m.active, port)
+			return as
+		}
 	}
+	return nil
 }
 
 // StopServe implements the blobs.BlobStopper seam: it tears down the serve
