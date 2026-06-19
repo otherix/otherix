@@ -20,6 +20,7 @@ import (
 type ReconcileStore interface {
 	DurabilityStore
 	AllPlacementDigests(ctx context.Context) ([]string, error)
+	AllNodeBlobDigests(ctx context.Context) ([]string, error)
 	BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error)
 	AddBlobPlacement(ctx context.Context, digest string, nodeID uuid.UUID) error
 	RemoveBlobPlacement(ctx context.Context, digest string, nodeID uuid.UUID) (bool, error)
@@ -50,13 +51,22 @@ const replicateInflightTTL = 5 * time.Minute
 // live holders than K has the rendezvous-surplus holders reclaimed back down to K.
 // Reclaim victims are always chosen from observed live holders, never from the
 // placement map, so a failed reclaim self-heals off observed reality next pass.
-// Purely CP-side; the byte movement is the existing pull/reclaim sagas.
+// It reconciles the union of placement digests (the durability intent) and the
+// digests observed across node_blobs inventories (observed reality), so a blob a
+// node still holds but whose placement key was already pruned is revisited and, if
+// unreferenced, collected through the reclaim path. Purely CP-side; the byte
+// movement is the existing pull/reclaim sagas.
 func ReconcileFunc(st ReconcileStore, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {
-		digests, err := st.AllPlacementDigests(ctx)
+		placed, err := st.AllPlacementDigests(ctx)
 		if err != nil {
 			return fmt.Errorf("list placement digests: %v", err)
 		}
+		observed, err := st.AllNodeBlobDigests(ctx)
+		if err != nil {
+			return fmt.Errorf("list observed digests: %v", err)
+		}
+		digests := unionDigests(placed, observed)
 		nodes, err := st.AllNodes(ctx)
 		if err != nil {
 			return fmt.Errorf("list nodes: %v", err)
@@ -71,6 +81,26 @@ func ReconcileFunc(st ReconcileStore, log *slog.Logger) func(context.Context) er
 		}
 		return nil
 	}
+}
+
+// unionDigests returns the deduplicated union of two digest lists. Placement is
+// the durability intent; node-blob digests are observed reality. Reconciling the
+// union lets the pass collect a blob a node still holds but that has no placement
+// entry (an orphaned blob whose placement key was already pruned), closing the
+// residual leak where a pruned placement key would otherwise hide a held blob.
+func unionDigests(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, d := range list {
+			if _, ok := seen[d]; ok {
+				continue
+			}
+			seen[d] = struct{}{}
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, nodes []store.Node, live, gone map[uuid.UUID]bool) error {
