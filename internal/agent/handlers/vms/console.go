@@ -129,7 +129,7 @@ func (h *Handler) ConsoleIssueToken(w http.ResponseWriter, r *http.Request) {
 // 409 maps to console_in_use), upgrades to WebSocket, and pumps
 // bytes bidirectionally between the WebSocket and the multiplexer's
 // subscriber channel. The subscriber receives a 20-line history tail
-// plus a visual separator before live bytes, per ADR 0029 L18.
+// plus a visual separator before live bytes.
 func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 	name, token, ok := h.consoleStreamPrelude(w, r)
 	if !ok {

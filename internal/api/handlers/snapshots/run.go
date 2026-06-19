@@ -67,7 +67,7 @@ type WorkerStore interface {
 	// delete worker resolves a snapshot's holder node(s) through it - NOT through the
 	// source VM - so deletion works after the VM is gone. Entries are durable (no
 	// remove path): the best-effort delete cannot confirm a blob is physically gone,
-	// so pruning the map is slice C's reconcile-loop job, not the delete path's.
+	// so pruning the map is the blob-reconcile loop's job, not the delete path's.
 	BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error)
 }
 
@@ -248,8 +248,8 @@ func runSnapshotDelete(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 	// best-effort and fire-and-forget (and fail-closed-leaks on any uncertainty),
 	// so an unconfirmed "success" cannot prove the blob is gone; dropping the entry
 	// would discard the only VM-independent pointer to a possibly-leaked blob. The
-	// map stays as a conservative reclamation index that slice C's reconcile loop
-	// (ADR 0027 pattern) prunes after verifying blob absence per node.
+	// map stays as a conservative reclamation index that the blob-reconcile loop
+	// prunes after verifying blob absence per node.
 	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{}`)}); err != nil {
 		return fmt.Errorf("finalize task success: %v", err)
 	}

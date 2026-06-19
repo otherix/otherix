@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# VM create-redelivery smoke - proves the audit R2-M1 + R2-M2 durable-dedup fix
+# VM create-redelivery smoke - proves the durable-dedup fix
 # end to end against a REAL agent (qemu + QMP). This crosses the CP->agent
-# boundary, so per the iteration discipline a mock-green run is necessary but NOT
+# boundary, where a mock-green run is necessary but NOT
 # sufficient; this is the operator-run real-agent proof.
 #
 # THE BUG (pre-fix):

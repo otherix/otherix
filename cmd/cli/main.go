@@ -2,10 +2,9 @@
 // Copyright 2026 Andrei Taranik
 
 // Command otherix is the operator-facing CLI for the Otherix control
-// plane and its agents. Iteration 2 ships a single subcommand —
-// ping-agent — used to validate CP→agent mTLS reachability against a
-// running otherix-agent. Future iterations layer on resource
-// subcommands (vm, pool, node, ...) without changing the binary name.
+// plane and its agents. It exposes resource subcommands (vm, pool, node,
+// ...) plus ping-agent, which validates CP->agent mTLS reachability
+// against a running otherix-agent.
 package main
 
 import (

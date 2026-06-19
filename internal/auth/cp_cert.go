@@ -34,7 +34,7 @@ const CPCertNearExpiryBuffer = 30 * 24 * time.Hour
 
 // CPCertCommonName is the Subject CommonName carried by every control-plane
 // replica server cert minted by GenerateReplicaCert. It is the identity the
-// agent listener pins to authorize inbound /v1 requests (audit H1): all HA
+// agent listener pins to authorize inbound /v1 requests: all HA
 // replicas share it, node certs never carry it.
 const CPCertCommonName = "otherix-cp-replica"
 

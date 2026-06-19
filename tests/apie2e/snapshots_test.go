@@ -83,7 +83,7 @@ func seedOwnedVM(t *testing.T, s *etcdstore.Store, ownerID uuid.UUID) (vmName st
 
 // seedDefaultArtifactPool creates an artifact pool and sets it as the cluster
 // default directly via the store, so a snapshot create through the HTTP handler
-// resolves an artifact pool (slice B requirement) without each test having to
+// resolves an artifact pool (a snapshot-create requirement) without each test having to
 // pass an explicit artifact_pool override. Used by the create-through-HTTP
 // tests whose subject is NOT artifact-pool resolution.
 func seedDefaultArtifactPool(t *testing.T, s *etcdstore.Store) {

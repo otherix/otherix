@@ -3,7 +3,7 @@
 
 // Package migration holds the agent-side, in-memory bookkeeping for an
 // in-flight VM migration: a record store and a port allocator over the
-// ADR 0013 ingress range. Nothing here is persisted - the CP holds the
+// configured migration ingress port range. Nothing here is persisted - the CP holds the
 // durable record and re-drives on agent restart (fail-safe to source).
 package migration
 

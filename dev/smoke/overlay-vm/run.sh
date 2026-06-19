@@ -73,7 +73,7 @@ invm2() { run_on "$SMOKE_HANDLE_2" "$@"; }
 overlay_ip() { otx node get "$1" --output json 2>/dev/null | jq -r '.wireguard.overlay_ip' | cut -d/ -f1; }
 
 # net_ready_both NET -> 0 when the network reconciled to "ready" on both nodes.
-# The scheduler's network-aware filter (ADR 0034 NL18) excludes any node where a
+# The scheduler's network-aware filter excludes any node where a
 # requested network has not reconciled to ready, so a VM-create raced ahead of
 # overlay materialisation fails with no_eligible_nodes. We gate on this first.
 net_ready_both() {

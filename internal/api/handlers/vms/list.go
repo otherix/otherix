@@ -49,11 +49,11 @@ const (
 //   - ?node=<name|id> — only VMs currently located on the named node
 //     (vm_runtime.current_node_id)
 //
-// Per F1: vm:read=any for every role, so this never falls into the
+// vm:read=any for every role, so this never falls into the
 // owner-scoped path; ListVMsByOwner stays inactive. The secret-bearing
 // view fields (user_data, network_config, image_url) are gated per row:
 // projectPage strips them unless the caller holds vm:console on that
-// VM (audit R2-H1).
+// VM.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	limit, ok := parseLimit(w, r)
 	if !ok {

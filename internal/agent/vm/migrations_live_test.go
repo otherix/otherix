@@ -786,7 +786,7 @@ func newTestManagerWithFabric(t *testing.T) (*Manager, *netfabric.FakeFabric) {
 	return m, fab
 }
 
-// TestStartIncomingLiveMaterializesNICs is the teeth for Task 7: the target must
+// TestStartIncomingLiveMaterializesNICs is the teeth for target NIC setup: the target must
 // create the migrated VM's NIC taps (attached to the overlay bridge) BEFORE
 // launching the incoming qemu, so the resumed guest has network. Before the fix
 // AdoptForMigration never set v.NICs and startIncomingLive never materialized
@@ -829,7 +829,7 @@ func TestStartIncomingLiveMaterializesNICs(t *testing.T) {
 	}
 }
 
-// TestRunIncomingResumeSendsGARP is the teeth for Task 8: after the target
+// TestRunIncomingResumeSendsGARP is the teeth for target GARP emission: after the target
 // resumes the live-migrated guest (StatusRunning), the agent emits one
 // gratuitous ARP per NIC with an IPv4 on the NIC's bridge, to refresh neighbor
 // ARP caches. The resume runs in the detached goroutine startIncomingLive
@@ -893,7 +893,7 @@ func (c *announceRecorderConn) AnnounceSelf(p qemu.AnnounceParameters) error {
 	return nil
 }
 
-// TestRunIncomingResumeAnnouncesSelf is the teeth for slice 3b Task 2: after the
+// TestRunIncomingResumeAnnouncesSelf is the teeth for target announce-self: after the
 // target resumes the live-migrated guest (StatusRunning), the agent issues one
 // QMP announce-self on the same live conn so a learning bridge / switch relearns
 // the guest's MAC on this node's port. Drives the real resume path (the detached

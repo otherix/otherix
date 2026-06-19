@@ -16,9 +16,9 @@ import (
 
 // node_blobs/<nodeID> -> JSON []store.NodeBlob. Observed state, heartbeat-fed
 // (last-writer-wins, no guard), mirroring pool_images/<poolID>. The holder-
-// discovery source for the cross-node pull saga (slice C1). NOT the placement
+// discovery source for the cross-node pull saga. NOT the placement
 // map (placement/<digest>/<node>): observed inventory is ephemeral truth,
-// placement is durable intent; C1 keeps them separate.
+// placement is durable intent; the two are kept separate.
 func nodeBlobInventoryKey(nodeID uuid.UUID) string {
 	return etcd.Key("node_blobs", nodeID.String())
 }

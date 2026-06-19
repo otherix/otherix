@@ -238,7 +238,7 @@ func TestDeleteSnapshot_FailsClosedWithChildren(t *testing.T) {
 	seedVM(t, cl, vm)
 
 	parent := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "parent")
-	// Nothing in slice A sets ParentSnapshotID, so craft a child by creating a
+	// Nothing currently sets ParentSnapshotID, so craft a child by creating a
 	// real snapshot (so its per-VM index entry exists) then patching its
 	// ParentSnapshotID to point at the parent.
 	child := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "child")
@@ -359,7 +359,7 @@ func TestSnapshotManifestApplied_FillsDisksReadyAndRefgraph(t *testing.T) {
 // VM-independent blob GC depends on: SnapshotManifestApplied seeds an entry under
 // the producing node, BlobPlacements reads the holder back, and an unseeded digest
 // reads back empty (not an error). Placement entries are intentionally durable (no
-// remove path) - they are the reclamation index slice C prunes, not the delete path.
+// remove path) - they are the reclamation index the blob-reconcile loop prunes, not the delete path.
 func TestBlobPlacements_SeedAndRead(t *testing.T) {
 	s, cl := startStore(t)
 	ctx := context.Background()

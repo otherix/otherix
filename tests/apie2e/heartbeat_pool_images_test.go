@@ -141,7 +141,7 @@ func TestHeartbeatImagesUnavailablePreservesInventory(t *testing.T) {
 }
 
 // TestHeartbeatSnapshotsFieldAccepted pins the agent->CP heartbeat-acceptance
-// seam for the snapshots[] inventory field (vm-snapshots slice A). The CP
+// seam for the snapshots[] inventory field (VM snapshot inventory). The CP
 // heartbeat decoder uses DisallowUnknownFields(), so an upgraded agent that
 // reports a pool's snapshot-blob cache via pools[].snapshots[] (plus
 // snapshots_unavailable) would 400 validation_failed unless the CP receiver
@@ -157,8 +157,8 @@ func TestHeartbeatSnapshotsFieldAccepted(t *testing.T) {
 	ag := wgSeedAgent(t, h, caCert, caKey, "node-snappool")
 
 	// A pool entry carrying snapshots[] + snapshots_unavailable:false. No pool
-	// row is seeded: the snapshot inventory is not yet projected CP-side (slice A
-	// only reports it), so acceptance must hold on the decode seam alone.
+	// row is seeded: the snapshot inventory is not yet projected CP-side (the
+	// agent only reports it), so acceptance must hold on the decode seam alone.
 	pool := map[string]any{
 		"name":                  "pool-snappool",
 		"reconciliation_status": "ready",

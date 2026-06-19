@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package blobpeer is the agent-to-agent blob data channel (slice C1): a
+// Package blobpeer is the agent-to-agent blob data channel: a
 // separate peer-facing mutual-TLS HTTPS listener that streams an immutable
 // content-addressed blob by digest, plus the consumer-side pull client. This is
 // NOT the agent's main API server: that server gates every route on the CP-only
@@ -58,7 +58,7 @@ func (h *ServeHandler) serve(w http.ResponseWriter, r *http.Request) {
 	// Node-leaf identity gate: any cluster node, NOT the CP-only identity. A
 	// missing peer cert is permitted here ONLY because httptest presents none;
 	// production runs this handler behind a tls.Config with
-	// RequireAndVerifyClientCert + the cluster CA pool (Task 10), so a peer
+	// RequireAndVerifyClientCert + the cluster CA pool, so a peer
 	// without a valid cluster-CA leaf never reaches this handler. When a cert IS
 	// present we still assert the node-<name> CN (reject a stray non-node leaf).
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {

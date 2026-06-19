@@ -317,7 +317,7 @@ func pinnedNodeIndexOps(old *uuid.UUID, target, vmID uuid.UUID) []clientv3.Op {
 // cutoverRuntimeOps moves vm_runtime.current_node_id source->target and the
 // vm_runtime-by-node secondary index, preserving every other runtime field.
 // It is part of the cutover Txn so the FDB-keying field flips atomically with
-// PinnedNodeID (ADR 0035 req 3). A missing runtime row (VM never reported) means
+// PinnedNodeID. A missing runtime row (VM never reported) means
 // nothing to move - returns no ops.
 func cutoverRuntimeOps(rt store.VMRuntime, found bool, source *uuid.UUID, target uuid.UUID) ([]clientv3.Op, error) {
 	if !found {

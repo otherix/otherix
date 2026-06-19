@@ -496,7 +496,7 @@ func TestDeleteSnapshot_EnumerationError_LeaksNothingDeleted(t *testing.T) {
 // deterministic disk ordering: a VM yielding two disks in REVERSE discovery
 // order (virtio1 before virtio0) must produce a manifest whose disks are sorted
 // ascending by index [(0,virtio0),(1,virtio1)]. Removing runSnapshotCreate's
-// sort.Slice(...byIndex) MUST fail this test. Slice A's enumerator only yields
+// sort.Slice(...byIndex) MUST fail this test. The production enumerator only yields
 // a single boot disk, so the two-disk fixture is injected through the
 // snapshotDiskDevices seam.
 func TestCreateSnapshot_MultiDisk_ManifestOrderedByIndex(t *testing.T) {

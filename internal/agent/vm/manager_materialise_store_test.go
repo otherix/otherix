@@ -94,7 +94,7 @@ func TestMaterialiseFromSnapshot_ReadsArtifactStoreFirst(t *testing.T) {
 	}
 }
 
-// TestMaterialiseFromSnapshot_FallsBackToDiskPool pins the slice-A / pre-relocation
+// TestMaterialiseFromSnapshot_FallsBackToDiskPool pins the pre-relocation
 // path: when the blob lives ONLY in the disk-pool snapshots dir (no store copy,
 // or no store configured), materialiseFromSnapshot still finds and clones it.
 func TestMaterialiseFromSnapshot_FallsBackToDiskPool(t *testing.T) {

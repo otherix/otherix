@@ -15,11 +15,10 @@
 # create, and the network delete is blocked by the VM's NIC on delete because VM
 # delete is async). The attached-VM-on-a-manifest-network flow is covered by the
 # networking smoke (which sequences network-reconcile before the VM); the
-# single-apply dependency gap is a ROADMAP backlog item.
+# single-apply dependency gap is a known limitation tracked separately.
 #
-# This is the manifest-feature closure gate (per the iteration discipline +
-# smoke-tests-operator-scenarios rule): the whole flow goes through the
-# real `otherix` CLI, never curl.
+# This validates the manifest feature end to end: the whole flow goes through
+# the real `otherix` CLI, never curl.
 #
 # PREREQUISITES: a seeded dev environment, i.e. run AFTER
 #   make local-dev-start

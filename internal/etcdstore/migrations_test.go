@@ -304,7 +304,7 @@ func indexExists(t *testing.T, cli *etcd.Client, key string) bool {
 
 // TestCommitMigrationCutoverFlipsCurrentNodeID asserts the cutover Txn advances
 // vm_runtime.current_node_id source->target atomically with PinnedNodeID, so the
-// overlay FDB projection re-points at the same revision (ADR 0035 req 3).
+// overlay FDB projection re-points at the same revision.
 func TestCommitMigrationCutoverFlipsCurrentNodeID(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()

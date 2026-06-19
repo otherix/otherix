@@ -23,7 +23,7 @@ import (
 // node. The target adopts a Migrated record (StatusStopped for offline
 // migration, StatusMigratingIncoming for live targets, per InitialStatus)
 // plus a destination disk path; the disk file itself is created and filled
-// by the migration flow (Task 8), not by this method.
+// by the migration flow, not by this method.
 type AdoptSpec struct {
 	UUID         uuid.UUID
 	Name         string

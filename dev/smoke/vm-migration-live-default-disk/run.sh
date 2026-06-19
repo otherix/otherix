@@ -177,7 +177,7 @@ wait_ping() {
 # stalling longer than STALL_THRESHOLD between observed increments. This is the
 # anti-blackhole teeth: after the live cutover the overlay must keep carrying
 # traffic, so the counter must keep climbing. A stall > STALL_THRESHOLD means a
-# prolonged blackhole - the failure this slice closes.
+# prolonged blackhole - the failure this smoke guards against.
 assert_advancing() {
   local label="$1" handle="$2" state="$3" vmid="$4" baseline="$5"
   local deadline last last_progress now cur

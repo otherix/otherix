@@ -28,8 +28,8 @@
 // is no retry-count cap; operator visibility comes from the
 // `reconciliation_status` column on the CP side.
 //
-// Resource scope in this iteration: storage pools only. VM lifecycle
-// reconciliation is the planned next slice and follows the same
-// skeleton — a dedicated reconciler subscribed to the same heartbeat
+// Resource scope so far: storage pools only. VM lifecycle
+// reconciliation is planned next and follows the same
+// skeleton - a dedicated reconciler subscribed to the same heartbeat
 // channel, owning its own `desired_vms[]` slot.
 package reconciler

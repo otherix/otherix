@@ -616,7 +616,7 @@ func (m *Manager) teardownDepartedSource(v *VM) {
 	// `vm logs -f` follows the guest to the target instead of hanging on the
 	// dead source mux. Also releases the pump goroutine + log file handle that
 	// would otherwise leak on every live migration. Before removeAdoptedVM so
-	// the log file is closed before its state dir is removed (ADR 0029 L16).
+	// the log file is closed before its state dir is removed.
 	m.detachMux(v.Name)
 	m.removeAdoptedVM(v.ID)
 }

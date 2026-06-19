@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# Live VM migration + overlay data-plane smoke (slice 3a) - proves that a LIVE
+# Live VM migration + overlay data-plane smoke - proves that a LIVE
 # migration of an OVERLAY-attached VM keeps the encrypted VXLAN data plane
 # following the guest: connectivity to/from the migrated VM continues across the
 # cutover with no prolonged blackhole. This is the real-agent gate for the epoch
-# fence + fast-push FDB nudge + GARP this slice added; mock-green is NOT
+# fence + fast-push FDB nudge + GARP; mock-green is NOT
 # sufficient. It combines the two sibling smokes:
 #   - vm-migration-live  -> the LIVE cutover (otherix vm migrate, no --offline)
 #                           and the runcmd-survives-migration serial heartbeat.
@@ -38,7 +38,7 @@
 #                            advancing -> B still reaches A at its new location
 #                            (GARP/FDB repoint worked).
 #                          A stall beyond STALL_THRESHOLD seconds with no counter
-#                          progress is the blackhole this slice closes -> fail.
+#                          progress is the blackhole this smoke guards against -> fail.
 #
 # Why a counter, not a one-shot sentinel: a one-shot "did it ever connect" proves
 # nothing about the cutover - it could have connected once before the migrate and
@@ -178,7 +178,7 @@ wait_ping() {
 # stalling longer than STALL_THRESHOLD between observed increments. This is the
 # anti-blackhole teeth: after the live cutover the overlay must keep carrying
 # traffic, so the counter must keep climbing. A stall > STALL_THRESHOLD means a
-# prolonged blackhole - the failure this slice closes.
+# prolonged blackhole - the failure this smoke guards against.
 assert_advancing() {
   local label="$1" handle="$2" state="$3" vmid="$4" baseline="$5"
   local deadline last last_progress now cur

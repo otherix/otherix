@@ -267,7 +267,7 @@ func TestRefreshRejectsSoftDeletedUser(t *testing.T) {
 }
 
 // TestRefreshConcurrentRotationIsTheft guards the concurrent double-spend
-// path (audit M8): when the store reports store.ErrRefreshTokenConflict from
+// path: when the store reports store.ErrRefreshTokenConflict from
 // RotateRefreshToken (a concurrent rotation already spent the parent), the
 // service must treat the presentation as theft - burn the whole family and
 // return ErrTokenReplay, exactly like a revoked-token presentation.
@@ -302,7 +302,7 @@ func TestRefreshConcurrentRotationIsTheft(t *testing.T) {
 // TestLoginUnknownEmailReturnsInvalidCredentials pins the user-not-found
 // branch of Login to the same sentinel as a wrong password, so the endpoint
 // cannot distinguish the two cases. The timing half of that guarantee (the
-// dummy-hash KDF cost, audit M6) is covered structurally by
+// dummy-hash KDF cost) is covered structurally by
 // TestDummyLoginHashIsRealArgon2id.
 func TestLoginUnknownEmailReturnsInvalidCredentials(t *testing.T) {
 	fake := &fakeAuthStore{} // UserByEmail defaults to store.ErrNotFound.

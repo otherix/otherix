@@ -250,7 +250,7 @@ func TestMigrationGet_View(t *testing.T) {
 		t.Errorf("live = false, want true")
 	}
 	if body.Stalled {
-		t.Errorf("stalled = true, want false (slice 1 always false)")
+		t.Errorf("stalled = true, want false (always false with no live data path)")
 	}
 }
 

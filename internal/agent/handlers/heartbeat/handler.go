@@ -15,8 +15,8 @@ type Handler struct{ nudger Nudger }
 // New returns a Handler that triggers n on nudge.
 func New(n Nudger) *Handler { return &Handler{nudger: n} }
 
-// Nudge triggers an immediate heartbeat and returns 204. The fast-push hot path
-// (ADR 0035 / NL8): the CP calls this after a cutover so this node re-pulls its
+// Nudge triggers an immediate heartbeat and returns 204. This is the fast-push
+// hot path: the CP calls it after a cutover so this node re-pulls its
 // declared_fdb without waiting for the next interval tick.
 func (h *Handler) Nudge(w http.ResponseWriter, r *http.Request) {
 	h.nudger.Nudge()

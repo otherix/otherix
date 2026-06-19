@@ -13,8 +13,8 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// TestUserRoleChangeRevokesRefreshTokens drives the real seam for audit R2-L1:
-// PATCH /v1/users/{id} with a different role must revoke the TARGET user's
+// TestUserRoleChangeRevokesRefreshTokens drives the real seam for role-change
+// refresh revocation: PATCH /v1/users/{id} with a different role must revoke the TARGET user's
 // refresh tokens, mirroring the password-change path. A stale or stolen refresh
 // token must not keep minting access tokens after the operator changed the
 // user's standing (e.g. a demotion or lockdown).

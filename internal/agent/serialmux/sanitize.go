@@ -4,8 +4,7 @@
 // Package serialmux provides the per-VM serial console multiplexer
 // that reads from QEMU's single-consumer chardev socket and fans bytes
 // out to one console subscriber (bidirectional) and any number of
-// logs subscribers (read-only). See ADR 0029 for the architectural
-// rationale.
+// logs subscribers (read-only).
 package serialmux
 
 // maxPendingCarry caps the partial-CSI bytes held between Process

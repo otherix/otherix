@@ -159,7 +159,7 @@ func TestAgentVMCreateExecutor_FirstRunPostsAndPersists(t *testing.T) {
 // TestAgentVMCreateExecutor_StableIdempotencyKey pins the agent idempotency key
 // to the stable CP task id (args.TaskID) rather than a fresh random uuid per
 // attempt. The key must equal args.TaskID.String() and be identical across two
-// separate Execute attempts for the same task (audit R2-M1a).
+// separate Execute attempts for the same task.
 func TestAgentVMCreateExecutor_StableIdempotencyKey(t *testing.T) {
 	t.Parallel()
 
@@ -187,7 +187,7 @@ func TestAgentVMCreateExecutor_StableIdempotencyKey(t *testing.T) {
 }
 
 // TestAgentVMDeleteExecutor_StableIdempotencyKey: the delete executor likewise
-// uses the stable CP task id as the agent idempotency key (audit R2-M1a).
+// uses the stable CP task id as the agent idempotency key.
 func TestAgentVMDeleteExecutor_StableIdempotencyKey(t *testing.T) {
 	t.Parallel()
 

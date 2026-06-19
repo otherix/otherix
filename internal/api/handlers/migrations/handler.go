@@ -75,8 +75,8 @@ func New(s Store, agent MigrationCancelClient, log *slog.Logger) *Handler {
 // keys) are not surfaced; no secret fields.
 //
 // Stalled is a derived signal (a live migration whose bytes_transferred /
-// progress_percent are flat while updated_at advances). Slice 1 has no
-// data path, so it is always false; the field is kept for forward-compat
+// progress_percent are flat while updated_at advances). With no live
+// data path yet, it is always false; the field is kept for forward-compat
 // so the wire shape does not change when the watchdog lands.
 type migrationView struct {
 	ID               string  `json:"id"`
@@ -97,7 +97,7 @@ type migrationView struct {
 	Live             bool    `json:"live"`
 	AllowPostcopy    bool    `json:"allow_postcopy"`
 	TargetPoolName   string  `json:"target_pool_name"`
-	// Stalled is always false in slice 1 (no data path yet); see doc above.
+	// Stalled is always false while there is no live data path yet; see doc above.
 	Stalled           bool    `json:"stalled"`
 	MaxBandwidthBytes *int64  `json:"max_bandwidth_bytes"`
 	MaxDowntimeMs     *int32  `json:"max_downtime_ms"`
@@ -135,7 +135,7 @@ type migrationDiskStatsView struct {
 
 // toView projects a store.Migration onto its public migrationView. Nullable
 // columns render as JSON null via pointer fields; timestamps are RFC 3339
-// (UTC). Stalled is hard-wired false in slice 1.
+// (UTC). Stalled is hard-wired false while there is no live data path yet.
 func toView(m store.Migration) migrationView {
 	v := migrationView{
 		ID:                m.ID.String(),

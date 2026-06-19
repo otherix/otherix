@@ -49,7 +49,7 @@ func schedulableFixture(t *testing.T, h *harness, owner uuid.UUID) (poolName str
 
 // schedulableFixtureWithNode is schedulableFixture exposing the node id so
 // callers can seed per-(node, network) reconciliation status for the
-// network-aware placement filter (ADR 0034 NL18).
+// network-aware placement filter.
 func schedulableFixtureWithNode(t *testing.T, h *harness, owner uuid.UUID) (nodeID uuid.UUID, poolName string) {
 	t.Helper()
 	ctx := context.Background()

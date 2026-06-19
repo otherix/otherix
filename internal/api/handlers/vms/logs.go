@@ -41,7 +41,7 @@ type logsNode struct {
 }
 
 // Logs implements GET /v1/vms/{id}/logs - the CP-side proxy for the
-// `otherix vm logs` workflow (ADR 0029). Authorization runs in two layers
+// `otherix vm logs` workflow. Authorization runs in two layers
 // (RequirePermission(PermVMConsole) on the route; CheckOwnership here).
 //
 // For a follow stream the relay FOLLOWS the VM across a live migration:

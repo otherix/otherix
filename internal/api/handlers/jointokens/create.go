@@ -179,7 +179,7 @@ func normaliseCreateRequest(req createRequest) (kind string, intendedNodeName *s
 
 // normaliseMaxUses canonicalises the requested max_uses. An omitted value defaults to a
 // single use for every kind: an unbounded, multi-redemption join credential left live for the
-// whole TTL is a footgun, so multi-use must be an explicit opt-in via max_uses=N (audit R2-L3).
+// whole TTL is a footgun, so multi-use must be an explicit opt-in via max_uses=N.
 // A requested value must be positive; a cluster token additionally caps at maxClusterTokenUses
 // (it redeems for the CA private key, so a near-unlimited cap is operationally unlimited).
 func normaliseMaxUses(kind string, requested *int32) (*int32, error) {

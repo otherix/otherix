@@ -15,7 +15,7 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 )
 
-// healthBody is the JSON shape an Iteration 1+ agent emits at /health.
+// healthBody is the JSON shape the agent emits at /health.
 // Re-declared as a literal here so test failures show the shape on
 // the wire without dragging in the agent-side type.
 func healthBody() map[string]any {

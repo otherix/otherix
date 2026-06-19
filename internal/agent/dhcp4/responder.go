@@ -36,7 +36,7 @@ type Responder interface {
 	DeregisterNetwork(networkID string) error
 }
 
-// ReplyOptions are the anycast constants every reply carries (Slice 1 gateway).
+// ReplyOptions are the anycast constants every reply carries (overlay gateway).
 type ReplyOptions struct {
 	Gateway netip.Addr
 	DNS     netip.Addr

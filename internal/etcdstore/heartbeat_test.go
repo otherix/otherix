@@ -161,7 +161,7 @@ func TestInHeartbeatProjection(t *testing.T) {
 // by-node index holds exactly the current-node entry (and not the stale one)
 // and that the vm_runtime row's CurrentNodeID matches. The non-atomic code
 // already produced a consistent index in the no-crash path, so this is
-// primarily a REGRESSION guard that the atomized row+index Txn (audit R2-L9)
+// primarily a REGRESSION guard that the atomized row+index Txn
 // preserves the index invariant DeleteNode consumes.
 // TestListVMsForNodeDeclared_ExcludesMigrationTargetUntilCutover pins the
 // migration-target carve-out: a VM present on the target only via an in-flight
@@ -434,7 +434,7 @@ func TestHeartbeatUpsertNetworkNodeStatus(t *testing.T) {
 }
 
 // TestFilterVMIDsPinnedToNode verifies the placement-authority gate of the
-// heartbeat projection (audit H2): only ids whose vms row is pinned to the
+// heartbeat projection: only ids whose vms row is pinned to the
 // queried node pass the filter, so a node pinned to B can never be claimed by
 // A's heartbeat, and an unscheduled VM (nil pin) is excluded for every node.
 func TestFilterVMIDsPinnedToNode(t *testing.T) {

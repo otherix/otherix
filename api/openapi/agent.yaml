@@ -124,8 +124,8 @@ tags:
       waiting for the next heartbeat interval tick.
   - name: blobs
     description: |
-      CP-driven control endpoints for the cross-node blob pull saga
-      (slice C1). The CP calls `serve` on a holder to open a peer-facing
+      CP-driven control endpoints for the cross-node blob pull saga.
+      The CP calls `serve` on a holder to open a peer-facing
       blob listener and `pull` on a consumer to fetch a blob from that
       holder. The blob bytes flow consumer<-holder over a separate
       peer-to-peer mutual-TLS listener and are not described by REST.
@@ -503,11 +503,11 @@ paths:
       tags: [vms]
       summary: Revert VM to a snapshot (asynchronous).
       description: |
-        In-place revert is not implemented in slice A. The agent returns
+        In-place revert is not currently implemented. The agent returns
         `501 not_implemented`. Restore is recreate-from-snapshot: the
         Control Plane creates a fresh VM from a snapshot manifest via
-        `vm create --from-snapshot`. The path is retained so a later
-        slice can implement in-place revert without an API break.
+        `vm create --from-snapshot`. The path is retained so in-place
+        revert can be added later without an API break.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1106,7 +1106,8 @@ paths:
       description: |
         Returns a chunked `text/plain` stream of sanitized serial
         console output for the named VM, produced by the per-VM
-        serial multiplexer described in ADR 0029.
+        serial multiplexer that fans the guest console out to history
+        plus any live followers.
 
         Query parameters:
           - `tail` (default `-1`): trailing N lines from history;
@@ -2385,7 +2386,7 @@ components:
           type: boolean
           default: false
           description: |
-            RAM capture is unsupported in slice A; only `false` is
+            RAM capture is not currently supported; only `false` is
             honored. The field is retained for forward compatibility.
 
     BlobServeRequest:
@@ -2940,9 +2941,9 @@ components:
         maxLength: 253
       description: |
         VM name — the operator-visible identifier the agent indexes
-        its in-memory inventory by. Per the Path D convention applied
-        to storage pools, agent endpoints address user-owned
-        resources by name rather than UUID; the VM's UUID still
+        its in-memory inventory by. As with storage pools, agent
+        endpoints address user-owned resources by name rather than
+        UUID; the VM's UUID still
         surfaces in response bodies (`VMDetail.vm_uuid`, etc.) for
         traceability against the CP's `vms.id`.
 

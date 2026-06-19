@@ -20,7 +20,7 @@ import (
 	"github.com/otherix/otherix/internal/config"
 )
 
-// setupBlobTransport brings the slice-C1 blob transport online: it asserts the
+// setupBlobTransport brings the cross-node blob transport online: it asserts the
 // production artifact store is present (fail closed), runs the one-time
 // relocation sweep, and builds the serve/pull control handler. Returns the
 // shared store (for the heartbeat blob inventory), the handler, and the serve
@@ -42,10 +42,10 @@ func setupBlobTransport(cfg *config.AgentConfig, manager *vm.Manager, baseTLS *t
 	return artStore, handler, serveMgr, nil
 }
 
-// buildBlobsHandler wires the slice-C1 blob control handler: the holder-side
+// buildBlobsHandler wires the cross-node blob control handler: the holder-side
 // serve manager + the consumer-side puller. The serve listener reuses the
 // cluster CA + node leaf from baseTLS and requires a cluster-CA node-leaf client
-// cert (the Task-9 hardening boundary). The serve host is the migration/
+// cert (the peer-authentication boundary). The serve host is the migration/
 // advertised host (the address a peer can reach this node on). Both control
 // endpoints are mounted on the CP-only main server (only the CP calls serve /
 // pull); the blob DATA path is the separate blobpeer listener.
@@ -62,7 +62,7 @@ func buildBlobsHandler(cfg *config.AgentConfig, manager *vm.Manager, artStore *a
 	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, log), serveMgr, nil
 }
 
-// blobPuller is the consumer-side half of the slice-C1 blob pull: it runs
+// blobPuller is the consumer-side half of the cross-node blob pull: it runs
 // blobpeer.Pull (via the VM manager's tracked-task seam) so the work is a
 // pollable agent task. It implements the blobs.BlobPuller seam. The mTLS client
 // carries the node leaf cert (mutual TLS to the holder) and trusts the cluster

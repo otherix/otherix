@@ -395,7 +395,7 @@ func (h *Handler) applyPoolImageInventory(ctx context.Context, hp store.Heartbea
 		// The agent could not enumerate this pool's images this tick (a transient
 		// ListImages error). Preserve the prior inventory rather than clear it: an
 		// empty upsert deletes the inventory, and a transient producer error must
-		// not wipe observed state (audit R2-L11, fail-closed).
+		// not wipe observed state (fail-closed).
 		return nil
 	}
 	images := make([]store.PoolImage, 0, len(p.Images))
@@ -430,11 +430,11 @@ func (h *Handler) applyPoolImageInventory(ctx context.Context, hp store.Heartbea
 
 // applyBlobInventory persists the agent-reported per-node artifact-store blob
 // inventory as observed state (the holder-discovery source for the cross-node
-// pull saga, slice C1). Fail-closed: on blobs_unavailable the agent could not
+// pull saga). Fail-closed: on blobs_unavailable the agent could not
 // enumerate its store this tick, so the CP PRESERVES the prior inventory (skip
 // the upsert) rather than clearing it - a transient producer error must not wipe
-// the holder-discovery source (mirrors the images_unavailable handling, audit
-// R2-L11). Otherwise the reported list is authoritative (an empty list clears
+// the holder-discovery source (mirrors the images_unavailable handling).
+// Otherwise the reported list is authoritative (an empty list clears
 // the inventory). Unlike pool image inventory, blobs are node-level, not
 // pool-scoped, so there is no (node_id, name) resolution step.
 func (h *Handler) applyBlobInventory(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
@@ -1087,7 +1087,7 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 				slog.String("vm_uuid", r.VMUUID.String()))
 			continue
 		}
-		// Placement-authority gate (audit H2). current_node_id feeds the
+		// Placement-authority gate. current_node_id feeds the
 		// overlay FDB projection and force-delete orphaning, so a heartbeat
 		// must never move a VM's runtime to a node the scheduler did not pin
 		// it to: the cert binding authenticates WHO reports, not WHICH VMs
@@ -1128,7 +1128,7 @@ func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjectio
 	if r.ObservedGeneration != nil {
 		obsGen = *r.ObservedGeneration
 	}
-	// Epoch fence (ADR 0035 req 1+3): while a VM has an active migration,
+	// Epoch fence: while a VM has an active migration,
 	// current_node_id MUST NOT be moved by the heartbeat path - it stays at
 	// the migration source until CommitMigrationCutover flips it. Both the
 	// source and the target are admitted by the placement gate during a

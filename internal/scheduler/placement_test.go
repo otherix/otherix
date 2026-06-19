@@ -1241,7 +1241,7 @@ func TestSchedulePlacement_PoolWithoutMetrics_FallsBackToCount(t *testing.T) {
 	}
 }
 
-// ----- Pre-N3 networking hardening: network-aware placement (ADR 0034 NL18) -----
+// ----- network-aware placement -----
 
 // TestSchedulePlacement_NetworkFailedExcludesNode confirms the network
 // filter excludes a node where a requested network failed to reconcile.

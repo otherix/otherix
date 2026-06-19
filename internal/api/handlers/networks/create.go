@@ -169,7 +169,7 @@ func (h *Handler) writeCreateNetworkError(w http.ResponseWriter, r *http.Request
 
 // validateNetworkName checks the create-side network name (trimmed by the
 // caller): non-empty, within the length bound, and free of '/' (which would
-// poison the etcd uniqueness-guard key path - audit R2-L7).
+// poison the etcd uniqueness-guard key path).
 func validateNetworkName(name string) error {
 	switch {
 	case name == "":

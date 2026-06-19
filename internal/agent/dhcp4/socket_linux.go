@@ -67,7 +67,7 @@ func openAFPacket(bridge string) (packetConn, error) {
 	}
 
 	// Attach the kernel BPF pre-filter so a guest IPv4 flood is dropped in the
-	// kernel instead of waking userspace per frame (audit R2-L4). Fail closed:
+	// kernel instead of waking userspace per frame. Fail closed:
 	// a socket without its filter would serve the unfiltered firehose.
 	if err := attachDHCPFilter(fd); err != nil {
 		_ = unix.Close(fd)

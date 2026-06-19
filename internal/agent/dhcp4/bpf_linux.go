@@ -16,7 +16,7 @@ import (
 // dhcpFilterProgram returns the classic-BPF program that accepts only
 // IPv4/UDP datagrams to port 67 (the DHCP server port) on an Ethernet-framed
 // AF_PACKET socket, dropping everything else in the kernel so a guest IPv4
-// flood cannot force a userspace wakeup per frame (audit R2-L4). It accepts
+// flood cannot force a userspace wakeup per frame. It accepts
 // the whole frame (return 0xffff) or drops it (return 0). parseDHCPFrame
 // remains the userspace second line.
 //

@@ -45,7 +45,7 @@
 //     network_config, image_url) are the carve-out: they are stripped
 //     unless the caller holds vm:console on that VM (see
 //     callerCanReadVMSecrets), closing the cross-owner cloud-init /
-//     presigned-URL leak (audit R2-H1).
+//     presigned-URL leak.
 //   - vm:delete gate admits admin (any) / operator (any) / developer
 //     (own); auth.CheckOwnership inside handler enforces own→404
 //     bridge per CLAUDE.md "403 vs 404" rule.
@@ -303,7 +303,7 @@ type vmViewNames struct {
 // network_config, image_url): when false they are left at their zero
 // values so the omitempty wire fields render absent. Callers compute it
 // per-VM via callerCanReadVMSecrets(ctx, vm.OwnerID) - vm:console on
-// this VM is the access signal (audit R2-H1).
+// this VM is the access signal.
 //
 // activeMig is the VM's in-flight (non-terminal) migration, or nil. When
 // non-nil it populates status.migration (Observability surface 3). The

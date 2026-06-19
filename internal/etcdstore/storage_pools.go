@@ -19,7 +19,7 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Storage pools are multi-instance (ADR 0022): the same name may exist once per
+// Storage pools are multi-instance: the same name may exist once per
 // node, so uniqueness is scoped (node_id, lower(name)) via a per-node guard,
 // and a cluster-wide name index backs the name-aggregated lookups. Effective
 // capacity subtracts pending vm_disk commits (disks on the pool created after

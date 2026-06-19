@@ -124,7 +124,7 @@ func (h *Handler) SnapshotDeleteByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // Revert handles POST /v1/vms/{vm_name}/revert. In-place revert-from-snapshot
-// is out of slice-A scope (recreate-from-snapshot lands in Task 12); the route
+// is not yet implemented (recreate-from-snapshot is the current path); the route
 // is bound so the surface exists, returning 501 not_implemented.
 func (h *Handler) Revert(w http.ResponseWriter, r *http.Request) {
 	response.WriteError(w, r, http.StatusNotImplemented,

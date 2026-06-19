@@ -863,7 +863,7 @@ func TestManager_InFlightGuard_EmptyName_IsNoOp(t *testing.T) {
 
 // TestValidateCreateSpecDiskGiB verifies the agent bounds disk_gib itself,
 // mirroring the control-plane cap, so a direct agent call or a buggy control
-// plane cannot request a multi-PiB qemu-img resize (audit R2-L6).
+// plane cannot request a multi-PiB qemu-img resize.
 func TestValidateCreateSpecDiskGiB(t *testing.T) {
 	base := func() CreateSpec {
 		return CreateSpec{Name: "web-01", VCPUs: 2, MemoryMB: 1024, PoolName: "default", ImageURL: "https://x/i.img"}

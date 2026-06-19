@@ -59,7 +59,7 @@ type MigrationWorkerStore interface {
 	NetworkByID(ctx context.Context, id uuid.UUID) (store.Network, error)
 	// OverlayPeerNodesForVM returns the nodes with a local VM on any overlay VNI
 	// this VM is attached to, excluding the VM's own current node - the FDB peer
-	// set the worker nudges after a cutover (ADR 0035 / NL8 fast-push).
+	// set the worker nudges after a cutover (fast-push).
 	OverlayPeerNodesForVM(ctx context.Context, vmID uuid.UUID) ([]store.Node, error)
 	StoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error)
 	StoragePoolByID(ctx context.Context, id uuid.UUID) (store.StoragePool, error)
@@ -230,7 +230,7 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 	src := *m.SourceNodeID
 
 	// Pass the VM's network ids so the scheduler's network-readiness filter
-	// (ADR 0034 NL18) excludes any candidate where a requested bridge network is
+	// excludes any candidate where a requested bridge network is
 	// not reconciled-ready, exactly as vm create does. Otherwise a node-less
 	// migration could land on a node whose bridge is not ready and materialiseNICs
 	// would fail on the target. Empty netIDs (a NIC-less VM) keeps the filter a
@@ -261,11 +261,11 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		// dispatcher requeues and the scheduler retry loop drives the next attempt.
 		// The agent is not contacted.
 		//
-		// SLICE-1 LIMITATION (spec D4 retry-forever not yet fully honored): a pending
+		// KNOWN LIMITATION (retry-forever not yet fully honored): a pending
 		// migration is re-driven ONLY by the vm.migrate job retry budget
 		// (workerMaxAttempts = 25). Once that budget is exhausted the job is dropped
 		// and the migration stays pending forever with no further attempts - the
-		// opposite of D4 "retries forever". The VM stays safe on its source node
+		// opposite of "retries forever". The VM stays safe on its source node
 		// meanwhile (nothing durable moved; the agent was never contacted), BUT the
 		// per-VM active-migration guard stays HELD while the migration is pending: a
 		// dropped-pending migration leaves the VM un-migratable (every future
@@ -273,7 +273,7 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 		// `migration cancel` (or vm stop/delete) releases the guard via the terminal
 		// transition. A periodic pending-migration re-driver (mirroring the
 		// vms.schedule loop, which requeues unscheduled VMs indefinitely) is required
-		// to honor D4 and is tracked in ROADMAP; it is out of scope for slice 1.
+		// to honor retry-forever and is tracked in ROADMAP.
 		return store.Migration{}, recordPending(ctx, st, log, m.ID, scheduleReasonFor(perr), perr)
 	}
 
@@ -418,7 +418,7 @@ func convergePostCutover(ctx context.Context, st MigrationWorkerStore, agent Mig
 			slog.String("migration_id", migID.String()), slog.String("source", source.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
 
-	// Fast-push (ADR 0035 / NL8): the cutover re-pointed current_node_id, so the
+	// Fast-push: the cutover re-pointed current_node_id, so the
 	// overlay peers' declared_fdb changed. Nudge them (and the target) to re-pull
 	// immediately instead of waiting up to a heartbeat interval. Best-effort: a
 	// failed lookup or nudge degrades to the heartbeat backstop and must NOT fail

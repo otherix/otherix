@@ -50,7 +50,7 @@ const snapshotManifestsSubdir = "manifests"
 const snapshotCaptureTimeout = 45 * time.Minute
 
 // SnapshotSpec is the post-validation create request the manager acts on.
-// Slice A is disk-only: WithMemory is rejected (RAM capture is out of scope).
+// Snapshots are disk-only: WithMemory is rejected (RAM capture is out of scope).
 type SnapshotSpec struct {
 	Name        string
 	Description string
@@ -58,7 +58,7 @@ type SnapshotSpec struct {
 }
 
 // ErrSnapshotWithMemory is returned by CreateSnapshot when with_memory is set.
-// Slice A captures disks only; the CP already rejects this, so reaching the
+// Snapshots capture disks only; the CP already rejects this, so reaching the
 // agent is defense in depth. Handlers map it to 400 validation_failed.
 var ErrSnapshotWithMemory = errors.New("snapshot with_memory is unsupported (disk-only)")
 
@@ -131,8 +131,8 @@ func qemuBackupIDs() (jobID, nodeName string) {
 }
 
 // snapshotDiskDevice is one VM disk to capture: its virtio index, the wire
-// device name (virtio<i>), and the on-disk source path. Slice A captures the
-// boot disk only (index 0); the slice keeps the index-ordered shape so a
+// device name (virtio<i>), and the on-disk source path. Capture currently covers
+// the boot disk only (index 0); the index-ordered shape is kept so a
 // future multi-disk VM maps blobs to disks deterministically (the same
 // virtio<i> invariant the migration data-path relies on).
 type snapshotDiskDevice struct {
@@ -141,7 +141,7 @@ type snapshotDiskDevice struct {
 	src    string
 }
 
-// snapshotDiskDevices enumerates v's disks in virtio-index order. Slice A VMs
+// snapshotDiskDevices enumerates v's disks in virtio-index order. Current VMs
 // carry a single boot disk (DiskPath) at index 0, device virtio0 - matching
 // the migration path's source disk node naming. cidata (a read-only,
 // deterministic ISO) is intentionally NOT captured; it is rebuilt on recreate.
@@ -299,7 +299,7 @@ func produceBlob(ctx context.Context, srcDisk, snapshotsDir string, convert conv
 }
 
 // produceBlobToStore materializes srcDisk (a backup-target qcow2) into the
-// dedicated content-addressed artifact store (slice C1), mirroring produceBlob's
+// dedicated content-addressed artifact store, mirroring produceBlob's
 // convert + validate + hash tail but landing the blob in the per-node store
 // instead of the disk pool's snapshots/ dir:
 //
@@ -311,8 +311,8 @@ func produceBlob(ctx context.Context, srcDisk, snapshotsDir string, convert conv
 //
 // The blob is never visible under blobs/{sha} until it validates (store.Put's
 // contract), and the temp dir is removed on the way out, so a crash leaves no
-// partial blob. This is the additive C1 transport copy; the disk-pool produceBlob
-// copy stays authoritative for slice-A idempotency/list/delete.
+// partial blob. This is the additive transport copy; the disk-pool produceBlob
+// copy stays authoritative for idempotency/list/delete.
 func produceBlobToStore(ctx context.Context, srcDisk string, store *artifactstore.Store, convert convertFunc) (BlobResult, error) {
 	tmpDir, err := os.MkdirTemp("", "otherix-blob-")
 	if err != nil {
@@ -476,7 +476,7 @@ func listManifests(poolRoot string) ([]snapshotManifest, error) {
 }
 
 // CreateSnapshot begins an async, disk-only snapshot capture for the named VM
-// and returns the agent task tracking it. WithMemory is rejected (slice A is
+// and returns the agent task tracking it. WithMemory is rejected (snapshots are
 // disk-only). Idempotency is (vm, snapshot_name)-keyed defense in depth: a
 // redelivered create whose manifest already exists OR whose capture is still
 // in flight returns the existing task/manifest and NEVER starts a second
@@ -595,9 +595,9 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 			m.failSnapshotTask(taskID, "snapshot_blob_failed", err.Error())
 			return
 		}
-		// Additive C1 dual-write: ALSO land the blob in the dedicated per-node
+		// Additive dual-write: ALSO land the blob in the dedicated per-node
 		// artifact store. The disk-pool produceBlob copy above stays AUTHORITATIVE
-		// for slice-A idempotency/list/delete; this store copy is the additive C1
+		// for idempotency/list/delete; this store copy is the additive
 		// transport copy. Nil-guarded so a half-wired test path cannot panic;
 		// production always has the store set (New fails closed otherwise).
 		if m.artifactStore != nil {
@@ -635,14 +635,14 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 		return
 	}
 
-	// Additive C1 manifest dual-write: ALSO write the snapshot manifest into the
+	// Additive manifest dual-write: ALSO write the snapshot manifest into the
 	// artifact store, keyed by EACH disk's blob digest, so a peer that pulls any
 	// one blob can recover the snapshot's disk set without the disk-pool copy. The
-	// disk-pool writeSnapshotManifest above stays AUTHORITATIVE for slice-A
-	// list/idempotency/delete; this is the additive C1 transport copy. Same manifest
+	// disk-pool writeSnapshotManifest above stays AUTHORITATIVE for
+	// list/idempotency/delete; this is the additive transport copy. Same manifest
 	// JSON the disk-pool copy carries (json.MarshalIndent of snapshotManifest).
 	// Nil-guarded; fail-open per disk - a store-side manifest write failure must not
-	// fail an already-durable slice-A capture (the disk-pool copy is the source of
+	// fail an already-durable capture (the disk-pool copy is the source of
 	// truth), so it logs and continues.
 	if m.artifactStore != nil {
 		if manJSON, err := json.MarshalIndent(man, "", "  "); err != nil {
@@ -670,7 +670,7 @@ func (m *Manager) runSnapshotCreate(taskID uuid.UUID, key snapshotInFlightKey, v
 }
 
 // snapshotVMState maps the agent VM status to the wire vm_state_at_snapshot.
-// Slice A is disk-only and crash-consistent; a running guest's snapshot is
+// Snapshots are disk-only and crash-consistent; a running guest's snapshot is
 // still disk-only, so the field reports the guest's observed run-state at
 // capture time (the CP records it for recreate semantics).
 func snapshotVMState(s Status) string {
@@ -824,14 +824,14 @@ func removeBlobIfPresent(log *slog.Logger, snapshotsDir, digest string) {
 
 // relocateSnapshotsToStore is a one-time, best-effort, fail-open sweep that moves
 // existing disk-pool-resident snapshot blobs (and manifests) into the dedicated
-// artifact store (slice C1 section 7). For each {poolRoot}/snapshots/{sha}.qcow2
+// artifact store. For each {poolRoot}/snapshots/{sha}.qcow2
 // it streams the blob into store.Put (which re-verifies the digest from the
 // FILENAME and atomically lands it); the old copy is removed ONLY after the blob
 // is confirmed present (Has) in the store. Any error leaks the old copy (left
 // readable for the dual-read transition) rather than deleting it - blobs are
 // immutable and content-addressed, so a failed move costs a redundant copy or a
 // re-pull, never data loss. Manifests are copied likewise (fail-open); the
-// disk-pool copies stay for slice-A idempotency/list/delete (their removal is C3).
+// disk-pool copies stay for idempotency/list/delete (their removal is a later step).
 //
 // The digest handed to store.Put is taken from the blob FILENAME, NOT the
 // sidecar, so store.Put's re-hash is the verification gate: a corrupt blob whose
@@ -955,7 +955,7 @@ func relocateManifestsToStore(log *slog.Logger, poolRoot string, store *artifact
 
 // VMSnapshots lists the materialized snapshots for the named VM, projected
 // onto the agentapi.Snapshot wire shape and ordered by created-at. Used by the
-// list handler and (Task 11) the heartbeat inventory.
+// list handler and the heartbeat inventory.
 func (m *Manager) VMSnapshots(vmName string) ([]agentapi.Snapshot, error) {
 	v, err := m.ByName(vmName)
 	if err != nil {

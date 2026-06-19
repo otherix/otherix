@@ -88,11 +88,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 // revokeSessionsIfCredentialsChanged revokes every refresh token of user id
 // when the update changed the password OR the role, and is a no-op otherwise.
-// Both are credential-equivalent session resets: a password change is the M7
-// session-invalidation half (audit M7), and a role change (especially a
+// Both are credential-equivalent session resets: a password change is the
+// session-invalidation half, and a role change (especially a
 // demotion or lockdown) must likewise drop the user's live refresh sessions so
 // a stolen or stale refresh token cannot keep minting tokens after the operator
-// changed the user's standing (audit R2-L1). Access JWTs are stateless and
+// changed the user's standing. Access JWTs are stateless and
 // survive up to their short TTL by design. A revoke failure is surfaced as 500
 // rather than swallowed, because silently leaving sessions alive defeats the
 // point; it returns false after writing that error and true otherwise.

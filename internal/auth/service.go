@@ -105,12 +105,12 @@ type TokenPair struct {
 
 // dummyLoginHash returns a fixed argon2id hash verified against on the
 // user-not-found path so Login pays the same KDF cost whether or not
-// the email exists, closing the enumeration timing oracle (audit M6).
+// the email exists, closing the enumeration timing oracle.
 // Computed lazily on first use (sync.OnceValue) so it always observes
 // the active argon2 cost parameters: a package-level var initializer
 // would run before the test_fast_argon init() override and capture the
 // production cost, making the dummy verify more expensive than a real
-// one under test builds (audit M6 review).
+// one under test builds.
 var dummyLoginHash = sync.OnceValue(func() string {
 	h, err := HashPassword("otherix-login-timing-equalizer")
 	if err != nil {
@@ -130,7 +130,7 @@ func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, err
 			// Equalize work with the user-found branch: run the KDF
 			// against a fixed dummy hash and discard the result, so an
 			// unauthenticated caller cannot tell a missing account from
-			// a wrong password by timing the response (audit M6). The
+			// a wrong password by timing the response. The
 			// dummy verify pays the same KDF cost as a real verify
 			// because the hash is computed lazily with the active
 			// argon2 parameters.

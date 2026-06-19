@@ -7,9 +7,9 @@
 // internal/agent/state (meta.json per VM); runtime supervision and
 // QMP control go through internal/agent/qemu.
 //
-// Task IDs are agent-local — they share no namespace with CP-side
-// task IDs from internal/store. CP integration (Iteration 3) maps
-// CP river-job IDs onto agent task IDs through the
+// Task IDs are agent-local - they share no namespace with CP-side
+// task IDs from internal/store. CP integration maps
+// CP job IDs onto agent task IDs through the
 // agent_task_id resumption pattern documented in CLAUDE.md.
 package vm
 
@@ -29,7 +29,7 @@ import (
 // L1 introduces pause/resume handlers.
 type Status string
 
-// Status values reachable in the Iteration 1 lifecycle.
+// Status values reachable in the VM lifecycle.
 const (
 	StatusPending  Status = "pending"
 	StatusCreating Status = "creating"
@@ -144,8 +144,8 @@ type CreateSpec struct {
 }
 
 // SnapshotRef is the resolved disk source for a recreate-from-snapshot create.
-// Pool names the pool whose snapshots/ subdir holds the blobs (slice A K=1: the
-// VM's own create pool); Disks lists every VM disk to materialize, ordered by
+// Pool names the pool whose snapshots/ subdir holds the blobs (with a single
+// replica, the VM's own create pool); Disks lists every VM disk to materialize, ordered by
 // virtio index, each carrying the content-addressed blob digest the agent
 // clones. The CP worker resolves these from the snapshot manifest so the agent
 // never needs CP store access.

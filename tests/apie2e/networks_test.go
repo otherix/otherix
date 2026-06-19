@@ -588,7 +588,7 @@ func TestNetworksUpdateEgressEmptyNormalisesToNone(t *testing.T) {
 
 // TestNetworkNameRejectsSlashOnCreate verifies a network name containing '/' is
 // rejected at create; it would poison the etcd uniqueness-guard key path, and
-// pool/VM/node names already forbid it (audit R2-L7).
+// pool/VM/node names already forbid it.
 func TestNetworkNameRejectsSlashOnCreate(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
@@ -603,7 +603,7 @@ func TestNetworkNameRejectsSlashOnCreate(t *testing.T) {
 }
 
 // TestNetworkNameRejectsSlashOnUpdate verifies patching a network name to one
-// containing '/' is rejected, mirroring the create-side guard (audit R2-L7).
+// containing '/' is rejected, mirroring the create-side guard.
 func TestNetworkNameRejectsSlashOnUpdate(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)

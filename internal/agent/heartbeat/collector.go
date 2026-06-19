@@ -46,7 +46,7 @@ type PoolReporter interface {
 // collector folds into each PoolReport.Images, plus a known flag. known is
 // false when the agent could not enumerate the pool this tick (a transient
 // error); the collector then marks PoolReport.ImagesUnavailable so the CP
-// preserves the prior inventory rather than clearing it (audit R2-L11).
+// preserves the prior inventory rather than clearing it.
 // Implemented by an adapter over vm.Manager.ListImages in the agent serve
 // assembly; nil is allowed (yields no image inventory) for test paths and the
 // legacy wiring.

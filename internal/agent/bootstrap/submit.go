@@ -55,7 +55,7 @@ type errorEnvelope struct {
 // CA specifically (pinnedCA, the single /v1/ca bundle entry matching the
 // operator fingerprint) - NOT the whole TOFU-served bundle, which a MITM
 // could have padded with its own CA. The secret token is never
-// transmitted to a server not authenticated by the pinned CA (audit H4).
+// transmitted to a server not authenticated by the pinned CA.
 // verifyResponseChain downstream of the response decode stays as
 // defense-in-depth on the returned cert material.
 //

@@ -4,8 +4,8 @@
 // Package artifactstore is the agent-local, content-addressed blob store: one
 // store per node, independent of the disk pools. It holds immutable
 // full-copy qcow2 blobs keyed by their sha256 digest plus the snapshot/image
-// manifests, and is the backing store for both slice-A snapshot capture and the
-// slice-C1 cross-node pull. Put verifies the digest before a blob becomes
+// manifests, and is the backing store for both snapshot capture and the
+// cross-node pull. Put verifies the digest before a blob becomes
 // visible (stage -> hash -> atomic rename -> sidecar), so an unverified or
 // short-read blob is never exposed.
 package artifactstore

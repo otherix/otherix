@@ -15,7 +15,7 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 )
 
-// Logs handles GET /v1/vms/{vm_name}/logs. Per ADR 0029 the response
+// Logs handles GET /v1/vms/{vm_name}/logs. The response
 // is a chunked text/plain stream of sanitized serial console output.
 //
 // Query parameters:

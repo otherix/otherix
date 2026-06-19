@@ -9,8 +9,8 @@ import (
 )
 
 // EnvToken and EnvServer name the env vars Resolve consults. The
-// token var matches Phase C's existing OTHERIX_API_TOKEN; the
-// server var is new — operators can pin a CP URL without editing
+// token var is the existing OTHERIX_API_TOKEN; the
+// server var lets operators pin a CP URL without editing
 // the config file (typical CI: `OTHERIX_API_TOKEN=… OTHERIX_SERVER=…
 // otherix vm list`).
 const (
@@ -83,7 +83,7 @@ var ErrTokenMissing = errors.New("cliconfig: no token configured")
 // fallback); this matches kubectl's --context behaviour.
 //
 // A nil opts.Config behaves as an empty config — Resolve still
-// works against flags + env alone, which is the Phase C smoke-test
+// works against flags + env alone, which is the smoke-test
 // path and must not regress.
 func Resolve(opts ResolveOptions) (ResolvedAuth, error) {
 	out := ResolvedAuth{}

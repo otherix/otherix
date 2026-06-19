@@ -324,7 +324,7 @@ func TestEnsureImageRejectsTraversalBasename(t *testing.T) {
 	}
 }
 
-// TestBlockLocalDial pins the SSRF guard's address taxonomy (audit M1):
+// TestBlockLocalDial pins the SSRF guard's address taxonomy:
 // loopback, link-local (incl. the cloud IMDS at 169.254.169.254), multicast,
 // and unspecified addresses are refused; RFC1918 + ULA private addresses
 // pass (operators host image mirrors on private networks); public addresses

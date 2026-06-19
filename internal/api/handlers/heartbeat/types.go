@@ -30,7 +30,7 @@ type requestBody struct {
 
 // blobReport mirrors HeartbeatBlob (the agent up-channel node-level blob entry).
 // The CP persists the per-node list as the observed node_blobs inventory, the
-// holder-discovery source for the cross-node pull saga (slice C1). Identity is
+// holder-discovery source for the cross-node pull saga. Identity is
 // the digest; SizeBytes is observability.
 type blobReport struct {
 	Digest    string `json:"digest"`
@@ -82,12 +82,12 @@ type poolReport struct {
 	Images               []poolImageReport `json:"images,omitempty"`
 	// ImagesUnavailable is true when the agent could not enumerate this pool's
 	// image cache this tick (a transient ListImages error). The CP then
-	// preserves the prior inventory rather than clearing it (audit R2-L11).
+	// preserves the prior inventory rather than clearing it.
 	ImagesUnavailable bool                 `json:"images_unavailable,omitempty"`
 	Snapshots         []poolSnapshotReport `json:"snapshots,omitempty"`
 	// SnapshotsUnavailable mirrors ImagesUnavailable for the snapshot blob
-	// inventory. Accepted but NOT yet consumed CP-side (vm-snapshots slice A only
-	// reports it; observed-state projection lands in a later slice). The field is
+	// inventory. Accepted but NOT yet consumed CP-side (the agent only
+	// reports it; observed-state projection lands later). The field is
 	// declared here so DisallowUnknownFields does not 400 an upgraded agent's
 	// heartbeat.
 	SnapshotsUnavailable bool `json:"snapshots_unavailable,omitempty"`
@@ -109,7 +109,7 @@ type poolImageReport struct {
 
 // poolSnapshotReport mirrors one entry of HeartbeatPoolReport.snapshots — the
 // agent's observed per-pool snapshot-blob cache (content-addressed). Accepted
-// but NOT yet projected onto observed state in vm-snapshots slice A; declared
+// but NOT yet projected onto observed state; declared
 // here so DisallowUnknownFields accepts an upgraded agent's heartbeat. Mirrors
 // poolImageReport.
 type poolSnapshotReport struct {

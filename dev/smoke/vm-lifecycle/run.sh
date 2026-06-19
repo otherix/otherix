@@ -3,8 +3,8 @@
 # Copyright 2026 Andrei Taranik
 #
 # VM lifecycle smoke - drives the full lifecycle transition matrix through the
-# `otherix` CLI against a REAL agent (qemu + QMP), closing the iteration-
-# discipline gap: today only `vm create` + `vm delete` are exercised end to end;
+# `otherix` CLI against a REAL agent (qemu + QMP), closing a real-agent
+# coverage gap: otherwise only `vm create` + `vm delete` are exercised end to end;
 # start/stop/poweroff/reboot/pause/resume/reset are unit-tested only, never on a
 # live agent. This smoke proves each verb actually drives qemu on the node.
 #

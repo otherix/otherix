@@ -22,7 +22,7 @@ import (
 
 // fakeUsersStore is a programmable test double for users.Store. It serves a
 // single user row and records every RevokeAllUserRefreshTokens call so tests
-// can assert whether a password change revoked the user's sessions (audit M7).
+// can assert whether a password change revoked the user's sessions.
 type fakeUsersStore struct {
 	user store.User
 

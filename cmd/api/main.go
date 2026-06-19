@@ -376,8 +376,8 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 		return fmt.Errorf("server: %v", err)
 	}
 
-	// Shutdown ordering contract (load-bearing for the graceful-shutdown requeue,
-	// audit R2-H3a): stopWorkers() blocks on the dispatcher's in-flight wg.Wait,
+	// Shutdown ordering contract (load-bearing for the graceful-shutdown
+	// requeue): stopWorkers() blocks on the dispatcher's in-flight wg.Wait,
 	// so every in-flight handler finishes and its queue bookkeeping (which runs on
 	// a context.WithoutCancel that survives ctx cancel) lands BEFORE runServe
 	// returns. Only after runServe returns do serve.go's deferred etcd client
@@ -502,7 +502,7 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	d := worker.NewDispatcher(st, log, 0 /* default poll interval */, cfg.Workers.MaxWorkers)
 
 	// The snapshot-blob pull broker pulls a recreate's snapshot blobs from a live
-	// peer to the target node before the agent materializes from them (slice C1).
+	// peer to the target node before the agent materializes from them.
 	// It reuses the etcd store (holder discovery + saga) and the agentclient
 	// (serve/pull data path).
 	blobBroker := blobbroker.New(st, blobbroker.NewClientExecutor(agentClient), log)

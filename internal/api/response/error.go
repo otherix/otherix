@@ -91,7 +91,7 @@ const (
 	// Returned with HTTP 501.
 	CodeNotImplemented ErrorCode = "not_implemented"
 
-	// Artifact-pool (slice B) error codes.
+	// Artifact-pool error codes.
 	CodePoolRoleInvalid           ErrorCode = "pool_role_invalid"
 	CodeArtifactPoolRequired      ErrorCode = "artifact_pool_required"
 	CodeDefaultArtifactPoolNotSet ErrorCode = "default_artifact_pool_not_set"
