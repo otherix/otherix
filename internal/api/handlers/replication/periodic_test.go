@@ -376,6 +376,53 @@ func TestReconcileOverReplicationReclaimsToK(t *testing.T) {
 	}
 }
 
+// TestReconcileOverReplicationReclaimsHRWLowest proves the reclaim victim is the
+// rendezvous-lowest holder, never a keeper: with 3 live holders and K=2 the single
+// reclaimed node is exactly the one holder not in selectTargets(digest, holders, 2),
+// so the K rendezvous-top keepers are never the victim regardless of which holder
+// happens to weigh high.
+func TestReconcileOverReplicationReclaimsHRWLowest(t *testing.T) {
+	n1, n2, n3 := uuid.New(), uuid.New(), uuid.New()
+	pool := "gold"
+	digest := "d0"
+	snapID := uuid.New()
+	holders := []uuid.UUID{n1, n2, n3}
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			refs:    map[string][]uuid.UUID{digest: {snapID}},
+			snaps:   map[uuid.UUID]store.Snapshot{snapID: {ID: snapID, ArtifactPoolName: &pool}},
+			pools:   map[string]store.ArtifactPool{pool: {Name: pool, ReplicationFactor: store.ReplicationFactor{Count: 2}, Membership: store.ArtifactPoolMembership{AllNodes: true}}},
+			holders: map[string][]uuid.UUID{digest: holders},
+			nodes: []store.Node{
+				{ID: n1, Name: "node-1", Status: store.NodeStatusReady},
+				{ID: n2, Name: "node-2", Status: store.NodeStatusReady},
+				{ID: n3, Name: "node-3", Status: store.NodeStatusReady},
+			},
+		},
+		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true, n3: true}},
+	}
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.reclaimed) != 1 {
+		t.Fatalf("reclaimed %d holders, want exactly 1 (3 holders down to K=2)", len(f.reclaimed))
+	}
+
+	keepers := map[uuid.UUID]bool{}
+	for _, k := range selectTargets(digest, holders, 2) {
+		keepers[k] = true
+	}
+	var wantVictim uuid.UUID
+	for _, h := range holders {
+		if !keepers[h] {
+			wantVictim = h
+		}
+	}
+	if got := f.reclaimed[0].TargetNodeID; got != wantVictim {
+		t.Errorf("reclaimed %s, want the lone non-keeper holder %s", got, wantVictim)
+	}
+}
+
 // TestReconcileReferencedBelowKUnchanged proves the add-to-K replicate path is
 // untouched by the GC branches: a referenced digest below K still adds a target
 // and enqueues exactly one replicate, and reclaims nothing.

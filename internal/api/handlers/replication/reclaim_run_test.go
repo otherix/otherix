@@ -146,6 +146,36 @@ func TestRunReclaimSkipsWhenTargetNotHolding(t *testing.T) {
 	}
 }
 
+// TestRunReclaimAbortsWhenSecondHolderUnreachable proves an unreachable second copy
+// does not license deleting the last reachable copy: a referenced blob (desired
+// floors to K=1) whose holders are {target, other} but where other's node is
+// unreachable has only {target} as a live holder. Removing the target would leave 0
+// live holders below the desired 1, so the worker aborts without touching the agent.
+func TestRunReclaimAbortsWhenSecondHolderUnreachable(t *testing.T) {
+	target := uuid.New()
+	other := uuid.New()
+	fake := &reclaimStoreFake{
+		refs:    []uuid.UUID{uuid.New()},
+		holders: []uuid.UUID{target, other},
+		nodes: []store.Node{
+			liveNodeForReclaim(target),
+			{ID: other, Status: store.NodeStatusUnreachable},
+		},
+	}
+	spy := &reclaimerSpy{}
+
+	if err := runReclaim(context.Background(), fake, spy, discardLogReclaim(),
+		ReclaimArgs{TaskID: uuid.New(), Digest: reclaimTestDigest, TargetNodeID: target}); err != nil {
+		t.Fatalf("runReclaim() error = %v, want nil", err)
+	}
+	if spy.calls != 0 {
+		t.Errorf("reclaimer called %d times, want 0 (unreachable copy does not count as live)", spy.calls)
+	}
+	if fake.finalizeStatus != store.TaskStatusSuccess {
+		t.Errorf("finalizeStatus = %q, want %q (abort is not an error)", fake.finalizeStatus, store.TaskStatusSuccess)
+	}
+}
+
 // TestRunReclaimProceedsWhenOrphaned proves an orphaned blob (zero snapshot refs,
 // desired 0) is reclaimed even from its only holder: removing it leaves 0 >= 0.
 func TestRunReclaimProceedsWhenOrphaned(t *testing.T) {

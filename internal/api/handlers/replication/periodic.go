@@ -246,6 +246,16 @@ func reclaimSurplus(ctx context.Context, st ReconcileStore, log *slog.Logger, di
 // held it). Members that still hold, are unreachable (transient), or gone (handled
 // earlier) are left in place. Used for the orphaned case, where the key must
 // survive until the bytes are confirmed gone.
+//
+// Pruning on observed absence trusts the node's reported inventory. A node that
+// reports a complete inventory which, because of an enumeration fault, omits a blob
+// it still holds would have its placement key pruned here, dropping the digest from
+// the placement scan; if the bytes are in fact still present they then leak, since
+// the placement map is the only cluster-wide rediscovery handle. This is bounded: a
+// node either reports its full inventory or, when enumeration fails, the prior
+// inventory is preserved, so observed absence closely tracks true absence in normal
+// operation. A future content-addressed sweep over each node's store is the backstop
+// for this residual leak.
 func pruneObservedAbsentMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, members []uuid.UUID, live, holderSet map[uuid.UUID]bool) {
 	for _, m := range members {
 		if live[m] && !holderSet[m] {
@@ -264,7 +274,12 @@ func pruneObservedAbsentMembers(ctx context.Context, st ReconcileStore, log *slo
 // Used for the over-replication case: the cluster keeps exactly the k keeper
 // holders, so surplus members leave the intent index immediately. Safe because the
 // k keepers keep the digest in the placement scan, so a reclaim that fails is
-// re-detected off observed holders next pass.
+// re-detected off observed holders next pass. This is safe only while every observed
+// holder is also a placement member (true today: the snapshot seed and the reconcile
+// add-targets step both record a member key before a node can hold the blob); a
+// future out-of-band holder source that lets a node hold a blob without a member key
+// would need to preserve this invariant, or the digest could drop from the placement
+// scan while a surplus copy remains.
 func trimNonKeeperMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, members []uuid.UUID, keepers map[uuid.UUID]bool) {
 	for _, m := range members {
 		if keepers[m] {
