@@ -6851,6 +6851,9 @@ components:
         - vm_name
         - architecture
         - disks
+        - durability
+        - desired_replicas
+        - observed_replicas
         - created_at
         - updated_at
       properties:
@@ -6938,6 +6941,29 @@ components:
           description: |
             Artifact pool this snapshot belongs to. Null for snapshots
             created before artifact pools existed.
+        durability:
+          type: string
+          enum: [unknown, degraded, replicating, durable]
+          description: |
+            Computed replication health of the snapshot's content-addressed
+            blobs. `durable` once every disk has at least its desired replica
+            count of live holders; `replicating` while replicas are still being
+            placed; `degraded` when a blob is short of its target with no
+            progress possible (no live holder, or no eligible node left);
+            `unknown` before the manifest is produced. Computed by the control
+            plane from the desired replication factor versus observed holders,
+            not reported by an agent.
+        desired_replicas:
+          type: integer
+          description: |
+            The strongest desired replica count across the manifest's disks
+            (the max over disks of the artifact pool's replication factor).
+        observed_replicas:
+          type: integer
+          description: |
+            The weakest observed live-holder count across the manifest's disks
+            (the min over disks). `observed_replicas >= desired_replicas` is the
+            `durable` condition.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
