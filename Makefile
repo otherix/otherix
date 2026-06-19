@@ -233,6 +233,10 @@ smoke-artifact-pool: ## Artifact-pool concept smoke (slice B): create pool, asse
 smoke-artifact-pull: ## Cross-node artifact-pull smoke (slice C1): snapshot on node-1, recreate-from-snapshot STEERED to the non-producing node-2 forces a CP-brokered peer pull (node-2 <- node-1) before materialize; asserts pull-dst boots on node-2 off the pulled blob (run after local-dev-start)
 	@bash dev/smoke/artifact-pull/run.sh
 
+.PHONY: smoke-artifact-durability
+smoke-artifact-durability: ## Artifact durability smoke: snapshot replicates to the pool replication factor, survives a holder loss, and re-replicates onto a surviving node (run after local-dev-start)
+	@bash dev/smoke/artifact-durability/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
