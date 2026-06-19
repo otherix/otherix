@@ -5,6 +5,7 @@ package etcdstore
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -82,6 +83,34 @@ func (s *Store) BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, er
 	}
 	sort.Slice(holders, func(i, j int) bool { return holders[i].String() < holders[j].String() })
 	return holders, nil
+}
+
+// AllNodeBlobDigests returns the sorted, deduplicated set of blob digests that
+// appear in ANY node's observed inventory. It is the observed-reality counterpart
+// to AllPlacementDigests (durability intent): the durability reconcile unions the
+// two so a blob a node still holds is reconciled even when it has no placement
+// entry (an orphaned blob whose placement key was already pruned). Read-only.
+func (s *Store) AllNodeBlobDigests(ctx context.Context) ([]string, error) {
+	items, err := s.c.Range(ctx, nodeBlobInventoryPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("range node blobs: %v", err)
+	}
+	seen := map[string]struct{}{}
+	for _, kv := range items {
+		var blobs []store.NodeBlob
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &blobs, "node_blob") {
+			continue
+		}
+		for _, b := range blobs {
+			seen[b.Digest] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for d := range seen {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // BlobSize returns the size in bytes any holder reports for digest, and whether

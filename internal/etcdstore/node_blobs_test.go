@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
@@ -93,6 +94,41 @@ func TestBlobSize(t *testing.T) {
 	absent := "00000000000000000000000000000000000000000000000000000000000000cd"
 	if size, ok := s.BlobSize(ctx, absent); ok || size != 0 {
 		t.Errorf("BlobSize(absent) = (%d, %v), want (0, false)", size, ok)
+	}
+}
+
+func TestAllNodeBlobDigests(t *testing.T) {
+	st, _ := startStore(t)
+	ctx := context.Background()
+	n1, n2 := uuid.New(), uuid.New()
+	dA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	if err := st.UpsertNodeBlobInventory(ctx, n1, []store.NodeBlob{{Digest: dA, SizeBytes: 1}, {Digest: dB, SizeBytes: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertNodeBlobInventory(ctx, n2, []store.NodeBlob{{Digest: dB, SizeBytes: 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.AllNodeBlobDigests(ctx)
+	if err != nil {
+		t.Fatalf("AllNodeBlobDigests = %v", err)
+	}
+	want := []string{dA, dB}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("AllNodeBlobDigests mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestAllNodeBlobDigestsEmpty(t *testing.T) {
+	st, _ := startStore(t)
+	got, err := st.AllNodeBlobDigests(context.Background())
+	if err != nil {
+		t.Fatalf("AllNodeBlobDigests = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("AllNodeBlobDigests on empty store = %v, want empty", got)
 	}
 }
 
