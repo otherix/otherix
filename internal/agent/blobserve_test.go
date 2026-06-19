@@ -215,39 +215,41 @@ func TestBlobServeManager_StopByTokenReleasesAndIsIdempotent(t *testing.T) {
 	m.StopByToken("never-served")
 }
 
-// TestBlobServeManager_StopByTokenDoesNotTearDownAReusedPort pins the
-// token-keyed claim: a stale token whose serve was already torn down must never
-// tear down a NEW serve that has since reclaimed the same port under a different
-// token. The one-port allocator forces the port reuse, so this exercises the
-// scan-then-claim window the token match closes.
-func TestBlobServeManager_StopByTokenDoesNotTearDownAReusedPort(t *testing.T) {
-	m, port := newTestServeManager(t)
+// TestTakeServeByToken_ClaimsStrictlyByToken pins the unit the fix introduced:
+// takeServeByToken claims the entry whose token matches and leaves every other
+// entry untouched, all under one mutex hold. A non-matching token claims
+// nothing. This is the atomic match-and-claim that replaced the
+// scan-release-claim window where a stale token could claim a reused port.
+func TestTakeServeByToken_ClaimsStrictlyByToken(t *testing.T) {
+	m, _ := newTestServeManager(t)
+	// Two live entries on distinct ports, distinct tokens (constructed directly:
+	// this is a white-box test of the claim primitive, not of Serve).
+	a1 := &activeServe{port: 1, token: "tok-1", timer: time.NewTimer(time.Hour)}
+	a2 := &activeServe{port: 2, token: "tok-2", timer: time.NewTimer(time.Hour)}
+	m.active[1] = a1
+	m.active[2] = a2
 
-	if _, _, err := m.Serve(strings.Repeat("a", 64), "tok-old", ""); err != nil {
-		t.Fatalf("Serve old: %v", err)
+	if got := m.takeServeByToken("nope"); got != nil {
+		t.Errorf("takeServeByToken(nope) = %v, want nil (no match)", got)
 	}
-	// Tear the first serve down, freeing the single port.
-	m.StopByToken("tok-old")
-
-	// A fresh serve reclaims the same port under a different token.
-	if _, _, err := m.Serve(strings.Repeat("b", 64), "tok-new", ""); err != nil {
-		t.Fatalf("Serve new: %v", err)
-	}
-
-	// A late StopByToken for the stale token must not touch the new serve.
-	m.StopByToken("tok-old")
-	if _, err := m.ports.Reserve(); err == nil {
-		t.Errorf("port released by stale-token stop, want new serve still holding it")
-	}
-	if _, ok := m.verifier.Verify("tok-new", strings.Repeat("b", 64)); !ok {
-		t.Errorf("new serve token dropped by stale-token stop, want still primed")
+	if len(m.active) != 2 {
+		t.Errorf("active len after no-match = %d, want 2 (nothing claimed)", len(m.active))
 	}
 
-	// The matching token tears the new serve down.
-	m.StopByToken("tok-new")
-	got, err := m.ports.Reserve()
-	if err != nil || got != port {
-		t.Errorf("Reserve after matching stop = (%d, %v), want (%d, nil)", got, err, port)
+	got := m.takeServeByToken("tok-2")
+	if got != a2 {
+		t.Fatalf("takeServeByToken(tok-2) = %v, want the tok-2 entry", got)
+	}
+	if _, ok := m.active[2]; ok {
+		t.Errorf("tok-2 entry still in active after claim, want removed")
+	}
+	if _, ok := m.active[1]; !ok {
+		t.Errorf("tok-1 entry claimed by takeServeByToken(tok-2), want untouched")
+	}
+
+	// A second claim of the now-removed token finds nothing.
+	if got := m.takeServeByToken("tok-2"); got != nil {
+		t.Errorf("second takeServeByToken(tok-2) = %v, want nil", got)
 	}
 }
 

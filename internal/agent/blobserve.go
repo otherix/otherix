@@ -193,10 +193,11 @@ func (m *blobServeManager) takeServe(port int) *activeServe {
 //
 // The token (not the digest) is the teardown key: two concurrent serves of the
 // same digest to different consumers exist as two ports / two tokens, so a
-// digest-keyed teardown would be ambiguous. The scan runs under the mutex, then
-// the claim goes through takeServe (which re-locks), so StopByToken is race-safe
+// digest-keyed teardown would be ambiguous. The match-and-claim is atomic
+// (takeServeByToken holds the mutex across both), so StopByToken is race-safe
 // with the per-serve TTL teardown - both contend for the same single-claim
-// active-map entry, so each serve is torn down exactly once.
+// active-map entry, so each serve is torn down exactly once, and a stale token
+// can never claim a port a fresh serve has since reclaimed under a new token.
 func (m *blobServeManager) StopByToken(token string) {
 	as := m.takeServeByToken(token)
 	if as == nil {
