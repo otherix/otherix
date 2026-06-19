@@ -51,6 +51,11 @@ type WorkerStore interface {
 	// decide which snapshot blobs the target already holds (skip the pull) vs
 	// must be pulled from a peer before materialize.
 	NodeBlobInventory(ctx context.Context, nodeID uuid.UUID) ([]store.NodeBlob, error)
+	// ImageBlobHolders returns the node ids whose OBSERVED image-cache inventory
+	// (heartbeat-fed) reports the pinned image digest. The create path reads it
+	// best-effort to pre-pull a cached image onto the target from a peer; a read
+	// error is swallowed (the agent's own download is the backstop).
+	ImageBlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
 }
 
 // SnapshotBlobBroker is the CP-side pull-saga seam the recreate-from-snapshot
@@ -141,6 +146,14 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, broker 
 	task, err := st.TaskByID(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("reload task: %v", err)
+	}
+
+	// Image-URL create only: best-effort pre-pull a pinned image onto the target
+	// from a peer that already caches it, so the agent clones from the cache
+	// instead of downloading from the source URL. FAIL-OPEN (never fails the
+	// create); the snapshot path has an empty ImageURL so it is skipped here.
+	if vm.ImageURL != "" {
+		ensureImageBlobLocal(ctx, st, broker, args.NodeID, hex.EncodeToString(vm.ImageSHA256), log)
 	}
 
 	result, execErr := exec.Execute(ctx, CreateArgs{
@@ -307,6 +320,38 @@ func ensureSnapshotBlobsLocal(ctx context.Context, st WorkerStore, broker Snapsh
 		have[d.SHA256] = struct{}{}
 	}
 	return nil
+}
+
+// ensureImageBlobLocal best-effort stages a pinned image onto the create target
+// from a peer that already caches it, so the agent skips the source download. It
+// is FAIL-OPEN: no peer holder, an inventory read error, or any broker error is
+// logged and swallowed - the agent's own download is the backstop, so a caching
+// miss never fails the create. (This is the deliberate divergence from
+// ensureSnapshotBlobsLocal, whose blob has no alternative source.)
+func ensureImageBlobLocal(ctx context.Context, st WorkerStore, broker SnapshotBlobBroker, targetNodeID uuid.UUID, imageSHA256 string, log *slog.Logger) {
+	if imageSHA256 == "" {
+		return
+	}
+	holders, err := st.ImageBlobHolders(ctx, imageSHA256)
+	if err != nil {
+		log.WarnContext(ctx, "image cache pre-pull: holder lookup failed, agent will download",
+			slog.String("digest", imageSHA256), slog.String("error", err.Error()))
+		return
+	}
+	hasPeer := false
+	for _, h := range holders {
+		if h == targetNodeID {
+			return // target already caches this image; nothing to stage
+		}
+		hasPeer = true
+	}
+	if !hasPeer {
+		return // no peer holds it; the agent downloads from source
+	}
+	if err := broker.BrokerPull(ctx, imageSHA256, targetNodeID, blobbroker.TierImage); err != nil {
+		log.InfoContext(ctx, "image cache pre-pull skipped, agent will download",
+			slog.String("digest", imageSHA256), slog.String("reason", err.Error()))
+	}
 }
 
 // resolveSourceSnapshot loads the snapshot and projects its manifest disks onto

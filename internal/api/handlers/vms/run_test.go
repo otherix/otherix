@@ -123,6 +123,10 @@ func (s *deleteWorkerStoreStub) ProjectVMLifecycleSuccess(context.Context, uuid.
 	panic("unexpected ProjectVMLifecycleSuccess")
 }
 
+func (s *deleteWorkerStoreStub) ImageBlobHolders(context.Context, string) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func (s *deleteWorkerStoreStub) NodeBlobInventory(context.Context, uuid.UUID) ([]store.NodeBlob, error) {
 	panic("unexpected NodeBlobInventory")
 }
@@ -319,6 +323,10 @@ func (s *createLifecycleWorkerStoreStub) ProjectVMLifecycleSuccess(context.Conte
 }
 
 func (s *createLifecycleWorkerStoreStub) NodeBlobInventory(context.Context, uuid.UUID) ([]store.NodeBlob, error) {
+	return nil, nil
+}
+
+func (s *createLifecycleWorkerStoreStub) ImageBlobHolders(context.Context, string) ([]uuid.UUID, error) {
 	return nil, nil
 }
 
