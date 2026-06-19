@@ -1,17 +1,17 @@
 # dev/smoke/lib.sh — platform abstraction shared by dev/smoke/*/run.sh.
 #
-# The two-node dev stack is backed by two Lima VMs on macOS and by two network
-# namespaces (otns1/otns2) on native Linux. Smoke scripts source this file and
-# target nodes through run_on / the per-node handles instead of calling limactl
-# directly, so the same smoke runs unchanged on both platforms:
+# The three-node dev stack is backed by three Lima VMs on macOS and by three
+# network namespaces (otns1/otns2/otns3) on native Linux. Smoke scripts source
+# this file and target nodes through run_on / the per-node handles instead of
+# calling limactl directly, so the same smoke runs unchanged on both platforms:
 #
 #   macOS : run_on <handle> <cmd...> -> limactl shell <handle> -- <cmd...>
 #   Linux : run_on <handle> <cmd...> -> sudo ip netns exec <handle> <cmd...>
 #
 # Handles and state dirs (the agent state_path root, where vms/<id>/serial.log
 # and wg/private.key live) are exposed per node:
-#   SMOKE_HANDLE_1 / SMOKE_HANDLE_2   node-1 / node-2 execution handle
-#   SMOKE_STATE_1  / SMOKE_STATE_2    node-1 / node-2 agent state_path root
+#   SMOKE_HANDLE_1 / _2 / _3   node-1 / node-2 / node-3 execution handle
+#   SMOKE_STATE_1  / _2 / _3   node-1 / node-2 / node-3 agent state_path root
 #
 # This file is sourced, not executed; it sets shell variables in the caller.
 # shellcheck shell=bash
@@ -22,15 +22,19 @@ case "$(uname -s)" in
         SMOKE_PLATFORM="lima"
         SMOKE_HANDLE_1="${VM1:-otherix-dev-1}"
         SMOKE_HANDLE_2="${VM2:-otherix-dev-2}"
+        SMOKE_HANDLE_3="${VM3:-otherix-dev-3}"
         SMOKE_STATE_1="/var/lib/otherix"
         SMOKE_STATE_2="/var/lib/otherix"
+        SMOKE_STATE_3="/var/lib/otherix"
         ;;
     Linux)
         SMOKE_PLATFORM="netns"
         SMOKE_HANDLE_1="otns1"
         SMOKE_HANDLE_2="otns2"
+        SMOKE_HANDLE_3="otns3"
         SMOKE_STATE_1="/var/lib/otherix/dev/node1"
         SMOKE_STATE_2="/var/lib/otherix/dev/node2"
+        SMOKE_STATE_3="/var/lib/otherix/dev/node3"
         ;;
     *)
         echo "unsupported platform: $(uname -s)" >&2
@@ -64,8 +68,8 @@ run_on() {
     esac
 }
 
-# smoke_handle <1|2> / smoke_state <1|2> — accessors for the per-node handle and
-# state_path root, for scripts that index nodes dynamically.
+# smoke_handle <1|2|3> / smoke_state <1|2|3> — accessors for the per-node handle
+# and state_path root, for scripts that index nodes dynamically.
 smoke_handle() { local v="SMOKE_HANDLE_$1"; printf '%s' "${!v}"; }
 smoke_state()  { local v="SMOKE_STATE_$1";  printf '%s' "${!v}"; }
 

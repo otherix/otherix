@@ -23,6 +23,7 @@ import (
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
+	replicationhandlers "github.com/otherix/otherix/internal/api/handlers/replication"
 	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
@@ -526,6 +527,9 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	d.Register("vm.snapshot.delete", workerMaxAttempts,
 		snapshotshandlers.DeleteHandler(st, snapshotExec, log))
 
+	d.Register("artifact.replicate", workerMaxAttempts,
+		replicationhandlers.ReplicateHandler(st, blobBroker, log))
+
 	// vm.migrate drives the live-migration saga (placement / two-phase handshake /
 	// atomic cutover). The placer reuses SchedulePlacement over the store's
 	// read-only querier (no placement lock - the worker re-pins only at cutover).
@@ -567,11 +571,15 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			GoneGrace:      cfg.Workers.Heartbeat.GoneGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
 		}, log,
-			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log)))
+			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log),
+			replicationhandlers.PruneGoneNodeBlobsFunc(st, log)))
 
 	s.Register("vms.schedule", 2*time.Second, true,
 		vmshandlers.ScheduleFunc(st, vmshandlers.ScheduleConfig{Algorithm: cfg.Placement.Algorithm}, log,
 			api.SchedulerResourcesFromConfig(cfg.Placement.Resources)))
+
+	s.Register("placement.reconcile", positiveOr(cfg.Workers.PlacementReconcile.Interval, 30*time.Second), true,
+		replicationhandlers.ReconcileFunc(st, log))
 
 	s.Register("auth.refresh_token_cleanup", time.Hour, false,
 		auth.RefreshTokenCleanupFunc(st, log))

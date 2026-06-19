@@ -99,6 +99,29 @@ func (s *Store) NodeByName(ctx context.Context, name string) (store.Node, error)
 	return s.NodeByID(ctx, id)
 }
 
+// AllNodes returns every non-deleted node row. The durability reconcile loop and
+// the snapshot durability projection use it to compute the live-node set and to
+// expand an artifact pool's membership by name. Soft-deleted rows are excluded;
+// status (including unreachable/gone) is preserved on the returned rows.
+func (s *Store) AllNodes(ctx context.Context) ([]store.Node, error) {
+	items, err := s.c.Range(ctx, nodePrefix())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Node, 0, len(items))
+	for _, kv := range items {
+		var n store.Node
+		if err := json.Unmarshal(kv.Value, &n); err != nil {
+			return nil, fmt.Errorf("unmarshal node %q: %v", kv.Key, err)
+		}
+		if n.DeletedAt != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // NodeEffectiveByID returns the node joined with its effective availability, or
 // store.ErrNotFound.
 func (s *Store) NodeEffectiveByID(ctx context.Context, id uuid.UUID) (store.NodeEffectiveAvailability, error) {

@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
+	"github.com/otherix/otherix/internal/api/handlers/replication"
 	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -47,6 +48,14 @@ type Store interface {
 	SnapshotByID(ctx context.Context, id uuid.UUID) (store.Snapshot, error)
 	ListSnapshots(ctx context.Context, p store.ListSnapshotsParams) ([]store.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams store.CreateTaskParams, args queue.JobArgs) (store.Snapshot, error)
+
+	// SnapshotsReferencingBlob, BlobHolders and AllNodes back the durability
+	// projection (see viewWithDurability); together with SnapshotByID and
+	// ArtifactPoolByName above they let *etcdstore.Store satisfy
+	// replication.DurabilityStore.
+	SnapshotsReferencingBlob(ctx context.Context, digest string) ([]uuid.UUID, error)
+	BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
+	AllNodes(ctx context.Context) ([]store.Node, error)
 }
 
 // Handler bundles the dependencies for the /v1/vms/{id}/snapshots +
@@ -85,8 +94,17 @@ type vmSnapshotView struct {
 	Disks            []vmSnapshotDiskView `json:"disks"`
 	ErrorMessage     *string              `json:"error_message"`
 	ArtifactPoolName *string              `json:"artifact_pool_name"`
-	CreatedAt        string               `json:"created_at"`
-	UpdatedAt        string               `json:"updated_at"`
+	// Durability is the computed replication health of the snapshot's blobs:
+	// "durable" once every disk has at least its desired replica count of live
+	// holders, "replicating" while replicas are still being placed, "degraded"
+	// when a blob is short with no progress possible, "unknown" before the
+	// manifest is produced. desired_replicas/observed_replicas are the
+	// max/min over the manifest disks.
+	Durability       string `json:"durability"`
+	DesiredReplicas  int    `json:"desired_replicas"`
+	ObservedReplicas int    `json:"observed_replicas"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 // vmSnapshotDiskView mirrors the per-disk blob descriptor in the manifest.
@@ -145,4 +163,21 @@ func toView(s store.Snapshot) vmSnapshotView {
 		CreatedAt:         s.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         s.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+// viewWithDurability projects a snapshot onto its public view and folds in the
+// CP-computed durability status. Durability is best-effort: on a store error it
+// renders "unknown" and logs, never failing the request.
+func (h *Handler) viewWithDurability(ctx context.Context, s store.Snapshot) vmSnapshotView {
+	v := toView(s)
+	status, desired, observed, err := replication.SnapshotDurability(ctx, h.store, s)
+	if err != nil {
+		h.log.WarnContext(ctx, "compute snapshot durability",
+			slog.String("snapshot_id", s.ID.String()), slog.Any("error", err))
+		status, desired, observed = replication.DurabilityUnknown, 0, 0
+	}
+	v.Durability = status
+	v.DesiredReplicas = desired
+	v.ObservedReplicas = observed
+	return v
 }

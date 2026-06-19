@@ -563,6 +563,10 @@ type WorkersConfig struct {
 	Heartbeat       HeartbeatWorkersConfig  `koanf:"heartbeat"`
 	StoragePoolScan StoragePoolScanConfig   `koanf:"storage_pool_scan"`
 	Backup          BackupConfig            `koanf:"backup"`
+
+	PlacementReconcile struct {
+		Interval time.Duration `koanf:"interval"`
+	} `koanf:"placement_reconcile"`
 }
 
 // BackupConfig pins the periodic etcd snapshot worker. When Enabled (and Dir is

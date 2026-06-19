@@ -129,12 +129,21 @@ workers:
     retention:
       completed: 168h
       failed:    720h
-  # Compressed cadence for dev: a 15s/45s window keeps the smoke loop
-  # responsive (operator does not wait 90s before the node flips to
-  # `ready`) while remaining wide enough to ride out a Lima VM hiccup.
+  # Compressed cadence for dev: a 15s interval with a 20s stale window keeps
+  # the smoke loop responsive (operator does not wait 90s before the node
+  # flips to `ready`) while remaining wide enough to ride out a Lima VM hiccup.
+  # gone_grace is tightened to 30s (must exceed stale_threshold) so a node that
+  # is killed during a durability smoke advances to `gone` in tens of seconds
+  # rather than minutes, letting the re-replication path fire promptly.
   heartbeat:
-    stale_threshold: 45s
+    stale_threshold: 20s
+    gone_grace:      30s
     interval:        15s
+  # Placement reconciler cadence. Dev uses a snappy 10s tick so a blob whose
+  # holder went `gone` is re-replicated to a surviving node within seconds of
+  # the node-loss being observed (production defaults are longer).
+  placement_reconcile:
+    interval: 10s
   # Periodic pool-scan trigger. Dev uses a compressed cadence (1 min /
   # 5 s jitter) so smoke-test operators can observe trigger ticks without
   # waiting 15 min. Production defaults to 15 min / 30 s jitter — see

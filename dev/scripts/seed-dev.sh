@@ -9,15 +9,15 @@
 # no manual restart — the polling loop picks up the four files
 # written by bootstrap within 5 seconds.
 #
-# Two-node dev stack (macOS / Lima): node-1 on otherix-dev-1 and node-2
-# on otherix-dev-2, each with its own CP->agent advertised endpoint
-# (127.0.0.1:9443 / :9444 via the per-VM Lima port-forward) and its own
-# WireGuard advertised endpoint (its user-v2 IP, baked into the staged
-# config by `copy-config-lima`). node-2 is bootstrap-only for the base seed: it
-# heartbeats, gets its overlay IP, peers into the WG mesh, and (like every node)
-# has the cluster default pool auto-provisioned on it by the CP, and creates no
-# VM on it (the WG mesh smoke needs no VM, and the networking smoke pins its VM
-# to node-1). On native Linux the stack stays single-node (node-1).
+# Three-node dev stack (macOS / Lima): node-1 on otherix-dev-1, node-2 on
+# otherix-dev-2, node-3 on otherix-dev-3, each with its own CP->agent advertised
+# endpoint (127.0.0.1:9443 / :9444 / :9445 via the per-VM Lima port-forward) and
+# its own WireGuard advertised endpoint (its user-v2 IP, baked into the staged
+# config by `copy-config-lima`). node-2 and node-3 are bootstrap-only for the
+# base seed: they heartbeat, get their overlay IP, peer into the WG mesh, and
+# (like every node) have the cluster default pool auto-provisioned on them by the
+# CP, and create no VM (the WG mesh smoke needs no VM, and the networking smoke
+# pins its VM to node-1). On native Linux the stack runs the same three nodes.
 #
 # The storage pool is NOT created here: the CP auto-provisions the cluster
 # default pool (`default`) on every node as it reaches ready (PR #15), and that
@@ -38,6 +38,7 @@
 # Optional env (with defaults):
 #   OTHERIX_LIMA_INSTANCE_1 — node-1 Lima VM (default: otherix-dev-1)
 #   OTHERIX_LIMA_INSTANCE_2 — node-2 Lima VM (default: otherix-dev-2)
+#   OTHERIX_LIMA_INSTANCE_3 — node-3 Lima VM (default: otherix-dev-3)
 #   OTHERIX_CP_URL          — CP base URL for CLI auth (default: http://localhost:8080)
 #   OTHERIX_NODE_ARCH       — node architecture (auto from uname)
 
@@ -54,6 +55,7 @@ fi
 
 : "${OTHERIX_LIMA_INSTANCE_1:=otherix-dev-1}"
 : "${OTHERIX_LIMA_INSTANCE_2:=otherix-dev-2}"
+: "${OTHERIX_LIMA_INSTANCE_3:=otherix-dev-3}"
 : "${OTHERIX_CP_URL:=http://localhost:8080}"
 : "${OTHERIX_NODE_ARCH:=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')}"
 
@@ -84,6 +86,7 @@ esac
 
 NODE_NAME_1="${OTHERIX_NODE_NAME:-node-1}"
 NODE_NAME_2="node-2"
+NODE_NAME_3="node-3"
 # POOL_NAME is display-only: the cluster default pool is provisioned by the CP
 # from its code default (default_pool_name "default") and auto-created on every
 # node as it reaches ready. seed-dev no longer creates a pool or sets the
@@ -107,10 +110,11 @@ echo "   platform        : ${PLATFORM}"
 echo "   architecture    : ${OTHERIX_NODE_ARCH}"
 echo "   node 1          : ${NODE_NAME_1}"
 echo "   node 2          : ${NODE_NAME_2}"
+echo "   node 3          : ${NODE_NAME_3}"
 echo "   default pool    : ${POOL_NAME} (auto-provisioned by the CP on ready nodes)"
 echo "   CP url          : ${OTHERIX_CP_URL}"
 if [ "${PLATFORM}" = "lima" ]; then
-    echo "   Lima instances  : ${OTHERIX_LIMA_INSTANCE_1} (node-1) / ${OTHERIX_LIMA_INSTANCE_2} (node-2)"
+    echo "   Lima instances  : ${OTHERIX_LIMA_INSTANCE_1} (node-1) / ${OTHERIX_LIMA_INSTANCE_2} (node-2) / ${OTHERIX_LIMA_INSTANCE_3} (node-3)"
 fi
 
 # --- Step 1: wait for CP to become reachable ----------------------------------
@@ -247,14 +251,16 @@ bootstrap_node_native() {
     exit 1
 }
 
-# --- Step 3: bootstrap node-1 + node-2 (both platforms are two-node) ---------
+# --- Step 3: bootstrap node-1 + node-2 + node-3 (both platforms are three-node) -
 
 if [ "${PLATFORM}" = "lima" ]; then
     bootstrap_node "${NODE_NAME_1}" "https://127.0.0.1:9443" "0.0.0.0:9443" "${OTHERIX_LIMA_INSTANCE_1}"
     bootstrap_node "${NODE_NAME_2}" "https://127.0.0.1:9444" "0.0.0.0:9443" "${OTHERIX_LIMA_INSTANCE_2}"
+    bootstrap_node "${NODE_NAME_3}" "https://127.0.0.1:9445" "0.0.0.0:9443" "${OTHERIX_LIMA_INSTANCE_3}"
 else
     bootstrap_node_native 1
     bootstrap_node_native 2
+    bootstrap_node_native 3
 fi
 
 # --- Step 4: seed the cluster default artifact pool --------------------------
@@ -283,6 +289,7 @@ echo ""
 echo ">> seed-dev complete"
 echo "   node 1   : ${NODE_NAME_1}"
 echo "   node 2   : ${NODE_NAME_2}"
+echo "   node 3   : ${NODE_NAME_3}"
 echo "   pool     : ${POOL_NAME} (cluster default disk pool, CP-auto-provisioned on ready nodes)"
 echo "   artifacts: ${ARTIFACT_POOL_NAME} (cluster default artifact pool, seeded above)"
 echo ""
