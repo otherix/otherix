@@ -245,6 +245,10 @@ smoke-artifact-pool-rf-update: ## Artifact-pool RF update smoke: raising replica
 smoke-artifact-gc: ## Artifact GC smoke: the blob collector reclaims orphaned and over-replicated copies and never reclaims a copy a snapshot still references (run after local-dev-start)
 	@bash dev/smoke/artifact-gc/run.sh
 
+.PHONY: smoke-artifact-janitor
+smoke-artifact-janitor: ## Artifact janitor smoke: the agent boot-time store hygiene sweep clears staging and repairs a missing sidecar, and the CP backstop reclaims a leaked blob whose placement record was lost while never touching a referenced blob (run after local-dev-start)
+	@bash dev/smoke/artifact-janitor/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
