@@ -64,8 +64,17 @@ func (s *Store) SweepSidecarless() (int, int, error) {
 		}
 		return 0, 0, fmt.Errorf("artifactstore: read blobs dir: %v", err)
 	}
-	blobs := map[string]struct{}{}
-	sidecars := map[string]struct{}{}
+	blobs, sidecars := partitionBlobDir(entries)
+	repaired, deleted := s.repairSidecarlessBlobs(blobs, sidecars)
+	deleted += s.dropOrphanSidecars(blobs, sidecars)
+	return repaired, deleted, nil
+}
+
+// partitionBlobDir splits a blobs/ directory listing into the set of blob digests
+// (regular files whose name is a hex sha256) and the set of sidecar digests
+// (files ending .sha256). The .staging subdir and other entries are ignored.
+func partitionBlobDir(entries []os.DirEntry) (blobs, sidecars map[string]struct{}) {
+	blobs, sidecars = map[string]struct{}{}, map[string]struct{}{}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -79,7 +88,13 @@ func (s *Store) SweepSidecarless() (int, int, error) {
 			blobs[name] = struct{}{}
 		}
 	}
+	return blobs, sidecars
+}
 
+// repairSidecarlessBlobs re-hashes each blob lacking a sidecar: a content match
+// rewrites the sidecar (the blob is kept), a mismatch deletes the corrupt file.
+// Best-effort per blob. Returns (repaired, deleted).
+func (s *Store) repairSidecarlessBlobs(blobs, sidecars map[string]struct{}) (int, int) {
 	repaired, deleted := 0, 0
 	for digest := range blobs {
 		if _, ok := sidecars[digest]; ok {
@@ -99,18 +114,26 @@ func (s *Store) SweepSidecarless() (int, int, error) {
 			deleted++
 		}
 	}
+	return repaired, deleted
+}
+
+// dropOrphanSidecars deletes each sidecar whose blob is absent both from the
+// listing and at delete time (the re-check spares a sidecar a concurrent upload
+// just landed). Best-effort. Returns the count deleted.
+func (s *Store) dropOrphanSidecars(blobs, sidecars map[string]struct{}) int {
+	deleted := 0
 	for digest := range sidecars {
 		if _, ok := blobs[digest]; ok {
 			continue
 		}
 		if s.Has(digest) {
-			continue // a concurrent upload landed the blob after the listing; keep its sidecar
+			continue
 		}
 		if err := os.Remove(s.sidecarPath(digest)); err == nil {
 			deleted++
 		}
 	}
-	return repaired, deleted, nil
+	return deleted
 }
 
 // blobHashesTo re-hashes the blob file for digest and reports whether its sha256
@@ -120,7 +143,7 @@ func (s *Store) blobHashesTo(digest string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return false, err
