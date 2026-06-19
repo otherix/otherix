@@ -121,3 +121,33 @@ func TestHeartbeatBlobsUnavailablePreservesInventory(t *testing.T) {
 		t.Fatalf("inventory after genuine-empty = %+v, want cleared (zero blobs)", inv)
 	}
 }
+
+// TestHeartbeatBlobsDropsInvalidDigest pins the holder-discovery ingest contract:
+// a heartbeat whose node_blobs inventory mixes a valid 64-hex digest with a
+// malformed one keeps only the valid entry. An inventory is incremental, so a bad
+// entry must be dropped (not reject the whole report), and a non-hex digest must
+// never become a holder-discovery key or a path component on the holder.
+func TestHeartbeatBlobsDropsInvalidDigest(t *testing.T) {
+	h := newE2E(t)
+	ctx := context.Background()
+
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+	ag := wgSeedAgent(t, h, caCert, caKey, "node-blobdrop")
+
+	good := "00000000000000000000000000000000000000000000000000000000000000ab"
+
+	// One valid and one malformed digest in the same inventory.
+	hbPostBlobs(t, agentSrv.URL, ag, []map[string]any{
+		{"digest": good, "size_bytes": 1 << 20},
+		{"digest": "not-a-digest", "size_bytes": 1 << 20},
+	}, false)
+
+	inv, err := h.store.NodeBlobInventory(ctx, ag.nodeID)
+	if err != nil {
+		t.Fatalf("NodeBlobInventory: %v", err)
+	}
+	if len(inv) != 1 || inv[0].Digest != good {
+		t.Fatalf("inventory = %+v, want only the valid digest %s (malformed dropped)", inv, good)
+	}
+}

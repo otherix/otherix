@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -23,12 +24,19 @@ type ReconcileStore interface {
 	AddBlobPlacement(ctx context.Context, digest string, nodeID uuid.UUID) error
 	RemoveBlobPlacement(ctx context.Context, digest string, nodeID uuid.UUID) (bool, error)
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
+	TryBeginReplicate(ctx context.Context, digest string, nodeID uuid.UUID, ttl time.Duration) (bool, error)
+	EndReplicate(ctx context.Context, digest string, nodeID uuid.UUID) error
 }
 
 // replicateMaxAttempts is the per-task retry budget stamped on the enqueued row;
 // the dispatcher applies its own registered budget. The reconcile loop re-enqueues
 // each pass while a replica is short, so this is a bound, not the only retry path.
 const replicateMaxAttempts = 25
+
+// replicateInflightTTL bounds how long an in-flight replicate suppresses a
+// duplicate enqueue if the worker dies without clearing the marker. Comfortably
+// larger than a normal pull, smaller than an operator's patience.
+const replicateInflightTTL = 5 * time.Minute
 
 // ReconcileFunc returns the periodic durability reconcile pass. For every produced
 // blob it holds the placement map to the desired replica count K: it prunes
@@ -128,6 +136,15 @@ func enqueueReplicas(ctx context.Context, st ReconcileStore, log *slog.Logger, d
 		if !live[m] || holderSet[m] {
 			continue
 		}
+		began, err := st.TryBeginReplicate(ctx, digest, m, replicateInflightTTL)
+		if err != nil {
+			log.WarnContext(ctx, "durability reconcile: replicate dedup check failed",
+				slog.String("digest", digest), slog.String("node_id", m.String()), slog.Any("error", err))
+			continue
+		}
+		if !began {
+			continue
+		}
 		taskID := uuid.New()
 		if _, err := st.EnqueueTask(ctx, store.CreateTaskParams{
 			ID:           taskID,
@@ -137,6 +154,7 @@ func enqueueReplicas(ctx context.Context, st ReconcileStore, log *slog.Logger, d
 			Args:         []byte(`{}`),
 			MaxAttempts:  replicateMaxAttempts,
 		}, ReplicateArgs{TaskID: taskID, Digest: digest, TargetNodeID: m}); err != nil {
+			_ = st.EndReplicate(ctx, digest, m)
 			log.WarnContext(ctx, "durability reconcile: enqueue replicate failed",
 				slog.String("digest", digest), slog.String("node_id", m.String()), slog.Any("error", err))
 		}

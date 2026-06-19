@@ -57,6 +57,7 @@ var operationIDs = map[string]struct{}{
 	"storagePools.scan":          {},
 	"blobs.serve":                {},
 	"blobs.pull":                 {},
+	"blobs.stopServe":            {},
 	"tasks.get":                  {},
 	"vms.list":                   {},
 	"vms.create":                 {},

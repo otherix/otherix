@@ -51,20 +51,32 @@ type pullSpy struct {
 	token          string
 	holderEndpoint string
 	holderIdentity string
+	expectedSize   int64
 	taskID         string
 	returnErr      error
 }
 
-func (s *pullSpy) Pull(digest, token, holderEndpoint, holderIdentity string) (string, error) {
+func (s *pullSpy) Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (string, error) {
 	s.calls++
 	s.digest = digest
 	s.token = token
 	s.holderEndpoint = holderEndpoint
 	s.holderIdentity = holderIdentity
+	s.expectedSize = expectedSize
 	if s.returnErr != nil {
 		return "", s.returnErr
 	}
 	return s.taskID, nil
+}
+
+// stopSpy records the tokens StopServe was driven with. It stands in for the
+// production serve manager (whose StopServe tears a real listener down).
+type stopSpy struct {
+	tokens []string
+}
+
+func (s *stopSpy) StopServe(token string) {
+	s.tokens = append(s.tokens, token)
 }
 
 func mountTestRouter(h *Handler) chi.Router {
@@ -86,7 +98,7 @@ func TestServe_HappyPath(t *testing.T) {
 		endpoint:  "https://10.0.0.2:49252",
 		expiresAt: "2026-06-18T12:00:00Z",
 	}
-	h := New(srv, &pullSpy{}, discardLogger())
+	h := New(srv, &pullSpy{}, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -123,7 +135,7 @@ func TestServe_HappyPath(t *testing.T) {
 }
 
 func TestServe_BadRequestOnMissingDigest(t *testing.T) {
-	h := New(&serveSpy{}, &pullSpy{}, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -141,7 +153,7 @@ func TestServe_BadRequestOnMissingDigest(t *testing.T) {
 
 func TestServe_BadRequestOnMissingConsumerNodeID(t *testing.T) {
 	srv := &serveSpy{}
-	h := New(srv, &pullSpy{}, discardLogger())
+	h := New(srv, &pullSpy{}, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -161,7 +173,7 @@ func TestServe_BadRequestOnMissingConsumerNodeID(t *testing.T) {
 }
 
 func TestServe_MalformedJSON(t *testing.T) {
-	h := New(&serveSpy{}, &pullSpy{}, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/serve", strings.NewReader("{not json"))
@@ -175,7 +187,7 @@ func TestServe_MalformedJSON(t *testing.T) {
 
 func TestServe_InternalErrorFromManager(t *testing.T) {
 	srv := &serveSpy{returnErr: errors.New("no free port")}
-	h := New(srv, &pullSpy{}, discardLogger())
+	h := New(srv, &pullSpy{}, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -196,7 +208,7 @@ func TestPull_HappyPath(t *testing.T) {
 	digest := strings.Repeat("c", 64)
 	taskID := uuid.New().String()
 	pull := &pullSpy{taskID: taskID}
-	h := New(&serveSpy{}, pull, discardLogger())
+	h := New(&serveSpy{}, pull, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -241,7 +253,7 @@ func TestPull_HappyPath(t *testing.T) {
 }
 
 func TestPull_BadRequestOnMissingHolderEndpoint(t *testing.T) {
-	h := New(&serveSpy{}, &pullSpy{}, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -259,7 +271,7 @@ func TestPull_BadRequestOnMissingHolderEndpoint(t *testing.T) {
 
 func TestPull_InternalErrorFromPuller(t *testing.T) {
 	pull := &pullSpy{returnErr: errors.New("task store full")}
-	h := New(&serveSpy{}, pull, discardLogger())
+	h := New(&serveSpy{}, pull, &stopSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -273,5 +285,58 @@ func TestPull_InternalErrorFromPuller(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+func TestStopServe_HappyPath(t *testing.T) {
+	stop := &stopSpy{}
+	h := New(&serveSpy{}, &pullSpy{}, stop, discardLogger())
+	router := mountTestRouter(h)
+
+	body, _ := json.Marshal(map[string]any{"token": "tok-789"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/stop-serve", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if len(stop.tokens) != 1 || stop.tokens[0] != "tok-789" {
+		t.Errorf("StopServe tokens = %v, want [tok-789]", stop.tokens)
+	}
+}
+
+func TestStopServe_BadRequestOnMissingToken(t *testing.T) {
+	stop := &stopSpy{}
+	h := New(&serveSpy{}, &pullSpy{}, stop, discardLogger())
+	router := mountTestRouter(h)
+
+	body, _ := json.Marshal(map[string]any{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/stop-serve", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(stop.tokens) != 0 {
+		t.Errorf("StopServe tokens = %v, want none (handler must reject before dispatch)", stop.tokens)
+	}
+}
+
+func TestStopServe_MalformedJSON(t *testing.T) {
+	stop := &stopSpy{}
+	h := New(&serveSpy{}, &pullSpy{}, stop, discardLogger())
+	router := mountTestRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/stop-serve", strings.NewReader("{not json"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(stop.tokens) != 0 {
+		t.Errorf("StopServe tokens = %v, want none", stop.tokens)
 	}
 }

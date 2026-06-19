@@ -75,6 +75,27 @@ func TestBlobHolders(t *testing.T) {
 	}
 }
 
+func TestBlobSize(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	node := uuid.New()
+	d := "00000000000000000000000000000000000000000000000000000000000000ab"
+
+	if err := s.UpsertNodeBlobInventory(ctx, node, []store.NodeBlob{{Digest: d, SizeBytes: 4096}}); err != nil {
+		t.Fatalf("UpsertNodeBlobInventory: %v", err)
+	}
+
+	size, ok := s.BlobSize(ctx, d)
+	if !ok || size != 4096 {
+		t.Errorf("BlobSize(%s) = (%d, %v), want (4096, true)", d, size, ok)
+	}
+
+	absent := "00000000000000000000000000000000000000000000000000000000000000cd"
+	if size, ok := s.BlobSize(ctx, absent); ok || size != 0 {
+		t.Errorf("BlobSize(absent) = (%d, %v), want (0, false)", size, ok)
+	}
+}
+
 func TestBlobHoldersNoneWhenAbsent(t *testing.T) {
 	s, _ := startStore(t)
 	holders, err := s.BlobHolders(context.Background(), "00000000000000000000000000000000000000000000000000000000000000cd")

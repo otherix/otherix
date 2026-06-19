@@ -83,3 +83,27 @@ func (s *Store) BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, er
 	sort.Slice(holders, func(i, j int) bool { return holders[i].String() < holders[j].String() })
 	return holders, nil
 }
+
+// BlobSize returns the size in bytes any holder reports for digest, and whether
+// any holder reports it. Content-addressed blobs are identical across holders, so
+// the first reported size is authoritative. The CP uses it to bound a consumer
+// pull body. Zero/absent means "size unknown" and the puller enforces only the
+// digest.
+func (s *Store) BlobSize(ctx context.Context, digest string) (int64, bool) {
+	items, err := s.c.Range(ctx, nodeBlobInventoryPrefix())
+	if err != nil {
+		return 0, false
+	}
+	for _, kv := range items {
+		var blobs []store.NodeBlob
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &blobs, "node_blob") {
+			continue
+		}
+		for _, b := range blobs {
+			if b.Digest == digest && b.SizeBytes > 0 {
+				return b.SizeBytes, true
+			}
+		}
+	}
+	return 0, false
+}

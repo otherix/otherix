@@ -55,6 +55,32 @@ func (c *Client) ServeBlob(
 	return resp, nil
 }
 
+// StopServe tells the holder agent at endpoint to tear down the serve listener
+// identified by the request's per-op token, releasing its reserved port instead
+// of waiting out the token TTL. The work is synchronous (204 No Content);
+// idempotent on the agent side (a token with no live serve is a no-op). Non-2xx
+// surfaces as *AgentError.
+//
+// The agent endpoint is fixed (`POST /v1/blobs/stop-serve`).
+func (c *Client) StopServe(ctx context.Context, endpoint string, req agentapi.BlobStopServeRequest) error {
+	body, err := json.Marshal(req) //nolint:gosec // G117: token is part of the wire contract - the CP hands the holder agent the per-op token to identify which serve to tear down; this marshals it onto the request by design, it is not a leak.
+	if err != nil {
+		return fmt.Errorf("agentclient: encode BlobStopServeRequest: %v", err)
+	}
+
+	target, _ := url.JoinPath(endpoint, "/v1/blobs/stop-serve")
+	httpReq, err := newRequest(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	if _, _, err := c.do(httpReq); err != nil {
+		return fmt.Errorf("agentclient: stop serve: %w", err)
+	}
+	return nil
+}
+
 // PullBlob tells the consumer agent at endpoint to pull the request's digest
 // from the holder's serve endpoint, presenting the per-op token. The work is
 // async: 202 returns an AsyncTaskAccepted whose task id this method returns.

@@ -127,4 +127,38 @@ func TestReconcileReachesKAgainstRealStore(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("pending artifact.replicate tasks = %d, want exactly 1", len(tasks))
 	}
+
+	// The target chosen on the first pass (the new placement member that is not node1).
+	target := members[0]
+	if target == node1 {
+		target = members[1]
+	}
+
+	countPending := func() int {
+		t.Helper()
+		got, err := s.ListTasksAny(ctx, store.ListTasksAnyParams{StatusFilter: &pending, TypeFilter: &typ, LimitCount: 100})
+		if err != nil {
+			t.Fatalf("ListTasksAny: %v", err)
+		}
+		return len(got)
+	}
+
+	// Second pass while the in-flight marker is set: dedup must enqueue NOTHING new.
+	if err := replication.ReconcileFunc(s, log)(ctx); err != nil {
+		t.Fatalf("ReconcileFunc (2nd pass): %v", err)
+	}
+	if n := countPending(); n != 1 {
+		t.Fatalf("after 2nd pass pending artifact.replicate tasks = %d, want still 1 (dedup)", n)
+	}
+
+	// Clear the marker; a later pass re-enqueues (target still not holding the blob).
+	if err := s.EndReplicate(ctx, digest, target); err != nil {
+		t.Fatalf("EndReplicate: %v", err)
+	}
+	if err := replication.ReconcileFunc(s, log)(ctx); err != nil {
+		t.Fatalf("ReconcileFunc (3rd pass): %v", err)
+	}
+	if n := countPending(); n != 2 {
+		t.Fatalf("after marker clear pending artifact.replicate tasks = %d, want 2 (re-enqueue)", n)
+	}
 }

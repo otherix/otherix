@@ -1301,6 +1301,27 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/blobs/stop-serve:
+    post:
+      operationId: blobs.stopServe
+      tags: [blobs]
+      summary: Tear down a peer blob serve listener.
+      description: |
+        Sent by the Control Plane to a holder agent to release a blob
+        serve listener and its port once the consumer pull has completed,
+        instead of waiting out the per-op token TTL. Idempotent: a token
+        with no live serve is a no-op.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobStopServeRequest"
+      responses:
+        "204":
+          description: Serve torn down (or already gone).
+        "400": { $ref: "#/components/responses/BadRequest" }
+
   /v1/networks:
     get:
       operationId: networks.list
@@ -2430,6 +2451,17 @@ components:
             RFC 3339 instant at which the serve listener is torn down
             (the per-op token TTL).
 
+    BlobStopServeRequest:
+      type: object
+      description: |
+        Sent by the CP to a holder agent to tear down the blob serve
+        listener identified by its per-operation token.
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: The CP-minted per-op token the serve was primed with.
+
     BlobPullRequest:
       type: object
       description: |
@@ -2460,6 +2492,15 @@ components:
             identity SAN, not the dialed IP - mirrors the migration
             target_node_identity pin. Absent: no pinning, the consumer
             verifies the holder cert against the dialed host.
+        expected_size:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            CP-known size in bytes of the blob (from the holder's reported
+            inventory). The consumer bounds the pull body to this value and fails
+            closed on overflow, so a misbehaving holder cannot fill the consumer
+            disk before the digest check. Omitted or null means the size is
+            unknown and only the digest is enforced.
 
     MigrationIncomingRequest:
       type: object

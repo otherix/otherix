@@ -34,29 +34,43 @@ type BlobServer interface {
 // streams the blob for digest from holderEndpoint (presenting token) into the
 // local artifact store, and return the task id immediately. holderIdentity
 // (when non-empty) pins TLS verification to the holder's node identity SAN.
+// expectedSize (when > 0) bounds the streamed body to the CP-known blob size so
+// a misbehaving holder cannot fill the disk before the digest check.
 // Production wraps a blobpeer.Pull adapter (server.go); tests pass a spy.
 type BlobPuller interface {
-	Pull(digest, token, holderEndpoint, holderIdentity string) (taskID string, err error)
+	Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (taskID string, err error)
 }
 
-// Handler bundles the serve / pull seams and the logger. All state (the serve
-// manager's listeners, the task store) lives behind the seams; the handler only
-// translates wire shapes.
+// BlobStopper is the seam the stop-serve handler drives: tear down the serve
+// listener identified by its per-op token, releasing its reserved port. The
+// token (not the digest) is the key so two concurrent serves of the same digest
+// to different consumers stay disambiguated. Idempotent: a token with no live
+// serve is a no-op. Production wraps the serve manager (server.go); tests pass a
+// spy.
+type BlobStopper interface {
+	StopServe(token string)
+}
+
+// Handler bundles the serve / pull / stop seams and the logger. All state (the
+// serve manager's listeners, the task store) lives behind the seams; the handler
+// only translates wire shapes.
 type Handler struct {
-	server BlobServer
-	puller BlobPuller
-	log    *slog.Logger
+	server  BlobServer
+	puller  BlobPuller
+	stopper BlobStopper
+	log     *slog.Logger
 }
 
-// New constructs a Handler over the serve / pull seams.
-func New(s BlobServer, p BlobPuller, log *slog.Logger) *Handler {
-	return &Handler{server: s, puller: p, log: log}
+// New constructs a Handler over the serve / pull / stop seams.
+func New(s BlobServer, p BlobPuller, stop BlobStopper, log *slog.Logger) *Handler {
+	return &Handler{server: s, puller: p, stopper: stop, log: log}
 }
 
 // Mount registers /v1/blobs routes on r.
 func (h *Handler) Mount(r chi.Router) {
 	r.Post("/serve", h.Serve)
 	r.Post("/pull", h.Pull)
+	r.Post("/stop-serve", h.StopServe)
 }
 
 // asyncAccepted mirrors `AsyncTaskAccepted` in api/openapi/agent.yaml.

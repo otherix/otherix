@@ -185,6 +185,51 @@ func (m *blobServeManager) takeServe(port int) *activeServe {
 	return as
 }
 
+// StopByToken tears down the active serve whose per-op token matches (releasing
+// its port and dropping the token), if any. A token with no live serve is a
+// no-op. The CP-driven stop-serve endpoint uses this to release the port at pull
+// completion instead of waiting out the token TTL. The 10-minute TTL teardown
+// remains the fallback for a CP that never calls stop-serve.
+//
+// The token (not the digest) is the teardown key: two concurrent serves of the
+// same digest to different consumers exist as two ports / two tokens, so a
+// digest-keyed teardown would be ambiguous. The match-and-claim is atomic
+// (takeServeByToken holds the mutex across both), so StopByToken is race-safe
+// with the per-serve TTL teardown - both contend for the same single-claim
+// active-map entry, so each serve is torn down exactly once, and a stale token
+// can never claim a port a fresh serve has since reclaimed under a new token.
+func (m *blobServeManager) StopByToken(token string) {
+	as := m.takeServeByToken(token)
+	if as == nil {
+		return
+	}
+	m.tearDown(as)
+}
+
+// takeServeByToken finds and removes the active serve whose per-op token matches
+// under a single hold of the mutex, returning it (or nil if none matches). Match
+// and claim are atomic so the result is keyed strictly on the token: there is no
+// window in which the TTL teardown could free the matched serve's port and a
+// fresh Serve re-reserve it for a different token before the claim lands. It is
+// the token-keyed sibling of takeServe (which claims by port) and shares the
+// same single-claim contract with the TTL teardown and Close.
+func (m *blobServeManager) takeServeByToken(token string) *activeServe {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for port, as := range m.active {
+		if as.token == token {
+			delete(m.active, port)
+			return as
+		}
+	}
+	return nil
+}
+
+// StopServe implements the blobs.BlobStopper seam: it tears down the serve
+// identified by its per-op token. It is a thin alias for StopByToken so the
+// handler can drive the manager without knowing the token-keyed naming.
+func (m *blobServeManager) StopServe(token string) { m.StopByToken(token) }
+
 // tearDown closes one serve's listener, releases its port, drops its primed
 // token, and stops its TTL timer. It runs at most once per serve: the caller
 // must first have claimed the entry via takeServe (or removed it under the

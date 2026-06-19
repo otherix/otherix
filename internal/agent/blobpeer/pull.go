@@ -20,6 +20,36 @@ import (
 // (artifactstore.Put re-verifies and discards a mismatch). The pull task fails.
 var ErrBlobVerifyFailed = errors.New("blobpeer: pulled blob failed digest verification")
 
+// ErrBlobTooLarge is returned when the holder streams more bytes than the
+// CP-known expected size, before the disk fills. (Integrity is also enforced by
+// the digest verify; this bound stops a disk-fill DoS that would otherwise occur
+// before the hash completes.)
+var ErrBlobTooLarge = errors.New("blobpeer: pull body exceeds expected size")
+
+// boundedReader fails closed once more than max bytes have been read. It records
+// the overflow on a flag so the caller can still recognize the cause even though
+// artifactstore.Put wraps the underlying copy error with %v (which severs the
+// errors.Is chain).
+type boundedReader struct {
+	r          io.Reader
+	max        int64
+	read       int64
+	overflowed bool
+}
+
+func (b *boundedReader) Read(p []byte) (int, error) {
+	if b.read >= b.max {
+		b.overflowed = true
+		return 0, ErrBlobTooLarge
+	}
+	if int64(len(p)) > b.max-b.read {
+		p = p[:b.max-b.read]
+	}
+	n, err := b.r.Read(p)
+	b.read += int64(n)
+	return n, err
+}
+
 // PullArgs is the input to Pull. Endpoint is the holder's peer-listener base URL
 // (https://host:port); Digest the requested content address; Token the per-op
 // bearer token; Store the local artifact store to land the blob in; TLSClient an
@@ -33,6 +63,12 @@ var ErrBlobVerifyFailed = errors.New("blobpeer: pulled blob failed digest verifi
 // with "certificate is valid for <SAN>, not <IP>". This mirrors the live
 // migration data path's tls-hostname pin (internal/agent/qemu/nbd.go). Empty
 // preserves the default behavior (verify against the dialed host).
+//
+// ExpectedSize, when > 0, is the CP-known size in bytes of the blob (from the
+// holder's reported inventory). Pull bounds the copied body to it and fails
+// closed on overflow, so a misbehaving holder cannot fill the consumer disk
+// before the digest check completes. Zero means the size is unknown and only the
+// digest is enforced (no cap).
 type PullArgs struct {
 	Endpoint       string
 	Digest         string
@@ -40,6 +76,7 @@ type PullArgs struct {
 	Store          *artifactstore.Store
 	TLSClient      *http.Client
 	HolderIdentity string
+	ExpectedSize   int64
 }
 
 // Pull streams the blob from the holder's peer listener over mTLS HTTPS and
@@ -89,7 +126,23 @@ func Pull(ctx context.Context, a PullArgs) error {
 		return fmt.Errorf("blobpeer: holder returned %d for digest %s", resp.StatusCode, a.Digest)
 	}
 
-	if err := a.Store.Put(a.Digest, resp.Body); err != nil {
+	// Bound the body the holder may stream into the content-addressed store when
+	// the CP knows the size: max = ExpectedSize+1, so a correctly-sized blob
+	// passes and the first over-size byte trips the cap. This stops a disk-fill
+	// DoS that would otherwise occur before the sha256 verify completes. The cap
+	// is a flag on the bounded reader (not the returned error) because
+	// artifactstore.Put wraps the copy error with %v, severing the errors.Is
+	// chain - so overflow is recognized by br.overflowed, not errors.Is(err, ...).
+	var body io.Reader = resp.Body
+	var br *boundedReader
+	if a.ExpectedSize > 0 {
+		br = &boundedReader{r: resp.Body, max: a.ExpectedSize + 1}
+		body = br
+	}
+	if err := a.Store.Put(a.Digest, body); err != nil {
+		if br != nil && br.overflowed {
+			return fmt.Errorf("%w: holder streamed past expected size for digest %s", ErrBlobTooLarge, a.Digest)
+		}
 		if errors.Is(err, artifactstore.ErrDigestMismatch) {
 			return fmt.Errorf("%w: %v", ErrBlobVerifyFailed, err)
 		}

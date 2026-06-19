@@ -59,7 +59,9 @@ func buildBlobsHandler(cfg *config.AgentConfig, manager *vm.Manager, artStore *a
 	if err != nil {
 		return nil, nil, fmt.Errorf("pull client: %w", err)
 	}
-	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, log), serveMgr, nil
+	// serveMgr is both the serve seam and the stop-serve seam (it has StopServe,
+	// the token-keyed teardown wired to the CP-driven stop-serve endpoint).
+	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, serveMgr, log), serveMgr, nil
 }
 
 // blobPuller is the consumer-side half of the cross-node blob pull: it runs
@@ -75,9 +77,11 @@ type blobPuller struct {
 // Pull starts a tracked agent task streaming the blob for digest from
 // holderEndpoint into the local artifact store and returns the task id
 // immediately. holderIdentity (when non-empty) pins TLS verification to the
-// holder's node identity SAN. It implements blobs.BlobPuller.
-func (p blobPuller) Pull(digest, token, holderEndpoint, holderIdentity string) (string, error) {
-	task, err := p.manager.PullBlob(context.Background(), p.client, digest, token, holderEndpoint, holderIdentity)
+// holder's node identity SAN. expectedSize (when > 0) bounds the streamed body
+// so a misbehaving holder cannot fill the disk before the digest check. It
+// implements blobs.BlobPuller.
+func (p blobPuller) Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (string, error) {
+	task, err := p.manager.PullBlob(context.Background(), p.client, digest, token, holderEndpoint, holderIdentity, expectedSize)
 	if err != nil {
 		return "", err
 	}

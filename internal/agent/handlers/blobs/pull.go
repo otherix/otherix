@@ -39,7 +39,11 @@ func (h *Handler) Pull(w http.ResponseWriter, r *http.Request) {
 	if req.HolderIdentity != nil {
 		holderIdentity = *req.HolderIdentity
 	}
-	taskID, err := h.puller.Pull(req.Digest, req.Token, req.HolderEndpoint, holderIdentity)
+	var expectedSize int64
+	if req.ExpectedSize != nil {
+		expectedSize = *req.ExpectedSize
+	}
+	taskID, err := h.puller.Pull(req.Digest, req.Token, req.HolderEndpoint, holderIdentity, expectedSize)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "blob pull failed",
 			"digest", req.Digest, "holder_endpoint", req.HolderEndpoint, "err", err)

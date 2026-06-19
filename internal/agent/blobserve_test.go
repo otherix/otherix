@@ -169,6 +169,90 @@ func TestBlobServeManager_CloseReleasesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestBlobServeManager_StopByTokenReleasesAndIsIdempotent verifies StopByToken
+// tears down the serve whose per-op token matches (releasing its port back to
+// the allocator and dropping its primed token), and a second StopByToken for the
+// same token is a no-op. The token (not the digest) is the teardown key so two
+// concurrent serves of the same digest to different consumers stay
+// disambiguated.
+func TestBlobServeManager_StopByTokenReleasesAndIsIdempotent(t *testing.T) {
+	m, port := newTestServeManager(t)
+
+	if _, _, err := m.Serve(strings.Repeat("a", 64), "tok-1", ""); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	// Port is reserved (allocator exhausted) and the token is primed.
+	if _, err := m.ports.Reserve(); err == nil {
+		t.Fatalf("Reserve succeeded while serve active, want exhausted")
+	}
+	if _, ok := m.verifier.Verify("tok-1", strings.Repeat("a", 64)); !ok {
+		t.Fatalf("token not primed during active serve")
+	}
+
+	m.StopByToken("tok-1")
+
+	// Port re-reservable (released) and token dropped.
+	got, err := m.ports.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve after StopByToken: %v, want port released", err)
+	}
+	if got != port {
+		t.Errorf("Reserve after StopByToken = %d, want %d (the released port)", got, port)
+	}
+	m.ports.Release(got)
+	if _, ok := m.verifier.Verify("tok-1", strings.Repeat("a", 64)); ok {
+		t.Errorf("token still primed after StopByToken, want dropped")
+	}
+
+	// Second StopByToken for the same token is a no-op (serve already gone), and
+	// it must not release the port a second time.
+	m.StopByToken("tok-1")
+	if _, err := m.ports.Reserve(); err != nil {
+		t.Fatalf("Reserve after second StopByToken: %v, want still one free port", err)
+	}
+
+	// StopByToken for an unknown token is a no-op.
+	m.StopByToken("never-served")
+}
+
+// TestTakeServeByToken_ClaimsStrictlyByToken pins the unit the fix introduced:
+// takeServeByToken claims the entry whose token matches and leaves every other
+// entry untouched, all under one mutex hold. A non-matching token claims
+// nothing. This is the atomic match-and-claim that replaced the
+// scan-release-claim window where a stale token could claim a reused port.
+func TestTakeServeByToken_ClaimsStrictlyByToken(t *testing.T) {
+	m, _ := newTestServeManager(t)
+	// Two live entries on distinct ports, distinct tokens (constructed directly:
+	// this is a white-box test of the claim primitive, not of Serve).
+	a1 := &activeServe{port: 1, token: "tok-1", timer: time.NewTimer(time.Hour)}
+	a2 := &activeServe{port: 2, token: "tok-2", timer: time.NewTimer(time.Hour)}
+	m.active[1] = a1
+	m.active[2] = a2
+
+	if got := m.takeServeByToken("nope"); got != nil {
+		t.Errorf("takeServeByToken(nope) = %v, want nil (no match)", got)
+	}
+	if len(m.active) != 2 {
+		t.Errorf("active len after no-match = %d, want 2 (nothing claimed)", len(m.active))
+	}
+
+	got := m.takeServeByToken("tok-2")
+	if got != a2 {
+		t.Fatalf("takeServeByToken(tok-2) = %v, want the tok-2 entry", got)
+	}
+	if _, ok := m.active[2]; ok {
+		t.Errorf("tok-2 entry still in active after claim, want removed")
+	}
+	if _, ok := m.active[1]; !ok {
+		t.Errorf("tok-1 entry claimed by takeServeByToken(tok-2), want untouched")
+	}
+
+	// A second claim of the now-removed token finds nothing.
+	if got := m.takeServeByToken("tok-2"); got != nil {
+		t.Errorf("second takeServeByToken(tok-2) = %v, want nil", got)
+	}
+}
+
 // TestBlobInventoryAdapter_NodeBlobs confirms the heartbeat BlobLister adapter
 // maps the artifact store's blob entries to heartbeat.BlobReport and reports
 // ok=true (including the empty inventory case).
