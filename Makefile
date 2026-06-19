@@ -237,6 +237,10 @@ smoke-artifact-pull: ## Cross-node artifact-pull smoke (slice C1): snapshot on n
 smoke-artifact-durability: ## Artifact durability smoke: snapshot replicates to the pool replication factor, survives a holder loss, and re-replicates onto a surviving node (run after local-dev-start)
 	@bash dev/smoke/artifact-durability/run.sh
 
+.PHONY: smoke-artifact-pool-rf-update
+smoke-artifact-pool-rf-update: ## Artifact-pool RF update smoke: raising replication_factor re-replicates existing snapshots to the new factor (run after local-dev-start)
+	@bash dev/smoke/artifact-pool-rf-update/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

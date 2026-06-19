@@ -105,6 +105,33 @@ func (s *Store) ArtifactPoolByName(ctx context.Context, name string) (store.Arti
 	return s.ArtifactPoolByID(ctx, id)
 }
 
+// UpdateArtifactPool applies the non-nil fields of params to the artifact pool
+// with the given id, bumps updated_at, and returns the updated row. The name is
+// immutable (no params field) so the name guard is left untouched and the row
+// is rewritten in place by id. Returns store.ErrNotFound when the pool is absent
+// or deleted.
+func (s *Store) UpdateArtifactPool(ctx context.Context, id uuid.UUID, params store.UpdateArtifactPoolParams) (store.ArtifactPool, error) {
+	ap, err := s.ArtifactPoolByID(ctx, id)
+	if err != nil {
+		return store.ArtifactPool{}, err
+	}
+	if params.ReplicationFactor != nil {
+		ap.ReplicationFactor = *params.ReplicationFactor
+	}
+	if params.Membership != nil {
+		ap.Membership = *params.Membership
+	}
+	ap.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(ap)
+	if err != nil {
+		return store.ArtifactPool{}, err
+	}
+	if err := s.c.Put(ctx, artifactPoolKey(ap.ID), val); err != nil {
+		return store.ArtifactPool{}, fmt.Errorf("update artifact pool put: %v", err)
+	}
+	return ap, nil
+}
+
 // ListArtifactPools returns non-deleted artifact pools ordered by (created_at,
 // id) ascending, after the cursor, capped at LimitCount. Bounded collection ->
 // primary-prefix scan (mirrors ListNetworks).

@@ -37,6 +37,16 @@ type ArtifactPoolCreateBody struct {
 	Membership        any             `json:"membership,omitempty"`
 }
 
+// ArtifactPoolUpdateBody is the PATCH /v1/artifact-pools/{id} request body.
+// Both fields are optional pointers so an unchanged field is omitted from the
+// JSON: only the supplied flags reach the server. ReplicationFactor is a raw
+// JSON value (an integer or the string "all"); Membership is the
+// {all_nodes, nodes} object.
+type ArtifactPoolUpdateBody struct {
+	ReplicationFactor *json.RawMessage `json:"replication_factor,omitempty"`
+	Membership        any              `json:"membership,omitempty"`
+}
+
 type artifactPoolList struct {
 	Data []ArtifactPool `json:"data"`
 	Meta struct {
@@ -64,6 +74,23 @@ func (c *Client) CreateArtifactPool(ctx context.Context, body ArtifactPoolCreate
 // verbatim (no client-side name resolution).
 func (c *Client) GetArtifactPool(ctx context.Context, identifier string) (ArtifactPool, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/artifact-pools/"+url.PathEscape(identifier), nil)
+	if err != nil {
+		return ArtifactPool{}, err
+	}
+	_, raw, err := c.do(req)
+	if err != nil {
+		return ArtifactPool{}, err
+	}
+	var out ArtifactPool
+	return out, decodeJSON(raw, &out)
+}
+
+// UpdateArtifactPool submits PATCH /v1/artifact-pools/{identifier} (UUID or
+// name). Only the fields set on body are sent; the CP applies the changes and
+// returns the updated pool. Admin-only (storage_pool:manage). Non-2xx surfaces
+// as *APIError.
+func (c *Client) UpdateArtifactPool(ctx context.Context, identifier string, body ArtifactPoolUpdateBody) (ArtifactPool, error) {
+	req, err := c.newRequest(ctx, http.MethodPatch, "/v1/artifact-pools/"+url.PathEscape(identifier), body)
 	if err != nil {
 		return ArtifactPool{}, err
 	}

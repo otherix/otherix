@@ -22,6 +22,7 @@ type Store interface {
 	CreateArtifactPool(ctx context.Context, p store.CreateArtifactPoolParams) (store.ArtifactPool, error)
 	ArtifactPoolByID(ctx context.Context, id uuid.UUID) (store.ArtifactPool, error)
 	ArtifactPoolByName(ctx context.Context, name string) (store.ArtifactPool, error)
+	UpdateArtifactPool(ctx context.Context, id uuid.UUID, p store.UpdateArtifactPoolParams) (store.ArtifactPool, error)
 	ListArtifactPools(ctx context.Context, p store.ListArtifactPoolsParams) ([]store.ArtifactPool, error)
 	DeleteArtifactPool(ctx context.Context, id uuid.UUID) error
 }

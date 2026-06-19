@@ -11,6 +11,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
@@ -60,6 +61,59 @@ func TestArtifactPoolCRUD(t *testing.T) {
 		ID: uuid.New(), Name: "gold", ReplicationFactor: store.ReplicationFactor{All: true},
 	}); err != nil {
 		t.Fatalf("recreate after delete: %v", err)
+	}
+}
+
+func TestArtifactPoolUpdate(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	ap, err := s.CreateArtifactPool(ctx, store.CreateArtifactPoolParams{
+		ID:                uuid.New(),
+		Name:              "gold",
+		ReplicationFactor: store.ReplicationFactor{Count: 1},
+		Membership:        store.ArtifactPoolMembership{AllNodes: true},
+	})
+	if err != nil {
+		t.Fatalf("CreateArtifactPool: %v", err)
+	}
+
+	rf3 := store.ReplicationFactor{Count: 3}
+	updated, err := s.UpdateArtifactPool(ctx, ap.ID, store.UpdateArtifactPoolParams{ReplicationFactor: &rf3})
+	if err != nil {
+		t.Fatalf("UpdateArtifactPool: %v", err)
+	}
+	if updated.ReplicationFactor != rf3 {
+		t.Errorf("updated.ReplicationFactor = %+v, want %+v", updated.ReplicationFactor, rf3)
+	}
+	if !updated.UpdatedAt.After(ap.UpdatedAt) {
+		t.Errorf("UpdatedAt not bumped: was %v, now %v", ap.UpdatedAt, updated.UpdatedAt)
+	}
+
+	got, err := s.ArtifactPoolByID(ctx, ap.ID)
+	if err != nil || got.ReplicationFactor != rf3 {
+		t.Fatalf("ArtifactPoolByID = %+v, %v; want RF %+v", got, err, rf3)
+	}
+	if got.Membership.AllNodes != true {
+		t.Errorf("membership changed unexpectedly: %+v", got.Membership)
+	}
+
+	// Nil RF + a new membership: only membership changes.
+	newMembership := store.ArtifactPoolMembership{AllNodes: false, Nodes: []string{"n1", "n2"}}
+	updated2, err := s.UpdateArtifactPool(ctx, ap.ID, store.UpdateArtifactPoolParams{Membership: &newMembership})
+	if err != nil {
+		t.Fatalf("UpdateArtifactPool (membership): %v", err)
+	}
+	if updated2.ReplicationFactor != rf3 {
+		t.Errorf("RF changed on membership-only update: %+v", updated2.ReplicationFactor)
+	}
+	if diff := cmp.Diff(newMembership, updated2.Membership); diff != "" {
+		t.Errorf("membership mismatch (-want +got):\n%s", diff)
+	}
+
+	// Update on a missing id returns ErrNotFound.
+	if _, err := s.UpdateArtifactPool(ctx, uuid.New(), store.UpdateArtifactPoolParams{ReplicationFactor: &rf3}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("update missing err = %v, want ErrNotFound", err)
 	}
 }
 

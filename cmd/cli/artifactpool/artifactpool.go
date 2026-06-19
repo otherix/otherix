@@ -27,6 +27,7 @@ authenticated role can read them, admin alone may create or delete them.`,
 	}
 	cmd.AddCommand(newCreateCommand())
 	cmd.AddCommand(newGetCommand())
+	cmd.AddCommand(newUpdateCommand())
 	cmd.AddCommand(newListCommand())
 	cmd.AddCommand(newDeleteCommand())
 	return cmd
