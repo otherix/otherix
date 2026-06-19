@@ -52,8 +52,10 @@ func (s *Store) SweepStaging(maxAge time.Duration) (int, error) {
 // content: a hash equal to the filename means a valid blob whose sidecar write
 // was interrupted, so the sidecar is rewritten (the blob is kept); a hash that
 // differs means the file is corrupt and unusable, so it is deleted. A sidecar
-// with no backing blob is an orphan and is deleted. A non-hex file name is left
-// alone. Best-effort per entry. Returns (repaired, deleted) counts.
+// with no backing blob is an orphan and is deleted, but only after re-checking
+// the blob is still absent (a concurrent upload may have landed it after the
+// directory listing). A non-hex file name is left alone. Best-effort per entry.
+// Returns (repaired, deleted) counts.
 func (s *Store) SweepSidecarless() (int, int, error) {
 	entries, err := os.ReadDir(s.blobsDir())
 	if err != nil {
@@ -100,6 +102,9 @@ func (s *Store) SweepSidecarless() (int, int, error) {
 	for digest := range sidecars {
 		if _, ok := blobs[digest]; ok {
 			continue
+		}
+		if s.Has(digest) {
+			continue // a concurrent upload landed the blob after the listing; keep its sidecar
 		}
 		if err := os.Remove(s.sidecarPath(digest)); err == nil {
 			deleted++

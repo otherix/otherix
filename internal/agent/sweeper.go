@@ -17,10 +17,12 @@ import (
 const artifactSweepInterval = time.Hour
 
 // artifactStagingMaxAge is the minimum age a staging temp file must reach on a
-// periodic sweep before it is removed, so a live upload mid-write is never
-// deleted. The boot sweep ignores this (nothing is in flight at boot) and clears
-// all staging.
-const artifactStagingMaxAge = time.Hour
+// periodic sweep before it is removed. The boot sweep (maxAge 0) is the primary
+// cleaner and clears all staging while nothing is in flight; the periodic sweep
+// is only a backstop for staging temps a boot sweep never saw. Its max-age is
+// therefore set generously, well beyond any expected blob-upload duration, so a
+// slow-but-live upload's staging temp is never removed mid-write.
+const artifactStagingMaxAge = 24 * time.Hour
 
 // artifactSweeper periodically reconciles the node's artifact store against
 // itself: it clears interrupted-upload staging temp files and repairs or removes
