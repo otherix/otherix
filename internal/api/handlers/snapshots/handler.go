@@ -103,8 +103,13 @@ type vmSnapshotView struct {
 	Durability       string `json:"durability"`
 	DesiredReplicas  int    `json:"desired_replicas"`
 	ObservedReplicas int    `json:"observed_replicas"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
+	// HolderNodes are the names of the live nodes that currently hold the
+	// snapshot's content-addressed blobs (the union of live holders across the
+	// manifest disks). Empty when the manifest is not yet produced or no live
+	// node holds it.
+	HolderNodes []string `json:"holder_nodes"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // vmSnapshotDiskView mirrors the per-disk blob descriptor in the manifest.
@@ -170,14 +175,20 @@ func toView(s store.Snapshot) vmSnapshotView {
 // renders "unknown" and logs, never failing the request.
 func (h *Handler) viewWithDurability(ctx context.Context, s store.Snapshot) vmSnapshotView {
 	v := toView(s)
-	status, desired, observed, err := replication.SnapshotDurability(ctx, h.store, s)
+	status, desired, observed, holderNodes, err := replication.SnapshotDurability(ctx, h.store, s)
 	if err != nil {
 		h.log.WarnContext(ctx, "compute snapshot durability",
 			slog.String("snapshot_id", s.ID.String()), slog.Any("error", err))
-		status, desired, observed = replication.DurabilityUnknown, 0, 0
+		status, desired, observed, holderNodes = replication.DurabilityUnknown, 0, 0, nil
 	}
 	v.Durability = status
 	v.DesiredReplicas = desired
 	v.ObservedReplicas = observed
+	// Always surface a (possibly empty) array so the field is never null on the
+	// wire; matches the schema's required holder_nodes.
+	if holderNodes == nil {
+		holderNodes = []string{}
+	}
+	v.HolderNodes = holderNodes
 	return v
 }

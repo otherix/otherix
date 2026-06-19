@@ -4,6 +4,8 @@
 package snapshot
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -14,8 +16,10 @@ func newGetCommand() *cobra.Command {
 		Use:   "get <id>",
 		Short: "Show a snapshot by id.",
 		Long: `Fetches a snapshot's projected view from the CP by its UUID. The text view
-surfaces the name, status, source VM state, architecture, summed disk size, and
-per-disk blob digests. --output json echoes the server projection verbatim.`,
+surfaces the name, status, source VM state, architecture, summed disk size,
+per-disk blob digests, the computed durability (with observed/desired replicas),
+and the names of the nodes that currently hold the snapshot. --output json echoes
+the server projection verbatim.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
@@ -69,6 +73,12 @@ func printSnapshotText(cmd *cobra.Command, s cpclient.Snapshot) {
 	printf(cmd, "vm_state_at_snapshot: %s\n", s.VMStateAtSnapshot)
 	printf(cmd, "architecture: %s\n", s.Architecture)
 	printf(cmd, "disk_size: %s\n", snapshotSize(s.DiskSizeBytes))
+	if s.Durability != "" {
+		printf(cmd, "durability: %s (%d/%d replicas)\n", s.Durability, s.ObservedReplicas, s.DesiredReplicas)
+	}
+	if len(s.HolderNodes) > 0 {
+		printf(cmd, "holder_nodes: %s\n", strings.Join(s.HolderNodes, ", "))
+	}
 	if s.Description != "" {
 		printf(cmd, "description: %s\n", s.Description)
 	}

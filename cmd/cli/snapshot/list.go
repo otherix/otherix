@@ -95,17 +95,17 @@ func runList(cmd *cobra.Command, _ []string) error {
 }
 
 // printSnapshotTable renders an aligned table to stdout. Columns:
-// ID VM NAME STATUS OWNER SIZE AGE - ID is the short snapshot id (the full
+// ID NAME VM STATUS OWNER SIZE AGE - ID is the short snapshot id (the full
 // UUID is in the json path), VM is the resolved vm_name, OWNER is the resolved
 // owner_display_name (both "-" when their row is gone), SIZE is the summed blob
 // size ("-" until measured), AGE is the snapshot's age. The bottom hint prints
 // next_cursor when populated so operators can chain the next page.
 func printSnapshotTable(cmd *cobra.Command, snapshots []cpclient.SnapshotListItem, next string) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ID\tVM\tNAME\tSTATUS\tOWNER\tSIZE\tAGE")
+	_, _ = fmt.Fprintln(tw, "ID\tNAME\tVM\tSTATUS\tOWNER\tSIZE\tAGE")
 	for _, s := range snapshots {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			shortID(s.ID), dashIfNil(s.VMName), s.Name, s.Status,
+			shortID(s.ID), s.Name, dashIfNil(s.VMName), s.Status,
 			dashIfNil(s.OwnerDisplayName), snapshotSize(s.DiskSizeBytes), humanAge(s.CreatedAt))
 	}
 	_ = tw.Flush()

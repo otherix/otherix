@@ -59,9 +59,13 @@ func snapshotJSON(id, name, status string) map[string]any {
 		"disks": []map[string]any{
 			{"index": 0, "device": "virtio0", "sha256": "abc123", "size_bytes": 1073741824},
 		},
-		"disk_size_bytes": 1073741824,
-		"created_at":      "2026-06-17T10:00:00Z",
-		"updated_at":      "2026-06-17T10:00:00Z",
+		"disk_size_bytes":   1073741824,
+		"durability":        "durable",
+		"desired_replicas":  2,
+		"observed_replicas": 2,
+		"holder_nodes":      []string{"node-1", "node-2"},
+		"created_at":        "2026-06-17T10:00:00Z",
+		"updated_at":        "2026-06-17T10:00:00Z",
 	}
 }
 
@@ -105,11 +109,16 @@ func TestList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list err = %v (stderr=%s)", err, stderr)
 	}
-	// Header columns.
+	// Header columns, in order: ID NAME VM STATUS OWNER SIZE AGE.
 	if !strings.Contains(stdout, "ID") || !strings.Contains(stdout, "VM") ||
 		!strings.Contains(stdout, "NAME") || !strings.Contains(stdout, "OWNER") ||
 		!strings.Contains(stdout, "SIZE") || !strings.Contains(stdout, "AGE") {
 		t.Errorf("table header missing columns:\n%s", stdout)
+	}
+	header := strings.Fields(strings.SplitN(stdout, "\n", 2)[0])
+	wantHeader := []string{"ID", "NAME", "VM", "STATUS", "OWNER", "SIZE", "AGE"}
+	if strings.Join(header, " ") != strings.Join(wantHeader, " ") {
+		t.Errorf("table header order = %v, want %v", header, wantHeader)
 	}
 	// Short id (first 8 chars) shown; full UUID must not leak into the table.
 	if !strings.Contains(stdout, "11111111") {
@@ -192,7 +201,11 @@ func TestGet_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get err = %v (stderr=%s)", err, stderr)
 	}
-	for _, want := range []string{"name: daily", "status: ready"} {
+	for _, want := range []string{
+		"name: daily", "status: ready",
+		"durability: durable (2/2 replicas)",
+		"holder_nodes: node-1, node-2",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("text view missing %q:\n%s", want, stdout)
 		}

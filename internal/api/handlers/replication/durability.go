@@ -6,6 +6,7 @@ package replication
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/google/uuid"
 
@@ -133,45 +134,44 @@ func durabilityRank(s string) int {
 }
 
 // SnapshotDurability computes the durability projection for a snapshot: the
-// weakest per-disk-digest status, the desired replica count (max over disks), and
-// the observed replica count (min over disks). A snapshot with no disks yet (not
-// produced) is unknown. Best-effort: the caller renders unknown / logs on error.
+// weakest per-disk-digest status, the desired replica count (max over disks), the
+// observed replica count (min over disks), and holderNodes - the sorted unique
+// names of the live nodes currently holding the snapshot's blobs (the union of
+// live holders across the manifest disks). A snapshot with no disks yet (not
+// produced) is unknown with nil holderNodes. Best-effort: the caller renders
+// unknown / logs on error.
 //
 // Cost: per disk this scans the snapshot-reference index and the whole node-blob
 // inventory once. Fine for a single-snapshot read; a list path should bound or
 // cache it rather than calling this per row.
-func SnapshotDurability(ctx context.Context, st DurabilityStore, snap store.Snapshot) (status string, desired, observed int, err error) {
+func SnapshotDurability(ctx context.Context, st DurabilityStore, snap store.Snapshot) (status string, desired, observed int, holderNodes []string, err error) {
 	if len(snap.Disks) == 0 {
-		return DurabilityUnknown, 0, 0, nil
+		return DurabilityUnknown, 0, 0, nil, nil
 	}
 	nodes, err := st.AllNodes(ctx)
 	if err != nil {
-		return DurabilityUnknown, 0, 0, err
+		return DurabilityUnknown, 0, 0, nil, err
 	}
 	live := liveNodeIDs(nodes)
+	nameByID := make(map[uuid.UUID]string, len(nodes))
+	for _, n := range nodes {
+		nameByID[n.ID] = n.Name
+	}
 	status = DurabilityDurable
 	minObserved := -1
+	holderNames := map[string]bool{}
 	for _, d := range snap.Disks {
 		k, eligible, err := blobPlacementTarget(ctx, st, d.SHA256, nodes, live)
 		if err != nil {
-			return DurabilityUnknown, 0, 0, err
+			return DurabilityUnknown, 0, 0, nil, err
 		}
 		holders, err := liveHolders(ctx, st, d.SHA256, live)
 		if err != nil {
-			return DurabilityUnknown, 0, 0, err
+			return DurabilityUnknown, 0, 0, nil, err
 		}
 		obs := len(holders)
-		held := make(map[uuid.UUID]bool, len(holders))
-		for _, h := range holders {
-			held[h] = true
-		}
-		notHolding := 0
-		for id := range eligible {
-			if !held[id] {
-				notHolding++
-			}
-		}
-		status = weaker(status, classifyDigest(obs, k, notHolding))
+		held := collectHolderNames(holders, nameByID, holderNames)
+		status = weaker(status, classifyDigest(obs, k, eligibleNotHolding(eligible, held)))
 		if k > desired {
 			desired = k
 		}
@@ -182,5 +182,42 @@ func SnapshotDurability(ctx context.Context, st DurabilityStore, snap store.Snap
 	if minObserved < 0 {
 		minObserved = 0
 	}
-	return status, desired, minObserved, nil
+	return status, desired, minObserved, sortedKeys(holderNames), nil
+}
+
+// collectHolderNames records the names of holders into names (a shared set
+// across disks) and returns the held-id set for this disk.
+func collectHolderNames(holders []uuid.UUID, nameByID map[uuid.UUID]string, names map[string]bool) map[uuid.UUID]bool {
+	held := make(map[uuid.UUID]bool, len(holders))
+	for _, h := range holders {
+		held[h] = true
+		if name := nameByID[h]; name != "" {
+			names[name] = true
+		}
+	}
+	return held
+}
+
+// eligibleNotHolding counts eligible nodes that are not already holding the blob.
+func eligibleNotHolding(eligible, held map[uuid.UUID]bool) int {
+	n := 0
+	for id := range eligible {
+		if !held[id] {
+			n++
+		}
+	}
+	return n
+}
+
+// sortedKeys returns the set keys sorted; nil for an empty set.
+func sortedKeys(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

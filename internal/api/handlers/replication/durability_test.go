@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
@@ -66,24 +67,28 @@ func TestSnapshotDurability(t *testing.T) {
 	}
 	snap := store.Snapshot{ID: snapID, ArtifactPoolName: &pool, Disks: []store.SnapshotDisk{{SHA256: digest}}}
 
-	// 2 holders, K=2 -> durable.
+	// 2 holders, K=2 -> durable; holder names are the two live holders, sorted.
 	f := base()
 	f.holders = map[string][]uuid.UUID{digest: {n1, n2}}
-	if got, des, obs, _ := SnapshotDurability(context.Background(), f, snap); got != DurabilityDurable || des != 2 || obs != 2 {
+	got, des, obs, holders, _ := SnapshotDurability(context.Background(), f, snap)
+	if got != DurabilityDurable || des != 2 || obs != 2 {
 		t.Errorf("2 holders: got %s des=%d obs=%d, want durable 2 2", got, des, obs)
+	}
+	if diff := cmp.Diff([]string{"node-1", "node-2"}, holders); diff != "" {
+		t.Errorf("2 holders names mismatch (-want +got):\n%s", diff)
 	}
 
 	// 1 holder, K=2, a free eligible node -> replicating.
 	f = base()
 	f.holders = map[string][]uuid.UUID{digest: {n1}}
-	if got, _, obs, _ := SnapshotDurability(context.Background(), f, snap); got != DurabilityReplicating || obs != 1 {
+	if got, _, obs, _, _ := SnapshotDurability(context.Background(), f, snap); got != DurabilityReplicating || obs != 1 {
 		t.Errorf("1 holder + room: got %s obs=%d, want replicating 1", got, obs)
 	}
 
 	// 0 live holders -> degraded.
 	f = base()
 	f.holders = map[string][]uuid.UUID{digest: {}}
-	if got, _, obs, _ := SnapshotDurability(context.Background(), f, snap); got != DurabilityDegraded || obs != 0 {
+	if got, _, obs, _, _ := SnapshotDurability(context.Background(), f, snap); got != DurabilityDegraded || obs != 0 {
 		t.Errorf("0 holders: got %s obs=%d, want degraded 0", got, obs)
 	}
 
@@ -91,14 +96,14 @@ func TestSnapshotDurability(t *testing.T) {
 	f = base()
 	f.nodes[0].Status = store.NodeStatusUnreachable
 	f.holders = map[string][]uuid.UUID{digest: {n1}}
-	if got, _, obs, _ := SnapshotDurability(context.Background(), f, snap); obs != 0 {
+	if got, _, obs, _, _ := SnapshotDurability(context.Background(), f, snap); obs != 0 {
 		t.Errorf("unreachable holder observed = %d, want 0", obs)
 	} else if got == DurabilityDurable {
 		t.Errorf("unreachable holder: got durable, want not durable")
 	}
 
 	// no disks yet -> unknown.
-	if got, _, _, _ := SnapshotDurability(context.Background(), base(), store.Snapshot{ID: snapID}); got != DurabilityUnknown {
+	if got, _, _, _, _ := SnapshotDurability(context.Background(), base(), store.Snapshot{ID: snapID}); got != DurabilityUnknown {
 		t.Errorf("no disks: got %s, want unknown", got)
 	}
 }

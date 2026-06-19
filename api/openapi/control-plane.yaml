@@ -6854,6 +6854,7 @@ components:
         - durability
         - desired_replicas
         - observed_replicas
+        - holder_nodes
         - created_at
         - updated_at
       properties:
@@ -6964,6 +6965,14 @@ components:
             The weakest observed live-holder count across the manifest's disks
             (the min over disks). `observed_replicas >= desired_replicas` is the
             `durable` condition.
+        holder_nodes:
+          type: array
+          items: { type: string }
+          description: |
+            Names of the live nodes that currently hold the snapshot's
+            content-addressed blobs (the union of live holders across the
+            manifest disks). Computed by the control plane from observed
+            inventory; empty when not yet produced or no live holder.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
