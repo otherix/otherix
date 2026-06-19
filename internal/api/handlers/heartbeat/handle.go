@@ -256,6 +256,9 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyBlobInventory(ctx, hp, agent.NodeID, body); err != nil {
 			return err
 		}
+		if err := h.applyImageBlobInventory(ctx, hp, agent.NodeID, body); err != nil {
+			return err
+		}
 		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
 			return err
 		}
@@ -457,6 +460,31 @@ func (h *Handler) applyBlobInventory(ctx context.Context, hp store.HeartbeatProj
 	}
 	if err := hp.UpsertNodeBlobInventory(ctx, nodeID, blobs); err != nil {
 		return fmt.Errorf("upsert node blob inventory: %v", err)
+	}
+	return nil
+}
+
+// applyImageBlobInventory projects the node's reported pinned-image cache
+// inventory into the image_blobs family. Invalid digests are dropped (kept
+// separate from the rest). The unavailable flag preserves the prior inventory
+// rather than clearing it (a transient List error must not look like "the node
+// dropped every cached image"). Mirrors applyBlobInventory; the families are
+// kept separate so the image tier never feeds the durability reconcile.
+func (h *Handler) applyImageBlobInventory(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
+	if body.ImageBlobsUnavailable {
+		return nil
+	}
+	blobs := make([]store.NodeBlob, 0, len(body.ImageBlobs))
+	for _, b := range body.ImageBlobs {
+		if err := validation.ValidateBlobDigest(b.Digest); err != nil {
+			h.log.WarnContext(ctx, "dropping node image blob with invalid digest",
+				slog.String("node_id", nodeID.String()), slog.String("digest", b.Digest))
+			continue
+		}
+		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: b.SizeBytes})
+	}
+	if err := hp.UpsertNodeImageBlobInventory(ctx, nodeID, blobs); err != nil {
+		return fmt.Errorf("upsert node image blob inventory: %v", err)
 	}
 	return nil
 }
