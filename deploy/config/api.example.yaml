@@ -215,6 +215,12 @@ workers:
   heartbeat:
     stale_threshold: 90s
     interval:        30s
+  # Periodic blob-placement reconcile. Each tick holds every content-addressed
+  # blob at its artifact pool's replication factor: it places fresh replicas on
+  # surviving nodes when a holder is lost and prunes terminally-gone holders.
+  # Defaults to 30s when unset.
+  placement_reconcile:
+    interval: 30s
   # Periodic storage_pool.scan trigger. Each tick enumerates active
   # pools whose owning node
   # is scannable and enqueues a fresh scan task — handler-side dedup
