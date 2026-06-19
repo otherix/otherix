@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -443,6 +444,15 @@ func (h *Handler) applyBlobInventory(ctx context.Context, hp store.HeartbeatProj
 	}
 	blobs := make([]store.NodeBlob, 0, len(body.Blobs))
 	for _, b := range body.Blobs {
+		// A blob inventory is incremental, so a single malformed digest drops only
+		// that entry (keeping the rest of the node's inventory) rather than
+		// rejecting the whole report. A non-hex digest would otherwise pollute
+		// holder-discovery accounting and become a path component on the holder.
+		if err := validation.ValidateBlobDigest(b.Digest); err != nil {
+			h.log.WarnContext(ctx, "dropping node blob with invalid digest",
+				slog.String("node_id", nodeID.String()), slog.String("digest", b.Digest))
+			continue
+		}
 		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: b.SizeBytes})
 	}
 	if err := hp.UpsertNodeBlobInventory(ctx, nodeID, blobs); err != nil {
