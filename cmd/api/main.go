@@ -567,7 +567,8 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			GoneGrace:      cfg.Workers.Heartbeat.GoneGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
 		}, log,
-			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log)))
+			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log),
+			nil))
 
 	s.Register("vms.schedule", 2*time.Second, true,
 		vmshandlers.ScheduleFunc(st, vmshandlers.ScheduleConfig{Algorithm: cfg.Placement.Algorithm}, log,

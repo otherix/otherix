@@ -78,7 +78,7 @@ func TestReconcileFuncPromotes(t *testing.T) {
 	}
 	bumpHeartbeat(t, s, np.ID)
 
-	fn := heartbeathandlers.ReconcileFunc(s, heartbeathandlers.ReconcileConfig{}, log, nil)
+	fn := heartbeathandlers.ReconcileFunc(s, heartbeathandlers.ReconcileConfig{}, log, nil, nil)
 	if err := fn(ctx); err != nil {
 		t.Fatalf("ReconcileFunc: %v", err)
 	}
