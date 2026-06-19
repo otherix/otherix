@@ -24,6 +24,7 @@ type reconcileStoreFake struct {
 	durabilityStoreFake
 	placement map[string]map[uuid.UUID]bool // digest -> member set
 	enqueued  []ReplicateArgs
+	reclaimed []ReclaimArgs
 	added     []struct {
 		digest string
 		node   uuid.UUID
@@ -32,7 +33,8 @@ type reconcileStoreFake struct {
 		digest string
 		node   uuid.UUID
 	}
-	inflight map[inflightKey]bool
+	inflight        map[inflightKey]bool
+	reclaimInflight map[inflightKey]bool
 }
 
 func (f *reconcileStoreFake) AllPlacementDigests(context.Context) ([]string, error) {
@@ -74,8 +76,32 @@ func (f *reconcileStoreFake) RemoveBlobPlacement(_ context.Context, d string, n 
 }
 
 func (f *reconcileStoreFake) EnqueueTask(_ context.Context, _ store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error) {
-	f.enqueued = append(f.enqueued, args.(ReplicateArgs))
+	switch a := args.(type) {
+	case ReplicateArgs:
+		f.enqueued = append(f.enqueued, a)
+	case ReclaimArgs:
+		f.reclaimed = append(f.reclaimed, a)
+	default:
+		panic("reconcileStoreFake: unexpected job args type")
+	}
 	return uuid.New(), nil
+}
+
+func (f *reconcileStoreFake) TryBeginReclaim(_ context.Context, d string, n uuid.UUID, _ time.Duration) (bool, error) {
+	if f.reclaimInflight == nil {
+		f.reclaimInflight = map[inflightKey]bool{}
+	}
+	k := inflightKey{d, n}
+	if f.reclaimInflight[k] {
+		return false, nil
+	}
+	f.reclaimInflight[k] = true
+	return true, nil
+}
+
+func (f *reconcileStoreFake) EndReclaim(_ context.Context, d string, n uuid.UUID) error {
+	delete(f.reclaimInflight, inflightKey{d, n})
+	return nil
 }
 
 func (f *reconcileStoreFake) TryBeginReplicate(_ context.Context, d string, n uuid.UUID, _ time.Duration) (bool, error) {
@@ -243,5 +269,141 @@ func TestReconcileSkipsEnqueueWhileInflight(t *testing.T) {
 	}
 	if !f.inflight[inflightKey{digest, n2}] {
 		t.Errorf("enqueue did not set the in-flight marker for n2")
+	}
+}
+
+// TestReconcileOrphanedReclaimsAllHolders proves that an unreferenced digest
+// (zero referencing snapshots) reclaims every live holder and never replicates.
+func TestReconcileOrphanedReclaimsAllHolders(t *testing.T) {
+	n1, n2 := uuid.New(), uuid.New()
+	digest := "d0"
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			refs:    map[string][]uuid.UUID{digest: {}},
+			holders: map[string][]uuid.UUID{digest: {n1, n2}},
+			nodes: []store.Node{
+				{ID: n1, Name: "node-1", Status: store.NodeStatusReady},
+				{ID: n2, Name: "node-2", Status: store.NodeStatusReady},
+			},
+		},
+		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true}},
+	}
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.reclaimed) != 2 {
+		t.Fatalf("reclaimed %d holders, want 2 (orphaned)", len(f.reclaimed))
+	}
+	if len(f.enqueued) != 0 {
+		t.Errorf("enqueued %d replicate tasks for an orphaned digest, want 0", len(f.enqueued))
+	}
+	got := map[uuid.UUID]bool{}
+	for _, r := range f.reclaimed {
+		if r.Digest != digest {
+			t.Errorf("reclaim digest = %s, want %s", r.Digest, digest)
+		}
+		got[r.TargetNodeID] = true
+	}
+	if !got[n1] || !got[n2] {
+		t.Errorf("reclaimed targets = %v, want both n1 and n2", got)
+	}
+}
+
+// TestReconcileOrphanedPrunesObservedAbsentMember proves that an orphaned digest
+// prunes the placement key of a member observed to no longer hold the blob, but
+// keeps the key of a member still holding (the digest stays scannable until the
+// bytes are confirmed gone everywhere).
+func TestReconcileOrphanedPrunesObservedAbsentMember(t *testing.T) {
+	n1, n2 := uuid.New(), uuid.New()
+	digest := "d0"
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			refs:    map[string][]uuid.UUID{digest: {}},
+			holders: map[string][]uuid.UUID{digest: {n1}},
+			nodes: []store.Node{
+				{ID: n1, Name: "node-1", Status: store.NodeStatusReady},
+				{ID: n2, Name: "node-2", Status: store.NodeStatusReady},
+			},
+		},
+		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true}},
+	}
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.removed) != 1 || f.removed[0].node != n2 {
+		t.Errorf("removed = %+v, want one prune of the observed-absent member n2", f.removed)
+	}
+}
+
+// TestReconcileOverReplicationReclaimsToK proves that a referenced digest with
+// more live holders than K reclaims the surplus down to K, keeping the rendezvous
+// top-K holders, and never enqueues a replicate.
+func TestReconcileOverReplicationReclaimsToK(t *testing.T) {
+	n1, n2, n3 := uuid.New(), uuid.New(), uuid.New()
+	pool := "gold"
+	digest := "d0"
+	snapID := uuid.New()
+	holders := []uuid.UUID{n1, n2, n3}
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			refs:    map[string][]uuid.UUID{digest: {snapID}},
+			snaps:   map[uuid.UUID]store.Snapshot{snapID: {ID: snapID, ArtifactPoolName: &pool}},
+			pools:   map[string]store.ArtifactPool{pool: {Name: pool, ReplicationFactor: store.ReplicationFactor{Count: 2}, Membership: store.ArtifactPoolMembership{AllNodes: true}}},
+			holders: map[string][]uuid.UUID{digest: holders},
+			nodes: []store.Node{
+				{ID: n1, Name: "node-1", Status: store.NodeStatusReady},
+				{ID: n2, Name: "node-2", Status: store.NodeStatusReady},
+				{ID: n3, Name: "node-3", Status: store.NodeStatusReady},
+			},
+		},
+		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true, n3: true}},
+	}
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.reclaimed) != 1 {
+		t.Fatalf("reclaimed %d holders, want exactly 1 (3 holders down to K=2)", len(f.reclaimed))
+	}
+	if len(f.enqueued) != 0 {
+		t.Errorf("enqueued %d replicate tasks while over-replicated, want 0", len(f.enqueued))
+	}
+	keepers := map[uuid.UUID]bool{}
+	for _, k := range selectTargets(digest, holders, 2) {
+		keepers[k] = true
+	}
+	if keepers[f.reclaimed[0].TargetNodeID] {
+		t.Errorf("reclaimed a keeper %s, want only the rendezvous surplus holder", f.reclaimed[0].TargetNodeID)
+	}
+}
+
+// TestReconcileReferencedBelowKUnchanged proves the add-to-K replicate path is
+// untouched by the GC branches: a referenced digest below K still adds a target
+// and enqueues exactly one replicate, and reclaims nothing.
+func TestReconcileReferencedBelowKUnchanged(t *testing.T) {
+	n1, n2 := uuid.New(), uuid.New()
+	pool := "gold"
+	digest := "d0"
+	snapID := uuid.New()
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			refs:    map[string][]uuid.UUID{digest: {snapID}},
+			snaps:   map[uuid.UUID]store.Snapshot{snapID: {ID: snapID, ArtifactPoolName: &pool}},
+			pools:   map[string]store.ArtifactPool{pool: {Name: pool, ReplicationFactor: store.ReplicationFactor{Count: 2}, Membership: store.ArtifactPoolMembership{AllNodes: true}}},
+			holders: map[string][]uuid.UUID{digest: {n1}},
+			nodes: []store.Node{
+				{ID: n1, Name: "node-1", Status: store.NodeStatusReady},
+				{ID: n2, Name: "node-2", Status: store.NodeStatusReady},
+			},
+		},
+		placement: map[string]map[uuid.UUID]bool{digest: {n1: true}},
+	}
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.reclaimed) != 0 {
+		t.Errorf("reclaimed %d while below K, want 0", len(f.reclaimed))
+	}
+	if len(f.enqueued) != 1 {
+		t.Errorf("enqueued %d replicate tasks, want 1 (add-to-K path)", len(f.enqueued))
 	}
 }

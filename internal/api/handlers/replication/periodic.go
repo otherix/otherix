@@ -26,6 +26,8 @@ type ReconcileStore interface {
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 	TryBeginReplicate(ctx context.Context, digest string, nodeID uuid.UUID, ttl time.Duration) (bool, error)
 	EndReplicate(ctx context.Context, digest string, nodeID uuid.UUID) error
+	TryBeginReclaim(ctx context.Context, digest string, nodeID uuid.UUID, ttl time.Duration) (bool, error)
+	EndReclaim(ctx context.Context, digest string, nodeID uuid.UUID) error
 }
 
 // replicateMaxAttempts is the per-task retry budget stamped on the enqueued row;
@@ -43,8 +45,12 @@ const replicateInflightTTL = 5 * time.Minute
 // holders that reached terminal 'gone' (never the last live pointer), adds fresh
 // targets by rendezvous hash to reach K, and enqueues an artifact.replicate task
 // for every chosen-but-not-yet-holding live member (only when a live holder exists
-// to pull from). Purely CP-side; the byte movement is the existing pull saga. The
-// pass is non-destructive apart from the narrowly-scoped gone prune.
+// to pull from). It also drives the reclaim side: a blob no longer referenced by
+// any snapshot has every live holder reclaimed, and a referenced blob with more
+// live holders than K has the rendezvous-surplus holders reclaimed back down to K.
+// Reclaim victims are always chosen from observed live holders, never from the
+// placement map, so a failed reclaim self-heals off observed reality next pass.
+// Purely CP-side; the byte movement is the existing pull/reclaim sagas.
 func ReconcileFunc(st ReconcileStore, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {
 		digests, err := st.AllPlacementDigests(ctx)
@@ -68,6 +74,10 @@ func ReconcileFunc(st ReconcileStore, log *slog.Logger) func(context.Context) er
 }
 
 func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, nodes []store.Node, live, gone map[uuid.UUID]bool) error {
+	refs, err := st.SnapshotsReferencingBlob(ctx, digest)
+	if err != nil {
+		return err
+	}
 	k, eligible, err := blobPlacementTarget(ctx, st, digest, nodes, live)
 	if err != nil {
 		return err
@@ -87,6 +97,17 @@ func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, d
 
 	members = pruneGoneMembers(ctx, st, log, digest, members, gone, holderSet)
 
+	// Orphaned: no snapshot references this blob, so the cluster wants zero copies.
+	// Reclaim every live holder and prune the placement key of any member observed
+	// to no longer hold the blob. A member that still holds keeps its key until
+	// absence is observed, so the digest stays in the placement scan until the
+	// bytes are confirmed gone everywhere.
+	if len(refs) == 0 {
+		reclaimSurplus(ctx, st, log, digest, holders, nil)
+		pruneObservedAbsentMembers(ctx, st, log, digest, members, live, holderSet)
+		return nil
+	}
+
 	liveMembers := 0
 	memberSet := make(map[uuid.UUID]bool, len(members))
 	for _, m := range members {
@@ -102,6 +123,22 @@ func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, d
 	if len(holders) == 0 {
 		return nil
 	}
+
+	// Over-replicated: more live holders than K. Keep the K rendezvous-preferred
+	// holders, reclaim the surplus, and trim every non-keeper placement member
+	// (the K keepers keep the digest scannable, so a failed reclaim self-heals off
+	// observed holders next pass).
+	if len(holders) > k {
+		keepers := selectTargets(digest, holders, k)
+		keeperSet := make(map[uuid.UUID]bool, len(keepers))
+		for _, kp := range keepers {
+			keeperSet[kp] = true
+		}
+		reclaimSurplus(ctx, st, log, digest, holders, keeperSet)
+		trimNonKeeperMembers(ctx, st, log, digest, members, keeperSet)
+		return nil
+	}
+
 	enqueueReplicas(ctx, st, log, digest, members, live, holderSet)
 	return nil
 }
@@ -158,6 +195,88 @@ func enqueueReplicas(ctx context.Context, st ReconcileStore, log *slog.Logger, d
 			log.WarnContext(ctx, "durability reconcile: enqueue replicate failed",
 				slog.String("digest", digest), slog.String("node_id", m.String()), slog.Any("error", err))
 		}
+	}
+}
+
+// reclaimMaxAttempts is the per-task retry budget stamped on an enqueued reclaim
+// row; the dispatcher applies its own registered budget. The reconcile loop
+// re-enqueues each pass while a copy is surplus, so this is a bound, not the only
+// retry path.
+const reclaimMaxAttempts = 25
+
+// reclaimInflightTTL bounds how long an in-flight reclaim suppresses a duplicate
+// enqueue if the worker dies without clearing the marker.
+const reclaimInflightTTL = 5 * time.Minute
+
+// reclaimSurplus enqueues an artifact.reclaim task for every live holder not in
+// keepers (nil keepers => every holder is surplus, the orphaned case), guarded by
+// the cross-replica reclaim marker. Best-effort: an error is logged and skipped.
+func reclaimSurplus(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, holders []uuid.UUID, keepers map[uuid.UUID]bool) {
+	for _, h := range holders {
+		if keepers[h] {
+			continue
+		}
+		began, err := st.TryBeginReclaim(ctx, digest, h, reclaimInflightTTL)
+		if err != nil {
+			log.WarnContext(ctx, "durability reconcile: reclaim dedup check failed",
+				slog.String("digest", digest), slog.String("node_id", h.String()), slog.Any("error", err))
+			continue
+		}
+		if !began {
+			continue
+		}
+		taskID := uuid.New()
+		if _, err := st.EnqueueTask(ctx, store.CreateTaskParams{
+			ID:           taskID,
+			Type:         "artifact.reclaim",
+			Status:       store.TaskStatusPending,
+			ResourceType: "artifact_blob",
+			Args:         []byte(`{}`),
+			MaxAttempts:  reclaimMaxAttempts,
+		}, ReclaimArgs{TaskID: taskID, Digest: digest, TargetNodeID: h}); err != nil {
+			_ = st.EndReclaim(ctx, digest, h)
+			log.WarnContext(ctx, "durability reconcile: enqueue reclaim failed",
+				slog.String("digest", digest), slog.String("node_id", h.String()), slog.Any("error", err))
+		}
+	}
+}
+
+// pruneObservedAbsentMembers removes the placement key of any live member not
+// currently holding the digest (observed absence = the reclaim landed, or it never
+// held it). Members that still hold, are unreachable (transient), or gone (handled
+// earlier) are left in place. Used for the orphaned case, where the key must
+// survive until the bytes are confirmed gone.
+func pruneObservedAbsentMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, members []uuid.UUID, live, holderSet map[uuid.UUID]bool) {
+	for _, m := range members {
+		if live[m] && !holderSet[m] {
+			if _, err := st.RemoveBlobPlacement(ctx, digest, m); err != nil {
+				log.WarnContext(ctx, "durability reconcile: prune observed-absent member failed",
+					slog.String("digest", digest), slog.String("node_id", m.String()), slog.Any("error", err))
+				continue
+			}
+			log.InfoContext(ctx, "durability reconcile: pruned observed-absent placement member",
+				slog.String("digest", digest), slog.String("node_id", m.String()))
+		}
+	}
+}
+
+// trimNonKeeperMembers removes the placement key of every member not in keepers.
+// Used for the over-replication case: the cluster keeps exactly the k keeper
+// holders, so surplus members leave the intent index immediately. Safe because the
+// k keepers keep the digest in the placement scan, so a reclaim that fails is
+// re-detected off observed holders next pass.
+func trimNonKeeperMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, members []uuid.UUID, keepers map[uuid.UUID]bool) {
+	for _, m := range members {
+		if keepers[m] {
+			continue
+		}
+		if _, err := st.RemoveBlobPlacement(ctx, digest, m); err != nil {
+			log.WarnContext(ctx, "durability reconcile: trim surplus member failed",
+				slog.String("digest", digest), slog.String("node_id", m.String()), slog.Any("error", err))
+			continue
+		}
+		log.InfoContext(ctx, "durability reconcile: trimmed surplus placement member",
+			slog.String("digest", digest), slog.String("node_id", m.String()))
 	}
 }
 
