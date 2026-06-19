@@ -75,7 +75,7 @@ func TestValidateCreateRequest(t *testing.T) {
 		},
 		{name: "empty image_url", req: func() vmCreateRequest { r := base(); r.ImageURL = ""; return r }()},
 		{
-			// SSRF guard (audit M1): only absolute https URLs are admitted, so
+			// SSRF guard: only absolute https URLs are admitted, so
 			// a vm:create holder cannot point the agent at http://169.254.169.254
 			// or any other plaintext/internal scheme.
 			name: "http image_url",

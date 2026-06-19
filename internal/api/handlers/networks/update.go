@@ -158,7 +158,7 @@ func rejectNonNameKeys(body []byte) []string {
 
 // updateNameError validates a patched network name (trimmed by the caller),
 // returning the validation message for an empty, over-length, or '/'-bearing
-// name ('/' would poison the etcd uniqueness-guard key path - audit R2-L7), or
+// name ('/' would poison the etcd uniqueness-guard key path), or
 // "" when the name is acceptable.
 func updateNameError(name string) string {
 	switch {

@@ -2,9 +2,9 @@
 // Copyright 2026 Andrei Taranik
 
 // Package artifactpools hosts the /v1/artifact-pools HTTP handlers - the
-// cluster-level artifact-pool concept (slice B): a named content-addressed
+// cluster-level artifact-pool concept: a named content-addressed
 // artifact store with a replication_factor and advisory membership. No per-node
-// backing exists yet (sub-project C). Reads gated storage_pool:read, mutations
+// backing exists yet. Reads gated storage_pool:read, mutations
 // storage_pool:manage.
 package artifactpools
 

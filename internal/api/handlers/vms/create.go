@@ -235,7 +235,7 @@ func decodeCreateBody(w http.ResponseWriter, r *http.Request) (vmCreateRequest, 
 const maxDiskGiB = 65536
 
 // validateCreateImageFields enforces the image-source field invariants:
-// image_url present and an absolute https URL (SSRF guard, audit M1), arch in
+// image_url present and an absolute https URL (SSRF guard), arch in
 // {amd64, arm64}, image_sha256 (when set) a 64-char lowercase hex digest,
 // format (when set) in {qcow2, raw}, and disk_gib in [0, maxDiskGiB]. Returns
 // false (after writing the 400 envelope) on the first violation.

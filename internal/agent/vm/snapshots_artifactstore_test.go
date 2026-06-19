@@ -50,8 +50,8 @@ func TestProduceBlobToStoreLandsInArtifactStore(t *testing.T) {
 
 // TestCaptureDualWritesToArtifactStore drives the REAL capture worker
 // (CreateSnapshot -> runSnapshotCreate) with an artifact store wired in and
-// asserts the C1 dual-write seam: the blob AND the manifest land in the store
-// (keyed by the disk's blob digest), WHILE the slice-A disk-pool copy is still
+// asserts the dual-write seam: the blob AND the manifest land in the store
+// (keyed by the disk's blob digest), WHILE the disk-pool copy is still
 // produced. Exercising the worker, not produceBlobToStore directly, is what
 // proves the seam (the disk loop and the manifest write both fan out to the
 // store).
@@ -78,13 +78,13 @@ func TestCaptureDualWritesToArtifactStore(t *testing.T) {
 
 	wantSHA := shaHex(qcow2Body(0x11))
 
-	// Slice-A disk-pool copy preserved.
+	// Disk-pool copy preserved.
 	poolBlob := filepath.Join(m.defaultTestPoolRoot(t), "snapshots", wantSHA+".qcow2")
 	if _, err := os.Stat(poolBlob); err != nil {
-		t.Errorf("disk-pool blob missing at %q: %v (slice-A copy must be preserved)", poolBlob, err)
+		t.Errorf("disk-pool blob missing at %q: %v (disk-pool copy must be preserved)", poolBlob, err)
 	}
 
-	// C1 additive store copy: blob + manifest keyed by the blob digest.
+	// Additive store copy: blob + manifest keyed by the blob digest.
 	if !store.Has(wantSHA) {
 		t.Errorf("artifact store missing blob %s after capture", wantSHA)
 	}

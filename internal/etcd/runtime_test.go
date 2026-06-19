@@ -23,7 +23,7 @@ import (
 	"github.com/otherix/otherix/internal/etcd"
 )
 
-// TestStartPersistsAcrossRestart drives the slice-1 DoD: a single-node embedded
+// TestStartPersistsAcrossRestart verifies persistence across restart: a single-node embedded
 // member starts, accepts a write through its client endpoint, survives a
 // stop/start cycle, and replays the value on warm boot from the same data dir.
 // Pure in-process (no Docker), but gated behind the integration tag because it

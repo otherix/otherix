@@ -65,7 +65,7 @@ type Config struct {
 	// uses mutual TLS: every peer presents a cert chaining to the cluster CA and
 	// rejects peers that do not - the protection for control-plane replicas
 	// talking over a public network. Peer URLs must use https when these are
-	// set. In production these are issued by the cluster CA (ADR 0026), reusing
+	// set. In production these are issued by the cluster CA, reusing
 	// the same trust anchor as agent mTLS - no new PKI.
 	PeerCertFile string
 	PeerKeyFile  string
@@ -109,7 +109,7 @@ func (c *Config) validatePeerURL() error {
 // validateClientURL checks the client URL is a valid URL bound to loopback. The
 // etcd client KV API is plaintext and unauthenticated and exposes the cluster CA
 // private key and every secret hash, so it must never bind to a routable address
-// (audit M4). The control plane reads KV in-process; the membership/backup TCP
+// The control plane reads KV in-process; the membership/backup TCP
 // clients dial the local loopback client URL; HA inter-member traffic uses the
 // peer (Raft) transport - so there is no legitimate non-loopback client URL.
 func (c *Config) validateClientURL() error {

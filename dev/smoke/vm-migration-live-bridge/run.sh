@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# Live VM migration + bridge data-plane smoke (slice 3b) - proves that a LIVE
+# Live VM migration + bridge data-plane smoke - proves that a LIVE
 # migration of a type=bridge-attached VM keeps L2 connectivity following the
 # guest across the cutover: connectivity to/from the migrated VM continues with
 # no prolonged blackhole. This is the real-agent gate for the post-cutover
-# announce-self (QMP) this slice relies on - the target announces the guest's
+# announce-self (QMP) - the target announces the guest's
 # MAC so the Linux bridge / switch relearns the port at the new location;
 # mock-green is NOT sufficient. It is the bridge analog of
 # vm-migration-live-overlay and combines:
@@ -43,7 +43,7 @@
 #                            advancing -> B still reaches A at its new location
 #                            (announce-self made the bridge relearn the port).
 #                          A stall beyond STALL_THRESHOLD seconds with no counter
-#                          progress is the blackhole this slice closes -> fail.
+#                          progress is the blackhole this smoke guards against -> fail.
 #
 # Why a counter, not a one-shot sentinel: a one-shot "did it ever connect" proves
 # nothing about the cutover - it could have connected once before the migrate and
@@ -129,7 +129,7 @@ assert_node() {
 # The scheduler's network-aware filter excludes any node where a requested network
 # has not reconciled to ready, so a VM-create raced ahead of bridge
 # materialisation fails with no_eligible_nodes. We gate on this first. The bridge
-# is materialised cluster-wide (managed=true) on BOTH nodes (ADR 0034 NL18), so
+# is materialised cluster-wide (managed=true) on BOTH nodes, so
 # the migration network-readiness filter is satisfied on the target.
 net_ready_both() {
   local net="$1" n
@@ -186,7 +186,7 @@ wait_ping() {
 # stalling longer than STALL_THRESHOLD between observed increments. This is the
 # anti-blackhole teeth: after the live cutover the bridge L2 must keep carrying
 # traffic, so the counter must keep climbing. A stall > STALL_THRESHOLD means a
-# prolonged blackhole - the failure this slice closes.
+# prolonged blackhole - the failure this smoke guards against.
 assert_advancing() {
   local label="$1" handle="$2" state="$3" vmid="$4" baseline="$5"
   local deadline last last_progress now cur
@@ -330,22 +330,22 @@ pass "CP up (${CP_VERSION}); $NODE1 + $NODE2 ready; default pool ready on both"
 # This smoke puts VM-A (node-1) and VM-B (node-2) on the SAME type=bridge
 # network and asserts they reach each other at L2 across the cutover. A plain
 # managed bridge is a NODE-LOCAL, isolated L2 segment: the agent attaches only
-# VM taps, no uplink (ADR 0034 NL16 - physical-uplink/NIC management is operator-
-# owned, out of scope phase 1). The stock dev stack provides NO inter-node L2
+# VM taps, no uplink (physical-uplink/NIC management is operator-owned and out of
+# scope here). The stock dev stack provides NO inter-node L2
 # fabric for bridges (nodes are connected only at L3 + the WireGuard overlay), so
 # cross-node bridge traffic BLACKHOLES at the baseline step before any migration.
 # Until a dev-stack follow-up wires each node's managed bridge to a shared host
-# segment / trunk, this smoke cannot pass here. The announce-self code path this
-# slice adds IS exercised by smoke-vm-migration-live-overlay (announce-self fires
+# segment / trunk, this smoke cannot pass here. The announce-self code path
+# IS exercised by smoke-vm-migration-live-overlay (announce-self fires
 # unconditionally on every live migration). Set SMOKE_BRIDGE_CROSSNODE=1 to run
 # this smoke once you have provided cross-node bridge L2 (e.g. a real switch, or
 # the dev-stack uplink follow-up).
 if [[ "${SMOKE_BRIDGE_CROSSNODE:-0}" != "1" ]]; then
-  echo "SKIP: cross-node bridge L2 is not wired in the stock dev stack (ADR 0034"
-  echo "      NL16 - operator-owned uplink, out of scope phase 1). VM-A on node-1"
+  echo "SKIP: cross-node bridge L2 is not wired in the stock dev stack"
+  echo "      (operator-owned uplink, out of scope). VM-A on node-1"
   echo "      and VM-B on node-2 on a plain managed bridge cannot reach each other"
   echo "      at L2 without an inter-node bridge fabric, so this smoke would"
-  echo "      blackhole at the baseline step. The slice-3b announce-self path is"
+  echo "      blackhole at the baseline step. The announce-self path is"
   echo "      validated by smoke-vm-migration-live-overlay (announce-self runs on"
   echo "      every live migration). Provide cross-node bridge L2 and re-run with"
   echo "      SMOKE_BRIDGE_CROSSNODE=1 to exercise the bridge-specific assertions."
@@ -360,7 +360,7 @@ H2="$SMOKE_HANDLE_2"; S2="$SMOKE_STATE_2"
 # --- step 1: managed bridge network -----------------------------------
 echo "=== step 1: create managed bridge network $NET ($BRIDGE_IFACE) ==="
 cleanup >/dev/null 2>&1 || true   # best-effort delete-first of stale leftovers
-# managed=true materialises the bridge cluster-wide on BOTH nodes (ADR 0034 NL18)
+# managed=true materialises the bridge cluster-wide on BOTH nodes
 # so the live-migration network-readiness filter is satisfied on the target.
 # --egress none (the default) -> no --subnet/--gateway; the guests carry static
 # cloud-init IPs on $SUBNET (no CP IPAM on a plain bridge in this smoke).

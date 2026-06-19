@@ -37,7 +37,7 @@ tags:
   - name: storage-pools
     description: Per-node storage pools.
   - name: artifact-pools
-    description: Cluster-level artifact pools (slice B).
+    description: Cluster-level artifact pools.
   - name: networks
     description: Cluster-wide networks.
   - name: vms
@@ -2239,12 +2239,12 @@ paths:
       tags: [vms]
       summary: Revert a VM to a snapshot (asynchronous).
       description: |
-        In-place revert is not implemented in slice A. This endpoint
+        In-place revert is not currently implemented. This endpoint
         returns `501` with `code: not_implemented`. Restore is
         recreate-from-snapshot: create a fresh, independent VM from a
         snapshot via `POST /v1/vms` with `source_snapshot_id`
         (`vm create --from-snapshot`). The path and request body are
-        retained so a later slice can implement in-place revert without
+        retained so in-place revert can be added later without
         an API break.
       security:
         - bearerAuth: []
@@ -2282,7 +2282,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "501":
           description: |
-            In-place revert is not implemented in slice A. The error
+            In-place revert is not currently implemented. The error
             payload carries `code: not_implemented`. Use
             recreate-from-snapshot (`POST /v1/vms` with
             `source_snapshot_id`) instead.
@@ -2446,7 +2446,7 @@ paths:
         `tail=N` limits to the trailing N lines; `follow=true` keeps
         the stream open and forwards live bytes as the VM emits them.
 
-        Authorization runs in two layers (per [ADR 0029](../../docs/decisions/0029-vm-serial-log-multiplexer.md)):
+        Authorization runs in two layers:
         1. `vm:console` permission gates the route (admin / operator
            hold it at any scope; developer holds it at own scope;
            viewer is denied).
@@ -3609,14 +3609,15 @@ components:
           enum: [all]
           description: Every current and future member node.
       description: |
-        Durability target K. Not enforced in slice B (no transport; observed
-        replicas stay 1); the reconcile loop that maintains K is sub-project C.
+        Durability target K. Not yet enforced (no transport; observed
+        replicas stay 1); the reconcile loop that maintains K is a future
+        addition.
     ArtifactPoolMembership:
       type: object
       required: [all_nodes]
       description: |
-        Which nodes are intended to back the pool. Advisory metadata in slice B
-        (nothing is materialised); sub-project C materialises and reconciles it.
+        Which nodes are intended to back the pool. Currently advisory metadata
+        (nothing is materialised); a future addition materialises and reconciles it.
       properties:
         all_nodes:
           type: boolean
@@ -4498,7 +4499,7 @@ components:
           type: array
           description: |
             Agent-observed content-addressed blob inventory from the node's
-            dedicated artifact store (slice C1). Reported once per node, NOT per
+            dedicated artifact store. Reported once per node, NOT per
             pool. Full snapshot: the CP replaces the node_blobs observed
             inventory with this list. The CP uses it as the holder-discovery
             source for the cross-node pull saga. Absent or empty with
@@ -4628,8 +4629,7 @@ components:
             content-addressed snapshot cache). Absent or empty with
             snapshots_unavailable=false means the pool has no cached snapshot
             blobs; see snapshots_unavailable for the could-not-enumerate case.
-            Reported in vm-snapshots slice A; CP-side consumption is deferred to
-            a later slice.
+            CP-side consumption of this field is deferred to a later change.
           items:
             $ref: "#/components/schemas/HeartbeatPoolSnapshot"
         snapshots_unavailable:
@@ -4681,8 +4681,8 @@ components:
       description: |
         One cached snapshot blob the agent observed in a pool's snapshots
         directory (content-addressed cache). Carried inside
-        HeartbeatPoolReport.snapshots. Reported in vm-snapshots slice A; the CP
-        stores it as observed pool state in a later slice. The on-node blob path
+        HeartbeatPoolReport.snapshots. The CP stores it as observed pool state
+        in a later change. The on-node blob path
         is intentionally not surfaced; identity is the sha256.
       required: [sha256]
       properties:
@@ -4698,7 +4698,7 @@ components:
       type: object
       description: |
         One content-addressed blob the agent holds in its per-node artifact
-        store (slice C1). Carried in HeartbeatRequest.blobs; the CP stores it as
+        store. Carried in HeartbeatRequest.blobs; the CP stores it as
         the observed node_blobs inventory (the holder-discovery source). The
         on-node path is intentionally absent; identity is the digest.
       required: [digest, size_bytes]
@@ -4961,8 +4961,8 @@ components:
           minLength: 1
           maxLength: 253
           description: |
-            VM name as known to the agent (Pre-L1 Path D — all agent-
-            side identity is name-keyed).
+            VM name as known to the agent (all agent-side identity is
+            name-keyed).
         desired_phase:
           type: string
           enum: [running, stopped, deleted]
@@ -6879,7 +6879,7 @@ components:
         with_memory:
           type: boolean
           description: |
-            Always `false` in slice A; RAM capture is unsupported. The
+            Always `false`; RAM capture is not currently supported. The
             field is retained for forward compatibility.
         vm_state_at_snapshot:
           type: string
@@ -6936,8 +6936,8 @@ components:
         artifact_pool_name:
           type: [string, "null"]
           description: |
-            Artifact pool this snapshot belongs to (slice B). Null for snapshots
-            created before slice B.
+            Artifact pool this snapshot belongs to. Null for snapshots
+            created before artifact pools existed.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -6956,7 +6956,7 @@ components:
           type: boolean
           default: false
           description: |
-            RAM capture is unsupported in slice A. Sending `true` returns
+            RAM capture is not currently supported. Sending `true` returns
             `400 validation_failed` with `details.reason =
             "with_memory_unsupported"`. The field is retained for forward
             compatibility.
@@ -6967,7 +6967,7 @@ components:
             default artifact pool; an unresolvable value returns 409
             (default_artifact_pool_not_set / artifact_pool_required), 400 (the
             name is a storage pool), or 404 (unknown). The blob still lives in
-            the source VM disk pool dir in slice B; this records ownership.
+            the source VM disk pool dir for now; this records ownership.
 
     VmSnapshotUpdate:
       type: object

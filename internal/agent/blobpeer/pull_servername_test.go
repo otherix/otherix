@@ -88,7 +88,7 @@ func holderCertDNSOnly(t *testing.T, dnsName string) (*http.Client, *tls.Config)
 	return client, srvTLS
 }
 
-// TestPullServerNamePinning reproduces the slice-C1 cross-node pull TLS bug and
+// TestPullServerNamePinning reproduces the cross-node pull TLS bug and
 // proves the HolderIdentity ServerName pin fixes it. The test TLS server's leaf
 // cert is valid only for the DNS SAN "holder.test"; the consumer dials it by
 // 127.0.0.1 (the httptest URL host), which is NOT in the cert.

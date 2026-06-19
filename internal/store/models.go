@@ -339,7 +339,7 @@ type AgentWireguard struct {
 type ClusterSetting struct {
 	ID                      int32
 	DefaultPoolName         *string
-	DefaultArtifactPoolName *string // cluster-wide default artifact pool (slice B); operator-set, no boot seed
+	DefaultArtifactPoolName *string // cluster-wide default artifact pool; operator-set, no boot seed
 	OverlaySupernet         *string // cluster overlay supernet CIDR; seeded once at boot, immutable
 	VNIMin                  *int32  // overlay VNI range floor; seeded once at boot, immutable
 	VNIMax                  *int32  // overlay VNI range ceiling; seeded once at boot, immutable
@@ -453,10 +453,10 @@ type MigrationStats struct {
 	SetupTimeMs       int64
 }
 
-// ArtifactPool is a cluster-level content-addressed artifact store concept
-// (slice B): a name, a durability target (ReplicationFactor), and advisory
+// ArtifactPool is a cluster-level content-addressed artifact store concept:
+// a name, a durability target (ReplicationFactor), and advisory
 // membership. It is NOT a per-node storage_pools instance and has no node/path
-// in slice B - per-node backing, replication, and reconcile are sub-project C.
+// yet - per-node backing, replication, and reconcile are future work.
 // Names are unique across BOTH the artifact-pool and storage-pool namespaces.
 type ArtifactPool struct {
 	ID                uuid.UUID
@@ -638,10 +638,10 @@ type Snapshot struct {
 	// self-describing.
 	SourceArchitecture CPUArch
 	SourceFirmwareID   *uuid.UUID
-	// ArtifactPoolName is the artifact pool this snapshot belongs to (slice B).
+	// ArtifactPoolName is the artifact pool this snapshot belongs to.
 	// The blob still lives physically in the source VM's disk pool dir; this tag
 	// records logical ownership and feeds fail-closed artifact-pool delete. Nil
-	// for snapshots created before slice B.
+	// for snapshots created before artifact pools existed.
 	ArtifactPoolName *string
 	DiskSizeBytes    *int64
 	Disks            []SnapshotDisk
@@ -853,7 +853,7 @@ type PoolImage struct {
 }
 
 // NodeBlob is one content-addressed blob a node holds in its artifact store
-// (slice C1 observed state). The heartbeat path writes the per-node list; the
+// (observed state). The heartbeat path writes the per-node list; the
 // pull-saga holder discovery reads it. Identity is the digest; SizeBytes is
 // observability.
 type NodeBlob struct {
@@ -884,7 +884,7 @@ type CreatePullSagaParams struct {
 	TokenTTL     time.Duration
 }
 
-// PullSagaPhase is the lifecycle phase of a cross-node blob pull saga (slice C1).
+// PullSagaPhase is the lifecycle phase of a cross-node blob pull saga.
 type PullSagaPhase string
 
 // Pull-saga phases.

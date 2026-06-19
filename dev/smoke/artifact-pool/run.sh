@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# Artifact-pool concept smoke (slice B) - proves the artifact-pool concept layer
+# Artifact-pool concept smoke - proves the artifact-pool concept layer
 # end to end through the `otherix` CLI against a REAL agent (qemu + QMP + the
 # content-addressed blob store):
 #

@@ -23,7 +23,7 @@ import (
 
 // snapshotCreateRequest is the JSON body of POST /v1/vms/{id}/snapshots. name is
 // required (1..255); description is optional. with_memory is accepted for
-// forward-compat but rejected in slice A (disk-only).
+// forward-compat but currently rejected (disk-only snapshots).
 type snapshotCreateRequest struct {
 	Name         string  `json:"name"`
 	Description  *string `json:"description"`
@@ -36,7 +36,7 @@ type snapshotCreateRequest struct {
 // the capability but does not own the VM sees a 404 (no existence leak).
 //
 // Sequence: resolve VM by name -> ownership check (404 on deny) -> decode body
-// -> reject with_memory:true (400, disk-only in slice A) -> validate name ->
+// -> reject with_memory:true (400, disk-only snapshots) -> validate name ->
 // resolve vm_state_at_snapshot from the VM's observed runtime phase -> atomic
 // CreateSnapshot (snapshot row + backing task) -> 202.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {

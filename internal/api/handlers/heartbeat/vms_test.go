@@ -61,7 +61,7 @@ func (s *vmRuntimeSpy) ActiveMigrationForVM(_ context.Context, vmID uuid.UUID) (
 }
 
 // TestApplyVMsPlacementGate verifies the placement-authority seam of the
-// heartbeat VM projection (audit H2): a node's runtime claim is written through
+// heartbeat VM projection: a node's runtime claim is written through
 // UpsertVMRuntime only when the VM both exists and is pinned to the reporting
 // node. A VM pinned to another node, an unscheduled VM (nil pin), and an
 // unknown VM are all skipped fail-closed, so a heartbeat can never move

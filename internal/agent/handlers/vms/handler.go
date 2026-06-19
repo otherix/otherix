@@ -21,7 +21,7 @@ import (
 
 // Handler bundles the VM manager dependency and the logger. The
 // manager owns all state - including the per-VM serial multiplexer
-// registry (see ADR 0029) - so the handler only translates wire
+// registry - so the handler only translates wire
 // shapes. The TokenStore is injected so tests can swap a
 // clock-controlled instance without touching production wiring.
 type Handler struct {

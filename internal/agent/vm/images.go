@@ -29,9 +29,8 @@ import (
 )
 
 // importHTTPTimeout caps the worst-case duration of a single image
-// download. 1h is the agent-side default; ROADMAP entry
-// "agent.storage.dir.import_timeout config" tracks operator-facing
-// exposure.
+// download. 1h is the agent-side default; operator-facing exposure of
+// an import_timeout config is future work.
 const importHTTPTimeout = time.Hour
 
 // importMaxRedirects bounds redirect chain length for source URL
@@ -55,7 +54,7 @@ var maxImageBytes int64 = 64 << 30
 // ALLOWING RFC1918 + ULA private ranges - operators legitimately host VM
 // image mirrors on private networks. It runs as the net.Dialer Control hook
 // on the resolved IP of EVERY connection the image download makes -
-// including redirect hops - so it is DNS-rebind-safe (SSRF guard, audit M1).
+// including redirect hops - so it is DNS-rebind-safe (SSRF guard).
 func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -83,8 +82,7 @@ var (
 	// "qcow2". `raw` is a deferred enum extension.
 	ErrUnsupportedFormat = errors.New("unsupported image format (qcow2 only)")
 	// ErrMissingSourceURL is returned when the source URL is empty. Only
-	// source_url is accepted; source_path not implemented (separate
-	// iteration tracked in ROADMAP).
+	// source_url is accepted; source_path is not yet implemented.
 	ErrMissingSourceURL = errors.New("source_url is required")
 	// ErrInvalidChecksumFormat is returned when a non-empty expected
 	// checksum fails the 64-char lowercase hex pattern.
@@ -135,8 +133,8 @@ type CachedImage struct {
 
 // imageLockKey indexes the per-(pool, basename) mutex preventing concurrent
 // ensures of the same cached image from clobbering each other. The mutex
-// stays alive in the map for the lifetime of the manager — cleanup is a
-// future iteration concern. The pool dimension is a string name (the
+// stays alive in the map for the lifetime of the manager - cleanup of
+// stale entries is deferred future work. The pool dimension is a string name (the
 // agent's pool registry is name-keyed).
 type imageLockKey struct {
 	pool     string
@@ -215,7 +213,7 @@ func (m *Manager) EnsureImage(ctx context.Context, poolName, sourceURL, expected
 // EnsureImageInto materializes the pool image (download-on-miss, digest-verify)
 // and clones it into dstPath, holding the per-image lock across both steps so a
 // concurrent ensure for the same (pool, basename) cannot overwrite the cache
-// file between the verify and the clone (audit R2-L5). On a pinned-digest cache
+// file between the verify and the clone. On a pinned-digest cache
 // HIT it re-hashes the cache file bytes (not the sidecar), so a tampered cache
 // file routes to the existing re-download path. Clone failures are wrapped in
 // ErrCloneFailed so the caller can map them to clone_failed.
@@ -463,7 +461,7 @@ func (m *Manager) downloadAndHash(ctx context.Context, sourceURL, tempPath strin
 
 // qcow2Magic is the first 4 bytes of every valid qcow2 image: 'QFI\xfb'
 // (0x514649fb big-endian). Magic-only validation; full 9-rule header
-// validation deferred — ROADMAP entry "full qcow2 header validation".
+// validation (the full qcow2 header check) is deferred future work.
 var qcow2Magic = [4]byte{'Q', 'F', 'I', 0xfb}
 
 // validateQcow2Magic reads the first 4 bytes of path and rejects anything

@@ -152,7 +152,7 @@ func TestRunCreateBlobUnavailableIsRetryable(t *testing.T) {
 	}
 }
 
-// TestRunCreateSkipsPullWhenTargetHoldsBlob pins the slice-A K=1 same-node fast
+// TestRunCreateSkipsPullWhenTargetHoldsBlob pins the single-replica same-node fast
 // path: when the target node already reports the snapshot's blob in observed
 // inventory (e.g. the producing node IS the target), NO pull happens and the
 // create proceeds straight to the agent. Preserves current behavior exactly.

@@ -840,8 +840,8 @@ func TestRunMigration_PendingSingleNode(t *testing.T) {
 	}
 }
 
-// TestPlaceAndBindRefusesNetworkUnreadyTarget pins Task 3 (slice 3b): a node-less
-// migration must honor the scheduler's network-readiness filter (ADR 0034 NL18)
+// TestPlaceAndBindRefusesNetworkUnreadyTarget verifies that a node-less
+// migration must honor the scheduler's network-readiness filter
 // exactly as vm create does. The only resource-eligible target (nodeB) has the
 // VM's bridge network in a NON-ready state, so placeAndBind must pass the VM's
 // NetworkIDs to the placer and the candidate is excluded - the migration stays
@@ -1086,7 +1086,7 @@ func (st overlayPeersStub) OverlayPeerNodesForVM(_ context.Context, _ uuid.UUID)
 	return st.peers, nil
 }
 
-// TestConvergePostCutoverNudgesOverlayPeers pins the fast-push (ADR 0035 / NL8):
+// TestConvergePostCutoverNudgesOverlayPeers pins the fast-push:
 // on the committed-cutover success arm, the worker nudges the computed overlay
 // peer set AND the target so they re-pull their FDB immediately. It drives the
 // full happy path (convergePostCutover is unexported), injecting the peer set

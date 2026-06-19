@@ -161,7 +161,7 @@ func TestCollectPoolImages(t *testing.T) {
 // TestCollectPoolImagesUnavailable confirms the tri-state fail-closed contract:
 // a PoolImageLister that returns known=false (the agent could not enumerate the
 // pool) makes the collector set ImagesUnavailable = true with no images, so the
-// CP preserves the prior inventory rather than clearing it (audit R2-L11).
+// CP preserves the prior inventory rather than clearing it.
 func TestCollectPoolImagesUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {

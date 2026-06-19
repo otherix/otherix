@@ -442,7 +442,7 @@ func (m *Mock) StoragePoolsScan(w http.ResponseWriter, r *http.Request, poolName
 	m.respondJSON(w, r, opID, http.StatusAccepted, body)
 }
 
-// BlobsServe implements POST /v1/blobs/serve (slice C1). The mock holder opens
+// BlobsServe implements POST /v1/blobs/serve. The mock holder opens
 // no real listener; it echoes back a synthetic serve_endpoint + expiry so a
 // CP-side test can drive the serve->pull control flow against the OpenAPI
 // contract. Decodes the request for body-shape validation only.
@@ -466,7 +466,7 @@ func (m *Mock) BlobsServe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// BlobsPull implements POST /v1/blobs/pull (slice C1). The mock consumer records
+// BlobsPull implements POST /v1/blobs/pull. The mock consumer records
 // an agent task and returns 202; no real transfer runs. Decodes the request for
 // body-shape validation only.
 func (m *Mock) BlobsPull(w http.ResponseWriter, r *http.Request, _ agentapi.BlobsPullParams) {

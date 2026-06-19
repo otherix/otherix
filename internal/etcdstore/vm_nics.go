@@ -348,7 +348,7 @@ func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network
 // OverlayPeerNodesForVM returns the nodes that have a local VM on any overlay VNI
 // the given VM is attached to, excluding the VM's own current node. These are the
 // nodes whose declared_fdb changes when the VM moves, so the CP nudges them to
-// re-pull after a cutover (ADR 0035 / NL8 fast-push). It reuses the cluster-wide
+// re-pull after a cutover (fast-push). It reuses the cluster-wide
 // overlay placement projection, identifies the VM's own VNIs + node by its NIC
 // MACs, then collects the distinct other nodes on those VNIs. A node that has
 // since gone is skipped rather than failing the lookup (this feeds a best-effort

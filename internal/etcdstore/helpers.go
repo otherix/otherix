@@ -17,7 +17,7 @@ import (
 // decodeOrQuarantine unmarshals val into dst. On a decode failure it logs a WARN
 // naming the key and returns false so the caller skips the item, rather than
 // failing the whole Range scan - one malformed persisted key must not halt a
-// consume/sweep loop every tick (audit R2-L12). Only per-item decode failures
+// consume/sweep loop every tick. Only per-item decode failures
 // are quarantined; a transient Range error stays the caller's to return. The
 // poison key is never deleted, only skipped and logged so an operator can
 // investigate.

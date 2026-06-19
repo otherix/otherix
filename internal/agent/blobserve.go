@@ -25,7 +25,7 @@ import (
 // dropping the primed token so a replay finds nothing to serve.
 const serveTokenTTL = 10 * time.Minute
 
-// blobServeManager is the holder-side half of the slice-C1 blob pull: on
+// blobServeManager is the holder-side half of the cross-node blob pull: on
 // Serve it reserves a port from the artifacts range, opens a peer-facing
 // mutual-TLS listener (NODE-leaf client auth, NOT the CP-only identity) that
 // streams the requested blob by digest, and returns the reachable endpoint plus

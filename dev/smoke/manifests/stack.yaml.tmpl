@@ -4,8 +4,8 @@
 # attached to smoke-mf-net, so its placement does not wait on the network
 # reconciling and the network delete is not blocked by the VM's NIC. The
 # attached-VM-on-a-manifest-network flow (which needs sequencing) is covered by
-# the networking smoke; the single-apply dependency gap is a ROADMAP backlog
-# item. Only @@IMAGE_URL@@ / @@ARCH@@ are substituted.
+# the networking smoke; the single-apply dependency gap is a known limitation
+# tracked separately. Only @@IMAGE_URL@@ / @@ARCH@@ are substituted.
 apiVersion: otherix/v1
 kind: Network
 metadata:

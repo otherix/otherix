@@ -186,7 +186,7 @@ func writeFile(fs filesystem.FileSystem, name string, content []byte) error {
 
 // buildMetaData renders the NoCloud meta-data document. The hostname is
 // yaml-encoded (never interpolated) so a name carrying a newline or YAML
-// metacharacter cannot inject extra top-level keys (audit R2-M5).
+// metacharacter cannot inject extra top-level keys.
 func buildMetaData(hostname string) ([]byte, error) {
 	type metaData struct {
 		InstanceID    string `yaml:"instance-id"`

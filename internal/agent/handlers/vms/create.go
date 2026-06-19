@@ -29,8 +29,8 @@ type nicReq struct {
 type createRequest struct {
 	// UUID is optional. When supplied it is used as the agent-side VM
 	// id (unified UUID model: CP mints, agent uses). When absent the
-	// agent generates a fresh uuid - backward compatible with pre-Phase A
-	// callers.
+	// agent generates a fresh uuid - backward compatible with callers
+	// that predate the CP-minted-UUID model.
 	//
 	// `pool` is the pool **name**. The agent's local registry is
 	// name-keyed; the cluster-wide UUID polymorphism stays an

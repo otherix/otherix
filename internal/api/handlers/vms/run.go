@@ -283,7 +283,7 @@ func loadCreateSourceSnapshot(ctx context.Context, st WorkerStore, broker Snapsh
 // node before materialize. It reads the target's OBSERVED node-blob inventory,
 // builds a have-set, and for each disk digest NOT already held calls
 // broker.BrokerPull(ctx, digest, targetNodeID) and awaits it. A digest the
-// target already holds (the slice-A K=1 same-node case: the producing node IS
+// target already holds (the single-replica same-node case: the producing node IS
 // the target) is skipped, so no pull happens and current behavior is preserved
 // exactly. A no-holder digest surfaces as blobbroker.ErrBlobUnavailable, which
 // the caller classifies RETRYABLE.
@@ -312,7 +312,7 @@ func ensureSnapshotBlobsLocal(ctx context.Context, st WorkerStore, broker Snapsh
 // resolveSourceSnapshot loads the snapshot and projects its manifest disks onto
 // the agent-facing VMCreateSourceSnapshot, ordered by disk index (the virtio<i>
 // invariant the agent clones in). poolName is the recreate VM's target pool -
-// in slice A (K=1) the blobs live under that pool's snapshots/ subdir on the
+// for a single-replica (K=1) snapshot the blobs live under that pool's snapshots/ subdir on the
 // same node, so the agent resolves {poolRoot}/snapshots/{sha}.qcow2 from its own
 // registry. A snapshot with no manifest disks is an inconsistency (the worker
 // only fills Disks on a successful capture) and fails the create.
@@ -585,10 +585,10 @@ func failCreateExec(ctx context.Context, st WorkerStore, log *slog.Logger, taskI
 // clearAgentTaskIDIfGone clears the task's persisted agent_task_id when execErr
 // is a permanent agent-task 404 (the agent task vanished, typically after an
 // agent restart), so the redelivery re-POSTs and the agent's durable dedup
-// (m.vms) reconciles instead of re-polling a vanished task forever (R2-M2). It is
+// (m.vms) reconciles instead of re-polling a vanished task forever. It is
 // a no-op for any other error. A clear-write failure is returned so the caller
 // requeues; otherwise nil and the caller proceeds to failRun. Safe: the re-POST
-// cannot clobber a live VM (R2-M1 / ADR 0042).
+// cannot clobber a live VM (the agent's durable dedup ignores a duplicate create).
 func clearAgentTaskIDIfGone(ctx context.Context, st WorkerStore, taskID uuid.UUID, execErr error) error {
 	if !isAgentTaskGone(execErr) {
 		return nil

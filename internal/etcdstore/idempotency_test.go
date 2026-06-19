@@ -23,7 +23,7 @@ import (
 var _ middleware.IdempotencyStore = (*etcdstore.Store)(nil)
 
 // idempUser is a fixed user id used to scope the per-user idempotency rows in
-// these store tests (audit R2-L10).
+// these store tests.
 var idempUser = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
 func beginParams(key string, expires time.Time) store.BeginIdempotencyKeyParams {
@@ -107,8 +107,7 @@ func TestIdempotencyReclaimExpired(t *testing.T) {
 }
 
 // TestIdempotencyPerUserKeyNamespace asserts the per-user scope at the store
-// layer: two users using the same key string each get an independent row
-// (audit R2-L10).
+// layer: two users using the same key string each get an independent row.
 func TestIdempotencyPerUserKeyNamespace(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

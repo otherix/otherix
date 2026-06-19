@@ -54,7 +54,7 @@ type mockSnapshotDisk struct {
 
 // mockSnapshotManifest returns the deterministic two-disk manifest captured for
 // vm at snapshot time: virtio0 / virtio1 with fixed digests and sizes, the VM's
-// architecture, and vm_state_at_snapshot=stopped (slice A is disk-only, no RAM).
+// architecture, and vm_state_at_snapshot=stopped (snapshots are disk-only, no RAM).
 func mockSnapshotManifest(vm AgentVM, name, description string, now time.Time) mockSnapshot {
 	arch := vm.Architecture
 	if arch == "" {

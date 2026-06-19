@@ -16,7 +16,7 @@ type listResponse struct {
 
 // List handles GET /v1/vms.
 //
-// Iteration 1 returns the full VM set without pagination — the agent
+// Returns the full VM set without pagination - the agent
 // holds at most a few dozen VMs per node. The response shape uses the
 // standard envelope (data + meta.next_cursor) so future agents can
 // paginate without changing the wire envelope.

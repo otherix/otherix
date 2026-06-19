@@ -27,11 +27,11 @@ import (
 // scoring; DiskBytes is derived from the requested disk_gib in
 // the single-root-disk model.
 // NetworkIDs lists the cluster-wide networks the VM attaches to. When
-// non-empty, the network-aware filter (ADR 0034 NL18) excludes any
+// non-empty, the network-aware filter excludes any
 // candidate node where a requested network's per-(node, network)
 // reconciliation_status is not "ready" (or has no status record at all).
 // Empty NetworkIDs makes the filter a no-op.
-// ExcludeNodeID is the optional migration-source exclusion (spec D2): a
+// ExcludeNodeID is the optional migration-source exclusion: a
 // node-less `vm migrate` reuses the initial-placement path but must land
 // on a node other than the VM's current one. When non-nil, the scheduler
 // drops every candidate whose node id matches before scoring; if that
@@ -308,7 +308,7 @@ type NetworkUnreadyNode struct {
 // NetworkUnreadyDetail is the structured payload attached to
 // ErrNoEligibleNodes when at least one candidate that otherwise fit the
 // request was excluded specifically because a requested network had not
-// reconciled to "ready" on it (ADR 0034 NL18). Distinct from
+// reconciled to "ready" on it. Distinct from
 // NodePressureDetail and InsufficientResourcesDetail because the
 // operator action differs: a failed network reconciliation calls for
 // inspecting the agent's network materialisation, not capacity or
@@ -599,8 +599,8 @@ func applyNetworkFilter(ctx context.Context, q Querier, fits []candidate, req Pl
 	return survivors, nil
 }
 
-// filterByNetworkReadiness applies the network-aware placement filter
-// (ADR 0034 NL18). For each candidate that already passed the resource
+// filterByNetworkReadiness applies the network-aware placement filter.
+// For each candidate that already passed the resource
 // fit, it loads the node's per-(node, network) reconciliation records and
 // keeps the candidate only when every requested network id is present
 // with status "ready". A network that is missing, "pending", or "failed"

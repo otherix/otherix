@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package blobs hosts the agent's CP-driven /v1/blobs/* control handlers
-// (slice C1). The Control Plane dials these over the agent's main mTLS server
+// Package blobs hosts the agent's CP-driven /v1/blobs/* control handlers.
+// The Control Plane dials these over the agent's main mTLS server
 // (CP-only identity) to orchestrate a cross-node blob pull:
 //
 //   - POST /v1/blobs/serve tells a holder agent to open a peer-facing blob

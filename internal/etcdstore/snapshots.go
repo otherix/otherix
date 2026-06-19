@@ -62,9 +62,9 @@ func blobRefPrefix(digest string) string {
 // is the K=1 seed of the §3/§5 placement map (replicated-artifact-store design):
 // the snapshot-create success callback writes one entry per disk under the
 // producing node, and blob GC reads it to find a blob's holder node(s) WITHOUT a
-// VM lookup - so a snapshot stays deletable after its source VM is gone. Slice C
-// grows the map from {1 node} to {K nodes} + a reconcile loop; the key schema and
-// the GC's read are unchanged.
+// VM lookup - so a snapshot stays deletable after its source VM is gone. Future
+// replication grows the map from {1 node} to {K nodes} + a reconcile loop; the
+// key schema and the GC's read are unchanged.
 func placementKey(digest string, nodeID uuid.UUID) string {
 	return etcd.Key("placement", digest, nodeID.String())
 }
@@ -421,7 +421,7 @@ func (s *Store) SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUI
 		return err
 	}
 
-	// 1 row put + 2 ops per disk (blobRef + placement). Slice A is single-disk (3
+	// 1 row put + 2 ops per disk (blobRef + placement). The current path is single-disk (3
 	// ops); a future multi-disk path must chunk via commitInChunks before it nears
 	// etcd's 128-op/txn limit (~63 disks), which no real VM approaches.
 	ops := []clientv3.Op{clientv3.OpPut(snapshotKey(id), string(val))}
@@ -444,8 +444,8 @@ func (s *Store) SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUI
 // agent delete cannot confirm a blob is physically gone, so removing the entry on an
 // unconfirmed "success" could discard the only VM-independent pointer to a blob the
 // agent fail-closed-leaked. The map is therefore a durable, conservative reclamation
-// index; pruning it (and reclaiming leaked blobs) is the slice-C reconcile loop's
-// job (ADR 0027 pattern), which can actually verify blob presence per node.
+// index; pruning it (and reclaiming leaked blobs) is the blob-reconcile loop's
+// job, which can actually verify blob presence per node.
 func (s *Store) BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error) {
 	items, err := s.c.Range(ctx, placementPrefix(digest))
 	if err != nil {
@@ -502,7 +502,7 @@ func (s *Store) DereferenceSnapshotBlobs(ctx context.Context, snapshotID uuid.UU
 // CountSnapshotsInArtifactPool counts non-deleted snapshots tagged with the
 // given artifact pool name (case-insensitive). The authoritative input to
 // fail-closed artifact-pool delete. Scans the snapshot primary prefix (the
-// artifact-pool delete is a rare admin op; no dedicated index in slice B).
+// artifact-pool delete is a rare admin op; no dedicated index).
 func (s *Store) CountSnapshotsInArtifactPool(ctx context.Context, name string) (int64, error) {
 	snaps, err := s.snapshotsByPrimaryPrefix(ctx)
 	if err != nil {

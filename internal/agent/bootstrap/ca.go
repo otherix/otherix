@@ -75,7 +75,7 @@ type caBundleResponse struct {
 // first call, so there is nothing to verify the CP serving cert against;
 // the payload is public (CA certs only); and the operator fingerprint pin
 // makes any MITM substitution detectable. The subsequent token-bearing
-// POST /v1/nodes/join IS verified against the CA pinned here (audit H4).
+// POST /v1/nodes/join IS verified against the CA pinned here.
 //
 // Returns the concatenated trust bundle PEM (every CA the agent must trust,
 // to persist as its trust anchor) plus the parsed pinned CA cert (the one
@@ -182,7 +182,7 @@ func newBootstrapTransport() *http.Transport {
 // POST /v1/nodes/join. Unlike newBootstrapTransport (which the /v1/ca anchor
 // fetch uses), it VERIFIES the CP serving cert against EXACTLY the
 // operator-pinned cluster CA - the single cert whose fingerprint the operator
-// supplied - and nothing else (audit H4). Deliberately NOT the full /v1/ca
+// supplied - and nothing else. Deliberately NOT the full /v1/ca
 // bundle: the bundle arrives over an unauthenticated TOFU channel, so an
 // active MITM can append its own CA next to the pinned one with
 // self-consistent per-entry fingerprints; pooling the whole bundle would let

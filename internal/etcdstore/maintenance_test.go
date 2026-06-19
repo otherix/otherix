@@ -78,10 +78,10 @@ func TestDeleteExpiredTasks(t *testing.T) {
 	}
 }
 
-// TestDeleteExpiredTasksQuarantinesUndecodableKey pins the L12 quarantine on a
+// TestDeleteExpiredTasksQuarantinesUndecodableKey pins the quarantine behavior on a
 // representative sweep: a malformed task key must not halt DeleteExpiredTasks.
 // The valid expired task is still deleted (count 1), no error, and the poison
-// key is left in place (audit R2-L12).
+// key is left in place.
 func TestDeleteExpiredTasksQuarantinesUndecodableKey(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()

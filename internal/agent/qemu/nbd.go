@@ -53,7 +53,7 @@ const (
 type NBDServerSpec struct {
 	CredsDir       string // tls-creds-x509 server dir
 	SourceIdentity string // "CN=node-<source>"; pins the connecting source DN
-	BindHost       string // migration ingress host (ADR 0013)
+	BindHost       string // migration ingress host
 	Port           int    // reserved ingress port
 	Export         string // NBD export name = the correlation auth_token
 	DiskPath       string // destination disk (already created, writable)

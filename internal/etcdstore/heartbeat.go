@@ -200,7 +200,7 @@ func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.Upse
 	// one Txn so a crash cannot leave the row's current_node_id pointing at a
 	// node the index no longer (or does not yet) reference. DeleteNode consumes
 	// this index, so a dangling entry would make a force-delete miss a VM
-	// (audit R2-L9). Row + at most one Delete + at most one Put is <= 3 ops,
+	// Row + at most one Delete + at most one Put is <= 3 ops,
 	// well under etcd's per-txn limit.
 	val, err := etcd.Marshal(rt)
 	if err != nil {

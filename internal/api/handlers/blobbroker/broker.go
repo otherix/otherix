@@ -2,7 +2,7 @@
 // Copyright 2026 Andrei Taranik
 
 // Package blobbroker is the CP-side control that orchestrates a cross-node
-// blob pull saga (slice C1): discover a live holder from observed inventory,
+// blob pull saga: discover a live holder from observed inventory,
 // mint a single-use per-op token, tell the holder to serve, tell the consumer
 // to pull and await it to terminal, then tear down. It fails closed with
 // ErrBlobUnavailable when no holder exists - the honest K=1 boundary.

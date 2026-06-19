@@ -46,7 +46,7 @@ const (
 
 // ErrConsoleInUse is returned by SubscribeConsole when another console
 // subscriber is already attached to the same multiplexer. The agent
-// console handler maps this to 409 console_in_use per ADR 0028.
+// console handler maps this to 409 console_in_use.
 var ErrConsoleInUse = errors.New("serialmux: console already in use")
 
 // errMultiplexerClosed is returned by Reconnect when the multiplexer
@@ -54,8 +54,8 @@ var ErrConsoleInUse = errors.New("serialmux: console already in use")
 // signal that the VM lifecycle has moved past reboot.
 var errMultiplexerClosed = errors.New("serialmux: multiplexer closed")
 
-// Multiplexer is the per-VM serial console multiplexer described by
-// ADR 0029. One instance per running VM lives in the agent's Manager;
+// Multiplexer is the per-VM serial console multiplexer.
+// One instance per running VM lives in the agent's Manager;
 // callers attach a single bidirectional ConsoleSubscriber or any
 // number of read-only LogsSubscribers.
 //

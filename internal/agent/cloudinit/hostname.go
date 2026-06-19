@@ -95,7 +95,7 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 
 // minimalCloudConfig emits a #cloud-config blob carrying only a yaml-encoded
 // hostname, so the name is encoded (never interpolated) even on the fallback
-// paths (audit R2-M5).
+// paths.
 func minimalCloudConfig(hostname string) ([]byte, error) {
 	b, err := yaml.Marshal(map[string]string{"hostname": hostname})
 	if err != nil {

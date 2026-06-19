@@ -109,7 +109,7 @@ func TestRotateRefreshToken(t *testing.T) {
 }
 
 // TestRotateRefreshTokenRefusesRevokedParent guards the serialized half of the
-// double-spend window (audit M8): once a parent has been rotated (revoked), a
+// double-spend window: once a parent has been rotated (revoked), a
 // second rotation of the same parent must be refused with
 // store.ErrRefreshTokenConflict and must not insert another live child, so the
 // family ends with exactly one live token.
@@ -152,7 +152,7 @@ func TestRotateRefreshTokenRefusesRevokedParent(t *testing.T) {
 }
 
 // TestRotateRefreshTokenConcurrentSingleWinner guards the simultaneous half of
-// the double-spend window (audit M8): N concurrent rotations of the same live
+// the double-spend window: N concurrent rotations of the same live
 // parent must produce exactly one live child; every loser observes
 // store.ErrRefreshTokenConflict. The CAS on the parent's ModRevision makes the
 // invariant hold regardless of scheduling.

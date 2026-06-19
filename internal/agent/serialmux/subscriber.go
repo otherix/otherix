@@ -20,8 +20,8 @@ var errSubscriberClosed = errors.New("serialmux: subscriber closed")
 var errSubscriberFull = errors.New("serialmux: subscriber channel full")
 
 // ConsoleSubscriber is the bidirectional console attachment. Only one
-// console subscriber can be active per multiplexer (spec §4.1.2,
-// ADR 0028 console_in_use semantic).
+// console subscriber can be active per multiplexer (the console_in_use
+// semantic).
 //
 // Bytes() exposes the receive channel for QEMU serial output; Write()
 // forwards operator keystrokes back to QEMU via the multiplexer.

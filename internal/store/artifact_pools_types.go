@@ -51,8 +51,8 @@ func (rf *ReplicationFactor) UnmarshalJSON(b []byte) error {
 }
 
 // ArtifactPoolMembership records which nodes are intended to back the pool.
-// Advisory metadata in slice B (nothing is materialised); slice C materialises
-// and reconciles it. AllNodes=true means every current and future node;
+// Advisory metadata for now (nothing is materialised); future replication
+// materialises and reconciles it. AllNodes=true means every current and future node;
 // otherwise Nodes is an explicit node-name list.
 type ArtifactPoolMembership struct {
 	AllNodes bool     `json:"all_nodes"`

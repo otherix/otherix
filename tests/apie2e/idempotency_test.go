@@ -58,7 +58,7 @@ func TestIdempotencyReplaySameKeyAndBody(t *testing.T) {
 }
 
 // TestIdempotencyPerUserScopeNoCrossUserCollision drives the real seam for
-// audit R2-L10: two different users posting the same mutating endpoint with the
+// per-user idempotency-key scoping: two different users posting the same mutating endpoint with the
 // SAME Idempotency-Key but DIFFERENT bodies must both succeed. Idempotency keys
 // are scoped per user, so neither user can squat a key string to grief the
 // other (a 24h 409 denial under the old global-key scheme).

@@ -61,7 +61,7 @@ type clusterJoinResponse struct {
 // over a TOFU connection and pin the cluster CA by the operator fingerprint,
 // then POST the cluster token to /v1/cluster/join over a transport that
 // VERIFIES the target replica's serving cert against that pinned CA - the
-// token never leaves the joiner before the server is authenticated (audit H4).
+// token never leaves the joiner before the server is authenticated.
 // The returned CA is re-checked against the operator-pinned fingerprint and
 // the key confirmed to pair with the cert (defense-in-depth). Returns the CA
 // material to persist on disk before etcd starts.
@@ -142,7 +142,7 @@ type caBundleResponse struct {
 // whole bundle would let an attacker-CA-signed leaf pass the verified
 // /v1/cluster/join handshake and capture the cluster token. The pool then
 // anchors the verified /v1/cluster/join POST so the token is never sent
-// before the server is authenticated (audit H4). The TLS skip is acceptable
+// before the server is authenticated. The TLS skip is acceptable
 // only here: no CA is pinned yet, the payload is public (CA certs only), and
 // the fingerprint pin makes substitution detectable.
 func prefetchPinnedCA(ctx context.Context, cpURL, expectedFingerprint string, timeout time.Duration) (*x509.CertPool, error) {
@@ -224,7 +224,7 @@ func prefetchPinnedCA(ctx context.Context, cpURL, expectedFingerprint string, ti
 // target replica's serving cert against the prefetched, fingerprint-pinned
 // cluster CA pool, and decodes the response, mapping a non-201 status to a
 // descriptive error. Only the /v1/ca prefetch is TOFU; this token-bearing
-// call is fully verified (audit H4).
+// call is fully verified.
 func postClusterJoin(ctx context.Context, p ClusterJoinFetchParams, caPool *x509.CertPool) (clusterJoinResponse, error) {
 	reqBody, err := json.Marshal(map[string]string{"token": p.Token, "peer_url": p.PeerURL})
 	if err != nil {

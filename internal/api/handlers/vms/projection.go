@@ -24,7 +24,7 @@ const (
 
 // projectStatus maps the (vms row, vm_runtime row) pair plus the
 // "delete in flight" bit to the user-facing status string per the
-// Phase B truth table:
+// truth table below:
 //
 //	deleted_at not null              → gone
 //	active vm.delete task            → deleting  (teardown in flight, pre-tombstone)

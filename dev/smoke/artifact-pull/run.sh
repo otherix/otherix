@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# Cross-node artifact-pull smoke (slice C1) - proves a content-addressed snapshot
-# blob is made available on a NON-PRODUCING node ON DEMAND, which is C1's whole
-# point. Driven end to end through the `otherix` CLI against TWO real agents
+# Cross-node artifact-pull smoke - proves a content-addressed snapshot
+# blob is made available on a NON-PRODUCING node ON DEMAND, which is the
+# whole point of the cross-node pull. Driven end to end through the `otherix` CLI against TWO real agents
 # (qemu + QMP + the content-addressed blob store + the CP-brokered peer pull):
 #
 #   1. discover the producer (node-1) + a second ready consumer node (node-2)
@@ -23,7 +23,7 @@
 #
 # THE PROPAGATION / DETERMINISM APPROACH (why this is deterministic, not racy):
 #   The producing node's OBSERVED blob inventory (node_blobs) lags the snapshot by
-#   ONE heartbeat (dev heartbeat_interval=5s, ADR 0027) and is NOT surfaced via the
+#   ONE heartbeat (dev heartbeat_interval=5s) and is NOT surfaced via the
 #   CLI - so we do NOT poll it. Instead we lean on the RETRYABLE classification of
 #   the C1 seam: when the broker finds no live holder yet, vm.create fails
 #   `blob_unavailable`, which the worker classifies RETRYABLE; the dispatcher

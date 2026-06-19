@@ -19,10 +19,10 @@ import (
 )
 
 // VMCreateRequest is the body the CP-side worker sends to the agent's
-// POST /v1/vms. Wire-shape matches the Iteration 1 agent's actual
+// POST /v1/vms. Wire-shape matches the agent's actual
 // surface (internal/agent/handlers/vms/create.go) — minimal fields
 // only. The richer agent.yaml VMSpec is a future design target;
-// reconciliation between the two is tracked as future iteration work.
+// reconciliation between the two is tracked as future work.
 //
 // The `pool` field carries the pool name, not a UUID. The agent's
 // local pool registry is name-keyed; the cluster-wide multi-instance
@@ -146,7 +146,7 @@ type AgentVM struct {
 
 // agentVMListResponse mirrors the agent's listResponse wire shape
 // (handler.go list.go). The meta envelope is forward-compatible with
-// cursor pagination but Iteration 1 agent leaves next_cursor null.
+// cursor pagination but the agent currently leaves next_cursor null.
 type agentVMListResponse struct {
 	Data []AgentVM      `json:"data"`
 	Meta map[string]any `json:"meta"`
@@ -222,9 +222,9 @@ func (c *Client) VM(ctx context.Context, endpoint string, vmName string) (AgentV
 	return v, nil
 }
 
-// ListVMs returns the agent's full VM inventory. Iteration 1 agent
-// returns a single page without pagination; future iterations may layer
-// on cursor pagination — this method's signature stays the same since
+// ListVMs returns the agent's full VM inventory. The agent currently
+// returns a single page without pagination; cursor pagination may be
+// layered on later, but this method's signature stays the same since
 // the meta envelope holds the cursor server-side.
 func (c *Client) ListVMs(ctx context.Context, endpoint string) ([]AgentVM, error) {
 	target, _ := url.JoinPath(endpoint, "/v1/vms")
@@ -261,8 +261,8 @@ func (c *Client) ResumeVM(ctx context.Context, endpoint, vmName, idempotencyKey 
 }
 
 // ResetVM issues a synchronous POST /v1/vms/{vm_name}/reset. Same
-// envelope contract as PauseVM. Per Pre-L1 spec amendment reset is
-// sync (200 + VMDetail) rather than the previous 202 + task.
+// envelope contract as PauseVM. Reset is
+// sync (200 + VMDetail) rather than 202 + task.
 func (c *Client) ResetVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (AgentVM, error) {
 	return c.postVMLifecycle(ctx, endpoint, "reset", vmName, idempotencyKey)
 }
@@ -352,7 +352,7 @@ type IssueConsoleTokenResponse struct {
 // persisted on the CP — agents are the only authority for token
 // state.
 //
-// Per Pre-L1 Path D the path is name-keyed (`/v1/vms/{vm_name}/...`).
+// The path is name-keyed (`/v1/vms/{vm_name}/...`).
 func (c *Client) IssueConsoleToken(
 	ctx context.Context,
 	endpoint, vmName, protocol string,
@@ -417,7 +417,7 @@ func (c *Client) postVMLifecycleAsync(
 // the agent's task id from the AsyncTaskAccepted envelope. 202 is the
 // happy path; 404 surfaces as *AgentError (caller decides whether to
 // treat absent VMs as idempotent — typically yes for retry loops).
-// Per Pre-L1 Path D the agent's `DELETE /v1/vms/{vm_name}` is
+// The agent's `DELETE /v1/vms/{vm_name}` is
 // name-keyed; callers pass the VM name (the CP-side loader hands
 // the worker `vm.Name` together with `vm.ID` so the executor still
 // has both for projection).

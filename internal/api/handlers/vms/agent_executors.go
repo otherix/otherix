@@ -54,7 +54,7 @@ func resolveCloudInitNetworkConfig(vm store.VM) string {
 // agentVMClient is the narrow agent-client surface vm executors
 // depend on. *agentclient.Client satisfies it structurally; tests
 // pass an in-test fake without importing the production client.
-// Per Pre-L1 Path D the agent's per-VM URLs are name-keyed; the
+// The agent's per-VM URLs are name-keyed; the
 // DeleteVM signature carries the name string the executor reads
 // from `DeleteArgs.VMName`.
 type agentVMClient interface {

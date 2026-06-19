@@ -21,7 +21,7 @@ import (
 
 // TestJoinIPAdvertisedEndpointInCertSAN drives the real join sequence (chi
 // router -> nodejoin handler -> redeem -> auth.SignCSR -> etcdstore) and proves
-// the ADR 0037 wiring end to end: a node advertising an IP endpoint must yield
+// the IP-SAN wiring end to end: a node advertising an IP endpoint must yield
 // a serving cert whose SAN IPAddresses include that IP. The seam has teeth -
 // reverting redeem.go to pass "" for advertised_endpoint makes the IP
 // assertion fail.

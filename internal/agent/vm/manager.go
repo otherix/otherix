@@ -125,15 +125,15 @@ type Manager struct {
 	// imageDialControl is the net.Dialer Control hook applied to every dial
 	// the image download client performs, including redirect hops (the
 	// Control runs on the resolved IP, post-DNS, so it is DNS-rebind-safe).
-	// New sets it to blockLocalDial (SSRF guard, audit M1); image tests
+	// New sets it to blockLocalDial (SSRF guard); image tests
 	// driving httptest servers on loopback set it to nil to opt out.
 	imageDialControl func(network, address string, c syscall.RawConn) error
 
 	// imageLocks serialises concurrent storage-image work on the same
 	// (pool, basename). Keys are imageLockKey, values are *sync.Mutex.
-	// The map grows monotonically — bounded by active distinct basenames
-	// the operator imports. Cleanup is a future iteration concern (see
-	// ROADMAP). sync.Map's zero value is usable so no init is needed.
+	// The map grows monotonically - bounded by active distinct basenames
+	// the operator imports. Cleanup of stale entries is deferred future
+	// work. sync.Map's zero value is usable so no init is needed.
 	imageLocks sync.Map
 
 	// inFlight tracks in-progress lifecycle operations keyed by VM
@@ -145,7 +145,7 @@ type Manager struct {
 	inFlight sync.Map
 
 	// muxes maps a running VM's name to its serial console
-	// multiplexer (see ADR 0029). An entry exists from the moment
+	// multiplexer. An entry exists from the moment
 	// Start finishes attachMux until Delete tears it down. Stop /
 	// Poweroff intentionally do not remove the entry: the multiplexer
 	// keeps the on-disk log file readable until Delete removes the
@@ -156,7 +156,7 @@ type Manager struct {
 	muxes   map[string]*serialmux.Multiplexer
 
 	// migrations holds the agent's in-memory migration records (target
-	// and source side); migPorts hands out ADR 0013 ingress ports for
+	// and source side); migPorts hands out migration ingress ports for
 	// incoming migrations. Neither is persisted - the CP re-drives on
 	// agent restart.
 	migrations *migration.Store
@@ -164,7 +164,7 @@ type Manager struct {
 
 	// tlsCA / tlsCert / tlsKey are the agent's mTLS material paths
 	// (cfg.TLS.*), reused to materialise per-migration qemu-nbd server
-	// creds (Task 4).
+	// creds.
 	tlsCA, tlsCert, tlsKey string
 
 	// QEMU side-effect seams for the migration path, overridable in
@@ -242,20 +242,21 @@ type Manager struct {
 	// verbatim copy so the capture path runs on darwin without qemu-img.
 	snapshotConvert convertFunc
 
-	// artifactStore is the dedicated per-node content-addressed artifact store
-	// (slice C1). Snapshot capture dual-writes the blob + manifest here ADDITIVELY
+	// artifactStore is the dedicated per-node content-addressed artifact store.
+	// Snapshot capture dual-writes the blob + manifest here ADDITIVELY
 	// alongside the disk-pool copy: the disk-pool copy stays AUTHORITATIVE for
-	// slice-A idempotency/list/delete; this store copy is the additive C1 transport
-	// copy that later C1 tasks (heartbeat inventory, peer pull, recreate) consume.
-	// Removing the disk-pool copy is C3, not C1. Set from cfg.Artifacts.Root in New;
-	// nil-guarded at the capture site so a half-wired test path cannot panic.
+	// idempotency/list/delete; this store copy is the additive transport
+	// copy that the cross-node features (heartbeat inventory, peer pull, recreate)
+	// consume. Removing the disk-pool copy is a later step. Set from
+	// cfg.Artifacts.Root in New; nil-guarded at the capture site so a half-wired
+	// test path cannot panic.
 	artifactStore *artifactstore.Store
 
 	// snapshotDiskDevices enumerates a VM's disks in virtio-index order for
 	// the snapshot capture loop. Production is the package snapshotDiskDevices
-	// (slice A: a single boot disk at index 0); the test injects a multi-disk
+	// (a single boot disk at index 0); the test injects a multi-disk
 	// fixture to pin the manifest's deterministic index ordering. The field is
-	// a test-only seam: slice A's enumerator cannot yield 2 disks, so there is
+	// a test-only seam: the production enumerator cannot yield 2 disks, so there is
 	// no other way to drive runSnapshotCreate's index sort.
 	snapshotDiskDevices func(*VM) []snapshotDiskDevice
 
@@ -403,9 +404,9 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.diskCapturer = qmpDiskCapturer{}
 	m.snapshotConvert = qemu.ConvertTo
 	m.snapshotDiskDevices = snapshotDiskDevices
-	// Dedicated per-node artifact store (slice C1). Snapshot capture dual-writes
+	// Dedicated per-node artifact store. Snapshot capture dual-writes
 	// blob + manifest here additively (the disk-pool copy stays authoritative for
-	// slice-A). Built from cfg.Artifacts.Root, which production config always
+	// idempotency/list/delete). Built from cfg.Artifacts.Root, which production config always
 	// defaults to a valid /var/lib/otherix/ path (config Validate rejects empty).
 	// An empty root means an unconfigured/test path: leave the store nil and let
 	// the capture site skip the additive write rather than failing construction.
@@ -972,7 +973,7 @@ func (m *Manager) materialiseCreateDisk(ctx context.Context, v *VM, spec CreateS
 	default:
 		// EnsureImageInto holds the per-image lock across the ensure and the clone
 		// so a concurrent ensure cannot overwrite the cache file between the digest
-		// verify and the clone (audit R2-L5).
+		// verify and the clone.
 		var err error
 		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
 		if err != nil {
@@ -993,15 +994,15 @@ func (m *Manager) materialiseCreateDisk(ctx context.Context, v *VM, spec CreateS
 
 // materialiseFromSnapshot clones every disk in ref into the per-VM disk path, in
 // virtio-index order, dual-reading the content-addressed blob from BOTH possible
-// locations: the dedicated per-node artifact store (where a slice-C1 cross-node
+// locations: the dedicated per-node artifact store (where a cross-node
 // pull lands the blob) is preferred, falling back to the disk-pool snapshots/
-// subdir ({poolRoot}/snapshots/{sha}.qcow2 - the slice-A / pre-relocation path).
+// subdir ({poolRoot}/snapshots/{sha}.qcow2 - the pre-relocation path).
 // Each blob must exist in at least one (the CP resolved these digests from the
 // snapshot manifest AND pulled any not already local; a blob missing from both
-// is a placement/replication gap surfaced as snapshot_blob_missing). Slice A VMs
+// is a placement/replication gap surfaced as snapshot_blob_missing). Current VMs
 // carry a single boot disk: index 0 clones into v.DiskPath (the boot disk the
 // qemu command line attaches); any higher-index disk clones alongside it as
-// disk{i}.qcow2 to preserve content even though the slice-A guest attaches only
+// disk{i}.qcow2 to preserve content even though the guest attaches only
 // the boot disk. Returns a (failCode, failMsg) pair - failCode is "" on success.
 //
 // GOOS=linux: this runs only on the agent (the agent is Linux-only); the store
@@ -1051,8 +1052,8 @@ func (m *Manager) materialiseFromSnapshot(v *VM, ref *SnapshotRef) (failCode, fa
 }
 
 // resolveSnapshotBlobPath returns the on-disk path of the content-addressed blob
-// for sha, preferring the dedicated artifact store (where a C1 cross-node pull
-// lands it) and falling back to the disk-pool snapshots dir (the slice-A /
+// for sha, preferring the dedicated artifact store (where a cross-node pull
+// lands it) and falling back to the disk-pool snapshots dir (the
 // pre-relocation copy). Returns ok=false when the blob is in neither. The caller
 // re-hashes the returned path before cloning, so the source is always verified
 // regardless of which location supplied it.
@@ -1121,7 +1122,7 @@ func (m *Manager) runCreate(taskID uuid.UUID, v *VM, spec CreateSpec) {
 		return
 	}
 
-	// Per ADR 0029 L13 the multiplexer is a required prerequisite -
+	// The multiplexer is a required prerequisite -
 	// if it cannot attach to the QEMU serial socket we tear the VM
 	// down rather than leave operators with a half-broken console.
 	// Same pattern runStart / runReboot apply for their spawn paths.
@@ -1387,7 +1388,7 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 		return
 	}
 
-	// Per ADR 0029 L13 the multiplexer is a required prerequisite -
+	// The multiplexer is a required prerequisite -
 	// if it cannot attach to the QEMU serial socket we tear the VM
 	// down rather than leave operators with a half-broken console.
 	if err := m.attachMux(log, v); err != nil {
@@ -1697,7 +1698,7 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 		return
 	}
 
-	// Per ADR 0029 L15 the multiplexer is reused across reboot so
+	// The multiplexer is reused across reboot so
 	// subscribers and the log file stay continuous. If the existing
 	// entry's Reconnect fails (e.g. the QEMU socket path moved), fall
 	// back to a fresh attachMux - existing subscribers see Done() on
@@ -1720,8 +1721,8 @@ func (m *Manager) runReboot(taskID, vmID uuid.UUID) {
 }
 
 // DeleteByName begins async VM teardown addressed by name, used by
-// the Path D-rekeyed `DELETE /v1/vms/{vm_name}` agent handler.
-// Resolves name → in-memory VM under the manager mutex, then delegates
+// the name-keyed `DELETE /v1/vms/{vm_name}` agent handler.
+// Resolves name -> in-memory VM under the manager mutex, then delegates
 // to Delete. ErrNotFound when no entry matches.
 func (m *Manager) DeleteByName(ctx context.Context, name string) (*AgentTask, error) {
 	m.mu.Lock()
@@ -1809,7 +1810,7 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	}
 
 	// Tear down the multiplexer before removing the state directory so
-	// its log file handle is closed first (ADR 0029 L16). detachMux is
+	// its log file handle is closed first. detachMux is
 	// keyed on VM name; the entry may already be absent (Stop /
 	// Poweroff do not remove it but agent restart would).
 	m.detachMux(v.Name)
@@ -2030,7 +2031,7 @@ func (m *Manager) failTaskOnly(taskID uuid.UUID, code, message string) {
 
 // maxAgentDiskGiB mirrors the control-plane maxDiskGiB; the agent bounds
 // disk_gib itself so a direct agent call or a buggy control plane cannot request
-// a multi-PiB qemu-img resize (audit R2-L6).
+// a multi-PiB qemu-img resize.
 const maxAgentDiskGiB = 65536
 
 func validateCreateSpec(s CreateSpec) error {

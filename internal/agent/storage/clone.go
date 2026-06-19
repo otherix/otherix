@@ -2,9 +2,8 @@
 // Copyright 2026 Andrei Taranik
 
 // Package storage hosts agent-side storage operations: image cloning
-// and (in future iterations) image import / scan / delete on local
-// pools. Iteration 1 covers only the full-copy clone path used by
-// vm.create.
+// and (in future) image import / scan / delete on local pools. It
+// currently covers only the full-copy clone path used by vm.create.
 package storage
 
 import (

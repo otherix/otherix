@@ -2,12 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# Networking N1a-2 operator smoke - drives the `otherix` CLI as a real
+# Networking operator smoke - drives the `otherix` CLI as a real
 # operator against a real agent on the Lima VM, then verifies the
 # node-local materialisation over real netlink/nftables inside Lima.
 #
-# This is the N1a-2 closure gate (per the iteration discipline +
-# smoke-tests-operator-scenarios rule). It exercises, end to end:
+# It exercises, end to end:
 #   - `otherix network create` (managed bridge + managed NAT)
 #   - per-(node,network) reconciliation surfaced on `network get`
 #   - `otherix vm create --network` -> tap attached to the bridge
@@ -18,7 +17,7 @@
 # so that: the CP is up on http://localhost:8080, the `dev` CLI cluster
 # is configured, node-dev is `ready`, and a default pool exists. The CP
 # and agent binaries MUST be built from the current tree (the networks
-# fields + reconciler are N1a-2). This script creates its own networks +
+# fields + reconciler must be present). This script creates its own networks +
 # VM and cleans them up; it does NOT tear down the dev env.
 #
 # Usage: make smoke-networking   (or: bash dev/smoke/networking/run.sh)

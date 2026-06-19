@@ -15,7 +15,7 @@ import (
 const (
 	// logFileName is the active multiplexer log file inside a VM's
 	// state directory; rotation moves it to rotatedFileName on the
-	// 10 MB threshold (see ADR 0029, L1).
+	// 10 MB threshold.
 	logFileName = "serial.log"
 
 	// rotatedFileName is the single rotated log retained alongside

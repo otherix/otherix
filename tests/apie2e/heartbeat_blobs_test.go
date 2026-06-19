@@ -66,8 +66,8 @@ func hbPostBlobs(t *testing.T, baseURL string, ag wgAgent, blobs []map[string]an
 	}
 }
 
-// TestHeartbeatBlobsUnavailablePreservesInventory pins the slice-C1 fail-closed
-// contract end to end over the real CP heartbeat handler: a heartbeat reporting
+// TestHeartbeatBlobsUnavailablePreservesInventory pins the node-blob-inventory
+// fail-closed contract end to end over the real CP heartbeat handler: a heartbeat reporting
 // blobs_unavailable for a node PRESERVES the prior node_blobs inventory rather
 // than clearing it (a transient agent enumerate-failure must not wipe the
 // holder-discovery source), while a genuinely-enumerated empty list still clears

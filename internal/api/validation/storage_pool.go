@@ -44,7 +44,7 @@ func ValidateStoragePoolType(t string) error {
 // storagePoolNameRe restricts a pool name to start with an alphanumeric
 // and continue with alphanumerics, dot, dash, or underscore - notably no
 // '/' (the etcd key separator), so a name cannot poison the pool-name
-// prefix-scan index (audit M5).
+// prefix-scan index.
 var storagePoolNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // ValidateStoragePoolName returns nil when s is a syntactically valid
@@ -76,7 +76,7 @@ func ValidateStoragePoolName(s string) error {
 // than the operator typed would surprise them - but a `..` traversal
 // segment is never a legitimate pool root and would let the path
 // escape the allowlist gate, so it is rejected outright rather than
-// silently rewritten (audit M2).
+// silently rewritten.
 func ValidatePoolPath(s string) error {
 	if s == "" {
 		return errors.New("path is required")
@@ -115,7 +115,7 @@ var ErrPoolPathNotAllowed = errors.New("path is not on the storage_pools allowli
 // `/var/lib/otherix/pools` cannot match `/var/lib/otherix/pools-evil/`.
 // The candidate is canonicalised with filepath.Clean before matching,
 // so a `..` traversal form (`/var/lib/otherix/pools/../../../etc`)
-// cannot HasPrefix-match its way past the gate (audit M2) - the gate
+// cannot HasPrefix-match its way past the gate - the gate
 // is self-protecting regardless of whether the caller ran
 // ValidatePoolPath first. Callers SHOULD still run ValidatePoolPath
 // first for the full syntactic checks (NUL-free, length cap).

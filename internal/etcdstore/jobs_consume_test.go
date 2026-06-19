@@ -183,10 +183,10 @@ func TestRetryJobOnlyRequeuesRunning(t *testing.T) {
 	}
 }
 
-// TestPendingJobsQuarantinesUndecodableKey pins the L12 quarantine: a malformed
+// TestPendingJobsQuarantinesUndecodableKey pins the quarantine behavior: a malformed
 // job key under the jobs prefix must not halt PendingJobs. The valid pending job
 // is still returned, no error, and the poison key is left in place (not deleted)
-// so an operator can investigate (audit R2-L12).
+// so an operator can investigate.
 func TestPendingJobsQuarantinesUndecodableKey(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()

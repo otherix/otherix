@@ -103,7 +103,7 @@ func (c MigrationConfig) Validate() error {
 
 // ArtifactsConfig describes the per-node content-addressed artifact store and
 // the peer-facing blob-transport listener used for on-demand cross-node blob
-// pulls (slice C1). Root holds the immutable blobs + manifests; the port range
+// pulls. Root holds the immutable blobs + manifests; the port range
 // supports parallel peer serves on a single node and is intentionally distinct
 // from MigrationConfig's range so blob serves never contend for migration
 // ingress ports. The listener reuses the node leaf cert (same trust as

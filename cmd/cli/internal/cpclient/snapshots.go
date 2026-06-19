@@ -13,7 +13,7 @@ import (
 
 // SnapshotCreateBody is the JSON body of POST /v1/vms/{id}/snapshots. Name is
 // required; Description is optional. WithMemory stays in the wire shape for
-// forward compatibility but the server rejects true with 400 in slice A
+// forward compatibility but the server rejects true with 400
 // (RAM capture unsupported). omitempty keeps Description / WithMemory off the
 // wire when unset so the server defaults apply.
 type SnapshotCreateBody struct {

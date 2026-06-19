@@ -49,7 +49,7 @@ func newFakeStore() *fakeIdempStore {
 
 // idempMapKey mirrors the store's per-user key scoping in the in-memory fake:
 // rows are keyed on (user_id, key) so two users using the same key string do
-// not collide (audit R2-L10).
+// not collide.
 func idempMapKey(userID uuid.UUID, key string) string {
 	return userID.String() + "/" + key
 }
@@ -443,7 +443,7 @@ func TestIdempotency_DifferentBodyMismatch(t *testing.T) {
 // TestIdempotency_DifferentUsersDoNotCollide asserts that two different users
 // using the SAME key string get independent namespaces: the second user's
 // request runs on its own row instead of colliding with the first user's row
-// (audit R2-L10 - the old global-key scope returned 409 here, letting a user
+// (the old global-key scope returned 409 here, letting a user
 // squat a key string to grief others).
 func TestIdempotency_DifferentUsersDoNotCollide(t *testing.T) {
 	fake := newFakeStore()

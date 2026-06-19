@@ -84,8 +84,8 @@ func parseNodeNameFromCert(certPath string) (string, error) {
 }
 
 // Run starts the agent HTTPS (mTLS) server and blocks until ctx is
-// cancelled or the server fails. Iteration 1 mounts the full agent
-// surface — /v1/vms, /v1/tasks — alongside the Iteration 0 /health
+// cancelled or the server fails. It mounts the full agent
+// surface - /v1/vms, /v1/tasks - alongside the /health
 // endpoint, all guarded by mTLS client cert verification.
 //
 // Name-keyed agent identity: the node name is parsed from the cert CN
@@ -121,7 +121,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("vm manager: %w", err)
 	}
 
-	// Slice-C1 blob transport (artifact store + serve/pull control handler). Runs
+	// Blob transport (artifact store + serve/pull control handler). Runs
 	// the one-time relocation sweep and fails closed if the production artifact
 	// store is absent (artifacts.root is mandatory in production config).
 	artStore, blobsHandler, blobServeMgr, err := setupBlobTransport(cfg, manager, tlsCfg, log)
@@ -143,7 +143,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// process; restart drops the tokens alongside the QEMU `-serial`
 	// sockets they reference. The single-session lock that used to
 	// live next to it now lives inside serialmux.Multiplexer
-	// (ErrConsoleInUse) per ADR 0029.
+	// (ErrConsoleInUse).
 	consoleTokens := console.NewTokenStore()
 	consoleTokens.Start(ctx)
 
@@ -590,7 +590,7 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			r.Route("/vms", vmsHandler.Mount)
 			r.Route("/tasks", tasksHandler.Mount)
 			r.Route("/storage-pools", storagePoolsHandler.Mount)
-			// CP-driven blob pull control endpoints (slice C1). Same CP-only
+			// CP-driven blob pull control endpoints. Same CP-only
 			// RequireCPIdentity group: only the CP calls serve / pull. The blob
 			// DATA path is the separate blobpeer listener (peer node certs).
 			r.Route("/blobs", blobsHandler.Mount)

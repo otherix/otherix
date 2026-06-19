@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,7 +91,7 @@ func newTestServeManager(t *testing.T) (*blobServeManager, int) {
 	pool.AddCert(leaf)
 	nodeCert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
 
-	port := 49500
+	port := freeTCPPort(t)
 	m := &blobServeManager{
 		store:     store,
 		ports:     migration.NewPortAllocator(port, port),
@@ -105,11 +106,28 @@ func newTestServeManager(t *testing.T) (*blobServeManager, int) {
 	return m, port
 }
 
-// TestBlobServeManager_CloseReleasesAndIsIdempotent pins Fix 1: Close tears down
-// a live serve listener (releasing its port back to the allocator and dropping
-// its primed token), and a second Close is a no-op. With a one-port allocator,
-// the only proof the port was released is that a fresh Reserve hands the same
-// port back.
+// freeTCPPort returns a TCP port the OS just confirmed is free, by binding
+// 127.0.0.1:0 and immediately releasing it. The tiny window between release and
+// reuse is far less collision-prone than a fixed well-known port (which flaked
+// in CI when the runner already held it).
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatalf("close probe listener: %v", err)
+	}
+	return port
+}
+
+// TestBlobServeManager_CloseReleasesAndIsIdempotent verifies Close tears down a
+// live serve listener (releasing its port back to the allocator and dropping its
+// primed token), and a second Close is a no-op. With a one-port allocator, the
+// only proof the port was released is that a fresh Reserve hands the same port
+// back.
 func TestBlobServeManager_CloseReleasesAndIsIdempotent(t *testing.T) {
 	m, port := newTestServeManager(t)
 

@@ -5,9 +5,8 @@
 // construction (architecture-aware), QMP control over the per-VM monitor
 // socket, and process supervision via pidfile + kill -0 + QMP probe.
 //
-// Iteration 1 covers the minimum needed for VM create / delete:
-// query-status, system_powerdown, quit. Future iterations layer
-// pause/resume, migrate, query-block on top of the same QMPClient.
+// The QMP surface covers query-status, system_powerdown, quit, plus
+// pause/resume, migrate, and query-block, all on the same QMPClient.
 package qemu
 
 import (
@@ -49,7 +48,7 @@ func DetectAccelerator() string {
 }
 
 // HostArch returns the architecture of the host the agent runs on.
-// Iteration 1 only supports same-arch guests — cross-arch emulation is
+// Only same-arch guests are supported - cross-arch emulation is
 // possible (TCG) but out of scope.
 func HostArch() Architecture {
 	switch runtime.GOARCH {

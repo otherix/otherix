@@ -14,10 +14,10 @@ import (
 
 // pathFilesystemStats reports total and available bytes of the filesystem
 // containing path via syscall.Statfs. Mirrors the pattern in
-// internal/agent/heartbeat/statfs_linux.go (rootFilesystemStats) —
+// internal/agent/heartbeat/statfs_linux.go (rootFilesystemStats) -
 // duplicated rather than relocated to avoid touching the heartbeat
-// package during the A1 fix; consolidation under a shared
-// internal/agent/fsutil/ package is tracked in ROADMAP.
+// package; consolidation under a shared
+// internal/agent/fsutil/ package is future work.
 //
 // Returns (nil, nil, error) on syscall failure — caller surfaces the
 // failure as a terminal-failed agent task. clampUintToInt64 /

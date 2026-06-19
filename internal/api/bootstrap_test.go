@@ -59,7 +59,7 @@ func (h *captureHandler) WithGroup(string) slog.Handler { return h }
 // TestBootstrapAdmin_ExistingAdminWarnsToRemoveEnv asserts that when an admin
 // already exists and the bootstrap env vars are still set, BootstrapAdminWithEnv
 // returns nil without creating a user and emits a WARN naming both env vars so
-// the operator removes them (audit R2-L13), rather than logging silently at INFO.
+// the operator removes them, rather than logging silently at INFO.
 func TestBootstrapAdmin_ExistingAdminWarnsToRemoveEnv(t *testing.T) {
 	stub := &existingAdminStoreStub{}
 	var records []captureRecord

@@ -668,7 +668,7 @@ func startBootstrapTLSServer(t *testing.T, tlsSignCA auth.ClusterCAResult, adver
 
 // TestBootstrap_TokenOnlySentOverVerifiedTLS seam-proves through the REAL
 // Bootstrap entry point that the join token is transmitted only after the CP
-// serving cert verifies against the fingerprint-pinned cluster CA (audit H4).
+// serving cert verifies against the fingerprint-pinned cluster CA.
 func TestBootstrap_TokenOnlySentOverVerifiedTLS(t *testing.T) {
 	ca, err := auth.GenerateClusterCA(time.Now())
 	if err != nil {

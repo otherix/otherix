@@ -3,8 +3,8 @@
 # Copyright 2026 Andrei Taranik
 #
 # Offline VM migration smoke - drives `otherix vm migrate --offline` across the
-# two-node dev stack through the `otherix` CLI as a real operator, closing an
-# iteration-discipline gap: the CP-side migrate path is unit/e2e tested, but a
+# two-node dev stack through the `otherix` CLI as a real operator, closing a
+# real-agent coverage gap: the CP-side migrate path is unit/e2e tested, but a
 # full stop+copy+start cutover across two REAL agents (qemu + disk transfer) is
 # only proven here.
 #

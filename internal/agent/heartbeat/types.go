@@ -71,8 +71,7 @@ type DeclaredFDBEntry struct {
 // agent has observed after a reconciliation pass. Forward-compatibility
 // capacity fields (capacity_bytes / available_bytes / reported_at) are
 // omitted from this struct intentionally; capacity reporting stays on
-// `storage_pool.scan` for this iteration. Add them when the
-// scan-subsumption iteration lands.
+// `storage_pool.scan` for now. Add them when heartbeat subsumes the scan.
 type PoolReport struct {
 	Name                 string            `json:"name"`
 	ReconciliationStatus string            `json:"reconciliation_status"`
@@ -80,7 +79,7 @@ type PoolReport struct {
 	Images               []PoolImageReport `json:"images,omitempty"`
 	// ImagesUnavailable is true when the agent could not enumerate this pool's
 	// image cache this tick (a transient ListImages error). The CP then preserves
-	// the prior inventory rather than clearing it (audit R2-L11, fail-closed).
+	// the prior inventory rather than clearing it (fail-closed).
 	ImagesUnavailable bool                 `json:"images_unavailable,omitempty"`
 	Snapshots         []PoolSnapshotReport `json:"snapshots,omitempty"`
 	// SnapshotsUnavailable is true when the agent could not enumerate this pool's
@@ -113,7 +112,7 @@ type PoolSnapshotReport struct {
 }
 
 // BlobReport is one content-addressed blob the agent holds in its dedicated
-// per-node artifact store (slice C1). Reported once per NODE (not per pool):
+// per-node artifact store. Reported once per NODE (not per pool):
 // the artifact store is node-level, independent of disk pools. The CP ingests
 // the list into the observed node_blobs inventory, the holder-discovery source
 // for the cross-node pull saga. The on-node path is intentionally omitted

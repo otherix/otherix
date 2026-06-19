@@ -8,7 +8,7 @@ import "github.com/otherix/otherix/internal/store"
 // machineTypeFor returns the qemu machine type the CP picks for a
 // fresh VM whose architecture is arch. The schema requires a non-null
 // `vms.machine_type`; VMs do not carry a per-VM machine_type
-// override yet. The mapping mirrors the Iteration 1 agent's defaults:
+// override yet. The mapping mirrors the agent's defaults:
 //
 //   - amd64 → q35  (modern Intel chipset, KVM-friendly defaults)
 //   - arm64 → virt (the canonical ARM virtual machine type)

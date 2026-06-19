@@ -22,9 +22,8 @@ const (
 	TaskStatusFailed  TaskStatus = "failed"
 )
 
-// TaskKind identifies what a task is doing. Iteration 1 has two kinds;
-// future iterations layer on additional kinds (vm.start, vm.stop,
-// vm.migrate) without changing the surface.
+// TaskKind identifies what a task is doing. Additional kinds (vm.start,
+// vm.stop, vm.migrate) can be layered on without changing the surface.
 type TaskKind string
 
 // TaskKind values minted by the VM manager.
@@ -44,14 +43,13 @@ const (
 	TaskKindVMSnapshotDelete TaskKind = "vm.snapshot.delete"
 	// TaskKindStoragePoolScan tracks a POST /v1/storage-pools/{id}/scan
 	// task. The TaskStore.Create call carries the pool's UUID through
-	// the `vmID` parameter — transitional reuse pending the broader
-	// taskView contract alignment (rename `VMID` → `ResourceID`, json
-	// `vm_id` → `resource_id`) tracked under contract-test parity in
-	// ROADMAP.
+	// the `vmID` parameter - transitional reuse pending the broader
+	// taskView contract alignment (rename `VMID` -> `ResourceID`, json
+	// `vm_id` -> `resource_id`).
 	TaskKindStoragePoolScan TaskKind = "storage_pool.scan"
 	// TaskKindBlobPull tracks a POST /v1/blobs/pull task: streaming a
 	// content-addressed blob from a holder peer into the node's artifact store
-	// (slice C1). It is not VM-scoped; the TaskStore.Create call passes the nil
+	// It is not VM-scoped; the TaskStore.Create call passes the nil
 	// UUID for vmID (the blob is node-level, not a VM resource).
 	TaskKindBlobPull TaskKind = "blob.pull"
 )

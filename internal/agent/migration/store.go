@@ -28,9 +28,9 @@ const (
 	ModeOffline Mode = "offline"
 )
 
-// Phase is the agent-observed migration phase. Slice 2a uses
+// Phase is the agent-observed migration phase. The current set is
 // setup -> active -> completed (or failed / cancelled); postcopy_active
-// is reserved for slice 2c.
+// is reserved for a future post-copy mode.
 type Phase string
 
 // Phase values.

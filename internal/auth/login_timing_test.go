@@ -39,8 +39,8 @@ func TestDummyLoginHashParamsMatchActiveArgonParams(t *testing.T) {
 	}
 }
 
-// TestDummyLoginHashIsRealArgon2id guards the user-enumeration timing fix
-// (audit M6): the dummy hash verified on Login's user-not-found path must
+// TestDummyLoginHashIsRealArgon2id guards the user-enumeration timing fix:
+// the dummy hash verified on Login's user-not-found path must
 // be a well-formed argon2id PHC string so VerifyPassword runs the full KDF
 // rather than bailing out on a parse error. A (false, nil) result proves
 // the mismatch path was reached, i.e. the KDF cost was actually paid.

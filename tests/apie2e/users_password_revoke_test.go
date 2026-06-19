@@ -53,8 +53,8 @@ func TestPasswordChangeRevokesOwnRefreshTokens(t *testing.T) {
 }
 
 // TestAdminPasswordResetRevokesTargetRefreshTokens covers the admin half of
-// audit M7: PATCH /v1/users/{id} with a new password must revoke the TARGET
-// user's refresh tokens, not the admin's.
+// password-change refresh revocation: PATCH /v1/users/{id} with a new password
+// must revoke the TARGET user's refresh tokens, not the admin's.
 func TestAdminPasswordResetRevokesTargetRefreshTokens(t *testing.T) {
 	h := newE2E(t)
 	victimID, email, pw := seedUser(t, h.store, auth.RoleDeveloper)

@@ -360,7 +360,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			// /v1/snapshots surface. The snapshot record's own
 			// GET-by-id (status polling) + delete. Snapshots are never
 			// CREATED through this subtree — only through POST
-			// /v1/vms/{id}/snapshots (ADR 0009).
+			// /v1/vms/{id}/snapshots.
 			r.Route("/snapshots", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/", snapH.ListAll)
 				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/{id}", snapH.Get)
@@ -371,8 +371,8 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			// GET-by-id + list for status polling, plus the best-effort
 			// cancel. Get / List are gated by vm:read so any VM viewer can
 			// poll a migration; Start (above) and Cancel are gated by
-			// vm:migrate. Migrations are never CREATED through this subtree
-			// — only through POST /v1/vms/{id}/migrate (ADR 0009).
+			// vm:migrate. Migrations are never CREATED through this subtree,
+			// only through POST /v1/vms/{id}/migrate.
 			r.Route("/migrations", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/", migH.List)
 				r.With(middleware.RequirePermission(auth.PermVMRead, deps.Logger)).Get("/{id}", migH.Get)

@@ -22,7 +22,7 @@ func newCreateCommand() *cobra.Command {
 		Long: `Submits POST /v1/artifact-pools. Required permission: storage_pool:manage.
 An artifact pool is a cluster-level content-addressed store for snapshots (and,
 later, images). --replication-factor is the durability target K (an integer >= 1,
-or 'all' for every member); not enforced yet in slice B. --members selects which
+or 'all' for every member); not enforced yet. --members selects which
 nodes back it ('all', the default, or a comma-separated node-name list).
 
 Example:

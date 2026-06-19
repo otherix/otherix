@@ -15,7 +15,7 @@ import (
 // certificate whose Subject CommonName is the control plane's
 // auth.CPCertCommonName. The agent listener is tls.RequireAndVerifyClientCert
 // with a cluster-CA ClientCAs pool, so any cert reaching this middleware is
-// already chain-verified; this supplies the missing identity check (audit H1):
+// already chain-verified; this supplies the missing identity check:
 // without it a stolen node-<name> cert - itself a valid cluster-CA client cert -
 // could drive a peer agent's full control surface.
 //
