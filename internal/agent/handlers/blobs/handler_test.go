@@ -52,17 +52,19 @@ type pullSpy struct {
 	holderEndpoint string
 	holderIdentity string
 	expectedSize   int64
+	tier           string
 	taskID         string
 	returnErr      error
 }
 
-func (s *pullSpy) Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (string, error) {
+func (s *pullSpy) Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64, tier string) (string, error) {
 	s.calls++
 	s.digest = digest
 	s.token = token
 	s.holderEndpoint = holderEndpoint
 	s.holderIdentity = holderIdentity
 	s.expectedSize = expectedSize
+	s.tier = tier
 	if s.returnErr != nil {
 		return "", s.returnErr
 	}

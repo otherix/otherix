@@ -2538,6 +2538,15 @@ components:
             closed on overflow, so a misbehaving holder cannot fill the consumer
             disk before the digest check. Omitted or null means the size is
             unknown and only the digest is enforced.
+        tier:
+          type: string
+          enum: [artifact, image]
+          description: |
+            Which content-addressed store the consumer writes the pulled blob
+            into. "artifact" (the default when omitted) is the durability-tracked
+            artifact store; "image" is the node-level pinned-image cache tier,
+            which is never durability-tracked. The holder always serves from
+            whichever store holds the digest.
 
     MigrationIncomingRequest:
       type: object
