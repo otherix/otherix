@@ -23,7 +23,7 @@ import (
 )
 
 // ErrBlobUnavailable is returned by BrokerPull when no node reports holding the
-// requested blob in observed inventory. Callers (Task 13 recreate-from-snapshot)
+// requested blob in observed inventory. Callers (recreate-from-snapshot)
 // branch on it via errors.Is to surface a fail-closed blob_unavailable.
 var ErrBlobUnavailable = errors.New("blobbroker: no live holder for blob")
 
@@ -41,7 +41,7 @@ const (
 )
 
 // pullTokenTTL bounds the lifetime of the single-use per-op token minted for one
-// pull. The holder's serve listener self-expires at this TTL (Task 10), which is
+// pull. The holder's serve listener self-expires at this TTL, which is
 // also the broker's teardown backstop.
 const pullTokenTTL = 5 * time.Minute
 
@@ -106,7 +106,7 @@ func New(st Store, exec AgentExecutor, log *slog.Logger) *Broker {
 //
 // The consumer pull is awaited to terminal, and that await is bounded by BOTH
 // the caller's ctx deadline AND the agent client's configured timeout
-// (agent_client.timeout, default 5 minutes). The caller (Task 13 recreate
+// (agent_client.timeout, default 5 minutes). The caller (the recreate
 // worker) must therefore pass a ctx whose deadline accommodates a full blob
 // transfer, and operators sizing very large blobs may need to raise
 // agent_client.timeout; a transfer exceeding either bound surfaces as a timeout
@@ -126,7 +126,7 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	if len(holders) == 0 {
 		return ErrBlobUnavailable
 	}
-	holderID := holders[0] // C1: any live holder; placement policy is C2.
+	holderID := holders[0] // any live holder suffices; placement-aware selection is a separate concern.
 
 	holder, err := b.store.NodeByID(ctx, holderID)
 	if err != nil {
@@ -148,7 +148,7 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 		return fmt.Errorf("create pull saga: %v", err)
 	}
 
-	// ServeBlob discards expiresAt: C1 does not act on the serve expiry. The
+	// ServeBlob discards expiresAt: the broker does not act on the serve expiry. The
 	// holder's serve listener self-expires on its token TTL (and is torn down by
 	// the agent on shutdown), so the broker relies on that self-expiry rather
 	// than tracking the deadline.
@@ -203,7 +203,7 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 func holderIdentity(nodeName string) string { return "node-" + nodeName + ".agents.otherix.local" }
 
 // ClientExecutor adapts *agentclient.Client to the AgentExecutor seam. It is the
-// production wiring used by the worker that drives BrokerPull (Task 13); the
+// production wiring used by the worker that drives BrokerPull; the
 // broker orchestration itself is unit-tested against a spy.
 type ClientExecutor struct {
 	c *agentclient.Client

@@ -284,7 +284,7 @@ func (m *blobServeManager) Close() error {
 
 // serveTokenStore is the in-agent TokenVerifier primed by Serve: it maps a
 // CP-handed per-op token to the digest it authorizes serving. It implements
-// blobpeer.TokenVerifier. Minimal for C1: a token authorizes exactly its primed
+// blobpeer.TokenVerifier. Minimal by design: a token authorizes exactly its primed
 // digest; the per-listener cluster-CA client-cert gate (Serve's tls.Config) is
 // the node-identity boundary.
 type serveTokenStore struct {
