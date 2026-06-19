@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# linux-multinode.sh — privileged lifecycle of the native-Linux two-node dev
+# linux-multinode.sh — privileged lifecycle of the native-Linux three-node dev
 # topology. The ONLY sudo surface of the Linux dev flow.
 #
 # Subcommands (all require root):
-#   up                  create bridge + 2 netns + veth + host NAT + state dirs
+#   up                  create bridge + 3 netns + veth + host NAT + state dirs
 #   down [--wipe]       tear it all down; --wipe also removes /var/lib/otherix/dev
 #   bootstrap N TOK FP  render node-N config, redeem join token inside otnsN
 #   start N             launch node-N agent in its net+mount namespace
-#   stop                kill both agents
-#   restart             stop + start both
+#   stop                kill all agents
+#   restart             stop + start all
 #
-# Node N in {1,2}: netns otnsN, underlay IP 10.77.0.N, host veth veth-otnsN,
+# Node N in {1,2,3}: netns otnsN, underlay IP 10.77.0.N, host veth veth-otnsN,
 # state dir /var/lib/otherix/dev/nodeN, node name node-N.
 #
 # netns isolates the agent's fixed-name network resources (otwg0, otherix-nat,
@@ -104,7 +104,7 @@ up() {
     fi
 
     local n ns ip hveth
-    for n in 1 2; do
+    for n in 1 2 3; do
         ns="$(node_ns "${n}")"; ip="$(node_ip "${n}")"; hveth="$(node_veth "${n}")"
         ip netns list | grep -qw "${ns}" || ip netns add "${ns}"
         write_netns_resolv "${ns}"
@@ -142,7 +142,7 @@ up() {
         fi
     fi
 
-    echo ">> linux-multinode up: bridge ${BRIDGE} ${BRIDGE_IP}, netns otns1/otns2, NAT ${NAT_TABLE}"
+    echo ">> linux-multinode up: bridge ${BRIDGE} ${BRIDGE_IP}, netns otns1/otns2/otns3, NAT ${NAT_TABLE}"
 }
 
 down() {
@@ -150,12 +150,12 @@ down() {
     stop_all || true
 
     local n ns hveth
-    for n in 1 2; do
+    for n in 1 2 3; do
         ns="$(node_ns "${n}")"
         ip netns list | grep -qw "${ns}" && ip netns del "${ns}"
         rm -rf "/etc/netns/${ns}"
     done
-    for n in 1 2; do
+    for n in 1 2 3; do
         hveth="$(node_veth "${n}")"
         ip link show "${hveth}" >/dev/null 2>&1 && ip link del "${hveth}"
     done
@@ -215,7 +215,7 @@ do_start() {
 
 stop_all() {
     local n pidf pid
-    for n in 1 2; do
+    for n in 1 2 3; do
         pidf="$(node_dir "${n}")/agent.pid"
         [ -f "${pidf}" ] || continue
         pid="$(cat "${pidf}")"
@@ -236,6 +236,7 @@ restart() {
     stop_all
     do_start 1
     do_start 2
+    do_start 3
 }
 
 main() {

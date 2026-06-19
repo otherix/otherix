@@ -101,11 +101,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
     # Lima forwards the in-VM agent ports onto the host; check them.
     check_port_free 9443 "agent-1 (Lima fwd)" || port_fails=$((port_fails+1))
     check_port_free 9444 "agent-2 (Lima fwd)" || port_fails=$((port_fails+1))
+    check_port_free 9445 "agent-3 (Lima fwd)" || port_fails=$((port_fails+1))
 else
     # Linux agents live inside netns — their 9443 is not on the host. Instead
     # assert the dev topology is not already up.
-    if ip link show otdev0 >/dev/null 2>&1 || ip netns list 2>/dev/null | grep -qE '^otns[12]$'; then
-        echo "✗ Linux dev topology already present (otdev0 / otns1 / otns2)" >&2
+    if ip link show otdev0 >/dev/null 2>&1 || ip netns list 2>/dev/null | grep -qE '^otns[123]$'; then
+        echo "✗ Linux dev topology already present (otdev0 / otns1 / otns2 / otns3)" >&2
         echo "  Run 'make local-dev-stop' first." >&2
         port_fails=$((port_fails+1))
     fi
@@ -128,9 +129,9 @@ make --no-print-directory bootstrap-dev
 # bootstrap`) fails with a cryptic "command not found" if the binary hasn't
 # landed yet. Linux native takes the else branch below (a netns-readiness
 # check) — bootstrap-dev-linux is synchronous (build + netns topology up).
-echo ">> Step 4/8 — Lima VM readiness (macOS only, both VMs)"
+echo ">> Step 4/8 — Lima VM readiness (macOS only, all VMs)"
 if [ "$(uname -s)" = "Darwin" ]; then
-    for vm in otherix-dev-1 otherix-dev-2; do
+    for vm in otherix-dev-1 otherix-dev-2 otherix-dev-3; do
         # Shell responsive — bounds Lima 'Started' to actual usability.
         # 60s budget (30 iterations × 2s) — first-start cloud-init occasionally
         # delays SSH availability past Lima's own readiness signal.
@@ -167,13 +168,13 @@ if [ "$(uname -s)" = "Darwin" ]; then
         echo "   ✓ ${vm} responsive, agent binary staged"
     done
 else
-    for ns in otns1 otns2; do
+    for ns in otns1 otns2 otns3; do
         if ! ip netns list 2>/dev/null | grep -qw "${ns}"; then
             echo "✗ netns ${ns} missing after bootstrap-dev (topology 'up' failed?)" >&2
             exit 1
         fi
     done
-    echo "   ✓ netns otns1 / otns2 present"
+    echo "   ✓ netns otns1 / otns2 / otns3 present"
 fi
 
 echo ">> Step 5/8 — Start otherix-api in background"
@@ -221,9 +222,9 @@ echo ">> Step 8/8 — Final sanity (otherix node list)"
 "${REPO_ROOT}/bin/otherix" node list
 
 if [ "$(uname -s)" = "Darwin" ]; then
-    NODES_LINE="Lima VMs   : otherix-dev-1 (node-1) / otherix-dev-2 (node-2)"
+    NODES_LINE="Lima VMs   : otherix-dev-1 (node-1) / otherix-dev-2 (node-2) / otherix-dev-3 (node-3)"
 else
-    NODES_LINE="netns      : otns1 (node-1) / otns2 (node-2)"
+    NODES_LINE="netns      : otns1 (node-1) / otns2 (node-2) / otns3 (node-3)"
 fi
 cat <<EOF
 

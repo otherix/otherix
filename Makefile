@@ -302,8 +302,8 @@ download: ## go mod download
 
 # ========== Local dev stack ==========
 
-# local-dev-* is the documented dev-stack control surface (macOS Lima 2 VMs /
-# Linux netns 2 nodes). start/stop/clean/cleanrestart are the lifecycle;
+# local-dev-* is the documented dev-stack control surface (macOS Lima 3 VMs /
+# Linux netns 3 nodes). start/stop/clean/cleanrestart are the lifecycle;
 # restart/deploy are the non-destructive inner loop (etcd/pki + VMs/certs
 # preserved). The per-OS internals (bootstrap-dev/deploy-dev/clean-dev,
 # *-linux/*-macos, lima-*) are hidden from `make help`.
@@ -346,13 +346,16 @@ etcd-reset: ## Wipe the dev embedded-etcd data dir + PKI for a clean-slate smoke
 # (user-mode systemd unit). macOS runs the agent inside a Lima VM
 # (Ubuntu 24.04, system unit) and reaches the CP via host.lima.internal.
 # See docs/macos-development.md for the macOS path.
-# The macOS dev stack runs TWO Lima VMs so the WireGuard underlay has a real
-# cross-host mesh: otherix-dev-1 (node-1) and otherix-dev-2 (node-2). Both join
-# the user-v2 network for VM-to-VM L3; VM2's CP->agent forward maps guest 9443
-# to host 9444 (VM1 keeps 9443). LIMA_VM is the primary VM (node-1), used by the
-# single-host operations: the netns netfabric tests and the networking smoke.
+# The macOS dev stack runs THREE Lima VMs so the WireGuard underlay has a real
+# cross-host mesh and a blob can re-replicate to a surviving node after a holder
+# dies: otherix-dev-1 (node-1), otherix-dev-2 (node-2), otherix-dev-3 (node-3).
+# All join the user-v2 network for VM-to-VM L3; each VM's CP->agent forward maps
+# guest 9443 to a distinct host port (VM1=9443, VM2=9444, VM3=9445). LIMA_VM is
+# the primary VM (node-1), used by the single-host operations: the netns
+# netfabric tests and the networking smoke.
 LIMA_VM_1   := otherix-dev-1
 LIMA_VM_2   := otherix-dev-2
+LIMA_VM_3   := otherix-dev-3
 LIMA_VM     := $(LIMA_VM_1)
 
 # bootstrap-dev / deploy-dev / clean-dev / restart-agent are internal per-OS
@@ -440,6 +443,8 @@ clean-dev-macos:
 	-limactl delete $(LIMA_VM_1) 2>/dev/null || true
 	-limactl stop $(LIMA_VM_2) 2>/dev/null || true
 	-limactl delete $(LIMA_VM_2) 2>/dev/null || true
+	-limactl stop $(LIMA_VM_3) 2>/dev/null || true
+	-limactl delete $(LIMA_VM_3) 2>/dev/null || true
 	@echo ">> clean-dev-macos done"
 
 lima-check:
@@ -447,13 +452,14 @@ lima-check:
 	  echo "limactl not found. Install with: brew install lima"; exit 1; \
 	}
 
-# lima-ensure brings up BOTH dev VMs. VM2's CP->agent forward maps guest 9443
-# to host 9444 (VM1 keeps the yaml default 9443) so the CP reaches each agent at
-# a distinct advertised_endpoint. lima-ensure-one is the per-VM helper, invoked
-# recursively with VM + HOSTPORT so the create path can override the forward.
+# lima-ensure brings up ALL dev VMs. Each VM's CP->agent forward maps guest 9443
+# to a distinct host port (VM1=9443, VM2=9444, VM3=9445) so the CP reaches each
+# agent at a distinct advertised_endpoint. lima-ensure-one is the per-VM helper,
+# invoked recursively with VM + HOSTPORT so the create path can override the forward.
 lima-ensure: lima-check
 	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_1) HOSTPORT=9443
 	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_2) HOSTPORT=9444
+	@$(MAKE) --no-print-directory lima-ensure-one VM=$(LIMA_VM_3) HOSTPORT=9445
 
 # Nested virtualization (so /dev/kvm appears inside the guest and the agent's
 # qemu can use KVM instead of TCG) needs Apple M3+ AND macOS 15+. Lima exposes it
@@ -502,7 +508,7 @@ copy-agent-lima: lima-ensure
 	  x86_64)  goarch=amd64 ;; \
 	  *) echo "unsupported lima arch: $$arch"; exit 1 ;; \
 	esac; \
-	for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	for vm in $(LIMA_VM_1) $(LIMA_VM_2) $(LIMA_VM_3); do \
 	  echo ">> staging otherix-agent into $$vm"; \
 	  limactl cp $(BIN_DIR)/linux-$$goarch/otherix-agent $$vm:/tmp/otherix-agent; \
 	  limactl shell $$vm sudo mv /tmp/otherix-agent /usr/local/bin/otherix-agent; \
@@ -516,7 +522,7 @@ copy-agent-lima: lima-ensure
 # suffix .guest, reuses host UID 501), so the chown determines user/group at
 # runtime via `id -un`/`id -gn` inside the VM shell.
 copy-config-lima: lima-ensure
-	@for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	@for vm in $(LIMA_VM_1) $(LIMA_VM_2) $(LIMA_VM_3); do \
 	  wgip=$$(limactl shell $$vm -- ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.104\.[0-9]+' | head -1); \
 	  if [ -z "$$wgip" ]; then echo "no user-v2 (192.168.104.x) IP on $$vm yet — is the user-v2 network up?"; exit 1; fi; \
 	  echo ">> $$vm WireGuard advertised endpoint: $$wgip:51820"; \
@@ -526,11 +532,11 @@ copy-config-lima: lima-ensure
 	done
 
 restart-agent-lima: lima-ensure
-	@for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	@for vm in $(LIMA_VM_1) $(LIMA_VM_2) $(LIMA_VM_3); do \
 	  limactl shell $$vm sudo systemctl restart otherix-agent; \
 	done
 	@sleep 1
-	@for vm in $(LIMA_VM_1) $(LIMA_VM_2); do \
+	@for vm in $(LIMA_VM_1) $(LIMA_VM_2) $(LIMA_VM_3); do \
 	  echo "== $$vm =="; \
 	  limactl shell $$vm sudo systemctl status otherix-agent --no-pager || true; \
 	done
