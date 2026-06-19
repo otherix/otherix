@@ -241,6 +241,10 @@ smoke-artifact-durability: ## Artifact durability smoke: snapshot replicates to 
 smoke-artifact-pool-rf-update: ## Artifact-pool RF update smoke: raising replication_factor re-replicates existing snapshots to the new factor (run after local-dev-start)
 	@bash dev/smoke/artifact-pool-rf-update/run.sh
 
+.PHONY: smoke-artifact-gc
+smoke-artifact-gc: ## Artifact GC smoke: the blob collector reclaims orphaned and over-replicated copies and never reclaims a copy a snapshot still references (run after local-dev-start)
+	@bash dev/smoke/artifact-gc/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

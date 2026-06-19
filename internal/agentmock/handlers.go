@@ -486,6 +486,26 @@ func (m *Mock) BlobsStopServe(w http.ResponseWriter, r *http.Request) {
 	m.respondJSON(w, r, opID, http.StatusNoContent, nil)
 }
 
+// BlobsReclaim implements POST /v1/blobs/reclaim. The mock holder owns no real
+// store; it validates the body shape and returns 204 so a CP-side test can drive
+// the reclaim control flow against the OpenAPI contract.
+func (m *Mock) BlobsReclaim(w http.ResponseWriter, r *http.Request) {
+	const opID = "blobs.reclaim"
+	if m.preDispatch(w, r, opID) {
+		return
+	}
+	var body agentapi.BlobReclaimRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "invalid JSON")
+		return
+	}
+	if body.Digest == "" {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "digest is required")
+		return
+	}
+	m.respondJSON(w, r, opID, http.StatusNoContent, nil)
+}
+
 // BlobsPull implements POST /v1/blobs/pull. The mock consumer records
 // an agent task and returns 202; no real transfer runs. Decodes the request for
 // body-shape validation only.

@@ -16,6 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agentapi"
 	"github.com/otherix/otherix/internal/api"
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
@@ -529,6 +532,8 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 
 	d.Register("artifact.replicate", workerMaxAttempts,
 		replicationhandlers.ReplicateHandler(st, blobBroker, log))
+	d.Register("artifact.reclaim", workerMaxAttempts,
+		replicationhandlers.ReclaimHandler(st, reclaimAdapter{st: st, agentClient: agentClient}, log))
 
 	// vm.migrate drives the live-migration saga (placement / two-phase handshake /
 	// atomic cutover). The placer reuses SchedulePlacement over the store's
@@ -543,6 +548,25 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 		}, log))
 
 	return d
+}
+
+// reclaimAdapter resolves a target node's advertised endpoint and tells its
+// agent to delete a blob by digest. It adapts the store + agent client to the
+// replication.Reclaimer seam the artifact.reclaim worker drives, mirroring how
+// blobbroker resolves a node endpoint via NodeByID.
+type reclaimAdapter struct {
+	st          *etcdstore.Store
+	agentClient *agentclient.Client
+}
+
+// Reclaim resolves targetNodeID to its advertised endpoint and calls the agent
+// blob-reclaim endpoint. A reclaim of an absent blob is a no-op success agent-side.
+func (a reclaimAdapter) Reclaim(ctx context.Context, targetNodeID uuid.UUID, digest string) error {
+	node, err := a.st.NodeByID(ctx, targetNodeID)
+	if err != nil {
+		return fmt.Errorf("resolve reclaim target node %s: %v", targetNodeID, err)
+	}
+	return a.agentClient.ReclaimBlob(ctx, node.AdvertisedEndpoint, agentapi.BlobReclaimRequest{Digest: digest})
 }
 
 // buildScheduler registers the periodic maintenance functions on a scheduler.

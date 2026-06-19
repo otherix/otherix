@@ -51,19 +51,28 @@ type BlobStopper interface {
 	StopServe(token string)
 }
 
-// Handler bundles the serve / pull / stop seams and the logger. All state (the
-// serve manager's listeners, the task store) lives behind the seams; the handler
-// only translates wire shapes.
+// BlobDeleter is the seam the reclaim handler drives: delete one
+// content-addressed blob (and its checksum sidecar) by digest from the local
+// artifact store. Idempotent: deleting an absent blob is a no-op. Production
+// wraps *artifactstore.Store; tests pass a spy.
+type BlobDeleter interface {
+	Delete(digest string) error
+}
+
+// Handler bundles the serve / pull / stop / delete seams and the logger. All
+// state (the serve manager's listeners, the task store, the artifact store)
+// lives behind the seams; the handler only translates wire shapes.
 type Handler struct {
 	server  BlobServer
 	puller  BlobPuller
 	stopper BlobStopper
+	deleter BlobDeleter
 	log     *slog.Logger
 }
 
-// New constructs a Handler over the serve / pull / stop seams.
-func New(s BlobServer, p BlobPuller, stop BlobStopper, log *slog.Logger) *Handler {
-	return &Handler{server: s, puller: p, stopper: stop, log: log}
+// New constructs a Handler over the serve / pull / stop / delete seams.
+func New(s BlobServer, p BlobPuller, stop BlobStopper, del BlobDeleter, log *slog.Logger) *Handler {
+	return &Handler{server: s, puller: p, stopper: stop, deleter: del, log: log}
 }
 
 // Mount registers /v1/blobs routes on r.
@@ -71,6 +80,7 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Post("/serve", h.Serve)
 	r.Post("/pull", h.Pull)
 	r.Post("/stop-serve", h.StopServe)
+	r.Post("/reclaim", h.Reclaim)
 }
 
 // asyncAccepted mirrors `AsyncTaskAccepted` in api/openapi/agent.yaml.

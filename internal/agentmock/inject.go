@@ -58,6 +58,7 @@ var operationIDs = map[string]struct{}{
 	"blobs.serve":                {},
 	"blobs.pull":                 {},
 	"blobs.stopServe":            {},
+	"blobs.reclaim":              {},
 	"tasks.get":                  {},
 	"vms.list":                   {},
 	"vms.create":                 {},

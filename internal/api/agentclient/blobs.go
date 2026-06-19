@@ -81,6 +81,31 @@ func (c *Client) StopServe(ctx context.Context, endpoint string, req agentapi.Bl
 	return nil
 }
 
+// ReclaimBlob tells the holder agent at endpoint to delete the request's digest
+// from its artifact store. The work is synchronous (204 No Content); idempotent
+// on the agent side (deleting an absent blob is a no-op). Non-2xx surfaces as
+// *AgentError so the CP reclaim worker can classify it.
+//
+// The agent endpoint is fixed (`POST /v1/blobs/reclaim`).
+func (c *Client) ReclaimBlob(ctx context.Context, endpoint string, req agentapi.BlobReclaimRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("agentclient: encode BlobReclaimRequest: %v", err)
+	}
+
+	target, _ := url.JoinPath(endpoint, "/v1/blobs/reclaim")
+	httpReq, err := newRequest(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	if _, _, err := c.do(httpReq); err != nil {
+		return fmt.Errorf("agentclient: reclaim blob: %w", err)
+	}
+	return nil
+}
+
 // PullBlob tells the consumer agent at endpoint to pull the request's digest
 // from the holder's serve endpoint, presenting the per-op token. The work is
 // async: 202 returns an AsyncTaskAccepted whose task id this method returns.

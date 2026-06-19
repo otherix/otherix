@@ -1322,6 +1322,31 @@ paths:
           description: Serve torn down (or already gone).
         "400": { $ref: "#/components/responses/BadRequest" }
 
+  /v1/blobs/reclaim:
+    post:
+      operationId: blobs.reclaim
+      tags: [blobs]
+      summary: Delete a blob from this node's artifact store.
+      description: |
+        Sent by the Control Plane to a holder agent to delete one
+        content-addressed blob the cluster no longer needs (an orphaned blob
+        whose last snapshot reference is gone, or a surplus copy beyond the
+        desired replica count). The agent removes the blob and its checksum
+        sidecar from its local store. Idempotent: deleting a blob this node
+        does not hold is a no-op success. The Control Plane is the sole
+        authority on whether a blob is still needed; the agent deletes exactly
+        the named digest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobReclaimRequest"
+      responses:
+        "204":
+          description: Blob removed (or already absent).
+        "400": { $ref: "#/components/responses/BadRequest" }
+
   /v1/networks:
     get:
       operationId: networks.list
@@ -2461,6 +2486,18 @@ components:
         token:
           type: string
           description: The CP-minted per-op token the serve was primed with.
+
+    BlobReclaimRequest:
+      type: object
+      description: |
+        Sent by the CP to a holder agent to delete one content-addressed blob
+        by digest from the node's artifact store.
+      required: [digest]
+      properties:
+        digest:
+          type: string
+          description: Lowercase hex sha256 of the blob to delete (64 chars).
+          pattern: "^[a-f0-9]{64}$"
 
     BlobPullRequest:
       type: object

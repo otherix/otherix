@@ -61,7 +61,7 @@ func buildBlobsHandler(cfg *config.AgentConfig, manager *vm.Manager, artStore *a
 	}
 	// serveMgr is both the serve seam and the stop-serve seam (it has StopServe,
 	// the token-keyed teardown wired to the CP-driven stop-serve endpoint).
-	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, serveMgr, log), serveMgr, nil
+	return blobshandlers.New(serveMgr, blobPuller{manager: manager, client: pullClient}, serveMgr, artStore, log), serveMgr, nil
 }
 
 // blobPuller is the consumer-side half of the cross-node blob pull: it runs

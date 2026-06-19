@@ -98,7 +98,7 @@ func TestServe_HappyPath(t *testing.T) {
 		endpoint:  "https://10.0.0.2:49252",
 		expiresAt: "2026-06-18T12:00:00Z",
 	}
-	h := New(srv, &pullSpy{}, &stopSpy{}, discardLogger())
+	h := New(srv, &pullSpy{}, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -135,7 +135,7 @@ func TestServe_HappyPath(t *testing.T) {
 }
 
 func TestServe_BadRequestOnMissingDigest(t *testing.T) {
-	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -153,7 +153,7 @@ func TestServe_BadRequestOnMissingDigest(t *testing.T) {
 
 func TestServe_BadRequestOnMissingConsumerNodeID(t *testing.T) {
 	srv := &serveSpy{}
-	h := New(srv, &pullSpy{}, &stopSpy{}, discardLogger())
+	h := New(srv, &pullSpy{}, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -173,7 +173,7 @@ func TestServe_BadRequestOnMissingConsumerNodeID(t *testing.T) {
 }
 
 func TestServe_MalformedJSON(t *testing.T) {
-	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/serve", strings.NewReader("{not json"))
@@ -187,7 +187,7 @@ func TestServe_MalformedJSON(t *testing.T) {
 
 func TestServe_InternalErrorFromManager(t *testing.T) {
 	srv := &serveSpy{returnErr: errors.New("no free port")}
-	h := New(srv, &pullSpy{}, &stopSpy{}, discardLogger())
+	h := New(srv, &pullSpy{}, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -208,7 +208,7 @@ func TestPull_HappyPath(t *testing.T) {
 	digest := strings.Repeat("c", 64)
 	taskID := uuid.New().String()
 	pull := &pullSpy{taskID: taskID}
-	h := New(&serveSpy{}, pull, &stopSpy{}, discardLogger())
+	h := New(&serveSpy{}, pull, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -253,7 +253,7 @@ func TestPull_HappyPath(t *testing.T) {
 }
 
 func TestPull_BadRequestOnMissingHolderEndpoint(t *testing.T) {
-	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -271,7 +271,7 @@ func TestPull_BadRequestOnMissingHolderEndpoint(t *testing.T) {
 
 func TestPull_InternalErrorFromPuller(t *testing.T) {
 	pull := &pullSpy{returnErr: errors.New("task store full")}
-	h := New(&serveSpy{}, pull, &stopSpy{}, discardLogger())
+	h := New(&serveSpy{}, pull, &stopSpy{}, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{
@@ -290,7 +290,7 @@ func TestPull_InternalErrorFromPuller(t *testing.T) {
 
 func TestStopServe_HappyPath(t *testing.T) {
 	stop := &stopSpy{}
-	h := New(&serveSpy{}, &pullSpy{}, stop, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, stop, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{"token": "tok-789"})
@@ -308,7 +308,7 @@ func TestStopServe_HappyPath(t *testing.T) {
 
 func TestStopServe_BadRequestOnMissingToken(t *testing.T) {
 	stop := &stopSpy{}
-	h := New(&serveSpy{}, &pullSpy{}, stop, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, stop, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	body, _ := json.Marshal(map[string]any{})
@@ -326,7 +326,7 @@ func TestStopServe_BadRequestOnMissingToken(t *testing.T) {
 
 func TestStopServe_MalformedJSON(t *testing.T) {
 	stop := &stopSpy{}
-	h := New(&serveSpy{}, &pullSpy{}, stop, discardLogger())
+	h := New(&serveSpy{}, &pullSpy{}, stop, &deleterSpy{}, discardLogger())
 	router := mountTestRouter(h)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/blobs/stop-serve", strings.NewReader("{not json"))
