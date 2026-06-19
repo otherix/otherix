@@ -173,7 +173,7 @@ func (h *Handler) resolveListItems(ctx context.Context, rows []store.Snapshot) [
 			ownerNames[s.OwnerID] = ownerName
 		}
 		views = append(views, snapshotListItemView{
-			vmSnapshotView:   toView(s),
+			vmSnapshotView:   h.viewWithDurability(ctx, s),
 			VMName:           vmName,
 			OwnerDisplayName: ownerName,
 		})

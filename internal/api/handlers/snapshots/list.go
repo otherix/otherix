@@ -86,7 +86,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	views := make([]vmSnapshotView, 0, len(rows))
 	for _, s := range rows {
-		views = append(views, toView(s))
+		views = append(views, h.viewWithDurability(r.Context(), s))
 	}
 
 	response.WriteJSON(w, r, http.StatusOK, listResponse{

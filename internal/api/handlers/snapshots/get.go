@@ -50,5 +50,5 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.WriteJSON(w, r, http.StatusOK, toView(snap))
+	response.WriteJSON(w, r, http.StatusOK, h.viewWithDurability(r.Context(), snap))
 }
