@@ -37,6 +37,9 @@ const (
 // count of live member nodes of that pool. A snapshot whose pool is unresolved
 // (nil name or a deleted pool) contributes 1 and an empty member set, never
 // raising K. The floor is 1.
+//
+// The blank live-node-set parameter is a stable seam for the reconcile planner,
+// which shares this signature; the body derives liveness from nodes directly.
 func blobPlacementTarget(ctx context.Context, st DurabilityStore, digest string, nodes []store.Node, _ map[uuid.UUID]bool) (k int, eligible map[uuid.UUID]bool, err error) {
 	snapIDs, err := st.SnapshotsReferencingBlob(ctx, digest)
 	if err != nil {
@@ -133,6 +136,10 @@ func durabilityRank(s string) int {
 // weakest per-disk-digest status, the desired replica count (max over disks), and
 // the observed replica count (min over disks). A snapshot with no disks yet (not
 // produced) is unknown. Best-effort: the caller renders unknown / logs on error.
+//
+// Cost: per disk this scans the snapshot-reference index and the whole node-blob
+// inventory once. Fine for a single-snapshot read; a list path should bound or
+// cache it rather than calling this per row.
 func SnapshotDurability(ctx context.Context, st DurabilityStore, snap store.Snapshot) (status string, desired, observed int, err error) {
 	if len(snap.Disks) == 0 {
 		return DurabilityUnknown, 0, 0, nil
