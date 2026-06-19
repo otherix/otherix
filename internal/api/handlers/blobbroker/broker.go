@@ -38,6 +38,7 @@ const pullTokenTTL = 5 * time.Minute
 // single goroutine, so no CAS is required here (see etcdstore notes).
 type Store interface {
 	BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
+	BlobSize(ctx context.Context, digest string) (int64, bool)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	CreatePullSaga(ctx context.Context, p store.CreatePullSagaParams) (store.ArtifactPullSaga, string, error)
 	UpdatePullSagaServeEndpoint(ctx context.Context, id uuid.UUID, endpoint string) error
@@ -57,7 +58,9 @@ type AgentExecutor interface {
 	// endpoint and blocks until the consumer pull task reaches a terminal
 	// status, returning an error on any non-success terminal. holderIdentity is
 	// the holder's node identity SAN the consumer pins TLS verification against.
-	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string) error
+	// expectedSize (when > 0) is the CP-known blob size the consumer bounds the
+	// pull body to; 0 means unknown (no cap, digest verify still enforced).
+	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) error
 	// StopServe tears the holder's serve listener down. Best-effort: the
 	// listener also self-expires on the token TTL.
 	StopServe(ctx context.Context, holderEndpoint, digest string) error
@@ -139,7 +142,12 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	// identity SAN, not the dialed inter-node IP (the holder's node leaf cert
 	// carries the identity, not the IP). Mirrors migration's target_node_identity.
 	hid := holderIdentity(holder.Name)
-	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid)
+	// Resolve the CP-known blob size (any holder's reported size is authoritative
+	// for a content-addressed blob) so the consumer can bound the pull body. A
+	// zero/absent size means unknown - the consumer applies no cap and relies on
+	// the digest verify alone.
+	expectedSize, _ := b.store.BlobSize(ctx, digest)
+	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize)
 
 	// Teardown is best-effort and ALWAYS runs: a stop failure logs but never
 	// fails a pull that otherwise succeeded (the listener self-expires on TTL).
@@ -197,7 +205,7 @@ func (e *ClientExecutor) ServeBlob(ctx context.Context, holderEndpoint, digest, 
 // the consumer agent's task to terminal, mirroring the migration await. A
 // non-success terminal (a verify failure on the agent surfaces as a failed task)
 // returns an error so the broker fails the saga.
-func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string) error {
+func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) error {
 	req := agentapi.BlobPullRequest{
 		Digest:         digest,
 		HolderEndpoint: holderEndpoint,
@@ -205,6 +213,9 @@ func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint,
 	}
 	if holderIdentity != "" {
 		req.HolderIdentity = &holderIdentity
+	}
+	if expectedSize > 0 {
+		req.ExpectedSize = &expectedSize
 	}
 	taskID, err := e.c.PullBlob(ctx, consumerEndpoint, req)
 	if err != nil {

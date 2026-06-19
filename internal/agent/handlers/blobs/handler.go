@@ -34,9 +34,11 @@ type BlobServer interface {
 // streams the blob for digest from holderEndpoint (presenting token) into the
 // local artifact store, and return the task id immediately. holderIdentity
 // (when non-empty) pins TLS verification to the holder's node identity SAN.
+// expectedSize (when > 0) bounds the streamed body to the CP-known blob size so
+// a misbehaving holder cannot fill the disk before the digest check.
 // Production wraps a blobpeer.Pull adapter (server.go); tests pass a spy.
 type BlobPuller interface {
-	Pull(digest, token, holderEndpoint, holderIdentity string) (taskID string, err error)
+	Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (taskID string, err error)
 }
 
 // Handler bundles the serve / pull seams and the logger. All state (the serve

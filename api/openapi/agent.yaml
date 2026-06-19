@@ -2460,6 +2460,15 @@ components:
             identity SAN, not the dialed IP - mirrors the migration
             target_node_identity pin. Absent: no pinning, the consumer
             verifies the holder cert against the dialed host.
+        expected_size:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            CP-known size in bytes of the blob (from the holder's reported
+            inventory). The consumer bounds the pull body to this value and fails
+            closed on overflow, so a misbehaving holder cannot fill the consumer
+            disk before the digest check. Omitted or null means the size is
+            unknown and only the digest is enforced.
 
     MigrationIncomingRequest:
       type: object

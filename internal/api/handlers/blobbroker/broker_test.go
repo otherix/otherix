@@ -26,10 +26,15 @@ type storeStub struct {
 	nodeName map[uuid.UUID]string
 	phases   []store.PullSagaPhase
 	token    string
+	blobSize int64
 }
 
 func (s *storeStub) BlobHolders(_ context.Context, _ string) ([]uuid.UUID, error) {
 	return s.holders, nil
+}
+
+func (s *storeStub) BlobSize(_ context.Context, _ string) (int64, bool) {
+	return s.blobSize, s.blobSize > 0
 }
 
 func (s *storeStub) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
@@ -54,6 +59,7 @@ type agentSpy struct {
 	calls          []string
 	serveEndp      string
 	pullHolderIdty string
+	pullExpSize    int64
 }
 
 func (a *agentSpy) ServeBlob(_ context.Context, holderEndpoint, _, _, _ string) (string, string, error) {
@@ -61,9 +67,10 @@ func (a *agentSpy) ServeBlob(_ context.Context, holderEndpoint, _, _, _ string) 
 	return a.serveEndp, "2030-01-01T00:00:00Z", nil
 }
 
-func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, holderEndpoint, holderIdentity string) error {
+func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, holderEndpoint, holderIdentity string, expectedSize int64) error {
 	a.calls = append(a.calls, "pull:"+consumerEndpoint+"<-"+holderEndpoint)
 	a.pullHolderIdty = holderIdentity
+	a.pullExpSize = expectedSize
 	return nil
 }
 
@@ -79,6 +86,7 @@ func TestBrokerPullSequencing(t *testing.T) {
 		nodeEndp: map[uuid.UUID]string{holder: "https://holder:9443", consumer: "https://consumer:9443"},
 		nodeName: map[uuid.UUID]string{holder: "node-1", consumer: "node-2"},
 		token:    "otx_pull_x",
+		blobSize: 65536,
 	}
 	spy := &agentSpy{serveEndp: "https://holder:49252"}
 	b := New(st, spy, testLogger())
@@ -105,6 +113,12 @@ func TestBrokerPullSequencing(t *testing.T) {
 	// from the holder node name (mirrors migration target_node_identity).
 	if want := "node-node-1.agents.otherix.local"; spy.pullHolderIdty != want {
 		t.Errorf("pull holder identity = %q, want %q", spy.pullHolderIdty, want)
+	}
+
+	// The CP-known blob size (from observed inventory) flows to the consumer so
+	// it can bound the pull body.
+	if spy.pullExpSize != 65536 {
+		t.Errorf("pull expected size = %d, want 65536", spy.pullExpSize)
 	}
 
 	// The saga must reach complete via serving (UpdatePullSagaServeEndpoint
