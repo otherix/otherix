@@ -20,6 +20,11 @@ type membershipBody struct {
 	Nodes    []string `json:"nodes,omitempty"`
 }
 
+type patchRequest struct {
+	ReplicationFactor *store.ReplicationFactor `json:"replication_factor"`
+	Membership        *membershipBody          `json:"membership"`
+}
+
 type artifactPoolView struct {
 	ID                string                  `json:"id"`
 	Name              string                  `json:"name"`

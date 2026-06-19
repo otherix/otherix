@@ -1577,6 +1577,50 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: artifactPools.update
+      tags: [artifact-pools]
+      summary: Update an artifact pool's replication factor and/or membership (admin only).
+      description: |
+        **Required permission:** `storage_pool:manage`. The pool name is
+        immutable; only `replication_factor` and `membership` can change. At
+        least one of the two must be present, else `400 validation_failed`.
+
+        `replication_factor` is live-effective. Increasing it immediately drives
+        re-replication up to the new target through the durability reconcile
+        loop, which reads the pool's current `replication_factor` each pass.
+        Decreasing it is allowed and leaves the now-excess copies in place until
+        a future garbage-collection pass reclaims them; durability stays correct
+        because the number of copies stays at or above the new target, never
+        below it.
+
+        When the effective `membership` is an explicit node list and the
+        effective `replication_factor` is a concrete count, the count may not
+        exceed the number of listed members (`400 validation_failed`). With
+        `all_nodes` membership the eligible set is dynamic, so no static cap
+        applies.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactPoolUpdate" }
+      responses:
+        "200":
+          description: Artifact pool updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactPool" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
     delete:
       operationId: artifactPools.delete
       tags: [artifact-pools]
@@ -3649,6 +3693,17 @@ components:
           allOf:
             - $ref: "#/components/schemas/ArtifactPoolMembership"
           description: Defaults to all_nodes=true when omitted.
+    ArtifactPoolUpdate:
+      type: object
+      description: |
+        At least one of `replication_factor` or `membership` must be present.
+        The pool name is immutable and cannot be patched.
+      properties:
+        replication_factor:
+          allOf:
+            - $ref: "#/components/schemas/ReplicationFactor"
+          description: New durability target. Any change up or down is allowed.
+        membership: { $ref: "#/components/schemas/ArtifactPoolMembership" }
     ArtifactPoolList:
       type: object
       required: [data, meta]

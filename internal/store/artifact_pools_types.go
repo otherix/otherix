@@ -67,6 +67,14 @@ type CreateArtifactPoolParams struct {
 	Membership        ArtifactPoolMembership
 }
 
+// UpdateArtifactPoolParams is the input to Store.UpdateArtifactPool. Each field
+// is a pointer so a nil leaves the existing row value untouched. The name is
+// immutable, so it has no field here.
+type UpdateArtifactPoolParams struct {
+	ReplicationFactor *ReplicationFactor
+	Membership        *ArtifactPoolMembership
+}
+
 // ListArtifactPoolsParams is the input to Store.ListArtifactPools (cursor
 // pagination over a bounded collection, like networks).
 type ListArtifactPoolsParams struct {

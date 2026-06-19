@@ -402,6 +402,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermStoragePoolRead, deps.Logger)).Get("/", artifactPoolsH.List)
 				r.With(middleware.RequirePermission(auth.PermStoragePoolRead, deps.Logger)).Get("/{id}", artifactPoolsH.Get)
 				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Post("/", artifactPoolsH.Create)
+				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Patch("/{id}", artifactPoolsH.Patch)
 				r.With(middleware.RequirePermission(auth.PermStoragePoolManage, deps.Logger)).Delete("/{id}", artifactPoolsH.Delete)
 			})
 
