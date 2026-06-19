@@ -60,7 +60,7 @@ type WorkerStore interface {
 // as blobbroker.ErrBlobUnavailable, which the worker classifies RETRYABLE (the
 // holder inventory is observed state that lags the snapshot by one heartbeat).
 type SnapshotBlobBroker interface {
-	BrokerPull(ctx context.Context, digest string, node uuid.UUID) error
+	BrokerPull(ctx context.Context, digest string, node uuid.UUID, tier blobbroker.Tier) error
 }
 
 // defaultStaleGrace is the fallback heartbeat-staleness window used by the
@@ -300,7 +300,7 @@ func ensureSnapshotBlobsLocal(ctx context.Context, st WorkerStore, broker Snapsh
 		if _, held := have[d.SHA256]; held {
 			continue
 		}
-		if err := broker.BrokerPull(ctx, d.SHA256, targetNodeID); err != nil {
+		if err := broker.BrokerPull(ctx, d.SHA256, targetNodeID, blobbroker.TierArtifact); err != nil {
 			return fmt.Errorf("pull blob %s: %w", d.SHA256, err)
 		}
 		// Mark held so a snapshot referencing the same blob twice pulls once.

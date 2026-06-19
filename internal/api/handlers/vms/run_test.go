@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -326,7 +327,7 @@ func (s *createLifecycleWorkerStoreStub) NodeBlobInventory(context.Context, uuid
 // blobs need no real pull. BrokerPull always succeeds.
 type noopBroker struct{}
 
-func (noopBroker) BrokerPull(context.Context, string, uuid.UUID) error { return nil }
+func (noopBroker) BrokerPull(context.Context, string, uuid.UUID, blobbroker.Tier) error { return nil }
 
 // spyCreateExecutor records whether the agent create was attempted, the image
 // source the worker handed it, and a canned result/error to surface back.

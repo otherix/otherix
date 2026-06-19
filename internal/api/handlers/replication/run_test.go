@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -48,7 +49,7 @@ type brokerStub struct {
 	err       error
 }
 
-func (b *brokerStub) BrokerPull(_ context.Context, digest string, node uuid.UUID) error {
+func (b *brokerStub) BrokerPull(_ context.Context, digest string, node uuid.UUID, _ blobbroker.Tier) error {
 	b.gotDigest, b.gotNode = digest, node
 	return b.err
 }
