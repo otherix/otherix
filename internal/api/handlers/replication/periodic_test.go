@@ -35,6 +35,7 @@ type reconcileStoreFake struct {
 	}
 	inflight        map[inflightKey]bool
 	reclaimInflight map[inflightKey]bool
+	nodeBlobDigests []string // digests observed across node_blobs inventories
 }
 
 func (f *reconcileStoreFake) AllPlacementDigests(context.Context) ([]string, error) {
@@ -43,6 +44,10 @@ func (f *reconcileStoreFake) AllPlacementDigests(context.Context) ([]string, err
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+func (f *reconcileStoreFake) AllNodeBlobDigests(context.Context) ([]string, error) {
+	return f.nodeBlobDigests, nil
 }
 
 func (f *reconcileStoreFake) BlobPlacements(_ context.Context, d string) ([]uuid.UUID, error) {
@@ -452,5 +457,61 @@ func TestReconcileReferencedBelowKUnchanged(t *testing.T) {
 	}
 	if len(f.enqueued) != 1 {
 		t.Errorf("enqueued %d replicate tasks, want 1 (add-to-K path)", len(f.enqueued))
+	}
+}
+
+// TestReconcileBackstopReclaimsObservedOrphan proves the union of observed
+// node_blobs digests is reconciled: a blob a node still holds but whose placement
+// key was already pruned (so AllPlacementDigests omits it) is collected through the
+// reclaim path, closing the residual leak. The digest reaches reconcileDigest only
+// via the node_blobs union, never via the placement scan.
+func TestReconcileBackstopReclaimsObservedOrphan(t *testing.T) {
+	n1 := uuid.New()
+	digest := "0bada550000000000000000000000000000000000000000000000000000000aa"
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			// Zero referencing snapshots -> orphaned; the node still holds the blob.
+			refs:    map[string][]uuid.UUID{digest: nil},
+			holders: map[string][]uuid.UUID{digest: {n1}},
+			nodes:   []store.Node{{ID: n1, Name: "node-1", Status: store.NodeStatusReady}},
+		},
+		// No placement entry: AllPlacementDigests must not return this digest.
+		placement:       map[string]map[uuid.UUID]bool{},
+		nodeBlobDigests: []string{digest},
+	}
+
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := len(f.reclaimed); got != 1 {
+		t.Errorf("backstop reclaim enqueues = %d, want 1 (observed orphan, no placement key)", got)
+	}
+}
+
+// TestReconcileBackstopSkipsReferencedObservedBlob proves the widened iteration
+// does not over-collect: an observed blob that is still referenced by a snapshot is
+// not orphaned and is never reclaimed.
+func TestReconcileBackstopSkipsReferencedObservedBlob(t *testing.T) {
+	n1 := uuid.New()
+	digest := "0bada550000000000000000000000000000000000000000000000000000000bb"
+	pool := "gold"
+	snapID := uuid.New()
+	f := &reconcileStoreFake{
+		durabilityStoreFake: durabilityStoreFake{
+			refs:    map[string][]uuid.UUID{digest: {snapID}},
+			snaps:   map[uuid.UUID]store.Snapshot{snapID: {ID: snapID, ArtifactPoolName: &pool}},
+			pools:   map[string]store.ArtifactPool{pool: {Name: pool, ReplicationFactor: store.ReplicationFactor{Count: 1}, Membership: store.ArtifactPoolMembership{AllNodes: true}}},
+			holders: map[string][]uuid.UUID{digest: {n1}},
+			nodes:   []store.Node{{ID: n1, Name: "node-1", Status: store.NodeStatusReady}},
+		},
+		placement:       map[string]map[uuid.UUID]bool{},
+		nodeBlobDigests: []string{digest},
+	}
+
+	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := len(f.reclaimed); got != 0 {
+		t.Errorf("reclaim enqueues = %d, want 0 (a referenced observed blob is never collected)", got)
 	}
 }

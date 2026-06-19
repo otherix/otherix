@@ -176,6 +176,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
+	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", newArtifactSweeper(artStore, log).Run, log)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -201,6 +202,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "wireguard reconciler", done: wgReconcilerDone},
 		{name: "dns forwarder", done: dnsForwarderDone},
 		{name: "dhcp responder", done: dhcpResponderDone},
+		{name: "artifact sweeper", done: artifactSweeperDone},
 	}
 
 	select {

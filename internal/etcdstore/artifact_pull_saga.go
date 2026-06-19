@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
@@ -21,6 +22,15 @@ import (
 const pullTokenPrefix = "otx_pull_"
 
 func pullSagaKey(id uuid.UUID) string { return etcd.Key("artifact_pull_saga", id.String()) }
+
+// pullSagaPrefix is the scan prefix for all saga records.
+func pullSagaPrefix() string { return etcd.Key("artifact_pull_saga") + "/" }
+
+// pullSagaTerminal reports whether a saga has reached a terminal phase (the pull
+// operation is finished and the record is retained only for diagnosis).
+func pullSagaTerminal(p store.PullSagaPhase) bool {
+	return p == store.PullSagaPhaseComplete || p == store.PullSagaPhaseFailed
+}
 
 // CreatePullSaga writes the saga record and mints an ephemeral per-op bearer
 // token, returning the token plaintext exactly once. The token is NOT persisted
@@ -90,4 +100,40 @@ func (s *Store) SetPullSagaPhase(ctx context.Context, id uuid.UUID, phase store.
 	}
 	saga.Phase = phase
 	return s.c.PutJSON(ctx, pullSagaKey(id), saga)
+}
+
+// DeleteExpiredPullSagas removes terminal saga records created before cutoff.
+// Only terminal (complete / failed) sagas are eligible: a non-terminal saga,
+// however old, is a stuck-or-in-flight operation kept for diagnosis, not
+// retention's concern. Returns the number deleted. The deletes commit in chunks
+// under the etcd per-transaction op limit. Mirrors DeleteExpiredTasks.
+func (s *Store) DeleteExpiredPullSagas(ctx context.Context, cutoff time.Time) (int, error) {
+	items, err := s.c.Range(ctx, pullSagaPrefix())
+	if err != nil {
+		return 0, fmt.Errorf("range pull sagas: %v", err)
+	}
+	var ops []clientv3.Op
+	deleted := 0
+	for _, kv := range items {
+		var saga store.ArtifactPullSaga
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &saga, "artifact_pull_saga") {
+			continue
+		}
+		if !pullSagaTerminal(saga.Phase) || !saga.CreatedAt.Before(cutoff) {
+			continue
+		}
+		ops = append(ops, clientv3.OpDelete(pullSagaKey(saga.ID)))
+		deleted++
+	}
+	if err := s.commitInChunks(ctx, ops); err != nil {
+		return 0, fmt.Errorf("delete expired pull sagas: %v", err)
+	}
+	return deleted, nil
+}
+
+// PutPullSagaForTest writes a saga value verbatim. Exported only so store tests
+// can seed a saga with a chosen CreatedAt; production writes go through
+// CreatePullSaga.
+func (s *Store) PutPullSagaForTest(ctx context.Context, saga store.ArtifactPullSaga) error {
+	return s.c.PutJSON(ctx, pullSagaKey(saga.ID), saga)
 }

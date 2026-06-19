@@ -605,6 +605,10 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("placement.reconcile", positiveOr(cfg.Workers.PlacementReconcile.Interval, 30*time.Second), true,
 		replicationhandlers.ReconcileFunc(st, log))
 
+	s.Register("artifact.saga.retention",
+		positiveOr(cfg.Workers.ArtifactSagaRetention.Interval, time.Hour), false,
+		blobbroker.SagaRetentionFunc(st, positiveOr(cfg.Workers.ArtifactSagaRetention.Retention, 24*time.Hour), log))
+
 	s.Register("auth.refresh_token_cleanup", time.Hour, false,
 		auth.RefreshTokenCleanupFunc(st, log))
 

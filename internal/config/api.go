@@ -567,6 +567,11 @@ type WorkersConfig struct {
 	PlacementReconcile struct {
 		Interval time.Duration `koanf:"interval"`
 	} `koanf:"placement_reconcile"`
+
+	ArtifactSagaRetention struct {
+		Interval  time.Duration `koanf:"interval"`
+		Retention time.Duration `koanf:"retention"`
+	} `koanf:"artifact_saga_retention"`
 }
 
 // BackupConfig pins the periodic etcd snapshot worker. When Enabled (and Dir is
