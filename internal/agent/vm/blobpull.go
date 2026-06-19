@@ -20,6 +20,10 @@ import (
 // every component shares one store.
 func (m *Manager) ArtifactStore() *artifactstore.Store { return m.artifactStore }
 
+// ImageStore returns the node-level pinned-image cache tier, or nil when the
+// agent has no artifacts root configured.
+func (m *Manager) ImageStore() *artifactstore.Store { return m.imageStore }
+
 // PoolRoots returns the filesystem root of every registered pool. The blob
 // relocation sweep (server.go boot) walks these to move disk-pool-resident
 // snapshot blobs into the artifact store.
