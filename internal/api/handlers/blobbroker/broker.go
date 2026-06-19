@@ -61,9 +61,12 @@ type AgentExecutor interface {
 	// expectedSize (when > 0) is the CP-known blob size the consumer bounds the
 	// pull body to; 0 means unknown (no cap, digest verify still enforced).
 	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) error
-	// StopServe tears the holder's serve listener down. Best-effort: the
-	// listener also self-expires on the token TTL.
-	StopServe(ctx context.Context, holderEndpoint, digest string) error
+	// StopServe tears the holder's serve listener down, keyed on the per-op
+	// token the serve was minted with (NOT the digest: two concurrent serves of
+	// the same digest to different consumers exist as two tokens, so a
+	// digest-keyed teardown would be ambiguous). Best-effort: the listener also
+	// self-expires on the token TTL if the CP never calls this.
+	StopServe(ctx context.Context, holderEndpoint, token string) error
 }
 
 // Broker orchestrates one pull saga at a time via BrokerPull.
@@ -151,7 +154,9 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 
 	// Teardown is best-effort and ALWAYS runs: a stop failure logs but never
 	// fails a pull that otherwise succeeded (the listener self-expires on TTL).
-	if stopErr := b.exec.StopServe(ctx, holder.AdvertisedEndpoint, digest); stopErr != nil {
+	// Keyed on the per-op token (minted by CreatePullSaga), not the digest, so it
+	// names exactly this serve even if another serve of the same digest is live.
+	if stopErr := b.exec.StopServe(ctx, holder.AdvertisedEndpoint, token); stopErr != nil {
 		b.log.WarnContext(ctx, "blobbroker: stop serve failed (best-effort)",
 			"holder", holder.AdvertisedEndpoint, "error", stopErr)
 	}
@@ -238,8 +243,11 @@ func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint,
 	return nil
 }
 
-// StopServe is a no-op in C1: the Task-10 holder serve listener self-expires on
-// the token TTL, so there is no stop-serve agent endpoint. The method is kept as
-// part of the seam (and exercised in order by the broker) for symmetry and so a
-// future explicit teardown can be wired without touching the broker.
-func (e *ClientExecutor) StopServe(_ context.Context, _, _ string) error { return nil }
+// StopServe tells the holder agent to tear down the serve listener identified by
+// its per-op token, releasing the reserved port at pull completion instead of
+// waiting out the token TTL. The holder treats it as idempotent (a token with no
+// live serve is a no-op), and the broker calls it best-effort: the listener
+// self-expires on the token TTL should this call (or the CP) never land.
+func (e *ClientExecutor) StopServe(ctx context.Context, holderEndpoint, token string) error {
+	return e.c.StopServe(ctx, holderEndpoint, agentapi.BlobStopServeRequest{Token: token})
+}

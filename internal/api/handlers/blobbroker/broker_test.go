@@ -60,6 +60,7 @@ type agentSpy struct {
 	serveEndp      string
 	pullHolderIdty string
 	pullExpSize    int64
+	stopToken      string
 }
 
 func (a *agentSpy) ServeBlob(_ context.Context, holderEndpoint, _, _, _ string) (string, string, error) {
@@ -74,8 +75,9 @@ func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, h
 	return nil
 }
 
-func (a *agentSpy) StopServe(_ context.Context, holderEndpoint, _ string) error {
+func (a *agentSpy) StopServe(_ context.Context, holderEndpoint, token string) error {
 	a.calls = append(a.calls, "stop:"+holderEndpoint)
+	a.stopToken = token
 	return nil
 }
 
@@ -119,6 +121,13 @@ func TestBrokerPullSequencing(t *testing.T) {
 	// it can bound the pull body.
 	if spy.pullExpSize != 65536 {
 		t.Errorf("pull expected size = %d, want 65536", spy.pullExpSize)
+	}
+
+	// The serve teardown is keyed on the per-op token minted by CreatePullSaga,
+	// not the digest - so it names exactly this serve even if another serve of
+	// the same digest is concurrently live to a different consumer.
+	if spy.stopToken != st.token {
+		t.Errorf("stop serve token = %q, want %q (the per-op token, not the digest)", spy.stopToken, st.token)
 	}
 
 	// The saga must reach complete via serving (UpdatePullSagaServeEndpoint

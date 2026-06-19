@@ -466,6 +466,26 @@ func (m *Mock) BlobsServe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// BlobsStopServe implements POST /v1/blobs/stop-serve. The mock holder opened no
+// real listener, so there is nothing to tear down; it validates the body shape
+// and returns 204 (idempotent, matching the real agent).
+func (m *Mock) BlobsStopServe(w http.ResponseWriter, r *http.Request) {
+	const opID = "blobs.stopServe"
+	if m.preDispatch(w, r, opID) {
+		return
+	}
+	var body agentapi.BlobStopServeRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "invalid JSON")
+		return
+	}
+	if body.Token == "" {
+		m.respondError(w, r, opID, http.StatusBadRequest, "validation_failed", "token is required")
+		return
+	}
+	m.respondJSON(w, r, opID, http.StatusNoContent, nil)
+}
+
 // BlobsPull implements POST /v1/blobs/pull. The mock consumer records
 // an agent task and returns 202; no real transfer runs. Decodes the request for
 // body-shape validation only.

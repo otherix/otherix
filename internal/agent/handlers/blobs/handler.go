@@ -41,24 +41,36 @@ type BlobPuller interface {
 	Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (taskID string, err error)
 }
 
-// Handler bundles the serve / pull seams and the logger. All state (the serve
-// manager's listeners, the task store) lives behind the seams; the handler only
-// translates wire shapes.
-type Handler struct {
-	server BlobServer
-	puller BlobPuller
-	log    *slog.Logger
+// BlobStopper is the seam the stop-serve handler drives: tear down the serve
+// listener identified by its per-op token, releasing its reserved port. The
+// token (not the digest) is the key so two concurrent serves of the same digest
+// to different consumers stay disambiguated. Idempotent: a token with no live
+// serve is a no-op. Production wraps the serve manager (server.go); tests pass a
+// spy.
+type BlobStopper interface {
+	StopServe(token string)
 }
 
-// New constructs a Handler over the serve / pull seams.
-func New(s BlobServer, p BlobPuller, log *slog.Logger) *Handler {
-	return &Handler{server: s, puller: p, log: log}
+// Handler bundles the serve / pull / stop seams and the logger. All state (the
+// serve manager's listeners, the task store) lives behind the seams; the handler
+// only translates wire shapes.
+type Handler struct {
+	server  BlobServer
+	puller  BlobPuller
+	stopper BlobStopper
+	log     *slog.Logger
+}
+
+// New constructs a Handler over the serve / pull / stop seams.
+func New(s BlobServer, p BlobPuller, stop BlobStopper, log *slog.Logger) *Handler {
+	return &Handler{server: s, puller: p, stopper: stop, log: log}
 }
 
 // Mount registers /v1/blobs routes on r.
 func (h *Handler) Mount(r chi.Router) {
 	r.Post("/serve", h.Serve)
 	r.Post("/pull", h.Pull)
+	r.Post("/stop-serve", h.StopServe)
 }
 
 // asyncAccepted mirrors `AsyncTaskAccepted` in api/openapi/agent.yaml.
