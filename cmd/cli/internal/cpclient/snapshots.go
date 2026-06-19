@@ -52,6 +52,10 @@ type Snapshot struct {
 	Disks             []SnapshotDisk `json:"disks"`
 	DiskSizeBytes     *int64         `json:"disk_size_bytes"`
 	ErrorMessage      *string        `json:"error_message"`
+	Durability        string         `json:"durability"`
+	DesiredReplicas   int            `json:"desired_replicas"`
+	ObservedReplicas  int            `json:"observed_replicas"`
+	HolderNodes       []string       `json:"holder_nodes"`
 	CreatedAt         string         `json:"created_at"`
 	UpdatedAt         string         `json:"updated_at"`
 }
