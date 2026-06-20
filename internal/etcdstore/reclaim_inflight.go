@@ -37,7 +37,22 @@ func reclaimInflightKey(digest string, nodeID uuid.UUID) string {
 func (s *Store) TryBeginReclaim(ctx context.Context, digest string, nodeID uuid.UUID, ttl time.Duration) (bool, error) {
 	k := reclaimInflightKey(digest, nodeID)
 	now := time.Now().UTC()
-
+	enc, err := etcd.Marshal(reclaimInflight{ExpiresAt: now.Add(ttl)})
+	if err != nil {
+		return false, err
+	}
+	// Fast path: atomically create the marker when absent. Only one racing replica
+	// wins the create, so the common first-time double-enqueue is impossible.
+	created, err := s.c.PutIfAbsent(ctx, k, enc)
+	if err != nil {
+		return false, fmt.Errorf("create reclaim marker: %v", err)
+	}
+	if created {
+		return true, nil
+	}
+	// A marker already exists. If it is still fresh, back off; if it has expired,
+	// overwrite it (the loser of an expired-marker race re-creates an idempotent
+	// reclaim of the same HRW-deterministic victim, so a rare double here is safe).
 	val, found, err := s.c.Get(ctx, k)
 	if err != nil {
 		return false, fmt.Errorf("read reclaim marker: %v", err)
@@ -48,12 +63,8 @@ func (s *Store) TryBeginReclaim(ctx context.Context, digest string, nodeID uuid.
 			return false, nil
 		}
 	}
-	enc, err := etcd.Marshal(reclaimInflight{ExpiresAt: now.Add(ttl)})
-	if err != nil {
-		return false, err
-	}
 	if err := s.c.Put(ctx, k, enc); err != nil {
-		return false, fmt.Errorf("write reclaim marker: %v", err)
+		return false, fmt.Errorf("refresh reclaim marker: %v", err)
 	}
 	return true, nil
 }

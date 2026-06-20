@@ -89,6 +89,33 @@ func TestDeleteExpiredPullSagas(t *testing.T) {
 	}
 }
 
+func TestDeleteStrandedPullSagas(t *testing.T) {
+	st, _ := startStore(t)
+	ctx := context.Background()
+
+	oldStranded := seedPullSaga(t, st, ctx, store.PullSagaPhasePulling, time.Now().Add(-2*time.Hour))
+	oldTerminal := seedPullSaga(t, st, ctx, store.PullSagaPhaseComplete, time.Now().Add(-2*time.Hour))
+	freshStranded := seedPullSaga(t, st, ctx, store.PullSagaPhaseServing, time.Now())
+
+	cutoff := time.Now().Add(-time.Hour)
+	deleted, err := st.DeleteStrandedPullSagas(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("DeleteStrandedPullSagas = %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("DeleteStrandedPullSagas deleted = %d, want 1 (only non-terminal+old)", deleted)
+	}
+	if _, err := st.PullSagaByID(ctx, oldStranded); err == nil {
+		t.Errorf("non-terminal+old saga still present, want deleted")
+	}
+	if _, err := st.PullSagaByID(ctx, oldTerminal); err != nil {
+		t.Errorf("terminal+old saga deleted, want kept (that is DeleteExpiredPullSagas's job): %v", err)
+	}
+	if _, err := st.PullSagaByID(ctx, freshStranded); err != nil {
+		t.Errorf("non-terminal+fresh saga deleted, want kept (a live pull): %v", err)
+	}
+}
+
 // seedPullSaga creates a saga at the given phase and CreatedAt by constructing
 // the value and writing it through the store's test-only put helper (the public
 // create path stamps CreatedAt itself, so a chosen timestamp needs the seam).

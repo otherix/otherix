@@ -39,6 +39,33 @@ func (s *Store) UpsertNodeImageBlobInventory(ctx context.Context, nodeID uuid.UU
 	return s.c.PutJSON(ctx, nodeImageBlobInventoryKey(nodeID), blobs)
 }
 
+// ImageBlobSize returns the size in bytes any holder reports for an image-tier
+// digest, and whether any holder reports it. Mirrors BlobSize over the
+// image_blobs family: content-addressed blobs are identical across holders, so
+// the first reported size is authoritative. The CP uses it to bound an
+// image-tier consumer pull body; BlobSize reads node_blobs (the artifact tier)
+// and returns 0 for an image-only digest, which would leave the pull uncapped.
+// Zero/absent means "size unknown" and the puller falls back to the absolute
+// cap.
+func (s *Store) ImageBlobSize(ctx context.Context, digest string) (int64, bool) {
+	items, err := s.c.Range(ctx, nodeImageBlobInventoryPrefix())
+	if err != nil {
+		return 0, false
+	}
+	for _, kv := range items {
+		var blobs []store.NodeBlob
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &blobs, "node_image_blob") {
+			continue
+		}
+		for _, b := range blobs {
+			if b.Digest == digest && b.SizeBytes > 0 {
+				return b.SizeBytes, true
+			}
+		}
+	}
+	return 0, false
+}
+
 // ImageBlobHolders returns the node ids whose reported image-cache inventory
 // contains digest, sorted for determinism.
 func (s *Store) ImageBlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error) {

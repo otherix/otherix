@@ -26,6 +26,27 @@ var ErrBlobVerifyFailed = errors.New("blobpeer: pulled blob failed digest verifi
 // before the hash completes.)
 var ErrBlobTooLarge = errors.New("blobpeer: pull body exceeds expected size")
 
+// maxUnsizedPullBytes is the absolute fallback cap applied when the CP-known
+// ExpectedSize is unknown (<= 0). It matches the source-download cap (64 GiB) so
+// an unsized peer pull can never fill the consumer disk: the holder might be
+// buggy or compromised, and without a size hint there is no per-blob bound, so
+// this ceiling stands in. The end-of-stream digest verify remains the
+// correctness backstop; this just bounds the bytes WRITTEN before the verify can
+// reject them.
+const maxUnsizedPullBytes = 64 << 30
+
+// effectivePullCap returns the byte cap to bound a pull body with. A positive
+// expectedSize bounds at expectedSize+1, so a correctly-sized blob reads in full
+// and the first over-size byte trips the cap. An unknown size (<= 0) falls back
+// to the absolute maxUnsizedPullBytes ceiling, so an unsized pull is bounded
+// rather than unbounded.
+func effectivePullCap(expectedSize int64) int64 {
+	if expectedSize > 0 {
+		return expectedSize + 1
+	}
+	return maxUnsizedPullBytes
+}
+
 // boundedReader fails closed once more than max bytes have been read. It records
 // the overflow on a flag so the caller can still recognize the cause even though
 // artifactstore.Put wraps the underlying copy error with %v (which severs the
@@ -67,8 +88,10 @@ func (b *boundedReader) Read(p []byte) (int, error) {
 // ExpectedSize, when > 0, is the CP-known size in bytes of the blob (from the
 // holder's reported inventory). Pull bounds the copied body to it and fails
 // closed on overflow, so a misbehaving holder cannot fill the consumer disk
-// before the digest check completes. Zero means the size is unknown and only the
-// digest is enforced (no cap).
+// before the digest check completes. Zero or negative means the size is unknown;
+// Pull then bounds the body with an absolute fallback cap (maxUnsizedPullBytes)
+// so even an unsized pull can never fill the disk, with the digest verify as the
+// correctness backstop.
 type PullArgs struct {
 	Endpoint       string
 	Digest         string
@@ -126,21 +149,19 @@ func Pull(ctx context.Context, a PullArgs) error {
 		return fmt.Errorf("blobpeer: holder returned %d for digest %s", resp.StatusCode, a.Digest)
 	}
 
-	// Bound the body the holder may stream into the content-addressed store when
-	// the CP knows the size: max = ExpectedSize+1, so a correctly-sized blob
-	// passes and the first over-size byte trips the cap. This stops a disk-fill
-	// DoS that would otherwise occur before the sha256 verify completes. The cap
-	// is a flag on the bounded reader (not the returned error) because
-	// artifactstore.Put wraps the copy error with %v, severing the errors.Is
-	// chain - so overflow is recognized by br.overflowed, not errors.Is(err, ...).
-	var body io.Reader = resp.Body
-	var br *boundedReader
-	if a.ExpectedSize > 0 {
-		br = &boundedReader{r: resp.Body, max: a.ExpectedSize + 1}
-		body = br
-	}
-	if err := a.Store.Put(a.Digest, body); err != nil {
-		if br != nil && br.overflowed {
+	// Always bound the body the holder may stream into the content-addressed
+	// store. When the CP knows the size the cap is ExpectedSize+1, so a
+	// correctly-sized blob passes and the first over-size byte trips it. When the
+	// size is unknown (an image-tier digest with no reported size, or a stale
+	// inventory) the cap falls back to the absolute maxUnsizedPullBytes ceiling so
+	// an unsized pull can never fill the disk. This stops a disk-fill DoS that
+	// would otherwise occur before the sha256 verify completes. The cap is a flag
+	// on the bounded reader (not the returned error) because artifactstore.Put
+	// wraps the copy error with %v, severing the errors.Is chain - so overflow is
+	// recognized by br.overflowed, not errors.Is(err, ...).
+	br := &boundedReader{r: resp.Body, max: effectivePullCap(a.ExpectedSize)}
+	if err := a.Store.Put(a.Digest, br); err != nil {
+		if br.overflowed {
 			return fmt.Errorf("%w: holder streamed past expected size for digest %s", ErrBlobTooLarge, a.Digest)
 		}
 		if errors.Is(err, artifactstore.ErrDigestMismatch) {

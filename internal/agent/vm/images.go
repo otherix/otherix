@@ -49,14 +49,21 @@ const importDialTimeout = 30 * time.Second
 // so the over-cap test can lower it.
 var maxImageBytes int64 = 64 << 30
 
+// cgnatRange is the RFC 6598 shared address space (100.64.0.0/10) used by some
+// cloud fabrics for internal services; an image URL resolving into it is treated
+// as a node-local/special-use SSRF target and refused.
+var cgnatRange = func() *net.IPNet { _, n, _ := net.ParseCIDR("100.64.0.0/10"); return n }()
+
 // blockLocalDial rejects a dial to a node-local or special-use address:
 // loopback (the agent's own services), link-local unicast (incl. the cloud
-// IMDS at 169.254.169.254 and fe80::/10), multicast, and unspecified. That
-// kills cloud-metadata and loopback/agent-local SSRF while intentionally
-// ALLOWING RFC1918 + ULA private ranges - operators legitimately host VM
-// image mirrors on private networks. It runs as the net.Dialer Control hook
-// on the resolved IP of EVERY connection the image download makes -
-// including redirect hops - so it is DNS-rebind-safe (SSRF guard).
+// IMDS at 169.254.169.254 and fe80::/10), multicast, unspecified, and the
+// RFC 6598 shared CGNAT range 100.64.0.0/10 (used by some cloud fabrics for
+// internal services). That kills cloud-metadata and loopback/agent-local SSRF
+// while intentionally ALLOWING RFC1918 + ULA private ranges - operators
+// legitimately host VM image mirrors on private networks. It runs as the
+// net.Dialer Control hook on the resolved IP of EVERY connection the image
+// download makes - including redirect hops - so it is DNS-rebind-safe (SSRF
+// guard).
 func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -66,7 +73,7 @@ func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("image source resolved to non-IP address %q", host)
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || cgnatRange.Contains(ip) {
 		return fmt.Errorf("image source resolves to a node-local or special-use address %s", ip)
 	}
 	return nil
@@ -316,11 +323,11 @@ func (m *Manager) ensureImageIntoPinned(ctx context.Context, sourceURL, expected
 		return EnsureResult{SHA256: expectedSHA, Path: blobPath, SizeBytes: fi.Size()}, nil
 	}
 
-	scratch, err := os.MkdirTemp("", "otherix-image-*")
+	scratch, cleanup, err := m.newImageScratch()
 	if err != nil {
-		return EnsureResult{}, fmt.Errorf("create scratch dir: %v", err)
+		return EnsureResult{}, err
 	}
-	defer func() { _ = os.RemoveAll(scratch) }()
+	defer cleanup()
 	tempPath := filepath.Join(scratch, "download")
 
 	m.log.Info("image not cached, downloading from source", slog.String("digest", expectedSHA))
@@ -403,6 +410,16 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 	}
 	computedSHA := v.(string)
 	m.writeImageMeta(computedSHA, sourceURL, basename)
+	// Clone under the per-digest lock so the eviction sweeper (nudged by the Put
+	// above) or the scrubber cannot delete the freshly-stored blob between the Put
+	// and CloneImage's open. A lost-race miss (the blob was evicted before we took
+	// the lock) returns a retryable error so the create re-materializes it.
+	lock := m.lockForImage(imageStoreLockPool, computedSHA)
+	lock.Lock()
+	defer lock.Unlock()
+	if !m.imageStore.Has(computedSHA) {
+		return EnsureResult{}, fmt.Errorf("image blob evicted before clone, retry: %s", computedSHA)
+	}
 	return m.cloneFromImageStore(computedSHA, dstPath)
 }
 
@@ -414,11 +431,11 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 // per-computed-digest lock still guards the Put against an unrelated pinned
 // create of the same content.
 func (m *Manager) downloadStoreUnpinned(ctx context.Context, sourceURL string) (string, error) {
-	scratch, err := os.MkdirTemp("", "otherix-image-*")
+	scratch, cleanup, err := m.newImageScratch()
 	if err != nil {
-		return "", fmt.Errorf("create scratch dir: %v", err)
+		return "", err
 	}
-	defer func() { _ = os.RemoveAll(scratch) }()
+	defer cleanup()
 	tempPath := filepath.Join(scratch, "download")
 
 	m.log.Info("unpinned image not cached, downloading from source", slog.String("url", sourceURL))
@@ -451,6 +468,12 @@ func (m *Manager) downloadStoreUnpinned(ctx context.Context, sourceURL string) (
 
 // cloneFromImageStore resolves the cached blob path for digest, bumps its mtime
 // (LRU for the eviction sweeper), and clones it into dstPath.
+//
+// A cache hit clones on the trust of the content-addressed name: the blob bytes
+// are not re-hashed on this hot path, since re-hashing a multi-GB image on every
+// create would defeat the cache. Integrity is enforced out of band - the bytes
+// are verified at Put time, and the periodic blob scrubber re-hashes stored blobs
+// and deletes any corrupt copy - so the clone here may trust the filename digest.
 func (m *Manager) cloneFromImageStore(digest, dstPath string) (EnsureResult, error) {
 	blobPath, err := m.imageStore.BlobPath(digest)
 	if err != nil {
@@ -466,6 +489,56 @@ func (m *Manager) cloneFromImageStore(digest, dstPath string) (EnsureResult, err
 		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
 	}
 	return EnsureResult{SHA256: digest, Path: blobPath, SizeBytes: fi.Size()}, nil
+}
+
+// imageScratchDir returns the managed directory under which image downloads are
+// staged before being stored. It is a sibling of the image store root so the
+// agent boot sweep can reclaim any partial download a crash left behind; when no
+// image store is wired (test path) it returns "" so os.MkdirTemp falls back to
+// the OS temp dir.
+func (m *Manager) imageScratchDir() string {
+	if m.imageStore == nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(m.imageStore.Root()), "image-scratch")
+}
+
+// newImageScratch creates a fresh per-download scratch directory under the
+// managed image-scratch root (so the agent boot sweep can reclaim a partial
+// download a crash leaves behind), falling back to the OS temp dir when no image
+// store is wired (test path). It returns the temp dir path and a cleanup func the
+// caller defers.
+func (m *Manager) newImageScratch() (string, func(), error) {
+	scratchRoot := m.imageScratchDir()
+	if scratchRoot != "" {
+		if err := os.MkdirAll(scratchRoot, 0o750); err != nil {
+			return "", nil, fmt.Errorf("create image scratch root: %v", err)
+		}
+	}
+	scratch, err := os.MkdirTemp(scratchRoot, "otherix-image-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create scratch dir: %v", err)
+	}
+	return scratch, func() { _ = os.RemoveAll(scratch) }, nil
+}
+
+// SweepImageScratch removes every leftover image-download scratch dir under the
+// managed image-scratch root. A crash during a download leaves a partial file
+// there that no other sweep reclaims; the agent calls this once at boot. A nil
+// image store (test path) is a no-op. Best-effort: a removal error is logged, not
+// fatal.
+func (m *Manager) SweepImageScratch() {
+	dir := m.imageScratchDir()
+	if dir == "" {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		m.log.Warn("sweep image scratch: remove", slog.String("dir", dir), slog.String("err", err.Error()))
+		return
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		m.log.Warn("sweep image scratch: recreate", slog.String("dir", dir), slog.String("err", err.Error()))
+	}
 }
 
 // imageMetaDir returns the sibling directory holding <digest>.meta readability
@@ -502,6 +575,43 @@ func (m *Manager) writeImageMeta(digest, sourceURL, basename string) {
 		_ = os.Remove(tmp)
 		m.log.Warn("write image meta: rename", slog.String("digest", digest), slog.String("err", err.Error()))
 	}
+}
+
+// SweepOrphanImageMeta removes <digest>.meta readability sidecars whose blob is
+// no longer in the image store (evicted or scrubbed). The .meta files are advisory
+// url->digest hints written on import; nothing reads them on a hot path, so a stray
+// one is harmless but accumulates unbounded and can outlive its blob. Only a name
+// matching <64-lowercase-hex>.meta is ever a candidate, so an unrelated file in the
+// dir is never removed. Best-effort: a removal error is logged and skipped. Returns
+// the count removed. A nil image store (test path) or an absent meta dir yields 0.
+func (m *Manager) SweepOrphanImageMeta() int {
+	if m.imageStore == nil {
+		return 0
+	}
+	dir := m.imageMetaDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0 // absent/unreadable: nothing to sweep
+	}
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta") {
+			continue
+		}
+		digest := strings.TrimSuffix(e.Name(), ".meta")
+		if !isHexSHA256Lower(digest) {
+			continue // not a <digest>.meta sidecar: leave it alone
+		}
+		if m.imageStore.Has(digest) {
+			continue // blob still present: keep the hint
+		}
+		if rmErr := os.Remove(filepath.Join(dir, e.Name())); rmErr != nil {
+			m.log.Warn("sweep orphan image meta: remove", slog.String("file", e.Name()), slog.String("err", rmErr.Error()))
+			continue
+		}
+		removed++
+	}
+	return removed
 }
 
 // resolveEnsure runs the pre-flight validation (format, source URL, checksum

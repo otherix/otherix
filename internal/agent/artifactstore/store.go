@@ -159,6 +159,14 @@ func (s *Store) Put(digest string, r io.Reader) error {
 		cleanup()
 		return fmt.Errorf("artifactstore: stream blob: %v", err)
 	}
+	// fsync the staged data before the rename so the bytes are durable before
+	// the rename names them: on a power loss the rename must never become
+	// visible ahead of the data blocks (which would leave a valid-named blob
+	// with garbage content that List advertises as a healthy holder).
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("artifactstore: sync staging: %v", err)
+	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("artifactstore: close staging: %v", err)
@@ -176,10 +184,35 @@ func (s *Store) Put(digest string, r io.Reader) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("artifactstore: atomic rename: %v", err)
 	}
+	// fsync the blobs dir so the rename itself is durable. On a sync failure
+	// the blob is on disk but not durably linked; surface the error so the
+	// caller retries rather than falsely reporting success.
+	if err := syncDir(s.blobsDir()); err != nil {
+		return err
+	}
 	if err := os.WriteFile(s.sidecarPath(digest), []byte(digest), 0o644); err != nil { //nolint:gosec // sidecar is non-secret metadata
 		return fmt.Errorf("artifactstore: write sidecar: %v", err)
 	}
+	// fsync the blobs dir again so the sidecar entry is durable.
+	if err := syncDir(s.blobsDir()); err != nil {
+		return err
+	}
 	return nil
+}
+
+// syncDir fsyncs a directory so a rename/create within it is durable across a
+// power loss. Best-effort callers wrap the error; a sync failure on the parent
+// dir is reported, not swallowed, since it defeats the crash-durability guarantee.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) // #nosec G304 -- store-internal directory path
+	if err != nil {
+		return fmt.Errorf("artifactstore: open dir for sync: %v", err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("artifactstore: sync dir: %v", err)
+	}
+	return d.Close()
 }
 
 // Delete removes the blob and its sidecar for digest. An absent blob is a no-op
@@ -206,14 +239,38 @@ func (s *Store) WriteManifest(digest string, body []byte) error {
 		return fmt.Errorf("artifactstore: mkdir manifests: %v", err)
 	}
 	tmp := filepath.Join(s.manifestsDir(), "."+uuid.NewString()+".tmp")
-	if err := os.WriteFile(tmp, body, 0o644); err != nil { //nolint:gosec // manifest is non-secret metadata
+	if err := writeFileSync(tmp, body, 0o644); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("artifactstore: write staging manifest: %v", err)
 	}
 	if err := os.Rename(tmp, s.manifestPath(digest)); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("artifactstore: rename manifest: %v", err)
 	}
+	// fsync the manifests dir so the rename itself is durable across a power loss.
+	if err := syncDir(s.manifestsDir()); err != nil {
+		return err
+	}
 	return nil
+}
+
+// writeFileSync writes body to path and fsyncs it before close, so the bytes
+// are durable before a subsequent rename names the file. Mirrors Put's
+// staged-file sync discipline for the manifest path.
+func writeFileSync(path string, body []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm) // #nosec G304 -- store-internal staging path, fresh uuid
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // ReadManifest returns the manifest body keyed by digest, or ErrNotFound.

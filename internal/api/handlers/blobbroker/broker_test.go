@@ -21,13 +21,14 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 // broker drives so the test can assert the saga lifecycle alongside the agent
 // call order.
 type storeStub struct {
-	holders      []uuid.UUID
-	imageHolders []uuid.UUID
-	nodeEndp     map[uuid.UUID]string
-	nodeName     map[uuid.UUID]string
-	phases       []store.PullSagaPhase
-	token        string
-	blobSize     int64
+	holders       []uuid.UUID
+	imageHolders  []uuid.UUID
+	nodeEndp      map[uuid.UUID]string
+	nodeName      map[uuid.UUID]string
+	phases        []store.PullSagaPhase
+	token         string
+	blobSize      int64
+	imageBlobSize int64
 }
 
 func (s *storeStub) BlobHolders(_ context.Context, _ string) ([]uuid.UUID, error) {
@@ -40,6 +41,10 @@ func (s *storeStub) ImageBlobHolders(_ context.Context, _ string) ([]uuid.UUID, 
 
 func (s *storeStub) BlobSize(_ context.Context, _ string) (int64, bool) {
 	return s.blobSize, s.blobSize > 0
+}
+
+func (s *storeStub) ImageBlobSize(_ context.Context, _ string) (int64, bool) {
+	return s.imageBlobSize, s.imageBlobSize > 0
 }
 
 func (s *storeStub) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
@@ -175,6 +180,11 @@ func TestBrokerPullImageTierUsesImageHolders(t *testing.T) {
 		nodeEndp:     map[uuid.UUID]string{holder: "https://holder:9443", consumer: "https://consumer:9443"},
 		nodeName:     map[uuid.UUID]string{holder: "node-1", consumer: "node-2"},
 		token:        "otx_pull_x",
+		// The artifact-tier size returns 0 for an image-only digest; the image-tier
+		// size is the authoritative bound. The broker must read the image tier so
+		// the pull is capped rather than running uncapped.
+		blobSize:      0,
+		imageBlobSize: 4096,
 	}
 	spy := &agentSpy{serveEndp: "https://holder:49252"}
 	b := New(st, spy, testLogger())
@@ -184,6 +194,11 @@ func TestBrokerPullImageTierUsesImageHolders(t *testing.T) {
 	}
 	if spy.pullTier != TierImage {
 		t.Errorf("pull tier = %q, want %q", spy.pullTier, TierImage)
+	}
+	// The size bound on the image-tier pull must come from the image inventory,
+	// not the artifact inventory (which returns 0 for an image-only digest).
+	if spy.pullExpSize != 4096 {
+		t.Errorf("image-tier pull expected size = %d, want 4096 (from image inventory)", spy.pullExpSize)
 	}
 }
 

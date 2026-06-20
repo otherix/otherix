@@ -234,6 +234,23 @@ func projectCreateSuccess(ctx context.Context, st WorkerStore, log *slog.Logger,
 	// the same URL can peer-pull by digest. FAIL-OPEN - a registry write failure
 	// never fails the create. Skipped for snapshot-sourced creates (no URL/digest).
 	if imageURL != "" && result.ImageSHA256 != "" {
+		// Detectability for registry poisoning: the digest is agent self-reported,
+		// so a compromised or buggy node could flip an existing URL's pointer to a
+		// different digest, silently making later unpinned if_not_present creates on
+		// other nodes boot the wrong image under a legitimate URL. We do not re-hash
+		// CP-side (bandwidth), but we DO log a WARN when an existing pointer changes
+		// to a different value, so the flip leaves an audit trail. FAIL-OPEN: a
+		// lookup error is logged at debug and never blocks the upsert or the create.
+		if old, ok, lookErr := st.ImageURLDigest(ctx, imageURL); lookErr != nil {
+			log.DebugContext(ctx, "image url registry pre-upsert lookup failed (non-fatal)",
+				slog.String("image_url", imageURL), slog.String("error", lookErr.Error()))
+		} else if ok && old != result.ImageSHA256 {
+			log.WarnContext(ctx, "image url registry digest changed",
+				slog.String("image_url", imageURL),
+				slog.String("previous_digest", old),
+				slog.String("new_digest", result.ImageSHA256),
+				slog.String("reported_by_node", nodeID.String()))
+		}
 		if err := st.UpsertImageURLDigest(ctx, imageURL, result.ImageSHA256, result.VirtualSizeBytes, time.Now().UTC(), nodeID); err != nil {
 			log.WarnContext(ctx, "image URL registry write failed (non-fatal)",
 				slog.String("url", imageURL), slog.String("digest", result.ImageSHA256), slog.String("error", err.Error()))
@@ -665,7 +682,19 @@ func failCreateExec(ctx context.Context, st WorkerStore, log *slog.Logger, taskI
 	if cerr := clearAgentTaskIDIfGone(ctx, st, taskID, execErr); cerr != nil {
 		return cerr
 	}
-	return failRun(ctx, st, log, "vms.create", taskID, classifyVMError(execErr, errCodeVMCreateFailed), execErr)
+	code := classifyVMError(execErr, errCodeVMCreateFailed)
+	// A pinned create whose URL serves bytes other than the operator-pinned
+	// sha256 is a PERMANENT condition: re-downloading the same URL will keep
+	// serving the same mismatching bytes, so retrying only burns the create
+	// attempt budget before failing terminally. Route it to the terminal arm
+	// like the gone-node case. There is no wrong-data risk - the agent rejects
+	// the bytes fail-closed and materializes nothing - so the only cost averted
+	// is the wasted retries. image_unavailable / blob_unavailable /
+	// agent_unreachable stay retryable (they can become satisfiable on retry).
+	if code == errCodeVMChecksumMismatch {
+		return failTerminal(ctx, st, log, "vms.create", taskID, code, execErr)
+	}
+	return failRun(ctx, st, log, "vms.create", taskID, code, execErr)
 }
 
 // clearAgentTaskIDIfGone clears the task's persisted agent_task_id when execErr

@@ -260,6 +260,48 @@ func TestEnsureUnpinnedStaleHintFallsBackToDownload(t *testing.T) {
 	}
 }
 
+// TestEnsureUnpinnedNoHintEvictionRaceRetryable pins the regression where the
+// unpinned no-hint clone ran with no per-digest lock held: the Put nudges the
+// eviction sweeper, which could delete the freshly stored blob before the clone
+// opened it, turning a successful download into a terminal clone_failed. The
+// nudge here deletes the just-Put blob (simulating eviction selecting it); with
+// the fix the clone runs under the per-digest lock and re-checks presence, so
+// the lost-race surfaces as a retryable error (never ErrCloneFailed).
+func TestEnsureUnpinnedNoHintEvictionRaceRetryable(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(27)
+	digest := shaHex(body)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/noble.img"
+
+	// Simulate the eviction sweeper selecting and deleting the just-Put blob
+	// the moment the Put nudges it - the lock is still held inside the Put, so
+	// the Delete here lands after the Put returns and releases it but before the
+	// clone takes the lock back.
+	m.SetImageEvictionNudge(func() {
+		if err := m.imageStore.Delete(digest); err != nil {
+			t.Errorf("nudge delete: %v", err)
+		}
+	})
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	_, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", "", dst)
+	if err == nil {
+		t.Fatal("EnsureImageInto = nil, want a retryable error (blob evicted before clone)")
+	}
+	if errors.Is(err, ErrCloneFailed) {
+		t.Fatalf("error = %v, want retryable (not ErrCloneFailed); a delete-after-Put must not surface as terminal clone_failed", err)
+	}
+	if !strings.Contains(err.Error(), "retry") {
+		t.Errorf("error = %v, want a message indicating retry", err)
+	}
+}
+
 // assertMetaSidecar checks the human-readable <digest>.meta sidecar in the
 // images-meta/ dir that sits as a sibling to the image store root.
 func assertMetaSidecar(t *testing.T, imgRoot, digest, wantURL string) {
@@ -606,6 +648,10 @@ func TestBlockLocalDial(t *testing.T) {
 		{"private 172.16/12", "172.16.0.1:8080", false},
 		{"link-local IMDS", "169.254.169.254:80", true},
 		{"link-local v6", "[fe80::1]:80", true},
+		{"cgnat low", "100.64.0.1:443", true},
+		{"cgnat high", "100.127.255.254:80", true},
+		{"non-cgnat 100.63", "100.63.255.255:443", false},
+		{"non-cgnat 100.128", "100.128.0.1:443", false},
 		{"ULA v6", "[fd00::1]:443", false},
 		{"multicast v4", "224.0.0.1:80", true},
 		{"unspecified v4", "0.0.0.0:80", true},
@@ -872,5 +918,144 @@ func TestAddPoolSweepsLegacyBasenameCacheOnFirstRegistration(t *testing.T) {
 	}
 	if _, err := os.Stat(imagesDir); err != nil {
 		t.Errorf("images dir must survive AddPool sweep: %v", err)
+	}
+}
+
+// TestImageScratchDirIsImageStoreSibling pins the managed scratch dir to a sibling
+// of the image store root so the agent boot sweep can reclaim partial downloads.
+func TestImageScratchDirIsImageStoreSibling(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	if m.imageScratchDir() != "" {
+		t.Errorf("imageScratchDir with no image store = %q, want empty", m.imageScratchDir())
+	}
+	m.imageStore = mustNewForTesting(t)
+	want := filepath.Join(filepath.Dir(m.imageStore.Root()), "image-scratch")
+	if got := m.imageScratchDir(); got != want {
+		t.Errorf("imageScratchDir() = %q, want %q", got, want)
+	}
+}
+
+// TestSweepImageScratchClearsLeftovers confirms SweepImageScratch removes leftover
+// scratch dirs and leaves an empty image-scratch dir in place.
+func TestSweepImageScratchClearsLeftovers(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+
+	scratchRoot := m.imageScratchDir()
+	leftover := filepath.Join(scratchRoot, "otherix-image-stale")
+	if err := os.MkdirAll(leftover, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, "download"), []byte("partial"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	m.SweepImageScratch()
+
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Errorf("leftover scratch dir not removed by SweepImageScratch")
+	}
+	info, err := os.Stat(scratchRoot)
+	if err != nil || !info.IsDir() {
+		t.Errorf("image-scratch dir must be present and empty after sweep: stat err=%v", err)
+	}
+	entries, err := os.ReadDir(scratchRoot)
+	if err != nil {
+		t.Fatalf("ReadDir(scratchRoot) = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("image-scratch dir not empty after sweep: %d entries", len(entries))
+	}
+}
+
+// TestSweepOrphanImageMeta confirms the sweep removes a <digest>.meta sidecar
+// whose blob is no longer in the image store, keeps one whose blob is present,
+// ignores a non-.meta file, and returns the count removed.
+func TestSweepOrphanImageMeta(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+
+	metaDir := m.imageMetaDir()
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	present := shaHex(qcow2Body(7))
+	orphan := strings.Repeat("b", 64)
+	if err := m.imageStore.Put(present, bytes.NewReader(qcow2Body(7))); err != nil {
+		t.Fatalf("Put present blob: %v", err)
+	}
+
+	mustWrite := func(name string) {
+		if err := os.WriteFile(filepath.Join(metaDir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(present + ".meta")
+	mustWrite(orphan + ".meta")
+	mustWrite("README.txt") // unrelated file: never removed
+
+	if got := m.SweepOrphanImageMeta(); got != 1 {
+		t.Errorf("SweepOrphanImageMeta() = %d, want 1", got)
+	}
+	if _, err := os.Stat(filepath.Join(metaDir, orphan+".meta")); !os.IsNotExist(err) {
+		t.Errorf("orphan .meta not removed: stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(metaDir, present+".meta")); err != nil {
+		t.Errorf("present-blob .meta wrongly removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(metaDir, "README.txt")); err != nil {
+		t.Errorf("unrelated file wrongly removed: %v", err)
+	}
+}
+
+// TestSweepOrphanImageMetaAbsentDir confirms an absent meta dir yields 0.
+func TestSweepOrphanImageMetaAbsentDir(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	if got := m.SweepOrphanImageMeta(); got != 0 {
+		t.Errorf("SweepOrphanImageMeta() with absent dir = %d, want 0", got)
+	}
+}
+
+// TestSweepOrphanImageMetaNilStore confirms a nil image store yields 0.
+func TestSweepOrphanImageMetaNilStore(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	if got := m.SweepOrphanImageMeta(); got != 0 {
+		t.Errorf("SweepOrphanImageMeta() with nil store = %d, want 0", got)
+	}
+}
+
+// TestPinnedDownloadStagesUnderManagedScratch confirms a pinned download lands its
+// scratch under the managed image-scratch dir (not the OS temp dir) and still
+// completes end to end through the httptest harness.
+func TestPinnedDownloadStagesUnderManagedScratch(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(91)
+	sum := shaHex(body)
+	url := serve(t, body)
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", "", dst); err != nil {
+		t.Fatalf("EnsureImageInto(pinned miss) error = %v", err)
+	}
+	if !m.ImageStore().Has(sum) {
+		t.Errorf("image store missing digest after download")
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("clone destination not present: %v", err)
+	}
+	// The managed scratch root must exist (the download created it) and the
+	// per-download temp must be gone (defer cleanup).
+	if _, err := os.Stat(m.imageScratchDir()); err != nil {
+		t.Errorf("managed scratch root not created by download: %v", err)
+	}
+	entries, err := os.ReadDir(m.imageScratchDir())
+	if err != nil {
+		t.Fatalf("ReadDir(scratch) = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("download temp not cleaned from managed scratch: %d entries", len(entries))
 	}
 }

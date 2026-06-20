@@ -131,6 +131,36 @@ func (s *Store) DeleteExpiredPullSagas(ctx context.Context, cutoff time.Time) (i
 	return deleted, nil
 }
 
+// DeleteStrandedPullSagas removes NON-terminal saga records created before cutoff.
+// A saga the control plane left non-terminal (a crash between serve-open and the
+// terminal phase update) is otherwise retained forever, since DeleteExpiredPullSagas
+// reaps only terminal sagas. cutoff should be generously older than any real pull so
+// a slow-but-live pull's saga is never reaped mid-flight. Returns the count removed.
+// The deletes commit in chunks under the etcd per-transaction op limit.
+func (s *Store) DeleteStrandedPullSagas(ctx context.Context, cutoff time.Time) (int, error) {
+	items, err := s.c.Range(ctx, pullSagaPrefix())
+	if err != nil {
+		return 0, fmt.Errorf("range pull sagas: %v", err)
+	}
+	var ops []clientv3.Op
+	deleted := 0
+	for _, kv := range items {
+		var saga store.ArtifactPullSaga
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &saga, "artifact_pull_saga") {
+			continue
+		}
+		if pullSagaTerminal(saga.Phase) || !saga.CreatedAt.Before(cutoff) {
+			continue
+		}
+		ops = append(ops, clientv3.OpDelete(pullSagaKey(saga.ID)))
+		deleted++
+	}
+	if err := s.commitInChunks(ctx, ops); err != nil {
+		return 0, fmt.Errorf("delete stranded pull sagas: %v", err)
+	}
+	return deleted, nil
+}
+
 // PutPullSagaForTest writes a saga value verbatim. Exported only so store tests
 // can seed a saga with a chosen CreatedAt; production writes go through
 // CreatePullSaga.

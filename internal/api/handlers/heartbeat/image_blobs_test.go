@@ -65,6 +65,40 @@ func TestApplyImageBlobInventoryValidatesAndUpserts(t *testing.T) {
 	}
 }
 
+// TestApplyImageBlobInventoryClampsSize verifies the image-tier size clamp: a
+// negative or over-ceiling SizeBytes is clamped to 0 (still a holder, but no
+// node-supplied pull bound) while a normal size passes through. The reported
+// size becomes the consumer's pull cap, so an unvalidated value would defeat or
+// disable that cap.
+func TestApplyImageBlobInventoryClampsSize(t *testing.T) {
+	nodeID := uuid.New()
+	normal := strings.Repeat("a", 64)
+	negative := strings.Repeat("b", 64)
+	huge := strings.Repeat("c", 64)
+
+	body := &requestBody{
+		ImageBlobs: []blobReport{
+			{Digest: normal, SizeBytes: 4096},
+			{Digest: negative, SizeBytes: -1},
+			{Digest: huge, SizeBytes: maxBlobSizeBytes + 1},
+		},
+	}
+
+	spy := &imageBlobsSpy{}
+	h := newQuietHandler()
+	if err := h.applyImageBlobInventory(context.Background(), spy, nodeID, body); err != nil {
+		t.Fatalf("applyImageBlobInventory returned error: %v", err)
+	}
+	want := []store.NodeBlob{
+		{Digest: normal, SizeBytes: 4096},
+		{Digest: negative, SizeBytes: 0},
+		{Digest: huge, SizeBytes: 0},
+	}
+	if diff := cmp.Diff(want, spy.imageBlobs[nodeID]); diff != "" {
+		t.Errorf("image blob inventory after clamp mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestApplyImageBlobInventoryUnavailablePreserves verifies that on
 // image_blobs_unavailable the upsert is skipped entirely so a transient
 // agent enumerate-failure preserves the prior inventory rather than clearing it.

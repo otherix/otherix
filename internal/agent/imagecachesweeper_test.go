@@ -77,7 +77,7 @@ func TestSweepEvictsColdestToMaxBytes(t *testing.T) {
 	seedBlob(t, store, digestC, 100, base.Add(2*time.Minute))
 
 	sw := newImageCacheSweeper(store, alwaysLock, neverFree,
-		config.ImageCacheConfig{MaxBytes: 250}, nil, sweeperDiscardLog())
+		config.ImageCacheConfig{MaxBytes: 250}, nil, nil, sweeperDiscardLog())
 	sw.sweep(context.Background())
 
 	if store.Has(digestA) {
@@ -101,7 +101,7 @@ func TestSweepFreeFloorTriggersUnderMaxBytes(t *testing.T) {
 
 	freeStub := func(string) (uint64, error) { return 50, nil }
 	sw := newImageCacheSweeper(store, alwaysLock, freeStub,
-		config.ImageCacheConfig{MaxBytes: 0, MinFreeBytes: 200}, nil, sweeperDiscardLog())
+		config.ImageCacheConfig{MaxBytes: 0, MinFreeBytes: 200}, nil, nil, sweeperDiscardLog())
 	sw.sweep(context.Background())
 
 	if store.Has(digestA) {
@@ -127,7 +127,7 @@ func TestSweepSkipsLockedCandidate(t *testing.T) {
 		return func() {}, true
 	}
 	sw := newImageCacheSweeper(store, lockStub, neverFree,
-		config.ImageCacheConfig{MaxBytes: 150}, nil, sweeperDiscardLog())
+		config.ImageCacheConfig{MaxBytes: 150}, nil, nil, sweeperDiscardLog())
 	sw.sweep(context.Background())
 
 	if !store.Has(digestA) {
@@ -143,7 +143,7 @@ func TestSweepNoopUnderCeilings(t *testing.T) {
 	seedBlob(t, store, digestA, 100, time.Now().Add(-time.Hour))
 
 	sw := newImageCacheSweeper(store, alwaysLock, neverFree,
-		config.ImageCacheConfig{MaxBytes: 1000, MinFreeBytes: 0}, nil, sweeperDiscardLog())
+		config.ImageCacheConfig{MaxBytes: 1000, MinFreeBytes: 0}, nil, nil, sweeperDiscardLog())
 	sw.sweep(context.Background())
 
 	if !store.Has(digestA) {
@@ -157,7 +157,7 @@ func TestSweepStatfsErrorIsFailOpen(t *testing.T) {
 
 	freeErr := func(string) (uint64, error) { return 0, os.ErrPermission }
 	sw := newImageCacheSweeper(store, alwaysLock, freeErr,
-		config.ImageCacheConfig{MaxBytes: 0, MinFreeBytes: 200}, nil, sweeperDiscardLog())
+		config.ImageCacheConfig{MaxBytes: 0, MinFreeBytes: 200}, nil, nil, sweeperDiscardLog())
 	sw.sweep(context.Background()) // must not panic
 
 	if !store.Has(digestA) {
@@ -170,7 +170,7 @@ func TestSweepDisabledWhenBothCeilingsZero(t *testing.T) {
 	seedBlob(t, store, digestA, 100, time.Now().Add(-time.Hour))
 
 	sw := newImageCacheSweeper(store, alwaysLock, neverFree,
-		config.ImageCacheConfig{MaxBytes: 0, MinFreeBytes: 0}, nil, sweeperDiscardLog())
+		config.ImageCacheConfig{MaxBytes: 0, MinFreeBytes: 0}, nil, nil, sweeperDiscardLog())
 	sw.sweep(context.Background())
 
 	if !store.Has(digestA) {
