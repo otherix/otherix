@@ -257,6 +257,10 @@ smoke-image-cache: ## Image-cache smoke: a pinned image (--image-sha256) is peer
 smoke-image-cache-eviction: ## Image-cache eviction smoke: caching a second pinned image over the (dev-shrunk) ceiling evicts the coldest cached image first (LRU), a VM created from the evicted image keeps running (its disk is an independent copy), and recreating from the evicted image re-fetches it from source (run after local-dev-start)
 	@bash dev/smoke/image-cache-eviction/run.sh
 
+.PHONY: smoke-unpinned-peer-pull
+smoke-unpinned-peer-pull: ## Unpinned peer-pull smoke: a VM from an UNPINNED --image-url is downloaded on node-1 and registered URL -> digest; a second node creating from the same URL peer-pulls the image instead of re-downloading; a third create with --pull-policy always force-downloads despite the peer holders; `vm get -o yaml` round-trips imagePullPolicy: always (run after local-dev-start)
+	@bash dev/smoke/unpinned-peer-pull/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it
