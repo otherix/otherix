@@ -6112,6 +6112,16 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
+    ImagePullPolicy:
+      type: string
+      enum: [if_not_present, always]
+      default: if_not_present
+      description: |
+        Image reuse policy for an image-sourced VM. `if_not_present` (default)
+        lets the create reuse a cached or peer-held copy of the image; `always`
+        forces a fresh download from `image_url`. Ignored for snapshot-sourced
+        creates.
+
     VM:
       type: object
       description: |
@@ -6186,6 +6196,8 @@ components:
           type: string
           enum: [qcow2, raw]
           description: Image disk format.
+        image_pull_policy:
+          $ref: "#/components/schemas/ImagePullPolicy"
         pool:
           type: string
           description: |
@@ -6421,6 +6433,8 @@ components:
           enum: [qcow2, raw]
           default: qcow2
           description: Image disk format.
+        image_pull_policy:
+          $ref: "#/components/schemas/ImagePullPolicy"
         disk_gib:
           type: integer
           minimum: 0

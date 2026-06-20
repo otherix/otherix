@@ -59,10 +59,13 @@ type vmCreateRequest struct {
 	// it wins over Firmware.
 	FirmwareID string `json:"firmware_id,omitempty"`
 	// Format is the image disk format ("qcow2" | "raw"); defaults to qcow2.
-	Format  string  `json:"format,omitempty"`
-	DiskGiB int     `json:"disk_gib,omitempty"`
-	Pool    string  `json:"pool,omitempty"`
-	Node    *string `json:"node,omitempty"`
+	Format string `json:"format,omitempty"`
+	// ImagePullPolicy governs image reuse vs forced re-fetch ("if_not_present"
+	// default | "always"). Optional; ignored for snapshot-sourced creates.
+	ImagePullPolicy string  `json:"image_pull_policy,omitempty"`
+	DiskGiB         int     `json:"disk_gib,omitempty"`
+	Pool            string  `json:"pool,omitempty"`
+	Node            *string `json:"node,omitempty"`
 	// Network is an optional network to attach a single NIC to. Accepts
 	// either a network name or a uuid literal, of type bridge or overlay.
 	// When omitted the VM is created with no NIC (the agent falls back to
@@ -189,6 +192,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		ImageURL:          src.imageURL,
 		ImageSHA256:       src.imageSHA,
 		ImageFormat:       src.format,
+		ImagePullPolicy:   mustPullPolicy(req.ImagePullPolicy),
 		CpuCores:          int32(req.VCPUs),    //nolint:gosec // bounded 1..128 by validateCreateRequest
 		MemoryMib:         int32(req.MemoryMB), //nolint:gosec // bounded 128..524288 by validateCreateRequest
 		CPUModel:          "host",
@@ -269,6 +273,11 @@ func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCre
 			return false
 		}
 	}
+	if _, err := store.ParseImagePullPolicy(req.ImagePullPolicy); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "image_pull_policy must be one of: if_not_present, always", nil)
+		return false
+	}
 	// 0 means "default to the image virtual size"; the upper bound matches the
 	// vm_disks size_gib ceiling and keeps the int32 column / bytes math safe.
 	if req.DiskGiB < 0 || req.DiskGiB > maxDiskGiB {
@@ -277,6 +286,14 @@ func validateCreateImageFields(w http.ResponseWriter, r *http.Request, req vmCre
 		return false
 	}
 	return true
+}
+
+// mustPullPolicy parses an already-validated pull policy, defaulting empty to
+// if_not_present. validateCreateImageFields has rejected any invalid value, so
+// the error branch is unreachable for the create path.
+func mustPullPolicy(s string) store.ImagePullPolicy {
+	p, _ := store.ParseImagePullPolicy(s)
+	return p
 }
 
 // validateCreateRequest enforces the field-level invariants. Identifier
