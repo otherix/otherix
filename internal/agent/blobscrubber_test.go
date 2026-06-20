@@ -65,6 +65,26 @@ func TestBlobScrubberSweepsBothStores(t *testing.T) {
 	}
 }
 
+func TestBlobScrubberRunDisabledReturnsImmediately(t *testing.T) {
+	sc := &blobScrubber{
+		artifactStore: scrubStore(t),
+		cfg:           config.ScrubConfig{}, // all zero = disabled
+		log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	// A disabled Run must return nil at once without arming a ticker; a
+	// non-cancelled context proves it never blocks waiting for a tick.
+	done := make(chan error, 1)
+	go func() { done <- sc.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("disabled Run returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("disabled Run did not return; it must short-circuit before arming a ticker")
+	}
+}
+
 func TestBlobScrubberDisabledNoop(t *testing.T) {
 	art := scrubStore(t)
 	d := putAndAge(t, art, []byte("x"))
