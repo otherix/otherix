@@ -53,6 +53,7 @@ type Store interface {
 	BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
 	ImageBlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
 	BlobSize(ctx context.Context, digest string) (int64, bool)
+	ImageBlobSize(ctx context.Context, digest string) (int64, bool)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	CreatePullSaga(ctx context.Context, p store.CreatePullSagaParams) (store.ArtifactPullSaga, string, error)
 	UpdatePullSagaServeEndpoint(ctx context.Context, id uuid.UUID, endpoint string) error
@@ -169,12 +170,18 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	// carries the identity, not the IP). Mirrors migration's target_node_identity.
 	hid := holderIdentity(holder.Name)
 	// Resolve the CP-known blob size (any holder's reported size is authoritative
-	// for a content-addressed blob) so the consumer can bound the pull body. A
-	// zero/absent size means unknown - the consumer applies no cap and relies on
-	// the digest verify alone. BlobSize reads node_blobs (the artifact tier); an
-	// image-only digest lives in image_blobs and yields (0, false) here, which is
-	// fine: 0 means uncapped and the agent's digest verify is the backstop.
-	expectedSize, _ := b.store.BlobSize(ctx, digest)
+	// for a content-addressed blob) so the consumer can bound the pull body. The
+	// size must come from the SAME tier the pull targets: BlobSize reads
+	// node_blobs (the artifact tier) and returns 0 for an image-only digest, which
+	// would leave an image-tier pull uncapped. A zero/absent size means unknown -
+	// the consumer then falls back to an absolute cap and relies on the digest
+	// verify.
+	var expectedSize int64
+	if tier == TierImage {
+		expectedSize, _ = b.store.ImageBlobSize(ctx, digest)
+	} else {
+		expectedSize, _ = b.store.BlobSize(ctx, digest)
+	}
 	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize, tier)
 
 	// Teardown is best-effort and ALWAYS runs: a stop failure logs but never

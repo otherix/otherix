@@ -47,6 +47,45 @@ func TestBoundedReaderUnderMaxPasses(t *testing.T) {
 	}
 }
 
+// TestEffectivePullCap proves the cap selection: a positive ExpectedSize bounds
+// at ExpectedSize+1 (the honest blob plus the trip byte), while an unsized pull
+// (<= 0) falls back to the absolute cap so it can never run unbounded.
+func TestEffectivePullCap(t *testing.T) {
+	cases := []struct {
+		name     string
+		expected int64
+		want     int64
+	}{
+		{"sized", 4096, 4097},
+		{"zero-falls-back", 0, maxUnsizedPullBytes},
+		{"negative-falls-back", -1, maxUnsizedPullBytes},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := effectivePullCap(c.expected); got != c.want {
+				t.Errorf("effectivePullCap(%d) = %d, want %d", c.expected, got, c.want)
+			}
+		})
+	}
+}
+
+// TestPullUnsizedFallsBackToCap proves an unsized pull (ExpectedSize <= 0) is
+// bounded by the absolute fallback cap rather than running with no bound. The
+// const is too large to stream in a test, so this drives the boundedReader
+// directly at the fallback cap and asserts the cap is selected and enforced.
+func TestPullUnsizedFallsBackToCap(t *testing.T) {
+	if effectivePullCap(0) != maxUnsizedPullBytes {
+		t.Fatalf("unsized cap = %d, want %d", effectivePullCap(0), maxUnsizedPullBytes)
+	}
+	// A boundedReader at the fallback cap still trips on overflow: stream one byte
+	// past a tiny stand-in cap to confirm the bound is real, not a no-op.
+	const cap = 4
+	br := &boundedReader{r: bytes.NewReader(bytes.Repeat([]byte("x"), cap+1)), max: cap}
+	if _, err := io.ReadAll(br); !errors.Is(err, ErrBlobTooLarge) {
+		t.Fatalf("bounded read err = %v, want ErrBlobTooLarge", err)
+	}
+}
+
 // TestPullOverflowFailsClosed proves the security property: a holder streaming
 // more bytes than the CP-known ExpectedSize is stopped at the bound, the pull
 // fails closed, and no blob is materialized into the consumer store (the disk is

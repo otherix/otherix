@@ -441,6 +441,29 @@ func (h *Handler) applyPoolImageInventory(ctx context.Context, hp store.Heartbea
 // Otherwise the reported list is authoritative (an empty list clears
 // the inventory). Unlike pool image inventory, blobs are node-level, not
 // pool-scoped, so there is no (node_id, name) resolution step.
+// maxBlobSizeBytes is the sane ceiling for a heartbeat-reported blob size (64
+// GiB, the same family as the consumer's absolute pull cap). The reported size
+// becomes the bound the consumer pull is capped to, so an unvalidated value is a
+// control: a huge size raises the cap arbitrarily and a negative one disables it
+// (the consumer's > 0 gate). A node is not trusted to set its own pull bound.
+const maxBlobSizeBytes = 64 << 30
+
+// clampBlobSize sanitizes a heartbeat-reported blob size before it is stored and
+// later used as the consumer's pull cap. A negative or over-ceiling value is
+// clamped to 0 ("unknown size"): the entry still counts as a holder for
+// durability, but the consumer then falls back to its own absolute cap rather
+// than trusting a node-supplied bound. A normal size passes through unchanged.
+func (h *Handler) clampBlobSize(ctx context.Context, nodeID uuid.UUID, digest string, size int64) int64 {
+	if size < 0 || size > maxBlobSizeBytes {
+		h.log.WarnContext(ctx, "clamping out-of-range heartbeat blob size to unknown",
+			slog.String("node_id", nodeID.String()),
+			slog.String("digest", digest),
+			slog.Int64("reported_size_bytes", size))
+		return 0
+	}
+	return size
+}
+
 func (h *Handler) applyBlobInventory(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
 	if body.BlobsUnavailable {
 		return nil
@@ -456,7 +479,7 @@ func (h *Handler) applyBlobInventory(ctx context.Context, hp store.HeartbeatProj
 				slog.String("node_id", nodeID.String()), slog.String("digest", b.Digest))
 			continue
 		}
-		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: b.SizeBytes})
+		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: h.clampBlobSize(ctx, nodeID, b.Digest, b.SizeBytes)})
 	}
 	if err := hp.UpsertNodeBlobInventory(ctx, nodeID, blobs); err != nil {
 		return fmt.Errorf("upsert node blob inventory: %v", err)
@@ -481,7 +504,7 @@ func (h *Handler) applyImageBlobInventory(ctx context.Context, hp store.Heartbea
 				slog.String("node_id", nodeID.String()), slog.String("digest", b.Digest))
 			continue
 		}
-		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: b.SizeBytes})
+		blobs = append(blobs, store.NodeBlob{Digest: b.Digest, SizeBytes: h.clampBlobSize(ctx, nodeID, b.Digest, b.SizeBytes)})
 	}
 	if err := hp.UpsertNodeImageBlobInventory(ctx, nodeID, blobs); err != nil {
 		return fmt.Errorf("upsert node image blob inventory: %v", err)

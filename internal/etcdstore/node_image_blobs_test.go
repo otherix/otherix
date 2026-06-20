@@ -57,6 +57,27 @@ func TestImageBlobInventoryEmptyDeletes(t *testing.T) {
 	}
 }
 
+func TestImageBlobSize(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	n := uuid.New()
+	d := strings.Repeat("d", 64)
+
+	if err := s.UpsertNodeImageBlobInventory(ctx, n, []store.NodeBlob{{Digest: d, SizeBytes: 8192}}); err != nil {
+		t.Fatalf("UpsertNodeImageBlobInventory: %v", err)
+	}
+
+	size, ok := s.ImageBlobSize(ctx, d)
+	if !ok || size != 8192 {
+		t.Errorf("ImageBlobSize(%s) = (%d, %v), want (8192, true)", d, size, ok)
+	}
+
+	absent := strings.Repeat("e", 64)
+	if size, ok := s.ImageBlobSize(ctx, absent); ok || size != 0 {
+		t.Errorf("ImageBlobSize(absent) = (%d, %v), want (0, false)", size, ok)
+	}
+}
+
 func TestImageBlobInventoryIsolatedFromNodeBlobs(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
