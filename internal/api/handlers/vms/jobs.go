@@ -115,7 +115,12 @@ type CreateArgs struct {
 	ImageURL    string
 	ImageSHA256 string
 	Format      string
-	DiskGiB     int
+	// ResolvedImageDigest is the CP's best-effort peer-pull HINT for an unpinned
+	// image (the digest resolved from the URL registry). Empty for pinned creates
+	// and for pull_policy=always. Forwarded to the agent as
+	// VMSpec.resolved_image_digest.
+	ResolvedImageDigest string
+	DiskGiB             int
 	// SourceSnapshot, when non-nil, is the resolved recreate-from-snapshot disk
 	// source the worker loaded from the snapshot manifest (ordered blob digests
 	// + the pool the blobs live on). When set, the executor sends it to the

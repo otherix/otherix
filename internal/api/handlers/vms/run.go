@@ -56,6 +56,14 @@ type WorkerStore interface {
 	// best-effort to pre-pull a cached image onto the target from a peer; a read
 	// error is swallowed (the agent's own download is the backstop).
 	ImageBlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
+	// ImageURLDigest returns the most recently imported content digest for an
+	// image URL, used to peer-pull an UNPINNED image by its resolved digest.
+	// ok=false means no node has imported it yet (the agent downloads).
+	ImageURLDigest(ctx context.Context, url string) (digest string, ok bool, err error)
+	// UpsertImageURLDigest records the digest a successful create resolved an
+	// image URL to (last-writer-wins). Best-effort; a failure never fails a
+	// create.
+	UpsertImageURLDigest(ctx context.Context, url, digest string, sizeBytes int64, importedAt time.Time, node uuid.UUID) error
 }
 
 // SnapshotBlobBroker is the CP-side pull-saga seam the recreate-from-snapshot
@@ -148,33 +156,57 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, broker 
 		return fmt.Errorf("reload task: %v", err)
 	}
 
-	// Image-URL create only: best-effort pre-pull a pinned image onto the target
-	// from a peer that already caches it, so the agent clones from the cache
-	// instead of downloading from the source URL. FAIL-OPEN (never fails the
-	// create); the snapshot path has an empty ImageURL so it is skipped here.
-	if vm.ImageURL != "" {
-		ensureImageBlobLocal(ctx, st, broker, args.NodeID, hex.EncodeToString(vm.ImageSHA256), log)
-	}
+	resolvedImageHint := stageCreateImage(ctx, st, broker, vm, args.NodeID, log)
 
 	result, execErr := exec.Execute(ctx, CreateArgs{
-		TaskID:         taskID,
-		AgentTaskID:    task.AgentTaskID,
-		VM:             vm,
-		Disk:           disk,
-		ImageURL:       vm.ImageURL,
-		ImageSHA256:    hex.EncodeToString(vm.ImageSHA256),
-		Format:         string(vm.ImageFormat),
-		DiskGiB:        int(disk.SizeGib),
-		SourceSnapshot: sourceSnapshot,
-		Pool:           pool,
-		Node:           node,
-		NICs:           nics,
-		OnAgentTaskID:  onAgentTaskID(st, taskID),
+		TaskID:              taskID,
+		AgentTaskID:         task.AgentTaskID,
+		VM:                  vm,
+		Disk:                disk,
+		ImageURL:            vm.ImageURL,
+		ImageSHA256:         hex.EncodeToString(vm.ImageSHA256),
+		Format:              string(vm.ImageFormat),
+		ResolvedImageDigest: resolvedImageHint,
+		DiskGiB:             int(disk.SizeGib),
+		SourceSnapshot:      sourceSnapshot,
+		Pool:                pool,
+		Node:                node,
+		NICs:                nics,
+		OnAgentTaskID:       onAgentTaskID(st, taskID),
 	})
 	if execErr != nil {
 		return failCreateExec(ctx, st, log, taskID, execErr)
 	}
 	return projectCreateSuccess(ctx, st, log, taskID, args.VMID, args.NodeID, result)
+}
+
+// stageCreateImage best-effort pre-pulls an image-URL create's image onto the
+// target node from a peer that already caches it, so the agent clones instead of
+// downloading. It returns the best-effort peer-pull HINT to forward to the agent
+// (empty when none applies). FAIL-OPEN: never fails the create; the snapshot
+// path has an empty ImageURL so it returns "".
+//   - pinned (ImageSHA256 set): pre-pull by the pinned digest, no hint.
+//   - unpinned + if_not_present: resolve the URL->digest registry; on a hit,
+//     pre-pull that digest and return it as the hint.
+//   - unpinned + always: skip the registry and the hint so the agent re-fetches
+//     from the source URL (force-from-URL).
+func stageCreateImage(ctx context.Context, st WorkerStore, broker SnapshotBlobBroker, vm store.VM, nodeID uuid.UUID, log *slog.Logger) string {
+	if vm.ImageURL == "" {
+		return ""
+	}
+	switch {
+	case len(vm.ImageSHA256) > 0:
+		ensureImageBlobLocal(ctx, st, broker, nodeID, hex.EncodeToString(vm.ImageSHA256), log)
+	case vm.ImagePullPolicy != store.ImagePullPolicyAlways:
+		if digest, ok, err := st.ImageURLDigest(ctx, vm.ImageURL); err != nil {
+			log.WarnContext(ctx, "unpinned image: registry lookup failed, agent will download",
+				slog.String("url", vm.ImageURL), slog.String("error", err.Error()))
+		} else if ok {
+			ensureImageBlobLocal(ctx, st, broker, nodeID, digest, log)
+			return digest
+		}
+	}
+	return ""
 }
 
 // projectCreateSuccess commits a successful vm.create: it marshals the agent

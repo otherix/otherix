@@ -165,6 +165,11 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 		SourceSnapshot:    args.SourceSnapshot,
 		Nics:              args.NICs,
 	}
+	// best-effort unpinned peer-pull hint; nil for pinned / always
+	if args.ResolvedImageDigest != "" {
+		hint := args.ResolvedImageDigest
+		body.ResolvedImageDigest = &hint
+	}
 	agentTaskID, err := e.client.PostVMCreate(ctx, args.Node.AdvertisedEndpoint, idemKey, body)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("post vm.create: %w", err)
