@@ -266,9 +266,12 @@ type createLifecycleWorkerStoreStub struct {
 	imageURLDigestOK    bool
 	imageURLDigestCalls int
 	// upsertedURL / upsertedDigest record the last UpsertImageURLDigest write
-	// (consumed by the registry-write tests); a no-op recorder for now.
+	// (consumed by the registry-write tests). upsertErr, when set, is returned by
+	// UpsertImageURLDigest so the fail-open test can assert a registry-write
+	// failure never fails the create.
 	upsertedURL    string
 	upsertedDigest string
+	upsertErr      error
 }
 
 func (s *createLifecycleWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
@@ -360,7 +363,7 @@ func (s *createLifecycleWorkerStoreStub) ImageURLDigest(context.Context, string)
 func (s *createLifecycleWorkerStoreStub) UpsertImageURLDigest(_ context.Context, url, digest string, _ int64, _ time.Time, _ uuid.UUID) error {
 	s.upsertedURL = url
 	s.upsertedDigest = digest
-	return nil
+	return s.upsertErr
 }
 
 // noopBroker is the SnapshotBlobBroker double for the create/lifecycle tests
@@ -1130,5 +1133,54 @@ func TestRunDeleteCordonedStaleNode(t *testing.T) {
 				t.Errorf("ProjectVMDeleteSuccess not called; the delete must always converge to projected success")
 			}
 		})
+	}
+}
+
+// TestProjectCreateSuccessWritesURLRegistry pins the import-report: a successful
+// create that resolved an image URL to a content digest records URL -> digest so
+// a later unpinned create of the same URL can peer-pull by digest.
+func TestProjectCreateSuccessWritesURLRegistry(t *testing.T) {
+	st := &createLifecycleWorkerStoreStub{}
+	taskID, vmID, nodeID := uuid.New(), uuid.New(), uuid.New()
+
+	err := projectCreateSuccess(context.Background(), st, discardLog(), taskID, vmID, nodeID,
+		"https://ex.test/noble.img", CreateResult{VMID: vmID.String(), ImageSHA256: "abcd"})
+	if err != nil {
+		t.Fatalf("projectCreateSuccess err = %v, want nil", err)
+	}
+	if st.upsertedURL != "https://ex.test/noble.img" {
+		t.Errorf("upsertedURL = %q, want %q", st.upsertedURL, "https://ex.test/noble.img")
+	}
+	if st.upsertedDigest != "abcd" {
+		t.Errorf("upsertedDigest = %q, want %q", st.upsertedDigest, "abcd")
+	}
+}
+
+// TestProjectCreateSuccessRegistryWriteFailureDoesNotFailCreate pins fail-open: a
+// registry-write failure is swallowed and never fails the committed create.
+func TestProjectCreateSuccessRegistryWriteFailureDoesNotFailCreate(t *testing.T) {
+	st := &createLifecycleWorkerStoreStub{upsertErr: errors.New("etcd down")}
+	taskID, vmID, nodeID := uuid.New(), uuid.New(), uuid.New()
+
+	err := projectCreateSuccess(context.Background(), st, discardLog(), taskID, vmID, nodeID,
+		"https://ex.test/noble.img", CreateResult{VMID: vmID.String(), ImageSHA256: "abcd"})
+	if err != nil {
+		t.Errorf("projectCreateSuccess err = %v, want nil (a registry write failure must not fail the create)", err)
+	}
+}
+
+// TestProjectCreateSuccessSnapshotSourcedSkipsRegistry pins the carve-out: a
+// snapshot-sourced create (empty URL and digest) writes nothing to the registry.
+func TestProjectCreateSuccessSnapshotSourcedSkipsRegistry(t *testing.T) {
+	st := &createLifecycleWorkerStoreStub{}
+	taskID, vmID, nodeID := uuid.New(), uuid.New(), uuid.New()
+
+	err := projectCreateSuccess(context.Background(), st, discardLog(), taskID, vmID, nodeID,
+		"", CreateResult{VMID: vmID.String(), ImageSHA256: ""})
+	if err != nil {
+		t.Fatalf("projectCreateSuccess err = %v, want nil", err)
+	}
+	if st.upsertedURL != "" {
+		t.Errorf("upsertedURL = %q, want empty (snapshot-sourced create must not write the registry)", st.upsertedURL)
 	}
 }

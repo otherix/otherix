@@ -177,7 +177,7 @@ func runCreate(ctx context.Context, st WorkerStore, exec CreateExecutor, broker 
 	if execErr != nil {
 		return failCreateExec(ctx, st, log, taskID, execErr)
 	}
-	return projectCreateSuccess(ctx, st, log, taskID, args.VMID, args.NodeID, result)
+	return projectCreateSuccess(ctx, st, log, taskID, args.VMID, args.NodeID, vm.ImageURL, result)
 }
 
 // stageCreateImage best-effort pre-pulls an image-URL create's image onto the
@@ -214,7 +214,7 @@ func stageCreateImage(ctx context.Context, st WorkerStore, broker SnapshotBlobBr
 // malformed digest degrades to no stamp rather than failing the committed
 // create), and runs the runtime-row + task-finalize projection in one store
 // call. Split out of runCreate to keep it under gocyclo.
-func projectCreateSuccess(ctx context.Context, st WorkerStore, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, result CreateResult) error {
+func projectCreateSuccess(ctx context.Context, st WorkerStore, log *slog.Logger, taskID, vmID, nodeID uuid.UUID, imageURL string, result CreateResult) error {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return failRun(ctx, st, log, "vms.create", taskID, "internal", fmt.Errorf("marshal create result: %v", err))
@@ -229,6 +229,15 @@ func projectCreateSuccess(ctx context.Context, st WorkerStore, log *slog.Logger,
 		resolvedDigest,
 	); err != nil {
 		return fmt.Errorf("project create success: %v", err)
+	}
+	// Best-effort: record URL -> resolved digest so a later unpinned create of
+	// the same URL can peer-pull by digest. FAIL-OPEN - a registry write failure
+	// never fails the create. Skipped for snapshot-sourced creates (no URL/digest).
+	if imageURL != "" && result.ImageSHA256 != "" {
+		if err := st.UpsertImageURLDigest(ctx, imageURL, result.ImageSHA256, result.VirtualSizeBytes, time.Now().UTC(), nodeID); err != nil {
+			log.WarnContext(ctx, "image URL registry write failed (non-fatal)",
+				slog.String("url", imageURL), slog.String("digest", result.ImageSHA256), slog.String("error", err.Error()))
+		}
 	}
 	return nil
 }
