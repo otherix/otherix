@@ -9,6 +9,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -535,5 +536,164 @@ func TestCreateSnapshot_WritesRowOwnerIndexAndTask(t *testing.T) {
 		},
 	}, stubSnapArgs{}); !errors.Is(err, store.ErrSnapshotNameExists) {
 		t.Errorf("duplicate name err = %v, want store.ErrSnapshotNameExists", err)
+	}
+}
+
+// TestMarkSnapshotError_CreatingToError flips a creating row to error with the
+// message and bumps updated_at, leaving every other field intact.
+func TestMarkSnapshotError_CreatingToError(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snaperr")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-err-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "doomed")
+	if snap.Status != store.SnapshotStatusCreating {
+		t.Fatalf("seeded status = %q, want creating", snap.Status)
+	}
+
+	if err := s.MarkSnapshotError(ctx, snap.ID, "agent capture failed"); err != nil {
+		t.Fatalf("MarkSnapshotError: %v", err)
+	}
+
+	got, err := s.SnapshotByID(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByID: %v", err)
+	}
+	if got.Status != store.SnapshotStatusError {
+		t.Errorf("status = %q, want error", got.Status)
+	}
+	if got.ErrorMessage == nil || *got.ErrorMessage != "agent capture failed" {
+		t.Errorf("error_message = %v, want %q", got.ErrorMessage, "agent capture failed")
+	}
+	if !got.UpdatedAt.After(snap.UpdatedAt) && !got.UpdatedAt.Equal(snap.UpdatedAt) {
+		t.Errorf("updated_at = %v, want >= seeded %v", got.UpdatedAt, snap.UpdatedAt)
+	}
+}
+
+// TestMarkSnapshotError_AbsentRowNoOp returns nil for an absent snapshot id and
+// writes nothing (no resurrection of a never-existed row).
+func TestMarkSnapshotError_AbsentRowNoOp(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	missing := uuid.New()
+	if err := s.MarkSnapshotError(ctx, missing, "boom"); err != nil {
+		t.Fatalf("MarkSnapshotError(absent) = %v, want nil", err)
+	}
+	if _, err := s.SnapshotByIDIncludingDeleted(ctx, missing); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("absent row materialised: SnapshotByIDIncludingDeleted = %v, want ErrNotFound", err)
+	}
+}
+
+// TestMarkSnapshotError_SoftDeletedNoOp must NOT resurrect or mutate a
+// soft-deleted row (delete leaves the row soft-deleted at status=deleting).
+func TestMarkSnapshotError_SoftDeletedNoOp(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snaperrdel")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-err-del-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "doomed")
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+
+	if err := s.MarkSnapshotError(ctx, snap.ID, "boom"); err != nil {
+		t.Fatalf("MarkSnapshotError(soft-deleted) = %v, want nil", err)
+	}
+
+	got, err := s.SnapshotByIDIncludingDeleted(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByIDIncludingDeleted: %v", err)
+	}
+	if got.DeletedAt == nil {
+		t.Errorf("soft-deleted row resurrected: deleted_at cleared")
+	}
+	if got.Status != store.SnapshotStatusDeleting {
+		t.Errorf("status = %q, want deleting (unchanged); MarkSnapshotError must not clobber a soft-deleted row", got.Status)
+	}
+	if got.ErrorMessage != nil {
+		t.Errorf("error_message = %v, want nil (must not write on a soft-deleted row)", got.ErrorMessage)
+	}
+}
+
+// TestMarkSnapshotError_ReadyNoClobber must NOT overwrite a row that already
+// reached ready (a redelivered failure must never clobber a committed success).
+func TestMarkSnapshotError_ReadyNoClobber(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snaperrready")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-err-ready-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "good")
+	snap.Status = store.SnapshotStatusReady
+	if err := cl.PutJSON(ctx, etcd.Key("snapshots", snap.ID.String()), snap); err != nil {
+		t.Fatalf("patch ready: %v", err)
+	}
+
+	if err := s.MarkSnapshotError(ctx, snap.ID, "boom"); err != nil {
+		t.Fatalf("MarkSnapshotError(ready) = %v, want nil", err)
+	}
+
+	got, err := s.SnapshotByID(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByID: %v", err)
+	}
+	if got.Status != store.SnapshotStatusReady {
+		t.Errorf("status = %q, want ready (unchanged); MarkSnapshotError must not clobber a committed row", got.Status)
+	}
+	if got.ErrorMessage != nil {
+		t.Errorf("error_message = %v, want nil (must not write on a ready row)", got.ErrorMessage)
+	}
+}
+
+// TestMarkSnapshotError_CapsMessage bounds an oversized agent error string so a
+// huge message cannot bloat the row.
+func TestMarkSnapshotError_CapsMessage(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snaperrcap")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-err-cap-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "doomed")
+	huge := strings.Repeat("x", 10_000)
+	if err := s.MarkSnapshotError(ctx, snap.ID, huge); err != nil {
+		t.Fatalf("MarkSnapshotError: %v", err)
+	}
+
+	got, err := s.SnapshotByID(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByID: %v", err)
+	}
+	if got.ErrorMessage == nil {
+		t.Fatalf("error_message = nil, want a (capped) message")
+	}
+	if len(*got.ErrorMessage) >= len(huge) {
+		t.Errorf("error_message len = %d, want bounded below %d", len(*got.ErrorMessage), len(huge))
 	}
 }

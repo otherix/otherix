@@ -435,6 +435,63 @@ func (s *Store) SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUI
 	return nil
 }
 
+// maxSnapshotErrorMessage bounds the error_message stamped on a snapshot row so a
+// large agent error string cannot bloat the persisted row.
+const maxSnapshotErrorMessage = 1024
+
+// MarkSnapshotError surfaces a capture failure onto the snapshot row: it flips a
+// still-creating row to status=error and sets error_message (capped) in a single
+// transaction, so an operator listing snapshots sees the reason rather than a
+// permanently-creating row. It is a best-effort operator nicety - the backing task
+// failure is the authoritative signal - and is deliberately narrow: it transitions
+// ONLY a creating row. It is a no-op (returns nil) when the row is absent, already
+// soft-deleted, or already terminal (ready/error/restoring/deleting), so it never
+// resurrects a deleted row and never clobbers a committed success on a redelivered
+// failure. The msg is capped at maxSnapshotErrorMessage runes.
+func (s *Store) MarkSnapshotError(ctx context.Context, id uuid.UUID, msg string) error {
+	resp, err := s.c.Raw().Get(ctx, snapshotKey(id))
+	if err != nil {
+		return fmt.Errorf("read snapshot %s: %v", id, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil
+	}
+	rev := resp.Kvs[0].ModRevision
+	var snap store.Snapshot
+	if err := json.Unmarshal(resp.Kvs[0].Value, &snap); err != nil {
+		return fmt.Errorf("unmarshal snapshot %s: %v", id, err)
+	}
+	// Only a still-creating, non-deleted row transitions. A soft-deleted row, or one
+	// that already reached any other status, is left untouched (no resurrection, no
+	// clobber of a committed success).
+	if snap.DeletedAt != nil || snap.Status != store.SnapshotStatusCreating {
+		return nil
+	}
+
+	capped := msg
+	if len([]rune(capped)) > maxSnapshotErrorMessage {
+		capped = string([]rune(capped)[:maxSnapshotErrorMessage])
+	}
+	snap.Status = store.SnapshotStatusError
+	snap.ErrorMessage = &capped
+	snap.UpdatedAt = time.Now().UTC()
+
+	val, err := etcd.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	// CAS on ModRevision so a concurrent success projection (SnapshotManifestApplied)
+	// or delete that committed between our read and write wins - we must not overwrite
+	// it. A lost CAS means the row already moved on; treat it as a benign no-op.
+	if _, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(snapshotKey(id)), "=", rev)).
+		Then(clientv3.OpPut(snapshotKey(id), string(val))).
+		Commit(); err != nil {
+		return fmt.Errorf("mark snapshot error txn: %v", err)
+	}
+	return nil
+}
+
 // BlobPlacements returns the node ids holding the blob with the given digest, read
 // from the placement map (the K=1 seed of the §3/§5 design). Blob GC uses it to
 // resolve a snapshot's holder node(s) WITHOUT loading the source VM, so deletion

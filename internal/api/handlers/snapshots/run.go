@@ -69,6 +69,12 @@ type WorkerStore interface {
 	// remove path): the best-effort delete cannot confirm a blob is physically gone,
 	// so pruning the map is the blob-reconcile loop's job, not the delete path's.
 	BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error)
+	// MarkSnapshotError surfaces a capture failure onto the snapshot row (flips a
+	// still-creating row to status=error + sets error_message). Best-effort and
+	// narrow: a no-op on an absent, soft-deleted, or already-terminal row, so it
+	// never resurrects a deleted row or clobbers a committed success. Called only
+	// on the CREATE-kind failure path - the delete path leaves the row soft-deleted.
+	MarkSnapshotError(ctx context.Context, id uuid.UUID, msg string) error
 }
 
 // CreateHandler returns the dispatcher handler for vm.snapshot.create jobs.
@@ -108,11 +114,11 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 
 	snap, err := st.SnapshotByID(ctx, args.SnapshotID)
 	if err != nil {
-		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeSnapshotFailed, fmt.Errorf("load snapshot: %v", err))
+		return failCreateTask(ctx, st, log, "snapshots.create", taskID, args.SnapshotID, errCodeSnapshotFailed, fmt.Errorf("load snapshot: %v", err))
 	}
 	endpoint, vmName, nodeID, err := resolveSnapshotNode(ctx, st, snap.VmID)
 	if err != nil {
-		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeNodeUnreachable, err)
+		return failCreateTask(ctx, st, log, "snapshots.create", taskID, args.SnapshotID, errCodeNodeUnreachable, err)
 	}
 
 	task, err := st.TaskByID(ctx, taskID)
@@ -137,7 +143,7 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 				return fmt.Errorf("clear agent_task_id: %v", cerr)
 			}
 		}
-		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeSnapshotFailed, execErr)
+		return failCreateTask(ctx, st, log, "snapshots.create", taskID, args.SnapshotID, errCodeSnapshotFailed, execErr)
 	}
 
 	// Project the agent-authoritative manifest (disks + vm_state_at_snapshot) and
@@ -145,7 +151,7 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 	// projection runs first: a finalize without the manifest would leave a "success"
 	// task pointing at an empty-manifest snapshot.
 	if err := st.SnapshotManifestApplied(ctx, args.SnapshotID, nodeID, res.Disks, res.VMStateAtSnapshot); err != nil {
-		return failTask(ctx, st, log, "snapshots.create", taskID, errCodeSnapshotFailed, fmt.Errorf("apply manifest: %v", err))
+		return failCreateTask(ctx, st, log, "snapshots.create", taskID, args.SnapshotID, errCodeSnapshotFailed, fmt.Errorf("apply manifest: %v", err))
 	}
 	result, err := json.Marshal(struct {
 		SnapshotID string `json:"snapshot_id"`
@@ -361,6 +367,23 @@ func resolveSnapshotNode(ctx context.Context, st WorkerStore, vmID uuid.UUID) (e
 		return "", "", uuid.Nil, fmt.Errorf("load node: %v", err)
 	}
 	return node.AdvertisedEndpoint, vm.Name, node.ID, nil
+}
+
+// failCreateTask is the CREATE-kind failure path: it fails the backing task (the
+// authoritative signal) AND, best-effort, surfaces the failure onto the snapshot
+// row so an operator listing snapshots sees status=error + the reason rather than a
+// permanently-creating row. MarkSnapshotError is narrow (a no-op on an
+// absent/soft-deleted/already-terminal row) so this never resurrects or clobbers;
+// it is purely a nicety, so a MarkSnapshotError error is logged and swallowed -
+// the task failure stands. The delete path must NOT call this (it leaves the row
+// soft-deleted).
+func failCreateTask(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID, snapshotID uuid.UUID, code string, cause error) error {
+	failErr := failTask(ctx, st, log, op, taskID, code, cause)
+	if err := st.MarkSnapshotError(ctx, snapshotID, code+": "+cause.Error()); err != nil {
+		log.WarnContext(ctx, op+" mark snapshot error failed (row stays creating; task failure is authoritative)",
+			"task_id", taskID, "snapshot_id", snapshotID, "error", err)
+	}
+	return failErr
 }
 
 // failTask writes the terminal failed envelope and returns cause so the dispatcher
