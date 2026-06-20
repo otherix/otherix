@@ -7,8 +7,10 @@ argument; UUID literals are rejected by the server with
 `400 validation_failed`.
 
 There is no template entity. A VM is created from an image reference;
-the agent owns a per-pool image cache and materializes the URL on first
-use.
+the agent owns a content-addressed image cache and materializes the URL
+on first use. For how that cache works - pinning, pull policy, cross-node
+peer pull, and eviction - see [Images](../concepts/images.md). To capture
+and recreate VMs from snapshots, see the [Snapshots guide](snapshots.md).
 
 ## Create
 

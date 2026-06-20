@@ -72,9 +72,12 @@ nav:
       - Desired vs observed state: concepts/desired-vs-observed.md
       - Networking: concepts/networking.md
       - Storage pools: concepts/storage-pools.md
+      - Images: concepts/images.md
+      - Snapshots and the artifact store: concepts/snapshots.md
   - Guides:
       - Join a node: guides/join-a-node.md
       - Create and manage VMs: guides/create-and-manage-vms.md
+      - Snapshots: guides/snapshots.md
       - Declarative manifests: guides/declarative-manifests.md
       - Storage pools: guides/storage-pools.md
       - Networks: guides/networks.md
