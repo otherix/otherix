@@ -142,6 +142,14 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	manager.SweepOrphanImageMeta()
 	sweepLeftoverImageTempDirs(log)
 
+	// Snapshot staging hygiene, run synchronously BEFORE serving for the same
+	// reason: a capture that opens a snapshots/.staging temp after serving begins
+	// must never be swept mid-write. The boot pass clears all staging while
+	// nothing is in flight; the periodic pass (in the drain set below) spares
+	// fresh temps.
+	snapStagingSweeper := newSnapshotStagingSweeper(manager.SweepSnapshotStaging, log)
+	snapStagingSweeper.BootSweep(ctx)
+
 	// Per-resource reconcilers (pool / network / vm / wireguard). Each plugs
 	// into the heartbeat sender as both a ResponseHandler (consumes its
 	// declared_* slice) and a reporter (publishes observed state).
@@ -190,6 +198,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
 	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", sweeper.Run, log)
+	snapStagingSweeperDone := runReconciler(heartbeatCtx, "snapshot staging sweeper", snapStagingSweeper.Run, log)
 	blobScrubberDone := runReconciler(heartbeatCtx, "blob scrubber", (&blobScrubber{
 		artifactStore: artStore,
 		imageStore:    manager.ImageStore(),
@@ -225,6 +234,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "dns forwarder", done: dnsForwarderDone},
 		{name: "dhcp responder", done: dhcpResponderDone},
 		{name: "artifact sweeper", done: artifactSweeperDone},
+		{name: "snapshot staging sweeper", done: snapStagingSweeperDone},
 		{name: "blob scrubber", done: blobScrubberDone},
 	}
 	if imageEvictDone != nil {
