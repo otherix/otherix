@@ -214,6 +214,61 @@ func TestListSnapshots_PairsBlobsWithSidecars(t *testing.T) {
 	}
 }
 
+// TestSyncDir_FsyncsDirectoryAndRejectsMissing pins the directory-fsync helper
+// produceBlob uses to make a rename/sidecar entry durable: it must succeed on a
+// real directory and surface (not swallow) an error on a missing path.
+func TestSyncDir_FsyncsDirectoryAndRejectsMissing(t *testing.T) {
+	dir := t.TempDir()
+	if err := syncDir(dir); err != nil {
+		t.Errorf("syncDir(%q) = %v, want nil", dir, err)
+	}
+	missing := filepath.Join(dir, "does-not-exist")
+	if err := syncDir(missing); err == nil {
+		t.Errorf("syncDir(%q) = nil, want error for a missing directory", missing)
+	}
+}
+
+// TestProduceBlob_RoundTripsAfterFsync proves the durability path stays correct:
+// after produceBlob (which now fsyncs the staged blob, the snapshots dir post
+// rename, and again post sidecar), the blob and sidecar are both readable and
+// the sidecar matches the blob digest. The fsync calls are exercised on this
+// path; a sync error would fail the produce rather than be swallowed.
+func TestProduceBlob_RoundTripsAfterFsync(t *testing.T) {
+	dir := t.TempDir()
+	snapshotsDir := filepath.Join(dir, "snapshots")
+
+	src := filepath.Join(dir, "src-disk0.qcow2")
+	body := qcow2Body(0x55)
+	if err := os.WriteFile(src, body, 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	wantSHA := shaHex(body)
+
+	res, err := produceBlob(context.Background(), src, snapshotsDir, copyConvert)
+	if err != nil {
+		t.Fatalf("produceBlob: %v", err)
+	}
+
+	blobPath := filepath.Join(snapshotsDir, wantSHA+".qcow2")
+	gotBlob, err := os.ReadFile(blobPath)
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
+	if shaHex(gotBlob) != wantSHA {
+		t.Errorf("blob digest = %q, want %q", shaHex(gotBlob), wantSHA)
+	}
+	sidecar, err := os.ReadFile(blobPath + ".sha256")
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if string(sidecar) != wantSHA {
+		t.Errorf("sidecar = %q, want %q", sidecar, wantSHA)
+	}
+	if res.SHA256 != wantSHA {
+		t.Errorf("res.SHA256 = %q, want %q", res.SHA256, wantSHA)
+	}
+}
+
 // TestQemuBackupIDs_WithinNodeNameLimit pins the QEMU block-node-name constraint
 // that the real-agent smoke caught: blockdev-add rejects a node-name longer than
 // 31 chars ("Node name too long"), and a full uuid suffix (36 chars) overflowed
