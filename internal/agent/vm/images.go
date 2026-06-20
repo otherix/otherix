@@ -49,14 +49,21 @@ const importDialTimeout = 30 * time.Second
 // so the over-cap test can lower it.
 var maxImageBytes int64 = 64 << 30
 
+// cgnatRange is the RFC 6598 shared address space (100.64.0.0/10) used by some
+// cloud fabrics for internal services; an image URL resolving into it is treated
+// as a node-local/special-use SSRF target and refused.
+var cgnatRange = func() *net.IPNet { _, n, _ := net.ParseCIDR("100.64.0.0/10"); return n }()
+
 // blockLocalDial rejects a dial to a node-local or special-use address:
 // loopback (the agent's own services), link-local unicast (incl. the cloud
-// IMDS at 169.254.169.254 and fe80::/10), multicast, and unspecified. That
-// kills cloud-metadata and loopback/agent-local SSRF while intentionally
-// ALLOWING RFC1918 + ULA private ranges - operators legitimately host VM
-// image mirrors on private networks. It runs as the net.Dialer Control hook
-// on the resolved IP of EVERY connection the image download makes -
-// including redirect hops - so it is DNS-rebind-safe (SSRF guard).
+// IMDS at 169.254.169.254 and fe80::/10), multicast, unspecified, and the
+// RFC 6598 shared CGNAT range 100.64.0.0/10 (used by some cloud fabrics for
+// internal services). That kills cloud-metadata and loopback/agent-local SSRF
+// while intentionally ALLOWING RFC1918 + ULA private ranges - operators
+// legitimately host VM image mirrors on private networks. It runs as the
+// net.Dialer Control hook on the resolved IP of EVERY connection the image
+// download makes - including redirect hops - so it is DNS-rebind-safe (SSRF
+// guard).
 func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -66,7 +73,7 @@ func blockLocalDial(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("image source resolved to non-IP address %q", host)
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || cgnatRange.Contains(ip) {
 		return fmt.Errorf("image source resolves to a node-local or special-use address %s", ip)
 	}
 	return nil
@@ -562,6 +569,43 @@ func (m *Manager) writeImageMeta(digest, sourceURL, basename string) {
 		_ = os.Remove(tmp)
 		m.log.Warn("write image meta: rename", slog.String("digest", digest), slog.String("err", err.Error()))
 	}
+}
+
+// SweepOrphanImageMeta removes <digest>.meta readability sidecars whose blob is
+// no longer in the image store (evicted or scrubbed). The .meta files are advisory
+// url->digest hints written on import; nothing reads them on a hot path, so a stray
+// one is harmless but accumulates unbounded and can outlive its blob. Only a name
+// matching <64-lowercase-hex>.meta is ever a candidate, so an unrelated file in the
+// dir is never removed. Best-effort: a removal error is logged and skipped. Returns
+// the count removed. A nil image store (test path) or an absent meta dir yields 0.
+func (m *Manager) SweepOrphanImageMeta() int {
+	if m.imageStore == nil {
+		return 0
+	}
+	dir := m.imageMetaDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0 // absent/unreadable: nothing to sweep
+	}
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta") {
+			continue
+		}
+		digest := strings.TrimSuffix(e.Name(), ".meta")
+		if !isHexSHA256Lower(digest) {
+			continue // not a <digest>.meta sidecar: leave it alone
+		}
+		if m.imageStore.Has(digest) {
+			continue // blob still present: keep the hint
+		}
+		if rmErr := os.Remove(filepath.Join(dir, e.Name())); rmErr != nil {
+			m.log.Warn("sweep orphan image meta: remove", slog.String("file", e.Name()), slog.String("err", rmErr.Error()))
+			continue
+		}
+		removed++
+	}
+	return removed
 }
 
 // resolveEnsure runs the pre-flight validation (format, source URL, checksum

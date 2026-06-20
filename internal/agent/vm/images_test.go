@@ -648,6 +648,10 @@ func TestBlockLocalDial(t *testing.T) {
 		{"private 172.16/12", "172.16.0.1:8080", false},
 		{"link-local IMDS", "169.254.169.254:80", true},
 		{"link-local v6", "[fe80::1]:80", true},
+		{"cgnat low", "100.64.0.1:443", true},
+		{"cgnat high", "100.127.255.254:80", true},
+		{"non-cgnat 100.63", "100.63.255.255:443", false},
+		{"non-cgnat 100.128", "100.128.0.1:443", false},
 		{"ULA v6", "[fd00::1]:443", false},
 		{"multicast v4", "224.0.0.1:80", true},
 		{"unspecified v4", "0.0.0.0:80", true},
@@ -961,6 +965,64 @@ func TestSweepImageScratchClearsLeftovers(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("image-scratch dir not empty after sweep: %d entries", len(entries))
+	}
+}
+
+// TestSweepOrphanImageMeta confirms the sweep removes a <digest>.meta sidecar
+// whose blob is no longer in the image store, keeps one whose blob is present,
+// ignores a non-.meta file, and returns the count removed.
+func TestSweepOrphanImageMeta(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+
+	metaDir := m.imageMetaDir()
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	present := shaHex(qcow2Body(7))
+	orphan := strings.Repeat("b", 64)
+	if err := m.imageStore.Put(present, bytes.NewReader(qcow2Body(7))); err != nil {
+		t.Fatalf("Put present blob: %v", err)
+	}
+
+	mustWrite := func(name string) {
+		if err := os.WriteFile(filepath.Join(metaDir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(present + ".meta")
+	mustWrite(orphan + ".meta")
+	mustWrite("README.txt") // unrelated file: never removed
+
+	if got := m.SweepOrphanImageMeta(); got != 1 {
+		t.Errorf("SweepOrphanImageMeta() = %d, want 1", got)
+	}
+	if _, err := os.Stat(filepath.Join(metaDir, orphan+".meta")); !os.IsNotExist(err) {
+		t.Errorf("orphan .meta not removed: stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(metaDir, present+".meta")); err != nil {
+		t.Errorf("present-blob .meta wrongly removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(metaDir, "README.txt")); err != nil {
+		t.Errorf("unrelated file wrongly removed: %v", err)
+	}
+}
+
+// TestSweepOrphanImageMetaAbsentDir confirms an absent meta dir yields 0.
+func TestSweepOrphanImageMetaAbsentDir(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	if got := m.SweepOrphanImageMeta(); got != 0 {
+		t.Errorf("SweepOrphanImageMeta() with absent dir = %d, want 0", got)
+	}
+}
+
+// TestSweepOrphanImageMetaNilStore confirms a nil image store yields 0.
+func TestSweepOrphanImageMetaNilStore(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	if got := m.SweepOrphanImageMeta(); got != 0 {
+		t.Errorf("SweepOrphanImageMeta() with nil store = %d, want 0", got)
 	}
 }
 

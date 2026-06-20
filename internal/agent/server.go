@@ -139,6 +139,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	sweeper := newArtifactSweeper(artStore, manager.ImageStore(), log)
 	sweeper.BootSweep(ctx)
 	manager.SweepImageScratch()
+	manager.SweepOrphanImageMeta()
 	sweepLeftoverImageTempDirs(log)
 
 	// Per-resource reconcilers (pool / network / vm / wireguard). Each plugs
@@ -438,7 +439,7 @@ func startImageCacheEviction(ctx context.Context, cfg *config.AgentConfig, manag
 		default: // a pass is already pending; coalesce
 		}
 	})
-	sweeper := newImageCacheSweeper(imgStore, manager.TryLockImageBlob, freeBytesStatfs, cfg.Artifacts.ImageCache, nudgeCh, log)
+	sweeper := newImageCacheSweeper(imgStore, manager.TryLockImageBlob, freeBytesStatfs, cfg.Artifacts.ImageCache, nudgeCh, func() { manager.SweepOrphanImageMeta() }, log)
 	return runReconciler(ctx, "image cache eviction", sweeper.Run, log)
 }
 

@@ -26,11 +26,15 @@ type imageCacheSweeper struct {
 	freeBytes func(path string) (uint64, error)
 	cfg       config.ImageCacheConfig
 	nudge     <-chan struct{}
+	// afterPass runs at the end of every sweep, after any eviction. It reclaims
+	// orphaned <digest>.meta sidecars whose blob this pass (or a scrub) removed.
+	// Best-effort and nil-safe; an eviction pass is exactly when a meta orphans.
+	afterPass func()
 	log       *slog.Logger
 }
 
-func newImageCacheSweeper(store *artifactstore.Store, tryLock func(string) (func(), bool), freeBytes func(string) (uint64, error), cfg config.ImageCacheConfig, nudge <-chan struct{}, log *slog.Logger) *imageCacheSweeper {
-	return &imageCacheSweeper{store: store, tryLock: tryLock, freeBytes: freeBytes, cfg: cfg, nudge: nudge, log: log}
+func newImageCacheSweeper(store *artifactstore.Store, tryLock func(string) (func(), bool), freeBytes func(string) (uint64, error), cfg config.ImageCacheConfig, nudge <-chan struct{}, afterPass func(), log *slog.Logger) *imageCacheSweeper {
+	return &imageCacheSweeper{store: store, tryLock: tryLock, freeBytes: freeBytes, cfg: cfg, nudge: nudge, afterPass: afterPass, log: log}
 }
 
 // Run sweeps once at boot, then on each tick or nudge, until ctx is done.
@@ -39,7 +43,7 @@ func (s *imageCacheSweeper) Run(ctx context.Context) error {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
-	s.sweep(ctx)
+	s.pass(ctx)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -47,10 +51,19 @@ func (s *imageCacheSweeper) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			s.sweep(ctx)
+			s.pass(ctx)
 		case <-s.nudge:
-			s.sweep(ctx)
+			s.pass(ctx)
 		}
+	}
+}
+
+// pass runs one eviction pass and then the best-effort orphaned-meta sweep, so a
+// meta whose blob this pass (or a scrub) removed is reclaimed on the same tick.
+func (s *imageCacheSweeper) pass(ctx context.Context) {
+	s.sweep(ctx)
+	if s.afterPass != nil {
+		s.afterPass()
 	}
 }
 
