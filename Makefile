@@ -253,6 +253,10 @@ smoke-artifact-janitor: ## Artifact janitor smoke: the agent boot-time store hyg
 smoke-blob-scrub: ## Real-agent smoke: blob scrubber detects corruption and durability heals (3-node)
 	@bash dev/smoke/blob-scrub/run.sh
 
+.PHONY: smoke-node-cache-hygiene
+smoke-node-cache-hygiene: ## Node-cache-hygiene smoke: a batch of concurrent creates from one new unpinned --image-url on one node downloads the image once (within-node import coalescing), a stray file in a pool's legacy basename image cache is swept on agent restart (the images/ dir survives), and a stray .staging orphan in the node image store is swept by the artifact sweeper boot pass (run after local-dev-start)
+	@bash dev/smoke/node-cache-hygiene/run.sh
+
 .PHONY: smoke-image-cache
 smoke-image-cache: ## Image-cache smoke: a pinned image (--image-sha256) is peer-pulled onto a second node from a node that already caches it (cache hit, no re-download), the image tier stays out of the durability placement map, and a no-peer-holder create falls back to a source download and boots (run after local-dev-start)
 	@bash dev/smoke/image-cache/run.sh
