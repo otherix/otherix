@@ -109,9 +109,20 @@ func (c MigrationConfig) Validate() error {
 // ingress ports. The listener reuses the node leaf cert (same trust as
 // CP<->agent mTLS) - no cert material is configured here.
 type ArtifactsConfig struct {
-	Root           string `koanf:"root"`
-	PortRangeStart int    `koanf:"port_range_start"`
-	PortRangeEnd   int    `koanf:"port_range_end"`
+	Root           string           `koanf:"root"`
+	PortRangeStart int              `koanf:"port_range_start"`
+	PortRangeEnd   int              `koanf:"port_range_end"`
+	ImageCache     ImageCacheConfig `koanf:"image_cache"`
+}
+
+// ImageCacheConfig bounds the node-level pinned-image cache store. A periodic
+// sweeper evicts the coldest cached images (LRU by file mtime) to keep the store
+// under MaxBytes and to keep at least MinFreeBytes free on its partition. A zero
+// ceiling disables that bound; both zero disables eviction.
+type ImageCacheConfig struct {
+	MaxBytes         int64         `koanf:"max_bytes"`         // total cache size ceiling; 0 disables
+	MinFreeBytes     int64         `koanf:"min_free_bytes"`    // partition free-space floor; 0 disables
+	EvictionInterval time.Duration `koanf:"eviction_interval"` // periodic pass cadence
 }
 
 // artifactsRootAllowedPrefix is the fixed allowlist prefix Root must sit under,
@@ -137,6 +148,12 @@ func (c ArtifactsConfig) Validate() error {
 	}
 	if c.PortRangeEnd < c.PortRangeStart {
 		return errors.New("artifacts.port_range_end must be >= artifacts.port_range_start")
+	}
+	if c.ImageCache.MaxBytes < 0 {
+		return errors.New("artifacts.image_cache.max_bytes must be >= 0")
+	}
+	if c.ImageCache.MinFreeBytes < 0 {
+		return errors.New("artifacts.image_cache.min_free_bytes must be >= 0")
 	}
 	return nil
 }

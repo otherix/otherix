@@ -3,7 +3,10 @@
 
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestArtifactsConfigValidate(t *testing.T) {
 	good := ArtifactsConfig{Root: "/var/lib/otherix/artifacts", PortRangeStart: 49252, PortRangeEnd: 49351}
@@ -51,5 +54,28 @@ func TestDefaultAgentConfigArtifacts(t *testing.T) {
 	c.Migration.Host = "10.0.0.1"
 	if err := c.Validate(); err != nil {
 		t.Errorf("default AgentConfig.Validate() = %v, want nil", err)
+	}
+}
+
+func TestImageCacheConfigDefaultsAndValidation(t *testing.T) {
+	ic := defaultAgentConfig().Artifacts.ImageCache
+	if ic.MaxBytes != 50<<30 {
+		t.Errorf("default MaxBytes = %d, want %d", ic.MaxBytes, int64(50<<30))
+	}
+	if ic.MinFreeBytes != 10<<30 {
+		t.Errorf("default MinFreeBytes = %d, want %d", ic.MinFreeBytes, int64(10<<30))
+	}
+	if ic.EvictionInterval != 5*time.Minute {
+		t.Errorf("default EvictionInterval = %v, want 5m", ic.EvictionInterval)
+	}
+
+	bad := ArtifactsConfig{
+		Root:           "/var/lib/otherix/artifacts",
+		PortRangeStart: 49252,
+		PortRangeEnd:   49351,
+		ImageCache:     ImageCacheConfig{MaxBytes: -1},
+	}
+	if err := bad.Validate(); err == nil {
+		t.Errorf("Validate() = nil for negative MaxBytes, want error")
 	}
 }
