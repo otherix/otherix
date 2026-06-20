@@ -916,3 +916,84 @@ func TestAddPoolSweepsLegacyBasenameCacheOnFirstRegistration(t *testing.T) {
 		t.Errorf("images dir must survive AddPool sweep: %v", err)
 	}
 }
+
+// TestImageScratchDirIsImageStoreSibling pins the managed scratch dir to a sibling
+// of the image store root so the agent boot sweep can reclaim partial downloads.
+func TestImageScratchDirIsImageStoreSibling(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	if m.imageScratchDir() != "" {
+		t.Errorf("imageScratchDir with no image store = %q, want empty", m.imageScratchDir())
+	}
+	m.imageStore = mustNewForTesting(t)
+	want := filepath.Join(filepath.Dir(m.imageStore.Root()), "image-scratch")
+	if got := m.imageScratchDir(); got != want {
+		t.Errorf("imageScratchDir() = %q, want %q", got, want)
+	}
+}
+
+// TestSweepImageScratchClearsLeftovers confirms SweepImageScratch removes leftover
+// scratch dirs and leaves an empty image-scratch dir in place.
+func TestSweepImageScratchClearsLeftovers(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+
+	scratchRoot := m.imageScratchDir()
+	leftover := filepath.Join(scratchRoot, "otherix-image-stale")
+	if err := os.MkdirAll(leftover, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, "download"), []byte("partial"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	m.SweepImageScratch()
+
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Errorf("leftover scratch dir not removed by SweepImageScratch")
+	}
+	info, err := os.Stat(scratchRoot)
+	if err != nil || !info.IsDir() {
+		t.Errorf("image-scratch dir must be present and empty after sweep: stat err=%v", err)
+	}
+	entries, err := os.ReadDir(scratchRoot)
+	if err != nil {
+		t.Fatalf("ReadDir(scratchRoot) = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("image-scratch dir not empty after sweep: %d entries", len(entries))
+	}
+}
+
+// TestPinnedDownloadStagesUnderManagedScratch confirms a pinned download lands its
+// scratch under the managed image-scratch dir (not the OS temp dir) and still
+// completes end to end through the httptest harness.
+func TestPinnedDownloadStagesUnderManagedScratch(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(91)
+	sum := shaHex(body)
+	url := serve(t, body)
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", "", dst); err != nil {
+		t.Fatalf("EnsureImageInto(pinned miss) error = %v", err)
+	}
+	if !m.ImageStore().Has(sum) {
+		t.Errorf("image store missing digest after download")
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("clone destination not present: %v", err)
+	}
+	// The managed scratch root must exist (the download created it) and the
+	// per-download temp must be gone (defer cleanup).
+	if _, err := os.Stat(m.imageScratchDir()); err != nil {
+		t.Errorf("managed scratch root not created by download: %v", err)
+	}
+	entries, err := os.ReadDir(m.imageScratchDir())
+	if err != nil {
+		t.Fatalf("ReadDir(scratch) = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("download temp not cleaned from managed scratch: %d entries", len(entries))
+	}
+}

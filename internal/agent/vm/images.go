@@ -316,11 +316,11 @@ func (m *Manager) ensureImageIntoPinned(ctx context.Context, sourceURL, expected
 		return EnsureResult{SHA256: expectedSHA, Path: blobPath, SizeBytes: fi.Size()}, nil
 	}
 
-	scratch, err := os.MkdirTemp("", "otherix-image-*")
+	scratch, cleanup, err := m.newImageScratch()
 	if err != nil {
-		return EnsureResult{}, fmt.Errorf("create scratch dir: %v", err)
+		return EnsureResult{}, err
 	}
-	defer func() { _ = os.RemoveAll(scratch) }()
+	defer cleanup()
 	tempPath := filepath.Join(scratch, "download")
 
 	m.log.Info("image not cached, downloading from source", slog.String("digest", expectedSHA))
@@ -424,11 +424,11 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 // per-computed-digest lock still guards the Put against an unrelated pinned
 // create of the same content.
 func (m *Manager) downloadStoreUnpinned(ctx context.Context, sourceURL string) (string, error) {
-	scratch, err := os.MkdirTemp("", "otherix-image-*")
+	scratch, cleanup, err := m.newImageScratch()
 	if err != nil {
-		return "", fmt.Errorf("create scratch dir: %v", err)
+		return "", err
 	}
-	defer func() { _ = os.RemoveAll(scratch) }()
+	defer cleanup()
 	tempPath := filepath.Join(scratch, "download")
 
 	m.log.Info("unpinned image not cached, downloading from source", slog.String("url", sourceURL))
@@ -476,6 +476,56 @@ func (m *Manager) cloneFromImageStore(digest, dstPath string) (EnsureResult, err
 		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
 	}
 	return EnsureResult{SHA256: digest, Path: blobPath, SizeBytes: fi.Size()}, nil
+}
+
+// imageScratchDir returns the managed directory under which image downloads are
+// staged before being stored. It is a sibling of the image store root so the
+// agent boot sweep can reclaim any partial download a crash left behind; when no
+// image store is wired (test path) it returns "" so os.MkdirTemp falls back to
+// the OS temp dir.
+func (m *Manager) imageScratchDir() string {
+	if m.imageStore == nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(m.imageStore.Root()), "image-scratch")
+}
+
+// newImageScratch creates a fresh per-download scratch directory under the
+// managed image-scratch root (so the agent boot sweep can reclaim a partial
+// download a crash leaves behind), falling back to the OS temp dir when no image
+// store is wired (test path). It returns the temp dir path and a cleanup func the
+// caller defers.
+func (m *Manager) newImageScratch() (string, func(), error) {
+	scratchRoot := m.imageScratchDir()
+	if scratchRoot != "" {
+		if err := os.MkdirAll(scratchRoot, 0o750); err != nil {
+			return "", nil, fmt.Errorf("create image scratch root: %v", err)
+		}
+	}
+	scratch, err := os.MkdirTemp(scratchRoot, "otherix-image-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create scratch dir: %v", err)
+	}
+	return scratch, func() { _ = os.RemoveAll(scratch) }, nil
+}
+
+// SweepImageScratch removes every leftover image-download scratch dir under the
+// managed image-scratch root. A crash during a download leaves a partial file
+// there that no other sweep reclaims; the agent calls this once at boot. A nil
+// image store (test path) is a no-op. Best-effort: a removal error is logged, not
+// fatal.
+func (m *Manager) SweepImageScratch() {
+	dir := m.imageScratchDir()
+	if dir == "" {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		m.log.Warn("sweep image scratch: remove", slog.String("dir", dir), slog.String("err", err.Error()))
+		return
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		m.log.Warn("sweep image scratch: recreate", slog.String("dir", dir), slog.String("err", err.Error()))
+	}
 }
 
 // imageMetaDir returns the sibling directory holding <digest>.meta readability

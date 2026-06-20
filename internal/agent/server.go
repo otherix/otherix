@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -129,6 +130,17 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("blob transport: %w", err)
 	}
 
+	// Boot hygiene, run synchronously BEFORE anything that can open a `.staging`
+	// or image-scratch temp starts (the listener accepting /v1/blobs/pull and the
+	// reconcilers driving a create/import). The boot staging sweep removes ALL
+	// staging on both stores; running it concurrently with serving could delete an
+	// in-flight Put's temp mid-write. SweepImageScratch and the temp-dir backstop
+	// reclaim image downloads a crash left behind that no periodic sweep covers.
+	sweeper := newArtifactSweeper(artStore, manager.ImageStore(), log)
+	sweeper.BootSweep(ctx)
+	manager.SweepImageScratch()
+	sweepLeftoverImageTempDirs(log)
+
 	// Per-resource reconcilers (pool / network / vm / wireguard). Each plugs
 	// into the heartbeat sender as both a ResponseHandler (consumes its
 	// declared_* slice) and a reporter (publishes observed state).
@@ -176,7 +188,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
-	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", newArtifactSweeper(artStore, manager.ImageStore(), log).Run, log)
+	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", sweeper.Run, log)
 	blobScrubberDone := runReconciler(heartbeatCtx, "blob scrubber", (&blobScrubber{
 		artifactStore: artStore,
 		imageStore:    manager.ImageStore(),
@@ -374,6 +386,24 @@ func awaitDone(dones []namedDone, timeout time.Duration) (timedOut bool, stuck [
 		}
 	}
 	return false, nil
+}
+
+// sweepLeftoverImageTempDirs removes any leftover `otherix-image-*` scratch dirs
+// in the OS temp dir at boot. This is a backstop for the historical layout (and
+// the no-image-store test path) where image downloads staged under
+// os.MkdirTemp("", ...) and a crash left a partial multi-GB file that no other
+// sweep reclaimed. Best-effort: glob and removal errors are logged, never fatal.
+func sweepLeftoverImageTempDirs(log *slog.Logger) {
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "otherix-image-*"))
+	if err != nil {
+		log.Warn("sweep leftover image temp dirs: glob", "error", err.Error())
+		return
+	}
+	for _, dir := range matches {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			log.Warn("sweep leftover image temp dirs: remove", "dir", dir, "error", rmErr.Error())
+		}
+	}
 }
 
 // runReconciler launches one reconciler's Run loop in a goroutine and

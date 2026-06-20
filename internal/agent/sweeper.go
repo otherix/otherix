@@ -39,11 +39,16 @@ func newArtifactSweeper(store, imageStore *artifactstore.Store, log *slog.Logger
 	return &artifactSweeper{store: store, imageStore: imageStore, log: log}
 }
 
-// Run sweeps once immediately (boot pass: clear all staging), then on each tick
-// until ctx is cancelled (periodic pass: spare fresh staging). Returns ctx.Err()
-// on cancellation so the reconciler drain logs it at info.
+// BootSweep runs the one-time boot pass synchronously (clear all staging on both
+// stores) before the agent starts serving, so an in-flight Put opened after
+// serving begins is never swept mid-write.
+func (a *artifactSweeper) BootSweep(ctx context.Context) { a.sweep(ctx, 0) }
+
+// Run sweeps on each tick until ctx is cancelled (periodic pass: spare fresh
+// staging). The one-time boot pass that clears all staging is run separately via
+// BootSweep before serving, so Run performs the periodic pass only. Returns
+// ctx.Err() on cancellation so the reconciler drain logs it at info.
 func (a *artifactSweeper) Run(ctx context.Context) error {
-	a.sweep(ctx, 0)
 	t := time.NewTicker(artifactSweepInterval)
 	defer t.Stop()
 	for {
