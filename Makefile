@@ -249,6 +249,10 @@ smoke-artifact-gc: ## Artifact GC smoke: the blob collector reclaims orphaned an
 smoke-artifact-janitor: ## Artifact janitor smoke: the agent boot-time store hygiene sweep clears staging and repairs a missing sidecar, and the CP backstop reclaims a leaked blob whose placement record was lost while never touching a referenced blob (run after local-dev-start)
 	@bash dev/smoke/artifact-janitor/run.sh
 
+.PHONY: smoke-blob-scrub
+smoke-blob-scrub: ## Real-agent smoke: blob scrubber detects corruption and durability heals (3-node)
+	@bash dev/smoke/blob-scrub/run.sh
+
 .PHONY: smoke-image-cache
 smoke-image-cache: ## Image-cache smoke: a pinned image (--image-sha256) is peer-pulled onto a second node from a node that already caches it (cache hit, no re-download), the image tier stays out of the durability placement map, and a no-peer-holder create falls back to a source download and boots (run after local-dev-start)
 	@bash dev/smoke/image-cache/run.sh
