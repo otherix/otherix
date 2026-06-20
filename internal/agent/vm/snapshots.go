@@ -113,6 +113,15 @@ func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, src, dest str
 		return fmt.Errorf("dial qmp: %v", err)
 	}
 	defer func() { _ = client.Close() }()
+	// Best-effort reap of any leftover snapshot backup-target nodes a prior
+	// crashed capture left in this still-running guest (the agent dying between
+	// blockdev-add and blockdev-del does not kill the guest, so the node + its
+	// open fd linger). DropStaleBackupTargets is fail-toward-inaction; its error
+	// is discarded so a cleanup failure NEVER fails the capture that follows.
+	// Within this one Capture the backup adds and drops its own node before
+	// returning, so this entry-time reap only ever sees truly-stale nodes from
+	// PRIOR tasks.
+	_ = client.DropStaleBackupTargets(ctx)
 	jobID, nodeName := qemuBackupIDs()
 	if err := client.BackupDiskToFile(ctx, jobID, nodeName, device, dest); err != nil {
 		return fmt.Errorf("backup disk %s: %v", device, err)
@@ -127,7 +136,7 @@ func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, src, dest str
 // limit and qemu rejects blockdev-add with "Node name too long".
 func qemuBackupIDs() (jobID, nodeName string) {
 	s := uuid.NewString()[:8]
-	return "snap-" + s, "snaptgt-" + s
+	return "snap-" + s, qemu.BackupTargetNodePrefix + s
 }
 
 // snapshotDiskDevice is one VM disk to capture: its virtio index, the wire

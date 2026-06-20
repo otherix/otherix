@@ -6,12 +6,22 @@ package qemu
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitalocean/go-qemu/qmp"
+	"github.com/google/go-cmp/cmp"
 )
+
+// discardLogger returns a slog.Logger that drops everything, for tests that
+// assert behaviour rather than log output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 func TestBlockdevBackupCmd(t *testing.T) {
 	raw := blockdevBackupCmd("backup-disk0", "virtio0", "snap-target-disk0")
@@ -209,6 +219,107 @@ func TestRunBackup_FailsClosedOnTimeout(t *testing.T) {
 	}
 	if got := f.snapshot(); !contains(got, "blockdev-del") {
 		t.Errorf("calls = %v, want blockdev-del cleanup on the timeout path", got)
+	}
+}
+
+// fakeStaleConn is a staleTargetConn test double: it serves a fixed set of
+// named block nodes from QueryNamedBlockNodes and records every node name passed
+// to BlockdevDel. delErrs maps a node name to the error BlockdevDel returns for
+// it (e.g. qemu's "node still in use by an active job" refusal); queryErr, when
+// set, makes the enumerate fail.
+type fakeStaleConn struct {
+	nodes    []NamedBlockNode
+	queryErr error
+	delErrs  map[string]error
+
+	mu   sync.Mutex
+	dels []string
+}
+
+func (f *fakeStaleConn) QueryNamedBlockNodes() ([]NamedBlockNode, error) {
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	return f.nodes, nil
+}
+
+func (f *fakeStaleConn) BlockdevDel(nodeName string) error {
+	f.mu.Lock()
+	f.dels = append(f.dels, nodeName)
+	f.mu.Unlock()
+	if f.delErrs != nil {
+		return f.delErrs[nodeName]
+	}
+	return nil
+}
+
+func (f *fakeStaleConn) deleted() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.dels...)
+}
+
+// TestDropStaleBackupTargets_DropsOnlyPrefixed asserts the cleanup drops exactly
+// the stale snaptgt-* nodes and NEVER a real VM disk (virtio<i>): the prefix
+// guard is load-bearing because blockdev-del on a live disk would detach a
+// running guest's storage.
+func TestDropStaleBackupTargets_DropsOnlyPrefixed(t *testing.T) {
+	f := &fakeStaleConn{nodes: []NamedBlockNode{
+		{NodeName: "snaptgt-abc12345"},
+		{NodeName: "virtio0"},
+	}}
+
+	if err := dropStaleBackupTargets(f, discardLogger()); err != nil {
+		t.Fatalf("dropStaleBackupTargets() = %v, want nil", err)
+	}
+
+	got := f.deleted()
+	want := []string{"snaptgt-abc12345"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("deleted nodes mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestDropStaleBackupTargets_InUseRefusalIsBestEffort asserts that when qemu
+// refuses blockdev-del because the stale node is still in use by an active job,
+// the cleanup leaves it and STILL returns nil (fail toward inaction; a cleanup
+// failure must never fail the capture that follows).
+func TestDropStaleBackupTargets_InUseRefusalIsBestEffort(t *testing.T) {
+	f := &fakeStaleConn{
+		nodes: []NamedBlockNode{
+			{NodeName: "snaptgt-aaaaaaaa"},
+			{NodeName: "snaptgt-bbbbbbbb"},
+		},
+		delErrs: map[string]error{
+			"snaptgt-aaaaaaaa": errors.New("Node 'snaptgt-aaaaaaaa' is in use"),
+		},
+	}
+
+	if err := dropStaleBackupTargets(f, discardLogger()); err != nil {
+		t.Fatalf("dropStaleBackupTargets() = %v, want nil on a best-effort in-use refusal", err)
+	}
+
+	// Both stale nodes are attempted; the in-use one is left (its del errored),
+	// the other is dropped. The loop continues past the refusal.
+	got := f.deleted()
+	want := []string{"snaptgt-aaaaaaaa", "snaptgt-bbbbbbbb"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("attempted dels mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestDropStaleBackupTargets_EnumerateErrorReturnsNil asserts an enumerate
+// (query) failure returns nil and deletes nothing: a failure to list the block
+// nodes must not fail the capture, and with no enumeration there is nothing to
+// safely drop.
+func TestDropStaleBackupTargets_EnumerateErrorReturnsNil(t *testing.T) {
+	f := &fakeStaleConn{queryErr: errors.New("monitor closed")}
+
+	if err := dropStaleBackupTargets(f, discardLogger()); err != nil {
+		t.Fatalf("dropStaleBackupTargets() = %v, want nil on enumerate failure", err)
+	}
+	if got := f.deleted(); len(got) != 0 {
+		t.Errorf("deleted = %v, want no dels when enumerate fails", got)
 	}
 }
 
