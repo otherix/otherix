@@ -171,6 +171,16 @@ func TestListDigests(t *testing.T) {
 	}
 }
 
+func TestSyncDirSurfacesError(t *testing.T) {
+	// A sync failure on the parent dir defeats the crash-durability guarantee and
+	// must be surfaced, not swallowed. Pointing syncDir at an absent path exercises
+	// the open-failure branch (fsync-failure itself is not unit-injectable).
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := syncDir(missing); err == nil {
+		t.Errorf("syncDir(absent) = nil, want error")
+	}
+}
+
 func TestNewRejectsRootOutsideAllowlist(t *testing.T) {
 	if _, err := New("/etc/otherix/artifacts"); err == nil {
 		t.Errorf("New(/etc/otherix/artifacts) = nil, want allowlist error")
