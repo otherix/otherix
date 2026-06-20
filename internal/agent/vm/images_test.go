@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -794,5 +796,81 @@ func TestEnsureImageIntoUnpinnedCoalescesConcurrentSameURL(t *testing.T) {
 	}
 	if !m.ImageStore().Has(wantSHA) {
 		t.Errorf("image store missing digest %q after coalesced download", wantSHA)
+	}
+}
+
+func discardImageLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestSweepLegacyBasenameCacheRemovesRegularFilesKeepsDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), imagesSubdir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"noble.img", "noble.img.sha256", "jammy.img", "jammy.img.sha256"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := sweepLegacyBasenameCache(dir, discardImageLogger())
+	if got != 4 {
+		t.Errorf("removed = %d, want 4", got)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("images dir must survive the sweep: %v", err)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 0 {
+		t.Errorf("images dir not emptied: %d entries remain", len(ents))
+	}
+}
+
+func TestSweepLegacyBasenameCacheAbsentDirIsNoop(t *testing.T) {
+	got := sweepLegacyBasenameCache(filepath.Join(t.TempDir(), "nonexistent"), discardImageLogger())
+	if got != 0 {
+		t.Errorf("removed = %d, want 0 for an absent directory", got)
+	}
+}
+
+func TestSweepLegacyBasenameCacheSkipsSubdirectories(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), imagesSubdir)
+	if err := os.MkdirAll(filepath.Join(dir, "keep-me-subdir"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "noble.img"), []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	got := sweepLegacyBasenameCache(dir, discardImageLogger())
+	if got != 1 {
+		t.Errorf("removed = %d, want 1 (the regular file only)", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep-me-subdir")); err != nil {
+		t.Errorf("subdirectory must not be removed: %v", err)
+	}
+}
+
+func TestAddPoolSweepsLegacyBasenameCacheOnFirstRegistration(t *testing.T) {
+	m, _, _ := newImageTestManager(t)
+	root := t.TempDir()
+	imagesDir := filepath.Join(root, imagesSubdir)
+	if err := os.MkdirAll(imagesDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(imagesDir, "stale.img")
+	if err := os.WriteFile(legacy, []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AddPool("sweep-pool", root); err != nil {
+		t.Fatalf("AddPool = %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy basename cache file not swept on first AddPool")
+	}
+	if _, err := os.Stat(imagesDir); err != nil {
+		t.Errorf("images dir must survive AddPool sweep: %v", err)
 	}
 }

@@ -584,8 +584,18 @@ func (m *Manager) AddPool(name, root string) error {
 		return fmt.Errorf("pool %q subdirs: %w", name, err)
 	}
 	m.poolsMu.Lock()
+	_, existed := m.pools[name]
 	m.pools[name] = pool{name: name, root: root}
 	m.poolsMu.Unlock()
+	// On a pool's first registration in this process, sweep its retired legacy
+	// basename image cache once (the write path is gone post-#120; a periodic
+	// pass would find nothing new). Best-effort and self-contained.
+	if !existed {
+		if n := sweepLegacyBasenameCache(filepath.Join(root, imagesSubdir), m.log); n > 0 {
+			m.log.Info("swept legacy basename image cache",
+				slog.String("pool", name), slog.Int("files_removed", n))
+		}
+	}
 	return nil
 }
 

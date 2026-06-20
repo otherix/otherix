@@ -81,6 +81,35 @@ const imagesSubdir = "images"
 // lock namespace with any real pool).
 const imageStoreLockPool = "\x00image-store"
 
+// sweepLegacyBasenameCache removes the regular files (cached image files and
+// their .sha256 sidecars) left in a pool's legacy basename image cache directory
+// imagesDir. PR #120 retired the write path into this cache - unpinned images now
+// live in the node-level digest image store - so the directory holds only frozen
+// pre-#120 entries that nothing reads as a cache-hit source. It removes only
+// regular files in the immediate directory: it never recurses, never removes the
+// directory itself (ensurePoolSubdirs keeps it; ListImages tolerates it empty),
+// and is best-effort per file. Returns the count removed; an absent or unreadable
+// directory yields 0.
+func sweepLegacyBasenameCache(imagesDir string, log *slog.Logger) int {
+	entries, err := os.ReadDir(imagesDir)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		if rmErr := os.Remove(filepath.Join(imagesDir, e.Name())); rmErr != nil {
+			log.Warn("sweep legacy basename cache: remove",
+				slog.String("file", e.Name()), slog.String("err", rmErr.Error()))
+			continue
+		}
+		removed++
+	}
+	return removed
+}
+
 // Image-surface sentinel errors. Callers branch on errors.Is for envelope
 // mapping; EnsureImage is synchronous so all of these surface directly to
 // the create flow that drives it.
