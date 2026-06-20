@@ -468,6 +468,12 @@ func (m *Manager) downloadStoreUnpinned(ctx context.Context, sourceURL string) (
 
 // cloneFromImageStore resolves the cached blob path for digest, bumps its mtime
 // (LRU for the eviction sweeper), and clones it into dstPath.
+//
+// A cache hit clones on the trust of the content-addressed name: the blob bytes
+// are not re-hashed on this hot path, since re-hashing a multi-GB image on every
+// create would defeat the cache. Integrity is enforced out of band - the bytes
+// are verified at Put time, and the periodic blob scrubber re-hashes stored blobs
+// and deletes any corrupt copy - so the clone here may trust the filename digest.
 func (m *Manager) cloneFromImageStore(digest, dstPath string) (EnsureResult, error) {
 	blobPath, err := m.imageStore.BlobPath(digest)
 	if err != nil {

@@ -63,7 +63,8 @@ sole positional.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--image-url` | (required) | Source image URL to download and boot from. |
-| `--image-sha256` | (none) | Expected sha256, verified after download. |
+| `--image-sha256` | (none) | Expected sha256, verified after download. Pins the image to exact content. |
+| `--pull-policy` | `if-not-present` | `if-not-present` reuses a cached image for the URL; `always` forces a fresh re-fetch from `--image-url`. A mutable URL is not re-fetched under `if-not-present` (see the Create-and-manage-VMs guide). |
 | `--arch` | (required) | `amd64` or `arm64`. |
 | `--firmware` | (none) | Firmware name (mutually exclusive with `--firmware-id`). |
 | `--firmware-id` | (none) | Firmware uuid (mutually exclusive with `--firmware`). |

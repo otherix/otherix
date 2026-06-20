@@ -38,7 +38,8 @@ vm running name=<name>
 |---|---|---|
 | `--image-url` | - | Source image URL to download and boot from. Required. |
 | `--arch` | - | `amd64` or `arm64`. Required. |
-| `--image-sha256` | (unset) | Expected sha256; verified after download. |
+| `--image-sha256` | (unset) | Expected sha256; verified after download. Pins the image to exact content. |
+| `--pull-policy` | `if-not-present` | `if-not-present` reuses a cached image for the URL; `always` forces a fresh re-fetch from `--image-url`. See the warning below. |
 | `--firmware` | (unset) | Firmware name. Mutually exclusive with `--firmware-id`. |
 | `--firmware-id` | (unset) | Firmware uuid. Mutually exclusive with `--firmware`. |
 | `--format` | (server default) | Disk format, e.g. `qcow2` or `raw`. |
@@ -57,6 +58,21 @@ vm running name=<name>
 When `--pool` is omitted the cluster default-pool reference is used and
 the scheduler picks the (node, pool instance) target. A `--node` hint
 pins placement to exactly that node.
+
+!!! warning "A mutable URL is not re-fetched under the default pull policy"
+    The default `--pull-policy if-not-present` follows Kubernetes
+    `IfNotPresent` semantics: once the cluster has imported an
+    `--image-url`, later unpinned creates of the same URL reuse the
+    cached image and do **not** re-download. If the URL is a rolling tag
+    whose content was republished (for example a
+    `noble-minimal-cloudimg-arm64.img` that upstream rebuilt), the new
+    VM silently boots the previously-cached image, not the current one.
+
+    To always boot the current content of a mutable URL, pass
+    `--pull-policy always`, which forces a fresh fetch from the URL. For
+    an exact, reproducible image instead, pin it with
+    `--image-sha256 <hex>`: the download is verified against the digest
+    and the same digest is reused everywhere.
 
 ## Inspect
 
