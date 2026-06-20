@@ -216,6 +216,9 @@ func ProjectVM(v cpclient.VM) ([]byte, error) {
 	if v.Format != "" {
 		spec["format"] = v.Format
 	}
+	if v.ImagePullPolicy != "" {
+		spec["imagePullPolicy"] = v.ImagePullPolicy
+	}
 	if v.Pool != "" {
 		spec["pool"] = v.Pool
 	}

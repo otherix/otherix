@@ -22,6 +22,7 @@ const (
 	flagFirmware         = "firmware"
 	flagFirmwareID       = "firmware-id"
 	flagFormat           = "format"
+	flagPullPolicy       = "pull-policy"
 	flagDiskGiB          = "disk-gib"
 	flagPool             = "pool"
 	flagNode             = "node"
@@ -96,6 +97,7 @@ and the agent falls back to legacy SLIRP networking.`,
 	cmd.Flags().String(flagFirmware, "", "firmware name (optional; mutually exclusive with --firmware-id)")
 	cmd.Flags().String(flagFirmwareID, "", "firmware uuid (optional; mutually exclusive with --firmware)")
 	cmd.Flags().String(flagFormat, "", "image disk format, e.g. qcow2 or raw (optional; server default applies)")
+	cmd.Flags().String(flagPullPolicy, "", "image pull policy: if-not-present (default) or always (force re-fetch from --image-url)")
 	cmd.Flags().Int(flagDiskGiB, 0, "root disk size in GiB (optional; defaults to the image's virtual size)")
 	cmd.Flags().String(flagPool, "", "storage pool name or uuid (optional; cluster default used when empty)")
 	cmd.Flags().String(flagNode, "", "explicit placement hint — node name or uuid (optional)")
@@ -131,6 +133,7 @@ type createFlags struct {
 	firmware          string
 	firmwareID        string
 	format            string
+	pullPolicy        string
 	diskGiB           int
 	pool              string
 	node              string
@@ -219,6 +222,9 @@ func parseImageFlags(cmd *cobra.Command, f *createFlags) error {
 	if f.format, err = cmd.Flags().GetString(flagFormat); err != nil {
 		return err
 	}
+	if f.pullPolicy, err = cmd.Flags().GetString(flagPullPolicy); err != nil {
+		return err
+	}
 	if f.diskGiB, err = cmd.Flags().GetInt(flagDiskGiB); err != nil {
 		return err
 	}
@@ -284,6 +290,19 @@ func readCloudInitFlag(cmd *cobra.Command, name string, validate bool) (*string,
 	return &out, nil
 }
 
+// normalizePullPolicy maps the kebab CLI value to the API wire value. Empty
+// stays empty (the server defaults to if_not_present).
+func normalizePullPolicy(s string) string {
+	switch s {
+	case "if-not-present":
+		return "if_not_present"
+	case "always":
+		return "always"
+	default:
+		return s
+	}
+}
+
 func runCreate(cmd *cobra.Command, args []string) error {
 	c, err := clientFromFlags(cmd)
 	if err != nil {
@@ -320,6 +339,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		req.Firmware = f.firmware
 		req.FirmwareID = f.firmwareID
 		req.Format = f.format
+		req.ImagePullPolicy = normalizePullPolicy(f.pullPolicy)
 		req.DiskGiB = f.diskGiB
 	}
 	if f.node != "" {

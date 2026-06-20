@@ -226,6 +226,7 @@ func vmCreateOp(d Document) (CreateOp, error) {
 		req.Firmware = s.Firmware
 		req.FirmwareID = s.FirmwareID
 		req.Format = s.Format
+		req.ImagePullPolicy = s.ImagePullPolicy
 		req.DiskGiB = s.DiskGiB
 	}
 	if s.Node != "" {

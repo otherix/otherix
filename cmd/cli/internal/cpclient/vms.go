@@ -41,16 +41,20 @@ import (
 //     with `status.reason` `pool_not_on_node`. A uuid literal in `Node`
 //     is rejected at create with 400 `validation_failed`.
 type CreateVMRequest struct {
-	Name        string  `json:"name"`
-	ImageURL    string  `json:"image_url"`
-	ImageSHA256 string  `json:"image_sha256,omitempty"`
-	Arch        string  `json:"arch"`
-	Firmware    string  `json:"firmware,omitempty"`
-	FirmwareID  string  `json:"firmware_id,omitempty"`
-	Format      string  `json:"format,omitempty"`
-	DiskGiB     int     `json:"disk_gib,omitempty"`
-	Pool        string  `json:"pool,omitempty"`
-	Node        *string `json:"node,omitempty"`
+	Name        string `json:"name"`
+	ImageURL    string `json:"image_url"`
+	ImageSHA256 string `json:"image_sha256,omitempty"`
+	Arch        string `json:"arch"`
+	Firmware    string `json:"firmware,omitempty"`
+	FirmwareID  string `json:"firmware_id,omitempty"`
+	Format      string `json:"format,omitempty"`
+	// ImagePullPolicy selects whether a cached image is reused
+	// ("if_not_present", the server default) or re-fetched from ImageURL
+	// ("always"). omitempty leaves the server default in force when unset.
+	ImagePullPolicy string  `json:"image_pull_policy,omitempty"`
+	DiskGiB         int     `json:"disk_gib,omitempty"`
+	Pool            string  `json:"pool,omitempty"`
+	Node            *string `json:"node,omitempty"`
 	// SourceSnapshotID recreates the VM from a snapshot instead of an image.
 	// Exactly one of ImageURL / SourceSnapshotID must be set. When set, the
 	// server takes architecture / format / firmware from the snapshot manifest
@@ -92,21 +96,24 @@ type CreateVMRequest struct {
 // operator), nil otherwise. Architecture stays a string here
 // (the CLI does not need the typed CpuArch enum for output formatting).
 type VM struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	OwnerID      string   `json:"owner_id"`
-	Owner        *string  `json:"owner"`
-	ImageURL     string   `json:"image_url"`
-	ImageSHA256  string   `json:"image_sha256,omitempty"`
-	Format       string   `json:"format"`
-	Pool         string   `json:"pool"`
-	Node         *string  `json:"node"`
-	Networks     []string `json:"networks"`
-	Architecture string   `json:"architecture"`
-	VCPUs        int      `json:"vcpus"`
-	MemoryMB     int      `json:"memory_mb"`
-	Status       VMStatus `json:"status"`
-	DesiredPhase string   `json:"desired_phase"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	OwnerID     string  `json:"owner_id"`
+	Owner       *string `json:"owner"`
+	ImageURL    string  `json:"image_url"`
+	ImageSHA256 string  `json:"image_sha256,omitempty"`
+	Format      string  `json:"format"`
+	// ImagePullPolicy echoes the VM's image_pull_policy ("if_not_present" |
+	// "always") so `get -o yaml` round-trips it into spec.imagePullPolicy.
+	ImagePullPolicy string   `json:"image_pull_policy"`
+	Pool            string   `json:"pool"`
+	Node            *string  `json:"node"`
+	Networks        []string `json:"networks"`
+	Architecture    string   `json:"architecture"`
+	VCPUs           int      `json:"vcpus"`
+	MemoryMB        int      `json:"memory_mb"`
+	Status          VMStatus `json:"status"`
+	DesiredPhase    string   `json:"desired_phase"`
 	// SourceSnapshotID is the snapshot a VM was restored from, when it was
 	// created in the snapshot-source mode (nil for image-sourced VMs). The
 	// server surfaces it on GET /v1/vms/{id}; `vm get -o yaml` round-trips it
