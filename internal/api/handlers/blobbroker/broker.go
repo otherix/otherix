@@ -2,10 +2,12 @@
 // Copyright 2026 Andrei Taranik
 
 // Package blobbroker is the CP-side control that orchestrates a cross-node
-// blob pull saga: discover a live holder from observed inventory,
-// mint a single-use per-op token, tell the holder to serve, tell the consumer
-// to pull and await it to terminal, then tear down. It fails closed with
-// ErrBlobUnavailable when no holder exists - the honest K=1 boundary.
+// blob pull saga: discover the live holders from observed inventory, then for
+// each in turn mint a single-use per-op token, tell the holder to serve, tell
+// the consumer to pull and await it to terminal, and tear the serve down. It
+// advances to the next live holder on a serve or pull failure and returns on the
+// first success. It fails closed with ErrBlobUnavailable when no live holder
+// exists - the honest availability boundary.
 package blobbroker
 
 import (
@@ -99,11 +101,16 @@ func New(st Store, exec AgentExecutor, log *slog.Logger) *Broker {
 }
 
 // BrokerPull makes the blob identified by digest present on consumerNodeID by
-// pulling it from a live holder. It discovers a holder from observed inventory
-// (fail-closed ErrBlobUnavailable when none), mints a single-use token, opens
-// the holder serve listener, drives the consumer pull to terminal, then tears
-// the serve listener down. Returns nil only when the consumer pull completed
-// successfully; the saga phase mirrors the outcome.
+// pulling it from a live holder. It discovers the holders from observed
+// inventory, filters them to the LIVE set (a holder reported unreachable or gone,
+// or whose node lookup fails, is skipped) preserving the inventory order, and
+// fails closed with ErrBlobUnavailable when the live set is empty (no holders, or
+// all holders dead). It then iterates the live holders: for each it mints a
+// single-use token, opens the holder serve listener, drives the consumer pull to
+// terminal, and ALWAYS tears the serve listener down. It returns nil on the first
+// holder that completes successfully; on a serve or pull failure it advances to
+// the next live holder, and if every live holder fails it returns the last cause
+// wrapped. The saga phase of the attempted holder mirrors its outcome.
 //
 // The consumer pull is awaited to terminal, and that await is bounded by BOTH
 // the caller's ctx deadline AND the agent client's configured timeout
@@ -124,25 +131,62 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	if err != nil {
 		return fmt.Errorf("discover holders: %v", err)
 	}
-	if len(holders) == 0 {
-		return ErrBlobUnavailable
-	}
-	holderID := holders[0] // any live holder suffices; placement-aware selection is a separate concern.
 
-	holder, err := b.store.NodeByID(ctx, holderID)
-	if err != nil {
-		return fmt.Errorf("load holder node: %v", err)
-	}
 	consumer, err := b.store.NodeByID(ctx, consumerNodeID)
 	if err != nil {
 		return fmt.Errorf("load consumer node: %v", err)
 	}
 
+	// Filter holders to the LIVE set, preserving the inventory order so the choice
+	// stays deterministic. A holder reported unreachable or gone, or one whose node
+	// lookup fails, is skipped: BlobHolders prunes only gone nodes from inventory,
+	// so an unreachable holder can still appear here and would otherwise drive a
+	// serve at a dead endpoint.
+	var live []store.Node
+	for _, id := range holders {
+		n, err := b.store.NodeByID(ctx, id)
+		if err != nil {
+			b.log.WarnContext(ctx, "blobbroker: skip holder, node lookup failed",
+				"holder_id", id, "error", err)
+			continue
+		}
+		if !isLive(n) {
+			continue
+		}
+		live = append(live, n)
+	}
+	if len(live) == 0 {
+		return ErrBlobUnavailable
+	}
+
+	// Iterate the live holders, advancing on failure and returning on the first
+	// success. lastErr carries the most recent per-holder cause so an all-fail
+	// outcome surfaces a real reason rather than the no-holder sentinel.
+	var lastErr error
+	for _, holder := range live {
+		if err := b.pullFromHolder(ctx, digest, holder, consumer, consumerNodeID, tier); err != nil {
+			b.log.WarnContext(ctx, "blobbroker: holder pull failed, trying next live holder",
+				"holder", holder.AdvertisedEndpoint, "error", err)
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("all live holders failed: %v", lastErr)
+}
+
+// pullFromHolder runs one per-holder pull saga: mint a single-use token, open the
+// holder serve listener, drive the consumer pull to terminal, then ALWAYS tear
+// the holder serve listener down. The teardown is deferred so it runs on every
+// return path (serve failure, pull failure, success) - no serve listener leaks
+// when the caller falls through to the next holder. It returns nil only when the
+// consumer pull completed successfully; the saga phase mirrors the outcome.
+func (b *Broker) pullFromHolder(ctx context.Context, digest string, holder, consumer store.Node, consumerNodeID uuid.UUID, tier Tier) error {
 	saga, token, err := b.store.CreatePullSaga(ctx, store.CreatePullSagaParams{
 		ID:           uuid.New(),
 		Digest:       digest,
 		ConsumerNode: consumerNodeID,
-		HolderNode:   holderID,
+		HolderNode:   holder.ID,
 		TokenTTL:     pullTokenTTL,
 	})
 	if err != nil {
@@ -159,6 +203,20 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
 		return fmt.Errorf("holder serve: %v", err)
 	}
+
+	// Teardown is best-effort and ALWAYS runs (deferred so it fires on every
+	// return path below, including the pull-failure fallthrough): a stop failure
+	// logs but never fails a pull that otherwise succeeded (the listener
+	// self-expires on TTL). Keyed on the per-op token (minted by CreatePullSaga),
+	// not the digest, so it names exactly this serve even if another serve of the
+	// same digest is live.
+	defer func() {
+		if stopErr := b.exec.StopServe(ctx, holder.AdvertisedEndpoint, token); stopErr != nil {
+			b.log.WarnContext(ctx, "blobbroker: stop serve failed (best-effort)",
+				"holder", holder.AdvertisedEndpoint, "error", stopErr)
+		}
+	}()
+
 	// Records the serve endpoint and advances the saga to serving.
 	// best-effort: saga endpoint is non-authoritative metadata; a write failure must not abort an in-progress pull.
 	_ = b.store.UpdatePullSagaServeEndpoint(ctx, saga.ID, serveEndpoint)
@@ -182,23 +240,22 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	} else {
 		expectedSize, _ = b.store.BlobSize(ctx, digest)
 	}
-	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize, tier)
-
-	// Teardown is best-effort and ALWAYS runs: a stop failure logs but never
-	// fails a pull that otherwise succeeded (the listener self-expires on TTL).
-	// Keyed on the per-op token (minted by CreatePullSaga), not the digest, so it
-	// names exactly this serve even if another serve of the same digest is live.
-	if stopErr := b.exec.StopServe(ctx, holder.AdvertisedEndpoint, token); stopErr != nil {
-		b.log.WarnContext(ctx, "blobbroker: stop serve failed (best-effort)",
-			"holder", holder.AdvertisedEndpoint, "error", stopErr)
-	}
-
-	if pullErr != nil {
+	if pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize, tier); pullErr != nil {
 		// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
 		return fmt.Errorf("consumer pull: %v", pullErr)
 	}
 	return b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseComplete)
+}
+
+// isLive reports whether a node may serve a blob pull: not soft-deleted and not
+// in a terminal-or-stale status (unreachable or gone). It mirrors the durability
+// reconciler's liveness predicate so holder selection and replica placement agree
+// on what "live" means.
+func isLive(n store.Node) bool {
+	return n.DeletedAt == nil &&
+		n.Status != store.NodeStatusUnreachable &&
+		n.Status != store.NodeStatusGone
 }
 
 // holderIdentity is the holder node's SAN name the consumer pins TLS

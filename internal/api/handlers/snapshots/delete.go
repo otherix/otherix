@@ -21,9 +21,10 @@ import (
 //
 // Sequence: resolve snapshot by id -> ownership check (404 on deny) ->
 // store.DeleteSnapshot (sync, fail-closed: refuses a snapshot with live children
-// with 409 snapshot_has_children, else soft-deletes + flips to deleting) ->
+// with 409 snapshot_has_children, refuses with 409 + blocking_resources while an
+// in-flight vm.create is sourcing it, else soft-deletes + flips to deleting) ->
 // enqueue a vm.snapshot.delete task for the async blob GC -> 202. The blob
-// removal itself is the worker's job (Task 6), gated on the CP reference graph.
+// removal itself is the worker's job, gated on the CP reference graph.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	caller := auth.UserFromContext(r.Context())
 	if caller == nil {
@@ -75,6 +76,13 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "snapshot has non-deleted children",
 				map[string]any{"reason": "snapshot_has_children"})
+			return
+		}
+		if errors.Is(err, store.ErrSnapshotSourcingCreate) {
+			response.WriteBlockingResources(w, r, &response.BlockingResourcesError{
+				Message:   "snapshot is being sourced by an in-flight VM create; wait for it to finish or delete that VM first",
+				Resources: map[string]int64{"vm_creates": 1},
+			})
 			return
 		}
 		if errors.Is(err, store.ErrNotFound) {

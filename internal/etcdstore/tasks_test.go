@@ -96,6 +96,97 @@ func TestActiveVMDeleteTaskVMIDs(t *testing.T) {
 	}
 }
 
+// vmCreateJobArgs is a minimal queue.JobArgs payload that carries a
+// source_snapshot_id, matching the wire shape of the production VMCreateArgs the
+// vm.create enqueue path persists. ActiveCreatesReferencingSnapshot decodes this
+// off the task's Args JSON.
+type vmCreateJobArgs struct {
+	SourceSnapshotID *uuid.UUID `json:"source_snapshot_id,omitempty"`
+}
+
+func (vmCreateJobArgs) Kind() string { return "vm.create" }
+
+// TestActiveCreatesReferencingSnapshot asserts the guard counts exactly the
+// pending|running vm.create tasks whose source_snapshot_id is the queried
+// snapshot: a pending and a running create are counted, while a terminal
+// (success) create, an image-sourced create (no source_snapshot_id), a create
+// referencing a different snapshot, and a non-create task are all excluded. The
+// count drops to zero once the matching creates reach a terminal state.
+func TestActiveCreatesReferencingSnapshot(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	snapID := uuid.New()
+	otherSnapID := uuid.New()
+
+	enqueueCreate := func(src *uuid.UUID, status store.TaskStatus) uuid.UUID {
+		t.Helper()
+		argsJSON := []byte(`{}`)
+		if src != nil {
+			argsJSON = []byte(`{"source_snapshot_id":"` + src.String() + `"}`)
+		}
+		res := uuid.New()
+		p := store.CreateTaskParams{
+			ID: uuid.New(), Type: "vm.create", Status: store.TaskStatusPending,
+			ResourceType: "vm", ResourceID: &res, Args: argsJSON, MaxAttempts: 3,
+		}
+		if _, err := s.EnqueueTask(ctx, p, vmCreateJobArgs{SourceSnapshotID: src}); err != nil {
+			t.Fatalf("EnqueueTask: %v", err)
+		}
+		switch status {
+		case store.TaskStatusRunning:
+			if _, err := s.UpdateTaskRunning(ctx, p.ID); err != nil {
+				t.Fatalf("UpdateTaskRunning: %v", err)
+			}
+		case store.TaskStatusSuccess, store.TaskStatusFailed, store.TaskStatusCancelled:
+			if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: p.ID, Status: status}); err != nil {
+				t.Fatalf("UpdateTaskFinalized: %v", err)
+			}
+		}
+		return p.ID
+	}
+
+	enqueueCreate(&snapID, store.TaskStatusPending)      // counted
+	enqueueCreate(&snapID, store.TaskStatusRunning)      // counted
+	enqueueCreate(&snapID, store.TaskStatusSuccess)      // terminal -> excluded
+	enqueueCreate(nil, store.TaskStatusRunning)          // image-sourced -> excluded
+	enqueueCreate(&otherSnapID, store.TaskStatusRunning) // different snapshot -> excluded
+
+	// A non-create task referencing the snapshot id is not a vm.create -> excluded.
+	res := uuid.New()
+	if _, err := s.EnqueueTask(ctx, store.CreateTaskParams{
+		ID: uuid.New(), Type: "vm.delete", Status: store.TaskStatusPending, ResourceType: "vm",
+		ResourceID: &res, Args: []byte(`{"source_snapshot_id":"` + snapID.String() + `"}`), MaxAttempts: 3,
+	}, vmCreateJobArgs{SourceSnapshotID: &snapID}); err != nil {
+		t.Fatalf("EnqueueTask(vm.delete): %v", err)
+	}
+
+	got, err := s.ActiveCreatesReferencingSnapshot(ctx, snapID)
+	if err != nil {
+		t.Fatalf("ActiveCreatesReferencingSnapshot: %v", err)
+	}
+	if got != 2 {
+		t.Errorf("ActiveCreatesReferencingSnapshot(%v) = %d, want 2 (pending + running)", snapID, got)
+	}
+
+	gotOther, err := s.ActiveCreatesReferencingSnapshot(ctx, otherSnapID)
+	if err != nil {
+		t.Fatalf("ActiveCreatesReferencingSnapshot(other): %v", err)
+	}
+	if gotOther != 1 {
+		t.Errorf("ActiveCreatesReferencingSnapshot(%v) = %d, want 1", otherSnapID, gotOther)
+	}
+
+	absent := uuid.New()
+	gotAbsent, err := s.ActiveCreatesReferencingSnapshot(ctx, absent)
+	if err != nil {
+		t.Fatalf("ActiveCreatesReferencingSnapshot(absent): %v", err)
+	}
+	if gotAbsent != 0 {
+		t.Errorf("ActiveCreatesReferencingSnapshot(%v) = %d, want 0", absent, gotAbsent)
+	}
+}
+
 func TestEnqueueTaskWritesTaskAndJob(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

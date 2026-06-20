@@ -113,6 +113,15 @@ func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, src, dest str
 		return fmt.Errorf("dial qmp: %v", err)
 	}
 	defer func() { _ = client.Close() }()
+	// Best-effort reap of any leftover snapshot backup-target nodes a prior
+	// crashed capture left in this still-running guest (the agent dying between
+	// blockdev-add and blockdev-del does not kill the guest, so the node + its
+	// open fd linger). DropStaleBackupTargets is fail-toward-inaction; its error
+	// is discarded so a cleanup failure NEVER fails the capture that follows.
+	// Within this one Capture the backup adds and drops its own node before
+	// returning, so this entry-time reap only ever sees truly-stale nodes from
+	// PRIOR tasks.
+	_ = client.DropStaleBackupTargets(ctx)
 	jobID, nodeName := qemuBackupIDs()
 	if err := client.BackupDiskToFile(ctx, jobID, nodeName, device, dest); err != nil {
 		return fmt.Errorf("backup disk %s: %v", device, err)
@@ -127,7 +136,7 @@ func (qmpDiskCapturer) Capture(ctx context.Context, v *VM, device, src, dest str
 // limit and qemu rejects blockdev-add with "Node name too long".
 func qemuBackupIDs() (jobID, nodeName string) {
 	s := uuid.NewString()[:8]
-	return "snap-" + s, "snaptgt-" + s
+	return "snap-" + s, qemu.BackupTargetNodePrefix + s
 }
 
 // snapshotDiskDevice is one VM disk to capture: its virtio index, the wire
@@ -289,13 +298,62 @@ func produceBlob(ctx context.Context, srcDisk, snapshotsDir string, convert conv
 		return BlobResult{SHA256: sha, Path: blobPath, SizeBytes: cachedSize}, nil
 	}
 
+	// fsync the staged blob content before the rename so the bytes are durable
+	// before the rename names them. The staging file was written by an external
+	// convert process, so open it explicitly to flush its content: on a power
+	// loss the rename must never become visible ahead of the data blocks (which
+	// would leave a valid-named blob with garbage content that ListSnapshots
+	// advertises as a healthy holder).
+	if err := syncFile(tempPath); err != nil {
+		return BlobResult{}, fmt.Errorf("sync staging blob: %v", err)
+	}
 	if err := os.Rename(tempPath, blobPath); err != nil {
 		return BlobResult{}, fmt.Errorf("atomic rename to snapshots: %v", err)
+	}
+	// fsync the snapshots dir so the rename itself is durable. On a sync failure
+	// the blob is on disk but not durably linked; surface the error so the caller
+	// retries rather than falsely reporting success.
+	if err := syncDir(snapshotsDir); err != nil {
+		return BlobResult{}, err
 	}
 	if err := os.WriteFile(sidecarPath, []byte(sha), 0o644); err != nil { //nolint:gosec // sidecar is non-secret metadata
 		return BlobResult{}, fmt.Errorf("write snapshot sidecar: %v", err)
 	}
+	// fsync the snapshots dir again so the sidecar entry is durable.
+	if err := syncDir(snapshotsDir); err != nil {
+		return BlobResult{}, err
+	}
 	return BlobResult{SHA256: sha, Path: blobPath, SizeBytes: size}, nil
+}
+
+// syncFile opens path read-only, fsyncs it, and closes it, flushing content
+// written by an external process so the bytes are durable before a subsequent
+// rename names the file. A sync failure is reported, not swallowed.
+func syncFile(path string) error {
+	f, err := os.Open(path) // #nosec G304 -- staging path is built from the agent's own pool root, fresh uuid
+	if err != nil {
+		return fmt.Errorf("open file for sync: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync file: %v", err)
+	}
+	return f.Close()
+}
+
+// syncDir fsyncs a directory so a rename or create within it is durable across a
+// power loss. A sync failure on the parent dir is reported, not swallowed, since
+// it defeats the crash-durability guarantee.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) // #nosec G304 -- store-internal directory path
+	if err != nil {
+		return fmt.Errorf("open dir for sync: %v", err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("sync dir: %v", err)
+	}
+	return d.Close()
 }
 
 // produceBlobToStore materializes srcDisk (a backup-target qcow2) into the

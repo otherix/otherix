@@ -66,6 +66,12 @@ type snapWorkerStoreStub struct {
 	// recorded terminal task outcome
 	finalizedStatus store.TaskStatus
 	finalized       bool
+
+	// recorded snapshot-row error surfacing (the create-fail nicety): the id and
+	// message handed to MarkSnapshotError, and whether it was called at all.
+	markedErrorID  uuid.UUID
+	markedErrorMsg string
+	markedError    bool
 }
 
 func (s *snapWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
@@ -134,6 +140,13 @@ func (s *snapWorkerStoreStub) DereferenceSnapshotBlobs(_ context.Context, _ uuid
 
 func (s *snapWorkerStoreStub) BlobPlacements(_ context.Context, digest string) ([]uuid.UUID, error) {
 	return s.placements[digest], nil
+}
+
+func (s *snapWorkerStoreStub) MarkSnapshotError(_ context.Context, id uuid.UUID, msg string) error {
+	s.markedError = true
+	s.markedErrorID = id
+	s.markedErrorMsg = msg
+	return nil
 }
 
 // fakeSnapshotExecutor is the SnapshotExecutor double. Create is split into Post
@@ -306,6 +319,17 @@ func TestRunSnapshotCreate_ExecutorError_FailsTask(t *testing.T) {
 	}
 	if !st.finalized || st.finalizedStatus != store.TaskStatusFailed {
 		t.Errorf("task finalized = (%v, %q), want (true, failed)", st.finalized, st.finalizedStatus)
+	}
+	// The create-fail path must ALSO surface the failure onto the snapshot row, so
+	// an operator listing snapshots sees error (not a permanently-creating row).
+	if !st.markedError {
+		t.Errorf("snapshot row not flipped to error on create failure; MarkSnapshotError must be called")
+	}
+	if st.markedErrorID != st.snapshot.ID {
+		t.Errorf("MarkSnapshotError id = %v, want the snapshot id %v", st.markedErrorID, st.snapshot.ID)
+	}
+	if st.markedErrorMsg == "" {
+		t.Errorf("MarkSnapshotError msg = empty, want the failure message")
 	}
 }
 
@@ -492,6 +516,11 @@ func TestRunSnapshotDelete_HolderNodeTransientError_FailsTask(t *testing.T) {
 	}
 	if !st.finalized || st.finalizedStatus != store.TaskStatusFailed {
 		t.Errorf("task finalized = (%v, %q), want (true, failed)", st.finalized, st.finalizedStatus)
+	}
+	// The DELETE path must never flip the (already soft-deleted) row to error - that
+	// surfacing is scoped to the CREATE kind only.
+	if st.markedError {
+		t.Errorf("MarkSnapshotError called on the delete path; must be create-kind only")
 	}
 }
 

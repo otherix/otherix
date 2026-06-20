@@ -86,6 +86,14 @@ var (
 	// it): delete is fail-closed and refuses until the children are removed first.
 	ErrSnapshotHasChildren = errors.New("store: snapshot has non-deleted children")
 
+	// ErrSnapshotSourcingCreate is returned by DeleteSnapshot when an active
+	// (pending or running) vm.create task names this snapshot as its source: such
+	// a create pulls the snapshot's blobs to the target node while it runs, so
+	// deleting the source (which enqueues blob GC) could remove a blob the
+	// in-flight create still needs. Delete is fail-closed and refuses until the
+	// sourcing create reaches a terminal state.
+	ErrSnapshotSourcingCreate = errors.New("store: snapshot is being sourced by an active vm create")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")

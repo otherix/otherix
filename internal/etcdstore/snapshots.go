@@ -316,8 +316,11 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 
 // DeleteSnapshot soft-deletes a snapshot fail-closed: it refuses with
 // store.ErrSnapshotHasChildren when any non-deleted snapshot of the same VM
-// names this snapshot as its parent, mutating nothing in that case (a delete
-// must fail toward inaction so a still-referenced base is never destroyed). When
+// names this snapshot as its parent, and with store.ErrSnapshotSourcingCreate
+// when an active (pending|running) vm.create names this snapshot as its source,
+// mutating nothing in either case (a delete must fail toward inaction so a
+// still-referenced base, or a blob an in-flight create still needs, is never
+// destroyed). When
 // no children exist it stamps deleted_at + status=deleting, drops the per-VM
 // name guard and the owner index (so CountUserResources falls), AND enqueues the
 // blob-GC task+job - all in ONE transaction. Enqueuing the GC job atomically with
@@ -342,6 +345,21 @@ func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams sto
 		if sib.DeletedAt == nil && sib.ParentSnapshotID != nil && *sib.ParentSnapshotID == id {
 			return store.Snapshot{}, store.ErrSnapshotHasChildren
 		}
+	}
+
+	// Fail-closed sourcing-create check: refuse while an active (pending|running)
+	// vm.create names this snapshot as its source. Such a create pulls the
+	// snapshot's blobs to the target node while it runs and takes no ref/pin on the
+	// source, so soft-deleting now (which enqueues blob GC) could remove a blob the
+	// in-flight create still needs. A store error here aborts the delete (the read
+	// is uncertain - never proceed to delete on an unknown), erring toward the
+	// non-destructive refusal.
+	activeCreates, err := s.ActiveCreatesReferencingSnapshot(ctx, id)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	if activeCreates > 0 {
+		return store.Snapshot{}, store.ErrSnapshotSourcingCreate
 	}
 
 	now := time.Now().UTC()
@@ -431,6 +449,63 @@ func (s *Store) SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUI
 	}
 	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
 		return fmt.Errorf("snapshot manifest applied txn: %v", err)
+	}
+	return nil
+}
+
+// maxSnapshotErrorMessage bounds the error_message stamped on a snapshot row so a
+// large agent error string cannot bloat the persisted row.
+const maxSnapshotErrorMessage = 1024
+
+// MarkSnapshotError surfaces a capture failure onto the snapshot row: it flips a
+// still-creating row to status=error and sets error_message (capped) in a single
+// transaction, so an operator listing snapshots sees the reason rather than a
+// permanently-creating row. It is a best-effort operator nicety - the backing task
+// failure is the authoritative signal - and is deliberately narrow: it transitions
+// ONLY a creating row. It is a no-op (returns nil) when the row is absent, already
+// soft-deleted, or already terminal (ready/error/restoring/deleting), so it never
+// resurrects a deleted row and never clobbers a committed success on a redelivered
+// failure. The msg is capped at maxSnapshotErrorMessage runes.
+func (s *Store) MarkSnapshotError(ctx context.Context, id uuid.UUID, msg string) error {
+	resp, err := s.c.Raw().Get(ctx, snapshotKey(id))
+	if err != nil {
+		return fmt.Errorf("read snapshot %s: %v", id, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil
+	}
+	rev := resp.Kvs[0].ModRevision
+	var snap store.Snapshot
+	if err := json.Unmarshal(resp.Kvs[0].Value, &snap); err != nil {
+		return fmt.Errorf("unmarshal snapshot %s: %v", id, err)
+	}
+	// Only a still-creating, non-deleted row transitions. A soft-deleted row, or one
+	// that already reached any other status, is left untouched (no resurrection, no
+	// clobber of a committed success).
+	if snap.DeletedAt != nil || snap.Status != store.SnapshotStatusCreating {
+		return nil
+	}
+
+	capped := msg
+	if len([]rune(capped)) > maxSnapshotErrorMessage {
+		capped = string([]rune(capped)[:maxSnapshotErrorMessage])
+	}
+	snap.Status = store.SnapshotStatusError
+	snap.ErrorMessage = &capped
+	snap.UpdatedAt = time.Now().UTC()
+
+	val, err := etcd.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	// CAS on ModRevision so a concurrent success projection (SnapshotManifestApplied)
+	// or delete that committed between our read and write wins - we must not overwrite
+	// it. A lost CAS means the row already moved on; treat it as a benign no-op.
+	if _, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(snapshotKey(id)), "=", rev)).
+		Then(clientv3.OpPut(snapshotKey(id), string(val))).
+		Commit(); err != nil {
+		return fmt.Errorf("mark snapshot error txn: %v", err)
 	}
 	return nil
 }

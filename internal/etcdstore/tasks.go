@@ -5,6 +5,7 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -290,6 +291,67 @@ func (s *Store) ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]stru
 		out[*t.ResourceID] = struct{}{}
 	}
 	return out, nil
+}
+
+// ActiveCreatesReferencingSnapshot counts the pending or running vm.create
+// tasks whose source_snapshot_id (decoded off the task Args) is snapshotID. It
+// is the fail-closed input to the snapshot-delete refusal: a create-from-snapshot
+// pulls the source blobs to the target node while the create task runs (and takes
+// no ref/pin on the source), so deleting the source mid-create - which enqueues
+// blob GC - could remove a blob the in-flight create still needs. One
+// task-prefix scan, sibling of ActiveVMDeleteTaskVMIDs.
+//
+// The predicate is exactly pending|running by deliberate taxonomy: success,
+// failed and cancelled are excluded. Once a create is success the disk is
+// already materialized from the snapshot blobs (the source is no longer read);
+// cancelled/failed creates are not in flight. The task Args is immutable after
+// enqueue, so the source linkage is stable for the task's whole life; only the
+// status writers (UpdateTaskRunning -> running, UpdateTaskFinalized -> terminal)
+// move a task in or out of the active window. Erring is toward REFUSING (a
+// non-destructive 409), so a borderline still-running create keeps the source
+// safe.
+//
+// Known residual (recoverable, deliberately not closed): a create that hit a
+// transient failure sits at status=failed in the brief gap before the
+// dispatcher requeues it (UpdateTaskRunning flips it back to running). In that
+// gap it is neither pending nor running, so the guard counts it as not active
+// and a concurrent delete proceeds. The blast radius is the original recoverable
+// bug shrunk to that gap: the next attempt re-reads the now-soft-deleted source,
+// fails terminally (snapshot_not_found) without further blob reads, and the
+// operator re-issues. Widening the window to chase the gap would not lower net
+// risk, so the refusal stays scoped to the in-flight window.
+func (s *Store) ActiveCreatesReferencingSnapshot(ctx context.Context, snapshotID uuid.UUID) (int, error) {
+	items, err := s.c.Range(ctx, taskPrefix())
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	for _, kv := range items {
+		var t store.Task
+		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &t, "task") {
+			continue
+		}
+		if t.Type != "vm.create" {
+			continue
+		}
+		if t.Status != store.TaskStatusPending && t.Status != store.TaskStatusRunning {
+			continue
+		}
+		var args struct {
+			SourceSnapshotID *uuid.UUID `json:"source_snapshot_id"`
+		}
+		if err := json.Unmarshal(t.Args, &args); err != nil {
+			// A vm.create task with unparsable Args cannot be confirmed as NOT
+			// referencing the snapshot; fail closed by counting it so the delete
+			// refuses (non-destructive) rather than proceeding on uncertainty.
+			count++
+			continue
+		}
+		if args.SourceSnapshotID != nil && *args.SourceSnapshotID == snapshotID {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // taskFilter is the unified filter surface for ListTasksAny/Own.
