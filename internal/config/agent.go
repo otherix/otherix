@@ -236,6 +236,11 @@ func defaultAgentConfig() AgentConfig {
 				MinFreeBytes:     10 << 30,
 				EvictionInterval: 5 * time.Minute,
 			},
+			Scrub: ScrubConfig{
+				Interval:            time.Hour,
+				MinReverifyInterval: 168 * time.Hour,
+				MaxBytesPerPass:     10 << 30,
+			},
 		},
 		QEMU: QEMUConfig{
 			AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd",
