@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -591,6 +592,41 @@ func TestRunCreateExecErrorRetryable(t *testing.T) {
 	}
 }
 
+// TestRunCreateChecksumMismatchTerminal pins that a pinned create whose URL
+// serves bytes other than the operator-pinned sha256 fails TERMINALLY: the
+// agent surfaces a checksum_mismatch envelope, and the worker must finalize the
+// task FAILED with that code and return NIL so the dispatcher COMPLETES the job
+// instead of retrying (re-downloading the same URL keeps serving the same
+// mismatching bytes, so a retry only burns the create attempt budget). This is
+// the same terminal arm the gone-node case uses. Revert-to-confirm: routing
+// checksum_mismatch back through failRun makes runCreate return non-nil here.
+func TestRunCreateChecksumMismatchTerminal(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	st := &createLifecycleWorkerStoreStub{vm: store.VM{ID: vmID}, node: node, disk: store.VMDisk{VmID: vmID}}
+	exec := &spyCreateExecutor{err: &agentclient.AgentError{Status: 422, Code: errCodeVMChecksumMismatch}}
+
+	err := runCreate(context.Background(), st, exec, noopBroker{}, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate(checksum_mismatch) = %v, want nil (terminal, no retry)", err)
+	}
+	if !exec.called {
+		t.Errorf("agent create not attempted on live node")
+	}
+	if !st.finalizedFailed {
+		t.Errorf("task not finalized failed on checksum_mismatch")
+	}
+	if st.projectedCreate {
+		t.Errorf("ProjectVMCreateSuccess called on checksum_mismatch; a rejected create must NOT project success")
+	}
+	if got := string(st.finalizedError); !strings.Contains(got, errCodeVMChecksumMismatch) {
+		t.Errorf("finalized error envelope = %q, want it to carry %q", got, errCodeVMChecksumMismatch)
+	}
+}
+
 // TestRunCreateClearsAgentTaskIDOn404 pins R2-M2 for the create path: when the
 // agent task vanished (poll 404, e.g. the agent restarted and lost its in-memory
 // task store), the worker clears the persisted agent_task_id so the redelivery
@@ -929,6 +965,69 @@ func TestRunCreateResolvesSourceSnapshotSeam(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got.Disks); diff != "" {
 		t.Errorf("SourceSnapshot.Disks mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestRunCreateAuditsRegistryDigestFlip pins the poisoning-detectability seam:
+// the url->digest registry is written from an agent self-reported digest, so a
+// flip of an existing URL's pointer to a DIFFERENT digest must leave an audit
+// trail (a WARN log). A first import (no existing pointer) and a same-digest
+// re-import must NOT warn. The create itself always succeeds (the audit is
+// fail-open and never blocks the upsert).
+func TestRunCreateAuditsRegistryDigestFlip(t *testing.T) {
+	const url = "https://ex.test/noble.img"
+	tests := []struct {
+		name           string
+		existingDigest string
+		existingOK     bool // registry already holds a pointer for url
+		newDigest      string
+		wantWarn       bool
+	}{
+		{name: "first import does not warn", existingOK: false, newDigest: "aaaa", wantWarn: false},
+		{name: "same-digest re-import does not warn", existingDigest: "aaaa", existingOK: true, newDigest: "aaaa", wantWarn: false},
+		{name: "digest flip warns", existingDigest: "aaaa", existingOK: true, newDigest: "bbbb", wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			nodeID := uuid.New()
+			vmID := uuid.New()
+			fresh := time.Now().Add(-5 * time.Second)
+			node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+			// Pinned create (ImagePullPolicy default ""/if_not_present is fine; the
+			// success-path registry write keys only on a non-empty URL + digest).
+			vm := store.VM{ID: vmID, ImageURL: url, ImageFormat: store.ImageFormatQcow2}
+			st := &createLifecycleWorkerStoreStub{
+				vm: vm, node: node, disk: store.VMDisk{VmID: vmID},
+				imageURLDigest:   tc.existingDigest,
+				imageURLDigestOK: tc.existingOK,
+			}
+			exec := &spyCreateExecutor{result: CreateResult{VMID: vmID.String(), ImageSHA256: tc.newDigest}}
+
+			var buf bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			err := runCreate(context.Background(), st, exec, noopBroker{}, log,
+				VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+			if err != nil {
+				t.Fatalf("runCreate err = %v, want nil", err)
+			}
+			// The create always commits and the upsert always runs (fail-open audit).
+			if st.upsertedDigest != tc.newDigest {
+				t.Errorf("upserted digest = %q, want %q (audit must not block the upsert)", st.upsertedDigest, tc.newDigest)
+			}
+			gotWarn := strings.Contains(buf.String(), "image url registry digest changed")
+			if gotWarn != tc.wantWarn {
+				t.Errorf("flip WARN emitted = %v, want %v\nlog: %s", gotWarn, tc.wantWarn, buf.String())
+			}
+			if tc.wantWarn {
+				logged := buf.String()
+				for _, want := range []string{"previous_digest", tc.existingDigest, "new_digest", tc.newDigest, "reported_by_node", nodeID.String()} {
+					if !strings.Contains(logged, want) {
+						t.Errorf("flip WARN missing %q\nlog: %s", want, logged)
+					}
+				}
+			}
+		})
 	}
 }
 
