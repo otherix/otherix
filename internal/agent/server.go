@@ -468,7 +468,7 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 		return nil
 	}
 
-	collector, err := heartbeat.NewLinux(heartbeat.CollectorDeps{
+	deps := heartbeat.CollectorDeps{
 		VMs:           manager,
 		VMReporter:    vmRec,
 		Pools:         poolRec,
@@ -479,7 +479,14 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 		WireGuard:     wgRec,
 		Migration:     cfg.Migration,
 		QEMU:          cfg.QEMU,
-	})
+	}
+	// The image cache tier store may be nil when no artifacts root is
+	// configured; only wire the adapter when present so it never dereferences a
+	// nil store in List.
+	if imgStore := manager.ImageStore(); imgStore != nil {
+		deps.ImageBlobs = imageInventoryAdapter{store: imgStore, log: log}
+	}
+	collector, err := heartbeat.NewLinux(deps)
 	if err != nil {
 		log.Warn("heartbeat disabled: collector init failed", "error", err.Error())
 		return nil

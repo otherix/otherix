@@ -4,6 +4,7 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,10 +14,127 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
+
+// mustNewForTesting builds an image store rooted under t.TempDir(), bypassing
+// the production /var/lib/otherix/ allowlist so the pinned-image tests run on
+// the macOS dev host.
+func mustNewForTesting(t *testing.T) *artifactstore.Store {
+	t.Helper()
+	s, err := artifactstore.NewForTesting(t.TempDir())
+	if err != nil {
+		t.Fatalf("new image store: %v", err)
+	}
+	return s
+}
+
+func TestEnsureImageIntoPinnedDownloadsIntoImageStore(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(21)
+	sum := shaHex(body)
+	url := serve(t, body)
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst)
+	if err != nil {
+		t.Fatalf("EnsureImageInto(pinned miss) error = %v", err)
+	}
+	if res.SHA256 != sum {
+		t.Errorf("res.SHA256 = %q, want %q", res.SHA256, sum)
+	}
+	if !m.ImageStore().Has(sum) {
+		t.Errorf("image store missing digest %q after download", sum)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("clone destination not present: %v", err)
+	}
+}
+
+func TestEnsureImageIntoPinnedHitClonesWithoutDownload(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(22)
+	sum := shaHex(body)
+	if err := m.ImageStore().Put(sum, bytes.NewReader(body)); err != nil {
+		t.Fatalf("seed image store: %v", err)
+	}
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/ubuntu-24.04-arm64.img"
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst)
+	if err != nil {
+		t.Fatalf("EnsureImageInto(pinned hit) error = %v", err)
+	}
+	if res.SHA256 != sum {
+		t.Errorf("res.SHA256 = %q, want %q", res.SHA256, sum)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("download count = %d, want 0 (cache hit must not download)", got)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("clone destination not present: %v", err)
+	}
+}
+
+func TestEnsureImageIntoPinnedChecksumMismatchStoresNothing(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(23)
+	sum := shaHex(body)
+	url := serve(t, body)
+
+	wrong := strings.Repeat("a", 64)
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	_, err := m.EnsureImageInto(context.Background(), poolName, url, wrong, "qcow2", dst)
+	if err == nil {
+		t.Fatal("EnsureImageInto(pinned, url disagrees) error = nil, want checksum_mismatch")
+	}
+	var ce *ChecksumMismatchError
+	if !errorAs(err, &ce) {
+		t.Errorf("error = %v, want *ChecksumMismatchError", err)
+	}
+	if m.ImageStore().Has(wrong) {
+		t.Errorf("image store holds the wrong digest after mismatch")
+	}
+	if m.ImageStore().Has(sum) {
+		t.Errorf("image store holds the served digest after mismatch (nothing should be stored)")
+	}
+}
+
+func TestEnsureImageIntoUnpinnedUnchanged(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(24)
+	url := serve(t, body)
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", dst); err != nil {
+		t.Fatalf("EnsureImageInto(unpinned) error = %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("clone destination not present: %v", err)
+	}
+	entries, err := m.ImageStore().List()
+	if err != nil {
+		t.Fatalf("image store List: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("image store holds %d entries after an unpinned ensure; want none", len(entries))
+	}
+}
 
 // qcow2Body returns a minimal byte slice with the qcow2 magic prefix so
 // validateQcow2Magic passes; the trailing bytes vary so distinct bodies

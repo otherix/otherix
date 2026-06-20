@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -120,6 +121,10 @@ func (s *deleteWorkerStoreStub) ProjectVMCreateSuccess(context.Context, store.Up
 
 func (s *deleteWorkerStoreStub) ProjectVMLifecycleSuccess(context.Context, uuid.UUID, store.VMDesiredPhase, store.VMPhase, store.UpdateTaskFinalizedParams) error {
 	panic("unexpected ProjectVMLifecycleSuccess")
+}
+
+func (s *deleteWorkerStoreStub) ImageBlobHolders(context.Context, string) ([]uuid.UUID, error) {
+	return nil, nil
 }
 
 func (s *deleteWorkerStoreStub) NodeBlobInventory(context.Context, uuid.UUID) ([]store.NodeBlob, error) {
@@ -321,12 +326,16 @@ func (s *createLifecycleWorkerStoreStub) NodeBlobInventory(context.Context, uuid
 	return nil, nil
 }
 
+func (s *createLifecycleWorkerStoreStub) ImageBlobHolders(context.Context, string) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 // noopBroker is the SnapshotBlobBroker double for the create/lifecycle tests
 // whose VMs are image-sourced (the broker is never reached) or whose snapshot
 // blobs need no real pull. BrokerPull always succeeds.
 type noopBroker struct{}
 
-func (noopBroker) BrokerPull(context.Context, string, uuid.UUID) error { return nil }
+func (noopBroker) BrokerPull(context.Context, string, uuid.UUID, blobbroker.Tier) error { return nil }
 
 // spyCreateExecutor records whether the agent create was attempted, the image
 // source the worker handed it, and a canned result/error to surface back.

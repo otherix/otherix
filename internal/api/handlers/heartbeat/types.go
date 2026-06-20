@@ -26,6 +26,15 @@ type requestBody struct {
 	// node_blobs inventory rather than clearing it (fail-closed, mirrors
 	// ImagesUnavailable).
 	BlobsUnavailable bool `json:"blobs_unavailable,omitempty"`
+	// ImageBlobs is the agent's reported pinned-image cache inventory (the
+	// peer-pullable image tier). Reported on a SEPARATE channel from Blobs and
+	// persisted to the image_blobs family so it never feeds the durability
+	// reconcile.
+	ImageBlobs []blobReport `json:"image_blobs,omitempty"`
+	// ImageBlobsUnavailable mirrors BlobsUnavailable for the image tier: true
+	// when the agent could not enumerate its image cache this tick. The CP then
+	// preserves the prior image_blobs inventory rather than clearing it.
+	ImageBlobsUnavailable bool `json:"image_blobs_unavailable,omitempty"`
 }
 
 // blobReport mirrors HeartbeatBlob (the agent up-channel node-level blob entry).

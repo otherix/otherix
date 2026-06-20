@@ -4569,6 +4569,27 @@ components:
             node_blobs inventory instead of clearing it, so a transient producer
             error does not wipe observed state. Absent or false means the blobs
             array is authoritative (an empty array clears the inventory).
+        image_blobs:
+          type: array
+          description: |
+            Agent-observed pinned-image cache inventory (the peer-pullable image
+            tier), reported on a SEPARATE channel from `blobs`. Reported once per
+            node, NOT per pool. Full snapshot: the CP replaces the image_blobs
+            observed inventory with this list. Kept distinct from `blobs` so the
+            image tier is NOT durability-tracked (it never feeds the durability
+            reconcile). Absent or empty with image_blobs_unavailable=false means
+            the node caches no pinned images.
+          items:
+            $ref: "#/components/schemas/HeartbeatBlob"
+        image_blobs_unavailable:
+          type: boolean
+          description: |
+            True when the agent could not enumerate its pinned-image cache this
+            tick (a transient error). The CP then PRESERVES the previously-reported
+            image_blobs inventory instead of clearing it, so a transient producer
+            error does not wipe observed state. Absent or false means the
+            image_blobs array is authoritative (an empty array clears the
+            inventory).
 
     HeartbeatWireGuardReport:
       type: object

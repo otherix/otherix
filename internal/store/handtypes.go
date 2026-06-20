@@ -57,6 +57,12 @@ type HeartbeatProjection interface {
 	// entirely on blobs_unavailable so a transient agent enumerate-failure
 	// preserves the prior inventory (the holder-discovery source).
 	UpsertNodeBlobInventory(ctx context.Context, nodeID uuid.UUID, blobs []NodeBlob) error
+	// UpsertNodeImageBlobInventory replaces the observed per-node pinned-image
+	// cache inventory (kept in a family separate from node_blobs so it never
+	// feeds the durability reconcile). An empty slice clears it; the heartbeat
+	// handler skips the call entirely on image_blobs_unavailable so a transient
+	// agent enumerate-failure preserves the prior inventory.
+	UpsertNodeImageBlobInventory(ctx context.Context, nodeID uuid.UUID, blobs []NodeBlob) error
 	ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]StoragePool, error)
 	UpsertNetworkNodeStatus(ctx context.Context, arg UpsertNetworkNodeStatusParams) error
 	ListNetworks(ctx context.Context) ([]Network, error)

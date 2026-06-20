@@ -11,14 +11,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // Broker pulls a blob to a consumer node via the CP-brokered pull saga. The
-// production implementation is *blobbroker.Broker (wired in cmd/api); the
-// interface keeps this package free of a blobbroker import.
+// production implementation is *blobbroker.Broker (wired in cmd/api).
 type Broker interface {
-	BrokerPull(ctx context.Context, digest string, consumerNodeID uuid.UUID) error
+	BrokerPull(ctx context.Context, digest string, consumerNodeID uuid.UUID, tier blobbroker.Tier) error
 }
 
 // ReplicateWorkerStore is the task-mutator surface the replicate worker needs.
@@ -63,7 +63,7 @@ func runReplicate(ctx context.Context, st ReplicateWorkerStore, broker Broker, l
 				slog.String("digest", args.Digest), slog.String("node_id", args.TargetNodeID.String()), slog.Any("error", err))
 		}
 	}()
-	if err := broker.BrokerPull(ctx, args.Digest, args.TargetNodeID); err != nil {
+	if err := broker.BrokerPull(ctx, args.Digest, args.TargetNodeID, blobbroker.TierArtifact); err != nil {
 		return failReplicate(ctx, st, log, args.TaskID, err)
 	}
 	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{

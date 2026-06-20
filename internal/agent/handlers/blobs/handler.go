@@ -35,10 +35,13 @@ type BlobServer interface {
 // local artifact store, and return the task id immediately. holderIdentity
 // (when non-empty) pins TLS verification to the holder's node identity SAN.
 // expectedSize (when > 0) bounds the streamed body to the CP-known blob size so
-// a misbehaving holder cannot fill the disk before the digest check.
-// Production wraps a blobpeer.Pull adapter (server.go); tests pass a spy.
+// a misbehaving holder cannot fill the disk before the digest check. tier
+// selects which content-addressed store the pulled blob lands in ("image" for
+// the node-level image cache tier; "" or "artifact" for the durability-tracked
+// artifact store). Production wraps a blobpeer.Pull adapter (server.go); tests
+// pass a spy.
 type BlobPuller interface {
-	Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (taskID string, err error)
+	Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64, tier string) (taskID string, err error)
 }
 
 // BlobStopper is the seam the stop-serve handler drives: tear down the serve

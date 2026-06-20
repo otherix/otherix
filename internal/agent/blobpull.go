@@ -51,7 +51,7 @@ func setupBlobTransport(cfg *config.AgentConfig, manager *vm.Manager, baseTLS *t
 // pull); the blob DATA path is the separate blobpeer listener.
 func buildBlobsHandler(cfg *config.AgentConfig, manager *vm.Manager, artStore *artifactstore.Store, baseTLS *tls.Config, log *slog.Logger) (*blobshandlers.Handler, *blobServeManager, error) {
 	blobPorts := migration.NewPortAllocator(cfg.Artifacts.PortRangeStart, cfg.Artifacts.PortRangeEnd)
-	serveMgr, err := newBlobServeManager(artStore, blobPorts, cfg.Migration.Host, baseTLS, log)
+	serveMgr, err := newBlobServeManager(artStore, manager.ImageStore(), blobPorts, cfg.Migration.Host, baseTLS, log)
 	if err != nil {
 		return nil, nil, fmt.Errorf("serve manager: %w", err)
 	}
@@ -75,13 +75,14 @@ type blobPuller struct {
 }
 
 // Pull starts a tracked agent task streaming the blob for digest from
-// holderEndpoint into the local artifact store and returns the task id
-// immediately. holderIdentity (when non-empty) pins TLS verification to the
-// holder's node identity SAN. expectedSize (when > 0) bounds the streamed body
-// so a misbehaving holder cannot fill the disk before the digest check. It
-// implements blobs.BlobPuller.
-func (p blobPuller) Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (string, error) {
-	task, err := p.manager.PullBlob(context.Background(), p.client, digest, token, holderEndpoint, holderIdentity, expectedSize)
+// holderEndpoint into the local store and returns the task id immediately.
+// holderIdentity (when non-empty) pins TLS verification to the holder's node
+// identity SAN. expectedSize (when > 0) bounds the streamed body so a
+// misbehaving holder cannot fill the disk before the digest check. tier selects
+// the destination store ("image" -> the image cache tier; "" / "artifact" ->
+// the artifact store). It implements blobs.BlobPuller.
+func (p blobPuller) Pull(digest, token, holderEndpoint, holderIdentity string, expectedSize int64, tier string) (string, error) {
+	task, err := p.manager.PullBlob(context.Background(), p.client, digest, token, holderEndpoint, holderIdentity, expectedSize, tier)
 	if err != nil {
 		return "", err
 	}
@@ -139,6 +140,28 @@ func (a blobInventoryAdapter) NodeBlobs() ([]heartbeat.BlobReport, bool) {
 	entries, err := a.store.List()
 	if err != nil {
 		a.log.Warn("heartbeat: node blob inventory unavailable", "error", err.Error())
+		return nil, false
+	}
+	out := make([]heartbeat.BlobReport, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, heartbeat.BlobReport{Digest: e.Digest, SizeBytes: e.SizeBytes})
+	}
+	return out, true
+}
+
+// imageInventoryAdapter reports the node-level pinned-image cache tier as the
+// heartbeat image_blobs inventory. Same shape as blobInventoryAdapter over a
+// different store; kept distinct so the two tiers report through distinct
+// heartbeat fields.
+type imageInventoryAdapter struct {
+	store *artifactstore.Store
+	log   *slog.Logger
+}
+
+func (a imageInventoryAdapter) NodeBlobs() ([]heartbeat.BlobReport, bool) {
+	entries, err := a.store.List()
+	if err != nil {
+		a.log.Warn("heartbeat: image cache inventory unavailable", "error", err.Error())
 		return nil, false
 	}
 	out := make([]heartbeat.BlobReport, 0, len(entries))

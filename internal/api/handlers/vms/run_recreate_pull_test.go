@@ -45,7 +45,7 @@ type brokerPullCall struct {
 	node   uuid.UUID
 }
 
-func (b *brokerSpy) BrokerPull(_ context.Context, digest string, node uuid.UUID) error {
+func (b *brokerSpy) BrokerPull(_ context.Context, digest string, node uuid.UUID, _ blobbroker.Tier) error {
 	if b.exec != nil && !b.exec.called {
 		b.pulledBeforeExec = true
 	}

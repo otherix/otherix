@@ -38,13 +38,17 @@ const serveTokenTTL = 10 * time.Minute
 // permissive when no client cert is present). This listener is the enforcement
 // boundary for that handler.
 type blobServeManager struct {
-	store     *artifactstore.Store
-	ports     *migration.PortAllocator
-	serveHost string
-	nodeCert  tls.Certificate
-	clientCAs *tls.Config // carries ClientCAs (the cluster CA pool) from loadTLS
-	ttl       time.Duration
-	log       *slog.Logger
+	store *artifactstore.Store
+	// imageStore is the node-level pinned-image cache tier, or nil when the node
+	// has none. The serve resolver reads it alongside store so a holder can serve
+	// a pinned image it only has in the image cache tier.
+	imageStore *artifactstore.Store
+	ports      *migration.PortAllocator
+	serveHost  string
+	nodeCert   tls.Certificate
+	clientCAs  *tls.Config // carries ClientCAs (the cluster CA pool) from loadTLS
+	ttl        time.Duration
+	log        *slog.Logger
 
 	verifier *serveTokenStore
 
@@ -72,8 +76,10 @@ type activeServe struct {
 // main mTLS server uses (from loadTLS): its ClientCAs (cluster CA pool) and
 // Certificates (node leaf) are reused so the blob listener trusts exactly the
 // same cluster identities. serveHost is the reachable host (migration/advertised
-// host) the returned serve_endpoint advertises.
-func newBlobServeManager(store *artifactstore.Store, ports *migration.PortAllocator, serveHost string, baseTLS *tls.Config, log *slog.Logger) (*blobServeManager, error) {
+// host) the returned serve_endpoint advertises. imageStore is the node-level
+// image cache tier (may be nil); when present it is resolved alongside store so
+// the holder can serve a pinned image it only has in the cache tier.
+func newBlobServeManager(store, imageStore *artifactstore.Store, ports *migration.PortAllocator, serveHost string, baseTLS *tls.Config, log *slog.Logger) (*blobServeManager, error) {
 	if len(baseTLS.Certificates) == 0 {
 		return nil, fmt.Errorf("blob serve: base tls config carries no node leaf certificate")
 	}
@@ -81,15 +87,16 @@ func newBlobServeManager(store *artifactstore.Store, ports *migration.PortAlloca
 		return nil, fmt.Errorf("blob serve: base tls config carries no cluster CA pool")
 	}
 	return &blobServeManager{
-		store:     store,
-		ports:     ports,
-		serveHost: serveHost,
-		nodeCert:  baseTLS.Certificates[0],
-		clientCAs: baseTLS,
-		ttl:       serveTokenTTL,
-		log:       log,
-		verifier:  newServeTokenStore(),
-		active:    map[int]*activeServe{},
+		store:      store,
+		imageStore: imageStore,
+		ports:      ports,
+		serveHost:  serveHost,
+		nodeCert:   baseTLS.Certificates[0],
+		clientCAs:  baseTLS,
+		ttl:        serveTokenTTL,
+		log:        log,
+		verifier:   newServeTokenStore(),
+		active:     map[int]*activeServe{},
 	}, nil
 }
 
@@ -126,8 +133,16 @@ func (m *blobServeManager) Serve(digest, token, _ string) (string, string, error
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    m.clientCAs.ClientCAs,
 	}
+	// Resolve the served digest across both tiers: the durability-tracked
+	// artifact store and (when present) the node-level image cache tier. Append
+	// only the non-nil image store - a typed-nil *artifactstore.Store wrapped in
+	// the Getter interface would be non-nil at the interface level.
+	stores := []blobpeer.Getter{m.store}
+	if m.imageStore != nil {
+		stores = append(stores, m.imageStore)
+	}
 	srv := &http.Server{
-		Handler:           blobpeer.NewServeHandler(m.store, m.verifier),
+		Handler:           blobpeer.NewServeHandler(blobpeer.MultiStore(stores...), m.verifier),
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -269,7 +284,7 @@ func (m *blobServeManager) Close() error {
 
 // serveTokenStore is the in-agent TokenVerifier primed by Serve: it maps a
 // CP-handed per-op token to the digest it authorizes serving. It implements
-// blobpeer.TokenVerifier. Minimal for C1: a token authorizes exactly its primed
+// blobpeer.TokenVerifier. Minimal by design: a token authorizes exactly its primed
 // digest; the per-listener cluster-CA client-cert gate (Serve's tls.Config) is
 // the node-identity boundary.
 type serveTokenStore struct {

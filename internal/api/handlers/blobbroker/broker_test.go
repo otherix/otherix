@@ -21,16 +21,21 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 // broker drives so the test can assert the saga lifecycle alongside the agent
 // call order.
 type storeStub struct {
-	holders  []uuid.UUID
-	nodeEndp map[uuid.UUID]string
-	nodeName map[uuid.UUID]string
-	phases   []store.PullSagaPhase
-	token    string
-	blobSize int64
+	holders      []uuid.UUID
+	imageHolders []uuid.UUID
+	nodeEndp     map[uuid.UUID]string
+	nodeName     map[uuid.UUID]string
+	phases       []store.PullSagaPhase
+	token        string
+	blobSize     int64
 }
 
 func (s *storeStub) BlobHolders(_ context.Context, _ string) ([]uuid.UUID, error) {
 	return s.holders, nil
+}
+
+func (s *storeStub) ImageBlobHolders(_ context.Context, _ string) ([]uuid.UUID, error) {
+	return s.imageHolders, nil
 }
 
 func (s *storeStub) BlobSize(_ context.Context, _ string) (int64, bool) {
@@ -60,6 +65,7 @@ type agentSpy struct {
 	serveEndp      string
 	pullHolderIdty string
 	pullExpSize    int64
+	pullTier       Tier
 	stopToken      string
 }
 
@@ -68,10 +74,11 @@ func (a *agentSpy) ServeBlob(_ context.Context, holderEndpoint, _, _, _ string) 
 	return a.serveEndp, "2030-01-01T00:00:00Z", nil
 }
 
-func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, holderEndpoint, holderIdentity string, expectedSize int64) error {
+func (a *agentSpy) PullBlobAndAwait(_ context.Context, consumerEndpoint, _, _, holderEndpoint, holderIdentity string, expectedSize int64, tier Tier) error {
 	a.calls = append(a.calls, "pull:"+consumerEndpoint+"<-"+holderEndpoint)
 	a.pullHolderIdty = holderIdentity
 	a.pullExpSize = expectedSize
+	a.pullTier = tier
 	return nil
 }
 
@@ -93,7 +100,7 @@ func TestBrokerPullSequencing(t *testing.T) {
 	spy := &agentSpy{serveEndp: "https://holder:49252"}
 	b := New(st, spy, testLogger())
 
-	if err := b.BrokerPull(context.Background(), "abc", consumer); err != nil {
+	if err := b.BrokerPull(context.Background(), "abc", consumer, TierArtifact); err != nil {
 		t.Fatalf("BrokerPull: %v", err)
 	}
 
@@ -149,11 +156,55 @@ func TestBrokerPullNoHolderFailsClosed(t *testing.T) {
 	spy := &agentSpy{}
 	b := New(st, spy, testLogger())
 
-	err := b.BrokerPull(context.Background(), "abc", consumer)
+	err := b.BrokerPull(context.Background(), "abc", consumer, TierArtifact)
 	if !errors.Is(err, ErrBlobUnavailable) {
 		t.Fatalf("BrokerPull no-holder err = %v, want ErrBlobUnavailable", err)
 	}
 	if len(spy.calls) != 0 {
 		t.Errorf("agent contacted despite no holder: %v", spy.calls)
+	}
+}
+
+func TestBrokerPullImageTierUsesImageHolders(t *testing.T) {
+	holder, consumer := uuid.New(), uuid.New()
+	st := &storeStub{
+		// Image-tier holder present; the artifact holder source is EMPTY, so a
+		// successful pull proves the broker discovered holders from the image tier.
+		holders:      nil,
+		imageHolders: []uuid.UUID{holder},
+		nodeEndp:     map[uuid.UUID]string{holder: "https://holder:9443", consumer: "https://consumer:9443"},
+		nodeName:     map[uuid.UUID]string{holder: "node-1", consumer: "node-2"},
+		token:        "otx_pull_x",
+	}
+	spy := &agentSpy{serveEndp: "https://holder:49252"}
+	b := New(st, spy, testLogger())
+
+	if err := b.BrokerPull(context.Background(), "abc", consumer, TierImage); err != nil {
+		t.Fatalf("BrokerPull image tier: %v", err)
+	}
+	if spy.pullTier != TierImage {
+		t.Errorf("pull tier = %q, want %q", spy.pullTier, TierImage)
+	}
+}
+
+func TestBrokerPullArtifactTierUnchanged(t *testing.T) {
+	holder, consumer := uuid.New(), uuid.New()
+	st := &storeStub{
+		// Artifact-tier holder present; the image holder source is EMPTY, so a
+		// successful pull proves the broker still discovers from the artifact tier.
+		holders:      []uuid.UUID{holder},
+		imageHolders: nil,
+		nodeEndp:     map[uuid.UUID]string{holder: "https://holder:9443", consumer: "https://consumer:9443"},
+		nodeName:     map[uuid.UUID]string{holder: "node-1", consumer: "node-2"},
+		token:        "otx_pull_x",
+	}
+	spy := &agentSpy{serveEndp: "https://holder:49252"}
+	b := New(st, spy, testLogger())
+
+	if err := b.BrokerPull(context.Background(), "abc", consumer, TierArtifact); err != nil {
+		t.Fatalf("BrokerPull artifact tier: %v", err)
+	}
+	if spy.pullTier != TierArtifact {
+		t.Errorf("pull tier = %q, want %q", spy.pullTier, TierArtifact)
 	}
 }

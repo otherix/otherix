@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	vmshandlers "github.com/otherix/otherix/internal/api/handlers/vms"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
@@ -31,7 +32,7 @@ var _ vmshandlers.WorkerStore = (*etcdstore.Store)(nil)
 // always succeeds.
 type noopBroker struct{}
 
-func (noopBroker) BrokerPull(context.Context, string, uuid.UUID) error { return nil }
+func (noopBroker) BrokerPull(context.Context, string, uuid.UUID, blobbroker.Tier) error { return nil }
 
 // createArgs builds the image-model vm.create job-args for the worker seam: the
 // VM is self-describing (the worker reads the image source off the VM/disk rows),

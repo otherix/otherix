@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -73,6 +74,11 @@ func blockLocalDial(_, address string, _ syscall.RawConn) error {
 // imagesSubdir is the per-pool cache directory holding the image files and
 // their sidecars (renamed from the former templates/ layout).
 const imagesSubdir = "images"
+
+// imageStoreLockPool is the synthetic pool dimension for the node-level image
+// cache tier lock keys (the cache is node-level, not per-pool, so it shares no
+// lock namespace with any real pool).
+const imageStoreLockPool = "\x00image-store"
 
 // Image-surface sentinel errors. Callers branch on errors.Is for envelope
 // mapping; EnsureImage is synchronous so all of these surface directly to
@@ -222,6 +228,13 @@ func (m *Manager) EnsureImageInto(ctx context.Context, poolName, sourceURL, expe
 	if err != nil {
 		return EnsureResult{}, err
 	}
+	// Pinned images use the node-level content-addressed image cache tier so a
+	// peer can serve them and a second VM from the same digest skips the
+	// download. Unpinned images stay on the per-pool basename cache (no stable
+	// content key to pull by).
+	if expectedSHA != "" && m.imageStore != nil {
+		return m.ensureImageIntoPinned(ctx, sourceURL, expectedSHA, dstPath)
+	}
 	lock := m.lockForImage(poolName, basename)
 	lock.Lock()
 	defer lock.Unlock()
@@ -233,6 +246,74 @@ func (m *Manager) EnsureImageInto(ctx context.Context, poolName, sourceURL, expe
 		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
 	}
 	return res, nil
+}
+
+// ensureImageIntoPinned serves a pinned image from the node-level image cache
+// tier. A hit clones from the cached blob with no network I/O; a miss downloads
+// through the SSRF-guarded client, verifies the bytes hash to expectedSHA,
+// validates the qcow2 header, stores the blob (content-addressed; Put re-verifies
+// the digest), then clones. The per-digest lock serialises concurrent creates of
+// the same pinned image so two goroutines do not download it twice.
+func (m *Manager) ensureImageIntoPinned(ctx context.Context, sourceURL, expectedSHA, dstPath string) (EnsureResult, error) {
+	lock := m.lockForImage(imageStoreLockPool, expectedSHA)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if m.imageStore.Has(expectedSHA) {
+		blobPath, err := m.imageStore.BlobPath(expectedSHA)
+		if err != nil {
+			return EnsureResult{}, fmt.Errorf("resolve cached image path: %v", err)
+		}
+		fi, statErr := os.Stat(blobPath)
+		if statErr != nil {
+			return EnsureResult{}, fmt.Errorf("stat cached image: %v", statErr)
+		}
+		m.log.Info("image cache hit, cloning without download", slog.String("digest", expectedSHA))
+		if err := storage.CloneImage(blobPath, dstPath); err != nil {
+			return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
+		}
+		return EnsureResult{SHA256: expectedSHA, Path: blobPath, SizeBytes: fi.Size()}, nil
+	}
+
+	scratch, err := os.MkdirTemp("", "otherix-image-*")
+	if err != nil {
+		return EnsureResult{}, fmt.Errorf("create scratch dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	tempPath := filepath.Join(scratch, "download")
+
+	m.log.Info("image not cached, downloading from source", slog.String("digest", expectedSHA))
+	_, computedSHA, dlErr := m.downloadAndHash(ctx, sourceURL, tempPath)
+	if dlErr != nil {
+		return EnsureResult{}, fmt.Errorf("download %s: %v", sourceURL, dlErr)
+	}
+	if computedSHA != expectedSHA {
+		return EnsureResult{}, &ChecksumMismatchError{Expected: expectedSHA, Actual: computedSHA, URL: sourceURL}
+	}
+	if err := validateQcow2Magic(tempPath); err != nil {
+		return EnsureResult{}, fmt.Errorf("qcow2_header_invalid: %v", err)
+	}
+	f, err := os.Open(tempPath) // #nosec G304 -- tempPath is the agent's own scratch dir.
+	if err != nil {
+		return EnsureResult{}, fmt.Errorf("open downloaded image: %v", err)
+	}
+	putErr := m.imageStore.Put(expectedSHA, f)
+	_ = f.Close()
+	if putErr != nil {
+		return EnsureResult{}, fmt.Errorf("store image blob: %v", putErr)
+	}
+	blobPath, err := m.imageStore.BlobPath(expectedSHA)
+	if err != nil {
+		return EnsureResult{}, fmt.Errorf("resolve stored image path: %v", err)
+	}
+	fi, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		return EnsureResult{}, fmt.Errorf("stat stored image: %v", statErr)
+	}
+	if err := storage.CloneImage(blobPath, dstPath); err != nil {
+		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
+	}
+	return EnsureResult{SHA256: expectedSHA, Path: blobPath, SizeBytes: fi.Size()}, nil
 }
 
 // resolveEnsure runs the pre-flight validation (format, source URL, checksum

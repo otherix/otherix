@@ -20,6 +20,10 @@ import (
 // every component shares one store.
 func (m *Manager) ArtifactStore() *artifactstore.Store { return m.artifactStore }
 
+// ImageStore returns the node-level pinned-image cache tier, or nil when the
+// agent has no artifacts root configured.
+func (m *Manager) ImageStore() *artifactstore.Store { return m.imageStore }
+
 // PoolRoots returns the filesystem root of every registered pool. The blob
 // relocation sweep (server.go boot) walks these to move disk-pool-resident
 // snapshot blobs into the artifact store.
@@ -42,36 +46,46 @@ func (m *Manager) RelocateSnapshotsToStore() {
 }
 
 // PullBlob starts a tracked agent task that streams the blob for digest from
-// holderEndpoint (presenting the per-op token) into the node's artifact store
-// over the supplied mTLS client, and returns the task immediately in `pending`
-// status. The CP polls /v1/tasks/{id} for terminal status - the task lives in
-// the same TaskStore the /v1/tasks handler reads. Returns ErrNoArtifactStore
-// when the node has no artifact store configured (the blob has nowhere to land).
+// holderEndpoint (presenting the per-op token) into one of the node's
+// content-addressed stores over the supplied mTLS client, and returns the task
+// immediately in `pending` status. tier selects the destination: "image" lands
+// the blob in the node-level pinned-image cache tier; "" or "artifact" lands it
+// in the durability-tracked artifact store. When tier=="image" but the node has
+// no image store, the pull falls back to the artifact store (the CP only brokers
+// image pulls to nodes that report an image store, and the digest re-verify
+// still protects correctness). The CP polls /v1/tasks/{id} for terminal status -
+// the task lives in the same TaskStore the /v1/tasks handler reads. Returns
+// ErrNoArtifactStore when the node has no artifact store configured (the blob
+// has nowhere to land).
 //
 // The actual transfer runs in a goroutine: blobpeer.Pull re-verifies the digest
 // while writing into the store (fail-closed - a wrong-bytes holder never
 // materializes a blob), so a verification failure fails the task rather than
 // landing a corrupt blob.
-func (m *Manager) PullBlob(ctx context.Context, client *http.Client, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) (*AgentTask, error) {
+func (m *Manager) PullBlob(ctx context.Context, client *http.Client, digest, token, holderEndpoint, holderIdentity string, expectedSize int64, tier string) (*AgentTask, error) {
 	if m.artifactStore == nil {
 		return nil, ErrNoArtifactStore
 	}
+	store := m.artifactStore
+	if tier == "image" && m.imageStore != nil {
+		store = m.imageStore
+	}
 	task := m.tasks.Create(TaskKindBlobPull, uuid.Nil)
-	go m.runPullBlob(context.WithoutCancel(ctx), task.ID, client, digest, token, holderEndpoint, holderIdentity, expectedSize)
+	go m.runPullBlob(context.WithoutCancel(ctx), task.ID, client, store, digest, token, holderEndpoint, holderIdentity, expectedSize)
 	return task, nil
 }
 
 // runPullBlob is the goroutine body for PullBlob: transition to running, run the
-// pull, and record terminal status. context.WithoutCancel keeps the transfer
-// alive past the triggering HTTP request's context.
-func (m *Manager) runPullBlob(ctx context.Context, taskID uuid.UUID, client *http.Client, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) {
+// pull into store, and record terminal status. context.WithoutCancel keeps the
+// transfer alive past the triggering HTTP request's context.
+func (m *Manager) runPullBlob(ctx context.Context, taskID uuid.UUID, client *http.Client, store *artifactstore.Store, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) {
 	m.tasks.Update(taskID, func(t *AgentTask) { t.Status = TaskStatusRunning })
 
 	err := blobpeer.Pull(ctx, blobpeer.PullArgs{
 		Endpoint:       holderEndpoint,
 		Digest:         digest,
 		Token:          token,
-		Store:          m.artifactStore,
+		Store:          store,
 		TLSClient:      client,
 		HolderIdentity: holderIdentity,
 		ExpectedSize:   expectedSize,

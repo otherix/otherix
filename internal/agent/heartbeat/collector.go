@@ -113,6 +113,7 @@ type LinuxCollector struct {
 	poolImages    PoolImageLister
 	poolSnapshots PoolSnapshotLister
 	blobs         BlobLister
+	imageBlobs    BlobLister
 	networks      NetworkReporter
 	wireguard     WireGuardReporter
 	migration     config.MigrationConfig
@@ -137,6 +138,7 @@ type CollectorDeps struct {
 	PoolImages    PoolImageLister
 	PoolSnapshots PoolSnapshotLister
 	Blobs         BlobLister
+	ImageBlobs    BlobLister
 	Networks      NetworkReporter
 	WireGuard     WireGuardReporter
 	Migration     config.MigrationConfig
@@ -166,6 +168,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		poolImages:    deps.PoolImages,
 		poolSnapshots: deps.PoolSnapshots,
 		blobs:         deps.Blobs,
+		imageBlobs:    deps.ImageBlobs,
 		networks:      deps.Networks,
 		wireguard:     deps.WireGuard,
 		migration:     deps.Migration,
@@ -287,6 +290,17 @@ func (c *LinuxCollector) foldObservedInventory(report *Report) {
 			report.Blobs = blobs
 		} else {
 			report.BlobsUnavailable = true
+		}
+	}
+	if c.imageBlobs != nil {
+		// The image cache tier is also node-level; reported through a distinct
+		// field so the CP keys it into image_blobs rather than node_blobs.
+		// known=false marks it unenumerable this tick so the CP preserves the
+		// prior inventory.
+		if blobs, known := c.imageBlobs.NodeBlobs(); known {
+			report.ImageBlobs = blobs
+		} else {
+			report.ImageBlobsUnavailable = true
 		}
 	}
 	if c.networks != nil {

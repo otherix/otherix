@@ -268,6 +268,14 @@ func (h heartbeatProjection) UpsertNodeBlobInventory(ctx context.Context, nodeID
 	return h.s.UpsertNodeBlobInventory(ctx, nodeID, blobs)
 }
 
+// UpsertNodeImageBlobInventory persists the agent-reported observed pinned-image
+// cache inventory for a node, delegating to the store-level blind put (empty
+// slice clears). Kept separate from node_blobs so the image tier never feeds the
+// durability reconcile.
+func (h heartbeatProjection) UpsertNodeImageBlobInventory(ctx context.Context, nodeID uuid.UUID, blobs []store.NodeBlob) error {
+	return h.s.UpsertNodeImageBlobInventory(ctx, nodeID, blobs)
+}
+
 // ListStoragePoolsByNode returns the non-deleted pools on a node.
 func (h heartbeatProjection) ListStoragePoolsByNode(ctx context.Context, nodeID uuid.UUID) ([]store.StoragePool, error) {
 	items, err := h.s.c.Range(ctx, storagePoolPrefix())

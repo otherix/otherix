@@ -252,6 +252,14 @@ type Manager struct {
 	// test path cannot panic.
 	artifactStore *artifactstore.Store
 
+	// imageStore is the node-level content-addressed cache tier for pinned
+	// VM images. It is SEPARATE from artifactStore: its contents are reported
+	// through a distinct heartbeat channel and never enter the placement map
+	// or the durability reconcile, so a cached image is never reference-count
+	// reclaimed. Derived from a sibling images/ dir next to the artifact root;
+	// nil when the artifact root is unset (test path).
+	imageStore *artifactstore.Store
+
 	// snapshotDiskDevices enumerates a VM's disks in virtio-index order for
 	// the snapshot capture loop. Production is the package snapshotDiskDevices
 	// (a single boot disk at index 0); the test injects a multi-disk
@@ -416,6 +424,14 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			return nil, fmt.Errorf("init artifact store: %w", err)
 		}
 		m.artifactStore = artifactStore
+	}
+	if cfg.Artifacts.Root != "" {
+		imageRoot := filepath.Join(filepath.Dir(cfg.Artifacts.Root), "images")
+		imageStore, err := artifactstore.New(imageRoot)
+		if err != nil {
+			return nil, fmt.Errorf("init image store: %w", err)
+		}
+		m.imageStore = imageStore
 	}
 	m.migrations = migration.NewStore()
 	m.migPorts = migration.NewPortAllocator(cfg.Migration.PortRangeStart, cfg.Migration.PortRangeEnd)

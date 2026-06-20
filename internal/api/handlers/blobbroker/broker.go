@@ -23,12 +23,25 @@ import (
 )
 
 // ErrBlobUnavailable is returned by BrokerPull when no node reports holding the
-// requested blob in observed inventory. Callers (Task 13 recreate-from-snapshot)
+// requested blob in observed inventory. Callers (recreate-from-snapshot)
 // branch on it via errors.Is to surface a fail-closed blob_unavailable.
 var ErrBlobUnavailable = errors.New("blobbroker: no live holder for blob")
 
+// Tier selects which content-addressed store a broker pull targets. Artifact is
+// the durability-tracked store (snapshots, replication); Image is the node-level
+// pinned-image cache tier. They use separate holder-discovery sources and the
+// consumer writes the pulled blob into the matching store.
+type Tier string
+
+// The broker pull tiers: TierArtifact is the durability-tracked store, TierImage
+// is the node-level pinned-image cache.
+const (
+	TierArtifact Tier = "artifact"
+	TierImage    Tier = "image"
+)
+
 // pullTokenTTL bounds the lifetime of the single-use per-op token minted for one
-// pull. The holder's serve listener self-expires at this TTL (Task 10), which is
+// pull. The holder's serve listener self-expires at this TTL, which is
 // also the broker's teardown backstop.
 const pullTokenTTL = 5 * time.Minute
 
@@ -38,6 +51,7 @@ const pullTokenTTL = 5 * time.Minute
 // single goroutine, so no CAS is required here (see etcdstore notes).
 type Store interface {
 	BlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
+	ImageBlobHolders(ctx context.Context, digest string) ([]uuid.UUID, error)
 	BlobSize(ctx context.Context, digest string) (int64, bool)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	CreatePullSaga(ctx context.Context, p store.CreatePullSagaParams) (store.ArtifactPullSaga, string, error)
@@ -59,8 +73,10 @@ type AgentExecutor interface {
 	// status, returning an error on any non-success terminal. holderIdentity is
 	// the holder's node identity SAN the consumer pins TLS verification against.
 	// expectedSize (when > 0) is the CP-known blob size the consumer bounds the
-	// pull body to; 0 means unknown (no cap, digest verify still enforced).
-	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) error
+	// pull body to; 0 means unknown (no cap, digest verify still enforced). tier
+	// selects which content-addressed store the consumer writes the pulled blob
+	// into.
+	PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64, tier Tier) error
 	// StopServe tears the holder's serve listener down, keyed on the per-op
 	// token the serve was minted with (NOT the digest: two concurrent serves of
 	// the same digest to different consumers exist as two tokens, so a
@@ -90,20 +106,27 @@ func New(st Store, exec AgentExecutor, log *slog.Logger) *Broker {
 //
 // The consumer pull is awaited to terminal, and that await is bounded by BOTH
 // the caller's ctx deadline AND the agent client's configured timeout
-// (agent_client.timeout, default 5 minutes). The caller (Task 13 recreate
+// (agent_client.timeout, default 5 minutes). The caller (the recreate
 // worker) must therefore pass a ctx whose deadline accommodates a full blob
 // transfer, and operators sizing very large blobs may need to raise
 // agent_client.timeout; a transfer exceeding either bound surfaces as a timeout
 // that fails the saga, not a broker bug.
-func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID uuid.UUID) error {
-	holders, err := b.store.BlobHolders(ctx, digest)
+func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID uuid.UUID, tier Tier) error {
+	var holders []uuid.UUID
+	var err error
+	switch tier {
+	case TierImage:
+		holders, err = b.store.ImageBlobHolders(ctx, digest)
+	default:
+		holders, err = b.store.BlobHolders(ctx, digest)
+	}
 	if err != nil {
 		return fmt.Errorf("discover holders: %v", err)
 	}
 	if len(holders) == 0 {
 		return ErrBlobUnavailable
 	}
-	holderID := holders[0] // C1: any live holder; placement policy is C2.
+	holderID := holders[0] // any live holder suffices; placement-aware selection is a separate concern.
 
 	holder, err := b.store.NodeByID(ctx, holderID)
 	if err != nil {
@@ -125,7 +148,7 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 		return fmt.Errorf("create pull saga: %v", err)
 	}
 
-	// ServeBlob discards expiresAt: C1 does not act on the serve expiry. The
+	// ServeBlob discards expiresAt: the broker does not act on the serve expiry. The
 	// holder's serve listener self-expires on its token TTL (and is torn down by
 	// the agent on shutdown), so the broker relies on that self-expiry rather
 	// than tracking the deadline.
@@ -148,9 +171,11 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 	// Resolve the CP-known blob size (any holder's reported size is authoritative
 	// for a content-addressed blob) so the consumer can bound the pull body. A
 	// zero/absent size means unknown - the consumer applies no cap and relies on
-	// the digest verify alone.
+	// the digest verify alone. BlobSize reads node_blobs (the artifact tier); an
+	// image-only digest lives in image_blobs and yields (0, false) here, which is
+	// fine: 0 means uncapped and the agent's digest verify is the backstop.
 	expectedSize, _ := b.store.BlobSize(ctx, digest)
-	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize)
+	pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize, tier)
 
 	// Teardown is best-effort and ALWAYS runs: a stop failure logs but never
 	// fails a pull that otherwise succeeded (the listener self-expires on TTL).
@@ -178,7 +203,7 @@ func (b *Broker) BrokerPull(ctx context.Context, digest string, consumerNodeID u
 func holderIdentity(nodeName string) string { return "node-" + nodeName + ".agents.otherix.local" }
 
 // ClientExecutor adapts *agentclient.Client to the AgentExecutor seam. It is the
-// production wiring used by the worker that drives BrokerPull (Task 13); the
+// production wiring used by the worker that drives BrokerPull; the
 // broker orchestration itself is unit-tested against a spy.
 type ClientExecutor struct {
 	c *agentclient.Client
@@ -210,7 +235,7 @@ func (e *ClientExecutor) ServeBlob(ctx context.Context, holderEndpoint, digest, 
 // the consumer agent's task to terminal, mirroring the migration await. A
 // non-success terminal (a verify failure on the agent surfaces as a failed task)
 // returns an error so the broker fails the saga.
-func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64) error {
+func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint, digest, token, holderEndpoint, holderIdentity string, expectedSize int64, tier Tier) error {
 	req := agentapi.BlobPullRequest{
 		Digest:         digest,
 		HolderEndpoint: holderEndpoint,
@@ -221,6 +246,12 @@ func (e *ClientExecutor) PullBlobAndAwait(ctx context.Context, consumerEndpoint,
 	}
 	if expectedSize > 0 {
 		req.ExpectedSize = &expectedSize
+	}
+	// Image tier writes the pulled blob into the node-level image cache; artifact
+	// (the default) keeps the omitted wire shape so existing pulls are unchanged.
+	if tier == TierImage {
+		t := agentapi.BlobPullRequestTierImage
+		req.Tier = &t
 	}
 	taskID, err := e.c.PullBlob(ctx, consumerEndpoint, req)
 	if err != nil {
