@@ -74,6 +74,10 @@ func newForTest(root string) (*Store, error) {
 // uses New.
 func NewForTesting(root string) (*Store, error) { return newForTest(root) }
 
+// NewForTest builds a Store rooted at root WITHOUT the production allowlist-prefix
+// check, for tests in other packages that use a temp dir.
+func NewForTest(root string) (*Store, error) { return newForTest(root) }
+
 func (s *Store) blobsDir() string     { return filepath.Join(s.root, "blobs") }
 func (s *Store) manifestsDir() string { return filepath.Join(s.root, "manifests") }
 func (s *Store) stagingDir() string   { return filepath.Join(s.blobsDir(), ".staging") }

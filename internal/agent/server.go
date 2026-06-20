@@ -177,6 +177,13 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
 	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", newArtifactSweeper(artStore, log).Run, log)
+	blobScrubberDone := runReconciler(heartbeatCtx, "blob scrubber", (&blobScrubber{
+		artifactStore: artStore,
+		imageStore:    manager.ImageStore(),
+		imageTryLock:  manager.TryLockImageBlob,
+		cfg:           cfg.Artifacts.Scrub,
+		log:           log,
+	}).Run, log)
 
 	imageEvictDone := startImageCacheEviction(heartbeatCtx, cfg, manager, log)
 
@@ -205,6 +212,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "dns forwarder", done: dnsForwarderDone},
 		{name: "dhcp responder", done: dhcpResponderDone},
 		{name: "artifact sweeper", done: artifactSweeperDone},
+		{name: "blob scrubber", done: blobScrubberDone},
 	}
 	if imageEvictDone != nil {
 		dones = append(dones, namedDone{name: "image cache eviction", done: imageEvictDone})
