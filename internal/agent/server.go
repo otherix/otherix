@@ -176,7 +176,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
-	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", newArtifactSweeper(artStore, log).Run, log)
+	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", newArtifactSweeper(artStore, manager.ImageStore(), log).Run, log)
 	blobScrubberDone := runReconciler(heartbeatCtx, "blob scrubber", (&blobScrubber{
 		artifactStore: artStore,
 		imageStore:    manager.ImageStore(),
