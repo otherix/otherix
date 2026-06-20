@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/cloudinit"
@@ -135,6 +136,15 @@ type Manager struct {
 	// the operator imports. Cleanup of stale entries is deferred future
 	// work. sync.Map's zero value is usable so no init is needed.
 	imageLocks sync.Map
+
+	// imageDownloadGroup coalesces concurrent unpinned image imports of the
+	// same source URL on this node into a single download. The content digest
+	// is unknown until the bytes arrive, so the per-digest image lock cannot
+	// dedupe the fetch itself; this groups by source URL instead. The leader
+	// downloads, validates, and stores the blob; every concurrent caller
+	// receives the resulting digest and clones from the cache. The zero value
+	// is ready to use.
+	imageDownloadGroup singleflight.Group
 
 	// imageEvictionNudge, when set, is called after a new image lands in the
 	// image cache so the eviction sweeper runs an immediate pass instead of

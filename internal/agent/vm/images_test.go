@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -736,5 +737,62 @@ func TestEnsureImageIntoRehashesTamperedHit(t *testing.T) {
 	cached, _ := os.ReadFile(imgPath)
 	if shaHex(cached) != want {
 		t.Errorf("cache file sha after re-download = %q, want %q", shaHex(cached), want)
+	}
+}
+
+func TestEnsureImageIntoUnpinnedCoalescesConcurrentSameURL(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	m.imageDialControl = nil // allow loopback httptest dials
+
+	body := qcow2Body(0x5a)
+	wantSHA := shaHex(body)
+
+	var hits atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		<-release // block so concurrent callers pile into the in-flight singleflight call
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/noble-minimal-cloudimg-arm64.img"
+
+	const n = 5
+	dsts := make([]string, n)
+	results := make([]EnsureResult, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		dsts[i] = filepath.Join(t.TempDir(), "disk.qcow2")
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", "", dsts[i])
+		}(i)
+	}
+	// Canonical singleflight test barrier: give every goroutine time to reach
+	// the in-flight Do before the leader's download completes.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := hits.Load(); got != 1 {
+		t.Errorf("download count = %d, want 1 (concurrent same-URL imports must coalesce)", got)
+	}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Errorf("caller %d error = %v", i, errs[i])
+			continue
+		}
+		if results[i].SHA256 != wantSHA {
+			t.Errorf("caller %d SHA256 = %q, want %q", i, results[i].SHA256, wantSHA)
+		}
+		if _, err := os.Stat(dsts[i]); err != nil {
+			t.Errorf("caller %d clone destination missing: %v", i, err)
+		}
+	}
+	if !m.ImageStore().Has(wantSHA) {
+		t.Errorf("image store missing digest %q after coalesced download", wantSHA)
 	}
 }

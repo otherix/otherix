@@ -358,9 +358,36 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 		lock.Unlock() // hint not present: fall through to download
 	}
 
+	// Coalesce concurrent unpinned imports of the same URL on this node into a
+	// single download: the digest is unknown until the bytes arrive, so the
+	// per-digest image lock cannot dedupe the fetch. singleflight keys by URL;
+	// the leader downloads + stores, and every concurrent caller receives the
+	// resulting digest and clones from cache. The shared call runs under the
+	// leader's context (a singleflight property); a leader cancellation fails
+	// the in-flight followers too, which is acceptable fail-open behaviour - a
+	// retry starts a fresh download (singleflight drops the key when Do returns).
+	v, doErr, _ := m.imageDownloadGroup.Do(sourceURL, func() (any, error) {
+		return m.downloadStoreUnpinned(ctx, sourceURL)
+	})
+	if doErr != nil {
+		return EnsureResult{}, doErr
+	}
+	computedSHA := v.(string)
+	m.writeImageMeta(computedSHA, sourceURL, basename)
+	return m.cloneFromImageStore(computedSHA, dstPath)
+}
+
+// downloadStoreUnpinned downloads sourceURL into scratch, validates the qcow2
+// header, stores the bytes in the node image store under their computed digest
+// (Put re-verifies the digest), nudges the eviction sweeper, and returns the
+// digest. It runs inside the per-URL singleflight (see ensureImageIntoUnpinned)
+// so concurrent unpinned imports of the same URL share one download; the
+// per-computed-digest lock still guards the Put against an unrelated pinned
+// create of the same content.
+func (m *Manager) downloadStoreUnpinned(ctx context.Context, sourceURL string) (string, error) {
 	scratch, err := os.MkdirTemp("", "otherix-image-*")
 	if err != nil {
-		return EnsureResult{}, fmt.Errorf("create scratch dir: %v", err)
+		return "", fmt.Errorf("create scratch dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
 	tempPath := filepath.Join(scratch, "download")
@@ -368,10 +395,10 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 	m.log.Info("unpinned image not cached, downloading from source", slog.String("url", sourceURL))
 	_, computedSHA, dlErr := m.downloadAndHash(ctx, sourceURL, tempPath)
 	if dlErr != nil {
-		return EnsureResult{}, fmt.Errorf("download %s: %v", sourceURL, dlErr)
+		return "", fmt.Errorf("download %s: %v", sourceURL, dlErr)
 	}
 	if err := validateQcow2Magic(tempPath); err != nil {
-		return EnsureResult{}, fmt.Errorf("qcow2_header_invalid: %v", err)
+		return "", fmt.Errorf("qcow2_header_invalid: %v", err)
 	}
 
 	lock := m.lockForImage(imageStoreLockPool, computedSHA)
@@ -380,18 +407,17 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 
 	f, err := os.Open(tempPath) // #nosec G304 -- agent's own scratch dir
 	if err != nil {
-		return EnsureResult{}, fmt.Errorf("open downloaded image: %v", err)
+		return "", fmt.Errorf("open downloaded image: %v", err)
 	}
 	putErr := m.imageStore.Put(computedSHA, f)
 	_ = f.Close()
 	if putErr != nil {
-		return EnsureResult{}, fmt.Errorf("store image blob: %v", putErr)
+		return "", fmt.Errorf("store image blob: %v", putErr)
 	}
 	if m.imageEvictionNudge != nil {
 		m.imageEvictionNudge()
 	}
-	m.writeImageMeta(computedSHA, sourceURL, basename)
-	return m.cloneFromImageStore(computedSHA, dstPath)
+	return computedSHA, nil
 }
 
 // cloneFromImageStore resolves the cached blob path for digest, bumps its mtime
