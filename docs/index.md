@@ -32,7 +32,14 @@ VMs are not cattle. Disks persist, identities are stable, and the design follows
 the workload:
 
 - **Created from an image URL** - no template entity, no registry. The agent
-  materializes the image into a per-pool cache on first use.
+  materializes the image into a content-addressed node cache on first use, and a
+  cached image is pulled peer-to-peer between nodes rather than re-downloaded -
+  see [Images](concepts/images.md).
+- **Snapshots are standalone, replicated artifacts** - content-addressed,
+  disk-only, independent of the source VM. Place them in an artifact pool to keep
+  N copies across nodes; the cluster re-replicates after a node loss, reclaims
+  orphaned blobs automatically, and self-heals corruption - see
+  [Snapshots](concepts/snapshots.md).
 - **Live migration is peer-to-peer** between agents, with the control plane out of
   the data path. The guest, your open console and `logs -f` session, and the
   network all follow the VM across the move - see [Live migration](guides/live-migration.md).

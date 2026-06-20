@@ -249,6 +249,87 @@ otherix migration cancel <migration-id>
 
 ---
 
+## otherix snapshot
+
+Disk-only, crash-consistent, content-addressed VM snapshots. Snapshots are
+**created** through `vm snapshot` (a VM sub-resource action) and **managed**
+through the top-level `snapshot` group. See the
+[Snapshots guide](../guides/snapshots.md) and
+[concept page](../concepts/snapshots.md).
+
+### vm snapshot
+
+Capture a snapshot of `<vm>` (CP `POST /v1/vms/<vm>/snapshots`, async).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--name` | `snap<unix_seconds>` | Snapshot name, unique within the VM. |
+| `--description` | (unset) | Optional free-text description. |
+| `--artifact-pool` | cluster default | Artifact pool that sets the replication factor for this snapshot. |
+| `--wait` | `false` | Block until the capture task reaches a terminal status. |
+| `--wait-timeout` | `10m` | Max time the CLI blocks when `--wait` is set (the snapshot keeps producing server-side regardless). |
+
+```bash
+otherix vm snapshot web-1 --name golden --wait
+otherix vm snapshot web-1 --artifact-pool artifacts
+```
+
+### snapshot list / get / delete
+
+```bash
+otherix snapshot list [--vm <name>] [--status <status>]
+otherix snapshot get <id>
+otherix snapshot delete <id>      # async; reclaims orphaned blobs automatically
+```
+
+### vm create --from-snapshot
+
+Recreate a fresh VM from a snapshot instead of an image URL (mutually exclusive
+with `--image-url`). Architecture, format, and firmware come from the snapshot
+manifest, so `--arch` and the image flags are not passed. The recreate can run on
+any node; an absent blob is pulled peer-to-peer before boot.
+
+```bash
+otherix vm create web-2 --from-snapshot <snapshot-id>
+```
+
+---
+
+## otherix artifact-pool
+
+Cluster-level content-addressed stores that set the **replication factor** for the
+snapshots tagged into them. Every authenticated role can read them; `create`,
+`update`, and `delete` are admin-only. See the
+[Snapshots guide](../guides/snapshots.md#make-snapshots-survive-a-node-loss).
+
+### artifact-pool create
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--replication-factor` | `1` | Durability target: an integer `>= 1`, or `all` for every member. The control plane keeps each blob on that many live nodes and re-replicates after a node loss. |
+| `--members` | `all` | Which nodes may back the pool: `all` or a comma-separated node-name list. |
+| `-o, --output` | `text` | `text` or `json`. |
+
+```bash
+otherix artifact-pool create artifacts --replication-factor 2
+otherix artifact-pool create artifacts --replication-factor all
+```
+
+### artifact-pool list / get / update / delete
+
+```bash
+otherix artifact-pool list
+otherix artifact-pool get artifacts
+otherix artifact-pool update artifacts --replication-factor 3   # re-replicates existing snapshots immediately
+otherix artifact-pool update artifacts --members node-a,node-b
+otherix artifact-pool delete artifacts                          # refused while snapshots still reference it
+```
+
+The pool name is immutable; `update` changes only `--replication-factor` and/or
+`--members` (at least one required).
+
+---
+
 ## otherix pool
 
 Manage storage pools (CP `/v1/storage-pools` surface). Multi-instance: one pool
@@ -512,6 +593,18 @@ use requires `--force`.
 
 ```bash
 otherix cluster unset-default-pool --force
+```
+
+### cluster default-artifact-pool
+
+The artifact-pool analogue of the default-pool commands: a `vm snapshot` that
+omits `--artifact-pool` is tagged into this pool and inherits its replication
+factor. `set`/`unset` are admin-only.
+
+```bash
+otherix cluster get-default-artifact-pool
+otherix cluster set-default-artifact-pool artifacts
+otherix cluster unset-default-artifact-pool --force
 ```
 
 ### cluster join-token create
