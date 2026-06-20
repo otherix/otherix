@@ -310,6 +310,16 @@ func (s *Store) ActiveVMDeleteTaskVMIDs(ctx context.Context) (map[uuid.UUID]stru
 // move a task in or out of the active window. Erring is toward REFUSING (a
 // non-destructive 409), so a borderline still-running create keeps the source
 // safe.
+//
+// Known residual (recoverable, deliberately not closed): a create that hit a
+// transient failure sits at status=failed in the brief gap before the
+// dispatcher requeues it (UpdateTaskRunning flips it back to running). In that
+// gap it is neither pending nor running, so the guard counts it as not active
+// and a concurrent delete proceeds. The blast radius is the original recoverable
+// bug shrunk to that gap: the next attempt re-reads the now-soft-deleted source,
+// fails terminally (snapshot_not_found) without further blob reads, and the
+// operator re-issues. Widening the window to chase the gap would not lower net
+// risk, so the refusal stays scoped to the in-flight window.
 func (s *Store) ActiveCreatesReferencingSnapshot(ctx context.Context, snapshotID uuid.UUID) (int, error) {
 	items, err := s.c.Range(ctx, taskPrefix())
 	if err != nil {

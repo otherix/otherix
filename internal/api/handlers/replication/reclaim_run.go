@@ -80,6 +80,20 @@ func runReclaim(ctx context.Context, st ReclaimWorkerStore, reclaimer Reclaimer,
 // reports whether deleting target is still justified: target must currently hold
 // the blob, and removing it must leave at least desired live holders. desired is
 // 0 for an orphaned blob (zero snapshot refs) and K otherwise.
+//
+// Known limitation (accepted, deliberately not hardened): the live-holder count
+// comes from observed heartbeat inventory, which is validated by digest FORMAT
+// only (a 64-hex string), not by possession - the holder is trusted to actually
+// store the bytes it reports. The realistic fault mode is a stale/partial
+// enumeration that OMITS a blob (fails toward not-reclaiming, since a lower
+// holder count makes the surplus check fail), not one that INVENTS a valid digest
+// matching a real blob on another node. A node maliciously claiming a digest it
+// never wrote could inflate the holder count and, in the worst case, license a
+// reclaim that drops real durability below desired; that is a malicious-only case
+// outside the observed-inventory trust model. The periodic scrubber re-hashes a
+// node's OWN store but cannot catch a phantom claim. Hardening the margin here
+// would touch the destructive path with no realistic-fault benefit, so the
+// limitation is documented rather than coded around.
 func reclaimStillSafe(ctx context.Context, st ReclaimWorkerStore, digest string, target uuid.UUID) (bool, error) {
 	nodes, err := st.AllNodes(ctx)
 	if err != nil {
