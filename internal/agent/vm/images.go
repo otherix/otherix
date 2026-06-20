@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -216,24 +217,31 @@ func (m *Manager) EnsureImage(ctx context.Context, poolName, sourceURL, expected
 	return m.ensureLocked(ctx, p.root, basename, sourceURL, expectedSHA)
 }
 
-// EnsureImageInto materializes the pool image (download-on-miss, digest-verify)
-// and clones it into dstPath, holding the per-image lock across both steps so a
-// concurrent ensure for the same (pool, basename) cannot overwrite the cache
-// file between the verify and the clone. On a pinned-digest cache
-// HIT it re-hashes the cache file bytes (not the sidecar), so a tampered cache
-// file routes to the existing re-download path. Clone failures are wrapped in
-// ErrCloneFailed so the caller can map them to clone_failed.
-func (m *Manager) EnsureImageInto(ctx context.Context, poolName, sourceURL, expectedSHA, format, dstPath string) (EnsureResult, error) {
+// EnsureImageInto materializes the image (download-on-miss, digest-verify) and
+// clones it into dstPath, holding the per-image lock across both steps so a
+// concurrent ensure for the same key cannot overwrite the cache file between the
+// verify and the clone. When the node-level image store is wired, both pinned
+// and unpinned images use it: pinned re-hashes the cache file bytes on a HIT
+// (not the sidecar), so a tampered cache file routes to re-download; unpinned
+// follows hint when present (best-effort, see ensureImageIntoUnpinned). Without
+// the image store, the legacy per-pool basename cache is used. Clone failures
+// are wrapped in ErrCloneFailed so the caller can map them to clone_failed.
+func (m *Manager) EnsureImageInto(ctx context.Context, poolName, sourceURL, expectedSHA, format, hint, dstPath string) (EnsureResult, error) {
 	p, basename, err := m.resolveEnsure(poolName, sourceURL, expectedSHA, format)
 	if err != nil {
 		return EnsureResult{}, err
 	}
-	// Pinned images use the node-level content-addressed image cache tier so a
-	// peer can serve them and a second VM from the same digest skips the
-	// download. Unpinned images stay on the per-pool basename cache (no stable
-	// content key to pull by).
-	if expectedSHA != "" && m.imageStore != nil {
-		return m.ensureImageIntoPinned(ctx, sourceURL, expectedSHA, dstPath)
+	// Pinned and unpinned both use the node-level content-addressed image cache
+	// tier when it is available, so a peer can serve them and a second VM from
+	// the same digest skips the download. Pinned keys by the supplied digest;
+	// unpinned keys by the CP's resolved-digest hint when present, else by the
+	// digest computed after download. The legacy per-pool basename cache is used
+	// only when the image store is unwired (test paths / no artifact root).
+	if m.imageStore != nil {
+		if expectedSHA != "" {
+			return m.ensureImageIntoPinned(ctx, sourceURL, expectedSHA, dstPath)
+		}
+		return m.ensureImageIntoUnpinned(ctx, sourceURL, basename, hint, dstPath)
 	}
 	lock := m.lockForImage(poolName, basename)
 	lock.Lock()
@@ -323,6 +331,122 @@ func (m *Manager) ensureImageIntoPinned(ctx context.Context, sourceURL, expected
 		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
 	}
 	return EnsureResult{SHA256: expectedSHA, Path: blobPath, SizeBytes: fi.Size()}, nil
+}
+
+// ensureImageIntoUnpinned materializes an unpinned image into dstPath through
+// the node-level content-addressed image store. When hint is set and the store
+// already holds it (e.g. the CP pre-pulled it from a peer), it clones from cache
+// with no download. Otherwise it downloads sourceURL, computes the digest,
+// stores the blob, writes the human-readable <digest>.meta sidecar, and clones.
+// The hint is best-effort: a miss falls back to download, and the returned
+// SHA256 is always the digest actually materialized (hint on a hit, computed on
+// a download).
+func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basename, hint, dstPath string) (EnsureResult, error) {
+	if hint != "" {
+		lock := m.lockForImage(imageStoreLockPool, hint)
+		lock.Lock()
+		hit := m.imageStore.Has(hint)
+		if hit {
+			res, err := m.cloneFromImageStore(hint, dstPath)
+			lock.Unlock()
+			if err != nil {
+				return EnsureResult{}, err
+			}
+			m.writeImageMeta(hint, sourceURL, basename)
+			return res, nil
+		}
+		lock.Unlock() // hint not present: fall through to download
+	}
+
+	scratch, err := os.MkdirTemp("", "otherix-image-*")
+	if err != nil {
+		return EnsureResult{}, fmt.Errorf("create scratch dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	tempPath := filepath.Join(scratch, "download")
+
+	m.log.Info("unpinned image not cached, downloading from source", slog.String("url", sourceURL))
+	_, computedSHA, dlErr := m.downloadAndHash(ctx, sourceURL, tempPath)
+	if dlErr != nil {
+		return EnsureResult{}, fmt.Errorf("download %s: %v", sourceURL, dlErr)
+	}
+	if err := validateQcow2Magic(tempPath); err != nil {
+		return EnsureResult{}, fmt.Errorf("qcow2_header_invalid: %v", err)
+	}
+
+	lock := m.lockForImage(imageStoreLockPool, computedSHA)
+	lock.Lock()
+	defer lock.Unlock()
+
+	f, err := os.Open(tempPath) // #nosec G304 -- agent's own scratch dir
+	if err != nil {
+		return EnsureResult{}, fmt.Errorf("open downloaded image: %v", err)
+	}
+	putErr := m.imageStore.Put(computedSHA, f)
+	_ = f.Close()
+	if putErr != nil {
+		return EnsureResult{}, fmt.Errorf("store image blob: %v", putErr)
+	}
+	if m.imageEvictionNudge != nil {
+		m.imageEvictionNudge()
+	}
+	m.writeImageMeta(computedSHA, sourceURL, basename)
+	return m.cloneFromImageStore(computedSHA, dstPath)
+}
+
+// cloneFromImageStore resolves the cached blob path for digest, bumps its mtime
+// (LRU for the eviction sweeper), and clones it into dstPath.
+func (m *Manager) cloneFromImageStore(digest, dstPath string) (EnsureResult, error) {
+	blobPath, err := m.imageStore.BlobPath(digest)
+	if err != nil {
+		return EnsureResult{}, fmt.Errorf("resolve cached image path: %v", err)
+	}
+	fi, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		return EnsureResult{}, fmt.Errorf("stat cached image: %v", statErr)
+	}
+	now := time.Now()
+	_ = os.Chtimes(blobPath, now, now)
+	if err := storage.CloneImage(blobPath, dstPath); err != nil {
+		return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
+	}
+	return EnsureResult{SHA256: digest, Path: blobPath, SizeBytes: fi.Size()}, nil
+}
+
+// imageMetaDir returns the sibling directory holding <digest>.meta readability
+// sidecars. It is intentionally separate from the image store's blob directory
+// so the artifact-store janitor / eviction never treat a .meta as a stray blob
+// or orphan sidecar.
+func (m *Manager) imageMetaDir() string {
+	return filepath.Join(filepath.Dir(m.imageStore.Root()), "images-meta")
+}
+
+// writeImageMeta writes a best-effort {url, basename} sidecar next-but-isolated
+// to the cached blob so an operator can map a hex digest back to its source.
+// Advisory only - never load-bearing - so any failure is logged and swallowed.
+func (m *Manager) writeImageMeta(digest, sourceURL, basename string) {
+	dir := m.imageMetaDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // advisory metadata dir
+		m.log.Warn("write image meta: mkdir", slog.String("digest", digest), slog.String("err", err.Error()))
+		return
+	}
+	b, err := json.Marshal(struct {
+		URL      string `json:"url"`
+		Basename string `json:"basename"`
+	}{URL: sourceURL, Basename: basename})
+	if err != nil {
+		return
+	}
+	tmp := filepath.Join(dir, digest+".meta.tmp")
+	final := filepath.Join(dir, digest+".meta")
+	if err := os.WriteFile(tmp, b, 0o644); err != nil { //nolint:gosec // advisory non-secret metadata
+		m.log.Warn("write image meta: tmp", slog.String("digest", digest), slog.String("err", err.Error()))
+		return
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		m.log.Warn("write image meta: rename", slog.String("digest", digest), slog.String("err", err.Error()))
+	}
 }
 
 // resolveEnsure runs the pre-flight validation (format, source URL, checksum

@@ -49,6 +49,12 @@ type createRequest struct {
 	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
 	Format         string `json:"format,omitempty"`
 	DiskGiB        int    `json:"disk_gib,omitempty"`
+	// ResolvedImageDigest is the CP's best-effort content-digest HINT for an
+	// unpinned image. When present and the node's image cache holds it, the
+	// agent clones from cache instead of downloading. Not a pin: a miss falls
+	// back to downloading image_url. Absent for pinned creates and for
+	// pull_policy=always.
+	ResolvedImageDigest *string `json:"resolved_image_digest,omitempty"`
 	// UserData carries CP-resolved raw `#cloud-config` YAML (L3 Area
 	// 3 lock). Optional — empty value skips cidata generation.
 	// CP-side resolver passes through vm.user_data and injects a
@@ -163,20 +169,21 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, err := h.manager.Create(r.Context(), vm.CreateSpec{
-		UUID:              vmID,
-		Name:              req.Name,
-		VCPUs:             req.VCPUs,
-		MemoryMB:          req.MemoryMB,
-		PoolName:          req.Pool,
-		ImageURL:          req.ImageURL,
-		ExpectedSHA256:    req.ExpectedSHA256,
-		Format:            format,
-		DiskGiB:           req.DiskGiB,
-		UserData:          []byte(req.UserData),
-		NetworkData:       []byte(req.NetworkConfig),
-		CloudInitDisabled: req.CloudInitDisabled,
-		SourceSnapshot:    sourceSnapshotSpec(req.SourceSnapshot),
-		NICs:              nics,
+		UUID:                vmID,
+		Name:                req.Name,
+		VCPUs:               req.VCPUs,
+		MemoryMB:            req.MemoryMB,
+		PoolName:            req.Pool,
+		ImageURL:            req.ImageURL,
+		ExpectedSHA256:      req.ExpectedSHA256,
+		Format:              format,
+		ResolvedImageDigest: derefString(req.ResolvedImageDigest),
+		DiskGiB:             req.DiskGiB,
+		UserData:            []byte(req.UserData),
+		NetworkData:         []byte(req.NetworkConfig),
+		CloudInitDisabled:   req.CloudInitDisabled,
+		SourceSnapshot:      sourceSnapshotSpec(req.SourceSnapshot),
+		NICs:                nics,
 	})
 	if err != nil {
 		mapCreateError(w, r, err)
@@ -188,6 +195,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Status: string(task.Status),
 		Links:  map[string]any{"self": "/v1/tasks/" + task.ID.String()},
 	})
+}
+
+// derefString returns the pointed-to string, or "" when the pointer is nil.
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // sourceSnapshotSpec maps the wire source_snapshot object onto the manager's

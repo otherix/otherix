@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,7 @@ func TestEnsureImageIntoPinnedDownloadsIntoImageStore(t *testing.T) {
 	url := serve(t, body)
 
 	dst := filepath.Join(t.TempDir(), "disk.qcow2")
-	res, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst)
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", "", dst)
 	if err != nil {
 		t.Fatalf("EnsureImageInto(pinned miss) error = %v", err)
 	}
@@ -75,7 +76,7 @@ func TestEnsureImageIntoPinnedHitClonesWithoutDownload(t *testing.T) {
 	url := srv.URL + "/ubuntu-24.04-arm64.img"
 
 	dst := filepath.Join(t.TempDir(), "disk.qcow2")
-	res, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst)
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", "", dst)
 	if err != nil {
 		t.Fatalf("EnsureImageInto(pinned hit) error = %v", err)
 	}
@@ -108,7 +109,7 @@ func TestEnsureImageIntoPinnedHitBumpsMtime(t *testing.T) {
 		t.Fatalf("backdate: %v", err)
 	}
 	dst := filepath.Join(t.TempDir(), "disk.qcow2")
-	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst); err != nil {
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", "", dst); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	fi, statErr := os.Stat(blobPath)
@@ -129,7 +130,7 @@ func TestEnsureImageIntoPinnedMissNudges(t *testing.T) {
 	nudged := 0
 	m.SetImageEvictionNudge(func() { nudged++ })
 	dst := filepath.Join(t.TempDir(), "disk.qcow2")
-	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst); err != nil {
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", "", dst); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if nudged != 1 {
@@ -146,7 +147,7 @@ func TestEnsureImageIntoPinnedChecksumMismatchStoresNothing(t *testing.T) {
 
 	wrong := strings.Repeat("a", 64)
 	dst := filepath.Join(t.TempDir(), "disk.qcow2")
-	_, err := m.EnsureImageInto(context.Background(), poolName, url, wrong, "qcow2", dst)
+	_, err := m.EnsureImageInto(context.Background(), poolName, url, wrong, "qcow2", "", dst)
 	if err == nil {
 		t.Fatal("EnsureImageInto(pinned, url disagrees) error = nil, want checksum_mismatch")
 	}
@@ -162,25 +163,118 @@ func TestEnsureImageIntoPinnedChecksumMismatchStoresNothing(t *testing.T) {
 	}
 }
 
-func TestEnsureImageIntoUnpinnedUnchanged(t *testing.T) {
+func TestEnsureUnpinnedHintHitClonesWithoutDownload(t *testing.T) {
 	m, poolName, _ := newImageTestManager(t)
 	m.imageStore = mustNewForTesting(t)
 	body := qcow2Body(24)
-	url := serve(t, body)
+	digest := shaHex(body)
+	if err := m.ImageStore().Put(digest, bytes.NewReader(body)); err != nil {
+		t.Fatalf("seed image store: %v", err)
+	}
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/noble.img"
 
 	dst := filepath.Join(t.TempDir(), "disk.qcow2")
-	if _, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", dst); err != nil {
-		t.Fatalf("EnsureImageInto(unpinned) error = %v", err)
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", digest, dst)
+	if err != nil {
+		t.Fatalf("EnsureImageInto = %v", err)
+	}
+	if res.SHA256 != digest {
+		t.Errorf("res.SHA256 = %q, want %q", res.SHA256, digest)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("downloaded %d times, want 0 (hint hit must clone from cache)", got)
 	}
 	if _, err := os.Stat(dst); err != nil {
-		t.Errorf("clone destination not present: %v", err)
+		t.Errorf("disk not cloned: %v", err)
 	}
-	entries, err := m.ImageStore().List()
+	assertMetaSidecar(t, m.ImageStore().Root(), digest, url)
+}
+
+func TestEnsureUnpinnedNoHintDownloadsStoresReports(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(25)
+	digest := shaHex(body)
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/noble.img"
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", "", dst)
 	if err != nil {
-		t.Fatalf("image store List: %v", err)
+		t.Fatalf("EnsureImageInto = %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("image store holds %d entries after an unpinned ensure; want none", len(entries))
+	if res.SHA256 != digest {
+		t.Errorf("res.SHA256 = %q, want computed %q", res.SHA256, digest)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("downloaded %d times, want 1", got)
+	}
+	if !m.ImageStore().Has(digest) {
+		t.Errorf("blob not stored under computed digest")
+	}
+	assertMetaSidecar(t, m.ImageStore().Root(), digest, url)
+}
+
+func TestEnsureUnpinnedStaleHintFallsBackToDownload(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(26)
+	digest := shaHex(body)
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/noble.img"
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	// hint points at a digest the store does NOT have and no peer populated.
+	res, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2",
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0", dst)
+	if err != nil {
+		t.Fatalf("EnsureImageInto = %v", err)
+	}
+	if res.SHA256 != digest {
+		t.Errorf("res.SHA256 = %q, want computed %q (stale hint must not pin)", res.SHA256, digest)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("downloaded %d times, want 1 (stale hint falls back to download)", got)
+	}
+}
+
+// assertMetaSidecar checks the human-readable <digest>.meta sidecar in the
+// images-meta/ dir that sits as a sibling to the image store root.
+func assertMetaSidecar(t *testing.T, imgRoot, digest, wantURL string) {
+	t.Helper()
+	metaPath := filepath.Join(filepath.Dir(imgRoot), "images-meta", digest+".meta")
+	b, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read .meta sidecar: %v", err)
+	}
+	var meta struct {
+		URL      string `json:"url"`
+		Basename string `json:"basename"`
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		t.Fatalf("parse .meta: %v", err)
+	}
+	if meta.URL != wantURL {
+		t.Errorf(".meta url = %q, want %q", meta.URL, wantURL)
 	}
 }
 
@@ -612,7 +706,7 @@ func TestEnsureImageIntoRehashesTamperedHit(t *testing.T) {
 	url := serve(t, body)
 
 	dst1 := filepath.Join(t.TempDir(), "disk1.qcow2")
-	if _, err := m.EnsureImageInto(context.Background(), poolName, url, want, "qcow2", dst1); err != nil {
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, want, "qcow2", "", dst1); err != nil {
 		t.Fatalf("EnsureImageInto(seed) error = %v", err)
 	}
 	got1, _ := os.ReadFile(dst1)
@@ -631,7 +725,7 @@ func TestEnsureImageIntoRehashesTamperedHit(t *testing.T) {
 	}
 
 	dst2 := filepath.Join(t.TempDir(), "disk2.qcow2")
-	if _, err := m.EnsureImageInto(context.Background(), poolName, url, want, "qcow2", dst2); err != nil {
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, want, "qcow2", "", dst2); err != nil {
 		t.Fatalf("EnsureImageInto(tampered hit) error = %v", err)
 	}
 	got2, _ := os.ReadFile(dst2)
