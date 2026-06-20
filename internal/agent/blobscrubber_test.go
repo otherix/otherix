@@ -20,7 +20,7 @@ import (
 
 func scrubStore(t *testing.T) *artifactstore.Store {
 	t.Helper()
-	s, err := artifactstore.NewForTest(t.TempDir())
+	s, err := artifactstore.NewForTesting(t.TempDir())
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
