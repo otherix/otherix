@@ -78,3 +78,9 @@ artifacts:
     max_bytes: 681574400       # 650 MiB
     min_free_bytes: 0          # disable the free-space floor in dev
     eviction_interval: 15s
+  # Blob scrubber shrunk for dev so a tampered blob is re-verified within a smoke
+  # window. Production defaults are 1h / 168h / 10 GiB.
+  scrub:
+    interval: 10s
+    min_reverify_interval: 3s
+    max_bytes_per_pass: 1073741824  # 1 GiB, covers the small test blobs

@@ -113,6 +113,7 @@ type ArtifactsConfig struct {
 	PortRangeStart int              `koanf:"port_range_start"`
 	PortRangeEnd   int              `koanf:"port_range_end"`
 	ImageCache     ImageCacheConfig `koanf:"image_cache"`
+	Scrub          ScrubConfig      `koanf:"scrub"`
 }
 
 // ImageCacheConfig bounds the node-level pinned-image cache store. A periodic
@@ -123,6 +124,18 @@ type ImageCacheConfig struct {
 	MaxBytes         int64         `koanf:"max_bytes"`         // total cache size ceiling; 0 disables
 	MinFreeBytes     int64         `koanf:"min_free_bytes"`    // partition free-space floor; 0 disables
 	EvictionInterval time.Duration `koanf:"eviction_interval"` // periodic pass cadence
+}
+
+// ScrubConfig drives the periodic blob scrubber: it re-hashes stored blobs to
+// detect silent corruption a Put-time verify cannot catch (bit-rot, a bad
+// sector), deletes a confirmed-corrupt copy, and lets the heartbeat inventory +
+// durability reconcile re-replicate a healthy copy. Each blob is re-verified at
+// most once per MinReverifyInterval, with at most MaxBytesPerPass re-hashed per
+// pass to bound read I/O. A zero on any of the three disables the scrubber.
+type ScrubConfig struct {
+	Interval            time.Duration `koanf:"interval"`              // pass cadence; 0 disables
+	MinReverifyInterval time.Duration `koanf:"min_reverify_interval"` // min age before a blob is re-verified; 0 disables
+	MaxBytesPerPass     int64         `koanf:"max_bytes_per_pass"`    // per-pass re-hash byte ceiling; 0 disables
 }
 
 // artifactsRootAllowedPrefix is the fixed allowlist prefix Root must sit under,
@@ -154,6 +167,15 @@ func (c ArtifactsConfig) Validate() error {
 	}
 	if c.ImageCache.MinFreeBytes < 0 {
 		return errors.New("artifacts.image_cache.min_free_bytes must be >= 0")
+	}
+	if c.Scrub.MaxBytesPerPass < 0 {
+		return errors.New("artifacts.scrub.max_bytes_per_pass must be >= 0")
+	}
+	if c.Scrub.Interval < 0 {
+		return errors.New("artifacts.scrub.interval must be >= 0")
+	}
+	if c.Scrub.MinReverifyInterval < 0 {
+		return errors.New("artifacts.scrub.min_reverify_interval must be >= 0")
 	}
 	return nil
 }
