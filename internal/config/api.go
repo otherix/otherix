@@ -569,8 +569,9 @@ type WorkersConfig struct {
 	} `koanf:"placement_reconcile"`
 
 	ArtifactSagaRetention struct {
-		Interval  time.Duration `koanf:"interval"`
-		Retention time.Duration `koanf:"retention"`
+		Interval          time.Duration `koanf:"interval"`
+		Retention         time.Duration `koanf:"retention"`
+		StrandedRetention time.Duration `koanf:"stranded_retention"`
 	} `koanf:"artifact_saga_retention"`
 }
 

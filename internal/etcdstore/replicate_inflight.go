@@ -37,7 +37,22 @@ func replicateInflightKey(digest string, nodeID uuid.UUID) string {
 func (s *Store) TryBeginReplicate(ctx context.Context, digest string, nodeID uuid.UUID, ttl time.Duration) (bool, error) {
 	k := replicateInflightKey(digest, nodeID)
 	now := time.Now().UTC()
-
+	enc, err := etcd.Marshal(replicateInflight{ExpiresAt: now.Add(ttl)})
+	if err != nil {
+		return false, err
+	}
+	// Fast path: atomically create the marker when absent. Only one racing replica
+	// wins the create, so the common first-time double-enqueue is impossible.
+	created, err := s.c.PutIfAbsent(ctx, k, enc)
+	if err != nil {
+		return false, fmt.Errorf("create replicate marker: %v", err)
+	}
+	if created {
+		return true, nil
+	}
+	// A marker already exists. If it is still fresh, back off; if it has expired,
+	// overwrite it (the loser of an expired-marker race re-creates an idempotent
+	// content-addressed pull, so a rare double here is safe).
 	val, found, err := s.c.Get(ctx, k)
 	if err != nil {
 		return false, fmt.Errorf("read replicate marker: %v", err)
@@ -48,12 +63,8 @@ func (s *Store) TryBeginReplicate(ctx context.Context, digest string, nodeID uui
 			return false, nil
 		}
 	}
-	enc, err := etcd.Marshal(replicateInflight{ExpiresAt: now.Add(ttl)})
-	if err != nil {
-		return false, err
-	}
 	if err := s.c.Put(ctx, k, enc); err != nil {
-		return false, fmt.Errorf("write replicate marker: %v", err)
+		return false, fmt.Errorf("refresh replicate marker: %v", err)
 	}
 	return true, nil
 }

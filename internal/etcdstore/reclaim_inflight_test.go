@@ -7,6 +7,7 @@ package etcdstore_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,5 +68,44 @@ func TestTryBeginReclaimExpired(t *testing.T) {
 	}
 	if !began2 {
 		t.Errorf("TryBeginReclaim over expired marker = false, want true")
+	}
+}
+
+// TestTryBeginReclaimConcurrent drives the seam the atomic create-if-absent
+// protects: two replicas racing the first reclaim of the same (digest, node)
+// must yield exactly one winner, never two enqueues.
+func TestTryBeginReclaimConcurrent(t *testing.T) {
+	st, _ := startStore(t)
+	ctx := context.Background()
+	digest := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1"
+	node := uuid.New()
+
+	const racers = 8
+	var wg sync.WaitGroup
+	results := make([]bool, racers)
+	errs := make([]error, racers)
+	start := make(chan struct{})
+	for i := range racers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = st.TryBeginReclaim(ctx, digest, node, time.Minute)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	won := 0
+	for i := range racers {
+		if errs[i] != nil {
+			t.Fatalf("racer %d TryBeginReclaim = %v, want nil", i, errs[i])
+		}
+		if results[i] {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Errorf("concurrent TryBeginReclaim winners = %d, want exactly 1", won)
 	}
 }
