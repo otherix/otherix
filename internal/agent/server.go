@@ -178,6 +178,8 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
 	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", newArtifactSweeper(artStore, log).Run, log)
 
+	imageEvictDone := startImageCacheEviction(heartbeatCtx, cfg, manager, log)
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", cfg.Server.Listen)
@@ -203,6 +205,9 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "dns forwarder", done: dnsForwarderDone},
 		{name: "dhcp responder", done: dhcpResponderDone},
 		{name: "artifact sweeper", done: artifactSweeperDone},
+	}
+	if imageEvictDone != nil {
+		dones = append(dones, namedDone{name: "image cache eviction", done: imageEvictDone})
 	}
 
 	select {
@@ -377,6 +382,26 @@ func runReconciler(ctx context.Context, name string, run func(context.Context) e
 		log.Info(name + " stopped")
 	}()
 	return done
+}
+
+// startImageCacheEviction wires and launches the image cache eviction
+// sweeper, returning the channel closed when it exits. A node with no
+// artifacts root has a nil image store; in that case eviction is disabled
+// and the returned channel is nil (skipped from the drain set).
+func startImageCacheEviction(ctx context.Context, cfg *config.AgentConfig, manager *vm.Manager, log *slog.Logger) <-chan struct{} {
+	imgStore := manager.ImageStore()
+	if imgStore == nil {
+		return nil
+	}
+	nudgeCh := make(chan struct{}, 1)
+	manager.SetImageEvictionNudge(func() {
+		select {
+		case nudgeCh <- struct{}{}:
+		default: // a pass is already pending; coalesce
+		}
+	})
+	sweeper := newImageCacheSweeper(imgStore, manager.TryLockImageBlob, freeBytesStatfs, cfg.Artifacts.ImageCache, nudgeCh, log)
+	return runReconciler(ctx, "image cache eviction", sweeper.Run, log)
 }
 
 // poolImageAdapter implements heartbeat.PoolImageLister over

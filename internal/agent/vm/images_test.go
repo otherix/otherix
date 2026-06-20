@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/otherix/otherix/internal/agent/artifactstore"
 	"github.com/otherix/otherix/internal/agent/netfabric"
@@ -86,6 +87,53 @@ func TestEnsureImageIntoPinnedHitClonesWithoutDownload(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); err != nil {
 		t.Errorf("clone destination not present: %v", err)
+	}
+}
+
+func TestEnsureImageIntoPinnedHitBumpsMtime(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(0x71)
+	sum := shaHex(body)
+	url := serve(t, body)
+	if err := m.imageStore.Put(sum, bytes.NewReader(body)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	blobPath, err := m.imageStore.BlobPath(sum)
+	if err != nil {
+		t.Fatalf("BlobPath: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(blobPath, old, old); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	fi, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		t.Fatalf("stat blob: %v", statErr)
+	}
+	if !fi.ModTime().After(old.Add(time.Hour)) {
+		t.Errorf("cache-hit did not bump mtime: got %v, want newer than %v", fi.ModTime(), old)
+	}
+}
+
+func TestEnsureImageIntoPinnedMissNudges(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(0x72)
+	sum := shaHex(body)
+	url := serve(t, body)
+	nudged := 0
+	m.SetImageEvictionNudge(func() { nudged++ })
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	if _, err := m.EnsureImageInto(context.Background(), poolName, url, sum, "qcow2", dst); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if nudged != 1 {
+		t.Errorf("nudge fired %d times after a download+Put, want 1", nudged)
 	}
 }
 

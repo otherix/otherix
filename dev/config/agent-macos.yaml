@@ -63,3 +63,18 @@ wireguard:
 
 qemu:
   aarch64_firmware_path: "/usr/share/AAVMF/AAVMF_CODE.fd"
+
+# Pinned-image cache bounds, shrunk for dev so the LRU eviction sweeper is
+# reachable in a smoke. The cache holds digest-pinned images (--image-sha256 S)
+# under /var/lib/otherix/images, separate from the durability artifact store.
+# max_bytes is sized between the two test cloud images (~586 MiB server fits
+# alone, ~217 MiB minimal + server together do not), so caching a second image
+# evicts the coldest first. min_free_bytes is 0 so only the byte ceiling drives
+# eviction in dev (the free-space floor would otherwise evict far more on a
+# roomy dev partition). A short eviction_interval gives a periodic fallback to
+# the create-time nudge. Production defaults are 50 GiB / 10 GiB / 5m.
+artifacts:
+  image_cache:
+    max_bytes: 681574400       # 650 MiB
+    min_free_bytes: 0          # disable the free-space floor in dev
+    eviction_interval: 15s

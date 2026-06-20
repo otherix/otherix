@@ -253,6 +253,10 @@ smoke-artifact-janitor: ## Artifact janitor smoke: the agent boot-time store hyg
 smoke-image-cache: ## Image-cache smoke: a pinned image (--image-sha256) is peer-pulled onto a second node from a node that already caches it (cache hit, no re-download), the image tier stays out of the durability placement map, and a no-peer-holder create falls back to a source download and boots (run after local-dev-start)
 	@bash dev/smoke/image-cache/run.sh
 
+.PHONY: smoke-image-cache-eviction
+smoke-image-cache-eviction: ## Image-cache eviction smoke: caching a second pinned image over the (dev-shrunk) ceiling evicts the coldest cached image first (LRU), a VM created from the evicted image keeps running (its disk is an independent copy), and recreating from the evicted image re-fetches it from source (run after local-dev-start)
+	@bash dev/smoke/image-cache-eviction/run.sh
+
 # smoke-all runs the stack-dependent smokes in sequence (fail-fast) against a
 # stand brought up by `make local-dev-start`. smoke-ha is NOT included — it
 # spins its own 3 api-server processes and does not use the dev stand; run it

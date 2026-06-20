@@ -231,6 +231,11 @@ func defaultAgentConfig() AgentConfig {
 			Root:           "/var/lib/otherix/artifacts",
 			PortRangeStart: 49252,
 			PortRangeEnd:   49351,
+			ImageCache: ImageCacheConfig{
+				MaxBytes:         50 << 30,
+				MinFreeBytes:     10 << 30,
+				EvictionInterval: 5 * time.Minute,
+			},
 		},
 		QEMU: QEMUConfig{
 			AArch64FirmwarePath: "/usr/share/AAVMF/AAVMF_CODE.fd",

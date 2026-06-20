@@ -269,6 +269,10 @@ func (m *Manager) ensureImageIntoPinned(ctx context.Context, sourceURL, expected
 			return EnsureResult{}, fmt.Errorf("stat cached image: %v", statErr)
 		}
 		m.log.Info("image cache hit, cloning without download", slog.String("digest", expectedSHA))
+		// Bump mtime so the eviction sweeper treats this as a recently-used image
+		// (LRU by file mtime). Best-effort: a touch failure must not fail the create.
+		now := time.Now()
+		_ = os.Chtimes(blobPath, now, now)
 		if err := storage.CloneImage(blobPath, dstPath); err != nil {
 			return EnsureResult{}, fmt.Errorf("%w: %v", ErrCloneFailed, err)
 		}
@@ -301,6 +305,11 @@ func (m *Manager) ensureImageIntoPinned(ctx context.Context, sourceURL, expected
 	_ = f.Close()
 	if putErr != nil {
 		return EnsureResult{}, fmt.Errorf("store image blob: %v", putErr)
+	}
+	// A new image landed; ask the eviction sweeper for an immediate pass so the
+	// cache cannot drift far past its ceiling between ticks. Nil-safe.
+	if m.imageEvictionNudge != nil {
+		m.imageEvictionNudge()
 	}
 	blobPath, err := m.imageStore.BlobPath(expectedSHA)
 	if err != nil {
