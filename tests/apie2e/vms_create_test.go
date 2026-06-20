@@ -173,6 +173,67 @@ func TestVMCreate_OneOfImageOrSnapshot(t *testing.T) {
 	}
 }
 
+// TestVMCreate_ImagePullPolicy locks the image_pull_policy surface through the
+// real HTTP edge:
+//
+//   - omitted -> the created VM view shows the persisted default if_not_present.
+//   - explicit "always" -> the view echoes "always".
+//   - an invalid value ("Always", wrong case) on an image create -> 400.
+func TestVMCreate_ImagePullPolicy(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	poolName := schedulableFixture(t, h, adminID)
+
+	getPullPolicy := func(t *testing.T, name string) string {
+		t.Helper()
+		resp := h.get(t, "/v1/vms/"+name, admin)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("get vm status = %d, want 200", resp.StatusCode)
+		}
+		var view struct {
+			ImagePullPolicy string `json:"image_pull_policy"`
+		}
+		decodeJSON(t, resp, &view)
+		return view.ImagePullPolicy
+	}
+
+	// Omitted -> default if_not_present.
+	defBody := vmCreateBody(map[string]any{"pool": poolName})
+	defName := defBody["name"].(string)
+	resp := h.post(t, "/v1/vms", defBody, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("default create status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if got := getPullPolicy(t, defName); got != "if_not_present" {
+		t.Errorf("default image_pull_policy = %q, want if_not_present", got)
+	}
+
+	// Explicit "always" -> echoed back.
+	alwaysBody := vmCreateBody(map[string]any{"pool": poolName, "image_pull_policy": "always"})
+	alwaysName := alwaysBody["name"].(string)
+	resp = h.post(t, "/v1/vms", alwaysBody, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("always create status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if got := getPullPolicy(t, alwaysName); got != "always" {
+		t.Errorf("explicit image_pull_policy = %q, want always", got)
+	}
+
+	// Invalid value (wrong case) on an image create -> 400 validation_failed.
+	badBody := vmCreateBody(map[string]any{"pool": poolName, "image_pull_policy": "Always"})
+	resp = h.post(t, "/v1/vms", badBody, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad pull-policy create status = %d, want 400", resp.StatusCode)
+	}
+	var badEnv errorEnvelope
+	decodeJSON(t, resp, &badEnv)
+	if badEnv.Error.Code != "validation_failed" {
+		t.Errorf("bad pull-policy code = %q, want validation_failed", badEnv.Error.Code)
+	}
+}
+
 // TestVMCreate_ArtifactPoolRejected locks role separation: vm create against an
 // artifact pool name returns 409 pool_role_invalid (artifact pools cannot host
 // VM disks).

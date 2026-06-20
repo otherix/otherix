@@ -48,6 +48,12 @@ type VMCreateRequest struct {
 	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
 	Format         string `json:"format,omitempty"`
 	DiskGiB        int    `json:"disk_gib,omitempty"`
+	// ResolvedImageDigest is the CP's best-effort content-digest HINT for an
+	// UNPINNED image. When set the CP has pre-pulled this digest onto the target
+	// from a peer, so the agent clones from its image cache instead of
+	// downloading ImageURL. Not a pin: a cache miss falls back to download. Nil
+	// for pinned creates and for pull_policy=always.
+	ResolvedImageDigest *string `json:"resolved_image_digest,omitempty"`
 	// UserData carries the CP-resolved cloud-init `#cloud-config`
 	// blob (L3 Area 3 lock — already-resolved vm.user_data,
 	// hostname-injected (no template fallback)). Empty

@@ -127,6 +127,14 @@ func (s *deleteWorkerStoreStub) ImageBlobHolders(context.Context, string) ([]uui
 	return nil, nil
 }
 
+func (s *deleteWorkerStoreStub) ImageURLDigest(context.Context, string) (string, bool, error) {
+	panic("unexpected ImageURLDigest")
+}
+
+func (s *deleteWorkerStoreStub) UpsertImageURLDigest(context.Context, string, string, int64, time.Time, uuid.UUID) error {
+	panic("unexpected UpsertImageURLDigest")
+}
+
 func (s *deleteWorkerStoreStub) NodeBlobInventory(context.Context, uuid.UUID) ([]store.NodeBlob, error) {
 	panic("unexpected NodeBlobInventory")
 }
@@ -247,6 +255,23 @@ type createLifecycleWorkerStoreStub struct {
 	projectedCreate    bool
 	projectedLifecycle bool
 	clearedAgentTaskID bool
+
+	// imageBlobHolders is returned by ImageBlobHolders so the unpinned-hit test
+	// can stand up a peer holder (otherwise the pre-pull is skipped).
+	imageBlobHolders []uuid.UUID
+	// imageURLDigest / imageURLDigestOK back ImageURLDigest; imageURLDigestCalls
+	// counts lookups so the always-policy test can assert the registry is NOT
+	// consulted.
+	imageURLDigest      string
+	imageURLDigestOK    bool
+	imageURLDigestCalls int
+	// upsertedURL / upsertedDigest record the last UpsertImageURLDigest write
+	// (consumed by the registry-write tests). upsertErr, when set, is returned by
+	// UpsertImageURLDigest so the fail-open test can assert a registry-write
+	// failure never fails the create.
+	upsertedURL    string
+	upsertedDigest string
+	upsertErr      error
 }
 
 func (s *createLifecycleWorkerStoreStub) UpdateTaskRunning(context.Context, uuid.UUID) (bool, error) {
@@ -327,7 +352,18 @@ func (s *createLifecycleWorkerStoreStub) NodeBlobInventory(context.Context, uuid
 }
 
 func (s *createLifecycleWorkerStoreStub) ImageBlobHolders(context.Context, string) ([]uuid.UUID, error) {
-	return nil, nil
+	return s.imageBlobHolders, nil
+}
+
+func (s *createLifecycleWorkerStoreStub) ImageURLDigest(context.Context, string) (string, bool, error) {
+	s.imageURLDigestCalls++
+	return s.imageURLDigest, s.imageURLDigestOK, nil
+}
+
+func (s *createLifecycleWorkerStoreStub) UpsertImageURLDigest(_ context.Context, url, digest string, _ int64, _ time.Time, _ uuid.UUID) error {
+	s.upsertedURL = url
+	s.upsertedDigest = digest
+	return s.upsertErr
 }
 
 // noopBroker is the SnapshotBlobBroker double for the create/lifecycle tests
@@ -336,6 +372,17 @@ func (s *createLifecycleWorkerStoreStub) ImageBlobHolders(context.Context, strin
 type noopBroker struct{}
 
 func (noopBroker) BrokerPull(context.Context, string, uuid.UUID, blobbroker.Tier) error { return nil }
+
+// spyBroker records whether a peer pre-pull was attempted, for the unpinned
+// peer-pull hint tests. BrokerPull always succeeds.
+type spyBroker struct {
+	pulled bool
+}
+
+func (b *spyBroker) BrokerPull(context.Context, string, uuid.UUID, blobbroker.Tier) error {
+	b.pulled = true
+	return nil
+}
 
 // spyCreateExecutor records whether the agent create was attempted, the image
 // source the worker handed it, and a canned result/error to surface back.
@@ -672,6 +719,124 @@ func TestRunCreateHandsImageSourceFromVMRow(t *testing.T) {
 	}
 }
 
+// TestRunCreateUnpinnedIfNotPresentResolvesHintAndPrePulls pins the unpinned
+// peer-pull seam: an unpinned if_not_present create whose URL the registry
+// resolves to a digest a peer holds must pass that digest to the agent as a hint
+// AND pre-pull it onto the target.
+func TestRunCreateUnpinnedIfNotPresentResolvesHintAndPrePulls(t *testing.T) {
+	nodeID := uuid.New()
+	peerID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	vm := store.VM{
+		ID:              vmID,
+		ImageURL:        "https://ex.test/noble.img",
+		ImageSHA256:     nil, // unpinned
+		ImageFormat:     store.ImageFormatQcow2,
+		ImagePullPolicy: store.ImagePullPolicyIfNotPresent,
+	}
+	disk := store.VMDisk{VmID: vmID, SizeGib: 20}
+	st := &createLifecycleWorkerStoreStub{
+		vm: vm, node: node, disk: disk,
+		imageURLDigest:   "abcd",
+		imageURLDigestOK: true,
+		imageBlobHolders: []uuid.UUID{peerID}, // a peer holds the resolved digest
+	}
+	exec := &spyCreateExecutor{}
+	broker := &spyBroker{}
+
+	err := runCreate(context.Background(), st, exec, broker, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil", err)
+	}
+	if exec.gotArgs.ResolvedImageDigest != "abcd" {
+		t.Errorf("hint = %q, want abcd (if_not_present registry hit must pass the hint)", exec.gotArgs.ResolvedImageDigest)
+	}
+	if !broker.pulled {
+		t.Errorf("expected a peer pre-pull for the resolved digest")
+	}
+}
+
+// TestRunCreateUnpinnedAlwaysSkipsRegistryAndHint pins force-from-URL: an
+// unpinned always create must NOT consult the registry, pass no hint, and not
+// pre-pull, even when the registry would hit and a peer holds the image.
+func TestRunCreateUnpinnedAlwaysSkipsRegistryAndHint(t *testing.T) {
+	nodeID := uuid.New()
+	peerID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	vm := store.VM{
+		ID:              vmID,
+		ImageURL:        "https://ex.test/noble.img",
+		ImageSHA256:     nil,
+		ImageFormat:     store.ImageFormatQcow2,
+		ImagePullPolicy: store.ImagePullPolicyAlways,
+	}
+	disk := store.VMDisk{VmID: vmID, SizeGib: 20}
+	st := &createLifecycleWorkerStoreStub{
+		vm: vm, node: node, disk: disk,
+		imageURLDigest:   "abcd",
+		imageURLDigestOK: true,
+		imageBlobHolders: []uuid.UUID{peerID},
+	}
+	exec := &spyCreateExecutor{}
+	broker := &spyBroker{}
+
+	err := runCreate(context.Background(), st, exec, broker, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil", err)
+	}
+	if exec.gotArgs.ResolvedImageDigest != "" {
+		t.Errorf("hint = %q, want empty (always must not pass a hint)", exec.gotArgs.ResolvedImageDigest)
+	}
+	if st.imageURLDigestCalls != 0 {
+		t.Errorf("always must not consult the registry; got %d lookups", st.imageURLDigestCalls)
+	}
+	if broker.pulled {
+		t.Errorf("always must not peer pre-pull")
+	}
+}
+
+// TestRunCreateUnpinnedRegistryMissNoHint pins the miss path: an unpinned
+// if_not_present create whose URL the registry has not seen passes no hint (the
+// agent downloads from the source URL).
+func TestRunCreateUnpinnedRegistryMissNoHint(t *testing.T) {
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	fresh := time.Now().Add(-5 * time.Second)
+	node := store.Node{ID: nodeID, Name: "node-x", Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}
+	vm := store.VM{
+		ID:              vmID,
+		ImageURL:        "https://ex.test/noble.img",
+		ImageSHA256:     nil,
+		ImageFormat:     store.ImageFormatQcow2,
+		ImagePullPolicy: store.ImagePullPolicyIfNotPresent,
+	}
+	disk := store.VMDisk{VmID: vmID, SizeGib: 20}
+	st := &createLifecycleWorkerStoreStub{
+		vm: vm, node: node, disk: disk,
+		imageURLDigestOK: false, // registry miss
+	}
+	exec := &spyCreateExecutor{}
+	broker := &spyBroker{}
+
+	err := runCreate(context.Background(), st, exec, broker, discardLog(),
+		VMCreateArgs{TaskID: uuid.New(), VMID: vmID, NodeID: nodeID}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("runCreate err = %v, want nil", err)
+	}
+	if exec.gotArgs.ResolvedImageDigest != "" {
+		t.Errorf("hint = %q, want empty on registry miss", exec.gotArgs.ResolvedImageDigest)
+	}
+	if broker.pulled {
+		t.Errorf("registry miss must not peer pre-pull")
+	}
+}
+
 // TestRunCreateSurfacesAgentResolvedResult pins the success-projection seam: the
 // resolved content digest and disk sizes the agent computed (returned by the
 // executor in CreateResult) are echoed into the task result the worker
@@ -968,5 +1133,54 @@ func TestRunDeleteCordonedStaleNode(t *testing.T) {
 				t.Errorf("ProjectVMDeleteSuccess not called; the delete must always converge to projected success")
 			}
 		})
+	}
+}
+
+// TestProjectCreateSuccessWritesURLRegistry pins the import-report: a successful
+// create that resolved an image URL to a content digest records URL -> digest so
+// a later unpinned create of the same URL can peer-pull by digest.
+func TestProjectCreateSuccessWritesURLRegistry(t *testing.T) {
+	st := &createLifecycleWorkerStoreStub{}
+	taskID, vmID, nodeID := uuid.New(), uuid.New(), uuid.New()
+
+	err := projectCreateSuccess(context.Background(), st, discardLog(), taskID, vmID, nodeID,
+		"https://ex.test/noble.img", CreateResult{VMID: vmID.String(), ImageSHA256: "abcd"})
+	if err != nil {
+		t.Fatalf("projectCreateSuccess err = %v, want nil", err)
+	}
+	if st.upsertedURL != "https://ex.test/noble.img" {
+		t.Errorf("upsertedURL = %q, want %q", st.upsertedURL, "https://ex.test/noble.img")
+	}
+	if st.upsertedDigest != "abcd" {
+		t.Errorf("upsertedDigest = %q, want %q", st.upsertedDigest, "abcd")
+	}
+}
+
+// TestProjectCreateSuccessRegistryWriteFailureDoesNotFailCreate pins fail-open: a
+// registry-write failure is swallowed and never fails the committed create.
+func TestProjectCreateSuccessRegistryWriteFailureDoesNotFailCreate(t *testing.T) {
+	st := &createLifecycleWorkerStoreStub{upsertErr: errors.New("etcd down")}
+	taskID, vmID, nodeID := uuid.New(), uuid.New(), uuid.New()
+
+	err := projectCreateSuccess(context.Background(), st, discardLog(), taskID, vmID, nodeID,
+		"https://ex.test/noble.img", CreateResult{VMID: vmID.String(), ImageSHA256: "abcd"})
+	if err != nil {
+		t.Errorf("projectCreateSuccess err = %v, want nil (a registry write failure must not fail the create)", err)
+	}
+}
+
+// TestProjectCreateSuccessSnapshotSourcedSkipsRegistry pins the carve-out: a
+// snapshot-sourced create (empty URL and digest) writes nothing to the registry.
+func TestProjectCreateSuccessSnapshotSourcedSkipsRegistry(t *testing.T) {
+	st := &createLifecycleWorkerStoreStub{}
+	taskID, vmID, nodeID := uuid.New(), uuid.New(), uuid.New()
+
+	err := projectCreateSuccess(context.Background(), st, discardLog(), taskID, vmID, nodeID,
+		"", CreateResult{VMID: vmID.String(), ImageSHA256: ""})
+	if err != nil {
+		t.Fatalf("projectCreateSuccess err = %v, want nil", err)
+	}
+	if st.upsertedURL != "" {
+		t.Errorf("upsertedURL = %q, want empty (snapshot-sourced create must not write the registry)", st.upsertedURL)
 	}
 }

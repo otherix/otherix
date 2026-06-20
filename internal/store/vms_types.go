@@ -21,11 +21,16 @@ type CreateVMParams struct {
 	ImageURL     string
 	ImageSHA256  []byte
 	ImageFormat  ImageFormat
-	CpuCores     int32
-	MemoryMib    int32
-	CPUModel     string
-	MachineType  string
-	FirmwareID   *uuid.UUID
+	// ImagePullPolicy governs image reuse vs forced re-fetch for an
+	// image-sourced create. Empty/if_not_present allows cache+peer reuse;
+	// always forces a fresh download from ImageURL. Ignored for
+	// snapshot-sourced VMs.
+	ImagePullPolicy ImagePullPolicy
+	CpuCores        int32
+	MemoryMib       int32
+	CPUModel        string
+	MachineType     string
+	FirmwareID      *uuid.UUID
 	// SourceSnapshotID is set when the VM is recreated from a snapshot
 	// (`vm create --from-snapshot`). CreateUnscheduledVM persists it and, when
 	// set, forces ImageURL="" / ImageSHA256=nil (no image lineage on a

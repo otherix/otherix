@@ -108,6 +108,12 @@ type CreateSpec struct {
 	ImageURL       string
 	ExpectedSHA256 string
 	Format         string
+	// ResolvedImageDigest is the CP's best-effort content-digest hint for an
+	// UNPINNED image (see agent.yaml VMSpec.resolved_image_digest). When set
+	// and the image cache holds it, the agent clones from cache and skips the
+	// download; otherwise it is ignored and the agent downloads image_url. Not
+	// a pin. Empty for pinned creates and for pull_policy=always.
+	ResolvedImageDigest string
 	// DiskGiB is the requested root-disk size. 0 means default to the image's
 	// virtual size; a value below the virtual size is rejected; a larger value
 	// grows the disk via qemu-img resize after the copy.

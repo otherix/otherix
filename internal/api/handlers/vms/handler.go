@@ -178,18 +178,21 @@ type vmView struct {
 	// SourceSnapshotID is the snapshot this VM was recreated from (vm create
 	// --from-snapshot), or null for an image-sourced VM. Provenance, not a
 	// secret: always visible to every vm:read holder (unlike ImageURL).
-	SourceSnapshotID *string         `json:"source_snapshot_id"`
-	Format           string          `json:"format"`
-	Pool             string          `json:"pool"`
-	Node             *string         `json:"node"`
-	Networks         []string        `json:"networks"`
-	Nics             []nicView       `json:"nics"`
-	Architecture     string          `json:"architecture"`
-	VCPUs            int             `json:"vcpus"`
-	MemoryMB         int             `json:"memory_mb"`
-	Status           vmStatusView    `json:"status"`
-	DesiredPhase     string          `json:"desired_phase"`
-	Labels           json.RawMessage `json:"labels"`
+	SourceSnapshotID *string `json:"source_snapshot_id"`
+	Format           string  `json:"format"`
+	// ImagePullPolicy is the image reuse policy ("if_not_present" | "always")
+	// the VM was created with. Inventory, not a secret; always visible.
+	ImagePullPolicy string          `json:"image_pull_policy"`
+	Pool            string          `json:"pool"`
+	Node            *string         `json:"node"`
+	Networks        []string        `json:"networks"`
+	Nics            []nicView       `json:"nics"`
+	Architecture    string          `json:"architecture"`
+	VCPUs           int             `json:"vcpus"`
+	MemoryMB        int             `json:"memory_mb"`
+	Status          vmStatusView    `json:"status"`
+	DesiredPhase    string          `json:"desired_phase"`
+	Labels          json.RawMessage `json:"labels"`
 	// UserData and NetworkConfig echo the cloud-init payloads the VM was
 	// created with, verbatim - but ONLY to callers holding vm:console on
 	// this VM (owner for developer scope=own; any VM for admin / operator).
@@ -344,6 +347,7 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, 
 		ImageSHA256:      hex.EncodeToString(vm.ImageSHA256),
 		SourceSnapshotID: sourceSnapshotID,
 		Format:           string(vm.ImageFormat),
+		ImagePullPolicy:  string(vm.ImagePullPolicy),
 		Pool:             pool,
 		Node:             names.node,
 		Networks:         networksOrEmpty(nets),

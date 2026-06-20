@@ -996,7 +996,7 @@ func (m *Manager) materialiseCreateDisk(ctx context.Context, v *VM, spec CreateS
 		// so a concurrent ensure cannot overwrite the cache file between the digest
 		// verify and the clone.
 		var err error
-		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, v.DiskPath)
+		ensured, err = m.EnsureImageInto(ctx, v.PoolName, spec.ImageURL, spec.ExpectedSHA256, spec.Format, spec.ResolvedImageDigest, v.DiskPath)
 		if err != nil {
 			var ce *ChecksumMismatchError
 			switch {

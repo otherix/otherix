@@ -70,12 +70,15 @@ type VMSpec struct {
 	// when set, architecture / format / firmware come from the snapshot
 	// manifest. Surfaced so a snapshot-sourced VM's `get -o yaml` round-trips
 	// its origin instead of collapsing to an empty imageURL.
-	SourceSnapshotID  string `yaml:"sourceSnapshotID"`
-	ImageSHA256       string `yaml:"imageSHA256"`
-	Arch              string `yaml:"arch"`
-	Firmware          string `yaml:"firmware"`
-	FirmwareID        string `yaml:"firmwareID"`
-	Format            string `yaml:"format"`
+	SourceSnapshotID string `yaml:"sourceSnapshotID"`
+	ImageSHA256      string `yaml:"imageSHA256"`
+	Arch             string `yaml:"arch"`
+	Firmware         string `yaml:"firmware"`
+	FirmwareID       string `yaml:"firmwareID"`
+	Format           string `yaml:"format"`
+	// ImagePullPolicy mirrors the API image_pull_policy ("if_not_present" |
+	// "always"). Surfaced so `get -o yaml` round-trips it through `create -f`.
+	ImagePullPolicy   string `yaml:"imagePullPolicy"`
 	DiskGiB           int    `yaml:"diskGiB"`
 	VCPUs             int    `yaml:"vcpus"`
 	MemoryMB          int    `yaml:"memoryMB"`

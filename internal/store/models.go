@@ -4,6 +4,7 @@
 package store
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"time"
@@ -57,6 +58,34 @@ const (
 	ImageFormatQcow2 ImageFormat = "qcow2"
 	ImageFormatRaw   ImageFormat = "raw"
 )
+
+// ImagePullPolicy governs whether an image-sourced VM create may reuse a
+// cached/peer copy of the image (if_not_present) or must re-fetch from the
+// source URL (always). It mirrors the Kubernetes imagePullPolicy and is
+// meaningful only for image-sourced creates; snapshot-sourced creates ignore
+// it. The wire form is lowercase snake_case.
+type ImagePullPolicy string
+
+const (
+	ImagePullPolicyIfNotPresent ImagePullPolicy = "if_not_present"
+	ImagePullPolicyAlways       ImagePullPolicy = "always"
+)
+
+// ParseImagePullPolicy converts the wire string to an ImagePullPolicy. The
+// empty string defaults to if_not_present (the field is optional on the API).
+// Any other value is an error.
+func ParseImagePullPolicy(s string) (ImagePullPolicy, error) {
+	switch s {
+	case "":
+		return ImagePullPolicyIfNotPresent, nil
+	case string(ImagePullPolicyIfNotPresent):
+		return ImagePullPolicyIfNotPresent, nil
+	case string(ImagePullPolicyAlways):
+		return ImagePullPolicyAlways, nil
+	default:
+		return "", fmt.Errorf("invalid image pull policy %q", s)
+	}
+}
 
 type MigrationPhase string
 
@@ -716,11 +745,16 @@ type VM struct {
 	ImageURL     string
 	ImageSHA256  []byte
 	ImageFormat  ImageFormat
-	CpuCores     int32
-	MemoryMib    int32
-	CPUModel     string
-	MachineType  string
-	FirmwareID   *uuid.UUID
+	// ImagePullPolicy governs image reuse vs forced re-fetch for an
+	// image-sourced create. Empty/if_not_present allows cache+peer reuse;
+	// always forces a fresh download from ImageURL. Ignored for
+	// snapshot-sourced VMs.
+	ImagePullPolicy ImagePullPolicy
+	CpuCores        int32
+	MemoryMib       int32
+	CPUModel        string
+	MachineType     string
+	FirmwareID      *uuid.UUID
 	// SourceSnapshotID is the snapshot this VM was recreated from
 	// (`vm create --from-snapshot`), or nil for an image-sourced VM. When set,
 	// ImageURL is empty and ImageSHA256 is nil (no image lineage on a

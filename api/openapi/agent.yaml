@@ -1640,7 +1640,8 @@ components:
           description: |
             Task-type-specific payload, populated on success. For
             `vm.create` the agent returns `vm_id` (string uuid),
-            `image_sha256` (the resolved image content digest),
+            `image_sha256` (the resolved image content digest - the computed
+            digest for an unpinned image, the verified digest for a pinned one),
             `virtual_size_bytes` (int64, the image's virtual size) and
             `disk_size_bytes` (int64, the materialized root-disk size).
         error:
@@ -2156,6 +2157,17 @@ components:
             agent can include it in `VMDetail.observed_generation`
             once converged, letting the CP tell whether the runtime
             has caught up to the latest spec.
+        resolved_image_digest:
+          type: [string, "null"]
+          description: |
+            Best-effort content-digest HINT for an UNPINNED image create. When
+            the Control Plane has resolved this VM's `image_url` to a known
+            digest (and pre-pulled it onto this node), it passes the digest here
+            so the agent clones from its image cache instead of downloading.
+            This is NOT a pin: if the agent cannot satisfy the hint it downloads
+            from `image_url` and uses whatever digest it computes. Absent for
+            pinned creates (the digest is `checksum_sha256`) and for
+            `pull_policy: always` (the CP forces a fresh download by omitting it).
 
     VMSummary:
       type: object

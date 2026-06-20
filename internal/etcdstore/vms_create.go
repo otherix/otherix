@@ -130,6 +130,10 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		imageURL = ""
 		imageSHA = nil
 	}
+	pullPolicy := p.ImagePullPolicy
+	if pullPolicy == "" {
+		pullPolicy = store.ImagePullPolicyIfNotPresent
+	}
 	return store.VM{
 		ID:                p.ID,
 		OwnerID:           p.OwnerID,
@@ -140,6 +144,7 @@ func vmFromCreateParams(p store.CreateVMParams, now time.Time) store.VM {
 		ImageURL:          imageURL,
 		ImageSHA256:       imageSHA,
 		ImageFormat:       p.ImageFormat,
+		ImagePullPolicy:   pullPolicy,
 		CpuCores:          p.CpuCores,
 		MemoryMib:         p.MemoryMib,
 		CPUModel:          p.CPUModel,
