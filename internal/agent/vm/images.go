@@ -403,6 +403,16 @@ func (m *Manager) ensureImageIntoUnpinned(ctx context.Context, sourceURL, basena
 	}
 	computedSHA := v.(string)
 	m.writeImageMeta(computedSHA, sourceURL, basename)
+	// Clone under the per-digest lock so the eviction sweeper (nudged by the Put
+	// above) or the scrubber cannot delete the freshly-stored blob between the Put
+	// and CloneImage's open. A lost-race miss (the blob was evicted before we took
+	// the lock) returns a retryable error so the create re-materializes it.
+	lock := m.lockForImage(imageStoreLockPool, computedSHA)
+	lock.Lock()
+	defer lock.Unlock()
+	if !m.imageStore.Has(computedSHA) {
+		return EnsureResult{}, fmt.Errorf("image blob evicted before clone, retry: %s", computedSHA)
+	}
 	return m.cloneFromImageStore(computedSHA, dstPath)
 }
 

@@ -260,6 +260,48 @@ func TestEnsureUnpinnedStaleHintFallsBackToDownload(t *testing.T) {
 	}
 }
 
+// TestEnsureUnpinnedNoHintEvictionRaceRetryable pins the regression where the
+// unpinned no-hint clone ran with no per-digest lock held: the Put nudges the
+// eviction sweeper, which could delete the freshly stored blob before the clone
+// opened it, turning a successful download into a terminal clone_failed. The
+// nudge here deletes the just-Put blob (simulating eviction selecting it); with
+// the fix the clone runs under the per-digest lock and re-checks presence, so
+// the lost-race surfaces as a retryable error (never ErrCloneFailed).
+func TestEnsureUnpinnedNoHintEvictionRaceRetryable(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+	m.imageStore = mustNewForTesting(t)
+	body := qcow2Body(27)
+	digest := shaHex(body)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/noble.img"
+
+	// Simulate the eviction sweeper selecting and deleting the just-Put blob
+	// the moment the Put nudges it - the lock is still held inside the Put, so
+	// the Delete here lands after the Put returns and releases it but before the
+	// clone takes the lock back.
+	m.SetImageEvictionNudge(func() {
+		if err := m.imageStore.Delete(digest); err != nil {
+			t.Errorf("nudge delete: %v", err)
+		}
+	})
+
+	dst := filepath.Join(t.TempDir(), "disk.qcow2")
+	_, err := m.EnsureImageInto(context.Background(), poolName, url, "", "qcow2", "", dst)
+	if err == nil {
+		t.Fatal("EnsureImageInto = nil, want a retryable error (blob evicted before clone)")
+	}
+	if errors.Is(err, ErrCloneFailed) {
+		t.Fatalf("error = %v, want retryable (not ErrCloneFailed); a delete-after-Put must not surface as terminal clone_failed", err)
+	}
+	if !strings.Contains(err.Error(), "retry") {
+		t.Errorf("error = %v, want a message indicating retry", err)
+	}
+}
+
 // assertMetaSidecar checks the human-readable <digest>.meta sidecar in the
 // images-meta/ dir that sits as a sibling to the image store root.
 func assertMetaSidecar(t *testing.T, imgRoot, digest, wantURL string) {
