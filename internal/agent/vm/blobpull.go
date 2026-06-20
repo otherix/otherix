@@ -24,6 +24,23 @@ func (m *Manager) ArtifactStore() *artifactstore.Store { return m.artifactStore 
 // agent has no artifacts root configured.
 func (m *Manager) ImageStore() *artifactstore.Store { return m.imageStore }
 
+// TryLockImageBlob attempts the per-digest image-cache lock without blocking.
+// ok=false means a create is cloning or storing this digest right now, so a
+// caller that wants to delete the blob (eviction) must skip it. On ok=true the
+// caller MUST call release exactly once.
+func (m *Manager) TryLockImageBlob(digest string) (release func(), ok bool) {
+	mu := m.lockForImage(imageStoreLockPool, digest)
+	if !mu.TryLock() {
+		return nil, false
+	}
+	return mu.Unlock, true
+}
+
+// SetImageEvictionNudge installs the hook the image-store Put path calls to ask
+// the eviction sweeper for an immediate pass. The server wires it after both the
+// manager and the sweeper exist.
+func (m *Manager) SetImageEvictionNudge(fn func()) { m.imageEvictionNudge = fn }
+
 // PoolRoots returns the filesystem root of every registered pool. The blob
 // relocation sweep (server.go boot) walks these to move disk-pool-resident
 // snapshot blobs into the artifact store.

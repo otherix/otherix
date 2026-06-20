@@ -136,6 +136,11 @@ type Manager struct {
 	// work. sync.Map's zero value is usable so no init is needed.
 	imageLocks sync.Map
 
+	// imageEvictionNudge, when set, is called after a new image lands in the
+	// image cache so the eviction sweeper runs an immediate pass instead of
+	// waiting for its tick. Nil until the server wires it; nil-safe at the call.
+	imageEvictionNudge func()
+
 	// inFlight tracks in-progress lifecycle operations keyed by VM
 	// name. Entry value is struct{}; presence alone signals "busy".
 	// Loaded into via LoadOrStore at Start / Stop / Poweroff /
