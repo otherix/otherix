@@ -261,6 +261,65 @@ func TestDeleteSnapshot_FailsClosedWithChildren(t *testing.T) {
 	}
 }
 
+// TestDeleteSnapshot_FailsClosedWhileVMCreateSourcing proves the delete refuses
+// (fail-closed, mutating nothing) while an active vm.create task references the
+// snapshot as its source, then succeeds once that create reaches a terminal
+// state. A create-from-snapshot pulls the source blobs at the target node while
+// the create task runs; deleting the source mid-create could GC a blob the
+// in-flight create still needs, so delete must refuse until the create settles.
+func TestDeleteSnapshot_FailsClosedWhileVMCreateSourcing(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapsrccreate")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-srccreate-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "base")
+
+	// An active vm.create sourcing this snapshot.
+	createTaskID := uuid.New()
+	createRes := uuid.New()
+	if _, err := s.EnqueueTask(ctx, store.CreateTaskParams{
+		ID: createTaskID, Type: "vm.create", Status: store.TaskStatusPending, ResourceType: "vm",
+		ResourceID: &createRes, Args: []byte(`{"source_snapshot_id":"` + snap.ID.String() + `"}`), MaxAttempts: 25,
+	}, stubVMCreateArgs{SourceSnapshotID: &snap.ID}); err != nil {
+		t.Fatalf("EnqueueTask(vm.create): %v", err)
+	}
+
+	_, err = s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{})
+	if !errors.Is(err, store.ErrSnapshotSourcingCreate) {
+		t.Fatalf("DeleteSnapshot while create active = %v, want store.ErrSnapshotSourcingCreate", err)
+	}
+	// Fail-closed: the row is NOT soft-deleted.
+	got, err := s.SnapshotByID(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByID after refused delete: %v", err)
+	}
+	if got.DeletedAt != nil || got.Status != store.SnapshotStatusCreating {
+		t.Errorf("snapshot mutated by refused delete: deletedAt=%v status=%q", got.DeletedAt, got.Status)
+	}
+
+	// Settle the create; delete now proceeds.
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: createTaskID, Status: store.TaskStatusSuccess}); err != nil {
+		t.Fatalf("UpdateTaskFinalized(create): %v", err)
+	}
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
+		t.Fatalf("DeleteSnapshot after create settled: %v", err)
+	}
+	deleted, err := s.SnapshotByIDIncludingDeleted(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByIDIncludingDeleted: %v", err)
+	}
+	if deleted.DeletedAt == nil || deleted.Status != store.SnapshotStatusDeleting {
+		t.Errorf("snapshot not soft-deleted after create settled: deletedAt=%v status=%q", deleted.DeletedAt, deleted.Status)
+	}
+}
+
 func TestDeleteSnapshot_SoftDeletesAndDropsOwnerIndex(t *testing.T) {
 	s, cl := startStore(t)
 	ctx := context.Background()
@@ -467,6 +526,15 @@ type stubSnapArgs struct {
 }
 
 func (stubSnapArgs) Kind() string { return "vm.snapshot.create" }
+
+// stubVMCreateArgs is a minimal queue.JobArgs the vm.create enqueue path can
+// marshal: it carries only source_snapshot_id, the field
+// ActiveCreatesReferencingSnapshot reads off the task Args.
+type stubVMCreateArgs struct {
+	SourceSnapshotID *uuid.UUID `json:"source_snapshot_id,omitempty"`
+}
+
+func (stubVMCreateArgs) Kind() string { return "vm.create" }
 
 func TestCreateSnapshot_WritesRowOwnerIndexAndTask(t *testing.T) {
 	s, cl := startStore(t)

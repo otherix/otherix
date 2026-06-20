@@ -316,8 +316,11 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 
 // DeleteSnapshot soft-deletes a snapshot fail-closed: it refuses with
 // store.ErrSnapshotHasChildren when any non-deleted snapshot of the same VM
-// names this snapshot as its parent, mutating nothing in that case (a delete
-// must fail toward inaction so a still-referenced base is never destroyed). When
+// names this snapshot as its parent, and with store.ErrSnapshotSourcingCreate
+// when an active (pending|running) vm.create names this snapshot as its source,
+// mutating nothing in either case (a delete must fail toward inaction so a
+// still-referenced base, or a blob an in-flight create still needs, is never
+// destroyed). When
 // no children exist it stamps deleted_at + status=deleting, drops the per-VM
 // name guard and the owner index (so CountUserResources falls), AND enqueues the
 // blob-GC task+job - all in ONE transaction. Enqueuing the GC job atomically with
@@ -342,6 +345,21 @@ func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams sto
 		if sib.DeletedAt == nil && sib.ParentSnapshotID != nil && *sib.ParentSnapshotID == id {
 			return store.Snapshot{}, store.ErrSnapshotHasChildren
 		}
+	}
+
+	// Fail-closed sourcing-create check: refuse while an active (pending|running)
+	// vm.create names this snapshot as its source. Such a create pulls the
+	// snapshot's blobs to the target node while it runs and takes no ref/pin on the
+	// source, so soft-deleting now (which enqueues blob GC) could remove a blob the
+	// in-flight create still needs. A store error here aborts the delete (the read
+	// is uncertain - never proceed to delete on an unknown), erring toward the
+	// non-destructive refusal.
+	activeCreates, err := s.ActiveCreatesReferencingSnapshot(ctx, id)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	if activeCreates > 0 {
+		return store.Snapshot{}, store.ErrSnapshotSourcingCreate
 	}
 
 	now := time.Now().UTC()
