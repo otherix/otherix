@@ -16,7 +16,7 @@
 #
 # PREREQUISITES: a seeded two-node dev stack, i.e. run AFTER
 #   make local-dev-start
-# so the CP is up on http://localhost:8080, the `dev` CLI cluster is
+# so the CP is up on https://localhost:8080, the `dev` CLI cluster is
 # configured, and node-1 + node-2 (Lima VMs on macOS, netns on Linux) are
 # both `ready` with otwg0 up. CP + agent binaries MUST be built from the
 # current tree (the WG handshake observation is N2c-2).
@@ -57,7 +57,7 @@ wg_field() {
 # --- preconditions -----------------------------------------------------
 echo "=== wireguard-mesh smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 for n in "$NODE1" "$NODE2"; do
   st="$(otx node get "$n" --output json 2>/dev/null | jq -r '.status' || true)"
   [[ "$st" == "ready" ]] || fail "$n not ready (got '${st:-none}'); run make local-dev-start"

@@ -39,7 +39,7 @@
 #   OTHERIX_LIMA_INSTANCE_1 — node-1 Lima VM (default: otherix-dev-1)
 #   OTHERIX_LIMA_INSTANCE_2 — node-2 Lima VM (default: otherix-dev-2)
 #   OTHERIX_LIMA_INSTANCE_3 — node-3 Lima VM (default: otherix-dev-3)
-#   OTHERIX_CP_URL          — CP base URL for CLI auth (default: http://localhost:8080)
+#   OTHERIX_CP_URL          — CP base URL for CLI auth (default: https://localhost:8080)
 #   OTHERIX_NODE_ARCH       — node architecture (auto from uname)
 
 set -euo pipefail
@@ -56,7 +56,7 @@ fi
 : "${OTHERIX_LIMA_INSTANCE_1:=otherix-dev-1}"
 : "${OTHERIX_LIMA_INSTANCE_2:=otherix-dev-2}"
 : "${OTHERIX_LIMA_INSTANCE_3:=otherix-dev-3}"
-: "${OTHERIX_CP_URL:=http://localhost:8080}"
+: "${OTHERIX_CP_URL:=https://localhost:8080}"
 : "${OTHERIX_NODE_ARCH:=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')}"
 
 if [ -z "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL:-}" ] || [ -z "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
@@ -122,7 +122,9 @@ fi
 echo ""
 echo ">> Step 1 — waiting for CP at ${OTHERIX_CP_URL}/healthz"
 for i in $(seq 1 30); do
-    if curl -fsS "${OTHERIX_CP_URL}/healthz" >/dev/null 2>&1; then
+    # -k: the dev CP serves the user API over TLS with a self-signed cluster-CA
+    # cert; a liveness probe is not a trust check (the CLI pins the CA below).
+    if curl -fsSk "${OTHERIX_CP_URL}/healthz" >/dev/null 2>&1; then
         echo "   ✓ CP reachable"
         break
     fi
@@ -137,12 +139,36 @@ done
 
 echo ""
 echo ">> Step 2 — configuring CLI cluster (mints long-lived API token)"
-"${CLI}" config add cluster \
-    --name dev \
-    --server "${OTHERIX_CP_URL}" \
-    --login "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}" \
-    --password "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD}" \
-    --force
+# Over HTTPS the dev CP presents a self-signed cluster-CA leaf the system trust
+# store will not validate, so `config add cluster` would stop for confirmation.
+# Pin it non-interactively: read the cluster CA fingerprint from /v1/ca (curl -k)
+# and pass --ca-fingerprint, mirroring the operator flow. The CLI then stores the
+# CA inline in the dev cluster entry. A plain-http OTHERIX_CP_URL override skips
+# this and adds the cluster with no CA, as before.
+case "${OTHERIX_CP_URL}" in
+    https://*)
+        fp="$(curl -fsSk "${OTHERIX_CP_URL}/v1/ca" | jq -r '.signer_fingerprint_sha256')"
+        if [ -z "${fp}" ] || [ "${fp}" = "null" ]; then
+            echo "   ✗ could not read cluster CA fingerprint from ${OTHERIX_CP_URL}/v1/ca" >&2
+            exit 1
+        fi
+        "${CLI}" config add cluster \
+            --name dev \
+            --server "${OTHERIX_CP_URL}" \
+            --login "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}" \
+            --password "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD}" \
+            --ca-fingerprint "${fp}" \
+            --force
+        ;;
+    *)
+        "${CLI}" config add cluster \
+            --name dev \
+            --server "${OTHERIX_CP_URL}" \
+            --login "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}" \
+            --password "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD}" \
+            --force
+        ;;
+esac
 
 # --- bootstrap_node: mint token, run bootstrap, start agent, wait heartbeat ---
 #

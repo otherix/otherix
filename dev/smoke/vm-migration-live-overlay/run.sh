@@ -303,8 +303,8 @@ EOF
 echo "=== vm-migration-live-overlay smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
 [ -x "$OTX" ] || fail "otherix CLI not found at '$OTX' (run make build, or set OTX=...)"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
-CP_VERSION="$(curl -fsS http://localhost:8080/healthz | jq -r '.version')"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
+CP_VERSION="$(cp_version)"
 info "CP version: ${CP_VERSION}"
 
 for n in "$NODE1" "$NODE2"; do

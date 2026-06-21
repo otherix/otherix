@@ -187,7 +187,9 @@ echo "   PID ${api_pid} → ${LOG_FILE}"
 echo ">> Step 6/8 — Wait for CP /healthz (60s budget)"
 ready=0
 for _ in $(seq 1 30); do
-    if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
+    # -k: the user API serves TLS with a self-signed cluster-CA cert; this is a
+    # liveness probe, not a trust check (seed-dev pins the CA for the CLI).
+    if curl -fsSk https://localhost:8080/healthz >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -205,7 +207,7 @@ if [ "${ready}" -ne 1 ]; then
     tail -30 "${LOG_FILE}" >&2
     exit 1
 fi
-echo "   ✓ CP reachable at http://localhost:8080"
+echo "   ✓ CP reachable at https://localhost:8080"
 
 echo ">> Step 7/8 — Bootstrap agent + seed cluster (seed-dev)"
 make --no-print-directory seed-dev
@@ -231,7 +233,7 @@ cat <<EOF
 >> local-dev-start complete
 
    etcd data  : ${REPO_ROOT}/.local/etcd (embedded member)
-   api-server : http://localhost:8080 (PID $(cat "${PID_FILE}"))
+   api-server : https://localhost:8080 (PID $(cat "${PID_FILE}"))
    api log    : ${LOG_FILE}
    ${NODES_LINE}
    CLI        : ${REPO_ROOT}/bin/otherix (cluster: dev)

@@ -137,7 +137,7 @@ echo "=== vm-create-redelivery smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
 command -v etcdctl >/dev/null || fail "etcdctl is required (it pokes the embedded etcd dev member to model the CP job redelivery)"
 [ -x "$OTX" ] || fail "otherix CLI not found at '$OTX' (run make build, or set OTX=...)"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 [[ -n "$(etcd_get /otherix/seq/jobs)" || -n "$(etcd_get /otherix)" ]] || true  # touch endpoint early; real check below
 ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" endpoint health >/dev/null 2>&1 \
   || fail "etcd not reachable at $ETCD_EP (the dev CP embeds it on 2379; run make local-dev-start)"
