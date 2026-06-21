@@ -16,6 +16,8 @@ package cpclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,9 +46,9 @@ type Client struct {
 // Options configures a Client. BaseURL and Token are required; the
 // rest are tuned by the callsite when needed.
 type Options struct {
-	// BaseURL is the CP's root URL ("http://localhost:8080" in the
-	// dev workflow; an HTTPS URL behind a TLS terminator in production).
-	// Trailing slashes are trimmed before use.
+	// BaseURL is the CP's root URL ("http://localhost:8080" in the dev
+	// workflow; an https:// URL in production, terminated by the
+	// api-server itself or a proxy). Trailing slashes are trimmed.
 	BaseURL string
 
 	// Token is the bearer credential. Either a JWT (no prefix) or an
@@ -61,6 +63,14 @@ type Options struct {
 	// faked client. Production code leaves this nil and uses the
 	// stdlib default.
 	HTTPClient *http.Client
+
+	// CACertPEM, when non-empty, is the PEM bundle the client trusts for
+	// HTTPS to BaseURL (in place of the system trust store). Decoded PEM,
+	// not base64.
+	CACertPEM []byte
+
+	// InsecureSkipVerify disables TLS verification. Development only.
+	InsecureSkipVerify bool
 }
 
 // New constructs a Client. Returns an error when BaseURL or Token is
@@ -76,15 +86,39 @@ func New(opts Options) (*Client, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = defaultTimeout
 	}
-	httpClient := opts.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: opts.Timeout}
+	httpClient, err := buildHTTPClient(opts)
+	if err != nil {
+		return nil, err
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
 		token:      opts.Token,
 		httpClient: httpClient,
 	}, nil
+}
+
+// buildHTTPClient returns an *http.Client honouring opts' TLS trust
+// settings. It clones the stdlib default transport so connection-pool
+// and proxy defaults are preserved, then overlays the TLS config. A
+// caller-supplied HTTPClient (tests) is returned unchanged.
+func buildHTTPClient(opts Options) (*http.Client, error) {
+	if opts.HTTPClient != nil {
+		return opts.HTTPClient, nil
+	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	switch {
+	case opts.InsecureSkipVerify:
+		tlsCfg.InsecureSkipVerify = true
+	case len(opts.CACertPEM) > 0:
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(opts.CACertPEM) {
+			return nil, errors.New("cpclient: certificate-authority-data contains no usable PEM certificate")
+		}
+		tlsCfg.RootCAs = pool
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = tlsCfg
+	return &http.Client{Timeout: opts.Timeout, Transport: tr}, nil
 }
 
 // NewAnonymous constructs a Client without a bearer token. The only
@@ -103,9 +137,9 @@ func NewAnonymous(baseURL string, opts Options) (*Client, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = defaultTimeout
 	}
-	httpClient := opts.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: opts.Timeout}
+	httpClient, err := buildHTTPClient(opts)
+	if err != nil {
+		return nil, err
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
