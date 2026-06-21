@@ -141,6 +141,10 @@ coverage: test ## Generate HTML coverage report
 smoke-ha: ## HA multi-process smoke: 3 real api-server nodes form a cluster over peer mTLS (no Docker, no Lima)
 	bash dev/scripts/smoke-ha.sh
 
+.PHONY: smoke-tls
+smoke-tls: ## CLI-over-HTTPS smoke: user /v1 API on TLS, `otherix config add cluster` pins the cluster CA inline (no Docker, no Lima)
+	bash dev/scripts/smoke-tls.sh
+
 .PHONY: smoke-networking
 smoke-networking: ## Networking operator smoke: drives `otherix network`/`vm create --network` against the real Lima agent (run after local-dev-start)
 	bash dev/smoke/networking/run.sh

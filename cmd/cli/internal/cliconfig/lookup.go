@@ -40,6 +40,12 @@ type ResolvedAuth struct {
 	EndpointSource string
 	TokenSource    string
 	ClusterName    string
+	// CACertData is the base64 PEM bundle stored on the selected
+	// cluster (empty = system trust). InsecureSkipTLSVerify is that
+	// cluster's verification escape hatch. Both are empty/false when no
+	// config cluster is selected (flags/env only).
+	CACertData            string
+	InsecureSkipTLSVerify bool
 }
 
 // ResolveOptions captures every input Resolve uses — populated by
@@ -94,6 +100,8 @@ func Resolve(opts ResolveOptions) (ResolvedAuth, error) {
 	}
 	if cluster != nil {
 		out.ClusterName = cluster.Name
+		out.CACertData = cluster.CertificateAuthorityData
+		out.InsecureSkipTLSVerify = cluster.InsecureSkipTLSVerify
 	}
 
 	switch {

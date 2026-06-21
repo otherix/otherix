@@ -34,6 +34,7 @@ import (
 func TestLoadOrGenerateCPCert_SkipWhenNoConsumer(t *testing.T) {
 	t.Parallel()
 	cfg := config.APIConfig{
+		Server:      config.ServerConfig{TLS: config.ServerTLSConfig{Enabled: false}},
 		AgentServer: config.AgentServerConfig{Enabled: false},
 		AgentClient: config.AgentClientConfig{Enabled: false},
 	}
@@ -54,6 +55,36 @@ func TestLoadOrGenerateCPCert_SkipWhenNoConsumer(t *testing.T) {
 	}
 	if material.ClusterCA != nil {
 		t.Error("ClusterCA should be nil when skipped")
+	}
+}
+
+// TestLoadOrGenerateCPCert_UserTLSForcesMaterial verifies user-facing
+// TLS is a cert consumer: with agent server/client off but
+// server.tls.enabled on, the orchestrator must NOT skip - it produces
+// real material (auto-generate against the cluster CA).
+func TestLoadOrGenerateCPCert_UserTLSForcesMaterial(t *testing.T) {
+	t.Parallel()
+	ca := testCA(t)
+	s := &fakeCABootstrapStore{active: rowFromCA(ca)}
+	cfg := config.APIConfig{
+		Server:      config.ServerConfig{Listen: "127.0.0.1:8080", TLS: config.ServerTLSConfig{Enabled: true}},
+		AgentServer: config.AgentServerConfig{Enabled: false},
+		AgentClient: config.AgentClientConfig{Enabled: false},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	material, err := api.LoadOrGenerateCPCert(context.Background(), s, cfg, log)
+	if err != nil {
+		t.Fatalf("LoadOrGenerateCPCert: %v", err)
+	}
+	if material.Skipped() {
+		t.Fatal("material.Skipped() = true, want false (user TLS is a consumer)")
+	}
+	if len(material.Cert.Certificate) == 0 {
+		t.Error("Cert is empty, want a generated leaf")
+	}
+	if material.ClusterCA == nil {
+		t.Error("ClusterCA is nil, want the cluster trust anchor")
 	}
 }
 

@@ -6,14 +6,18 @@ package config
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/otherix/otherix/cmd/cli/internal/catrust"
 	"github.com/otherix/otherix/cmd/cli/internal/cliconfig"
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
@@ -38,12 +42,16 @@ func newAddCommand() *cobra.Command {
 
 func newAddClusterCommand() *cobra.Command {
 	var (
-		name       string
-		server     string
-		login      string
-		password   string
-		setCurrent bool
-		force      bool
+		name          string
+		server        string
+		login         string
+		password      string
+		caFile        string
+		caData        string
+		caFingerprint string
+		insecureSkip  bool
+		setCurrent    bool
+		force         bool
 	)
 	cmd := &cobra.Command{
 		Use:   "cluster",
@@ -60,12 +68,16 @@ a TTY; --force replaces an existing entry with the same name (best-
 effort revoking the old API token server-side first).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runAddCluster(cmd, addClusterOptions{
-				name:       name,
-				server:     server,
-				login:      login,
-				password:   password,
-				setCurrent: setCurrent,
-				force:      force,
+				name:          name,
+				server:        server,
+				login:         login,
+				password:      password,
+				caFile:        caFile,
+				caData:        caData,
+				caFingerprint: caFingerprint,
+				insecureSkip:  insecureSkip,
+				setCurrent:    setCurrent,
+				force:         force,
 			})
 		},
 	}
@@ -75,11 +87,17 @@ effort revoking the old API token server-side first).`,
 	cmd.Flags().StringVar(&password, "password", os.Getenv(envPassword), "operator password (env: OTHERIX_PASSWORD)")
 	cmd.Flags().BoolVar(&setCurrent, "set-current", true, "make this the current cluster (default true for the first cluster)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing cluster with the same name (revokes the previous token server-side)")
+	cmd.Flags().StringVar(&caFile, "ca-file", "", "PEM file to trust for this cluster's HTTPS endpoint")
+	cmd.Flags().StringVar(&caData, "ca-data", "", "base64 PEM bundle to trust (alternative to --ca-file)")
+	cmd.Flags().StringVar(&caFingerprint, "ca-fingerprint", "", "expected sha256 fingerprint (hex) of the cluster CA; verifies the TOFU fetch non-interactively")
+	cmd.Flags().BoolVar(&insecureSkip, "insecure-skip-tls-verify", false, "do not verify the CP TLS certificate (development only)")
 	return cmd
 }
 
 type addClusterOptions struct {
 	name, server, login, password string
+	caFile, caData, caFingerprint string
+	insecureSkip                  bool
 	setCurrent, force             bool
 }
 
@@ -95,7 +113,12 @@ func runAddCluster(cmd *cobra.Command, opts addClusterOptions) error {
 		return errors.New("server URL is required")
 	}
 
-	authed, token, err := loginAndIssueToken(cmd.Context(), server, opts)
+	caPEM, insecure, err := acquireTrust(cmd, server, opts)
+	if err != nil {
+		return err
+	}
+
+	authed, token, err := loginAndIssueToken(cmd.Context(), server, opts, caPEM, insecure)
 	if err != nil {
 		return err
 	}
@@ -109,7 +132,7 @@ func runAddCluster(cmd *cobra.Command, opts addClusterOptions) error {
 		return err
 	}
 
-	if err := writeClusterEntry(cmd.Context(), cfg, authed, server, token, opts, stderr); err != nil {
+	if err := writeClusterEntry(cmd.Context(), cfg, authed, server, token, opts, caPEM, insecure, stderr); err != nil {
 		return err
 	}
 	if err := cliconfig.Save(path, cfg); err != nil {
@@ -125,8 +148,8 @@ func runAddCluster(cmd *cobra.Command, opts addClusterOptions) error {
 // anonymous client → upgrade to JWT → create API token. Returns
 // the authenticated client (handy for a subsequent best-effort
 // revoke) and the created token row.
-func loginAndIssueToken(ctx context.Context, server string, opts addClusterOptions) (*cpclient.Client, cpclient.APIToken, error) {
-	anon, err := cpclient.NewAnonymous(server, cpclient.Options{})
+func loginAndIssueToken(ctx context.Context, server string, opts addClusterOptions, caPEM []byte, insecure bool) (*cpclient.Client, cpclient.APIToken, error) {
+	anon, err := cpclient.NewAnonymous(server, cpclient.Options{CACertPEM: caPEM, InsecureSkipVerify: insecure})
 	if err != nil {
 		return nil, cpclient.APIToken{}, fmt.Errorf("init client: %v", err)
 	}
@@ -147,11 +170,87 @@ func loginAndIssueToken(ctx context.Context, server string, opts addClusterOptio
 	return authed, token, nil
 }
 
+// acquireTrust establishes the TLS trust the CLI will use for server.
+// For a plaintext (http) endpoint it is a no-op. For https it applies,
+// in order: explicit --ca-file/--ca-data, --insecure-skip-tls-verify,
+// a system-trust probe, then a TOFU fetch+pin of /v1/ca. It returns
+// the PEM to embed (nil = system trust) and whether to skip verify.
+func acquireTrust(cmd *cobra.Command, server string, opts addClusterOptions) (caPEM []byte, insecure bool, err error) {
+	if !strings.HasPrefix(server, "https://") {
+		return nil, false, nil
+	}
+	switch {
+	case opts.caFile != "" || opts.caData != "":
+		p, perr := readExplicitCA(opts.caFile, opts.caData)
+		return p, false, perr
+	case opts.insecureSkip:
+		return nil, true, nil
+	}
+	if systemTrustOK(cmd.Context(), server) {
+		return nil, false, nil
+	}
+	confirm := func(fp string) (bool, error) {
+		return promptTrust(cmd.ErrOrStderr(), cmd.InOrStdin(), server, fp)
+	}
+	p, ferr := catrust.FetchAndPin(cmd.Context(), server, opts.caFingerprint, confirm)
+	if ferr != nil {
+		return nil, false, ferr
+	}
+	return p, false, nil
+}
+
+// readExplicitCA loads PEM from --ca-file or decodes --ca-data.
+func readExplicitCA(file, data string) ([]byte, error) {
+	if file != "" {
+		raw, err := os.ReadFile(file) //nolint:gosec // operator-supplied trust path
+		if err != nil {
+			return nil, fmt.Errorf("read --ca-file: %v", err)
+		}
+		return raw, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode --ca-data: %v", err)
+	}
+	return raw, nil
+}
+
+// systemTrustOK probes server with the system trust store. It returns
+// true when the TLS handshake verifies; false on any error (untrusted
+// CA, hostname mismatch, connection refused) so the caller falls back to
+// TOFU, which surfaces a genuine connection failure itself.
+func systemTrustOK(ctx context.Context, server string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(server, "/")+"/v1/ca", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return true
+}
+
+// promptTrust shows the fetched fingerprint and asks the operator to
+// confirm on a TTY. Non-TTY without --ca-fingerprint reaches here only
+// when FetchAndPin was given an empty fingerprint; return an error so
+// the caller fails closed.
+func promptTrust(stderr io.Writer, stdin io.Reader, server, fingerprint string) (bool, error) {
+	if !stdinIsTerminal() {
+		return false, fmt.Errorf("cannot verify CA for %s non-interactively: pass --ca-fingerprint %s (verify it out of band) or --ca-file", server, fingerprint)
+	}
+	_, _ = fmt.Fprintf(stderr, "CP %s presented a CA with fingerprint:\n  sha256:%s\nTrust this CA? [y/N]: ", server, fingerprint)
+	line, _ := bufio.NewReader(stdin).ReadString('\n')
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes", nil
+}
+
 // writeClusterEntry mutates cfg in-place: optionally revoking the
 // previous token under --force, replacing the cluster entry, and
 // flipping current-cluster when appropriate. The caller persists
 // the result.
-func writeClusterEntry(ctx context.Context, cfg *cliconfig.Config, authed *cpclient.Client, server string, token cpclient.APIToken, opts addClusterOptions, stderr io.Writer) error {
+func writeClusterEntry(ctx context.Context, cfg *cliconfig.Config, authed *cpclient.Client, server string, token cpclient.APIToken, opts addClusterOptions, caPEM []byte, insecure bool, stderr io.Writer) error {
 	if existing, lookupErr := cfg.FindCluster(opts.name); lookupErr == nil {
 		if !opts.force {
 			return fmt.Errorf("cluster %q already exists: rerun with --force to replace it", opts.name)
@@ -167,6 +266,10 @@ func writeClusterEntry(ctx context.Context, cfg *cliconfig.Config, authed *cpcli
 		Token:   token.Token,
 		TokenID: token.ID,
 	}
+	if len(caPEM) > 0 {
+		entry.CertificateAuthorityData = base64.StdEncoding.EncodeToString(caPEM)
+	}
+	entry.InsecureSkipTLSVerify = insecure
 	if err := cfg.AddCluster(entry); err != nil {
 		return err
 	}

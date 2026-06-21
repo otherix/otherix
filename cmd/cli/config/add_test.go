@@ -6,12 +6,16 @@ package config_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -85,6 +89,57 @@ func newLoginSrv(t *testing.T) *loginSrv {
 		}
 	}))
 	return srv
+}
+
+// newTLSLoginSrv is newLoginSrv over TLS, additionally serving /v1/ca
+// with the server's own self-signed cert as the trust anchor (so the
+// CLI's TOFU fetch + pin yields a CA that validates this same server).
+func newTLSLoginSrv(t *testing.T) *loginSrv {
+	t.Helper()
+	srv := &loginSrv{}
+	srv.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/ca":
+			certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+			sum := sha256.Sum256(srv.Certificate().Raw)
+			hexFP := hex.EncodeToString(sum[:])
+			_, _ = io.WriteString(w, `{"cas":[{"cert_pem":`+strconv.Quote(string(certPEM))+`,"fingerprint_sha256":"`+hexFP+`"}],"signer_fingerprint_sha256":"`+hexFP+`"}`)
+		case r.URL.Path == "/v1/auth/login":
+			_, _ = io.WriteString(w, `{"access_token":"jwt","refresh_token":"r","token_type":"Bearer","expires_in":900}`)
+		case r.URL.Path == "/v1/users/me/api-tokens" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"id":"019e0000-0000-7000-8000-000000000001","user_id":"u","name":"n","prefix":"otx_zzz1234","token":"otx_zzz1234567","created_at":"now","last_used_at":null,"expires_at":null,"revoked_at":null}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	return srv
+}
+
+func TestAddCluster_TOFUStoresInlineCA(t *testing.T) {
+	srv := newTLSLoginSrv(t)
+	defer srv.Close()
+	sum := sha256.Sum256(srv.Certificate().Raw)
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	_, stderr, err := runConfigCmd(t, path, []string{
+		"add", "cluster",
+		"--name", "prod",
+		"--server", srv.URL, // https://...
+		"--login", "admin@otherix.local",
+		"--password", "right",
+		"--ca-fingerprint", hex.EncodeToString(sum[:]),
+	}, "")
+	if err != nil {
+		t.Fatalf("add cluster: %v stderr=%s", err, stderr)
+	}
+	cfg, err := cliconfig.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Clusters) != 1 || cfg.Clusters[0].CertificateAuthorityData == "" {
+		t.Errorf("stored cluster = %+v, want non-empty CertificateAuthorityData from TOFU", cfg.Clusters)
+	}
 }
 
 func TestAddCluster_Happy(t *testing.T) {

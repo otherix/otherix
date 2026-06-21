@@ -14,6 +14,8 @@ server:
   read_timeout: 30s
   write_timeout: 30s
   shutdown_grace: 30s
+  tls:
+    enabled: false  # dev/loopback runs plaintext; production defaults to true
 
 # Dedicated mTLS listener for agent traffic — POST /v1/nodes/{id}/heartbeat
 # and every future agent-only endpoint. mTLS material (CP server cert +

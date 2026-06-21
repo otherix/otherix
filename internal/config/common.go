@@ -16,10 +16,22 @@ import (
 
 // ServerConfig describes how a binary's HTTP(S) server should listen.
 type ServerConfig struct {
-	Listen        string        `koanf:"listen"`
-	ReadTimeout   time.Duration `koanf:"read_timeout"`
-	WriteTimeout  time.Duration `koanf:"write_timeout"`
-	ShutdownGrace time.Duration `koanf:"shutdown_grace"`
+	Listen        string          `koanf:"listen"`
+	ReadTimeout   time.Duration   `koanf:"read_timeout"`
+	WriteTimeout  time.Duration   `koanf:"write_timeout"`
+	ShutdownGrace time.Duration   `koanf:"shutdown_grace"`
+	TLS           ServerTLSConfig `koanf:"tls"`
+}
+
+// ServerTLSConfig controls server-side TLS termination on the user-facing
+// listener. Enabled defaults to true (set in defaultAPIConfig); an
+// explicit `server.tls.enabled: false` opts the listener back to
+// plaintext for loopback/dev use. The certificate is the per-replica
+// CP cert produced by LoadOrGenerateCPCert (cp_cert block: operator
+// override or auto-generated from the cluster CA) - there is no
+// separate cert material here.
+type ServerTLSConfig struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 // Validate reports an error if Listen is empty.

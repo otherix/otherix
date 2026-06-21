@@ -6,6 +6,7 @@ package cpclient_test
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -433,6 +434,54 @@ func TestWaitTask_RetriesTransient5xx(t *testing.T) {
 	if got.Status != "success" {
 		t.Errorf("Status = %s, want success", got.Status)
 	}
+}
+
+func TestClientTrustsCustomCA(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	// PEM-encode the server's own cert as the CA the client must trust.
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+
+	// Without the CA: handshake fails.
+	bad, err := cpclient.New(cpclient.Options{BaseURL: srv.URL, Token: "otx_x"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, gerr := bad.HTTPClient().Get(srv.URL); gerr == nil {
+		t.Error("request without CA succeeded, want TLS verification error")
+	}
+
+	// With the CA: handshake succeeds.
+	good, err := cpclient.New(cpclient.Options{BaseURL: srv.URL, Token: "otx_x", CACertPEM: caPEM})
+	if err != nil {
+		t.Fatalf("New with CA: %v", err)
+	}
+	resp, gerr := good.HTTPClient().Get(srv.URL)
+	if gerr != nil {
+		t.Fatalf("request with CA failed: %v", gerr)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestClientInsecureSkipVerify(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c, err := cpclient.New(cpclient.Options{BaseURL: srv.URL, Token: "otx_x", InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, gerr := c.HTTPClient().Get(srv.URL)
+	if gerr != nil {
+		t.Fatalf("insecure request failed: %v", gerr)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestNetworkFailureSurfacesAsError(t *testing.T) {

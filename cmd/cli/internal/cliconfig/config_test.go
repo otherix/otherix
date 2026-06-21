@@ -213,3 +213,35 @@ func TestCurrentClusterEntry_DanglingPointer(t *testing.T) {
 		t.Errorf("CurrentClusterEntry dangling err = %v, want ErrClusterNotFound", err)
 	}
 }
+
+func TestClusterRoundTripsInlineCA(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	cfg := &cliconfig.Config{}
+	if err := cfg.AddCluster(cliconfig.Cluster{
+		Name:                     "prod",
+		Server:                   "https://cp.example:8080",
+		Token:                    "otx_abc",
+		CertificateAuthorityData: "YmFzZTY0LXBlbQ==",
+		InsecureSkipTLSVerify:    true,
+	}); err != nil {
+		t.Fatalf("AddCluster: %v", err)
+	}
+	if err := cliconfig.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := cliconfig.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c, err := got.FindCluster("prod")
+	if err != nil {
+		t.Fatalf("FindCluster: %v", err)
+	}
+	if c.CertificateAuthorityData != "YmFzZTY0LXBlbQ==" {
+		t.Errorf("CertificateAuthorityData = %q, want base64 round-trip", c.CertificateAuthorityData)
+	}
+	if !c.InsecureSkipTLSVerify {
+		t.Errorf("InsecureSkipTLSVerify = false, want true")
+	}
+}

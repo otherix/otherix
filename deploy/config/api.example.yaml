@@ -3,6 +3,11 @@ server:
   read_timeout: 30s
   write_timeout: 30s
   shutdown_grace: 30s
+  # User-facing /v1 API serves HTTPS by default (tls.enabled defaults to true,
+  # using the cp_cert material). Set enabled: false to serve plaintext, e.g. on
+  # loopback behind a terminating proxy or for local development.
+  tls:
+    enabled: false
 
 # Embedded etcd member backing the control-plane store. etcd is
 # the only stateful service — there is no separate database process. The

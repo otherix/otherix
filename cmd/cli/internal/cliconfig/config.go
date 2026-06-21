@@ -66,6 +66,14 @@ type Cluster struct {
 	Server  string `yaml:"server"`
 	Token   string `yaml:"token"`
 	TokenID string `yaml:"token-id,omitempty"`
+	// CertificateAuthorityData is the base64-encoded PEM bundle the CLI
+	// trusts when dialing Server over HTTPS. Empty means "use the system
+	// trust store" (a publicly-trusted or operator-installed cert). It is
+	// stored inline so the config file is self-contained.
+	CertificateAuthorityData string `yaml:"certificate-authority-data,omitempty"`
+	// InsecureSkipTLSVerify disables TLS verification for this cluster.
+	// A development escape hatch only; never set it against a real CP.
+	InsecureSkipTLSVerify bool `yaml:"insecure-skip-tls-verify,omitempty"`
 }
 
 // ErrClusterNotFound is returned by FindCluster / SetCurrent /

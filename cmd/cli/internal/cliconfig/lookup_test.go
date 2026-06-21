@@ -114,6 +114,29 @@ func TestResolve_Matrix(t *testing.T) {
 	}
 }
 
+func TestResolveSurfacesClusterCA(t *testing.T) {
+	cfg := &cliconfig.Config{
+		CurrentCluster: "prod",
+		Clusters: []cliconfig.Cluster{{
+			Name:                     "prod",
+			Server:                   "https://cp:8080",
+			Token:                    "otx_t",
+			CertificateAuthorityData: "YmFzZTY0",
+			InsecureSkipTLSVerify:    true,
+		}},
+	}
+	got, err := cliconfig.Resolve(cliconfig.ResolveOptions{Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.CACertData != "YmFzZTY0" {
+		t.Errorf("CACertData = %q, want surfaced from cluster", got.CACertData)
+	}
+	if !got.InsecureSkipTLSVerify {
+		t.Errorf("InsecureSkipTLSVerify = false, want true")
+	}
+}
+
 func TestResolve_EndpointMissing(t *testing.T) {
 	_, err := cliconfig.Resolve(cliconfig.ResolveOptions{
 		FlagToken: "tok",

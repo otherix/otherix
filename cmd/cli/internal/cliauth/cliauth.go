@@ -14,6 +14,7 @@
 package cliauth
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -70,9 +71,19 @@ func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
 		return nil, translateResolveError(err, path)
 	}
 
+	var caPEM []byte
+	if auth.CACertData != "" {
+		decoded, derr := base64.StdEncoding.DecodeString(auth.CACertData)
+		if derr != nil {
+			return nil, fmt.Errorf("decode certificate-authority-data for cluster %q: %v", auth.ClusterName, derr)
+		}
+		caPEM = decoded
+	}
 	return cpclient.New(cpclient.Options{
-		BaseURL: auth.Endpoint,
-		Token:   auth.Token,
+		BaseURL:            auth.Endpoint,
+		Token:              auth.Token,
+		CACertPEM:          caPEM,
+		InsecureSkipVerify: auth.InsecureSkipTLSVerify,
 	})
 }
 
