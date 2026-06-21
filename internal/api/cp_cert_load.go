@@ -54,6 +54,14 @@ type CPCertCAStore interface {
 	ActiveCACert(ctx context.Context) (store.CaCert, error)
 }
 
+// noCertConsumer reports whether nothing in this api-server needs the CP
+// cert material: no agent listener, no agent client dialer, and no
+// user-facing TLS. When true, LoadOrGenerateCPCert skips production
+// entirely and returns Source="skipped".
+func noCertConsumer(cfg config.APIConfig) bool {
+	return !cfg.AgentServer.Enabled && !cfg.AgentClient.Enabled && !cfg.Server.TLS.Enabled
+}
+
 // LoadOrGenerateCPCert orchestrates the three-mode CP server cert
 // lifecycle. Called by cmd/api/main.go after BootstrapClusterCA,
 // before agent client / server construction. Returns a fully-loaded
@@ -74,7 +82,7 @@ type CPCertCAStore interface {
 //     (write failure logged WARN — boot succeeds on in-memory cert
 //     alone).
 func LoadOrGenerateCPCert(ctx context.Context, s CPCertCAStore, cfg config.APIConfig, log *slog.Logger) (TLSMaterial, error) {
-	if !cfg.AgentServer.Enabled && !cfg.AgentClient.Enabled && !cfg.Server.TLS.Enabled {
+	if noCertConsumer(cfg) {
 		log.InfoContext(ctx, "cp_cert.bootstrap.skipped",
 			slog.String("reason", "no_consumer"),
 			slog.Bool("agent_server_enabled", cfg.AgentServer.Enabled),
