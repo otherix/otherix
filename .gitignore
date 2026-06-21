@@ -16,9 +16,6 @@
 *.swp
 
 # Claude Code — personal/local files
-# No trailing slash: matches both a real .claude directory and a .claude symlink
-# (the symlink form is used when this repo's Claude material lives in a separate
-# otherix-development checkout).
 .claude
 CLAUDE.local.md
 
