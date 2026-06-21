@@ -189,9 +189,20 @@ bootstrap_node() {
     fi
 
     if [ -n "${lima_vm}" ]; then
-        # No sudo — /var/lib/otherix/certs + /etc/otherix are chown'd to the Lima
-        # user in the provision script, so cert material lands with the
-        # ownership the systemd unit (User=$LIMA_USER) expects.
+        # The Lima provision script (dev/lima/otherix-dev.yaml) creates and
+        # chowns /var/lib/otherix + /etc/otherix on VM CREATION. A state wipe on
+        # a REUSED VM (local-dev-start / cleanrestart) removes /var/lib/otherix
+        # without re-running provision, so bootstrap's cert-persist would fail
+        # with "mkdir /var/lib/otherix: permission denied" (/var/lib is
+        # root-owned; the agent user is not). Re-ensure the dirs idempotently
+        # with the agent user's ownership before bootstrap. The cert material
+        # then lands with the ownership the systemd unit (User=$LIMA_USER) wants.
+        local vm_user vm_group
+        vm_user="$(limactl shell "${lima_vm}" -- id -un)"
+        vm_group="$(limactl shell "${lima_vm}" -- id -gn)"
+        limactl shell "${lima_vm}" -- sudo install -d \
+            -o "${vm_user}" -g "${vm_group}" \
+            /var/lib/otherix /var/lib/otherix/certs /etc/otherix
         limactl shell "${lima_vm}" -- /usr/local/bin/otherix-agent bootstrap \
             --token "${token}" \
             --ca-fingerprint "sha256:${fp}" \
