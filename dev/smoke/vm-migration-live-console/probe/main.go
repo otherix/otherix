@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -48,11 +49,12 @@ type config struct {
 	readyOut, goIn      string
 	pre, post           string
 	settle, markTimeout time.Duration
+	insecure            bool
 }
 
 func parseFlags() config {
 	var c config
-	flag.StringVar(&c.cpURL, "cp-url", "http://localhost:8080", "CP base URL")
+	flag.StringVar(&c.cpURL, "cp-url", "https://localhost:8080", "CP base URL")
 	flag.StringVar(&c.token, "token", "", "API token (otx_...) (required)")
 	flag.StringVar(&c.vm, "vm", "", "VM name to open a console against (required)")
 	flag.StringVar(&c.readyOut, "ready", "", "file to touch once the PRE marker echoes (required)")
@@ -61,6 +63,7 @@ func parseFlags() config {
 	flag.StringVar(&c.post, "marker-post", "POSTCONSOLE", "POST marker token")
 	flag.DurationVar(&c.settle, "settle", 6*time.Second, "time to let the guest console settle before the PRE marker")
 	flag.DurationVar(&c.markTimeout, "timeout", 120*time.Second, "deadline for each marker phase")
+	flag.BoolVar(&c.insecure, "insecure", false, "skip TLS verification (dev: the CP serves a self-signed cluster-CA cert)")
 	flag.Parse()
 	if c.token == "" || c.vm == "" || c.readyOut == "" || c.goIn == "" {
 		fmt.Fprintln(os.Stderr, "probe: --token, --vm, --ready and --go are required")
@@ -70,12 +73,13 @@ func parseFlags() config {
 }
 
 func run(ctx context.Context, c config) error {
-	wsURL, err := issueConsole(ctx, c)
+	client := httpClientFor(c)
+	wsURL, err := issueConsole(ctx, c, client)
 	if err != nil {
 		return fmt.Errorf("issue console ticket: %v", err)
 	}
 
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: client})
 	if err != nil {
 		return fmt.Errorf("dial console WS: %v", err)
 	}
@@ -124,9 +128,24 @@ func run(ctx context.Context, c config) error {
 	return nil
 }
 
+// httpClientFor returns the HTTP client the probe uses for the console-token
+// POST and the WebSocket dial. With -insecure it skips TLS verification, which
+// the dev stack needs because the CP serves the user API with a self-signed
+// cluster-CA cert; otherwise it uses the default client (system trust).
+func httpClientFor(c config) *http.Client {
+	if !c.insecure {
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // dev smoke probe against a self-signed dev CP
+		},
+	}
+}
+
 // issueConsole POSTs the console-token request and returns the proxy WS
 // URL (which already carries the single-use token in its query).
-func issueConsole(ctx context.Context, c config) (string, error) {
+func issueConsole(ctx context.Context, c config, client *http.Client) (string, error) {
 	body := bytes.NewBufferString(`{"protocol":"serial"}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(c.cpURL, "/")+"/v1/vms/"+c.vm+"/console", body)
@@ -135,7 +154,7 @@ func issueConsole(ctx context.Context, c config) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -111,8 +111,8 @@ trap cleanup EXIT
 # --- preconditions -----------------------------------------------------
 echo "=== overlay-vm smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
-CP_VERSION="$(curl -fsS http://localhost:8080/healthz | jq -r '.version')"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
+CP_VERSION="$(cp_version)"
 info "CP version: ${CP_VERSION}"
 for n in "$NODE1" "$NODE2"; do
   st="$(otx node get "$n" --output json 2>/dev/null | jq -r '.status' || true)"

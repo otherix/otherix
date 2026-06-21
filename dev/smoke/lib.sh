@@ -86,3 +86,19 @@ smoke_require_node_cmd() {
     esac
     exit 1
 }
+
+# CP_BASE — base URL of the dev control-plane user API. The dev stack serves the
+# user /v1 API over TLS (dev/config/api.yaml server.tls.enabled), so the default
+# is https. The cluster cert is signed by the self-generated dev cluster CA, so
+# the readiness helpers below pass -k: a liveness probe is not a trust check, and
+# it runs before any CA has been pinned. The operator-facing CLI path (the seeded
+# `dev` cluster) pins the real CA inline and does verify.
+CP_BASE="${CP_BASE:-https://localhost:8080}"
+
+# cp_ready — succeed when the CP liveness endpoint answers, fail otherwise. Used
+# by smoke preflights in place of a raw curl so the scheme/flags live in one spot.
+cp_ready() { curl -fsSk "${CP_BASE}/healthz" >/dev/null 2>&1; }
+
+# cp_version — print the CP build version from /healthz (best-effort; empty on
+# failure). Smokes use it only for a banner line.
+cp_version() { curl -fsSk "${CP_BASE}/healthz" | jq -r '.version' 2>/dev/null; }

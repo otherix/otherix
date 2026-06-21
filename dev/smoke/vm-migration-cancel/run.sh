@@ -95,7 +95,7 @@ echo "=== vm-migration-cancel: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
 command -v etcdctl >/dev/null || fail "etcdctl is required (reads the backing task; no task CLI)"
 [ -x "$OTX" ] || fail "otherix CLI not found at '$OTX' (run make build)"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" endpoint health >/dev/null 2>&1 || fail "etcd not reachable at $ETCD_EP"
 for n in "$NODE1" "$NODE2"; do
   st="$(otx node get "$n" --output json 2>/dev/null | jq -r '.status' || true)"

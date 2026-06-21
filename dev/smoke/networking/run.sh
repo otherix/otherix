@@ -14,7 +14,7 @@
 #
 # PREREQUISITES: a seeded dev environment, i.e. run AFTER
 #   make local-dev-start
-# so that: the CP is up on http://localhost:8080, the `dev` CLI cluster
+# so that: the CP is up on https://localhost:8080, the `dev` CLI cluster
 # is configured, node-dev is `ready`, and a default pool exists. The CP
 # and agent binaries MUST be built from the current tree (the networks
 # fields + reconciler must be present). This script creates its own networks +
@@ -88,7 +88,7 @@ trap cleanup EXIT
 # --- preconditions -----------------------------------------------------
 echo "=== networking smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 node_status="$(otx node get "$NODE" --output json 2>/dev/null | jq -r '.status' || true)"
 [[ "$node_status" == "ready" ]] || fail "$NODE not ready (got '${node_status:-none}'); run make seed-dev"
 pass "CP up, $NODE ready"

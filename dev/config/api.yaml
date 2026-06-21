@@ -15,7 +15,7 @@ server:
   write_timeout: 30s
   shutdown_grace: 30s
   tls:
-    enabled: false  # dev/loopback runs plaintext; production defaults to true
+    enabled: true  # dev dogfoods the production default; CLI pins the cluster CA inline
 
 # Dedicated mTLS listener for agent traffic — POST /v1/nodes/{id}/heartbeat
 # and every future agent-only endpoint. mTLS material (CP server cert +

@@ -117,7 +117,7 @@ cp_kill_hard() {
   # Wait until /healthz is actually down so we know the kill took.
   local deadline=$(( SECONDS + 15 ))
   while (( SECONDS < deadline )); do
-    curl -fsS http://localhost:8080/healthz >/dev/null 2>&1 || { info "CP down"; return 0; }
+    cp_ready || { info "CP down"; return 0; }
     sleep 1
   done
   fail "CP still answering /healthz after SIGKILL"
@@ -129,7 +129,7 @@ cp_start() {
   echo "$!" > "$API_PID_FILE"
   local deadline=$(( SECONDS + 60 ))
   while (( SECONDS < deadline )); do
-    curl -fsS http://localhost:8080/healthz >/dev/null 2>&1 && { pass "CP back up (pid $(cp_pid))"; return 0; }
+    cp_ready && { pass "CP back up (pid $(cp_pid))"; return 0; }
     sleep 2
   done
   tail -30 "$API_LOG_FILE" >&2 || true
@@ -139,7 +139,7 @@ cp_start() {
 cleanup() {
   echo "--- cleanup ---"
   # The CP must be up to delete; best-effort restart if we left it down.
-  curl -fsS http://localhost:8080/healthz >/dev/null 2>&1 || cp_start >/dev/null 2>&1 || true
+  cp_ready || cp_start >/dev/null 2>&1 || true
   otx vm delete "$VM" --force --wait --wait-timeout 90s >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -149,7 +149,7 @@ echo "=== chaos-cp-crash-migrate: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
 command -v etcdctl >/dev/null || fail "etcdctl is required (pokes the embedded etcd dev member)"
 [ -x "$OTX" ] || fail "otherix CLI not found at '$OTX' (run make build)"
-curl -fsS http://localhost:8080/healthz >/dev/null || fail "CP not up on :8080 (run make local-dev-start)"
+cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 ETCDCTL_API=3 etcdctl --endpoints="$ETCD_EP" endpoint health >/dev/null 2>&1 \
   || fail "etcd not reachable at $ETCD_EP (run make local-dev-start)"
 for n in "$NODE1" "$NODE2"; do
