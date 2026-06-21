@@ -125,6 +125,12 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 		grace: cfg.Server.ShutdownGrace,
 	}
 
+	userTLS, err := userListenerTLSConfig(cfg.Server.TLS.Enabled, material)
+	if err != nil {
+		return nil, err
+	}
+	srv.httpServer.TLSConfig = userTLS
+
 	if cfg.AgentServer.Enabled {
 		tlsCfg, err := buildAgentServerTLSConfig(material)
 		if err != nil {
@@ -175,8 +181,13 @@ func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		s.log.InfoContext(ctx, "http server listening", "address", s.httpServer.Addr)
-		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.log.InfoContext(ctx, "http server listening",
+			"address", s.httpServer.Addr, "tls", s.httpServer.TLSConfig != nil)
+		serve := s.httpServer.ListenAndServe
+		if s.httpServer.TLSConfig != nil {
+			serve = func() error { return s.httpServer.ListenAndServeTLS("", "") }
+		}
+		if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("http listen: %v", err)
 			return
 		}
