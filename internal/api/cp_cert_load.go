@@ -34,8 +34,9 @@ import (
 //   - "operator_files" — Mode A, loaded from cp_cert.cert_file/key_file.
 //   - "local_cache"    — Mode B, loaded from /var/lib/otherix/certs/cp-cert.*.
 //   - "auto_generate"  — Mode C, freshly minted on boot.
-//   - "skipped"        — neither agent_server nor agent_client enabled;
-//     material zero-valued, downstream skips wiring.
+//   - "skipped"        — no cert consumer enabled (neither agent_server,
+//     agent_client, nor user TLS); material zero-valued, downstream
+//     skips wiring.
 type TLSMaterial struct {
 	Cert      tls.Certificate
 	ClusterCA *x509.Certificate
@@ -61,8 +62,9 @@ type CPCertCAStore interface {
 //
 // Mode dispatch order:
 //
-//  1. Skip condition — neither agent_server.enabled nor
-//     agent_client.enabled → return Source="skipped" zero material.
+//  1. Skip condition — neither agent_server.enabled,
+//     agent_client.enabled, nor server.tls.enabled -> return
+//     Source="skipped" zero material.
 //  2. Mode A (operator files) — cp_cert.cert_file + key_file both set;
 //     files must exist (missing-when-configured = fatal).
 //  3. Mode B (local cache) — cp_cert.local_cache.enabled = true and
@@ -72,11 +74,12 @@ type CPCertCAStore interface {
 //     (write failure logged WARN — boot succeeds on in-memory cert
 //     alone).
 func LoadOrGenerateCPCert(ctx context.Context, s CPCertCAStore, cfg config.APIConfig, log *slog.Logger) (TLSMaterial, error) {
-	if !cfg.AgentServer.Enabled && !cfg.AgentClient.Enabled {
+	if !cfg.AgentServer.Enabled && !cfg.AgentClient.Enabled && !cfg.Server.TLS.Enabled {
 		log.InfoContext(ctx, "cp_cert.bootstrap.skipped",
 			slog.String("reason", "no_consumer"),
 			slog.Bool("agent_server_enabled", cfg.AgentServer.Enabled),
-			slog.Bool("agent_client_enabled", cfg.AgentClient.Enabled))
+			slog.Bool("agent_client_enabled", cfg.AgentClient.Enabled),
+			slog.Bool("user_tls_enabled", cfg.Server.TLS.Enabled))
 		return TLSMaterial{Source: "skipped"}, nil
 	}
 
