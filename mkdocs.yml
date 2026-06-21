@@ -83,6 +83,7 @@ nav:
       - Networks: guides/networks.md
       - Live migration: guides/live-migration.md
       - Users and RBAC: guides/users-and-rbac.md
+      - Securing the API: guides/securing-the-api.md
       - Console and logs: guides/console-and-logs.md
   - Operations:
       - High availability: operations/high-availability.md
