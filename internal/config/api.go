@@ -696,6 +696,7 @@ func defaultAPIConfig() APIConfig {
 			ReadTimeout:   30 * time.Second,
 			WriteTimeout:  30 * time.Second,
 			ShutdownGrace: 30 * time.Second,
+			TLS:           ServerTLSConfig{Enabled: true},
 		},
 		Logger: logger.Config{Level: "info", Format: "json"},
 		Auth: AuthConfig{
