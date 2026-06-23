@@ -52,7 +52,7 @@ func TestBuildReplyDiscoverYieldsOffer(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -69,7 +69,7 @@ func TestBuildReplyNetmask(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -84,7 +84,7 @@ func TestBuildReplyDNS(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -102,7 +102,7 @@ func TestBuildReplyServerIdentifier(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildReplyLeaseTime(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBuildReplyClasslessStaticRoute(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBuildReplyOption121RawBytes(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -186,12 +186,54 @@ func TestBuildReplyOption121RawBytes(t *testing.T) {
 	}
 }
 
+func TestBuildReplyConditionalOptions(t *testing.T) {
+	cases := []struct {
+		name             string
+		advertiseDNS     bool
+		advertiseDefault bool
+		wantDNS          bool
+		wantOnLink       bool
+		wantDefaultRoute bool
+	}{
+		{name: "nat style dns+default", advertiseDNS: true, advertiseDefault: true, wantDNS: true, wantOnLink: true, wantDefaultRoute: true},
+		{name: "isolated dns only", advertiseDNS: true, advertiseDefault: false, wantDNS: true, wantOnLink: true, wantDefaultRoute: false},
+		{name: "addressing only", advertiseDNS: false, advertiseDefault: false, wantDNS: false, wantOnLink: false, wantDefaultRoute: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, subnet, opt := testReservation(t)
+			req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
+			reply, err := buildReply(req, res, subnet, opt, tc.advertiseDNS, tc.advertiseDefault)
+			if err != nil {
+				t.Fatalf("buildReply: %v", err)
+			}
+			if gotDNS := len(reply.DNS()) > 0; gotDNS != tc.wantDNS {
+				t.Errorf("opt6 DNS present = %v, want %v", gotDNS, tc.wantDNS)
+			}
+			var onLink, def bool
+			for _, rt := range reply.ClasslessStaticRoute() {
+				if ones, _ := rt.Dest.Mask.Size(); ones == 32 {
+					onLink = true
+				} else if ones == 0 {
+					def = true
+				}
+			}
+			if onLink != tc.wantOnLink {
+				t.Errorf("opt121 on-link = %v, want %v", onLink, tc.wantOnLink)
+			}
+			if def != tc.wantDefaultRoute {
+				t.Errorf("opt121 default = %v, want %v", def, tc.wantDefaultRoute)
+			}
+		})
+	}
+}
+
 func TestBuildReplyRejectsNonIPv4Reservation(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	res.IP = netip.MustParseAddr("fd00::5")
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	if _, err := buildReply(req, res, subnet, opt); err == nil {
+	if _, err := buildReply(req, res, subnet, opt, true, true); err == nil {
 		t.Fatalf("buildReply() with IPv6 reservation = nil error, want error")
 	}
 }
@@ -200,7 +242,7 @@ func TestBuildReplyNoRouterOption(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeDiscover)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -218,7 +260,7 @@ func TestBuildReplyRequestMatchingIPYieldsAck(t *testing.T) {
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeRequest,
 		dhcpv4.WithOption(dhcpv4.OptRequestedIPAddress(res.IP.AsSlice())))
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -236,7 +278,7 @@ func TestBuildReplyRequestWrongIPYieldsNak(t *testing.T) {
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeRequest,
 		dhcpv4.WithOption(dhcpv4.OptRequestedIPAddress(net.ParseIP("10.20.0.99"))))
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}
@@ -250,7 +292,7 @@ func TestBuildReplyRequestNoRequestedIPYieldsAck(t *testing.T) {
 	res, subnet, opt := testReservation(t)
 	req := newRequest(t, res.MAC, dhcpv4.MessageTypeRequest)
 
-	reply, err := buildReply(req, res, subnet, opt)
+	reply, err := buildReply(req, res, subnet, opt, true, true)
 	if err != nil {
 		t.Fatalf("buildReply() = %v", err)
 	}

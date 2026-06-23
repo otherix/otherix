@@ -26,6 +26,12 @@ type NetworkConfig struct {
 	Bridge       string
 	Subnet       netip.Prefix
 	Reservations []Reservation
+
+	// AdvertiseDNS controls DHCP option 6 (the overlay resolver). AdvertiseDefaultRoute
+	// controls the option-121 default route (0.0.0.0/0). Both are set per network by
+	// the reconciler.
+	AdvertiseDNS          bool
+	AdvertiseDefaultRoute bool
 }
 
 // Responder serves DHCPv4 on overlay bridges for CP-IPAM reservations. The
