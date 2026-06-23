@@ -79,7 +79,7 @@ type appliedNetwork struct {
 	VNI        uint32 // VXLAN id, for RemoveVXLAN on teardown (Overlay only)
 	HasEgress  bool   // true for an overlay materialised with egress=nat: teardown removes the iface masquerade
 	HasDHCP    bool   // true for a dhcp-enabled overlay registered with the responder: teardown deregisters it
-	Anycast    bool   // true for a managed bridge materialised with the dhcp/dns anycast services path (anycast gateway + DNS at 169.254.1.1, plus masquerade by subnet when nat), as opposed to the real-gateway path
+	Anycast    bool   // true for a managed bridge materialised with the dhcp/dns anycast services path (anycast gateway + DNS at 169.254.1.1, plus masquerade by subnet when nat). Teardown removes the masquerade and deregisters the DHCP responder; the anycast /32 goes with RemoveBridge. Not a real-gateway path, so teardownNAT skips RemoveGatewayAddr for it.
 }
 
 // networksDesired is the latest CP-declared network intent for this node: the
@@ -480,6 +480,20 @@ func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetw
 	if err := r.teardownNAT(ctx, id, a); err != nil {
 		errs = append(errs, err)
 	}
+	if a.Anycast && r.dhcp != nil {
+		// The dhcp/dns anycast path registered the responder on this bridge;
+		// deregister it (idempotent) so a CP-side delete does not leak the socket.
+		if err := r.dhcp.DeregisterNetwork(id); err != nil {
+			r.log.WarnContext(ctx, "deregister dhcp failed during managed bridge teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+			errs = append(errs, err)
+		}
+		// Forget any remembered register-error state so a deleted-then-recreated
+		// network re-logs its first failure.
+		delete(r.dhcpRegisterErr, id)
+	}
 	if err := r.fabric.RemoveBridge(a.BridgeName); err != nil {
 		r.log.WarnContext(ctx, "remove bridge failed during network teardown",
 			slog.String("network_id", id),
@@ -508,12 +522,17 @@ func (r *Networks) teardownNAT(ctx context.Context, id string, a appliedNetwork)
 		)
 		errs = append(errs, err)
 	}
-	if err := r.fabric.RemoveGatewayAddr(a.BridgeName, a.Gateway); err != nil {
-		r.log.WarnContext(ctx, "remove gateway addr failed during network teardown",
-			slog.String("network_id", id),
-			slog.String("error", err.Error()),
-		)
-		errs = append(errs, err)
+	// The anycast (dhcp/dns) path installs no real in-subnet gateway addr - its
+	// gateway is the link-local anycast /32 removed with the bridge - so skip the
+	// gateway-addr removal for it (a.Gateway is the zero prefix there).
+	if !a.Anycast {
+		if err := r.fabric.RemoveGatewayAddr(a.BridgeName, a.Gateway); err != nil {
+			r.log.WarnContext(ctx, "remove gateway addr failed during network teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

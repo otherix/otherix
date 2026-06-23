@@ -735,3 +735,63 @@ func TestApplyManaged_PlainBridgeNoServices(t *testing.T) {
 		t.Errorf("applied[br-plain].Anycast = true, want false")
 	}
 }
+
+func TestTeardown_ManagedBridgeAnycastDeregistersDHCP(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	// First pass: materialise the dhcp/dns bridge.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{managedBridgeDhcpNet()},
+	})
+	rec.reconcile(context.Background())
+	if len(fake.RegisterCalls) != 1 {
+		t.Fatalf("setup: RegisterCalls = %d, want 1", len(fake.RegisterCalls))
+	}
+	// Second pass: network removed from the declared set.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{},
+	})
+	rec.reconcile(context.Background())
+
+	if len(fake.DeregisterCalls) != 1 || fake.DeregisterCalls[0] != "br-svc" {
+		t.Errorf("DeregisterCalls = %v, want [br-svc]", fake.DeregisterCalls)
+	}
+	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otbsvc" {
+		t.Errorf("RemoveBridgeCalls = %v, want [otbsvc]", f.RemoveBridgeCalls)
+	}
+	if _, ok := rec.applied["br-svc"]; ok {
+		t.Errorf("applied[br-svc] still present after teardown")
+	}
+}
+
+// A nat anycast bridge teardown must NOT attempt a real-gateway-addr removal
+// (the anycast path installs no in-subnet gateway; a.Gateway is the zero prefix).
+func TestTeardown_NATAnycastBridgeSkipsGatewayAddrRemoval(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := managedBridgeDhcpNet()
+	d.Egress = "nat"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+	})
+	rec.reconcile(context.Background())
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{},
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.RemoveGatewayCalls) != 0 {
+		t.Errorf("RemoveGatewayCalls = %v, want none (anycast path has no real gateway addr)", f.RemoveGatewayCalls)
+	}
+	if len(f.RemoveMasqCalls) != 1 {
+		t.Errorf("RemoveMasqCalls = %d, want 1 (nat masquerade reclaimed)", len(f.RemoveMasqCalls))
+	}
+}
