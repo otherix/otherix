@@ -17,12 +17,12 @@
 #                         (the cluster default pool is CP-auto-provisioned)
 #    8. node list       — final sanity check
 #
-# Fail-fast on existing state per locked decision (2a): if otherix-api is
-# already running, exit with a clear "run local-dev-stop first" message.
-# The admin row now lives in embedded etcd (wiped by local-dev-stop's
-# etcd-reset), so the old Postgres admin-email pre-check is gone - a fresh
-# data dir has no admin and the api-server seeds on boot; a reused data dir
-# keeps the matching admin (BootstrapAdmin is idempotent).
+# Self-healing start: a stale otherix-api from a crashed prior session is reaped
+# (SIGTERM then SIGKILL) rather than hard-failing, so a fresh start never needs a
+# manual destructive local-dev-stop just to clear an orphan. The admin row lives
+# in embedded etcd (wiped by local-dev-stop's etcd-reset): a fresh data dir has
+# no admin and the api-server seeds on boot; a reused data dir keeps the matching
+# admin (BootstrapAdmin is idempotent).
 #
 # Default credentials (overridable):
 #   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin@otherix.local
@@ -55,22 +55,24 @@ echo "   admin email      : ${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}"
 echo "   pid/log dir      : ${RUN_DIR}"
 echo ""
 
-# --- Fail-fast: check for existing api-server -------------------------------
+# --- Reap any stale api-server from a prior session -------------------------
+# A crashed or interrupted prior run can leave an orphaned otherix-api holding
+# the api ports. That used to hard-fail start and force a destructive
+# local-dev-stop (which wipes etcd) just to get going again - a top cause of
+# "the stand needs several restarts". Reap it instead: SIGTERM, then SIGKILL any
+# survivor, then continue. The port pre-flight below still guards against a
+# NON-otherix process squatting on a port.
 if pgrep -f "otherix-api --config" >/dev/null 2>&1; then
-    pids=$(pgrep -f "otherix-api --config" | tr '\n' ' ')
-    echo "✗ otherix-api already running (PID ${pids})" >&2
-    echo "  Run 'make local-dev-stop' first." >&2
-    exit 1
+    stale=$(pgrep -f "otherix-api --config" | tr '\n' ' ')
+    echo ">> reaping stale otherix-api (PID ${stale}) left by a prior session"
+    pkill -TERM -f "otherix-api --config" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -f "otherix-api --config" >/dev/null 2>&1 || break
+        sleep 0.3
+    done
+    pkill -KILL -f "otherix-api --config" 2>/dev/null || true
 fi
-if [ -f "${PID_FILE}" ]; then
-    stale_pid=$(cat "${PID_FILE}")
-    if kill -0 "${stale_pid}" 2>/dev/null; then
-        echo "✗ PID file ${PID_FILE} points to live process ${stale_pid}" >&2
-        echo "  Run 'make local-dev-stop' first." >&2
-        exit 1
-    fi
-    rm -f "${PID_FILE}"
-fi
+rm -f "${PID_FILE}"
 
 mkdir -p "${RUN_DIR}"
 
