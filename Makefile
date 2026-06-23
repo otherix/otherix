@@ -217,6 +217,10 @@ smoke-dhcp-overlay-teardown: ## DHCP-overlay teardown smoke: repeated create/del
 smoke-overlay-isolated-dns: ## Isolated-overlay DNS smoke: dhcp without egress hands out IP + DNS, no default route
 	bash dev/smoke/overlay-isolated-dns/run.sh
 
+.PHONY: smoke-bridge-managed-dhcp
+smoke-bridge-managed-dhcp: ## Managed-bridge DHCP/DNS smoke: dhcp + dns + nat egress hands out IP + DNS + default route via 169.254.1.1
+	bash dev/smoke/bridge-managed-dhcp/run.sh
+
 .PHONY: smoke-chaos-cp-crash-migrate
 smoke-chaos-cp-crash-migrate: ## Chaos: SIGKILL the CP mid vm.migrate; the lease reaper reclaims the stranded job, the migration recovers, the VM is migratable again (P0; run after local-dev-start)
 	@bash dev/smoke/chaos-cp-crash-migrate/run.sh
