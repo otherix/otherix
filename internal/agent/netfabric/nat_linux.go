@@ -259,6 +259,15 @@ func masqUserData(subnet netip.Prefix, bridge, iface string) []byte {
 // source address in subnet, independent of the egress iface. The trailing
 // colon is load-bearing: it keeps a short bridge name (br-a) from
 // prefix-matching a longer one's marker (br-ab).
+//
+// The marker carries the bridge segment so two bridges sharing a subnet get
+// distinct, independently-removable rules. A masquerade rule installed by an
+// earlier build whose marker lacked the bridge segment is NOT matched by this
+// prefix, so an in-place binary swap neither updates nor reaps it; that legacy
+// rule lingers in the node's persistent netns until the chain is rebuilt
+// (agent host reboot / netns recreate). This is an accepted upgrade limitation,
+// not a leak in steady state: a fresh node and any teardown/recreate after the
+// swap use only the bridge-keyed form.
 func masqSubnetPrefix(subnet netip.Prefix, bridge string) []byte {
 	return []byte("otherix:" + subnet.String() + ":" + bridge + ":")
 }
