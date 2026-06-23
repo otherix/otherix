@@ -113,9 +113,17 @@ otherix create -f cluster.yaml --dry-run
 
 | Kind | Required | Optional |
 | --- | --- | --- |
-| `Network` | `type` | `bridgeName`, `managed`, `dhcp`, `egress`, `subnet`, `gateway`, `mtu`, `vlan` |
+| `Network` | `type` | `bridgeName`, `managed`, `dhcp`, `dns`, `egress`, `subnet`, `gateway`, `mtu`, `vlan` |
 | `StoragePool` | `path`, one of `node` / `nodeList` | `type` |
 | `VM` | `imageURL`, `arch` | `imageSHA256`, `firmware` / `firmwareID`, `format`, `diskGiB`, `vcpus`, `memoryMB`, `pool`, `network`, `node`, `userData`, `networkConfig` / `cloudInitDisabled` |
+
+The Network `dhcp` field enables CP-IPAM addressing and the per-node DHCP
+responder; `dns` advertises the anycast resolver (`169.254.1.1`). `dns` is
+optional and **defaults to the `dhcp` value** for a managed bridge (and to on for
+an overlay), so `dhcp: true` alone gives you both - set `dns: false` to hand out
+addresses without the resolver, or `dns: true` with `dhcp: false` for a
+resolver-only network. `dhcp` requires a `subnet` and, for a bridge,
+`managed: true`.
 
 Within a kind, a few fields are mutually exclusive: `node` and `nodeList`
 (StoragePool); `firmware` and `firmwareID`, and `userData` /
@@ -177,6 +185,9 @@ status, owner, reconciliation) so the output re-applies cleanly.
       projects `type` + `subnet` (plus `dhcp` when CP-IPAM is enabled); the
       create API forbids the server-derived `bridgeName` / `mtu` / `vlan`, so
       re-applying allocates a fresh VNI rather than preserving the original.
+      `dns` round-trips too, but only when it diverges from its default (which
+      is the `dhcp` value for a bridge, on for an overlay); at the default it is
+      omitted and the server re-derives the same value.
     - **StoragePool:** round-trips except the operator-settable `config` blob.
       A multi-node pool projects as a single `nodeList` document when every
       instance shares a path, or as one document per instance when paths

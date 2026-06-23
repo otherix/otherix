@@ -50,7 +50,7 @@ func rejectUnknownKeys(d Document, allowed map[string]bool) error {
 
 var networkSpecKeys = map[string]bool{
 	"type": true, "bridgeName": true, "managed": true, "egress": true,
-	"subnet": true, "gateway": true, "dhcp": true, "mtu": true, "vlan": true,
+	"subnet": true, "gateway": true, "dhcp": true, "dns": true, "mtu": true, "vlan": true,
 }
 
 // DecodeNetworkSpec decodes and validates a Network document's spec.

@@ -74,6 +74,8 @@ func renderGet(cmd *cobra.Command, n cpclient.Network) error {
 	printf(cmd, "egress: %s\n", n.Egress)
 	printf(cmd, "subnet: %s\n", orDash(n.Subnet))
 	printf(cmd, "gateway: %s\n", orDash(n.Gateway))
+	printf(cmd, "dhcp: %t\n", n.Dhcp != nil && *n.Dhcp)
+	printf(cmd, "dns: %t\n", n.DNS != nil && *n.DNS)
 	printf(cmd, "mtu: %d\n", n.MTU)
 	if n.VlanTag != nil {
 		printf(cmd, "vlan_tag: %d\n", *n.VlanTag)

@@ -158,6 +158,7 @@ func networkCreateOp(d Document) (CreateOp, error) {
 		Subnet:     s.Subnet,
 		Gateway:    s.Gateway,
 		Dhcp:       s.Dhcp,
+		DNS:        s.Dns,
 		Mtu:        s.MTU,
 		VlanTag:    s.VLAN,
 	}
