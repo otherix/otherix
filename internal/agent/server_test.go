@@ -4,9 +4,140 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestRunSupervisedRestartsOnError verifies the supervisor re-invokes run
+// after a non-cancel error: a run that fails N times then blocks until ctx
+// cancel must be called exactly N+1 times. This is the core teeth - it fails
+// if run is invoked only once (the unsupervised behaviour that left DNS dark
+// after a transient bind failure).
+func TestRunSupervisedRestartsOnError(t *testing.T) {
+	const failures = 3
+	var calls int32
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	run := func(ctx context.Context) error {
+		n := atomic.AddInt32(&calls, 1)
+		if n <= failures {
+			return errors.New("transient bind failure")
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	done := runSupervised(ctx, "test", run, 1*time.Millisecond, 5*time.Millisecond, discardLogger())
+
+	// Poll until the success call (failures+1) lands, bounded.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&calls) < failures+1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("run called %d times, want %d within deadline", atomic.LoadInt32(&calls), failures+1)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("done not closed after ctx cancel")
+	}
+
+	if got := atomic.LoadInt32(&calls); got != failures+1 {
+		t.Errorf("run call count = %d, want %d", got, failures+1)
+	}
+}
+
+// TestRunSupervisedCleanCancelNoRestart verifies a clean ctx-cancel return
+// does not trigger a restart: run is invoked exactly once and done closes
+// promptly.
+func TestRunSupervisedCleanCancelNoRestart(t *testing.T) {
+	var calls int32
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	run := func(ctx context.Context) error {
+		atomic.AddInt32(&calls, 1)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	done := runSupervised(ctx, "test", run, 1*time.Millisecond, 5*time.Millisecond, discardLogger())
+
+	// Let the goroutine enter run.
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt32(&calls) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("run not invoked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("done not closed after ctx cancel")
+	}
+
+	// Give any erroneous restart a moment to surface.
+	time.Sleep(20 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("run call count = %d, want 1 (clean cancel must not restart)", got)
+	}
+}
+
+// TestRunSupervisedCancelDuringBackoff verifies the backoff wait selects on
+// ctx.Done(): cancelling ctx while the supervisor is sleeping between restarts
+// closes done promptly, well under maxBackoff.
+func TestRunSupervisedCancelDuringBackoff(t *testing.T) {
+	var calls int32
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	run := func(ctx context.Context) error {
+		atomic.AddInt32(&calls, 1)
+		return errors.New("always fails, forcing a backoff wait")
+	}
+
+	// Large maxBackoff so a blind time.Sleep would not return promptly.
+	done := runSupervised(ctx, "test", run, 10*time.Second, 30*time.Second, discardLogger())
+
+	// Wait until run has failed at least once and we are in the backoff wait.
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt32(&calls) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("run not invoked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("done not closed during backoff wait; wait does not select on ctx.Done()")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("done closed after %v, want prompt return well under maxBackoff", elapsed)
+	}
+}
 
 // TestAwaitDoneAllClosed verifies the bounded drain returns promptly with
 // timedOut=false when every done-channel is already closed.

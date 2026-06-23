@@ -195,7 +195,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	netReconcilerDone := runReconciler(heartbeatCtx, "network reconciler", netReconciler.Run, log)
 	vmReconcilerDone := runReconciler(heartbeatCtx, "vm reconciler", vmReconciler.Run, log)
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
-	dnsForwarderDone := runReconciler(heartbeatCtx, "dns forwarder", dnsForwarder.Run, log)
+	dnsForwarderDone := runSupervised(heartbeatCtx, "dns forwarder", dnsForwarder.Run, dnsForwarderMinBackoff, dnsForwarderMaxBackoff, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
 	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", sweeper.Run, log)
 	snapStagingSweeperDone := runReconciler(heartbeatCtx, "snapshot staging sweeper", snapStagingSweeper.Run, log)
@@ -429,6 +429,60 @@ func runReconciler(ctx context.Context, name string, run func(context.Context) e
 			log.Error(name+" stopped with error", "error", err.Error())
 		}
 		log.Info(name + " stopped")
+	}()
+	return done
+}
+
+// dnsForwarderMinBackoff is the initial wait before the dns forwarder is
+// restarted after a failed bind. It doubles after each consecutive failure.
+const dnsForwarderMinBackoff = 1 * time.Second
+
+// dnsForwarderMaxBackoff caps the restart backoff for the dns forwarder so a
+// persistently failing bind retries at a bounded steady rate.
+const dnsForwarderMaxBackoff = 30 * time.Second
+
+// runSupervised launches run in a goroutine and restarts it with bounded
+// exponential backoff whenever it returns a non-cancel error, returning a
+// channel closed when supervision ends. It exists for loops (the dns
+// forwarder) whose Run hard-returns on a transient failure such as an initial
+// UDP bind error: without supervision a single failed bind would leave DNS
+// permanently dark for the process lifetime. A clean return (nil or a
+// context-cancel error) ends supervision without a restart.
+//
+// Backoff starts at minBackoff, doubles after each consecutive failure, and is
+// capped at maxBackoff. The wait between restarts selects on ctx.Done() so a
+// shutdown aborts the wait promptly. No reset logic is needed: a healthy Run
+// blocks until ctx cancel and never returns, so the only thing ever retried is
+// a still-failing start.
+func runSupervised(ctx context.Context, name string, run func(context.Context) error, minBackoff, maxBackoff time.Duration, log *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		log.Info(name + " starting")
+		backoff := minBackoff
+		for {
+			err := run(ctx)
+			if err == nil || errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				log.Info(name + " stopped")
+				return
+			}
+			log.Error(name+" stopped with error, restarting after backoff",
+				"error", err.Error(), "backoff", backoff.String())
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				log.Info(name + " stopped")
+				return
+			case <-timer.C:
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}
 	}()
 	return done
 }
