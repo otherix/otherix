@@ -229,10 +229,19 @@ func TestOverlayNetworkCreateWithDhcp(t *testing.T) {
 	}
 }
 
-// TestOverlayNetworkCreateDhcpRequiresNAT verifies that dhcp=true on an overlay
-// network without egress=nat (egress omitted -> none) is rejected with 400
-// validation_failed.
-func TestOverlayNetworkCreateDhcpRequiresNAT(t *testing.T) {
+// dnsView decodes the dns flag (alongside dhcp/type) from a network response.
+type dnsView struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Dhcp bool   `json:"dhcp"`
+	Dns  bool   `json:"dns"`
+}
+
+// TestOverlayNetworkCreateDhcpNoEgressAccepted verifies that dhcp=true on an
+// overlay network with a subnet but NO egress (egress omitted -> none) is now
+// accepted with 201 Created: dhcp no longer requires egress=nat. The response
+// also carries dns:true, the overlay default when dns is omitted.
+func TestOverlayNetworkCreateDhcpNoEgressAccepted(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
 
@@ -243,8 +252,37 @@ func TestOverlayNetworkCreateDhcpRequiresNAT(t *testing.T) {
 		"dhcp":   true,
 	}
 	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create overlay dhcp without egress status = %d, want 201; body=%s", resp.StatusCode, raw)
+	}
+	var created dnsView
+	decodeJSON(t, resp, &created)
+	if !created.Dhcp {
+		t.Errorf("dhcp = false, want true")
+	}
+	if !created.Dns {
+		t.Errorf("dns = false, want true (overlay default when omitted)")
+	}
+}
+
+// TestBridgeNetworkCreateDnsRejected verifies that dns=true on a type=bridge
+// network is rejected with 400 validation_failed (DNS is overlay-only).
+func TestBridgeNetworkCreateDnsRejected(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	suffix := uuid.NewString()[:8]
+	body := map[string]any{
+		"name":        "br-dns-" + suffix,
+		"type":        "bridge",
+		"bridge_name": "br" + suffix[:6],
+		"dns":         true,
+	}
+	resp := h.post(t, "/v1/networks", body, admin)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("create overlay dhcp without egress=nat status = %d, want 400", resp.StatusCode)
+		t.Fatalf("create bridge with dns status = %d, want 400", resp.StatusCode)
 	}
 	assertErrorCode(t, resp, "validation_failed")
 }

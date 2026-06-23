@@ -69,6 +69,7 @@ type networkView struct {
 	Subnet      *string         `json:"subnet"`
 	Gateway     *string         `json:"gateway"`
 	DhcpEnabled bool            `json:"dhcp"`
+	DnsEnabled  bool            `json:"dns"`
 	VNI         *int32          `json:"vni"`
 	Config      json.RawMessage `json:"config"`
 	CreatedAt   string          `json:"created_at"`
@@ -112,6 +113,7 @@ func toView(n store.Network) networkView {
 		Subnet:      prefixString(n.Subnet),
 		Gateway:     addrString(n.Gateway),
 		DhcpEnabled: n.DhcpEnabled,
+		DnsEnabled:  n.DnsEnabled,
 		VNI:         n.VNI,
 		Config:      rawJSONOrEmpty(n.Config),
 		CreatedAt:   n.CreatedAt.UTC().Format(time.RFC3339Nano),
