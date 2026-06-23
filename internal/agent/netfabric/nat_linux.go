@@ -157,6 +157,40 @@ func (f *linuxFabric) EnsureBridgeRoute(subnet netip.Prefix, bridge string) erro
 	return nil
 }
 
+// RemoveBridgeRoute removes the link-scoped connected route for subnet on the
+// named bridge. Idempotent: an absent bridge or an already-removed route
+// returns nil (the route also dies with the bridge, so teardown that deletes
+// the bridge needs no separate call - this is for a same-bridge subnet change).
+func (f *linuxFabric) RemoveBridgeRoute(subnet netip.Prefix, bridge string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return fmt.Errorf("netfabric: remove bridge route %s on %s: %v", subnet, bridge, err)
+	}
+	_, dst, err := net.ParseCIDR(subnet.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: remove bridge route %s on %s: parse: %v", subnet, bridge, err)
+	}
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Dst:       dst,
+		Scope:     netlink.SCOPE_LINK,
+	}
+	if err := netlink.RouteDel(route); err != nil {
+		if errors.Is(err, unix.ESRCH) || errors.Is(err, os.ErrNotExist) {
+			return nil // already gone
+		}
+		return fmt.Errorf("netfabric: remove bridge route %s on %s: %v", subnet, bridge, err)
+	}
+	return nil
+}
+
 // EnsureGatewayAddr assigns addr to the named bridge link, idempotently.
 // AddrReplace adds the address when absent and is a no-op when it is
 // already present, so a second call against the same bridge succeeds.

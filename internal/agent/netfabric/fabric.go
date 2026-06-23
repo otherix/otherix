@@ -99,6 +99,10 @@ type Fabric interface {
 	// overlay back to the bridge (the anycast gateway is a link-local /32 and
 	// gives the node no route to the overlay subnet otherwise).
 	EnsureBridgeRoute(subnet netip.Prefix, bridge string) error
+	// RemoveBridgeRoute removes the link-scoped connected route for subnet on the
+	// named bridge. Idempotent: a no-op (nil) when the route or bridge is already
+	// absent, so reaping a stale route after a subnet change is safe to retry.
+	RemoveBridgeRoute(subnet netip.Prefix, bridge string) error
 
 	// EnsureVXLAN creates the otvx<vni> VXLAN VTEP if absent, sets its MTU and
 	// brings it up. Learning is off (the FDB is controller-authoritative);

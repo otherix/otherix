@@ -795,3 +795,55 @@ func TestTeardown_NATAnycastBridgeSkipsGatewayAddrRemoval(t *testing.T) {
 		t.Errorf("RemoveMasqCalls = %d, want 1 (nat masquerade reclaimed)", len(f.RemoveMasqCalls))
 	}
 }
+
+// A managed anycast bridge that keeps its bridge but changes subnet must reap
+// the old link-scoped bridge route: EnsureBridgeRoute installs the new Dst but
+// cannot remove the old one, and nothing else GCs it (it only dies with the
+// bridge), so reconcileDelta must remove it.
+func TestReconcileDelta_AnycastBridgeSubnetChangeReapsOldRoute(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+
+	d1 := managedBridgeDhcpNet() // subnet 10.80.0.0/24
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: []heartbeat.DeclaredNetwork{d1}})
+	rec.reconcile(context.Background())
+	if len(f.RemoveBridgeRouteCalls) != 0 {
+		t.Fatalf("first pass RemoveBridgeRouteCalls = %d, want 0", len(f.RemoveBridgeRouteCalls))
+	}
+
+	d2 := managedBridgeDhcpNet()
+	newSubnet := "10.81.0.0/24"
+	d2.Subnet = &newSubnet // same bridge/id, changed subnet
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: []heartbeat.DeclaredNetwork{d2}})
+	rec.reconcile(context.Background())
+
+	if len(f.RemoveBridgeRouteCalls) != 1 {
+		t.Fatalf("RemoveBridgeRouteCalls = %d, want 1 (old route reaped)", len(f.RemoveBridgeRouteCalls))
+	}
+	if got := f.RemoveBridgeRouteCalls[0]; got.Subnet.String() != "10.80.0.0/24" || got.Bridge != "otbsvc" {
+		t.Errorf("reaped route = %v on %s, want 10.80.0.0/24 on otbsvc", got.Subnet, got.Bridge)
+	}
+}
+
+// A steady-state reconcile of an unchanged anycast bridge must not reap its
+// route: the reap fires only on a real same-bridge subnet change.
+func TestReconcileDelta_AnycastBridgeSameSubnetNoReap(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := managedBridgeDhcpNet()
+	for i := 0; i < 2; i++ {
+		rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: []heartbeat.DeclaredNetwork{d}})
+		rec.reconcile(context.Background())
+	}
+	if len(f.RemoveBridgeRouteCalls) != 0 {
+		t.Errorf("steady-state RemoveBridgeRouteCalls = %d, want 0", len(f.RemoveBridgeRouteCalls))
+	}
+}

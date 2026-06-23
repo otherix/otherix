@@ -367,6 +367,20 @@ func (r *Networks) reconcileDelta(ctx context.Context, d heartbeat.DeclaredNetwo
 		return
 	}
 	newNAT := d.Egress == "nat"
+	// A dhcp/dns (anycast) managed bridge that keeps its bridge but changes
+	// subnet leaves a stale link-scoped bridge route: EnsureBridgeRoute installs
+	// the new Dst but cannot remove the old one, and nothing else GCs it (the
+	// route only dies with the bridge). Reap the old route here. Same-bridge
+	// only - a rename tears the whole old bridge down below, route and all.
+	// Best-effort: a failure is logged and retried next pass (the id stays
+	// declared), it must not block materialising the new state.
+	if prev.Anycast && prev.BridgeName == d.BridgeName &&
+		prev.Subnet.IsValid() && prev.Subnet != newSubnet {
+		if err := r.fabric.RemoveBridgeRoute(prev.Subnet, prev.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "remove stale bridge route failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		}
+	}
 	switch {
 	case prev.BridgeName != d.BridgeName:
 		// Bridge rename: tear the old bridge down entirely. The new
