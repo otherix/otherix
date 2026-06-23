@@ -197,6 +197,7 @@ func TestBuildReplyConditionalOptions(t *testing.T) {
 	}{
 		{name: "nat style dns+default", advertiseDNS: true, advertiseDefault: true, wantDNS: true, wantOnLink: true, wantDefaultRoute: true},
 		{name: "isolated dns only", advertiseDNS: true, advertiseDefault: false, wantDNS: true, wantOnLink: true, wantDefaultRoute: false},
+		{name: "default route only", advertiseDNS: false, advertiseDefault: true, wantDNS: false, wantOnLink: true, wantDefaultRoute: true},
 		{name: "addressing only", advertiseDNS: false, advertiseDefault: false, wantDNS: false, wantOnLink: false, wantDefaultRoute: false},
 	}
 	for _, tc := range cases {
