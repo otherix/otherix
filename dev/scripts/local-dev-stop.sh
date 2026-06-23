@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
-# local-dev-stop — destructive teardown of the local dev stack.
+# local-dev-stop — teardown of the local dev stack.
 #
-# Stops everything brought up by `make local-dev-start` AND wipes the
-# embedded-etcd state via `make etcd-reset`. Per locked decision (3a) — no
-# confirmation prompt; user runs this when they want clean slate.
+# Default (soft) stops everything brought up by `make local-dev-start` and wipes
+# the embedded-etcd state, but KEEPS the Lima VMs (powered off) so the next
+# local-dev-start reuses them instead of re-creating from scratch (no image
+# convert / disk expand / apt re-run). Re-seeding a reused VM is safe: seed-dev
+# bootstraps each node with --force, re-issuing its cert against the fresh CA.
+#
+# With --destroy it deletes the VMs (full nuke) - for a wedged VM or a deliberate
+# from-scratch rebuild. No confirmation prompt; run it when you want a clean slate.
 #
 # Sequence:
 #   1. Stop otherix-api  — SIGTERM, wait for graceful shutdown (35s budget),
 #                          SIGKILL fallback
-#   2. clean-dev         — stop + delete Lima VM
+#   2. clean-dev / destroy-dev — stop (or stop+delete) Lima VMs / netns
 #   3. etcd-reset        — wipe the embedded-etcd data dir (.local/etcd)
 
 set -euo pipefail
+
+# Teardown mode: soft (keep VMs, default) or destroy (delete VMs).
+MODE="soft"
+if [ "${1:-}" = "--destroy" ]; then
+    MODE="destroy"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -63,23 +74,36 @@ if [ "${stopped}" -eq 0 ] && [ -z "${orphans}" ]; then
     echo "   no api-server processes to stop"
 fi
 
-if [ "$(uname -s)" = "Darwin" ]; then
-    echo ">> Step 2/3 — Stop + delete Lima VMs"
+if [ "${MODE}" = "destroy" ]; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo ">> Step 2/3 — Stop + delete Lima VMs"
+    else
+        echo ">> Step 2/3 — Tear down netns topology + per-node state"
+    fi
+    make --no-print-directory destroy-dev
 else
-    echo ">> Step 2/3 — Tear down netns topology + per-node state"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo ">> Step 2/3 — Stop Lima VMs (kept for reuse on next start)"
+    else
+        echo ">> Step 2/3 — Tear down netns topology + per-node state"
+    fi
+    make --no-print-directory clean-dev
 fi
-make --no-print-directory clean-dev
 
 echo ">> Step 3/3 — Reset embedded etcd (wipe data dir)"
 make --no-print-directory etcd-reset >/dev/null
 
 echo ""
-echo ">> local-dev-stop complete — system reset"
+echo ">> local-dev-stop complete — cluster state reset"
 echo "   etcd data dir wiped (.local/etcd)"
 if [ "$(uname -s)" = "Darwin" ]; then
-    echo "   Lima VMs destroyed (otherix-dev-1, otherix-dev-2)"
+    if [ "${MODE}" = "destroy" ]; then
+        echo "   Lima VMs deleted (otherix-dev-1/2/3)"
+    else
+        echo "   Lima VMs stopped, kept for reuse (otherix-dev-1/2/3)"
+    fi
 else
-    echo "   netns topology + /var/lib/otherix/dev removed (otns1, otns2, otdev0)"
+    echo "   netns topology + /var/lib/otherix/dev removed (otns1, otns2, otns3)"
 fi
 echo "   api-server stopped"
 echo ""

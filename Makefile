@@ -351,14 +351,17 @@ download: ## go mod download
 # restart/deploy are the non-destructive inner loop (etcd/pki + VMs/certs
 # preserved). The per-OS internals (bootstrap-dev/deploy-dev/clean-dev,
 # *-linux/*-macos, lima-*) are hidden from `make help`.
-.PHONY: local-dev-start local-dev-stop local-dev-clean \
+.PHONY: local-dev-start local-dev-stop local-dev-destroy local-dev-clean \
         local-dev-restart local-dev-deploy local-dev-cleanrestart
 
 local-dev-start: ## Dev stack up: api-server (embedded etcd) + agents + CLI (admin@otherix.local / correct-horse-battery-staple)
 	@bash dev/scripts/local-dev-start.sh
 
-local-dev-stop: ## Dev stack down + wipe etcd/pki + delete VMs/netns (DESTRUCTIVE)
+local-dev-stop: ## Dev stack down: stop api + stop VMs (kept, reused on next start) + wipe etcd/pki
 	@bash dev/scripts/local-dev-stop.sh
+
+local-dev-destroy: ## Full nuke: stop api + DELETE VMs/netns + wipe etcd/pki (forces a from-scratch VM rebuild)
+	@bash dev/scripts/local-dev-stop.sh --destroy
 
 local-dev-clean: ## local-dev-stop + remove .local/ and the dev CLI cluster (pristine slate)
 	@bash dev/scripts/local-dev-clean.sh
@@ -371,7 +374,7 @@ local-dev-deploy: build-api build-cli ## Rebuild + restart api + agents + host C
 	@$(MAKE) --no-print-directory deploy-dev
 	@bash dev/scripts/restart-api-dev.sh
 
-local-dev-cleanrestart: ## local-dev-stop then local-dev-start (nuke + fresh cluster)
+local-dev-cleanrestart: ## Fresh cluster (wipe etcd + re-seed); VMs are stopped and reused, not rebuilt
 	@$(MAKE) --no-print-directory local-dev-stop
 	@$(MAKE) --no-print-directory local-dev-start
 
@@ -405,9 +408,9 @@ LIMA_VM     := $(LIMA_VM_1)
 # bootstrap-dev / deploy-dev / clean-dev / restart-agent are internal per-OS
 # dispatchers used by the local-dev-* family. They are intentionally NOT in
 # `make help` (no `##`) — the documented surface is local-dev-*.
-.PHONY: bootstrap-dev deploy-dev clean-dev restart-agent seed-dev \
+.PHONY: bootstrap-dev deploy-dev clean-dev destroy-dev restart-agent seed-dev \
         bootstrap-dev-linux deploy-dev-linux clean-dev-linux \
-        bootstrap-dev-macos deploy-dev-macos clean-dev-macos \
+        bootstrap-dev-macos deploy-dev-macos clean-dev-macos destroy-dev-macos \
         lima-check lima-ensure lima-ensure-one \
         build-agent-lima copy-agent-lima copy-config-lima \
         restart-agent-lima
@@ -430,6 +433,16 @@ clean-dev:
 	@case "$$(uname -s)" in \
 	  Linux)  $(MAKE) clean-dev-linux ;; \
 	  Darwin) $(MAKE) clean-dev-macos ;; \
+	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
+	esac
+
+# destroy-dev is the full-delete teardown. On Linux the netns topology is torn
+# down completely either way (there is no "reuse" of a netns stack), so it maps
+# to clean-dev-linux; on macOS it deletes the Lima VMs.
+destroy-dev:
+	@case "$$(uname -s)" in \
+	  Linux)  $(MAKE) clean-dev-linux ;; \
+	  Darwin) $(MAKE) destroy-dev-macos ;; \
 	  *) echo "unsupported OS: $$(uname -s)"; exit 1 ;; \
 	esac
 
@@ -482,14 +495,24 @@ bootstrap-dev-macos: lima-ensure copy-config-lima build-agent-lima copy-agent-li
 deploy-dev-macos: build-agent-lima copy-agent-lima restart-agent-lima
 	@echo ">> deploy-dev-macos done"
 
+# clean-dev-macos stops the VMs but KEEPS them, so the next local-dev-start
+# reuses them (no image convert / disk expand / apt re-run). destroy-dev-macos
+# is the explicit full delete for when a VM is wedged or you want a from-scratch
+# rebuild.
 clean-dev-macos:
+	-limactl stop $(LIMA_VM_1) 2>/dev/null || true
+	-limactl stop $(LIMA_VM_2) 2>/dev/null || true
+	-limactl stop $(LIMA_VM_3) 2>/dev/null || true
+	@echo ">> clean-dev-macos done (VMs stopped, reused on next start)"
+
+destroy-dev-macos:
 	-limactl stop $(LIMA_VM_1) 2>/dev/null || true
 	-limactl delete $(LIMA_VM_1) 2>/dev/null || true
 	-limactl stop $(LIMA_VM_2) 2>/dev/null || true
 	-limactl delete $(LIMA_VM_2) 2>/dev/null || true
 	-limactl stop $(LIMA_VM_3) 2>/dev/null || true
 	-limactl delete $(LIMA_VM_3) 2>/dev/null || true
-	@echo ">> clean-dev-macos done"
+	@echo ">> destroy-dev-macos done (VMs deleted)"
 
 lima-check:
 	@command -v limactl >/dev/null 2>&1 || { \

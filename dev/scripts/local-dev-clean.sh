@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # local-dev-clean — pristine teardown of the local dev stack.
 #
-# Runs the destructive `local-dev-stop` (stop api + delete Lima VMs / netns +
-# wipe etcd/pki) and then removes the remaining dev residue so the repo looks
-# like the stack was never started:
-#   1. local-dev-stop.sh  — stop api + clean-dev + etcd-reset
+# Runs the full-nuke `local-dev-stop --destroy` (stop api + DELETE Lima VMs /
+# netns + wipe etcd/pki) and then removes the remaining dev residue so the repo
+# looks like the stack was never started:
+#   1. local-dev-stop.sh --destroy — stop api + destroy-dev + etcd-reset
 #   2. rm -rf .local       — logs/pid + etcd + pki (superset of etcd-reset)
 #   3. otherix config remove cluster — drop the dev cluster from ~/.otherix
 #
@@ -22,8 +22,8 @@ cd "${REPO_ROOT}"
 echo ">> local-dev-clean"
 echo ""
 
-echo ">> Step 1/3 — local-dev-stop (stop api + delete VMs/netns + wipe etcd/pki)"
-bash "${SCRIPT_DIR}/local-dev-stop.sh"
+echo ">> Step 1/3 — local-dev-stop --destroy (stop api + delete VMs/netns + wipe etcd/pki)"
+bash "${SCRIPT_DIR}/local-dev-stop.sh" --destroy
 
 echo ">> Step 2/3 — remove .local/ (logs, pid, etcd, pki)"
 rm -rf "${REPO_ROOT}/.local"
