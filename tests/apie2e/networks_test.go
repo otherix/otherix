@@ -29,6 +29,8 @@ type networkView struct {
 	Subnet     *string            `json:"subnet"`
 	Gateway    *string            `json:"gateway"`
 	MTU        int32              `json:"mtu"`
+	Dhcp       bool               `json:"dhcp"`
+	DNS        bool               `json:"dns"`
 	Status     *networkStatusView `json:"status"`
 }
 
@@ -211,6 +213,60 @@ func TestNetworksCreateNoneWithSubnet400(t *testing.T) {
 	body := newNetworkBody()
 	body["egress"] = "none"
 	body["subnet"] = "10.20.0.0/24"
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}
+
+func TestNetworksCreateManagedBridgeDHCPNoEgress(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	body := newNetworkBody()
+	body["managed"] = true
+	body["subnet"] = "10.70.0.0/24"
+	body["dhcp"] = true
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+	if !created.Dhcp {
+		t.Errorf("dhcp = false, want true")
+	}
+	if !created.DNS {
+		t.Errorf("dns = false, want true (defaults on with dhcp)")
+	}
+	if created.Subnet == nil || *created.Subnet != "10.70.0.0/24" {
+		t.Errorf("subnet = %v, want 10.70.0.0/24", created.Subnet)
+	}
+}
+
+func TestNetworksCreateUnmanagedBridgeDHCP400(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	body := newNetworkBody()
+	body["managed"] = false
+	body["subnet"] = "10.70.0.0/24"
+	body["dhcp"] = true
+	resp := h.post(t, "/v1/networks", body, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", resp.StatusCode)
+	}
+	assertErrorCode(t, resp, "validation_failed")
+}
+
+func TestNetworksCreateManagedBridgeDHCPNoSubnet400(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	body := newNetworkBody()
+	body["managed"] = true
+	body["dhcp"] = true
 	resp := h.post(t, "/v1/networks", body, admin)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("create status = %d, want 400", resp.StatusCode)

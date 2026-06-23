@@ -98,21 +98,15 @@ func (h *Handler) createOverlay(w http.ResponseWriter, r *http.Request, req *cre
 	response.WriteJSON(w, r, http.StatusCreated, toView(row))
 }
 
-// createBridge handles the type=bridge create branch: it resolves the
-// egress-driven subnet/gateway, materialises the mtu default, enforces the DHCP
-// cross-field rules (which reject dhcp=true on a bridge), and persists the row.
+// createBridge handles the type=bridge create branch: it materialises the mtu
+// default, enforces the dhcp/dns cross-field rules (which require a managed
+// bridge and a subnet), resolves the subnet/gateway (accepting a subnet at any
+// egress when dhcp/dns is set), and persists the row.
 func (h *Handler) createBridge(w http.ResponseWriter, r *http.Request, req *createRequest) {
 	managed := req.Managed != nil && *req.Managed
 	egress := store.NetworkEgressNone
 	if req.Egress != nil {
 		egress = store.NetworkEgress(*req.Egress)
-	}
-
-	subnet, gateway, err := resolveCreateEgress(egress, req.Subnet, req.Gateway)
-	if err != nil {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, err.Error(), nil)
-		return
 	}
 
 	mtu := int32(validation.DefaultMTU)
@@ -121,13 +115,23 @@ func (h *Handler) createBridge(w http.ResponseWriter, r *http.Request, req *crea
 	}
 
 	dhcp := req.Dhcp != nil && *req.Dhcp
-	dns := req.DNS != nil && *req.DNS
+	dns := dhcp
+	if req.DNS != nil {
+		dns = *req.DNS
+	}
 	if err := validation.ValidateDhcp(dhcp, req.Subnet != nil, managed, store.NetworkType(req.Type)); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
 	}
 	if err := validation.ValidateDNS(dns, managed, store.NetworkType(req.Type)); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+
+	subnet, gateway, err := resolveCreateEgress(egress, req.Subnet, req.Gateway, dhcp || dns)
+	if err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
@@ -281,33 +285,47 @@ func validateOverlayCreate(req *createRequest) error {
 	return validateConfigShape(req.Config)
 }
 
-// resolveCreateEgress turns the optional subnet/gateway request strings
-// into the stored pointers, enforcing the egress-driven invariants:
+// resolveCreateEgress turns the optional subnet/gateway request strings into the
+// stored pointers, enforcing the egress-driven invariants:
 //
-//   - egress=nat: subnet is required and parsed to canonical (masked)
-//     form; gateway, if supplied, must be a valid host inside the
-//     subnet, otherwise it defaults to the first usable host.
-//   - egress=none: neither subnet nor gateway may be present, keeping the
-//     stored model free of IP fields the mode does not use.
-func resolveCreateEgress(egress store.NetworkEgress, subnetStr, gatewayStr *string) (*netip.Prefix, *netip.Addr, error) {
-	if egress != store.NetworkEgressNAT {
+//   - egress=nat: subnet is required (parsed to canonical, masked form); gateway,
+//     if supplied, must be a valid host inside the subnet, else it defaults to the
+//     first usable host.
+//   - egress=none with wantAddressing (a managed bridge with dhcp/dns): subnet is
+//     required for IPAM, the host bridge route, and DNS reachability; gateway is
+//     optional (derived for IPAM-exclusion, vestigial on the anycast dataplane).
+//   - egress=none without addressing: neither subnet nor gateway may be present.
+func resolveCreateEgress(egress store.NetworkEgress, subnetStr, gatewayStr *string, wantAddressing bool) (*netip.Prefix, *netip.Addr, error) {
+	switch {
+	case egress == store.NetworkEgressNAT:
+		if subnetStr == nil {
+			return nil, nil, errors.New("subnet is required when egress=nat")
+		}
+		return parseSubnetAndGateway(subnetStr, gatewayStr)
+	case wantAddressing:
+		if subnetStr == nil {
+			return nil, nil, errors.New("dhcp=true or dns=true requires a subnet")
+		}
+		return parseSubnetAndGateway(subnetStr, gatewayStr)
+	default:
 		if subnetStr != nil {
-			return nil, nil, errors.New("subnet is only allowed when egress=nat")
+			return nil, nil, errors.New("subnet is only allowed when egress=nat or with dhcp/dns")
 		}
 		if gatewayStr != nil {
-			return nil, nil, errors.New("gateway is only allowed when egress=nat")
+			return nil, nil, errors.New("gateway is only allowed when egress=nat or with dhcp/dns")
 		}
 		return nil, nil, nil
 	}
+}
 
-	if subnetStr == nil {
-		return nil, nil, errors.New("subnet is required when egress=nat")
-	}
+// parseSubnetAndGateway parses a required subnet to canonical (masked) form and
+// resolves the gateway: an explicit gateway must be a valid host inside the
+// subnet; an omitted gateway defaults to the first usable host.
+func parseSubnetAndGateway(subnetStr, gatewayStr *string) (*netip.Prefix, *netip.Addr, error) {
 	subnet, err := validation.ParseSubnet(*subnetStr)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	var gateway netip.Addr
 	if gatewayStr != nil {
 		gateway, err = netip.ParseAddr(*gatewayStr)
@@ -320,7 +338,6 @@ func resolveCreateEgress(egress store.NetworkEgress, subnetStr, gatewayStr *stri
 	} else {
 		gateway = validation.GatewayDefault(subnet)
 	}
-
 	return &subnet, &gateway, nil
 }
 
