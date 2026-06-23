@@ -165,21 +165,41 @@ func TestValidateDhcp(t *testing.T) {
 		dhcp      bool
 		hasSubnet bool
 		typ       store.NetworkType
-		egress    store.NetworkEgress
 		wantErr   bool
 	}{
-		{name: "dhcp false bridge ok", dhcp: false, hasSubnet: false, typ: store.NetworkTypeBridge, egress: store.NetworkEgressNone, wantErr: false},
-		{name: "dhcp false overlay ok", dhcp: false, hasSubnet: false, typ: store.NetworkTypeOverlay, egress: store.NetworkEgressNAT, wantErr: false},
-		{name: "dhcp true bridge rejected", dhcp: true, hasSubnet: true, typ: store.NetworkTypeBridge, egress: store.NetworkEgressNAT, wantErr: true},
-		{name: "dhcp true overlay egress none rejected", dhcp: true, hasSubnet: true, typ: store.NetworkTypeOverlay, egress: store.NetworkEgressNone, wantErr: true},
-		{name: "dhcp true overlay nat with subnet ok", dhcp: true, hasSubnet: true, typ: store.NetworkTypeOverlay, egress: store.NetworkEgressNAT, wantErr: false},
-		{name: "dhcp true overlay nat without subnet rejected", dhcp: true, hasSubnet: false, typ: store.NetworkTypeOverlay, egress: store.NetworkEgressNAT, wantErr: true},
+		{name: "dhcp false bridge ok", dhcp: false, hasSubnet: false, typ: store.NetworkTypeBridge, wantErr: false},
+		{name: "dhcp false overlay ok", dhcp: false, hasSubnet: false, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dhcp true bridge rejected", dhcp: true, hasSubnet: true, typ: store.NetworkTypeBridge, wantErr: true},
+		{name: "dhcp true overlay no egress with subnet ok", dhcp: true, hasSubnet: true, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dhcp true overlay without subnet rejected", dhcp: true, hasSubnet: false, typ: store.NetworkTypeOverlay, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateDhcp(tc.dhcp, tc.hasSubnet, tc.typ, tc.egress)
+			err := ValidateDhcp(tc.dhcp, tc.hasSubnet, tc.typ)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("ValidateDhcp(%v, %v, %q, %q) err = %v, wantErr = %v", tc.dhcp, tc.hasSubnet, tc.typ, tc.egress, err, tc.wantErr)
+				t.Errorf("ValidateDhcp(%v, %v, %q) err = %v, wantErr = %v", tc.dhcp, tc.hasSubnet, tc.typ, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateDns(t *testing.T) {
+	cases := []struct {
+		name    string
+		dns     bool
+		typ     store.NetworkType
+		wantErr bool
+	}{
+		{name: "dns false bridge ok", dns: false, typ: store.NetworkTypeBridge, wantErr: false},
+		{name: "dns false overlay ok", dns: false, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dns true overlay ok", dns: true, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dns true bridge rejected", dns: true, typ: store.NetworkTypeBridge, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateDns(tc.dns, tc.typ)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateDns(%v, %q) err = %v, wantErr = %v", tc.dns, tc.typ, err, tc.wantErr)
 			}
 		})
 	}
