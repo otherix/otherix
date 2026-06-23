@@ -5868,7 +5868,7 @@ components:
 
     Network:
       type: object
-      required: [id, name, type, bridge_name, managed, egress, dhcp, mtu, config, created_at, updated_at]
+      required: [id, name, type, bridge_name, managed, egress, dhcp, dns, mtu, config, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -5902,7 +5902,15 @@ components:
           description: |
             Immutable after creation. `true` enables CP-IPAM and the
             per-node DHCP responder for this network. Overlay-only:
-            requires `type: overlay`, `egress: nat`, and a `subnet`.
+            requires `type: overlay` and a `subnet`.
+        dns:
+          type: boolean
+          description: |
+            Immutable after creation. Overlay-only. `true` advertises the
+            overlay anycast resolver (169.254.1.1) to VMs via DHCP option 6.
+            Independent of egress: an isolated overlay still resolves via the
+            node upstream. On `egress: nat` DNS is always advertised regardless
+            of this flag.
         subnet:
           type: [string, "null"]
           description: |
@@ -5989,8 +5997,16 @@ components:
           description: |
             Optional on create (defaults to `false`). `true` enables
             CP-IPAM and the per-node DHCP responder. Overlay-only:
-            requires `type: overlay`, `egress: nat`, and a `subnet`;
+            requires `type: overlay` and a `subnet`;
             rejected otherwise. Immutable once the network exists.
+        dns:
+          type: boolean
+          default: true
+          description: |
+            Overlay-only; defaults to `true`. Advertises the overlay anycast
+            resolver (169.254.1.1) via DHCP option 6. Set `false` to suppress
+            DNS on an isolated overlay. Rejected on non-overlay networks.
+            Immutable once the network exists.
         subnet:
           type: string
           description: |

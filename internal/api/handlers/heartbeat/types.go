@@ -260,6 +260,7 @@ type declaredNetwork struct {
 	Subnet       *string           `json:"subnet"`
 	Gateway      *string           `json:"gateway"`
 	DhcpEnabled  bool              `json:"dhcp"`
+	DNSEnabled   bool              `json:"dns"`
 	Reservations []dhcpReservation `json:"reservations"`
 }
 

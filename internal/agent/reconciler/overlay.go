@@ -85,67 +85,105 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
 
-	if d.Egress == "nat" {
-		r.applyOverlayEgress(ctx, d, vniVal)
+	if overlayNeedsServices(d) {
+		r.applyOverlayServices(ctx, d, vniVal)
 	}
 
 	return ready(d.ID)
 }
 
-// applyOverlayEgress best-effort installs the egress datapath (ip_forward +
-// anycast gateway + interface masquerade) for an egress=nat overlay whose L2
-// plane has already converged. Egress is a sub-capability: a failure here is
-// logged and retried on the next reconcile pass, and must NOT fail the network.
-// Marking the whole overlay failed on an egress hiccup would wrongly exclude
-// the node from VM placement even though the VTEP/bridge/FDB datapath is up.
-// HasEgress is recorded only when the full datapath installs, so teardown and
+// overlayNeedsServices reports whether an overlay needs the host-side services
+// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none.
+func overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
+	return d.Egress == "nat" || d.DNSEnabled || d.DhcpEnabled
+}
+
+// applyOverlayServices best-effort installs the per-capability host datapath for
+// an overlay whose L2 plane has already converged: NAT egress (ip_forward +
+// masquerade), the L3 service plane (anycast gateway + bridge route, needed for
+// either NAT or the host-side DNS forwarder so its replies reach the VM), and
+// DHCP registration. Each capability is gated independently so DHCP and DNS work
+// without NAT egress. Every step is a sub-capability: a failure is logged and
+// retried on the next reconcile pass, and must NOT fail the network. Marking the
+// whole overlay failed on a services hiccup would wrongly exclude the node from
+// VM placement even though the VTEP/bridge/FDB datapath is up. HasEgress is
+// recorded only when the full NAT datapath installs, so teardown and
 // observability reflect the real state.
-func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredNetwork, vniVal uint32) {
-	if err := r.fabric.EnableIPForwarding(); err != nil {
-		r.log.WarnContext(ctx, "overlay egress: enable ip_forward failed; retrying next pass",
-			slog.String("network_id", d.ID), slog.String("error", err.Error()))
-		return
-	}
-	if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, netfabric.GatewayMAC(vniVal)); err != nil {
-		r.log.WarnContext(ctx, "overlay egress: anycast gateway failed; retrying next pass",
-			slog.String("network_id", d.ID), slog.String("error", err.Error()))
-		return
-	}
-	// The anycast gateway is only a link-local /32, so the node has no connected
-	// route to the overlay subnet. Install one on the bridge so return/reply
-	// traffic to overlay VMs is delivered to the bridge instead of misrouted out
-	// the uplink. Best-effort: a bad/absent subnet is logged and skipped (does
-	// not fail the network), a fabric error retries next pass.
-	if d.Subnet != nil {
-		if subnet, err := netip.ParsePrefix(*d.Subnet); err != nil {
-			r.log.WarnContext(ctx, "overlay egress: bad subnet, skipping bridge route",
-				slog.String("network_id", d.ID), slog.String("subnet", *d.Subnet), slog.String("error", err.Error()))
-		} else if err := r.fabric.EnsureBridgeRoute(subnet, d.BridgeName); err != nil {
-			r.log.WarnContext(ctx, "overlay egress: bridge route failed; retrying next pass",
+func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.DeclaredNetwork, vniVal uint32) {
+	nat := d.Egress == "nat"
+	// L3 services (anycast gateway + bridge route) are needed by NAT egress and
+	// by the host-side DNS forwarder: in both cases the host must own the gateway
+	// address on the bridge and route to the overlay subnet so reply traffic
+	// reaches the VM.
+	wantL3 := nat || d.DNSEnabled
+
+	if nat {
+		if err := r.fabric.EnableIPForwarding(); err != nil {
+			r.log.WarnContext(ctx, "overlay egress: enable ip_forward failed; retrying next pass",
 				slog.String("network_id", d.ID), slog.String("error", err.Error()))
 			return
 		}
 	}
-	// Empty egress iface -> netfabric resolves the host default route.
-	if err := r.fabric.EnsureMasqueradeIface(d.BridgeName, ""); err != nil {
-		r.log.WarnContext(ctx, "overlay egress: masquerade failed; retrying next pass",
-			slog.String("network_id", d.ID), slog.String("error", err.Error()))
-		return
+	if wantL3 {
+		if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, netfabric.GatewayMAC(vniVal)); err != nil {
+			r.log.WarnContext(ctx, "overlay l3: anycast gateway failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+			return
+		}
+		// The anycast gateway is only a link-local /32, so the node has no connected
+		// route to the overlay subnet. Install one on the bridge so reply traffic to
+		// overlay VMs (including the host-side DNS forwarder's responses) is delivered
+		// to the bridge instead of misrouted out the uplink. Best-effort: a bad/absent
+		// subnet is logged and skipped (does not fail the network), a fabric error
+		// retries next pass.
+		if d.Subnet != nil {
+			if subnet, err := netip.ParsePrefix(*d.Subnet); err != nil {
+				r.log.WarnContext(ctx, "overlay l3: bad subnet, skipping bridge route",
+					slog.String("network_id", d.ID), slog.String("subnet", *d.Subnet), slog.String("error", err.Error()))
+			} else if err := r.fabric.EnsureBridgeRoute(subnet, d.BridgeName); err != nil {
+				r.log.WarnContext(ctx, "overlay l3: bridge route failed; retrying next pass",
+					slog.String("network_id", d.ID), slog.String("error", err.Error()))
+				return
+			}
+		}
 	}
-	// DHCP is overlay-only (the wire dhcp flag is only ever set for egress=nat
-	// overlays). Re-assert the registration on EVERY pass when enabled: the
-	// responder is idempotent (it swaps reservations), so this converges new or
-	// changed reservations. Best-effort, fail toward connectivity: a register
-	// failure is logged and retried next pass, it must NOT fail the network.
+	if nat {
+		// Empty egress iface -> netfabric resolves the host default route.
+		if err := r.fabric.EnsureMasqueradeIface(d.BridgeName, ""); err != nil {
+			r.log.WarnContext(ctx, "overlay egress: masquerade failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+			return
+		}
+	}
+	r.registerOverlayDHCP(ctx, d, nat)
+	r.applied[d.ID] = appliedNetwork{
+		BridgeName: d.BridgeName,
+		Managed:    true,
+		Overlay:    true,
+		VNI:        vniVal,
+		HasEgress:  nat,
+		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
+	}
+}
+
+// registerOverlayDHCP re-asserts the DHCP registration on EVERY pass when
+// enabled: the responder is idempotent (it swaps reservations), so this
+// converges new or changed reservations. AdvertiseDNS is forced on for NAT
+// overlays as well so legacy etcd rows (which decode DNSEnabled=false) keep
+// advertising the resolver. Best-effort, fail toward connectivity: a register
+// failure is logged and retried next pass, it must NOT fail the network.
+func (r *Networks) registerOverlayDHCP(ctx context.Context, d heartbeat.DeclaredNetwork, nat bool) {
 	if d.DhcpEnabled && r.dhcp != nil {
 		if subnet, err := netip.ParsePrefix(deref(d.Subnet)); err != nil {
 			r.log.WarnContext(ctx, "overlay dhcp: bad subnet, skipping registration",
 				slog.String("network_id", d.ID), slog.String("error", err.Error()))
 		} else if err := r.dhcp.RegisterNetwork(dhcp4.NetworkConfig{
-			NetworkID:    d.ID,
-			Bridge:       d.BridgeName,
-			Subnet:       subnet,
-			Reservations: parseReservations(ctx, r.log, d.Reservations),
+			NetworkID:             d.ID,
+			Bridge:                d.BridgeName,
+			Subnet:                subnet,
+			Reservations:          parseReservations(ctx, r.log, d.Reservations),
+			AdvertiseDNS:          d.DNSEnabled || nat,
+			AdvertiseDefaultRoute: nat,
 		}); err != nil {
 			// Log on transition only: registration is re-asserted every pass,
 			// so a permanent failure (e.g. missing CAP_NET_RAW) would spam a
@@ -165,14 +203,6 @@ func (r *Networks) applyOverlayEgress(ctx context.Context, d heartbeat.DeclaredN
 		// forget any prior register-error state, emitting the recovery INFO if
 		// there was one, so a later re-enable re-logs a fresh first failure.
 		r.clearDHCPRegisterErr(ctx, d.ID)
-	}
-	r.applied[d.ID] = appliedNetwork{
-		BridgeName: d.BridgeName,
-		Managed:    true,
-		Overlay:    true,
-		VNI:        vniVal,
-		HasEgress:  true,
-		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
 	}
 }
 

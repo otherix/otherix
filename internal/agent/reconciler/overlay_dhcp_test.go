@@ -82,6 +82,84 @@ func TestApplyOverlayEgressRegistersDHCP(t *testing.T) {
 	}
 }
 
+// TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3 drives a dns=true,
+// dhcp=true, egress=none overlay through the real applyOverlay entry and asserts
+// that DHCP registers advertising DNS but not a default route, that the L3
+// anycast gateway is installed (so the host-side DNS forwarder's replies reach
+// the VM), and that masquerade is NOT (no NAT without egress).
+func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
+	f := readyEgressFabric()
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := overlayDhcpNet() // dhcp + subnet + reservation
+	d.Egress = ""         // no NAT egress; DNS-only L3
+	d.DNSEnabled = true
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	if len(fake.RegisterCalls) != 1 {
+		t.Fatalf("RegisterCalls = %d, want 1 (dhcp must register without egress)", len(fake.RegisterCalls))
+	}
+	cfg := fake.RegisterCalls[0]
+	if !cfg.AdvertiseDNS {
+		t.Errorf("AdvertiseDNS = false, want true (dns enabled)")
+	}
+	if cfg.AdvertiseDefaultRoute {
+		t.Errorf("AdvertiseDefaultRoute = true, want false (no egress)")
+	}
+	// L3 services: anycast gateway must be installed so the DNS forwarder's
+	// replies are routed back to the VM.
+	if len(f.AnycastGatewayCalls) != 1 || f.AnycastGatewayCalls[0].Bridge != "otb1000" {
+		t.Errorf("AnycastGatewayCalls = %+v, want one for otb1000", f.AnycastGatewayCalls)
+	}
+	// No NAT without egress.
+	if len(f.MasqueradeIfaceCalls) != 0 {
+		t.Errorf("MasqueradeIfaceCalls = %+v, want none (no egress)", f.MasqueradeIfaceCalls)
+	}
+	if rec.applied["ov1"].HasEgress {
+		t.Errorf("HasEgress = true, want false (no egress)")
+	}
+}
+
+// TestApplyOverlayNatForcesAdvertiseDNS asserts back-compat: an egress=nat
+// overlay that decodes DNSEnabled=false (a legacy etcd row) still advertises DNS
+// and a default route via DHCP.
+func TestApplyOverlayNatForcesAdvertiseDNS(t *testing.T) {
+	f := readyEgressFabric()
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := overlayDhcpNet()
+	d.Egress = "nat"
+	d.DNSEnabled = false
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	if len(fake.RegisterCalls) != 1 {
+		t.Fatalf("RegisterCalls = %d, want 1", len(fake.RegisterCalls))
+	}
+	cfg := fake.RegisterCalls[0]
+	if !cfg.AdvertiseDNS {
+		t.Errorf("AdvertiseDNS = false, want true (nat forces DNS advertisement for back-compat)")
+	}
+	if !cfg.AdvertiseDefaultRoute {
+		t.Errorf("AdvertiseDefaultRoute = false, want true (nat advertises default route)")
+	}
+}
+
 func TestApplyOverlayDHCPRegisterErrorStaysReady(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{Errs: map[string]error{"RegisterNetwork": errors.New("boom")}}

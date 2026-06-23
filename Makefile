@@ -213,6 +213,10 @@ smoke-vm-migration-live-console: ## Live VM migration + console smoke: an open `
 smoke-dhcp-overlay-teardown: ## DHCP-overlay teardown smoke: repeated create/delete of a dhcp overlay must never wedge the agent network reconciler (run after local-dev-start)
 	@dev/smoke/dhcp-overlay-teardown/run.sh
 
+.PHONY: smoke-overlay-isolated-dns
+smoke-overlay-isolated-dns: ## Isolated-overlay DNS smoke: dhcp without egress hands out IP + DNS, no default route
+	bash dev/smoke/overlay-isolated-dns/run.sh
+
 .PHONY: smoke-chaos-cp-crash-migrate
 smoke-chaos-cp-crash-migrate: ## Chaos: SIGKILL the CP mid vm.migrate; the lease reaper reclaims the stranded job, the migration recovers, the VM is migratable again (P0; run after local-dev-start)
 	@bash dev/smoke/chaos-cp-crash-migrate/run.sh

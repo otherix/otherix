@@ -25,6 +25,7 @@ type createRequest struct {
 	Subnet     *string         `json:"subnet,omitempty"`
 	Gateway    *string         `json:"gateway,omitempty"`
 	Dhcp       *bool           `json:"dhcp,omitempty"`
+	DNS        *bool           `json:"dns,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 }
 

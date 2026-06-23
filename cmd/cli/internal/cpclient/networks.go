@@ -79,6 +79,7 @@ type CreateNetworkParams struct {
 	Subnet     string
 	Gateway    string
 	Dhcp       bool
+	DNS        *bool
 	VlanTag    *int
 	Mtu        *int
 }
@@ -110,6 +111,9 @@ func (p CreateNetworkParams) body() map[string]any {
 	}
 	if p.Dhcp {
 		out["dhcp"] = true
+	}
+	if p.DNS != nil {
+		out["dns"] = *p.DNS
 	}
 	if p.VlanTag != nil {
 		out["vlan_tag"] = *p.VlanTag

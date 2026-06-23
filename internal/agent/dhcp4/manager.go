@@ -71,6 +71,9 @@ type responder struct {
 type snapshot struct {
 	subnet netip.Prefix
 	byMAC  map[string]Reservation // key = MAC string
+
+	advertiseDNS          bool
+	advertiseDefaultRoute bool
 }
 
 // bridgeServer owns one bridge's socket and its read-loop. conn is nil until the
@@ -371,7 +374,7 @@ func (r *responder) handle(srv *bridgeServer, payload []byte) {
 		r.log.Debug("dhcp unknown client, dropping", "bridge", srv.bridge, "mac", req.ClientHWAddr.String())
 		return
 	}
-	reply, err := buildReply(req, res, snap.subnet, r.reply)
+	reply, err := buildReply(req, res, snap.subnet, r.reply, snap.advertiseDNS, snap.advertiseDefaultRoute)
 	if err != nil {
 		r.log.Warn("dhcp build reply failed", "bridge", srv.bridge, "mac", req.ClientHWAddr.String(), "error", err.Error())
 		return
@@ -395,5 +398,10 @@ func buildSnapshot(cfg NetworkConfig) *snapshot {
 	for _, res := range cfg.Reservations {
 		byMAC[res.MAC.String()] = res
 	}
-	return &snapshot{subnet: cfg.Subnet, byMAC: byMAC}
+	return &snapshot{
+		subnet:                cfg.Subnet,
+		byMAC:                 byMAC,
+		advertiseDNS:          cfg.AdvertiseDNS,
+		advertiseDefaultRoute: cfg.AdvertiseDefaultRoute,
+	}
 }

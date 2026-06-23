@@ -58,7 +58,16 @@ func (h *Handler) createOverlay(w http.ResponseWriter, r *http.Request, req *cre
 		egress = store.NetworkEgress(*req.Egress)
 	}
 	dhcp := req.Dhcp != nil && *req.Dhcp
-	if err := validation.ValidateDhcp(dhcp, true, store.NetworkTypeOverlay, egress); err != nil {
+	dns := true
+	if req.DNS != nil {
+		dns = *req.DNS
+	}
+	if err := validation.ValidateDhcp(dhcp, true, store.NetworkTypeOverlay); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+	if err := validation.ValidateDNS(dns, store.NetworkTypeOverlay); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
@@ -70,6 +79,7 @@ func (h *Handler) createOverlay(w http.ResponseWriter, r *http.Request, req *cre
 		Egress:      egress,
 		Subnet:      &subnet,
 		DhcpEnabled: dhcp,
+		DNSEnabled:  dns,
 		Config:      normaliseConfig(req.Config),
 	})
 	if err != nil {
@@ -111,7 +121,13 @@ func (h *Handler) createBridge(w http.ResponseWriter, r *http.Request, req *crea
 	}
 
 	dhcp := req.Dhcp != nil && *req.Dhcp
-	if err := validation.ValidateDhcp(dhcp, req.Subnet != nil, store.NetworkType(req.Type), egress); err != nil {
+	dns := req.DNS != nil && *req.DNS
+	if err := validation.ValidateDhcp(dhcp, req.Subnet != nil, store.NetworkType(req.Type)); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+	if err := validation.ValidateDNS(dns, store.NetworkType(req.Type)); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
@@ -129,6 +145,7 @@ func (h *Handler) createBridge(w http.ResponseWriter, r *http.Request, req *crea
 		Subnet:      subnet,
 		Gateway:     gateway,
 		DhcpEnabled: dhcp,
+		DNSEnabled:  dns,
 		Config:      normaliseConfig(req.Config),
 	})
 	if err != nil {

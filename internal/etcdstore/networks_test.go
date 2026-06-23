@@ -622,6 +622,27 @@ func TestCreateNetworkOverlayAllocatesVNI(t *testing.T) {
 	}
 }
 
+func TestCreateNetworkPersistsDNSEnabled(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	pfx := netip.MustParsePrefix("10.77.0.0/24")
+	got, err := s.CreateNetwork(ctx, store.CreateNetworkParams{
+		ID:          uuid.New(),
+		Name:        "dns-rt",
+		Type:        store.NetworkTypeOverlay,
+		Egress:      store.NetworkEgressNone,
+		Subnet:      &pfx,
+		DhcpEnabled: true,
+		DNSEnabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	if !got.DNSEnabled {
+		t.Errorf("DNSEnabled = false, want true")
+	}
+}
+
 func TestCreateOverlayStampsMtuFromUnderlay(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

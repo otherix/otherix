@@ -663,6 +663,7 @@ func networkToDeclared(n store.Network) declaredNetwork {
 		Mtu:         n.Mtu,
 		VNI:         n.VNI,
 		DhcpEnabled: n.DhcpEnabled,
+		DNSEnabled:  n.DNSEnabled,
 	}
 	if n.Subnet != nil {
 		s := n.Subnet.String()

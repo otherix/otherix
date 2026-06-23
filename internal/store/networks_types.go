@@ -22,6 +22,7 @@ type CreateNetworkParams struct {
 	Subnet      *netip.Prefix
 	Gateway     *netip.Addr
 	DhcpEnabled bool
+	DNSEnabled  bool
 	Config      []byte
 }
 

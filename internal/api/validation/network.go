@@ -136,23 +136,30 @@ func ValidateNetworkInvariants(typ store.NetworkType, managed bool, egress store
 }
 
 // ValidateDhcp enforces the cross-field rules for enabling DHCP on a network.
-// DHCP is overlay-only (bridge DHCP needs a
-// different gateway-delivery profile - bridge gateways are in-subnet, the
-// responder's option-121 link-local gateway is overlay-specific). It requires
-// type=overlay, egress=nat (the responder relies on the overlay anycast
-// gateway), and a subnet (IPAM allocates from it). dhcp=false is always valid.
-func ValidateDhcp(dhcp bool, hasSubnet bool, typ store.NetworkType, egress store.NetworkEgress) error {
+// DHCP is overlay-only (bridge DHCP needs a different gateway-delivery profile -
+// bridge gateways are in-subnet, the responder's option-121 link-local gateway
+// is overlay-specific) and requires a subnet (IPAM allocates from it). Egress is
+// NOT required: an isolated overlay can still address its VMs. dhcp=false is
+// always valid.
+func ValidateDhcp(dhcp bool, hasSubnet bool, typ store.NetworkType) error {
 	if !dhcp {
 		return nil
 	}
 	if typ != store.NetworkTypeOverlay {
 		return errors.New("dhcp=true requires type=overlay")
 	}
-	if egress != store.NetworkEgressNAT {
-		return errors.New("dhcp=true requires egress=nat")
-	}
 	if !hasSubnet {
 		return errors.New("dhcp=true requires a subnet")
+	}
+	return nil
+}
+
+// ValidateDNS enforces that the dns flag is overlay-only. dns advertises the
+// overlay anycast resolver (169.254.1.1) via DHCP option 6; bridge-network DNS
+// is a separate future profile. dns=false is always valid.
+func ValidateDNS(dns bool, typ store.NetworkType) error {
+	if dns && typ != store.NetworkTypeOverlay {
+		return errors.New("dns=true requires type=overlay")
 	}
 	return nil
 }
