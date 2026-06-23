@@ -134,18 +134,18 @@ func TestLoadDeclaredNetworksDHCP(t *testing.T) {
 	}
 }
 
-// TestNetworkToDeclaredCarriesDns verifies the projection copies DnsEnabled onto
+// TestNetworkToDeclaredCarriesDNS verifies the projection copies DNSEnabled onto
 // the declared-network wire shape so the agent reconciler can read it.
-func TestNetworkToDeclaredCarriesDns(t *testing.T) {
+func TestNetworkToDeclaredCarriesDNS(t *testing.T) {
 	dn := networkToDeclared(store.Network{
 		ID:          uuid.New(),
 		Name:        "n",
 		Type:        store.NetworkTypeOverlay,
 		Egress:      store.NetworkEgressNone,
 		DhcpEnabled: true,
-		DnsEnabled:  true,
+		DNSEnabled:  true,
 	})
-	if !dn.DnsEnabled {
-		t.Errorf("declared DnsEnabled = false, want true")
+	if !dn.DNSEnabled {
+		t.Errorf("declared DNSEnabled = false, want true")
 	}
 }

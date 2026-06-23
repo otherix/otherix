@@ -85,11 +85,17 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
 
-	if d.Egress == "nat" || d.DnsEnabled || d.DhcpEnabled {
+	if overlayNeedsServices(d) {
 		r.applyOverlayServices(ctx, d, vniVal)
 	}
 
 	return ready(d.ID)
+}
+
+// overlayNeedsServices reports whether an overlay needs the host-side services
+// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none.
+func overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
+	return d.Egress == "nat" || d.DNSEnabled || d.DhcpEnabled
 }
 
 // applyOverlayServices best-effort installs the per-capability host datapath for
@@ -109,7 +115,7 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 	// by the host-side DNS forwarder: in both cases the host must own the gateway
 	// address on the bridge and route to the overlay subnet so reply traffic
 	// reaches the VM.
-	wantL3 := nat || d.DnsEnabled
+	wantL3 := nat || d.DNSEnabled
 
 	if nat {
 		if err := r.fabric.EnableIPForwarding(); err != nil {
@@ -149,12 +155,24 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 			return
 		}
 	}
-	// Re-assert the DHCP registration on EVERY pass when enabled: the responder is
-	// idempotent (it swaps reservations), so this converges new or changed
-	// reservations. AdvertiseDNS is forced on for NAT overlays as well so legacy
-	// etcd rows (which decode DnsEnabled=false) keep advertising the resolver.
-	// Best-effort, fail toward connectivity: a register failure is logged and
-	// retried next pass, it must NOT fail the network.
+	r.registerOverlayDHCP(ctx, d, nat)
+	r.applied[d.ID] = appliedNetwork{
+		BridgeName: d.BridgeName,
+		Managed:    true,
+		Overlay:    true,
+		VNI:        vniVal,
+		HasEgress:  nat,
+		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
+	}
+}
+
+// registerOverlayDHCP re-asserts the DHCP registration on EVERY pass when
+// enabled: the responder is idempotent (it swaps reservations), so this
+// converges new or changed reservations. AdvertiseDNS is forced on for NAT
+// overlays as well so legacy etcd rows (which decode DNSEnabled=false) keep
+// advertising the resolver. Best-effort, fail toward connectivity: a register
+// failure is logged and retried next pass, it must NOT fail the network.
+func (r *Networks) registerOverlayDHCP(ctx context.Context, d heartbeat.DeclaredNetwork, nat bool) {
 	if d.DhcpEnabled && r.dhcp != nil {
 		if subnet, err := netip.ParsePrefix(deref(d.Subnet)); err != nil {
 			r.log.WarnContext(ctx, "overlay dhcp: bad subnet, skipping registration",
@@ -164,7 +182,7 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 			Bridge:                d.BridgeName,
 			Subnet:                subnet,
 			Reservations:          parseReservations(ctx, r.log, d.Reservations),
-			AdvertiseDNS:          d.DnsEnabled || nat,
+			AdvertiseDNS:          d.DNSEnabled || nat,
 			AdvertiseDefaultRoute: nat,
 		}); err != nil {
 			// Log on transition only: registration is re-asserted every pass,
@@ -185,14 +203,6 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 		// forget any prior register-error state, emitting the recovery INFO if
 		// there was one, so a later re-enable re-logs a fresh first failure.
 		r.clearDHCPRegisterErr(ctx, d.ID)
-	}
-	r.applied[d.ID] = appliedNetwork{
-		BridgeName: d.BridgeName,
-		Managed:    true,
-		Overlay:    true,
-		VNI:        vniVal,
-		HasEgress:  nat,
-		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
 	}
 }
 

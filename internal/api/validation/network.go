@@ -154,10 +154,10 @@ func ValidateDhcp(dhcp bool, hasSubnet bool, typ store.NetworkType) error {
 	return nil
 }
 
-// ValidateDns enforces that the dns flag is overlay-only. dns advertises the
+// ValidateDNS enforces that the dns flag is overlay-only. dns advertises the
 // overlay anycast resolver (169.254.1.1) via DHCP option 6; bridge-network DNS
 // is a separate future profile. dns=false is always valid.
-func ValidateDns(dns bool, typ store.NetworkType) error {
+func ValidateDNS(dns bool, typ store.NetworkType) error {
 	if dns && typ != store.NetworkTypeOverlay {
 		return errors.New("dns=true requires type=overlay")
 	}

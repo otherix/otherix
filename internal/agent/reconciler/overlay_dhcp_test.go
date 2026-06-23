@@ -96,7 +96,7 @@ func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
 	}
 	d := overlayDhcpNet() // dhcp + subnet + reservation
 	d.Egress = ""         // no NAT egress; DNS-only L3
-	d.DnsEnabled = true
+	d.DNSEnabled = true
 	ip := "10.42.0.5/16"
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
@@ -129,7 +129,7 @@ func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
 }
 
 // TestApplyOverlayNatForcesAdvertiseDNS asserts back-compat: an egress=nat
-// overlay that decodes DnsEnabled=false (a legacy etcd row) still advertises DNS
+// overlay that decodes DNSEnabled=false (a legacy etcd row) still advertises DNS
 // and a default route via DHCP.
 func TestApplyOverlayNatForcesAdvertiseDNS(t *testing.T) {
 	f := readyEgressFabric()
@@ -140,7 +140,7 @@ func TestApplyOverlayNatForcesAdvertiseDNS(t *testing.T) {
 	}
 	d := overlayDhcpNet()
 	d.Egress = "nat"
-	d.DnsEnabled = false
+	d.DNSEnabled = false
 	ip := "10.42.0.5/16"
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},

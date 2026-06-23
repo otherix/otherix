@@ -622,7 +622,7 @@ func TestCreateNetworkOverlayAllocatesVNI(t *testing.T) {
 	}
 }
 
-func TestCreateNetworkPersistsDnsEnabled(t *testing.T) {
+func TestCreateNetworkPersistsDNSEnabled(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
 	pfx := netip.MustParsePrefix("10.77.0.0/24")
@@ -633,13 +633,13 @@ func TestCreateNetworkPersistsDnsEnabled(t *testing.T) {
 		Egress:      store.NetworkEgressNone,
 		Subnet:      &pfx,
 		DhcpEnabled: true,
-		DnsEnabled:  true,
+		DNSEnabled:  true,
 	})
 	if err != nil {
 		t.Fatalf("CreateNetwork: %v", err)
 	}
-	if !got.DnsEnabled {
-		t.Errorf("DnsEnabled = false, want true")
+	if !got.DNSEnabled {
+		t.Errorf("DNSEnabled = false, want true")
 	}
 }
 

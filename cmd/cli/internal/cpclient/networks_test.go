@@ -142,11 +142,11 @@ func TestCreateNetworkParamsBody(t *testing.T) {
 	}
 }
 
-// TestCreateNetworkBodyIncludesDns locks the dns plumbing: a non-nil
-// *Dns transmits its value (including false, which is meaningful and
-// must reach the server), while a nil *Dns omits the dns key so the
+// TestCreateNetworkBodyIncludesDNS locks the dns plumbing: a non-nil
+// *DNS transmits its value (including false, which is meaningful and
+// must reach the server), while a nil *DNS omits the dns key so the
 // server applies its default.
-func TestCreateNetworkBodyIncludesDns(t *testing.T) {
+func TestCreateNetworkBodyIncludesDNS(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 
 	cases := []struct {
@@ -161,7 +161,7 @@ func TestCreateNetworkBodyIncludesDns(t *testing.T) {
 				Type:   "overlay",
 				Subnet: "10.50.0.0/24",
 				Dhcp:   true,
-				Dns:    boolPtr(false),
+				DNS:    boolPtr(false),
 			},
 			want: map[string]any{
 				"name":   "net-overlay",
@@ -177,7 +177,7 @@ func TestCreateNetworkBodyIncludesDns(t *testing.T) {
 				Name:   "net-overlay",
 				Type:   "overlay",
 				Subnet: "10.50.0.0/24",
-				Dns:    nil,
+				DNS:    nil,
 			},
 			want: map[string]any{
 				"name":   "net-overlay",

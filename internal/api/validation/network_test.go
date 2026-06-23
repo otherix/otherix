@@ -183,7 +183,7 @@ func TestValidateDhcp(t *testing.T) {
 	}
 }
 
-func TestValidateDns(t *testing.T) {
+func TestValidateDNS(t *testing.T) {
 	cases := []struct {
 		name    string
 		dns     bool
@@ -197,9 +197,9 @@ func TestValidateDns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateDns(tc.dns, tc.typ)
+			err := ValidateDNS(tc.dns, tc.typ)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("ValidateDns(%v, %q) err = %v, wantErr = %v", tc.dns, tc.typ, err, tc.wantErr)
+				t.Errorf("ValidateDNS(%v, %q) err = %v, wantErr = %v", tc.dns, tc.typ, err, tc.wantErr)
 			}
 		})
 	}

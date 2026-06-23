@@ -195,7 +195,7 @@ func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetwor
 		Egress: egress,
 		Subnet: subnet,
 		Dhcp:   dhcp,
-		Dns:    &dns,
+		DNS:    &dns,
 	}, nil
 }
 

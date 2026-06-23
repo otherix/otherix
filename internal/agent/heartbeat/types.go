@@ -224,7 +224,7 @@ type DeclaredNetwork struct {
 	Subnet       *string           `json:"subnet"`
 	Gateway      *string           `json:"gateway"`
 	DhcpEnabled  bool              `json:"dhcp"`
-	DnsEnabled   bool              `json:"dns"`
+	DNSEnabled   bool              `json:"dns"`
 	Reservations []DhcpReservation `json:"reservations"`
 }
 
