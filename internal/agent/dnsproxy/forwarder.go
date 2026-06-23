@@ -44,6 +44,21 @@ const defaultMaxInFlight = 256
 // while honest DNS (which resolves fast) rarely reaches 16 concurrent in-flight.
 const defaultMaxPerSource = 16
 
+// defaultMaxQueriesPerSecondPerSource caps the sustained per-source query rate
+// when Config.MaxQueriesPerSecondPerSource is unset. Honest DNS resolves a
+// handful of names then idles, so 50 sustained queries per second from ONE
+// source is already abusive; at this default the limit is effectively a no-op
+// for honest traffic and an operator opts into a tighter cap by setting a lower
+// value.
+const defaultMaxQueriesPerSecondPerSource = 50
+
+// maxRateLimitedSources bounds how many distinct source IPs the per-source rate
+// limiter tracks at once, so the limiter itself cannot become a
+// memory-exhaustion vector under spoofed fresh-source-IP-per-query traffic. At
+// the cap the limiter evicts an idle (refilled-to-full) bucket or, if none is
+// idle, fails open without tracking the new source.
+const maxRateLimitedSources = 8192
+
 // Config parametrises a Forwarder.
 type Config struct {
 	// Listen is the UDP bind address, e.g. "169.254.1.1:53". Bound with
@@ -65,6 +80,16 @@ type Config struct {
 	// global pool has room, so one guest cannot monopolise the resolver. <= 0
 	// applies defaultMaxPerSource.
 	MaxPerSource int
+	// MaxQueriesPerSecondPerSource caps the sustained query RATE from a single
+	// client IP (a token bucket with a one-second burst). It limits exfil/tunnel
+	// velocity for a compromised guest using its real source address; it is NOT a
+	// security boundary - a guest that spoofs fresh source IPs bypasses it, just
+	// like the per-source concurrency cap, and on overlapping managed-bridge
+	// subnets two networks' identically-addressed guests share a key. Tenant
+	// isolation is the per-bridge L2 and anycast ARP containment, not this key.
+	// <= 0 applies defaultMaxQueriesPerSecondPerSource. Dropped queries are
+	// retried by the client.
+	MaxQueriesPerSecondPerSource int
 }
 
 // Forwarder relays UDP DNS queries to an upstream resolver.
@@ -91,8 +116,64 @@ type Forwarder struct {
 	inflight      map[string]int
 	sourceDropped atomic.Uint64
 
+	// maxQPSPerSource caps the sustained per-source query rate. buckets holds one
+	// token bucket per tracked source under rmu (a dedicated lock so rate refill
+	// and idle-bucket eviction never contend with the concurrency accounting on
+	// smu). maxRateLimitedSources bounds buckets so the limiter cannot itself
+	// exhaust memory under spoofed source IPs; at the cap an idle bucket is
+	// evicted or the new source fails open untracked. rateLimited counts queries
+	// shed by this rate cap. now is the clock (time.Now in production; injected by
+	// tests).
+	maxQPSPerSource       float64
+	rmu                   sync.Mutex
+	buckets               map[string]*tokenBucket
+	maxRateLimitedSources int
+	rateLimited           atomic.Uint64
+	now                   func() time.Time
+
 	mu   sync.Mutex
 	conn net.PacketConn
+}
+
+// tokenBucket is an unsynchronised token bucket; callers serialise access (the
+// forwarder holds rmu). capacity equals the per-source rate, giving a
+// one-second burst. tokens refill lazily on each allow/idle check.
+type tokenBucket struct {
+	tokens     float64
+	lastRefill time.Time
+}
+
+// newTokenBucket returns a full bucket as of now (capacity == rate), so a
+// source's first query is always allowed.
+func newTokenBucket(now time.Time, rate float64) *tokenBucket {
+	return &tokenBucket{tokens: rate, lastRefill: now}
+}
+
+// refill adds the tokens accrued since lastRefill, capped at the one-second
+// burst capacity (== rate), and advances lastRefill to now.
+func (b *tokenBucket) refill(now time.Time, rate float64) {
+	if elapsed := now.Sub(b.lastRefill).Seconds(); elapsed > 0 {
+		b.tokens = min(rate, b.tokens+elapsed*rate)
+	}
+	b.lastRefill = now
+}
+
+// allow refills as of now and consumes one token, reporting whether the query
+// is permitted.
+func (b *tokenBucket) allow(now time.Time, rate float64) bool {
+	b.refill(now, rate)
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
+// idle reports whether the bucket has refilled to full capacity as of now,
+// meaning its source is quiescent and the bucket is safe to evict.
+func (b *tokenBucket) idle(now time.Time, rate float64) bool {
+	b.refill(now, rate)
+	return b.tokens >= rate
 }
 
 // New validates cfg and returns a Forwarder. Upstreams default to the node's
@@ -116,14 +197,22 @@ func New(cfg Config) (*Forwarder, error) {
 	if perSource <= 0 {
 		perSource = defaultMaxPerSource
 	}
+	qps := cfg.MaxQueriesPerSecondPerSource
+	if qps <= 0 {
+		qps = defaultMaxQueriesPerSecondPerSource
+	}
 	return &Forwarder{
-		listen:       cfg.Listen,
-		upstreams:    ups,
-		log:          cfg.Log,
-		ready:        make(chan struct{}),
-		sem:          make(chan struct{}, maxInFlight),
-		maxPerSource: perSource,
-		inflight:     map[string]int{},
+		listen:                cfg.Listen,
+		upstreams:             ups,
+		log:                   cfg.Log,
+		ready:                 make(chan struct{}),
+		sem:                   make(chan struct{}, maxInFlight),
+		maxPerSource:          perSource,
+		inflight:              map[string]int{},
+		maxQPSPerSource:       float64(qps),
+		buckets:               map[string]*tokenBucket{},
+		maxRateLimitedSources: maxRateLimitedSources,
+		now:                   time.Now,
 	}, nil
 }
 
@@ -134,6 +223,47 @@ func (f *Forwarder) Dropped() uint64 { return f.dropped.Load() }
 // SourceDropped reports the number of queries shed because the per-source
 // in-flight cap was reached. Monotonic; for observability and tests.
 func (f *Forwarder) SourceDropped() uint64 { return f.sourceDropped.Load() }
+
+// RateLimited reports the number of queries shed because the per-source query
+// rate cap was reached. Monotonic; for observability and tests.
+func (f *Forwarder) RateLimited() uint64 { return f.rateLimited.Load() }
+
+// rateAllow reports whether a query from ip is within its per-source rate cap as
+// of now. It is best-effort and fail-open: a tracked source consumes a token; an
+// untracked source gets a fresh full bucket when there is room; at the source-map
+// cap it evicts one idle (refilled-to-full) bucket to make room, and if none is
+// idle it allows the query without tracking it (so a spoofed-source-IP flood
+// cannot grow the map past its cap). It never blocks and never errors.
+func (f *Forwarder) rateAllow(ip string, now time.Time) bool {
+	rate := f.maxQPSPerSource
+	f.rmu.Lock()
+	defer f.rmu.Unlock()
+	if b, ok := f.buckets[ip]; ok {
+		return b.allow(now, rate)
+	}
+	if len(f.buckets) >= f.maxRateLimitedSources && !f.evictIdleBucketLocked(now, rate) {
+		// Map full and every tracked source is actively rate-limited: fail open
+		// without tracking ip, keeping the map bounded.
+		return true
+	}
+	b := newTokenBucket(now, rate)
+	b.allow(now, rate)
+	f.buckets[ip] = b
+	return true
+}
+
+// evictIdleBucketLocked removes one tracked source whose bucket has refilled to
+// full (its source is quiescent) and reports whether it freed a slot. Caller
+// holds rmu. A single pass suffices at the source-map cap.
+func (f *Forwarder) evictIdleBucketLocked(now time.Time, rate float64) bool {
+	for ip, b := range f.buckets {
+		if b.idle(now, rate) {
+			delete(f.buckets, ip)
+			return true
+		}
+	}
+	return false
+}
 
 // acquireSource reserves a per-source in-flight slot for ip, returning false
 // when ip is already at MaxPerSource. Paired with releaseSource.
@@ -220,6 +350,16 @@ func (f *Forwarder) Run(ctx context.Context) error {
 		query := make([]byte, n)
 		copy(query, buf[:n])
 		ip := sourceIP(client)
+		if !f.rateAllow(ip, f.now()) {
+			// This source exceeded its sustained query rate: drop (the client
+			// retries). Cheapest rejection, so checked before the concurrency caps.
+			// Accounted separately from the concurrency drops.
+			if d := f.rateLimited.Add(1); d == 1 || d%1000 == 0 {
+				f.log.Warn("dns forwarder dropping queries: per-source rate cap",
+					"source", ip, "dropped_total", d, "max_qps_per_source", f.maxQPSPerSource)
+			}
+			continue
+		}
 		if !f.acquireSource(ip) {
 			// This source already holds MaxPerSource relays: drop (the client
 			// retries) so one guest cannot starve the global pool. Accounted
