@@ -125,26 +125,8 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 		}
 	}
 	if wantL3 {
-		if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, netfabric.GatewayMAC(vniVal)); err != nil {
-			r.log.WarnContext(ctx, "overlay l3: anycast gateway failed; retrying next pass",
-				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		if !r.ensureAnycastL3Plane(ctx, d, netfabric.GatewayMAC(vniVal)) {
 			return
-		}
-		// The anycast gateway is only a link-local /32, so the node has no connected
-		// route to the overlay subnet. Install one on the bridge so reply traffic to
-		// overlay VMs (including the host-side DNS forwarder's responses) is delivered
-		// to the bridge instead of misrouted out the uplink. Best-effort: a bad/absent
-		// subnet is logged and skipped (does not fail the network), a fabric error
-		// retries next pass.
-		if d.Subnet != nil {
-			if subnet, err := netip.ParsePrefix(*d.Subnet); err != nil {
-				r.log.WarnContext(ctx, "overlay l3: bad subnet, skipping bridge route",
-					slog.String("network_id", d.ID), slog.String("subnet", *d.Subnet), slog.String("error", err.Error()))
-			} else if err := r.fabric.EnsureBridgeRoute(subnet, d.BridgeName); err != nil {
-				r.log.WarnContext(ctx, "overlay l3: bridge route failed; retrying next pass",
-					slog.String("network_id", d.ID), slog.String("error", err.Error()))
-				return
-			}
 		}
 	}
 	if nat {
@@ -155,7 +137,7 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 			return
 		}
 	}
-	r.registerOverlayDHCP(ctx, d, nat)
+	r.registerDHCP(ctx, d, nat)
 	r.applied[d.ID] = appliedNetwork{
 		BridgeName: d.BridgeName,
 		Managed:    true,
@@ -166,13 +148,39 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 	}
 }
 
-// registerOverlayDHCP re-asserts the DHCP registration on EVERY pass when
+// ensureAnycastL3Plane installs the host L3 service plane for a network whose L2
+// has converged: the anycast gateway (169.254.1.1) on the bridge with the given
+// per-network MAC, plus a connected bridge route to the subnet so the host-side
+// DNS forwarder's replies reach the VM. Shared by overlay and managed-bridge
+// service paths. Returns false on a hard fabric error (caller should return and
+// retry next pass); a bad/absent subnet is logged and skipped (route is
+// best-effort), still returning true. Idempotent.
+func (r *Networks) ensureAnycastL3Plane(ctx context.Context, d heartbeat.DeclaredNetwork, gwMAC net.HardwareAddr) bool {
+	if err := r.fabric.EnsureAnycastGateway(d.BridgeName, netfabric.OverlayGatewayAddr, gwMAC); err != nil {
+		r.log.WarnContext(ctx, "l3: anycast gateway failed; retrying next pass",
+			slog.String("network_id", d.ID), slog.String("error", err.Error()))
+		return false
+	}
+	if d.Subnet != nil {
+		if subnet, err := netip.ParsePrefix(*d.Subnet); err != nil {
+			r.log.WarnContext(ctx, "l3: bad subnet, skipping bridge route",
+				slog.String("network_id", d.ID), slog.String("subnet", *d.Subnet), slog.String("error", err.Error()))
+		} else if err := r.fabric.EnsureBridgeRoute(subnet, d.BridgeName); err != nil {
+			r.log.WarnContext(ctx, "l3: bridge route failed; retrying next pass",
+				slog.String("network_id", d.ID), slog.String("error", err.Error()))
+			return false
+		}
+	}
+	return true
+}
+
+// registerDHCP re-asserts the DHCP registration on EVERY pass when
 // enabled: the responder is idempotent (it swaps reservations), so this
 // converges new or changed reservations. AdvertiseDNS is forced on for NAT
-// overlays as well so legacy etcd rows (which decode DNSEnabled=false) keep
+// networks as well so legacy etcd rows (which decode DNSEnabled=false) keep
 // advertising the resolver. Best-effort, fail toward connectivity: a register
 // failure is logged and retried next pass, it must NOT fail the network.
-func (r *Networks) registerOverlayDHCP(ctx context.Context, d heartbeat.DeclaredNetwork, nat bool) {
+func (r *Networks) registerDHCP(ctx context.Context, d heartbeat.DeclaredNetwork, nat bool) {
 	if d.DhcpEnabled && r.dhcp != nil {
 		if subnet, err := netip.ParsePrefix(deref(d.Subnet)); err != nil {
 			r.log.WarnContext(ctx, "overlay dhcp: bad subnet, skipping registration",

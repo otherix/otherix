@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/otherix/otherix/internal/agent/dhcp4"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
@@ -632,4 +633,165 @@ func TestRun_NetworksHandlesTriggerAndTick(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// managedBridgeDhcpNet returns an egress=none managed bridge with dhcp+dns and a
+// subnet - the addressing-island shape (IP + resolver, no default route).
+func managedBridgeDhcpNet() heartbeat.DeclaredNetwork {
+	subnet := "10.80.0.0/24"
+	return heartbeat.DeclaredNetwork{
+		ID: "br-svc", Name: "svc", Type: "bridge", Managed: true,
+		Egress: "none", BridgeName: "otbsvc", Mtu: 1500,
+		Subnet: &subnet, DhcpEnabled: true, DNSEnabled: true,
+		Reservations: []heartbeat.DhcpReservation{{MAC: "52:54:00:de:ad:01", IP: "10.80.0.5"}},
+	}
+}
+
+func TestApplyManaged_DHCPDNSInstallsAnycastServices(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{managedBridgeDhcpNet()},
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.AnycastGatewayCalls) != 1 {
+		t.Fatalf("AnycastGatewayCalls = %d, want 1 (anycast gateway plumbed)", len(f.AnycastGatewayCalls))
+	}
+	if len(f.BridgeRouteCalls) != 1 {
+		t.Errorf("BridgeRouteCalls = %d, want 1 (host route to subnet)", len(f.BridgeRouteCalls))
+	}
+	if len(f.MasqueradeCalls) != 0 {
+		t.Errorf("MasqueradeCalls = %d, want 0 (no NAT without egress)", len(f.MasqueradeCalls))
+	}
+	if len(fake.RegisterCalls) != 1 {
+		t.Fatalf("RegisterCalls = %d, want 1 (DHCP responder registered)", len(fake.RegisterCalls))
+	}
+	cfg := fake.RegisterCalls[0]
+	if cfg.Bridge != "otbsvc" {
+		t.Errorf("register Bridge = %q, want otbsvc", cfg.Bridge)
+	}
+	if !cfg.AdvertiseDNS {
+		t.Errorf("AdvertiseDNS = false, want true (dns enabled)")
+	}
+	if cfg.AdvertiseDefaultRoute {
+		t.Errorf("AdvertiseDefaultRoute = true, want false (no egress)")
+	}
+	if !rec.applied["br-svc"].Anycast {
+		t.Errorf("applied[br-svc].Anycast = false, want true")
+	}
+}
+
+func TestApplyManaged_NATDHCPAdvertisesDefaultRoute(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := managedBridgeDhcpNet()
+	d.Egress = "nat"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.MasqueradeCalls) != 1 {
+		t.Errorf("MasqueradeCalls = %d, want 1 (NAT masquerade by subnet)", len(f.MasqueradeCalls))
+	}
+	if f.EnableIPForwardingCalls == 0 {
+		t.Errorf("EnableIPForwardingCalls = 0, want >=1")
+	}
+	if len(fake.RegisterCalls) != 1 || !fake.RegisterCalls[0].AdvertiseDefaultRoute {
+		t.Errorf("want one DHCP register advertising the default route, got %+v", fake.RegisterCalls)
+	}
+}
+
+func TestApplyManaged_PlainBridgeNoServices(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{
+			{ID: "br-plain", Type: "bridge", Managed: true, Egress: "none", BridgeName: "otbplain", Mtu: 1500},
+		},
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.AnycastGatewayCalls) != 0 {
+		t.Errorf("AnycastGatewayCalls = %d, want 0 (no dhcp/dns)", len(f.AnycastGatewayCalls))
+	}
+	if len(fake.RegisterCalls) != 0 {
+		t.Errorf("RegisterCalls = %d, want 0 (no dhcp)", len(fake.RegisterCalls))
+	}
+	if rec.applied["br-plain"].Anycast {
+		t.Errorf("applied[br-plain].Anycast = true, want false")
+	}
+}
+
+func TestTeardown_ManagedBridgeAnycastDeregistersDHCP(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	// First pass: materialise the dhcp/dns bridge.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{managedBridgeDhcpNet()},
+	})
+	rec.reconcile(context.Background())
+	if len(fake.RegisterCalls) != 1 {
+		t.Fatalf("setup: RegisterCalls = %d, want 1", len(fake.RegisterCalls))
+	}
+	// Second pass: network removed from the declared set.
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{},
+	})
+	rec.reconcile(context.Background())
+
+	if len(fake.DeregisterCalls) != 1 || fake.DeregisterCalls[0] != "br-svc" {
+		t.Errorf("DeregisterCalls = %v, want [br-svc]", fake.DeregisterCalls)
+	}
+	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otbsvc" {
+		t.Errorf("RemoveBridgeCalls = %v, want [otbsvc]", f.RemoveBridgeCalls)
+	}
+	if _, ok := rec.applied["br-svc"]; ok {
+		t.Errorf("applied[br-svc] still present after teardown")
+	}
+}
+
+// A nat anycast bridge teardown must NOT attempt a real-gateway-addr removal
+// (the anycast path installs no in-subnet gateway; a.Gateway is the zero prefix).
+func TestTeardown_NATAnycastBridgeSkipsGatewayAddrRemoval(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := managedBridgeDhcpNet()
+	d.Egress = "nat"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{d},
+	})
+	rec.reconcile(context.Background())
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{},
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.RemoveGatewayCalls) != 0 {
+		t.Errorf("RemoveGatewayCalls = %v, want none (anycast path has no real gateway addr)", f.RemoveGatewayCalls)
+	}
+	if len(f.RemoveMasqCalls) != 1 {
+		t.Errorf("RemoveMasqCalls = %d, want 1 (nat masquerade reclaimed)", len(f.RemoveMasqCalls))
+	}
 }

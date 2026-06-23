@@ -136,17 +136,23 @@ func ValidateNetworkInvariants(typ store.NetworkType, managed bool, egress store
 }
 
 // ValidateDhcp enforces the cross-field rules for enabling DHCP on a network.
-// DHCP is overlay-only (bridge DHCP needs a different gateway-delivery profile -
-// bridge gateways are in-subnet, the responder's option-121 link-local gateway
-// is overlay-specific) and requires a subnet (IPAM allocates from it). Egress is
-// NOT required: an isolated overlay can still address its VMs. dhcp=false is
-// always valid.
-func ValidateDhcp(dhcp bool, hasSubnet bool, typ store.NetworkType) error {
+// DHCP is allowed on type=overlay (always managed) and on a managed type=bridge
+// (an isolated per-host L2, addressed via the same anycast 169.254.1.1 datapath).
+// It always requires a subnet (IPAM allocates from it). Egress is NOT required:
+// an isolated network can still address its VMs. dhcp=false is always valid.
+func ValidateDhcp(dhcp, hasSubnet, managed bool, typ store.NetworkType) error {
 	if !dhcp {
 		return nil
 	}
-	if typ != store.NetworkTypeOverlay {
-		return errors.New("dhcp=true requires type=overlay")
+	switch typ {
+	case store.NetworkTypeOverlay:
+		// Overlay is always managed.
+	case store.NetworkTypeBridge:
+		if !managed {
+			return errors.New("dhcp=true requires managed=true")
+		}
+	default:
+		return errors.New("dhcp=true requires type=overlay or type=bridge")
 	}
 	if !hasSubnet {
 		return errors.New("dhcp=true requires a subnet")
@@ -154,14 +160,26 @@ func ValidateDhcp(dhcp bool, hasSubnet bool, typ store.NetworkType) error {
 	return nil
 }
 
-// ValidateDNS enforces that the dns flag is overlay-only. dns advertises the
-// overlay anycast resolver (169.254.1.1) via DHCP option 6; bridge-network DNS
-// is a separate future profile. dns=false is always valid.
-func ValidateDNS(dns bool, typ store.NetworkType) error {
-	if dns && typ != store.NetworkTypeOverlay {
-		return errors.New("dns=true requires type=overlay")
+// ValidateDNS enforces the cross-field rules for advertising the anycast resolver
+// (169.254.1.1) via DHCP option 6. Allowed on type=overlay (always managed) and on
+// a managed type=bridge. dns=false is always valid. The subnet requirement for a
+// dns-enabled network is enforced at the create boundary (the bridge route and DNS
+// reachability need it), alongside the dhcp subnet rule.
+func ValidateDNS(dns, managed bool, typ store.NetworkType) error {
+	if !dns {
+		return nil
 	}
-	return nil
+	switch typ {
+	case store.NetworkTypeOverlay:
+		return nil
+	case store.NetworkTypeBridge:
+		if !managed {
+			return errors.New("dns=true requires managed=true")
+		}
+		return nil
+	default:
+		return errors.New("dns=true requires type=overlay or type=bridge")
+	}
 }
 
 // ParseSubnet parses s as an IPv4 CIDR prefix and returns it in

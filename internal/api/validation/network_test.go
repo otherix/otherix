@@ -5,6 +5,7 @@ package validation
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/otherix/otherix/internal/store"
@@ -164,20 +165,22 @@ func TestValidateDhcp(t *testing.T) {
 		name      string
 		dhcp      bool
 		hasSubnet bool
+		managed   bool
 		typ       store.NetworkType
 		wantErr   bool
 	}{
-		{name: "dhcp false bridge ok", dhcp: false, hasSubnet: false, typ: store.NetworkTypeBridge, wantErr: false},
-		{name: "dhcp false overlay ok", dhcp: false, hasSubnet: false, typ: store.NetworkTypeOverlay, wantErr: false},
-		{name: "dhcp true bridge rejected", dhcp: true, hasSubnet: true, typ: store.NetworkTypeBridge, wantErr: true},
-		{name: "dhcp true overlay no egress with subnet ok", dhcp: true, hasSubnet: true, typ: store.NetworkTypeOverlay, wantErr: false},
-		{name: "dhcp true overlay without subnet rejected", dhcp: true, hasSubnet: false, typ: store.NetworkTypeOverlay, wantErr: true},
+		{name: "dhcp false bridge ok", dhcp: false, hasSubnet: false, managed: false, typ: store.NetworkTypeBridge, wantErr: false},
+		{name: "dhcp false overlay ok", dhcp: false, hasSubnet: false, managed: true, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dhcp true unmanaged bridge rejected", dhcp: true, hasSubnet: true, managed: false, typ: store.NetworkTypeBridge, wantErr: true},
+		{name: "dhcp true managed bridge ok", dhcp: true, hasSubnet: true, managed: true, typ: store.NetworkTypeBridge, wantErr: false},
+		{name: "dhcp true overlay no egress with subnet ok", dhcp: true, hasSubnet: true, managed: true, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dhcp true overlay without subnet rejected", dhcp: true, hasSubnet: false, managed: true, typ: store.NetworkTypeOverlay, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateDhcp(tc.dhcp, tc.hasSubnet, tc.typ)
+			err := ValidateDhcp(tc.dhcp, tc.hasSubnet, tc.managed, tc.typ)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("ValidateDhcp(%v, %v, %q) err = %v, wantErr = %v", tc.dhcp, tc.hasSubnet, tc.typ, err, tc.wantErr)
+				t.Errorf("ValidateDhcp(%v, %v, %v, %q) err = %v, wantErr = %v", tc.dhcp, tc.hasSubnet, tc.managed, tc.typ, err, tc.wantErr)
 			}
 		})
 	}
@@ -187,21 +190,56 @@ func TestValidateDNS(t *testing.T) {
 	cases := []struct {
 		name    string
 		dns     bool
+		managed bool
 		typ     store.NetworkType
 		wantErr bool
 	}{
-		{name: "dns false bridge ok", dns: false, typ: store.NetworkTypeBridge, wantErr: false},
-		{name: "dns false overlay ok", dns: false, typ: store.NetworkTypeOverlay, wantErr: false},
-		{name: "dns true overlay ok", dns: true, typ: store.NetworkTypeOverlay, wantErr: false},
-		{name: "dns true bridge rejected", dns: true, typ: store.NetworkTypeBridge, wantErr: true},
+		{name: "dns false bridge ok", dns: false, managed: false, typ: store.NetworkTypeBridge, wantErr: false},
+		{name: "dns false overlay ok", dns: false, managed: true, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dns true overlay ok", dns: true, managed: true, typ: store.NetworkTypeOverlay, wantErr: false},
+		{name: "dns true unmanaged bridge rejected", dns: true, managed: false, typ: store.NetworkTypeBridge, wantErr: true},
+		{name: "dns true managed bridge ok", dns: true, managed: true, typ: store.NetworkTypeBridge, wantErr: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateDNS(tc.dns, tc.typ)
+			err := ValidateDNS(tc.dns, tc.managed, tc.typ)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("ValidateDNS(%v, %q) err = %v, wantErr = %v", tc.dns, tc.typ, err, tc.wantErr)
+				t.Errorf("ValidateDNS(%v, %v, %q) err = %v, wantErr = %v", tc.dns, tc.managed, tc.typ, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateDhcp_ManagedBridgeAllowed(t *testing.T) {
+	if err := ValidateDhcp(true, true, true, store.NetworkTypeBridge); err != nil {
+		t.Errorf("ValidateDhcp(dhcp,subnet,managed,bridge) = %v, want nil", err)
+	}
+}
+
+func TestValidateDhcp_UnmanagedBridgeRejected(t *testing.T) {
+	err := ValidateDhcp(true, true, false, store.NetworkTypeBridge)
+	if err == nil || !strings.Contains(err.Error(), "managed=true") {
+		t.Errorf("ValidateDhcp(dhcp,subnet,unmanaged,bridge) = %v, want error mentioning managed=true", err)
+	}
+}
+
+func TestValidateDhcp_ManagedBridgeNeedsSubnet(t *testing.T) {
+	err := ValidateDhcp(true, false, true, store.NetworkTypeBridge)
+	if err == nil || !strings.Contains(err.Error(), "subnet") {
+		t.Errorf("ValidateDhcp(dhcp,no-subnet,managed,bridge) = %v, want subnet error", err)
+	}
+}
+
+func TestValidateDNS_ManagedBridgeAllowed(t *testing.T) {
+	if err := ValidateDNS(true, true, store.NetworkTypeBridge); err != nil {
+		t.Errorf("ValidateDNS(dns,managed,bridge) = %v, want nil", err)
+	}
+}
+
+func TestValidateDNS_UnmanagedBridgeRejected(t *testing.T) {
+	err := ValidateDNS(true, false, store.NetworkTypeBridge)
+	if err == nil || !strings.Contains(err.Error(), "managed=true") {
+		t.Errorf("ValidateDNS(dns,unmanaged,bridge) = %v, want error mentioning managed=true", err)
 	}
 }
 

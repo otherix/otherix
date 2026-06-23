@@ -4,6 +4,7 @@
 package netfabric
 
 import (
+	"crypto/sha256"
 	"net"
 	"net/netip"
 )
@@ -27,4 +28,15 @@ const OverlayDNSPort = 53
 func GatewayMAC(vni uint32) net.HardwareAddr {
 	//nolint:gosec // G115: VNI is a 24-bit VXLAN id; truncating each shifted octet to a byte is the intended encoding.
 	return net.HardwareAddr{0x02, 0x00, 0x00, byte(vni >> 16), byte(vni >> 8), byte(vni)}
+}
+
+// GatewayMACFromID returns the deterministic anycast gateway MAC for a managed
+// bridge keyed on its network id (bridges have no VNI). First octet 0x02 marks
+// it locally-administered + unicast; the remaining octets are a stable hash of
+// id, so the MAC is uniform across nodes for one network (anycast works) yet
+// distinct per network on a host. The 0x02,0xBB prefix keeps it out of the
+// overlay VNI MAC space (0x02,0x00,0x00,<vni>).
+func GatewayMACFromID(id string) net.HardwareAddr {
+	sum := sha256.Sum256([]byte(id))
+	return net.HardwareAddr{0x02, 0xBB, sum[0], sum[1], sum[2], sum[3]}
 }
