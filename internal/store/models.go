@@ -519,14 +519,14 @@ type Network struct {
 	Gateway *netip.Addr
 	// DhcpEnabled turns on CP-IPAM + the per-node DHCP responder for this
 	// network: every NIC gets a CP-allocated Ipv4Address from Subnet and the
-	// agent serves it over DHCP. Requires Subnet (and, for overlay, Egress=nat).
-	// Immutable after create.
+	// agent serves it over DHCP. Requires Subnet; independent of Egress. Valid
+	// on overlay or a managed bridge. Immutable after create.
 	DhcpEnabled bool
-	// DNSEnabled advertises the overlay anycast resolver (169.254.1.1) to VMs
-	// via DHCP option 6. Overlay-only, default true at create. Independent of
-	// Egress: an isolated overlay still resolves via the node's upstream. On
-	// Egress=nat DNS is advertised regardless of this flag (see the reconciler).
-	// Immutable after create.
+	// DNSEnabled advertises the anycast resolver (169.254.1.1) to VMs
+	// via DHCP option 6. Valid on overlay or a managed bridge; default true at
+	// create. Independent of Egress: an isolated network still resolves via the
+	// node's upstream. On Egress=nat DNS is advertised regardless of this flag
+	// (see the reconciler). Immutable after create.
 	DNSEnabled bool
 	// VNI is the CP-allocated VXLAN Network Identifier, unique and
 	// immutable, present only for type=overlay. Nil for bridge.

@@ -113,9 +113,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 // does not allow on PATCH and returns the offending field names (nil
 // when none are present). `type` is API-immutable; `managed` is fixed at
 // creation time (egress=nat requires managed=true, and flipping managed
-// would silently invalidate that invariant); `dhcp` is fixed at creation
-// time (a network's DHCP profile is set once), so all three are rejected
-// here before the typed decode.
+// would silently invalidate that invariant); `dhcp` and `dns` are fixed at
+// creation time (a network's DHCP/DNS profile is set once), so all four are
+// rejected here before the typed decode.
 func rejectImmutableKeys(body []byte) []string {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil
@@ -127,7 +127,7 @@ func rejectImmutableKeys(body []byte) []string {
 		return nil
 	}
 	var forbidden []string
-	for _, k := range []string{"type", "managed", "dhcp"} {
+	for _, k := range []string{"type", "managed", "dhcp", "dns"} {
 		if _, ok := keys[k]; ok {
 			forbidden = append(forbidden, k)
 		}
@@ -350,13 +350,20 @@ func finalizeNATEgress(w http.ResponseWriter, r *http.Request, row *store.Networ
 	return true
 }
 
-// finalizeNoneEgress enforces the egress=none invariant: the row carries
-// no subnet/gateway. Setting either (without also clearing it) is
-// rejected; otherwise both are cleared.
+// finalizeNoneEgress enforces the egress=none invariant. A plain egress=none
+// network carries no subnet/gateway, so both are cleared. A dhcp/dns-enabled
+// network is the exception: it keeps its addressing subnet at egress=none (the
+// create handler accepts a subnet there for IPAM, the host bridge route, and
+// DNS reachability), so a PATCH that does not touch the subnet must not wipe it.
+// Setting a subnet/gateway through this path (without also clearing it) stays
+// rejected.
 func finalizeNoneEgress(w http.ResponseWriter, r *http.Request, row *store.Network, intent egressIntent) bool {
 	if (intent.subnetSet && !intent.subnetCleared) || intent.gatewaySet {
 		writeValidation(w, r, "subnet and gateway are only allowed when egress=nat")
 		return false
+	}
+	if row.DhcpEnabled || row.DNSEnabled {
+		return true
 	}
 	row.Subnet = nil
 	row.Gateway = nil

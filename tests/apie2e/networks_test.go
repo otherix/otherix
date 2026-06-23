@@ -677,3 +677,70 @@ func TestNetworkNameRejectsSlashOnUpdate(t *testing.T) {
 	}
 	assertErrorCode(t, resp, "validation_failed")
 }
+
+func TestNetworksPatchPreservesManagedBridgeDHCPSubnet(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	resp := h.post(t, "/v1/networks", map[string]any{
+		"name":        "br-patch",
+		"type":        "bridge",
+		"managed":     true,
+		"bridge_name": "brpatch",
+		"subnet":      "10.72.0.0/24",
+		"dhcp":        true,
+	}, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create dhcp bridge = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+
+	// A PATCH that does not touch the subnet (name only) must NOT wipe it.
+	resp = h.patch(t, "/v1/networks/"+created.ID, map[string]any{"name": "br-patch-renamed"}, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch name = %d, want 200", resp.StatusCode)
+	}
+
+	resp = h.get(t, "/v1/networks/"+created.ID, admin)
+	var got networkView
+	decodeJSON(t, resp, &got)
+	if got.Subnet == nil || *got.Subnet != "10.72.0.0/24" {
+		t.Errorf("after name PATCH, subnet = %v, want 10.72.0.0/24 (must survive)", got.Subnet)
+	}
+	if !got.Dhcp {
+		t.Errorf("after name PATCH, dhcp = false, want true")
+	}
+}
+
+func TestNetworksUpdateDNSForbidden(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	resp := h.post(t, "/v1/networks", newNetworkBody(), admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created networkView
+	decodeJSON(t, resp, &created)
+
+	resp = h.patch(t, "/v1/networks/"+created.ID, map[string]any{"dns": false}, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch dns = %d, want 400", resp.StatusCode)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				ForbiddenFields []string `json:"forbidden_fields"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "validation_failed" {
+		t.Errorf("error code = %q, want validation_failed", env.Error.Code)
+	}
+	if len(env.Error.Details.ForbiddenFields) != 1 || env.Error.Details.ForbiddenFields[0] != "dns" {
+		t.Errorf("forbidden_fields = %v, want [dns]", env.Error.Details.ForbiddenFields)
+	}
+}
