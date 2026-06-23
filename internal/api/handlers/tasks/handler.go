@@ -15,9 +15,9 @@
 //     404 (NOT 403, per CLAUDE.md no-existence-leak rule) when the
 //     row exists but belongs to another user.
 //
-// Internal columns (`args`, `river_job_id`, `created_by`) are not
+// Internal fields (`args`, `job_id`, `created_by`) are not
 // surfaced through the public Task projection — args is a worker
-// payload, river_job_id is an ops drill-down weak ref, created_by is
+// payload, job_id is an ops drill-down weak ref, created_by is
 // an RBAC scoping anchor. The view mirrors components/schemas/Task in
 // api/openapi/control-plane.yaml verbatim.
 package tasks
@@ -61,7 +61,7 @@ func New(s Store, log *slog.Logger) *Handler {
 }
 
 // taskView mirrors components/schemas/Task in
-// api/openapi/control-plane.yaml. Internal columns (args, river_job_id,
+// api/openapi/control-plane.yaml. Internal fields (args, job_id,
 // created_by) are intentionally absent.
 type taskView struct {
 	ID           string          `json:"id"`

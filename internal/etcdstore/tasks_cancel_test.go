@@ -28,11 +28,11 @@ func TestCancelLosesToClaim(t *testing.T) {
 		t.Fatalf("EnqueueTask: %v", err)
 	}
 	task, _ := s.TaskByID(ctx, p.ID)
-	claimed, err := s.ClaimJob(ctx, *task.RiverJobID) // dispatcher wins first
+	claimed, err := s.ClaimJob(ctx, *task.JobID) // dispatcher wins first
 	if err != nil || !claimed {
 		t.Fatalf("ClaimJob = %v, %v; want true, nil", claimed, err)
 	}
-	if _, err := s.CancelPendingTask(ctx, p.ID, task.RiverJobID); !errors.Is(err, store.ErrTaskNotCancellable) {
+	if _, err := s.CancelPendingTask(ctx, p.ID, task.JobID); !errors.Is(err, store.ErrTaskNotCancellable) {
 		t.Fatalf("cancel after claim = %v, want ErrTaskNotCancellable", err)
 	}
 	got, _ := s.TaskByID(ctx, p.ID)
@@ -52,7 +52,7 @@ func TestCancelBeforeClaimDeletesJob(t *testing.T) {
 		t.Fatalf("EnqueueTask: %v", err)
 	}
 	task, _ := s.TaskByID(ctx, p.ID)
-	cancelled, err := s.CancelPendingTask(ctx, p.ID, task.RiverJobID)
+	cancelled, err := s.CancelPendingTask(ctx, p.ID, task.JobID)
 	if err != nil {
 		t.Fatalf("CancelPendingTask: %v", err)
 	}
@@ -61,11 +61,11 @@ func TestCancelBeforeClaimDeletesJob(t *testing.T) {
 	}
 	pending, _ := s.PendingJobs(ctx)
 	for _, j := range pending {
-		if j.ID == *task.RiverJobID {
+		if j.ID == *task.JobID {
 			t.Errorf("cancelled job %d still pending - dispatcher could deliver a cancelled task", j.ID)
 		}
 	}
-	claimed, _ := s.ClaimJob(ctx, *task.RiverJobID)
+	claimed, _ := s.ClaimJob(ctx, *task.JobID)
 	if claimed {
 		t.Errorf("ClaimJob succeeded on a cancelled (deleted) job")
 	}
@@ -87,13 +87,13 @@ func TestCancelClaimRaceExactlyOneWins(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if _, err := s.CancelPendingTask(ctx, p.ID, task.RiverJobID); err == nil {
+			if _, err := s.CancelPendingTask(ctx, p.ID, task.JobID); err == nil {
 				cancelOK.Store(true)
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			if ok, _ := s.ClaimJob(ctx, *task.RiverJobID); ok {
+			if ok, _ := s.ClaimJob(ctx, *task.JobID); ok {
 				claimOK.Store(true)
 			}
 		}()

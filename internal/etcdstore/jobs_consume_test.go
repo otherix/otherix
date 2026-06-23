@@ -117,16 +117,16 @@ func TestRequeueJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, _ := s.TaskByID(ctx, p.ID)
-	if ok, _ := s.ClaimJob(ctx, *task.RiverJobID); !ok {
+	if ok, _ := s.ClaimJob(ctx, *task.JobID); !ok {
 		t.Fatal("claim")
 	}
-	if err := s.RequeueJob(ctx, *task.RiverJobID); err != nil {
+	if err := s.RequeueJob(ctx, *task.JobID); err != nil {
 		t.Fatalf("RequeueJob: %v", err)
 	}
 	pending, _ := s.PendingJobs(ctx)
 	var found bool
 	for _, j := range pending {
-		if j.ID == *task.RiverJobID {
+		if j.ID == *task.JobID {
 			found = true
 			if j.Attempts != 0 {
 				t.Errorf("attempts bumped on requeue: %d, want 0", j.Attempts)
@@ -143,13 +143,13 @@ func TestRequeueJob(t *testing.T) {
 
 	// A second requeue (job now pending, not running) is a no-op: it must not
 	// touch the job.
-	if err := s.RequeueJob(ctx, *task.RiverJobID); err != nil {
+	if err := s.RequeueJob(ctx, *task.JobID); err != nil {
 		t.Fatalf("RequeueJob (non-running) = %v, want nil no-op", err)
 	}
 	pending, _ = s.PendingJobs(ctx)
 	var stillFound bool
 	for _, j := range pending {
-		if j.ID == *task.RiverJobID && j.Attempts == 0 {
+		if j.ID == *task.JobID && j.Attempts == 0 {
 			stillFound = true
 		}
 	}

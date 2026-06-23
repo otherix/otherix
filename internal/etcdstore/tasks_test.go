@@ -202,7 +202,7 @@ func TestEnqueueTaskWritesTaskAndJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TaskByID: %v", err)
 	}
-	if got.Status != store.TaskStatusPending || got.RiverJobID == nil || *got.RiverJobID < 1 {
+	if got.Status != store.TaskStatusPending || got.JobID == nil || *got.JobID < 1 {
 		t.Errorf("task = %+v, want pending + job ref stamped", got)
 	}
 }
@@ -217,10 +217,10 @@ func TestEnqueueTaskJobSequenceMonotonic(t *testing.T) {
 			t.Fatalf("EnqueueTask %d: %v", i, err)
 		}
 		got, _ := s.TaskByID(ctx, p.ID)
-		if *got.RiverJobID <= prev {
-			t.Errorf("job seq not monotonic: %d after %d", *got.RiverJobID, prev)
+		if *got.JobID <= prev {
+			t.Errorf("job seq not monotonic: %d after %d", *got.JobID, prev)
 		}
-		prev = *got.RiverJobID
+		prev = *got.JobID
 	}
 }
 
@@ -232,7 +232,7 @@ func TestCancelPendingTask(t *testing.T) {
 		t.Fatalf("EnqueueTask: %v", err)
 	}
 	got, _ := s.TaskByID(ctx, p.ID)
-	cancelled, err := s.CancelPendingTask(ctx, p.ID, got.RiverJobID)
+	cancelled, err := s.CancelPendingTask(ctx, p.ID, got.JobID)
 	if err != nil {
 		t.Fatalf("CancelPendingTask: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestCancelPendingTask(t *testing.T) {
 		t.Errorf("cancelled = %+v, want cancelled + finished_at", cancelled)
 	}
 	// Second cancel: no longer pending.
-	if _, err := s.CancelPendingTask(ctx, p.ID, got.RiverJobID); !errors.Is(err, store.ErrTaskNotCancellable) {
+	if _, err := s.CancelPendingTask(ctx, p.ID, got.JobID); !errors.Is(err, store.ErrTaskNotCancellable) {
 		t.Errorf("re-cancel = %v, want store.ErrTaskNotCancellable", err)
 	}
 	// Missing task.

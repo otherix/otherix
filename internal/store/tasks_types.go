@@ -57,8 +57,3 @@ type UpdateTaskFinalizedParams struct {
 	Error  []byte
 	ID     uuid.UUID
 }
-
-type UpdateTaskRiverJobIDParams struct {
-	RiverJobID *int64
-	ID         uuid.UUID
-}

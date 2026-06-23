@@ -93,7 +93,7 @@ func TestCreateScheduledVMHappyPath(t *testing.T) {
 	}
 	// Task is pending with a job ref.
 	task, err := s.TaskByID(ctx, taskID)
-	if err != nil || task.Status != store.TaskStatusPending || task.RiverJobID == nil {
+	if err != nil || task.Status != store.TaskStatusPending || task.JobID == nil {
 		t.Fatalf("task = (%+v, %v)", task, err)
 	}
 	// VM resolves by name + has a disk + counts toward the node's pinned load.

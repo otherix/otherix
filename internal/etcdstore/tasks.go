@@ -52,7 +52,7 @@ func taskFromParams(p store.CreateTaskParams, jobSeq int64) store.Task {
 		ResourceID:   p.ResourceID,
 		Args:         p.Args,
 		MaxAttempts:  p.MaxAttempts,
-		RiverJobID:   &ref,
+		JobID:        &ref,
 		CreatedBy:    p.CreatedBy,
 		CreatedAt:    time.Now().UTC(),
 	}
