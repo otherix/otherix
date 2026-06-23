@@ -68,11 +68,14 @@ type Fabric interface {
 	EnsureGatewayAddr(bridge string, addr netip.Prefix) error
 	// RemoveGatewayAddr removes addr from the named bridge.
 	RemoveGatewayAddr(bridge string, addr netip.Prefix) error
-	// EnsureMasquerade installs a masquerade rule for subnet egressing via
-	// egressIface, idempotently.
-	EnsureMasquerade(subnet netip.Prefix, egressIface string) error
-	// RemoveMasquerade removes the masquerade rule for subnet.
-	RemoveMasquerade(subnet netip.Prefix) error
+	// EnsureMasquerade installs a masquerade rule for traffic that entered via
+	// bridge with a source address in subnet, egressing via egressIface,
+	// idempotently. Matching the input bridge keeps the rule scoped to the
+	// one network: managed-bridge subnets may overlap across networks, so a
+	// rule matched on source subnet alone could SNAT another network's traffic.
+	EnsureMasquerade(subnet netip.Prefix, bridge, egressIface string) error
+	// RemoveMasquerade removes every masquerade rule for subnet on bridge.
+	RemoveMasquerade(subnet netip.Prefix, bridge string) error
 	// EnableIPForwarding turns on IPv4 forwarding in the agent's network
 	// namespace (net.ipv4.ip_forward=1). Idempotent. Required before a node
 	// can route overlay VM egress out its uplink.

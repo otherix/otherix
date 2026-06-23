@@ -270,8 +270,11 @@ func (r *Networks) applyManaged(ctx context.Context, d heartbeat.DeclaredNetwork
 			return r.failed(ctx, d, err.Error())
 		}
 		// Empty egress iface — netfabric resolves the host default route.
-		// Per-network egress-iface override is future work.
-		if err := r.fabric.EnsureMasquerade(subnet, ""); err != nil {
+		// Per-network egress-iface override is future work. The bridge name
+		// scopes the rule to this network: managed-bridge subnets may overlap,
+		// so a rule matched on source subnet alone could SNAT another
+		// network's traffic.
+		if err := r.fabric.EnsureMasquerade(subnet, d.BridgeName, ""); err != nil {
 			return r.failed(ctx, d, err.Error())
 		}
 		// NAT converged: augment the recorded entry so a later teardown
@@ -322,7 +325,10 @@ func (r *Networks) applyManagedServices(ctx context.Context, d heartbeat.Declare
 	}
 	if nat {
 		// Empty egress iface -> netfabric resolves the host default route.
-		if err := r.fabric.EnsureMasquerade(subnet, ""); err != nil {
+		// The bridge name scopes the rule to this network: managed-bridge
+		// subnets may overlap, so a rule matched on source subnet alone could
+		// SNAT another network's traffic.
+		if err := r.fabric.EnsureMasquerade(subnet, d.BridgeName, ""); err != nil {
 			r.log.WarnContext(ctx, "managed bridge egress: masquerade failed; retrying next pass",
 				slog.String("network_id", d.ID), slog.String("error", err.Error()))
 			return ready(d.ID)
@@ -529,7 +535,7 @@ func (r *Networks) teardownNAT(ctx context.Context, id string, a appliedNetwork)
 		return nil
 	}
 	var errs []error
-	if err := r.fabric.RemoveMasquerade(a.Subnet); err != nil {
+	if err := r.fabric.RemoveMasquerade(a.Subnet, a.BridgeName); err != nil {
 		r.log.WarnContext(ctx, "remove masquerade failed during network teardown",
 			slog.String("network_id", id),
 			slog.String("error", err.Error()),

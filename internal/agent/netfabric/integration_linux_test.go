@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -962,8 +963,8 @@ func TestLinuxFabricTapLifecycle(t *testing.T) {
 }
 
 // countMasqRules returns how many rules in the otherix-nat postrouting
-// chain carry a marker for subnet, across every egress iface.
-func countMasqRules(t *testing.T, subnet netip.Prefix) int {
+// chain carry a marker for (subnet, bridge), across every egress iface.
+func countMasqRules(t *testing.T, subnet netip.Prefix, bridge string) int {
 	t.Helper()
 	c := &nftables.Conn{}
 	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
@@ -972,7 +973,7 @@ func countMasqRules(t *testing.T, subnet netip.Prefix) int {
 	if err != nil {
 		t.Fatalf("GetRules(%s/%s) = %v", natTableName, natChainName, err)
 	}
-	prefix := masqSubnetPrefix(subnet)
+	prefix := masqSubnetPrefix(subnet, bridge)
 	n := 0
 	for _, r := range rules {
 		if bytes.HasPrefix(r.UserData, prefix) {
@@ -1018,19 +1019,22 @@ func TestLinuxFabricNAT(t *testing.T) {
 		// Probe nftables support before asserting on masquerade. A fresh
 		// netns without nft support (older kernels, missing modules) makes
 		// the first masquerade op fail; skip rather than fail there.
-		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
-			requireNetfabric(t, "EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
+		if err := f.EnsureMasquerade(subnet, bridge, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasquerade(%s, %s, lo) = %v (nftables unavailable in netns?)", subnet, bridge, err)
 		}
 
-		if n := countMasqRules(t, subnet); n != 1 {
+		if n := countMasqRules(t, subnet, bridge); n != 1 {
 			t.Fatalf("masquerade rule count = %d after first ensure, want 1", n)
 		}
 
+		// The installed rule must carry the input-bridge iif match.
+		assertMasqIIFMatch(t, subnet, bridge)
+
 		// Idempotent: a second ensure must not add a duplicate rule.
-		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
-			t.Fatalf("EnsureMasquerade(%s, lo) second call = %v", subnet, err)
+		if err := f.EnsureMasquerade(subnet, bridge, "lo"); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, %s, lo) second call = %v", subnet, bridge, err)
 		}
-		if n := countMasqRules(t, subnet); n != 1 {
+		if n := countMasqRules(t, subnet, bridge); n != 1 {
 			t.Fatalf("masquerade rule count = %d after second ensure, want 1", n)
 		}
 
@@ -1047,16 +1051,16 @@ func TestLinuxFabricNAT(t *testing.T) {
 			}
 		}
 
-		if err := f.RemoveMasquerade(subnet); err != nil {
-			t.Fatalf("RemoveMasquerade(%s) = %v", subnet, err)
+		if err := f.RemoveMasquerade(subnet, bridge); err != nil {
+			t.Fatalf("RemoveMasquerade(%s, %s) = %v", subnet, bridge, err)
 		}
-		if n := countMasqRules(t, subnet); n != 0 {
+		if n := countMasqRules(t, subnet, bridge); n != 0 {
 			t.Fatalf("masquerade rule count = %d after remove, want 0", n)
 		}
 
 		// Idempotent: removing an absent rule is a no-op.
-		if err := f.RemoveMasquerade(subnet); err != nil {
-			t.Fatalf("RemoveMasquerade(%s) on absent = %v", subnet, err)
+		if err := f.RemoveMasquerade(subnet, bridge); err != nil {
+			t.Fatalf("RemoveMasquerade(%s, %s) on absent = %v", subnet, bridge, err)
 		}
 
 		if err := f.RemoveGatewayAddr(bridge, gw); err != nil {
@@ -1087,6 +1091,7 @@ func TestLinuxFabricRemoveMasqueradeOnFreshNetns(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
 		subnet := netip.MustParsePrefix("10.99.0.0/24")
+		const bridge = "ot-br-fresh0"
 
 		// Probe nftables support: ListTables fails on a netns without nft
 		// support, so skip there rather than fail, consistent with the NAT
@@ -1096,8 +1101,8 @@ func TestLinuxFabricRemoveMasqueradeOnFreshNetns(t *testing.T) {
 			requireNetfabric(t, "ListTables() = %v (nftables unavailable in netns?)", err)
 		}
 
-		if err := f.RemoveMasquerade(subnet); err != nil {
-			t.Fatalf("RemoveMasquerade(%s) on fresh netns = %v, want nil", subnet, err)
+		if err := f.RemoveMasquerade(subnet, bridge); err != nil {
+			t.Fatalf("RemoveMasquerade(%s, %s) on fresh netns = %v, want nil", subnet, bridge, err)
 		}
 
 		// Removal must not have created the otherix-nat table.
@@ -1215,12 +1220,12 @@ func TestLinuxFabricConcurrentMutators(t *testing.T) {
 				_ = f.CreateTap(tap, 1500)
 				_ = f.AttachTap(tap, bridge)
 				_ = f.EnsureGatewayAddr(bridge, gw)
-				_ = f.EnsureMasquerade(subnet, "lo")
+				_ = f.EnsureMasquerade(subnet, bridge, "lo")
 				_ = f.EnsureVXLAN(vxlanLoopbackConfig())
 				_ = f.FDBAppend(vni, entry)
 				_ = f.FDBDelete(vni, entry)
 				_ = f.RemoveVXLAN(vni)
-				_ = f.RemoveMasquerade(subnet)
+				_ = f.RemoveMasquerade(subnet, bridge)
 				_ = f.RemoveGatewayAddr(bridge, gw)
 				_ = f.DeleteTap(tap)
 			}(i)
@@ -1242,6 +1247,7 @@ func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
 		subnet := netip.MustParsePrefix("10.99.0.0/24")
+		const bridge = "ot-br-multi0"
 
 		// A second usable egress iface besides lo: a dummy link.
 		const dummyName = "otdummy0"
@@ -1249,34 +1255,133 @@ func TestLinuxFabricMasqueradeMultiIface(t *testing.T) {
 			t.Fatalf("LinkAdd(dummy %q) = %v", dummyName, err)
 		}
 
-		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
-			requireNetfabric(t, "EnsureMasquerade(%s, lo) = %v (nftables unavailable in netns?)", subnet, err)
+		if err := f.EnsureMasquerade(subnet, bridge, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasquerade(%s, %s, lo) = %v (nftables unavailable in netns?)", subnet, bridge, err)
 		}
-		if n := countMasqRules(t, subnet); n != 1 {
+		if n := countMasqRules(t, subnet, bridge); n != 1 {
 			t.Fatalf("masquerade rule count = %d after first iface, want 1", n)
 		}
 
-		if err := f.EnsureMasquerade(subnet, dummyName); err != nil {
-			t.Fatalf("EnsureMasquerade(%s, %s) = %v", subnet, dummyName, err)
+		if err := f.EnsureMasquerade(subnet, bridge, dummyName); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, %s, %s) = %v", subnet, bridge, dummyName, err)
 		}
-		if n := countMasqRules(t, subnet); n != 2 {
+		if n := countMasqRules(t, subnet, bridge); n != 2 {
 			t.Fatalf("masquerade rule count = %d after second iface, want 2", n)
 		}
 
-		// Idempotent per (subnet, iface): re-ensuring lo adds no rule.
-		if err := f.EnsureMasquerade(subnet, "lo"); err != nil {
-			t.Fatalf("EnsureMasquerade(%s, lo) repeat = %v", subnet, err)
+		// Idempotent per (subnet, bridge, iface): re-ensuring lo adds no rule.
+		if err := f.EnsureMasquerade(subnet, bridge, "lo"); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, %s, lo) repeat = %v", subnet, bridge, err)
 		}
-		if n := countMasqRules(t, subnet); n != 2 {
+		if n := countMasqRules(t, subnet, bridge); n != 2 {
 			t.Fatalf("masquerade rule count = %d after lo repeat, want 2", n)
 		}
 
-		// A single removal clears every iface's rule for the subnet.
-		if err := f.RemoveMasquerade(subnet); err != nil {
-			t.Fatalf("RemoveMasquerade(%s) = %v", subnet, err)
+		// A single removal clears every iface's rule for the (subnet, bridge).
+		if err := f.RemoveMasquerade(subnet, bridge); err != nil {
+			t.Fatalf("RemoveMasquerade(%s, %s) = %v", subnet, bridge, err)
 		}
-		if n := countMasqRules(t, subnet); n != 0 {
+		if n := countMasqRules(t, subnet, bridge); n != 0 {
 			t.Fatalf("masquerade rule count = %d after remove, want 0", n)
+		}
+	})
+}
+
+// assertMasqIIFMatch fails the test unless exactly one rule for (subnet,
+// bridge) exists whose expressions include an input-interface match
+// (MetaKeyIIFNAME followed by a Cmp on the bridge's NUL-padded comparand).
+// This proves the iif match is actually present in the installed rule, not
+// just recorded in the marker. The iif match scopes the masquerade to the
+// one input bridge so an overlapping subnet on another bridge is not
+// SNAT'd through this rule.
+func assertMasqIIFMatch(t *testing.T, subnet netip.Prefix, bridge string) {
+	t.Helper()
+	c := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
+	chain := &nftables.Chain{Name: natChainName, Table: table}
+	rules, err := c.GetRules(table, chain)
+	if err != nil {
+		t.Fatalf("GetRules(%s/%s) = %v", natTableName, natChainName, err)
+	}
+	prefix := masqSubnetPrefix(subnet, bridge)
+	want := ifnameComparand(bridge)
+	matched := 0
+	for _, r := range rules {
+		if !bytes.HasPrefix(r.UserData, prefix) {
+			continue
+		}
+		for i := 0; i+1 < len(r.Exprs); i++ {
+			meta, ok := r.Exprs[i].(*expr.Meta)
+			if !ok || meta.Key != expr.MetaKeyIIFNAME {
+				continue
+			}
+			cmpExpr, ok := r.Exprs[i+1].(*expr.Cmp)
+			if !ok || cmpExpr.Op != expr.CmpOpEq {
+				continue
+			}
+			if bytes.Equal(cmpExpr.Data, want) {
+				matched++
+			}
+		}
+	}
+	if matched != 1 {
+		t.Fatalf("rules for (%s, %s) with an iif==%s match = %d, want 1", subnet, bridge, bridge, matched)
+	}
+}
+
+// TestLinuxFabricMasqueradeDistinctBridgesSameSubnet proves the collision
+// fix: two managed bridges that share a subnet (subnet reuse is allowed
+// across isolated per-host L2 networks) each get their own masquerade rule
+// keyed on the input bridge, so masquerade for one network is never folded
+// into the other's rule. Before keying the marker per bridge, the second
+// EnsureMasquerade would have matched the first rule's marker and installed
+// nothing - leaving one network's egress unmasqueraded (or, worse, the
+// saddr-only rule SNATting the wrong network's traffic).
+func TestLinuxFabricMasqueradeDistinctBridgesSameSubnet(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		subnet := netip.MustParsePrefix("10.80.0.0/24")
+		const brA = "otbrA"
+		const brB = "otbrB"
+
+		if err := f.EnsureMasquerade(subnet, brA, "lo"); err != nil {
+			requireNetfabric(t, "EnsureMasquerade(%s, %s, lo) = %v (nftables unavailable in netns?)", subnet, brA, err)
+		}
+		if err := f.EnsureMasquerade(subnet, brB, "lo"); err != nil {
+			t.Fatalf("EnsureMasquerade(%s, %s, lo) = %v", subnet, brB, err)
+		}
+
+		// Two distinct rules, one per bridge. The regression this guards:
+		// before the per-bridge marker, brB collided with brA's marker and
+		// this would be 1, not 2.
+		if n := countMasqRules(t, subnet, brA); n != 1 {
+			t.Fatalf("rule count for (%s, %s) = %d, want 1", subnet, brA, n)
+		}
+		if n := countMasqRules(t, subnet, brB); n != 1 {
+			t.Fatalf("rule count for (%s, %s) = %d, want 1", subnet, brB, n)
+		}
+
+		// Each rule actually matches its own input bridge.
+		assertMasqIIFMatch(t, subnet, brA)
+		assertMasqIIFMatch(t, subnet, brB)
+
+		// Removing one bridge's rule leaves the other intact.
+		if err := f.RemoveMasquerade(subnet, brA); err != nil {
+			t.Fatalf("RemoveMasquerade(%s, %s) = %v", subnet, brA, err)
+		}
+		if n := countMasqRules(t, subnet, brA); n != 0 {
+			t.Fatalf("rule count for (%s, %s) after remove = %d, want 0", subnet, brA, n)
+		}
+		if n := countMasqRules(t, subnet, brB); n != 1 {
+			t.Fatalf("rule count for (%s, %s) after removing %s = %d, want 1", subnet, brB, brA, n)
+		}
+
+		// Removing the second clears the rest.
+		if err := f.RemoveMasquerade(subnet, brB); err != nil {
+			t.Fatalf("RemoveMasquerade(%s, %s) = %v", subnet, brB, err)
+		}
+		if n := countMasqRules(t, subnet, brB); n != 0 {
+			t.Fatalf("rule count for (%s, %s) after remove = %d, want 0", subnet, brB, n)
 		}
 	})
 }

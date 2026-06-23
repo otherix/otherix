@@ -241,28 +241,38 @@ func (f *linuxFabric) RemoveGatewayAddr(bridge string, addr netip.Prefix) error 
 }
 
 // masqUserData returns the stable UserData marker tagged onto the
-// masquerade rule for subnet egressing via iface. The marker is keyed on
-// both subnet and the resolved egress interface so that changing the
-// egress interface installs a distinct rule rather than silently matching
-// the stale one. masqSubnetPrefix returns the iface-independent prefix of
-// this marker, used by RemoveMasquerade to remove every rule for a subnet
+// masquerade rule for traffic that entered via bridge with a source
+// address in subnet, egressing via iface. The marker is keyed on subnet,
+// the input bridge, and the resolved egress interface so that two bridges
+// sharing a subnet get two distinct rules (managed-bridge subnets may
+// overlap), and so that changing the egress interface installs a distinct
+// rule rather than silently matching the stale one. masqSubnetPrefix
+// returns the iface-independent prefix of this marker, used by
+// RemoveMasquerade to remove every rule for a (subnet, bridge) pair
 // regardless of which iface it was installed for.
-func masqUserData(subnet netip.Prefix, iface string) []byte {
-	return append(masqSubnetPrefix(subnet), iface...)
+func masqUserData(subnet netip.Prefix, bridge, iface string) []byte {
+	return append(masqSubnetPrefix(subnet, bridge), iface...)
 }
 
-// masqSubnetPrefix returns the leading "otherix:<subnet>:" segment shared
-// by every masquerade marker for subnet, independent of the egress iface.
-func masqSubnetPrefix(subnet netip.Prefix) []byte {
-	return []byte("otherix:" + subnet.String() + ":")
+// masqSubnetPrefix returns the leading "otherix:<subnet>:<bridge>:" segment
+// shared by every masquerade marker for traffic entering bridge with a
+// source address in subnet, independent of the egress iface. The trailing
+// colon is load-bearing: it keeps a short bridge name (br-a) from
+// prefix-matching a longer one's marker (br-ab).
+func masqSubnetPrefix(subnet netip.Prefix, bridge string) []byte {
+	return []byte("otherix:" + subnet.String() + ":" + bridge + ":")
 }
 
 // EnsureMasquerade installs a MASQUERADE rule for source traffic from
-// subnet leaving via egressIface, idempotently. When egressIface is
-// empty the host's default-route interface is used. The rule is tagged
-// with a per-subnet UserData marker; a second call that finds a rule
-// carrying that marker does nothing.
-func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) error {
+// subnet that entered via bridge and leaves via egressIface, idempotently.
+// When egressIface is empty the host's default-route interface is used.
+// Matching the input bridge scopes the rule to one network: managed-bridge
+// subnets may overlap across networks, so a rule matched on source subnet
+// alone could SNAT another network's traffic. The rule is tagged with a
+// UserData marker keyed on subnet, bridge, and egress iface; a second call
+// that finds a rule carrying that marker does nothing, and two bridges
+// sharing a subnet get two distinct rules.
+func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, bridge, egressIface string) error {
 	if !subnet.Addr().Is4() {
 		return fmt.Errorf("netfabric: ensure masquerade for %s: only IPv4 subnets are supported", subnet)
 	}
@@ -273,10 +283,14 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 		}
 		egressIface = iface
 	}
-	// Guard the resolved iface against the kernel IFNAMSIZ ceiling. An
-	// over-long name would otherwise be silently truncated into the
-	// OIFNAME comparand, producing a rule that matches the wrong (or no)
-	// interface. The terminating NUL leaves ifnameSize-1 usable octets.
+	// Guard the input bridge and the resolved egress iface against the kernel
+	// IFNAMSIZ ceiling. An over-long name would otherwise be silently
+	// truncated into the IIFNAME/OIFNAME comparand, producing a rule that
+	// matches the wrong (or no) interface. The terminating NUL leaves
+	// ifnameSize-1 usable octets.
+	if len(bridge) >= ifnameSize {
+		return fmt.Errorf("netfabric: ensure masquerade for %s: bridge %q exceeds %d-byte limit", subnet, bridge, ifnameSize-1)
+	}
 	if len(egressIface) >= ifnameSize {
 		return fmt.Errorf("netfabric: ensure masquerade for %s: egress iface %q exceeds %d-byte limit", subnet, egressIface, ifnameSize-1)
 	}
@@ -295,7 +309,7 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 		return fmt.Errorf("netfabric: ensure masquerade for %s: %v", subnet, err)
 	}
 
-	marker := masqUserData(subnet, egressIface)
+	marker := masqUserData(subnet, bridge, egressIface)
 	rules, err := c.GetRules(table, chain)
 	if err != nil {
 		return fmt.Errorf("netfabric: ensure masquerade for %s: list rules: %v", subnet, err)
@@ -310,7 +324,7 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 		Table:    table,
 		Chain:    chain,
 		UserData: marker,
-		Exprs:    masqExprs(subnet, egressIface),
+		Exprs:    masqExprs(subnet, bridge, egressIface),
 	})
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("netfabric: ensure masquerade for %s: %v", subnet, err)
@@ -318,11 +332,13 @@ func (f *linuxFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) 
 	return nil
 }
 
-// RemoveMasquerade removes every masquerade rule tagged for subnet from
-// Otherix's own NAT chain. It returns nil when no matching rule exists,
-// including when the NAT table has never been created; removal never
-// materialises state.
-func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
+// RemoveMasquerade removes every masquerade rule tagged for (subnet,
+// bridge) from Otherix's own NAT chain, across any egress iface. It
+// returns nil when no matching rule exists, including when the NAT table
+// has never been created; removal never materialises state. Scoping to the
+// bridge leaves a second network sharing the subnet on a different bridge
+// untouched.
+func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix, bridge string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -333,11 +349,12 @@ func (f *linuxFabric) RemoveMasquerade(subnet netip.Prefix) error {
 	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName}
 	chain := &nftables.Chain{Name: natChainName, Table: table}
 
-	// Match on the iface-independent subnet prefix so every rule for the
-	// subnet is removed regardless of which egress iface it was installed
-	// for. The marker is "otherix:<subnet>:<iface>"; the prefix is
-	// "otherix:<subnet>:".
-	prefix := masqSubnetPrefix(subnet)
+	// Match on the iface-independent (subnet, bridge) prefix so every rule
+	// for the pair is removed regardless of which egress iface it was
+	// installed for, while leaving another bridge's rules for the same
+	// subnet alone. The marker is "otherix:<subnet>:<bridge>:<iface>"; the
+	// prefix is "otherix:<subnet>:<bridge>:".
+	prefix := masqSubnetPrefix(subnet, bridge)
 	rules, err := c.GetRules(table, chain)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
@@ -524,14 +541,23 @@ func (f *linuxFabric) natTableChain(c *nftables.Conn) (*nftables.Table, *nftable
 }
 
 // masqExprs builds the expression sequence for a masquerade rule that
-// matches IPv4 source addresses inside subnet egressing via iface. It
-// loads the IPv4 source address (network header offset 12, length 4),
-// masks it to the prefix, compares it to the network address, compares
-// the outbound interface name, then masquerades.
-func masqExprs(subnet netip.Prefix, iface string) []expr.Any {
+// matches traffic which entered via bridge with an IPv4 source address
+// inside subnet, egressing via iface. It first matches the input interface
+// name, then loads the IPv4 source address (network header offset 12,
+// length 4), masks it to the prefix, compares it to the network address,
+// compares the outbound interface name, then masquerades. The leading iif
+// match scopes the rule to one network: managed-bridge subnets may overlap
+// across networks, so a rule matched on source subnet alone could SNAT
+// another network's traffic. The iif match strictly narrows what is
+// masqueraded; the saddr and oifname matches remain as defense in depth.
+func masqExprs(subnet netip.Prefix, bridge, iface string) []expr.Any {
 	network := subnet.Masked().Addr().As4()
 	mask := prefixMask4(subnet.Bits())
 	return []expr.Any{
+		// meta load iifname => reg 1
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		// cmp eq reg 1 bridge
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifnameComparand(bridge)},
 		// payload load 4b @ network header + 12 => reg 1 (ip saddr)
 		&expr.Payload{
 			DestRegister: 1,
