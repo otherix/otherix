@@ -131,6 +131,7 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 		Subnet:      arg.Subnet,
 		Gateway:     arg.Gateway,
 		DhcpEnabled: arg.DhcpEnabled,
+		DnsEnabled:  arg.DnsEnabled,
 		VlanTag:     arg.VlanTag,
 		Mtu:         arg.Mtu,
 		Config:      arg.Config,

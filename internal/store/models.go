@@ -522,6 +522,12 @@ type Network struct {
 	// agent serves it over DHCP. Requires Subnet (and, for overlay, Egress=nat).
 	// Immutable after create.
 	DhcpEnabled bool
+	// DnsEnabled advertises the overlay anycast resolver (169.254.1.1) to VMs
+	// via DHCP option 6. Overlay-only, default true at create. Independent of
+	// Egress: an isolated overlay still resolves via the node's upstream. On
+	// Egress=nat DNS is advertised regardless of this flag (see the reconciler).
+	// Immutable after create.
+	DnsEnabled bool
 	// VNI is the CP-allocated VXLAN Network Identifier, unique and
 	// immutable, present only for type=overlay. Nil for bridge.
 	VNI       *int32
