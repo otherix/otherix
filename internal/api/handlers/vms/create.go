@@ -74,8 +74,8 @@ type vmCreateRequest struct {
 	Network  string `json:"network,omitempty"`
 	VCPUs    int    `json:"vcpus"`
 	MemoryMB int    `json:"memory_mb"`
-	// UserData is an optional VM-level cloud-init override (L3
-	// Area 3 lock). Stored verbatim in vms.user_data so the resolution
+	// UserData is an optional VM-level cloud-init override.
+	// Stored verbatim in vms.user_data so the resolution
 	// stays a pure function of the VM row.
 	UserData *string `json:"user_data,omitempty"`
 	// NetworkConfig is an optional VM-level cloud-init network-config

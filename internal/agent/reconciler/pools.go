@@ -181,7 +181,7 @@ func (r *Pools) reconcile(ctx context.Context) {
 	}
 
 	// Apply removals: pools the agent observes that the CP no longer
-	// declares. Per L13 filesystem is left intact — only the registry
+	// declares. The filesystem is left intact — only the registry
 	// entry is dropped.
 	for name := range observedByName {
 		if _, declared := desiredByName[name]; declared {

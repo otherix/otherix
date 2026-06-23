@@ -50,13 +50,12 @@ var (
 
 	// ErrQMPUnavailable wraps a failed QMP socket dial or command
 	// dispatch. Handlers map this to 500 — the operator can re-
-	// invoke the action; the agent does not retry automatically
-	// (Area 4-IV lock).
+	// invoke the action; the agent does not retry automatically.
 	ErrQMPUnavailable = errors.New("qmp socket unavailable or rejected command")
 
 	// ErrInFlight is returned by async lifecycle entrypoints when the
 	// same VM (by name) already has an operation in progress. Locked
-	// via inFlight sync.Map[name]struct{} per L3 D2: prevents the VM
+	// via inFlight sync.Map[name]struct{}: prevents the VM
 	// reconciler from racing concurrent Start / Stop / Poweroff /
 	// Reboot / Delete on the same VM. Handlers map this to 409
 	// conflict; the reconciler reads HasInFlight before enqueuing
@@ -164,7 +163,7 @@ type Manager struct {
 	// Start finishes attachMux until Delete tears it down. Stop /
 	// Poweroff intentionally do not remove the entry: the multiplexer
 	// keeps the on-disk log file readable until Delete removes the
-	// VM's state directory (L17). Agent restart leaves entries empty
+	// VM's state directory. Agent restart leaves entries empty
 	// even for VMs that survived in-place; a subsequent reboot
 	// re-attaches via reconnectMux's fallback.
 	muxesMu sync.Mutex
@@ -401,7 +400,7 @@ type PoolView struct {
 // boot.
 func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*Manager, error) {
 	if cfg.StatePath == "" {
-		return nil, fmt.Errorf("state_path is required")
+		return nil, errors.New("state_path is required")
 	}
 	if err := ensureWritableDir(cfg.StatePath); err != nil {
 		return nil, fmt.Errorf("state_path: %w", err)
@@ -569,7 +568,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 // the next heartbeat.
 func (m *Manager) AddPool(name, root string) error {
 	if name == "" {
-		return fmt.Errorf("pool: name is required")
+		return errors.New("pool: name is required")
 	}
 	if root == "" {
 		return fmt.Errorf("pool %q: root is required", name)
@@ -599,7 +598,7 @@ func (m *Manager) AddPool(name, root string) error {
 	return nil
 }
 
-// RemovePool drops a pool from the in-memory registry. Per SL11 the
+// RemovePool drops a pool from the in-memory registry. The
 // filesystem is left intact — operator responsibility to reclaim
 // space if desired. Subsequent VM ops referencing this pool name
 // return ErrPoolUnknown.
@@ -1262,7 +1261,7 @@ func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 // as running; ErrQMPUnavailable when the QMP dial or command call
 // fails. Synchronous — the QMP `stop` command returns immediately.
 //
-// Per Area 4-IV the agent does not auto-retry on QMP failure: the
+// The agent does not auto-retry on QMP failure: the
 // VM stays in its prior phase, the error surfaces to the operator,
 // and they decide whether to re-invoke.
 func (m *Manager) Pause(ctx context.Context, name string) (*VM, error) {
@@ -1334,7 +1333,7 @@ func (m *Manager) Reset(ctx context.Context, name string) (*VM, error) {
 //
 // Failures are logged at the agent's component logger so operators
 // can correlate the structured handler 5xx with the underlying QMP
-// fault; the persisted phase is unchanged on failure (Area 4-IV).
+// fault; the persisted phase is unchanged on failure.
 func (m *Manager) runSyncLifecycle(
 	_ context.Context,
 	name, op string,
@@ -1454,7 +1453,7 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 // system_powerdown). The agent waits up to shutdownGrace (60s) for the
 // guest to honour the signal; if the guest does not exit within the
 // window the task completes as failed with code `stop_timeout` and the
-// observed phase stays running per Area 4-II lock (operators dispatch
+// observed phase stays running (operators dispatch
 // to poweroff via the CLI `--force` flag or the explicit poweroff
 // endpoint).
 func (m *Manager) Stop(ctx context.Context, name string) (*AgentTask, error) {
@@ -1643,7 +1642,7 @@ func (m *Manager) runPoweroff(taskID, vmID uuid.UUID) {
 }
 
 // Reboot begins async graceful reboot — orchestrates an internal stop
-// followed by an internal start (Area 4-III lock — reboot ≠ reset; the
+// followed by an internal start (reboot ≠ reset; the
 // QEMU process is replaced so the PID changes). Stop honours
 // shutdownGrace; if the guest does not exit within the window the
 // reboot task fails with code `stop_timeout` and the observed phase stays
@@ -1893,9 +1892,9 @@ func (m *Manager) GetMux(name string) *serialmux.Multiplexer {
 // v.Name. A pre-existing entry (e.g. left behind by a failed Start)
 // is Close'd before the new one is installed.
 //
-// Per L13 a multiplexer dial failure is fatal: callers tear the
+// A multiplexer dial failure is fatal: callers tear the
 // freshly-spawned QEMU down (via killQEMU) and fail the lifecycle
-// task. Per L16 the per-VM state directory is the multiplexer's log
+// task. The per-VM state directory is the multiplexer's log
 // directory; runDelete removes it after detachMux closes the file.
 func (m *Manager) attachMux(log *slog.Logger, v *VM) error {
 	logDir := filepath.Join(m.stateDir, v.ID.String())
@@ -1914,7 +1913,7 @@ func (m *Manager) attachMux(log *slog.Logger, v *VM) error {
 
 // reconnectMux is the Reboot helper: it asks the existing multiplexer
 // to dial the new QEMU process. Subscribers and the log file stay
-// continuous (L15). If the existing entry is missing or its Reconnect
+// continuous. If the existing entry is missing or its Reconnect
 // errors out, the multiplexer is replaced via attachMux - clients of
 // the failed instance see Done() and reconnect to the fresh one.
 func (m *Manager) reconnectMux(log *slog.Logger, v *VM) error {
@@ -2077,28 +2076,28 @@ const maxAgentDiskGiB = 65536
 
 func validateCreateSpec(s CreateSpec) error {
 	if s.Name == "" {
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	}
 	if len(s.Name) > 255 {
-		return fmt.Errorf("name must be ≤ 255 chars")
+		return errors.New("name must be ≤ 255 chars")
 	}
 	if !validVMName(s.Name) {
-		return fmt.Errorf("name must be a lowercase RFC1123 DNS label")
+		return errors.New("name must be a lowercase RFC1123 DNS label")
 	}
 	if s.VCPUs < 1 || s.VCPUs > 128 {
-		return fmt.Errorf("vcpus must be in [1, 128]")
+		return errors.New("vcpus must be in [1, 128]")
 	}
 	if s.MemoryMB < 128 || s.MemoryMB > 524288 {
-		return fmt.Errorf("memory_mb must be in [128, 524288]")
+		return errors.New("memory_mb must be in [128, 524288]")
 	}
 	if s.PoolName == "" {
-		return fmt.Errorf("pool is required")
+		return errors.New("pool is required")
 	}
 	if err := validateDiskSource(s); err != nil {
 		return err
 	}
 	if s.ExpectedSHA256 != "" && len(s.ExpectedSHA256) != 64 {
-		return fmt.Errorf("expected_sha256 must be a 64-char sha256 hex digest")
+		return errors.New("expected_sha256 must be a 64-char sha256 hex digest")
 	}
 	if s.DiskGiB < 0 || s.DiskGiB > maxAgentDiskGiB {
 		return fmt.Errorf("disk_gib must be in [0, %d]", maxAgentDiskGiB)
@@ -2114,9 +2113,9 @@ func validateCreateSpec(s CreateSpec) error {
 func validateDiskSource(s CreateSpec) error {
 	switch {
 	case s.ImageURL == "" && s.SourceSnapshot == nil:
-		return fmt.Errorf("exactly one of image_url or source_snapshot is required")
+		return errors.New("exactly one of image_url or source_snapshot is required")
 	case s.ImageURL != "" && s.SourceSnapshot != nil:
-		return fmt.Errorf("image_url and source_snapshot are mutually exclusive")
+		return errors.New("image_url and source_snapshot are mutually exclusive")
 	}
 	return nil
 }

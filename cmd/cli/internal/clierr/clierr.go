@@ -25,7 +25,10 @@ import (
 func Classify(err error) error {
 	var apiErr *cpclient.APIError
 	if errors.As(err, &apiErr) {
-		return fmt.Errorf("%s", apiErr.Error())
+		// Return the typed error unchanged: it renders the canonical
+		// "<code>: <detail>" string via Error() while preserving
+		// StatusCode/Code/Details for any downstream errors.As.
+		return apiErr
 	}
 	msg := err.Error()
 	var dnsErr *net.DNSError

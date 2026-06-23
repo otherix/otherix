@@ -86,12 +86,12 @@ func runConsole(cmd *cobra.Command, args []string) error {
 		return classifyError(err)
 	}
 	if resp.WebsocketURL == "" || resp.Token == "" {
-		return fmt.Errorf("malformed console response (empty url or token)")
+		return errors.New("malformed console response (empty url or token)")
 	}
 
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("stdin is not a terminal — console requires an interactive shell")
+		return errors.New("stdin is not a terminal — console requires an interactive shell")
 	}
 
 	// Dial BEFORE flipping the terminal to raw mode so any failure
@@ -144,7 +144,7 @@ func runConsole(cmd *cobra.Command, args []string) error {
 	wsErrMu.Unlock()
 	if hint := consoleCloseHint(websocket.CloseStatus(finalErr)); hint != "" {
 		_, _ = fmt.Fprintln(stderr, hint)
-		return fmt.Errorf("console session moved during migration")
+		return errors.New("console session moved during migration")
 	}
 	_, _ = fmt.Fprintln(stderr, "session ended.")
 	return nil

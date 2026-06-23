@@ -55,7 +55,7 @@ type VMCreateRequest struct {
 	// for pinned creates and for pull_policy=always.
 	ResolvedImageDigest *string `json:"resolved_image_digest,omitempty"`
 	// UserData carries the CP-resolved cloud-init `#cloud-config`
-	// blob (L3 Area 3 lock — already-resolved vm.user_data,
+	// blob (already-resolved vm.user_data,
 	// hostname-injected (no template fallback)). Empty
 	// string on the wire means "no cidata"; the agent skips
 	// ISO generation when absent.
@@ -198,7 +198,7 @@ func (c *Client) PostVMCreate(
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
 	if accepted.TaskID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
+		return uuid.Nil, errors.New("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
 	return accepted.TaskID, nil
 }
@@ -312,7 +312,7 @@ func (c *Client) StartVM(ctx context.Context, endpoint, vmName, idempotencyKey s
 // StopVM submits POST /v1/vms/{vm_name}/stop. Same envelope contract
 // as StartVM. Stop is a graceful ACPI shutdown — the agent's task may
 // terminate with `stop_timeout` if the guest does not honour the
-// signal (Area 4-II lock — no internal escalation; operators dispatch
+// signal (no internal escalation; operators dispatch
 // to poweroff or `stop --force`).
 func (c *Client) StopVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (uuid.UUID, error) {
 	return c.postVMLifecycleAsync(ctx, endpoint, "stop", vmName, idempotencyKey)
@@ -326,7 +326,7 @@ func (c *Client) PoweroffVM(ctx context.Context, endpoint, vmName, idempotencyKe
 }
 
 // RebootVM submits POST /v1/vms/{vm_name}/reboot. The agent
-// orchestrates an internal stop+start (Area 4-III lock — distinct
+// orchestrates an internal stop+start (distinct
 // from Reset; the QEMU process is replaced so the PID changes). On
 // stop-phase timeout the agent task fails with `stop_timeout`.
 func (c *Client) RebootVM(ctx context.Context, endpoint, vmName, idempotencyKey string) (uuid.UUID, error) {
@@ -384,7 +384,7 @@ func (c *Client) IssueConsoleToken(
 		return zero, fmt.Errorf("agentclient: decode ConsoleTokenResponse: %v", err)
 	}
 	if parsed.Token == "" {
-		return zero, fmt.Errorf("agentclient: ConsoleTokenResponse.token is empty")
+		return zero, errors.New("agentclient: ConsoleTokenResponse.token is empty")
 	}
 	return parsed, nil
 }
@@ -452,7 +452,7 @@ func (c *Client) DeleteVM(
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
 	if accepted.TaskID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
+		return uuid.Nil, errors.New("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
 	return accepted.TaskID, nil
 }

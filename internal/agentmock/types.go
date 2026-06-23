@@ -63,7 +63,7 @@ type ErrorEnvelope struct {
 
 // AgentVM is the test API view of a VM the mock has materialised on
 // this node. The wire shape on the GET / LIST surface mirrors the
-// Iteration 1 agent's hand-written `vmView` (id, name, vcpus,
+// agent's hand-written `vmView` (id, name, vcpus,
 // memory_mb, pool_id, architecture, status, created_at, updated_at) —
 // the richer agentapi.VMSpec shape is a future design target and is
 // deliberately not surfaced through the wire.
@@ -78,11 +78,11 @@ type AgentVM struct {
 	PoolName     string
 	Architecture string
 	Status       string
-	// UserData (L3) records the cloud-init blob the CP-side resolver
+	// UserData records the cloud-init blob the CP-side resolver
 	// shipped with the create request. Empty when the operator left
 	// vm.user_data unset.
 	// Surfaced through StoredVM so integration tests can
-	// assert L3 resolution end-to-end.
+	// assert resolution end-to-end.
 	UserData  string
 	CreatedAt time.Time
 	UpdatedAt time.Time

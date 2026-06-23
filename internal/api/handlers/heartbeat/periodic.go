@@ -33,8 +33,8 @@ type NodeReadyHook func(ctx context.Context, ready []store.PromoteHealthyNodesRo
 type NodeGoneHook func(ctx context.Context, gone []store.MarkNodesGoneRow) error
 
 // ReconcileFunc returns the periodic function that flips nodes between 'ready'
-// and 'unreachable' on heartbeat freshness. The etcd-runtime replacement for the
-// river ReconcileWorker; the Scheduler drives it (run-on-start).
+// and 'unreachable' on heartbeat freshness. The etcd-runtime periodic
+// reconcile worker; the Scheduler drives it (run-on-start).
 //
 // onReady is the post-promotion seam (may be nil). It fires only when at least
 // one node was promoted; its error is logged at WARN and otherwise ignored - a

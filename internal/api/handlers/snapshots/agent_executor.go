@@ -6,6 +6,7 @@ package snapshots
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -100,7 +101,7 @@ func (e *agentSnapshotExecutor) Delete(ctx context.Context, a DeleteExecArgs) er
 // the map[string]any so the disk array decodes cleanly.
 func decodeSnapshotResult(result map[string]any) (CreateExecResult, error) {
 	if result == nil {
-		return CreateExecResult{}, fmt.Errorf("agent success result is nil")
+		return CreateExecResult{}, errors.New("agent success result is nil")
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -111,7 +112,7 @@ func decodeSnapshotResult(result map[string]any) (CreateExecResult, error) {
 		return CreateExecResult{}, fmt.Errorf("decode agent Snapshot: %v", err)
 	}
 	if len(snap.Disks) == 0 {
-		return CreateExecResult{}, fmt.Errorf("agent snapshot result has no disks")
+		return CreateExecResult{}, errors.New("agent snapshot result has no disks")
 	}
 
 	disks := make([]store.SnapshotDisk, 0, len(snap.Disks))

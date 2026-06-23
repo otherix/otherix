@@ -23,7 +23,7 @@ type periodicJob struct {
 }
 
 // Scheduler runs registered periodic functions on independent tickers, the
-// etcd-runtime replacement for river's periodic-job scheduler. It drives the
+// etcd-runtime periodic scheduler. It drives the
 // node-health reconcile, the scan trigger, and the retention sweeps; unlike the
 // dispatcher it does not consume the job queue.
 type Scheduler struct {

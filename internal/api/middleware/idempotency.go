@@ -335,7 +335,7 @@ func isMutatingMethod(m string) bool {
 }
 
 // userIDPtr returns a pointer to a copy of id, suitable for the
-// sqlc-generated nullable UUID parameter.
+// store's nullable UUID parameter.
 func userIDPtr(id uuid.UUID) *uuid.UUID {
 	v := id
 	return &v

@@ -4,12 +4,12 @@
 // Package agentclient is the CP→agent HTTP client. It dials each
 // agent over mutual TLS (CP presents a leaf signed by the cluster CA;
 // agent's server cert is verified against the same CA bundle), and
-// exposes the narrow surface a river worker needs to drive an async
+// exposes the narrow surface a worker needs to drive an async
 // operation: submit a request that returns 202 + AsyncTaskAccepted,
 // then poll the agent's GET /v1/tasks/{id} until the task reaches a
 // terminal status.
 //
-// The storage_pool.scan vertical slice ships PostScan + PollTask.
+// The storage_pool.scan flow ships PostScan + PollTask.
 // Future task types (vm.*, snapshot operations)
 // extend this package with their own initiator methods, sharing the
 // same Client / mTLS material / poll loop.

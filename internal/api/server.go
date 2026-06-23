@@ -2,7 +2,7 @@
 // Copyright 2026 Andrei Taranik
 
 // Package api hosts the REST API server (chi router, middleware, handlers)
-// and, in subsequent tasks, the in-process river worker pool. Built into
+// and, in subsequent tasks, the in-process worker dispatcher pool. Built into
 // the otherix-api binary.
 package api
 
@@ -84,7 +84,7 @@ type Server struct {
 }
 
 // NewServer constructs a Server bound to cfg, the given Store + auth
-// service + river client, and the supplied logger. The router is built
+// service + worker dispatcher, and the supplied logger. The router is built
 // here; callers do not need to wire it up themselves. When
 // cfg.AgentServer.Enabled is true, the agent listener is wired
 // alongside the user listener — material's Cert + ClusterCA build the

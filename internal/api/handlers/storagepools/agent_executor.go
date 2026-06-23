@@ -5,6 +5,7 @@ package storagepools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,7 +31,7 @@ type agentClient interface {
 //
 // Errors flow through verbatim (wrapped with phase context) so the
 // upstream worker's fail() path can render the originating layer in
-// the task error envelope. River retry classification is left to the
+// the task error envelope. Retry classification is left to the
 // queue's own MaxAttempts/backoff and is intentionally NOT pre-
 // empted at the executor level.
 type agentScanExecutor struct {
@@ -86,7 +87,7 @@ func (e *agentScanExecutor) Execute(ctx context.Context, args ScanArgs) (ScanRes
 // executor stays resilient to encoder differences.
 func decodeScanResult(result map[string]any) (ScanResult, error) {
 	if result == nil {
-		return ScanResult{}, fmt.Errorf("agent success result is nil")
+		return ScanResult{}, errors.New("agent success result is nil")
 	}
 
 	capacity, err := pickInt64(result, "capacity_bytes")

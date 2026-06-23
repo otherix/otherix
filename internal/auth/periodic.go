@@ -17,8 +17,8 @@ type RefreshTokenCleaner interface {
 }
 
 // RefreshTokenCleanupFunc returns the periodic function that deletes refresh
-// tokens past their expiry. The etcd-runtime replacement for the river
-// RefreshTokenCleanupWorker; the worker.Scheduler drives it.
+// tokens past their expiry. The etcd-runtime periodic refresh-token
+// cleanup; the worker.Scheduler drives it.
 func RefreshTokenCleanupFunc(st RefreshTokenCleaner, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {
 		deleted, err := st.DeleteExpiredRefreshTokens(ctx, time.Now())

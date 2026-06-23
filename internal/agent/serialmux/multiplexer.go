@@ -21,13 +21,13 @@ const (
 	pumpBufferSize = 4096
 
 	// rotationThresholdBytes is the size at which the active log
-	// triggers rotation. Locked at 10 MB per L1; tests can override
+	// triggers rotation. Locked at 10 MB; tests can override
 	// via newMuxWithThreshold to avoid writing 10 MB to disk.
 	rotationThresholdBytes int64 = 10 * 1024 * 1024
 
 	// defaultSubscriberCapacity sizes each subscriber's outbound
 	// channel. 32 absorbs bursty boot output before the slow-consumer
-	// drop path kicks in (L2).
+	// drop path kicks in.
 	defaultSubscriberCapacity = 32
 
 	// ringBufferBytes caps the in-memory recent history retained for
@@ -36,7 +36,7 @@ const (
 	ringBufferBytes = 8 * 1024
 
 	// consoleHistoryLines is the per-connect history tail delivered to
-	// a fresh console subscriber (L18).
+	// a fresh console subscriber.
 	consoleHistoryLines = 20
 
 	// logDirMode is the permission bits used when ensuring the per-VM
@@ -85,7 +85,7 @@ type Multiplexer struct {
 	ring *RingBuffer
 
 	// sanitizer carries partial ANSI CSI bytes across chunk
-	// boundaries so the pump's L14 sanitization preserves
+	// boundaries so the pump's sanitization preserves
 	// cross-chunk CSI sequences verbatim. Only the pump goroutine
 	// touches it, so no further synchronisation is needed.
 	sanitizer *Sanitizer
@@ -102,7 +102,7 @@ type Multiplexer struct {
 }
 
 // New constructs a multiplexer that dials qemuSocket as a Unix-domain
-// socket. Per L13 a dial failure is fatal - Manager.Start surfaces it
+// socket. A dial failure is fatal - Manager.Start surfaces it
 // instead of declaring a half-running VM.
 func New(vmName, qemuSocket, logDir string, log *slog.Logger) (*Multiplexer, error) {
 	return newMux(vmName, logDir, defaultDial(qemuSocket), log)
@@ -189,7 +189,7 @@ func newMuxWithThreshold(vmName, logDir string, dial func() (net.Conn, error), l
 //
 // On success the subscriber receives up to consoleHistoryLines of
 // recent buffered output followed by a visual separator before any
-// live bytes, per L18.
+// live bytes.
 func (m *Multiplexer) SubscribeConsole() (*ConsoleSubscriber, error) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
@@ -201,7 +201,7 @@ func (m *Multiplexer) SubscribeConsole() (*ConsoleSubscriber, error) {
 	sub := newConsoleSubscriber(m.writeToQEMU, defaultSubscriberCapacity)
 	m.consoleSub = sub
 
-	// L18: deliver a recent-history tail on attach so the operator
+	// Deliver a recent-history tail on attach so the operator
 	// has context for what just happened. The original spec also
 	// emitted a visual separator between history and live bytes,
 	// but real-agent smoke showed the marker sitting awkwardly
@@ -233,7 +233,7 @@ func (m *Multiplexer) SubscribeLogs(tailLines int, follow bool) *LogsSubscriber 
 
 // Reconnect closes the active QEMU connection and dials again. Used
 // by Manager.Reboot - the QEMU process is recycled but log file,
-// subscribers, and ring buffer continuity must survive (L15).
+// subscribers, and ring buffer continuity must survive.
 //
 // Reconnect is serialised against Close via transitionMu; a Reconnect
 // invoked after Close returns errMultiplexerClosed.

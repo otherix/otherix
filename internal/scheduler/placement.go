@@ -417,7 +417,7 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 		eligible = filtered
 	}
 
-	// Migration source exclusion (spec D2). Drop the current node so a
+	// Migration source exclusion. Drop the current node so a
 	// node-less migrate re-pins elsewhere. Exclude wins over NodeHint: a
 	// hint pinning the excluded node empties the set here rather than
 	// returning the source. An emptied set routes through the same
@@ -473,11 +473,11 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 // their hits into a single NodePressureDetail so the operator has
 // something actionable even when only one pressure type fired.
 func diagnoseEmptyEligible(ctx context.Context, q Querier, poolName string) error {
-	any, listErr := q.ListStoragePoolsByName(ctx, poolName)
+	pools, listErr := q.ListStoragePoolsByName(ctx, poolName)
 	if listErr != nil {
-		return fmt.Errorf("scheduler: list any pools: %w", listErr)
+		return fmt.Errorf("scheduler: list pools: %w", listErr)
 	}
-	if len(any) == 0 {
+	if len(pools) == 0 {
 		return fmt.Errorf("scheduler: pool %q: %w", poolName, ErrPoolNotFound)
 	}
 	mem, mErr := q.ListMemoryPressuredCandidatesByName(ctx, poolName)
@@ -517,8 +517,8 @@ func filterByNodeHint(rows []store.ListEligiblePoolsByNameRow, hint string) ([]s
 }
 
 // excludeNode drops every candidate whose node id matches excludeID,
-// preserving input order. It backs the migration-source exclusion (spec
-// D2): a node-less `vm migrate` reuses the placement path but must land
+// preserving input order. It backs the migration-source exclusion:
+// a node-less `vm migrate` reuses the placement path but must land
 // somewhere other than the VM's current node. An empty result is the
 // caller's signal to route through diagnoseEmptyEligible.
 func excludeNode(rows []store.ListEligiblePoolsByNameRow, excludeID uuid.UUID) []store.ListEligiblePoolsByNameRow {
@@ -558,8 +558,8 @@ type scoredCandidate struct {
 // multiplies the effective availability so values > 1.0 inflate
 // capacity, values < 1.0 reserve headroom. Candidates with any required
 // metric column missing fall back to count-based scoring (kept in fits
-// with useCountFallback=true) — preserves the bootstrap-friendly behaviour
-// from Sub-iteration A. Returned rejected slice feeds the insufficient-
+// with useCountFallback=true) — preserves the bootstrap-friendly behaviour.
+// Returned rejected slice feeds the insufficient-
 // resources error payload.
 func filterByResources(rows []store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) (fits, rejected []candidate) {
 	for _, r := range rows {
@@ -683,7 +683,7 @@ func fitsAllResources(r store.ListEligiblePoolsByNameRow, req PlacementRequest, 
 // the CPU / memory checks; a pool without last-scan numbers fails the
 // disk check. Partial nils — a node reporting CPU but not memory —
 // are treated as missing metrics, not "zero available", consistent
-// with the bootstrap-fallback semantic since Sub-iteration A.
+// with the bootstrap-fallback semantic.
 func candidateHasMetrics(r store.ListEligiblePoolsByNameRow, req PlacementRequest, cfg ResourcesConfig) bool {
 	n := r.NodeEffectiveAvailability
 	if cfg.CPU.Enabled {

@@ -9,7 +9,7 @@ import (
 )
 
 // AgentClientConfig configures the CP→agent HTTP client (polling
-// parameters only) used by river workers to drive async operations
+// parameters only) used by the worker dispatcher to drive async operations
 // on agents — currently the storage_pool.scan worker, with future
 // task types (vm.*, storage_pool.scan) reusing the same client.
 //
@@ -24,7 +24,7 @@ import (
 //
 // Enabled gates the constructor: the api binary skips client
 // construction entirely when false (HTTP-only smoke loops). The
-// scan executor and other river workers that dispatch to agents
+// scan executor and other workers that dispatch to agents
 // require enabled=true.
 type AgentClientConfig struct {
 	Enabled         bool          `koanf:"enabled"`

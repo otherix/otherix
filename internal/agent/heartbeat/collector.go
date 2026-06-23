@@ -6,6 +6,7 @@ package heartbeat
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -78,8 +79,8 @@ type BlobLister interface {
 }
 
 // VMReporter returns the per-VM observed-state slice the collector
-// folds into HeartbeatRequest.vms. Implemented by the VM reconciler
-// per L3 D3 — single ownership of observed VM state mirrors the
+// folds into HeartbeatRequest.vms. Implemented by the VM reconciler:
+// single ownership of observed VM state mirrors the
 // pool reporter precedent. Nil disables the seam and the collector
 // falls back to Manager.List() directly (legacy / test paths).
 type VMReporter interface {
@@ -126,7 +127,7 @@ type LinuxCollector struct {
 // CollectorDeps bundles the collector's construction-time inputs.
 // procPath defaults to /proc; tests override it for synthetic
 // fixtures. Pools may be nil — collector skips the pool-report field.
-// VMReporter (L3 D3): when supplied, the collector uses it as the
+// VMReporter: when supplied, the collector uses it as the
 // authoritative source for HeartbeatRequest.vms[] and keeps VMs only
 // for resource accounting (sumRunningVMs). When nil, the collector
 // falls back to VMs.List() for backward compatibility with tests.
@@ -153,7 +154,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		return nil, fmt.Errorf("heartbeat: LinuxCollector requires GOOS=linux, got %s", runtime.GOOS)
 	}
 	if deps.VMs == nil {
-		return nil, fmt.Errorf("heartbeat: VMs lister is required")
+		return nil, errors.New("heartbeat: VMs lister is required")
 	}
 	procPath := deps.ProcPath
 	if procPath == "" {
@@ -313,7 +314,7 @@ func (c *LinuxCollector) foldObservedInventory(report *Report) {
 
 // buildVMReports prefers the reconciler-owned cache when supplied and
 // falls back to a direct Manager.List() projection for legacy / test
-// paths. Per L3 D3 the reconciler is the single owner of observed VM
+// paths. The reconciler is the single owner of observed VM
 // state once wired; the fallback exists so collector_test fixtures
 // can stay decoupled from the reconciler package.
 func (c *LinuxCollector) buildVMReports() []VMReport {

@@ -5,7 +5,7 @@
 
 package agent
 
-import "fmt"
+import "errors"
 
 // freeBytesStatfs is unsupported off linux (the agent runtime is linux-only).
 // The image cache sweeper injects this as a seam, so non-linux unit tests pass a
@@ -13,5 +13,5 @@ import "fmt"
 //
 //nolint:unused // platform stub: the linux build and the eviction sweeper are the real callers; this exists only to keep the package cross-compilable off linux.
 func freeBytesStatfs(string) (uint64, error) {
-	return 0, fmt.Errorf("statfs not supported on this platform")
+	return 0, errors.New("statfs not supported on this platform")
 }

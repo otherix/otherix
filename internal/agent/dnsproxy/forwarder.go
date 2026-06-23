@@ -108,9 +108,9 @@ func New(cfg Config) (*Forwarder, error) {
 	if len(ups) == 0 {
 		ups = upstreamResolvers()
 	}
-	max := cfg.MaxInFlight
-	if max <= 0 {
-		max = defaultMaxInFlight
+	maxInFlight := cfg.MaxInFlight
+	if maxInFlight <= 0 {
+		maxInFlight = defaultMaxInFlight
 	}
 	perSource := cfg.MaxPerSource
 	if perSource <= 0 {
@@ -121,7 +121,7 @@ func New(cfg Config) (*Forwarder, error) {
 		upstreams:    ups,
 		log:          cfg.Log,
 		ready:        make(chan struct{}),
-		sem:          make(chan struct{}, max),
+		sem:          make(chan struct{}, maxInFlight),
 		maxPerSource: perSource,
 		inflight:     map[string]int{},
 	}, nil

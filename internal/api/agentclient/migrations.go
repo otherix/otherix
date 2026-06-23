@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -93,7 +94,7 @@ func (c *Client) StartOutgoingMigration(
 		return "", fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
 	if accepted.TaskID == uuid.Nil {
-		return "", fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
+		return "", errors.New("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
 	return accepted.TaskID.String(), nil
 }

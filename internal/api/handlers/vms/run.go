@@ -644,7 +644,7 @@ type LifecycleKind struct {
 }
 
 // LifecycleKinds returns the four async lifecycle kinds with their projection
-// parameters, matching the river LifecycleWorkers registration verbatim:
+// parameters, matching the lifecycle worker registration verbatim:
 // start → running/running, stop and poweroff → stopped/stopped, reboot leaves
 // the desired phase unchanged (the runtime cycles, the user intent does not)
 // and observes running.
@@ -675,7 +675,7 @@ func isAgentTaskGone(err error) bool {
 
 // failCreateExec handles a vm.create executor error: it clears a stale
 // agent_task_id on a permanent agent-task 404 (so the redelivery re-POSTs and the
-// agent's durable dedup reconciles, R2-M2) and then finalizes the task failed
+// agent's durable dedup reconciles) and then finalizes the task failed
 // with retry semantics. A clear-write failure preempts and is returned so the
 // caller requeues.
 func failCreateExec(ctx context.Context, st WorkerStore, log *slog.Logger, taskID uuid.UUID, execErr error) error {
@@ -726,7 +726,7 @@ func classifyLoadErr(err error, notFoundCode string) string {
 // finalizeFailed writes the terminal failed envelope for taskID. It returns nil
 // on a successful write, or a wrapped error if the finalize write itself failed
 // (the caller should retry so the envelope eventually persists). Mirrors the
-// river workers' fail() against the WorkerStore mutator.
+// worker's fail() against the WorkerStore mutator.
 func finalizeFailed(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
 	envelope, marshalErr := marshalTaskError(code, cause.Error())
 	if marshalErr != nil {

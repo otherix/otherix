@@ -216,7 +216,7 @@ func (s *Store) loadCutoverState(ctx context.Context, migID uuid.UUID) (cutoverS
 
 // CommitMigrationCutover atomically re-pins the VM from source to target and
 // marks the migration completed. It is the safety-critical seam of live
-// migration (spec D3): PinnedNodeID stays = source until this single Txn flips
+// migration: PinnedNodeID stays = source until this single Txn flips
 // it. The Txn CAS-guards BOTH the migration and VM ModRevisions, so any
 // concurrent write to either row loses the commit and returns
 // store.ErrConcurrentUpdate (the worker re-reads and retries). The pinned_node
@@ -380,7 +380,7 @@ func applyMigrationProgress(m *store.Migration, upd store.MigrationProgressUpdat
 // (failed or cancelled), it stamps CompletedAt and appends terminalCleanupOps to
 // release the active-per-VM guard and per-node indexes - PinnedNodeID is never
 // touched here, so a failed/cancelled migration leaves the VM on its source
-// (fail-safe-to-source, spec D3). A lost CAS returns store.ErrConcurrentUpdate.
+// (fail-safe-to-source). A lost CAS returns store.ErrConcurrentUpdate.
 func (s *Store) UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error {
 	resp, err := s.c.Raw().Get(ctx, migrationKey(migID))
 	if err != nil {
@@ -524,9 +524,9 @@ func (s *Store) CancelMigration(ctx context.Context, id uuid.UUID, reason string
 
 // BindMigrationTarget binds the scheduler-picked target onto a node-less
 // migration: it sets TargetNodeID (and TargetPoolName), clears SchedulingReason,
-// and writes the per-node index entry for the target so the reservation (Task 7)
-// and the heartbeat placement gate (Task 6) see the bound target. PinnedNodeID is
-// untouched - the VM stays on source until cutover (spec D3). It is the seam the
+// and writes the per-node index entry for the target so the reservation
+// and the heartbeat placement gate see the bound target. PinnedNodeID is
+// untouched - the VM stays on source until cutover. It is the seam the
 // worker calls after SchedulePlacement returns a winner.
 //
 // Guards under a single ModRevision CAS: a terminal migration is rejected with

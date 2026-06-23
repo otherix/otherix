@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -84,7 +85,7 @@ func overlayIPForIndex(supernet netip.Prefix, idx int32) (netip.Addr, error) {
 // unreachable, and a redelivered report re-converges idempotently.
 func (s *Store) UpsertAgentWireguard(ctx context.Context, arg store.UpsertAgentWireguardParams) error {
 	if arg.PublicKey == "" {
-		return fmt.Errorf("etcdstore: upsert agent_wireguard: empty public key")
+		return errors.New("etcdstore: upsert agent_wireguard: empty public key")
 	}
 	var existing store.AgentWireguard
 	found, err := s.c.GetJSON(ctx, agentWireguardKey(arg.NodeID), &existing)

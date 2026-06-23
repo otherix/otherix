@@ -14,8 +14,8 @@ import (
 // MigrateBody is the optional JSON body of POST /v1/vms/{id}/migrate. Every
 // field is optional from the server's view, but the CLI always sets Live (the
 // --offline flag maps to live=false; the default is true). TargetNode /
-// TargetPool name a node / pool on the target (omitted = scheduler picks, spec
-// D2). MaxBandwidthBytes / MaxDowntimeMs are ephemeral knobs echoed onto the
+// TargetPool name a node / pool on the target (omitted = scheduler picks).
+// MaxBandwidthBytes / MaxDowntimeMs are ephemeral knobs echoed onto the
 // migration row. Pointer fields stay omitempty so an unset knob lets the server
 // apply its default rather than pinning a zero.
 type MigrateBody struct {
@@ -170,7 +170,7 @@ func (c *Client) Migration(ctx context.Context, id string) (Migration, json.RawM
 }
 
 // CancelMigration submits POST /v1/migrations/{id}/cancel. Cancel is sync and
-// best-effort (spec D5): 200 returns the current Migration view, terminal or
+// best-effort: 200 returns the current Migration view, terminal or
 // freshly cancelled (the endpoint is idempotent - cancelling an already-terminal
 // migration returns it unchanged at 200). 404 / 5xx surface as *APIError.
 func (c *Client) CancelMigration(ctx context.Context, id string) (Migration, error) {

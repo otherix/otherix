@@ -11,8 +11,8 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 )
 
-// Resume handles POST /v1/vms/{vm_name}/resume. Synchronous per L1
-// scope: the agent dials QMP, issues `cont`, returns the refreshed
+// Resume handles POST /v1/vms/{vm_name}/resume. Synchronous:
+// the agent dials QMP, issues `cont`, returns the refreshed
 // VM view with phase=running.
 func (h *Handler) Resume(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "vm_name")

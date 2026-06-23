@@ -4,6 +4,7 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"unicode/utf8"
@@ -23,7 +24,7 @@ var artifactPoolNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // path and the future on-node dir).
 func ValidateArtifactPoolName(name string) error {
 	if name == "" {
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	}
 	if utf8.RuneCountInString(name) > ArtifactPoolNameMaxLength {
 		return fmt.Errorf("name is too long (max %d)", ArtifactPoolNameMaxLength)

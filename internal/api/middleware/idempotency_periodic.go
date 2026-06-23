@@ -16,8 +16,8 @@ type IdempotencyCleaner interface {
 }
 
 // IdempotencyCleanupFunc returns the periodic function that deletes
-// idempotency-key rows past their TTL. The etcd-runtime replacement for the
-// river IdempotencyCleanupWorker; the worker.Scheduler drives it.
+// idempotency-key rows past their TTL. The etcd-runtime periodic idempotency
+// cleanup; the worker.Scheduler drives it.
 func IdempotencyCleanupFunc(st IdempotencyCleaner, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {
 		deleted, err := st.DeleteExpiredIdempotencyKeys(ctx)

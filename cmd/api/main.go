@@ -44,7 +44,7 @@ import (
 const componentName = "api"
 
 // workerMaxAttempts is the per-kind retry budget the dispatcher applies to every
-// async task kind. Mirrors the river MaxAttempts (25) set at enqueue time across
+// async task kind. Mirrors the job-queue MaxAttempts (25) set at enqueue time across
 // vm.create / vm.delete / vm.* lifecycle / storage_pool.scan.
 const workerMaxAttempts = 25
 
@@ -570,7 +570,7 @@ func (a reclaimAdapter) Reclaim(ctx context.Context, targetNodeID uuid.UUID, dig
 }
 
 // buildScheduler registers the periodic maintenance functions on a scheduler.
-// Cadences mirror the river periodic registrations: hourly retention sweeps, the
+// Cadences mirror the worker periodic registrations: hourly retention sweeps, the
 // heartbeat reconcile on the configured interval (run-on-start so a restart
 // promotes nodes that kept heartbeating), and the scan trigger when enabled.
 func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger) *worker.Scheduler {

@@ -21,7 +21,7 @@ type AgentCertQuerier interface {
 }
 
 // AgentCertLookupResult is the pared-down view AgentVerifier needs.
-// An adapter in the router wiring lifts the sqlc-generated row into
+// An adapter in the router wiring lifts the store's row into
 // this shape so AgentVerifier itself stays decoupled from store.
 type AgentCertLookupResult struct {
 	NodeID  uuid.UUID

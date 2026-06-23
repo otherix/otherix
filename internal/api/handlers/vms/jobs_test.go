@@ -32,7 +32,7 @@ func TestClassifyVMError(t *testing.T) {
 			name:     "agent error without code → agent_unreachable",
 			err:      &agentclient.AgentError{Status: 502},
 			fallback: errCodeVMCreateFailed,
-			want:     errCodeVMAgentUnreachabl,
+			want:     errCodeVMAgentUnreachable,
 		},
 		{
 			name:     "timeout error → request_timeout",

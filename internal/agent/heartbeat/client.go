@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,10 +56,10 @@ type ClientConfig struct {
 // in the middle of the run loop.
 func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.CPEndpoint == "" {
-		return nil, fmt.Errorf("heartbeat client: cp_endpoint is required")
+		return nil, errors.New("heartbeat client: cp_endpoint is required")
 	}
 	if cfg.NodeName == "" {
-		return nil, fmt.Errorf("heartbeat client: node_name is required")
+		return nil, errors.New("heartbeat client: node_name is required")
 	}
 	tlsCfg, err := buildTLSConfig(cfg.TLS)
 	if err != nil {
@@ -136,10 +137,10 @@ func (c *Client) Send(ctx context.Context, report Report) (int, *Response, error
 // rule.
 func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 	if cfg.CertPath == "" || cfg.KeyPath == "" {
-		return nil, fmt.Errorf("heartbeat client: cert_path and key_path are required")
+		return nil, errors.New("heartbeat client: cert_path and key_path are required")
 	}
 	if cfg.CACertPath == "" {
-		return nil, fmt.Errorf("heartbeat client: ca_cert_path is required")
+		return nil, errors.New("heartbeat client: ca_cert_path is required")
 	}
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
 	if err != nil {

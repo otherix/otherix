@@ -18,7 +18,7 @@ type createRequest struct {
 
 // joinTokenView is the public projection of a join_tokens row. The
 // stored token_hash is NEVER part of this shape. consumption_count
-// is a derived value (correlated subquery in ListJoinTokens / dedicated
+// is a derived value (aggregated in ListJoinTokens / dedicated
 // CountJoinTokenConsumptions on Get).
 type joinTokenView struct {
 	ID               string  `json:"id"`

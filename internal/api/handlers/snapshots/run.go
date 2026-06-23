@@ -137,7 +137,7 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 		// task we were polling. Clear the persisted agent_task_id so the redelivery
 		// re-POSTs (the agent's (vm, snapshot_name) capture idempotency reconciles it)
 		// instead of polling a vanished task to a hard failure forever. Mirrors the
-		// vm.create worker's clearAgentTaskIDIfGone (R2-M2).
+		// vm.create worker's clearAgentTaskIDIfGone.
 		if agentTaskGone(execErr) {
 			if cerr := st.ClearTaskAgentTaskID(ctx, taskID); cerr != nil {
 				return fmt.Errorf("clear agent_task_id: %v", cerr)
@@ -178,7 +178,7 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 // Residual window: a crash between PostSnapshot returning the id and
 // UpdateTaskAgentTaskID committing it leaves the task without a persisted id, so a
 // redelivery re-POSTs. That CP-side window is closed agent-side by (vm,
-// snapshot_name) capture idempotency (Task 10).
+// snapshot_name) capture idempotency.
 func startOrResumeCapture(ctx context.Context, st WorkerStore, exec SnapshotExecutor, taskID uuid.UUID, task store.Task, args CreateExecArgs) (CreateExecResult, error) {
 	if task.AgentTaskID != nil {
 		return exec.Poll(ctx, args.AdvertisedEndpoint, *task.AgentTaskID)

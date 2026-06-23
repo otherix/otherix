@@ -21,12 +21,12 @@ type ScanTriggerStore interface {
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 }
 
-// scanTriggerMaxAttempts mirrors the river scan-task attempt budget.
+// scanTriggerMaxAttempts is the scan-task attempt budget.
 const scanTriggerMaxAttempts = 25
 
 // ScanTriggerFunc returns the periodic function that fans out a scan task for
-// every pool needing one. The etcd-runtime replacement for the river
-// ScanTriggerWorker; the Scheduler drives it. Unlike the river trigger it does
+// every pool needing one. The etcd-runtime periodic scan trigger; the Scheduler
+// drives it. Unlike the prior trigger it does
 // not apply per-pool jitter (the etcd job has no scheduled-at), so all eligible
 // pools enqueue at once - acceptable at this scale, revisitable if agent-side
 // scan load needs spreading.

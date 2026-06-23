@@ -20,9 +20,6 @@
 // payload, river_job_id is an ops drill-down weak ref, created_by is
 // an RBAC scoping anchor. The view mirrors components/schemas/Task in
 // api/openapi/control-plane.yaml verbatim.
-//
-// `tasks.cancel` and the create-side `storagePools.scan` that emits
-// tasks are deferred to subsequent slices.
 package tasks
 
 import (
@@ -39,7 +36,7 @@ import (
 // Store is the storage surface the tasks handlers depend on. Cancel's
 // transactional job-cancel is hidden inside store.CancelPendingTask
 // (which uses the queue seam), so the handler no longer holds a queue
-// or river client. Depending on the interface narrows the handler's
+// or worker dispatcher. Depending on the interface narrows the handler's
 // storage dependency to the methods it uses and lets tests substitute a
 // fake. *etcdstore.Store satisfies it.
 type Store interface {

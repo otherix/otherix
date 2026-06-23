@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -83,7 +84,7 @@ func (s *Store) casClusterSettings(ctx context.Context, mutate func(*store.Clust
 			return nil
 		}
 	}
-	return fmt.Errorf("cas cluster settings: retries exhausted")
+	return errors.New("cas cluster settings: retries exhausted")
 }
 
 // ClusterSettings returns the singleton cluster-settings row, materialising the
@@ -241,7 +242,7 @@ const (
 // so a non-first-writer replica booting with a typo'd or stale local config does
 // not fail - the immutable seeded value already governs. Zero/zero falls back to
 // the defaults. A FIRST seed with an invalid range still errors.
-func (s *Store) SeedVNIRange(ctx context.Context, min, max int) error {
+func (s *Store) SeedVNIRange(ctx context.Context, lo, hi int) error {
 	cur, err := s.ClusterSettings(ctx)
 	if err != nil {
 		return err
@@ -249,14 +250,14 @@ func (s *Store) SeedVNIRange(ctx context.Context, min, max int) error {
 	if cur.VNIMin != nil && cur.VNIMax != nil {
 		return nil // already seeded, immutable - ignore this replica's local config
 	}
-	if min == 0 && max == 0 {
-		min, max = defaultVNIMin, defaultVNIMax
+	if lo == 0 && hi == 0 {
+		lo, hi = defaultVNIMin, defaultVNIMax
 	}
-	if min < 1000 || max > 16777215 || min >= max {
-		return fmt.Errorf("invalid vni range [%d,%d]: require 1000<=min<max<=16777215", min, max)
+	if lo < 1000 || hi > 16777215 || lo >= hi {
+		return fmt.Errorf("invalid vni range [%d,%d]: require 1000<=min<max<=16777215", lo, hi)
 	}
-	mn := int32(min) //nolint:gosec // bounded by the validation above
-	mx := int32(max) //nolint:gosec // bounded by the validation above
+	mn := int32(lo) //nolint:gosec // bounded by the validation above
+	mx := int32(hi) //nolint:gosec // bounded by the validation above
 	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
 		if cs.VNIMin == nil && cs.VNIMax == nil {
 			cs.VNIMin = &mn
@@ -272,15 +273,15 @@ func (s *Store) VNIRange(ctx context.Context) (int32, int32, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	min := int32(defaultVNIMin)
-	max := int32(defaultVNIMax)
+	lo := int32(defaultVNIMin)
+	hi := int32(defaultVNIMax)
 	if cs.VNIMin != nil {
-		min = *cs.VNIMin
+		lo = *cs.VNIMin
 	}
 	if cs.VNIMax != nil {
-		max = *cs.VNIMax
+		hi = *cs.VNIMax
 	}
-	return min, max, nil
+	return lo, hi, nil
 }
 
 // defaultUnderlayMTU is the physical underlay MTU assumed when the operator

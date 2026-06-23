@@ -3,8 +3,8 @@
 
 // Package snapshots hosts the /v1/vms/{id}/snapshots + /v1/snapshots/* HTTP
 // handlers - the operator-facing CP surface for snapshot create / list / get /
-// delete. A snapshot is a content-addressed, disk-only VM snapshot (ADR slice
-// A): create is async (202 + a vm.snapshot.create task); the worker (Task 6)
+// delete. A snapshot is a content-addressed, disk-only VM snapshot:
+// create is async (202 + a vm.snapshot.create task); the worker
 // drives the agent blob produce and fills the manifest. Get / list project the
 // store row; delete is fail-closed CP-side (refuses a snapshot with live
 // children) then enqueues a best-effort blob-GC task.
@@ -36,7 +36,7 @@ import (
 // fail-closed delete that enqueues the blob-GC task+job in the SAME transaction).
 // *etcdstore.Store satisfies it; depending on the interface narrows the dependency
 // to what the handlers use and lets tests substitute a fake. The vm.snapshot.*
-// workers (run.go, Task 6) are consumer-side and hold the concrete store.
+// workers (run.go) are consumer-side and hold the concrete store.
 type Store interface {
 	resolver.Querier
 

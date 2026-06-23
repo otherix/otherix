@@ -6,6 +6,7 @@ package cpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -197,7 +198,7 @@ type ListVMsParams struct {
 // *APIError.
 func (c *Client) CreateVM(ctx context.Context, req CreateVMRequest) (VM, json.RawMessage, error) {
 	if req.Name == "" {
-		return VM{}, nil, fmt.Errorf("cpclient.CreateVM: name is required")
+		return VM{}, nil, errors.New("cpclient.CreateVM: name is required")
 	}
 
 	httpReq, err := c.newRequest(ctx, http.MethodPost, "/v1/vms", req)
@@ -293,7 +294,7 @@ func (c *Client) ResumeVM(ctx context.Context, identifier string) (VM, error) {
 }
 
 // ResetVM submits POST /v1/vms/{identifier}/reset — synchronous per
-// the Pre-L1 spec amendment. 200 returns the refreshed VM; phase
+// the spec amendment. 200 returns the refreshed VM; phase
 // stays `running` because reset preserves runtime identity (the
 // QEMU process keeps running, only the guest CPU is reset).
 func (c *Client) ResetVM(ctx context.Context, identifier string) (VM, error) {
@@ -417,7 +418,7 @@ type VMConsoleResponse struct {
 // as *APIError.
 func (c *Client) VMConsole(ctx context.Context, vmName, protocol string) (VMConsoleResponse, error) {
 	if vmName == "" {
-		return VMConsoleResponse{}, fmt.Errorf("cpclient.VMConsole: vm name is required")
+		return VMConsoleResponse{}, errors.New("cpclient.VMConsole: vm name is required")
 	}
 	req := VMConsoleRequest{Protocol: protocol}
 	httpReq, err := c.newRequest(ctx, http.MethodPost,
@@ -448,7 +449,7 @@ func (c *Client) VMConsole(ctx context.Context, vmName, protocol string) (VMCons
 // agent's chunked text/plain body verbatim.
 func (c *Client) VMLogs(ctx context.Context, vmName string, tailLines int, follow bool) (io.ReadCloser, error) {
 	if vmName == "" {
-		return nil, fmt.Errorf("cpclient.VMLogs: vm name is required")
+		return nil, errors.New("cpclient.VMLogs: vm name is required")
 	}
 	qry := url.Values{}
 	qry.Set("tail", strconv.Itoa(tailLines))

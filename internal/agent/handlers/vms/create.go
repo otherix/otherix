@@ -55,8 +55,8 @@ type createRequest struct {
 	// back to downloading image_url. Absent for pinned creates and for
 	// pull_policy=always.
 	ResolvedImageDigest *string `json:"resolved_image_digest,omitempty"`
-	// UserData carries CP-resolved raw `#cloud-config` YAML (L3 Area
-	// 3 lock). Optional — empty value skips cidata generation.
+	// UserData carries CP-resolved raw `#cloud-config` YAML.
+	// Optional — empty value skips cidata generation.
 	// CP-side resolver passes through vm.user_data and injects a
 	// top-level `hostname:` (no template fallback)
 	// matching the VM name when missing.

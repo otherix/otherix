@@ -5,6 +5,7 @@ package agent
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -81,10 +82,10 @@ type activeServe struct {
 // the holder can serve a pinned image it only has in the cache tier.
 func newBlobServeManager(store, imageStore *artifactstore.Store, ports *migration.PortAllocator, serveHost string, baseTLS *tls.Config, log *slog.Logger) (*blobServeManager, error) {
 	if len(baseTLS.Certificates) == 0 {
-		return nil, fmt.Errorf("blob serve: base tls config carries no node leaf certificate")
+		return nil, errors.New("blob serve: base tls config carries no node leaf certificate")
 	}
 	if baseTLS.ClientCAs == nil {
-		return nil, fmt.Errorf("blob serve: base tls config carries no cluster CA pool")
+		return nil, errors.New("blob serve: base tls config carries no cluster CA pool")
 	}
 	return &blobServeManager{
 		store:      store,
@@ -109,7 +110,7 @@ func (m *blobServeManager) Serve(digest, token, _ string) (string, string, error
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return "", "", fmt.Errorf("blob serve: manager is closed")
+		return "", "", errors.New("blob serve: manager is closed")
 	}
 	m.mu.Unlock()
 
@@ -169,7 +170,7 @@ func (m *blobServeManager) Serve(digest, token, _ string) (string, string, error
 		_ = ln.Close()
 		m.ports.Release(port)
 		m.verifier.drop(token)
-		return "", "", fmt.Errorf("blob serve: manager is closed")
+		return "", "", errors.New("blob serve: manager is closed")
 	}
 	m.active[port] = as
 	m.mu.Unlock()

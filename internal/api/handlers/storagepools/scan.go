@@ -20,17 +20,16 @@ import (
 // Scan implements POST /v1/storage-pools/{id}/scan. Required permission:
 // `storage_pool:scan` (admin / operator).
 //
-// The handler runs three writes in one DB
-// transaction:
+// The handler runs three writes in one atomic enqueue:
 //
 //  1. CreateTask (status=pending).
-//  2. riverClient.InsertTx — enqueue the worker job.
-//  3. UpdateTaskRiverJobID — stamp the weak ref so ops can drill
-//     down from a task to its river_job row.
+//  2. enqueue the worker job.
+//  3. stamp the weak ref so ops can drill down from a task to its
+//     job-queue reference.
 //
-// Atomicity matters: a rolled-back tx leaves no orphan row in either
-// place, and the client retry (whether through Idempotency-Key or a
-// plain re-issue) sees a clean slate.
+// Atomicity matters: a rolled-back enqueue leaves no orphan row in
+// either place, and the client retry (whether through Idempotency-Key
+// or a plain re-issue) sees a clean slate.
 //
 // The Idempotency-Key middleware wraps the route. The 202 response is
 // recorded for replay; a retry within the 24 h TTL

@@ -48,7 +48,7 @@ func snapshotName(ts time.Time) string {
 // renamed over outPath, so a crash mid-write never leaves a truncated file at
 // the canonical path.
 //
-// TODO(slice 9d): once peer/client mTLS lands, accept the client TLS material so
+// TODO: once peer/client mTLS lands, accept the client TLS material so
 // snapshots work against a TLS-protected member endpoint.
 func SnapshotSave(ctx context.Context, clientURL, outPath string) (int64, error) {
 	cli, err := clientv3.New(clientv3.Config{

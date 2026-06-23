@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -20,8 +19,8 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// asyncOp enumerates the four L2 async lifecycle actions. Drives
-// agent dispatch, river job-args kind, and the success-path
+// asyncOp enumerates the four async lifecycle actions. Drives
+// agent dispatch, the job-args kind, and the success-path
 // vms.desired_phase write.
 type asyncOp int
 
@@ -61,7 +60,7 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 
 // Stop implements POST /v1/vms/{id}/stop — async graceful ACPI
 // shutdown. On agent-side timeout the task completes as failed with
-// `stop_timeout` (Area 4-II lock — no internal escalation).
+// `stop_timeout` (no internal escalation).
 func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	h.runAsyncLifecycle(w, r, asyncOpStop)
 }
@@ -73,7 +72,7 @@ func (h *Handler) Poweroff(w http.ResponseWriter, r *http.Request) {
 }
 
 // Reboot implements POST /v1/vms/{id}/reboot — async stop+start
-// cycle (Area 4-III lock — distinct from Reset; the agent's QEMU PID
+// cycle (distinct from Reset; the agent's QEMU PID
 // changes). desired_phase stays 'running'.
 func (h *Handler) Reboot(w http.ResponseWriter, r *http.Request) {
 	h.runAsyncLifecycle(w, r, asyncOpReboot)
@@ -81,8 +80,8 @@ func (h *Handler) Reboot(w http.ResponseWriter, r *http.Request) {
 
 // runAsyncLifecycle is the shared engine for Start / Stop /
 // Poweroff / Reboot. Sequence: resolve VM → ownership check →
-// resolve owning node → atomic insert (tasks + river job +
-// UpdateTaskRiverJobID) inside InTx → 202 + AsyncTaskAccepted.
+// resolve owning node → atomic enqueue (tasks row + job) → 202 +
+// AsyncTaskAccepted.
 // Mirrors the Delete handler's wire shape verbatim.
 func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op asyncOp) {
 	caller := auth.UserFromContext(r.Context())
@@ -103,7 +102,7 @@ func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op a
 		return
 	}
 
-	// Lifecycle precedence (spec D5): `vm stop` supersedes an in-flight
+	// Lifecycle precedence: `vm stop` supersedes an in-flight
 	// migration. The desired phase (stopped) outranks "I want it on another
 	// node", so cancel any active migration before enqueuing the stop. Cancel
 	// is non-destructive - pre-cutover the VM never left its source, post-cutover
@@ -128,10 +127,10 @@ func (h *Handler) runAsyncLifecycle(w http.ResponseWriter, r *http.Request, op a
 }
 
 // runAsyncLifecycleEnqueue resolves the owning node and atomically
-// inserts the tasks row + river job + agent task id pointer inside
-// one transaction. Returns the freshly-minted task id on success.
+// inserts the tasks row + job + agent task id pointer in one atomic
+// enqueue. Returns the freshly-minted task id on success.
 // Shared by all four async lifecycle ops — the only difference is
-// the river args type, dispatched by jobArgsFor.
+// the job-args type, dispatched by jobArgsFor.
 func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm store.VM, caller *auth.User) (uuid.UUID, error) {
 	nodeID, err := h.resolveNodeForVM(ctx, vm)
 	if err != nil {
@@ -180,7 +179,7 @@ func jobArgsForOp(op asyncOp, taskID, vmID, nodeID uuid.UUID) (queue.JobArgs, er
 	case asyncOpReboot:
 		return VMRebootArgs{TaskID: taskID, VMID: vmID, NodeID: nodeID}, nil
 	default:
-		return nil, fmt.Errorf("unknown async op")
+		return nil, errors.New("unknown async op")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"embed"
 	"encoding/pem"
+	"errors"
 	"fmt"
 )
 
@@ -91,7 +92,7 @@ func caPool() (*x509.CertPool, error) {
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caBytes) {
-		return nil, fmt.Errorf("agentmock: ca.crt is not valid PEM")
+		return nil, errors.New("agentmock: ca.crt is not valid PEM")
 	}
 	return pool, nil
 }
@@ -173,7 +174,7 @@ func NodeCertFingerprint() ([]byte, error) {
 	}
 	block, _ := pem.Decode(pemBytes)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("agentmock: node.crt is not a CERTIFICATE PEM block")
+		return nil, errors.New("agentmock: node.crt is not a CERTIFICATE PEM block")
 	}
 	sum := sha256.Sum256(block.Bytes)
 	return sum[:], nil

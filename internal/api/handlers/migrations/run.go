@@ -20,14 +20,14 @@ import (
 )
 
 // errTargetPoolNotReady signals that the bound target node does not (yet) have
-// the migration's pool. It is retryable-as-pending (D4): the VM stays on
+// the migration's pool. It is retryable-as-pending: the VM stays on
 // source and the migration waits for the pool to appear, rather than failing.
 var errTargetPoolNotReady = errors.New("target pool not ready on node")
 
 // Run-form migration worker for the etcd job runtime. It drains a vm.migrate job
 // and drives the migration to a terminal outcome against the agent two-phase
-// handshake, implementing spec D2 (node-less placement), D3 (PinnedNodeID stays
-// = source until the atomic cutover), D4 (pending retry-forever), and the
+// handshake, implementing node-less placement, PinnedNodeID staying
+// = source until the atomic cutover, pending retry-forever, and the
 // Crash-semantics fail-safe-to-source rule (every pre-cutover failure leaves the
 // VM on its source).
 //
@@ -91,7 +91,7 @@ type MigrationAgentClient interface {
 	CancelMigration(ctx context.Context, endpoint, vmName, migrationID string) (agentapi.Migration, error)
 }
 
-// Placer is the placement seam (spec D2): a node-less migrate scores a target
+// Placer is the placement seam: a node-less migrate scores a target
 // via the same scheduler.SchedulePlacement path used at create, excluding the
 // source node. The production implementation wraps SchedulePlacement over the
 // store's PlacementQuerier; tests inject a fake.
@@ -177,7 +177,7 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		return failTask(ctx, st, log, taskID, "not_found", fmt.Errorf("load vm: %v", err))
 	}
 
-	// An omitted --pool defaults to the source VM's pool name (correction A):
+	// An omitted --pool defaults to the source VM's pool name:
 	// a VM keeps its pool name across a move. placeAndBind (node-less) and the
 	// explicit-node handshake both consume m.TargetPoolName below.
 	if m.TargetPoolName == "" {
@@ -189,7 +189,7 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		m.TargetPoolName = spn
 	}
 
-	// Spec D2: node-less migrate picks a target via the scheduler (excluding the
+	// A node-less migrate picks a target via the scheduler (excluding the
 	// source), then binds it. A bound migration skips straight to the handshake.
 	if m.TargetNodeID == nil {
 		bound, perr := placeAndBind(ctx, st, placer, cfg, log, m, vm)
@@ -205,7 +205,7 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 // placeAndBind scores a target for a node-less migration and binds it. On an
 // unschedulable verdict it records the retryable scheduling_reason on the still-
 // pending migration and returns a RETRYABLE error so the dispatcher requeues
-// (spec D4: retry-forever, VM stays on source) - the agent is NEVER contacted.
+// (retry-forever, VM stays on source) - the agent is NEVER contacted.
 // On success it binds the target and returns the reloaded migration.
 func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, cfg MigrateConfig, log *slog.Logger, m store.Migration, vm store.VM) (store.Migration, error) {
 	// Hold store.LockKeyPlacement across the read-availability -> bind decision
@@ -213,7 +213,7 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 	// the choice). It mirrors the vm.create path, which holds the same lock across
 	// SchedulePlacement + bind, and closes the TOCTOU where two concurrent node-less
 	// migrations both score the same target before either binds and oversubscribe
-	// it (Task-7 reservation only counts ALREADY-bound targets). The lock serializes
+	// it (reservation only counts ALREADY-bound targets). The lock serializes
 	// this selection->bind window across replicas; it does NOT guard the cutover
 	// re-pin (that is its own atomic txn). On the single-node default it is a no-op
 	// (etcd writes are linearizable); see store.LockKeyPlacement. There is no
@@ -321,8 +321,8 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 	agentTaskID, err := startOrResume(ctx, st, agent, log, taskID, task, vm, m, source, target)
 	if err != nil {
 		if errors.Is(err, errTargetPoolNotReady) {
-			// The bound target lacks the migration's pool (correction B): record
-			// pending and requeue (D4), VM stays on source, agent never contacted.
+			// The bound target lacks the migration's pool: record
+			// pending and requeue, VM stays on source, agent never contacted.
 			return recordPending(ctx, st, log, m.ID, ReasonPoolNotReady, err)
 		}
 		// A handshake-setup error (incoming prep, outgoing start) is retryable: the
@@ -1015,7 +1015,7 @@ func resolveMigrationNics(ctx context.Context, st MigrationWorkerStore, vmID uui
 // (node_id, name), so the name index can return rows on several nodes; the row
 // on m.TargetNodeID is the destination. A missing pool on the target is NOT a
 // hard failure: it wraps errTargetPoolNotReady so the caller records the
-// migration pending (D4, retryable) and waits for the pool to appear, rather
+// migration pending (retryable) and waits for the pool to appear, rather
 // than failing the migration.
 func targetPoolPath(ctx context.Context, st MigrationWorkerStore, m store.Migration) (string, error) {
 	if m.TargetNodeID == nil {

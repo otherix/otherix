@@ -75,7 +75,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // listFilters bundles the optional filter values once parsed and
-// validated. Pointer-shaped because the underlying sqlc params accept
+// validated. Pointer-shaped because the underlying store params accept
 // nil for "no filter".
 type listFilters struct {
 	status       *string

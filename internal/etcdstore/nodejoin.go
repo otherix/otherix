@@ -143,7 +143,7 @@ func (s *Store) commitNodeRedemption(ctx context.Context, token store.JoinToken,
 		}
 		// CAS lost to a concurrent redemption; re-read and retry.
 	}
-	return fmt.Errorf("redeem join token: too many concurrent attempts")
+	return errors.New("redeem join token: too many concurrent attempts")
 }
 
 // readNodeConsumedCount returns the token's redemption count and the counter

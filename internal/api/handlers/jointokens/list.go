@@ -15,9 +15,8 @@ import (
 // node:manage (admin-only). Cursor pagination;
 // include_expired=true to surface expired rows (default false).
 //
-// consumption_count surfaces via correlated subquery in the sqlc-
-// generated query — first slice has low cardinality so the
-// non-index'd subquery is acceptable.
+// consumption_count is derived in the etcd store - join-token
+// cardinality is low, so deriving it per row is acceptable.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := pagination.Limit(pagination.ParseLimit(q.Get("limit")))

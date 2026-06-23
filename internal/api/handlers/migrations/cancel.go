@@ -15,7 +15,7 @@ import (
 )
 
 // Cancel implements POST /v1/migrations/{id}/cancel - sync (200) with the
-// current Migration view. Best-effort and valid only pre-cutover (spec D5):
+// current Migration view. Best-effort and valid only pre-cutover:
 // PinnedNodeID is never touched, so a cancel is trivially fail-safe-to-source.
 // Required permission: vm:migrate (a cancel mutates the migration, same gate as
 // initiating it), held only by admin and operator (both scope any); developer

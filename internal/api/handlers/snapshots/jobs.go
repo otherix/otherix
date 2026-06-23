@@ -13,7 +13,7 @@ import (
 
 // SnapshotCreateArgs is the queue.JobArgs payload for the vm.snapshot.create
 // task: the backing task id and the snapshot id the worker resolves to drive the
-// agent blob produce. Task 6 extends this file with the executor seam + run.go;
+// agent blob produce. The executor seam lives in run.go;
 // the struct lives here so the create handler can enqueue the job atomically
 // with the snapshot row.
 type SnapshotCreateArgs struct {

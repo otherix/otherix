@@ -239,8 +239,8 @@ func (r *WireGuard) setStatus(state, errMsg string) {
 }
 
 // toWGPeers translates declared peers into netfabric.WGPeer. A peer that fails
-// to parse is skipped + logged so one bad entry never drops the whole mesh. In
-// this slice the declared list is empty (single agent), so this returns an
+// to parse is skipped + logged so one bad entry never drops the whole mesh. When
+// the declared list is empty (single agent), this returns an
 // empty slice.
 func (r *WireGuard) toWGPeers(ctx context.Context, declared []heartbeat.DeclaredWireGuardPeer) []netfabric.WGPeer {
 	out := make([]netfabric.WGPeer, 0, len(declared))
