@@ -367,7 +367,7 @@ local-dev-restart: ## Bounce api + agents in place, no rebuild (state preserved)
 	@bash dev/scripts/restart-api-dev.sh
 	@$(MAKE) --no-print-directory restart-agent
 
-local-dev-deploy: build-api ## Rebuild + restart api + agents to pick up code changes (state preserved)
+local-dev-deploy: build-api build-cli ## Rebuild + restart api + agents + host CLI to pick up code changes (state preserved)
 	@$(MAKE) --no-print-directory deploy-dev
 	@bash dev/scripts/restart-api-dev.sh
 
