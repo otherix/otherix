@@ -80,7 +80,7 @@ Example:
 	cmd.Flags().String(flagCreateGateway, "", "gateway IP inside --subnet (derived when omitted)")
 	cmd.Flags().Int(flagCreateMTU, 0, "link MTU (68..9216; server defaults to 1500 when omitted)")
 	cmd.Flags().Int(flagCreateVLAN, 0, "VLAN tag (1..4094; omitted leaves the network untagged)")
-	cmd.Flags().Bool(flagCreateDhcp, false, "enable CP-IPAM + DHCP responder (overlay only; requires --egress nat --subnet)")
+	cmd.Flags().Bool(flagCreateDhcp, false, "enable CP-IPAM + DHCP responder (overlay only; requires --subnet)")
 	cmd.Flags().Bool(flagCreateDns, true, "advertise the overlay resolver (169.254.1.1) via DHCP option 6 (overlay only; --dns=false to suppress)")
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the network UUID in the text output")

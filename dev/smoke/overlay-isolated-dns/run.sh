@@ -148,8 +148,8 @@ UD_FILE="${TMPDIR_ISO}/user-data.yaml"
 # and - only when the overlay advertises it - the option-6 nameserver) is the
 # ONLY source of the guest's addressing and resolver, so a name that resolves
 # is attributable to option 6, and a leased address proves the DHCP responder.
-# dhcp4-overrides.use-dns lets netplan honour the option-6 nameserver. Marked
-# optional so systemd-networkd-wait-online does not block boot if a renewal lags.
+# systemd-networkd honours the DHCP option-6 nameserver by default. optional:true
+# keeps systemd-networkd-wait-online from blocking boot if a renewal lags.
 cat >"$NC_FILE" <<'EOF'
 network:
   version: 2
