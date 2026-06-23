@@ -60,12 +60,14 @@ func (unsupportedFabric) RemoveGatewayAddr(bridge string, addr netip.Prefix) err
 }
 
 // EnsureMasquerade reports errUnsupported on non-Linux builds.
-func (unsupportedFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) error {
+func (unsupportedFabric) EnsureMasquerade(subnet netip.Prefix, bridge, egressIface string) error {
 	return errUnsupported
 }
 
 // RemoveMasquerade reports errUnsupported on non-Linux builds.
-func (unsupportedFabric) RemoveMasquerade(subnet netip.Prefix) error { return errUnsupported }
+func (unsupportedFabric) RemoveMasquerade(subnet netip.Prefix, bridge string) error {
+	return errUnsupported
+}
 
 // EnableIPForwarding reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnableIPForwarding() error { return errUnsupported }
@@ -86,6 +88,9 @@ func (unsupportedFabric) RemoveMasqueradeIface(string) error { return errUnsuppo
 
 // EnsureBridgeRoute reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureBridgeRoute(netip.Prefix, string) error { return errUnsupported }
+
+// RemoveBridgeRoute reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) RemoveBridgeRoute(netip.Prefix, string) error { return errUnsupported }
 
 // EnsureVXLAN reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureVXLAN(cfg VXLANConfig) error { return errUnsupported }

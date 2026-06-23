@@ -121,8 +121,8 @@ func TestReconcile_ManagedNAT(t *testing.T) {
 	if len(fab.MasqueradeCalls) != 1 {
 		t.Fatalf("EnsureMasquerade calls = %v, want one", fab.MasqueradeCalls)
 	}
-	if got := fab.MasqueradeCalls[0]; got.Subnet.String() != "10.20.0.0/24" || got.EgressIface != "" {
-		t.Errorf("EnsureMasquerade = {%s %q}, want {10.20.0.0/24 \"\"}", got.Subnet, got.EgressIface)
+	if got := fab.MasqueradeCalls[0]; got.Subnet.String() != "10.20.0.0/24" || got.Bridge != "otnat0" || got.EgressIface != "" {
+		t.Errorf("EnsureMasquerade = {%s %q %q}, want {10.20.0.0/24 otnat0 \"\"}", got.Subnet, got.Bridge, got.EgressIface)
 	}
 	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "ready" {
 		t.Errorf("NetworkReports = %+v, want one ready entry", reports)
@@ -275,8 +275,8 @@ func TestReconcile_RemovesManagedBridge(t *testing.T) {
 	if got := fab.RemoveBridgeCalls; len(got) != 1 || got[0] != "otnat0" {
 		t.Errorf("RemoveBridge calls = %v, want [otnat0]", got)
 	}
-	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].String() != "10.20.0.0/24" {
-		t.Errorf("RemoveMasquerade calls = %v, want [10.20.0.0/24]", got)
+	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].Subnet.String() != "10.20.0.0/24" || got[0].Bridge != "otnat0" {
+		t.Errorf("RemoveMasquerade calls = %v, want [{10.20.0.0/24 otnat0}]", got)
 	}
 	if len(fab.RemoveGatewayCalls) != 1 {
 		t.Errorf("RemoveGatewayAddr calls = %v, want one", fab.RemoveGatewayCalls)
@@ -382,8 +382,8 @@ func TestReconcile_NATToNoneTearsDownNAT(t *testing.T) {
 	})
 	rec.reconcile(context.Background())
 
-	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].String() != "10.20.0.0/24" {
-		t.Errorf("RemoveMasquerade calls = %v, want [10.20.0.0/24]", got)
+	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].Subnet.String() != "10.20.0.0/24" || got[0].Bridge != "otnat0" {
+		t.Errorf("RemoveMasquerade calls = %v, want [{10.20.0.0/24 otnat0}]", got)
 	}
 	if len(fab.RemoveGatewayCalls) != 1 {
 		t.Errorf("RemoveGatewayAddr calls = %v, want one", fab.RemoveGatewayCalls)
@@ -426,15 +426,16 @@ func TestReconcile_NATSubnetChangeReplacesMasquerade(t *testing.T) {
 	})
 	rec.reconcile(context.Background())
 
-	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].String() != "10.20.0.0/24" {
-		t.Errorf("RemoveMasquerade calls = %v, want [10.20.0.0/24]", got)
+	if got := fab.RemoveMasqCalls; len(got) != 1 || got[0].Subnet.String() != "10.20.0.0/24" || got[0].Bridge != "otnat0" {
+		t.Errorf("RemoveMasquerade calls = %v, want [{10.20.0.0/24 otnat0}]", got)
 	}
 	if len(fab.RemoveBridgeCalls) != 0 {
 		t.Errorf("RemoveBridge called on same-bridge subnet change: %v", fab.RemoveBridgeCalls)
 	}
-	// Two EnsureMasquerade: original A, then B after the change.
-	if got := fab.MasqueradeCalls; len(got) != 2 || got[1].Subnet.String() != "10.30.0.0/24" {
-		t.Errorf("EnsureMasquerade calls = %v, want second call for 10.30.0.0/24", got)
+	// Two EnsureMasquerade: original A, then B after the change. Both carry
+	// the same input bridge.
+	if got := fab.MasqueradeCalls; len(got) != 2 || got[1].Subnet.String() != "10.30.0.0/24" || got[1].Bridge != "otnat0" {
+		t.Errorf("EnsureMasquerade calls = %v, want second call for {10.30.0.0/24 otnat0}", got)
 	}
 	if reports := rec.NetworkReports(); len(reports) != 1 || reports[0].ReconciliationStatus != "ready" {
 		t.Errorf("NetworkReports = %+v, want one ready entry", reports)
@@ -701,7 +702,12 @@ func TestApplyManaged_NATDHCPAdvertisesDefaultRoute(t *testing.T) {
 	rec.reconcile(context.Background())
 
 	if len(f.MasqueradeCalls) != 1 {
-		t.Errorf("MasqueradeCalls = %d, want 1 (NAT masquerade by subnet)", len(f.MasqueradeCalls))
+		t.Fatalf("MasqueradeCalls = %d, want 1 (NAT masquerade by subnet)", len(f.MasqueradeCalls))
+	}
+	// The anycast (dhcp/dns) NAT path must thread the input bridge so the
+	// masquerade is scoped to this network, not just its (possibly shared) subnet.
+	if got := f.MasqueradeCalls[0]; got.Subnet.String() != "10.80.0.0/24" || got.Bridge != "otbsvc" {
+		t.Errorf("EnsureMasquerade = {%s %q}, want {10.80.0.0/24 otbsvc}", got.Subnet, got.Bridge)
 	}
 	if f.EnableIPForwardingCalls == 0 {
 		t.Errorf("EnableIPForwardingCalls = 0, want >=1")
@@ -793,5 +799,57 @@ func TestTeardown_NATAnycastBridgeSkipsGatewayAddrRemoval(t *testing.T) {
 	}
 	if len(f.RemoveMasqCalls) != 1 {
 		t.Errorf("RemoveMasqCalls = %d, want 1 (nat masquerade reclaimed)", len(f.RemoveMasqCalls))
+	}
+}
+
+// A managed anycast bridge that keeps its bridge but changes subnet must reap
+// the old link-scoped bridge route: EnsureBridgeRoute installs the new Dst but
+// cannot remove the old one, and nothing else GCs it (it only dies with the
+// bridge), so reconcileDelta must remove it.
+func TestReconcileDelta_AnycastBridgeSubnetChangeReapsOldRoute(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+
+	d1 := managedBridgeDhcpNet() // subnet 10.80.0.0/24
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: []heartbeat.DeclaredNetwork{d1}})
+	rec.reconcile(context.Background())
+	if len(f.RemoveBridgeRouteCalls) != 0 {
+		t.Fatalf("first pass RemoveBridgeRouteCalls = %d, want 0", len(f.RemoveBridgeRouteCalls))
+	}
+
+	d2 := managedBridgeDhcpNet()
+	newSubnet := "10.81.0.0/24"
+	d2.Subnet = &newSubnet // same bridge/id, changed subnet
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: []heartbeat.DeclaredNetwork{d2}})
+	rec.reconcile(context.Background())
+
+	if len(f.RemoveBridgeRouteCalls) != 1 {
+		t.Fatalf("RemoveBridgeRouteCalls = %d, want 1 (old route reaped)", len(f.RemoveBridgeRouteCalls))
+	}
+	if got := f.RemoveBridgeRouteCalls[0]; got.Subnet.String() != "10.80.0.0/24" || got.Bridge != "otbsvc" {
+		t.Errorf("reaped route = %v on %s, want 10.80.0.0/24 on otbsvc", got.Subnet, got.Bridge)
+	}
+}
+
+// A steady-state reconcile of an unchanged anycast bridge must not reap its
+// route: the reap fires only on a real same-bridge subnet change.
+func TestReconcileDelta_AnycastBridgeSameSubnetNoReap(t *testing.T) {
+	f := &netfabric.FakeFabric{}
+	fake := &dhcp4.FakeResponder{}
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	d := managedBridgeDhcpNet()
+	for i := 0; i < 2; i++ {
+		rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: []heartbeat.DeclaredNetwork{d}})
+		rec.reconcile(context.Background())
+	}
+	if len(f.RemoveBridgeRouteCalls) != 0 {
+		t.Errorf("steady-state RemoveBridgeRouteCalls = %d, want 0", len(f.RemoveBridgeRouteCalls))
 	}
 }

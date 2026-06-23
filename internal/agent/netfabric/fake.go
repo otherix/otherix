@@ -36,12 +36,13 @@ type FakeFabric struct {
 	GatewayAddrCalls   []GatewayCall
 	RemoveGatewayCalls []GatewayCall
 	MasqueradeCalls    []MasqueradeCall
-	RemoveMasqCalls    []netip.Prefix
+	RemoveMasqCalls    []RemoveMasqueradeCall
 
 	MasqueradeIfaceCalls []MasqueradeIfaceCall
 	RemoveMasqIfaceCalls []string
 
-	BridgeRouteCalls []BridgeRouteCall
+	BridgeRouteCalls       []BridgeRouteCall
+	RemoveBridgeRouteCalls []BridgeRouteCall
 
 	AnycastGatewayCalls       []AnycastGatewayCall
 	RemoveAnycastGatewayCalls []AnycastGatewayCall
@@ -132,7 +133,14 @@ type GatewayCall struct {
 // MasqueradeCall records one EnsureMasquerade invocation.
 type MasqueradeCall struct {
 	Subnet      netip.Prefix
+	Bridge      string
 	EgressIface string
+}
+
+// RemoveMasqueradeCall records one RemoveMasquerade invocation.
+type RemoveMasqueradeCall struct {
+	Subnet netip.Prefix
+	Bridge string
 }
 
 // MasqueradeIfaceCall records one EnsureMasqueradeIface invocation.
@@ -232,15 +240,15 @@ func (f *FakeFabric) RemoveGatewayAddr(bridge string, addr netip.Prefix) error {
 
 // EnsureMasquerade records the call and returns
 // Errs["EnsureMasquerade"].
-func (f *FakeFabric) EnsureMasquerade(subnet netip.Prefix, egressIface string) error {
-	f.MasqueradeCalls = append(f.MasqueradeCalls, MasqueradeCall{Subnet: subnet, EgressIface: egressIface})
+func (f *FakeFabric) EnsureMasquerade(subnet netip.Prefix, bridge, egressIface string) error {
+	f.MasqueradeCalls = append(f.MasqueradeCalls, MasqueradeCall{Subnet: subnet, Bridge: bridge, EgressIface: egressIface})
 	return f.err("EnsureMasquerade")
 }
 
 // RemoveMasquerade records the call and returns
 // Errs["RemoveMasquerade"].
-func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix) error {
-	f.RemoveMasqCalls = append(f.RemoveMasqCalls, subnet)
+func (f *FakeFabric) RemoveMasquerade(subnet netip.Prefix, bridge string) error {
+	f.RemoveMasqCalls = append(f.RemoveMasqCalls, RemoveMasqueradeCall{Subnet: subnet, Bridge: bridge})
 	return f.err("RemoveMasquerade")
 }
 
@@ -260,6 +268,12 @@ func (f *FakeFabric) RemoveMasqueradeIface(inIface string) error {
 func (f *FakeFabric) EnsureBridgeRoute(subnet netip.Prefix, bridge string) error {
 	f.BridgeRouteCalls = append(f.BridgeRouteCalls, BridgeRouteCall{Subnet: subnet, Bridge: bridge})
 	return f.err("EnsureBridgeRoute")
+}
+
+// RemoveBridgeRoute records the call and returns Errs["RemoveBridgeRoute"].
+func (f *FakeFabric) RemoveBridgeRoute(subnet netip.Prefix, bridge string) error {
+	f.RemoveBridgeRouteCalls = append(f.RemoveBridgeRouteCalls, BridgeRouteCall{Subnet: subnet, Bridge: bridge})
+	return f.err("RemoveBridgeRoute")
 }
 
 // EnableIPForwarding records the call and returns
