@@ -24,6 +24,24 @@ func TestGatewayMAC(t *testing.T) {
 	}
 }
 
+func TestGatewayMACFromID_DeterministicAndLocallyAdministered(t *testing.T) {
+	a := GatewayMACFromID("net-1234")
+	b := GatewayMACFromID("net-1234")
+	if a.String() != b.String() {
+		t.Errorf("GatewayMACFromID not deterministic: %s vs %s", a, b)
+	}
+	if a[0]&0x02 == 0 {
+		t.Errorf("MAC %s is not locally-administered (bit 0x02 unset in first octet)", a)
+	}
+	if a[0]&0x01 != 0 {
+		t.Errorf("MAC %s is multicast (bit 0x01 set in first octet), want unicast", a)
+	}
+	c := GatewayMACFromID("net-9999")
+	if a.String() == c.String() {
+		t.Errorf("distinct ids produced the same MAC: %s", a)
+	}
+}
+
 func TestOverlayGatewayAddr(t *testing.T) {
 	if got := OverlayGatewayAddr.String(); got != "169.254.1.1" {
 		t.Errorf("OverlayGatewayAddr = %v, want 169.254.1.1", got)
