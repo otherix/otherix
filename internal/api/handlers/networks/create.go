@@ -62,12 +62,12 @@ func (h *Handler) createOverlay(w http.ResponseWriter, r *http.Request, req *cre
 	if req.DNS != nil {
 		dns = *req.DNS
 	}
-	if err := validation.ValidateDhcp(dhcp, true, store.NetworkTypeOverlay); err != nil {
+	if err := validation.ValidateDhcp(dhcp, true, true, store.NetworkTypeOverlay); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
 	}
-	if err := validation.ValidateDNS(dns, store.NetworkTypeOverlay); err != nil {
+	if err := validation.ValidateDNS(dns, true, store.NetworkTypeOverlay); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
@@ -122,12 +122,12 @@ func (h *Handler) createBridge(w http.ResponseWriter, r *http.Request, req *crea
 
 	dhcp := req.Dhcp != nil && *req.Dhcp
 	dns := req.DNS != nil && *req.DNS
-	if err := validation.ValidateDhcp(dhcp, req.Subnet != nil, store.NetworkType(req.Type)); err != nil {
+	if err := validation.ValidateDhcp(dhcp, req.Subnet != nil, managed, store.NetworkType(req.Type)); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
 	}
-	if err := validation.ValidateDNS(dns, store.NetworkType(req.Type)); err != nil {
+	if err := validation.ValidateDNS(dns, managed, store.NetworkType(req.Type)); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
