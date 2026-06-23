@@ -112,7 +112,7 @@ func (h *Handler) runCancel(
 
 	switch row.Status {
 	case store.TaskStatusPending:
-		cancelled, err := h.store.CancelPendingTask(ctx, taskID, row.RiverJobID)
+		cancelled, err := h.store.CancelPendingTask(ctx, taskID, row.JobID)
 		if err != nil {
 			if errors.Is(err, store.ErrTaskNotCancellable) {
 				return store.Task{}, errCancelNotCancellable

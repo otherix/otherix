@@ -715,7 +715,7 @@ type Task struct {
 	Error        []byte
 	Attempts     int32
 	MaxAttempts  int32
-	RiverJobID   *int64
+	JobID        *int64
 	AgentTaskID  *uuid.UUID
 	CreatedBy    *uuid.UUID
 	CreatedAt    time.Time
