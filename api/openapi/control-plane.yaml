@@ -5900,17 +5900,17 @@ components:
         dhcp:
           type: boolean
           description: |
-            Immutable after creation. `true` enables CP-IPAM and the
-            per-node DHCP responder for this network. Overlay-only:
-            requires `type: overlay` and a `subnet`.
+            Enable CP-IPAM address allocation plus the per-node DHCP
+            responder. Valid on `type: overlay` or a managed `type: bridge`;
+            requires a `subnet`. Independent of egress: an isolated network
+            still addresses its VMs. Immutable after create.
         dns:
           type: boolean
           description: |
-            Immutable after creation. Overlay-only. `true` advertises the
-            overlay anycast resolver (169.254.1.1) to VMs via DHCP option 6.
-            Independent of egress: an isolated overlay still resolves via the
-            node upstream. On `egress: nat` DNS is always advertised regardless
-            of this flag.
+            Advertise the anycast resolver 169.254.1.1 to VMs via DHCP
+            option 6. Valid on `type: overlay` or a managed `type: bridge`;
+            requires a `subnet`. Defaults on when `dhcp` is enabled.
+            Immutable after create.
         subnet:
           type: [string, "null"]
           description: |
@@ -5995,18 +5995,18 @@ components:
           type: boolean
           default: false
           description: |
-            Optional on create (defaults to `false`). `true` enables
-            CP-IPAM and the per-node DHCP responder. Overlay-only:
-            requires `type: overlay` and a `subnet`;
-            rejected otherwise. Immutable once the network exists.
+            Enable CP-IPAM address allocation plus the per-node DHCP
+            responder. Valid on `type: overlay` or a managed `type: bridge`;
+            requires a `subnet`. Independent of egress: an isolated network
+            still addresses its VMs. Immutable after create.
         dns:
           type: boolean
           default: true
           description: |
-            Overlay-only; defaults to `true`. Advertises the overlay anycast
-            resolver (169.254.1.1) via DHCP option 6. Set `false` to suppress
-            DNS on an isolated overlay. Rejected on non-overlay networks.
-            Immutable once the network exists.
+            Advertise the anycast resolver 169.254.1.1 to VMs via DHCP
+            option 6. Valid on `type: overlay` or a managed `type: bridge`;
+            requires a `subnet`. Defaults on when `dhcp` is enabled.
+            Immutable after create.
         subnet:
           type: string
           description: |
