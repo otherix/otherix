@@ -71,7 +71,7 @@ func NBDServerArgs(s NBDServerSpec) []string {
 		"--tls-authz", migAuthzID,
 		// --persistent keeps the server up across multiple data connections so
 		// the source side is free to parallelize the transfer (qemu-img -m /
-		// NBD multi-conn now, blockdev-mirror + multifd in the live slice).
+		// NBD multi-conn now, blockdev-mirror + multifd for live migration).
 		// qemu-nbd holds an exclusive write lock on the disk while it runs, so
 		// the CP tears it down (process kill) on the target AFTER cutover and
 		// BEFORE the migrated VM boots - deterministic regardless of how many

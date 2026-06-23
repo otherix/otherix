@@ -4,6 +4,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -310,7 +311,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	name := args[0]
 	if name == "" {
-		return fmt.Errorf("vm name is required")
+		return errors.New("vm name is required")
 	}
 	f, err := parseCreateFlags(cmd)
 	if err != nil {

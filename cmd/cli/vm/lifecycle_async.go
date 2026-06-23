@@ -32,8 +32,8 @@ already-running VM completes successfully without re-spawning.`,
 }
 
 // newStopCommand wires `otherix vm stop <vm>` — async graceful ACPI
-// shutdown. --force dispatches to the poweroff endpoint per Area 4-II
-// lock (CLI-level dispatch, NOT a stop-with-force flag on the API).
+// shutdown. --force dispatches to the poweroff endpoint
+// (CLI-level dispatch, NOT a stop-with-force flag on the API).
 func newStopCommand() *cobra.Command {
 	return newAsyncLifecycleCommand(
 		"stop",
@@ -97,8 +97,8 @@ dispatch to reset to force.`,
 // poweroff endpoint. All four support --wait / --wait-timeout.
 //
 // When forceFlag is true, --force is added to the command's flag set
-// and dispatched to cpclient.PoweroffVM on parse time — the spec's
-// Area 4-II lock requires CLI-level dispatch rather than a server-
+// and dispatched to cpclient.PoweroffVM on parse time, which
+// requires CLI-level dispatch rather than a server-
 // side flag.
 func newAsyncLifecycleCommand(
 	use, short, long string,

@@ -80,7 +80,7 @@ func (f *linuxFabric) EnsureWireGuard(cfg WGConfig) error {
 // netlink mutation, so EnsureWireGuard fails closed on bad input.
 func validateWGConfig(cfg WGConfig) error {
 	if cfg.Name == "" {
-		return fmt.Errorf("netfabric: ensure wireguard: empty interface name")
+		return errors.New("netfabric: ensure wireguard: empty interface name")
 	}
 	if cfg.MTU < 0 || cfg.MTU > 65535 {
 		return fmt.Errorf("netfabric: ensure wireguard %s: mtu %d out of range [0,65535]", cfg.Name, cfg.MTU)

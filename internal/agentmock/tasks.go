@@ -41,13 +41,13 @@ type agentTask struct {
 	// "storage_pool.scan", zero value otherwise.
 	result PoolScanResult
 
-	// Iteration 3 Phase A: vm.create / vm.delete outcomes. Set
+	// vm.create / vm.delete outcomes. Set
 	// when taskType == "vm.create" / "vm.delete", nil otherwise.
 	// vmBlueprint carries the AgentVM that materialises into
 	// state.storedVMs on terminal-success of a create task — the
 	// blueprint is captured at handler time so the create result is
-	// frozen against later state mutations. Per Pre-L1 Path D rekey
-	// the delete-side key is the VM name (was UUID); the resourceID
+	// frozen against later state mutations. The delete-side key is the
+	// VM name (was UUID); the resourceID
 	// field already carries the VM UUID for the wire projection.
 	vmCreateResult *VMCreateResult
 	vmBlueprint    *AgentVM
@@ -63,7 +63,7 @@ type agentTask struct {
 	vmVirtualSizeBytes int64
 	vmDiskSizeBytes    int64
 
-	// L2 async lifecycle (vm.start / vm.stop / vm.poweroff /
+	// the asynchronous lifecycle (vm.start / vm.stop / vm.poweroff /
 	// vm.reboot). vmLifecycleResult holds the queued synthetic
 	// outcome; vmLifecycleName carries the inventory key for the
 	// materialise hook; vmLifecycleOp drives the per-op default

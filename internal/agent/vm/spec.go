@@ -25,8 +25,8 @@ import (
 // Status enumerates the lifecycle states of an agent-managed VM. The
 // The agent currently omits start/stop/pause/resume - running ↔ stopped
 // transitions arrive in a later iteration. `paused` lands ahead of the rest
-// of the runtime-state surface because Pre-L1 wiring needs it before
-// L1 introduces pause/resume handlers.
+// of the runtime-state surface because earlier wiring needs it before
+// pause/resume handlers are introduced.
 type Status string
 
 // Status values reachable in the VM lifecycle.
@@ -118,8 +118,8 @@ type CreateSpec struct {
 	// virtual size; a value below the virtual size is rejected; a larger value
 	// grows the disk via qemu-img resize after the copy.
 	DiskGiB int
-	// UserData carries already-resolved raw `#cloud-config` YAML
-	// per L3 Area 3 lock — CP-side has resolved vm.user_data and
+	// UserData carries already-resolved raw `#cloud-config` YAML:
+	// CP-side has resolved vm.user_data and
 	// injected hostname (there is no template fallback) when
 	// needed. When empty (and NetworkData is also empty) the agent
 	// skips cidata generation (legacy VMs still boot, just without a
@@ -163,7 +163,7 @@ type SnapshotRef struct {
 // SnapshotDiskRef is one disk in a SnapshotRef: its virtio index, the wire
 // device name (virtio<i>), and the sha256 of the content-addressed blob under
 // {poolRoot}/snapshots/{sha}.qcow2. Ordering by Index is the virtio<i>
-// invariant the migration data-path and the Task-10 manifest also rely on.
+// invariant the migration data-path and the snapshot manifest also rely on.
 type SnapshotDiskRef struct {
 	Index  int
 	Device string

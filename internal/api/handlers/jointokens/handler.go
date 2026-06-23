@@ -133,7 +133,7 @@ func toView(t store.JoinToken, consumptionCount int64) joinTokenView {
 	return v
 }
 
-// toViewFromListRow is the variant that accepts the sqlc-generated
+// toViewFromListRow is the variant that accepts the store's
 // ListJoinTokensRow shape (carries a computed consumption_count).
 func toViewFromListRow(row store.ListJoinTokensRow) joinTokenView {
 	jt := store.JoinToken{
@@ -150,8 +150,8 @@ func toViewFromListRow(row store.ListJoinTokensRow) joinTokenView {
 }
 
 // toConsumptionView projects a store.JoinTokenConsumption onto the
-// public shape. source_ip stringification handles the pgtype.Inet
-// (here netip.Addr) nullable form.
+// public shape. source_ip stringification handles the netip.Addr
+// nullable form.
 func toConsumptionView(c store.JoinTokenConsumption) consumptionView {
 	v := consumptionView{
 		ID:          c.ID.String(),

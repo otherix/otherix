@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -65,7 +66,7 @@ type heartbeatMigrationCap struct {
 // status. Independent of the goroutine schedule.
 func (m *Mock) SendHeartbeatNow(ctx context.Context) (int, error) {
 	if m.cpURL == "" {
-		return 0, fmt.Errorf("agentmock: ControlPlaneURL is empty; SendHeartbeatNow needs Options.ControlPlaneURL")
+		return 0, errors.New("agentmock: ControlPlaneURL is empty; SendHeartbeatNow needs Options.ControlPlaneURL")
 	}
 	body, err := m.buildHeartbeatBody()
 	if err != nil {

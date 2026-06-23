@@ -93,7 +93,7 @@ func (s *Store) RedeemClusterJoinToken(ctx context.Context, p store.RedeemCluste
 		}
 		// CAS lost to a concurrent redemption; re-read and retry.
 	}
-	return store.RedeemClusterJoinResult{}, fmt.Errorf("redeem cluster join token: too many concurrent attempts")
+	return store.RedeemClusterJoinResult{}, errors.New("redeem cluster join token: too many concurrent attempts")
 }
 
 // readConsumedCount returns the token's current redemption count and the

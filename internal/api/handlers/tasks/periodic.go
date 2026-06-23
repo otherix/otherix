@@ -19,8 +19,8 @@ type CleanupStore interface {
 }
 
 // CleanupFunc returns the periodic function that deletes finalized tasks past
-// their per-state retention window. The etcd-runtime replacement for the river
-// CleanupWorker; the Scheduler drives it.
+// their per-state retention window. The etcd-runtime retention sweep; the
+// Scheduler drives it.
 func CleanupFunc(st CleanupStore, retention RetentionConfig, log *slog.Logger) func(context.Context) error {
 	rc := retention.withDefaults()
 	return func(ctx context.Context) error {

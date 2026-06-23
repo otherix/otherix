@@ -67,7 +67,7 @@ var (
 
 	// ErrMigrationNotCancelable is returned by CancelMigration when the migration
 	// is already in a terminal phase (completed/failed/cancelled): cancel is valid
-	// only pre-cutover (spec D5), so a terminal migration cannot be cancelled.
+	// only pre-cutover, so a terminal migration cannot be cancelled.
 	ErrMigrationNotCancelable = errors.New("store: migration is not cancelable")
 
 	// ErrMigrationTargetConflict is returned by BindMigrationTarget when the

@@ -15,7 +15,7 @@ import (
 var errSubscriberClosed = errors.New("serialmux: subscriber closed")
 
 // errSubscriberFull is returned when the subscriber's outbound channel
-// is full. Per L2 the multiplexer never blocks on a slow consumer; the
+// is full. The multiplexer never blocks on a slow consumer; the
 // caller increments the drop counter and continues.
 var errSubscriberFull = errors.New("serialmux: subscriber channel full")
 

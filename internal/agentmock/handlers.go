@@ -543,7 +543,7 @@ func (m *Mock) BlobsPull(w http.ResponseWriter, r *http.Request, _ agentapi.Blob
 	})
 }
 
-// VmsList implements GET /v1/vms — Phase A vertical slice. Delegates
+// VmsList implements GET /v1/vms. Delegates
 // to vmList for the inventory snapshot.
 func (m *Mock) VmsList(w http.ResponseWriter, r *http.Request, _ agentapi.VmsListParams) {
 	const opID = "vms.list"
@@ -553,7 +553,7 @@ func (m *Mock) VmsList(w http.ResponseWriter, r *http.Request, _ agentapi.VmsLis
 	m.vmList(w, r, opID)
 }
 
-// VmsCreate implements POST /v1/vms — Phase A vertical slice.
+// VmsCreate implements POST /v1/vms.
 func (m *Mock) VmsCreate(w http.ResponseWriter, r *http.Request, _ agentapi.VmsCreateParams) {
 	const opID = "vms.create"
 	if m.preDispatch(w, r, opID) {
@@ -562,7 +562,7 @@ func (m *Mock) VmsCreate(w http.ResponseWriter, r *http.Request, _ agentapi.VmsC
 	m.vmCreate(w, r, opID)
 }
 
-// VmsDelete implements DELETE /v1/vms/{vm_name} — Phase A vertical slice.
+// VmsDelete implements DELETE /v1/vms/{vm_name}.
 func (m *Mock) VmsDelete(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsDeleteParams) {
 	const opID = "vms.delete"
 	if m.preDispatch(w, r, opID) {
@@ -571,7 +571,7 @@ func (m *Mock) VmsDelete(w http.ResponseWriter, r *http.Request, vmName agentapi
 	m.vmDelete(w, r, vmName, opID)
 }
 
-// VmsGet implements GET /v1/vms/{vm_name} — Phase A vertical slice.
+// VmsGet implements GET /v1/vms/{vm_name}.
 func (m *Mock) VmsGet(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName) {
 	const opID = "vms.get"
 	if m.preDispatch(w, r, opID) {
@@ -580,8 +580,8 @@ func (m *Mock) VmsGet(w http.ResponseWriter, r *http.Request, vmName agentapi.VM
 	m.vmGet(w, r, vmName, opID)
 }
 
-// VmsStart implements POST /v1/vms/{vm_name}/start — L2 async vertical
-// slice. Returns 202 + AsyncTaskAccepted; the inventory transition
+// VmsStart implements POST /v1/vms/{vm_name}/start — asynchronous.
+// Returns 202 + AsyncTaskAccepted; the inventory transition
 // (stopped/failed → running) lands lazily on later TasksGet calls.
 func (m *Mock) VmsStart(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsStartParams) {
 	const opID = "vms.start"
@@ -627,8 +627,8 @@ func (m *Mock) VmsReboot(w http.ResponseWriter, r *http.Request, vmName agentapi
 	m.vmLifecycleAsync(w, r, opID, vmName, "reboot")
 }
 
-// VmsPause implements POST /v1/vms/{vm_name}/pause — L1 sync vertical
-// slice. Looks up the stored AgentVM by name, transitions its status
+// VmsPause implements POST /v1/vms/{vm_name}/pause — synchronous.
+// Looks up the stored AgentVM by name, transitions its status
 // to paused, and returns the refreshed entry. 404 when the inventory
 // has no entry for `vmName`; 409 when the current status is not
 // `running`. Both error envelopes match the agent contract — the CP
@@ -651,8 +651,8 @@ func (m *Mock) VmsResume(w http.ResponseWriter, r *http.Request, vmName agentapi
 	m.vmLifecycle(w, r, opID, vmName, "paused", "running")
 }
 
-// VmsReset implements POST /v1/vms/{vm_name}/reset — sync per the
-// Pre-L1 spec amendment. Requires `running` and leaves the status
+// VmsReset implements POST /v1/vms/{vm_name}/reset — synchronous.
+// Requires `running` and leaves the status
 // `running` (reset preserves runtime identity; the QEMU process
 // keeps going, only the guest CPU is reset).
 func (m *Mock) VmsReset(w http.ResponseWriter, r *http.Request, vmName agentapi.VMName, _ agentapi.VmsResetParams) {

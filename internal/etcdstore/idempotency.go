@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 
 // Idempotency keys back the mutating-endpoint replay guard. The row key is
 // scoped per user: /otherix/idempotency_keys/<user_id>/<key> -> JSON row, so two
-// users may use the same client-supplied key string without colliding (audit
-// R2-L10). The middleware's in_flight -> completed lifecycle maps to
+// users may use the same client-supplied key string without colliding.
+// The middleware's in_flight -> completed lifecycle maps to
 // compare-guarded writes (begin inserts only if absent; reclaim overwrites only
 // an expired row). not-found / conflict / no-op cases return the store's
 // not-found sentinel store.ErrNotFound, which the middleware tolerates.
@@ -35,7 +36,7 @@ func idempotencyPrefix() string { return etcd.Key("idempotency_keys") + "/" }
 // programming error, never a request-driven case.
 func idempotencyParamsKey(userID *uuid.UUID, key string) (string, error) {
 	if userID == nil {
-		return "", fmt.Errorf("idempotency key requires a user id")
+		return "", errors.New("idempotency key requires a user id")
 	}
 	return idempotencyKeyKey(*userID, key), nil
 }

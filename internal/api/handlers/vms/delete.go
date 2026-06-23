@@ -24,8 +24,8 @@ import (
 // "403 vs 404" rule. {id} is a VM name; UUID literals are rejected
 // with 400 validation_failed at the resolver.
 //
-// Atomic enqueue: tasks row + river job + UpdateTaskRiverJobID land
-// in one transaction. The vms / vm_disks / vm_runtime rows are NOT
+// Atomic enqueue: tasks row + job land in one atomic enqueue. The
+// vms / vm_disks / vm_runtime rows are NOT
 // touched at handler time — the worker drives the soft-delete chain
 // inside its own InTx after the agent confirms teardown. Rationale:
 // a partial failure between handler-side soft-delete and worker
@@ -82,7 +82,7 @@ var errVMNoNode = errors.New("vm has no resolvable node")
 
 // runDelete runs the ownership check, resolves the owning node from
 // vm.pinned_node_id (or vm_disks → pool fallback), and atomically
-// inserts the tasks row + river job inside one transaction. Returns
+// inserts the tasks row + job in one atomic enqueue. Returns
 // the task id on success.
 func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User) (uuid.UUID, error) {
 	if err := auth.CheckOwnership(caller, &vm.OwnerID, auth.PermVMDelete); err != nil {
@@ -108,7 +108,7 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 		}
 	}
 
-	// Lifecycle precedence (spec D5): `vm delete` supersedes an in-flight
+	// Lifecycle precedence: `vm delete` supersedes an in-flight
 	// migration. The desired phase (deleted) outranks "I want it on another
 	// node", so cancel any active migration before enqueuing the delete.
 	// Non-destructive (cancel is fail-safe-to-source pre-cutover, a no-op
@@ -172,7 +172,7 @@ func (h *Handler) resolveNodeForVM(ctx context.Context, vm store.VM) (uuid.UUID,
 
 // cancelActiveMigration cancels the VM's in-flight (non-terminal) migration, if
 // any, with the audit reason - the authoritative lifecycle-precedence step for
-// `vm stop` / `vm delete` (spec D5). It is best-effort and fails SOFT: a lookup
+// `vm stop` / `vm delete`. It is best-effort and fails SOFT: a lookup
 // or cancel error is logged and swallowed so the stop/delete still enqueues. The
 // migration worker also guards via redelivery, so a missed cancel here is
 // recoverable, never a stuck VM; and cancel itself is non-destructive

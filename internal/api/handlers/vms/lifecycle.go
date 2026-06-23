@@ -6,7 +6,6 @@ package vms
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -33,7 +32,7 @@ type syncLifecycleClient interface {
 // the Handler so the sync lifecycle handlers (Pause / Resume /
 // Reset) can dispatch to the pinned agent. Kept separate from the
 // async-handler deps so test wiring can plug a fakeSyncLifecycle
-// client without touching the river-backed create / delete seams.
+// client without touching the worker-backed create / delete seams.
 type LifecycleDeps struct {
 	AgentClient syncLifecycleClient
 }
@@ -53,8 +52,8 @@ func (h *Handler) Resume(w http.ResponseWriter, r *http.Request) {
 	h.runSyncLifecycle(w, r, syncOpResume)
 }
 
-// Reset implements POST /v1/vms/{id}/reset — sync per the Pre-L1
-// spec amendment. Issues QMP `system_reset`. Same permission
+// Reset implements POST /v1/vms/{id}/reset — sync per the spec
+// amendment. Issues QMP `system_reset`. Same permission
 // contract as Pause.
 func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 	h.runSyncLifecycle(w, r, syncOpReset)
@@ -188,7 +187,7 @@ func (h *Handler) dispatchSyncOp(
 	case syncOpReset:
 		return h.lifecycle.AgentClient.ResetVM(ctx, endpoint, vmName, idemKey)
 	default:
-		return agentclient.AgentVM{}, fmt.Errorf("unknown sync op")
+		return agentclient.AgentVM{}, errors.New("unknown sync op")
 	}
 }
 

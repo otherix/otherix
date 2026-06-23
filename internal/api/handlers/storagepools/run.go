@@ -100,7 +100,7 @@ func runScan(ctx context.Context, st WorkerStore, exec ScanExecutor, pressureDis
 
 // failTask writes the terminal failed envelope and returns cause so the
 // dispatcher requeues vs fails against the kind's attempt budget. Mirrors the
-// river workers' fail() against the WorkerStore mutator.
+// worker's fail() against the WorkerStore mutator.
 func failTask(ctx context.Context, st WorkerStore, log *slog.Logger, op string, taskID uuid.UUID, code string, cause error) error {
 	envelope, marshalErr := marshalError(code, cause.Error())
 	if marshalErr != nil {

@@ -107,7 +107,7 @@ type Store interface {
 	// migration: read by the VM status.migration summary and by the
 	// stop/delete lifecycle-precedence path. CancelMigration ends that
 	// migration (cancelled) before stop/delete enqueues - the desired
-	// lifecycle outranks "I want it on another node" (spec D5).
+	// lifecycle outranks "I want it on another node".
 	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error)
 	CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error)
 }
@@ -201,7 +201,7 @@ type vmView struct {
 	// developer reading a foreign VM) gets the fields stripped, because
 	// cloud-init routinely carries guest passwords, SSH keys, and API
 	// tokens. See callerCanReadVMSecrets and the includeSecrets parameter
-	// on toView (audit finding R2-H1).
+	// on toView.
 	UserData      *string `json:"user_data,omitempty"`
 	NetworkConfig *string `json:"network_config,omitempty"`
 	CreatedAt     string  `json:"created_at"`

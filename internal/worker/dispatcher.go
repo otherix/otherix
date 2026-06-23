@@ -3,8 +3,8 @@
 
 // Package worker is the etcd-backed control-plane job runtime. The Dispatcher
 // consumes the etcd job queue (internal/etcdstore) and routes each job to a
-// registered handler, the replacement for river's in-process
-// worker pool. Task-driven worker logic lives in the owning handler packages as
+// registered handler, the in-process worker dispatcher
+// pool. Task-driven worker logic lives in the owning handler packages as
 // Run functions registered here; periodic work is driven separately by the
 // Scheduler.
 package worker

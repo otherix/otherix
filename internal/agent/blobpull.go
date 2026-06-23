@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -29,7 +30,7 @@ import (
 func setupBlobTransport(cfg *config.AgentConfig, manager *vm.Manager, baseTLS *tls.Config, log *slog.Logger) (*artifactstore.Store, *blobshandlers.Handler, *blobServeManager, error) {
 	artStore := manager.ArtifactStore()
 	if artStore == nil {
-		return nil, nil, nil, fmt.Errorf("artifact store required in production (artifacts.root unset?)")
+		return nil, nil, nil, errors.New("artifact store required in production (artifacts.root unset?)")
 	}
 	// One-time, best-effort relocation of disk-pool-resident snapshot blobs into
 	// the artifact store. Fail-open: errors are logged inside, never fatal.
@@ -95,10 +96,10 @@ func (p blobPuller) Pull(digest, token, holderEndpoint, holderIdentity string, e
 // heartbeat.buildTLSConfig.
 func newBlobPullClient(cfg config.TLSConfig) (*http.Client, error) {
 	if cfg.CertPath == "" || cfg.KeyPath == "" {
-		return nil, fmt.Errorf("blob pull client: cert_path and key_path are required")
+		return nil, errors.New("blob pull client: cert_path and key_path are required")
 	}
 	if cfg.CACertPath == "" {
-		return nil, fmt.Errorf("blob pull client: ca_cert_path is required")
+		return nil, errors.New("blob pull client: ca_cert_path is required")
 	}
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
 	if err != nil {

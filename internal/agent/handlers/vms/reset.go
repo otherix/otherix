@@ -11,8 +11,8 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 )
 
-// Reset handles POST /v1/vms/{vm_name}/reset. Synchronous per Pre-L1
-// reset spec amendment: the agent dials QMP, issues `system_reset`,
+// Reset handles POST /v1/vms/{vm_name}/reset. Synchronous:
+// the agent dials QMP, issues `system_reset`,
 // returns the refreshed VM view. The QEMU process keeps running and
 // the guest CPU is reset; persisted phase stays running because the
 // runtime identity is preserved — operators detect the reboot via

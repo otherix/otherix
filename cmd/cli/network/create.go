@@ -154,7 +154,7 @@ func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetwor
 		return cpclient.CreateNetworkParams{}, err
 	}
 	if subnet == "" {
-		return cpclient.CreateNetworkParams{}, fmt.Errorf("--type overlay requires --subnet")
+		return cpclient.CreateNetworkParams{}, errors.New("--type overlay requires --subnet")
 	}
 
 	// Reject flags that are bridge-only / server-derived for overlay.

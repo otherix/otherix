@@ -14,7 +14,7 @@
 // The resolver stays a handler-scoped package
 // (internal/api/handlers/internal/resolver) and not a store-scoped
 // helper: the wire-level "identifier" concept belongs to the API
-// edge, the store layer stays a thin sqlc binding.
+// edge, the store layer stays a thin type binding.
 package resolver
 
 import (

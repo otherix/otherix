@@ -461,8 +461,8 @@ func startImageCacheEviction(ctx context.Context, cfg *config.AgentConfig, manag
 // observed-but-unknown here (known only at create time), not a defect. A
 // ListImages error (e.g. an unknown pool name mid-reconcile) yields nil + false
 // for that pool so the heartbeat liveness signal is never blocked on inventory,
-// and the CP preserves the prior inventory rather than clearing it (audit
-// R2-L11, fail-closed).
+// and the CP preserves the prior inventory rather than clearing it
+// (fail-closed).
 type poolImageAdapter struct {
 	ctx     context.Context
 	manager *vm.Manager
@@ -577,7 +577,7 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 	}
 
 	// MultiResponseHandler fans the heartbeat response to every
-	// reconciler (L3 D3). Pool reconciler consumes declared_pools; VM
+	// reconciler. Pool reconciler consumes declared_pools; VM
 	// reconciler consumes declared_vms; network reconciler consumes
 	// declared_networks; WireGuard reconciler consumes self_overlay_ip +
 	// declared_wireguard_peers. Each ignores the others' payload without

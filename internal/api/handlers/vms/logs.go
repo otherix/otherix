@@ -250,8 +250,8 @@ func (h *Handler) pumpLogsOnce(w http.ResponseWriter, r *http.Request, client *h
 // relayLogsFollowing streams the VM's logs to the client, following the VM
 // across live migrations. On an upstream break it re-reads the fresh
 // PinnedNodeID: a node change (committed cutover) re-dials the target with
-// tail=-1; same-node-no-migration is a clean end. The migrating safety-net
-// branch is added in Task 2.
+// tail=-1; same-node-no-migration is a clean end. A still-in-flight migration
+// hits the safety-net branch that waits for the cutover flip.
 func (h *Handler) relayLogsFollowing(w http.ResponseWriter, r *http.Request, vm store.VM) {
 	client := h.logsStreamClient()
 	vmName := vm.Name

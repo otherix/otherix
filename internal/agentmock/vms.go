@@ -24,7 +24,7 @@ func syntheticImageSHA(imageURL string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// vmCreateRequestBody mirrors the Iteration 1 agent's hand-written
+// vmCreateRequestBody mirrors the agent's hand-written
 // createRequest (internal/agent/handlers/vms/create.go) — the
 // simplified shape the CP worker sends through agentclient.
 // Decoding into this struct rather than agentapi.VMSpec is
@@ -46,14 +46,14 @@ type vmCreateRequestBody struct {
 	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
 	Format         string `json:"format,omitempty"`
 	DiskGiB        int    `json:"disk_gib,omitempty"`
-	// UserData (L3) carries the CP-resolved cloud-init blob. Mock
+	// UserData carries the CP-resolved cloud-init blob. Mock
 	// stores it on the AgentVM record so integration tests can
 	// assert the resolver picked the right source and the agent wire
 	// shape propagates the field.
 	UserData string `json:"user_data,omitempty"`
 }
 
-// vmView mirrors the Iteration 1 agent's hand-written response shape.
+// vmView mirrors the agent's hand-written response shape.
 // Defined locally so the mock's wire output is fully controlled by
 // this package — see comment on vmCreateRequestBody. The wire field
 // is `pool` (was `pool_id`) for consistency with the CP edge; the
@@ -227,7 +227,7 @@ func (m *Mock) vmCreate(w http.ResponseWriter, r *http.Request, opID string) {
 // matches the agent contract that delete-of-missing is a no-op
 // (callers translating 404 → ok already short-circuit before
 // dispatch). Tests that need explicit 404 semantics should use
-// InjectError("vms.delete", ...). The Path D URL key is the VM name;
+// InjectError("vms.delete", ...). The URL key is the VM name;
 // the projection still surfaces the VM's UUID through `resource_id`
 // when a matching AgentVM exists in the inventory, falling back to
 // uuid.Nil for delete-of-missing.
@@ -274,7 +274,7 @@ func (m *Mock) vmGet(w http.ResponseWriter, r *http.Request, vmName string, opID
 	m.respondJSON(w, r, opID, http.StatusOK, vmToView(v))
 }
 
-// vmLifecycle implements the L1 sync surface (pause / resume / reset).
+// vmLifecycle implements the synchronous surface (pause / resume / reset).
 // Looks up the stored AgentVM by name, validates the current status
 // matches `requireStatus`, then transitions to `newStatus` and returns
 // the refreshed entry. For reset, callers pass `newStatus == requireStatus`
@@ -394,7 +394,7 @@ func (m *Mock) vmLifecycleAsync(w http.ResponseWriter, r *http.Request, opID, vm
 // materializeVMLifecycleLocked transitions storedVMs[name].Status
 // per the queued outcome once an async lifecycle task has reached
 // terminal-success. Caller holds m.state.mu. Failed terminals are a
-// no-op (the inventory entry stays in its prior phase per Area 4-IV
+// no-op (the inventory entry stays in its prior phase
 // — manual intervention only).
 func (m *Mock) materializeVMLifecycleLocked(snapshot *agentTask, now time.Time) {
 	if snapshot.vmLifecycleResult == nil || snapshot.vmLifecycleName == "" {

@@ -13,7 +13,7 @@ import (
 
 // Reboot handles POST /v1/vms/{vm_name}/reboot — async per spec.
 // Returns 202 + AsyncTaskAccepted; Manager.Reboot orchestrates an
-// internal stop + start (Area 4-III lock — distinct from Reset; the
+// internal stop + start (distinct from Reset; the
 // QEMU process is replaced so the PID changes). On stop-phase
 // timeout the task fails with code `stop_timeout`; operators dispatch
 // to reset to force.

@@ -216,8 +216,8 @@ type IncomingResult struct {
 //
 // Cleanup-on-failure is intentionally minimal: cleanup releases the reserved
 // port. If AdoptForMigration succeeds but a later step fails the adopted VM
-// record and any partial destination disk are left behind; for this slice
-// that is acceptable - the CP re-drives the migration as failed and the
+// record and any partial destination disk are left behind; that
+// is acceptable - the CP re-drives the migration as failed and the
 // partial is GC'd. No migration record is stored until every step succeeds,
 // so an early failure leaves nothing in m.migrations to delete.
 func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingResult, error) {

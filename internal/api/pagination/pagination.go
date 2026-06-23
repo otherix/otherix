@@ -29,14 +29,14 @@ const cursorPayloadLen = 24
 // to 50 when raw is zero. Mirrors the OpenAPI parameter constraints.
 func Limit(raw int) int32 {
 	const (
-		def = 50
-		max = 200
+		def      = 50
+		maxLimit = 200
 	)
 	if raw <= 0 {
 		return def
 	}
-	if raw > max {
-		return max
+	if raw > maxLimit {
+		return maxLimit
 	}
 	return int32(raw)
 }

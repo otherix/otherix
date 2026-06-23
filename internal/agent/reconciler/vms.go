@@ -18,7 +18,7 @@ import (
 
 // VMManager is the narrow vm.Manager surface the VM reconciler needs.
 // vm.Manager satisfies it structurally; tests pass a fake without
-// importing the production package. Per L3 D2 the manager exposes
+// importing the production package. The manager exposes
 // HasInFlight so the reconciler can short-circuit corrective ops
 // while a prior tick's enqueue is still running.
 type VMManager interface {
@@ -136,7 +136,7 @@ func (r *VMs) Run(ctx context.Context) error {
 //   - desired_phase=stopped, observed=running → Stop (graceful)
 //   - desired_phase=deleted, observed≠deleting → DeleteByName
 //   - any in-flight (HasInFlight==true)        → skip enqueue
-//   - observed=failed                          → skip per Area 4-IV
+//   - observed=failed                          → skip
 //     (manual intervention)
 //   - observed transitional (pending /
 //     creating / stopping / deleting / paused) → skip; next tick re-checks
@@ -168,8 +168,8 @@ func (r *VMs) reconcile(ctx context.Context) {
 		if !declared {
 			// VM observed locally but CP does not declare it on this
 			// node. Could be: 1) CP-side delete tasks lost; 2) VM
-			// migrated away and CP forgot to declare elsewhere. Per L3
-			// D4 lock, CP orphan-detects via omission; agent simply
+			// migrated away and CP forgot to declare elsewhere.
+			// CP orphan-detects via omission; agent simply
 			// reports the VM in heartbeat and waits. No corrective op.
 			continue
 		}
@@ -188,7 +188,7 @@ func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM)
 		return
 	}
 	if v.Status == vm.StatusFailed {
-		// Area 4-IV: failed VMs require operator intervention.
+		// Failed VMs require operator intervention.
 		// Reconciler does NOT auto-restart even when desired=running.
 		return
 	}

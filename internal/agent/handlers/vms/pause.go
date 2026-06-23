@@ -13,8 +13,8 @@ import (
 	"github.com/otherix/otherix/internal/api/response"
 )
 
-// Pause handles POST /v1/vms/{vm_name}/pause. Synchronous per L1
-// scope: the agent dials QMP, issues `stop`, returns the refreshed
+// Pause handles POST /v1/vms/{vm_name}/pause. Synchronous:
+// the agent dials QMP, issues `stop`, returns the refreshed
 // VM view with phase=paused. Maps Manager errors:
 //
 //   - ErrNotFound       → 404 not_found

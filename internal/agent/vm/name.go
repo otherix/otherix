@@ -13,8 +13,7 @@ var rfc1123Label = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // chars, [a-z0-9-], first and last alphanumeric). The agent mirrors the
 // control-plane VM-name constraint as defense-in-depth: the name is formatted
 // into cloud-init YAML, so a name with a newline or YAML metacharacter must
-// never reach the builder even if a future CP path stops validating (audit
-// R2-M5).
+// never reach the builder even if a future CP path stops validating.
 func validVMName(name string) bool {
 	if len(name) == 0 || len(name) > 63 {
 		return false

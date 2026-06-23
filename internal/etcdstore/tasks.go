@@ -41,7 +41,7 @@ func (s *Store) TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error) 
 }
 
 // taskFromParams builds a fresh task row from create params, stamping
-// created_at and the river-equivalent job reference.
+// created_at and the job-queue reference.
 func taskFromParams(p store.CreateTaskParams, jobSeq int64) store.Task {
 	ref := jobSeq
 	return store.Task{

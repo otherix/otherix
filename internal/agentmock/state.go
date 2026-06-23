@@ -69,23 +69,23 @@ type state struct {
 	tasks           map[uuid.UUID]*agentTask
 	poolScanResults map[string][]PoolScanResult
 
-	// Iteration 3 Phase A vm.create / vm.delete projection.
+	// vm.create / vm.delete projection.
 	// `storedVMs` is the on-node inventory observable through
 	// VmsGet / VmsList; create-success materialises an entry, delete-
 	// success removes it. `vmCreateResults` and `vmDeleteResults` are
 	// per-name FIFO queues seeded by the test API — empty queue +
-	// no pre-existing VM defaults to success. Per Pre-L1 Path D rekey
-	// the agent's wire surface addresses VMs by name; the mock's
+	// no pre-existing VM defaults to success. The agent's wire surface
+	// addresses VMs by name; the mock's
 	// in-memory inventory mirrors that key so the materialisation
 	// flow matches the agent contract end-to-end.
 	storedVMs       map[string]AgentVM
 	vmCreateResults map[string][]VMCreateResult
 	vmDeleteResults map[string][]VMDeleteResult
 
-	// L2 async lifecycle FIFO queues, keyed by (vmName, op) where op
+	// Asynchronous lifecycle FIFO queues, keyed by (vmName, op) where op
 	// is one of "start" / "stop" / "poweroff" / "reboot". Empty queue
-	// yields a default success per vmLifecycleOpDefaultTransition. Per
-	// L2 Step 5 the materialisation hook transitions storedVMs[name]
+	// yields a default success per vmLifecycleOpDefaultTransition. The
+	// materialisation hook transitions storedVMs[name]
 	// either to the per-op default phase or to VMLifecycleResult.NewStatus
 	// if non-empty.
 	vmLifecycleResults map[vmLifecycleKey][]VMLifecycleResult
@@ -127,7 +127,7 @@ type storagePool struct {
 	reportedAt time.Time
 }
 
-// vmLifecycleKey indexes the per-(vm name, op) FIFO queue of L2 async
+// vmLifecycleKey indexes the per-(vm name, op) FIFO queue of asynchronous
 // lifecycle outcomes. Op is one of "start" / "stop" / "poweroff" /
 // "reboot"; per-op separation lets one VM stage a stop-timeout failure
 // and a subsequent start success without interference.

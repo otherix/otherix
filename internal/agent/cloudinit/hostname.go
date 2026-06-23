@@ -19,7 +19,7 @@ const userDataHeader = "#cloud-config"
 // matching the VM name. If the input already pins a top-level
 // `hostname:` (regardless of value), the input is returned unchanged
 // — operator intent takes precedence over the VM name even when the
-// values differ, matching the Area 3 sub-3 "full replace" lock.
+// values differ, the "full replace" rule.
 //
 // Empty or whitespace-only user-data materialises to a minimal
 // `#cloud-config\nhostname: <name>\n` so the resulting ISO still

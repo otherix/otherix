@@ -211,7 +211,7 @@ const (
 	errCodeVMNotFound         = "vm_not_found"
 	errCodeVMPoolMissing      = "pool_not_found"
 	errCodeVMNodeMissing      = "node_not_found"
-	errCodeVMAgentUnreachabl  = "agent_unreachable"
+	errCodeVMAgentUnreachable = "agent_unreachable"
 	errCodeVMTimeout          = "request_timeout"
 	errCodeVMCreateFailed     = "vm_create_failed"
 	errCodeVMDeleteFailed     = "vm_delete_failed"
@@ -228,8 +228,8 @@ const (
 	errCodeVMBlobUnavailable = "blob_unavailable"
 )
 
-// Failure codes specific to the L2 async lifecycle surface. Pass-through agent
-// codes (stop_timeout, qemu_supervision_failed, qmp_unavailable, ...) are
+// Failure codes specific to the asynchronous VM lifecycle surface. Pass-through
+// agent codes (stop_timeout, qemu_supervision_failed, qmp_unavailable, ...) are
 // preserved verbatim by classifyVMError.
 const (
 	errCodeVMStartFailed    = "vm_start_failed"
@@ -258,7 +258,7 @@ func classifyVMError(err error, fallback string) string {
 		if ae.Code != "" {
 			return ae.Code
 		}
-		return errCodeVMAgentUnreachabl
+		return errCodeVMAgentUnreachable
 	}
 	var te *agentclient.TimeoutError
 	if errors.As(err, &te) {

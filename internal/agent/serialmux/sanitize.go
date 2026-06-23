@@ -18,7 +18,7 @@ const maxPendingCarry = 64
 // rules in sanitizeWithCarry. The multiplexer instantiates one per
 // VM and feeds every chunk read from the QEMU socket through Process;
 // the Sanitizer carries partial ANSI CSI sequences across chunk
-// boundaries so the L14 "preserve ANSI CSI verbatim" rule is honored
+// boundaries so the "preserve ANSI CSI verbatim" rule is honored
 // even when the QEMU socket Read happens to split mid-sequence.
 //
 // Sanitizer is not safe for concurrent use; the pump is the sole
@@ -32,7 +32,7 @@ func NewSanitizer() *Sanitizer { return &Sanitizer{} }
 
 // Process sanitizes the next chunk of raw serial bytes. It merges
 // any pending partial CSI bytes from the previous Process call,
-// applies the L14 sanitization rules, and saves any new trailing
+// applies the sanitization rules, and saves any new trailing
 // partial CSI bytes into the carry buffer for the next call. The
 // returned slice is a fresh allocation.
 func (s *Sanitizer) Process(chunk []byte) []byte {
@@ -58,7 +58,7 @@ func (s *Sanitizer) Process(chunk []byte) []byte {
 	return out
 }
 
-// sanitizeWithCarry applies the L14 sanitization rules to data and
+// sanitizeWithCarry applies the sanitization rules to data and
 // returns (out, carry):
 //
 //   - out: sanitized bytes ready for emission.
@@ -66,7 +66,7 @@ func (s *Sanitizer) Process(chunk []byte) []byte {
 //     sequence whose tail is in the next chunk; the caller
 //     (Sanitizer) saves them and prepends to the next Process call.
 //
-// L14 rules (revised after real-agent smoke caught the staircase
+// Sanitization rules (revised after real-agent smoke caught the staircase
 // effect that stripping CR produced on console-stream sessions):
 //
 //   - Strip C0 control bytes except \b (0x08), \t (0x09), \n (0x0A),
@@ -148,7 +148,7 @@ func sanitize(data []byte) []byte {
 //   - incomplete: true when the chunk ends mid-sequence; the caller
 //     saves the remainder in the carry buffer for the next chunk.
 //
-// L14 preserves CSI sequences. The other ANSI / VT-style escapes
+// Sanitization preserves CSI sequences. The other ANSI / VT-style escapes
 // (charset designation, RI / IND / NEL single-byte controls, DEC
 // private modes) are dropped wholesale - they carry no visible
 // glyph but their bytes after ESC are in the printable ASCII range

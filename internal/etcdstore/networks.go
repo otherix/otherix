@@ -43,7 +43,7 @@ func networkVNISeqKey() string { return etcd.Key("seq", "network_vni") }
 // (a deleted overlay's VNI is not reissued); the range is wide enough that the
 // leak is negligible at SMB scale. Returns store.ErrVNIExhausted past the range.
 func (s *Store) allocateVNI(ctx context.Context) (int32, error) {
-	min, max, err := s.VNIRange(ctx)
+	lo, hi, err := s.VNIRange(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -52,10 +52,10 @@ func (s *Store) allocateVNI(ctx context.Context) (int32, error) {
 		return 0, err
 	}
 	offset := seq - 1
-	if offset > int64(max-min) {
+	if offset > int64(hi-lo) {
 		return 0, store.ErrVNIExhausted
 	}
-	vni := min + int32(offset) //nolint:gosec // offset bounded by the check above; max <= 16777215 keeps the result in int32 range
+	vni := lo + int32(offset) //nolint:gosec // offset bounded by the check above; hi <= 16777215 keeps the result in int32 range
 	return vni, nil
 }
 

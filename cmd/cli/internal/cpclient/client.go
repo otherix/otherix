@@ -30,7 +30,7 @@ import (
 
 // defaultTimeout is the per-request deadline applied when Options.Timeout
 // is zero. Generous enough to accommodate the create handler's atomic
-// enqueue (one round-trip to Postgres + river insert) without masking a
+// enqueue (one round-trip to the control plane) without masking a
 // genuinely-stuck server.
 const defaultTimeout = 30 * time.Second
 

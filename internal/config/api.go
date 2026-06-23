@@ -79,7 +79,7 @@ func (n NetworkConfig) Validate() error {
 // EtcdConfig configures the embedded etcd member that backs the
 // control-plane store. The single-node defaults let a
 // standalone api-server boot with no operator input; HA topologies
-// (slice 9) override Mode + InitialCluster + the peer mTLS material.
+// override Mode + InitialCluster + the peer mTLS material.
 //
 // This is plain transport: cmd/api translates it into the leaf
 // internal/etcd.Config, whose Validate is the single source of truth
@@ -291,11 +291,10 @@ type ResourceConfig struct {
 // from heartbeat / scan metrics; the scheduler excludes flagged nodes
 // (or pools, for disk pressure) from placement until recovery.
 //
-// Sub-iteration A shipped Memory pressure (heartbeat-driven, per-node).
-// Sub-iteration B adds SystemDisk pressure (heartbeat-driven, per-node,
-// requires agent root-filesystem metrics in the heartbeat payload) and
-// Disk pressure (scan-driven, per-pool — a pressured pool is excluded
-// independently of other pools on the same node).
+// Memory pressure is heartbeat-driven, per-node. SystemDisk pressure is
+// heartbeat-driven, per-node (requires agent root-filesystem metrics in the
+// heartbeat payload). Disk pressure is scan-driven, per-pool — a pressured
+// pool is excluded independently of other pools on the same node.
 type PressureConfig struct {
 	Memory     PressureConditionConfig `koanf:"memory"`
 	SystemDisk PressureConditionConfig `koanf:"system_disk"`
@@ -553,7 +552,7 @@ type ConsoleConfig struct {
 	AccessMode string `koanf:"access_mode"`
 }
 
-// WorkersConfig controls the in-process River worker pool embedded in the
+// WorkersConfig controls the in-process worker dispatcher pool embedded in the
 // API server.
 type WorkersConfig struct {
 	Enabled         bool                    `koanf:"enabled"`
@@ -603,7 +602,7 @@ func (b BackupConfig) Validate() error {
 }
 
 // StoragePoolScanConfig pins the periodic `storage_pool.scan_trigger`
-// worker (disk-aware scheduling Sub-iteration A). The trigger fires at
+// worker (disk-aware scheduling). The trigger fires at
 // Interval, enumerates active pools whose owning node is scannable, and
 // enqueues a fresh `storage_pool.scan` task for each — staggered by a
 // random delay in [0, Jitter) to spread agent-side load.

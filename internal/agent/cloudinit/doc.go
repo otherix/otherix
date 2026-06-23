@@ -6,7 +6,7 @@
 // contract (https://cloudinit.readthedocs.io/en/latest/topics/
 // datasources/nocloud.html).
 //
-// Per Otherix L3 Area 3 lock: operators ship raw `#cloud-config`
+// Operators ship raw `#cloud-config`
 // YAML; this package does not parse cloud-init semantics beyond
 // hostname injection. The VM-level user_data is resolved CP-side
 // (there is no template fallback); the agent receives a single
@@ -18,6 +18,5 @@
 //	/user-data       — operator-provided `#cloud-config` YAML
 //	/network-config  — optional, omitted if NetworkData is empty
 //
-// The package wraps github.com/diskfs/go-diskfs per Item 5 of the
-// L3 spec.
+// The package wraps github.com/diskfs/go-diskfs.
 package cloudinit

@@ -25,8 +25,7 @@
 // Delete is conditional on no active vm_disks references; storage
 // pools have no force-delete counterpart by design (the operator
 // must remove or migrate the dependent disks first). The async
-// `storage_pools.scan` operation is deferred to a separate slice,
-// pending the river queue worker setup.
+// `storage_pools.scan` operation runs over the etcd worker dispatcher.
 package storagepools
 
 import (

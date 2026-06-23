@@ -6,6 +6,7 @@ package agentclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -56,7 +57,7 @@ func (c *Client) PostScan(
 		return uuid.Nil, fmt.Errorf("agentclient: decode AsyncTaskAccepted: %v", err)
 	}
 	if accepted.TaskID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("agentclient: AsyncTaskAccepted.task_id is zero uuid")
+		return uuid.Nil, errors.New("agentclient: AsyncTaskAccepted.task_id is zero uuid")
 	}
 	return accepted.TaskID, nil
 }

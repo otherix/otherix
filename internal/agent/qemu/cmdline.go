@@ -10,6 +10,7 @@
 package qemu
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -228,22 +229,22 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 
 func validateSpec(spec VMSpec) error {
 	if spec.Name == "" {
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	}
 	if spec.UUID == uuid.Nil {
-		return fmt.Errorf("uuid is required")
+		return errors.New("uuid is required")
 	}
 	if spec.VCPUs < 1 {
-		return fmt.Errorf("vcpus must be >= 1")
+		return errors.New("vcpus must be >= 1")
 	}
 	if spec.MemoryMB < 128 {
-		return fmt.Errorf("memory_mb must be >= 128")
+		return errors.New("memory_mb must be >= 128")
 	}
 	if spec.DiskPath == "" || spec.QMPSocket == "" || spec.ConsoleSocket == "" || spec.PIDFile == "" {
-		return fmt.Errorf("disk_path, qmp_socket, console_socket, pid_file are all required")
+		return errors.New("disk_path, qmp_socket, console_socket, pid_file are all required")
 	}
 	if spec.Architecture == ArchARM64 && spec.AArch64Firmware == "" {
-		return fmt.Errorf("aarch64 spec requires AArch64Firmware path")
+		return errors.New("aarch64 spec requires AArch64Firmware path")
 	}
 	if spec.Accelerator != "kvm" && spec.Accelerator != "tcg" {
 		return fmt.Errorf("accelerator must be \"kvm\" or \"tcg\" (got %q)", spec.Accelerator)

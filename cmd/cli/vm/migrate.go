@@ -36,7 +36,7 @@ type migrateFlags struct {
 }
 
 // newMigrateCommand wires `otherix vm migrate <vm>` — live storage migration
-// of the VM to another node (spec D2: no --node lets the scheduler pick a
+// of the VM to another node (no --node lets the scheduler pick a
 // different node). The CP enqueues a vm.migrate task whose resource is the
 // migration; --wait blocks the CLI on the task, but the migration runs
 // server-side regardless of the client (--wait-timeout is a client-side bound,

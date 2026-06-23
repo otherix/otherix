@@ -5,6 +5,7 @@ package cluster
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,7 +54,7 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if ttl < time.Minute || ttl > 24*time.Hour {
-		return fmt.Errorf("validation_failed: --ttl must be in [1m, 24h]")
+		return errors.New("validation_failed: --ttl must be in [1m, 24h]")
 	}
 
 	kind := "cluster"
@@ -62,7 +63,7 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 	req.TTLSeconds = &ttlSeconds
 	if maxUses != 0 {
 		if maxUses < 0 {
-			return fmt.Errorf("validation_failed: --max-uses must be >= 1")
+			return errors.New("validation_failed: --max-uses must be >= 1")
 		}
 		v := maxUses
 		req.MaxUses = &v

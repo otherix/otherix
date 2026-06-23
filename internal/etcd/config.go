@@ -10,6 +10,7 @@
 package etcd
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -98,10 +99,10 @@ func (c *Config) initialClusterString() string {
 func (c *Config) validatePeerURL() error {
 	peerU, err := url.Parse(c.PeerURL)
 	if err != nil || c.PeerURL == "" || peerU.Host == "" {
-		return fmt.Errorf("peer-url is required and must be a valid URL")
+		return errors.New("peer-url is required and must be a valid URL")
 	}
 	if peerU.Scheme == "https" && !c.peerTLSEnabled() {
-		return fmt.Errorf("peer-url is https but peer mTLS files (cert/key/ca) are not all set")
+		return errors.New("peer-url is https but peer mTLS files (cert/key/ca) are not all set")
 	}
 	return nil
 }
@@ -115,7 +116,7 @@ func (c *Config) validatePeerURL() error {
 func (c *Config) validateClientURL() error {
 	u, err := url.Parse(c.ClientURL)
 	if err != nil || c.ClientURL == "" || u.Host == "" {
-		return fmt.Errorf("client-url is required and must be a valid URL")
+		return errors.New("client-url is required and must be a valid URL")
 	}
 	if !isLoopbackHost(u.Hostname()) {
 		return fmt.Errorf("client-url host %q is not loopback: the etcd client KV API is "+
@@ -146,10 +147,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid mode %q (want single|bootstrap|join)", c.Mode)
 	}
 	if c.Name == "" {
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	}
 	if c.DataDir == "" {
-		return fmt.Errorf("data-dir is required")
+		return errors.New("data-dir is required")
 	}
 	if err := c.validatePeerURL(); err != nil {
 		return err
@@ -158,7 +159,7 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if c.ClusterToken == "" {
-		return fmt.Errorf("cluster-token is required")
+		return errors.New("cluster-token is required")
 	}
 	if (c.Mode == ModeBootstrap || c.Mode == ModeJoin) && c.InitialCluster == "" && !c.memberDirExists() {
 		return fmt.Errorf("initial-cluster is required for mode %q on a fresh data dir", c.Mode)

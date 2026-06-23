@@ -212,7 +212,7 @@ func vmDiskIndexOps(d store.VMDisk) []clientv3.Op {
 
 // PlacementQuerier returns the store's scheduler read surface, so a caller that
 // runs SchedulePlacement OUTSIDE the placement-locked bind transaction (the
-// migration worker, which never re-pins the VM at placement time - spec D3) can
+// migration worker, which never re-pins the VM at placement time) can
 // score candidates against live cluster state. The returned Querier is a thin
 // read view over the store; it holds no lock and commits nothing.
 func (s *Store) PlacementQuerier() scheduler.Querier { return placementReader{s: s} }
