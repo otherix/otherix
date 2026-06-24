@@ -128,10 +128,11 @@ func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
 	}
 }
 
-// TestApplyOverlayNatForcesAdvertiseDNS asserts back-compat: an egress=nat
-// overlay that decodes DNSEnabled=false (a legacy etcd row) still advertises DNS
-// and a default route via DHCP.
-func TestApplyOverlayNatForcesAdvertiseDNS(t *testing.T) {
+// TestApplyOverlayNatDNSDisabledWithholdsResolver asserts that an explicit
+// dns=false is authoritative even under egress=nat: the DHCP responder does NOT
+// advertise the resolver (no option 6), while egress is unaffected - the default
+// route is still advertised. dns and egress are independent.
+func TestApplyOverlayNatDNSDisabledWithholdsResolver(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{}
 	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
@@ -152,11 +153,11 @@ func TestApplyOverlayNatForcesAdvertiseDNS(t *testing.T) {
 		t.Fatalf("RegisterCalls = %d, want 1", len(fake.RegisterCalls))
 	}
 	cfg := fake.RegisterCalls[0]
-	if !cfg.AdvertiseDNS {
-		t.Errorf("AdvertiseDNS = false, want true (nat forces DNS advertisement for back-compat)")
+	if cfg.AdvertiseDNS {
+		t.Errorf("AdvertiseDNS = true, want false (explicit dns=false withholds the resolver even under nat)")
 	}
 	if !cfg.AdvertiseDefaultRoute {
-		t.Errorf("AdvertiseDefaultRoute = false, want true (nat advertises default route)")
+		t.Errorf("AdvertiseDefaultRoute = false, want true (nat advertises the default route independent of dns)")
 	}
 }
 

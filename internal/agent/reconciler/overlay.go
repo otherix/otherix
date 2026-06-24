@@ -176,10 +176,12 @@ func (r *Networks) ensureAnycastL3Plane(ctx context.Context, d heartbeat.Declare
 
 // registerDHCP re-asserts the DHCP registration on EVERY pass when
 // enabled: the responder is idempotent (it swaps reservations), so this
-// converges new or changed reservations. AdvertiseDNS is forced on for NAT
-// networks as well so legacy etcd rows (which decode DNSEnabled=false) keep
-// advertising the resolver. Best-effort, fail toward connectivity: a register
-// failure is logged and retried next pass, it must NOT fail the network.
+// converges new or changed reservations. AdvertiseDNS follows the network's
+// explicit dns setting: an operator who sets dns=false withholds the resolver
+// even under egress=nat (dns and egress are independent; nat still advertises
+// the default route via AdvertiseDefaultRoute). Best-effort, fail toward
+// connectivity: a register failure is logged and retried next pass, it must NOT
+// fail the network.
 func (r *Networks) registerDHCP(ctx context.Context, d heartbeat.DeclaredNetwork, nat bool) {
 	if d.DhcpEnabled && r.dhcp != nil {
 		if subnet, err := netip.ParsePrefix(deref(d.Subnet)); err != nil {
@@ -190,7 +192,7 @@ func (r *Networks) registerDHCP(ctx context.Context, d heartbeat.DeclaredNetwork
 			Bridge:                d.BridgeName,
 			Subnet:                subnet,
 			Reservations:          parseReservations(ctx, r.log, d.Reservations),
-			AdvertiseDNS:          d.DNSEnabled || nat,
+			AdvertiseDNS:          d.DNSEnabled,
 			AdvertiseDefaultRoute: nat,
 		}); err != nil {
 			// Log on transition only: registration is re-asserted every pass,
