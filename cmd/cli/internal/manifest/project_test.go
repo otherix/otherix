@@ -90,6 +90,35 @@ func TestProjectNetworkOverlayIsReappliable(t *testing.T) {
 	}
 }
 
+func TestProjectNetworkOverlayRoundTripsNatEgress(t *testing.T) {
+	// egress is user-set for an overlay (none|nat), NOT server-derived, so a nat
+	// overlay must round-trip egress: nat - otherwise re-applying silently
+	// downgrades it to egress: none and drops the NAT.
+	subnet := "10.62.0.0/24"
+	n := cpclient.Network{Name: "ovl-nat", Type: "overlay", Egress: "nat", Subnet: &subnet}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if !strings.Contains(string(out), "egress: nat") {
+		t.Errorf("overlay projection missing egress: nat:\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse overlay projection: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("overlay projection not apply-ready: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Network == nil {
+		t.Fatalf("plan = %+v, want 1 network op", plan)
+	}
+	if plan[0].Network.Egress != "nat" {
+		t.Errorf("Network.Egress = %q, want nat after round-trip", plan[0].Network.Egress)
+	}
+}
+
 func TestProjectNetworkRoundTripsDhcp(t *testing.T) {
 	// dhcp is emitted only when the live network's Dhcp pointer is non-nil
 	// and true, mirroring the conditional egress projection. A dhcp overlay
