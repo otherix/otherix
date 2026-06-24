@@ -88,6 +88,49 @@ func TestBuildDeletePlanReverseOrder(t *testing.T) {
 	}
 }
 
+func TestNetworkSpecDecodesDNS(t *testing.T) {
+	// dns is a pointer in the params: an explicit dns: false in a manifest is
+	// sent verbatim (it must reach the server, not be defaulted back to dhcp),
+	// dns: true is sent, and an omitted dns leaves the pointer nil so the
+	// server applies its per-type default.
+	base := "apiVersion: otherix/v1\nkind: Network\nmetadata: { name: n }\nspec:\n  type: bridge\n  managed: true\n  bridgeName: br0\n  subnet: 10.0.0.0/24\n  dhcp: true\n"
+	cases := []struct {
+		name string
+		src  string
+		want *bool
+	}{
+		{"explicit-false", base + "  dns: false\n", boolPtr(false)},
+		{"explicit-true", base + "  dns: true\n", boolPtr(true)},
+		{"omitted", base, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			docs, err := manifest.Parse(strings.NewReader(tc.src))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			plan, err := manifest.BuildCreatePlan(docs)
+			if err != nil {
+				t.Fatalf("BuildCreatePlan() error = %v", err)
+			}
+			if len(plan) != 1 || plan[0].Network == nil {
+				t.Fatalf("plan = %+v, want 1 network op", plan)
+			}
+			got := plan[0].Network.DNS
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("Network.DNS = %v, want nil", *got)
+			case tc.want != nil && got == nil:
+				t.Errorf("Network.DNS = nil, want %v", *tc.want)
+			case tc.want != nil && got != nil && *got != *tc.want:
+				t.Errorf("Network.DNS = %v, want %v", *got, *tc.want)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 func TestVMSpecToRequestMapsUserData(t *testing.T) {
 	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec:\n  imageURL: https://x/u.qcow2\n  arch: arm64\n  userData: |\n    #cloud-config\n    packages: [htop]\n"
 	docs, _ := manifest.Parse(strings.NewReader(src))

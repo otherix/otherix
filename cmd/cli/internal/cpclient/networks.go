@@ -32,6 +32,7 @@ type Network struct {
 	Subnet     *string         `json:"subnet"`
 	Gateway    *string         `json:"gateway"`
 	Dhcp       *bool           `json:"dhcp"`
+	DNS        *bool           `json:"dns"`
 	VNI        *int            `json:"vni"`
 	Config     json.RawMessage `json:"config"`
 	CreatedAt  string          `json:"created_at"`

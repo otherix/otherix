@@ -278,6 +278,7 @@ func renderCreateOutput(cmd *cobra.Command, n cpclient.Network, format string, s
 	printf(cmd, "subnet: %s\n", orDash(n.Subnet))
 	printf(cmd, "gateway: %s\n", orDash(n.Gateway))
 	printf(cmd, "dhcp: %t\n", n.Dhcp != nil && *n.Dhcp)
+	printf(cmd, "dns: %t\n", n.DNS != nil && *n.DNS)
 	printf(cmd, "mtu: %d\n", n.MTU)
 	return nil
 }

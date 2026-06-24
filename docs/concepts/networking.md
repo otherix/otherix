@@ -64,9 +64,84 @@ MTUs are derived from it the same way.
 
 ## Egress
 
-Bridge networks can request managed egress with the **`nat`** mode, which installs
-an nftables masquerade rule for the network's subnet. VMs then reach external
-networks through the host's address.
+A managed network can request egress with the **`nat`** mode, which installs an
+nftables masquerade rule and a default route so VMs reach external networks
+through the host's address. The other mode is **`none`** (the default): no
+masquerade, no default route - the network is isolated to its own segment.
+
+Egress is **independent of addressing**. A network can hand out IP addresses and
+a resolver (DHCP and DNS, below) while keeping `egress=none`: its VMs get a full
+local configuration and can talk among themselves and resolve names, but have no
+route off the segment. Switching to `egress=nat` adds the default route and the
+masquerade on top of the same addressing.
+
+## Automatic addressing: DHCP and DNS
+
+A managed network can run two per-node services so VMs get their configuration
+automatically, with no static cloud-init: a **DHCPv4 responder** and a **DNS
+forwarder**. They are available on both managed **bridge** networks
+(`managed=true`) and **overlay** networks, and are enabled per network with the
+`dhcp` and `dns` settings (see the [Networks guide](../guides/networks.md)).
+
+### The anycast address `169.254.1.1`
+
+Both services answer at a single link-local **anycast** address,
+**`169.254.1.1`**. It is simultaneously the network's **default gateway** and its
+**DNS resolver**. The address is:
+
+- **the same on every node** (anycast). A VM caches `169.254.1.1` as its gateway
+  and resolver once, and that stays valid wherever the VM runs - so the
+  configuration **survives a live migration** with no change inside the guest.
+- a **`/32` link-local address, isolated per host.** It never overlaps the VM
+  subnet and is contained to the local segment (the agent sets the kernel's ARP
+  containment so the shared address does not leak between bridges on the same
+  host). Each network uses a distinct gateway MAC - derived from the VNI for an
+  overlay, from the network id for a managed bridge - so two networks sharing a
+  host never collide on the address.
+
+The guest is never handed an in-subnet gateway IP; the gateway lives at the
+link-local `169.254.1.1` and is delivered as an on-link route (see DHCP below).
+
+### How DHCP works
+
+When `dhcp` is enabled, each node that hosts the network runs a DHCPv4 responder
+on that network's bridge:
+
+- **The control plane owns the addresses.** A NIC's IPv4 is allocated from the
+  network's subnet by the control plane when the VM is admitted (the lowest free
+  host, skipping network/broadcast/gateway), not by the agent. The responder only
+  hands out that pre-allocated reservation.
+- **It answers only known MACs.** A DISCOVER/REQUEST from a MAC in the
+  reservation set gets an OFFER/ACK with the reserved address, the subnet mask
+  (DHCP option 1) and a 1-hour lease; an unknown MAC is dropped.
+- **It advertises the resolver and routes conditionally.** DHCP **option 6
+  (DNS)** carries `169.254.1.1` when `dns` is on. DHCP **option 121 (classless
+  static routes)** carries the on-link route to the `169.254.1.1/32` gateway, and
+  - only for an `egress=nat` network - the `0.0.0.0/0` default route through it.
+  There is no DHCP option 3: the gateway is link-local and delivered only via
+  option 121.
+
+So an isolated network (`egress=none`, `dhcp`, `dns`) hands a VM an IP, a mask
+and a resolver, but no default route. Add `egress=nat` to also advertise the
+default route.
+
+### How DNS resolving works
+
+When `dns` is enabled, each node runs a stateless DNS forwarder bound to
+`169.254.1.1:53`:
+
+- A VM's query to `169.254.1.1` is **relayed to the node's own upstream
+  resolver** (read from the host's `/run/systemd/resolve/resolv.conf` or
+  `/etc/resolv.conf`, skipping loopback stubs, falling back to `1.1.1.1`). The
+  forwarder is a plain UDP passthrough - no cache, no rewriting, no policy.
+- Because the listen address is anycast and local on every node, **DNS keeps
+  working across a live migration** with no reconfiguration inside the guest -
+  the query is simply answered by the forwarder on whichever node the VM now runs.
+
+A VM learns to use `169.254.1.1` as its resolver automatically when `dhcp` is on
+(via DHCP option 6). On a `dns`-only network (no `dhcp`), the resolver is
+reachable at `169.254.1.1` but a statically-addressed guest must be pointed at it
+itself.
 
 ## Live migration: the network follows the VM
 

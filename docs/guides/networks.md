@@ -25,8 +25,10 @@ network:
 | `--bridge-name` | Host bridge interface name. Required for `--type bridge`. 1..15 chars, `[A-Za-z][A-Za-z0-9_-]*`; the `otb*` / `otvx*` / `otwg*` prefixes are reserved. |
 | `--managed` | The Control Plane manages the bridge lifecycle (required for NAT egress). |
 | `--egress` | Managed egress mode: `none` (default) or `nat`. |
-| `--subnet` | Egress subnet in CIDR form. Required for `--egress nat`. |
+| `--subnet` | Subnet in CIDR form (IPv4, /8../30). Required for `--egress nat` and for `--dhcp`. |
 | `--gateway` | Gateway IP inside `--subnet`. Derived as the first usable host when omitted. |
+| `--dhcp` | Run the DHCPv4 responder for this network (requires `--managed` and `--subnet`). VMs get their IP/mask/resolver automatically. |
+| `--dns` | Advertise the anycast resolver `169.254.1.1` (requires `--managed`). Defaults to the `--dhcp` value, so `--dhcp` alone enables both; pass `--dns=false` to run DHCP without advertising the resolver. |
 | `--mtu` | Link MTU, 68..9216. The server applies 1500 when omitted. |
 | `--vlan` | VLAN tag, 1..4094. Omitted leaves the network untagged. |
 
@@ -43,6 +45,44 @@ otherix network create net-nat \
   --subnet 10.10.0.0/24
 ```
 
+### Managed bridge with DHCP and DNS
+
+Add `--dhcp` to have the network address its VMs automatically - no static
+cloud-init needed. The control plane allocates each VM an IP from `--subnet`, and
+the per-node DHCP responder hands it out together with the anycast resolver
+`169.254.1.1`. With `--egress nat` the VMs also get a default route and reach
+external networks; this is the usual "VMs that just work" setup:
+
+```bash
+otherix network create net-app \
+  --type bridge \
+  --bridge-name br-app \
+  --managed \
+  --egress nat \
+  --subnet 10.20.0.0/24 \
+  --dhcp
+```
+
+`--dns` defaults to the `--dhcp` value, so the command above also advertises the
+resolver. To hand out addresses but **not** the resolver, pass `--dns=false`.
+
+To build an **isolated** network - VMs get an IP, mask and a working resolver but
+**no route off the segment** - keep the default `--egress none`:
+
+```bash
+otherix network create net-isolated \
+  --type bridge \
+  --bridge-name br-iso \
+  --managed \
+  --subnet 10.30.0.0/24 \
+  --dhcp
+```
+
+Addressing (`--dhcp` / `--dns`) is independent of egress: any combination is
+valid. See [Networking concepts](../concepts/networking.md#automatic-addressing-dhcp-and-dns)
+for how the anycast `169.254.1.1` gateway-and-resolver works and why it survives
+live migration.
+
 ## Creating an overlay network
 
 An overlay network is a VXLAN segment; the Control Plane derives the bridge name
@@ -55,6 +95,77 @@ otherix network create my-overlay --type overlay --subnet 10.50.0.0/24
 ```
 
 A subnet must be IPv4 with a prefix length between /8 and /30.
+
+`--dhcp` and `--dns` work the same way on an overlay as on a managed bridge (an
+overlay is always managed, so no `--managed` is needed). A cross-node overlay
+that addresses its VMs and gives them external egress:
+
+```bash
+otherix network create my-overlay \
+  --type overlay \
+  --subnet 10.50.0.0/24 \
+  --egress nat \
+  --dhcp
+```
+
+Every node hosting the overlay answers DHCP and DNS at the same anycast
+`169.254.1.1`, so a VM that migrates between nodes keeps its addressing and
+resolver unchanged.
+
+## Declaring a network in a manifest
+
+The same networks can be described declaratively and applied with
+`otherix create -f` (see [Declarative manifests](declarative-manifests.md)). A
+managed bridge with DHCP, DNS and NAT egress:
+
+```yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: net-app
+spec:
+  type: bridge
+  managed: true
+  bridgeName: br-app
+  egress: nat
+  subnet: 10.20.0.0/24
+  dhcp: true
+```
+
+An overlay with the same addressing (no `bridgeName` / `managed` - they are
+server-derived for an overlay):
+
+```yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: my-overlay
+spec:
+  type: overlay
+  subnet: 10.50.0.0/24
+  egress: nat
+  dhcp: true
+```
+
+Both `dhcp` and `dns` are manifest fields. `dns` is optional and defaults to the
+`dhcp` value for a managed bridge (and to on for an overlay), so `dhcp: true`
+alone advertises the resolver. Set `dns: false` to hand out addresses without it,
+or `dns: true` with `dhcp: false` for a resolver-only network:
+
+```yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: net-app-noresolver
+spec:
+  type: bridge
+  managed: true
+  bridgeName: br-app
+  egress: nat
+  subnet: 10.20.0.0/24
+  dhcp: true
+  dns: false
+```
 
 ## Listing and inspecting
 

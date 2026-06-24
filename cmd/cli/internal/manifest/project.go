@@ -96,6 +96,10 @@ func overlayNetworkSpec(n cpclient.Network) map[string]any {
 	if n.Dhcp != nil && *n.Dhcp {
 		spec["dhcp"] = true
 	}
+	// Overlay dns defaults on server-side, so emit only the off case.
+	if n.DNS != nil && !*n.DNS {
+		spec["dns"] = false
+	}
 	return spec
 }
 
@@ -122,6 +126,11 @@ func bridgeNetworkSpec(n cpclient.Network) map[string]any {
 	}
 	if n.Dhcp != nil && *n.Dhcp {
 		spec["dhcp"] = true
+	}
+	// Bridge dns defaults to the dhcp value server-side, so emit it only when
+	// it diverges (dhcp on + dns off, or a dns-only network with dhcp off).
+	if dhcpVal := n.Dhcp != nil && *n.Dhcp; n.DNS != nil && *n.DNS != dhcpVal {
+		spec["dns"] = *n.DNS
 	}
 	// MTU is NOT NULL / always populated, so emitting it (even 1500) is
 	// lossless. VlanTag is nullable: a nil pointer means untagged.

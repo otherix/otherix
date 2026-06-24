@@ -142,6 +142,61 @@ func TestProjectNetworkOmitsDhcpWhenFalseOrNil(t *testing.T) {
 	}
 }
 
+func TestProjectNetworkRoundTripsDNS(t *testing.T) {
+	// dns is emitted only when it differs from the type's default (bridge: dns
+	// follows dhcp; overlay: dns defaults true). A managed bridge with dhcp on
+	// but dns off must round-trip dns: false through get -o yaml | create -f.
+	subnet := "10.20.0.0/24"
+	dhcp, dnsOff := true, false
+	n := cpclient.Network{
+		Name: "net-app", Type: "bridge", BridgeName: "br-app", Managed: true,
+		Egress: "nat", Subnet: &subnet, Dhcp: &dhcp, DNS: &dnsOff, MTU: 1500,
+	}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if !strings.Contains(string(out), "dns: false") {
+		t.Errorf("projection missing dns: false:\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse projected network: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("projected network is not apply-ready: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Network == nil {
+		t.Fatalf("plan = %+v, want 1 network op", plan)
+	}
+	if plan[0].Network.DNS == nil || *plan[0].Network.DNS != false {
+		t.Errorf("Network.DNS = %v, want non-nil false after round-trip", plan[0].Network.DNS)
+	}
+}
+
+func TestProjectNetworkOmitsDNSWhenDefault(t *testing.T) {
+	// dns at its type default must not emit a dns line: a managed bridge with
+	// dhcp=true,dns=true (bridge default dns==dhcp), an overlay with dns=true
+	// (overlay default true), and any network whose view did not surface dns.
+	subnet := "10.20.0.0/24"
+	dhcpOn, dnsOn := true, true
+	cases := []cpclient.Network{
+		{Name: "b", Type: "bridge", BridgeName: "br0", Managed: true, Egress: "nat", Subnet: &subnet, Dhcp: &dhcpOn, DNS: &dnsOn, MTU: 1500},
+		{Name: "o", Type: "overlay", Egress: "nat", Subnet: &subnet, Dhcp: &dhcpOn, DNS: &dnsOn},
+		{Name: "n", Type: "bridge", BridgeName: "br0"}, // DNS nil: not surfaced
+	}
+	for _, n := range cases {
+		out, err := manifest.ProjectNetwork(n)
+		if err != nil {
+			t.Fatalf("ProjectNetwork(%s) error = %v", n.Name, err)
+		}
+		if strings.Contains(string(out), "dns") {
+			t.Errorf("projection for %s must omit dns at default:\n%s", n.Name, out)
+		}
+	}
+}
+
 func TestProjectMultiDocSeparator(t *testing.T) {
 	a := cpclient.Network{Name: "a", Type: "bridge", BridgeName: "br0"}
 	b := cpclient.Network{Name: "b", Type: "bridge", BridgeName: "br1"}

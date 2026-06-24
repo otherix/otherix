@@ -42,8 +42,12 @@ type NetworkSpec struct {
 	Subnet     string `yaml:"subnet"`
 	Gateway    string `yaml:"gateway"`
 	Dhcp       bool   `yaml:"dhcp"`
-	MTU        *int   `yaml:"mtu"`
-	VLAN       *int   `yaml:"vlan"`
+	// Dns is a pointer so an omitted value (nil) lets the server apply its
+	// default (for a managed bridge dns follows dhcp; for an overlay dns
+	// defaults on), while an explicit dns: true/false is sent verbatim.
+	Dns  *bool `yaml:"dns"`
+	MTU  *int  `yaml:"mtu"`
+	VLAN *int  `yaml:"vlan"`
 }
 
 // StoragePoolSpec is the spec body for kind StoragePool. Node and
