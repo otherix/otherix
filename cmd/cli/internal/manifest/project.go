@@ -85,13 +85,19 @@ func ProjectNetwork(n cpclient.Network) ([]byte, error) {
 }
 
 // overlayNetworkSpec builds the apply-ready spec map for an overlay
-// network: type + subnet (the minimal valid overlay create body) plus
-// dhcp when the CP enabled CP-IPAM. bridgeName / mtu / vlan / gateway /
-// egress are server-derived or fixed for overlay and so are not emitted.
+// network: type + subnet (the minimal valid overlay create body) plus the
+// user-set fields (egress, dhcp, dns) when non-default. bridgeName / mtu /
+// vlan / gateway are server-derived or fixed for overlay (the create API
+// forbids them) and so are not emitted.
 func overlayNetworkSpec(n cpclient.Network) map[string]any {
 	spec := map[string]any{"type": n.Type}
 	if n.Subnet != nil && *n.Subnet != "" {
 		spec["subnet"] = *n.Subnet
+	}
+	// egress is user-set for an overlay (none|nat); emit the non-default nat so
+	// a nat overlay round-trips instead of silently re-applying as egress=none.
+	if n.Egress != "" && n.Egress != "none" {
+		spec["egress"] = n.Egress
 	}
 	if n.Dhcp != nil && *n.Dhcp {
 		spec["dhcp"] = true
