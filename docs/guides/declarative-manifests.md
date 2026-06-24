@@ -119,9 +119,9 @@ otherix create -f cluster.yaml --dry-run
 
 The Network `dhcp` field enables CP-IPAM addressing and the per-node DHCP
 responder; `dns` advertises the anycast resolver (`169.254.1.1`). `dns` is
-optional and **defaults to the `dhcp` value** for a managed bridge (and to on for
-an overlay), so `dhcp: true` alone gives you both - set `dns: false` to hand out
-addresses without the resolver, or `dns: true` with `dhcp: false` for a
+optional and **defaults to the `dhcp` value** (the same rule for both bridge and
+overlay networks), so `dhcp: true` alone gives you both - set `dns: false` to hand
+out addresses without the resolver, or `dns: true` with `dhcp: false` for a
 resolver-only network. `dhcp` requires a `subnet` and, for a bridge,
 `managed: true`.
 

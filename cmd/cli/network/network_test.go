@@ -233,6 +233,46 @@ func TestNetworkCreate_DhcpBody(t *testing.T) {
 	}
 }
 
+func TestNetworkCreate_OverlayDNSBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		wantKey bool
+		wantVal bool
+	}{
+		// No --dns: omit the key so the server defaults dns to the dhcp value.
+		{"omitted", []string{"create", "ovl", "--type", "overlay", "--subnet", "10.50.0.0/24"}, false, false},
+		// --dns=false: send it verbatim (must reach the server, not be defaulted).
+		{"explicit-false", []string{"create", "ovl", "--type", "overlay", "--subnet", "10.50.0.0/24", "--dns=false"}, true, false},
+		{"explicit-true", []string{"create", "ovl", "--type", "overlay", "--subnet", "10.50.0.0/24", "--dns"}, true, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				v, present := body["dns"]
+				if present != tc.wantKey {
+					t.Errorf("dns key present = %v, want %v (body=%v)", present, tc.wantKey, body)
+				}
+				if tc.wantKey && v != tc.wantVal {
+					t.Errorf("dns = %v, want %v", v, tc.wantVal)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write(networkJSON(uuid.NewString(), "ovl"))
+			}))
+			defer srv.Close()
+			if _, _, err := runNetworkCmd(t, srv.URL, tc.args); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+		})
+	}
+}
+
 func TestNetworkCreate_DhcpOmittedWhenAbsent(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

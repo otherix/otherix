@@ -386,6 +386,46 @@ func TestOverlayNetworkPersistsEgressNAT(t *testing.T) {
 	}
 }
 
+func TestOverlayNetworkDNSDefaultsToDhcp(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	tests := []struct {
+		name    string
+		fields  map[string]any // dhcp/dns deltas on the base overlay body
+		wantDNS bool
+	}{
+		// dns defaults to the dhcp value for an overlay (same as a managed
+		// bridge): a plain overlay has no resolver, an overlay with dhcp gets one,
+		// and an explicit dns overrides either way.
+		{"plain", map[string]any{}, false},
+		{"dhcp", map[string]any{"dhcp": true}, true},
+		{"dhcp-dns-off", map[string]any{"dhcp": true, "dns": false}, false},
+		{"dns-only", map[string]any{"dns": true}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"name":   "ovl-" + uuid.NewString()[:8],
+				"type":   "overlay",
+				"subnet": "10.61.0.0/24",
+			}
+			for k, v := range tc.fields {
+				body[k] = v
+			}
+			resp := h.post(t, "/v1/networks", body, admin)
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("create status = %d, want 201", resp.StatusCode)
+			}
+			var created networkView
+			decodeJSON(t, resp, &created)
+			if created.DNS != tc.wantDNS {
+				t.Errorf("dns = %v, want %v", created.DNS, tc.wantDNS)
+			}
+		})
+	}
+}
+
 func TestNetworksGetStatusEmptyThenPopulated(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)

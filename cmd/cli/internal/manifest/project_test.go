@@ -205,15 +205,18 @@ func TestProjectNetworkRoundTripsDNS(t *testing.T) {
 }
 
 func TestProjectNetworkOmitsDNSWhenDefault(t *testing.T) {
-	// dns at its type default must not emit a dns line: a managed bridge with
-	// dhcp=true,dns=true (bridge default dns==dhcp), an overlay with dns=true
-	// (overlay default true), and any network whose view did not surface dns.
+	// dns defaults to the dhcp value for BOTH types, so a dns line is omitted
+	// whenever dns equals dhcp: a bridge or overlay with dhcp=true,dns=true, a
+	// plain overlay with dhcp=false,dns=false, and any view that did not surface
+	// dns.
 	subnet := "10.20.0.0/24"
 	dhcpOn, dnsOn := true, true
+	dhcpOff, dnsOff := false, false
 	cases := []cpclient.Network{
 		{Name: "b", Type: "bridge", BridgeName: "br0", Managed: true, Egress: "nat", Subnet: &subnet, Dhcp: &dhcpOn, DNS: &dnsOn, MTU: 1500},
 		{Name: "o", Type: "overlay", Egress: "nat", Subnet: &subnet, Dhcp: &dhcpOn, DNS: &dnsOn},
-		{Name: "n", Type: "bridge", BridgeName: "br0"}, // DNS nil: not surfaced
+		{Name: "p", Type: "overlay", Subnet: &subnet, Dhcp: &dhcpOff, DNS: &dnsOff}, // plain overlay: dhcp=false,dns=false
+		{Name: "n", Type: "bridge", BridgeName: "br0"},                              // DNS nil: not surfaced
 	}
 	for _, n := range cases {
 		out, err := manifest.ProjectNetwork(n)
@@ -223,6 +226,33 @@ func TestProjectNetworkOmitsDNSWhenDefault(t *testing.T) {
 		if strings.Contains(string(out), "dns") {
 			t.Errorf("projection for %s must omit dns at default:\n%s", n.Name, out)
 		}
+	}
+}
+
+func TestProjectNetworkOverlayRoundTripsDivergentDNS(t *testing.T) {
+	// dns defaults to the dhcp value for an overlay (same as a bridge), so dns is
+	// emitted only when it diverges from dhcp: a resolver-only overlay
+	// (dhcp=false, dns=true) round-trips dns: true.
+	subnet := "10.62.0.0/24"
+	dhcpOff, dnsOn := false, true
+	n := cpclient.Network{Name: "ovl-dns", Type: "overlay", Subnet: &subnet, Dhcp: &dhcpOff, DNS: &dnsOn}
+	out, err := manifest.ProjectNetwork(n)
+	if err != nil {
+		t.Fatalf("ProjectNetwork() error = %v", err)
+	}
+	if !strings.Contains(string(out), "dns: true") {
+		t.Errorf("overlay projection missing dns: true (diverges from dhcp=false default):\n%s", out)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("not apply-ready: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Network == nil || plan[0].Network.DNS == nil || *plan[0].Network.DNS != true {
+		t.Errorf("Network.DNS did not round-trip to non-nil true: %+v", plan)
 	}
 }
 

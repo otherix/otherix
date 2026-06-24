@@ -83,6 +83,12 @@ forwarder**. They are available on both managed **bridge** networks
 (`managed=true`) and **overlay** networks, and are enabled per network with the
 `dhcp` and `dns` settings (see the [Networks guide](../guides/networks.md)).
 
+`dns` defaults to the `dhcp` value - the same rule for both network types - so
+enabling DHCP also hands out the resolver. The resolver is part of the automatic
+configuration: turn on DHCP and VMs get an address, the resolver and routes
+together. Set `dns=false` to hand out addresses without the resolver, or `dns=true`
+without DHCP to make the resolver reachable for statically-addressed guests.
+
 ### The anycast address `169.254.1.1`
 
 Both services answer at a single link-local **anycast** address,
