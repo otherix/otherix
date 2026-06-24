@@ -188,15 +188,20 @@ func createOverlayParams(cmd *cobra.Command, name string) (cpclient.CreateNetwor
 		egress = ""
 	}
 	dhcp, _ := cmd.Flags().GetBool(flagCreateDhcp)
-	dns, _ := cmd.Flags().GetBool(flagCreateDns)
-	return cpclient.CreateNetworkParams{
+	params := cpclient.CreateNetworkParams{
 		Name:   name,
 		Type:   "overlay",
 		Egress: egress,
 		Subnet: subnet,
 		Dhcp:   dhcp,
-		DNS:    &dns,
-	}, nil
+	}
+	// Send dns only when the operator set it; otherwise the server defaults it to
+	// the dhcp value (same as a managed bridge).
+	if cmd.Flags().Changed(flagCreateDns) {
+		dns, _ := cmd.Flags().GetBool(flagCreateDns)
+		params.DNS = &dns
+	}
+	return params, nil
 }
 
 // createBridgeParams assembles CreateNetworkParams for --type bridge

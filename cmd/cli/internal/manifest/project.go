@@ -102,9 +102,11 @@ func overlayNetworkSpec(n cpclient.Network) map[string]any {
 	if n.Dhcp != nil && *n.Dhcp {
 		spec["dhcp"] = true
 	}
-	// Overlay dns defaults on server-side, so emit only the off case.
-	if n.DNS != nil && !*n.DNS {
-		spec["dns"] = false
+	// dns defaults to the dhcp value (same rule as a bridge); emit it only when
+	// it diverges (a resolver-only overlay with dhcp=false,dns=true, or
+	// dhcp=true,dns=false).
+	if dhcpVal := n.Dhcp != nil && *n.Dhcp; n.DNS != nil && *n.DNS != dhcpVal {
+		spec["dns"] = *n.DNS
 	}
 	return spec
 }

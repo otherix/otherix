@@ -148,9 +148,9 @@ spec:
 ```
 
 Both `dhcp` and `dns` are manifest fields. `dns` is optional and defaults to the
-`dhcp` value for a managed bridge (and to on for an overlay), so `dhcp: true`
-alone advertises the resolver. Set `dns: false` to hand out addresses without it,
-or `dns: true` with `dhcp: false` for a resolver-only network:
+`dhcp` value (the same rule for bridge and overlay), so `dhcp: true` alone
+advertises the resolver. Set `dns: false` to hand out addresses without it, or
+`dns: true` with `dhcp: false` for a resolver-only network:
 
 ```yaml
 apiVersion: otherix/v1

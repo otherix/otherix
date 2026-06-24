@@ -58,7 +58,9 @@ func (h *Handler) createOverlay(w http.ResponseWriter, r *http.Request, req *cre
 		egress = store.NetworkEgress(*req.Egress)
 	}
 	dhcp := req.Dhcp != nil && *req.Dhcp
-	dns := true
+	// dns defaults to the dhcp value (same rule as a managed bridge), so --dhcp
+	// alone gives addressing plus the resolver. An explicit dns is honoured.
+	dns := dhcp
 	if req.DNS != nil {
 		dns = *req.DNS
 	}
