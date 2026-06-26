@@ -835,8 +835,10 @@ paths:
         "409":
           description: |
             Node cannot be drained in its current state (pending, unreachable,
-            or gone - see `details.current_status`), or the request replays an
-            `Idempotency-Key` with a different body.
+            or gone - see `details.current_status`); too many drains are already
+            in progress (retry shortly); the node was modified concurrently
+            (retry); or the request replays an `Idempotency-Key` with a different
+            body.
           content:
             application/json:
               schema:
