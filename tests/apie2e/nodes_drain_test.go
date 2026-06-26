@@ -131,6 +131,56 @@ func TestDrainIdempotentReturnsSameTask(t *testing.T) {
 	}
 }
 
+// TestDrainAdmissionCapRejectsBeyondLimit proves the drain-admission cap: with
+// the router built at cap=1, draining node-1 succeeds (202) and leaves it
+// draining, but draining node-2 while node-1 is still draining is rejected with
+// 409 and node-2 is NOT flipped (no task created, status unchanged). The
+// idempotent replay on node-1 still returns 202 - the cap gates only the
+// start-a-new-drain path. The apie2e harness runs no dispatcher, so the enqueued
+// node.drain job sits pending and node-1 stays draining across the calls.
+func TestDrainAdmissionCapRejectsBeyondLimit(t *testing.T) {
+	h := newE2E(t, withMaxConcurrentDrains(1))
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+	node1 := seedNodeWithStatus(t, h.store, store.NodeStatusReady)
+	node2 := seedNodeWithStatus(t, h.store, store.NodeStatusReady)
+	ctx := context.Background()
+
+	first := h.post(t, "/v1/nodes/"+node1+"/drain", nil, admin)
+	if first.StatusCode != http.StatusAccepted {
+		t.Fatalf("drain node-1 status = %d, want 202", first.StatusCode)
+	}
+
+	// node-2 is rejected because node-1 is already draining and the cap is 1.
+	second := h.post(t, "/v1/nodes/"+node2+"/drain", nil, admin)
+	if second.StatusCode != http.StatusConflict {
+		t.Fatalf("drain node-2 status = %d, want 409 (cap reached)", second.StatusCode)
+	}
+	var conflict drainConflictView
+	decodeJSON(t, second, &conflict)
+	if conflict.Error.Code != "conflict" {
+		t.Errorf("node-2 reject code = %q, want conflict", conflict.Error.Code)
+	}
+
+	// node-2 must be untouched: still ready, no drain task stamped.
+	n2, err := h.store.NodeByName(ctx, node2)
+	if err != nil {
+		t.Fatalf("NodeByName(node2): %v", err)
+	}
+	if n2.Status != store.NodeStatusReady {
+		t.Errorf("node-2 status = %v, want ready (not flipped by a rejected drain)", n2.Status)
+	}
+	if n2.DrainTaskID != nil {
+		t.Errorf("node-2 DrainTaskID = %v, want nil (no task created)", n2.DrainTaskID)
+	}
+
+	// The idempotent replay on node-1 is NOT capped: it starts nothing, so it
+	// still returns its in-flight task verbatim.
+	replay := h.post(t, "/v1/nodes/"+node1+"/drain", nil, admin)
+	if replay.StatusCode != http.StatusAccepted {
+		t.Errorf("idempotent replay on node-1 status = %d, want 202 (replay is never capped)", replay.StatusCode)
+	}
+}
+
 // TestCancelRunningDrainSetsMarker proves the cooperative cancel branch fires
 // for a running node.drain: cancelling it returns 200 and sets the drain cancel
 // marker the saga polls. The apie2e harness runs no worker dispatcher, so the

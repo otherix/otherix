@@ -67,7 +67,7 @@ func TestCreateRejectsNonDNSLabelName(t *testing.T) {
 	for _, name := range []string{"Bad_Name", "a/b", "node.local", "-node", "node-"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			h := New(&createStoreStub{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			h := New(&createStoreStub{}, slog.New(slog.NewTextHandler(io.Discard, nil)), 0)
 			rec := httptest.NewRecorder()
 			h.Create(rec, newCreateRequest(t, name))
 			if rec.Code != http.StatusBadRequest {
@@ -94,7 +94,7 @@ func TestCreateAcceptsDNSLabelName(t *testing.T) {
 	t.Parallel()
 
 	stub := &createStoreStub{}
-	h := New(stub, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := New(stub, slog.New(slog.NewTextHandler(io.Discard, nil)), 0)
 	rec := httptest.NewRecorder()
 	h.Create(rec, newCreateRequest(t, "node-1"))
 	if rec.Code != http.StatusCreated {

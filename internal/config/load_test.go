@@ -30,6 +30,9 @@ func TestLoadAPIFileAndDefaults(t *testing.T) {
 	if got, want := cfg.Workers.MaxWorkers, 10; got != want {
 		t.Errorf("Workers.MaxWorkers = %d, want %d (default preserved)", got, want)
 	}
+	if got, want := cfg.Workers.MaxConcurrentDrains, DefaultMaxConcurrentDrains; got != want {
+		t.Errorf("Workers.MaxConcurrentDrains = %d, want %d (default preserved)", got, want)
+	}
 }
 
 func TestLoadAPIEnvOverrides(t *testing.T) {

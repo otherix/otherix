@@ -466,6 +466,30 @@ func startDrain(t *testing.T, s *etcdstore.Store, ctx context.Context, name stri
 	return node, taskID
 }
 
+// TestCountDrainingNodes asserts the drain-admission counter: zero before any
+// drain, two after starting drains on two nodes, and unaffected by ready /
+// cordoned nodes that are not draining.
+func TestCountDrainingNodes(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if n, err := s.CountDrainingNodes(ctx); err != nil || n != 0 {
+		t.Fatalf("CountDrainingNodes() before any drain = (%d, %v), want (0, nil)", n, err)
+	}
+
+	// Two nodes that are NOT draining: a ready one and a cordoned one. Neither
+	// must be counted.
+	seedNodeWithStatus(t, s, ctx, "count-ready", store.NodeStatusReady)
+	seedNodeWithStatus(t, s, ctx, "count-cordoned", store.NodeStatusCordoned)
+
+	startDrain(t, s, ctx, "count-draining-1")
+	startDrain(t, s, ctx, "count-draining-2")
+
+	if n, err := s.CountDrainingNodes(ctx); err != nil || n != 2 {
+		t.Errorf("CountDrainingNodes() = (%d, %v), want (2, nil)", n, err)
+	}
+}
+
 // TestReconcileStuckDrainCordonsTerminalTask drains a node, forces its drain
 // task terminal-failed while the node stays draining (the wedge), and asserts
 // the backstop finalizes the node to cordoned and clears the dangling pointer.

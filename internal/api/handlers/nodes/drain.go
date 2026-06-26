@@ -82,6 +82,25 @@ func (h *Handler) Drain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Admission cap: a node in draining holds a worker slot for the whole drain
+	// plus its migrate-job slots, so an uncapped fleet drain would exhaust the
+	// bounded worker pool and self-deadlock (sagas fill every slot, their own
+	// migrate jobs can no longer be dispatched, no progress). Reject a new drain
+	// once the cap is reached WITHOUT flipping the node or enqueuing anything. The
+	// idempotent already-draining replay above starts nothing, so it is never
+	// capped.
+	draining, err := h.store.CountDrainingNodes(r.Context())
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "drain node", nil)
+		return
+	}
+	if draining >= h.maxConcurrentDrains {
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict, "too many drains in progress, retry shortly", nil)
+		return
+	}
+
 	body, ok := decodeDrainBody(w, r)
 	if !ok {
 		return

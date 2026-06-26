@@ -552,16 +552,31 @@ type ConsoleConfig struct {
 	AccessMode string `koanf:"access_mode"`
 }
 
+// DefaultMaxConcurrentDrains is the fallback drain-admission cap applied when
+// workers.max_concurrent_drains is unset or < 1. Chosen so worst-case slot
+// consumption (cap * (1 saga + DrainMaxConcurrentMigrations)) stays well below
+// the default worker pool size, leaving headroom for other async work.
+const DefaultMaxConcurrentDrains = 2
+
 // WorkersConfig controls the in-process worker dispatcher pool embedded in the
 // API server.
 type WorkersConfig struct {
-	Enabled         bool                    `koanf:"enabled"`
-	MaxWorkers      int                     `koanf:"max_workers"`
-	Tasks           TasksWorkersConfig      `koanf:"tasks"`
-	Migrations      MigrationsWorkersConfig `koanf:"migrations"`
-	Heartbeat       HeartbeatWorkersConfig  `koanf:"heartbeat"`
-	StoragePoolScan StoragePoolScanConfig   `koanf:"storage_pool_scan"`
-	Backup          BackupConfig            `koanf:"backup"`
+	Enabled    bool `koanf:"enabled"`
+	MaxWorkers int  `koanf:"max_workers"`
+	// MaxConcurrentDrains caps how many node drains may run at once. Each drain
+	// holds a dispatcher worker slot for its whole duration (the saga blocks
+	// while polling) plus up to DrainMaxConcurrentMigrations vm.migrate slots, so
+	// without a cap a fleet/rolling drain fills the bounded pool with sagas whose
+	// own migrate jobs can no longer be dispatched - a self-deadlock that freezes
+	// all cluster async work. The nodes drain handler rejects a new drain with 409
+	// once this many nodes are already draining. Default 2; values < 1 fall back
+	// to the default so a misconfig cannot disable the guard.
+	MaxConcurrentDrains int                     `koanf:"max_concurrent_drains"`
+	Tasks               TasksWorkersConfig      `koanf:"tasks"`
+	Migrations          MigrationsWorkersConfig `koanf:"migrations"`
+	Heartbeat           HeartbeatWorkersConfig  `koanf:"heartbeat"`
+	StoragePoolScan     StoragePoolScanConfig   `koanf:"storage_pool_scan"`
+	Backup              BackupConfig            `koanf:"backup"`
 
 	PlacementReconcile struct {
 		Interval time.Duration `koanf:"interval"`
@@ -709,8 +724,9 @@ func defaultAPIConfig() APIConfig {
 		},
 		Console: ConsoleConfig{AccessMode: "proxy"},
 		Workers: WorkersConfig{
-			Enabled:    true,
-			MaxWorkers: 10,
+			Enabled:             true,
+			MaxWorkers:          10,
+			MaxConcurrentDrains: DefaultMaxConcurrentDrains,
 			Tasks: TasksWorkersConfig{
 				Retention: TaskRetentionConfig{
 					Completed: 7 * 24 * time.Hour,

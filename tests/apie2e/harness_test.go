@@ -149,9 +149,31 @@ func (f *fakeClusterMembership) removedIDs() []uint64 {
 	return append([]uint64(nil), f.removed...)
 }
 
+// e2eOptions carries the optional knobs newE2E callers can override. Zero value
+// is the production-default wiring.
+type e2eOptions struct {
+	// maxConcurrentDrains overrides the drain-admission cap. 0 leaves the router
+	// at its default (config.DefaultMaxConcurrentDrains).
+	maxConcurrentDrains int
+}
+
+// e2eOption mutates e2eOptions. Functional-option form keeps newE2E's default
+// call site unchanged.
+type e2eOption func(*e2eOptions)
+
+// withMaxConcurrentDrains sets the drain-admission cap on the test router so a
+// test can exercise the cap with a small limit (e.g. 1).
+func withMaxConcurrentDrains(n int) e2eOption {
+	return func(o *e2eOptions) { o.maxConcurrentDrains = n }
+}
+
 // newE2E wipes the keyspace and builds a fresh router over the shared member.
-func newE2E(t *testing.T) *harness {
+func newE2E(t *testing.T, opts ...e2eOption) *harness {
 	t.Helper()
+	var o e2eOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
 	if sharedEtcdClient == nil {
 		t.Fatal("sharedEtcdClient not initialised")
 	}
@@ -191,10 +213,11 @@ func newE2E(t *testing.T) *harness {
 		StoragePools: config.StoragePoolsConfig{
 			AllowedPathPrefixes: []string{"/var/lib/otherix/pools/"},
 		},
-		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
-		RequestTimeout:    10 * time.Second,
-		HealthCheckName:   "etcd",
-		ClusterMembership: membership,
+		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RequestTimeout:      10 * time.Second,
+		HealthCheckName:     "etcd",
+		ClusterMembership:   membership,
+		MaxConcurrentDrains: o.maxConcurrentDrains,
 	})
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)

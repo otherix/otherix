@@ -396,6 +396,19 @@ func (s *Store) listNodesByStatus(ctx context.Context, status store.NodeStatus) 
 	return out, nil
 }
 
+// CountDrainingNodes returns how many non-deleted nodes are currently in the
+// draining status. A node in draining IS an active drain, so the drain handler
+// uses this as the admission counter that caps concurrent drains: each drain
+// holds a worker slot for its whole duration plus its migrate-job slots, so an
+// uncapped fleet drain would exhaust the bounded worker pool.
+func (s *Store) CountDrainingNodes(ctx context.Context) (int, error) {
+	nodes, err := s.listNodesByStatus(ctx, store.NodeStatusDraining)
+	if err != nil {
+		return 0, err
+	}
+	return len(nodes), nil
+}
+
 // ReconcileStuckDrain finds nodes wedged in draining whose drain task is missing
 // or already terminal (the live drain job died / was dropped) and finalizes them
 // to cordoned, clearing drain_task_id. Returns the count fixed. A draining node
