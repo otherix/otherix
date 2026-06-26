@@ -547,21 +547,26 @@ type Node struct {
 	MigrationPortRangeEnd   int32
 	Status                  NodeStatus
 	CordonedAt              *time.Time
-	CPUCoresTotal           *int32
-	CPUCoresAvailable       *int32
-	CPUModel                *string
-	CpuFlags                []string
-	MemoryTotalMib          *int64
-	MemoryAvailableMib      *int64
-	Hugepages2mibTotal      *int32
-	Hugepages1gibTotal      *int32
-	KernelVersion           *string
-	QEMUVersion             *string
-	NumaTopology            []byte
-	Capabilities            []byte
-	LastHeartbeatAt         *time.Time
-	AgentVersion            *string
-	Labels                  []byte
+	// DrainTaskID points at the in-flight node.drain task while the node is
+	// draining; nil otherwise. Set atomically with the ready|cordoned ->
+	// draining flip, cleared atomically when the drain finalizes the node back
+	// to cordoned. Lets a repeat drain request resolve the existing task O(1).
+	DrainTaskID        *uuid.UUID
+	CPUCoresTotal      *int32
+	CPUCoresAvailable  *int32
+	CPUModel           *string
+	CpuFlags           []string
+	MemoryTotalMib     *int64
+	MemoryAvailableMib *int64
+	Hugepages2mibTotal *int32
+	Hugepages1gibTotal *int32
+	KernelVersion      *string
+	QEMUVersion        *string
+	NumaTopology       []byte
+	Capabilities       []byte
+	LastHeartbeatAt    *time.Time
+	AgentVersion       *string
+	Labels             []byte
 	// Timestamp when memory pressure condition was set. NULL when condition not active. CP-side computed from heartbeat metrics against placement.pressure.memory.threshold_percent.
 	MemoryPressureSince *time.Time
 	// Consecutive heartbeat observations below memory pressure threshold. Used for debouncing — count reaches placement.pressure.memory.consecutive_required → pressure set. Reset to 0 on first observation at-or-above threshold.

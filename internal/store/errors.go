@@ -94,6 +94,10 @@ var (
 	// sourcing create reaches a terminal state.
 	ErrSnapshotSourcingCreate = errors.New("store: snapshot is being sourced by an active vm create")
 
+	// ErrNodeNotDrainable is returned when a drain is requested on a node whose
+	// status is not ready or cordoned.
+	ErrNodeNotDrainable = errors.New("store: node not drainable")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")

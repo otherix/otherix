@@ -40,6 +40,16 @@ func (s *Store) TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error) 
 	return t, nil
 }
 
+// isTerminalTaskStatus reports whether a task status is terminal in the
+// committed sense used by FinishNodeDrain's idempotent re-entry: success,
+// failed, or cancelled. Unlike isCommittedTerminal (which excludes failed
+// because a finalized-failed task is still re-run by the dispatcher), drain
+// finalization treats a failed task as terminal: the drain saga records its own
+// terminal status exactly once and a redelivery must not re-finalize it.
+func isTerminalTaskStatus(s store.TaskStatus) bool {
+	return s == store.TaskStatusSuccess || s == store.TaskStatusFailed || s == store.TaskStatusCancelled
+}
+
 // taskFromParams builds a fresh task row from create params, stamping
 // created_at and the job-queue reference.
 func taskFromParams(p store.CreateTaskParams, jobSeq int64) store.Task {
