@@ -68,8 +68,6 @@ type Store interface {
 	DrainCancelRequested(ctx context.Context, taskID uuid.UUID) (bool, error)
 }
 
-// Ensure the production store satisfies the handler's storage contract.
-
 // Handler bundles the dependencies for the nodes routes.
 type Handler struct {
 	store Store
