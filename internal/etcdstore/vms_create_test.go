@@ -205,6 +205,59 @@ func TestPlacementReaderExcludesCordonedNode(t *testing.T) {
 	}
 }
 
+// containsNode reports whether any eligible-pool row sits on the node id.
+func containsNode(rows []store.ListEligiblePoolsByNameRow, id uuid.UUID) bool {
+	for _, r := range rows {
+		if r.NodeEffectiveAvailability.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEligiblePoolsExcludesDrainingNode locks the invariant that a draining node
+// never receives a placement (fresh create or migration target). nodeSchedulable
+// is the single forward-compat seam enforcing this; the two-phase assertion
+// proves draining - not capacity or pressure - is the cause of exclusion.
+func TestEligiblePoolsExcludesDrainingNode(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	// schedulingFixture seeds an ample-capacity, unpressured, ready node + pool
+	// (the happy-path test proves it is genuinely eligible).
+	nodeID, _, poolName := schedulingFixture(t, s)
+
+	// Phase 1: the ready node IS eligible, so a later absence is meaningful.
+	rows, err := s.PlacementQuerier().ListEligiblePoolsByName(ctx, poolName)
+	if err != nil {
+		t.Fatalf("ListEligiblePoolsByName (ready): %v", err)
+	}
+	if !containsNode(rows, nodeID) {
+		t.Fatalf("ready node %s not eligible - seed is wrong, test would be vacuous", nodeID)
+	}
+
+	// Flip the node to draining via the real drain primitive.
+	taskID := uuid.New()
+	if _, err := s.StartNodeDrain(ctx, nodeID, store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "node.drain",
+		Status:       store.TaskStatusPending,
+		ResourceType: "node",
+		ResourceID:   &nodeID,
+		MaxAttempts:  1,
+	}, fakeDrainArgs{TaskID: taskID, NodeID: nodeID, DeadlineUnix: 1 << 40}); err != nil {
+		t.Fatalf("StartNodeDrain: %v", err)
+	}
+
+	// Phase 2: the draining node is NOT eligible.
+	rows, err = s.PlacementQuerier().ListEligiblePoolsByName(ctx, poolName)
+	if err != nil {
+		t.Fatalf("ListEligiblePoolsByName (draining): %v", err)
+	}
+	if containsNode(rows, nodeID) {
+		t.Fatalf("draining node %s still eligible", nodeID)
+	}
+}
+
 // placementCount exercises CountRunningVMsByNode through a throwaway plan.
 func placementCount(ctx context.Context, s *etcdstore.Store, nodeID uuid.UUID) (int64, error) {
 	var n int64
