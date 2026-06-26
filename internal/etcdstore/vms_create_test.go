@@ -75,9 +75,6 @@ func TestCreateScheduledVMHappyPath(t *testing.T) {
 
 	var sawEligible int
 	taskID, err := s.CreateScheduledVM(ctx, func(pr store.PlacementReader) (store.VMCreateWrites, error) {
-		if err := pr.AcquirePlacementLock(ctx, 1); err != nil {
-			return store.VMCreateWrites{}, err
-		}
 		eligible, err := pr.ListEligiblePoolsByName(ctx, poolName)
 		if err != nil {
 			return store.VMCreateWrites{}, err

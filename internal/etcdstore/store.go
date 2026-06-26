@@ -34,8 +34,9 @@ import (
 // holds a KV client over the embedded member; one Store instance carries
 // every resource's methods.
 type Store struct {
-	c   *etcd.Client
-	log *slog.Logger
+	c           *etcd.Client
+	log         *slog.Logger
+	placementLk *placementLocker
 }
 
 // Option configures a Store.
@@ -47,7 +48,7 @@ func WithLogger(log *slog.Logger) Option { return func(s *Store) { s.log = log }
 
 // New constructs a Store over the given KV client.
 func New(c *etcd.Client, opts ...Option) *Store {
-	s := &Store{c: c, log: slog.Default()}
+	s := &Store{c: c, log: slog.Default(), placementLk: newPlacementLocker()}
 	for _, o := range opts {
 		o(s)
 	}

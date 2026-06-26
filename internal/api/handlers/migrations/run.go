@@ -42,7 +42,7 @@ var errTargetPoolNotReady = errors.New("target pool not ready on node")
 // (placement bind, progress / terminal, atomic cutover). *etcdstore.Store
 // satisfies it.
 type MigrationWorkerStore interface {
-	AcquirePlacementLock(ctx context.Context, lockKey int64) error
+	AcquirePlacementLock(ctx context.Context, lockKey int64) (func(), error)
 	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
 	UpdateTaskAgentTaskID(ctx context.Context, arg store.UpdateTaskAgentTaskIDParams) error
@@ -210,19 +210,18 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, cfg MigrateConfig, log *slog.Logger, m store.Migration, vm store.VM) (store.Migration, error) {
 	// Hold store.LockKeyPlacement across the read-availability -> bind decision
 	// window (placer.Place reads candidate availability; BindMigrationTarget pins
-	// the choice). It mirrors the vm.create path, which holds the same lock across
-	// SchedulePlacement + bind, and closes the TOCTOU where two concurrent node-less
-	// migrations both score the same target before either binds and oversubscribe
-	// it (reservation only counts ALREADY-bound targets). The lock serializes
-	// this selection->bind window across replicas; it does NOT guard the cutover
-	// re-pin (that is its own atomic txn). On the single-node default it is a no-op
-	// (etcd writes are linearizable); see store.LockKeyPlacement. There is no
-	// explicit release because the no-op stub holds nothing; the HA implementation
-	// will scope the etcd lock's lifetime to this transaction span when it lands.
-	if err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
+	// the choice). It closes the TOCTOU where two concurrent node-less migrations
+	// both score the same target before either binds and co-locate (reservation
+	// only counts ALREADY-bound targets). On the single-control-plane default this
+	// is a process-local keyed mutex; the HA path takes an etcd lock keyed by
+	// lockKey with the same contract. The defer below releases it after the bind
+	// commits; it does NOT guard the cutover re-pin (that is its own atomic txn).
+	release, err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement)
+	if err != nil {
 		// A lock-acquire failure is retryable: the VM is still on source.
 		return store.Migration{}, fmt.Errorf("acquire placement lock: %v", err)
 	}
+	defer release()
 
 	// TargetPoolName is pre-defaulted to the source VM's pool name in
 	// runMigration; placeAndBind no longer falls back to cfg.DefaultPoolName.

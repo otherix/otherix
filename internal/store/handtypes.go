@@ -97,11 +97,12 @@ type OverlayNICPlacement struct {
 	NodeID uuid.UUID
 }
 
-// PlacementReader is the read surface SchedulePlacement consumes, plus the
-// advisory-lock acquisition that serialises the placement decision window across
-// replicas. A store backend implements it for the vm.create handler.
+// PlacementReader is the read surface SchedulePlacement consumes. A store backend
+// implements it for the vm.create handler. The advisory lock that serialises the
+// placement decision window across replicas is no longer part of this read
+// surface: the handler acquires it around the bind (see AcquirePlacementLock on
+// the store and the vms.schedule loop).
 type PlacementReader interface {
-	AcquirePlacementLock(ctx context.Context, lockKey int64) error
 	ListEligiblePoolsByName(ctx context.Context, name string) ([]ListEligiblePoolsByNameRow, error)
 	ListMemoryPressuredCandidatesByName(ctx context.Context, name string) ([]ListMemoryPressuredCandidatesByNameRow, error)
 	ListSystemDiskPressuredCandidatesByName(ctx context.Context, name string) ([]ListSystemDiskPressuredCandidatesByNameRow, error)

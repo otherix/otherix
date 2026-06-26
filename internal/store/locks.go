@@ -10,12 +10,16 @@ package store
 // canonical case — pick a node, then insert a VM pinned to it) must
 // serialize their critical section across replicas, otherwise concurrent
 // decisions can over-allocate. The key namespace identifies each such
-// critical section; AcquirePlacementLock is a no-op on the single-node
-// default, since an etcd transaction already serializes the write.
+// critical section. On the single-control-plane default AcquirePlacementLock
+// is a process-local keyed mutex (see internal/etcdstore/placement_lock.go);
+// the HA path replaces that backend with an etcd lock keyed by the same
+// lockKey.
 //
 // Contract:
 //
-//   - Every key here is acquired ONLY inside a transaction.
+//   - Each key is acquired in the handler around its read->commit window
+//     (the placement read and the committing bind), held until that window
+//     completes.
 //   - Keys are bigint, namespaced by reservation in this file. Reserve
 //     before use, never reuse a freed key (the symbol stays, even if
 //     the workflow that minted it goes away — an in-flight transaction
@@ -26,11 +30,10 @@ package store
 //     scoped locks (per-pool, per-node, etc.) if granularity gains
 //     justify the additional surface.
 const (
-	// LockKeyPlacement gates the VM placement decision window. The
-	// vm.create handler acquires it inside the same etcd transaction that
-	// runs SchedulePlacement + CreateVM + CreateVMDisk + CreateTask +
-	// the job enqueue, so concurrent placements across api-server
-	// replicas observe each other's pin before they read candidate
-	// availability.
+	// LockKeyPlacement gates the VM placement decision window. The vm.create
+	// scheduling loop (bindWithMACRetry) acquires it around BindScheduledVM,
+	// and the migration worker acquires it around placer.Place ->
+	// BindMigrationTarget, so concurrent placements observe each other's pin
+	// before they read candidate availability.
 	LockKeyPlacement int64 = 1
 )

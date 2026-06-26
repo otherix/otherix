@@ -16,26 +16,19 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// CreateScheduledVM runs the placement-locked critical section for a VM create:
-// it hands a placement reader to plan (which scores candidates with the
-// scheduler and builds the vms / vm_disks / tasks rows + job args), then
-// persists those rows + the backing job in one transaction. A uq_vms_name
-// violation surfaces as store.ErrVMNameInUse; plan's own errors propagate
-// verbatim. Returns the task id.
+// CreateScheduledVM runs the critical section for a VM create: it hands a
+// placement reader to plan (which scores candidates with the scheduler and
+// builds the vms / vm_disks / tasks rows + job args), then persists those rows +
+// the backing job in one transaction. A uq_vms_name violation surfaces as
+// store.ErrVMNameInUse; plan's own errors propagate verbatim. Returns the task id.
 //
 // The production admission path no longer calls this: VM create persists an
 // unscheduled VM (CreateUnscheduledVM) and the vms.schedule loop binds it
-// (BindScheduledVM). CreateScheduledVM is retained as the single-shot
-// direct-bind write path used by the etcdstore / apie2e tests to land a fully
-// bound VM (row + disk + nic + task + job) without driving the two-phase
-// reconcile loop. Do not wire it back into a handler.
-//
-// Unlike the SQL backend's pg_advisory_xact_lock, the placement read and the
-// pinned-node write are not held under one lock across the plan callback (etcd
-// has no cross-callback transaction). This is safe for the single-node default
-// (linearizable) and CountRunningVMsByNode counts pinned intent so concurrent
-// creates spread immediately; the HA path will gate plan behind an etcd lock
-// (ROADMAP).
+// (BindScheduledVM), taking the placement lock around that bind. CreateScheduledVM
+// is retained as the single-shot direct-bind write path used by the etcdstore /
+// apie2e tests to land a fully bound VM (row + disk + nic + task + job) without
+// driving the two-phase reconcile loop; it does not acquire the placement lock.
+// Do not wire it back into a handler.
 func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.PlacementReader) (store.VMCreateWrites, error)) (uuid.UUID, error) {
 	writes, err := plan(placementReader{s: s})
 	if err != nil {
@@ -217,27 +210,21 @@ func vmDiskIndexOps(d store.VMDisk) []clientv3.Op {
 // read view over the store; it holds no lock and commits nothing.
 func (s *Store) PlacementQuerier() scheduler.Querier { return placementReader{s: s} }
 
-// AcquirePlacementLock acquires the cluster-wide advisory lock named by lockKey.
-// It is the standalone entry the migration worker takes around its placement ->
-// bind window (placeAndBind), which spans two separate store calls (SchedulePlacement
-// then BindMigrationTarget) rather than a single transaction the way vm.create does.
-// On the single-node default this is a no-op (etcd writes are linearizable); the HA
-// path will take an etcd lock keyed by lockKey. It delegates to the placementReader
-// so create and migrate share one lock implementation.
-func (s *Store) AcquirePlacementLock(ctx context.Context, lockKey int64) error {
-	return placementReader{s: s}.AcquirePlacementLock(ctx, lockKey)
+// AcquirePlacementLock acquires the cluster-wide advisory lock named by lockKey,
+// returning a release func the caller MUST defer. It serializes the placement
+// decision window (read availability -> pin commit) so concurrent placements
+// spread across nodes instead of co-locating. On the single-control-plane default
+// this is a process-local keyed mutex; the HA path will take an etcd lock keyed by
+// lockKey with the same contract. A ctx cancellation while waiting returns
+// ctx.Err() (retryable; nothing durable changed) with a no-op release.
+func (s *Store) AcquirePlacementLock(ctx context.Context, lockKey int64) (func(), error) {
+	return s.placementLk.acquire(ctx, lockKey)
 }
 
 // placementReader is the etcd-backed scheduler read surface handed to the plan
 // callback. It composes the per-pool/per-node effective views with the
 // eligibility predicates the SQL placement queries encode.
 type placementReader struct{ s *Store }
-
-// AcquirePlacementLock is a no-op on the single-node default (etcd writes are
-// linearizable). The HA path will take an etcd lock keyed by lockKey.
-func (r placementReader) AcquirePlacementLock(ctx context.Context, lockKey int64) error {
-	return nil
-}
 
 // ListStoragePoolsByName returns every per-node instance sharing the name.
 func (r placementReader) ListStoragePoolsByName(ctx context.Context, name string) ([]store.StoragePool, error) {

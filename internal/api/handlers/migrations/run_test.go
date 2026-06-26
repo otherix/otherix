@@ -1523,12 +1523,21 @@ type placementLockSpy struct {
 	lockKeys []int64
 }
 
-func (sp *placementLockSpy) AcquirePlacementLock(ctx context.Context, lockKey int64) error {
+func (sp *placementLockSpy) AcquirePlacementLock(ctx context.Context, lockKey int64) (func(), error) {
 	sp.mu.Lock()
 	sp.events = append(sp.events, "lock")
 	sp.lockKeys = append(sp.lockKeys, lockKey)
 	sp.mu.Unlock()
-	return sp.MigrationWorkerStore.AcquirePlacementLock(ctx, lockKey)
+	release, err := sp.MigrationWorkerStore.AcquirePlacementLock(ctx, lockKey)
+	if err != nil {
+		return release, err
+	}
+	return func() {
+		sp.mu.Lock()
+		sp.events = append(sp.events, "unlock")
+		sp.mu.Unlock()
+		release()
+	}, nil
 }
 
 func (sp *placementLockSpy) BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error {
@@ -1567,8 +1576,8 @@ func TestRunMigration_AcquiresPlacementLockBeforeBind(t *testing.T) {
 		t.Fatalf("MigrateHandler(lock-order) = %v, want nil", err)
 	}
 
-	if len(spy.events) < 2 || spy.events[0] != "lock" || spy.events[1] != "bind" {
-		t.Errorf("call order = %v, want [lock bind ...] (placement lock held across placement -> bind)", spy.events)
+	if got := spy.events; len(got) < 3 || got[0] != "lock" || got[1] != "bind" || got[2] != "unlock" {
+		t.Errorf("call order = %v, want [lock bind unlock] (lock held across placement -> bind, released after)", got)
 	}
 	if len(spy.lockKeys) == 0 || spy.lockKeys[0] != store.LockKeyPlacement {
 		t.Errorf("lock key = %v, want first acquire on store.LockKeyPlacement (%d)", spy.lockKeys, store.LockKeyPlacement)

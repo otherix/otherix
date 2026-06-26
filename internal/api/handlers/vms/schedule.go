@@ -20,6 +20,7 @@ import (
 // unscheduled VMs, bind one (placement-locked), and record an unschedulable
 // reason. *etcdstore.Store satisfies it.
 type ScheduleStore interface {
+	AcquirePlacementLock(ctx context.Context, lockKey int64) (func(), error)
 	ListUnscheduledVMs(ctx context.Context, limit int) ([]store.VM, error)
 	BindScheduledVM(ctx context.Context, vmID uuid.UUID, plan func(store.PlacementReader) (store.VMBindWrites, error)) error
 	UpdateVMSchedulingReason(ctx context.Context, vmID uuid.UUID, reason, message string, details []byte) error
@@ -90,6 +91,20 @@ func scheduleOne(ctx context.Context, st ScheduleStore, cfg ScheduleConfig, log 
 // MAC on a per-network collision (mirrors the former createWithMACRetry). The
 // plan callback re-runs each attempt, so a fresh MAC is generated on retry.
 func bindWithMACRetry(ctx context.Context, st ScheduleStore, vm store.VM, spec store.SchedulingSpec, cfg ScheduleConfig, res scheduler.ResourcesConfig) error {
+	// Serialize the placement decision window against all other placements so
+	// concurrent binds spread across nodes. The lock MUST wrap BindScheduledVM,
+	// not just the plan callback: BindScheduledVM commits the pin AFTER the
+	// callback returns, so releasing at callback-return would reopen the race.
+	// Deliberately held across the MAC-retry loop: a collision re-mints a fresh
+	// random MAC, so retries are rare and each is one fast local CAS (<=8). If a
+	// future backend makes acquire/commit expensive (the HA etcd lock), revisit
+	// to a per-attempt acquire so one VM's retries do not serialize all placements.
+	release, err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement)
+	if err != nil {
+		return fmt.Errorf("acquire placement lock: %v", err)
+	}
+	defer release()
+
 	const maxMACRetries = 8
 	var lastErr error
 	for i := 0; i < maxMACRetries; i++ {
@@ -109,10 +124,6 @@ func bindWithMACRetry(ctx context.Context, st ScheduleStore, vm store.VM, spec s
 // via scheduler.SchedulePlacement, and assembles the disk / optional NIC / task
 // / job for the placement-locked commit.
 func planBind(ctx context.Context, pr store.PlacementReader, vm store.VM, spec store.SchedulingSpec, cfg ScheduleConfig, res scheduler.ResourcesConfig) (store.VMBindWrites, error) {
-	if err := pr.AcquirePlacementLock(ctx, store.LockKeyPlacement); err != nil {
-		return store.VMBindWrites{}, fmt.Errorf("acquire placement lock: %v", err)
-	}
-
 	networkIDs, nicNetworkID, err := resolveBindNetwork(ctx, pr, spec)
 	if err != nil {
 		return store.VMBindWrites{}, err
