@@ -380,14 +380,6 @@ func (s *Store) DrainTimeoutSeconds(ctx context.Context) (int32, error) {
 	return defaultDrainTimeoutSeconds, nil
 }
 
-// SetDrainTimeoutSeconds writes the operator-set node-drain timeout on the
-// singleton, or clears it (back to the default) when v is nil.
-func (s *Store) SetDrainTimeoutSeconds(ctx context.Context, v *int32) error {
-	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
-		cs.DrainTimeoutSeconds = v
-	})
-}
-
 // DrainMaxConcurrentMigrations returns the operator-set cap on concurrent
 // evacuation migrations per node drain, falling back to the default when the
 // singleton has no value.
@@ -400,13 +392,4 @@ func (s *Store) DrainMaxConcurrentMigrations(ctx context.Context) (int32, error)
 		return *cs.DrainMaxConcurrentMigrations, nil
 	}
 	return defaultDrainMaxConcurrentMigrations, nil
-}
-
-// SetDrainMaxConcurrentMigrations writes the operator-set cap on concurrent
-// evacuation migrations per node drain, or clears it (back to the default) when
-// v is nil.
-func (s *Store) SetDrainMaxConcurrentMigrations(ctx context.Context, v *int32) error {
-	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
-		cs.DrainMaxConcurrentMigrations = v
-	})
 }

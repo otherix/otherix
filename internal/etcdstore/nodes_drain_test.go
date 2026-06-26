@@ -9,6 +9,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -294,6 +295,34 @@ func TestDrainCancelMarkerRoundTripAndFinishDeletes(t *testing.T) {
 	}
 	if requested {
 		t.Errorf("DrainCancelRequested = true, want false after FinishNodeDrain deletes the marker")
+	}
+}
+
+// TestDrainCancelMarkerDeletedOnTaskOnlyFinalize covers the finalize path that
+// bypasses FinishNodeDrain (a node force-deleted mid-drain finalizes the task
+// only). DeleteDrainCancel must remove the cancel marker there too so it does
+// not leak. It is also idempotent - a second delete on a fresh id is a no-op.
+func TestDrainCancelMarkerDeletedOnTaskOnlyFinalize(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	taskID := uuid.New()
+
+	if err := s.RequestDrainCancel(ctx, taskID); err != nil {
+		t.Fatalf("RequestDrainCancel: %v", err)
+	}
+	if err := s.DeleteDrainCancel(ctx, taskID); err != nil {
+		t.Fatalf("DeleteDrainCancel: %v", err)
+	}
+	requested, err := s.DrainCancelRequested(ctx, taskID)
+	if err != nil {
+		t.Fatalf("DrainCancelRequested after delete: %v", err)
+	}
+	if requested {
+		t.Errorf("DrainCancelRequested = true, want false after DeleteDrainCancel")
+	}
+	// Idempotent: deleting an absent marker is a clean no-op.
+	if err := s.DeleteDrainCancel(ctx, uuid.New()); err != nil {
+		t.Errorf("DeleteDrainCancel(absent) = %v, want nil", err)
 	}
 }
 
@@ -596,10 +625,11 @@ func TestReconcileStuckDrainCordonsTornNilPointer(t *testing.T) {
 }
 
 // TestReconcileStuckDrainSkipsLiveDrain is the Fix Risk Gate guard test: a
-// draining node whose drain task is still running is a live drain in progress
-// and MUST NOT be cordoned (cordoning it would abort the live drain). The
-// backstop reports 0 fixed and leaves the node draining with its pointer intact.
-// This test fails if the pending/running skip guard is removed.
+// draining node whose drain task is running AND whose backing job is still live
+// (pending, as enqueued) is a live drain in progress and MUST NOT be cordoned
+// (cordoning it would abort the live drain). The backstop reports 0 fixed and
+// leaves the node draining with its pointer intact. This is the negative case
+// for the dead-job branch: a running task is skipped only while its job lives.
 func TestReconcileStuckDrainSkipsLiveDrain(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -625,5 +655,63 @@ func TestReconcileStuckDrainSkipsLiveDrain(t *testing.T) {
 	}
 	if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
 		t.Errorf("node DrainTaskID = %v, want %v (intact)", got.DrainTaskID, taskID)
+	}
+}
+
+// drainJobKey rebuilds the queue key for a drain task's backing job (the
+// zero-padded sequence under jobs/) so a test can kill the job out from under a
+// running task. It mirrors the unexported jobKey in the package under test.
+func drainJobKey(t *testing.T, jobID *int64) string {
+	t.Helper()
+	if jobID == nil {
+		t.Fatal("drain task has no backing job id")
+	}
+	return etcd.Key("jobs", fmt.Sprintf("%020d", *jobID))
+}
+
+// TestReconcileStuckDrainCordonsRunningTaskWithDeadJob is the core of the
+// dead-job backstop: a drain whose job exhausts its attempt budget leaves the
+// task stuck in running while only the job is marked failed (here reproduced by
+// deleting the job key). A task-status-only backstop would treat this as a live
+// drain forever; reading the backing job reveals the saga is dead, so the
+// backstop cordons the node and clears the dangling pointer. Reverting the
+// dead-job branch (skip on any running task) makes this test fail: the node
+// stays draining.
+func TestReconcileStuckDrainCordonsRunningTaskWithDeadJob(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node, taskID := startDrain(t, s, ctx, "drain-dead-job")
+
+	if _, err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	deleted, err := cli.Delete(ctx, drainJobKey(t, task.JobID))
+	if err != nil {
+		t.Fatalf("delete backing job: %v", err)
+	}
+	if !deleted {
+		t.Fatalf("delete backing job: job %v not present", task.JobID)
+	}
+
+	n, err := s.ReconcileStuckDrain(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("ReconcileStuckDrain() = %d, want 1 (running task with a dead job must be cordoned)", n)
+	}
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if got.Status != store.NodeStatusCordoned {
+		t.Errorf("node status = %v, want cordoned", got.Status)
+	}
+	if got.DrainTaskID != nil {
+		t.Errorf("node DrainTaskID = %v, want nil", got.DrainTaskID)
 	}
 }

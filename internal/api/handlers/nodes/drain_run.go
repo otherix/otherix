@@ -32,6 +32,7 @@ type DrainWorkerStore interface {
 	CreateMigration(ctx context.Context, p store.CreateMigrationParams, args queue.JobArgs) (store.Migration, error)
 	FinishNodeDrain(ctx context.Context, nodeID, taskID uuid.UUID, status store.TaskStatus, result []byte) error
 	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
+	DeleteDrainCancel(ctx context.Context, taskID uuid.UUID) error
 	DrainCancelRequested(ctx context.Context, taskID uuid.UUID) (bool, error)
 	DrainMaxConcurrentMigrations(ctx context.Context) (int32, error)
 }
@@ -249,13 +250,21 @@ func migratedFrom(initial, remaining int) int {
 }
 
 // finalizeTaskOnly finalizes the drain task without touching the node (used when
-// the node was force-deleted mid-drain - there is no node row to flip).
+// the node was force-deleted mid-drain - there is no node row to flip). It also
+// deletes the cooperative cancel marker: this path bypasses FinishNodeDrain
+// (which owns the marker delete on the normal path), so the marker would leak
+// without an explicit delete here. The delete is best-effort - a failure does not
+// abort the finalize (the marker is a harmless content-free, fresh-UUID key).
 func finalizeTaskOnly(ctx context.Context, st DrainWorkerStore, taskID uuid.UUID, status store.TaskStatus, res DrainResult) error {
 	raw, err := json.Marshal(res)
 	if err != nil {
 		return fmt.Errorf("marshal drain result: %v", err)
 	}
-	return st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: status, Result: raw})
+	if err := st.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{ID: taskID, Status: status, Result: raw}); err != nil {
+		return err
+	}
+	_ = st.DeleteDrainCancel(ctx, taskID)
+	return nil
 }
 
 // tryEvacuate enqueues a node-less vm.migrate (reason=drain) for v IF a target

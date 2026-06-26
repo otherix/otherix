@@ -69,6 +69,7 @@ type fakeDrainStore struct {
 	updateTaskRunningHit bool
 	finishDrainHit       bool
 	finalizeTaskOnlyHit  bool
+	deleteDrainCancelHit bool
 	finalStatus          store.TaskStatus
 	finalNodeStatus      store.NodeStatus
 	finalResult          []byte
@@ -193,6 +194,13 @@ func (f *fakeDrainStore) UpdateTaskFinalized(ctx context.Context, arg store.Upda
 	f.finalizeTaskOnlyHit = true
 	f.finalStatus = arg.Status
 	f.finalResult = arg.Result
+	return nil
+}
+
+func (f *fakeDrainStore) DeleteDrainCancel(ctx context.Context, taskID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteDrainCancelHit = true
 	return nil
 }
 
@@ -371,6 +379,9 @@ func TestDrainNodeDeletedFinalizesTaskOnly(t *testing.T) {
 	}
 	if fs.finalStatus != store.TaskStatusCancelled {
 		t.Errorf("final status = %v, want cancelled", fs.finalStatus)
+	}
+	if !fs.deleteDrainCancelHit {
+		t.Errorf("DeleteDrainCancel not called; the task-only finalize path must clean the cancel marker")
 	}
 }
 

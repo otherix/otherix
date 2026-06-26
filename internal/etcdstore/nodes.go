@@ -367,8 +367,25 @@ func drainCancelKey(taskID uuid.UUID) string {
 // RequestDrainCancel sets the cooperative cancel marker for the drain task. It
 // is best-effort signalling, not a hard stop: the saga observes it between
 // eviction steps.
+//
+// The marker is normally deleted at finalize (FinishNodeDrain, or
+// DeleteDrainCancel on the task-only finalize path). The etcd wrapper exposes no
+// lease/TTL put, so the marker is not self-expiring; a finalize path that never
+// runs would leak it. That leak is harmless: the key is content-free and scoped
+// by the task's fresh UUID, so a stale marker can never match a future drain.
 func (s *Store) RequestDrainCancel(ctx context.Context, taskID uuid.UUID) error {
 	return s.c.Put(ctx, drainCancelKey(taskID), []byte("1"))
+}
+
+// DeleteDrainCancel removes the cooperative cancel marker for the drain task.
+// It is idempotent (a missing marker is a no-op) and is called on finalize paths
+// that do not go through FinishNodeDrain (e.g. a node force-deleted mid-drain,
+// which finalizes the task only) so the marker does not leak.
+func (s *Store) DeleteDrainCancel(ctx context.Context, taskID uuid.UUID) error {
+	if _, err := s.c.Delete(ctx, drainCancelKey(taskID)); err != nil {
+		return fmt.Errorf("delete drain cancel marker: %v", err)
+	}
+	return nil
 }
 
 // DrainCancelRequested reports whether a cooperative cancel has been requested
@@ -409,11 +426,21 @@ func (s *Store) CountDrainingNodes(ctx context.Context) (int, error) {
 	return len(nodes), nil
 }
 
-// ReconcileStuckDrain finds nodes wedged in draining whose drain task is missing
-// or already terminal (the live drain job died / was dropped) and finalizes them
-// to cordoned, clearing drain_task_id. Returns the count fixed. A draining node
-// whose task is still pending/running is left alone (a live drain is in
-// progress). Non-destructive: cordoned is the normal drain terminal.
+// ReconcileStuckDrain finds nodes wedged in draining whose drain is no longer
+// progressing and finalizes them to cordoned, clearing drain_task_id. Returns
+// the count fixed. Non-destructive: cordoned is the normal drain terminal.
+//
+// A draining node is left alone only when a LIVE drain owns it. The task status
+// alone is not a sufficient liveness signal: a drain whose backing job exhausts
+// its attempt budget leaves the task stuck in running while the dispatcher marks
+// only the job failed, so a task-status-only check would treat that wedge as a
+// live drain forever. The real liveness signal is the backing job. For a node
+// whose task is still pending/running, the job is read through task.JobID:
+//   - job pending or running -> a live saga owns it -> skip.
+//   - job absent (deleted) or terminal (completed/failed) -> the saga is dead ->
+//     finalize, exactly as for a missing or terminal task.
+//
+// A nil task.JobID (defensive; EnqueueTask always stamps one) is treated as dead.
 func (s *Store) ReconcileStuckDrain(ctx context.Context) (int, error) {
 	nodes, err := s.listNodesByStatus(ctx, store.NodeStatusDraining)
 	if err != nil {
@@ -421,40 +448,92 @@ func (s *Store) ReconcileStuckDrain(ctx context.Context) (int, error) {
 	}
 	fixed := 0
 	for _, n := range nodes {
-		if n.DrainTaskID != nil {
-			t, terr := s.TaskByID(ctx, *n.DrainTaskID)
-			if terr != nil && !errors.Is(terr, store.ErrNotFound) {
-				return fixed, terr
-			}
-			if terr == nil && (t.Status == store.TaskStatusPending || t.Status == store.TaskStatusRunning) {
-				continue // a live drain is in progress; leave it
-			}
-			// task missing (reaped) or terminal -> the drain is not progressing.
+		live, lerr := s.drainStillLive(ctx, n)
+		if lerr != nil {
+			return fixed, lerr
 		}
-		// torn (DrainTaskID == nil) or stalled task -> cordon.
-		node, modRev, lerr := s.nodeWithRev(ctx, n.ID)
-		if lerr != nil || node.Status != store.NodeStatusDraining {
-			continue
+		if live {
+			continue // a live drain is in progress; leave it
 		}
-		node.Status = store.NodeStatusCordoned
-		node.DrainTaskID = nil
-		node.UpdatedAt = time.Now().UTC()
-		val, merr := etcd.Marshal(node)
-		if merr != nil {
-			return fixed, merr
-		}
-		resp, cerr := s.c.Raw().Txn(ctx).
-			If(clientv3.Compare(clientv3.ModRevision(nodeKey(node.ID)), "=", modRev)).
-			Then(clientv3.OpPut(nodeKey(node.ID), string(val))).
-			Commit()
+		cordoned, cerr := s.cordonStuckDrain(ctx, n.ID)
 		if cerr != nil {
-			return fixed, fmt.Errorf("reconcile stuck drain txn: %v", cerr)
+			return fixed, cerr
 		}
-		if resp.Succeeded {
+		if cordoned {
 			fixed++
 		}
 	}
 	return fixed, nil
+}
+
+// drainStillLive reports whether a draining node is owned by a live drain (its
+// task is pending/running AND its backing job is still alive). A torn node (nil
+// drain_task_id), a missing/terminal task, or a non-terminal task whose backing
+// job is dead all report not-live - the backstop must cordon them.
+func (s *Store) drainStillLive(ctx context.Context, n store.Node) (bool, error) {
+	if n.DrainTaskID == nil {
+		return false, nil // torn: draining with nothing driving it
+	}
+	t, err := s.TaskByID(ctx, *n.DrainTaskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil // task reaped while the node stayed draining
+	}
+	if err != nil {
+		return false, err
+	}
+	if t.Status != store.TaskStatusPending && t.Status != store.TaskStatusRunning {
+		return false, nil // task terminal: the saga recorded its outcome
+	}
+	// Task non-terminal: the backing job is the real liveness signal. A drain whose
+	// job exhausted its attempts leaves the task stuck running with only the job
+	// marked failed, so a task-status-only check would never un-wedge it.
+	return s.drainJobLive(ctx, t.JobID)
+}
+
+// cordonStuckDrain flips a wedged draining node back to cordoned and clears its
+// drain_task_id under a ModRevision CAS, reporting whether the write committed.
+// It re-reads the row and no-ops (false) when the node is no longer draining
+// (raced) or lost the CAS, so a concurrent legitimate mutation always wins.
+func (s *Store) cordonStuckDrain(ctx context.Context, id uuid.UUID) (bool, error) {
+	node, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil || node.Status != store.NodeStatusDraining {
+		return false, nil
+	}
+	node.Status = store.NodeStatusCordoned
+	node.DrainTaskID = nil
+	node.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(node)
+	if err != nil {
+		return false, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(node.ID)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(node.ID), string(val))).
+		Commit()
+	if err != nil {
+		return false, fmt.Errorf("reconcile stuck drain txn: %v", err)
+	}
+	return resp.Succeeded, nil
+}
+
+// drainJobLive reports whether the drain task's backing job is still a live owner
+// of the saga. A live job is pending (queued) or running (claimed); an absent job
+// (deleted) or a terminal job (completed/failed) means the saga is dead and the
+// drain is no longer progressing. A nil jobID is treated as dead (defensive: a
+// drain task always carries a job ref, so a nil here is a torn task, not a live
+// drain).
+func (s *Store) drainJobLive(ctx context.Context, jobID *int64) (bool, error) {
+	if jobID == nil {
+		return false, nil
+	}
+	job, _, found, err := s.jobWithRev(ctx, *jobID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	return job.State == JobStatePending || job.State == JobStateRunning, nil
 }
 
 // ListNodesEffective returns nodes joined with their effective availability,

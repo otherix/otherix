@@ -339,8 +339,6 @@ func TestSeedClusterSettingsConcurrentFieldsDoNotClobber(t *testing.T) {
 	}
 }
 
-func int32Ptr(v int32) *int32 { return &v }
-
 func TestDrainSettingsDefaults(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -359,17 +357,6 @@ func TestDrainSettingsDefaults(t *testing.T) {
 	}
 	if conc != 2 {
 		t.Errorf("default drain concurrency = %d, want 2", conc)
-	}
-
-	if err := s.SetDrainTimeoutSeconds(ctx, int32Ptr(1800)); err != nil {
-		t.Fatalf("SetDrainTimeoutSeconds: %v", err)
-	}
-	to, err = s.DrainTimeoutSeconds(ctx)
-	if err != nil {
-		t.Fatalf("DrainTimeoutSeconds after set: %v", err)
-	}
-	if to != 1800 {
-		t.Errorf("after set, drain timeout = %d, want 1800", to)
 	}
 }
 
