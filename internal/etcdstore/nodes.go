@@ -655,6 +655,34 @@ func (s *Store) pendingReservations(ctx context.Context, n store.Node) (cpu int3
 	return cpu, mem, nil
 }
 
+// ListVMRefsForNodeDeclared returns the VMs pinned (desired home) to the node,
+// with ids, for the drain saga. It ranges vmsPinnedNodeIndexPrefix (NOT the
+// runtime-by-node index), so a pinned-but-not-yet-observed VM is included.
+// Soft-deleted and desired-deleted VMs are excluded.
+func (s *Store) ListVMRefsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]store.NodeVMRef, error) {
+	items, err := s.c.Range(ctx, vmsPinnedNodeIndexPrefix(nodeID))
+	if err != nil {
+		return nil, err
+	}
+	var refs []store.NodeVMRef
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return nil, fmt.Errorf("corrupt pinned-node index %q: %v", kv.Key, perr)
+		}
+		var vm store.VM
+		found, gerr := s.c.GetJSON(ctx, vmKey(id), &vm)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || vm.DeletedAt != nil || vm.DesiredPhase == store.VmDesiredPhaseDeleted {
+			continue
+		}
+		refs = append(refs, store.NodeVMRef{ID: vm.ID, Name: vm.Name, DesiredPhase: vm.DesiredPhase})
+	}
+	return refs, nil
+}
+
 // activeMigrationsOnNode returns the non-terminal migrations touching the node,
 // resolved from the node migration index by reading each primary.
 func (s *Store) activeMigrationsOnNode(ctx context.Context, nodeID uuid.UUID) ([]store.Migration, error) {

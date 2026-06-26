@@ -811,6 +811,14 @@ type VM struct {
 	DeletedAt             *time.Time
 }
 
+// NodeVMRef identifies a VM declared on a node (its desired home), carrying the
+// id the drain saga needs to enqueue a migration plus the name for diagnostics.
+type NodeVMRef struct {
+	ID           uuid.UUID
+	Name         string
+	DesiredPhase VMDesiredPhase
+}
+
 type VMDisk struct {
 	ID            uuid.UUID
 	VmID          uuid.UUID

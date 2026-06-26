@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -263,5 +264,111 @@ func TestDrainCancelMarkerRoundTripAndFinishDeletes(t *testing.T) {
 	}
 	if requested {
 		t.Errorf("DrainCancelRequested = true, want false after FinishNodeDrain deletes the marker")
+	}
+}
+
+// refIDs collects the ids returned by ListVMRefsForNodeDeclared into a set so
+// tests can assert membership without depending on result order.
+func refIDs(refs []store.NodeVMRef) map[uuid.UUID]bool {
+	out := make(map[uuid.UUID]bool, len(refs))
+	for _, r := range refs {
+		out[r.ID] = true
+	}
+	return out
+}
+
+func TestListVMRefsForNodeDeclaredReturnsPinnedVM(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node := seedNodeWithStatus(t, s, ctx, "drain-refs-pinned", store.NodeStatusReady)
+
+	vm := seedPinnedVM(t, cli, node.ID)
+
+	refs, err := s.ListVMRefsForNodeDeclared(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("ListVMRefsForNodeDeclared: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("ListVMRefsForNodeDeclared returned %d refs, want 1", len(refs))
+	}
+	if refs[0].ID != vm.ID || refs[0].Name != vm.Name {
+		t.Errorf("ref = {ID:%v, Name:%q}, want {ID:%v, Name:%q}", refs[0].ID, refs[0].Name, vm.ID, vm.Name)
+	}
+}
+
+// TestListVMRefsForNodeDeclaredIncludesUnobservedVM is the load-bearing case: a
+// VM pinned to the node that has NO vm_runtime row (created/pinned but never
+// observed by the agent) MUST still be returned. seedPinnedVM writes the vms
+// primary plus the pinned_node index entry and never touches the vm_runtime
+// node index, so this fails if the method ranges the runtime index.
+func TestListVMRefsForNodeDeclaredIncludesUnobservedVM(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node := seedNodeWithStatus(t, s, ctx, "drain-refs-unobserved", store.NodeStatusReady)
+
+	vm := seedPinnedVM(t, cli, node.ID)
+
+	// Guard the construction: no vm_runtime primary and no runtime-by-node index
+	// entry exist for this VM, so the only way to find it is the pinned index.
+	var rt store.VMRuntime
+	if found, err := cli.GetJSON(ctx, etcd.Key("vm_runtime", vm.ID.String()), &rt); err != nil || found {
+		t.Fatalf("vm_runtime primary = (found=%v, err=%v), want absent", found, err)
+	}
+	idx, err := cli.Range(ctx, etcd.Key("index", "vm_runtime", "node", node.ID.String())+"/")
+	if err != nil {
+		t.Fatalf("range vm_runtime node index: %v", err)
+	}
+	if len(idx) != 0 {
+		t.Fatalf("vm_runtime node index has %d entries, want 0 (VM is unobserved)", len(idx))
+	}
+
+	refs, err := s.ListVMRefsForNodeDeclared(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("ListVMRefsForNodeDeclared: %v", err)
+	}
+	if !refIDs(refs)[vm.ID] {
+		t.Errorf("ListVMRefsForNodeDeclared = %+v, want to include unobserved pinned VM %v", refs, vm.ID)
+	}
+}
+
+func TestListVMRefsForNodeDeclaredExcludesDeletedVM(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node := seedNodeWithStatus(t, s, ctx, "drain-refs-deleted", store.NodeStatusReady)
+
+	// A live VM that must be returned.
+	live := seedPinnedVM(t, cli, node.ID)
+
+	// A desired-deleted VM (user asked for deletion), still pinned: excluded.
+	desiredDeleted := seedPinnedVM(t, cli, node.ID)
+	desiredDeleted.DesiredPhase = store.VmDesiredPhaseDeleted
+	seedVM(t, cli, desiredDeleted)
+
+	// A soft-deleted VM (DeletedAt set), still pinned: excluded.
+	softDeleted := seedPinnedVM(t, cli, node.ID)
+	now := time.Now().UTC()
+	softDeleted.DeletedAt = &now
+	seedVM(t, cli, softDeleted)
+
+	// A VM pinned to a DIFFERENT node: excluded.
+	other := seedNodeWithStatus(t, s, ctx, "drain-refs-other", store.NodeStatusReady)
+	otherVM := seedPinnedVM(t, cli, other.ID)
+
+	refs, err := s.ListVMRefsForNodeDeclared(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("ListVMRefsForNodeDeclared: %v", err)
+	}
+	ids := refIDs(refs)
+	if !ids[live.ID] {
+		t.Errorf("ListVMRefsForNodeDeclared = %+v, want to include live VM %v", refs, live.ID)
+	}
+	if ids[desiredDeleted.ID] {
+		t.Errorf("ListVMRefsForNodeDeclared included desired-deleted VM %v, want excluded", desiredDeleted.ID)
+	}
+	if ids[softDeleted.ID] {
+		t.Errorf("ListVMRefsForNodeDeclared included soft-deleted VM %v, want excluded", softDeleted.ID)
+	}
+	if ids[otherVM.ID] {
+		t.Errorf("ListVMRefsForNodeDeclared included VM %v pinned to another node, want excluded", otherVM.ID)
 	}
 }
