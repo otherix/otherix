@@ -130,3 +130,45 @@ func TestDrainIdempotentReturnsSameTask(t *testing.T) {
 		t.Errorf("second task_id = %q, want %q (same in-flight task)", secondOut.TaskID, firstOut.TaskID)
 	}
 }
+
+// TestCancelRunningDrainSetsMarker proves the cooperative cancel branch fires
+// for a running node.drain: cancelling it returns 200 and sets the drain cancel
+// marker the saga polls. The apie2e harness runs no worker dispatcher, so the
+// enqueued drain stays pending and the saga never runs; the test forces the
+// task to running at the store layer (the same UpdateTaskRunning the saga uses)
+// to exercise the running branch deterministically, then asserts the marker
+// directly rather than polling for a cancelled status that nothing would set.
+func TestCancelRunningDrainSetsMarker(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+	name := seedNodeWithStatus(t, h.store, store.NodeStatusReady)
+	ctx := context.Background()
+
+	resp := h.post(t, "/v1/nodes/"+name+"/drain", nil, admin)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("drain status = %d, want 202", resp.StatusCode)
+	}
+	var accepted asyncTaskAcceptedView
+	decodeJSON(t, resp, &accepted)
+	taskID, err := uuid.Parse(accepted.TaskID)
+	if err != nil {
+		t.Fatalf("parse task id %q: %v", accepted.TaskID, err)
+	}
+
+	if _, err := h.store.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+
+	cancel := h.post(t, "/v1/tasks/"+accepted.TaskID+"/cancel", nil, admin)
+	if cancel.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status = %d, want 200", cancel.StatusCode)
+	}
+
+	requested, err := h.store.DrainCancelRequested(ctx, taskID)
+	if err != nil {
+		t.Fatalf("DrainCancelRequested: %v", err)
+	}
+	if !requested {
+		t.Errorf("DrainCancelRequested = false, want true after cancelling a running drain")
+	}
+}

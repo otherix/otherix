@@ -39,6 +39,12 @@ var errCancelNotCancellable = errors.New("task not cancellable")
 // Idempotent 409 with `details.code = task_already_finalized`.
 var errCancelAlreadyFinalized = errors.New("task already finalized")
 
+// taskTypeNodeDrain is the long-lived saga task type that supports a
+// cooperative running-cancel via a store marker, rather than the default
+// running -> 409 not-cancellable response. Mirrors the node.drain job
+// Kind in internal/api/handlers/nodes.
+const taskTypeNodeDrain = "node.drain"
+
 // Cancel implements POST /v1/tasks/{id}/cancel. Required permission:
 // `task:cancel`.
 //
@@ -50,7 +56,10 @@ var errCancelAlreadyFinalized = errors.New("task already finalized")
 //     body. If CancelPendingTask returns store.ErrTaskNotCancellable, the
 //     worker won the race and committed status=running before we did; the
 //     transaction does not commit, and we return 409 task_not_cancellable.
-//   - running → 409 task_not_cancellable.
+//   - running → 409 task_not_cancellable, EXCEPT a running node.drain
+//     saga, which supports a cooperative cancel: the handler sets the
+//     drain cancel marker and returns 200 with the still-running Task
+//     body. The saga finalizes the task to cancelled on its next poll.
 //   - success / failed / cancelled → 409 task_already_finalized.
 //
 // The Idempotency-Key middleware wraps this handler. The 200 response
@@ -121,6 +130,17 @@ func (h *Handler) runCancel(
 		}
 		return cancelled, nil
 	case store.TaskStatusRunning:
+		// A running node.drain is a long-lived saga. It cannot be
+		// flipped from under the worker, but it polls a cancel marker
+		// each loop: set it and let the saga finalize the task to
+		// cancelled and cordon the node on its next poll. This is
+		// best-effort - the response reports the task still running.
+		if row.Type == taskTypeNodeDrain {
+			if err := h.store.RequestDrainCancel(ctx, taskID); err != nil {
+				return store.Task{}, err
+			}
+			return row, nil
+		}
 		return store.Task{}, errCancelNotCancellable
 	default: // success / failed / cancelled
 		return store.Task{}, errCancelAlreadyFinalized

@@ -42,6 +42,7 @@ import (
 type Store interface {
 	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
 	CancelPendingTask(ctx context.Context, id uuid.UUID, jobRef *int64) (store.Task, error)
+	RequestDrainCancel(ctx context.Context, taskID uuid.UUID) error
 	ListTasksAny(ctx context.Context, arg store.ListTasksAnyParams) ([]store.Task, error)
 	ListTasksOwn(ctx context.Context, arg store.ListTasksOwnParams) ([]store.Task, error)
 }

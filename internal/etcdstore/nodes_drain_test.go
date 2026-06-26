@@ -225,6 +225,35 @@ func TestFinishNodeDrainClearsDanglingPointerWithoutFlippingStatus(t *testing.T)
 	}
 }
 
+// TestDrainCancelMarker locks the cooperative cancel marker round-trip:
+// DrainCancelRequested is false for a fresh task id, and true after
+// RequestDrainCancel sets the marker.
+func TestDrainCancelMarker(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	taskID := uuid.New()
+	requested, err := s.DrainCancelRequested(ctx, taskID)
+	if err != nil {
+		t.Fatalf("DrainCancelRequested(fresh): %v", err)
+	}
+	if requested {
+		t.Errorf("DrainCancelRequested(fresh) = true, want false")
+	}
+
+	if err := s.RequestDrainCancel(ctx, taskID); err != nil {
+		t.Fatalf("RequestDrainCancel: %v", err)
+	}
+
+	requested, err = s.DrainCancelRequested(ctx, taskID)
+	if err != nil {
+		t.Fatalf("DrainCancelRequested(after request): %v", err)
+	}
+	if !requested {
+		t.Errorf("DrainCancelRequested(after request) = false, want true")
+	}
+}
+
 // TestDrainCancelMarkerRoundTripAndFinishDeletes verifies the cooperative
 // cancel marker round-trips and that FinishNodeDrain deletes it on finalize.
 func TestDrainCancelMarkerRoundTripAndFinishDeletes(t *testing.T) {
