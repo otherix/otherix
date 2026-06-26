@@ -35,7 +35,7 @@ jobs:
       # get.otherix.dev Worker can alias it. Post-build copy: --strict only
       # checks markdown nav/links, so this extra static file does not affect it.
       - run: cp deploy/install/install.sh site/install.sh
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: site
@@ -55,4 +55,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
