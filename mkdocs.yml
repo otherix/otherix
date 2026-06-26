@@ -87,6 +87,7 @@ nav:
       - Console and logs: guides/console-and-logs.md
   - Operations:
       - High availability: operations/high-availability.md
+      - Node maintenance: operations/node-maintenance.md
       - Backups: operations/backups.md
       - Certificates: operations/certificates.md
       - Troubleshooting: operations/troubleshooting.md
