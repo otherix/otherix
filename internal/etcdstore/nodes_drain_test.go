@@ -267,6 +267,51 @@ func TestDrainCancelMarkerRoundTripAndFinishDeletes(t *testing.T) {
 	}
 }
 
+// TestActiveSourceMigrationCount asserts the count is filtered to migrations
+// whose SOURCE is the node: the in-flight evacuations the drain saga started.
+// The dst==0 assertion proves the source-only filter - a naive "touching"
+// count would return 1 for the target node and fail.
+func TestActiveSourceMigrationCount(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	src := seedNodeWithStatus(t, s, ctx, "drain-src-mig", store.NodeStatusReady)
+	dst := seedNodeWithStatus(t, s, ctx, "drain-dst-mig", store.NodeStatusReady)
+	vm := seedPinnedVM(t, cli, src.ID)
+
+	if n, err := s.ActiveSourceMigrationCount(ctx, src.ID); err != nil || n != 0 {
+		t.Fatalf("ActiveSourceMigrationCount(src) before migration = (%d, %v), want (0, nil)", n, err)
+	}
+
+	taskID := uuid.New()
+	p := store.CreateMigrationParams{
+		ID:           uuid.New(),
+		VmID:         vm.ID,
+		SourceNodeID: &src.ID,
+		TargetNodeID: &dst.ID,
+		Reason:       store.MigrationReasonDrain,
+		Live:         true,
+		Task: store.CreateTaskParams{
+			ID:           taskID,
+			Type:         "vm.migrate",
+			Status:       store.TaskStatusPending,
+			ResourceType: "migration",
+			MaxAttempts:  25,
+		},
+	}
+	if _, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: taskID, MigrationID: p.ID}); err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+
+	if n, err := s.ActiveSourceMigrationCount(ctx, src.ID); err != nil || n != 1 {
+		t.Errorf("ActiveSourceMigrationCount(src) = (%d, %v), want (1, nil)", n, err)
+	}
+	// The target node sees zero SOURCE migrations even though the migration
+	// touches it - this is the load-bearing source-only filter assertion.
+	if n, err := s.ActiveSourceMigrationCount(ctx, dst.ID); err != nil || n != 0 {
+		t.Errorf("ActiveSourceMigrationCount(dst) = (%d, %v), want (0, nil) (counted by source only)", n, err)
+	}
+}
+
 // refIDs collects the ids returned by ListVMRefsForNodeDeclared into a set so
 // tests can assert membership without depending on result order.
 func refIDs(refs []store.NodeVMRef) map[uuid.UUID]bool {

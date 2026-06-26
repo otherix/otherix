@@ -709,6 +709,23 @@ func (s *Store) activeMigrationsOnNode(ctx context.Context, nodeID uuid.UUID) ([
 	return active, nil
 }
 
+// ActiveSourceMigrationCount counts active (non-terminal) migrations whose
+// SOURCE is nodeID - the in-flight evacuations the drain saga has already
+// started, used to bound per-drain concurrency.
+func (s *Store) ActiveSourceMigrationCount(ctx context.Context, nodeID uuid.UUID) (int, error) {
+	migs, err := s.activeMigrationsOnNode(ctx, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, m := range migs {
+		if m.SourceNodeID != nil && *m.SourceNodeID == nodeID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // cancelMigrationOps builds the ops that mark each migration cancelled with the
 // audit reason and stamp completed_at, plus the terminalCleanupOps that release
 // the migration's transient state (the active-per-VM guard + per-node index
