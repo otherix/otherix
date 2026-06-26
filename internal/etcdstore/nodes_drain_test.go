@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -415,5 +416,161 @@ func TestListVMRefsForNodeDeclaredExcludesDeletedVM(t *testing.T) {
 	}
 	if ids[otherVM.ID] {
 		t.Errorf("ListVMRefsForNodeDeclared included VM %v pinned to another node, want excluded", otherVM.ID)
+	}
+}
+
+// startDrain seeds a ready node, begins a drain, and returns the node + task id.
+func startDrain(t *testing.T, s *etcdstore.Store, ctx context.Context, name string) (store.Node, uuid.UUID) {
+	t.Helper()
+	node := seedNodeWithStatus(t, s, ctx, name, store.NodeStatusReady)
+	taskID := uuid.New()
+	if _, err := s.StartNodeDrain(ctx, node.ID, store.CreateTaskParams{
+		ID:           taskID,
+		Type:         "node.drain",
+		Status:       store.TaskStatusPending,
+		ResourceType: "node",
+		ResourceID:   &node.ID,
+		MaxAttempts:  1,
+	}, fakeDrainArgs{TaskID: taskID, NodeID: node.ID, DeadlineUnix: 1 << 40}); err != nil {
+		t.Fatalf("StartNodeDrain: %v", err)
+	}
+	return node, taskID
+}
+
+// TestReconcileStuckDrainCordonsTerminalTask drains a node, forces its drain
+// task terminal-failed while the node stays draining (the wedge), and asserts
+// the backstop finalizes the node to cordoned and clears the dangling pointer.
+func TestReconcileStuckDrainCordonsTerminalTask(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	node, taskID := startDrain(t, s, ctx, "drain-wedged-terminal")
+
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
+		ID:     taskID,
+		Status: store.TaskStatusFailed,
+	}); err != nil {
+		t.Fatalf("force task failed: %v", err)
+	}
+
+	n, err := s.ReconcileStuckDrain(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("ReconcileStuckDrain() = %d, want 1", n)
+	}
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if got.Status != store.NodeStatusCordoned {
+		t.Errorf("node status = %v, want cordoned", got.Status)
+	}
+	if got.DrainTaskID != nil {
+		t.Errorf("node DrainTaskID = %v, want nil", got.DrainTaskID)
+	}
+}
+
+// TestReconcileStuckDrainCordonsMissingTask drains a node, then deletes the
+// drain task row (reproducing retention reaping the task while the node stayed
+// draining). With its drain_task_id pointing at a now-missing task, TaskByID
+// returns store.ErrNotFound and the backstop cordons the node.
+func TestReconcileStuckDrainCordonsMissingTask(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node, taskID := startDrain(t, s, ctx, "drain-wedged-missing")
+
+	deleted, err := cli.Delete(ctx, etcd.Key("tasks", taskID.String()))
+	if err != nil {
+		t.Fatalf("delete task row: %v", err)
+	}
+	if !deleted {
+		t.Fatalf("delete task row: task %v not present", taskID)
+	}
+	if _, terr := s.TaskByID(ctx, taskID); !errors.Is(terr, store.ErrNotFound) {
+		t.Fatalf("precondition: TaskByID(deleted) = %v, want store.ErrNotFound", terr)
+	}
+
+	n, err := s.ReconcileStuckDrain(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("ReconcileStuckDrain() = %d, want 1", n)
+	}
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if got.Status != store.NodeStatusCordoned || got.DrainTaskID != nil {
+		t.Errorf("node = {%v, drain_task_id=%v}, want cordoned/nil", got.Status, got.DrainTaskID)
+	}
+}
+
+// TestReconcileStuckDrainCordonsTornNilPointer writes a draining node row with a
+// nil drain_task_id directly (the torn state: draining with nothing driving it)
+// and asserts the backstop cordons it. The row is written via the same raw
+// PutJSON the heartbeat/maintenance paths use.
+func TestReconcileStuckDrainCordonsTornNilPointer(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node := seedNodeWithStatus(t, s, ctx, "drain-torn-nil", store.NodeStatusReady)
+
+	var row store.Node
+	if _, err := cli.GetJSON(ctx, etcd.Key("nodes", node.ID.String()), &row); err != nil {
+		t.Fatalf("GetJSON node: %v", err)
+	}
+	row.Status = store.NodeStatusDraining
+	row.DrainTaskID = nil
+	if err := cli.PutJSON(ctx, etcd.Key("nodes", node.ID.String()), row); err != nil {
+		t.Fatalf("PutJSON node: %v", err)
+	}
+
+	n, err := s.ReconcileStuckDrain(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("ReconcileStuckDrain() = %d, want 1", n)
+	}
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if got.Status != store.NodeStatusCordoned || got.DrainTaskID != nil {
+		t.Errorf("node = {%v, drain_task_id=%v}, want cordoned/nil", got.Status, got.DrainTaskID)
+	}
+}
+
+// TestReconcileStuckDrainSkipsLiveDrain is the Fix Risk Gate guard test: a
+// draining node whose drain task is still running is a live drain in progress
+// and MUST NOT be cordoned (cordoning it would abort the live drain). The
+// backstop reports 0 fixed and leaves the node draining with its pointer intact.
+// This test fails if the pending/running skip guard is removed.
+func TestReconcileStuckDrainSkipsLiveDrain(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	node, taskID := startDrain(t, s, ctx, "drain-live")
+
+	if _, err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+
+	n, err := s.ReconcileStuckDrain(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("ReconcileStuckDrain() = %d, want 0 (live drain must be skipped)", n)
+	}
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if got.Status != store.NodeStatusDraining {
+		t.Errorf("node status = %v, want draining (live drain untouched)", got.Status)
+	}
+	if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
+		t.Errorf("node DrainTaskID = %v, want %v (intact)", got.DrainTaskID, taskID)
 	}
 }

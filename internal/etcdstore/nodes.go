@@ -381,6 +381,69 @@ func (s *Store) DrainCancelRequested(ctx context.Context, taskID uuid.UUID) (boo
 	return found, nil
 }
 
+// listNodesByStatus returns every non-deleted node row in the given status.
+func (s *Store) listNodesByStatus(ctx context.Context, status store.NodeStatus) ([]store.Node, error) {
+	nodes, err := s.liveNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Status == status {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// ReconcileStuckDrain finds nodes wedged in draining whose drain task is missing
+// or already terminal (the live drain job died / was dropped) and finalizes them
+// to cordoned, clearing drain_task_id. Returns the count fixed. A draining node
+// whose task is still pending/running is left alone (a live drain is in
+// progress). Non-destructive: cordoned is the normal drain terminal.
+func (s *Store) ReconcileStuckDrain(ctx context.Context) (int, error) {
+	nodes, err := s.listNodesByStatus(ctx, store.NodeStatusDraining)
+	if err != nil {
+		return 0, err
+	}
+	fixed := 0
+	for _, n := range nodes {
+		if n.DrainTaskID != nil {
+			t, terr := s.TaskByID(ctx, *n.DrainTaskID)
+			if terr != nil && !errors.Is(terr, store.ErrNotFound) {
+				return fixed, terr
+			}
+			if terr == nil && (t.Status == store.TaskStatusPending || t.Status == store.TaskStatusRunning) {
+				continue // a live drain is in progress; leave it
+			}
+			// task missing (reaped) or terminal -> the drain is not progressing.
+		}
+		// torn (DrainTaskID == nil) or stalled task -> cordon.
+		node, modRev, lerr := s.nodeWithRev(ctx, n.ID)
+		if lerr != nil || node.Status != store.NodeStatusDraining {
+			continue
+		}
+		node.Status = store.NodeStatusCordoned
+		node.DrainTaskID = nil
+		node.UpdatedAt = time.Now().UTC()
+		val, merr := etcd.Marshal(node)
+		if merr != nil {
+			return fixed, merr
+		}
+		resp, cerr := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(nodeKey(node.ID)), "=", modRev)).
+			Then(clientv3.OpPut(nodeKey(node.ID), string(val))).
+			Commit()
+		if cerr != nil {
+			return fixed, fmt.Errorf("reconcile stuck drain txn: %v", cerr)
+		}
+		if resp.Succeeded {
+			fixed++
+		}
+	}
+	return fixed, nil
+}
+
 // ListNodesEffective returns nodes joined with their effective availability,
 // matching the optional architecture/status filters, ordered by (created_at,
 // id) ascending, after the cursor, capped at LimitCount.
