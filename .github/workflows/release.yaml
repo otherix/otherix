@@ -38,7 +38,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ github.event_name == 'push' && secrets.HOMEBREW_TAP_TOKEN || '' }}
       - name: Upload snapshot artifacts (PR)
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-snapshot
           path: dist/*.deb
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     container: ubuntu:24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist-snapshot
           path: dist
@@ -79,8 +79,10 @@ jobs:
           /usr/bin/otherix-api --config /etc/otherix/api.yaml >/tmp/api.log 2>&1 &
           pid=$!
           ok=0
+          # The packaged api serves HTTPS with an auto-generated self-signed
+          # cert (no operator cert configured), so probe https with -k.
           for i in $(seq 1 40); do
-            if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then ok=1; break; fi
+            if curl -fsS -k https://localhost:8080/healthz >/dev/null 2>&1; then ok=1; break; fi
             if ! kill -0 "$pid" 2>/dev/null; then echo "api process exited early"; break; fi
             sleep 1
           done
