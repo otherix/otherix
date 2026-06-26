@@ -715,3 +715,45 @@ func TestReconcileStuckDrainCordonsRunningTaskWithDeadJob(t *testing.T) {
 		t.Errorf("node DrainTaskID = %v, want nil", got.DrainTaskID)
 	}
 }
+
+// TestCordonRefusesToClobberDrainingNode pins the seam between the cordon/
+// uncordon store writers and an active drain. The handler validates the source
+// status before calling CordonNode/UncordonNode, but that is a TOCTOU: a drain
+// can flip the node to draining in the window between the handler's read and the
+// store write. setNodeCordon must refuse such a write rather than blind-put
+// cordoned over the drain - which would drop the drain_task_id and strand the
+// saga (the stuck-drain backstop only scans draining nodes). Both CordonNode and
+// UncordonNode must return store.ErrConcurrentUpdate and leave the node draining
+// with its drain_task_id intact.
+func TestCordonRefusesToClobberDrainingNode(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, uuid.UUID) (store.Node, error)
+	}{
+		{name: "cordon", call: s.CordonNode},
+		{name: "uncordon", call: s.UncordonNode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node, taskID := startDrain(t, s, ctx, "clobber-"+tc.name)
+
+			_, err := tc.call(ctx, node.ID)
+			if !errors.Is(err, store.ErrConcurrentUpdate) {
+				t.Errorf("%s(draining node) = %v, want store.ErrConcurrentUpdate", tc.name, err)
+			}
+
+			got, err := s.NodeByID(ctx, node.ID)
+			if err != nil {
+				t.Fatalf("NodeByID: %v", err)
+			}
+			if got.Status != store.NodeStatusDraining {
+				t.Errorf("node status = %v, want draining (drain must not be clobbered)", got.Status)
+			}
+			if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
+				t.Errorf("node DrainTaskID = %v, want %v (drain pointer must survive)", got.DrainTaskID, taskID)
+			}
+		})
+	}
+}

@@ -183,11 +183,26 @@ func (s *Store) UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, err
 }
 
 // setNodeCordon applies a cordon/uncordon status change, setting/clearing
-// cordoned_at and bumping updated_at (the nodes_set_updated_at trigger).
+// cordoned_at and bumping updated_at.
+//
+// The handler validates the source status (rejecting draining) before calling,
+// but that check is a TOCTOU: a drain can flip the node to draining between the
+// handler's read and this write. Two guards close that window. First, the node
+// is re-read fresh and refused if it now carries an active drain (DrainTaskID
+// set, i.e. draining) - a cordon/uncordon must never overwrite a live drain,
+// which would drop the drain_task_id and strand the saga. Second, the write
+// commits under a ModRevision CAS on the row, so any concurrent mutation between
+// this read and the put loses. Either guard tripping returns
+// store.ErrConcurrentUpdate; the operator can retry once the drain finishes.
 func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.NodeStatus, cordon bool) (store.Node, error) {
-	n, err := s.NodeByID(ctx, id)
+	n, modRev, err := s.nodeWithRev(ctx, id)
 	if err != nil {
 		return store.Node{}, err
+	}
+	if n.DrainTaskID != nil {
+		// A drain won the race and owns the node; refuse rather than clobber its
+		// drain_task_id and strand the saga.
+		return store.Node{}, store.ErrConcurrentUpdate
 	}
 	n.Status = status
 	now := time.Now().UTC()
@@ -197,8 +212,19 @@ func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.No
 		n.CordonedAt = nil
 	}
 	n.UpdatedAt = now
-	if err := s.c.PutJSON(ctx, nodeKey(id), n); err != nil {
+	val, err := etcd.Marshal(n)
+	if err != nil {
 		return store.Node{}, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, fmt.Errorf("set node cordon txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, store.ErrConcurrentUpdate
 	}
 	return n, nil
 }
