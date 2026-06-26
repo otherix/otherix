@@ -164,6 +164,61 @@ func (c *Client) ListNodes(ctx context.Context, params ListNodesParams) (NodeLis
 	return out, nil
 }
 
+// DrainNode submits POST /v1/nodes/{node}/drain - async per the
+// AsyncTaskAccepted pattern, returning the 202 task. A positive
+// timeoutSeconds overrides the cluster-default drain budget for this drain;
+// a non-positive value omits the body field so the server applies the
+// cluster default. Non-2xx surfaces as *APIError (e.g. 409 conflict when the
+// node is not in a drainable state).
+func (c *Client) DrainNode(ctx context.Context, node string, timeoutSeconds int32) (TaskAccepted, error) {
+	var body any
+	if timeoutSeconds > 0 {
+		body = struct {
+			TimeoutSeconds int32 `json:"timeout_seconds"`
+		}{TimeoutSeconds: timeoutSeconds}
+	}
+	httpReq, err := c.newRequest(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(node)+"/drain", body)
+	if err != nil {
+		return TaskAccepted{}, err
+	}
+	_, raw, err := c.do(httpReq)
+	if err != nil {
+		return TaskAccepted{}, err
+	}
+	var task TaskAccepted
+	if err := decodeJSON(raw, &task); err != nil {
+		return TaskAccepted{}, err
+	}
+	return task, nil
+}
+
+// CordonNode submits POST /v1/nodes/{node}/cordon - sync (200), idempotent.
+// The CLI discards the returned node view; the action's effect is the cordon.
+// Non-2xx surfaces as *APIError (e.g. 409 conflict for a non-cordonable state).
+func (c *Client) CordonNode(ctx context.Context, node string) error {
+	return c.nodeAction(ctx, node, "cordon")
+}
+
+// UncordonNode submits POST /v1/nodes/{node}/uncordon - sync (200),
+// idempotent. The documented reverse of a completed drain. Non-2xx surfaces
+// as *APIError (e.g. 409 conflict for a non-uncordonable state).
+func (c *Client) UncordonNode(ctx context.Context, node string) error {
+	return c.nodeAction(ctx, node, "uncordon")
+}
+
+// nodeAction POSTs a sync node maintenance verb (cordon / uncordon) and
+// discards the 200 body. Any non-2xx surfaces as *APIError via do.
+func (c *Client) nodeAction(ctx context.Context, node, action string) error {
+	httpReq, err := c.newRequest(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(node)+"/"+action, nil)
+	if err != nil {
+		return err
+	}
+	if _, _, err := c.do(httpReq); err != nil {
+		return err
+	}
+	return nil
+}
+
 // GetNode fetches GET /v1/nodes/{identifier}. The server resolves
 // either a UUID literal or a node name; the CLI forwards the raw
 // string verbatim. The per-role projection (full vs summary) is
