@@ -373,8 +373,14 @@ type ClusterSetting struct {
 	VNIMin                  *int32  // overlay VNI range floor; seeded once at boot, immutable
 	VNIMax                  *int32  // overlay VNI range ceiling; seeded once at boot, immutable
 	UnderlayMTU             *int32  // physical underlay MTU; seeded once at boot, immutable (overlay/otwg0 MTUs derive from it)
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	// DrainTimeoutSeconds bounds how long a single node drain runs before the
+	// saga gives up; operator-set, default 600.
+	DrainTimeoutSeconds *int32
+	// DrainMaxConcurrentMigrations caps how many evacuation migrations a single
+	// drain runs at once; operator-set, default 2.
+	DrainMaxConcurrentMigrations *int32
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
 }
 
 type Firmware struct {
@@ -547,21 +553,26 @@ type Node struct {
 	MigrationPortRangeEnd   int32
 	Status                  NodeStatus
 	CordonedAt              *time.Time
-	CPUCoresTotal           *int32
-	CPUCoresAvailable       *int32
-	CPUModel                *string
-	CpuFlags                []string
-	MemoryTotalMib          *int64
-	MemoryAvailableMib      *int64
-	Hugepages2mibTotal      *int32
-	Hugepages1gibTotal      *int32
-	KernelVersion           *string
-	QEMUVersion             *string
-	NumaTopology            []byte
-	Capabilities            []byte
-	LastHeartbeatAt         *time.Time
-	AgentVersion            *string
-	Labels                  []byte
+	// DrainTaskID points at the in-flight node.drain task while the node is
+	// draining; nil otherwise. Set atomically with the ready|cordoned ->
+	// draining flip, cleared atomically when the drain finalizes the node back
+	// to cordoned. Lets a repeat drain request resolve the existing task O(1).
+	DrainTaskID        *uuid.UUID
+	CPUCoresTotal      *int32
+	CPUCoresAvailable  *int32
+	CPUModel           *string
+	CpuFlags           []string
+	MemoryTotalMib     *int64
+	MemoryAvailableMib *int64
+	Hugepages2mibTotal *int32
+	Hugepages1gibTotal *int32
+	KernelVersion      *string
+	QEMUVersion        *string
+	NumaTopology       []byte
+	Capabilities       []byte
+	LastHeartbeatAt    *time.Time
+	AgentVersion       *string
+	Labels             []byte
 	// Timestamp when memory pressure condition was set. NULL when condition not active. CP-side computed from heartbeat metrics against placement.pressure.memory.threshold_percent.
 	MemoryPressureSince *time.Time
 	// Consecutive heartbeat observations below memory pressure threshold. Used for debouncing — count reaches placement.pressure.memory.consecutive_required → pressure set. Reset to 0 on first observation at-or-above threshold.
@@ -798,6 +809,14 @@ type VM struct {
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 	DeletedAt             *time.Time
+}
+
+// NodeVMRef identifies a VM declared on a node (its desired home), carrying the
+// id the drain saga needs to enqueue a migration plus the name for diagnostics.
+type NodeVMRef struct {
+	ID           uuid.UUID
+	Name         string
+	DesiredPhase VMDesiredPhase
 }
 
 type VMDisk struct {

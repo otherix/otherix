@@ -72,6 +72,7 @@ type RouterDeps struct {
 	VMLifecycle         vmshandlers.LifecycleDeps // sync pause/resume/reset agentclient
 	VMConsole           vmshandlers.ConsoleDeps   // console token issuance + proxy relay
 	ClusterMembership   ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
+	MaxConcurrentDrains int                       // cap on simultaneous node drains; 0 falls back to config.DefaultMaxConcurrentDrains in the nodes handler
 }
 
 // NewRouter constructs the api-server's HTTP handler: a chi router with
@@ -186,7 +187,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
 	usersH := usershandlers.New(deps.Store)
 	tokensH := apitokenshandlers.New(deps.Store)
-	nodesH := nodeshandlers.New(deps.Store, deps.Logger)
+	nodesH := nodeshandlers.New(deps.Store, deps.Logger, deps.MaxConcurrentDrains)
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
 	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.StoragePools, deps.Logger)
@@ -290,6 +291,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Post("/", nodesH.Create)
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/cordon", nodesH.Cordon)
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/uncordon", nodesH.Uncordon)
+				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/drain", nodesH.Drain)
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Delete("/{id}", nodesH.Delete)
 			})
 

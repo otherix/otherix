@@ -97,19 +97,20 @@ type Server struct {
 // activates when AgentServer.Enabled = true.
 func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.LifecycleDeps, vmConsole vmshandlers.ConsoleDeps, authSvc *auth.Service, material TLSMaterial, membership ClusterMembership, log *slog.Logger) (*Server, error) {
 	handler := NewRouter(RouterDeps{
-		Store:              s,
-		AuthService:        authSvc,
-		LoginRateLimiter:   newLoginRateLimiter(cfg.Auth.LoginRateLimit),
-		HealthCheckName:    "etcd",
-		StoragePools:       cfg.StoragePools,
-		Logger:             log,
-		RequestTimeout:     cfg.Server.WriteTimeout,
-		PressureMemory:     cfg.Placement.Pressure.Memory,
-		PressureSystemDisk: cfg.Placement.Pressure.SystemDisk,
-		PressureDisk:       cfg.Placement.Pressure.Disk,
-		VMLifecycle:        vmLifecycle,
-		VMConsole:          vmConsole,
-		ClusterMembership:  membership,
+		Store:               s,
+		AuthService:         authSvc,
+		LoginRateLimiter:    newLoginRateLimiter(cfg.Auth.LoginRateLimit),
+		HealthCheckName:     "etcd",
+		StoragePools:        cfg.StoragePools,
+		Logger:              log,
+		RequestTimeout:      cfg.Server.WriteTimeout,
+		PressureMemory:      cfg.Placement.Pressure.Memory,
+		PressureSystemDisk:  cfg.Placement.Pressure.SystemDisk,
+		PressureDisk:        cfg.Placement.Pressure.Disk,
+		VMLifecycle:         vmLifecycle,
+		VMConsole:           vmConsole,
+		ClusterMembership:   membership,
+		MaxConcurrentDrains: cfg.Workers.MaxConcurrentDrains,
 	})
 
 	srv := &Server{

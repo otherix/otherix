@@ -26,6 +26,7 @@ import (
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
+	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	replicationhandlers "github.com/otherix/otherix/internal/api/handlers/replication"
 	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
@@ -47,6 +48,12 @@ const componentName = "api"
 // async task kind. Mirrors the job-queue MaxAttempts (25) set at enqueue time across
 // vm.create / vm.delete / vm.* lifecycle / storage_pool.scan.
 const workerMaxAttempts = 25
+
+// nodeDrainMaxAttempts caps redeliveries of the node.drain job. A drain is a
+// long-lived saga that resumes from durable state on every redelivery, so it
+// gets a larger budget than the per-action kinds. Mirrors the value the drain
+// HTTP handler stamps at enqueue.
+const nodeDrainMaxAttempts = 50
 
 // The migrations cancel handler reaches its agent seam through a runtime
 // type assertion on the shared lifecycle agent client (router.go). That assertion
@@ -547,6 +554,19 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 			DefaultPoolName: cfg.StoragePools.DefaultPoolName,
 		}, log))
 
+	// node.drain evacuates a node's VMs via node-less vm.migrate jobs, gating each
+	// on a dry-run target check (the same scheduler placer the migrate saga binds
+	// with). DeadNodeGrace from the heartbeat reconciler lets the saga finalize a
+	// node that stops heartbeating mid-drain (the reconciler skips draining nodes).
+	drainPlacer := migrationshandlers.NewSchedulerPlacer(st.PlacementQuerier(), schedpkg.PlacementConfig{
+		Algorithm: cfg.Placement.Algorithm,
+		Resources: api.SchedulerResourcesFromConfig(cfg.Placement.Resources),
+	})
+	d.Register("node.drain", nodeDrainMaxAttempts,
+		nodeshandlers.DrainHandler(st, drainPlacer, nodeshandlers.DrainConfig{
+			DeadNodeGrace: cfg.Workers.Heartbeat.GoneGrace,
+		}, log))
+
 	return d
 }
 
@@ -604,6 +624,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 
 	s.Register("placement.reconcile", positiveOr(cfg.Workers.PlacementReconcile.Interval, 30*time.Second), true,
 		replicationhandlers.ReconcileFunc(st, log))
+
+	s.Register("node.drain.reconcile", 2*time.Minute, false,
+		nodeshandlers.DrainReconcileFunc(st, log))
 
 	s.Register("artifact.saga.retention",
 		positiveOr(cfg.Workers.ArtifactSagaRetention.Interval, time.Hour), false,

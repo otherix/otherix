@@ -22,6 +22,8 @@ import (
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/config"
+	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -45,20 +47,49 @@ type Store interface {
 	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (store.AgentWireguard, error)
 	ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
-}
 
-// Ensure the production store satisfies the handler's storage contract.
+	// Node-drain surface. The HTTP Drain handler uses StartNodeDrain (atomic
+	// node-flip + task + job enqueue), the cluster-default timeout / concurrency
+	// reads, and TaskByID to replay the in-flight task on an idempotent repeat.
+	// The remaining methods back the node.drain saga (the consumer that drives
+	// the drain to completion) and are declared here so the handler package's
+	// store contract stays the single interface the saga also depends on.
+	StartNodeDrain(ctx context.Context, nodeID uuid.UUID, taskParams store.CreateTaskParams, args queue.JobArgs) (store.Task, error)
+	CountDrainingNodes(ctx context.Context) (int, error)
+	FinishNodeDrain(ctx context.Context, nodeID, taskID uuid.UUID, status store.TaskStatus, result []byte) error
+	DrainTimeoutSeconds(ctx context.Context) (int32, error)
+	DrainMaxConcurrentMigrations(ctx context.Context) (int32, error)
+	TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error)
+	ListVMRefsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]store.NodeVMRef, error)
+	ActiveSourceMigrationCount(ctx context.Context, nodeID uuid.UUID) (int, error)
+	VMByID(ctx context.Context, id uuid.UUID) (store.VM, error)
+	CreateMigration(ctx context.Context, p store.CreateMigrationParams, args queue.JobArgs) (store.Migration, error)
+	UpdateTaskRunning(ctx context.Context, id uuid.UUID) (alreadyTerminal bool, err error)
+	UpdateTaskFinalized(ctx context.Context, arg store.UpdateTaskFinalizedParams) error
+	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)
+	DrainCancelRequested(ctx context.Context, taskID uuid.UUID) (bool, error)
+}
 
 // Handler bundles the dependencies for the nodes routes.
 type Handler struct {
 	store Store
 	log   *slog.Logger
+	// maxConcurrentDrains caps how many nodes may be draining at once. The Drain
+	// handler rejects a new drain with 409 once this many nodes already are, so a
+	// fleet drain cannot exhaust the worker pool. Always >= 1 after New clamps it.
+	maxConcurrentDrains int
 }
 
 // New constructs a Handler. It takes the Store interface so any
 // conforming backend can be wired in; production passes *store.Store.
-func New(s Store, log *slog.Logger) *Handler {
-	return &Handler{store: s, log: log}
+// maxConcurrentDrains caps simultaneous node drains; a value < 1 falls back to
+// config.DefaultMaxConcurrentDrains so a misconfiguration cannot disable the
+// guard (0 would otherwise reject every drain).
+func New(s Store, log *slog.Logger, maxConcurrentDrains int) *Handler {
+	if maxConcurrentDrains < 1 {
+		maxConcurrentDrains = config.DefaultMaxConcurrentDrains
+	}
+	return &Handler{store: s, log: log, maxConcurrentDrains: maxConcurrentDrains}
 }
 
 // nodeView is the full Node projection returned to admin / operator

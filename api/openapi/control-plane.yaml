@@ -781,6 +781,70 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/nodes/{id}/drain:
+    parameters:
+      - $ref: "#/components/parameters/NodeName"
+    post:
+      operationId: nodes.drain
+      tags: [nodes]
+      summary: Drain a node (admin/operator, asynchronous).
+      description: |
+        Flips the node to `draining` and enqueues a task that live-migrates
+        every VM off onto other eligible nodes, bounded by a timeout. VMs that
+        cannot be moved are left running and reported; drain never stops or
+        destroys a VM. When the drain finishes (emptied or timed out) the node
+        is left `cordoned`.
+
+        Accepts a `ready` or `cordoned` node. A repeat request on a node already
+        `draining` returns the in-flight task. Poll `/v1/tasks/{task_id}` for the
+        outcome; the result reports `migrated`, `remaining`, `in_flight`, and the
+        `stuck` VM names. Cancel an in-flight drain via
+        `POST /v1/tasks/{task_id}/cancel`.
+
+        **Required permission:** `node:maintenance` (admin/operator).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeout_seconds:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    Overall drain budget in seconds. Omitted or 0 uses the
+                    cluster default. When it expires the node is left cordoned
+                    with whatever VMs remain.
+      responses:
+        "202":
+          description: Drain accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncTaskAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Node cannot be drained in its current state (pending, unreachable,
+            or gone - see `details.current_status`); too many drains are already
+            in progress (retry shortly); the node was modified concurrently
+            (retry); or the request replays an `Idempotency-Key` with a different
+            body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/nodes/{name}/heartbeat:
     parameters:
       - name: name

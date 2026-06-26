@@ -4,6 +4,7 @@
 package nodes
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +44,13 @@ func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := h.store.UncordonNode(r.Context(), current.ID)
 	if err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			// A drain (or other writer) flipped the node out from under the
+			// handler's status check. Surface a retryable conflict, not a fault.
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeConflict, "node was modified concurrently, retry", nil)
+			return
+		}
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "uncordon node", nil)
 		return

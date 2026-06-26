@@ -2,9 +2,8 @@
 // Copyright 2026 Andrei Taranik
 
 // Package node hosts the `otherix node` cobra subcommand group and its
-// children. Read-only discovery surface for now; admin-level node
-// management (create / cordon / uncordon / delete) lives through the
-// REST API directly, with CLI verbs planned for a later iteration.
+// children: the read-only discovery surface (list / get) plus the admin-level
+// maintenance verbs drain / cordon / uncordon.
 package node
 
 import "github.com/spf13/cobra"
@@ -24,6 +23,9 @@ admin-only fields left nil on the lighter projection.`,
 	}
 	cmd.AddCommand(newListCommand())
 	cmd.AddCommand(newGetCommand())
+	cmd.AddCommand(newDrainCommand())
+	cmd.AddCommand(newCordonCommand())
+	cmd.AddCommand(newUncordonCommand())
 	cmd.AddCommand(newJoinTokenCommand())
 	return cmd
 }

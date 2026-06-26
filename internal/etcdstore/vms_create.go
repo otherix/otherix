@@ -388,8 +388,12 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 	return out, nil
 }
 
-// nodeSchedulable reports whether a node is ready and not cordoned (the shared
-// eligibility base every placement query enforces).
+// nodeSchedulable is the single predicate deciding whether a node may receive
+// new placements (fresh VM create or a migration target). It excludes every
+// non-ready lifecycle state - cordoned and draining nodes are unschedulable - so
+// drain never lands a migrated VM back on the node being evacuated. A future
+// taint model replaces this predicate with a "no NoSchedule taint" check; keep
+// the decision here, not scattered across callers.
 func nodeSchedulable(n store.NodeEffectiveAvailability) bool {
 	return n.Status == store.NodeStatusReady && n.CordonedAt == nil
 }

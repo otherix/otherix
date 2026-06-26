@@ -348,6 +348,102 @@ func TestMarkNodesGone(t *testing.T) {
 	}
 }
 
+// seedNodeRow writes a node row directly, so a test controls status,
+// last_heartbeat_at, and drain_task_id precisely.
+func seedNodeRow(t *testing.T, cli etcdPutter, name string, status store.NodeStatus, hb *time.Time, drainTaskID *uuid.UUID) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	n := store.Node{
+		ID:                 id,
+		Name:               uniqueNodeName(name),
+		Architecture:       store.CpuArchAmd64,
+		AdvertisedEndpoint: "https://node.example:9443",
+		MigrationHost:      "10.0.0.1",
+		Status:             status,
+		LastHeartbeatAt:    hb,
+		DrainTaskID:        drainTaskID,
+		CreatedAt:          time.Now().UTC(),
+		UpdatedAt:          time.Now().UTC(),
+	}
+	if err := cli.PutJSON(context.Background(), etcd.Key("nodes", id.String()), n); err != nil {
+		t.Fatalf("seed node %q: %v", name, err)
+	}
+	return id
+}
+
+// etcdPutter is the narrow client surface seedNodeRow needs.
+type etcdPutter interface {
+	PutJSON(ctx context.Context, key string, v any) error
+}
+
+// TestMarkUnreachableSkipsDrainingNode pins the heartbeat-reconcile seam against
+// an active drain. MarkNodesUnreachable / MarkNodesGone select from a snapshot
+// (liveNodes) and previously blind-put the new status, so a drain that flipped a
+// node between the snapshot and the write would have its drain_task_id silently
+// dropped - stranding the saga. The race is exercised at the per-node guard: a
+// candidate node that the selection predicate accepts (ready/unreachable, stale
+// heartbeat) but that already carries an active drain_task_id must be SKIPPED,
+// left in its current status with the pointer intact, rather than demoted. The
+// next sweep retries it once the drain finishes.
+func TestMarkUnreachableSkipsDrainingNode(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	old := time.Now().Add(-10 * time.Minute)
+
+	t.Run("unreachable", func(t *testing.T) {
+		taskID := uuid.New()
+		// A ready node with a stale heartbeat is a MarkNodesUnreachable candidate;
+		// the drain_task_id models a drain flip that landed after the snapshot.
+		id := seedNodeRow(t, cli, "mark-unreach-drain", store.NodeStatusReady, &old, &taskID)
+
+		rows, err := s.MarkNodesUnreachable(ctx, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("MarkNodesUnreachable: %v", err)
+		}
+		for _, r := range rows {
+			if r.ID == id {
+				t.Errorf("draining node %v was marked unreachable, want skipped", id)
+			}
+		}
+		got, err := s.NodeByID(ctx, id)
+		if err != nil {
+			t.Fatalf("NodeByID: %v", err)
+		}
+		if got.Status != store.NodeStatusReady {
+			t.Errorf("node status = %v, want ready (drain must not be clobbered)", got.Status)
+		}
+		if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
+			t.Errorf("node DrainTaskID = %v, want %v (drain pointer must survive)", got.DrainTaskID, taskID)
+		}
+	})
+
+	t.Run("gone", func(t *testing.T) {
+		taskID := uuid.New()
+		// An unreachable node with a stale heartbeat is a MarkNodesGone candidate.
+		id := seedNodeRow(t, cli, "mark-gone-drain", store.NodeStatusUnreachable, &old, &taskID)
+
+		rows, err := s.MarkNodesGone(ctx, time.Now().Add(-5*time.Minute))
+		if err != nil {
+			t.Fatalf("MarkNodesGone: %v", err)
+		}
+		for _, r := range rows {
+			if r.ID == id {
+				t.Errorf("draining node %v was marked gone, want skipped", id)
+			}
+		}
+		got, err := s.NodeByID(ctx, id)
+		if err != nil {
+			t.Fatalf("NodeByID: %v", err)
+		}
+		if got.Status != store.NodeStatusUnreachable {
+			t.Errorf("node status = %v, want unreachable (drain must not be clobbered)", got.Status)
+		}
+		if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
+			t.Errorf("node DrainTaskID = %v, want %v (drain pointer must survive)", got.DrainTaskID, taskID)
+		}
+	})
+}
+
 func TestListPoolsNeedingScan(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

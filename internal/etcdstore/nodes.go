@@ -15,6 +15,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/queue"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -182,11 +183,26 @@ func (s *Store) UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, err
 }
 
 // setNodeCordon applies a cordon/uncordon status change, setting/clearing
-// cordoned_at and bumping updated_at (the nodes_set_updated_at trigger).
+// cordoned_at and bumping updated_at.
+//
+// The handler validates the source status (rejecting draining) before calling,
+// but that check is a TOCTOU: a drain can flip the node to draining between the
+// handler's read and this write. Two guards close that window. First, the node
+// is re-read fresh and refused if it now carries an active drain (DrainTaskID
+// set, i.e. draining) - a cordon/uncordon must never overwrite a live drain,
+// which would drop the drain_task_id and strand the saga. Second, the write
+// commits under a ModRevision CAS on the row, so any concurrent mutation between
+// this read and the put loses. Either guard tripping returns
+// store.ErrConcurrentUpdate; the operator can retry once the drain finishes.
 func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.NodeStatus, cordon bool) (store.Node, error) {
-	n, err := s.NodeByID(ctx, id)
+	n, modRev, err := s.nodeWithRev(ctx, id)
 	if err != nil {
 		return store.Node{}, err
+	}
+	if n.DrainTaskID != nil {
+		// A drain won the race and owns the node; refuse rather than clobber its
+		// drain_task_id and strand the saga.
+		return store.Node{}, store.ErrConcurrentUpdate
 	}
 	n.Status = status
 	now := time.Now().UTC()
@@ -196,10 +212,354 @@ func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.No
 		n.CordonedAt = nil
 	}
 	n.UpdatedAt = now
-	if err := s.c.PutJSON(ctx, nodeKey(id), n); err != nil {
+	val, err := etcd.Marshal(n)
+	if err != nil {
 		return store.Node{}, err
 	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, fmt.Errorf("set node cordon txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
 	return n, nil
+}
+
+// nodeWithRev reads a node row and the ModRevision its primary key was last
+// written at, so a caller can CAS-guard a multi-key write against a concurrent
+// mutation of the row. Soft-deleted rows are reported as store.ErrNotFound,
+// matching NodeByID. Modeled on the raw-Get + ModRevision read loadCutoverState
+// uses; the bare NodeByID path cannot return the revision the CAS needs.
+func (s *Store) nodeWithRev(ctx context.Context, id uuid.UUID) (store.Node, int64, error) {
+	resp, err := s.c.Raw().Get(ctx, nodeKey(id))
+	if err != nil {
+		return store.Node{}, 0, fmt.Errorf("get node %s: %v", id, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return store.Node{}, 0, store.ErrNotFound
+	}
+	var n store.Node
+	if err := json.Unmarshal(resp.Kvs[0].Value, &n); err != nil {
+		return store.Node{}, 0, fmt.Errorf("unmarshal node %s: %v", id, err)
+	}
+	if n.DeletedAt != nil {
+		return store.Node{}, 0, store.ErrNotFound
+	}
+	return n, resp.Kvs[0].ModRevision, nil
+}
+
+// StartNodeDrain flips a ready or cordoned node to draining and enqueues the
+// drain task plus its backing job in one transaction, stamping the new task's
+// drain_task_id onto the node. A node in any other status returns
+// store.ErrNodeNotDrainable. The whole write is CAS-guarded on the node's
+// ModRevision, so a concurrent node mutation (cordon, heartbeat, delete) loses
+// and returns store.ErrConcurrentUpdate.
+func (s *Store) StartNodeDrain(ctx context.Context, nodeID uuid.UUID, taskParams store.CreateTaskParams, args queue.JobArgs) (store.Task, error) {
+	node, modRev, err := s.nodeWithRev(ctx, nodeID)
+	if err != nil {
+		return store.Task{}, err
+	}
+	if node.Status != store.NodeStatusReady && node.Status != store.NodeStatusCordoned {
+		return store.Task{}, store.ErrNodeNotDrainable
+	}
+	now := time.Now().UTC()
+	node.Status = store.NodeStatusDraining
+	node.DrainTaskID = &taskParams.ID
+	node.UpdatedAt = now
+	nodeVal, err := etcd.Marshal(node)
+	if err != nil {
+		return store.Task{}, err
+	}
+	seq, jobOp, err := s.enqueueJobOp(ctx, args)
+	if err != nil {
+		return store.Task{}, err
+	}
+	task := taskFromParams(taskParams, seq)
+	taskVal, err := etcd.Marshal(task)
+	if err != nil {
+		return store.Task{}, err
+	}
+	ops := []clientv3.Op{
+		clientv3.OpPut(nodeKey(node.ID), string(nodeVal)),
+		clientv3.OpPut(taskKey(task.ID), string(taskVal)),
+		jobOp,
+	}
+	ops = append(ops, taskIndexOps(task)...)
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(node.ID)), "=", modRev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
+		return store.Task{}, fmt.Errorf("start node drain txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Task{}, store.ErrConcurrentUpdate
+	}
+	return task, nil
+}
+
+// FinishNodeDrain finalizes a drain: it stamps the task's terminal status and
+// result, deletes the cooperative cancel marker, and, when the node is still
+// draining, flips it back to cordoned and clears drain_task_id. It is
+// idempotent - a redelivery whose task already reached a terminal status is a
+// no-op (returns nil). When the txn writes the node row it commits under a
+// ModRevision CAS on that row; a concurrent node mutation returns
+// store.ErrConcurrentUpdate. When no node write is needed the txn carries no
+// node compare, so a concurrent heartbeat blind-put on the node key does not
+// spuriously conflict.
+//
+// The task row is read-then-written without a CAS guard. That is safe only
+// because a drain task has a single writer in practice: the dispatcher grants
+// one delivery ownership at a time and the drain saga owns the task, so no other
+// writer races the task put. A future caller must not assume the txn CAS guards
+// the task row - it does not.
+func (s *Store) FinishNodeDrain(ctx context.Context, nodeID, taskID uuid.UUID, status store.TaskStatus, result []byte) error {
+	node, modRev, err := s.nodeWithRev(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if isTerminalTaskStatus(task.Status) {
+		return nil
+	}
+	now := time.Now().UTC()
+	task.Status = status
+	task.Result = result
+	task.FinishedAt = &now
+	taskVal, err := etcd.Marshal(task)
+	if err != nil {
+		return err
+	}
+	ops := []clientv3.Op{
+		clientv3.OpPut(taskKey(task.ID), string(taskVal)),
+		clientv3.OpDelete(drainCancelKey(taskID)),
+	}
+	// The node ModRevision compare is added to the txn If only when the txn
+	// actually writes the node row (branches A and B). When no node write is
+	// needed (branch C) the txn runs unconditional - a frequent heartbeat
+	// blind-put on the node key would otherwise spuriously fail the CAS even
+	// though the node is not being touched.
+	var cmps []clientv3.Cmp
+	writeNode := func() error {
+		node.UpdatedAt = now
+		nodeVal, merr := etcd.Marshal(node)
+		if merr != nil {
+			return merr
+		}
+		ops = append(ops, clientv3.OpPut(nodeKey(node.ID), string(nodeVal)))
+		cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(nodeKey(node.ID)), "=", modRev))
+		return nil
+	}
+	switch {
+	case node.Status == store.NodeStatusDraining:
+		node.Status = store.NodeStatusCordoned
+		node.DrainTaskID = nil
+		if err := writeNode(); err != nil {
+			return err
+		}
+	case node.DrainTaskID != nil:
+		node.DrainTaskID = nil
+		if err := writeNode(); err != nil {
+			return err
+		}
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(cmps...).
+		Then(ops...).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("finish node drain txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.ErrConcurrentUpdate
+	}
+	return nil
+}
+
+// drainCancelKey is the cooperative cancel marker for an in-flight drain task.
+// Its presence asks the drain saga to stop scheduling further evictions; the
+// marker is deleted when the drain finalizes.
+func drainCancelKey(taskID uuid.UUID) string {
+	return etcd.Key("node_drain_cancel", taskID.String())
+}
+
+// RequestDrainCancel sets the cooperative cancel marker for the drain task. It
+// is best-effort signalling, not a hard stop: the saga observes it between
+// eviction steps.
+//
+// The marker is normally deleted at finalize (FinishNodeDrain, or
+// DeleteDrainCancel on the task-only finalize path). The etcd wrapper exposes no
+// lease/TTL put, so the marker is not self-expiring; a finalize path that never
+// runs would leak it. That leak is harmless: the key is content-free and scoped
+// by the task's fresh UUID, so a stale marker can never match a future drain.
+func (s *Store) RequestDrainCancel(ctx context.Context, taskID uuid.UUID) error {
+	return s.c.Put(ctx, drainCancelKey(taskID), []byte("1"))
+}
+
+// DeleteDrainCancel removes the cooperative cancel marker for the drain task.
+// It is idempotent (a missing marker is a no-op) and is called on finalize paths
+// that do not go through FinishNodeDrain (e.g. a node force-deleted mid-drain,
+// which finalizes the task only) so the marker does not leak.
+func (s *Store) DeleteDrainCancel(ctx context.Context, taskID uuid.UUID) error {
+	if _, err := s.c.Delete(ctx, drainCancelKey(taskID)); err != nil {
+		return fmt.Errorf("delete drain cancel marker: %v", err)
+	}
+	return nil
+}
+
+// DrainCancelRequested reports whether a cooperative cancel has been requested
+// for the drain task.
+func (s *Store) DrainCancelRequested(ctx context.Context, taskID uuid.UUID) (bool, error) {
+	_, found, err := s.c.Get(ctx, drainCancelKey(taskID))
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
+// listNodesByStatus returns every non-deleted node row in the given status.
+func (s *Store) listNodesByStatus(ctx context.Context, status store.NodeStatus) ([]store.Node, error) {
+	nodes, err := s.liveNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Status == status {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// CountDrainingNodes returns how many non-deleted nodes are currently in the
+// draining status. A node in draining IS an active drain, so the drain handler
+// uses this as the admission counter that caps concurrent drains: each drain
+// holds a worker slot for its whole duration plus its migrate-job slots, so an
+// uncapped fleet drain would exhaust the bounded worker pool.
+func (s *Store) CountDrainingNodes(ctx context.Context) (int, error) {
+	nodes, err := s.listNodesByStatus(ctx, store.NodeStatusDraining)
+	if err != nil {
+		return 0, err
+	}
+	return len(nodes), nil
+}
+
+// ReconcileStuckDrain finds nodes wedged in draining whose drain is no longer
+// progressing and finalizes them to cordoned, clearing drain_task_id. Returns
+// the count fixed. Non-destructive: cordoned is the normal drain terminal.
+//
+// A draining node is left alone only when a LIVE drain owns it. The task status
+// alone is not a sufficient liveness signal: a drain whose backing job exhausts
+// its attempt budget leaves the task stuck in running while the dispatcher marks
+// only the job failed, so a task-status-only check would treat that wedge as a
+// live drain forever. The real liveness signal is the backing job. For a node
+// whose task is still pending/running, the job is read through task.JobID:
+//   - job pending or running -> a live saga owns it -> skip.
+//   - job absent (deleted) or terminal (completed/failed) -> the saga is dead ->
+//     finalize, exactly as for a missing or terminal task.
+//
+// A nil task.JobID (defensive; EnqueueTask always stamps one) is treated as dead.
+func (s *Store) ReconcileStuckDrain(ctx context.Context) (int, error) {
+	nodes, err := s.listNodesByStatus(ctx, store.NodeStatusDraining)
+	if err != nil {
+		return 0, err
+	}
+	fixed := 0
+	for _, n := range nodes {
+		live, lerr := s.drainStillLive(ctx, n)
+		if lerr != nil {
+			return fixed, lerr
+		}
+		if live {
+			continue // a live drain is in progress; leave it
+		}
+		cordoned, cerr := s.cordonStuckDrain(ctx, n.ID)
+		if cerr != nil {
+			return fixed, cerr
+		}
+		if cordoned {
+			fixed++
+		}
+	}
+	return fixed, nil
+}
+
+// drainStillLive reports whether a draining node is owned by a live drain (its
+// task is pending/running AND its backing job is still alive). A torn node (nil
+// drain_task_id), a missing/terminal task, or a non-terminal task whose backing
+// job is dead all report not-live - the backstop must cordon them.
+func (s *Store) drainStillLive(ctx context.Context, n store.Node) (bool, error) {
+	if n.DrainTaskID == nil {
+		return false, nil // torn: draining with nothing driving it
+	}
+	t, err := s.TaskByID(ctx, *n.DrainTaskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil // task reaped while the node stayed draining
+	}
+	if err != nil {
+		return false, err
+	}
+	if t.Status != store.TaskStatusPending && t.Status != store.TaskStatusRunning {
+		return false, nil // task terminal: the saga recorded its outcome
+	}
+	// Task non-terminal: the backing job is the real liveness signal. A drain whose
+	// job exhausted its attempts leaves the task stuck running with only the job
+	// marked failed, so a task-status-only check would never un-wedge it.
+	return s.drainJobLive(ctx, t.JobID)
+}
+
+// cordonStuckDrain flips a wedged draining node back to cordoned and clears its
+// drain_task_id under a ModRevision CAS, reporting whether the write committed.
+// It re-reads the row and no-ops (false) when the node is no longer draining
+// (raced) or lost the CAS, so a concurrent legitimate mutation always wins.
+func (s *Store) cordonStuckDrain(ctx context.Context, id uuid.UUID) (bool, error) {
+	node, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil || node.Status != store.NodeStatusDraining {
+		return false, nil
+	}
+	node.Status = store.NodeStatusCordoned
+	node.DrainTaskID = nil
+	node.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(node)
+	if err != nil {
+		return false, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(node.ID)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(node.ID), string(val))).
+		Commit()
+	if err != nil {
+		return false, fmt.Errorf("reconcile stuck drain txn: %v", err)
+	}
+	return resp.Succeeded, nil
+}
+
+// drainJobLive reports whether the drain task's backing job is still a live owner
+// of the saga. A live job is pending (queued) or running (claimed); an absent job
+// (deleted) or a terminal job (completed/failed) means the saga is dead and the
+// drain is no longer progressing. A nil jobID is treated as dead (defensive: a
+// drain task always carries a job ref, so a nil here is a torn task, not a live
+// drain).
+func (s *Store) drainJobLive(ctx context.Context, jobID *int64) (bool, error) {
+	if jobID == nil {
+		return false, nil
+	}
+	job, _, found, err := s.jobWithRev(ctx, *jobID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	return job.State == JobStatePending || job.State == JobStateRunning, nil
 }
 
 // ListNodesEffective returns nodes joined with their effective availability,
@@ -476,6 +836,34 @@ func (s *Store) pendingReservations(ctx context.Context, n store.Node) (cpu int3
 	return cpu, mem, nil
 }
 
+// ListVMRefsForNodeDeclared returns the VMs pinned (desired home) to the node,
+// with ids, for the drain saga. It ranges vmsPinnedNodeIndexPrefix (NOT the
+// runtime-by-node index), so a pinned-but-not-yet-observed VM is included.
+// Soft-deleted and desired-deleted VMs are excluded.
+func (s *Store) ListVMRefsForNodeDeclared(ctx context.Context, nodeID uuid.UUID) ([]store.NodeVMRef, error) {
+	items, err := s.c.Range(ctx, vmsPinnedNodeIndexPrefix(nodeID))
+	if err != nil {
+		return nil, err
+	}
+	var refs []store.NodeVMRef
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return nil, fmt.Errorf("corrupt pinned-node index %q: %v", kv.Key, perr)
+		}
+		var vm store.VM
+		found, gerr := s.c.GetJSON(ctx, vmKey(id), &vm)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found || vm.DeletedAt != nil || vm.DesiredPhase == store.VmDesiredPhaseDeleted {
+			continue
+		}
+		refs = append(refs, store.NodeVMRef{ID: vm.ID, Name: vm.Name, DesiredPhase: vm.DesiredPhase})
+	}
+	return refs, nil
+}
+
 // activeMigrationsOnNode returns the non-terminal migrations touching the node,
 // resolved from the node migration index by reading each primary.
 func (s *Store) activeMigrationsOnNode(ctx context.Context, nodeID uuid.UUID) ([]store.Migration, error) {
@@ -500,6 +888,23 @@ func (s *Store) activeMigrationsOnNode(ctx context.Context, nodeID uuid.UUID) ([
 		active = append(active, m)
 	}
 	return active, nil
+}
+
+// ActiveSourceMigrationCount counts active (non-terminal) migrations whose
+// SOURCE is nodeID - the in-flight evacuations the drain saga has already
+// started, used to bound per-drain concurrency.
+func (s *Store) ActiveSourceMigrationCount(ctx context.Context, nodeID uuid.UUID) (int, error) {
+	migs, err := s.activeMigrationsOnNode(ctx, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, m := range migs {
+		if m.SourceNodeID != nil && *m.SourceNodeID == nodeID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // cancelMigrationOps builds the ops that mark each migration cancelled with the
