@@ -151,6 +151,7 @@ otherix migration cancel <migration-id>
 
 ## See also
 
+- [Node maintenance](../operations/node-maintenance.md) - cordon, drain, and uncordon a node; drain evacuates a node by live-migrating every VM off it
 - [Console and logs](console-and-logs.md) - the session tools that survive a move
 - [Networking](../concepts/networking.md) - the cluster-wide L2 fabric and the FDB
 - [Create and manage VMs](create-and-manage-vms.md)
