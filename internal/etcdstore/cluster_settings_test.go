@@ -339,6 +339,40 @@ func TestSeedClusterSettingsConcurrentFieldsDoNotClobber(t *testing.T) {
 	}
 }
 
+func int32Ptr(v int32) *int32 { return &v }
+
+func TestDrainSettingsDefaults(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	to, err := s.DrainTimeoutSeconds(ctx)
+	if err != nil {
+		t.Fatalf("DrainTimeoutSeconds: %v", err)
+	}
+	if to != 600 {
+		t.Errorf("default drain timeout = %d, want 600", to)
+	}
+
+	conc, err := s.DrainMaxConcurrentMigrations(ctx)
+	if err != nil {
+		t.Fatalf("DrainMaxConcurrentMigrations: %v", err)
+	}
+	if conc != 2 {
+		t.Errorf("default drain concurrency = %d, want 2", conc)
+	}
+
+	if err := s.SetDrainTimeoutSeconds(ctx, int32Ptr(1800)); err != nil {
+		t.Fatalf("SetDrainTimeoutSeconds: %v", err)
+	}
+	to, err = s.DrainTimeoutSeconds(ctx)
+	if err != nil {
+		t.Fatalf("DrainTimeoutSeconds after set: %v", err)
+	}
+	if to != 1800 {
+		t.Errorf("after set, drain timeout = %d, want 1800", to)
+	}
+}
+
 func TestSeedUnderlayMTUZeroDefaults(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

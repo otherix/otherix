@@ -358,3 +358,55 @@ func (s *Store) UnderlayMTU(ctx context.Context) (int32, error) {
 	}
 	return defaultUnderlayMTU, nil
 }
+
+// defaultDrainTimeoutSeconds bounds a node drain when the operator set no
+// override; defaultDrainMaxConcurrentMigrations caps concurrent evacuation
+// migrations per drain.
+const (
+	defaultDrainTimeoutSeconds          = 600
+	defaultDrainMaxConcurrentMigrations = 2
+)
+
+// DrainTimeoutSeconds returns the operator-set node-drain timeout in seconds,
+// falling back to the default when the singleton has no value.
+func (s *Store) DrainTimeoutSeconds(ctx context.Context) (int32, error) {
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if cs.DrainTimeoutSeconds != nil {
+		return *cs.DrainTimeoutSeconds, nil
+	}
+	return defaultDrainTimeoutSeconds, nil
+}
+
+// SetDrainTimeoutSeconds writes the operator-set node-drain timeout on the
+// singleton, or clears it (back to the default) when v is nil.
+func (s *Store) SetDrainTimeoutSeconds(ctx context.Context, v *int32) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.DrainTimeoutSeconds = v
+	})
+}
+
+// DrainMaxConcurrentMigrations returns the operator-set cap on concurrent
+// evacuation migrations per node drain, falling back to the default when the
+// singleton has no value.
+func (s *Store) DrainMaxConcurrentMigrations(ctx context.Context) (int32, error) {
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if cs.DrainMaxConcurrentMigrations != nil {
+		return *cs.DrainMaxConcurrentMigrations, nil
+	}
+	return defaultDrainMaxConcurrentMigrations, nil
+}
+
+// SetDrainMaxConcurrentMigrations writes the operator-set cap on concurrent
+// evacuation migrations per node drain, or clears it (back to the default) when
+// v is nil.
+func (s *Store) SetDrainMaxConcurrentMigrations(ctx context.Context, v *int32) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.DrainMaxConcurrentMigrations = v
+	})
+}

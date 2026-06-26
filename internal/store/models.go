@@ -373,8 +373,14 @@ type ClusterSetting struct {
 	VNIMin                  *int32  // overlay VNI range floor; seeded once at boot, immutable
 	VNIMax                  *int32  // overlay VNI range ceiling; seeded once at boot, immutable
 	UnderlayMTU             *int32  // physical underlay MTU; seeded once at boot, immutable (overlay/otwg0 MTUs derive from it)
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	// DrainTimeoutSeconds bounds how long a single node drain runs before the
+	// saga gives up; operator-set, default 600.
+	DrainTimeoutSeconds *int32
+	// DrainMaxConcurrentMigrations caps how many evacuation migrations a single
+	// drain runs at once; operator-set, default 2.
+	DrainMaxConcurrentMigrations *int32
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
 }
 
 type Firmware struct {
