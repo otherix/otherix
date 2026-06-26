@@ -173,6 +173,10 @@ smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otheri
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh
 
+.PHONY: smoke-node-drain
+smoke-node-drain: ## Node-drain smoke: `otherix node drain` evacuates a node's VMs to other nodes (task success) and leaves a stuck VM running on timeout (task failed); run after local-dev-start
+	bash dev/smoke/node-drain/run.sh
+
 .PHONY: smoke-vm-migration
 smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline` across two nodes (run after local-dev-start)
 	bash dev/smoke/vm-migration/run.sh
