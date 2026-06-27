@@ -44,6 +44,13 @@ func (f *fakeUsersStore) UserByEmail(_ context.Context, email string) (store.Use
 	return store.User{}, store.ErrNotFound
 }
 
+func (f *fakeUsersStore) UserByUsername(_ context.Context, username string) (store.User, error) {
+	if username == f.user.Username {
+		return f.user, nil
+	}
+	return store.User{}, store.ErrNotFound
+}
+
 func (f *fakeUsersStore) CreateUser(_ context.Context, _ store.CreateUserParams) (store.User, error) {
 	return store.User{}, nil
 }

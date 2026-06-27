@@ -27,6 +27,7 @@ import (
 type Store interface {
 	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	UserByEmail(ctx context.Context, email string) (store.User, error)
+	UserByUsername(ctx context.Context, username string) (store.User, error)
 	CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error)
 	UpdateUser(ctx context.Context, arg store.UpdateUserParams) (store.User, error)
 	ListUsers(ctx context.Context, arg store.ListUsersParams) ([]store.User, error)
@@ -52,7 +53,8 @@ func New(s Store) *Handler {
 // omits password_hash so the helper cannot accidentally surface it.
 type userView struct {
 	ID          string  `json:"id"`
-	Email       string  `json:"email"`
+	Username    string  `json:"username"`
+	Email       string  `json:"email,omitempty"`
 	DisplayName string  `json:"display_name"`
 	Role        string  `json:"role"`
 	LastLoginAt *string `json:"last_login_at"`
@@ -63,6 +65,7 @@ type userView struct {
 func toView(u store.User) userView {
 	v := userView{
 		ID:          u.ID.String(),
+		Username:    u.Username,
 		Email:       u.Email,
 		DisplayName: u.DisplayName,
 		Role:        u.Role,

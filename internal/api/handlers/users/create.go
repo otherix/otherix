@@ -27,10 +27,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validation.ValidateEmail(req.Email); err != nil {
+	if err := validation.ValidateUsername(req.Username); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)
 		return
+	}
+	// Email is optional; validate only when supplied.
+	if req.Email != "" {
+		if err := validation.ValidateEmail(req.Email); err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, err.Error(), nil)
+			return
+		}
 	}
 	if err := validation.ValidatePassword(req.Password); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
@@ -53,12 +61,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	row, err := h.store.CreateUser(r.Context(), store.CreateUserParams{
 		ID:           uuid.New(),
+		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: hash,
 		DisplayName:  req.DisplayName,
 		Role:         string(role),
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrUserUsernameExists) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeConflict, "username already in use", nil)
+			return
+		}
 		if errors.Is(err, store.ErrUserEmailExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "email already in use", nil)
