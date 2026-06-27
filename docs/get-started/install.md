@@ -88,6 +88,32 @@ image is Alpine-based and intended for development and CI only (a
 production agent runs as a host binary alongside `qemu-system-*`, not in
 a container - it needs `/dev/kvm` and host networking).
 
+## Upgrade
+
+Upgrading installs the new release over the old one. State is preserved (etcd
+data, certs, and config under `/var/lib/otherix` and `/etc/otherix`); nothing is
+re-provisioned. The daemon `.deb` upgrades restart their services.
+
+`upgrade.sh` upgrades whatever is **already installed** on the host - api, agent,
+and/or the CLI - touching only what is present, so the same command is correct on
+a control-plane host, a hypervisor node, an operator workstation, or a single-node
+all-in-one:
+
+```bash
+curl -fsSL https://get.otherix.dev/upgrade.sh | sudo sh
+```
+
+Pin a version with `OTHERIX_VERSION=vX.Y.Z` (default: latest). It refuses if no
+Otherix component is installed - bootstrap a host with the install script (or the
+[single-node quickstart](quickstart-single-node.md)) first.
+
+To upgrade a single component instead, re-run the install script for it - the same
+`OTHERIX_COMPONENT` form as a fresh install upgrades in place:
+
+```bash
+curl -fsSL get.otherix.dev | OTHERIX_COMPONENT=api sudo -E sh
+```
+
 ## Filesystem layout
 
 Otherix follows a fixed convention:
