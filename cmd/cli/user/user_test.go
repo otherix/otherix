@@ -381,7 +381,15 @@ func TestUserWhoami_GetsMe(t *testing.T) {
 	if !hit {
 		t.Errorf("whoami should GET /v1/users/me")
 	}
-	if !strings.Contains(stdout, "admin") {
-		t.Errorf("stdout missing username:\n%s", stdout)
+	// whoami prints a terse one-line identity summary (username + role),
+	// not the full record that `user get` renders.
+	if want := "admin (role: admin)"; !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want a line containing %q", stdout, want)
+	}
+	if strings.Contains(stdout, "id:") || strings.Contains(stdout, "created_at:") {
+		t.Errorf("whoami should be terse, not the full record:\n%s", stdout)
+	}
+	if n := strings.Count(strings.TrimRight(stdout, "\n"), "\n"); n != 0 {
+		t.Errorf("whoami text output should be a single line, got %d newlines:\n%s", n, stdout)
 	}
 }
