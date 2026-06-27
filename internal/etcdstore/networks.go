@@ -165,7 +165,7 @@ func (s *Store) CreateNetwork(ctx context.Context, arg store.CreateNetworkParams
 			return store.Network{}, err
 		}
 		n.VNI = &vni
-		n.BridgeName = fmt.Sprintf("otb%d", vni)
+		n.BridgeName = fmt.Sprintf("otvb%d", vni)
 		n.Managed = true
 		n.Mtu = underlay - store.OverlayEncapOverhead
 		vg := networkVNIGuard(vni)

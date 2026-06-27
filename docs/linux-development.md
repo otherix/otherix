@@ -114,7 +114,7 @@ heartbeat continuity), plus `smoke-vm-migration-live-logs`,
 
 Verifies overlay egress (per-node SNAT) end to end against real agents. The CP
 gives overlay VMs internet access by putting a link-local anycast gateway
-(`169.254.1.1`) on every node's `otb<vni>` bridge, enabling `ip_forward`, and
+(`169.254.1.1`) on every node's `otvb<vni>` bridge, enabling `ip_forward`, and
 masquerading overlay traffic out the node's uplink; a per-node DNS forwarder on
 `169.254.1.1:53` relays to the node's upstream resolver. The gateway address is
 node-independent, so it survives live migration. Run after `make
@@ -164,7 +164,7 @@ local-dev-start`.
 
 4. Confirm the source IP is the node IP: on the node,
    `sudo ip netns exec otns1 nft list table ip otherix-nat` shows the
-   `iifname "otb<vni>" oifname ... masquerade` rule; the external peer sees the
+   `iifname "otvb<vni>" oifname ... masquerade` rule; the external peer sees the
    node's address.
 
 Pass criteria: ping + DNS + HTTP all succeed; the masquerade rule is present; no
@@ -172,7 +172,7 @@ Pass criteria: ping + DNS + HTTP all succeed; the masquerade rule is present; no
 
 ### Multi-overlay anycast containment (extended smoke)
 
-The gateway address `169.254.1.1` is anycast on the `otb<vni>` bridge of EVERY
+The gateway address `169.254.1.1` is anycast on the `otvb<vni>` bridge of EVERY
 egress overlay, each with a distinct per-VNI MAC. Bringing up two egress
 overlays on one node verifies they do not interfere (the agent sets
 `arp_ignore=1` / `arp_announce=2` per bridge to contain the shared address).
@@ -199,14 +199,14 @@ overlays on one node verifies they do not interfere (the agent sets
 
    ```bash
    # in the VM:
-   ip neigh show 169.254.1.1     # MAC must match THIS overlay's otb<vni>, not the other
+   ip neigh show 169.254.1.1     # MAC must match THIS overlay's otvb<vni>, not the other
    ```
 
    And on the node, the per-bridge ARP sysctls are set:
 
    ```bash
-   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otb<vni>/arp_ignore   # 1
-   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otb<vni>/arp_announce # 2
+   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otvb<vni>/arp_ignore   # 1
+   sudo ip netns exec otns1 cat /proc/sys/net/ipv4/conf/otvb<vni>/arp_announce # 2
    ```
 
 Pass criteria: both VMs reach the internet and resolve DNS independently;

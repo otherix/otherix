@@ -67,7 +67,7 @@ func TestProjectNetworkOverlayIsReappliable(t *testing.T) {
 	// yields a manifest the server rejects, so the overlay projection must
 	// emit only type + subnet (the valid overlay create body).
 	subnet := "10.10.0.0/24"
-	n := cpclient.Network{Name: "ovl", Type: "overlay", BridgeName: "otb100", MTU: 1390, Subnet: &subnet}
+	n := cpclient.Network{Name: "ovl", Type: "overlay", BridgeName: "otvb100", MTU: 1390, Subnet: &subnet}
 	out, err := manifest.ProjectNetwork(n)
 	if err != nil {
 		t.Fatalf("ProjectNetwork() error = %v", err)

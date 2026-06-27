@@ -43,11 +43,11 @@ const (
 var linuxBridgeNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,14}$`)
 
 // reservedDeviceNameRe matches the Otherix-owned device-name namespace
-// (otb<vni> overlay bridge, otvx<vni> VTEP, otwg0 WireGuard). An operator
+// (otvb<vni> overlay bridge, otvx<vni> VTEP, otwg0 WireGuard). An operator
 // type=bridge network must not claim a name in this space or it would shadow
 // a derived overlay device. The match is case-insensitive: operators cannot
-// bypass the reservation via case variation (e.g. OTB1000, OtVx5).
-var reservedDeviceNameRe = regexp.MustCompile(`(?i)^(otb|otvx|otwg)`)
+// bypass the reservation via case variation (e.g. OTVB1000, OtVx5).
+var reservedDeviceNameRe = regexp.MustCompile(`(?i)^(otvb|otvx|otwg)`)
 
 // ValidateNetworkType returns nil when t is a recognised
 // store.NetworkType value. The set is anchored to the store enum;
@@ -72,7 +72,7 @@ func ValidateBridgeName(s string) error {
 		return fmt.Errorf("invalid bridge_name %q (1..15 chars, [A-Za-z][A-Za-z0-9_-]*)", s)
 	}
 	if reservedDeviceNameRe.MatchString(s) {
-		return fmt.Errorf("invalid bridge_name %q (otb*/otvx*/otwg* are reserved for Otherix-owned devices)", s)
+		return fmt.Errorf("invalid bridge_name %q (otvb*/otvx*/otwg* are reserved for Otherix-owned devices)", s)
 	}
 	return nil
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // OverlayGatewayAddr is the link-local anycast address Otherix puts on every
-// overlay bridge (otb<vni>) as the VM-facing default gateway and DNS server.
+// overlay bridge (otvb<vni>) as the VM-facing default gateway and DNS server.
 // It is identical on every node, so a VM keeps the same next-hop across live
 // migration; the local node always answers. RFC 3927 link-local space, so it
 // never collides with a tenant overlay subnet.

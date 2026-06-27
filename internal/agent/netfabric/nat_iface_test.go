@@ -13,7 +13,7 @@ import (
 )
 
 func TestMasqIfaceExprs(t *testing.T) {
-	exprs := masqIfaceExprs("otb1000", "eth0")
+	exprs := masqIfaceExprs("otvb1000", "eth0")
 	if len(exprs) != 5 {
 		t.Fatalf("masqIfaceExprs len = %d, want 5", len(exprs))
 	}
@@ -25,7 +25,7 @@ func TestMasqIfaceExprs(t *testing.T) {
 	if !ok || inCmp.Op != expr.CmpOpEq {
 		t.Errorf("expr[1] = %#v, want Cmp Eq", exprs[1])
 	}
-	if string(inCmp.Data) != string(ifnameComparand("otb1000")) {
+	if string(inCmp.Data) != string(ifnameComparand("otvb1000")) {
 		t.Errorf("expr[1] iif comparand mismatch")
 	}
 	out, ok := exprs[2].(*expr.Meta)
@@ -42,12 +42,12 @@ func TestMasqIfaceExprs(t *testing.T) {
 }
 
 func TestMasqIfaceUserData(t *testing.T) {
-	m := masqIfaceUserData("otb1000", "eth0")
-	if string(m) != "otherix:iif:otb1000:eth0" {
-		t.Errorf("masqIfaceUserData = %q, want otherix:iif:otb1000:eth0", string(m))
+	m := masqIfaceUserData("otvb1000", "eth0")
+	if string(m) != "otherix:iif:otvb1000:eth0" {
+		t.Errorf("masqIfaceUserData = %q, want otherix:iif:otvb1000:eth0", string(m))
 	}
-	p := masqIfacePrefix("otb1000")
-	if string(p) != "otherix:iif:otb1000:" {
-		t.Errorf("masqIfacePrefix = %q, want otherix:iif:otb1000:", string(p))
+	p := masqIfacePrefix("otvb1000")
+	if string(p) != "otherix:iif:otvb1000:" {
+		t.Errorf("masqIfacePrefix = %q, want otherix:iif:otvb1000:", string(p))
 	}
 }

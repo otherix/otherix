@@ -317,13 +317,14 @@ func TestValidateBridgeNameReservedPrefix(t *testing.T) {
 		in   string
 		want bool // true = expect error
 	}{
-		{name: "overlay bridge", in: "otb1000", want: true},
+		{name: "overlay bridge", in: "otvb1000", want: true},
 		{name: "vtep", in: "otvx5", want: true},
 		{name: "wireguard", in: "otwg0", want: true},
 		{name: "operator bridge", in: "vmbr0", want: false},
 		{name: "plain", in: "br0", want: false},
 		{name: "ot but not reserved", in: "oteth0", want: false},
-		{name: "uppercase reserved", in: "OTB1000", want: true},
+		{name: "retired otb prefix is now allowed", in: "otbr0", want: false},
+		{name: "uppercase reserved", in: "OTVB1000", want: true},
 		{name: "mixed case vtep", in: "OtVx5", want: true},
 		{name: "uppercase wireguard", in: "OTWG0", want: true},
 	}

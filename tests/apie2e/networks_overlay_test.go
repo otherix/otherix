@@ -72,9 +72,9 @@ func TestOverlayNetworkCreateAllocatesVNI(t *testing.T) {
 	if created.VNI == nil {
 		t.Fatalf("vni is nil, want a non-nil allocated VNI")
 	}
-	wantBridgeName := fmt.Sprintf("otb%d", *created.VNI)
+	wantBridgeName := fmt.Sprintf("otvb%d", *created.VNI)
 	if created.BridgeName != wantBridgeName {
-		t.Errorf("bridge_name = %q, want %q (otb<vni>)", created.BridgeName, wantBridgeName)
+		t.Errorf("bridge_name = %q, want %q (otvb<vni>)", created.BridgeName, wantBridgeName)
 	}
 	if !created.Managed {
 		t.Errorf("managed = false, want true")
@@ -92,7 +92,7 @@ func TestOverlayNetworkCreateRejectsBridgeName(t *testing.T) {
 		"name":        "ov-bad-" + uuid.NewString()[:8],
 		"type":        "overlay",
 		"subnet":      "10.51.0.0/24",
-		"bridge_name": "otb9",
+		"bridge_name": "otvb9",
 	}
 	resp := h.post(t, "/v1/networks", body, admin)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -358,7 +358,7 @@ func TestOverlayNetworkPatchDhcpForbidden(t *testing.T) {
 // declared in the declared_networks down-channel (the N3b D1 flip). It seeds one
 // bridge and one overlay network, drives a synthetic agent heartbeat over the
 // mTLS agent router, and asserts that the overlay entry appears carrying its vni
-// and otb<vni> bridge name, alongside the bridge.
+// and otvb<vni> bridge name, alongside the bridge.
 func TestOverlayNetworkDeclaredToAgents(t *testing.T) {
 	h := newE2E(t)
 	admin, _ := loginAs(t, h, auth.RoleAdmin)
@@ -447,7 +447,7 @@ func TestOverlayNetworkDeclaredToAgents(t *testing.T) {
 			overlaySeen = true
 			if n.VNI == nil {
 				t.Errorf("declared overlay id=%q has nil vni", n.ID)
-			} else if want := fmt.Sprintf("otb%d", *n.VNI); n.BridgeName != want {
+			} else if want := fmt.Sprintf("otvb%d", *n.VNI); n.BridgeName != want {
 				t.Errorf("declared overlay bridge_name = %q, want %q", n.BridgeName, want)
 			}
 		}

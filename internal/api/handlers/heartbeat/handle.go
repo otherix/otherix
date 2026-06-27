@@ -778,7 +778,7 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 // emits a per-remote-VM unicast entry (mac -> remote node's VTEP IP) and one
 // all-zeros BUM/flood entry per distinct remote VTEP (head-end replication).
 // Remote = a VM on another node; the node never needs FDB for its own local VMs
-// (their MACs live on the otb<vni> bridge). Sorted (vni, mac, vtep) for stable
+// (their MACs live on the otvb<vni> bridge). Sorted (vni, mac, vtep) for stable
 // heartbeats.
 func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, []overlayReachability, error) {
 	// The placement scan is the FIRST read of the join; it establishes the MVCC

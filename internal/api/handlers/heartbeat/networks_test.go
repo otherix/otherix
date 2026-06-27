@@ -93,7 +93,7 @@ func TestNetworkToDeclaredCarriesVNI(t *testing.T) {
 		Type:       store.NetworkTypeOverlay,
 		Managed:    true,
 		Egress:     store.NetworkEgressNone,
-		BridgeName: "otb1000",
+		BridgeName: "otvb1000",
 		Mtu:        store.OverlayMTU,
 		VNI:        &vni,
 	}
