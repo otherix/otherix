@@ -180,7 +180,8 @@ otx cluster set-default-network "$NET_NAME" >/dev/null || die "set-default-netwo
 step "Creating the demo VM ($VM_NAME)"
 VM_PASS="$(gen_secret)"
 KEYS=""
-home="$(eval echo "~${SUDO_USER:-root}")"
+home="$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)"
+[ -n "$home" ] || home="/root"
 for k in "$home/.ssh/id_ed25519.pub" "$home/.ssh/id_rsa.pub"; do
 	[ -r "$k" ] && KEYS="$KEYS$(printf '\n      - %s' "$(cat "$k")")"
 done
