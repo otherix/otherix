@@ -14,7 +14,7 @@ func newWhoamiCommand() *cobra.Command {
 		Use:   "whoami",
 		Short: "Show who you are authenticated as (one-line summary).",
 		Long: `Fetches GET /v1/users/me and prints a one-line summary of the
-caller (username and role). Available to every authenticated role.
+caller (username, role, id). Available to every authenticated role.
 Use -o json or -o yaml for the full user object.`,
 		Args: cobra.NoArgs,
 		RunE: runWhoami,
@@ -37,10 +37,11 @@ func runWhoami(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return classifyError(err)
 	}
-	// whoami is "who am I" - a terse identity line by default. The full
-	// record is available via `user get <username>` or -o json/yaml here.
+	// whoami is "who am I" - a terse identity line by default (username,
+	// role, id). The full record is available via `user get <username>`
+	// or -o json/yaml here.
 	if format == "text" {
-		printf(cmd, "%s (role: %s)\n", me.Username, me.Role)
+		printf(cmd, "%s (role: %s, id: %s)\n", me.Username, me.Role, me.ID)
 		return nil
 	}
 	return renderUser(cmd, me, format)

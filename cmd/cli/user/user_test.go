@@ -363,6 +363,7 @@ func TestUserSetPassword_PatchesViaStdin(t *testing.T) {
 func TestUserWhoami_GetsMe(t *testing.T) {
 	t.Parallel()
 	var hit bool
+	id := uuid.NewString()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/users/me" {
 			t.Errorf("request = %s %s, want GET /v1/users/me", r.Method, r.URL.Path)
@@ -370,7 +371,7 @@ func TestUserWhoami_GetsMe(t *testing.T) {
 		hit = true
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(userJSON(uuid.NewString(), "admin", "admin"))
+		_, _ = w.Write(userJSON(id, "admin", "admin"))
 	}))
 	defer srv.Close()
 
@@ -381,12 +382,12 @@ func TestUserWhoami_GetsMe(t *testing.T) {
 	if !hit {
 		t.Errorf("whoami should GET /v1/users/me")
 	}
-	// whoami prints a terse one-line identity summary (username + role),
-	// not the full record that `user get` renders.
-	if want := "admin (role: admin)"; !strings.Contains(stdout, want) {
+	// whoami prints a terse one-line identity summary (username, role, id),
+	// not the full multi-line record that `user get` renders.
+	if want := "admin (role: admin, id: " + id + ")"; !strings.Contains(stdout, want) {
 		t.Errorf("stdout = %q, want a line containing %q", stdout, want)
 	}
-	if strings.Contains(stdout, "id:") || strings.Contains(stdout, "created_at:") {
+	if strings.Contains(stdout, "created_at:") || strings.Contains(stdout, "updated_at:") {
 		t.Errorf("whoami should be terse, not the full record:\n%s", stdout)
 	}
 	if n := strings.Count(strings.TrimRight(stdout, "\n"), "\n"); n != 0 {

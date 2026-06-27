@@ -56,7 +56,7 @@ did; see [Securing the API](securing-the-api.md) for `--ca-file` /
 
 ```bash
 otherix user whoami
-# username=dev-user role=developer
+# dev-user (role: developer, id: 0e1d2c3b-4a59-6877-8695-a4b3c2d1e0f9)
 ```
 
 ## 3. Developer: launch the first VM
