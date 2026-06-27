@@ -6,6 +6,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
+	apitokencmd "github.com/otherix/otherix/cmd/cli/apitoken"
 	artifactpoolcmd "github.com/otherix/otherix/cmd/cli/artifactpool"
 	clustercmd "github.com/otherix/otherix/cmd/cli/cluster"
 	configcmd "github.com/otherix/otherix/cmd/cli/config"
@@ -59,6 +60,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(networkcmd.NewCommand())
 	root.AddCommand(nodecmd.NewCommand())
 	root.AddCommand(usercmd.NewCommand())
+	root.AddCommand(apitokencmd.NewCommand())
 	root.AddCommand(clustercmd.NewCommand())
 	root.AddCommand(configcmd.NewCommand())
 	root.AddCommand(newManifestCreateCmd())
