@@ -132,6 +132,59 @@ func (c *Client) ClearClusterDefaultArtifactPool(ctx context.Context) error {
 	return err
 }
 
+// GetClusterDefaultNetwork fetches GET /v1/cluster/default-network. Returns
+// (nil, nil) when the cluster default network is unset (envelope code
+// `default_network_not_set`, 404). Other non-2xx responses surface as
+// *APIError so callers can branch on the wire code.
+func (c *Client) GetClusterDefaultNetwork(ctx context.Context) (*ClusterDefaultPool, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/cluster/default-network", nil)
+	if err != nil {
+		return nil, err
+	}
+	_, body, err := c.do(httpReq)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Code == string(response.CodeDefaultNetworkNotSet) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out ClusterDefaultPool
+	if err := decodeJSON(body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetClusterDefaultNetwork submits PUT /v1/cluster/default-network. The server
+// validates the supplied name resolves to an existing bridge network.
+func (c *Client) SetClusterDefaultNetwork(ctx context.Context, name string) (ClusterDefaultPool, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodPut, "/v1/cluster/default-network", ClusterDefaultPool{Name: name})
+	if err != nil {
+		return ClusterDefaultPool{}, err
+	}
+	_, body, err := c.do(httpReq)
+	if err != nil {
+		return ClusterDefaultPool{}, err
+	}
+	var out ClusterDefaultPool
+	if err := decodeJSON(body, &out); err != nil {
+		return ClusterDefaultPool{}, err
+	}
+	return out, nil
+}
+
+// ClearClusterDefaultNetwork submits DELETE /v1/cluster/default-network.
+// Idempotent on the wire - clearing an already-unset reference returns 204.
+func (c *Client) ClearClusterDefaultNetwork(ctx context.Context) error {
+	httpReq, err := c.newRequest(ctx, http.MethodDelete, "/v1/cluster/default-network", nil)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.do(httpReq)
+	return err
+}
+
 // ClusterMember mirrors components/schemas/ClusterMember.
 type ClusterMember struct {
 	ID         string   `json:"id"`
