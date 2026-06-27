@@ -19,7 +19,7 @@ import (
 
 // Environment variables consulted by BootstrapAdmin.
 const (
-	EnvBootstrapAdminEmail    = "OTHERIX_BOOTSTRAP_ADMIN_EMAIL"
+	EnvBootstrapAdminUsername = "OTHERIX_BOOTSTRAP_ADMIN_USERNAME"
 	EnvBootstrapAdminPassword = "OTHERIX_BOOTSTRAP_ADMIN_PASSWORD" //nolint:gosec // env var name, not a credential
 )
 
@@ -50,22 +50,22 @@ func BootstrapAdmin(ctx context.Context, s AdminBootstrapStore, log *slog.Logger
 // Production wiring goes through BootstrapAdmin; tests use this entry
 // point with a stub env reader.
 func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog.Logger, env BootstrapAdminEnv) error {
-	email := strings.TrimSpace(env(EnvBootstrapAdminEmail))
+	username := strings.TrimSpace(env(EnvBootstrapAdminUsername))
 	password := env(EnvBootstrapAdminPassword)
 
-	if email == "" && password == "" {
+	if username == "" && password == "" {
 		log.InfoContext(ctx, "bootstrap admin skipped: env vars not set",
-			slog.String("email_var", EnvBootstrapAdminEmail),
+			slog.String("username_var", EnvBootstrapAdminUsername),
 			slog.String("password_var", EnvBootstrapAdminPassword))
 		return nil
 	}
-	if email == "" || password == "" {
+	if username == "" || password == "" {
 		return fmt.Errorf("bootstrap admin requires both %s and %s",
-			EnvBootstrapAdminEmail, EnvBootstrapAdminPassword)
+			EnvBootstrapAdminUsername, EnvBootstrapAdminPassword)
 	}
 
-	if err := validation.ValidateEmail(email); err != nil {
-		return fmt.Errorf("bootstrap admin email: %v", err)
+	if err := validation.ValidateUsername(username); err != nil {
+		return fmt.Errorf("bootstrap admin username: %v", err)
 	}
 	if err := validation.ValidatePassword(password); err != nil {
 		return fmt.Errorf("bootstrap admin password: %v", err)
@@ -77,10 +77,10 @@ func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog
 	}
 	if count > 0 {
 		log.WarnContext(ctx, "bootstrap admin env is set but an admin already exists; "+
-			"remove OTHERIX_BOOTSTRAP_ADMIN_EMAIL and OTHERIX_BOOTSTRAP_ADMIN_PASSWORD "+
+			"remove OTHERIX_BOOTSTRAP_ADMIN_USERNAME and OTHERIX_BOOTSTRAP_ADMIN_PASSWORD "+
 			"(e.g. from /etc/otherix/api.env) so the bootstrap credentials no longer sit in the environment",
 			slog.Int64("admin_count", count),
-			slog.String("email_var", EnvBootstrapAdminEmail),
+			slog.String("username_var", EnvBootstrapAdminUsername),
 			slog.String("password_var", EnvBootstrapAdminPassword))
 		return nil
 	}
@@ -92,28 +92,28 @@ func BootstrapAdminWithEnv(ctx context.Context, s AdminBootstrapStore, log *slog
 
 	row, err := s.CreateUser(ctx, store.CreateUserParams{
 		ID:           uuid.New(),
-		Email:        email,
+		Username:     username,
 		PasswordHash: hash,
 		// Seed a human-readable display name so audit surfaces (e.g. the
 		// migration cancel record's "cancelled by <name>") show "admin" rather
-		// than the bootstrap email (PII) or the opaque user id.
+		// than the opaque user id.
 		DisplayName: "admin",
 		Role:        string(auth.RoleAdmin),
 	})
 	if err != nil {
 		// A unique violation here means a concurrent process beat us
-		// to the insert. Treat that as success: the requested email is
+		// to the insert. Treat that as success: the requested username is
 		// taken, an admin row exists, the goal is met.
-		if errors.Is(err, store.ErrUserEmailExists) {
-			log.WarnContext(ctx, "bootstrap admin: email already taken, continuing",
-				slog.String("email", email))
+		if errors.Is(err, store.ErrUserUsernameExists) {
+			log.WarnContext(ctx, "bootstrap admin: username already taken, continuing",
+				slog.String("username", username))
 			return nil
 		}
 		return fmt.Errorf("create admin: %v", err)
 	}
 
 	log.InfoContext(ctx, "bootstrap admin created",
-		slog.String("email", email),
+		slog.String("username", username),
 		slog.String("user_id", row.ID.String()))
 	return nil
 }
