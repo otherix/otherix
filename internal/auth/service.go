@@ -23,7 +23,7 @@ import (
 // here as the single named atomic RotateRefreshToken so the service stays
 // transaction-agnostic.
 type Store interface {
-	UserByEmail(ctx context.Context, email string) (store.User, error)
+	UserByUsername(ctx context.Context, username string) (store.User, error)
 	UserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	TouchUserLastLogin(ctx context.Context, id uuid.UUID) error
 	RefreshTokenByHash(ctx context.Context, hash []byte) (store.RefreshToken, error)
@@ -87,7 +87,7 @@ func NewService(cfg Config, s Store) (*Service, error) {
 // Credentials is the input to Login. UserAgent and IP are optional; they
 // are stored on the issued refresh token for audit purposes only.
 type Credentials struct {
-	Email     string
+	Username  string
 	Password  string
 	UserAgent string
 	IP        netip.Addr
@@ -105,7 +105,7 @@ type TokenPair struct {
 
 // dummyLoginHash returns a fixed argon2id hash verified against on the
 // user-not-found path so Login pays the same KDF cost whether or not
-// the email exists, closing the enumeration timing oracle.
+// the username exists, closing the enumeration timing oracle.
 // Computed lazily on first use (sync.OnceValue) so it always observes
 // the active argon2 cost parameters: a package-level var initializer
 // would run before the test_fast_argon init() override and capture the
@@ -124,7 +124,7 @@ var dummyLoginHash = sync.OnceValue(func() string {
 // for both "no such user" and "wrong password" — the endpoint must not
 // distinguish, by error shape or by response latency.
 func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, error) {
-	user, err := s.store.UserByEmail(ctx, creds.Email)
+	user, err := s.store.UserByUsername(ctx, creds.Username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Equalize work with the user-found branch: run the KDF
