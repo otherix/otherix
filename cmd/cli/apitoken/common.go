@@ -214,8 +214,10 @@ func printNextCursor(cmd *cobra.Command, next string) {
 // list). Otherwise every token of the target user is paged (revoked
 // included) and matched on the exact prefix.
 func resolveTokenByPrefix(ctx context.Context, c *cpclient.Client, userID, arg string) (cpclient.APIToken, error) {
-	if _, err := uuid.Parse(arg); err == nil {
-		return cpclient.APIToken{ID: arg}, nil
+	if u, err := uuid.Parse(arg); err == nil {
+		// Canonicalize so non-standard but parseable forms (braced,
+		// urn:uuid:, unhyphenated) reach the server in the form it stores.
+		return cpclient.APIToken{ID: u.String()}, nil
 	}
 	var matches []cpclient.APIToken
 	cursor := ""
@@ -232,10 +234,14 @@ func resolveTokenByPrefix(ctx context.Context, c *cpclient.Client, userID, arg s
 				matches = append(matches, t)
 			}
 		}
-		if page.Meta.NextCursor == nil || *page.Meta.NextCursor == "" {
+		next := page.Meta.NextCursor
+		// Stop on the last page, and defensively on a non-advancing cursor
+		// (a misbehaving server that keeps returning the same token) so the
+		// loop cannot spin forever.
+		if next == nil || *next == "" || *next == cursor {
 			break
 		}
-		cursor = *page.Meta.NextCursor
+		cursor = *next
 	}
 	switch len(matches) {
 	case 0:

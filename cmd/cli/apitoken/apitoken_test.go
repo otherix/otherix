@@ -377,3 +377,30 @@ func TestRevoke_NoMatchErrors(t *testing.T) {
 		t.Fatalf("err = %v, want a clean no-match message", err)
 	}
 }
+
+// TestRevoke_StalledCursorTerminates proves the prefix-resolution loop
+// terminates even when the server keeps returning the same non-empty
+// next_cursor (a misbehaving CP). Without the non-advancing-cursor guard
+// this would spin forever and the test would hit the go-test timeout.
+func TestRevoke_StalledCursorTerminates(t *testing.T) {
+	var pages int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			t.Errorf("no token matches the prefix; nothing should be deleted")
+		}
+		pages++
+		if pages > 100 {
+			t.Fatalf("resolution loop did not terminate (%d pages)", pages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Non-matching data with a stable, non-empty cursor every page.
+		_, _ = w.Write([]byte(`{"data":[{"id":"id1","user_id":"u1","name":"ci","prefix":"otx_ab12","created_at":"2026-06-27T10:00:00Z"}],"meta":{"next_cursor":"stuck"}}`))
+	}))
+	defer srv.Close()
+
+	_, _, err := runCmd(t, srv.URL, nil, []string{"revoke", "otx_zzzz", "--force"})
+	if err == nil || !strings.Contains(err.Error(), "no api token with prefix") {
+		t.Fatalf("err = %v, want a clean no-match message after the loop terminates", err)
+	}
+}
