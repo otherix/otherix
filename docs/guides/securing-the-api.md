@@ -102,7 +102,7 @@ automatically, in this order:
 otherix config add cluster \
   --name prod \
   --server https://cp.example.com:8080 \
-  --login admin@example.com \
+  --login admin \
   --ca-fingerprint sha256:1a2b3c...
 ```
 
@@ -145,7 +145,7 @@ The CLI then talks plain HTTP, and no CA is needed:
 otherix config add cluster \
   --name dev \
   --server http://localhost:8080 \
-  --login admin@example.com
+  --login admin
 ```
 
 !!! warning "Plaintext is for loopback or a terminating proxy only"

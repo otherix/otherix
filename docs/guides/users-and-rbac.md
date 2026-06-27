@@ -32,62 +32,65 @@ VM's name and metadata) but `vm:lifecycle` and `vm:delete` only at `own` scope
 the permission is simply held or not. The full per-permission table is in the
 [RBAC matrix](../rbac.md).
 
-## Managing users: REST only
+## Managing users
 
-!!! important "There is no `otherix user` CLI command"
-    User CRUD is **not** exposed through the CLI. Create, list, update, and
-    delete users via the Control Plane REST API directly. All of these
-    endpoints require an `admin` bearer token.
+The `otherix user` CLI is the primary way to manage users. Every command maps to
+the Control Plane REST API under `/v1/users`, which you can also call directly
+(see the [CLI reference](../reference/cli.md#otherix-user) and the
+[REST API](../reference/api.md)). User management requires an `admin` credential.
 
-The examples below use a bearer token in the `Authorization` header. That token
-can be an admin JWT (from `POST /v1/auth/login`) or an admin `otx_*` API token;
-the server selects the scheme by the `otx_` prefix.
+A **username** is the account's unique identity and its login credential:
+lowercase letters, digits, and interior hyphens (3..32, e.g. `dev-user`).
+`email` and `display_name` are optional. Passwords are 12..256 characters (no
+composition rules). Valid `role` values are `admin`, `operator`, `developer`,
+`viewer`.
 
 ### Create a user (admin)
 
-`POST /v1/users` takes `email`, `password`, `role`, and an optional
-`display_name`:
+```bash
+# Password is read from a no-echo prompt, or piped in with --password-stdin.
+otherix user create dev-user --role developer
+otherix user create dev-user --role developer --password-stdin <<<"$DEV_PASSWORD"
+
+# Optional contact / label fields:
+otherix user create dev-user --role developer \
+  --email dev@example.com --display-name "Dev User"
+```
+
+The equivalent REST call (`POST /v1/users`, with an admin bearer token - an admin
+JWT from `POST /v1/auth/login` or an admin `otx_*` API token; the server selects
+the scheme by the `otx_` prefix):
 
 ```bash
 curl -sS -X POST https://cp.example.com/v1/users \
   -H "Authorization: Bearer $OTHERIX_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-        "email": "dev@example.com",
+        "username": "dev-user",
         "password": "correct-horse-battery",
-        "role": "developer",
-        "display_name": "Dev User"
+        "role": "developer"
       }'
 ```
-
-Passwords are 12..256 characters (no composition rules). Valid `role` values are
-`admin`, `operator`, `developer`, `viewer`.
 
 ### List, read, update, delete
 
 ```bash
-# List users (cursor-paginated; optional ?email= exact-match filter)
-curl -sS https://cp.example.com/v1/users \
-  -H "Authorization: Bearer $OTHERIX_TOKEN"
-
-# Get one user by UUID
-curl -sS https://cp.example.com/v1/users/<uuid> \
-  -H "Authorization: Bearer $OTHERIX_TOKEN"
-
-# Update (display_name, password, or - admin only - role)
-curl -sS -X PATCH https://cp.example.com/v1/users/<uuid> \
-  -H "Authorization: Bearer $OTHERIX_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"role": "operator"}'
-
-# Soft-delete a user (refused while they still own resources)
-curl -sS -X DELETE https://cp.example.com/v1/users/<uuid> \
-  -H "Authorization: Bearer $OTHERIX_TOKEN"
+otherix user list                          # cursor-paginated
+otherix user get dev-user
+otherix user set-role dev-user operator    # admin only
+otherix user set-password dev-user         # prompts, or --password-stdin
+otherix user delete dev-user               # refused while they still own resources
+otherix user whoami                        # the calling user (any role)
 ```
 
-Any user can read and update **themselves** through `GET /v1/users/me` and
-`PATCH /v1/users/me` (the latter for `display_name` and `password`; a user
-cannot change their own `role`).
+A user can read and update **themselves** (`whoami`, and password via
+`set-password` on their own account) - mapped to `GET /v1/users/me` and
+`PATCH /v1/users/me`; a user cannot change their own `role`.
+
+!!! tip "Onboarding a new user end to end"
+    For a complete walkthrough - an admin creating a developer, that developer
+    authenticating their CLI, and launching their first VM - see
+    [Onboard a developer](onboarding-a-developer.md).
 
 ## API tokens
 
@@ -97,8 +100,8 @@ the server stores only its SHA-256.
 
 ### Via the CLI
 
-`otherix config add cluster` runs a one-time bootstrap: it logs in with an
-email and password, creates a long-lived API token named
+`otherix config add cluster` runs a one-time bootstrap: it logs in with a
+username and password, creates a long-lived API token named
 `otherix-cli-<cluster>` via `POST /v1/users/me/api-tokens`, and stores the
 `(server, token)` pair in your CLI config so subsequent commands authenticate
 automatically:
@@ -107,7 +110,7 @@ automatically:
 otherix config add cluster \
   --name prod \
   --server https://cp.example.com \
-  --login me@example.com
+  --login admin
 # password prompted interactively, or pass --password / OTHERIX_PASSWORD
 ```
 

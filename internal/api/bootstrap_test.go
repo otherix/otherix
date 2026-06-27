@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/otherix/otherix/internal/api"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -67,8 +68,8 @@ func TestBootstrapAdmin_ExistingAdminWarnsToRemoveEnv(t *testing.T) {
 
 	env := func(key string) string {
 		switch key {
-		case api.EnvBootstrapAdminEmail:
-			return "admin@otherix.local"
+		case api.EnvBootstrapAdminUsername:
+			return "admin"
 		case api.EnvBootstrapAdminPassword:
 			return "correct horse battery staple"
 		default:
@@ -95,10 +96,120 @@ func TestBootstrapAdmin_ExistingAdminWarnsToRemoveEnv(t *testing.T) {
 	}
 
 	w := warns[0]
-	if got := w.attrs["email_var"]; got != api.EnvBootstrapAdminEmail {
-		t.Errorf("email_var = %v, want %v", got, api.EnvBootstrapAdminEmail)
+	if got := w.attrs["username_var"]; got != api.EnvBootstrapAdminUsername {
+		t.Errorf("username_var = %v, want %v", got, api.EnvBootstrapAdminUsername)
 	}
 	if got := w.attrs["password_var"]; got != api.EnvBootstrapAdminPassword {
 		t.Errorf("password_var = %v, want %v", got, api.EnvBootstrapAdminPassword)
+	}
+}
+
+// recordingStoreStub reports no existing admin and captures the params passed to
+// CreateUser so a test can assert the bootstrapped admin shape.
+type recordingStoreStub struct {
+	gotParams store.CreateUserParams
+}
+
+func (s *recordingStoreStub) CountAdmins(context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (s *recordingStoreStub) CreateUser(_ context.Context, arg store.CreateUserParams) (store.User, error) {
+	s.gotParams = arg
+	return store.User{ID: arg.ID, Username: arg.Username, DisplayName: arg.DisplayName, Role: arg.Role}, nil
+}
+
+// TestBootstrapAdmin_CreatesAdminByUsername asserts that with both env vars set
+// and no existing admin, BootstrapAdminWithEnv creates an admin keyed on the
+// username (not an email), with the admin role and a non-empty display name.
+func TestBootstrapAdmin_CreatesAdminByUsername(t *testing.T) {
+	stub := &recordingStoreStub{}
+	log := slog.New(&captureHandler{records: &[]captureRecord{}})
+
+	env := func(key string) string {
+		switch key {
+		case api.EnvBootstrapAdminUsername:
+			return "admin"
+		case api.EnvBootstrapAdminPassword:
+			return "correct horse battery staple"
+		default:
+			return ""
+		}
+	}
+
+	if err := api.BootstrapAdminWithEnv(context.Background(), stub, log, env); err != nil {
+		t.Fatalf("BootstrapAdminWithEnv() = %v, want nil", err)
+	}
+
+	if got := stub.gotParams.Username; got != "admin" {
+		t.Errorf("created admin username = %q, want %q", got, "admin")
+	}
+	if got := stub.gotParams.Email; got != "" {
+		t.Errorf("created admin email = %q, want empty", got)
+	}
+	if got := stub.gotParams.Role; got != string(auth.RoleAdmin) {
+		t.Errorf("created admin role = %q, want %q", got, string(auth.RoleAdmin))
+	}
+	if got := stub.gotParams.DisplayName; got != "admin" {
+		t.Errorf("created admin display_name = %q, want %q", got, "admin")
+	}
+}
+
+// TestBootstrapAdmin_InvalidUsername asserts that a syntactically invalid
+// bootstrap username is rejected before any user is created.
+func TestBootstrapAdmin_InvalidUsername(t *testing.T) {
+	stub := &recordingStoreStub{}
+	log := slog.New(&captureHandler{records: &[]captureRecord{}})
+
+	env := func(key string) string {
+		switch key {
+		case api.EnvBootstrapAdminUsername:
+			return "Bad Name"
+		case api.EnvBootstrapAdminPassword:
+			return "correct horse battery staple"
+		default:
+			return ""
+		}
+	}
+
+	if err := api.BootstrapAdminWithEnv(context.Background(), stub, log, env); err == nil {
+		t.Fatalf("BootstrapAdminWithEnv() = nil, want error for invalid username")
+	}
+	if stub.gotParams.Username != "" {
+		t.Errorf("CreateUser was called with %q, want not called for invalid username", stub.gotParams.Username)
+	}
+}
+
+// TestBootstrapAdmin_BothUnsetSkips asserts that with neither env var set the
+// bootstrap is a no-op returning nil.
+func TestBootstrapAdmin_BothUnsetSkips(t *testing.T) {
+	stub := &recordingStoreStub{}
+	log := slog.New(&captureHandler{records: &[]captureRecord{}})
+
+	env := func(string) string { return "" }
+
+	if err := api.BootstrapAdminWithEnv(context.Background(), stub, log, env); err != nil {
+		t.Fatalf("BootstrapAdminWithEnv() = %v, want nil", err)
+	}
+	if stub.gotParams.Username != "" {
+		t.Errorf("CreateUser was called, want not called when env unset")
+	}
+}
+
+// TestBootstrapAdmin_OnlyUsernameSetIsFatal asserts that setting the username
+// without the password is a fatal misconfiguration.
+func TestBootstrapAdmin_OnlyUsernameSetIsFatal(t *testing.T) {
+	stub := &recordingStoreStub{}
+	log := slog.New(&captureHandler{records: &[]captureRecord{}})
+
+	env := func(key string) string {
+		if key == api.EnvBootstrapAdminUsername {
+			return "admin"
+		}
+		return ""
+	}
+
+	if err := api.BootstrapAdminWithEnv(context.Background(), stub, log, env); err == nil {
+		t.Fatalf("BootstrapAdminWithEnv() = nil, want error when only username set")
 	}
 }

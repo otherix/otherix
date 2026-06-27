@@ -92,7 +92,7 @@ paths:
     post:
       operationId: auth.login
       tags: [auth]
-      summary: Authenticate a user with email + password.
+      summary: Authenticate a user with username + password.
       security: []
       requestBody:
         required: true
@@ -171,6 +171,11 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: username
+          in: query
+          required: false
+          schema: { type: string, maxLength: 32 }
+          description: Filter by exact username match.
         - name: email
           in: query
           required: false
@@ -3788,12 +3793,12 @@ components:
 
     LoginRequest:
       type: object
-      required: [email, password]
+      required: [username, password]
       properties:
-        email:
+        username:
           type: string
-          format: email
-          maxLength: 255
+          maxLength: 32
+          description: Login identifier. The raw string is accepted as-is.
         password:
           type: string
           minLength: 1
@@ -3851,15 +3856,25 @@ components:
 
     User:
       type: object
-      required: [id, email, display_name, role, created_at, updated_at]
+      required: [id, username, display_name, role, created_at, updated_at]
       properties:
         id:
           type: string
           format: uuid
-        email:
+        username:
           type: string
+          pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+          minLength: 3
+          maxLength: 32
+          description: |
+            Primary login identifier. Lowercase alphanumeric and hyphens,
+            must start and end with an alphanumeric character. Unique and
+            immutable once set.
+        email:
+          type: [string, "null"]
           format: email
           maxLength: 255
+          description: Optional contact email. May be null.
         display_name:
           type: string
           maxLength: 255
@@ -3877,12 +3892,22 @@ components:
 
     UserCreate:
       type: object
-      required: [email, password, role]
+      required: [username, password, role]
       properties:
-        email:
+        username:
           type: string
+          pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+          minLength: 3
+          maxLength: 32
+          description: |
+            Primary login identifier. Lowercase alphanumeric and hyphens,
+            must start and end with an alphanumeric character. Unique and
+            immutable once set.
+        email:
+          type: [string, "null"]
           format: email
           maxLength: 255
+          description: Optional contact email.
         password:
           type: string
           minLength: 12
@@ -3896,6 +3921,9 @@ components:
 
     UserUpdate:
       type: object
+      description: |
+        Mutable user fields. `username` is immutable and cannot be changed
+        after creation, so it is intentionally absent from this schema.
       properties:
         display_name:
           type: string

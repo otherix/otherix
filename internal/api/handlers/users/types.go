@@ -6,6 +6,7 @@ package users
 // createRequest is the body of POST /v1/users. Mirrors UserCreate in
 // api/openapi/control-plane.yaml.
 type createRequest struct {
+	Username    string `json:"username"`
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"display_name"`

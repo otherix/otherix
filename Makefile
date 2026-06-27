@@ -181,6 +181,10 @@ smoke-node-drain: ## Node-drain smoke: `otherix node drain` evacuates a node's V
 smoke-node-placement-pressure: ## Node-placement-pressure smoke: a node under disk pressure is excluded from placement - VMs avoid it, a pinned VM stays pending, and clearing the pressure lets placement converge (run after local-dev-start)
 	bash dev/smoke/node-placement-pressure/run.sh
 
+.PHONY: smoke-user
+smoke-user: ## User CLI smoke: otherix user create/get/set-role/set-password/delete + login + RBAC gating (run after local-dev-start)
+	bash dev/smoke/user/run.sh
+
 .PHONY: smoke-vm-migration
 smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline` across two nodes (run after local-dev-start)
 	bash dev/smoke/vm-migration/run.sh

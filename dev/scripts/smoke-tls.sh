@@ -20,7 +20,7 @@ API="$ROOT/.local/smoke/otherix-api"
 CLI="$ROOT/.local/smoke/otherix"
 CFG="$WORK/cli-config.yaml"
 
-ADMIN_EMAIL="smoke-admin@otherix.test"
+ADMIN_USER="smoke-admin"
 ADMIN_PW="smoke-admin-password-123"
 JWT_SECRET="smoke-only-jwt-secret-32-bytes!!!"
 
@@ -74,7 +74,7 @@ cp_cert:       { local_cache: { enabled: false } }
 YAML
 
 log "start api (user listener over TLS)"
-OTHERIX_BOOTSTRAP_ADMIN_EMAIL="$ADMIN_EMAIL" OTHERIX_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW" \
+OTHERIX_BOOTSTRAP_ADMIN_USERNAME="$ADMIN_USER" OTHERIX_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW" \
   "$API" --config "$WORK/api.yaml" >"$WORK/log" 2>&1 &
 PID=$!
 log "api pid=$PID"
@@ -109,7 +109,7 @@ log "otherix config add cluster over HTTPS (TOFU + --ca-fingerprint)"
   --config "$CFG" \
   --name tls-smoke \
   --server "$BASE" \
-  --login "$ADMIN_EMAIL" \
+  --login "$ADMIN_USER" \
   --password "$ADMIN_PW" \
   --ca-fingerprint "$FP" \
   >"$WORK/add.log" 2>&1 || fail "config add cluster failed:\n$(cat "$WORK/add.log")"

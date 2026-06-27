@@ -28,12 +28,12 @@ import (
 )
 
 // Store is the storage surface the auth handlers depend on: a single
-// user-by-email lookup that Login uses to surface the authenticated
+// user-by-username lookup that Login uses to surface the authenticated
 // user inline in LoginResponse. *etcdstore.Store satisfies it; depending on
 // the interface rather than the concrete store narrows the handler's storage
 // dependency to the methods it uses and lets tests substitute a fake.
 type Store interface {
-	UserByEmail(ctx context.Context, email string) (store.User, error)
+	UserByUsername(ctx context.Context, username string) (store.User, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -73,7 +73,7 @@ func New(svc Service, s Store, loginLimiter *ratelimit.FailureLimiter) *Handler 
 }
 
 type loginRequest struct {
-	Email    string `json:"email"`
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
@@ -108,7 +108,8 @@ type logoutRequest struct {
 // can extract a shared package once a third surface needs it.
 type userView struct {
 	ID          string  `json:"id"`
-	Email       string  `json:"email"`
+	Username    string  `json:"username"`
+	Email       string  `json:"email,omitempty"`
 	DisplayName string  `json:"display_name"`
 	Role        string  `json:"role"`
 	LastLoginAt *string `json:"last_login_at"`
@@ -119,6 +120,7 @@ type userView struct {
 func toUserView(u store.User) userView {
 	v := userView{
 		ID:          u.ID.String(),
+		Username:    u.Username,
 		Email:       u.Email,
 		DisplayName: u.DisplayName,
 		Role:        u.Role,
@@ -132,12 +134,12 @@ func toUserView(u store.User) userView {
 	return v
 }
 
-// Login authenticates by email + password and returns access+refresh tokens.
+// Login authenticates by username + password and returns access+refresh tokens.
 //
 // Before the credential check (an argon2id verify costing ~19 MiB and
 // tens of milliseconds per call) the handler consults the optional
 // failed-login rate limiter under two keys: the source IP and the
-// lowercased target email. Either key being over budget short-circuits
+// lowercased target username. Either key being over budget short-circuits
 // to 429 rate_limited without touching argon2, capping brute-force CPU
 // and memory amplification. Only FAILED credential checks are recorded:
 // successful logins never count toward or reset the window, so a success
@@ -155,32 +157,38 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			response.CodeValidationFailed, "invalid request body", nil)
 		return
 	}
-	if req.Email == "" || req.Password == "" {
+	if req.Username == "" || req.Password == "" {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "email and password are required", nil)
+			response.CodeValidationFailed, "username and password are required", nil)
 		return
 	}
-	// Reject an over-long email before building limiter keys or running
-	// argon2. A >EmailMaxLength email can never match a stored user (every
-	// stored email passed validation, <= EmailMaxLength), so this only
-	// short-circuits input that would have 401'd anyway after a wasted
-	// dummy KDF - no legitimate login changes. This also caps the per-email
-	// limiter key at <= EmailMaxLength bytes, so attacker-controlled email
-	// bytes cannot turn the bounded limiter into a memory vector.
-	if len(req.Email) > validation.EmailMaxLength {
+	// Reject an over-long username before building limiter keys or running
+	// argon2. A >UsernameMaxLength username can never match a stored user
+	// (every stored username passed validation, <= UsernameMaxLength), so
+	// this only short-circuits input that would have 401'd anyway after a
+	// wasted dummy KDF - no legitimate login changes. This also caps the
+	// per-username limiter key at <= UsernameMaxLength bytes, so
+	// attacker-controlled username bytes cannot turn the bounded limiter
+	// into a memory vector. The login path deliberately does NOT run the
+	// full username syntax validation: rejecting a syntactically-invalid
+	// username with 400 (while an unknown-but-valid username falls through
+	// to the dummy-hash 401 path) would expose a status/timing oracle the
+	// anti-enumeration dummy hash cannot mask. Empty-check and length-clamp
+	// only.
+	if len(req.Username) > validation.UsernameMaxLength {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "email is too long", nil)
+			response.CodeValidationFailed, "username is too long", nil)
 		return
 	}
 
 	addr := clientAddr(r)
-	limiterKeys := loginLimiterKeys(addr, req.Email)
+	limiterKeys := loginLimiterKeys(addr, req.Username)
 	if h.rejectIfLoginThrottled(w, r, limiterKeys) {
 		return
 	}
 
 	pair, err := h.svc.Login(r.Context(), coreauth.Credentials{
-		Email:     req.Email,
+		Username:  req.Username,
 		Password:  req.Password,
 		UserAgent: r.UserAgent(),
 		IP:        addr,
@@ -197,7 +205,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			response.WriteError(w, r, http.StatusUnauthorized,
-				response.CodeInvalidCredentials, "invalid email or password", nil)
+				response.CodeInvalidCredentials, "invalid username or password", nil)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -205,7 +213,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.UserByEmail(r.Context(), req.Email)
+	user, err := h.store.UserByUsername(r.Context(), req.Username)
 	if err != nil {
 		// Login just succeeded; the user must exist. A failure here
 		// is genuinely a server problem.
@@ -307,18 +315,18 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // loginLimiterKeys builds the failure-counter keys for one login
-// attempt: the source IP and the lowercased target email. The ip key is
-// skipped when addr is the zero netip.Addr so unattributable requests
-// do not collapse into one shared bucket; the email key still
+// attempt: the source IP and the lowercased target username. The ip key
+// is skipped when addr is the zero netip.Addr so unattributable requests
+// do not collapse into one shared bucket; the username key still
 // constrains attacks on a single account. Behind a reverse proxy the
-// per-IP key collapses to the proxy address, so the per-email key
+// per-IP key collapses to the proxy address, so the per-username key
 // carries the weight there too (accepted tradeoff).
-func loginLimiterKeys(addr netip.Addr, email string) []string {
+func loginLimiterKeys(addr netip.Addr, username string) []string {
 	var keys []string
 	if addr.IsValid() {
 		keys = append(keys, "ip:"+addr.String())
 	}
-	return append(keys, "email:"+strings.ToLower(email))
+	return append(keys, "username:"+strings.ToLower(username))
 }
 
 // rejectIfLoginThrottled writes a 429 rate_limited response and reports

@@ -61,9 +61,9 @@ func newLoginSrv(t *testing.T) *loginSrv {
 	srv.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/auth/login":
-			var req struct{ Email, Password string }
+			var req struct{ Username, Password string }
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if req.Email == "" || req.Password == "" {
+			if req.Username == "" || req.Password == "" {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = io.WriteString(w, `{"error":{"code":"validation_failed","message":"required"}}`)
 				return

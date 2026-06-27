@@ -139,16 +139,17 @@ func nicIPv4(nic store.VMNic) *string {
 }
 
 // ownerLabel picks the best human-readable identifier for a VM owner:
-// the display_name when set, falling back to the email (a NOT NULL
-// column) so the resolved owner field is never an empty string - a
-// bootstrap-seeded admin, for instance, has no display_name. Both
-// fields sit behind the user:read gate, so the email fallback widens
-// what an already-privileged caller sees, not who can see it.
+// the display_name when set, falling back to the username (always
+// present) so the resolved owner field is never an empty string - a
+// bootstrap-seeded admin, for instance, has no display_name and an
+// optional email may be absent. Both fields sit behind the user:read
+// gate, so the username fallback widens what an already-privileged
+// caller sees, not who can see it.
 func ownerLabel(u store.User) string {
 	if u.DisplayName != "" {
 		return u.DisplayName
 	}
-	return u.Email
+	return u.Username
 }
 
 // callerCanReadUsers reports whether the request principal holds

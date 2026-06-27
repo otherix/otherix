@@ -85,20 +85,20 @@ install_daemon() {
 	fi
 
 	if [ "$COMPONENT" = "api" ] && [ ! -f /etc/otherix/admin.created ]; then
-		email="admin@otherix.local"
+		username="admin"
 		pass="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)"
 		{
-			echo "OTHERIX_BOOTSTRAP_ADMIN_EMAIL=$email"
+			echo "OTHERIX_BOOTSTRAP_ADMIN_USERNAME=$username"
 			echo "OTHERIX_BOOTSTRAP_ADMIN_PASSWORD=$pass"
 		} >> /etc/otherix/api.env
 		touch /etc/otherix/admin.created
 		systemctl restart otherix-api.service >/dev/null 2>&1 || true
 		echo
 		echo "================ Otherix admin created ================"
-		echo "  email:    $email"
+		echo "  username: $username"
 		echo "  password: $pass"
 		echo "  (printed once; stored in /etc/otherix/api.env)"
-		echo "  After first login, remove OTHERIX_BOOTSTRAP_ADMIN_EMAIL and"
+		echo "  After first login, remove OTHERIX_BOOTSTRAP_ADMIN_USERNAME and"
 		echo "  OTHERIX_BOOTSTRAP_ADMIN_PASSWORD from /etc/otherix/api.env."
 		echo "======================================================="
 	fi

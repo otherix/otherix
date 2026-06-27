@@ -26,7 +26,7 @@ koanf keys):
 
 | Env var | Meaning |
 | --- | --- |
-| `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` | Email of the first admin seeded on first boot. |
+| `OTHERIX_BOOTSTRAP_ADMIN_USERNAME` | Username of the first admin seeded on first boot. The user logs in by this username; email and display name are optional. |
 | `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD` | Password for that admin. |
 
 Both must be set together (or neither); setting only one is fatal. With an

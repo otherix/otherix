@@ -15,9 +15,9 @@ import "errors"
 // HTTP handlers map these to error codes via type-switch on errors.Is.
 var (
 	// ErrInvalidCredentials is returned by Login when no user matches
-	// the provided email or the password fails verification. The two
+	// the provided username or the password fails verification. The two
 	// cases are intentionally indistinguishable to the caller — the
-	// login endpoint must not leak which addresses are registered.
+	// login endpoint must not leak which usernames are registered.
 	ErrInvalidCredentials = errors.New("invalid credentials")
 
 	// ErrTokenExpired is returned when a JWT, refresh, or API token is

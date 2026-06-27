@@ -44,7 +44,7 @@ mints a long-lived API token, and stores it as the current cluster:
 otherix config add cluster \
   --name local \
   --server https://<cp-host>:8080 \
-  --login <admin-email> \
+  --login <admin-username> \
   --password <admin-password>
 ```
 

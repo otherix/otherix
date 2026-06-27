@@ -30,7 +30,7 @@ func TestCountAdmins(t *testing.T) {
 
 	mkUser := func(email, role string) {
 		if _, err := s.CreateUser(ctx, store.CreateUserParams{
-			ID: uuid.New(), Email: email, PasswordHash: "x", Role: role,
+			ID: uuid.New(), Username: "user-" + uuid.NewString()[:8], Email: email, PasswordHash: "x", Role: role,
 		}); err != nil {
 			t.Fatalf("CreateUser(%s): %v", email, err)
 		}

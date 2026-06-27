@@ -20,9 +20,9 @@ import (
 // user's standing (e.g. a demotion or lockdown).
 func TestUserRoleChangeRevokesRefreshTokens(t *testing.T) {
 	h := newE2E(t)
-	victimID, email, pw := seedUser(t, h.store, auth.RoleDeveloper)
+	victimID, username, pw := seedUser(t, h.store, auth.RoleDeveloper)
 
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("victim login status = %d, want 200", resp.StatusCode)
 	}
@@ -49,9 +49,9 @@ func TestUserRoleChangeRevokesRefreshTokens(t *testing.T) {
 // the user's refresh tokens intact.
 func TestUserDisplayNameChangeKeepsRefreshTokens(t *testing.T) {
 	h := newE2E(t)
-	victimID, email, pw := seedUser(t, h.store, auth.RoleDeveloper)
+	victimID, username, pw := seedUser(t, h.store, auth.RoleDeveloper)
 
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("victim login status = %d, want 200", resp.StatusCode)
 	}

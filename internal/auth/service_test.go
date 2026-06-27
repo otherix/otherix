@@ -24,7 +24,7 @@ import (
 type fakeAuthStore struct {
 	calls []string
 
-	userByEmail        func(ctx context.Context, email string) (store.User, error)
+	userByUsername     func(ctx context.Context, username string) (store.User, error)
 	userByID           func(ctx context.Context, id uuid.UUID) (store.User, error)
 	refreshTokenByHash func(ctx context.Context, hash []byte) (store.RefreshToken, error)
 	apiTokenByHash     func(ctx context.Context, hash []byte) (store.ApiToken, error)
@@ -34,10 +34,10 @@ type fakeAuthStore struct {
 	revokedFamilies      []uuid.UUID
 }
 
-func (f *fakeAuthStore) UserByEmail(ctx context.Context, email string) (store.User, error) {
-	f.calls = append(f.calls, "UserByEmail")
-	if f.userByEmail != nil {
-		return f.userByEmail(ctx, email)
+func (f *fakeAuthStore) UserByUsername(ctx context.Context, username string) (store.User, error) {
+	f.calls = append(f.calls, "UserByUsername")
+	if f.userByUsername != nil {
+		return f.userByUsername(ctx, username)
 	}
 	return store.User{}, store.ErrNotFound
 }
@@ -299,26 +299,26 @@ func TestRefreshConcurrentRotationIsTheft(t *testing.T) {
 	}
 }
 
-// TestLoginUnknownEmailReturnsInvalidCredentials pins the user-not-found
+// TestLoginUnknownUsernameIsInvalidCredentials pins the user-not-found
 // branch of Login to the same sentinel as a wrong password, so the endpoint
 // cannot distinguish the two cases. The timing half of that guarantee (the
 // dummy-hash KDF cost) is covered structurally by
 // TestDummyLoginHashIsRealArgon2id.
-func TestLoginUnknownEmailReturnsInvalidCredentials(t *testing.T) {
-	fake := &fakeAuthStore{} // UserByEmail defaults to store.ErrNotFound.
+func TestLoginUnknownUsernameIsInvalidCredentials(t *testing.T) {
+	fake := &fakeAuthStore{} // UserByUsername defaults to store.ErrNotFound.
 	svc := newTestService(t, fake)
 
 	_, err := svc.Login(context.Background(), auth.Credentials{
-		Email:    "nobody@example.test",
+		Username: "ghost",
 		Password: "irrelevant-password",
 	})
 	if !errors.Is(err, auth.ErrInvalidCredentials) {
-		t.Errorf("Login(unknown email) error = %v, want ErrInvalidCredentials", err)
+		t.Errorf("Login(unknown username) error = %v, want ErrInvalidCredentials", err)
 	}
 	// The not-found path must never mint or persist tokens.
 	for _, call := range fake.calls {
 		if call == "CreateRefreshToken" {
-			t.Errorf("Login(unknown email) persisted a refresh token; calls = %v", fake.calls)
+			t.Errorf("Login(unknown username) persisted a refresh token; calls = %v", fake.calls)
 		}
 	}
 }

@@ -31,7 +31,7 @@ WORK="$ROOT/.local/smoke/run-cli"
 API="$ROOT/.local/smoke/otherix-api"
 CLI="$ROOT/.local/smoke/otherix"
 
-ADMIN_EMAIL="smoke-admin@otherix.test"
+ADMIN_USER="smoke-admin"
 ADMIN_PW="smoke-admin-password-123"
 JWT_SECRET="smoke-only-jwt-secret-32-bytes!!!"
 
@@ -103,7 +103,7 @@ start_node() { # node
   local n="$1"
   local dir="$WORK/n$n"
   if [ "$n" = "0" ]; then
-    OTHERIX_BOOTSTRAP_ADMIN_EMAIL="$ADMIN_EMAIL" OTHERIX_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW" \
+    OTHERIX_BOOTSTRAP_ADMIN_USERNAME="$ADMIN_USER" OTHERIX_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW" \
       "$API" --config "$dir/api.yaml" >"$dir/log" 2>&1 &
   else
     "$API" --config "$dir/api.yaml" >"$dir/log" 2>&1 &
@@ -201,7 +201,7 @@ ok "node0 up (single)"
 log "login admin"
 JWT="$(curl -fsS -X POST "http://127.0.0.1:${API_PORT[0]}/v1/auth/login" \
   -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" | jq -r .access_token)"
+  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PW\"}" | jq -r .access_token)"
 [ -n "$JWT" ] && [ "$JWT" != "null" ] || fail "admin login failed"
 [ "$(voter_count 0 "$JWT")" = "1" ] || fail "node0 voters != 1"
 ok "node0 reports 1 voter via GET /v1/cluster/members"

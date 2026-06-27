@@ -28,7 +28,7 @@ func TestLogin_Happy(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body.Email != "a@b" || body.Password != "pw" {
+		if body.Username != "alice" || body.Password != "pw" {
 			t.Errorf("body = %+v", body)
 		}
 		_, _ = io.WriteString(w, `{"access_token":"jwt","refresh_token":"r","token_type":"Bearer","expires_in":900}`)
@@ -39,7 +39,7 @@ func TestLogin_Happy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAnonymous: %v", err)
 	}
-	resp, err := c.Login(context.Background(), cpclient.LoginRequest{Email: "a@b", Password: "pw"})
+	resp, err := c.Login(context.Background(), cpclient.LoginRequest{Username: "alice", Password: "pw"})
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -51,12 +51,12 @@ func TestLogin_Happy(t *testing.T) {
 func TestLogin_InvalidCredentials(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, `{"error":{"code":"invalid_credentials","message":"invalid email or password"}}`)
+		_, _ = io.WriteString(w, `{"error":{"code":"invalid_credentials","message":"invalid username or password"}}`)
 	}))
 	defer srv.Close()
 
 	c, _ := cpclient.NewAnonymous(srv.URL, cpclient.Options{HTTPClient: srv.Client()})
-	_, err := c.Login(context.Background(), cpclient.LoginRequest{Email: "a@b", Password: "wrong"})
+	_, err := c.Login(context.Background(), cpclient.LoginRequest{Username: "alice", Password: "wrong"})
 	var apiErr *cpclient.APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %v, want *cpclient.APIError", err)
@@ -73,7 +73,7 @@ func TestLogin_NetworkError(t *testing.T) {
 	srv.Close()
 
 	c, _ := cpclient.NewAnonymous(url, cpclient.Options{})
-	if _, err := c.Login(context.Background(), cpclient.LoginRequest{Email: "a@b", Password: "p"}); err == nil {
+	if _, err := c.Login(context.Background(), cpclient.LoginRequest{Username: "alice", Password: "p"}); err == nil {
 		t.Errorf("Login against closed server returned nil")
 	}
 }
@@ -191,7 +191,7 @@ func TestNewAnonymous_DoesNotSendAuthHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAnonymous: %v", err)
 	}
-	if _, err := c.Login(context.Background(), cpclient.LoginRequest{Email: "a@b", Password: "p"}); err != nil {
+	if _, err := c.Login(context.Background(), cpclient.LoginRequest{Username: "alice", Password: "p"}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 }

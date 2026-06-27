@@ -22,10 +22,10 @@ type tokenPair struct {
 
 func TestLoginRefreshLogoutRotation(t *testing.T) {
 	h := newE2E(t)
-	_, email, pw := seedUser(t, h.store, auth.RoleDeveloper)
+	_, username, pw := seedUser(t, h.store, auth.RoleDeveloper)
 
 	// Login.
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", resp.StatusCode)
 	}
@@ -63,9 +63,9 @@ func TestLoginRefreshLogoutRotation(t *testing.T) {
 
 func TestRefreshReplayRevokesFamily(t *testing.T) {
 	h := newE2E(t)
-	_, email, pw := seedUser(t, h.store, auth.RoleDeveloper)
+	_, username, pw := seedUser(t, h.store, auth.RoleDeveloper)
 
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", resp.StatusCode)
 	}
@@ -97,8 +97,8 @@ func TestRefreshReplayRevokesFamily(t *testing.T) {
 
 func TestLoginWrongPassword(t *testing.T) {
 	h := newE2E(t)
-	_, email, _ := seedUser(t, h.store, auth.RoleDeveloper)
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": "wrong-password"}, "")
+	_, username, _ := seedUser(t, h.store, auth.RoleDeveloper)
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": "wrong-password"}, "")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("login wrong-password status = %d, want 401", resp.StatusCode)
 	}

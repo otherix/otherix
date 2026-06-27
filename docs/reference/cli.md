@@ -643,6 +643,85 @@ otherix cluster member remove <hex-id> --force
 
 ---
 
+## otherix user
+
+Manage user accounts (CP `/v1/users` surface). A username is the account's
+unique identity and login credential: lowercase letters, digits, and interior
+hyphens (3..32). `email` and `display_name` are optional. Create/list/delete and
+`set-role` require `admin`; `whoami` works for any role. Passwords are never
+passed as a flag value - they are read from a no-echo prompt or, with
+`--password-stdin`, one line from stdin.
+
+### user create
+
+Create a user. `<username>` is positional.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--role` | (required) | `admin` / `operator` / `developer` / `viewer`. |
+| `--email` | (none) | Optional contact email. |
+| `--display-name` | (none) | Optional human label. |
+| `--password-stdin` | `false` | Read the password from stdin instead of prompting. |
+
+```bash
+otherix user create dev-user --role developer
+otherix user create ci-bot --role viewer --password-stdin <<<"$PW"
+```
+
+### user list
+
+Cursor-paginated list. `--output table|json`, `--limit`, `--cursor`, plus an
+optional `--username` exact-match filter.
+
+```bash
+otherix user list
+```
+
+### user get
+
+Show one user. `<username>` is positional. `--output table|json|yaml`.
+
+```bash
+otherix user get dev-user
+```
+
+### user set-role
+
+Change a user's role (admin only). `otherix user set-role <username> <role>`.
+
+```bash
+otherix user set-role dev-user operator
+```
+
+### user set-password
+
+Reset a user's password. `<username>` is positional; the new password is read
+from a no-echo prompt, or from stdin with `--password-stdin`.
+
+```bash
+otherix user set-password dev-user
+otherix user set-password dev-user --password-stdin <<<"$NEW_PW"
+```
+
+### user delete
+
+Soft-delete a user (`<username>` positional). Refused while the user still owns
+resources (VMs, snapshots); transfer or remove those first.
+
+```bash
+otherix user delete dev-user
+```
+
+### user whoami
+
+Print the calling user (username, role). Works for any role.
+
+```bash
+otherix user whoami
+```
+
+---
+
 ## otherix config
 
 Manage CLI cluster credentials in the kubectl-style YAML store at
@@ -657,7 +736,7 @@ cluster.
 | --- | --- | --- |
 | `--name` | (required) | Cluster name. |
 | `--server` | `$OTHERIX_SERVER` | CP base URL. |
-| `--login` | `$OTHERIX_LOGIN` | Operator email. |
+| `--login` | `$OTHERIX_LOGIN` | Operator username. |
 | `--password` | `$OTHERIX_PASSWORD` | Operator password. |
 | `--set-current` | `true` | Make this the current cluster. |
 | `--force` | `false` | Overwrite an existing entry (revokes the old token server-side). |
@@ -665,7 +744,7 @@ cluster.
 Missing required values are prompted interactively when stdin is a TTY.
 
 ```bash
-otherix config add cluster --name dev --server https://cp.dev:8080 --login admin@example.com
+otherix config add cluster --name dev --server https://cp.dev:8080 --login admin
 ```
 
 ### config list

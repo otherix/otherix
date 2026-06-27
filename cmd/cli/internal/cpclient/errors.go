@@ -5,9 +5,17 @@ package cpclient
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
+
+// ErrNotFound is the package sentinel for "no such resource" on a
+// list-then-resolve path where the CP returns 200 + an empty page
+// rather than a 404. GetUserByUsername maps an empty `data` array to
+// this so callers can errors.Is against it instead of inspecting a
+// zero row.
+var ErrNotFound = errors.New("resource not found")
 
 // APIError is the typed error every Client method returns when the CP
 // responds with a non-2xx envelope. Mirrors the shape of

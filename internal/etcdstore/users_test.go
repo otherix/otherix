@@ -26,6 +26,7 @@ var _ usershandlers.Store = (*etcdstore.Store)(nil)
 func userParams(email string) store.CreateUserParams {
 	return store.CreateUserParams{
 		ID:           uuid.New(),
+		Username:     "user-" + uuid.NewString()[:8],
 		Email:        email,
 		PasswordHash: "argon2id$stub",
 		DisplayName:  "Test User",
@@ -229,6 +230,97 @@ func TestUserDeleteRevokesAPITokens(t *testing.T) {
 	// The revoked token no longer authenticates by hash.
 	if _, err := s.APITokenByHash(ctx, []byte("del-hash-1")); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("APITokenByHash after user delete = %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestUserByUsername(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	created, err := s.CreateUser(ctx, store.CreateUserParams{
+		ID: uuid.New(), Username: "alice", PasswordHash: "x", Role: "developer",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	got, err := s.UserByUsername(ctx, "alice")
+	if err != nil {
+		t.Fatalf("UserByUsername: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("UserByUsername id = %v, want %v", got.ID, created.ID)
+	}
+	if _, err := s.UserByUsername(ctx, "nobody"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UserByUsername(nobody) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCreateUserUsernameConflict(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "alice", PasswordHash: "x", Role: "developer"}); err != nil {
+		t.Fatalf("first CreateUser: %v", err)
+	}
+	_, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "alice", PasswordHash: "y", Role: "viewer"})
+	if !errors.Is(err, store.ErrUserUsernameExists) {
+		t.Errorf("duplicate username err = %v, want ErrUserUsernameExists", err)
+	}
+}
+
+func TestCreateUserEmailOptional(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	// no email -> succeeds, and two users with empty email do NOT collide
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "user-one", PasswordHash: "x", Role: "viewer"}); err != nil {
+		t.Fatalf("create user-one (no email): %v", err)
+	}
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "user-two", PasswordHash: "x", Role: "viewer"}); err != nil {
+		t.Fatalf("create user-two (no email): %v", err)
+	}
+	// email present -> still unique-if-present
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "user-three", Email: "e@x.io", PasswordHash: "x", Role: "viewer"}); err != nil {
+		t.Fatalf("create user-three (with email): %v", err)
+	}
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "user-four", Email: "e@x.io", PasswordHash: "x", Role: "viewer"}); !errors.Is(err, store.ErrUserEmailExists) {
+		t.Errorf("duplicate email err = %v, want ErrUserEmailExists", err)
+	}
+}
+
+func TestDeleteUserNoEmailDoesNotClobberSharedKey(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	// two no-email users must coexist; deleting one must not drop a shared empty email key
+	a, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "no-mail-a", PasswordHash: "x", Role: "viewer"})
+	if err != nil {
+		t.Fatalf("first no-email create: %v", err)
+	}
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "no-mail-b", PasswordHash: "x", Role: "viewer"}); err != nil {
+		t.Fatalf("second no-email create: %v", err)
+	}
+	if err := s.DeleteUser(ctx, a.ID); err != nil {
+		t.Fatalf("DeleteUser(a): %v", err)
+	}
+	// b is still resolvable; a third no-email create still succeeds (no orphaned/clobbered key)
+	if _, err := s.UserByUsername(ctx, "no-mail-b"); err != nil {
+		t.Errorf("no-mail-b lookup after deleting a: %v", err)
+	}
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "no-mail-c", PasswordHash: "x", Role: "viewer"}); err != nil {
+		t.Errorf("third no-email create after delete: %v", err)
+	}
+}
+
+func TestUpdateUserNoEmailIsNoop(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	u, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "no-mail-u", PasswordHash: "x", DisplayName: "U", Role: "viewer"})
+	if err != nil {
+		t.Fatalf("CreateUser(no-email): %v", err)
+	}
+	// update a no-email user's role/display_name; must not touch any email guard
+	if _, err := s.UpdateUser(ctx, store.UpdateUserParams{ID: u.ID, DisplayName: "U2", Role: "operator", PasswordHash: "x"}); err != nil {
+		t.Fatalf("UpdateUser(no-email): %v", err)
+	}
+	if _, err := s.CreateUser(ctx, store.CreateUserParams{ID: uuid.New(), Username: "no-mail-v", PasswordHash: "x", Role: "viewer"}); err != nil {
+		t.Errorf("no-email create after a no-email update: %v", err)
 	}
 }
 

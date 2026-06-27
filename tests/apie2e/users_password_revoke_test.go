@@ -20,9 +20,9 @@ import (
 // victim rotated their password.
 func TestPasswordChangeRevokesOwnRefreshTokens(t *testing.T) {
 	h := newE2E(t)
-	_, email, pw := seedUser(t, h.store, auth.RoleDeveloper)
+	_, username, pw := seedUser(t, h.store, auth.RoleDeveloper)
 
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", resp.StatusCode)
 	}
@@ -45,7 +45,7 @@ func TestPasswordChangeRevokesOwnRefreshTokens(t *testing.T) {
 	resp.Body.Close()
 
 	// The new password logs in and starts a fresh session.
-	resp = h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": "rotated-password-123"}, "")
+	resp = h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": "rotated-password-123"}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("login with new password status = %d, want 200", resp.StatusCode)
 	}
@@ -57,9 +57,9 @@ func TestPasswordChangeRevokesOwnRefreshTokens(t *testing.T) {
 // must revoke the TARGET user's refresh tokens, not the admin's.
 func TestAdminPasswordResetRevokesTargetRefreshTokens(t *testing.T) {
 	h := newE2E(t)
-	victimID, email, pw := seedUser(t, h.store, auth.RoleDeveloper)
+	victimID, username, pw := seedUser(t, h.store, auth.RoleDeveloper)
 
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("victim login status = %d, want 200", resp.StatusCode)
 	}

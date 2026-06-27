@@ -16,6 +16,10 @@ import (
 // (admin / operator). Supports cursor pagination plus an exact-match
 // `email` query filter.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	if username := r.URL.Query().Get("username"); username != "" {
+		h.listByUsername(w, r, username)
+		return
+	}
 	if email := r.URL.Query().Get("email"); email != "" {
 		h.listByEmail(w, r, email)
 		return
@@ -58,6 +62,30 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusOK, listResponse{
 		Data: views,
 		Meta: paginationMeta{NextCursor: nextCursor},
+	})
+}
+
+// listByUsername handles the exact-match `username` filter through the
+// username guard lookup (O(1)). The username is unique among non-deleted
+// rows, so the result is at most one user; a miss returns an empty page
+// rather than 404, mirroring listByEmail.
+func (h *Handler) listByUsername(w http.ResponseWriter, r *http.Request, username string) {
+	row, err := h.store.UserByUsername(r.Context(), username)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			response.WriteJSON(w, r, http.StatusOK, listResponse{
+				Data: []userView{},
+				Meta: paginationMeta{},
+			})
+			return
+		}
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "lookup by username", nil)
+		return
+	}
+	response.WriteJSON(w, r, http.StatusOK, listResponse{
+		Data: []userView{toView(row)},
+		Meta: paginationMeta{},
 	})
 }
 

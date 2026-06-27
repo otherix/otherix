@@ -57,7 +57,7 @@ func newAddClusterCommand() *cobra.Command {
 		Use:   "cluster",
 		Short: "Authenticate against a CP, create an API token, store it",
 		Long: `add cluster runs a one-time bootstrap:
-  1. Logs into the CP with the supplied email + password (JWT).
+  1. Logs into the CP with the supplied username + password (JWT).
   2. Calls /v1/users/me/api-tokens with the JWT, creating a long-
      lived otx_* token named "otherix-cli-<cluster>".
   3. Persists (server, token, token-id) into the config file as a
@@ -83,7 +83,7 @@ effort revoking the old API token server-side first).`,
 	}
 	cmd.Flags().StringVar(&name, "name", "", "cluster name (required)")
 	cmd.Flags().StringVar(&server, "server", os.Getenv(cliconfig.EnvServer), "CP base URL (env: OTHERIX_SERVER)")
-	cmd.Flags().StringVar(&login, "login", os.Getenv(envLogin), "operator email (env: OTHERIX_LOGIN)")
+	cmd.Flags().StringVar(&login, "login", os.Getenv(envLogin), "operator username (env: OTHERIX_LOGIN)")
 	cmd.Flags().StringVar(&password, "password", os.Getenv(envPassword), "operator password (env: OTHERIX_PASSWORD)")
 	cmd.Flags().BoolVar(&setCurrent, "set-current", true, "make this the current cluster (default true for the first cluster)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing cluster with the same name (revokes the previous token server-side)")
@@ -154,7 +154,7 @@ func loginAndIssueToken(ctx context.Context, server string, opts addClusterOptio
 		return nil, cpclient.APIToken{}, fmt.Errorf("init client: %v", err)
 	}
 	login, err := anon.Login(ctx, cpclient.LoginRequest{
-		Email:    opts.login,
+		Username: opts.login,
 		Password: opts.password,
 	})
 	if err != nil {
@@ -295,7 +295,7 @@ func fillMissingAddInputs(stderr io.Writer, reader *bufio.Reader, opts *addClust
 	}{
 		{&opts.name, "Cluster name", "--name is required", false},
 		{&opts.server, "Server URL", "--server is required (or set OTHERIX_SERVER)", false},
-		{&opts.login, "Login (email)", "--login is required (or set OTHERIX_LOGIN)", false},
+		{&opts.login, "Login (username)", "--login is required (or set OTHERIX_LOGIN)", false},
 		{&opts.password, "Password", "--password is required (or set OTHERIX_PASSWORD)", true},
 	}
 	for _, f := range fields {

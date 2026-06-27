@@ -89,8 +89,8 @@ make local-dev-stop
 
 After `local-dev-start` finishes, `./bin/otherix` works against a
 fresh cluster with no further setup. The default admin is seeded
-from `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` / `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD`
-(defaults: `admin@otherix.local` / `correct-horse-battery-staple`).
+from `OTHERIX_BOOTSTRAP_ADMIN_USERNAME` / `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD`
+(defaults: `admin` / `correct-horse-battery-staple`).
 
 Verify the cluster:
 
