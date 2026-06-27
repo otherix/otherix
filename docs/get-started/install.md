@@ -144,10 +144,11 @@ For a working single-node install you care about a handful of blocks:
 ### Bootstrap admin
 
 The first admin user is seeded from environment variables read on first
-boot, before the HTTP server starts:
+boot, before the HTTP server starts. Identity is a username (the user
+logs in by it); email and display name are optional.
 
 ```bash
-export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
+export OTHERIX_BOOTSTRAP_ADMIN_USERNAME=admin
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
 ```
 

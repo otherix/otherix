@@ -27,7 +27,7 @@ verifier by token shape:
 # Login -> access token
 TOKEN=$(curl -s -X POST http://localhost:8080/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@example.com","password":"..."}' | jq -r .access_token)
+  -d '{"username":"admin","password":"..."}' | jq -r .access_token)
 
 curl -s http://localhost:8080/v1/vms -H "Authorization: Bearer $TOKEN"
 ```

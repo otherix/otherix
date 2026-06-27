@@ -74,7 +74,7 @@ make bootstrap-dev
 #    seeds the admin user row on first boot.
 #    (Shortcut: `make local-dev-start` runs steps 3+4 — api + agent +
 #    CLI — in one command. The explicit steps below are the manual path.)
-export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
+export OTHERIX_BOOTSTRAP_ADMIN_USERNAME=admin
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
 make build-api && ./bin/otherix-api --config dev/config/api.yaml
 
@@ -85,7 +85,7 @@ make build-api && ./bin/otherix-api --config dev/config/api.yaml
 #    runs revoke the previous CLI token and mint a fresh one.
 #
 #    Re-export the admin credentials if running in a fresh shell:
-export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
+export OTHERIX_BOOTSTRAP_ADMIN_USERNAME=admin
 export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
 make seed-dev
 
@@ -167,7 +167,7 @@ over HTTP with a bearer token.
 
 1. The Control Plane is running and has at least one admin user.
    The bootstrap path seeds an admin when
-   `OTHERIX_BOOTSTRAP_ADMIN_EMAIL` +
+   `OTHERIX_BOOTSTRAP_ADMIN_USERNAME` +
    `OTHERIX_BOOTSTRAP_ADMIN_PASSWORD` are set on first start.
 2. A node is registered and has the auto-provisioned `default` storage
    pool. No image pre-staging is needed - the agent fetches the image
@@ -179,7 +179,7 @@ over HTTP with a bearer token.
 # Option A — JWT access token (15-min default TTL).
 TOKEN=$(curl -s -X POST http://localhost:8080/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@example.com","password":"…"}' \
+  -d '{"username":"admin","password":"…"}' \
   | jq -r .access_token)
 
 # Option B — long-lived API token (no expiry by default).
@@ -257,7 +257,7 @@ pool_not_found, qemu_spawn_failed, …), `request_timeout`,
 $ otherix config add cluster \
     --name production \
     --server http://localhost:8080 \
-    --login admin@otherix.local \
+    --login admin \
     --password 'correct-horse-battery-staple'
 cluster added: name=production server=http://localhost:8080 current=true
 ```
@@ -711,7 +711,7 @@ through the full sequence.
 3. Bootstrap admin seeded — set the env vars BEFORE the first api
    start, then start the api with the dev config:
    ```bash
-   export OTHERIX_BOOTSTRAP_ADMIN_EMAIL=admin@otherix.local
+   export OTHERIX_BOOTSTRAP_ADMIN_USERNAME=admin
    export OTHERIX_BOOTSTRAP_ADMIN_PASSWORD='correct-horse-battery-staple'
    make build-api && ./bin/otherix-api --config dev/config/api.yaml
    ```

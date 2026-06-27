@@ -25,7 +25,7 @@
 # admin (BootstrapAdmin is idempotent).
 #
 # Default credentials (overridable):
-#   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin@otherix.local
+#   OTHERIX_BOOTSTRAP_ADMIN_USERNAME — admin
 #   OTHERIX_BOOTSTRAP_ADMIN_PASSWORD — correct-horse-battery-staple
 
 set -euo pipefail
@@ -44,14 +44,14 @@ LOG_FILE="${RUN_DIR}/otherix-api.log"
 # the "Step 3 — token expired" footgun.
 unset OTHERIX_API_TOKEN OTHERIX_SERVER OTHERIX_CONFIG OTHERIX_LOGIN OTHERIX_PASSWORD
 
-: "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL:=admin@otherix.local}"
+: "${OTHERIX_BOOTSTRAP_ADMIN_USERNAME:=admin}"
 : "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD:=correct-horse-battery-staple}"
-export OTHERIX_BOOTSTRAP_ADMIN_EMAIL OTHERIX_BOOTSTRAP_ADMIN_PASSWORD
+export OTHERIX_BOOTSTRAP_ADMIN_USERNAME OTHERIX_BOOTSTRAP_ADMIN_PASSWORD
 
 cd "${REPO_ROOT}"
 
 echo ">> local-dev-start"
-echo "   admin email      : ${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}"
+echo "   admin username   : ${OTHERIX_BOOTSTRAP_ADMIN_USERNAME}"
 echo "   pid/log dir      : ${RUN_DIR}"
 echo ""
 

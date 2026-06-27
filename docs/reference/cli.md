@@ -657,7 +657,7 @@ cluster.
 | --- | --- | --- |
 | `--name` | (required) | Cluster name. |
 | `--server` | `$OTHERIX_SERVER` | CP base URL. |
-| `--login` | `$OTHERIX_LOGIN` | Operator email. |
+| `--login` | `$OTHERIX_LOGIN` | Operator username. |
 | `--password` | `$OTHERIX_PASSWORD` | Operator password. |
 | `--set-current` | `true` | Make this the current cluster. |
 | `--force` | `false` | Overwrite an existing entry (revokes the old token server-side). |
@@ -665,7 +665,7 @@ cluster.
 Missing required values are prompted interactively when stdin is a TTY.
 
 ```bash
-otherix config add cluster --name dev --server https://cp.dev:8080 --login admin@example.com
+otherix config add cluster --name dev --server https://cp.dev:8080 --login admin
 ```
 
 ### config list

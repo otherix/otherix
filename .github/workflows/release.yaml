@@ -75,7 +75,7 @@ jobs:
           # shellcheck disable=SC1091
           . /etc/otherix/api.env
           export OTHERIX_AUTH__JWT_SECRET
-          export OTHERIX_BOOTSTRAP_ADMIN_EMAIL OTHERIX_BOOTSTRAP_ADMIN_PASSWORD 2>/dev/null || true
+          export OTHERIX_BOOTSTRAP_ADMIN_USERNAME OTHERIX_BOOTSTRAP_ADMIN_PASSWORD 2>/dev/null || true
           /usr/bin/otherix-api --config /etc/otherix/api.yaml >/tmp/api.log 2>&1 &
           pid=$!
           ok=0

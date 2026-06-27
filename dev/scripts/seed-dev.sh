@@ -32,7 +32,7 @@
 #     never overwrites the staged config (operator-tuned settings survive).
 #
 # Required env:
-#   OTHERIX_BOOTSTRAP_ADMIN_EMAIL    — admin email used for CP bootstrap
+#   OTHERIX_BOOTSTRAP_ADMIN_USERNAME — admin username used for CP bootstrap
 #   OTHERIX_BOOTSTRAP_ADMIN_PASSWORD — admin password
 #
 # Optional env (with defaults):
@@ -59,8 +59,8 @@ fi
 : "${OTHERIX_CP_URL:=https://localhost:8080}"
 : "${OTHERIX_NODE_ARCH:=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')}"
 
-if [ -z "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL:-}" ] || [ -z "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
-    echo "OTHERIX_BOOTSTRAP_ADMIN_EMAIL and OTHERIX_BOOTSTRAP_ADMIN_PASSWORD must be set" >&2
+if [ -z "${OTHERIX_BOOTSTRAP_ADMIN_USERNAME:-}" ] || [ -z "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
+    echo "OTHERIX_BOOTSTRAP_ADMIN_USERNAME and OTHERIX_BOOTSTRAP_ADMIN_PASSWORD must be set" >&2
     echo "(same env vars the CP boot hook uses to seed the admin row)" >&2
     exit 1
 fi
@@ -155,7 +155,7 @@ case "${OTHERIX_CP_URL}" in
         "${CLI}" config add cluster \
             --name dev \
             --server "${OTHERIX_CP_URL}" \
-            --login "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}" \
+            --login "${OTHERIX_BOOTSTRAP_ADMIN_USERNAME}" \
             --password "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD}" \
             --ca-fingerprint "${fp}" \
             --force
@@ -164,7 +164,7 @@ case "${OTHERIX_CP_URL}" in
         "${CLI}" config add cluster \
             --name dev \
             --server "${OTHERIX_CP_URL}" \
-            --login "${OTHERIX_BOOTSTRAP_ADMIN_EMAIL}" \
+            --login "${OTHERIX_BOOTSTRAP_ADMIN_USERNAME}" \
             --password "${OTHERIX_BOOTSTRAP_ADMIN_PASSWORD}" \
             --force
         ;;
