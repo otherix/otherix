@@ -35,6 +35,9 @@ back to when the request omits --pool.`,
 	cmd.AddCommand(newGetDefaultArtifactPoolCommand())
 	cmd.AddCommand(newSetDefaultArtifactPoolCommand())
 	cmd.AddCommand(newUnsetDefaultArtifactPoolCommand())
+	cmd.AddCommand(newGetDefaultNetworkCommand())
+	cmd.AddCommand(newSetDefaultNetworkCommand())
+	cmd.AddCommand(newUnsetDefaultNetworkCommand())
 	cmd.AddCommand(newMemberCommand())
 	cmd.AddCommand(newJoinTokenCommand())
 	return cmd
