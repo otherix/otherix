@@ -58,7 +58,9 @@
   /* code */
   --md-code-fg-color:           #cdd5da;
   --md-code-bg-color:           #16191c;
-  --md-code-hl-comment-color:   #5f6b72;
+  /* Comments: muted but readable. #5f6b72 only made ~3.3:1 on the #16191c
+     code background (below WCAG AA); #8a939a lifts it to ~5.6:1. */
+  --md-code-hl-comment-color:   #8a939a;
   --md-code-hl-keyword-color:   #b9a4f0;
   --md-code-hl-function-color:  #74b6e8;
   --md-code-hl-string-color:    #82d99a;
