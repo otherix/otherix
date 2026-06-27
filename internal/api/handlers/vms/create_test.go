@@ -193,6 +193,57 @@ func (s *firmwareStoreStub) DefaultFirmwareForArchType(_ context.Context, _ stor
 	return fw, nil
 }
 
+// networkStoreStub satisfies the handler's Store interface for the
+// resolveNetworkName default-fallback test. It embeds Store (nil) so only
+// ClusterSettings has a body; any other call panics.
+type networkStoreStub struct {
+	Store
+	settings store.ClusterSetting
+}
+
+func (s *networkStoreStub) ClusterSettings(context.Context) (store.ClusterSetting, error) {
+	return s.settings, nil
+}
+
+// TestResolveNetworkNameDefaultFallback covers the empty-network branch: with a
+// cluster default network configured, an omitted `network` binds to that
+// default; with none configured, the VM gets no NIC.
+func TestResolveNetworkNameDefaultFallback(t *testing.T) {
+	t.Parallel()
+
+	defaultName := "qnet"
+	cases := []struct {
+		name     string
+		settings store.ClusterSetting
+		want     string
+	}{
+		{
+			name:     "default network set falls through",
+			settings: store.ClusterSetting{DefaultNetworkName: &defaultName},
+			want:     defaultName,
+		},
+		{
+			name:     "no default network yields no NIC",
+			settings: store.ClusterSetting{DefaultNetworkName: nil},
+			want:     "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := &Handler{store: &networkStoreStub{settings: tc.settings}, log: discardLog()}
+			rec := httptest.NewRecorder()
+			got, ok := h.resolveNetworkName(rec, fakeRequest(), "")
+			if !ok {
+				t.Fatalf("resolveNetworkName(\"\") ok = false, want true (body: %s)", rec.Body.String())
+			}
+			if got != tc.want {
+				t.Errorf("resolveNetworkName(\"\") = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveFirmware covers the firmware-resolution truth table: an explicit
 // firmware_id wins; otherwise the default for (arch, type) where type defaults
 // to uefi unless firmware=="bios"; bad inputs surface typed sentinels.

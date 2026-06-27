@@ -661,7 +661,8 @@ func (h *Handler) checkPoolWritableBestEffort(w http.ResponseWriter, r *http.Req
 // network name stashed on the SchedulingSpec; the NIC row is created later at
 // bind. It accepts:
 //
-//   - empty: no NIC is attached (returns "", true) — legacy SLIRP fallback.
+//   - empty: fall back to the cluster default network when configured, else no
+//     NIC (legacy SLIRP).
 //   - uuid literal: looked up by id (an explicit reference); a missing id →
 //     404 not_found. Returns the instance's canonical name.
 //   - bare string: returned verbatim without an existence check. An unknown
@@ -672,7 +673,22 @@ func (h *Handler) checkPoolWritableBestEffort(w http.ResponseWriter, r *http.Req
 // short-circuit signal.
 func (h *Handler) resolveNetworkName(w http.ResponseWriter, r *http.Request, requested string) (string, bool) {
 	if requested == "" {
-		return "", true
+		// No explicit network: fall back to the cluster default network
+		// when one is configured, otherwise attach no NIC (legacy SLIRP).
+		settings, err := h.store.ClusterSettings(r.Context())
+		if err != nil {
+			h.log.ErrorContext(r.Context(), "load cluster settings", "error", err)
+			response.WriteError(w, r, http.StatusInternalServerError,
+				response.CodeInternal, "load cluster settings", nil)
+			return "", false
+		}
+		if settings.DefaultNetworkName == nil {
+			return "", true
+		}
+		// The default was validated as an existing bridge network at set
+		// time; pass the bare name through (deferred, like any bare name)
+		// so the NIC binds at scheduling.
+		return *settings.DefaultNetworkName, true
 	}
 	id, perr := uuid.Parse(requested)
 	if perr != nil {
