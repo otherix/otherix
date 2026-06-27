@@ -20,8 +20,12 @@ VM_NAME="${OTHERIX_VM_NAME:-demo}"
 VM_USER="${OTHERIX_VM_USER:-otherix}"
 NODE_NAME="$(hostname -s 2>/dev/null || echo node-1)"
 CLUSTER_NAME="local"
-API_URL="http://127.0.0.1:8080"
+# The packaged api serves the user API over HTTPS on :8080 (server.tls.enabled
+# defaults to true; the packaged config does not override it). The leaf cert is
+# signed by the cluster CA written here on first boot.
+API_URL="https://127.0.0.1:8080"
 AGENT_CP_URL="https://127.0.0.1:8443"
+CA_FILE="/var/lib/otherix/ca/cluster-ca.crt"
 
 STEP=""
 step() { STEP="$1"; echo; echo "==> $1"; }
@@ -49,7 +53,9 @@ resolve_version() {
 # running_api_version prints the version reported by an Otherix control plane
 # already serving /healthz at $1, or nothing when none answers.
 running_api_version() {
-	curl -fsS "$1/healthz" 2>/dev/null \
+	# -k: this is a loopback liveness probe; the cluster CA may not yet be on
+	# disk when we first poll, and we only need the version string.
+	curl -fsSk "$1/healthz" 2>/dev/null \
 		| sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
 }
 
@@ -111,6 +117,20 @@ if [ -n "$_running" ] && [ "$_running" != "${V#v}" ]; then
 	die "an Otherix control plane (version ${_running}) is already serving on ${API_URL}, but this quickstart installs ${V#v}. Stop it (e.g. 'sudo systemctl stop otherix-api', a manual otherix-api, or your dev stack) or use a clean host, then re-run."
 fi
 
+# When no control plane of ours is up, every port this stack needs - including
+# the embedded etcd client/peer ports - must be free. A leftover etcd, a manual
+# otherix-api, or a dev stack holding one of these makes the api crash-loop on
+# startup ("bind: address already in use") and the wait below time out opaquely;
+# catch it here with a precise message instead. Skipped on a same-version resume
+# (the running api legitimately holds these).
+if [ -z "$_running" ]; then
+	for _p in 8080 8443 9443 2379 2380; do
+		if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${_p}\$"; then
+			die "port :${_p} is already in use - another process (a leftover Otherix, its embedded etcd, or a dev stack) is holding it. Find it with 'sudo ss -ltnp | grep :${_p}', stop it, or use a clean host, then re-run."
+		fi
+	done
+fi
+
 TMP="$(mktemp -d)"
 dl "https://github.com/$REPO/releases/download/$V/SHA256SUMS" "$TMP/SHA256SUMS"
 
@@ -143,18 +163,25 @@ fi
 
 # ---- 3. wait for the control plane -------------------------------------
 step "Waiting for the control plane"
-i=0; until curl -fsS "$API_URL/healthz" >/dev/null 2>&1; do
-	i=$((i+1)); [ "$i" -gt 60 ] && die "control plane did not become healthy on $API_URL"
+i=0; until curl -fsSk "$API_URL/healthz" >/dev/null 2>&1; do
+	i=$((i+1))
+	if [ "$i" -gt 60 ]; then
+		echo "--- last otherix-api logs ---" >&2
+		journalctl -u otherix-api.service -n 20 --no-pager >&2 2>/dev/null || true
+		die "control plane did not become healthy on $API_URL (see otherix-api logs above)"
+	fi
 	sleep 1
 done
 
 # ---- 4. configure the CLI cluster profile ------------------------------
 step "Configuring the CLI cluster profile '$CLUSTER_NAME'"
 # Feed the password via env, not argv (argv is visible via `ps`).
+[ -r "$CA_FILE" ] || die "cluster CA not found at $CA_FILE (the control plane should have written it on first boot)"
 OTHERIX_PASSWORD="$ADMIN_PASS" otherix config add cluster \
 	--name "$CLUSTER_NAME" \
 	--server "$API_URL" \
 	--login "$ADMIN_USER" \
+	--ca-file "$CA_FILE" \
 	--force >/dev/null || die "config add cluster failed"
 
 # ---- 5. bootstrap the local agent --------------------------------------
