@@ -320,7 +320,8 @@ func decodeJSON(t *testing.T, resp *http.Response, target any) {
 }
 
 // seedUser inserts a user with the given role and a real argon2id hash,
-// returning id, email, and plaintext password.
+// returning id, username, and plaintext password. The username is a unique
+// valid handle (the login identity); email is left absent.
 func seedUser(t *testing.T, s *etcdstore.Store, role auth.Role) (uuid.UUID, string, string) {
 	t.Helper()
 	const pw = "correct-horse-battery-staple"
@@ -329,21 +330,21 @@ func seedUser(t *testing.T, s *etcdstore.Store, role auth.Role) (uuid.UUID, stri
 		t.Fatalf("HashPassword: %v", err)
 	}
 	id := uuid.New()
-	email := fmt.Sprintf("e2e-%s-%s@example.test", role, uuid.NewString()[:8])
+	username := fmt.Sprintf("e2e-%s-%s", role, uuid.NewString()[:8])
 	if _, err := s.CreateUser(context.Background(), store.CreateUserParams{
-		ID: id, Email: email, PasswordHash: hash, DisplayName: "E2E " + string(role), Role: string(role),
+		ID: id, Username: username, PasswordHash: hash, DisplayName: "E2E " + string(role), Role: string(role),
 	}); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	return id, email, pw
+	return id, username, pw
 }
 
 // loginAs seeds a user with the role and logs in over HTTP, returning the
 // access token and the user id. Exercises the real auth.login path.
 func loginAs(t *testing.T, h *harness, role auth.Role) (token string, userID uuid.UUID) {
 	t.Helper()
-	id, email, pw := seedUser(t, h.store, role)
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	id, username, pw := seedUser(t, h.store, role)
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", resp.StatusCode)
 	}

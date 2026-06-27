@@ -18,6 +18,7 @@ import (
 
 type userView struct {
 	ID          string `json:"id"`
+	Username    string `json:"username"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
@@ -29,7 +30,7 @@ func TestUsersCRUDAsAdmin(t *testing.T) {
 
 	// Create.
 	body := map[string]string{
-		"email":        "crud-" + uuid.NewString()[:8] + "@example.test",
+		"username":     "crud-" + uuid.NewString()[:8],
 		"password":     "correct-horse-battery-staple",
 		"display_name": "CRUD User",
 		"role":         "developer",
@@ -40,7 +41,7 @@ func TestUsersCRUDAsAdmin(t *testing.T) {
 	}
 	var created userView
 	decodeJSON(t, resp, &created)
-	if created.ID == "" || created.Email != body["email"] || created.Role != "developer" {
+	if created.ID == "" || created.Username != body["username"] || created.Role != "developer" {
 		t.Fatalf("create view = %+v", created)
 	}
 
@@ -104,7 +105,7 @@ func TestUsersCreateForbiddenForDeveloper(t *testing.T) {
 	h := newE2E(t)
 	dev, _ := loginAs(t, h, auth.RoleDeveloper)
 	resp := h.post(t, "/v1/users", map[string]string{
-		"email": "x@example.test", "password": "correct-horse-battery-staple",
+		"username": "forbidden-x", "password": "correct-horse-battery-staple",
 		"display_name": "X", "role": "developer",
 	}, dev)
 	if resp.StatusCode != http.StatusForbidden {

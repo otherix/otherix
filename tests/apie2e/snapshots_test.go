@@ -417,13 +417,13 @@ func seedDeveloperWithDisplayName(t *testing.T, h *harness, displayName string) 
 		t.Fatalf("HashPassword: %v", err)
 	}
 	id := uuid.New()
-	email := "e2e-dev-" + uuid.NewString()[:8] + "@example.test"
+	username := "e2e-dev-" + uuid.NewString()[:8]
 	if _, err := h.store.CreateUser(context.Background(), store.CreateUserParams{
-		ID: id, Email: email, PasswordHash: hash, DisplayName: displayName, Role: string(auth.RoleDeveloper),
+		ID: id, Username: username, PasswordHash: hash, DisplayName: displayName, Role: string(auth.RoleDeveloper),
 	}); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	resp := h.post(t, "/v1/auth/login", map[string]string{"email": email, "password": pw}, "")
+	resp := h.post(t, "/v1/auth/login", map[string]string{"username": username, "password": pw}, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", resp.StatusCode)
 	}
