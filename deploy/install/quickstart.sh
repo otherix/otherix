@@ -184,12 +184,27 @@ OTHERIX_PASSWORD="$ADMIN_PASS" otherix config add cluster \
 	--ca-file "$CA_FILE" \
 	--force >/dev/null || die "config add cluster failed"
 
+# config add wrote root's ~/.otherix (the script runs as root). The config is
+# self-contained (token + embedded CA), so copy it to the invoking operator's
+# home and hand it over, letting them run `otherix ...` without sudo.
+if [ -n "${SUDO_USER:-}" ] && [ -f /root/.otherix/config ]; then
+	_uhome="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+	if [ -n "$_uhome" ] && [ "$_uhome" != "/root" ]; then
+		mkdir -p "$_uhome/.otherix"
+		cp /root/.otherix/config "$_uhome/.otherix/config"
+		chown -R "$SUDO_USER" "$_uhome/.otherix"
+		chmod 0700 "$_uhome/.otherix"
+		chmod 0600 "$_uhome/.otherix/config"
+		CLI_CONFIG_OWNER="$SUDO_USER"
+	fi
+fi
+
 # ---- 5. bootstrap the local agent --------------------------------------
 step "Bootstrapping the local hypervisor agent ($NODE_NAME)"
 bundle="$(otx node join-token create --node-name "$NODE_NAME" --ttl 10m --output json)" \
 	|| die "join-token mint failed"
-token="$(echo "$bundle" | jq -r '.token')"
-FP="$(echo "$bundle" | jq -r '.ca_fingerprint_sha256')"
+token="$(printf '%s' "$bundle" | jq -r '.token')"
+FP="$(printf '%s' "$bundle" | jq -r '.ca_fingerprint_sha256')"
 [ -n "$token" ] && [ "$token" != "null" ] || die "join-token mint returned no token"
 [ -n "$FP" ] && [ "$FP" != "null" ] || die "join-token bundle carried no CA fingerprint"
 # Pass the token via env (not argv) so it never appears in the process table.
@@ -252,8 +267,11 @@ step "Waiting for $VM_NAME to boot and lease an IP"
 VM_IP=""
 i=0; while :; do
 	j="$(otx vm get "$VM_NAME" --output json 2>/dev/null || true)"
-	phase="$(echo "$j" | jq -r '.status.phase // ""')"
-	VM_IP="$(echo "$j" | jq -r '.nics[0].ipv4_address // ""')"
+	# printf, not echo: dash's echo interprets the \n escapes inside the JSON
+	# (e.g. in user_data) into raw newlines, which makes jq reject the string
+	# as containing unescaped control characters.
+	phase="$(printf '%s' "$j" | jq -r '.status.phase // ""')"
+	VM_IP="$(printf '%s' "$j" | jq -r '.nics[0].ipv4_address // ""')"
 	[ "$phase" = "running" ] && [ -n "$VM_IP" ] && [ "$VM_IP" != "null" ] && break
 	i=$((i+1)); [ "$i" -gt 120 ] && die "VM $VM_NAME did not reach running with an IP (last phase: ${phase:-unknown})"
 	sleep 2
@@ -279,7 +297,7 @@ cat <<EOF
     username: $ADMIN_USER
     password: $ADMIN_PASS
     (also stored in /etc/otherix/api.env)
-  CLI config: /root/.otherix/config (cluster '$CLUSTER_NAME')
+  CLI config: /root/.otherix/config${CLI_CONFIG_OWNER:+ (also set up for $CLI_CONFIG_OWNER, who can run otherix without sudo)}
 
   Make your own VM (the default network is attached automatically):
     otherix vm create web-1 --image-url <url> --arch $A
