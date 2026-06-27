@@ -54,11 +54,11 @@ func (s *serviceSpy) LogoutAll(_ context.Context, _ uuid.UUID) error { return ni
 // view lookup.
 type storeStub struct{}
 
-func (storeStub) UserByEmail(_ context.Context, email string) (store.User, error) {
+func (storeStub) UserByUsername(_ context.Context, username string) (store.User, error) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	return store.User{
 		ID:          uuid.New(),
-		Email:       email,
+		Username:    username,
 		DisplayName: "Test User",
 		Role:        "viewer",
 		CreatedAt:   now,
@@ -66,9 +66,9 @@ func (storeStub) UserByEmail(_ context.Context, email string) (store.User, error
 	}, nil
 }
 
-func postLogin(t *testing.T, h *Handler, remoteAddr, email, password string) *httptest.ResponseRecorder {
+func postLogin(t *testing.T, h *Handler, remoteAddr, username, password string) *httptest.ResponseRecorder {
 	t.Helper()
-	body := `{"email":` + strconv.Quote(email) + `,"password":` + strconv.Quote(password) + `}`
+	body := `{"username":` + strconv.Quote(username) + `,"password":` + strconv.Quote(password) + `}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
 	req.RemoteAddr = remoteAddr
 	rec := httptest.NewRecorder()
@@ -85,21 +85,21 @@ func TestLogin_RateLimited429BeforeArgon2(t *testing.T) {
 	})
 	h := New(spy, storeStub{}, limiter)
 
-	// Two failed attempts from the same IP, email case varied: the
-	// email key must normalise to lowercase.
-	if rec := postLogin(t, h, "192.0.2.10:4444", "Admin@Example.com", "wrong"); rec.Code != http.StatusUnauthorized {
+	// Two failed attempts from the same IP, username case varied: the
+	// username key must normalise to lowercase.
+	if rec := postLogin(t, h, "192.0.2.10:4444", "Admin-User", "wrong"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("attempt 1 status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
-	if rec := postLogin(t, h, "192.0.2.10:4444", "admin@example.COM", "wrong"); rec.Code != http.StatusUnauthorized {
+	if rec := postLogin(t, h, "192.0.2.10:4444", "admin-USER", "wrong"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("attempt 2 status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 	if spy.loginCalls != 2 {
 		t.Fatalf("Login calls after 2 attempts = %d, want 2", spy.loginCalls)
 	}
 
-	// Third attempt: different source IP, so only the email key can
+	// Third attempt: different source IP, so only the username key can
 	// block it. Must be 429 and must NOT reach the service (argon2).
-	rec := postLogin(t, h, "192.0.2.99:5555", "ADMIN@example.com", "wrong")
+	rec := postLogin(t, h, "192.0.2.99:5555", "ADMIN-user", "wrong")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("attempt 3 status = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
@@ -133,7 +133,7 @@ func TestLogin_RateLimited429BeforeArgon2(t *testing.T) {
 	}
 }
 
-func TestLogin_PerIPKeyBlocksAcrossEmails(t *testing.T) {
+func TestLogin_PerIPKeyBlocksAcrossUsernames(t *testing.T) {
 	spy := &serviceSpy{loginErr: coreauth.ErrInvalidCredentials}
 	limiter := ratelimit.New(ratelimit.Config{
 		MaxFailures: 2,
@@ -142,11 +142,11 @@ func TestLogin_PerIPKeyBlocksAcrossEmails(t *testing.T) {
 	})
 	h := New(spy, storeStub{}, limiter)
 
-	// Same IP, distinct emails: the ip key alone must block.
-	postLogin(t, h, "192.0.2.20:1000", "a@example.com", "wrong")
-	postLogin(t, h, "192.0.2.20:1001", "b@example.com", "wrong")
+	// Same IP, distinct usernames: the ip key alone must block.
+	postLogin(t, h, "192.0.2.20:1000", "user-a", "wrong")
+	postLogin(t, h, "192.0.2.20:1001", "user-b", "wrong")
 
-	rec := postLogin(t, h, "192.0.2.20:1002", "c@example.com", "wrong")
+	rec := postLogin(t, h, "192.0.2.20:1002", "user-c", "wrong")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("attempt 3 status = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
@@ -165,9 +165,16 @@ func TestLogin_SuccessesAreNeverCounted(t *testing.T) {
 	h := New(spy, storeStub{}, limiter)
 
 	for i := 0; i < 5; i++ {
-		rec := postLogin(t, h, "192.0.2.30:2000", "ok@example.com", "right")
+		rec := postLogin(t, h, "192.0.2.30:2000", "alice", "right")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("successful attempt %d status = %d, want %d", i+1, rec.Code, http.StatusOK)
+		}
+		var resp loginResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal login response: %v", err)
+		}
+		if got := resp.User.Username; got != "alice" {
+			t.Errorf("login response user.username = %q, want alice", got)
 		}
 	}
 	if spy.loginCalls != 5 {
@@ -180,7 +187,7 @@ func TestLogin_NilLimiterNeverThrottles(t *testing.T) {
 	h := New(spy, storeStub{}, nil)
 
 	for i := 0; i < 20; i++ {
-		rec := postLogin(t, h, "192.0.2.40:3000", "user@example.com", "wrong")
+		rec := postLogin(t, h, "192.0.2.40:3000", "some-user", "wrong")
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d with nil limiter status = %d, want %d (never 429)",
 				i+1, rec.Code, http.StatusUnauthorized)
@@ -191,7 +198,7 @@ func TestLogin_NilLimiterNeverThrottles(t *testing.T) {
 	}
 }
 
-func TestLogin_OverlongEmailRejectedBeforeServiceAndLimiter(t *testing.T) {
+func TestLogin_OverlongUsernameRejectedBeforeServiceAndLimiter(t *testing.T) {
 	spy := &serviceSpy{loginErr: coreauth.ErrInvalidCredentials}
 	limiter := ratelimit.New(ratelimit.Config{
 		MaxFailures: 2,
@@ -200,18 +207,19 @@ func TestLogin_OverlongEmailRejectedBeforeServiceAndLimiter(t *testing.T) {
 	})
 	h := New(spy, storeStub{}, limiter)
 
-	// An email longer than EmailMaxLength can never match a stored user
-	// (every stored email passed validation, <= EmailMaxLength), so it
-	// must be rejected at the edge with 400 validation_failed BEFORE the
-	// argon2 path runs and BEFORE its bytes are retained as a limiter key.
-	longEmail := strings.Repeat("a", validation.EmailMaxLength+1) + "@x.io"
-	rec := postLogin(t, h, "192.0.2.50:6000", longEmail, "whatever")
+	// A username longer than UsernameMaxLength can never match a stored
+	// user (every stored username passed validation, <= UsernameMaxLength),
+	// so it must be rejected at the edge with 400 validation_failed BEFORE
+	// the argon2 path runs and BEFORE its bytes are retained as a limiter
+	// key.
+	longUsername := strings.Repeat("a", validation.UsernameMaxLength+1)
+	rec := postLogin(t, h, "192.0.2.50:6000", longUsername, "whatever")
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 	if spy.loginCalls != 0 {
-		t.Errorf("Login calls = %d, want 0 (argon2 path must not run for an over-long email)", spy.loginCalls)
+		t.Errorf("Login calls = %d, want 0 (argon2 path must not run for an over-long username)", spy.loginCalls)
 	}
 
 	var envelope struct {
@@ -226,20 +234,20 @@ func TestLogin_OverlongEmailRejectedBeforeServiceAndLimiter(t *testing.T) {
 		t.Errorf("error.code = %q, want %q", got, want)
 	}
 
-	// The over-long email must NOT have been retained as a limiter key:
+	// The over-long username must NOT have been retained as a limiter key:
 	// the limiter is a bounded resource and must not grow from input that
 	// never reached the credential path. With MaxFailures=2, even a single
 	// recorded failure would not block yet, so repeat the request and
 	// confirm the key never accumulates toward a block.
 	for i := 0; i < 5; i++ {
-		postLogin(t, h, "192.0.2.50:6000", longEmail, "whatever")
+		postLogin(t, h, "192.0.2.50:6000", longUsername, "whatever")
 	}
-	if blocked, _ := limiter.Blocked("email:" + strings.ToLower(longEmail)); blocked {
-		t.Errorf("limiter blocked the over-long email key, want no entry ever recorded")
+	if blocked, _ := limiter.Blocked("username:" + strings.ToLower(longUsername)); blocked {
+		t.Errorf("limiter blocked the over-long username key, want no entry ever recorded")
 	}
 }
 
-func TestLogin_InvalidRemoteAddrStillThrottledByEmail(t *testing.T) {
+func TestLogin_InvalidRemoteAddrStillThrottledByUsername(t *testing.T) {
 	spy := &serviceSpy{loginErr: coreauth.ErrInvalidCredentials}
 	limiter := ratelimit.New(ratelimit.Config{
 		MaxFailures: 2,
@@ -249,12 +257,12 @@ func TestLogin_InvalidRemoteAddrStillThrottledByEmail(t *testing.T) {
 	h := New(spy, storeStub{}, limiter)
 
 	// Unparsable RemoteAddr: the ip key is skipped (zero netip.Addr),
-	// the email key still carries the weight. No panic, no degradation
+	// the username key still carries the weight. No panic, no degradation
 	// to a shared "zero IP" bucket.
-	postLogin(t, h, "not-an-ip", "x@example.com", "wrong")
-	postLogin(t, h, "not-an-ip", "x@example.com", "wrong")
+	postLogin(t, h, "not-an-ip", "user-x", "wrong")
+	postLogin(t, h, "not-an-ip", "user-x", "wrong")
 
-	rec := postLogin(t, h, "not-an-ip", "x@example.com", "wrong")
+	rec := postLogin(t, h, "not-an-ip", "user-x", "wrong")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("attempt 3 status = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
