@@ -6,14 +6,16 @@ package user
 import "github.com/spf13/cobra"
 
 // newWhoamiCommand returns the `otherix user whoami` cobra command. It
-// fetches GET /v1/users/me and renders the authenticated caller's own
-// user view. Available to every authenticated role.
+// fetches GET /v1/users/me and prints a one-line identity summary of the
+// authenticated caller. Available to every authenticated role; `-o json`
+// / `-o yaml` emit the full user object.
 func newWhoamiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "whoami",
-		Short: "Show the authenticated caller's own user.",
-		Long: `Fetches GET /v1/users/me and renders the caller's own user view.
-Available to every authenticated role.`,
+		Short: "Show who you are authenticated as (one-line summary).",
+		Long: `Fetches GET /v1/users/me and prints a one-line summary of the
+caller (username, role, id). Available to every authenticated role.
+Use -o json or -o yaml for the full user object.`,
 		Args: cobra.NoArgs,
 		RunE: runWhoami,
 	}
@@ -34,6 +36,13 @@ func runWhoami(cmd *cobra.Command, _ []string) error {
 	me, err := c.GetMe(cmd.Context())
 	if err != nil {
 		return classifyError(err)
+	}
+	// whoami is "who am I" - a terse identity line by default (username,
+	// role, id). The full record is available via `user get <username>`
+	// or -o json/yaml here.
+	if format == "text" {
+		printf(cmd, "%s (role: %s, id: %s)\n", me.Username, me.Role, me.ID)
+		return nil
 	}
 	return renderUser(cmd, me, format)
 }

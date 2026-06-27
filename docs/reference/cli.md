@@ -714,10 +714,12 @@ otherix user delete dev-user
 
 ### user whoami
 
-Print the calling user (username, role). Works for any role.
+Print a one-line identity summary of the calling user (username, role, id).
+Works for any role; `-o json` / `-o yaml` emit the full user object.
 
 ```bash
 otherix user whoami
+# admin (role: admin, id: fdee0856-a462-4f67-819a-f8f7002e598f)
 ```
 
 ---
