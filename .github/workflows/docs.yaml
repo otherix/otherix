@@ -45,6 +45,7 @@ jobs:
       # the get.otherix.dev Worker can alias it (same pattern as install.sh).
       - run: cp deploy/install/quickstart.sh site/quickstart.sh
       - run: cp deploy/install/uninstall.sh site/uninstall.sh
+      - run: cp deploy/install/upgrade.sh site/upgrade.sh
       - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main'
         with:

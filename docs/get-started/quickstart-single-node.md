@@ -72,19 +72,23 @@ and more.
 
 The quickstart is for the initial bring-up only - do not re-run it to upgrade.
 It provisions the network and demo VM, and it refuses to run against a
-different-version control plane already serving on the host. To move to a newer
-release, re-install the components. This upgrades the binaries in place and
-preserves all state (etcd data, certs, and config under `/var/lib/otherix` and
-`/etc/otherix`):
+different-version control plane already serving on the host.
+
+To move to a newer release, run `upgrade.sh`. It upgrades the components already
+installed on this host - api, agent, and/or the CLI - to the latest release,
+touching only what is present, so the same command is correct on a single-node
+host, a hypervisor node, a control-plane host, or an operator workstation. State
+is preserved (etcd data, certs, and config under `/var/lib/otherix` and
+`/etc/otherix`); nothing is provisioned. The daemon package upgrades restart
+their services:
 
 ```bash
-curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=api   sh
-curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=agent sh
-curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=cli   sh
+curl -fsSL https://get.otherix.dev/upgrade.sh | sudo sh
 ```
 
-Each command installs the latest release and the package upgrade restarts the
-service. Pin a specific version with `OTHERIX_VERSION=vX.Y.Z`.
+Pin a specific version with `OTHERIX_VERSION=vX.Y.Z`. To upgrade a single
+component manually instead, re-run the installer for it
+(`curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=api sh`).
 
 ## Uninstall
 
