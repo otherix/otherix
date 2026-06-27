@@ -10,7 +10,7 @@
 #
 # What it proves, end to end:
 #   - operator CLI (primary): `otherix network create --type overlay` allocates
-#     a VNI + otb<vni> bridge; `otherix vm create --network <overlay>` attaches a
+#     a VNI + otvb<vni> bridge; `otherix vm create --network <overlay>` attaches a
 #     NIC to that overlay on each node;
 #   - the agent programs the otvx<vni> FDB from the CP's declared_fdb
 #     (head-end replication): the peer VM's MAC -> peer node's otwg0 VTEP IP plus

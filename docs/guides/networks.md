@@ -22,7 +22,7 @@ network:
 
 | Flag | Meaning |
 | --- | --- |
-| `--bridge-name` | Host bridge interface name. Required for `--type bridge`. 1..15 chars, `[A-Za-z][A-Za-z0-9_-]*`; the `otb*` / `otvx*` / `otwg*` prefixes are reserved. |
+| `--bridge-name` | Host bridge interface name. Required for `--type bridge`. 1..15 chars, `[A-Za-z][A-Za-z0-9_-]*`; the `otvb*` / `otvx*` / `otwg*` prefixes are reserved. |
 | `--managed` | The Control Plane manages the bridge lifecycle (required for NAT egress). |
 | `--egress` | Managed egress mode: `none` (default) or `nat`. |
 | `--subnet` | Subnet in CIDR form (IPv4, /8../30). Required for `--egress nat` and for `--dhcp`. |

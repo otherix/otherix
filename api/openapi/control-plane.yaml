@@ -6169,7 +6169,7 @@ components:
           minLength: 1
           description: |
             Required for `type: bridge`; forbidden for `type: overlay`
-            (the server derives `otb<vni>`).
+            (the server derives `otvb<vni>`).
         managed:
           type: boolean
           default: false

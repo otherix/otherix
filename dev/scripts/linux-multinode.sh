@@ -14,7 +14,7 @@
 # state dir /var/lib/otherix/dev/nodeN, node name node-N.
 #
 # netns isolates the agent's fixed-name network resources (otwg0, otherix-nat,
-# otvx*/otb*); the mount namespace + private bind mount in `start` isolates the
+# otvx*/otvb*); the mount namespace + private bind mount in `start` isolates the
 # cluster-default pool path (/var/lib/otherix/pools -> /var/lib/otherix/dev/nodeN/pools).
 # No agent Go code is involved.
 
