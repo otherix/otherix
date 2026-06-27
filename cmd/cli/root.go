@@ -15,6 +15,7 @@ import (
 	nodecmd "github.com/otherix/otherix/cmd/cli/node"
 	poolcmd "github.com/otherix/otherix/cmd/cli/pool"
 	snapshotcmd "github.com/otherix/otherix/cmd/cli/snapshot"
+	usercmd "github.com/otherix/otherix/cmd/cli/user"
 	"github.com/otherix/otherix/cmd/cli/vm"
 	"github.com/otherix/otherix/internal/version"
 )
@@ -57,6 +58,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(artifactpoolcmd.NewCommand())
 	root.AddCommand(networkcmd.NewCommand())
 	root.AddCommand(nodecmd.NewCommand())
+	root.AddCommand(usercmd.NewCommand())
 	root.AddCommand(clustercmd.NewCommand())
 	root.AddCommand(configcmd.NewCommand())
 	root.AddCommand(newManifestCreateCmd())
