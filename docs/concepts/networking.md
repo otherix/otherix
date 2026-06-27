@@ -26,6 +26,25 @@ each VM's tap device to it. This is the simplest case: everything is local
 netlink, no tunnelling. Egress to the outside world is handled by the NAT mode
 below.
 
+### Default network
+
+The cluster can hold a single default network. When it is set, `otherix vm
+create` needs no `--network` flag - the VM gets one NIC on the default network.
+An operator sets it with:
+
+```bash
+otherix cluster set-default-network <bridge-network>
+```
+
+The named network must be a bridge network. There is no automatic default: the
+reference is operator-set, and clearing it (`otherix cluster
+unset-default-network`) means a VM created without `--network` has no NIC.
+
+Deleting the network that is set as the default does not clear the reference. The
+pointer simply dangles: a VM created without `--network` is then admitted but
+stays pending with a `network_not_found` reason until you set a new default (or
+pass `--network` explicitly). Existing VMs are unaffected.
+
 ## Overlay networks
 
 An overlay network gives VMs on different nodes a single L2 segment. Each overlay

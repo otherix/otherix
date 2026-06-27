@@ -141,6 +141,23 @@ func (s *Store) ClearDefaultArtifactPoolName(ctx context.Context) error {
 	})
 }
 
+// SetDefaultNetworkName writes the cluster-wide default network name on the
+// singleton. The caller validates the name resolves to an existing bridge
+// network before calling.
+func (s *Store) SetDefaultNetworkName(ctx context.Context, name *string) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.DefaultNetworkName = name
+	})
+}
+
+// ClearDefaultNetworkName nulls the cluster-wide default network name.
+// Idempotent.
+func (s *Store) ClearDefaultNetworkName(ctx context.Context) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.DefaultNetworkName = nil
+	})
+}
+
 // SeedDefaultPoolName writes the cluster-wide default pool name on the singleton
 // first-writer-wins: it sets the name only when none exists, so a re-boot or a
 // second replica observing an existing value (or an operator-set default) no-ops.

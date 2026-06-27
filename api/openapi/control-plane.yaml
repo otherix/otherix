@@ -3549,6 +3549,96 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/cluster/default-network:
+    get:
+      operationId: cluster.getDefaultNetwork
+      tags: [cluster]
+      summary: Get the cluster default-network name.
+      description: |
+        Returns the cluster default-network reference held in the
+        `cluster_settings` singleton. The default network is attached to
+        VM-create requests that omit `network`. When unset (404), a VM
+        created without `network` has no NIC.
+
+        **Required permission:** `cluster:read` (every role).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Cluster default-network reference.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDefaultPool"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: Cluster default network is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      operationId: cluster.setDefaultNetwork
+      tags: [cluster]
+      summary: Set the cluster default-network name (admin only).
+      description: |
+        The supplied `name` must resolve to an existing bridge network;
+        a non-bridge or unknown name returns 400 `validation_failed`.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDefaultNetworkRequest"
+      responses:
+        "200":
+          description: Cluster default-network reference set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDefaultPool"
+        "400":
+          description: |
+            The request body is malformed, or `name` does not match an
+            existing bridge network. The error `code` is `validation_failed`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: cluster.clearDefaultNetwork
+      tags: [cluster]
+      summary: Clear the cluster default-network reference (admin only).
+      description: |
+        Idempotent - clearing an already-null reference returns 204.
+        After clear, a VM created without `network` has no NIC.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Cluster default-network reference cleared.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/cluster/members:
     get:
       operationId: cluster.listMembers
@@ -3690,6 +3780,7 @@ components:
         - pool_role_invalid
         - artifact_pool_required
         - default_artifact_pool_not_set
+        - default_network_not_set
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
@@ -5941,6 +6032,18 @@ components:
       description: |
         Body of `PUT /v1/cluster/default-pool`. The name must resolve
         to at least one existing storage_pool instance in the cluster.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+
+    SetDefaultNetworkRequest:
+      type: object
+      required: [name]
+      description: |
+        Body of `PUT /v1/cluster/default-network`. The name must resolve
+        to an existing bridge network in the cluster.
       properties:
         name:
           type: string

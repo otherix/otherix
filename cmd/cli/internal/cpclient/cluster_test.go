@@ -159,6 +159,94 @@ func TestClearClusterDefaultPool_HappyPath(t *testing.T) {
 	}
 }
 
+func TestGetClusterDefaultNetwork_Set(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/cluster/default-network" || r.Method != http.MethodGet {
+			t.Errorf("got %s %s, want GET /v1/cluster/default-network", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"qnet"}`))
+	}))
+	defer srv.Close()
+
+	c := fixtureClient(t, srv)
+	got, err := c.GetClusterDefaultNetwork(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterDefaultNetwork() error = %v", err)
+	}
+	if got == nil || got.Name != "qnet" {
+		t.Errorf("GetClusterDefaultNetwork() = %v, want {qnet}", got)
+	}
+}
+
+func TestGetClusterDefaultNetwork_UnsetReturnsNilNoError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"default_network_not_set","message":"unset"}}`))
+	}))
+	defer srv.Close()
+
+	c := fixtureClient(t, srv)
+	got, err := c.GetClusterDefaultNetwork(context.Background())
+	if err != nil {
+		t.Fatalf("GetClusterDefaultNetwork() error = %v", err)
+	}
+	if got != nil {
+		t.Errorf("GetClusterDefaultNetwork() = %v, want nil for unset", got)
+	}
+}
+
+func TestSetClusterDefaultNetwork_HappyPath(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var got cpclient.ClusterDefaultPool
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got.Name != "qnet" {
+			t.Errorf("body.name = %s, want qnet", got.Name)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"qnet"}`))
+	}))
+	defer srv.Close()
+
+	c := fixtureClient(t, srv)
+	got, err := c.SetClusterDefaultNetwork(context.Background(), "qnet")
+	if err != nil {
+		t.Fatalf("SetClusterDefaultNetwork() error = %v", err)
+	}
+	if got.Name != "qnet" {
+		t.Errorf("Name = %s, want qnet", got.Name)
+	}
+}
+
+func TestClearClusterDefaultNetwork_HappyPath(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/v1/cluster/default-network") {
+			t.Errorf("path = %s, want suffix /v1/cluster/default-network", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := fixtureClient(t, srv)
+	if err := c.ClearClusterDefaultNetwork(context.Background()); err != nil {
+		t.Fatalf("ClearClusterDefaultNetwork() error = %v", err)
+	}
+}
+
 func TestListClusterMembers_HappyPath(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

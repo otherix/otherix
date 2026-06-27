@@ -185,12 +185,16 @@ directory is administrative information.
 
 ### Cluster configuration
 
-Cluster-level settings (today: default-pool reference held in the
-`cluster_settings` singleton; future: default-network, …) sit on
+Cluster-level settings (the default-pool, default-artifact-pool, and
+default-network references held in the `cluster_settings` singleton) sit on
 `/v1/cluster/*`. Reads are open to every authenticated role
 because the operator-facing context (e.g. "which pool defaults?") is
 not a secret; mutations are admin-only by precedent with other
 cluster-shaping permissions (`storage_pool:manage`, `node:manage`).
+
+The default-network endpoints follow the same split: `GET
+/v1/cluster/default-network` is `cluster:read` (every role); `PUT` and `DELETE
+/v1/cluster/default-network` are `cluster:manage` (admin only).
 
 `cluster:manage` also governs etcd cluster membership: `GET /v1/cluster/members`
 (inspect the current members) and `DELETE /v1/cluster/members/{id}` (evict a

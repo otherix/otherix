@@ -61,6 +61,55 @@ func TestClusterSettingsSetAndClearDefaultPool(t *testing.T) {
 	}
 }
 
+func TestClusterSettingsSetAndClearDefaultNetwork(t *testing.T) {
+	st, _ := startStore(t)
+	ctx := context.Background()
+
+	cs, err := st.ClusterSettings(ctx)
+	if err != nil {
+		t.Fatalf("ClusterSettings() error = %v", err)
+	}
+	if cs.DefaultNetworkName != nil {
+		t.Errorf("DefaultNetworkName = %v, want nil", *cs.DefaultNetworkName)
+	}
+
+	name := "default"
+	if err := st.SetDefaultNetworkName(ctx, &name); err != nil {
+		t.Fatalf("SetDefaultNetworkName(%q) error = %v", name, err)
+	}
+	cs, err = st.ClusterSettings(ctx)
+	if err != nil {
+		t.Fatalf("ClusterSettings() error = %v", err)
+	}
+	if cs.DefaultNetworkName == nil || *cs.DefaultNetworkName != name {
+		t.Errorf("DefaultNetworkName = %v, want %q", cs.DefaultNetworkName, name)
+	}
+
+	// A sibling-field write must not clobber the network name (CAS merge).
+	pool := "pool-a"
+	if err := st.SetDefaultPoolName(ctx, &pool); err != nil {
+		t.Fatalf("SetDefaultPoolName(%q) error = %v", pool, err)
+	}
+	cs, err = st.ClusterSettings(ctx)
+	if err != nil {
+		t.Fatalf("ClusterSettings() error = %v", err)
+	}
+	if cs.DefaultNetworkName == nil || *cs.DefaultNetworkName != name {
+		t.Errorf("after sibling write DefaultNetworkName = %v, want %q", cs.DefaultNetworkName, name)
+	}
+
+	if err := st.ClearDefaultNetworkName(ctx); err != nil {
+		t.Fatalf("ClearDefaultNetworkName() error = %v", err)
+	}
+	cs, err = st.ClusterSettings(ctx)
+	if err != nil {
+		t.Fatalf("ClusterSettings() error = %v", err)
+	}
+	if cs.DefaultNetworkName != nil {
+		t.Errorf("DefaultNetworkName = %v, want nil after clear", *cs.DefaultNetworkName)
+	}
+}
+
 func TestSeedDefaultPoolName(t *testing.T) {
 	ctx := context.Background()
 
