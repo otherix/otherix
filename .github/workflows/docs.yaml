@@ -8,12 +8,18 @@ on:
       - "mkdocs.yml"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yaml"
+      # The docs build publishes these scripts to the site (install.sh,
+      # quickstart.sh), so a change to them must trigger a redeploy.
+      - "deploy/install/**"
   pull_request:
     paths:
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yaml"
+      # The docs build publishes these scripts to the site (install.sh,
+      # quickstart.sh), so a change to them must trigger a redeploy.
+      - "deploy/install/**"
 
 permissions:
   contents: read

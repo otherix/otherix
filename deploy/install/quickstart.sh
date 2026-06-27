@@ -38,8 +38,19 @@ arch() {
 
 resolve_version() {
 	[ "$VERSION" != "latest" ] && { echo "$VERSION"; return; }
-	curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-		| grep -m1 '"tag_name"' | cut -d'"' -f4
+	# Capture the response first, then parse: piping curl straight into a
+	# short-circuiting `grep -m1` makes grep close the pipe early and curl
+	# abort the write with exit 23 (harmless, but it prints a scary error).
+	_rel="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")" \
+		|| die "could not reach the GitHub releases API"
+	printf '%s\n' "$_rel" | grep '"tag_name"' | head -n1 | cut -d'"' -f4
+}
+
+# running_api_version prints the version reported by an Otherix control plane
+# already serving /healthz at $1, or nothing when none answers.
+running_api_version() {
+	curl -fsS "$1/healthz" 2>/dev/null \
+		| sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
 }
 
 dl() { curl -fsSL "$1" -o "$2" || die "download failed: $1"; }
@@ -89,6 +100,17 @@ have curl || { have apt-get && apt-get install -y curl >/dev/null; } || die "cur
 have jq || { have apt-get && apt-get install -y jq >/dev/null; } || die "jq is required"
 V="$(resolve_version)"; A="$(arch)"
 [ -n "$V" ] || die "could not resolve a release version"
+
+# Refuse to run against an Otherix control plane that is already serving on the
+# API port. Nothing of ours is up yet at this point, so any responder is a
+# foreign or stale control plane (an older release, or a dev binary) that the
+# steps below would otherwise silently drive - the exact failure a dev machine
+# with a leftover server hits. A prior run of THIS version is allowed to resume.
+_running="$(running_api_version "$API_URL")"
+if [ -n "$_running" ] && [ "$_running" != "${V#v}" ]; then
+	die "an Otherix control plane (version ${_running}) is already serving on ${API_URL}, but this quickstart installs ${V#v}. Stop it (e.g. 'sudo systemctl stop otherix-api', a manual otherix-api, or your dev stack) or use a clean host, then re-run."
+fi
+
 TMP="$(mktemp -d)"
 dl "https://github.com/$REPO/releases/download/$V/SHA256SUMS" "$TMP/SHA256SUMS"
 
