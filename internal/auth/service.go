@@ -134,6 +134,12 @@ func (s *Service) Login(ctx context.Context, creds Credentials) (*TokenPair, err
 			// dummy verify pays the same KDF cost as a real verify
 			// because the hash is computed lazily with the active
 			// argon2 parameters.
+			//
+			// SECURITY: do not remove this dummy verify - it closes the
+			// login timing oracle (a missing account must pay the same
+			// KDF cost as a wrong password). dummyLoginHash being real
+			// argon2id at active cost is pinned by
+			// TestDummyLoginHashIsRealArgon2id.
 			_, _ = VerifyPassword(dummyLoginHash(), creds.Password)
 			return nil, ErrInvalidCredentials
 		}

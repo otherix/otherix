@@ -45,20 +45,26 @@ the server selects the scheme by the `otx_` prefix.
 
 ### Create a user (admin)
 
-`POST /v1/users` takes `email`, `password`, `role`, and an optional
-`display_name`:
+`POST /v1/users` takes `username`, `password`, `role`, and optional
+`email` and `display_name`. The username is the login credential and the
+account's unique identity; it is lowercase letters, digits, and interior
+hyphens (3..32, e.g. `dev-user`). Email is optional:
 
 ```bash
 curl -sS -X POST https://cp.example.com/v1/users \
   -H "Authorization: Bearer $OTHERIX_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-        "email": "dev@example.com",
+        "username": "dev-user",
         "password": "correct-horse-battery",
         "role": "developer",
+        "email": "dev@example.com",
         "display_name": "Dev User"
       }'
 ```
+
+Or from the CLI: `otherix user create dev-user --role developer --password-stdin`
+(email and display name are optional flags).
 
 Passwords are 12..256 characters (no composition rules). Valid `role` values are
 `admin`, `operator`, `developer`, `viewer`.
@@ -66,7 +72,7 @@ Passwords are 12..256 characters (no composition rules). Valid `role` values are
 ### List, read, update, delete
 
 ```bash
-# List users (cursor-paginated; optional ?email= exact-match filter)
+# List users (cursor-paginated; optional ?username= or ?email= exact-match filter)
 curl -sS https://cp.example.com/v1/users \
   -H "Authorization: Bearer $OTHERIX_TOKEN"
 
@@ -97,8 +103,8 @@ the server stores only its SHA-256.
 
 ### Via the CLI
 
-`otherix config add cluster` runs a one-time bootstrap: it logs in with an
-email and password, creates a long-lived API token named
+`otherix config add cluster` runs a one-time bootstrap: it logs in with a
+username and password, creates a long-lived API token named
 `otherix-cli-<cluster>` via `POST /v1/users/me/api-tokens`, and stores the
 `(server, token)` pair in your CLI config so subsequent commands authenticate
 automatically:
@@ -107,7 +113,7 @@ automatically:
 otherix config add cluster \
   --name prod \
   --server https://cp.example.com \
-  --login me@example.com
+  --login admin
 # password prompted interactively, or pass --password / OTHERIX_PASSWORD
 ```
 

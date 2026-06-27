@@ -92,7 +92,7 @@ paths:
     post:
       operationId: auth.login
       tags: [auth]
-      summary: Authenticate a user with email + password.
+      summary: Authenticate a user with username + password.
       security: []
       requestBody:
         required: true
