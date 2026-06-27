@@ -369,6 +369,7 @@ type ClusterSetting struct {
 	ID                      int32
 	DefaultPoolName         *string
 	DefaultArtifactPoolName *string // cluster-wide default artifact pool; operator-set, no boot seed
+	DefaultNetworkName      *string // cluster-wide default bridge network for VM create; operator-set, no boot seed
 	OverlaySupernet         *string // cluster overlay supernet CIDR; seeded once at boot, immutable
 	VNIMin                  *int32  // overlay VNI range floor; seeded once at boot, immutable
 	VNIMax                  *int32  // overlay VNI range ceiling; seeded once at boot, immutable
