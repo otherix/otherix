@@ -44,6 +44,7 @@ jobs:
       # Publish the single-node quickstart at docs.otherix.dev/quickstart.sh so
       # the get.otherix.dev Worker can alias it (same pattern as install.sh).
       - run: cp deploy/install/quickstart.sh site/quickstart.sh
+      - run: cp deploy/install/uninstall.sh site/uninstall.sh
       - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main'
         with:
