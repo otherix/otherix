@@ -4,16 +4,19 @@
 package apitoken
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
 
@@ -29,6 +32,7 @@ const (
 	flagLimit          = "limit"
 	flagCursor         = "cursor"
 	flagIncludeRevoked = "include-revoked"
+	flagForce          = "force"
 
 	defaultListLimit = 20
 )
@@ -203,4 +207,71 @@ func printNextCursor(cmd *cobra.Command, next string) {
 		return
 	}
 	printf(cmd, "\nMore results - next page (re-add any filters):\n  %s --cursor %s\n", cmd.CommandPath(), next)
+}
+
+// resolveTokenByPrefix resolves the revoke argument to a token. If arg
+// is a UUID it is treated as a token id directly (the escape hatch, no
+// list). Otherwise every token of the target user is paged (revoked
+// included) and matched on the exact prefix.
+func resolveTokenByPrefix(ctx context.Context, c *cpclient.Client, userID, arg string) (cpclient.APIToken, error) {
+	if _, err := uuid.Parse(arg); err == nil {
+		return cpclient.APIToken{ID: arg}, nil
+	}
+	var matches []cpclient.APIToken
+	cursor := ""
+	for {
+		page, err := c.ListAPITokensFor(ctx, userID, cpclient.ListAPITokensParams{
+			IncludeRevoked: true,
+			Cursor:         cursor,
+		})
+		if err != nil {
+			return cpclient.APIToken{}, classifyError(err)
+		}
+		for _, t := range page.Data {
+			if t.Prefix == arg {
+				matches = append(matches, t)
+			}
+		}
+		if page.Meta.NextCursor == nil || *page.Meta.NextCursor == "" {
+			break
+		}
+		cursor = *page.Meta.NextCursor
+	}
+	switch len(matches) {
+	case 0:
+		return cpclient.APIToken{}, fmt.Errorf("no api token with prefix %q", arg)
+	case 1:
+		return matches[0], nil
+	default:
+		ids := make([]string, 0, len(matches))
+		for _, m := range matches {
+			ids = append(ids, m.ID)
+		}
+		return cpclient.APIToken{}, fmt.Errorf("prefix %q matches %d tokens (%s); pass the full token id instead",
+			arg, len(matches), strings.Join(ids, ", "))
+	}
+}
+
+// stdinIsTTY reports whether stdin is a terminal. Tests redirect stdin
+// to a pipe -> returns false -> confirmation is skipped without --force.
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// readYes reads a single line from stdin and returns true on a y/Y
+// prefix. Empty or anything else -> false (the safer side).
+func readYes() bool {
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	return line[0] == 'y' || line[0] == 'Y'
 }

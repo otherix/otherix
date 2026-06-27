@@ -29,5 +29,6 @@ passed as a flag or argument.`,
 	}
 	cmd.AddCommand(newCreateCommand())
 	cmd.AddCommand(newListCommand())
+	cmd.AddCommand(newRevokeCommand())
 	return cmd
 }

@@ -251,3 +251,129 @@ func TestList_UserAdminOnBehalf(t *testing.T) {
 		t.Errorf("token list path = %s, want /v1/users/u-alice/api-tokens", tokenListPath)
 	}
 }
+
+func TestRevoke_ByPrefixResolvesThenDeletes(t *testing.T) {
+	var listed, deletedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/users/me/api-tokens":
+			listed = r.URL.RawQuery
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[{"id":"id-77","user_id":"u1","name":"ci","prefix":"otx_ab12","created_at":"2026-06-27T10:00:00Z"}],"meta":{"next_cursor":null}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/users/me/api-tokens/id-77":
+			deletedPath = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runCmd(t, srv.URL, nil, []string{"revoke", "otx_ab12", "--force"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(listed, "include_revoked=true") {
+		t.Errorf("resolve list should set include_revoked=true, got query %q", listed)
+	}
+	if deletedPath != "/v1/users/me/api-tokens/id-77" {
+		t.Errorf("delete path = %s, want /v1/users/me/api-tokens/id-77", deletedPath)
+	}
+	if !strings.Contains(stdout, "revoked") {
+		t.Errorf("stdout missing revoke confirmation:\n%s", stdout)
+	}
+}
+
+func TestRevoke_ByFullIDSkipsList(t *testing.T) {
+	var listCalls int
+	var deletedPath string
+	id := "11111111-2222-3333-4444-555555555555"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listCalls++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[],"meta":{"next_cursor":null}}`))
+		case http.MethodDelete:
+			deletedPath = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+
+	if _, _, err := runCmd(t, srv.URL, nil, []string{"revoke", id, "--force"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if listCalls != 0 {
+		t.Errorf("revoke by full id should not list, got %d list calls", listCalls)
+	}
+	if deletedPath != "/v1/users/me/api-tokens/"+id {
+		t.Errorf("delete path = %s, want .../%s", deletedPath, id)
+	}
+}
+
+func TestRevoke_AmbiguousPrefixErrorsNoDelete(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"id-a","user_id":"u1","name":"ci","prefix":"otx_ab12","created_at":"2026-06-27T10:00:00Z"},
+			{"id":"id-b","user_id":"u1","name":"ci2","prefix":"otx_ab12","created_at":"2026-06-27T10:00:00Z"}
+		],"meta":{"next_cursor":null}}`))
+	}))
+	defer srv.Close()
+
+	_, _, err := runCmd(t, srv.URL, nil, []string{"revoke", "otx_ab12", "--force"})
+	if err == nil {
+		t.Fatalf("expected an ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "full token id") {
+		t.Errorf("err = %v, want guidance to pass the full token id", err)
+	}
+	if deleted {
+		t.Errorf("ambiguous prefix must not delete anything")
+	}
+}
+
+func TestRevoke_AlreadyRevokedIsNoOp(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"id-x","user_id":"u1","name":"ci","prefix":"otx_ab12","revoked_at":"2026-06-20T10:00:00Z","created_at":"2026-06-19T10:00:00Z"}],"meta":{"next_cursor":null}}`))
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runCmd(t, srv.URL, nil, []string{"revoke", "otx_ab12", "--force"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if deleted {
+		t.Errorf("already-revoked token must not be deleted again")
+	}
+	if !strings.Contains(stdout, "already revoked") {
+		t.Errorf("stdout should report the no-op:\n%s", stdout)
+	}
+}
+
+func TestRevoke_NoMatchErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[],"meta":{"next_cursor":null}}`))
+	}))
+	defer srv.Close()
+
+	_, _, err := runCmd(t, srv.URL, nil, []string{"revoke", "otx_zzzz", "--force"})
+	if err == nil || !strings.Contains(err.Error(), "no api token with prefix") {
+		t.Fatalf("err = %v, want a clean no-match message", err)
+	}
+}
