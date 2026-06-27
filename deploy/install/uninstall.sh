@@ -68,7 +68,7 @@ step "Removing managed network devices"
 if have ip; then
 	for _dev in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | sed 's/@.*//'); do
 		case "$_dev" in
-			otb* | otvb* | otvx* | otwg* | oxbr*) ip link del "$_dev" 2>/dev/null || true ;;
+			otb[0-9]* | otvb[0-9]* | otvx[0-9]* | otwg[0-9]* | oxbr[0-9]*) ip link del "$_dev" 2>/dev/null || true ;;
 		esac
 	done
 fi
