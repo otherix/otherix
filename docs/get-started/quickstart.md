@@ -198,6 +198,9 @@ otherix vm delete demo-vm --wait --force
 
 ## Next steps
 
+- [Onboard a developer](../guides/onboarding-a-developer.md) - create a
+  non-admin user, authenticate their CLI, and launch their first VM as
+  that user.
 - [Join a node](../guides/join-a-node.md) - the enrolment protocol in
   full, including fleet tokens and recovery.
 - [Create and manage VMs](../guides/create-and-manage-vms.md) -
