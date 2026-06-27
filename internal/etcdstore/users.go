@@ -19,15 +19,22 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Users are addressed by UUID with a case-insensitive email uniqueness guard
-// (uq_users_email, partial on deleted_at). The guard value is the user id, so
-// it doubles as the email->id index that backs UserByEmail. The value carries
-// password_hash (the source of truth for auth); handlers strip it at the view
-// boundary.
+// Users are addressed by UUID. The username uniqueness guard
+// (uniq/users/username/<username>) is the primary handle index: it is always
+// written, its value is the user id, and it backs UserByUsername. A second,
+// unique-if-present email guard (uniq/users/email/<lower(email)>, partial on
+// deleted_at) backs UserByEmail and is written only when the email is
+// non-empty (email is optional). Both guard values are the user id; the user
+// row value carries password_hash (the source of truth for auth) which
+// handlers strip at the view boundary.
 
 func userKey(id uuid.UUID) string { return etcd.Key("users", id.String()) }
 
 func userPrefix() string { return etcd.Key("users") + "/" }
+
+func userUsernameGuard(username string) string {
+	return etcd.Key("uniq", "users", "username", username) // already lowercase by validation
+}
 
 func userEmailGuard(email string) string {
 	return etcd.Key("uniq", "users", "email", strings.ToLower(email))
@@ -75,13 +82,34 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (store.User, erro
 	return s.UserByID(ctx, id)
 }
 
-// CreateUser inserts a user, stamping created_at/updated_at, writing the email
-// guard + primary atomically. A case-insensitive email collision among
-// non-deleted rows returns store.ErrUserEmailExists.
+// UserByUsername returns the non-deleted user with the given username by
+// resolving the username guard to an id, or store.ErrNotFound. The guard is
+// dropped on soft-delete, so a deleted username resolves to not-found.
+func (s *Store) UserByUsername(ctx context.Context, username string) (store.User, error) {
+	idBytes, found, err := s.c.Get(ctx, userUsernameGuard(username))
+	if err != nil {
+		return store.User{}, err
+	}
+	if !found {
+		return store.User{}, store.ErrNotFound
+	}
+	id, perr := uuid.Parse(string(idBytes))
+	if perr != nil {
+		return store.User{}, fmt.Errorf("corrupt username guard for %q: %v", username, perr)
+	}
+	return s.UserByID(ctx, id)
+}
+
+// CreateUser inserts a user, stamping created_at/updated_at, writing the user
+// row, the username guard (always), and the email guard (only when the email
+// is non-empty) atomically. A username collision among non-deleted rows
+// returns store.ErrUserUsernameExists; a case-insensitive email collision
+// returns store.ErrUserEmailExists.
 func (s *Store) CreateUser(ctx context.Context, arg store.CreateUserParams) (store.User, error) {
 	now := time.Now().UTC()
 	u := store.User{
 		ID:           arg.ID,
+		Username:     arg.Username,
 		Email:        arg.Email,
 		PasswordHash: arg.PasswordHash,
 		DisplayName:  arg.DisplayName,
@@ -93,29 +121,46 @@ func (s *Store) CreateUser(ctx context.Context, arg store.CreateUserParams) (sto
 	if err != nil {
 		return store.User{}, err
 	}
-	guard := userEmailGuard(u.Email)
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)).
-		Then(
-			clientv3.OpPut(guard, u.ID.String()),
-			clientv3.OpPut(userKey(u.ID), string(val)),
-		).
-		Commit()
+	usernameGuard := userUsernameGuard(u.Username)
+	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(usernameGuard), "=", 0)}
+	ops := []clientv3.Op{
+		clientv3.OpPut(userKey(u.ID), string(val)),
+		clientv3.OpPut(usernameGuard, u.ID.String()),
+	}
+	if u.Email != "" {
+		emailGuard := userEmailGuard(u.Email)
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(emailGuard), "=", 0))
+		ops = append(ops, clientv3.OpPut(emailGuard, u.ID.String()))
+	}
+	resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return store.User{}, fmt.Errorf("create user txn: %v", err)
 	}
 	if !resp.Succeeded {
-		return store.User{}, store.ErrUserEmailExists
+		// The write was atomic; re-read only to choose which sentinel to
+		// report. The username guard is always written, so it is the dominant
+		// collision cause; if neither guard is present (a concurrent delete
+		// removed the winner between the failed commit and this read) default
+		// to the username sentinel rather than a misleading email one.
+		if _, found, gerr := s.c.Get(ctx, usernameGuard); gerr == nil && found {
+			return store.User{}, store.ErrUserUsernameExists
+		}
+		if u.Email != "" {
+			if _, found, gerr := s.c.Get(ctx, userEmailGuard(u.Email)); gerr == nil && found {
+				return store.User{}, store.ErrUserEmailExists
+			}
+		}
+		return store.User{}, store.ErrUserUsernameExists
 	}
 	return u, nil
 }
 
 // UpdateUser rewrites email, password_hash, display_name, and role, bumps
-// updated_at, and moves the email guard when the email changes. Returns
-// store.ErrNotFound when the row is missing and store.ErrUserEmailExists when a
-// changed email collides with another live user. (In current flows the handler
-// keeps email constant, so the guard move is a no-op; it is handled for
-// correctness.)
+// updated_at, and moves the email guard when the email changes. Username is
+// immutable, so its guard is never moved. Returns store.ErrNotFound when the
+// row is missing and store.ErrUserEmailExists when a changed email collides
+// with another live user. (In current flows the handler keeps email constant,
+// so the guard move is a no-op; it is handled for correctness.)
 func (s *Store) UpdateUser(ctx context.Context, arg store.UpdateUserParams) (store.User, error) {
 	existing, err := s.UserByID(ctx, arg.ID)
 	if err != nil {
@@ -133,22 +178,26 @@ func (s *Store) UpdateUser(ctx context.Context, arg store.UpdateUserParams) (sto
 		return store.User{}, err
 	}
 
-	oldGuard := userEmailGuard(existing.Email)
-	newGuard := userEmailGuard(arg.Email)
-	if oldGuard == newGuard {
+	// Email is optional and immutable in current flows; only move the email
+	// guard when the email actually changed. An empty email has no guard to
+	// write or delete (two no-email users must not share the empty-email key).
+	if existing.Email == arg.Email {
 		if err := s.c.Put(ctx, userKey(arg.ID), val); err != nil {
 			return store.User{}, err
 		}
 		return updated, nil
 	}
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
-		Then(
-			clientv3.OpPut(newGuard, arg.ID.String()),
-			clientv3.OpDelete(oldGuard),
-			clientv3.OpPut(userKey(arg.ID), string(val)),
-		).
-		Commit()
+	cmps := []clientv3.Cmp{}
+	ops := []clientv3.Op{clientv3.OpPut(userKey(arg.ID), string(val))}
+	if arg.Email != "" {
+		newGuard := userEmailGuard(arg.Email)
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0))
+		ops = append(ops, clientv3.OpPut(newGuard, arg.ID.String()))
+	}
+	if existing.Email != "" {
+		ops = append(ops, clientv3.OpDelete(userEmailGuard(existing.Email)))
+	}
+	resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return store.User{}, fmt.Errorf("update user txn: %v", err)
 	}
@@ -206,8 +255,9 @@ func (s *Store) CountUserResources(ctx context.Context, id uuid.UUID) (store.Cou
 	return store.CountUserResourcesRow{Vms: vms, Snapshots: snapshots}, nil
 }
 
-// DeleteUser soft-deletes the user (sets deleted_at, drops the email guard so
-// the address is reusable) and revokes every api token the user owns, all in one
+// DeleteUser soft-deletes the user (sets deleted_at, drops the username guard
+// and, when present, the email guard, so both handles are reusable) and revokes
+// every api token the user owns, all in one
 // transaction - matching the SQL DeleteUser's RevokeApiTokensForUser +
 // SoftDeleteUser InTx. The caller (handler) performs the owned-resource refusal
 // via CountUserResources first.
@@ -230,7 +280,10 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 
 	ops := []clientv3.Op{
 		clientv3.OpPut(userKey(id), string(val)),
-		clientv3.OpDelete(userEmailGuard(existing.Email)),
+		clientv3.OpDelete(userUsernameGuard(existing.Username)),
+	}
+	if existing.Email != "" {
+		ops = append(ops, clientv3.OpDelete(userEmailGuard(existing.Email)))
 	}
 	revokeOps, err := s.revokeUserAPITokenOps(ctx, id, now)
 	if err != nil {
