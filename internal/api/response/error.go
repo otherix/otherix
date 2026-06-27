@@ -96,6 +96,10 @@ const (
 	CodeArtifactPoolRequired      ErrorCode = "artifact_pool_required"
 	CodeDefaultArtifactPoolNotSet ErrorCode = "default_artifact_pool_not_set"
 
+	// CodeDefaultNetworkNotSet: GET /v1/cluster/default-network when the
+	// cluster has no default network configured.
+	CodeDefaultNetworkNotSet ErrorCode = "default_network_not_set"
+
 	CodeInternal ErrorCode = "internal"
 )
 

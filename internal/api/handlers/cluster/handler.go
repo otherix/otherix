@@ -31,6 +31,9 @@ type Store interface {
 	ArtifactPoolByName(ctx context.Context, name string) (store.ArtifactPool, error)
 	SetDefaultArtifactPoolName(ctx context.Context, name *string) error
 	ClearDefaultArtifactPoolName(ctx context.Context) error
+	NetworkByName(ctx context.Context, name string) (store.Network, error)
+	SetDefaultNetworkName(ctx context.Context, name *string) error
+	ClearDefaultNetworkName(ctx context.Context) error
 }
 
 // Ensure the production store satisfies the handler's storage contract.
