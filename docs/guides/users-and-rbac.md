@@ -117,6 +117,26 @@ otherix config add cluster \
 Re-run with `--force` to replace an existing cluster entry (it best-effort
 revokes the previous token server-side first).
 
+Beyond that bootstrap token, manage tokens explicitly with `otherix api-token`:
+
+```bash
+otherix api-token create ci-bot --ttl 90d   # plaintext shown once - copy it
+otherix api-token list
+otherix api-token revoke otx_xxxx
+```
+
+`--ttl` sets a relative lifetime (`90d`, `720h`, `30d12h`); omit it for a
+long-lived token. An admin can mint, list, or revoke on behalf of another user
+by adding `--user <username>`:
+
+```bash
+otherix api-token create deploy --user alice --ttl 30d
+otherix api-token list --user alice
+```
+
+The plaintext is returned only once, at creation; if it leaks or is lost, revoke
+it and mint a new one.
+
 ### Via the REST API
 
 `POST /v1/users/me/api-tokens` issues a token for the calling user. The `token`

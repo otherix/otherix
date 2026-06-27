@@ -724,6 +724,68 @@ otherix user whoami
 
 ---
 
+## otherix api-token
+
+Mint, list, and revoke the `otx_*` API tokens that authenticate the CLI and
+automation (CP `/v1/users/.../api-tokens` surface). Every authenticated role
+manages its own tokens; an admin can act on another user's tokens with
+`--user <username>`. The plaintext token is shown exactly once, on create, and
+is never passed as a flag or argument.
+
+### api-token create
+
+Mint a token. `<name>` is positional.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--ttl` | (never expires) | Relative lifetime: `90d`, `720h`, `30d12h`. |
+| `--user` | (yourself) | Mint on behalf of this user (admin only). |
+| `-o` | `text` | Output format: `text` / `json` / `yaml` (all include the plaintext once). |
+
+```bash
+otherix api-token create ci-bot
+otherix api-token create ci-bot --ttl 90d
+otherix api-token create deploy --user alice
+```
+
+The command prints the plaintext token once - copy it immediately:
+
+```
+api token created - copy it now, it will not be shown again:
+
+  otx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+  name:       ci-bot
+  prefix:     otx_xxxx
+  expires_at: never
+  id:         ...
+```
+
+### api-token list
+
+Cursor-paginated list. `--output table|json|yaml`, `--limit`, `--cursor`, plus
+`--user <username>` (admin) and `--include-revoked` (revoked tokens are hidden by
+default). The `STATUS` column is `active`, `expired`, or `revoked`.
+
+```bash
+otherix api-token list
+otherix api-token list --include-revoked
+```
+
+### api-token revoke
+
+Revoke a token by its `prefix` (the `otx_xxxx` shown by `list`), resolved to its
+id client-side. If a prefix is ambiguous, pass the full token id instead.
+`--user <username>` (admin) targets another user; `--force` skips the
+confirmation prompt. Revoke is immediate and idempotent.
+
+```bash
+otherix api-token revoke otx_xxxx
+otherix api-token revoke otx_xxxx --user alice --force
+```
+
+---
+
 ## otherix config
 
 Manage CLI cluster credentials in the kubectl-style YAML store at
