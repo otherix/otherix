@@ -185,6 +185,10 @@ smoke-node-placement-pressure: ## Node-placement-pressure smoke: a node under di
 smoke-user: ## User CLI smoke: otherix user create/get/set-role/set-password/delete + login + RBAC gating (run after local-dev-start)
 	bash dev/smoke/user/run.sh
 
+.PHONY: smoke-api-token
+smoke-api-token: ## api-token CLI smoke: otherix api-token create/list/revoke + token auth lifecycle (run after local-dev-start)
+	bash dev/smoke/api-token/run.sh
+
 .PHONY: smoke-vm-migration
 smoke-vm-migration: ## Offline VM migration smoke: `otherix vm migrate --offline` across two nodes (run after local-dev-start)
 	bash dev/smoke/vm-migration/run.sh
