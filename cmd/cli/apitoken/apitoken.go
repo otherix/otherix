@@ -28,5 +28,6 @@ The plaintext token is shown exactly once, on create, and is never
 passed as a flag or argument.`,
 	}
 	cmd.AddCommand(newCreateCommand())
+	cmd.AddCommand(newListCommand())
 	return cmd
 }

@@ -181,3 +181,73 @@ func TestCreate_NoTokenFlag(t *testing.T) {
 		t.Fatalf("create must NOT expose a --token flag that takes a secret value; found %v", f)
 	}
 }
+
+func TestList_Table(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/users/me/api-tokens" {
+			t.Errorf("path = %s, want /v1/users/me/api-tokens", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"id1","user_id":"u1","name":"ci","prefix":"otx_ab12","created_at":"2026-06-27T10:00:00Z"},
+			{"id":"id2","user_id":"u1","name":"deploy","prefix":"otx_cd34","revoked_at":"2026-06-20T10:00:00Z","created_at":"2026-06-19T10:00:00Z"}
+		],"meta":{"next_cursor":null}}`))
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runCmd(t, srv.URL, nil, []string{"list"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"PREFIX", "NAME", "STATUS", "otx_ab12", "ci", "active", "otx_cd34", "revoked"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("table missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestList_IncludeRevokedQuery(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[],"meta":{"next_cursor":null}}`))
+	}))
+	defer srv.Close()
+
+	if _, _, err := runCmd(t, srv.URL, nil, []string{"list", "--include-revoked"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(gotQuery, "include_revoked=true") {
+		t.Errorf("query = %q, want include_revoked=true", gotQuery)
+	}
+}
+
+func TestList_UserAdminOnBehalf(t *testing.T) {
+	var tokenListPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[{"id":"u-alice","username":"alice","role":"developer","created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T10:00:00Z"}],"meta":{"next_cursor":null}}`))
+		case "/v1/users/u-alice/api-tokens":
+			tokenListPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[],"meta":{"next_cursor":null}}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if _, _, err := runCmd(t, srv.URL, nil, []string{"list", "--user", "alice"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if tokenListPath != "/v1/users/u-alice/api-tokens" {
+		t.Errorf("token list path = %s, want /v1/users/u-alice/api-tokens", tokenListPath)
+	}
+}

@@ -23,9 +23,14 @@ import (
 )
 
 const (
-	flagOutput = "output"
-	flagUser   = "user"
-	flagTTL    = "ttl"
+	flagOutput         = "output"
+	flagUser           = "user"
+	flagTTL            = "ttl"
+	flagLimit          = "limit"
+	flagCursor         = "cursor"
+	flagIncludeRevoked = "include-revoked"
+
+	defaultListLimit = 20
 )
 
 // maxTTLDays caps the day component so days*24h cannot overflow int64
@@ -182,4 +187,20 @@ func renderToken(cmd *cobra.Command, t cpclient.APIToken, format string) error {
 		printf(cmd, "id: %s\nname: %s\nprefix: %s\nstatus: %s\n", t.ID, t.Name, t.Prefix, tokenStatus(t))
 	}
 	return nil
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// printNextCursor prints a copy-pasteable next-page hint for a
+// cursor-paginated listing. No-op when there is no next page.
+func printNextCursor(cmd *cobra.Command, next string) {
+	if next == "" {
+		return
+	}
+	printf(cmd, "\nMore results - next page (re-add any filters):\n  %s --cursor %s\n", cmd.CommandPath(), next)
 }
