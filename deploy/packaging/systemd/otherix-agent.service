@@ -22,7 +22,9 @@ KillMode=process
 # CAP_NET_RAW: the per-node DHCP responder opens an AF_PACKET raw socket on
 # each dhcp-enabled overlay bridge to answer guest DISCOVER before the guest
 # has an address.
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+# CAP_NET_BIND_SERVICE: the DNS forwarder binds the anycast resolver on
+# 169.254.1.1:53 (a privileged port) for dns-enabled networks.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 StandardOutput=journal
 StandardError=journal
 
