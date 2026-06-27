@@ -607,6 +607,21 @@ otherix cluster set-default-artifact-pool artifacts
 otherix cluster unset-default-artifact-pool --force
 ```
 
+### cluster default-network
+
+The network analogue of the default-pool commands. When a default network is
+set, `otherix vm create` without `--network` attaches one NIC to it; when
+unset, a VM created without `--network` has no NIC. The name must resolve to an
+existing bridge network. `set`/`unset` are admin-only (`cluster:manage`);
+`get` is open to every role and prints an informational line and exits 0 when
+unset.
+
+```bash
+otherix cluster get-default-network
+otherix cluster set-default-network default
+otherix cluster unset-default-network --force
+```
+
 ### cluster join-token create
 
 Mint a `kind=cluster` (HA-grow) join token used to add a new control-plane
