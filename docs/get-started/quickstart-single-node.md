@@ -1,82 +1,74 @@
-# Quick start: single-node control plane
+# Quick start: single-node
 
-Bring up a working Otherix control plane on one Debian/Ubuntu host, with
-no repo clone and no Go toolchain.
+Bring up a complete Otherix cluster and a running, SSH-able VM on one
+Debian/Ubuntu host with two commands. No repo clone, no Go toolchain.
 
-## 1. Install the control plane
+!!! note "Requirements"
+    A Debian/Ubuntu host with hardware virtualization (`/dev/kvm` present),
+    run as root. The host must reach GitHub releases and the Ubuntu cloud-image
+    mirror.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/otherix/otherix/main/deploy/install/install.sh \
-  | sudo OTHERIX_COMPONENT=api sh
-```
-
-The installer downloads the `otherix-api` `.deb`, installs the systemd
-unit, generates an auth secret, and prints a one-time admin password.
-The server boots in `single` mode and advertises this host's routable
-IPv4 (`peer_url: auto`), so it is already HA-ready.
-
-Check it:
+## 1. Install and launch
 
 ```bash
-systemctl status otherix-api
-curl http://localhost:8080/healthz   # or the configured listener
+curl -fsSL https://get.otherix.dev/quickstart.sh | sudo sh
 ```
 
-## 2. Install the CLI
+This installs the control plane, a local hypervisor agent, and the CLI;
+creates a default NAT network; and launches a demo VM. When it finishes it
+prints how to reach the VM - its IP, the login user, a generated password,
+and whether your SSH public key was installed:
 
-macOS:
+```
+  SSH in (NAT network 10.88.0.0/24, reachable from this host):
+    ssh otherix@10.88.0.10
+    (your SSH public key was installed)
+    password for otherix: <generated>
+```
+
+If you have `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub`, the script installs
+it into the VM so you can log in by key; the generated password is the fallback.
+
+## 2. Log in
+
+Over the network (the VM is on the host-local NAT bridge):
 
 ```bash
-brew install otherix/tap/otherix
+ssh otherix@<printed-ip>
 ```
 
-Linux:
+Or attach to the serial console, which needs no network at all:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/otherix/otherix/main/deploy/install/install.sh \
-  | sudo OTHERIX_COMPONENT=cli sh
+otherix vm console demo
 ```
 
-Then authenticate with the printed admin credentials. The CLI logs in,
-mints a long-lived API token, and stores it as the current cluster:
+From inside the VM, `ping 1.1.1.1` confirms NAT egress to the internet.
+
+## Make your own VM
+
+The script set a cluster default network, so `vm create` needs no `--network`:
 
 ```bash
-otherix config add cluster \
-  --name local \
-  --server https://<cp-host>:8080 \
-  --login <admin-username> \
-  --password <admin-password>
+otherix vm create web-1 \
+  --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img \
+  --arch amd64
 ```
 
-## 3. Add a hypervisor node
+See the [CLI reference](../reference/cli.md) for snapshots, resize, migration,
+and more.
 
-On each KVM host:
+## What the script set up
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/otherix/otherix/main/deploy/install/install.sh \
-  | sudo OTHERIX_COMPONENT=agent sh
-sudo otherix-agent bootstrap \
-  --token <join-token> \
-  --cp-url https://<cp-host>:8443 \
-  --ca-fingerprint <sha256> \
-  --node-name <name> \
-  --advertised-endpoint <agent-host>:9443 \
-  --migration-host <agent-host>
-```
-
-Issue the join token from the CLI (`otherix node join-token create`),
-which prints the token plaintext and the CA fingerprint exactly once.
-The agent boots in polling mode and becomes ready once bootstrap writes
-its cert material.
+- `otherix-api` and `otherix-agent` systemd services (state under
+  `/var/lib/otherix/`, config under `/etc/otherix/`).
+- A CLI cluster profile named `local` (in `/root/.otherix/config`).
+- A managed bridge network `default` with NAT egress and DHCP, set as the
+  cluster default network.
+- A demo VM named `demo` attached to that network.
 
 ## Growing to HA
 
-A single node is a one-member cluster with a routable peer URL, so you
-can add members later with no reconfiguration of this node. See the HA
-guide (Phase 2).
-
-## Filesystem layout
-
-- `/etc/otherix/` - operator config (`api.yaml`, `api.env`).
-- `/var/lib/otherix/` - all runtime state (etcd data, certs, pools, VM
-  state). Package removal never deletes this tree; `apt purge` keeps it.
+A single node is a one-member cluster with a routable peer URL, so you can add
+members later with no reconfiguration. See the
+[high-availability guide](../operations/high-availability.md).

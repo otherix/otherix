@@ -65,6 +65,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Get started:
+      - Quickstart (single-node): get-started/quickstart-single-node.md
       - Quickstart: get-started/quickstart.md
       - Installation: get-started/install.md
   - Concepts:
