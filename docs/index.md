@@ -12,7 +12,7 @@ to long-lived, stateful VMs instead of stateless containers.
 
 <div class="grid cards" markdown>
 
-- :material-rocket-launch: **[Quickstart](get-started/quickstart.md)**
+- :material-rocket-launch: **[Quickstart](get-started/quickstart-single-node.md)**
   Bring up a single-node cluster and boot your first VM.
 
 - :material-sitemap: **[Architecture](architecture.md)**
@@ -53,7 +53,7 @@ the workload:
 - **Operators / SREs** standing up and running a cluster - start with
   [Installation](get-started/install.md) and [Operations](operations/high-availability.md).
 - **Users** creating and managing VMs through the `otherix` CLI - start with the
-  [Quickstart](get-started/quickstart.md) and the [Guides](guides/create-and-manage-vms.md).
+  [Quickstart](get-started/quickstart-single-node.md) and the [Guides](guides/create-and-manage-vms.md).
 
 !!! note "Documentation in progress"
     This site is being built out. Pages marked *work in progress* are stubs that
