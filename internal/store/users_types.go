@@ -16,7 +16,8 @@ type CountUserResourcesRow struct {
 
 type CreateUserParams struct {
 	ID           uuid.UUID
-	Email        string
+	Username     string
+	Email        string // optional; "" means absent
 	PasswordHash string
 	DisplayName  string
 	Role         string
