@@ -62,10 +62,44 @@ and more.
 
 - `otherix-api` and `otherix-agent` systemd services (state under
   `/var/lib/otherix/`, config under `/etc/otherix/`).
-- A CLI cluster profile named `local` (in `/root/.otherix/config`).
+- A CLI cluster profile named `local` (in `/root/.otherix/config`, and copied to
+  the invoking operator's `~/.otherix` so `otherix` works without `sudo`).
 - A managed bridge network `default` with NAT egress and DHCP, set as the
   cluster default network.
 - A demo VM named `demo` attached to that network.
+
+## Upgrade
+
+The quickstart is for the initial bring-up only - do not re-run it to upgrade.
+It provisions the network and demo VM, and it refuses to run against a
+different-version control plane already serving on the host. To move to a newer
+release, re-install the components. This upgrades the binaries in place and
+preserves all state (etcd data, certs, and config under `/var/lib/otherix` and
+`/etc/otherix`):
+
+```bash
+curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=api   sh
+curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=agent sh
+curl -fsSL https://get.otherix.dev/install.sh | sudo OTHERIX_COMPONENT=cli   sh
+```
+
+Each command installs the latest release and the package upgrade restarts the
+service. Pin a specific version with `OTHERIX_VERSION=vX.Y.Z`.
+
+## Uninstall
+
+To remove every component and wipe all state - the packages, the CLI,
+`/var/lib/otherix`, `/etc/otherix`, the CLI config, the `otherix` user, and
+managed bridges / nft rules:
+
+```bash
+curl -fsSL https://get.otherix.dev/uninstall.sh | sudo FORCE=true sh
+```
+
+`FORCE=true` is required for the piped form; a blind `curl | sudo sh` with no
+confirmation refuses. For an interactive `yes` prompt, run it from a downloaded
+file instead (`curl -fsSL https://get.otherix.dev/uninstall.sh -o uninstall.sh
+&& sudo sh uninstall.sh`).
 
 ## Growing to HA
 

@@ -277,6 +277,19 @@ i=0; while :; do
 	sleep 2
 done
 
+# The CP reports running + an allocated IP before the guest has finished
+# booting and brought up its NIC, so a first ssh can race the boot. Wait
+# best-effort until the VM answers on the network (non-fatal: if it does not
+# respond in time, print the summary anyway with a note).
+VM_REACHABLE=""
+if have ping; then
+	step "Waiting for $VM_NAME to answer on the network"
+	i=0; while [ "$i" -le 45 ]; do
+		if ping -c1 -W1 "$VM_IP" >/dev/null 2>&1; then VM_REACHABLE=1; break; fi
+		i=$((i+1)); sleep 2
+	done
+fi
+
 # ---- 9. summary --------------------------------------------------------
 cat <<EOF
 
@@ -287,6 +300,7 @@ cat <<EOF
     ssh $VM_USER@$VM_IP
 EOF
 [ -n "$KEYS" ] && echo "    (your SSH public key was installed)"
+[ -z "$VM_REACHABLE" ] && echo "    (note: $VM_NAME may still be finishing cloud-init; give it a few seconds if ssh is refused)"
 cat <<EOF
     password for $VM_USER: $VM_PASS
 
