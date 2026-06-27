@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/auth"
 )
 
@@ -97,5 +99,40 @@ func TestClusterDefaultNetwork(t *testing.T) {
 	decodeJSON(t, resp, &env)
 	if env.Error.Code != "permission_denied" {
 		t.Errorf("put-as-developer code = %q, want permission_denied", env.Error.Code)
+	}
+}
+
+// TestClusterDefaultNetworkRejectsNonBridge verifies that pointing the cluster
+// default network at a non-bridge (overlay) network is rejected with 400
+// validation_failed; only bridge networks are valid as the cluster default.
+func TestClusterDefaultNetworkRejectsNonBridge(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+
+	// Create an overlay network (a non-bridge type).
+	name := "ovl-" + uuid.NewString()[:8]
+	resp := h.post(t, "/v1/networks", map[string]any{
+		"name":   name,
+		"type":   "overlay",
+		"subnet": "10.62.0.0/24",
+	}, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("overlay create status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// PUT it as the default -> 400 validation_failed (not a bridge).
+	resp = h.put(t, "/v1/cluster/default-network", map[string]any{"name": name}, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("put-overlay status = %d, want 400", resp.StatusCode)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "validation_failed" {
+		t.Errorf("put-overlay code = %q, want validation_failed", env.Error.Code)
 	}
 }
