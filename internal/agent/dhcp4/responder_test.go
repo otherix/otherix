@@ -186,7 +186,7 @@ func TestRegisterNetworkOpensOneSocketPerBridge(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	cfg := NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}
@@ -208,7 +208,7 @@ func TestRegisterNetworkOpensOneSocketPerBridge(t *testing.T) {
 		t.Fatalf("after re-register opened %d sockets, want 1", got)
 	}
 
-	c := conns["otb100"]
+	c := conns["otvb100"]
 	feedDiscover(t, c, res2.MAC)
 	waitSend(t, c)
 
@@ -235,14 +235,14 @@ func TestKnownMACDiscoverProducesOffer(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}); err != nil {
 		t.Fatalf("RegisterNetwork() = %v", err)
 	}
 
-	c := conns["otb100"]
+	c := conns["otvb100"]
 	feedDiscover(t, c, res.MAC)
 	waitSend(t, c)
 
@@ -272,14 +272,14 @@ func TestUnknownMACDiscoverProducesNoReply(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}); err != nil {
 		t.Fatalf("RegisterNetwork() = %v", err)
 	}
 
-	c := conns["otb100"]
+	c := conns["otvb100"]
 	unknown, _ := net.ParseMAC("52:54:00:99:99:99")
 	feedDiscover(t, c, unknown)
 
@@ -308,13 +308,13 @@ func TestDeregisterNetworkClosesSocket(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}); err != nil {
 		t.Fatalf("RegisterNetwork() = %v", err)
 	}
-	c := conns["otb100"]
+	c := conns["otvb100"]
 
 	if err := r.DeregisterNetwork("net-1"); err != nil {
 		t.Fatalf("DeregisterNetwork() = %v", err)
@@ -339,14 +339,14 @@ func TestServeSurvivesTransientRecvError(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}); err != nil {
 		t.Fatalf("RegisterNetwork() = %v", err)
 	}
 
-	c := conns["otb100"]
+	c := conns["otvb100"]
 	// A transient recv error must NOT kill the loop. The valid DISCOVER queued
 	// behind it must still be served.
 	feedRecvError(c, errors.New("transient recv failure"))
@@ -376,18 +376,18 @@ func TestRegisterBridgeRenameDrainsOldServer(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	cfg := NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}
 	if err := r.RegisterNetwork(cfg); err != nil {
 		t.Fatalf("RegisterNetwork() = %v", err)
 	}
-	old := conns["otb100"]
+	old := conns["otvb100"]
 
 	// Re-register the same networkID on a renamed bridge: the old server must be
 	// drained (socket closed) and a new socket opened on the new bridge.
-	cfg.Bridge = "otb200"
+	cfg.Bridge = "otvb200"
 	if err := r.RegisterNetwork(cfg); err != nil {
 		t.Fatalf("RegisterNetwork() rename = %v", err)
 	}
@@ -395,7 +395,7 @@ func TestRegisterBridgeRenameDrainsOldServer(t *testing.T) {
 	if !old.isClosed() {
 		t.Fatal("bridge rename did not close the old socket")
 	}
-	newC, ok := conns["otb200"]
+	newC, ok := conns["otvb200"]
 	if !ok {
 		t.Fatal("bridge rename did not open a socket on the new bridge")
 	}
@@ -458,14 +458,14 @@ func TestServeRecvTimeoutIsBenign(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}); err != nil {
 		t.Fatalf("RegisterNetwork() = %v", err)
 	}
 
-	c := conns["otb100"]
+	c := conns["otvb100"]
 	// A run of benign receive timeouts must not be counted as recv errors. The
 	// DISCOVER queued behind them must still be served promptly.
 	for i := 0; i < 5; i++ {
@@ -525,7 +525,7 @@ func TestStopServerDrainBounded(t *testing.T) {
 
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")},
 	}); err != nil {
@@ -553,7 +553,7 @@ func TestRegisterBeforeRunBuffers(t *testing.T) {
 	res := reservation(t, "52:54:00:aa:bb:cc", "10.20.0.5")
 	if err := r.RegisterNetwork(NetworkConfig{
 		NetworkID:    "net-1",
-		Bridge:       "otb100",
+		Bridge:       "otvb100",
 		Subnet:       netip.MustParsePrefix("10.20.0.0/24"),
 		Reservations: []Reservation{res},
 	}); err != nil {
@@ -569,7 +569,7 @@ func TestRegisterBeforeRunBuffers(t *testing.T) {
 		t.Fatalf("opened %d sockets after Run, want 1", got)
 	}
 
-	c := conns["otb100"]
+	c := conns["otvb100"]
 	feedDiscover(t, c, res.MAC)
 	waitSend(t, c)
 	if got := len(c.recordedSends()); got != 1 {

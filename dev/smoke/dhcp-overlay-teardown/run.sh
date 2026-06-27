@@ -12,12 +12,12 @@
 # (DeregisterNetwork -> stopServer -> <-done) hung and permanently darkened ALL
 # network reconciliation on that agent. The user-visible symptom was that after
 # a few create/delete cycles a fresh `network create` never materialised
-# (status.nodes stayed []), and the otb<vni> bridge never appeared.
+# (status.nodes stayed []), and the otvb<vni> bridge never appeared.
 #
 # What it proves, end to end, as a real operator (CLI + manifest):
 #   - `otherix create -f` a dhcp overlay -> it reconciles ready on BOTH nodes and
-#     the otb<vni> bridge materialises (the DHCP responder socket is open);
-#   - `otherix network delete` -> the otb<vni> bridge is torn down on both nodes;
+#     the otvb<vni> bridge materialises (the DHCP responder socket is open);
+#   - `otherix network delete` -> the otvb<vni> bridge is torn down on both nodes;
 #   - repeated across several cycles, then a final create still reconciles ready.
 #     On the pre-fix agent the FIRST delete wedges the reconciler, so the next
 #     create's wait-ready (and bridge-present check) times out -> the smoke fails.
@@ -42,7 +42,7 @@ NODE2="node-2"
 NET="dhcp-teardown"                       # must match metadata.name in the manifest
 CYCLES="${CYCLES:-3}"                      # create/delete repetitions before the final create
 READY_TIMEOUT="${READY_TIMEOUT:-90}"      # seconds to wait for per-node reconcile -> ready
-GONE_TIMEOUT="${GONE_TIMEOUT:-90}"        # seconds to wait for the otb<vni> bridge to disappear
+GONE_TIMEOUT="${GONE_TIMEOUT:-90}"        # seconds to wait for the otvb<vni> bridge to disappear
 
 # --- helpers -----------------------------------------------------------
 RED=$'\033[31m'; GREEN=$'\033[32m'; YEL=$'\033[33m'; NC=$'\033[0m'
@@ -111,7 +111,7 @@ pass "CP up, both nodes ready"
 
 # --- repeated create/delete cycles -------------------------------------
 # Each cycle: create the dhcp overlay, prove it reconciled ready on both nodes
-# AND the otb<vni> bridge (hence the open, parked DHCP responder socket) exists,
+# AND the otvb<vni> bridge (hence the open, parked DHCP responder socket) exists,
 # then delete it and prove the bridge is torn down on both nodes. A wedge on any
 # delete shows up as a timeout on the NEXT cycle's create.
 for (( i = 1; i <= CYCLES; i++ )); do

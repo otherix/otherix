@@ -54,7 +54,7 @@ func (f *linuxFabric) EnableIPForwarding() error {
 // the per-interface IPv4 sysctl tree. Used to contain the anycast gateway's
 // shared link-local address to its own bridge.
 func writeIfaceSysctl(iface, key, value string) error {
-	// iface is an Otherix-managed bridge name (otb<vni>), and key is a fixed
+	// iface is an Otherix-managed bridge name (otvb<vni>), and key is a fixed
 	// procfs leaf - not user input.
 	path := "/proc/sys/net/ipv4/conf/" + iface + "/" + key //nolint:gosec // G304: fixed procfs path, Otherix-owned iface name
 	// 0o600: procfs ignores the mode (the file pre-exists); gosec G306 wants <=0o600.

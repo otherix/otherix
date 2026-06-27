@@ -22,7 +22,7 @@ func vni(n int32) *int32 { return &n }
 func overlayNet() heartbeat.DeclaredNetwork {
 	return heartbeat.DeclaredNetwork{
 		ID: "ov1", Name: "ov", Type: "overlay", Managed: true,
-		BridgeName: "otb1000", Mtu: 1390, VNI: vni(1000),
+		BridgeName: "otvb1000", Mtu: 1390, VNI: vni(1000),
 	}
 }
 
@@ -95,14 +95,14 @@ func TestApplyOverlayReadyMaterializes(t *testing.T) {
 	if rep.ReconciliationStatus != "ready" {
 		t.Fatalf("status = %q, want ready", rep.ReconciliationStatus)
 	}
-	if len(f.EnsureBridgeCalls) != 1 || f.EnsureBridgeCalls[0] != (netfabric.BridgeCall{Name: "otb1000", MTU: 1390}) {
-		t.Errorf("EnsureBridgeCalls = %+v, want [{otb1000 1390}]", f.EnsureBridgeCalls)
+	if len(f.EnsureBridgeCalls) != 1 || f.EnsureBridgeCalls[0] != (netfabric.BridgeCall{Name: "otvb1000", MTU: 1390}) {
+		t.Errorf("EnsureBridgeCalls = %+v, want [{otvb1000 1390}]", f.EnsureBridgeCalls)
 	}
 	if len(f.EnsureVXLANCalls) != 1 {
 		t.Fatalf("EnsureVXLANCalls = %d, want 1", len(f.EnsureVXLANCalls))
 	}
 	got := f.EnsureVXLANCalls[0]
-	want := netfabric.VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("10.42.0.5"), Port: 4789, MTU: 1390, Master: "otb1000"}
+	want := netfabric.VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("10.42.0.5"), Port: 4789, MTU: 1390, Master: "otvb1000"}
 	if got != want {
 		t.Errorf("EnsureVXLAN cfg = %+v, want %+v", got, want)
 	}
@@ -129,8 +129,8 @@ func TestApplyOverlayTeardownOnUndeclare(t *testing.T) {
 	if len(f.RemoveVXLANCalls) != 1 || f.RemoveVXLANCalls[0] != 1000 {
 		t.Errorf("RemoveVXLANCalls = %v, want [1000]", f.RemoveVXLANCalls)
 	}
-	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otb1000" {
-		t.Errorf("RemoveBridgeCalls = %v, want [otb1000]", f.RemoveBridgeCalls)
+	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otvb1000" {
+		t.Errorf("RemoveBridgeCalls = %v, want [otvb1000]", f.RemoveBridgeCalls)
 	}
 }
 
@@ -138,7 +138,7 @@ func TestApplyOverlayTeardownOnUndeclare(t *testing.T) {
 // guarantee, mirroring applyManaged's EnsureBridge-ok-but-NAT-failed case: when
 // EnsureBridge SUCCEEDS but EnsureVXLAN persistently FAILS, the network must still
 // be recorded in r.applied so a later CP-side delete (while the VTEP is still
-// failing) tears the orphaned otb<vni> bridge down. Without the early record the
+// failing) tears the orphaned otvb<vni> bridge down. Without the early record the
 // bridge orphans on the host with no GC (r.applied is in-process only).
 func TestApplyOverlayTeardownAfterEnsureVXLANFailed(t *testing.T) {
 	f := &netfabric.FakeFabric{
@@ -177,8 +177,8 @@ func TestApplyOverlayTeardownAfterEnsureVXLANFailed(t *testing.T) {
 	if !ok {
 		t.Fatalf("ov1 absent from r.applied after EnsureBridge-ok/EnsureVXLAN-failed; bridge would orphan on a later CP delete")
 	}
-	if a.BridgeName != "otb1000" || !a.Overlay || a.VNI != 1000 {
-		t.Errorf("applied[ov1] = %+v, want {BridgeName:otb1000 Overlay:true VNI:1000}", a)
+	if a.BridgeName != "otvb1000" || !a.Overlay || a.VNI != 1000 {
+		t.Errorf("applied[ov1] = %+v, want {BridgeName:otvb1000 Overlay:true VNI:1000}", a)
 	}
 
 	// Now undeclare the network (VXLAN still failing). teardownManaged must run
@@ -186,8 +186,8 @@ func TestApplyOverlayTeardownAfterEnsureVXLANFailed(t *testing.T) {
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
 	rec.reconcile(context.Background())
 
-	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otb1000" {
-		t.Errorf("RemoveBridgeCalls = %v, want [otb1000] (orphaned bridge torn down on undeclare)", f.RemoveBridgeCalls)
+	if len(f.RemoveBridgeCalls) != 1 || f.RemoveBridgeCalls[0] != "otvb1000" {
+		t.Errorf("RemoveBridgeCalls = %v, want [otvb1000] (orphaned bridge torn down on undeclare)", f.RemoveBridgeCalls)
 	}
 	if len(f.RemoveVXLANCalls) != 1 || f.RemoveVXLANCalls[0] != 1000 {
 		t.Errorf("RemoveVXLANCalls = %v, want [1000]", f.RemoveVXLANCalls)

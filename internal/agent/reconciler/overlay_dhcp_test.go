@@ -61,8 +61,8 @@ func TestApplyOverlayEgressRegistersDHCP(t *testing.T) {
 	if cfg.NetworkID != "ov1" {
 		t.Errorf("NetworkID = %q, want ov1", cfg.NetworkID)
 	}
-	if cfg.Bridge != "otb1000" {
-		t.Errorf("Bridge = %q, want otb1000", cfg.Bridge)
+	if cfg.Bridge != "otvb1000" {
+		t.Errorf("Bridge = %q, want otvb1000", cfg.Bridge)
 	}
 	if cfg.Subnet.String() != "10.62.0.0/24" {
 		t.Errorf("Subnet = %v, want 10.62.0.0/24", cfg.Subnet)
@@ -116,8 +116,8 @@ func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
 	}
 	// L3 services: anycast gateway must be installed so the DNS forwarder's
 	// replies are routed back to the VM.
-	if len(f.AnycastGatewayCalls) != 1 || f.AnycastGatewayCalls[0].Bridge != "otb1000" {
-		t.Errorf("AnycastGatewayCalls = %+v, want one for otb1000", f.AnycastGatewayCalls)
+	if len(f.AnycastGatewayCalls) != 1 || f.AnycastGatewayCalls[0].Bridge != "otvb1000" {
+		t.Errorf("AnycastGatewayCalls = %+v, want one for otvb1000", f.AnycastGatewayCalls)
 	}
 	// No NAT without egress.
 	if len(f.MasqueradeIfaceCalls) != 0 {

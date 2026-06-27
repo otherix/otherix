@@ -46,7 +46,7 @@ NODE1="node-1"
 NODE2="node-2"
 
 NET="bridge-dns-false"           # managed bridge, dhcp on + dns OFF + nat egress
-BRIDGE_NAME="smkbr1"             # Linux ifname, <= 15 chars (otb*/otvx*/otwg* are reserved)
+BRIDGE_NAME="smkbr1"             # Linux ifname, <= 15 chars (otvb*/otvx*/otwg* are reserved)
 SUBNET="10.89.0.0/24"            # unlikely to clash with the dev stack
 VM="bridge-dns-false-vm"
 

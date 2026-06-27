@@ -195,7 +195,7 @@ deterministic names:
 
 | Device | Name | Notes |
 |---|---|---|
-| Bridge (overlay) | `otb<vni>` | e.g. `otb1000` for VNI 1000 |
+| Bridge (overlay) | `otvb<vni>` | e.g. `otvb1000` for VNI 1000 |
 | VXLAN VTEP | `otvx<vni>` | the tunnel endpoint, e.g. `otvx1000` |
 | WireGuard interface | `otwg0` | one interface carries all overlay peers |
 | VM tap | `ot<12hex>` | `ot` + the first 12 hex digits of the NIC id |

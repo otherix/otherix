@@ -53,7 +53,7 @@ NODE1="node-1"
 NODE2="node-2"
 
 NET="bridge-dhcp"                  # managed bridge, dhcp + dns + nat egress
-BRIDGE_NAME="smkbr0"             # Linux ifname, <= 15 chars (otb*/otvx*/otwg* are reserved)
+BRIDGE_NAME="smkbr0"             # Linux ifname, <= 15 chars (otvb*/otvx*/otwg* are reserved)
 SUBNET="10.88.0.0/24"            # unlikely to clash with the dev stack
 VM="bridge-dhcp-vm"
 

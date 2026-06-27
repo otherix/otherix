@@ -463,7 +463,7 @@ func TestNetworkList_Table(t *testing.T) {
 func TestNetworkList_CIDRColumn(t *testing.T) {
 	t.Parallel()
 	withSubnet := map[string]any{
-		"id": uuid.NewString(), "name": "ov-net", "type": "overlay", "bridge_name": "otb1000",
+		"id": uuid.NewString(), "name": "ov-net", "type": "overlay", "bridge_name": "otvb1000",
 		"managed": true, "egress": "nat", "vlan_tag": nil, "mtu": 1390,
 		"subnet": "10.62.0.0/24", "gateway": nil, "config": map[string]any{},
 		"created_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",

@@ -66,7 +66,7 @@ func TestMigrationNicsFromVM(t *testing.T) {
 				DeviceOrder: 0,
 				Ipv4Address: mustParseAddr(t, "10.42.0.5"),
 			},
-			Network: store.Network{BridgeName: "otb100", Mtu: 1390},
+			Network: store.Network{BridgeName: "otvb100", Mtu: 1390},
 		},
 		{
 			Nic: store.VMNic{
@@ -84,9 +84,9 @@ func TestMigrationNicsFromVM(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
 	}
-	if got[0].BridgeName != "otb100" || got[0].MacAddress != "52:54:00:00:00:01" ||
+	if got[0].BridgeName != "otvb100" || got[0].MacAddress != "52:54:00:00:00:01" ||
 		got[0].Model != agentapi.MigrationNicModelVirtio || got[0].DeviceOrder != 0 {
-		t.Errorf("nic0 = %+v, want bridge otb100 mac ...01 virtio order 0", got[0])
+		t.Errorf("nic0 = %+v, want bridge otvb100 mac ...01 virtio order 0", got[0])
 	}
 	if got[0].Mtu == nil || *got[0].Mtu != 1390 {
 		t.Errorf("nic0 mtu = %v, want 1390", got[0].Mtu)
@@ -865,7 +865,7 @@ func TestPlaceAndBindRefusesNetworkUnreadyTarget(t *testing.T) {
 	// The VM has a NIC on bridge network N. nodeB's per-(node, network) status for
 	// N is NOT ready (pending) -> the network filter must exclude nodeB, the only
 	// candidate (nodeA is the excluded source).
-	net := seedBridgeNetwork(t, s, "br-net", "otb0")
+	net := seedBridgeNetwork(t, s, "br-net", "otvb0")
 	seedVMNic(t, cli, vm.ID, net.ID, "52:54:00:00:00:01")
 	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
 		NetworkID: net.ID, NodeID: nodeB.ID, ReconciliationStatus: "pending",

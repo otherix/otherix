@@ -19,7 +19,7 @@ import (
 const vxlanUDPPort = 4789
 
 // applyOverlay materialises one type=overlay network fail-closed. It brings up
-// the otb<vni> bridge and the otvx<vni> VXLAN VTEP bound to this node's otwg0
+// the otvb<vni> bridge and the otvx<vni> VXLAN VTEP bound to this node's otwg0
 // overlay IP, enslaving the VTEP into the bridge. It is a no-op (pending) until
 // otwg0 is up AND carries exactly the heartbeat-declared self_overlay_ip - the
 // identity-check gate that stops a VTEP from binding the wrong source address.
@@ -61,7 +61,7 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	// the VTEP step that may still fail. Without this an EnsureBridge-ok-but-
 	// EnsureVXLAN-failed overlay is absent from r.applied, so a later CP-side
 	// delete (while EnsureVXLAN is still failing) makes removeUndeclared skip it
-	// and the otb<vni> bridge orphans with no GC (r.applied is in-process only).
+	// and the otvb<vni> bridge orphans with no GC (r.applied is in-process only).
 	// Recording the VNI now is safe: teardownManaged's RemoveVXLAN is idempotent
 	// (nil on an absent VTEP), so it no-ops while the bridge is still removed.
 	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}

@@ -3,7 +3,7 @@
 #
 # A dhcp-enabled overlay network (type=overlay + egress=nat + subnet +
 # dhcp=true) with NO VM. Creating it opens a per-node DHCP responder socket on
-# the otb<vni> bridge; with no VM the bridge is quiet, so the responder's recv
+# the otvb<vni> bridge; with no VM the bridge is quiet, so the responder's recv
 # parks immediately. Deleting it deregisters that responder - the exact path
 # that used to wedge the agent network reconciler. The dhcp-overlay-teardown
 # smoke applies/deletes this repeatedly and asserts reconciliation keeps working.

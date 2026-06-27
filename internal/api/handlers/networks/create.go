@@ -265,7 +265,7 @@ func validateOverlayCreate(req *createRequest) error {
 		return errors.New("subnet is required for type=overlay")
 	}
 	if req.BridgeName != "" {
-		return errors.New("bridge_name is forbidden for type=overlay (the server derives otb<vni>)")
+		return errors.New("bridge_name is forbidden for type=overlay (the server derives otvb<vni>)")
 	}
 	if req.MTU != nil {
 		return errors.New("mtu is forbidden for type=overlay (fixed at 1390)")

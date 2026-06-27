@@ -58,8 +58,8 @@ func TestApplyOverlayEgressInstallsGatewayAndMasq(t *testing.T) {
 		t.Fatalf("AnycastGatewayCalls = %d, want 1", len(f.AnycastGatewayCalls))
 	}
 	gw := f.AnycastGatewayCalls[0]
-	if gw.Bridge != "otb1000" {
-		t.Errorf("anycast gateway bridge = %q, want otb1000", gw.Bridge)
+	if gw.Bridge != "otvb1000" {
+		t.Errorf("anycast gateway bridge = %q, want otvb1000", gw.Bridge)
 	}
 	if gw.Addr != netfabric.OverlayGatewayAddr {
 		t.Errorf("anycast gateway addr = %v, want %v", gw.Addr, netfabric.OverlayGatewayAddr)
@@ -67,8 +67,8 @@ func TestApplyOverlayEgressInstallsGatewayAndMasq(t *testing.T) {
 	if want := netfabric.GatewayMAC(1000).String(); gw.MAC != want {
 		t.Errorf("anycast gateway MAC = %q, want %q", gw.MAC, want)
 	}
-	if len(f.MasqueradeIfaceCalls) != 1 || f.MasqueradeIfaceCalls[0].InIface != "otb1000" {
-		t.Errorf("MasqueradeIfaceCalls = %+v, want one for otb1000", f.MasqueradeIfaceCalls)
+	if len(f.MasqueradeIfaceCalls) != 1 || f.MasqueradeIfaceCalls[0].InIface != "otvb1000" {
+		t.Errorf("MasqueradeIfaceCalls = %+v, want one for otvb1000", f.MasqueradeIfaceCalls)
 	}
 	if !rec.applied["ov1"].HasEgress {
 		t.Errorf("applied[ov1].HasEgress = false, want true")
@@ -95,8 +95,8 @@ func TestApplyOverlayEgressInstallsSubnetRoute(t *testing.T) {
 		t.Fatalf("BridgeRouteCalls = %d, want 1 (overlay subnet route for return traffic)", len(f.BridgeRouteCalls))
 	}
 	got := f.BridgeRouteCalls[0]
-	if got.Bridge != "otb1000" || got.Subnet.String() != "10.62.0.0/24" {
-		t.Errorf("BridgeRouteCall = %+v, want {10.62.0.0/24 otb1000}", got)
+	if got.Bridge != "otvb1000" || got.Subnet.String() != "10.62.0.0/24" {
+		t.Errorf("BridgeRouteCall = %+v, want {10.62.0.0/24 otvb1000}", got)
 	}
 }
 
@@ -182,8 +182,8 @@ func TestApplyOverlayEgressTeardownRemovesMasq(t *testing.T) {
 	// CP deletes the network: empty declared set.
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &ip})
 	rec.reconcile(context.Background()) // teardown
-	if len(f.RemoveMasqIfaceCalls) != 1 || f.RemoveMasqIfaceCalls[0] != "otb1000" {
-		t.Errorf("RemoveMasqIfaceCalls = %v, want [otb1000]", f.RemoveMasqIfaceCalls)
+	if len(f.RemoveMasqIfaceCalls) != 1 || f.RemoveMasqIfaceCalls[0] != "otvb1000" {
+		t.Errorf("RemoveMasqIfaceCalls = %v, want [otvb1000]", f.RemoveMasqIfaceCalls)
 	}
 	if len(f.RemoveVXLANCalls) != 1 || len(f.RemoveBridgeCalls) != 1 {
 		t.Errorf("overlay not fully torn down: vxlan=%v bridge=%v", f.RemoveVXLANCalls, f.RemoveBridgeCalls)

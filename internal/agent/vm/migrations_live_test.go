@@ -811,7 +811,7 @@ func TestStartIncomingLiveMaterializesNICs(t *testing.T) {
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
 		NICs: []netfabric.NIC{{
-			ID: uuid.New(), Bridge: "otb100", MAC: "52:54:00:00:00:01",
+			ID: uuid.New(), Bridge: "otvb100", MAC: "52:54:00:00:00:01",
 			Model: "virtio", MTU: 1390, DeviceOrder: 0,
 			IPv4: netip.MustParseAddr("10.42.0.5"),
 		}},
@@ -824,8 +824,8 @@ func TestStartIncomingLiveMaterializesNICs(t *testing.T) {
 	if got := len(fab.CreateTapCalls); got != 1 {
 		t.Errorf("created taps = %d, want 1 (migrated NIC not materialized)", got)
 	}
-	if len(fab.AttachTapCalls) != 1 || fab.AttachTapCalls[0].Bridge != "otb100" {
-		t.Errorf("attached bridges = %v, want one attach to otb100", fab.AttachTapCalls)
+	if len(fab.AttachTapCalls) != 1 || fab.AttachTapCalls[0].Bridge != "otvb100" {
+		t.Errorf("attached bridges = %v, want one attach to otvb100", fab.AttachTapCalls)
 	}
 }
 
@@ -855,7 +855,7 @@ func TestRunIncomingResumeSendsGARP(t *testing.T) {
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
 		NICs: []netfabric.NIC{{
-			ID: uuid.New(), Bridge: "otb100", MAC: "52:54:00:00:00:01",
+			ID: uuid.New(), Bridge: "otvb100", MAC: "52:54:00:00:00:01",
 			Model: "virtio", MTU: 1390, DeviceOrder: 0,
 			IPv4: netip.MustParseAddr("10.42.0.5"),
 		}},
@@ -874,8 +874,8 @@ func TestRunIncomingResumeSendsGARP(t *testing.T) {
 		t.Fatalf("GARPs sent = %d, want 1", len(calls))
 	}
 	got := calls[0]
-	if got.Bridge != "otb100" || got.MAC != "52:54:00:00:00:01" || got.IP != netip.MustParseAddr("10.42.0.5") {
-		t.Errorf("SendGARP call = %+v, want bridge=otb100 mac=52:54:00:00:00:01 ip=10.42.0.5", got)
+	if got.Bridge != "otvb100" || got.MAC != "52:54:00:00:00:01" || got.IP != netip.MustParseAddr("10.42.0.5") {
+		t.Errorf("SendGARP call = %+v, want bridge=otvb100 mac=52:54:00:00:00:01 ip=10.42.0.5", got)
 	}
 }
 
@@ -923,7 +923,7 @@ func TestRunIncomingResumeAnnouncesSelf(t *testing.T) {
 		SourceIdentity: "CN=node-src",
 		BindHost:       "10.0.0.2",
 		NICs: []netfabric.NIC{{
-			ID: uuid.New(), Bridge: "otb100", MAC: "52:54:00:00:00:01",
+			ID: uuid.New(), Bridge: "otvb100", MAC: "52:54:00:00:00:01",
 			Model: "virtio", MTU: 1390, DeviceOrder: 0,
 			IPv4: netip.MustParseAddr("10.42.0.5"),
 		}},

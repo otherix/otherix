@@ -223,10 +223,10 @@ func TestLinuxFabricVXLANRecoverFromDownAfterEnslave(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
 		bringLoopbackUp(t)
-		if err := f.EnsureBridge("otb1000", 1390); err != nil {
+		if err := f.EnsureBridge("otvb1000", 1390); err != nil {
 			t.Fatalf("EnsureBridge = %v", err)
 		}
-		cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390, Master: "otb1000"}
+		cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390, Master: "otvb1000"}
 		if err := f.EnsureVXLAN(cfg); err != nil {
 			t.Fatalf("EnsureVXLAN(master) = %v", err)
 		}
@@ -297,16 +297,16 @@ func TestLinuxFabricVXLANEnslave(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
 		bringLoopbackUp(t)
-		if err := f.EnsureBridge("otb1000", 1390); err != nil {
+		if err := f.EnsureBridge("otvb1000", 1390); err != nil {
 			t.Fatalf("EnsureBridge = %v", err)
 		}
-		cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390, Master: "otb1000"}
+		cfg := VXLANConfig{VNI: 1000, Local: netip.MustParseAddr("127.0.0.1"), Port: 4789, MTU: 1390, Master: "otvb1000"}
 		if err := f.EnsureVXLAN(cfg); err != nil {
 			t.Fatalf("EnsureVXLAN(master) = %v", err)
 		}
-		br, err := netlink.LinkByName("otb1000")
+		br, err := netlink.LinkByName("otvb1000")
 		if err != nil {
-			t.Fatalf("LinkByName(otb1000) = %v", err)
+			t.Fatalf("LinkByName(otvb1000) = %v", err)
 		}
 		vtep, err := netlink.LinkByName("otvx1000")
 		if err != nil {
@@ -1543,20 +1543,20 @@ func TestLinuxFabricLinkState(t *testing.T) {
 	withNetNS(t, func() {
 		f := New()
 		// Absent link -> zero LinkState, nil error.
-		st, err := f.LinkState("otb1000")
+		st, err := f.LinkState("otvb1000")
 		if err != nil || st.Up {
 			t.Fatalf("LinkState(absent) = (%+v, %v), want (zero, nil)", st, err)
 		}
 		// Create a bridge with a known MTU + address and read it back.
-		if err := f.EnsureBridge("otb1000", 1390); err != nil {
+		if err := f.EnsureBridge("otvb1000", 1390); err != nil {
 			t.Fatalf("EnsureBridge = %v", err)
 		}
-		if err := f.EnsureGatewayAddr("otb1000", netip.MustParsePrefix("10.52.0.1/24")); err != nil {
+		if err := f.EnsureGatewayAddr("otvb1000", netip.MustParsePrefix("10.52.0.1/24")); err != nil {
 			t.Fatalf("EnsureGatewayAddr = %v", err)
 		}
-		st, err = f.LinkState("otb1000")
+		st, err = f.LinkState("otvb1000")
 		if err != nil {
-			t.Fatalf("LinkState(otb1000) = %v", err)
+			t.Fatalf("LinkState(otvb1000) = %v", err)
 		}
 		if !st.Up {
 			t.Errorf("Up = false, want true")
