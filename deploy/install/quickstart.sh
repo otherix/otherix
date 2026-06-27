@@ -159,6 +159,11 @@ else
 	# generated (every step below is idempotent, so a re-run converges).
 	ADMIN_PASS="$(awk -F= '/^OTHERIX_BOOTSTRAP_ADMIN_PASSWORD=/{print substr($0, index($0,"=")+1); exit}' /etc/otherix/api.env 2>/dev/null || true)"
 	[ -n "$ADMIN_PASS" ] || die "host already bootstrapped but the admin password is no longer in /etc/otherix/api.env (removed post-login); cannot resume - drive the cluster with the otherix CLI directly"
+	# Cover the narrow window where the first run wrote the creds + sentinel but
+	# died before restarting the api: an idempotent restart here guarantees the
+	# api started with OTHERIX_BOOTSTRAP_ADMIN_* in its environment so
+	# BootstrapAdmin actually created the admin.
+	systemctl restart otherix-api.service >/dev/null 2>&1 || true
 fi
 
 # ---- 3. wait for the control plane -------------------------------------
