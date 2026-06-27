@@ -10,9 +10,10 @@ import (
 )
 
 // TestOwnerLabel covers the owner-identifier fallback: the display_name
-// is used when set, otherwise the email (so a user without a display
-// name - e.g. the bootstrap admin - still resolves to a non-empty
-// label rather than a blank owner field).
+// is used when set, otherwise the username (always present, so a user
+// without a display name - e.g. the bootstrap admin - still resolves to
+// a non-empty label rather than a blank owner field). Email is optional
+// and is never used as a label, so it must not affect the result.
 func TestOwnerLabel(t *testing.T) {
 	cases := []struct {
 		name string
@@ -21,13 +22,18 @@ func TestOwnerLabel(t *testing.T) {
 	}{
 		{
 			name: "display_name set",
-			user: store.User{DisplayName: "Ada Lovelace", Email: "ada@example.test"},
+			user: store.User{DisplayName: "Ada Lovelace", Username: "ada", Email: "ada@example.test"},
 			want: "Ada Lovelace",
 		},
 		{
-			name: "empty display_name falls back to email",
-			user: store.User{DisplayName: "", Email: "admin@otherix.local"},
-			want: "admin@otherix.local",
+			name: "empty display_name falls back to username",
+			user: store.User{DisplayName: "", Username: "admin", Email: "admin@otherix.local"},
+			want: "admin",
+		},
+		{
+			name: "no display_name and no email falls back to username",
+			user: store.User{DisplayName: "", Username: "admin", Email: ""},
+			want: "admin",
 		},
 	}
 	for _, tc := range cases {
