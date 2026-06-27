@@ -11,7 +11,7 @@ import (
 // LoginRequest is the body of POST /v1/auth/login. Mirrors
 // loginRequest in internal/api/handlers/auth.
 type LoginRequest struct {
-	Email    string `json:"email"`
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
@@ -26,7 +26,7 @@ type LoginResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 }
 
-// Login exchanges email + password for an access / refresh pair.
+// Login exchanges username + password for an access / refresh pair.
 // May be called on an anonymous Client (NewAnonymous); the
 // returned access token is the input to WithToken for the second
 // hop (CreateAPIToken).
