@@ -85,6 +85,12 @@ func handToServiceUser(paths ...string) error {
 // service state root) and whether cert material should be handed to it. ok is
 // false when the parent is root-owned (a dev / non-package layout where there
 // is no separate service user to hand off to).
+//
+// The target owner is trusted from the filesystem rather than hard-coded, so it
+// generalizes to custom --cert-dir / non-package layouts. A host where the state
+// root is owned by an attacker-controlled uid would hand the key to it - but
+// chowning that 0750 directory already requires root, so such a host is root
+// compromised and the key is readable regardless; this adds no new capability.
 func resolveServiceOwner(certDir string) (uid, gid int, ok bool, err error) {
 	parent := filepath.Dir(certDir)
 	fi, statErr := os.Stat(parent)
