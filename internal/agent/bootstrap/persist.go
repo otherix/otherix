@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Persist writes the bootstrap result to disk atomically, in the order
@@ -40,7 +41,71 @@ func Persist(certPath, keyPath, caPath string, result *Result) error {
 	if err := writeFileAtomic(caPath, result.CACertPEM, 0o644); err != nil {
 		return fmt.Errorf("write ca %s: %v", caPath, err)
 	}
+	if err := handToServiceUser(keyPath, certPath, caPath); err != nil {
+		return fmt.Errorf("hand cert material to service user: %v", err)
+	}
 	return nil
+}
+
+// handToServiceUser hands the freshly-written cert material to the user that
+// owns the state directory it lives in. bootstrap is normally run as root
+// (operators invoke `sudo otherix-agent bootstrap`), but the agent service runs
+// as an unprivileged, dedicated user (the package's `otherix`). Without this,
+// the service cannot read its own 0600 key or traverse the 0750 cert dir, and
+// stays stuck waiting for cert material.
+//
+// The target owner is derived from the cert dir's parent - the package creates
+// the state root (/var/lib/otherix) owned by the service user - so there is no
+// hard-coded username. It is a deliberate no-op when not running as root (a
+// dev / non-package run already creates files as the right user) or when that
+// parent is itself root-owned (nothing to hand off).
+func handToServiceUser(paths ...string) error {
+	if os.Geteuid() != 0 || len(paths) == 0 {
+		return nil
+	}
+	dir := filepath.Dir(paths[0])
+	uid, gid, ok, err := resolveServiceOwner(dir)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	// Chown the directory and each file. Lchown does not follow symlinks -
+	// defense in depth, though the cert dir is not world-writable.
+	for _, p := range append([]string{dir}, paths...) {
+		if err := os.Lchown(p, uid, gid); err != nil {
+			return fmt.Errorf("chown %s to %d:%d: %v", p, uid, gid, err)
+		}
+	}
+	return nil
+}
+
+// resolveServiceOwner returns the uid/gid that owns certDir's parent (the
+// service state root) and whether cert material should be handed to it. ok is
+// false when the parent is root-owned (a dev / non-package layout where there
+// is no separate service user to hand off to).
+//
+// The target owner is trusted from the filesystem rather than hard-coded, so it
+// generalizes to custom --cert-dir / non-package layouts. A host where the state
+// root is owned by an attacker-controlled uid would hand the key to it - but
+// chowning that 0750 directory already requires root, so such a host is root
+// compromised and the key is readable regardless; this adds no new capability.
+func resolveServiceOwner(certDir string) (uid, gid int, ok bool, err error) {
+	parent := filepath.Dir(certDir)
+	fi, statErr := os.Stat(parent)
+	if statErr != nil {
+		return 0, 0, false, fmt.Errorf("stat state dir %s: %v", parent, statErr)
+	}
+	st, isUnix := fi.Sys().(*syscall.Stat_t)
+	if !isUnix {
+		return 0, 0, false, nil
+	}
+	uid, gid = int(st.Uid), int(st.Gid)
+	if uid == 0 && gid == 0 {
+		return 0, 0, false, nil
+	}
+	return uid, gid, true, nil
 }
 
 // writeFileAtomic writes content to path through a tempfile + rename
