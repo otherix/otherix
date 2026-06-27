@@ -40,6 +40,11 @@ The named network must be a bridge network. There is no automatic default: the
 reference is operator-set, and clearing it (`otherix cluster
 unset-default-network`) means a VM created without `--network` has no NIC.
 
+Deleting the network that is set as the default does not clear the reference. The
+pointer simply dangles: a VM created without `--network` is then admitted but
+stays pending with a `network_not_found` reason until you set a new default (or
+pass `--network` explicitly). Existing VMs are unaffected.
+
 ## Overlay networks
 
 An overlay network gives VMs on different nodes a single L2 segment. Each overlay
