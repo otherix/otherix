@@ -99,6 +99,11 @@ var (
 	// status is not ready or cordoned.
 	ErrNodeNotDrainable = errors.New("store: node not drainable")
 
+	// ErrSSHGrantNameExists is returned by CreateSSHGrant when a live grant
+	// already owns the (case-insensitive) name: the name guard key is present,
+	// so a second create for the same name loses the create CAS.
+	ErrSSHGrantNameExists = errors.New("store: ssh grant name already in use")
+
 	ErrAgentWireguardPubkeyInUse = errors.New("store: wireguard public key already in use by another node")
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
