@@ -72,6 +72,7 @@ type RouterDeps struct {
 	PressureDisk        config.PressureConditionConfig
 	VMLifecycle         vmshandlers.LifecycleDeps // sync pause/resume/reset agentclient
 	VMConsole           vmshandlers.ConsoleDeps   // console token issuance + proxy relay
+	SSHCertTTL          time.Duration             // guest SSH user-cert validity; 0 falls back to vmshandlers.defaultGuestCertTTL
 	ClusterMembership   ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
 	MaxConcurrentDrains int                       // cap on simultaneous node drains; 0 falls back to config.DefaultMaxConcurrentDrains in the nodes handler
 }
@@ -132,8 +133,14 @@ func NewRouter(deps RouterDeps) http.Handler {
 	// stream is not killed at 30 s.
 	if deps.AuthService != nil && deps.Store != nil {
 		streamingVMs := vmshandlers.New(deps.Store, deps.Logger,
-			deps.VMLifecycle, deps.VMConsole)
+			deps.VMLifecycle, deps.VMConsole,
+			vmshandlers.SSHDeps{Verifier: deps.AuthService, CertTTL: deps.SSHCertTTL})
 		r.Get("/v1/vms/{id}/console-stream", streamingVMs.ConsoleStream)
+		// ssh-cert is mounted OUTSIDE the Authn group (like console-stream):
+		// it must accept an SSH-grant token, which is not an Authn principal,
+		// and structurally guarantee a grant token reaches nothing else. The
+		// handler reads the bearer itself and dual-dispatches grant vs CLI.
+		r.Post("/v1/vms/{id}/ssh-cert", streamingVMs.IssueSSHCert)
 
 		streamAuthn := middleware.Authn(deps.AuthService)
 		r.Group(func(r chi.Router) {
@@ -197,7 +204,9 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	clusterMembersH := clustermembershandlers.New(deps.ClusterMembership, deps.Logger)
 	firmwaresH := firmwareshandlers.New(deps.Store, deps.Logger)
 	tasksH := taskshandlers.New(deps.Store, deps.Logger)
-	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.VMLifecycle, deps.VMConsole)
+	// The authenticated /v1/vms group does not serve ssh-cert (mounted
+	// outside Authn above), so it carries a zero SSHDeps.
+	vmsH := vmshandlers.New(deps.Store, deps.Logger, deps.VMLifecycle, deps.VMConsole, vmshandlers.SSHDeps{})
 	// The sync-lifecycle agent client (production: *agentclient.Client) also
 	// satisfies the migrations cancel seam; assert to it so a CP-side cancel
 	// best-effort propagates to the source + target agents. A nil / non-matching

@@ -54,7 +54,8 @@ func consoleStreamHandler(s Store) *Handler {
 	return New(s,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LifecycleDeps{},
-		ConsoleDeps{AgentClient: consoleClientStub{}, AccessMode: "proxy"})
+		ConsoleDeps{AgentClient: consoleClientStub{}, AccessMode: "proxy"},
+		SSHDeps{})
 }
 
 // consoleStreamRequest builds a GET request carrying the chi route
@@ -350,7 +351,7 @@ func (c *recordingConsoleClient) HTTPClient() *http.Client {
 
 func newFollowHandler(s Store, c consoleClient) *Handler {
 	return New(s, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		LifecycleDeps{}, ConsoleDeps{AgentClient: c, AccessMode: "proxy"})
+		LifecycleDeps{}, ConsoleDeps{AgentClient: c, AccessMode: "proxy"}, SSHDeps{})
 }
 
 func cpConsoleServer(t *testing.T, h *Handler) *httptest.Server {

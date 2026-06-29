@@ -100,6 +100,16 @@ const (
 	// cluster has no default network configured.
 	CodeDefaultNetworkNotSet ErrorCode = "default_network_not_set"
 
+	// SSH guest-cert mint error codes (POST /v1/vms/{id}/ssh-cert).
+	// CodeSSHSessionRejected is the uniform anti-enumeration rejection: an
+	// unknown VM, an unauthorized caller, and a bad/expired/revoked grant
+	// all collapse to it so the endpoint leaks no VM existence.
+	// CodeSSHLoginNotAllowed is the one non-uniform case: a grant caller who
+	// already proved reach but requested a login other than the grant's
+	// pinned login (no oracle, the caller is already authorized).
+	CodeSSHSessionRejected ErrorCode = "ssh_session_rejected"
+	CodeSSHLoginNotAllowed ErrorCode = "ssh_login_not_allowed"
+
 	CodeInternal ErrorCode = "internal"
 )
 

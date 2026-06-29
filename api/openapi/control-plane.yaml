@@ -2754,6 +2754,86 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/vms/{id}/ssh-cert:
+    parameters:
+      - $ref: "#/components/parameters/VMName"
+    post:
+      operationId: vms.issueSSHCert
+      tags: [vms]
+      summary: Mint a short-lived guest SSH user-certificate (synchronous).
+      description: |
+        Signs the supplied SSH public key with the cluster SSH user-CA and
+        returns a short-lived (single-digit-minute) guest certificate the
+        caller presents to the VM's guest sshd. The certificate certifies a
+        single login (principal).
+
+        Two credentials are accepted on the bearer:
+        - a normal CLI credential (`bearerAuth` JWT or `apiKeyAuth` `otx_`
+          token) - the caller must hold `vm:ssh` and own the VM (scope
+          permitting); the certificate is minted for the requested `login`
+          after the control plane sanitizes it to a valid SSH principal
+          (`[a-z_][a-z0-9_-]*`, max 32 chars). There is no control-plane
+          login allow-list; the guest sshd is the sole authority for whether
+          it accepts the login.
+        - an SSH-grant token (`otx_sshgrant_*`) - the certificate is minted
+          for the grant's pinned login on this VM; a `login` contradicting
+          the pinned one is rejected with 403 `ssh_login_not_allowed`.
+
+        To avoid leaking VM existence, an unknown VM, an unauthorized caller,
+        and a bad/expired/revoked grant all collapse to the same 401
+        `ssh_session_rejected`.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [public_key]
+              properties:
+                public_key:
+                  type: string
+                  description: |
+                    The SSH public key to certify, in one-line
+                    authorized-keys form (e.g. `ssh-ed25519 AAAA...`).
+                login:
+                  type: string
+                  description: |
+                    Desired guest login (principal). On the CLI path it is
+                    sanitized to `[a-z_][a-z0-9_-]*` (max 32 chars); on the
+                    grant path it is ignored unless it contradicts the
+                    grant's pinned login.
+      responses:
+        "200":
+          description: Guest certificate issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMSSHCertResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: |
+            Uniform anti-enumeration rejection (`ssh_session_rejected`):
+            missing/garbage bearer, unknown VM, unauthorized caller, or a
+            bad / expired / revoked grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: |
+            The grant caller already proved reach to this VM but requested a
+            login other than the grant's pinned login
+            (`ssh_login_not_allowed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/vms/{id}/logs:
     parameters:
       - $ref: "#/components/parameters/VMName"
@@ -3990,6 +4070,8 @@ components:
         - artifact_pool_required
         - default_artifact_pool_not_set
         - default_network_not_set
+        - ssh_session_rejected
+        - ssh_login_not_allowed
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
@@ -7147,6 +7229,27 @@ components:
           type: string
           format: uuid
           description: The node the VM already runs on.
+
+    VMSSHCertResponse:
+      type: object
+      description: |
+        A freshly minted short-lived guest SSH user-certificate. The
+        caller presents `certificate` to the VM's guest sshd to log in as
+        `login` until `expires_at`.
+      required: [certificate, login, expires_at]
+      properties:
+        certificate:
+          type: string
+          description: |
+            The signed SSH user-certificate in one-line authorized-keys
+            form (`ssh-ed25519-cert-v01@openssh.com AAAA...`).
+        login:
+          type: string
+          description: The guest login (principal) the certificate certifies.
+        expires_at:
+          type: string
+          format: date-time
+          description: Certificate expiry (RFC 3339).
 
     VMConsoleResponse:
       type: object
