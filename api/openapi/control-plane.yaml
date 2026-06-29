@@ -63,6 +63,13 @@ tags:
       Live and offline VM migrations. Initiated via
       `POST /v1/vms/{id}/migrate`; the resulting migration is addressable
       as `/v1/migrations/{id}` for status polling and cancellation.
+  - name: ssh-grants
+    description: |
+      Revocable, per-person SSH access grants an external SSH-only user
+      presents at connect time. A grant is a top-level resource spanning
+      one or more VMs (each pinned to a guest login). The whole surface
+      is gated by `vm:ssh-grant`. The grant token is returned exactly
+      once on creation; the server stores only its hash.
   - name: tasks
     description: Async operations (scans, imports, clones, migrations).
   - name: cluster
@@ -1860,6 +1867,208 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/ssh-grants:
+    get:
+      operationId: sshGrants.list
+      tags: [ssh-grants]
+      summary: List SSH access grants.
+      description: |
+        **Required permission:** `vm:ssh-grant`. A developer (own-scoped)
+        sees only the grants they created; admin/operator see all. The
+        stored token hash is never surfaced.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: List of SSH grants.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHGrantList"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: sshGrants.create
+      tags: [ssh-grants]
+      summary: Create an SSH access grant.
+      description: |
+        **Required permission:** `vm:ssh-grant`. For a developer
+        (own-scoped) every referenced VM must be owned by the caller; a
+        visible-but-unowned VM yields `403 permission_denied`. The
+        plaintext token is returned exactly once in
+        `SSHGrantCreateResponse.token`; the server stores only its hash.
+
+        `409 conflict` covers a grant-name collision and idempotency-key
+        replay mismatch.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SSHGrantCreate"
+      responses:
+        "201":
+          description: Grant created; the plaintext token is returned once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHGrantCreateResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/ssh-grants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: sshGrants.get
+      tags: [ssh-grants]
+      summary: Get an SSH access grant by id.
+      description: |
+        **Required permission:** `vm:ssh-grant`. Ownership is checked
+        against the grant's creator; a grant invisible to the caller
+        returns `404 not_found`, shared with the genuinely-absent
+        envelope so existence is not leaked.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: SSH grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHGrant"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/ssh-grants/{id}/vms:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: sshGrants.addVM
+      tags: [ssh-grants]
+      summary: Add a VM to an SSH grant's scope.
+      description: |
+        **Required permission:** `vm:ssh-grant`. The caller must own the
+        grant (else `404`) and, when own-scoped, the VM being added (else
+        `403`). Adding an existing `vm_name` replaces its login.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SSHGrantVM"
+      responses:
+        "200":
+          description: Updated grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHGrant"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/ssh-grants/{id}/vms/{vm_name}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: vm_name
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      operationId: sshGrants.removeVM
+      tags: [ssh-grants]
+      summary: Remove a VM from an SSH grant's scope.
+      description: |
+        **Required permission:** `vm:ssh-grant`. The caller must own the
+        grant (else `404`). Removing a `vm_name` not in the grant is a
+        no-op. Returns the updated grant.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Updated grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHGrant"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/ssh-grants/{id}/revoke:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: sshGrants.revoke
+      tags: [ssh-grants]
+      summary: Revoke an SSH access grant.
+      description: |
+        **Required permission:** `vm:ssh-grant`. The caller must own the
+        grant (else `404`). Revoke flags the grant and keeps the row so a
+        connect attempt is rejected uniformly rather than leaking
+        revocation as not-found. Idempotent. Returns the updated grant.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Revoked grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHGrant"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /v1/vms:
@@ -4104,6 +4313,105 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ApiToken"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    SSHGrantVM:
+      type: object
+      description: |
+        One VM a grant authorizes, with the guest login the recipient
+        connects as. The login is recorded for convenience; the guest
+        sshd owns login policy.
+      required: [vm_name, login]
+      properties:
+        vm_name:
+          type: string
+          description: Name of a VM the grant authorizes SSH access to.
+        login:
+          type: string
+          description: Guest login the recipient connects as on this VM.
+
+    SSHGrant:
+      type: object
+      description: |
+        A revocable, per-person SSH access grant. The stored token hash is
+        never surfaced; the plaintext is returned only on creation via
+        SSHGrantCreateResponse.
+      required:
+        [id, name, recipient_label, created_by, vms, revoked, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        recipient_label:
+          type: string
+          description: Free-form label identifying the human recipient.
+        created_by:
+          type: string
+          format: uuid
+          description: User id that minted the grant.
+        vms:
+          type: array
+          items:
+            $ref: "#/components/schemas/SSHGrantVM"
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: Absolute expiry; null means the grant never expires.
+        revoked:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SSHGrantCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          description: Cluster-unique grant name (case-insensitive).
+        recipient_label:
+          type: string
+          description: Free-form label identifying the human recipient.
+        vms:
+          type: array
+          items:
+            $ref: "#/components/schemas/SSHGrantVM"
+          description: VMs the grant authorizes, each with a pinned login.
+        ttl:
+          type: string
+          description: |
+            Optional Go duration (e.g. "168h") from which the absolute
+            expiry is derived. Omitted means the grant never expires.
+
+    SSHGrantCreateResponse:
+      allOf:
+        - $ref: "#/components/schemas/SSHGrant"
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: |
+                Plaintext grant token ("otx_sshgrant_<base64url>").
+                Returned exactly once on creation. The server stores only
+                sha256(token).
+
+    SSHGrantList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SSHGrant"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 

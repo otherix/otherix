@@ -30,6 +30,15 @@ const (
 	PermVMRevert    Permission = "vm:revert"
 	PermVMMigrate   Permission = "vm:migrate"
 
+	// SSH ingress. `vm:ssh` is the capability a grant token resolves to
+	// at connect time (the synthetic GrantPrincipal carries exactly this
+	// one permission, scoped to the grant's VM set). `vm:ssh-grant` gates
+	// the operator-facing grant CRUD surface (/v1/ssh-grants). Both follow
+	// the vm:console own/any shape: admin/operator any, developer own,
+	// viewer none.
+	PermVMSSH      Permission = "vm:ssh"
+	PermVMSSHGrant Permission = "vm:ssh-grant"
+
 	// Snapshots. Scoped against snapshots.owner_id (which today aligns
 	// with the parent VM's owner; see docs/rbac.md edge-case note about
 	// future ownership transfer).
@@ -121,6 +130,8 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMConsole:   ScopeAny,
 		PermVMRevert:    ScopeAny,
 		PermVMMigrate:   ScopeAny,
+		PermVMSSH:       ScopeAny,
+		PermVMSSHGrant:  ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -173,6 +184,8 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMConsole:   ScopeAny,
 		PermVMRevert:    ScopeAny,
 		PermVMMigrate:   ScopeAny,
+		PermVMSSH:       ScopeAny,
+		PermVMSSHGrant:  ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -215,6 +228,8 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMResize:    ScopeOwn,
 		PermVMConsole:   ScopeOwn,
 		PermVMRevert:    ScopeOwn,
+		PermVMSSH:       ScopeOwn,
+		PermVMSSHGrant:  ScopeOwn,
 
 		// Snapshots — own only.
 		PermSnapshotRead:   ScopeOwn,

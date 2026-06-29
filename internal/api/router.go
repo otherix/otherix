@@ -25,6 +25,7 @@ import (
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
+	sshgrantshandlers "github.com/otherix/otherix/internal/api/handlers/sshgrants"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
@@ -205,6 +206,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	migCancelClient, _ := deps.VMLifecycle.AgentClient.(migrationshandlers.MigrationCancelClient)
 	migH := migrationshandlers.New(deps.Store, migCancelClient, deps.Logger)
 	snapH := snapshotshandlers.New(deps.Store, deps.Logger)
+	sshGrantsH := sshgrantshandlers.New(deps.Store, deps.Logger)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)
@@ -367,6 +369,23 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/", snapH.ListAll)
 				r.With(middleware.RequirePermission(auth.PermSnapshotRead, deps.Logger)).Get("/{id}", snapH.Get)
 				r.With(middleware.RequirePermission(auth.PermSnapshotDelete, deps.Logger)).Delete("/{id}", snapH.Delete)
+			})
+
+			// /v1/ssh-grants surface. A grant is a top-level resource
+			// (it spans multiple VMs), gated end to end by vm:ssh-grant.
+			// RequirePermission gates role-level capability (viewer ->
+			// 403); ownership scope runs inside the handler bodies: read /
+			// edit / revoke key on the grant's creator (cross-user ->
+			// 404), create / add-vm additionally check each referenced
+			// VM's owner (visible-but-unowned -> 403). The plaintext token
+			// is surfaced once on create.
+			r.Route("/ssh-grants", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Get("/", sshGrantsH.List)
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Get("/{id}", sshGrantsH.Get)
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/", sshGrantsH.Create)
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/{id}/vms", sshGrantsH.AddVM)
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Delete("/{id}/vms/{vm_name}", sshGrantsH.RemoveVM)
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/{id}/revoke", sshGrantsH.Revoke)
 			})
 
 			// /v1/migrations surface. The migration record's own

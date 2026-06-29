@@ -68,9 +68,22 @@ Every entry is scoped against `vms.owner_id`.
 | `vm:console` | any   | any      | own       | —      |
 | `vm:revert`  | any   | any      | own       | —      |
 | `vm:migrate` | any   | any      | —         | —      |
+| `vm:ssh`     | any   | any      | own       | —      |
+| `vm:ssh-grant` | any | any      | own       | —      |
 
 `vm:lifecycle` covers start, stop, poweroff, reboot, reset, pause,
 resume — every transition between desired phases.
+
+`vm:ssh-grant` gates the operator-facing grant CRUD surface
+(`/v1/ssh-grants`): minting, listing, inspecting, editing the VM set of,
+and revoking the per-person SSH access grants an external user presents
+at connect time. For `developer` it is `own`, checked against each
+referenced VM's `owner_id` on create / add-vm, and against the grant's
+creator on read / edit / revoke (a cross-user grant is invisible — 404,
+not 403). `vm:ssh` is the single capability a grant token resolves to at
+connect time: the synthetic grant principal carries exactly this
+permission, scoped to the grant's current VM set, and is denied
+everything else.
 
 `vm:read` is `any` for every role: VM names and high-level metadata are
 not considered confidential within a single self-hosted installation.

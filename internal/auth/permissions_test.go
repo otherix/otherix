@@ -15,7 +15,7 @@ import (
 var allPermissions = []auth.Permission{
 	auth.PermVMRead, auth.PermVMCreate, auth.PermVMUpdate, auth.PermVMDelete,
 	auth.PermVMLifecycle, auth.PermVMResize, auth.PermVMConsole, auth.PermVMRevert,
-	auth.PermVMMigrate,
+	auth.PermVMMigrate, auth.PermVMSSH, auth.PermVMSSHGrant,
 
 	auth.PermSnapshotRead, auth.PermSnapshotCreate, auth.PermSnapshotDelete,
 	auth.PermSnapshotRevert,
@@ -210,6 +210,28 @@ func TestMatrix_VMMigrateAdminOperatorOnly(t *testing.T) {
 	}
 	if got := auth.ScopeFor(auth.RoleOperator, auth.PermVMMigrate); got != auth.ScopeAny {
 		t.Errorf("operator scope for vm:migrate = %q, want any", got)
+	}
+}
+
+func TestVMSSHPermissions(t *testing.T) {
+	cases := []struct {
+		role auth.Role
+		perm auth.Permission
+		want auth.Scope
+	}{
+		{auth.RoleAdmin, auth.PermVMSSH, auth.ScopeAny},
+		{auth.RoleAdmin, auth.PermVMSSHGrant, auth.ScopeAny},
+		{auth.RoleOperator, auth.PermVMSSH, auth.ScopeAny},
+		{auth.RoleOperator, auth.PermVMSSHGrant, auth.ScopeAny},
+		{auth.RoleDeveloper, auth.PermVMSSH, auth.ScopeOwn},
+		{auth.RoleDeveloper, auth.PermVMSSHGrant, auth.ScopeOwn},
+		{auth.RoleViewer, auth.PermVMSSH, auth.ScopeNone},
+		{auth.RoleViewer, auth.PermVMSSHGrant, auth.ScopeNone},
+	}
+	for _, c := range cases {
+		if got := auth.ScopeFor(c.role, c.perm); got != c.want {
+			t.Errorf("ScopeFor(%s,%s) = %q, want %q", c.role, c.perm, got, c.want)
+		}
 	}
 }
 
