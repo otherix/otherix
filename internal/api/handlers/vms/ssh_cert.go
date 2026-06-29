@@ -41,6 +41,15 @@ type SSHDeps struct {
 // connect-time credential, re-minted per connection.
 const defaultGuestCertTTL = 5 * time.Minute
 
+// sshCertMaxRequestBytes caps the cert-mint request body. The body carries a
+// single SSH public-key line (< 1 KiB) plus a short login, so 64 KiB is ample
+// headroom. This is a defence-in-depth backstop: the route is also mounted
+// under middleware.MaxBodyBytes, but this endpoint sits OUTSIDE the Authn group
+// and reads its own bearer, so it bounds its own body here too - a caller with
+// any non-empty garbage bearer cannot force unbounded buffering. An over-cap
+// read fails inside the JSON decode and surfaces as 400 validation_failed.
+const sshCertMaxRequestBytes int64 = 64 << 10
+
 // sshSessionRejectedMsg is the single generic message every anti-enumeration
 // rejection on the cert-mint endpoint returns. Unknown VM, unauthorized
 // caller, and bad/expired/revoked grant must all answer identically: any
@@ -97,6 +106,7 @@ func (h *Handler) IssueSSHCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, sshCertMaxRequestBytes)
 	var req sshCertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,

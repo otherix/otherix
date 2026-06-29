@@ -336,6 +336,37 @@ func TestIssueSSHCert_MissingBearerIsGenericReject(t *testing.T) {
 	assertGenericSSHReject(t, rec)
 }
 
+// TestIssueSSHCert_OverCapBodyIs400: a request body larger than
+// sshCertMaxRequestBytes is rejected as 400 validation_failed by the
+// handler's own MaxBytesReader - it must not 500, panic, or buffer the
+// whole oversized body. Guards the pre-auth DoS hardening on this
+// outside-Authn endpoint.
+func TestIssueSSHCert_OverCapBodyIs400(t *testing.T) {
+	t.Parallel()
+	h, grantToken := newSSHCertTestHandler(t, uuid.New(), nil)
+
+	// A well-formed JSON object whose public_key value alone exceeds the
+	// 64 KiB cap, so the MaxBytesReader trips mid-decode.
+	oversized := `{"public_key":"` + strings.Repeat("A", int(sshCertMaxRequestBytes)+1024) + `","login":"dev"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vms/web01/ssh-cert", strings.NewReader(oversized))
+	req.Header.Set("Authorization", "Bearer "+grantToken)
+	req = withChiURLParam(req, "id", "web01")
+	rec := httptest.NewRecorder()
+
+	h.IssueSSHCert(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body response.ErrorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body.Error.Code != response.CodeValidationFailed {
+		t.Errorf("error.code = %q, want %q", body.Error.Code, response.CodeValidationFailed)
+	}
+}
+
 func assertGenericSSHReject(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 	if rec.Code != http.StatusUnauthorized {

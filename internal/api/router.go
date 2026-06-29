@@ -140,7 +140,17 @@ func NewRouter(deps RouterDeps) http.Handler {
 		// it must accept an SSH-grant token, which is not an Authn principal,
 		// and structurally guarantee a grant token reaches nothing else. The
 		// handler reads the bearer itself and dual-dispatches grant vs CLI.
-		r.Post("/v1/vms/{id}/ssh-cert", streamingVMs.IssueSSHCert)
+		//
+		// Unlike its streaming siblings it is a bodied POST, so it opts back
+		// into Timeout + MaxBodyBytes via its own Group (the same bounds the
+		// bounded-REST surface applies) WITHOUT taking on Authn: a caller with
+		// any non-empty garbage bearer must not be able to slow-trickle or
+		// balloon the request body. The handler additionally caps its own body.
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Timeout(deps.RequestTimeout))
+			r.Use(middleware.MaxBodyBytes(bodyLimit))
+			r.Post("/v1/vms/{id}/ssh-cert", streamingVMs.IssueSSHCert)
+		})
 
 		streamAuthn := middleware.Authn(deps.AuthService)
 		r.Group(func(r chi.Router) {
