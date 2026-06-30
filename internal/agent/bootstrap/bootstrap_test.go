@@ -74,7 +74,7 @@ func TestNormalizeFingerprint(t *testing.T) {
 }
 
 func TestGenerateKeypairAndCSR(t *testing.T) {
-	keyPEM, csrPEM, priv, err := generateKeypairAndCSR("test-node")
+	keyPEM, csrPEM, priv, err := generateKeypairAndCSR(nodeCNPrefix, "test-node")
 	if err != nil {
 		t.Fatalf("generateKeypairAndCSR: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestGenerateKeypairAndCSR(t *testing.T) {
 }
 
 func TestGenerateKeypairAndCSR_AcceptedByAuthValidateCSR(t *testing.T) {
-	_, csrPEM, _, err := generateKeypairAndCSR("validate-target")
+	_, csrPEM, _, err := generateKeypairAndCSR(nodeCNPrefix, "validate-target")
 	if err != nil {
 		t.Fatalf("generateKeypairAndCSR: %v", err)
 	}
@@ -160,6 +160,37 @@ func TestGenerateKeypairAndCSR_AcceptedByAuthValidateCSR(t *testing.T) {
 	}
 	if csr == nil {
 		t.Fatal("auth.ValidateCSR returned nil csr without error")
+	}
+}
+
+// TestGenerateKeypairAndCSR_GatewayPrefix confirms the gateway identity prefix
+// threads into both the Subject CN and the SAN DNS, so a gateway bootstrap mints
+// a "gateway-<name>" CSR (matching the cert the CP issues via SignGatewayCSR).
+func TestGenerateKeypairAndCSR_GatewayPrefix(t *testing.T) {
+	_, csrPEM, _, err := generateKeypairAndCSR(gatewayCNPrefix, "edge1")
+	if err != nil {
+		t.Fatalf("generateKeypairAndCSR: %v", err)
+	}
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		t.Fatal("decode csrPEM: nil block")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse csr: %v", err)
+	}
+	if got, want := csr.Subject.CommonName, "gateway-edge1"; got != want {
+		t.Errorf("Subject.CommonName = %q, want %q", got, want)
+	}
+	wantDNS := "gateway-edge1.agents.otherix.local"
+	found := false
+	for _, dns := range csr.DNSNames {
+		if dns == wantDNS {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("CSR DNSNames missing %q (have %v)", wantDNS, csr.DNSNames)
 	}
 }
 

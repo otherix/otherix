@@ -22,13 +22,17 @@ import (
 // (auth.GenerateClusterCA) so the issued cert chains naturally
 // without forcing the CA to handle multiple key families.
 //
+// cnPrefix is the identity prefix the Subject CN and SAN DNS carry:
+// "node-" for a hypervisor agent, "gateway-" for an ingress gateway.
+// The CP discards the CSR Subject entirely and derives the issued
+// cert's identity from the validated request body and the join token's
+// kind (defense-in-depth against CN injection), so the prefix is
+// populated for realism and operator audit, not enforcement.
+//
 // CSR fields:
 //
-//   - Subject CN: "node-<nodeName>" — populated for realism. The
-//     SignCSR path discards the CSR Subject entirely and derives the
-//     issued cert's Subject from the validated request body
-//     (defense-in-depth against CN injection).
-//   - SAN DNS: "node-<nodeName>.agents.otherix.local" + "localhost".
+//   - Subject CN: "<cnPrefix><name>".
+//   - SAN DNS: "<cnPrefix><name>.agents.otherix.local" + "localhost".
 //   - SAN IP: 127.0.0.1.
 //
 // Key encoding: PKCS#8 PEM ("PRIVATE KEY" block). Matches the cluster
@@ -38,7 +42,7 @@ import (
 // to assert something on the keypair (unit tests do this — production
 // agent code discards it once the CSR is built; the key is loaded
 // from disk for subsequent mTLS handshakes).
-func generateKeypairAndCSR(nodeName string) (keyPEM, csrPEM []byte, priv *ecdsa.PrivateKey, err error) {
+func generateKeypairAndCSR(cnPrefix, name string) (keyPEM, csrPEM []byte, priv *ecdsa.PrivateKey, err error) {
 	priv, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("generate ecdsa key: %v", err)
@@ -54,9 +58,9 @@ func generateKeypairAndCSR(nodeName string) (keyPEM, csrPEM []byte, priv *ecdsa.
 	}
 
 	template := &x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: "node-" + nodeName},
+		Subject: pkix.Name{CommonName: cnPrefix + name},
 		DNSNames: []string{
-			"node-" + nodeName + ".agents.otherix.local",
+			cnPrefix + name + ".agents.otherix.local",
 			"localhost",
 		},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},

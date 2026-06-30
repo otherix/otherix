@@ -44,6 +44,14 @@ type Networks struct {
 	dhcp   dhcp4.Responder // per-node DHCPv4 responder for dhcp-enabled overlays; may be nil
 	tick   time.Duration
 
+	// gatewayMode strips the overlay services plane. An ingress gateway hosts
+	// no VMs and is never an anycast first-hop router, so it brings up the
+	// overlay datapath (bridge + VTEP + FDB + its unicast tenant addr) but never
+	// the anycast gateway, NAT masquerade, DHCP responder, or DNS forwarder -
+	// the bridge hardware address belongs to the unicast tenant MAC, which the
+	// services plane would otherwise clobber with the shared anycast MAC.
+	gatewayMode bool
+
 	desired atomic.Pointer[networksDesired]
 	trigger chan struct{}
 
@@ -114,6 +122,27 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 		dhcpRegisterErr: map[string]string{},
 	}, nil
 }
+
+// NewGatewayNetworks builds the network reconciler in gateway mode. It brings up
+// each declared overlay's datapath (bridge + VTEP + FDB + the gateway tenant
+// addr) but never runs the services plane (anycast gateway, NAT masquerade,
+// DHCP, DNS). A gateway hosts no VMs and is never an anycast first-hop router,
+// so the bridge hardware address belongs to the unicast tenant MAC rather than
+// the shared anycast MAC. It takes no DHCP responder; tick==0 falls back to
+// DefaultTickInterval. Returns ErrNilFabric when fabric is nil.
+func NewGatewayNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration) (*Networks, error) {
+	n, err := NewNetworks(f, nil, log, tick)
+	if err != nil {
+		return nil, err
+	}
+	n.gatewayMode = true
+	return n, nil
+}
+
+// GatewayMode reports whether this reconciler runs in gateway mode, that is it
+// brings up the overlay datapath without the anycast services plane. False for
+// an ordinary hypervisor-node reconciler.
+func (r *Networks) GatewayMode() bool { return r.gatewayMode }
 
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. The
 // sender invokes this immediately after a successful POST returns,

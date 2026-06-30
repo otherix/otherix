@@ -93,7 +93,7 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
 
-	if overlayNeedsServices(d) {
+	if r.overlayNeedsServices(d) {
 		r.applyOverlayServices(ctx, d, vniVal)
 	}
 
@@ -124,8 +124,14 @@ func (r *Networks) applyGatewayAddr(d heartbeat.DeclaredNetwork) error {
 }
 
 // overlayNeedsServices reports whether an overlay needs the host-side services
-// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none.
-func overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
+// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none. A
+// gateway reconciler never runs the services pass: a gateway hosts no VMs and is
+// never an anycast first-hop router, so it brings up the overlay datapath
+// without the services plane regardless of the declared egress/DNS/DHCP flags.
+func (r *Networks) overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
+	if r.gatewayMode {
+		return false
+	}
 	return d.Egress == "nat" || d.DNSEnabled || d.DhcpEnabled
 }
 
