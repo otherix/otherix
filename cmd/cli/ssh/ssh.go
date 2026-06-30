@@ -12,7 +12,7 @@
 // own stdin/stdout to the relay and is not normally run by hand.
 //
 // The package owns no transport logic of its own: certificate minting, the
-// relay WebSocket, and TLS trust all live in cmd/cli/internal/sshconn. This
+// relay WebSocket, and TLS trust all live in cmd/internal/sshconn. This
 // command is the thin operator-UX layer that turns CLI flags into an
 // sshconn.Config and assembles the `ssh` argv.
 package ssh
@@ -30,7 +30,7 @@ import (
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
 	"github.com/otherix/otherix/cmd/cli/internal/cliconfig"
-	"github.com/otherix/otherix/cmd/cli/internal/sshconn"
+	"github.com/otherix/otherix/cmd/internal/sshconn"
 )
 
 // defaultLogin is the guest login used when --login is omitted. It mirrors

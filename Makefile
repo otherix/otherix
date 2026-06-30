@@ -35,8 +35,8 @@ help: ## Show this help
 
 # ========== Build ==========
 
-.PHONY: build $(addprefix build-,$(BINARIES)) build-cli
-build: $(addprefix build-,$(BINARIES)) build-cli ## Build all binaries for current platform
+.PHONY: build $(addprefix build-,$(BINARIES)) build-cli build-ssh
+build: $(addprefix build-,$(BINARIES)) build-cli build-ssh ## Build all binaries for current platform
 
 $(addprefix build-,$(BINARIES)): build-%: ## Build a single daemon binary (api/agent)
 	@mkdir -p $(BIN_DIR)
@@ -49,20 +49,30 @@ build-cli: ## Build the otherix operator CLI to bin/otherix
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/otherix ./cmd/cli
 
+# otherix-ssh is the thin SSH-only connector an external person installs to
+# reach a granted VM; it ships separately from the operator CLI and daemons.
+build-ssh: ## Build the otherix-ssh external connector to bin/otherix-ssh
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/otherix-ssh ./cmd/otherix-ssh
+
 .PHONY: build-linux-amd64 build-linux-arm64
-build-linux-amd64: ## Cross-compile all daemons for linux/amd64
+build-linux-amd64: ## Cross-compile all daemons + otherix-ssh for linux/amd64
 	@mkdir -p $(BIN_DIR)/linux-amd64
 	@for b in $(BINARIES); do \
 	  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" \
 	    -o $(BIN_DIR)/linux-amd64/otherix-$$b ./cmd/$$b || exit 1; \
 	done
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" \
+	  -o $(BIN_DIR)/linux-amd64/otherix-ssh ./cmd/otherix-ssh
 
-build-linux-arm64: ## Cross-compile all daemons for linux/arm64
+build-linux-arm64: ## Cross-compile all daemons + otherix-ssh for linux/arm64
 	@mkdir -p $(BIN_DIR)/linux-arm64
 	@for b in $(BINARIES); do \
 	  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" \
 	    -o $(BIN_DIR)/linux-arm64/otherix-$$b ./cmd/$$b || exit 1; \
 	done
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" \
+	  -o $(BIN_DIR)/linux-arm64/otherix-ssh ./cmd/otherix-ssh
 
 .PHONY: clean
 clean: ## Remove build artifacts (bin/, coverage reports)

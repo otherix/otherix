@@ -13,7 +13,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
-	"github.com/otherix/otherix/cmd/cli/internal/sshconn"
+	"github.com/otherix/otherix/cmd/internal/sshconn"
 )
 
 func TestEffectiveLogin(t *testing.T) {
