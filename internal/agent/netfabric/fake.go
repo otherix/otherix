@@ -165,11 +165,13 @@ type AnycastGatewayCall struct {
 	MAC    string
 }
 
-// UnicastGatewayCall records one EnsureUnicastGateway invocation. MAC is the
-// stringified hardware address.
+// UnicastGatewayCall records one EnsureUnicastGateway invocation. Addr carries
+// the overlay subnet's prefix length (e.g. /24), so a test can assert the
+// gateway tenant IP is assigned as an on-link subnet address rather than a /32.
+// MAC is the stringified hardware address.
 type UnicastGatewayCall struct {
 	Bridge string
-	Addr   netip.Addr
+	Addr   netip.Prefix
 	MAC    string
 }
 
@@ -306,7 +308,7 @@ func (f *FakeFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error 
 }
 
 // EnsureUnicastGateway records the call and returns Errs["EnsureUnicastGateway"].
-func (f *FakeFabric) EnsureUnicastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+func (f *FakeFabric) EnsureUnicastGateway(bridge string, addr netip.Prefix, mac net.HardwareAddr) error {
 	f.UnicastGatewayCalls = append(f.UnicastGatewayCalls, UnicastGatewayCall{Bridge: bridge, Addr: addr, MAC: mac.String()})
 	return f.err("EnsureUnicastGateway")
 }

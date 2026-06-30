@@ -15,8 +15,12 @@ import (
 )
 
 // EnsureUnicastGateway pins mac as the bridge link's hardware address and
-// assigns addr/32 to it, idempotently. It is the unicast counterpart of
-// EnsureAnycastGateway: an ingress gateway claims a distinct per-membership
+// assigns addr to it, idempotently. addr carries the overlay subnet's prefix
+// length (e.g. /24) so the kernel installs an on-link route for the whole
+// overlay subnet via the bridge: the gateway then reaches guest VMs over the
+// overlay rather than leaking their traffic out the host default route (a bare
+// /32 host address gives no route to the subnet). It is the unicast counterpart
+// of EnsureAnycastGateway: an ingress gateway claims a distinct per-membership
 // unicast MAC drawn from the network's address space (never the shared anycast
 // MAC, which is identical on every node and can never be a unicast FDB target)
 // so the host kernel originates and answers at the tenant addr and return
@@ -25,7 +29,7 @@ import (
 // auto-inheriting the lowest enslaved-port MAC; a re-assert each reconcile pass
 // is harmless. A gateway runs this in place of the anycast services plane, so
 // the two never re-assert opposite hardware addresses on the same bridge.
-func (f *linuxFabric) EnsureUnicastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+func (f *linuxFabric) EnsureUnicastGateway(bridge string, addr netip.Prefix, mac net.HardwareAddr) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -36,10 +40,9 @@ func (f *linuxFabric) EnsureUnicastGateway(bridge string, addr netip.Addr, mac n
 	if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
 		return fmt.Errorf("netfabric: ensure unicast gateway on %s: set mac: %v", bridge, err)
 	}
-	p := netip.PrefixFrom(addr, addr.BitLen()) // /32 for IPv4
-	a, err := netlink.ParseAddr(p.String())
+	a, err := netlink.ParseAddr(addr.String())
 	if err != nil {
-		return fmt.Errorf("netfabric: ensure unicast gateway on %s: parse %s: %v", bridge, p, err)
+		return fmt.Errorf("netfabric: ensure unicast gateway on %s: parse %s: %v", bridge, addr, err)
 	}
 	if err := netlink.AddrReplace(link, a); err != nil {
 		return fmt.Errorf("netfabric: ensure unicast gateway on %s: %v", bridge, err)

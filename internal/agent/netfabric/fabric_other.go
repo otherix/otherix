@@ -81,7 +81,7 @@ func (unsupportedFabric) EnsureAnycastGateway(string, netip.Addr, net.HardwareAd
 func (unsupportedFabric) RemoveAnycastGateway(string, netip.Addr) error { return errUnsupported }
 
 // EnsureUnicastGateway reports errUnsupported on non-Linux builds.
-func (unsupportedFabric) EnsureUnicastGateway(string, netip.Addr, net.HardwareAddr) error {
+func (unsupportedFabric) EnsureUnicastGateway(string, netip.Prefix, net.HardwareAddr) error {
 	return errUnsupported
 }
 

@@ -103,11 +103,18 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 // applyGatewayAddr pins the ingress gateway's tenant IP and its distinct unicast
 // MAC onto the overlay bridge so the gateway host originates and answers at the
 // tenant IP and the bridge owns the MAC advertised to peers in the overlay FDB.
+// The tenant IP is assigned with the overlay subnet's prefix length (from
+// d.Subnet, e.g. /24), never a /32: the subnet prefix gives the gateway host an
+// on-link route to the whole overlay subnet via the bridge, so its dial to a
+// guest VM leaves over the overlay rather than the host default route.
 // It is a no-op for a hypervisor node (d.GatewayAddr nil), which leaves the
 // bridge hardware address to the anycast services path. An unparseable IP or MAC
 // is a corrupt declared entry that can never be programmed, so it surfaces as a
 // hard error and holds the overlay divergent rather than silently materialising
-// the network without its gateway address.
+// the network without its gateway address. A missing or unparseable subnet is
+// likewise a hard error: a tenant IP without a known subnet could only be
+// installed as an unroutable /32, so failing is safer than materialising a
+// broken gateway.
 func (r *Networks) applyGatewayAddr(d heartbeat.DeclaredNetwork) error {
 	if d.GatewayAddr == nil {
 		return nil
@@ -120,7 +127,15 @@ func (r *Networks) applyGatewayAddr(d heartbeat.DeclaredNetwork) error {
 	if err != nil {
 		return fmt.Errorf("gateway addr mac %q: %v", d.GatewayAddr.MAC, err)
 	}
-	return r.fabric.EnsureUnicastGateway(d.BridgeName, ip, mac)
+	if d.Subnet == nil {
+		return fmt.Errorf("gateway addr %s: overlay has no subnet to route the tenant IP", ip)
+	}
+	subnet, err := netip.ParsePrefix(*d.Subnet)
+	if err != nil {
+		return fmt.Errorf("gateway addr subnet %q: %v", *d.Subnet, err)
+	}
+	tenant := netip.PrefixFrom(ip, subnet.Bits())
+	return r.fabric.EnsureUnicastGateway(d.BridgeName, tenant, mac)
 }
 
 // overlayNeedsServices reports whether an overlay needs the host-side services
