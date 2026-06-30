@@ -430,24 +430,29 @@ func TestConsoleFollowReattachesAtCutover(t *testing.T) {
 	}
 	closeOnce(agentA.closed)
 
+	// Drive the operator past the cutover. A byte can still briefly echo from A
+	// before its drop propagates to the CP, so an echo alone does not prove the
+	// reattach happened; success requires the echo AND a mint against B (the
+	// reattach signal). Looping on the combined condition makes the seam
+	// deterministic instead of racing the cutover window.
 	deadline := time.Now().Add(5 * time.Second)
-	var echoed bool
+	var reattached bool
 	for time.Now().Before(deadline) {
 		_ = op.Write(context.Background(), websocket.MessageBinary, []byte("b"))
 		typ, data, err := op.Read(context.Background())
-		if err == nil && typ == websocket.MessageBinary && string(data) == "b" {
-			echoed = true
-			break
-		}
 		if err != nil {
 			t.Fatalf("post-cutover read error before reattach: %v", err)
 		}
+		eps := cl.mintedEndpoints()
+		if typ == websocket.MessageBinary && string(data) == "b" &&
+			len(eps) > 0 && eps[len(eps)-1] == nodeB.AdvertisedEndpoint {
+			reattached = true
+			break
+		}
 	}
-	if !echoed {
-		t.Errorf("post-cutover byte never echoed from B")
-	}
-	if eps := cl.mintedEndpoints(); len(eps) == 0 || eps[len(eps)-1] != nodeB.AdvertisedEndpoint {
-		t.Errorf("minted endpoints = %v, want last == %q", eps, nodeB.AdvertisedEndpoint)
+	if !reattached {
+		t.Errorf("post-cutover byte never echoed from B after a mint against %q (minted = %v)",
+			nodeB.AdvertisedEndpoint, cl.mintedEndpoints())
 	}
 }
 
