@@ -46,6 +46,9 @@ jobs:
       - run: cp deploy/install/quickstart.sh site/quickstart.sh
       - run: cp deploy/install/uninstall.sh site/uninstall.sh
       - run: cp deploy/install/upgrade.sh site/upgrade.sh
+      # Publish the external SSH connector installer at docs.otherix.dev/ssh.sh
+      # so the get.otherix.dev Worker can alias it (curl get.otherix.dev/ssh).
+      - run: cp deploy/install/ssh.sh site/ssh.sh
       - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main'
         with:
