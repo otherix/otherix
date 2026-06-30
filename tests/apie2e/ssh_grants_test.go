@@ -136,6 +136,58 @@ func TestSSHGrantLifecycle(t *testing.T) {
 	}
 }
 
+// TestSSHGrantLoginValidation asserts the grant create and add-vm paths
+// reject a login that is not a safe SSH principal with 400 validation_failed,
+// mirroring the cert-mint sanitize rule, and accept a well-formed login.
+func TestSSHGrantLoginValidation(t *testing.T) {
+	h := newE2E(t)
+	opTok, opID := loginAs(t, h, auth.RoleOperator)
+	vm, _ := seedOwnedVM(t, h.store, opID)
+
+	badLogins := []string{
+		"root;rm",               // shell metacharacter
+		"Foo Bar",               // space + uppercase
+		"   ",                   // empty after trim
+		strings.Repeat("a", 40), // over the 32-char cap
+		"0day",                  // leading digit
+	}
+	for _, login := range badLogins {
+		resp := h.post(t, "/v1/ssh-grants", map[string]any{
+			"name": "bad-" + login,
+			"vms":  []map[string]string{{"vm_name": vm, "login": login}},
+		}, opTok)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("create with login %q status = %d, want 400", login, resp.StatusCode)
+		}
+	}
+
+	// A valid login creates the grant.
+	resp := h.post(t, "/v1/ssh-grants", map[string]any{
+		"name": "good-create",
+		"vms":  []map[string]string{{"vm_name": vm, "login": "deploy"}},
+	}, opTok)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create with login deploy status = %d, want 201", resp.StatusCode)
+	}
+	var created sshGrantView
+	decodeJSON(t, resp, &created)
+
+	// add-vm enforces the same rule.
+	vm2, _ := seedOwnedVM(t, h.store, opID)
+	for _, login := range badLogins {
+		resp := h.post(t, "/v1/ssh-grants/"+created.ID+"/vms",
+			map[string]string{"vm_name": vm2, "login": login}, opTok)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("add-vm with login %q status = %d, want 400", login, resp.StatusCode)
+		}
+	}
+	resp = h.post(t, "/v1/ssh-grants/"+created.ID+"/vms",
+		map[string]string{"vm_name": vm2, "login": "ubuntu"}, opTok)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add-vm with login ubuntu status = %d, want 200", resp.StatusCode)
+	}
+}
+
 // TestSSHGrantNameConflict asserts a duplicate name returns 409 conflict.
 func TestSSHGrantNameConflict(t *testing.T) {
 	h := newE2E(t)

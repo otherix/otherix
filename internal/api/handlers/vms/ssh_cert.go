@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 )
 
@@ -268,20 +268,12 @@ func (h *Handler) rejectSSH(w http.ResponseWriter, r *http.Request) {
 		response.CodeSSHSessionRejected, sshSessionRejectedMsg, nil)
 }
 
-// loginPattern is the valid SSH principal charset the CLI path enforces:
-// a lowercase start ([a-z_]) followed by up to 31 [a-z0-9_-] characters
-// (32-char cap, the conventional Linux login limit). The guest sshd is the
-// sole authority for whether it accepts the login; sanitizeLogin only
-// guarantees the value is a safe single principal (no shell metacharacters,
-// path separators, or whitespace) before it is baked into a certificate.
-var loginPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-
 // sanitizeLogin reports whether login is a valid SSH principal and returns
-// it unchanged when so. It rejects (ok=false) empty, over-long, and any
-// value carrying characters outside loginPattern.
+// it unchanged when so. It rejects (ok=false) empty, over-long, and any value
+// carrying characters outside the shared SSH-login charset. The charset rule
+// lives in validation.ValidateSSHLogin so the cert-mint path and the
+// ssh-grant create/add-vm paths enforce it identically.
 func sanitizeLogin(login string) (string, bool) {
-	if !loginPattern.MatchString(login) {
-		return "", false
-	}
-	return login, true
+	sanitized, err := validation.ValidateSSHLogin(login)
+	return sanitized, err == nil
 }

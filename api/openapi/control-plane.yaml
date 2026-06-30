@@ -4479,7 +4479,14 @@ components:
           description: Name of a VM the grant authorizes SSH access to.
         login:
           type: string
-          description: Guest login the recipient connects as on this VM.
+          pattern: "^[a-z_][a-z0-9_-]{0,31}$"
+          maxLength: 32
+          description: |
+            Guest login the recipient connects as on this VM. Constrained to a
+            safe SSH principal (a lowercase start followed by up to 31
+            [a-z0-9_-] characters) because it is signed into a guest SSH
+            certificate and printed in an `ssh <login>@host` command; the
+            guest sshd is the sole authority over whether it accepts the login.
 
     SSHGrant:
       type: object

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -182,7 +183,10 @@ func validateVMs(in []createVM) ([]store.SSHGrantVM, error) {
 	return out, nil
 }
 
-// validateVM trims and validates a single VM-scope entry.
+// validateVM trims and validates a single VM-scope entry. The login must be
+// a safe SSH principal: it is signed into a guest SSH certificate and printed
+// in an ssh <login>@host command, so it is held to the same charset/length
+// rule as the cert-mint path (validation.ValidateSSHLogin).
 func validateVM(vm createVM) (store.SSHGrantVM, error) {
 	name := strings.TrimSpace(vm.VMName)
 	login := strings.TrimSpace(vm.Login)
@@ -192,7 +196,11 @@ func validateVM(vm createVM) (store.SSHGrantVM, error) {
 	case login == "":
 		return store.SSHGrantVM{}, errors.New("login is required")
 	}
-	return store.SSHGrantVM{VMName: name, Login: login}, nil
+	sanitized, err := validation.ValidateSSHLogin(login)
+	if err != nil {
+		return store.SSHGrantVM{}, err
+	}
+	return store.SSHGrantVM{VMName: name, Login: sanitized}, nil
 }
 
 // parseTTL turns the optional duration string into an absolute expiry. An
