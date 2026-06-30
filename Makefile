@@ -179,6 +179,10 @@ smoke-vm-lifecycle: ## VM lifecycle smoke: `otherix vm` start/stop/poweroff/rebo
 smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otherix vm create --network-config` on a real agent (run after local-dev-start)
 	bash dev/smoke/vm-network-config/run.sh
 
+.PHONY: smoke-vm-ssh
+smoke-vm-ssh: ## VM SSH-ingress smoke: real guest login over the relay via `otherix ssh` + external `ssh-grant`/`otherix-ssh` (operator, external, add-vm, revoke; run after local-dev-start)
+	bash dev/smoke/vm-ssh/run.sh
+
 .PHONY: smoke-vm-create-redelivery
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh
