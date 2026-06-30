@@ -1961,6 +1961,30 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: sshGrants.delete
+      tags: [ssh-grants]
+      summary: Delete an SSH access grant.
+      description: |
+        **Required permission:** `vm:ssh-grant`. The caller must own the
+        grant (else `404`). Delete removes the grant and frees its name
+        for reuse - unlike `revoke`, which disables the grant but keeps
+        the row (and its name) for audit. A token for a deleted grant
+        resolves to no row and is rejected uniformly at connect time,
+        exactly as any miss.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Deleted.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
 
   /v1/ssh-grants/{id}/vms:
     parameters:

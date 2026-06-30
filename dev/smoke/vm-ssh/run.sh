@@ -223,7 +223,9 @@ restore_ssh_ingress() {
 }
 cleanup() {
   echo "--- cleanup ---"
-  otx ssh-grant revoke ext-ssh >/dev/null 2>&1 || true
+  # Delete (not just revoke) so the grant name is freed and a second run of
+  # this smoke does not collide on 'ext-ssh' at create time.
+  otx ssh-grant delete ext-ssh >/dev/null 2>&1 || true
   otx vm delete "$VM_A" --wait --force >/dev/null 2>&1 || true
   otx vm delete "$VM_B" --wait --force >/dev/null 2>&1 || true
   otx network delete "$NET" --force >/dev/null 2>&1 || true
@@ -249,7 +251,7 @@ while (( SECONDS < deadline )); do pool_ready_node1 && { ok=1; break; }; sleep 3
 pass "CP up (${CP_VERSION}); $NODE1 ready; default pool ready on $NODE1"
 
 # best-effort delete-first so a stale leftover from a prior run does not 409
-otx ssh-grant revoke ext-ssh >/dev/null 2>&1 || true
+otx ssh-grant delete ext-ssh >/dev/null 2>&1 || true
 otx vm delete "$VM_A" --wait --force >/dev/null 2>&1 || true
 otx vm delete "$VM_B" --wait --force >/dev/null 2>&1 || true
 otx network delete "$NET" --force >/dev/null 2>&1 || true

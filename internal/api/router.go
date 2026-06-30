@@ -408,6 +408,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			r.Route("/ssh-grants", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Get("/", sshGrantsH.List)
 				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Get("/{id}", sshGrantsH.Get)
+				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Delete("/{id}", sshGrantsH.Delete)
 				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/", sshGrantsH.Create)
 				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/{id}/vms", sshGrantsH.AddVM)
 				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Delete("/{id}/vms/{vm_name}", sshGrantsH.RemoveVM)

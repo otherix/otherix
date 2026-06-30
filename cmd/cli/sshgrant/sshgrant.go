@@ -74,6 +74,7 @@ exactly once, in the create bundle, and is never a flag or argument.`,
 	cmd.AddCommand(newAddVMCommand())
 	cmd.AddCommand(newRemoveVMCommand())
 	cmd.AddCommand(newRevokeCommand())
+	cmd.AddCommand(newDeleteCommand())
 	return cmd
 }
 

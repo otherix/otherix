@@ -7,6 +7,7 @@
 package apie2e
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -201,6 +202,65 @@ func TestSSHGrantNameConflict(t *testing.T) {
 	resp := h.post(t, "/v1/ssh-grants", body, opTok)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("duplicate-name create status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// TestSSHGrantDelete asserts delete frees the name (a re-create with the same
+// name succeeds), returns 204, is invisible across owners (404, no leak), is
+// gated by vm:ssh-grant (viewer 403), and that a token for a deleted grant is
+// rejected uniformly at the cert path (401).
+func TestSSHGrantDelete(t *testing.T) {
+	h := newE2E(t)
+	seedSSHUserCA(t, h.store)
+	opTok, opID := loginAs(t, h, auth.RoleOperator)
+	devTok, _ := loginAs(t, h, auth.RoleDeveloper)
+	viewerTok, _ := loginAs(t, h, auth.RoleViewer)
+	vm, _ := seedOwnedVM(t, h.store, opID)
+
+	// Seed a grant through the store so we hold its plaintext token, then
+	// resolve its id for the API delete.
+	grantTok := seedSSHGrant(t, h.store, opID, vm, "ci")
+	seeded, err := h.store.SSHGrantByTokenHash(context.Background(), auth.HashToken(grantTok))
+	if err != nil {
+		t.Fatalf("SSHGrantByTokenHash: %v", err)
+	}
+
+	// A developer cannot see the operator's grant -> 404 (no existence leak).
+	if resp := h.delete(t, "/v1/ssh-grants/"+seeded.ID.String(), devTok); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-user delete status = %d, want 404", resp.StatusCode)
+	}
+
+	// A viewer holds no vm:ssh-grant -> 403 at the middleware.
+	if resp := h.delete(t, "/v1/ssh-grants/"+seeded.ID.String(), viewerTok); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("viewer delete status = %d, want 403", resp.StatusCode)
+	}
+
+	// The owner deletes the grant -> 204.
+	if resp := h.delete(t, "/v1/ssh-grants/"+seeded.ID.String(), opTok); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+
+	// The deleted grant's token is rejected uniformly at the cert path (401).
+	resp := h.post(t, "/v1/vms/"+vm+"/ssh-cert", map[string]string{
+		"public_key": genSSHPublicKey(t),
+	}, grantTok)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("deleted-grant cert mint status = %d, want 401 (uniform reject)", resp.StatusCode)
+	}
+
+	// The name is now free: a create reusing the deleted grant's name
+	// succeeds (revoke would have kept the name consumed forever).
+	resp = h.post(t, "/v1/ssh-grants", map[string]any{
+		"name": seeded.Name,
+		"vms":  []map[string]string{{"vm_name": vm, "login": "ubuntu"}},
+	}, opTok)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("re-create with freed name status = %d, want 201", resp.StatusCode)
+	}
+
+	// Deleting an already-deleted grant -> 404.
+	if resp := h.delete(t, "/v1/ssh-grants/"+seeded.ID.String(), opTok); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("re-delete status = %d, want 404", resp.StatusCode)
 	}
 }
 

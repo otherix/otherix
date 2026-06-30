@@ -339,6 +339,39 @@ func TestRevoke_PostsRevoke(t *testing.T) {
 	}
 }
 
+func TestDelete_ByNameResolvesThenDeletesByID(t *testing.T) {
+	var listed, deletedByID bool
+	var gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/ssh-grants":
+			listed = true
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[{"id":"g-77","name":"alice-web","recipient_label":"Alice",
+				"created_by":"u-1","vms":[{"vm_name":"web01","login":"deploy"}],"expires_at":null,"revoked":false,
+				"created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z"}],"meta":{"next_cursor":null}}`))
+		case r.URL.Path == "/v1/ssh-grants/g-77":
+			deletedByID, gotMethod = true, r.Method
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, _, err := runCmd(t, srv.URL, []string{"delete", "alice-web"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !listed || !deletedByID || gotMethod != http.MethodDelete {
+		t.Errorf("delete by name should list then DELETE by id (listed=%v deletedByID=%v method=%s)", listed, deletedByID, gotMethod)
+	}
+	if !strings.Contains(stdout, "deleted") {
+		t.Errorf("missing delete confirmation:\n%s", stdout)
+	}
+}
+
 // extractBlob pulls the otx_sshbundle_ line out of the create text output.
 func extractBlob(t *testing.T, stdout string) string {
 	t.Helper()

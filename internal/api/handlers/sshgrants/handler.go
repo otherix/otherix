@@ -42,6 +42,7 @@ type Store interface {
 	AddSSHGrantVM(ctx context.Context, grantID uuid.UUID, vm store.SSHGrantVM) (store.SSHGrant, error)
 	RemoveSSHGrantVM(ctx context.Context, grantID uuid.UUID, vmName string) (store.SSHGrant, error)
 	RevokeSSHGrant(ctx context.Context, grantID uuid.UUID) error
+	DeleteSSHGrant(ctx context.Context, grantID uuid.UUID) error
 	VMByName(ctx context.Context, name string) (store.VM, error)
 }
 

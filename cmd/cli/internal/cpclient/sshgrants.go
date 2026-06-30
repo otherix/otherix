@@ -223,6 +223,23 @@ func (c *Client) RevokeSSHGrant(ctx context.Context, identifier string) (SSHGran
 	return out, nil
 }
 
+// DeleteSSHGrant submits DELETE /v1/ssh-grants/{id}, removing the grant and
+// freeing its name for reuse (unlike RevokeSSHGrant, which keeps the row). The
+// identifier is a UUID or a grant name resolved client-side. A 204 returns nil;
+// any non-2xx surfaces as *APIError (e.g. 404 when the grant is already gone).
+func (c *Client) DeleteSSHGrant(ctx context.Context, identifier string) error {
+	id, err := c.resolveGrantIdentifier(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	req, err := c.newRequest(ctx, http.MethodDelete, "/v1/ssh-grants/"+id, nil)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.do(req)
+	return err
+}
+
 // resolveGrantIdentifier returns identifier unchanged when it is already a
 // UUID literal, otherwise treats it as a grant name and resolves it to a UUID
 // via resolveGrantName. The CP per-id routes accept only UUIDs, so this is the
