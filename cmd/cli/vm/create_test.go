@@ -131,6 +131,69 @@ func TestVMCreate_OldCloudInitFlagRemoved(t *testing.T) {
 	}
 }
 
+// TestVMCreate_SSHIngress sends --ssh-ingress and asserts the CP request
+// body carries ssh_ingress_enabled=true.
+func TestVMCreate_SSHIngress(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-ssh"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-ssh",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--pool", "pool-dev",
+		"--vcpus", "2",
+		"--memory-mb", "512",
+		"--ssh-ingress",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if enabled, _ := captured["ssh_ingress_enabled"].(bool); !enabled {
+		t.Errorf("ssh_ingress_enabled = %v, want true", captured["ssh_ingress_enabled"])
+	}
+}
+
+// TestVMCreate_SSHIngressMutualExclusion locks in the CLI-level guard:
+// supplying both --ssh-ingress AND --no-cloud-init fails before any HTTP
+// call leaves the box (the server is the backstop with a 400).
+func TestVMCreate_SSHIngressMutualExclusion(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("HTTP call must not happen when mutual-exclusion guard fires")
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-ssh-conflict",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--pool", "pool-dev",
+		"--vcpus", "1",
+		"--memory-mb", "128",
+		"--ssh-ingress",
+		"--no-cloud-init",
+	})
+	if err == nil {
+		t.Fatalf("expected mutual-exclusion error")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("err = %v, want mention of 'mutually exclusive'", err)
+	}
+}
+
 // TestVMCreate_NetworkConfigFile sends --network-config=<path> and
 // asserts the CP request body carries the resolved netplan YAML in
 // network_config. The content is opaque to the CLI (netplan v2, not

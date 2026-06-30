@@ -470,6 +470,9 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/default-network", clusterH.SetDefaultNetwork)
 				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Delete("/default-network", clusterH.ClearDefaultNetwork)
 
+				r.With(middleware.RequirePermission(auth.PermClusterRead, deps.Logger)).Get("/ssh-ingress", clusterH.GetSSHIngress)
+				r.With(middleware.RequirePermission(auth.PermClusterManage, deps.Logger)).Put("/ssh-ingress", clusterH.SetSSHIngress)
+
 				// etcd cluster membership admin. cluster:manage gates both
 				// the inspection read and the member eviction - the routes
 				// surface raw etcd topology, an operator-only concern.

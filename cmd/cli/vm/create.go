@@ -33,6 +33,7 @@ const (
 	flagUserDataPath     = "user-data"
 	flagNetworkConfig    = "network-config"
 	flagCloudInitDisable = "no-cloud-init"
+	flagSSHIngress       = "ssh-ingress"
 
 	defaultVCPUs    = 2
 	defaultMemoryMB = 2048
@@ -111,6 +112,8 @@ and the agent falls back to legacy SLIRP networking.`,
 		"path to a cloud-init network-config YAML (netplan v2); use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
 	cmd.Flags().Bool(flagCloudInitDisable, false,
 		"explicitly disable cloud-init for this VM. Mutually exclusive with --user-data and --network-config.")
+	cmd.Flags().Bool(flagSSHIngress, false,
+		"opt this VM into SSH ingress (trusts the cluster SSH user-CA at create). Requires cloud-init; mutually exclusive with --no-cloud-init. No-op unless SSH ingress is enabled cluster-wide.")
 	cmd.Flags().Bool(flagWait, false, "block until the VM reaches the running phase")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
@@ -144,6 +147,7 @@ type createFlags struct {
 	userData          *string
 	networkConfig     *string
 	cloudInitDisabled bool
+	sshIngress        bool
 	wait              bool
 	timeout           time.Duration
 }
@@ -242,6 +246,9 @@ func parseCloudInitFlags(cmd *cobra.Command, f *createFlags) error {
 	if f.cloudInitDisabled, err = cmd.Flags().GetBool(flagCloudInitDisable); err != nil {
 		return err
 	}
+	if f.sshIngress, err = cmd.Flags().GetBool(flagSSHIngress); err != nil {
+		return err
+	}
 	if f.userData, err = readCloudInitFlag(cmd, flagUserDataPath, true); err != nil {
 		return err
 	}
@@ -251,6 +258,13 @@ func parseCloudInitFlags(cmd *cobra.Command, f *createFlags) error {
 	if f.cloudInitDisabled && (f.userData != nil || f.networkConfig != nil) {
 		return fmt.Errorf("--%s is mutually exclusive with --%s and --%s",
 			flagCloudInitDisable, flagUserDataPath, flagNetworkConfig)
+	}
+	// SSH ingress provisions the guest through cloud-init, so it cannot be
+	// combined with an explicit cloud-init disable (the server also rejects
+	// this with 400; failing here avoids a round-trip).
+	if f.sshIngress && f.cloudInitDisabled {
+		return fmt.Errorf("--%s is mutually exclusive with --%s",
+			flagSSHIngress, flagCloudInitDisable)
 	}
 	return nil
 }
@@ -328,6 +342,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		UserData:          f.userData,
 		NetworkConfig:     f.networkConfig,
 		CloudInitDisabled: f.cloudInitDisabled,
+		SSHIngressEnabled: f.sshIngress,
 	}
 	if f.fromSnapshot != "" {
 		// Snapshot-source mode: forward only the provenance; architecture /

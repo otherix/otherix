@@ -3747,6 +3747,74 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/cluster/ssh-ingress:
+    get:
+      operationId: cluster.getSSHIngress
+      tags: [cluster]
+      summary: Get the cluster SSH-ingress configuration.
+      description: |
+        Returns the cluster-wide SSH-ingress master switch and the DNS
+        suffix VM hostnames are addressed under, held in the
+        `cluster_settings` singleton. An unconfigured cluster reports
+        `enabled: false` with an empty `cluster_suffix`.
+
+        **Required permission:** `cluster:read` (every role).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Cluster SSH-ingress configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterSSHIngress"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      operationId: cluster.setSSHIngress
+      tags: [cluster]
+      summary: Set the cluster SSH-ingress configuration (admin only).
+      description: |
+        Sets the SSH-ingress master switch and DNS suffix. Enabling
+        requires a non-empty, valid DNS-domain `cluster_suffix` (the
+        connector bundle and cert-mint address a VM under it); a missing
+        or malformed suffix returns 400 `validation_failed`. Disabling
+        (`enabled: false`) clears the requirement.
+
+        **Required permission:** `cluster:manage` (admin only).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetSSHIngressRequest"
+      responses:
+        "200":
+          description: Cluster SSH-ingress configuration set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterSSHIngress"
+        "400":
+          description: |
+            The request body is malformed, or `enabled` is true with an
+            empty `cluster_suffix`, or `cluster_suffix` is not a valid DNS
+            domain. The error `code` is `validation_failed`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/cluster/default-artifact-pool:
     get:
       operationId: cluster.getDefaultArtifactPool
@@ -6439,6 +6507,36 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+
+    ClusterSSHIngress:
+      type: object
+      required: [enabled, cluster_suffix]
+      description: |
+        Singleton cluster SSH-ingress configuration. `enabled` is the
+        cluster-wide master switch VM create consults before provisioning
+        a guest to trust the cluster SSH user-CA; `cluster_suffix` is the
+        DNS suffix SSH-ingress VM hostnames are addressed under (empty
+        until the operator sets it).
+      properties:
+        enabled:
+          type: boolean
+        cluster_suffix:
+          type: string
+          maxLength: 253
+
+    SetSSHIngressRequest:
+      type: object
+      required: [enabled]
+      description: |
+        Body of `PUT /v1/cluster/ssh-ingress`. When `enabled` is true,
+        `cluster_suffix` is required and must be a valid DNS domain. A
+        non-empty `cluster_suffix` is validated even when disabling.
+      properties:
+        enabled:
+          type: boolean
+        cluster_suffix:
+          type: string
+          maxLength: 253
 
     StoragePoolList:
       type: object

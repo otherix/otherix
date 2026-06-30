@@ -114,7 +114,7 @@ var vmSpecKeys = map[string]bool{
 	"imagePullPolicy": true,
 	"diskGiB":         true, "vcpus": true, "memoryMB": true, "pool": true,
 	"network": true, "node": true, "userData": true, "networkConfig": true,
-	"cloudInitDisabled": true,
+	"cloudInitDisabled": true, "sshIngressEnabled": true,
 }
 
 // DecodeVMSpec decodes and validates a VM document's spec. Exactly one
@@ -157,6 +157,9 @@ func DecodeVMSpec(d Document) (VMSpec, error) {
 	}
 	if s.NetworkConfig != "" && s.CloudInitDisabled {
 		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.networkConfig and spec.cloudInitDisabled are mutually exclusive", d.Index, d.Name)
+	}
+	if s.SSHIngressEnabled && s.CloudInitDisabled {
+		return VMSpec{}, fmt.Errorf("manifest: document %d (VM/%s): spec.sshIngressEnabled and spec.cloudInitDisabled are mutually exclusive", d.Index, d.Name)
 	}
 	return s, nil
 }

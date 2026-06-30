@@ -38,6 +38,39 @@ func TestValidateDNSLabel(t *testing.T) {
 	}
 }
 
+func TestValidateDNSDomain(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "single label", input: "local", wantErr: false},
+		{name: "two labels", input: "ssh.otherix.local", wantErr: false},
+		{name: "deep", input: "vms.cluster.example.com", wantErr: false},
+		{name: "label with hyphen", input: "ssh-ingress.example.com", wantErr: false},
+		{name: "numeric label", input: "1.example.com", wantErr: false},
+		{name: "empty", input: "", wantErr: true},
+		{name: "leading dot", input: ".example.com", wantErr: true},
+		{name: "trailing dot", input: "example.com.", wantErr: true},
+		{name: "double dot", input: "ssh..example.com", wantErr: true},
+		{name: "uppercase", input: "SSH.example.com", wantErr: true},
+		{name: "underscore", input: "ssh_x.example.com", wantErr: true},
+		{name: "space", input: "ssh x.example.com", wantErr: true},
+		{name: "leading hyphen label", input: "-ssh.example.com", wantErr: true},
+		{name: "trailing hyphen label", input: "ssh-.example.com", wantErr: true},
+		{name: "label too long", input: strings.Repeat("a", DNSLabelMaxLength+1) + ".com", wantErr: true},
+		{name: "domain too long", input: strings.Repeat("a.", 130) + "com", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateDNSDomain(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateDNSDomain(%q) err = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateVMNameAndNodeNameDelegate(t *testing.T) {
 	if err := ValidateVMName("vmlc-smoke"); err != nil {
 		t.Errorf("ValidateVMName(%q) err = %v, want nil", "vmlc-smoke", err)

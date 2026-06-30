@@ -92,4 +92,9 @@ type VMSpec struct {
 	UserData          string `yaml:"userData"`
 	NetworkConfig     string `yaml:"networkConfig"`
 	CloudInitDisabled bool   `yaml:"cloudInitDisabled"`
+	// SSHIngressEnabled mirrors the API ssh_ingress_enabled per-VM opt-in.
+	// Mutually exclusive with CloudInitDisabled. Create-time only; like
+	// CloudInitDisabled the live VM view does not surface it, so it is
+	// manifest-input-expressible but not emitted by `get -o yaml`.
+	SSHIngressEnabled bool `yaml:"sshIngressEnabled"`
 }

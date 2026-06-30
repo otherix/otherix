@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -35,6 +36,32 @@ func ValidateDNSLabel(s string) error {
 	}
 	if !dnsLabelRe.MatchString(s) {
 		return fmt.Errorf("invalid name %q (must be a lowercase RFC 1123 DNS label: [a-z0-9] and '-', start and end alphanumeric, max %d)", s, DNSLabelMaxLength)
+	}
+	return nil
+}
+
+// DNSDomainMaxLength bounds an RFC 1035 DNS domain name (the textual
+// representation, excluding the trailing dot).
+const DNSDomainMaxLength = 253
+
+// ValidateDNSDomain returns nil when s is a valid lowercase DNS domain
+// name: one or more RFC 1123 DNS labels joined by '.', each label
+// 1..63 runes of [a-z0-9] and '-' starting and ending alphanumeric,
+// the whole name at most 253 runes and carrying no leading, trailing,
+// or empty label. Lowercase-only mirrors ValidateDNSLabel: the value
+// becomes a host-suffix component in case-insensitive DNS and cert
+// SANs, so uppercase is rejected up front to avoid collisions.
+func ValidateDNSDomain(s string) error {
+	if s == "" {
+		return errors.New("domain is required")
+	}
+	if utf8.RuneCountInString(s) > DNSDomainMaxLength {
+		return fmt.Errorf("domain is too long (max %d characters)", DNSDomainMaxLength)
+	}
+	for _, label := range strings.Split(s, ".") {
+		if !dnsLabelRe.MatchString(label) || utf8.RuneCountInString(label) > DNSLabelMaxLength {
+			return fmt.Errorf("invalid domain %q (each label must be a lowercase RFC 1123 DNS label: [a-z0-9] and '-', start and end alphanumeric, max %d)", s, DNSLabelMaxLength)
+		}
 	}
 	return nil
 }

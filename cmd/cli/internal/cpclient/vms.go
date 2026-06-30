@@ -83,6 +83,12 @@ type CreateVMRequest struct {
 	// the JSON encoder skip the default-false case so existing handlers
 	// that decode the historical wire shape still parse cleanly.
 	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
+	// SSHIngressEnabled opts the VM into SSH ingress: when true (and the
+	// cluster master switch is on and a cluster SSH user-CA exists) the CP
+	// provisions the guest to trust the cluster SSH user-CA. Mutually
+	// exclusive with CloudInitDisabled. omitempty keeps the default-false
+	// case off the wire.
+	SSHIngressEnabled bool `json:"ssh_ingress_enabled,omitempty"`
 }
 
 // VM mirrors the response shape internal/api/handlers/vms.toView
