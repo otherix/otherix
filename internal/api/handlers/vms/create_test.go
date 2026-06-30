@@ -384,6 +384,131 @@ func TestResolveCreateUserData_SSHCACoexistence(t *testing.T) {
 	}
 }
 
+// TestResolveCreateUserData_OperatorMIME is the B2 assertion: when the
+// operator's OWN user-data is already a multipart-MIME archive, the SSH-ingress
+// assembly must NOT mislabel it as an opaque text/cloud-config body (which makes
+// cloud-init feed the operator's Content-Type/boundary header lines to the YAML
+// parser, silently dropping the operator's payload). The operator's nested
+// text/cloud-config `users:` leaf must remain reachable through a MIME walk, and
+// the injected TrustedUserCAKeys must coexist.
+func TestResolveCreateUserData_OperatorMIME(t *testing.T) {
+	t.Parallel()
+
+	// An operator-hand-crafted multipart-MIME user-data: one text/cloud-config
+	// part with a users: block.
+	operator := buildOperatorMultipart(t, "#cloud-config\nusers:\n  - name: operator-user\n")
+	h := &Handler{store: &sshUserDataStoreStub{
+		settings: store.ClusterSetting{SSHIngressEnabled: true},
+		ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
+	}, log: discardLog()}
+
+	req := vmCreateRequest{UserData: &operator, SSHIngressEnabled: true}
+	rec := httptest.NewRecorder()
+	got, ok := h.resolveCreateUserData(rec, fakeRequest(), req)
+	if !ok {
+		t.Fatalf("resolveCreateUserData ok = false, want true (body: %s)", rec.Body.String())
+	}
+	if got == nil {
+		t.Fatal("resolveCreateUserData returned nil user-data, want multipart MIME")
+	}
+
+	leaves := walkMIMELeaves(t, *got)
+
+	var sawOperatorUsers, sawCATrust bool
+	for _, leaf := range leaves {
+		if strings.Contains(leaf.body, "name: operator-user") {
+			sawOperatorUsers = true
+			// The operator's cloud-config must surface as a cloud-config leaf, not
+			// be buried inside a body that still carries raw MIME header lines.
+			if !strings.HasPrefix(leaf.mediaType, "text/cloud-config") {
+				t.Errorf("operator users: leaf media type = %q, want text/cloud-config", leaf.mediaType)
+			}
+			if strings.Contains(leaf.body, "Content-Type:") || strings.Contains(leaf.body, "boundary=") {
+				t.Errorf("operator MIME header lines leaked into a cloud-config body:\n%s", leaf.body)
+			}
+		}
+		if strings.Contains(leaf.body, "TrustedUserCAKeys") {
+			sawCATrust = true
+		}
+	}
+	if !sawOperatorUsers {
+		t.Errorf("operator users: block not reachable through MIME walk; leaves: %+v", leaves)
+	}
+	if !sawCATrust {
+		t.Errorf("injected TrustedUserCAKeys not reachable through MIME walk; leaves: %+v", leaves)
+	}
+}
+
+// buildOperatorMultipart wraps a single cloud-config document into a
+// multipart/mixed MIME archive shaped the way a real operator user-data would
+// arrive (leading Content-Type / MIME-Version headers).
+func buildOperatorMultipart(t *testing.T, cloudConfig string) string {
+	t.Helper()
+	var body strings.Builder
+	mw := multipart.NewWriter(&body)
+	pw, err := mw.CreatePart(map[string][]string{
+		"Content-Type": {"text/cloud-config; charset=\"utf-8\""},
+		"MIME-Version": {"1.0"},
+	})
+	if err != nil {
+		t.Fatalf("create operator part: %v", err)
+	}
+	if _, err := io.WriteString(pw, cloudConfig); err != nil {
+		t.Fatalf("write operator part: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close operator writer: %v", err)
+	}
+	return "Content-Type: multipart/mixed; boundary=\"" + mw.Boundary() + "\"\n" +
+		"MIME-Version: 1.0\n\n" + body.String()
+}
+
+// mimeLeaf is a non-multipart MIME part collected by walkMIMELeaves.
+type mimeLeaf struct {
+	mediaType string
+	body      string
+}
+
+// walkMIMELeaves recursively descends a NoCloud MIME user-data blob and returns
+// every non-multipart leaf part (media type + decoded body), so a test can
+// assert what cloud-init would ultimately process.
+func walkMIMELeaves(t *testing.T, userData string) []mimeLeaf {
+	t.Helper()
+	msg, err := mail.ReadMessage(strings.NewReader(userData))
+	if err != nil {
+		t.Fatalf("parse user-data MIME headers: %v\n%s", err, userData)
+	}
+	return walkMIMEReader(t, msg.Header.Get("Content-Type"), msg.Body)
+}
+
+func walkMIMEReader(t *testing.T, contentType string, r io.Reader) []mimeLeaf {
+	t.Helper()
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("parse Content-Type %q: %v", contentType, err)
+	}
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		b, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read leaf body: %v", err)
+		}
+		return []mimeLeaf{{mediaType: mediaType, body: string(b)}}
+	}
+	var leaves []mimeLeaf
+	mr := multipart.NewReader(r, params["boundary"])
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read multipart part: %v", err)
+		}
+		leaves = append(leaves, walkMIMEReader(t, p.Header.Get("Content-Type"), p)...)
+	}
+	return leaves
+}
+
 // TestResolveCreateUserData_Passthrough covers the fail-open paths: when SSH
 // ingress is not requested, not enabled cluster-wide, or the CA is absent, the
 // operator user-data is returned unchanged (no multipart wrapping).

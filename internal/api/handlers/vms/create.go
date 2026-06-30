@@ -15,6 +15,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/textproto"
 	"strings"
 
@@ -805,21 +806,29 @@ func buildSSHCATrustUserData(operatorUserData string, caAuthorizedKey []byte) (s
 		return otxDoc, nil
 	}
 
+	opHdr, opBody, err := operatorMIMEPart(operatorUserData)
+	if err != nil {
+		return "", err
+	}
+	otxHdr := textproto.MIMEHeader{}
+	otxHdr.Set("Content-Type", "text/cloud-config; charset=\"utf-8\"")
+	otxHdr.Set("MIME-Version", "1.0")
+
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	parts := []struct{ contentType, content string }{
-		{cloudInitPartContentType(operatorUserData), operatorUserData},
-		{"text/cloud-config; charset=\"utf-8\"", otxDoc},
+	parts := []struct {
+		hdr  textproto.MIMEHeader
+		body string
+	}{
+		{opHdr, opBody},
+		{otxHdr, otxDoc},
 	}
 	for _, p := range parts {
-		hdr := textproto.MIMEHeader{}
-		hdr.Set("Content-Type", p.contentType)
-		hdr.Set("MIME-Version", "1.0")
-		pw, err := mw.CreatePart(hdr)
+		pw, err := mw.CreatePart(p.hdr)
 		if err != nil {
 			return "", fmt.Errorf("create mime part: %v", err)
 		}
-		if _, err := io.WriteString(pw, p.content); err != nil {
+		if _, err := io.WriteString(pw, p.body); err != nil {
 			return "", fmt.Errorf("write mime part: %v", err)
 		}
 	}
@@ -859,10 +868,61 @@ func otherixSSHCACloudConfig(caAuthorizedKey []byte) string {
 	return b.String()
 }
 
-// cloudInitPartContentType maps an operator user-data document to the MIME
-// content type cloud-init expects for it, keyed off the leading line the way
-// cloud-init's own format detection is. An unrecognised document is carried as
-// #cloud-config, the common case for a VM-level override.
+// operatorMIMEPart returns the MIME header and body to carry the operator's
+// user-data as one part of the SSH-ingress multipart archive.
+//
+// For the common non-MIME document (#cloud-config, #!, #cloud-boothook,
+// #include, ...) the part Content-Type is keyed off the leading marker and the
+// body is the document verbatim.
+//
+// When the operator's user-data is ITSELF a MIME archive (its first line is a
+// `Content-Type:` / `MIME-Version:` header, e.g. a hand-crafted
+// multipart/mixed), labeling it text/cloud-config would make cloud-init feed its
+// header / boundary lines to the YAML parser, silently dropping the operator's
+// payload (finding B2). Instead its own top-level headers are lifted onto the
+// part and the message body becomes the part body, so cloud-init recurses into
+// the operator's nested parts rather than mis-parsing the archive.
+func operatorMIMEPart(operatorUserData string) (textproto.MIMEHeader, string, error) {
+	if isMIMEUserData(operatorUserData) {
+		msg, err := mail.ReadMessage(strings.NewReader(operatorUserData))
+		if err != nil {
+			return nil, "", fmt.Errorf("parse operator mime user-data: %v", err)
+		}
+		body, err := io.ReadAll(msg.Body)
+		if err != nil {
+			return nil, "", fmt.Errorf("read operator mime body: %v", err)
+		}
+		ct := msg.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "text/plain; charset=\"utf-8\""
+		}
+		hdr := textproto.MIMEHeader{}
+		hdr.Set("Content-Type", ct)
+		hdr.Set("MIME-Version", "1.0")
+		return hdr, string(body), nil
+	}
+	hdr := textproto.MIMEHeader{}
+	hdr.Set("Content-Type", cloudInitPartContentType(operatorUserData))
+	hdr.Set("MIME-Version", "1.0")
+	return hdr, operatorUserData, nil
+}
+
+// isMIMEUserData reports whether the user-data is itself a pre-formed MIME
+// archive, detected by a leading MIME header line the way cloud-init's own
+// format detection is (mirrors internal/agent/cloudinit.isMIMEUserData).
+// cloud-init treats user-data beginning with a `Content-Type:` or
+// `MIME-Version:` header as a MIME message rather than a #cloud-config document.
+func isMIMEUserData(userData string) bool {
+	trimmed := strings.TrimSpace(userData)
+	return strings.HasPrefix(trimmed, "Content-Type:") ||
+		strings.HasPrefix(trimmed, "MIME-Version:")
+}
+
+// cloudInitPartContentType maps a non-MIME operator user-data document to the
+// MIME content type cloud-init expects for it, keyed off the leading line the
+// way cloud-init's own format detection is. An unrecognised document is carried
+// as #cloud-config, the common case for a VM-level override. The operator-MIME
+// case is handled by operatorMIMEPart before this is reached.
 func cloudInitPartContentType(userData string) string {
 	head := userData
 	if i := strings.IndexByte(head, '\n'); i >= 0 {
@@ -876,6 +936,10 @@ func cloudInitPartContentType(userData string) string {
 		return "text/cloud-boothook; charset=\"utf-8\""
 	case strings.HasPrefix(head, "#include"):
 		return "text/x-include-url; charset=\"utf-8\""
+	case strings.HasPrefix(head, "#cloud-config-archive"):
+		return "text/cloud-config-archive; charset=\"utf-8\""
+	case strings.HasPrefix(head, "#part-handler"):
+		return "text/part-handler; charset=\"utf-8\""
 	default:
 		return "text/cloud-config; charset=\"utf-8\""
 	}
