@@ -392,6 +392,36 @@ func (r *responder) handle(srv *bridgeServer, payload []byte) {
 // DHCP broadcast flag (it has no unicast address to receive on yet).
 var broadcastMAC = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
+// LookupByMAC returns the CP-IPAM lease IP this agent serves for mac, across
+// all active bridges. mac is canonicalized via net.ParseMAC so callers may pass
+// any textual form; the snapshot is keyed by net.HardwareAddr.String(). This is
+// the agent's own DHCP state - the ssh-pipe handler's anti-SSRF IP source: the
+// dialed IP comes from here (a lease the agent itself serves), never from the
+// request.
+func (r *responder) LookupByMAC(mac string) (netip.Addr, bool) {
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	key := hw.String()
+
+	r.mu.Lock()
+	servers := make([]*bridgeServer, 0, len(r.nets))
+	for _, s := range r.nets {
+		servers = append(servers, s)
+	}
+	r.mu.Unlock()
+
+	for _, s := range servers {
+		if snap := s.snap.Load(); snap != nil {
+			if res, ok := snap.byMAC[key]; ok && res.IP.IsValid() {
+				return res.IP, true
+			}
+		}
+	}
+	return netip.Addr{}, false
+}
+
 // buildSnapshot builds the immutable serving snapshot for a network config.
 func buildSnapshot(cfg NetworkConfig) *snapshot {
 	byMAC := make(map[string]Reservation, len(cfg.Reservations))

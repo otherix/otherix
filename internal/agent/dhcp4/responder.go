@@ -40,6 +40,10 @@ type NetworkConfig struct {
 type Responder interface {
 	RegisterNetwork(cfg NetworkConfig) error
 	DeregisterNetwork(networkID string) error
+	// LookupByMAC returns the lease IP this agent serves for mac across all
+	// active bridges, canonicalizing mac via net.ParseMAC. It is the agent's
+	// own DHCP state and the ssh-pipe handler's anti-SSRF IP source.
+	LookupByMAC(mac string) (netip.Addr, bool)
 }
 
 // ReplyOptions are the anycast constants every reply carries (overlay gateway).

@@ -179,7 +179,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// drives this same Sender's loop.
 	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, log)
 
-	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, nudgerFor(sender), blobsHandler)
+	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -692,7 +692,7 @@ func (noopNudger) Nudge() {}
 // goroutines inherit r.Context() and would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
 // below opts back in via a Group.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, dhcpResponder dhcp4.Responder, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -709,13 +709,14 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 			response.CodeMethodNotAllowed, "method not allowed for this resource", nil)
 	})
 
-	vmsHandler := vmshandlers.New(manager, consoleTokens, log, cfg.Migration.Host)
+	vmsHandler := vmshandlers.New(manager, consoleTokens, log, cfg.Migration.Host, dhcpResponder)
 	tasksHandler := taskshandlers.New(manager, log)
 	storagePoolsHandler := storagepoolshandlers.New(manager, log)
 
 	// Streaming endpoints - registered before the Timeout Group below.
 	// Hijacked http.Server deadlines also cleared inside each handler.
 	r.Get("/v1/vms/{vm_name}/console-stream", vmsHandler.ConsoleStream)
+	r.Get("/v1/vms/{vm_name}/ssh-pipe", vmsHandler.SSHPipe)
 	r.Get("/v1/vms/{vm_name}/logs", vmsHandler.Logs)
 
 	r.Group(func(r chi.Router) {

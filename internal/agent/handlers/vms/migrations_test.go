@@ -52,7 +52,7 @@ func newTestVMsServer(t *testing.T) *httptest.Server {
 		t.Fatalf("AddPool: %v", err)
 	}
 
-	h := New(m, console.NewTokenStore(), discardLogger(), cfg.Migration.Host)
+	h := New(m, console.NewTokenStore(), discardLogger(), cfg.Migration.Host, nil)
 	r := chi.NewRouter()
 	r.Route("/v1/vms", h.Mount)
 	return httptest.NewServer(r)

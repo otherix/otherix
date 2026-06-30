@@ -3,6 +3,11 @@
 
 package dhcp4
 
+import (
+	"net"
+	"net/netip"
+)
+
 // FakeResponder is a Spy implementation of Responder for tests. It records
 // every call into an exported slice and returns a configurable error per
 // method via Errs, keyed by method name (nil or absent => success).
@@ -11,6 +16,10 @@ type FakeResponder struct {
 	// Errs maps a method name ("RegisterNetwork"/"DeregisterNetwork") to the
 	// error that method returns. A nil or absent entry means success.
 	Errs map[string]error
+
+	// Leases maps a canonical MAC string (net.HardwareAddr.String() form) to
+	// the IP LookupByMAC returns; an absent entry is a miss.
+	Leases map[string]netip.Addr
 
 	RegisterCalls   []NetworkConfig
 	DeregisterCalls []string
@@ -33,6 +42,17 @@ func (f *FakeResponder) RegisterNetwork(cfg NetworkConfig) error {
 func (f *FakeResponder) DeregisterNetwork(networkID string) error {
 	f.DeregisterCalls = append(f.DeregisterCalls, networkID)
 	return f.err("DeregisterNetwork")
+}
+
+// LookupByMAC returns Leases[mac], canonicalizing mac via net.ParseMAC to
+// match the production responder.
+func (f *FakeResponder) LookupByMAC(mac string) (netip.Addr, bool) {
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	ip, ok := f.Leases[hw.String()]
+	return ip, ok
 }
 
 // Ensure FakeResponder satisfies Responder at compile time.
