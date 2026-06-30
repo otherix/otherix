@@ -186,6 +186,15 @@ func (s *Store) listGatewayMembershipsForNetworkAtRev(ctx context.Context, netwo
 	if err != nil {
 		return nil, err
 	}
+	// Pin the row reads to the same revision the index was read at, so a
+	// membership deleted after rev is not silently dropped as a torn read. For a
+	// historical read (rev>0) that is rev itself; for the latest read (rev==0)
+	// it is the revision the index range observed, since etcd's response header
+	// always reports the store's current revision, never the requested one.
+	readRev := rev
+	if readRev == 0 {
+		readRev = idxRev
+	}
 	out := make([]store.GatewayMembership, 0, len(idxItems))
 	for _, kv := range idxItems {
 		gatewayID, perr := uuid.Parse(string(kv.Value))
@@ -193,7 +202,7 @@ func (s *Store) listGatewayMembershipsForNetworkAtRev(ctx context.Context, netwo
 			continue
 		}
 		var m store.GatewayMembership
-		found, gerr := s.c.GetJSONAtRev(ctx, gatewayMembershipKey(gatewayID, networkID), idxRev, &m)
+		found, gerr := s.c.GetJSONAtRev(ctx, gatewayMembershipKey(gatewayID, networkID), readRev, &m)
 		if gerr != nil {
 			return nil, gerr
 		}

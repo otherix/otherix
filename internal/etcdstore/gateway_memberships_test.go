@@ -114,6 +114,57 @@ func TestCreateGatewayMembershipSkipsVMHeldIP(t *testing.T) {
 	}
 }
 
+// TestListGatewayMembershipsForNetworkAtRevPinsRows asserts the pinned-read path
+// reads membership rows at the SAME revision as the per-network index. A
+// membership that existed at the captured revision but was deleted afterward
+// must still be listed when read at that revision: index and rows must reflect
+// one consistent snapshot, never a torn read where the index lists a row the
+// row-read then drops as not-found at current.
+func TestListGatewayMembershipsForNetworkAtRevPinsRows(t *testing.T) {
+	s, raw := startStore(t)
+	ctx := context.Background()
+	net := overlayNet(t, s, "10.64.0.0/24")
+	gw := uuid.New()
+
+	m, err := s.CreateGatewayMembership(ctx, gw, net.ID)
+	if err != nil {
+		t.Fatalf("CreateGatewayMembership: %v", err)
+	}
+
+	// Capture the store revision after the membership exists.
+	_, capturedRev, err := raw.RangeRev(ctx, etcd.KeyPrefix, 0)
+	if err != nil {
+		t.Fatalf("capture revision: %v", err)
+	}
+
+	// Delete the membership AFTER the captured revision.
+	if err := s.DeleteGatewayMembership(ctx, gw, net.ID); err != nil {
+		t.Fatalf("DeleteGatewayMembership: %v", err)
+	}
+
+	// Read pinned to the captured revision: the membership existed then, so it
+	// must still be returned even though it is gone at the current revision.
+	got, err := s.ListGatewayMembershipsForNetworkAtRev(ctx, net.ID, capturedRev)
+	if err != nil {
+		t.Fatalf("ListGatewayMembershipsForNetworkAtRev: %v", err)
+	}
+	if len(got) != 1 || got[0].GatewayID != gw {
+		t.Errorf("ListAtRev(%d) = %+v, want one row for gw %v", capturedRev, got, gw)
+	}
+	if len(got) == 1 && got[0].TenantIP != m.TenantIP {
+		t.Errorf("ListAtRev TenantIP = %v, want %v", got[0].TenantIP, m.TenantIP)
+	}
+
+	// The latest read (rev==0) must still reflect the deletion.
+	latest, err := s.ListGatewayMembershipsForNetwork(ctx, net.ID)
+	if err != nil {
+		t.Fatalf("ListGatewayMembershipsForNetwork: %v", err)
+	}
+	if len(latest) != 0 {
+		t.Errorf("ListForNetwork latest = %+v, want empty after delete", latest)
+	}
+}
+
 func TestGatewayMembershipListAndDelete(t *testing.T) {
 	s, raw := startStore(t)
 	ctx := context.Background()
