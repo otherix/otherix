@@ -119,6 +119,16 @@ type Store interface {
 	// signs short-lived guest user-certs with; store.ErrNotFound when no
 	// SSH user-CA has been provisioned.
 	ActiveSSHUserCA(ctx context.Context) (store.SSHUserCA, error)
+	// ActiveSessionCA returns the cluster ingress-session CA the ingress
+	// broker signs short-lived session credentials with; store.ErrNotFound
+	// when none has been provisioned.
+	ActiveSessionCA(ctx context.Context) (store.SessionCA, error)
+	// The following three reads make the handler satisfy
+	// gateways.GatewaySelectStore so the ingress broker can pass the store
+	// directly to gateways.SelectGatewayForVM.
+	AllNodes(ctx context.Context) ([]store.Node, error)
+	ListGatewayMembershipsForNetwork(ctx context.Context, networkID uuid.UUID) ([]store.GatewayMembership, error)
+	ListNetworkNodeStatusByNetwork(ctx context.Context, networkID uuid.UUID) ([]store.NetworkNodeStatus, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
