@@ -23,6 +23,7 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
+	gatewayshandlers "github.com/otherix/otherix/internal/api/handlers/gateways"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
@@ -632,6 +633,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 
 	s.Register("node.drain.reconcile", 2*time.Minute, false,
 		nodeshandlers.DrainReconcileFunc(st, log))
+
+	s.Register("gateway.reconcile", positiveOr(cfg.Workers.PlacementReconcile.Interval, 30*time.Second), true,
+		gatewayshandlers.ReconcileFunc(st, gatewayshandlers.ReconcileConfig{}, log))
 
 	s.Register("artifact.saga.retention",
 		positiveOr(cfg.Workers.ArtifactSagaRetention.Interval, time.Hour), false,
