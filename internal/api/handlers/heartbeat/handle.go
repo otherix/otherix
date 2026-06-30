@@ -293,7 +293,7 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 		return err
 	}
 	outcome.declaredVMs = declaredVMs
-	declaredNetworks, err := h.loadDeclaredNetworks(ctx, hp)
+	declaredNetworks, err := h.loadDeclaredNetworks(ctx, hp, nodeID)
 	if err != nil {
 		return err
 	}
@@ -608,13 +608,17 @@ func (h *Handler) loadDeclaredPools(ctx context.Context, hp store.HeartbeatProje
 // are NOT node-scoped: ListNetworks returns every non-deleted network and
 // the same set is handed to every node. Sorted by id so the agent's diff
 // against observed bridges stays deterministic across heartbeats.
-func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatProjection) ([]declaredNetwork, error) {
+func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) ([]declaredNetwork, error) {
 	rows, err := hp.ListNetworks(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list networks: %v", err)
 	}
 	if len(rows) == 0 {
 		return nil, nil
+	}
+	gwAddrs, err := h.gatewayAddrsForNode(ctx, hp, nodeID)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]declaredNetwork, 0, len(rows))
 	for _, row := range rows {
@@ -626,9 +630,41 @@ func (h *Handler) loadDeclaredNetworks(ctx context.Context, hp store.HeartbeatPr
 			}
 			dn.Reservations = reservationsFromNICs(nics)
 		}
+		if ga, ok := gwAddrs[row.ID]; ok {
+			dn.GatewayAddr = ga
+		}
 		out = append(out, dn)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// gatewayAddrsForNode returns the per-network tenant IP + unicast MAC the
+// heartbeating node must own as an ingress gateway, keyed by network id. It is
+// non-empty only when the node is a gateway: a gateway covers one or more
+// overlay networks (its memberships), and on each it claims a tenant IP + a
+// distinct unicast MAC so the host originates at the tenant IP and the bridge
+// owns the MAC advertised to peers. A hypervisor node holds no memberships and
+// gets an empty map (nil gateway_addr on every network).
+func (h *Handler) gatewayAddrsForNode(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) (map[uuid.UUID]*gatewayAddr, error) {
+	node, err := hp.NodeByID(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("node by id %s: %v", nodeID, err)
+	}
+	if node.Kind != store.NodeKindGateway {
+		return nil, nil
+	}
+	memberships, err := hp.ListGatewayMembershipsForGateway(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list gateway memberships for %s: %v", nodeID, err)
+	}
+	if len(memberships) == 0 {
+		return nil, nil
+	}
+	out := make(map[uuid.UUID]*gatewayAddr, len(memberships))
+	for _, m := range memberships {
+		out[m.NetworkID] = &gatewayAddr{IP: m.TenantIP.String(), MAC: m.MAC.String()}
+	}
 	return out, nil
 }
 

@@ -342,6 +342,22 @@ func (s *Store) overlayPlacementsForNetwork(ctx context.Context, n store.Network
 			NodeID: *rt.CurrentNodeID,
 		})
 	}
+	// A gateway covers an overlay network without hosting a VM, so its membership
+	// is projected as a synthetic placement keyed on the gateway node id. This
+	// makes peers learn the gateway VTEP and MAC through the same FDB join the NIC
+	// placements feed, and the gateway node becomes a peer/nudge target for free.
+	// Read at the same pinned rev so the gateway rows share the projection snapshot.
+	gwMembers, err := s.ListGatewayMembershipsForNetworkAtRev(ctx, n.ID, rev)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range gwMembers {
+		out = append(out, store.OverlayNICPlacement{
+			VNI:    *n.VNI,
+			Mac:    m.MAC,
+			NodeID: m.GatewayID,
+		})
+	}
 	return out, nil
 }
 

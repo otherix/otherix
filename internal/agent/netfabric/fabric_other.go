@@ -80,6 +80,11 @@ func (unsupportedFabric) EnsureAnycastGateway(string, netip.Addr, net.HardwareAd
 // RemoveAnycastGateway reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) RemoveAnycastGateway(string, netip.Addr) error { return errUnsupported }
 
+// EnsureUnicastGateway reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) EnsureUnicastGateway(string, netip.Prefix, net.HardwareAddr) error {
+	return errUnsupported
+}
+
 // EnsureMasqueradeIface reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureMasqueradeIface(string, string) error { return errUnsupported }
 

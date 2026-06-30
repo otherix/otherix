@@ -361,6 +361,11 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 			}
 			return nil, err
 		}
+		// Gateways terminate ingress and never host VMs - exclude them from every
+		// placement enumeration at this single querier chokepoint.
+		if node.Kind == store.NodeKindGateway {
+			continue
+		}
 		poolEff, err := s.poolEffective(ctx, p)
 		if err != nil {
 			return nil, err

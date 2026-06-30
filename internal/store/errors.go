@@ -49,6 +49,12 @@ var (
 	ErrJoinTokenExhausted    = errors.New("store: join token max_uses exceeded")
 	ErrJoinNodeNameMismatch  = errors.New("store: node name does not match token binding")
 	ErrJoinNodeNameTaken     = errors.New("store: node already has an active cert")
+	// ErrJoinNodeKindMismatch is returned when a redemption would reuse an
+	// existing node row whose kind differs from the kind the token enrolls: a
+	// node's kind is fixed by the token that first claims the name, so a later
+	// redemption for a different kind must not silently reuse (and re-stamp) the
+	// row. Surfaces as a 409 conflict.
+	ErrJoinNodeKindMismatch = errors.New("store: node kind does not match token kind")
 
 	// ErrMigrationActiveExists is returned by CreateMigration when the VM already
 	// has a non-terminal migration: the per-VM active guard key is present, so a
@@ -108,6 +114,17 @@ var (
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
 	ErrSubnetExhausted           = errors.New("store: network subnet exhausted")
+
+	// ErrNetworkNotGatewayEligible is returned by CreateGatewayMembership when the
+	// target network cannot back a gateway: only an overlay network with an
+	// allocated VNI and a subnet carries the VNI and address space a membership
+	// needs.
+	ErrNetworkNotGatewayEligible = errors.New("store: network is not gateway-eligible")
+
+	// ErrGatewayMembershipExists is returned by CreateGatewayMembership when the
+	// gateway already covers the network: the (gateway_id, network_id) row is
+	// present, so a second create loses the create CAS.
+	ErrGatewayMembershipExists = errors.New("store: gateway already a member of network")
 )
 
 // ResourceInUseError reports that a resource cannot be deleted because other

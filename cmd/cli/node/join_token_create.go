@@ -43,6 +43,7 @@ Examples:
 	cmd.Flags().Duration(flagTTL, defaultTokenTTL, "token validity duration (1m..24h)")
 	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = server default of 1)")
 	cmd.Flags().String(flagNodeName, "", "bind token to a specific node identity (forces single-use)")
+	cmd.Flags().String(flagKind, "node", "join kind: node|gateway (cluster tokens use `otherix cluster join-token create`)")
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	return cmd
 }
@@ -55,6 +56,7 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 	ttl, _ := cmd.Flags().GetDuration(flagTTL)
 	maxUses, _ := cmd.Flags().GetInt32(flagMaxUses)
 	nodeName, _ := cmd.Flags().GetString(flagNodeName)
+	kind, _ := cmd.Flags().GetString(flagKind)
 	format, err := outputFormat(cmd, "text")
 	if err != nil {
 		return err
@@ -67,6 +69,19 @@ func runJoinTokenCreate(cmd *cobra.Command, _ []string) error {
 	req := cpclient.CreateJoinTokenRequest{}
 	ttlSeconds := int(ttl.Seconds())
 	req.TTLSeconds = &ttlSeconds
+
+	// --kind selects node (default) or gateway. Cluster tokens are minted by
+	// `otherix cluster join-token create`, so they are rejected here. The
+	// default omits the field entirely so the server applies its node default.
+	switch kind {
+	case "node", "":
+		// Leave req.Kind nil; the server defaults to node.
+	case "gateway":
+		k := kind
+		req.Kind = &k
+	default:
+		return errors.New(`validation_failed: --kind must be "node" or "gateway"`)
+	}
 
 	if maxUses != 0 {
 		if maxUses < 0 {

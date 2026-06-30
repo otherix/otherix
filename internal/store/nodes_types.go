@@ -15,8 +15,11 @@ type CancelActiveMigrationsOnNodeParams struct {
 }
 
 type CreateNodeParams struct {
-	ID                      uuid.UUID
-	Name                    string
+	ID   uuid.UUID
+	Name string
+	// Kind is the node role; empty defaults to NodeKindNode at create time. Not
+	// accepted from the admin create-node request - gateways self-register on join.
+	Kind                    string
 	Architecture            CPUArch
 	AdvertisedEndpoint      string
 	MigrationHost           string

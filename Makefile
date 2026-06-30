@@ -1,6 +1,6 @@
 # ========== Variables ==========
 
-BINARIES        := api agent
+BINARIES        := api agent gateway
 BIN_DIR         := bin
 GO              := go
 GOLANGCI_VERSION := v2.12.2
@@ -182,6 +182,10 @@ smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otheri
 .PHONY: smoke-vm-ssh
 smoke-vm-ssh: ## VM SSH-ingress smoke: real guest login over the relay via `otherix ssh` + external `ssh-grant`/`otherix-ssh` (operator, external, add-vm, revoke; run after local-dev-start)
 	bash dev/smoke/vm-ssh/run.sh
+
+.PHONY: smoke-ingress-gateway
+smoke-ingress-gateway: ## Ingress-gateway smoke: gateway join + L4 forward to a guest on an overlay, session survives a live migration with sub-heartbeat convergence (run after local-dev-start)
+	bash dev/smoke/ingress-gateway/run.sh
 
 .PHONY: smoke-vm-create-redelivery
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)

@@ -227,6 +227,25 @@ func hasCAKeyUsageBits(value []byte) bool {
 //   - Serial: cryptographically-random 64-bit positive integer.
 //   - SignatureAlgorithm: ECDSAWithSHA384 (matches the CA's P-384 key).
 func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
+	return signLeaf(csr, "node-"+nodeName, advertisedEndpoint, caCert, caKey, now)
+}
+
+// SignGatewayCSR signs a validated CSR for a self-registering ingress gateway.
+// It mirrors SignCSR's server-authoritative template but stamps the gateway
+// identity: Subject CN "gateway-<name>" and SAN DNS
+// "gateway-<name>.agents.otherix.local". The advertised endpoint host is added
+// as a SAN exactly as for a node, so the CP can dial the gateway at its real
+// address. Returns the issued cert in PEM form plus the parsed *x509.Certificate.
+func SignGatewayCSR(csr *x509.CertificateRequest, name, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
+	return signLeaf(csr, "gateway-"+name, advertisedEndpoint, caCert, caKey, now)
+}
+
+// signLeaf builds and signs a server-authoritative leaf cert from a validated
+// CSR. commonName is the full Subject CN (e.g. "node-foo" or "gateway-edge1");
+// it also seeds the primary SAN as "<commonName>.agents.otherix.local". The
+// CSR's own Subject / SAN / extensions are ignored entirely (defense-in-depth
+// against CN injection). See SignCSR for the full template-field rationale.
+func signLeaf(csr *x509.CertificateRequest, commonName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
 	serial, err := randomLeafSerial()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate serial: %v", err)
@@ -238,7 +257,7 @@ func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, 
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName: "node-" + nodeName,
+			CommonName: commonName,
 		},
 		NotBefore: notBefore,
 		NotAfter:  notAfter,
@@ -248,7 +267,7 @@ func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, 
 			x509.ExtKeyUsageClientAuth,
 		},
 		DNSNames: []string{
-			"node-" + nodeName + ".agents.otherix.local",
+			commonName + ".agents.otherix.local",
 			"localhost",
 		},
 		IPAddresses:        []net.IP{net.ParseIP("127.0.0.1")},

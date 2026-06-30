@@ -16,6 +16,7 @@ const (
 	flagTTL         = "ttl"
 	flagMaxUses     = "max-uses"
 	flagNodeName    = "node-name"
+	flagKind        = "kind"
 	flagIncExpired  = "include-expired"
 	defaultTokenTTL = time.Hour
 )

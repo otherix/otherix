@@ -226,6 +226,19 @@ type DeclaredNetwork struct {
 	DhcpEnabled  bool              `json:"dhcp"`
 	DNSEnabled   bool              `json:"dns"`
 	Reservations []DhcpReservation `json:"reservations"`
+	// GatewayAddr is the tenant IP + unicast MAC an ingress gateway must own on
+	// this overlay bridge. Non-nil only on a gateway recipient that covers the
+	// network; nil for a hypervisor node.
+	GatewayAddr *GatewayAddr `json:"gateway_addr"`
+}
+
+// GatewayAddr is the tenant-facing address an ingress gateway owns on an overlay
+// bridge: IP is the tenant IP the gateway host originates and answers at, and
+// MAC is the distinct unicast hardware address the bridge claims so return
+// traffic to the MAC advertised in the overlay FDB is delivered locally.
+type GatewayAddr struct {
+	IP  string `json:"ip"`
+	MAC string `json:"mac"`
 }
 
 // DhcpReservation is one MAC->IP binding the CP-IPAM allocated for a NIC on a

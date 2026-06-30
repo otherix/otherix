@@ -90,6 +90,20 @@ type Fabric interface {
 	// bridge or the address is already absent.
 	RemoveAnycastGateway(bridge string, addr netip.Addr) error
 
+	// EnsureUnicastGateway pins mac as the bridge link's hardware address and
+	// assigns addr to it, idempotently. addr carries the overlay subnet's prefix
+	// length (e.g. /24) so the kernel installs an on-link route for the whole
+	// overlay subnet via the bridge, letting the gateway reach guest VMs over the
+	// overlay rather than leaking their traffic out the host default route. It is
+	// the unicast counterpart of EnsureAnycastGateway: an ingress gateway claims a
+	// distinct per-membership unicast MAC drawn from the network's address space -
+	// never the shared anycast MAC, which is identical on every node and can never
+	// be a unicast FDB target - so the host kernel originates and answers at the
+	// tenant addr and return traffic to the MAC advertised in the overlay FDB is
+	// delivered to this bridge. This method owns the bridge hardware address on a
+	// gateway, which therefore does not run the anycast services plane.
+	EnsureUnicastGateway(bridge string, addr netip.Prefix, mac net.HardwareAddr) error
+
 	// EnsureMasqueradeIface installs a masquerade rule for traffic entering via
 	// inIface and leaving via egressIface (empty = host default route),
 	// idempotently. CIDR-independent; used for overlay egress.

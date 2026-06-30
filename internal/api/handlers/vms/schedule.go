@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/netid"
 	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -209,7 +210,7 @@ func buildBindNIC(vm store.VM, nicNetworkID *uuid.UUID) (*store.CreateVMNicParam
 	if nicNetworkID == nil {
 		return nil, nil
 	}
-	mac, err := generateLocalMAC()
+	mac, err := netid.GenerateLocalMAC()
 	if err != nil {
 		return nil, fmt.Errorf("generate nic mac: %v", err)
 	}

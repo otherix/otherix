@@ -74,6 +74,14 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}); err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
+	// An ingress gateway owns a tenant IP + a distinct unicast MAC on the bridge:
+	// the host originates and answers at the tenant IP, and the bridge claims the
+	// MAC advertised to peers in the overlay FDB so return traffic is delivered
+	// here. Only a gateway recipient receives a gateway addr; a hypervisor node
+	// gets nil and skips this, leaving the bridge MAC to the anycast services path.
+	if err := r.applyGatewayAddr(d); err != nil {
+		return r.failed(ctx, d, err.Error())
+	}
 	converged, unparseable := r.reconcileFDB(ctx, vniVal, fdb)
 	// Unparseable declared entries take precedence in the reason: they are a
 	// distinct, stable divergence (a corrupt declared entry can never be
@@ -85,16 +93,60 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 		return r.pending(ctx, d, "fdb_not_converged")
 	}
 
-	if overlayNeedsServices(d) {
+	if r.overlayNeedsServices(d) {
 		r.applyOverlayServices(ctx, d, vniVal)
 	}
 
 	return ready(d.ID)
 }
 
+// applyGatewayAddr pins the ingress gateway's tenant IP and its distinct unicast
+// MAC onto the overlay bridge so the gateway host originates and answers at the
+// tenant IP and the bridge owns the MAC advertised to peers in the overlay FDB.
+// The tenant IP is assigned with the overlay subnet's prefix length (from
+// d.Subnet, e.g. /24), never a /32: the subnet prefix gives the gateway host an
+// on-link route to the whole overlay subnet via the bridge, so its dial to a
+// guest VM leaves over the overlay rather than the host default route.
+// It is a no-op for a hypervisor node (d.GatewayAddr nil), which leaves the
+// bridge hardware address to the anycast services path. An unparseable IP or MAC
+// is a corrupt declared entry that can never be programmed, so it surfaces as a
+// hard error and holds the overlay divergent rather than silently materialising
+// the network without its gateway address. A missing or unparseable subnet is
+// likewise a hard error: a tenant IP without a known subnet could only be
+// installed as an unroutable /32, so failing is safer than materialising a
+// broken gateway.
+func (r *Networks) applyGatewayAddr(d heartbeat.DeclaredNetwork) error {
+	if d.GatewayAddr == nil {
+		return nil
+	}
+	ip, err := netip.ParseAddr(d.GatewayAddr.IP)
+	if err != nil {
+		return fmt.Errorf("gateway addr ip %q: %v", d.GatewayAddr.IP, err)
+	}
+	mac, err := net.ParseMAC(d.GatewayAddr.MAC)
+	if err != nil {
+		return fmt.Errorf("gateway addr mac %q: %v", d.GatewayAddr.MAC, err)
+	}
+	if d.Subnet == nil {
+		return fmt.Errorf("gateway addr %s: overlay has no subnet to route the tenant IP", ip)
+	}
+	subnet, err := netip.ParsePrefix(*d.Subnet)
+	if err != nil {
+		return fmt.Errorf("gateway addr subnet %q: %v", *d.Subnet, err)
+	}
+	tenant := netip.PrefixFrom(ip, subnet.Bits())
+	return r.fabric.EnsureUnicastGateway(d.BridgeName, tenant, mac)
+}
+
 // overlayNeedsServices reports whether an overlay needs the host-side services
-// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none.
-func overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
+// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none. A
+// gateway reconciler never runs the services pass: a gateway hosts no VMs and is
+// never an anycast first-hop router, so it brings up the overlay datapath
+// without the services plane regardless of the declared egress/DNS/DHCP flags.
+func (r *Networks) overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
+	if r.gatewayMode {
+		return false
+	}
 	return d.Egress == "nat" || d.DNSEnabled || d.DhcpEnabled
 }
 
