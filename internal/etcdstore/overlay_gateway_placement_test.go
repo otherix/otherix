@@ -16,7 +16,7 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// TestOverlayPlacementsIncludeGatewayMembership pins the gateway FDB seam: a
+// TestOverlayPlacementsIncludeGatewayMembership pins the gateway FDB join: a
 // gateway covers an overlay network without hosting a VM, so its membership must
 // surface in the same overlay placement projection every NIC placement does -
 // carrying the gateway's MAC and its node id - so peers learn the gateway VTEP
