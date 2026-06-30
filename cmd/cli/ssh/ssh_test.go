@@ -49,6 +49,8 @@ func TestBuildSSHArgv(t *testing.T) {
 		"-i", "/k/key",
 		"-o", "CertificateFile=/c/cert",
 		"-o", "IdentitiesOnly=yes",
+		"-o", "UserKnownHostsFile=/c/known_hosts",
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "ProxyCommand='/usr/bin/otherix' ssh proxy %h %p",
 		"root@db",
 	}
@@ -160,6 +162,8 @@ func TestSSHWiringAssemblesArgv(t *testing.T) {
 	for _, want := range []string{
 		"ssh", "-i /fake/key", "CertificateFile=/fake/cert", "alice@myvm",
 		"ssh proxy %h %p",
+		"-o UserKnownHostsFile=/fake/known_hosts",
+		"-o StrictHostKeyChecking=accept-new",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("assembled argv %q missing %q", joined, want)

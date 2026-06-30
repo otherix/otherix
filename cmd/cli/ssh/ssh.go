@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -221,13 +222,22 @@ func tokenEnv(cmd *cobra.Command) []string {
 // guest certificate, a ProxyCommand that re-enters this binary's `ssh proxy`
 // relay, and the login@host destination. IdentitiesOnly pins ssh to the
 // supplied certificate rather than probing the operator's agent or default
-// keys. The argv[0] "ssh" is resolved via PATH by the executor.
+// keys. UserKnownHostsFile + StrictHostKeyChecking=accept-new pin host-key
+// trust to a managed known_hosts beside the cached cert (the connector's
+// KnownDir), so a first connect to a new VM accepts the key without prompting
+// (TOFU, works non-interactively) yet still rejects a changed key on later
+// connects, and never pollutes the operator's own ~/.ssh/known_hosts. This
+// mirrors the external connector's managed ssh_config block. The argv[0] "ssh"
+// is resolved via PATH by the executor.
 func buildSSHArgv(self, vmName, login, certPath, keyPath string, passthrough []string) []string {
+	knownHosts := filepath.Join(filepath.Dir(certPath), "known_hosts")
 	return []string{
 		"ssh",
 		"-i", keyPath,
 		"-o", "CertificateFile=" + certPath,
 		"-o", "IdentitiesOnly=yes",
+		"-o", "UserKnownHostsFile=" + knownHosts,
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "ProxyCommand=" + buildProxyCommand(self, passthrough),
 		login + "@" + vmName,
 	}
