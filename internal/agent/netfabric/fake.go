@@ -47,6 +47,8 @@ type FakeFabric struct {
 	AnycastGatewayCalls       []AnycastGatewayCall
 	RemoveAnycastGatewayCalls []AnycastGatewayCall
 
+	UnicastGatewayCalls []UnicastGatewayCall
+
 	// EnableIPForwardingCalls counts EnableIPForwarding invocations.
 	EnableIPForwardingCalls int
 
@@ -158,6 +160,14 @@ type BridgeRouteCall struct {
 // AnycastGatewayCall records one EnsureAnycastGateway or RemoveAnycastGateway
 // invocation. MAC is the stringified hardware address (empty for removals).
 type AnycastGatewayCall struct {
+	Bridge string
+	Addr   netip.Addr
+	MAC    string
+}
+
+// UnicastGatewayCall records one EnsureUnicastGateway invocation. MAC is the
+// stringified hardware address.
+type UnicastGatewayCall struct {
 	Bridge string
 	Addr   netip.Addr
 	MAC    string
@@ -293,6 +303,12 @@ func (f *FakeFabric) EnsureAnycastGateway(bridge string, addr netip.Addr, mac ne
 func (f *FakeFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error {
 	f.RemoveAnycastGatewayCalls = append(f.RemoveAnycastGatewayCalls, AnycastGatewayCall{Bridge: bridge, Addr: addr})
 	return f.err("RemoveAnycastGateway")
+}
+
+// EnsureUnicastGateway records the call and returns Errs["EnsureUnicastGateway"].
+func (f *FakeFabric) EnsureUnicastGateway(bridge string, addr netip.Addr, mac net.HardwareAddr) error {
+	f.UnicastGatewayCalls = append(f.UnicastGatewayCalls, UnicastGatewayCall{Bridge: bridge, Addr: addr, MAC: mac.String()})
+	return f.err("EnsureUnicastGateway")
 }
 
 // EnsureVXLAN records the call and returns Errs["EnsureVXLAN"].

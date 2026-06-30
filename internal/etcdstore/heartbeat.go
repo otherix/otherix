@@ -337,6 +337,13 @@ func (h heartbeatProjection) UnderlayMTU(ctx context.Context) (int32, error) {
 	return h.s.UnderlayMTU(ctx)
 }
 
+// ListGatewayMembershipsForGateway returns the overlay memberships a gateway
+// node covers, used to attach each network's tenant IP + unicast MAC to
+// declared_networks for a gateway recipient.
+func (h heartbeatProjection) ListGatewayMembershipsForGateway(ctx context.Context, gatewayID uuid.UUID) ([]store.GatewayMembership, error) {
+	return h.s.ListGatewayMembershipsForGateway(ctx, gatewayID)
+}
+
 // ListNetworks returns every non-deleted network. Networks are cluster-wide (not
 // node-scoped), so the projection hands the agent the full set to materialise
 // on its node.

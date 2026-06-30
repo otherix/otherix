@@ -86,6 +86,10 @@ type HeartbeatProjection interface {
 	ListOverlayNICPlacementsPinned(ctx context.Context) ([]OverlayNICPlacement, int64, error)
 	// ActiveMigrationForVM returns the non-terminal migration for vmID, if any.
 	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (Migration, bool, error)
+	// ListGatewayMembershipsForGateway returns the overlay networks a gateway node
+	// covers, so the declared-networks projection can attach each network's tenant
+	// IP + unicast MAC for a gateway recipient.
+	ListGatewayMembershipsForGateway(ctx context.Context, gatewayID uuid.UUID) ([]GatewayMembership, error)
 }
 
 // OverlayNICPlacement is one NIC attached to a type=overlay network whose owning

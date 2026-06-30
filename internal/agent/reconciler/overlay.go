@@ -74,6 +74,14 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}); err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
+	// An ingress gateway owns a tenant IP + a distinct unicast MAC on the bridge:
+	// the host originates and answers at the tenant IP, and the bridge claims the
+	// MAC advertised to peers in the overlay FDB so return traffic is delivered
+	// here. Only a gateway recipient receives a gateway addr; a hypervisor node
+	// gets nil and skips this, leaving the bridge MAC to the anycast services path.
+	if err := r.applyGatewayAddr(d); err != nil {
+		return r.failed(ctx, d, err.Error())
+	}
 	converged, unparseable := r.reconcileFDB(ctx, vniVal, fdb)
 	// Unparseable declared entries take precedence in the reason: they are a
 	// distinct, stable divergence (a corrupt declared entry can never be
@@ -90,6 +98,29 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}
 
 	return ready(d.ID)
+}
+
+// applyGatewayAddr pins the ingress gateway's tenant IP and its distinct unicast
+// MAC onto the overlay bridge so the gateway host originates and answers at the
+// tenant IP and the bridge owns the MAC advertised to peers in the overlay FDB.
+// It is a no-op for a hypervisor node (d.GatewayAddr nil), which leaves the
+// bridge hardware address to the anycast services path. An unparseable IP or MAC
+// is a corrupt declared entry that can never be programmed, so it surfaces as a
+// hard error and holds the overlay divergent rather than silently materialising
+// the network without its gateway address.
+func (r *Networks) applyGatewayAddr(d heartbeat.DeclaredNetwork) error {
+	if d.GatewayAddr == nil {
+		return nil
+	}
+	ip, err := netip.ParseAddr(d.GatewayAddr.IP)
+	if err != nil {
+		return fmt.Errorf("gateway addr ip %q: %v", d.GatewayAddr.IP, err)
+	}
+	mac, err := net.ParseMAC(d.GatewayAddr.MAC)
+	if err != nil {
+		return fmt.Errorf("gateway addr mac %q: %v", d.GatewayAddr.MAC, err)
+	}
+	return r.fabric.EnsureUnicastGateway(d.BridgeName, ip, mac)
 }
 
 // overlayNeedsServices reports whether an overlay needs the host-side services

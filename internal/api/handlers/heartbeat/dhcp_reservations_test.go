@@ -35,6 +35,12 @@ func (f *declaredNetworksFake) ListVMNicsByNetwork(_ context.Context, networkID 
 	return f.nics[networkID], nil
 }
 
+// NodeByID reports the heartbeating node as a plain hypervisor so the
+// gateway-addr lookup short-circuits (a normal node owns no tenant gateway addr).
+func (f *declaredNetworksFake) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
+	return store.Node{ID: id, Kind: store.NodeKindNode}, nil
+}
+
 func mustMAC(t *testing.T, s string) net.HardwareAddr {
 	t.Helper()
 	mac, err := net.ParseMAC(s)
@@ -98,7 +104,7 @@ func TestLoadDeclaredNetworksDHCP(t *testing.T) {
 	}
 
 	h := newQuietHandler()
-	got, err := h.loadDeclaredNetworks(context.Background(), fake)
+	got, err := h.loadDeclaredNetworks(context.Background(), fake, uuid.New())
 	if err != nil {
 		t.Fatalf("loadDeclaredNetworks: %v", err)
 	}
