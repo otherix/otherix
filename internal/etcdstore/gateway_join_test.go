@@ -18,9 +18,9 @@ import (
 
 // TestRedeemGatewayJoinTokenCreatesGatewayNode pins the gateway self-registration
 // path: a kind=gateway token redeems at the node-join endpoint and creates a node
-// row stamped Kind=gateway with the advertised endpoint persisted (HIGH-2: a later
-// CP path nudges the gateway by its AdvertisedEndpoint, so an empty one silently
-// drops it to the heartbeat backstop). The cert binding is recorded just like a node.
+// row stamped Kind=gateway with the advertised endpoint persisted: a later CP path
+// nudges the gateway by its AdvertisedEndpoint, so an empty one silently drops it to
+// the heartbeat backstop. The cert binding is recorded just like a node.
 func TestRedeemGatewayJoinTokenCreatesGatewayNode(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
