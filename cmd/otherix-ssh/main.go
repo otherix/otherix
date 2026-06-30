@@ -78,6 +78,20 @@ const includeMarker = "# Added by otherix-ssh"
 // override it to assert the resolved config without dialing the network.
 var proxyConnect = sshconn.Proxy
 
+// ensureCert is the guest-cert mint seam. Production wires it to
+// sshconn.EnsureGuestCert; tests override it to assert the mint inputs without
+// a real Control Plane round-trip. The connector mints the guest certificate
+// here, inside the ProxyCommand, because `add` imports a grant bundle with no
+// network access and so cannot mint at import time. The certificate is a
+// short-lived connect-time credential the grant token authorizes; minting it
+// just before the relay carries the session guarantees the CertificateFile the
+// managed ssh_config references exists by the time the ssh client reads it
+// during user authentication (which happens after the ProxyCommand connects).
+// A login is deliberately not passed: the Control Plane pins the grant's own
+// login, so the minted certificate always certifies exactly the principal the
+// grant allows.
+var ensureCert = sshconn.EnsureGuestCert
+
 // connectorState is the on-disk shape persisted by `add` and reloaded by
 // `proxy`. The CACertPEM bytes marshal to base64 in JSON automatically. Token
 // is a bearer secret and is never logged.
@@ -228,6 +242,13 @@ func runProxy(cmd *cobra.Command, host, portArg string) error {
 	}
 	vmName := stripSuffix(host, st.ClusterSuffix)
 	cfg := sshConfigFromState(st, dir)
+	// Mint (or refresh) the guest certificate before relaying so the
+	// CertificateFile the managed ssh_config points at is present when the ssh
+	// client reads it during user authentication. The grant token authorizes
+	// the mint and the Control Plane pins the login, so no login is passed.
+	if _, _, err := ensureCert(cmd.Context(), cfg, vmName, ""); err != nil {
+		return err
+	}
 	return proxyConnect(cmd.Context(), cfg, vmName, port, cmd.InOrStdin(), cmd.OutOrStdout())
 }
 

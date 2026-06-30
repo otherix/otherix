@@ -205,7 +205,11 @@ func TestProxyLoadsStateAndCallsSeam(t *testing.T) {
 	var gotVM string
 	var gotPort int
 	orig := proxyConnect
-	t.Cleanup(func() { proxyConnect = orig })
+	origCert := ensureCert
+	t.Cleanup(func() { proxyConnect = orig; ensureCert = origCert })
+	ensureCert = func(_ context.Context, _ sshconn.Config, _, _ string) (string, string, error) {
+		return "/fake/cert", "/fake/key", nil
+	}
 	proxyConnect = func(_ context.Context, cfg sshconn.Config, vmName string, port int, _ io.Reader, _ io.Writer) error {
 		gotCfg = cfg
 		gotVM = vmName
@@ -228,6 +232,90 @@ func TestProxyLoadsStateAndCallsSeam(t *testing.T) {
 	}
 	if gotCfg.BearerToken != "otx_sshgrant_secrettoken" {
 		t.Errorf("proxy cfg.BearerToken = %q", gotCfg.BearerToken)
+	}
+}
+
+// TestProxyMintsCertBeforeRelay locks in the JIT guest-cert mint: `proxy` must
+// mint (or refresh) the guest certificate for the suffix-stripped VM with the
+// grant's resolved trust+token BEFORE it splices the relay, so the
+// CertificateFile the managed ssh_config references exists when ssh reads it
+// during authentication. The login is empty (the Control Plane pins the
+// grant's login), and the relay sees the same VM and config.
+func TestProxyMintsCertBeforeRelay(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, blob := testBundle(t)
+	if err := runCmd(t, "add", blob); err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+
+	var order []string
+	var mintVM, mintLogin string
+	var mintCfg sshconn.Config
+	origCert := ensureCert
+	origProxy := proxyConnect
+	t.Cleanup(func() { ensureCert = origCert; proxyConnect = origProxy })
+	ensureCert = func(_ context.Context, cfg sshconn.Config, vmName, login string) (string, string, error) {
+		order = append(order, "mint")
+		mintVM = vmName
+		mintLogin = login
+		mintCfg = cfg
+		return "/fake/cert", "/fake/key", nil
+	}
+	proxyConnect = func(_ context.Context, _ sshconn.Config, _ string, _ int, _ io.Reader, _ io.Writer) error {
+		order = append(order, "relay")
+		return nil
+	}
+
+	if err := runCmd(t, "proxy", "web01.otherix", "22"); err != nil {
+		t.Fatalf("proxy error = %v", err)
+	}
+
+	if want := []string{"mint", "relay"}; len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
+		t.Errorf("call order = %v, want %v (mint must precede relay)", order, want)
+	}
+	if mintVM != "web01" {
+		t.Errorf("mint vm = %q, want %q", mintVM, "web01")
+	}
+	if mintLogin != "" {
+		t.Errorf("mint login = %q, want empty (the grant pins the login)", mintLogin)
+	}
+	if mintCfg.BearerToken != "otx_sshgrant_secrettoken" {
+		t.Errorf("mint cfg.BearerToken = %q", mintCfg.BearerToken)
+	}
+	if mintCfg.KnownDir == "" {
+		t.Error("mint cfg.KnownDir is empty; cert would not land beside the managed ssh_config")
+	}
+}
+
+// TestProxyMintFailureAbortsRelay locks in fail-closed behavior: when the mint
+// fails (e.g. the grant was revoked), proxy returns the error and never opens
+// the relay, so a revoked grant cannot carry a session.
+func TestProxyMintFailureAbortsRelay(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, blob := testBundle(t)
+	if err := runCmd(t, "add", blob); err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+
+	relayed := false
+	origCert := ensureCert
+	origProxy := proxyConnect
+	t.Cleanup(func() { ensureCert = origCert; proxyConnect = origProxy })
+	ensureCert = func(_ context.Context, _ sshconn.Config, _, _ string) (string, string, error) {
+		return "", "", io.ErrUnexpectedEOF
+	}
+	proxyConnect = func(_ context.Context, _ sshconn.Config, _ string, _ int, _ io.Reader, _ io.Writer) error {
+		relayed = true
+		return nil
+	}
+
+	if err := runCmd(t, "proxy", "web01.otherix", "22"); err == nil {
+		t.Fatal("proxy with a failing mint = nil error, want non-nil")
+	}
+	if relayed {
+		t.Error("relay opened after a failed mint; a revoked grant must not carry a session")
 	}
 }
 
