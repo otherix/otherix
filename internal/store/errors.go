@@ -49,6 +49,12 @@ var (
 	ErrJoinTokenExhausted    = errors.New("store: join token max_uses exceeded")
 	ErrJoinNodeNameMismatch  = errors.New("store: node name does not match token binding")
 	ErrJoinNodeNameTaken     = errors.New("store: node already has an active cert")
+	// ErrJoinNodeKindMismatch is returned when a redemption would reuse an
+	// existing node row whose kind differs from the kind the token enrolls: a
+	// node's kind is fixed by the token that first claims the name, so a later
+	// redemption for a different kind must not silently reuse (and re-stamp) the
+	// row. Surfaces as a 409 conflict.
+	ErrJoinNodeKindMismatch = errors.New("store: node kind does not match token kind")
 
 	// ErrMigrationActiveExists is returned by CreateMigration when the VM already
 	// has a non-terminal migration: the per-VM active guard key is present, so a

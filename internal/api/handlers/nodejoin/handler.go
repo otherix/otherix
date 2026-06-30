@@ -150,6 +150,14 @@ func (h *Handler) writeRedeemError(w http.ResponseWriter, r *http.Request, token
 			response.CodeConflict,
 			"node_name already has an active cert",
 			map[string]any{"field": "node_name"})
+	case errors.Is(err, store.ErrJoinNodeKindMismatch):
+		h.log.WarnContext(r.Context(), "join token redemption rejected",
+			slog.String("reason", "node_kind_mismatch"),
+			slog.String("token_hash_prefix", prefix))
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeConflict,
+			"node_name belongs to a node of a different kind",
+			map[string]any{"field": "node_name"})
 	default:
 		h.log.ErrorContext(r.Context(), "join token redemption failed",
 			slog.String("token_hash_prefix", prefix),

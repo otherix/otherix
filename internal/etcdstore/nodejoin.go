@@ -200,8 +200,20 @@ func redeemNodeKind(token store.JoinToken) string {
 	return store.NodeKindNode
 }
 
+// existingKind normalizes a stored node kind for comparison: an empty Kind on an
+// older row reads as the hypervisor node kind, matching redeemNodeKind's mapping
+// of an empty token kind. Keeps the kind-mismatch guard from rejecting a legacy
+// node row re-bootstrapping with a node token.
+func existingKind(kind string) string {
+	if kind == "" {
+		return store.NodeKindNode
+	}
+	return kind
+}
+
 // upsertJoinNode resolves the node row for a redemption: an existing node is
-// reused unless it still holds an active cert (store.ErrJoinNodeNameTaken),
+// reused unless it still holds an active cert (store.ErrJoinNodeNameTaken) or its
+// kind differs from the kind this token enrolls (store.ErrJoinNodeKindMismatch),
 // otherwise a fresh pending node is created with the given kind (node or gateway).
 // A concurrent create that loses the name guard re-fetches the winner.
 func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams, nodeKind string) (store.Node, error) {
@@ -213,6 +225,14 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 		}
 		if hasActive {
 			return store.Node{}, store.ErrJoinNodeNameTaken
+		}
+		// A node's kind is fixed by the token that first claims the name. The
+		// caller selects the CSR signing template from the reused row's kind, so a
+		// token of a different kind reusing this row would mis-issue an identity
+		// (e.g. a gateway token yielding a node-<name> leaf). Reject rather than
+		// silently re-stamping the row.
+		if existingKind(existing.Kind) != nodeKind {
+			return store.Node{}, store.ErrJoinNodeKindMismatch
 		}
 		return existing, nil
 	}
