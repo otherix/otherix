@@ -408,6 +408,9 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 // endpoint and the Step 2 CSR signer have an active row), then
 // BootstrapSSHUserCA (provisions the cluster SSH user-CA in etcd so every
 // replica signs guest user-certs with the same CA), then
+// BootstrapSessionCA (provisions the cluster ingress-session CA in etcd so every
+// replica signs session credentials with the same key and gateways verify them
+// against a single public half), then
 // SeedOverlaySupernet (writes the cluster overlay supernet first-writer-wins so
 // agent WG overlay allocation has a supernet to carve /24s from), then
 // SeedVNIRange (writes the VXLAN VNI allocation bounds first-writer-wins), then
@@ -423,6 +426,9 @@ func runBootstrapHooks(ctx context.Context, st *etcdstore.Store, caMaterial auth
 	}
 	if err := api.BootstrapSSHUserCA(ctx, st, log); err != nil {
 		return fmt.Errorf("bootstrap SSH user CA: %v", err)
+	}
+	if err := api.BootstrapSessionCA(ctx, st, log); err != nil {
+		return fmt.Errorf("bootstrap session CA: %v", err)
 	}
 	if err := st.SeedOverlaySupernet(ctx, netCfg.OverlaySupernet); err != nil {
 		return fmt.Errorf("seed overlay supernet: %v", err)

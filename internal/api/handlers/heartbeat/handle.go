@@ -116,6 +116,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		DeclaredFDB:            outcome.declaredFDB,
 		Otwg0MTU:               outcome.otwg0MTU,
 		OverlayReachability:    outcome.overlayReachability,
+		SessionCAPublicPEM:     outcome.sessionCAPublicPEM,
 	})
 }
 
@@ -195,6 +196,7 @@ type heartbeatOutcome struct {
 	overlayReachability    []overlayReachability
 	selfOverlayIP          *string
 	otwg0MTU               *int32
+	sessionCAPublicPEM     *string
 }
 
 // project runs the full state projection in a single transaction.
@@ -267,7 +269,29 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		}
 		return h.loadDeclared(ctx, hp, agent.NodeID, &outcome)
 	})
-	return outcome, err
+	if err != nil {
+		return outcome, err
+	}
+	outcome.sessionCAPublicPEM = h.loadSessionCAPublic(ctx, agent.NodeID)
+	return outcome, nil
+}
+
+// loadSessionCAPublic reads the active ingress-session CA public half for
+// down-channel distribution to gateways. It is a top-level read outside the
+// projection transaction and fails open: a missing CA or a transient read error
+// returns nil rather than failing an otherwise-applied heartbeat.
+func (h *Handler) loadSessionCAPublic(ctx context.Context, nodeID uuid.UUID) *string {
+	ca, err := h.store.ActiveSessionCA(ctx)
+	if err == nil {
+		pub := string(ca.PublicKeyPEM)
+		return &pub
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		h.log.WarnContext(ctx, "active session CA lookup failed; omitting from heartbeat",
+			slog.String("node_id", nodeID.String()),
+			slog.String("error", err.Error()))
+	}
+	return nil
 }
 
 // loadDeclared fetches every down-channel desired-state inventory (pools, VMs,

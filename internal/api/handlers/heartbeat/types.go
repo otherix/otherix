@@ -192,6 +192,11 @@ type responseBody struct {
 	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 	DeclaredFDB            []declaredFDBEntry      `json:"declared_fdb"`
+	// SessionCAPublicPEM is the PEM-encoded public half of the cluster
+	// ingress-session CA, distributed to gateways so they verify short-lived
+	// session credentials offline. Nil until the CA is provisioned; the private
+	// half never leaves the control plane.
+	SessionCAPublicPEM *string `json:"session_ca_public_pem,omitempty"`
 	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead),
 	// mirrored to the agent so it brings otwg0 up at the right size on a
 	// sub-1500 underlay.

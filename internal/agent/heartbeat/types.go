@@ -156,6 +156,11 @@ type Response struct {
 	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 	DeclaredFDB            []DeclaredFDBEntry      `json:"declared_fdb"`
+	// SessionCAPublicPEM is the PEM-encoded public half of the cluster
+	// ingress-session CA the CP distributes down-channel. A gateway uses it to
+	// verify short-lived ingress session credentials offline. Nil from an older
+	// CP or before the CA is provisioned.
+	SessionCAPublicPEM *string `json:"session_ca_public_pem,omitempty"`
 	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead).
 	// Nil from an older CP or before the underlay MTU is known; the WG
 	// reconciler falls back to netfabric.WireGuardMTU when absent.
