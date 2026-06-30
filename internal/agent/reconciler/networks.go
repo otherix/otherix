@@ -244,6 +244,16 @@ func (r *Networks) reconcile(ctx context.Context) {
 func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork, selfOverlayIP string, fdb []heartbeat.DeclaredFDBEntry) heartbeat.NetworkReport {
 	switch d.Type {
 	case "bridge":
+		if r.gatewayMode {
+			// A gateway hosts no VMs and is never a first-hop router, so a
+			// node-local bridge has no role on it: it runs neither the L3/NAT/DHCP
+			// services plane nor even a VM-less bridge to attach taps to. Bridge VMs
+			// are reached through their owning agent, never directly through the
+			// gateway, which carries tenant traffic only over overlays. Report it
+			// reconciled so the CP sees the gateway converge on a network it
+			// correctly does nothing about, rather than stall on a failed report.
+			return ready(d.ID)
+		}
 		subnet, gateway, err := parseSubnetGateway(d)
 		if err != nil {
 			return r.failed(ctx, d, err.Error())
