@@ -77,7 +77,7 @@ NODE1="node-1"                         # VM host + live-migration source
 NET="ingress-ovl"                      # dhcp-enabled overlay
 SUBNET="10.93.0.0/24"                  # unlikely to clash with the dev stack
 VM="ingress-vm"                        # the forwarded guest
-GW_NAME="ingress-gw"                   # the ingress gateway's cluster name
+GW_NAME="${GW_NAME:-ingress-gw}"       # the ingress gateway's cluster name
 ECHO_PORT="${ECHO_PORT:-9000}"         # the guest echo server port the gateway dials
 GW_LISTEN_PORT="${GW_LISTEN_PORT:-9443}" # the gateway control listener (mTLS) inside its node
 
@@ -99,7 +99,7 @@ GAP_THRESHOLD="${GAP_THRESHOLD:-10}"   # max tolerated seconds with no echo acro
 RED=$'\033[31m'; GREEN=$'\033[32m'; YEL=$'\033[33m'; NC=$'\033[0m'
 pass() { echo "${GREEN}PASS${NC} $*"; }
 info() { echo "${YEL}..${NC} $*"; }
-fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
+fail() { SMOKE_FAILED=1; echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 otx() { "$OTX" "$@"; }
 
 GW_HANDLE="$(smoke_handle "$GW_INDEX")"
@@ -135,6 +135,10 @@ node_path() {
 WORKDIR="$(mktemp -d)"
 GW_LAUNCHED=""
 cleanup() {
+  if [ -n "${KEEP_FAILED:-}" ] && [ -n "${SMOKE_FAILED:-}" ]; then
+    echo "--- KEEP_FAILED set and the run failed: leaving the VM/network/gateway up for inspection ---"
+    return
+  fi
   echo "--- cleanup ---"
   run_on "$GW_HANDLE" sudo pkill -f 'otherix-gateway serve' >/dev/null 2>&1 || true
   otx vm delete "$VM" --wait --force >/dev/null 2>&1 || true
@@ -183,9 +187,10 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/sh
+      # Write to /dev/console - the kernel's active console maps to the serial
+      # device the host captures (ttyAMA0 on arm64, ttyS0 on amd64), which a
+      # fixed tty name would get wrong across architectures.
       SC=/dev/console
-      [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
-      [ -e /dev/ttyS0 ] && SC=/dev/ttyS0
       while :; do
         IP=\$(ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1)
         [ -n "\$IP" ] && echo "OTHERIX_GUEST_IP \$IP" > "\$SC"
@@ -388,6 +393,10 @@ run_on "$GW_HANDLE" sudo pkill -f 'otherix-agent serve' >/dev/null 2>&1 || true
 GW_BIN_NODE="$(node_path "$GW_HANDLE" "$GW_BIN")"
 run_on "$GW_HANDLE" sudo install -m 0755 "$GW_BIN_NODE" /usr/local/bin/otherix-gateway >/dev/null 2>&1 \
   || run_on "$GW_HANDLE" sudo cp "$GW_BIN_NODE" /usr/local/bin/otherix-gateway
+# Remove any prior gateway config + WireGuard key so bootstrap writes a fresh
+# config (bootstrap never overwrites an existing config, even with --force) and
+# the gateway generates a fresh WireGuard identity. This keeps a re-run clean.
+run_on "$GW_HANDLE" sudo rm -f /etc/otherix/gateway.yaml /var/lib/otherix/wg-gateway/private.key >/dev/null 2>&1 || true
 # --force re-issues the gateway cert material: the repurposed node carries the
 # agent's shared ca.crt, which otherwise reads as partial cert state, and it
 # also makes a re-run idempotent over a prior gateway identity.
@@ -396,6 +405,7 @@ run_on "$GW_HANDLE" sudo otherix-gateway bootstrap --force \
   --cp-url "$GW_CP_URL" --node-name "$GW_NAME" \
   --advertised-endpoint "https://${GW_NODE_IP}:${GW_LISTEN_PORT}" \
   --wireguard-endpoint "${GW_WG_IP}:${GW_WG_PORT}" \
+  --heartbeat-interval "${GW_HEARTBEAT_INTERVAL:-5s}" \
   --listen "0.0.0.0:${GW_LISTEN_PORT}" \
   || fail "otherix-gateway bootstrap failed"
 run_on "$GW_HANDLE" sudo sh -c 'setsid nohup otherix-gateway serve >/var/log/otherix-gateway.log 2>&1 < /dev/null &'
@@ -437,7 +447,7 @@ deadline=$(( SECONDS + GUEST_IP_WAIT )); GUEST_IP=""
 info "waiting for the guest to announce its overlay IP (<= ${GUEST_IP_WAIT}s)"
 while (( SECONDS < deadline )); do
   GUEST_IP="$(run_on "$SMOKE_HANDLE_1" sudo grep -oE 'OTHERIX_GUEST_IP [0-9.]+' \
-      "${SRC_STATE}/${VMID}/serial.log" 2>/dev/null | awk '{print $2}' | tail -n1)" || true
+      "${SRC_STATE}/vms/${VMID}/serial.log" 2>/dev/null | awk '{print $2}' | tail -n1)" || true
   [ -n "$GUEST_IP" ] && break
   sleep 5
 done
