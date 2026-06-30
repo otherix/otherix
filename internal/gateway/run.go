@@ -245,11 +245,16 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, hea
 
 		r.Route("/v1", func(r chi.Router) {
 			r.Post("/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
-			// The connect/splice route (a tenant connection spliced onto the
-			// overlay) mounts here in a later slice, under the same
-			// CP-identity group — only the control plane drives it.
 		})
 	})
+
+	// The connect/splice route hijacks the inbound connection and splices it to
+	// a target dialed on the overlay. It stays under the top-level CP-identity
+	// gate — only the control plane drives it, and the target it carries is
+	// trusted as supplied — but deliberately outside the Timeout group: a
+	// long-lived spliced session must not be killed by the per-request deadline,
+	// and the timeout's guarded writer does not support hijacking.
+	r.Post("/v1/connect", newConnectHandler(log).Connect)
 
 	return r
 }
