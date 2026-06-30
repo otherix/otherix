@@ -12,6 +12,7 @@ package vms
 
 import (
 	"log/slog"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
@@ -34,6 +35,18 @@ type Handler struct {
 	// source is reachable - intentionally separate from the API listen
 	// address so operators can pin a dedicated migration network.
 	migrationHost string
+
+	// leases is the agent's own DHCP-reservation lookup (the dhcp4 responder).
+	// It is the anti-SSRF IP source for SSHPipe: the dial IP comes from a lease
+	// this agent serves, never from the request.
+	leases ipByMAC
+
+	// sshMu guards the ssh-pipe concurrency counters below.
+	sshMu       sync.Mutex
+	sshPerVM    map[string]int
+	sshTotal    int
+	sshPerVMCap int
+	sshAgentCap int
 }
 
 // New constructs a Handler. Production callers use the package's
@@ -41,8 +54,17 @@ type Handler struct {
 // invariant (former internal/agent/console.ConnectionTracker) is now
 // enforced inside serialmux.Multiplexer.SubscribeConsole, so the
 // Handler no longer takes a ConnectionTracker.
-func New(m *vm.Manager, tokens *console.TokenStore, log *slog.Logger, migrationHost string) *Handler {
-	return &Handler{manager: m, tokens: tokens, log: log, migrationHost: migrationHost}
+func New(m *vm.Manager, tokens *console.TokenStore, log *slog.Logger, migrationHost string, leases ipByMAC) *Handler {
+	return &Handler{
+		manager:       m,
+		tokens:        tokens,
+		log:           log,
+		migrationHost: migrationHost,
+		leases:        leases,
+		sshPerVM:      map[string]int{},
+		sshPerVMCap:   defaultSSHPerVMCap,
+		sshAgentCap:   defaultSSHAgentCap,
+	}
 }
 
 // Mount registers /v1/vms routes on r. The console-stream route is

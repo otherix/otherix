@@ -110,6 +110,15 @@ type Store interface {
 	// lifecycle outranks "I want it on another node".
 	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error)
 	CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error)
+	// SSHGrantByTokenHash resolves an SSH-grant by its token hash for the
+	// cert-mint dual-auth path; returns store.ErrNotFound when absent. A
+	// revoked grant is still returned so the handler can reject uniformly
+	// rather than leak revocation as a distinct response.
+	SSHGrantByTokenHash(ctx context.Context, hash []byte) (store.SSHGrant, error)
+	// ActiveSSHUserCA returns the cluster SSH user-CA the cert-mint endpoint
+	// signs short-lived guest user-certs with; store.ErrNotFound when no
+	// SSH user-CA has been provisioned.
+	ActiveSSHUserCA(ctx context.Context) (store.SSHUserCA, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.
@@ -125,6 +134,7 @@ type Handler struct {
 	log         *slog.Logger
 	lifecycle   LifecycleDeps
 	consoleDeps ConsoleDeps
+	sshDeps     SSHDeps
 }
 
 // New constructs a Handler. It takes the Store interface so any
@@ -133,18 +143,22 @@ type Handler struct {
 // Reset handlers need; tests that exercise the sync surface pass a stub
 // through here without importing the production client. console bundles the
 // console-handler deps (agentclient + access mode); tests that don't
-// exercise the console flow pass a zero-value ConsoleDeps.
+// exercise the console flow pass a zero-value ConsoleDeps. ssh bundles the
+// cert-mint deps (CLI-token verifier + guest-cert TTL) the IssueSSHCert
+// handler needs; routes that do not serve ssh-cert pass a zero SSHDeps.
 func New(
 	s Store,
 	log *slog.Logger,
 	lifecycle LifecycleDeps,
 	console ConsoleDeps,
+	ssh SSHDeps,
 ) *Handler {
 	return &Handler{
 		store:       s,
 		log:         log,
 		lifecycle:   lifecycle,
 		consoleDeps: console,
+		sshDeps:     ssh,
 	}
 }
 

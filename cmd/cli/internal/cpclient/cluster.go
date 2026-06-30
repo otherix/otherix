@@ -185,6 +185,53 @@ func (c *Client) ClearClusterDefaultNetwork(ctx context.Context) error {
 	return err
 }
 
+// ClusterSSHIngress mirrors the response shape of the
+// /v1/cluster/ssh-ingress endpoints: the cluster-wide SSH-ingress master
+// switch and the DNS suffix VM hostnames are addressed under.
+type ClusterSSHIngress struct {
+	Enabled       bool   `json:"enabled"`
+	ClusterSuffix string `json:"cluster_suffix"`
+}
+
+// GetClusterSSHIngress fetches GET /v1/cluster/ssh-ingress. The endpoint
+// always returns 200: an unconfigured cluster reports Enabled=false with an
+// empty ClusterSuffix.
+func (c *Client) GetClusterSSHIngress(ctx context.Context) (ClusterSSHIngress, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodGet, "/v1/cluster/ssh-ingress", nil)
+	if err != nil {
+		return ClusterSSHIngress{}, err
+	}
+	_, body, err := c.do(httpReq)
+	if err != nil {
+		return ClusterSSHIngress{}, err
+	}
+	var out ClusterSSHIngress
+	if err := decodeJSON(body, &out); err != nil {
+		return ClusterSSHIngress{}, err
+	}
+	return out, nil
+}
+
+// SetClusterSSHIngress submits PUT /v1/cluster/ssh-ingress. Enabling
+// requires a non-empty, valid DNS-domain suffix; the server rejects a
+// missing or malformed suffix with 400 validation_failed.
+func (c *Client) SetClusterSSHIngress(ctx context.Context, enabled bool, suffix string) (ClusterSSHIngress, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodPut, "/v1/cluster/ssh-ingress",
+		ClusterSSHIngress{Enabled: enabled, ClusterSuffix: suffix})
+	if err != nil {
+		return ClusterSSHIngress{}, err
+	}
+	_, body, err := c.do(httpReq)
+	if err != nil {
+		return ClusterSSHIngress{}, err
+	}
+	var out ClusterSSHIngress
+	if err := decodeJSON(body, &out); err != nil {
+		return ClusterSSHIngress{}, err
+	}
+	return out, nil
+}
+
 // ClusterMember mirrors components/schemas/ClusterMember.
 type ClusterMember struct {
 	ID         string   `json:"id"`

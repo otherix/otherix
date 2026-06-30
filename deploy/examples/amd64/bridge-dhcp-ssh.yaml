@@ -1,0 +1,65 @@
+# Managed bridge (NAT egress) with DHCP + a VM you reach over SSH ingress.
+#
+# A managed bridge can serve DHCP (dhcp=true): the per-node DHCP responder
+# hands the guest its IP, mask, DNS and default route, so the VM needs NO
+# network-config. Because otherix knows the guest's address (it reserved it
+# via CP-IPAM), it can route `otherix ssh` to the VM - so SSH ingress works
+# on this network. The VM opts in with sshIngressEnabled=true; cloud-init
+# provisions the cluster SSH-CA trust so logins authenticated by that CA are
+# accepted by the guest sshd.
+#
+# Two logins work out of the box:
+#   - the cloud image default user: otherix ssh ex-bridge-dhcp-vm --login ubuntu
+#   - the otherix user this userData creates: otherix ssh ex-bridge-dhcp-vm --login otherix
+#
+# SSH ingress is ON by default cluster-wide - there is no switch to flip first.
+# An admin can DISABLE it or set a custom DNS suffix:
+#   otherix cluster set-ssh-ingress --enabled=false          # turn it off
+#   otherix cluster set-ssh-ingress --enabled --suffix ssh.example.com
+# Apply:  otherix create -f deploy/examples/amd64/bridge-dhcp-ssh.yaml --wait
+# Login:  otherix ssh ex-bridge-dhcp-vm --login otherix   (or --login ubuntu)
+# Remove: otherix delete -f deploy/examples/amd64/bridge-dhcp-ssh.yaml
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: ex-bridge-dhcp
+spec:
+  type: bridge
+  bridgeName: exbr1
+  managed: true
+  egress: nat
+  subnet: 10.83.0.0/24
+  gateway: 10.83.0.1
+  dhcp: true
+---
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: ex-bridge-dhcp-vm
+spec:
+  imageURL: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img
+  arch: amd64
+  network: ex-bridge-dhcp
+  vcpus: 2
+  memoryMB: 2048
+  # SSH ingress: otherix provisions the cluster SSH-CA trust via cloud-init and
+  # routes `otherix ssh` to this VM. No network-config: the VM gets its address
+  # via the managed-bridge DHCP responder, which is the address otherix reserved
+  # and dials for SSH.
+  sshIngressEnabled: true
+  # cloud-init user-data: a sudo user `otherix` so `--login otherix` works
+  # alongside the cloud image's default `ubuntu` user. The CA-trust part and
+  # this userData coexist (cloud-init merges them). The password is a serial-
+  # console fallback only - dev/demo convenience, do not reuse anywhere real.
+  userData: |
+    #cloud-config
+    users:
+      - name: otherix
+        plain_text_passwd: otherix
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+    ssh_pwauth: true
+    chpasswd:
+      expire: false

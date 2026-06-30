@@ -124,7 +124,8 @@ func logsFollowHandler(s Store) *Handler {
 	return New(s,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LifecycleDeps{},
-		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"})
+		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"},
+		SSHDeps{})
 }
 
 // followRequest builds a GET /logs?follow=true request carrying a cancel
@@ -287,7 +288,8 @@ func TestRelayLogsFollowing_WaitsForFlip(t *testing.T) {
 	hh := New(stub,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LifecycleDeps{},
-		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"})
+		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"},
+		SSHDeps{})
 
 	rec := httptest.NewRecorder()
 	req, cancel := followRequest(t, stub.vm.Name)

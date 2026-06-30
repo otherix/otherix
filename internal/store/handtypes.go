@@ -201,3 +201,23 @@ type NodeDeleteOutcome struct {
 	VMsOrphaned         int64
 	MigrationsCancelled int64
 }
+
+// SSHUserCA is the cluster-wide SSH user certificate authority persisted in
+// etcd: the PEM-encoded private key the CP signs short-lived guest user-certs
+// with, and the authorized-keys public form provisioned into SSH-ingress VMs as
+// TrustedUserCAKeys. There is one active row per cluster (the at-most-one-active
+// guard), so every HA replica loads the same signer. The private key never
+// leaves the control plane.
+type SSHUserCA struct {
+	ID                  uuid.UUID
+	PrivateKeyPEM       []byte
+	PublicKeyAuthorized []byte
+	CreatedAt           time.Time
+}
+
+// CreateSSHUserCAParams carries the freshly generated SSH user-CA material the
+// store persists. The store assigns the id and created_at.
+type CreateSSHUserCAParams struct {
+	PrivateKeyPEM       []byte
+	PublicKeyAuthorized []byte
+}

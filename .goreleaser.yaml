@@ -45,6 +45,22 @@ builds:
       - -X github.com/otherix/otherix/internal/version.Commit={{.Commit}}
       - -X github.com/otherix/otherix/internal/version.Date={{.Date}}
 
+  # The thin external SSH connector. Ships for the same platforms as the CLI
+  # (an external runs it on their own laptop, macOS or Linux); ssh.sh and the
+  # Homebrew formula download it standalone.
+  - id: otherix-ssh
+    main: ./cmd/otherix-ssh
+    binary: otherix-ssh
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/otherix/otherix/internal/version.Version={{.Version}}
+      - -X github.com/otherix/otherix/internal/version.Commit={{.Commit}}
+      - -X github.com/otherix/otherix/internal/version.Date={{.Date}}
+
 archives:
   # One archive per binary so the CLI ships standalone (install.sh and the
   # Homebrew formula download a CLI-only tarball). `builds` filters by build id.
@@ -60,6 +76,10 @@ archives:
     builds: [otherix]
     format: tar.gz
     name_template: "otherix_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: otherix-ssh
+    builds: [otherix-ssh]
+    format: tar.gz
+    name_template: "otherix-ssh_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "SHA256SUMS"
@@ -130,6 +150,20 @@ brews:
     license: Apache-2.0
     install: |
       bin.install "otherix"
+
+  # The external SSH connector formula, pushed to the same tap so an external
+  # on macOS / Linuxbrew can `brew install otherix/tap/otherix-ssh`.
+  - name: otherix-ssh
+    ids: [otherix-ssh]
+    repository:
+      owner: otherix
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/otherix/otherix
+    description: Otherix external SSH connector for granted VMs.
+    license: Apache-2.0
+    install: |
+      bin.install "otherix-ssh"
 
 release:
   github:

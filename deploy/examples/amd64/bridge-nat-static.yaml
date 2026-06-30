@@ -1,9 +1,11 @@
 # Managed bridge (NAT egress) + a VM that configures a STATIC IP via
 # cloud-init network-config.
 #
-# DHCP is NOT available on bridge networks (otherix serves DHCP only on
-# dhcp-enabled overlays), so a bridge VM gets its address from the
-# network-config below, not from DHCP. See deploy/examples/README.md.
+# This example DELIBERATELY uses a static IP for a simple console-login demo:
+# the VM gets its address from the network-config below, not from DHCP. A
+# managed bridge can alternatively serve DHCP (dhcp=true) - see
+# bridge-dhcp-ssh.yaml - and that DHCP path is what SSH ingress requires.
+# See deploy/examples/README.md.
 #
 # Apply:  otherix create -f deploy/examples/amd64/bridge-nat-static.yaml --wait
 # Login:  otherix vm console ex-bridge-vm   (user otherix / password otherix)

@@ -38,6 +38,8 @@ back to when the request omits --pool.`,
 	cmd.AddCommand(newGetDefaultNetworkCommand())
 	cmd.AddCommand(newSetDefaultNetworkCommand())
 	cmd.AddCommand(newUnsetDefaultNetworkCommand())
+	cmd.AddCommand(newGetSSHIngressCommand())
+	cmd.AddCommand(newSetSSHIngressCommand())
 	cmd.AddCommand(newMemberCommand())
 	cmd.AddCommand(newJoinTokenCommand())
 	return cmd

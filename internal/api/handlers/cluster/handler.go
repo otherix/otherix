@@ -34,6 +34,7 @@ type Store interface {
 	NetworkByName(ctx context.Context, name string) (store.Network, error)
 	SetDefaultNetworkName(ctx context.Context, name *string) error
 	ClearDefaultNetworkName(ctx context.Context) error
+	SetSSHIngress(ctx context.Context, enabled bool, suffix *string) error
 }
 
 // Ensure the production store satisfies the handler's storage contract.

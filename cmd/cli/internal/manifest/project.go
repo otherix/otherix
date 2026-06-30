@@ -216,7 +216,7 @@ func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 // payloads (userData / networkConfig) round-trip when the view surfaces
 // them. Several create-time fields are still omitted because the API view
 // does not carry them (documented limitation): cloudInitDisabled,
-// firmware/firmwareID, and diskGiB. desiredPhase is also omitted (not part
+// sshIngressEnabled, firmware/firmwareID, and diskGiB. desiredPhase is also omitted (not part
 // of the v1 VM manifest schema). Only the first network is projected: the
 // v1 VM manifest schema has a single `network` field, so multi-NIC VMs are
 // not manifest-expressible and any NICs beyond the first are omitted.

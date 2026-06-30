@@ -380,8 +380,46 @@ type ClusterSetting struct {
 	// DrainMaxConcurrentMigrations caps how many evacuation migrations a single
 	// drain runs at once; operator-set, default 2.
 	DrainMaxConcurrentMigrations *int32
-	CreatedAt                    time.Time
-	UpdatedAt                    time.Time
+	// SSHIngressEnabled is the cluster-wide master switch for the VM SSH-ingress
+	// feature. A nil pointer means "never configured" and resolves to the default
+	// (ON) via SSHIngressEnabledOrDefault, so the per-VM opt-in works out of the
+	// box; an operator who explicitly stored false turns the feature off.
+	SSHIngressEnabled *bool
+	// SSHClusterSuffix is the DNS suffix SSH-ingress VM hostnames are addressed
+	// under (e.g. "vms.example.com"); operator-set. A nil pointer resolves to the
+	// default DefaultSSHClusterSuffix via SSHClusterSuffixOrDefault.
+	SSHClusterSuffix *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// DefaultSSHClusterSuffix is the local ssh_config namespace SSH-ingress VM
+// hostnames default to when the operator configured none. It is a synthetic
+// label, not real DNS; the external connector addresses a VM as <vm>.<suffix>.
+const DefaultSSHClusterSuffix = "otherix.local"
+
+// SSHIngressEnabledOrDefault reports the effective cluster SSH-ingress master
+// switch. SSH ingress defaults ON when never configured (the pointer is nil) so
+// the per-VM opt-in works without an extra cluster step; an operator who
+// explicitly stored false turns it off. Every reader must resolve the switch
+// through this method (or the *Store accessor that delegates to it) rather than
+// dereferencing the raw pointer, so the nil-means-on default applies uniformly.
+func (cs ClusterSetting) SSHIngressEnabledOrDefault() bool {
+	if cs.SSHIngressEnabled == nil {
+		return true
+	}
+	return *cs.SSHIngressEnabled
+}
+
+// SSHClusterSuffixOrDefault reports the effective SSH-ingress DNS suffix,
+// falling back to DefaultSSHClusterSuffix when the singleton has no value (nil
+// or empty). Readers resolve the suffix through this method so the default
+// applies uniformly.
+func (cs ClusterSetting) SSHClusterSuffixOrDefault() string {
+	if cs.SSHClusterSuffix == nil || *cs.SSHClusterSuffix == "" {
+		return DefaultSSHClusterSuffix
+	}
+	return *cs.SSHClusterSuffix
 }
 
 type Firmware struct {
@@ -783,6 +821,11 @@ type VM struct {
 	SchedulerHints    []byte
 	UserData          *string
 	CloudInitDisabled bool
+	// SSHIngressEnabled records the per-VM opt-in for SSH ingress: when true (and
+	// the cluster master switch is on) VM create provisioned the guest to trust
+	// the cluster SSH user-CA so the cert-mint endpoint's short-lived certs are
+	// accepted.
+	SSHIngressEnabled bool
 	MetaData          *string
 	NetworkConfig     *string
 	SshAuthorizedKeys []string

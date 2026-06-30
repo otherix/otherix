@@ -47,9 +47,10 @@ type Config struct {
 	Lease time.Duration
 }
 
-// responder serves DHCPv4 on overlay bridges for CP-IPAM reservations. It owns
-// one raw AF_PACKET socket per active bridge, opened lazily on the first
-// RegisterNetwork for that bridge and closed on DeregisterNetwork.
+// responder serves DHCPv4 for CP-IPAM reservations on any managed-DHCP network's
+// bridge (overlay or managed bridge - both register through the same reconciler
+// step). It owns one raw AF_PACKET socket per active bridge, opened lazily on the
+// first RegisterNetwork for that bridge and closed on DeregisterNetwork.
 //
 // Ordering: RegisterNetwork may be called before or after Run. Calls before Run
 // buffer the config; Run opens their sockets and starts serving once it holds a
@@ -154,7 +155,8 @@ func (r *responder) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// RegisterNetwork registers or updates the DHCP service for one overlay bridge.
+// RegisterNetwork registers or updates the DHCP service for one managed-DHCP
+// network's bridge (overlay or managed bridge).
 // It is idempotent: a re-register for the same networkID atomically swaps the
 // reservation set and subnet without reopening the socket. If the bridge name
 // changed for an existing networkID, the old socket is closed and a new one
@@ -391,6 +393,36 @@ func (r *responder) handle(srv *bridgeServer, payload []byte) {
 // broadcastMAC is the Ethernet broadcast address used when a client sets the
 // DHCP broadcast flag (it has no unicast address to receive on yet).
 var broadcastMAC = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+
+// LookupByMAC returns the CP-IPAM lease IP this agent serves for mac, across
+// all active bridges. mac is canonicalized via net.ParseMAC so callers may pass
+// any textual form; the snapshot is keyed by net.HardwareAddr.String(). This is
+// the agent's own DHCP state - the ssh-pipe handler's anti-SSRF IP source: the
+// dialed IP comes from here (a lease the agent itself serves), never from the
+// request.
+func (r *responder) LookupByMAC(mac string) (netip.Addr, bool) {
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	key := hw.String()
+
+	r.mu.Lock()
+	servers := make([]*bridgeServer, 0, len(r.nets))
+	for _, s := range r.nets {
+		servers = append(servers, s)
+	}
+	r.mu.Unlock()
+
+	for _, s := range servers {
+		if snap := s.snap.Load(); snap != nil {
+			if res, ok := snap.byMAC[key]; ok && res.IP.IsValid() {
+				return res.IP, true
+			}
+		}
+	}
+	return netip.Addr{}, false
+}
 
 // buildSnapshot builds the immutable serving snapshot for a network config.
 func buildSnapshot(cfg NetworkConfig) *snapshot {

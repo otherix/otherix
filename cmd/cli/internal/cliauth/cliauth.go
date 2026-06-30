@@ -35,12 +35,14 @@ const (
 	FlagConfig   = "config"
 )
 
-// BuildClient inspects cmd's persistent flags + the process env,
-// resolves an (endpoint, token) pair via cliconfig.Resolve, and
-// returns a ready-to-use *cpclient.Client. The error chain
-// surfaces actionable hints for each missing-credential case —
-// callers should `return err` from RunE and let main render it.
-func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
+// ResolveAuth inspects cmd's persistent flags + the process env and
+// resolves the (endpoint, token, TLS-trust) tuple via cliconfig.Resolve,
+// applying the documented flag → env → config precedence. The error
+// chain is already operator-shaped (see translateResolveError); callers
+// should `return err` from RunE. BuildClient layers a *cpclient.Client
+// on top of this; the ssh connector consumes the raw tuple to build its
+// own sshconn.Config, so the resolution lives here once.
+func ResolveAuth(cmd *cobra.Command) (cliconfig.ResolvedAuth, error) {
 	flagEndpoint, _ := cmd.Flags().GetString(FlagEndpoint)
 	flagToken, _ := cmd.Flags().GetString(FlagToken)
 	flagCluster, _ := cmd.Flags().GetString(FlagCluster)
@@ -48,13 +50,13 @@ func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
 
 	path, err := cliconfig.ResolvePath(flagConfigPath)
 	if err != nil && !errors.Is(err, cliconfig.ErrNoHome) {
-		return nil, err
+		return cliconfig.ResolvedAuth{}, err
 	}
 	var cfg *cliconfig.Config
 	if path != "" {
 		loaded, loadErr := cliconfig.Load(path)
 		if loadErr != nil {
-			return nil, fmt.Errorf("load config %s: %v", path, loadErr)
+			return cliconfig.ResolvedAuth{}, fmt.Errorf("load config %s: %v", path, loadErr)
 		}
 		cfg = loaded
 	}
@@ -68,7 +70,20 @@ func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
 		Config:       cfg,
 	})
 	if err != nil {
-		return nil, translateResolveError(err, path)
+		return cliconfig.ResolvedAuth{}, translateResolveError(err, path)
+	}
+	return auth, nil
+}
+
+// BuildClient inspects cmd's persistent flags + the process env,
+// resolves an (endpoint, token) pair via ResolveAuth, and returns a
+// ready-to-use *cpclient.Client. The error chain surfaces actionable
+// hints for each missing-credential case — callers should `return err`
+// from RunE and let main render it.
+func BuildClient(cmd *cobra.Command) (*cpclient.Client, error) {
+	auth, err := ResolveAuth(cmd)
+	if err != nil {
+		return nil, err
 	}
 
 	var caPEM []byte

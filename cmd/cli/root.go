@@ -16,6 +16,8 @@ import (
 	nodecmd "github.com/otherix/otherix/cmd/cli/node"
 	poolcmd "github.com/otherix/otherix/cmd/cli/pool"
 	snapshotcmd "github.com/otherix/otherix/cmd/cli/snapshot"
+	sshcmd "github.com/otherix/otherix/cmd/cli/ssh"
+	sshgrantcmd "github.com/otherix/otherix/cmd/cli/sshgrant"
 	usercmd "github.com/otherix/otherix/cmd/cli/user"
 	"github.com/otherix/otherix/cmd/cli/vm"
 	"github.com/otherix/otherix/internal/version"
@@ -53,6 +55,8 @@ func newRootCmd() *cobra.Command {
 		"config file path (default $OTHERIX_CONFIG, then ~/.otherix/config)")
 
 	root.AddCommand(vm.NewCommand())
+	root.AddCommand(sshcmd.NewCommand())
+	root.AddCommand(sshgrantcmd.NewCommand())
 	root.AddCommand(migrationcmd.NewCommand())
 	root.AddCommand(snapshotcmd.NewCommand())
 	root.AddCommand(poolcmd.NewCommand())

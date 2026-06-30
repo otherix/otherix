@@ -20,6 +20,7 @@ import (
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
+	sshgrantshandlers "github.com/otherix/otherix/internal/api/handlers/sshgrants"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
@@ -58,6 +59,7 @@ type RouterStore interface {
 	vmshandlers.Store
 	migrationshandlers.Store
 	snapshotshandlers.Store
+	sshgrantshandlers.Store
 	heartbeathandlers.Store
 	middleware.IdempotencyStore
 	health.Pinger

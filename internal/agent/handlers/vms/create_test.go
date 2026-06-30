@@ -54,7 +54,7 @@ func newCreateHarness(t *testing.T, fake *netfabric.FakeFabric, withPool bool) *
 			t.Fatalf("AddPool: %v", err)
 		}
 	}
-	return New(m, console.NewTokenStore(), discardLogger(), "127.0.0.1")
+	return New(m, console.NewTokenStore(), discardLogger(), "127.0.0.1", nil)
 }
 
 func TestCreate_NICEdgeValidation(t *testing.T) {

@@ -20,7 +20,8 @@ type Reservation struct {
 	IP  netip.Addr
 }
 
-// NetworkConfig is the DHCP service descriptor for one overlay bridge.
+// NetworkConfig is the DHCP service descriptor for one managed-DHCP network's
+// bridge (an overlay bridge or a managed bridge - the responder is the same).
 type NetworkConfig struct {
 	NetworkID    string
 	Bridge       string
@@ -34,12 +35,17 @@ type NetworkConfig struct {
 	AdvertiseDefaultRoute bool
 }
 
-// Responder serves DHCPv4 on overlay bridges for CP-IPAM reservations. The
-// reconciler registers/deregisters per network; the implementation owns one raw
-// socket per active bridge.
+// Responder serves DHCPv4 for CP-IPAM reservations on any managed-DHCP network's
+// bridge - an overlay bridge or a managed bridge alike (both register through the
+// same reconciler step). The reconciler registers/deregisters per network; the
+// implementation owns one raw socket per active bridge.
 type Responder interface {
 	RegisterNetwork(cfg NetworkConfig) error
 	DeregisterNetwork(networkID string) error
+	// LookupByMAC returns the lease IP this agent serves for mac across all
+	// active bridges, canonicalizing mac via net.ParseMAC. It is the agent's
+	// own DHCP state and the ssh-pipe handler's anti-SSRF IP source.
+	LookupByMAC(mac string) (netip.Addr, bool)
 }
 
 // ReplyOptions are the anycast constants every reply carries (overlay gateway).

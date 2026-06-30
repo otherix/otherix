@@ -213,6 +213,7 @@ func vmCreateOp(d Document) (CreateOp, error) {
 		VCPUs:             vcpus,
 		MemoryMB:          memoryMB,
 		CloudInitDisabled: s.CloudInitDisabled,
+		SSHIngressEnabled: s.SSHIngressEnabled,
 	}
 	if s.SourceSnapshotID != "" {
 		// Snapshot-sourced: the snapshot manifest is authoritative for

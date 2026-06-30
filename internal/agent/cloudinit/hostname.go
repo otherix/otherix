@@ -33,6 +33,15 @@ func injectHostname(userData []byte, hostname string) ([]byte, error) {
 		return minimalCloudConfig(hostname)
 	}
 
+	// A pre-formed multipart-MIME archive (e.g. the control plane wraps an
+	// operator #cloud-config and an injected SSH CA-trust document into one
+	// MIME blob) is not a YAML cloud-config and must not be parsed/rewritten -
+	// doing so corrupts the archive. Pass it through verbatim; the hostname
+	// still reaches the guest through the NoCloud meta-data local-hostname.
+	if isMIMEUserData(trimmed) {
+		return userData, nil
+	}
+
 	body := trimmed
 	header := userDataHeader
 	if bytes.HasPrefix(body, []byte(userDataHeader)) {
@@ -102,6 +111,15 @@ func minimalCloudConfig(hostname string) ([]byte, error) {
 		return nil, fmt.Errorf("marshal minimal cloud-config: %w", err)
 	}
 	return append([]byte(userDataHeader+"\n"), b...), nil
+}
+
+// isMIMEUserData reports whether the user-data is a pre-formed MIME archive,
+// detected by a leading MIME header line the way cloud-init's own format
+// detection is. cloud-init treats user-data beginning with a `Content-Type:` or
+// `MIME-Version:` header as a MIME message rather than a #cloud-config document.
+func isMIMEUserData(trimmed []byte) bool {
+	return bytes.HasPrefix(trimmed, []byte("Content-Type:")) ||
+		bytes.HasPrefix(trimmed, []byte("MIME-Version:"))
 }
 
 func documentRoot(n *yaml.Node) *yaml.Node {
