@@ -105,6 +105,32 @@ type FakeFabric struct {
 	WireGuardPeersCalls []string
 
 	SendGARPCalls []SendGARPCall
+
+	// NeighborResult maps NeighborKey(bridge, ip) to the outcome NeighborMAC
+	// returns, letting a test program a guest IP to one MAC and then re-bind the
+	// same IP to a different MAC - the IP-reuse anti-SSRF case. An absent key
+	// yields the zero NeighborOutcome (unresolved). Errs["NeighborMAC"] takes
+	// precedence over the map.
+	NeighborResult   map[string]NeighborOutcome
+	NeighborMACCalls []NeighborMACCall
+}
+
+// NeighborOutcome is the programmable result of a FakeFabric.NeighborMAC call.
+type NeighborOutcome struct {
+	MAC net.HardwareAddr
+	OK  bool
+	Err error
+}
+
+// NeighborMACCall records one NeighborMAC invocation.
+type NeighborMACCall struct {
+	Bridge string
+	IP     netip.Addr
+}
+
+// NeighborKey builds the NeighborResult map key for a (bridge, ip) pair.
+func NeighborKey(bridge string, ip netip.Addr) string {
+	return bridge + "|" + ip.String()
 }
 
 // BridgeCall records one EnsureBridge invocation.
@@ -431,6 +457,17 @@ func (f *FakeFabric) WireGuardPeerHandshakes(name string) ([]WGPeerHandshake, er
 func (f *FakeFabric) SendGARP(bridge string, mac string, ip netip.Addr) error {
 	f.SendGARPCalls = append(f.SendGARPCalls, SendGARPCall{Bridge: bridge, MAC: mac, IP: ip})
 	return f.err("SendGARP")
+}
+
+// NeighborMAC records the call and returns the programmed NeighborResult for
+// (bridge, ip). Errs["NeighborMAC"] takes precedence and yields an error result.
+func (f *FakeFabric) NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAddr, bool, error) {
+	f.NeighborMACCalls = append(f.NeighborMACCalls, NeighborMACCall{Bridge: bridge, IP: ip})
+	if err := f.err("NeighborMAC"); err != nil {
+		return nil, false, err
+	}
+	o := f.NeighborResult[NeighborKey(bridge, ip)]
+	return o.MAC, o.OK, o.Err
 }
 
 // Ensure FakeFabric satisfies Fabric at compile time.

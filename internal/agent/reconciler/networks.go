@@ -144,6 +144,34 @@ func NewGatewayNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration
 // an ordinary hypervisor-node reconciler.
 func (r *Networks) GatewayMode() bool { return r.gatewayMode }
 
+// OverlayBridgeForIP returns the overlay bridge whose CP-declared subnet
+// contains ip, so the ingress gateway's connect path can bind a session
+// credential's dial to the correct overlay datapath. It consults only the
+// latest declared state (the same authoritative source the reconciler applies
+// from); ok is false when no declared overlay subnet contains ip. The returned
+// bridge is the server-derived otvb<vni> name carried on the declared network,
+// so the caller never reconstructs the device-naming convention. Only overlay
+// networks (those carrying a VNI and a subnet) are considered.
+func (r *Networks) OverlayBridgeForIP(ip netip.Addr) (string, bool) {
+	d := r.desired.Load()
+	if d == nil {
+		return "", false
+	}
+	for _, n := range d.networks {
+		if n.VNI == nil || n.Subnet == nil {
+			continue
+		}
+		subnet, err := netip.ParsePrefix(*n.Subnet)
+		if err != nil {
+			continue
+		}
+		if subnet.Contains(ip) {
+			return n.BridgeName, true
+		}
+	}
+	return "", false
+}
+
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. The
 // sender invokes this immediately after a successful POST returns,
 // outside the reconciler's own goroutine. We copy the slice (the
