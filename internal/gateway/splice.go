@@ -41,12 +41,17 @@ const (
 // dialer that reaches a loopback stub.
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// overlayResolver maps a guest IP to the overlay bridge whose CP-declared subnet
-// contains it. The network reconciler (*reconciler.Networks) satisfies it; the
-// connect handler uses it to find which overlay datapath a session credential's
-// guest IP lives on before binding the dial to the credential MAC.
+// overlayResolver maps a guest IP to the overlay datapath whose CP-declared
+// subnet contains it and tracks live ingress sessions per network. The network
+// reconciler (*reconciler.Networks) satisfies it. OverlayNetworkForIP finds which
+// overlay datapath a session credential's guest IP lives on (bridge for the dial
+// binding, network id for session accounting); AcquireSession/ReleaseSession
+// maintain the per-network live-session counter the gateway reports through its
+// heartbeat so the CP keeps the gateway's membership sticky while sessions drain.
 type overlayResolver interface {
-	OverlayBridgeForIP(ip netip.Addr) (bridge string, ok bool)
+	OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string, ok bool)
+	AcquireSession(networkID string)
+	ReleaseSession(networkID string)
 }
 
 // connectDeps carries the collaborators the connect handler needs beyond its
@@ -153,7 +158,7 @@ func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// whose guest IP has been reassigned to a different NIC resolves to a
 	// different MAC and is refused. Every binding failure collapses to a uniform
 	// refusal so the gateway is no oracle and never dials on uncertain input.
-	bridge, ok := h.overlays.OverlayBridgeForIP(claims.GuestIP)
+	bridge, networkID, ok := h.overlays.OverlayNetworkForIP(claims.GuestIP)
 	if !ok {
 		h.log.Warn("connect: refused, guest ip not on any declared overlay",
 			"guest_ip", claims.GuestIP.String(), "vm_id", claims.VMID.String())
@@ -179,6 +184,15 @@ func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.slots.release(vmID)
+
+	// Count this session against its network the instant it holds a slot, and
+	// release the count on every exit path (defer), mirroring the slot discipline
+	// so the per-network counter can never leak. The count rides the gateway's
+	// heartbeat so the CP keeps this gateway's overlay membership sticky while the
+	// session is live. An earlier refusal (off-overlay, MAC mismatch) returns
+	// before this point and never increments.
+	h.overlays.AcquireSession(networkID)
+	defer h.overlays.ReleaseSession(networkID)
 
 	target := net.JoinHostPort(claims.GuestIP.String(), strconv.Itoa(claims.Port))
 

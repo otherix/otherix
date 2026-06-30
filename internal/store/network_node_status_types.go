@@ -21,6 +21,13 @@ type NetworkNodeStatus struct {
 	ReconciliationError  *string
 	LastReconciledAt     *time.Time
 	UpdatedAt            time.Time
+	// ActiveSessions is the gateway's self-reported count of live ingress
+	// sessions on this network. It is meaningful only for a gateway node and
+	// backs the sticky-membership guard: the coverage reconcile keeps a
+	// gateway's overlay membership while this count is above zero so a draining
+	// session is never yanked out from under it. Internal observed state; not
+	// surfaced through the public NetworkNodeStatus view.
+	ActiveSessions int
 }
 
 // UpsertNetworkNodeStatusParams updates one per-(node, network)
@@ -30,4 +37,7 @@ type UpsertNetworkNodeStatusParams struct {
 	NodeID               uuid.UUID
 	ReconciliationStatus string
 	ReconciliationError  *string
+	// ActiveSessions carries the gateway's self-reported live-session count for
+	// this network (zero for a non-gateway node).
+	ActiveSessions int
 }

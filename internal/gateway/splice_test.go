@@ -100,13 +100,21 @@ func signCred(t *testing.T, signer crypto.Signer, c auth.SessionCredClaims) stri
 	return tok
 }
 
-// fakeOverlays is a static overlayResolver: it returns Bridge/OK for every IP.
+// fakeOverlays is a static overlayResolver: it returns Bridge/NetworkID/OK for
+// every IP. Its session counters are no-ops; tests that assert session
+// accounting use spyOverlays instead.
 type fakeOverlays struct {
-	bridge string
-	ok     bool
+	bridge    string
+	networkID string
+	ok        bool
 }
 
-func (f fakeOverlays) OverlayBridgeForIP(netip.Addr) (string, bool) { return f.bridge, f.ok }
+func (f fakeOverlays) OverlayNetworkForIP(netip.Addr) (string, string, bool) {
+	return f.bridge, f.networkID, f.ok
+}
+
+func (fakeOverlays) AcquireSession(string) {}
+func (fakeOverlays) ReleaseSession(string) {}
 
 // fabricResolving returns a FakeFabric whose neighbor table resolves ip on bridge
 // to mac (OK).

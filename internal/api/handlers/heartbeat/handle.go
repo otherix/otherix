@@ -565,6 +565,7 @@ func (h *Handler) applyNetworkReports(ctx context.Context, hp store.HeartbeatPro
 			NodeID:               nodeID,
 			ReconciliationStatus: r.ReconciliationStatus,
 			ReconciliationError:  r.ReconciliationError,
+			ActiveSessions:       r.ActiveSessions,
 		}
 		if err := hp.UpsertNetworkNodeStatus(ctx, params); err != nil {
 			return fmt.Errorf("upsert network_node_status: %v", err)

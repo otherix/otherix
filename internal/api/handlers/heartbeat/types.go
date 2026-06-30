@@ -136,6 +136,11 @@ type networkReport struct {
 	ID                   string  `json:"id"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error"`
+	// ActiveSessions is a gateway's self-reported count of live ingress sessions
+	// on this network. Zero/absent for a hypervisor node. The CP stores it on the
+	// network_node_status row, where the gateway coverage reconcile reads it to
+	// keep a membership sticky while sessions drain.
+	ActiveSessions int `json:"active_sessions,omitempty"`
 }
 
 type migrationCapability struct {

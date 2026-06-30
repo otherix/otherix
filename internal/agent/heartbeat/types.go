@@ -139,6 +139,12 @@ type NetworkReport struct {
 	ID                   string  `json:"id"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+	// ActiveSessions is the number of live ingress sessions an ingress gateway
+	// currently splices on this network. Reported only by a gateway node (zero/
+	// omitted otherwise). The CP stores it as observed state and keeps the
+	// gateway's overlay membership sticky while it is above zero so a draining
+	// session is never torn out from under itself.
+	ActiveSessions int `json:"active_sessions,omitempty"`
 }
 
 // Response mirrors HeartbeatResponse. The CP returns the desired

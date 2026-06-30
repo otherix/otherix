@@ -58,6 +58,16 @@ type Networks struct {
 	mu      sync.Mutex
 	reports map[string]heartbeat.NetworkReport
 
+	// sessionMu guards sessions. The connect/splice plane mutates the counter
+	// from request goroutines (AcquireSession/ReleaseSession) while the heartbeat
+	// collector reads it (NetworkReports); a dedicated mutex keeps the
+	// session-count path off the reconcile-goroutine lock.
+	sessionMu sync.Mutex
+	// sessions counts live ingress sessions per network id, keyed the same way
+	// the NetworkReport is (the declared network id). Only an ingress gateway
+	// populates it; a network with no live session drops out of the map.
+	sessions map[string]int
+
 	// applied records the networks this reconciler has materialised,
 	// keyed by network id, so removals can be detected and torn down
 	// with the right primitives. Mutated only from the reconcile
@@ -118,6 +128,7 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 		tick:            tick,
 		trigger:         make(chan struct{}, 1),
 		reports:         map[string]heartbeat.NetworkReport{},
+		sessions:        map[string]int{},
 		applied:         map[string]appliedNetwork{},
 		dhcpRegisterErr: map[string]string{},
 	}, nil
@@ -172,6 +183,66 @@ func (r *Networks) OverlayBridgeForIP(ip netip.Addr) (string, bool) {
 	return "", false
 }
 
+// OverlayNetworkForIP returns both the overlay bridge AND the network id whose
+// CP-declared subnet contains ip. The ingress gateway's connect path needs the
+// bridge to bind the dial and the network id to key its per-network live-session
+// counter the same way the heartbeat NetworkReport is keyed. It consults only the
+// latest declared state, the same authoritative source the reconciler applies
+// from; ok is false when no declared overlay subnet contains ip. Only overlay
+// networks (those carrying a VNI and a subnet) are considered.
+func (r *Networks) OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string, ok bool) {
+	d := r.desired.Load()
+	if d == nil {
+		return "", "", false
+	}
+	for _, n := range d.networks {
+		if n.VNI == nil || n.Subnet == nil {
+			continue
+		}
+		subnet, err := netip.ParsePrefix(*n.Subnet)
+		if err != nil {
+			continue
+		}
+		if subnet.Contains(ip) {
+			return n.BridgeName, n.ID, true
+		}
+	}
+	return "", "", false
+}
+
+// AcquireSession records one live ingress session on the network. The connect
+// plane calls it when a session takes a connection slot; the count folds into
+// the network's heartbeat report so the CP keeps the gateway's membership sticky
+// while the session drains. Keyed by the declared network id.
+func (r *Networks) AcquireSession(networkID string) {
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	r.sessions[networkID]++
+}
+
+// ReleaseSession releases a session previously recorded by AcquireSession. It
+// never drives the count below zero (a spurious release is a no-op) and drops the
+// entry at zero so an idle network reports no sessions. Mirrors the connect
+// plane's slot-release discipline so the counter cannot leak.
+func (r *Networks) ReleaseSession(networkID string) {
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	if r.sessions[networkID] <= 0 {
+		return
+	}
+	r.sessions[networkID]--
+	if r.sessions[networkID] == 0 {
+		delete(r.sessions, networkID)
+	}
+}
+
+// activeSessions returns the live ingress-session count for the network id.
+func (r *Networks) activeSessions(networkID string) int {
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	return r.sessions[networkID]
+}
+
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. The
 // sender invokes this immediately after a successful POST returns,
 // outside the reconciler's own goroutine. We copy the slice (the
@@ -207,6 +278,9 @@ func (r *Networks) NetworkReports() []heartbeat.NetworkReport {
 	}
 	out := make([]heartbeat.NetworkReport, 0, len(r.reports))
 	for _, rep := range r.reports {
+		// Fold in the live ingress-session count so the CP can hold this
+		// gateway's overlay membership sticky while sessions drain.
+		rep.ActiveSessions = r.activeSessions(rep.ID)
 		out = append(out, rep)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
