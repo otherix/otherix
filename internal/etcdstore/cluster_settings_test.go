@@ -449,12 +449,9 @@ func TestSSHIngressSettingsSetAndRead(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
 
-	if err := s.SetSSHIngressEnabled(ctx, true); err != nil {
-		t.Fatalf("SetSSHIngressEnabled(true): %v", err)
-	}
 	suffix := "vms.example.test"
-	if err := s.SetSSHClusterSuffix(ctx, &suffix); err != nil {
-		t.Fatalf("SetSSHClusterSuffix: %v", err)
+	if err := s.SetSSHIngress(ctx, true, &suffix); err != nil {
+		t.Fatalf("SetSSHIngress(true): %v", err)
 	}
 
 	on, err := s.SSHIngressEnabled(ctx)
@@ -492,12 +489,9 @@ func TestSSHIngressSettingsSetAndRead(t *testing.T) {
 		t.Errorf("after sibling write SSHClusterSuffix = %q, want %q", got, suffix)
 	}
 
-	// Clearing the suffix returns to the empty default; disabling flips back.
-	if err := s.SetSSHClusterSuffix(ctx, nil); err != nil {
-		t.Fatalf("SetSSHClusterSuffix(nil): %v", err)
-	}
-	if err := s.SetSSHIngressEnabled(ctx, false); err != nil {
-		t.Fatalf("SetSSHIngressEnabled(false): %v", err)
+	// Disabling clears the suffix and flips the switch in one atomic write.
+	if err := s.SetSSHIngress(ctx, false, nil); err != nil {
+		t.Fatalf("SetSSHIngress(false): %v", err)
 	}
 	got, err = s.SSHClusterSuffix(ctx)
 	if err != nil {

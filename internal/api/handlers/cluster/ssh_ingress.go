@@ -90,18 +90,15 @@ func (h *Handler) SetSSHIngress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.SetSSHIngressEnabled(r.Context(), req.Enabled); err != nil {
-		h.log.ErrorContext(r.Context(), "set ssh ingress enabled", "error", err)
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "persist ssh ingress", nil)
-		return
-	}
+	// Persist the coupled (enabled, suffix) pair in a single store write so a
+	// torn commit can never leave the singleton enabled with an empty suffix -
+	// the combination the validation above forbids.
 	var suffixPtr *string
 	if suffix != "" {
 		suffixPtr = &suffix
 	}
-	if err := h.store.SetSSHClusterSuffix(r.Context(), suffixPtr); err != nil {
-		h.log.ErrorContext(r.Context(), "set ssh cluster suffix", "error", err)
+	if err := h.store.SetSSHIngress(r.Context(), req.Enabled, suffixPtr); err != nil {
+		h.log.ErrorContext(r.Context(), "set ssh ingress", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "persist ssh ingress", nil)
 		return

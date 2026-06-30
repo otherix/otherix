@@ -422,15 +422,6 @@ func (s *Store) SSHIngressEnabled(ctx context.Context) (bool, error) {
 	return cs.SSHIngressEnabled, nil
 }
 
-// SetSSHIngressEnabled writes the cluster-wide SSH-ingress master switch on the
-// singleton, upserting the row through the mod-revision CAS so a concurrent
-// sibling-field write is not clobbered.
-func (s *Store) SetSSHIngressEnabled(ctx context.Context, enabled bool) error {
-	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
-		cs.SSHIngressEnabled = enabled
-	})
-}
-
 // SSHClusterSuffix returns the operator-set DNS suffix SSH-ingress VM hostnames
 // are addressed under, "" when the singleton has no value (the operator must set
 // it before the connector bundle / cert-mint can address a VM).
@@ -445,11 +436,15 @@ func (s *Store) SSHClusterSuffix(ctx context.Context) (string, error) {
 	return "", nil
 }
 
-// SetSSHClusterSuffix writes the SSH-ingress DNS suffix on the singleton; a nil
-// suffix clears it. The write goes through the mod-revision CAS so a concurrent
-// sibling-field write is not clobbered.
-func (s *Store) SetSSHClusterSuffix(ctx context.Context, suffix *string) error {
+// SetSSHIngress sets the SSH-ingress master switch and DNS suffix on the
+// singleton atomically: both fields land in a single mod-revision CAS commit so
+// the coupled (enabled, suffix) pair is never torn into the enabled-without-suffix
+// combination the API edge forbids. A nil suffix clears it. The write goes
+// through the mod-revision CAS so a concurrent sibling-field write is not
+// clobbered.
+func (s *Store) SetSSHIngress(ctx context.Context, enabled bool, suffix *string) error {
 	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.SSHIngressEnabled = enabled
 		cs.SSHClusterSuffix = suffix
 	})
 }
