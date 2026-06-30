@@ -15,7 +15,7 @@ import (
 var allPermissions = []auth.Permission{
 	auth.PermVMRead, auth.PermVMCreate, auth.PermVMUpdate, auth.PermVMDelete,
 	auth.PermVMLifecycle, auth.PermVMResize, auth.PermVMConsole, auth.PermVMRevert,
-	auth.PermVMMigrate, auth.PermVMSSH, auth.PermVMSSHGrant,
+	auth.PermVMMigrate, auth.PermVMSSH, auth.PermVMSSHGrant, auth.PermVMConnect,
 
 	auth.PermSnapshotRead, auth.PermSnapshotCreate, auth.PermSnapshotDelete,
 	auth.PermSnapshotRevert,
@@ -227,6 +227,24 @@ func TestVMSSHPermissions(t *testing.T) {
 		{auth.RoleDeveloper, auth.PermVMSSHGrant, auth.ScopeOwn},
 		{auth.RoleViewer, auth.PermVMSSH, auth.ScopeNone},
 		{auth.RoleViewer, auth.PermVMSSHGrant, auth.ScopeNone},
+	}
+	for _, c := range cases {
+		if got := auth.ScopeFor(c.role, c.perm); got != c.want {
+			t.Errorf("ScopeFor(%s,%s) = %q, want %q", c.role, c.perm, got, c.want)
+		}
+	}
+}
+
+func TestVMConnectPermissions(t *testing.T) {
+	cases := []struct {
+		role auth.Role
+		perm auth.Permission
+		want auth.Scope
+	}{
+		{auth.RoleAdmin, auth.PermVMConnect, auth.ScopeAny},
+		{auth.RoleOperator, auth.PermVMConnect, auth.ScopeAny},
+		{auth.RoleDeveloper, auth.PermVMConnect, auth.ScopeOwn},
+		{auth.RoleViewer, auth.PermVMConnect, auth.ScopeNone},
 	}
 	for _, c := range cases {
 		if got := auth.ScopeFor(c.role, c.perm); got != c.want {
