@@ -25,11 +25,16 @@
 #   - revocation: `otherix ssh-grant revoke` cuts access and the next
 #     `ssh <vm>.<suffix>` is rejected.
 #
-# Network: the guest sits on an Otherix-managed-DHCP OVERLAY (--type overlay
-# --subnet --dhcp). The agent's ssh-pipe handler resolves the guest IP from the
-# CP-IPAM DHCP reservation it serves for the VM's NIC MAC (its anti-SSRF IP
-# source); the overlay reconciler is the path that loads those reservations into
-# the per-node DHCP responder, so the agent can address the guest.
+# Network: the guest sits on an Otherix-managed-DHCP network. The agent's
+# ssh-pipe handler resolves the guest IP from the CP-IPAM DHCP reservation it
+# serves for the VM's NIC MAC (its anti-SSRF IP source). The requirement is
+# type-agnostic: any Otherix-managed-DHCP network works, because both the overlay
+# path and the managed-bridge path call the SAME registerDHCP reconciler step
+# (internal/agent/reconciler) that loads those reservations into the per-node
+# DHCP responder. So an overlay (--type overlay --subnet --dhcp) OR a managed
+# bridge with --dhcp both let the agent address the guest; what does NOT work is
+# an external/unmanaged DHCP network (no CP-IPAM reservation to resolve the MAC).
+# This smoke uses an overlay for simplicity.
 #
 # Connector HOME isolation: both the operator credential cache and the external
 # connector state (the grant token is a bearer secret) are written under
@@ -329,13 +334,19 @@ pass "external 'ssh ${VM_B}.${SUFFIX}' works after add-vm with NO re-import"
 
 # --- step 6: revocation - the next connect is rejected -----------------
 echo "=== step 6: revocation (ssh-grant revoke) ==="
+# Positive control BEFORE revoke: prove VM_A is still running, so the post-revoke
+# "nonce absent" can only mean the revoked grant was rejected - not that the VM
+# happened to go down (which would make the negative assertion a false green).
+VM_A_PHASE="$(otx vm get "$VM_A" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true)"
+[[ "$VM_A_PHASE" == "running" ]] \
+  || fail "pre-revoke control: $VM_A phase is '${VM_A_PHASE:-none}', want running (cannot trust the post-revoke rejection if the VM is down)"
 otx ssh-grant revoke ext-ssh >/dev/null || fail "ssh-grant revoke failed"
 NONCE_REV="otx-rev-${RANDOM}-${RANDOM}"
 if OUT_REV="$(ext_ssh "${VM_A}.${SUFFIX}" "echo ${NONCE_REV}" 2>/dev/null)" \
    && grep -q "$NONCE_REV" <<<"$OUT_REV"; then
   fail "external ssh still reached the guest AFTER revoke - the grant must no longer authorize"
 fi
-pass "external 'ssh ${VM_A}.${SUFFIX}' rejected after revoke (grant no longer authorizes)"
+pass "external 'ssh ${VM_A}.${SUFFIX}' rejected after revoke (VM_A still running, so the grant - not the VM - is what stopped authorizing)"
 
 # --- step 7: teardown --------------------------------------------------
 echo "=== step 7: teardown VMs + overlay + restore ssh-ingress ==="

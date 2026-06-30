@@ -339,14 +339,23 @@ func (s *sshUserDataStoreStub) ActiveSSHUserCA(context.Context) (store.SSHUserCA
 // shape ActiveSSHUserCA().PublicKeyAuthorized carries.
 const testCAAuthorizedKey = "ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBHcluster-ca otherix-cluster-ca"
 
-// TestResolveCreateUserData_SSHCACoexistence is the M5 assertion: an operator
-// `#cloud-config` with a `users:` block MUST coexist with the injected
-// `TrustedUserCAKeys` CA-trust part. The result is valid multipart MIME and
-// neither document clobbers the other.
+// TestResolveCreateUserData_SSHCACoexistence asserts an operator `#cloud-config`
+// fully coexists with the injected `TrustedUserCAKeys` CA-trust part. cloud-init
+// MERGES two `#cloud-config` documents, and under its default merge the list
+// keys (`write_files`, `runcmd`) are last-part-wins, which would silently DROP
+// an operator's own `write_files`/`runcmd`. The CA-trust part therefore carries
+// an explicit `merge_how` directive so its lists APPEND to the operator's rather
+// than replace them. This test holds the line on all three coexisting: the
+// operator `users:`, the operator `write_files` + `runcmd`, and the injected
+// CA-trust `write_files` + `runcmd`, plus the presence of the merge directive.
 func TestResolveCreateUserData_SSHCACoexistence(t *testing.T) {
 	t.Parallel()
 
-	operator := "#cloud-config\nusers:\n  - name: operator-user\n    sudo: ALL=(ALL) NOPASSWD:ALL\n"
+	operator := "#cloud-config\n" +
+		"users:\n  - name: operator-user\n    sudo: ALL=(ALL) NOPASSWD:ALL\n" +
+		"write_files:\n" +
+		"  - path: /etc/operator-marker\n    content: |\n      operator-was-here\n" +
+		"runcmd:\n  - echo operator-runcmd-marker\n"
 	h := &Handler{store: &sshUserDataStoreStub{
 		settings: store.ClusterSetting{SSHIngressEnabled: true},
 		ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
@@ -367,14 +376,32 @@ func TestResolveCreateUserData_SSHCACoexistence(t *testing.T) {
 		t.Fatalf("multipart parts = %d, want 2 (operator + CA-trust)", len(parts))
 	}
 	joined := strings.Join(parts, "\n----\n")
+	// Operator content survives in full.
 	if !strings.Contains(joined, "name: operator-user") {
 		t.Errorf("operator users: block was clobbered; parts:\n%s", joined)
 	}
+	if !strings.Contains(joined, "/etc/operator-marker") || !strings.Contains(joined, "operator-was-here") {
+		t.Errorf("operator write_files entry was dropped; parts:\n%s", joined)
+	}
+	if !strings.Contains(joined, "operator-runcmd-marker") {
+		t.Errorf("operator runcmd entry was dropped; parts:\n%s", joined)
+	}
+	// Injected CA-trust content is present.
 	if !strings.Contains(joined, "TrustedUserCAKeys") {
 		t.Errorf("injected TrustedUserCAKeys missing; parts:\n%s", joined)
 	}
 	if !strings.Contains(joined, testCAAuthorizedKey) {
 		t.Errorf("CA public key missing from CA-trust part; parts:\n%s", joined)
+	}
+	if !strings.Contains(joined, "systemctl restart ssh") {
+		t.Errorf("injected CA-trust runcmd missing; parts:\n%s", joined)
+	}
+	// The CA-trust part carries the merge directive that makes cloud-init APPEND
+	// its lists to the operator's, so the operator write_files/runcmd above are
+	// not silently dropped at runtime. Without it cloud-init's default merge is
+	// last-part-wins for list keys.
+	if !strings.Contains(joined, "merge_how:") {
+		t.Errorf("CA-trust part missing merge_how directive (operator write_files/runcmd would be dropped at cloud-init merge); parts:\n%s", joined)
 	}
 	// The CA-trust part must NOT add login users (the guest sshd owns login
 	// policy): the only `users:` key present is the operator's own.

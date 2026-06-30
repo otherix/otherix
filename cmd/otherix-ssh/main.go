@@ -242,10 +242,17 @@ func runProxy(cmd *cobra.Command, host, portArg string) error {
 	}
 	vmName := stripSuffix(host, st.ClusterSuffix)
 	cfg := sshConfigFromState(st, dir)
-	// Mint (or refresh) the guest certificate before relaying so the
-	// CertificateFile the managed ssh_config points at is present when the ssh
-	// client reads it during user authentication. The grant token authorizes
-	// the mint and the Control Plane pins the login, so no login is passed.
+	// Mint the guest certificate before relaying so the CertificateFile the
+	// managed ssh_config points at is present when the ssh client reads it during
+	// user authentication. The grant token authorizes the mint and the Control
+	// Plane pins the login, so no login is passed here. The external path
+	// deliberately RE-MINTS on every connect rather than reusing the cached cert:
+	// the connector keeps one shared cert file, but per-VM grants carry
+	// heterogeneous logins, and cachedCertUsable("") checks the cert against the
+	// default "root" principal - which the grant cert (certifying the grant's own
+	// login) does not carry, so the cache always misses. That is correct and
+	// cheap enough: the CP pins the login server-side, so a fresh per-connect mint
+	// is exactly right and avoids serving the wrong VM's cached login.
 	if _, _, err := ensureCert(cmd.Context(), cfg, vmName, ""); err != nil {
 		return err
 	}

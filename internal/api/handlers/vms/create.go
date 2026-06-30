@@ -786,12 +786,16 @@ func (h *Handler) resolveCreateUserData(w http.ResponseWriter, r *http.Request, 
 }
 
 // buildSSHCATrustUserData assembles the cloud-init user-data that provisions the
-// guest to trust the cluster SSH user-CA. cloud-init does NOT deep-merge two
-// top-level #cloud-config documents, so a naive append corrupts an operator
-// document; instead the operator's user-data and the Otherix CA-trust document
-// are carried as separate parts of a multipart-MIME archive that cloud-init
-// processes independently. When the operator supplied no user-data the CA-trust
-// document is returned on its own (a plain #cloud-config, no multipart wrapper).
+// guest to trust the cluster SSH user-CA. A naive string concatenation of two
+// #cloud-config bodies is invalid, so the operator's user-data and the Otherix
+// CA-trust document are carried as separate parts of a multipart-MIME archive.
+// cloud-init then MERGES the two #cloud-config parts (it does not process them
+// in isolation): under its default merge the list keys (write_files, runcmd) are
+// last-part-wins, so the CA-trust part (emitted last) sets an explicit merge_how
+// directive that makes its lists APPEND to the operator's, preserving the
+// operator's own write_files/runcmd. See otherixSSHCACloudConfig. When the
+// operator supplied no user-data the CA-trust document is returned on its own
+// (a plain #cloud-config, no multipart wrapper).
 //
 // The injection adds ONLY the CA trust (TrustedUserCAKeys): it never creates
 // login users or a login allow-list - the guest sshd and the operator's own
@@ -848,10 +852,24 @@ func buildSSHCATrustUserData(operatorUserData string, caAuthorizedKey []byte) (s
 // pointing TrustedUserCAKeys at it, then restarts the SSH service so the trust
 // takes effect on first boot. The service name differs across distros (ssh on
 // Debian/Ubuntu, sshd on RHEL family), so the restart tries both.
+//
+// The document carries an explicit cloud-init `merge_how` directive. cloud-init
+// MERGES multiple #cloud-config documents, and under its default merge the list
+// keys (write_files, runcmd) are last-part-wins: without the directive, when an
+// operator supplies their own write_files/runcmd this CA-trust document (carried
+// as the later MIME part) would silently REPLACE them. The directive sits on
+// this later part - the directive on the part being merged in governs how it
+// folds into the accumulator - and tells cloud-init to APPEND lists, so the
+// operator's write_files/runcmd survive alongside the CA-trust entries.
 func otherixSSHCACloudConfig(caAuthorizedKey []byte) string {
 	caLine := strings.TrimRight(string(caAuthorizedKey), "\n")
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
+	b.WriteString("merge_how:\n")
+	b.WriteString(" - name: list\n")
+	b.WriteString("   settings: [append, no_replace]\n")
+	b.WriteString(" - name: dict\n")
+	b.WriteString("   settings: [no_replace, recurse_list]\n")
 	b.WriteString("write_files:\n")
 	b.WriteString("  - path: /etc/ssh/otherix_user_ca.pub\n")
 	b.WriteString("    permissions: '0644'\n")
