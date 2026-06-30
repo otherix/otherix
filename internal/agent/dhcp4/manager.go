@@ -47,9 +47,10 @@ type Config struct {
 	Lease time.Duration
 }
 
-// responder serves DHCPv4 on overlay bridges for CP-IPAM reservations. It owns
-// one raw AF_PACKET socket per active bridge, opened lazily on the first
-// RegisterNetwork for that bridge and closed on DeregisterNetwork.
+// responder serves DHCPv4 for CP-IPAM reservations on any managed-DHCP network's
+// bridge (overlay or managed bridge - both register through the same reconciler
+// step). It owns one raw AF_PACKET socket per active bridge, opened lazily on the
+// first RegisterNetwork for that bridge and closed on DeregisterNetwork.
 //
 // Ordering: RegisterNetwork may be called before or after Run. Calls before Run
 // buffer the config; Run opens their sockets and starts serving once it holds a
@@ -154,7 +155,8 @@ func (r *responder) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// RegisterNetwork registers or updates the DHCP service for one overlay bridge.
+// RegisterNetwork registers or updates the DHCP service for one managed-DHCP
+// network's bridge (overlay or managed bridge).
 // It is idempotent: a re-register for the same networkID atomically swaps the
 // reservation set and subnet without reopening the socket. If the bridge name
 // changed for an existing networkID, the old socket is closed and a new one
