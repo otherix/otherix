@@ -39,6 +39,11 @@ type CreateVMParams struct {
 	PinnedNodeID      *uuid.UUID
 	UserData          *string
 	CloudInitDisabled bool
+	// SSHIngressEnabled is the per-VM opt-in for SSH ingress. CreateUnscheduledVM
+	// persists it on the VM row; the create handler, when this is set and the
+	// cluster master switch is on, provisions the guest to trust the cluster SSH
+	// user-CA via the user-data it stores.
+	SSHIngressEnabled bool
 	NetworkConfig     *string
 	Labels            []byte
 	// SchedulingSpec is the JSON-encoded store.SchedulingSpec captured at

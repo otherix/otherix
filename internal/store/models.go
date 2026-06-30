@@ -380,8 +380,16 @@ type ClusterSetting struct {
 	// DrainMaxConcurrentMigrations caps how many evacuation migrations a single
 	// drain runs at once; operator-set, default 2.
 	DrainMaxConcurrentMigrations *int32
-	CreatedAt                    time.Time
-	UpdatedAt                    time.Time
+	// SSHIngressEnabled is the cluster-wide master switch for the VM SSH-ingress
+	// feature; operator-set, default false. When false, VM create never injects
+	// the SSH user-CA trust even for a VM that opts in.
+	SSHIngressEnabled bool
+	// SSHClusterSuffix is the DNS suffix SSH-ingress VM hostnames are addressed
+	// under (e.g. "vms.example.com"); operator-set, default "" (the operator must
+	// set it before the connector bundle / cert-mint can address a VM).
+	SSHClusterSuffix *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Firmware struct {
@@ -783,6 +791,11 @@ type VM struct {
 	SchedulerHints    []byte
 	UserData          *string
 	CloudInitDisabled bool
+	// SSHIngressEnabled records the per-VM opt-in for SSH ingress: when true (and
+	// the cluster master switch is on) VM create provisioned the guest to trust
+	// the cluster SSH user-CA so the cert-mint endpoint's short-lived certs are
+	// accepted.
+	SSHIngressEnabled bool
 	MetaData          *string
 	NetworkConfig     *string
 	SshAuthorizedKeys []string

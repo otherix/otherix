@@ -410,3 +410,46 @@ func (s *Store) DrainMaxConcurrentMigrations(ctx context.Context) (int32, error)
 	}
 	return defaultDrainMaxConcurrentMigrations, nil
 }
+
+// SSHIngressEnabled returns the cluster-wide SSH-ingress master switch, false
+// (disabled) when the singleton has never been written. It gates whether VM
+// create provisions the guest to trust the cluster SSH user-CA.
+func (s *Store) SSHIngressEnabled(ctx context.Context) (bool, error) {
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return cs.SSHIngressEnabled, nil
+}
+
+// SetSSHIngressEnabled writes the cluster-wide SSH-ingress master switch on the
+// singleton, upserting the row through the mod-revision CAS so a concurrent
+// sibling-field write is not clobbered.
+func (s *Store) SetSSHIngressEnabled(ctx context.Context, enabled bool) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.SSHIngressEnabled = enabled
+	})
+}
+
+// SSHClusterSuffix returns the operator-set DNS suffix SSH-ingress VM hostnames
+// are addressed under, "" when the singleton has no value (the operator must set
+// it before the connector bundle / cert-mint can address a VM).
+func (s *Store) SSHClusterSuffix(ctx context.Context) (string, error) {
+	cs, err := s.ClusterSettings(ctx)
+	if err != nil {
+		return "", err
+	}
+	if cs.SSHClusterSuffix != nil {
+		return *cs.SSHClusterSuffix, nil
+	}
+	return "", nil
+}
+
+// SetSSHClusterSuffix writes the SSH-ingress DNS suffix on the singleton; a nil
+// suffix clears it. The write goes through the mod-revision CAS so a concurrent
+// sibling-field write is not clobbered.
+func (s *Store) SetSSHClusterSuffix(ctx context.Context, suffix *string) error {
+	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
+		cs.SSHClusterSuffix = suffix
+	})
+}

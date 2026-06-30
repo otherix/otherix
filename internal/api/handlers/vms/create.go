@@ -4,14 +4,19 @@
 package vms
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -89,6 +94,12 @@ type vmCreateRequest struct {
 	// cidata.iso generation. Mutually exclusive with UserData; sending both
 	// surfaces as 400 validation_failed.
 	CloudInitDisabled bool `json:"cloud_init_disabled,omitempty"`
+	// SSHIngressEnabled is the per-VM opt-in for SSH ingress. When set (and the
+	// cluster master switch is on and a SSH user-CA exists), the handler injects
+	// the cluster SSH user-CA trust into the guest via multipart-MIME user-data
+	// so the guest sshd accepts the short-lived certs the cert-mint endpoint
+	// signs. Requires cloud-init (mutually exclusive with cloud_init_disabled).
+	SSHIngressEnabled bool `json:"ssh_ingress_enabled,omitempty"`
 }
 
 // errFirmwareNotFound is the in-flight signal that firmware resolution found no
@@ -168,6 +179,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userData, ok := h.resolveCreateUserData(w, r, req)
+	if !ok {
+		return
+	}
+
 	spec := store.SchedulingSpec{
 		PoolName: poolName,
 		DiskGiB:  int32(req.DiskGiB), //nolint:gosec // bounded 0..65536 by validateCreateRequest
@@ -199,8 +215,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		MachineType:       machineTypeFor(src.arch),
 		FirmwareID:        src.firmwareID,
 		SourceSnapshotID:  src.sourceSnapshotID,
-		UserData:          req.UserData,
+		UserData:          userData,
 		CloudInitDisabled: req.CloudInitDisabled,
+		SSHIngressEnabled: req.SSHIngressEnabled,
 		NetworkConfig:     req.NetworkConfig,
 		Labels:            []byte(`{}`),
 		SchedulingSpec:    specJSON,
@@ -363,6 +380,15 @@ func validateCloudInitExclusivity(w http.ResponseWriter, r *http.Request, req vm
 			response.CodeValidationFailed,
 			"network_config and cloud_init_disabled are mutually exclusive",
 			map[string]any{"conflicting_fields": []string{"network_config", "cloud_init_disabled"}})
+		return false
+	}
+	// SSH ingress provisions the guest's CA trust through cloud-init user-data,
+	// so it cannot coexist with an explicit cloud-init disable.
+	if req.SSHIngressEnabled && req.CloudInitDisabled {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed,
+			"ssh_ingress_enabled and cloud_init_disabled are mutually exclusive",
+			map[string]any{"conflicting_fields": []string{"ssh_ingress_enabled", "cloud_init_disabled"}})
 		return false
 	}
 	return true
@@ -708,6 +734,151 @@ func (h *Handler) resolveNetworkName(w http.ResponseWriter, r *http.Request, req
 		return "", false
 	}
 	return net.Name, true
+}
+
+// resolveCreateUserData returns the effective cloud-init user-data to persist on
+// the VM row. When the request opts into SSH ingress AND the cluster master
+// switch is on AND a cluster SSH user-CA exists, it wraps the operator's
+// user-data with an Otherix CA-trust part as multipart MIME so the guest sshd
+// trusts the cluster user-CA. Otherwise it returns the operator user-data
+// unchanged - fail-open to a normal VM when SSH ingress is off or the CA is not
+// yet provisioned. It writes the wire envelope and returns ok=false only on a
+// genuine store / assembly error.
+func (h *Handler) resolveCreateUserData(w http.ResponseWriter, r *http.Request, req vmCreateRequest) (*string, bool) {
+	if !req.SSHIngressEnabled {
+		return req.UserData, true
+	}
+	settings, err := h.store.ClusterSettings(r.Context())
+	if err != nil {
+		h.log.ErrorContext(r.Context(), "load cluster settings", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load cluster settings", nil)
+		return nil, false
+	}
+	if !settings.SSHIngressEnabled {
+		// The feature is not enabled cluster-wide: fail-open to a normal VM.
+		return req.UserData, true
+	}
+	ca, err := h.store.ActiveSSHUserCA(r.Context())
+	if errors.Is(err, store.ErrNotFound) {
+		// No SSH user-CA provisioned yet: fail-open rather than block create.
+		return req.UserData, true
+	}
+	if err != nil {
+		h.log.ErrorContext(r.Context(), "load ssh user-ca", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "create vm", nil)
+		return nil, false
+	}
+	base := ""
+	if req.UserData != nil {
+		base = *req.UserData
+	}
+	merged, err := buildSSHCATrustUserData(base, ca.PublicKeyAuthorized)
+	if err != nil {
+		h.log.ErrorContext(r.Context(), "assemble ssh ca-trust user-data", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "create vm", nil)
+		return nil, false
+	}
+	return &merged, true
+}
+
+// buildSSHCATrustUserData assembles the cloud-init user-data that provisions the
+// guest to trust the cluster SSH user-CA. cloud-init does NOT deep-merge two
+// top-level #cloud-config documents, so a naive append corrupts an operator
+// document; instead the operator's user-data and the Otherix CA-trust document
+// are carried as separate parts of a multipart-MIME archive that cloud-init
+// processes independently. When the operator supplied no user-data the CA-trust
+// document is returned on its own (a plain #cloud-config, no multipart wrapper).
+//
+// The injection adds ONLY the CA trust (TrustedUserCAKeys): it never creates
+// login users or a login allow-list - the guest sshd and the operator's own
+// user-data own login policy.
+//
+// Guest prerequisite: OpenSSH 8.2+ (for the sshd_config.d Include drop-in, which
+// the stock cloud images enable by default) and a cloud-init that honors
+// write_files.
+func buildSSHCATrustUserData(operatorUserData string, caAuthorizedKey []byte) (string, error) {
+	otxDoc := otherixSSHCACloudConfig(caAuthorizedKey)
+	if strings.TrimSpace(operatorUserData) == "" {
+		return otxDoc, nil
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	parts := []struct{ contentType, content string }{
+		{cloudInitPartContentType(operatorUserData), operatorUserData},
+		{"text/cloud-config; charset=\"utf-8\"", otxDoc},
+	}
+	for _, p := range parts {
+		hdr := textproto.MIMEHeader{}
+		hdr.Set("Content-Type", p.contentType)
+		hdr.Set("MIME-Version", "1.0")
+		pw, err := mw.CreatePart(hdr)
+		if err != nil {
+			return "", fmt.Errorf("create mime part: %v", err)
+		}
+		if _, err := io.WriteString(pw, p.content); err != nil {
+			return "", fmt.Errorf("write mime part: %v", err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return "", fmt.Errorf("close mime writer: %v", err)
+	}
+
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "Content-Type: multipart/mixed; boundary=%q\n", mw.Boundary())
+	out.WriteString("MIME-Version: 1.0\n\n")
+	out.Write(body.Bytes())
+	return out.String(), nil
+}
+
+// otherixSSHCACloudConfig builds the #cloud-config document that writes the
+// cluster SSH user-CA public key to the guest and adds an sshd_config.d drop-in
+// pointing TrustedUserCAKeys at it, then restarts the SSH service so the trust
+// takes effect on first boot. The service name differs across distros (ssh on
+// Debian/Ubuntu, sshd on RHEL family), so the restart tries both.
+func otherixSSHCACloudConfig(caAuthorizedKey []byte) string {
+	caLine := strings.TrimRight(string(caAuthorizedKey), "\n")
+	var b strings.Builder
+	b.WriteString("#cloud-config\n")
+	b.WriteString("write_files:\n")
+	b.WriteString("  - path: /etc/ssh/otherix_user_ca.pub\n")
+	b.WriteString("    permissions: '0644'\n")
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      " + caLine + "\n")
+	b.WriteString("  - path: /etc/ssh/sshd_config.d/60-otherix-ca.conf\n")
+	b.WriteString("    permissions: '0644'\n")
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      TrustedUserCAKeys /etc/ssh/otherix_user_ca.pub\n")
+	b.WriteString("runcmd:\n")
+	b.WriteString("  - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true\n")
+	return b.String()
+}
+
+// cloudInitPartContentType maps an operator user-data document to the MIME
+// content type cloud-init expects for it, keyed off the leading line the way
+// cloud-init's own format detection is. An unrecognised document is carried as
+// #cloud-config, the common case for a VM-level override.
+func cloudInitPartContentType(userData string) string {
+	head := userData
+	if i := strings.IndexByte(head, '\n'); i >= 0 {
+		head = head[:i]
+	}
+	head = strings.TrimSpace(head)
+	switch {
+	case strings.HasPrefix(head, "#!"):
+		return "text/x-shellscript; charset=\"utf-8\""
+	case strings.HasPrefix(head, "#cloud-boothook"):
+		return "text/cloud-boothook; charset=\"utf-8\""
+	case strings.HasPrefix(head, "#include"):
+		return "text/x-include-url; charset=\"utf-8\""
+	default:
+		return "text/cloud-config; charset=\"utf-8\""
+	}
 }
 
 // generateLocalMAC mints a locally-administered unicast MAC in QEMU's

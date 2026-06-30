@@ -7,8 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"strings"
 	"testing"
 
@@ -311,6 +315,178 @@ func TestResolveFirmwareNoDefault(t *testing.T) {
 	if got != nil {
 		t.Errorf("resolveFirmware id = %v, want nil (no firmware)", got)
 	}
+}
+
+// sshUserDataStoreStub satisfies the handler's Store interface for the
+// SSH-ingress user-data resolution tests. It embeds Store (nil) so only
+// ClusterSettings and ActiveSSHUserCA have bodies; any other call panics.
+type sshUserDataStoreStub struct {
+	Store
+	settings store.ClusterSetting
+	ca       store.SSHUserCA
+	caErr    error
+}
+
+func (s *sshUserDataStoreStub) ClusterSettings(context.Context) (store.ClusterSetting, error) {
+	return s.settings, nil
+}
+
+func (s *sshUserDataStoreStub) ActiveSSHUserCA(context.Context) (store.SSHUserCA, error) {
+	return s.ca, s.caErr
+}
+
+// testCAAuthorizedKey is a sample CA public key in authorized_keys form, the
+// shape ActiveSSHUserCA().PublicKeyAuthorized carries.
+const testCAAuthorizedKey = "ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBHcluster-ca otherix-cluster-ca"
+
+// TestResolveCreateUserData_SSHCACoexistence is the M5 assertion: an operator
+// `#cloud-config` with a `users:` block MUST coexist with the injected
+// `TrustedUserCAKeys` CA-trust part. The result is valid multipart MIME and
+// neither document clobbers the other.
+func TestResolveCreateUserData_SSHCACoexistence(t *testing.T) {
+	t.Parallel()
+
+	operator := "#cloud-config\nusers:\n  - name: operator-user\n    sudo: ALL=(ALL) NOPASSWD:ALL\n"
+	h := &Handler{store: &sshUserDataStoreStub{
+		settings: store.ClusterSetting{SSHIngressEnabled: true},
+		ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
+	}, log: discardLog()}
+
+	req := vmCreateRequest{UserData: &operator, SSHIngressEnabled: true}
+	rec := httptest.NewRecorder()
+	got, ok := h.resolveCreateUserData(rec, fakeRequest(), req)
+	if !ok {
+		t.Fatalf("resolveCreateUserData ok = false, want true (body: %s)", rec.Body.String())
+	}
+	if got == nil {
+		t.Fatal("resolveCreateUserData returned nil user-data, want multipart MIME")
+	}
+
+	parts := parseMultipartUserData(t, *got)
+	if len(parts) != 2 {
+		t.Fatalf("multipart parts = %d, want 2 (operator + CA-trust)", len(parts))
+	}
+	joined := strings.Join(parts, "\n----\n")
+	if !strings.Contains(joined, "name: operator-user") {
+		t.Errorf("operator users: block was clobbered; parts:\n%s", joined)
+	}
+	if !strings.Contains(joined, "TrustedUserCAKeys") {
+		t.Errorf("injected TrustedUserCAKeys missing; parts:\n%s", joined)
+	}
+	if !strings.Contains(joined, testCAAuthorizedKey) {
+		t.Errorf("CA public key missing from CA-trust part; parts:\n%s", joined)
+	}
+	// The CA-trust part must NOT add login users (the guest sshd owns login
+	// policy): the only `users:` key present is the operator's own.
+	if strings.Count(joined, "users:") != 1 {
+		t.Errorf("expected exactly one users: block (operator's own), got %d; parts:\n%s",
+			strings.Count(joined, "users:"), joined)
+	}
+}
+
+// TestResolveCreateUserData_Passthrough covers the fail-open paths: when SSH
+// ingress is not requested, not enabled cluster-wide, or the CA is absent, the
+// operator user-data is returned unchanged (no multipart wrapping).
+func TestResolveCreateUserData_Passthrough(t *testing.T) {
+	t.Parallel()
+
+	operator := "#cloud-config\nusers:\n  - name: operator-user\n"
+	cases := []struct {
+		name string
+		req  vmCreateRequest
+		stub *sshUserDataStoreStub
+	}{
+		{
+			name: "per-vm opt-in absent",
+			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: false},
+			stub: &sshUserDataStoreStub{
+				settings: store.ClusterSetting{SSHIngressEnabled: true},
+				ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
+			},
+		},
+		{
+			name: "cluster setting disabled",
+			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: true},
+			stub: &sshUserDataStoreStub{
+				settings: store.ClusterSetting{SSHIngressEnabled: false},
+				ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
+			},
+		},
+		{
+			name: "ca absent",
+			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: true},
+			stub: &sshUserDataStoreStub{
+				settings: store.ClusterSetting{SSHIngressEnabled: true},
+				caErr:    store.ErrNotFound,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := &Handler{store: tc.stub, log: discardLog()}
+			rec := httptest.NewRecorder()
+			got, ok := h.resolveCreateUserData(rec, fakeRequest(), tc.req)
+			if !ok {
+				t.Fatalf("resolveCreateUserData ok = false, want true (body: %s)", rec.Body.String())
+			}
+			if got == nil || *got != operator {
+				t.Errorf("resolveCreateUserData = %v, want operator user-data unchanged", got)
+			}
+		})
+	}
+}
+
+// TestBuildSSHCATrustUserDataNoOperatorDoc covers the no-operator-user-data
+// branch: a single `#cloud-config` CA-trust document (no multipart wrapper
+// needed) that still carries the CA public key and TrustedUserCAKeys drop-in.
+func TestBuildSSHCATrustUserDataNoOperatorDoc(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildSSHCATrustUserData("", []byte(testCAAuthorizedKey))
+	if err != nil {
+		t.Fatalf("buildSSHCATrustUserData: %v", err)
+	}
+	if !strings.HasPrefix(got, "#cloud-config") {
+		t.Errorf("single-doc output should start with #cloud-config, got:\n%s", got)
+	}
+	if !strings.Contains(got, "TrustedUserCAKeys") || !strings.Contains(got, testCAAuthorizedKey) {
+		t.Errorf("CA-trust doc missing TrustedUserCAKeys / CA key:\n%s", got)
+	}
+}
+
+// parseMultipartUserData parses a NoCloud multipart-MIME user-data blob and
+// returns each part's decoded body, failing the test on a malformed envelope.
+func parseMultipartUserData(t *testing.T, userData string) []string {
+	t.Helper()
+	msg, err := mail.ReadMessage(strings.NewReader(userData))
+	if err != nil {
+		t.Fatalf("parse user-data MIME headers: %v\n%s", err, userData)
+	}
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("parse Content-Type: %v", err)
+	}
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		t.Fatalf("top-level media type = %q, want multipart/*", mediaType)
+	}
+	mr := multipart.NewReader(msg.Body, params["boundary"])
+	var bodies []string
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read multipart part: %v", err)
+		}
+		b, err := io.ReadAll(p)
+		if err != nil {
+			t.Fatalf("read part body: %v", err)
+		}
+		bodies = append(bodies, string(b))
+	}
+	return bodies
 }
 
 // TestGenerateLocalMAC asserts the minted MAC carries the QEMU 52:54:00 OUI,

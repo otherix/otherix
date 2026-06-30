@@ -7089,6 +7089,21 @@ components:
             verbatim. Mutually exclusive with `cloud_init_disabled`;
             allowed alongside `user_data`. When omitted the guest uses
             cloud-init's DHCP fallback.
+        ssh_ingress_enabled:
+          type: boolean
+          default: false
+          description: |
+            Opt this VM into SSH ingress. When `true` (and the cluster
+            SSH-ingress master switch is enabled and a cluster SSH user-CA
+            exists), the control plane provisions the guest at create time
+            to trust the cluster SSH user-CA so the short-lived certificates
+            the cert-mint endpoint issues are accepted. The CA trust is
+            injected as an additional cloud-init document alongside any
+            operator-supplied `user_data`; it adds only `TrustedUserCAKeys`
+            and never creates login users. Requires cloud-init - mutually
+            exclusive with `cloud_init_disabled`. Requires a guest image with
+            OpenSSH 8.2+. When SSH ingress is disabled cluster-wide or no CA
+            is provisioned, this is a no-op and a normal VM is created.
 
     VMUpdate:
       type: object

@@ -49,6 +49,31 @@ func TestInjectHostnameFallbackYAMLSafe(t *testing.T) {
 	}
 }
 
+// TestInjectHostnameMultipartPassthrough pins the seam with CP-side SSH-ingress
+// provisioning: when the user-data is a pre-formed multipart-MIME archive (the
+// CP wraps an operator #cloud-config and the injected SSH CA-trust document into
+// one MIME blob), injectHostname must pass it through byte-for-byte rather than
+// YAML-parse it. YAML-parsing a MIME archive corrupts or hard-fails the seed;
+// the hostname still reaches the guest via meta-data local-hostname.
+func TestInjectHostnameMultipartPassthrough(t *testing.T) {
+	mime := "Content-Type: multipart/mixed; boundary=\"==BOUNDARY==\"\n" +
+		"MIME-Version: 1.0\n\n" +
+		"--==BOUNDARY==\n" +
+		"Content-Type: text/cloud-config; charset=\"utf-8\"\n\n" +
+		"#cloud-config\nusers:\n  - name: op\n\n" +
+		"--==BOUNDARY==\n" +
+		"Content-Type: text/cloud-config; charset=\"utf-8\"\n\n" +
+		"#cloud-config\nwrite_files: []\n\n" +
+		"--==BOUNDARY==--\n"
+	out, err := injectHostname([]byte(mime), "vm-1")
+	if err != nil {
+		t.Fatalf("injectHostname(multipart) err = %v", err)
+	}
+	if string(out) != mime {
+		t.Errorf("multipart user-data was rewritten; got:\n%s\nwant:\n%s", out, mime)
+	}
+}
+
 func TestInjectHostname(t *testing.T) {
 	tests := []struct {
 		name        string

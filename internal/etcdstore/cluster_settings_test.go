@@ -423,3 +423,94 @@ func TestSeedUnderlayMTUZeroDefaults(t *testing.T) {
 		t.Errorf("UnderlayMTU() after zero seed = %d, want 1500", mtu)
 	}
 }
+
+func TestSSHIngressSettingsDefaults(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	on, err := s.SSHIngressEnabled(ctx)
+	if err != nil {
+		t.Fatalf("SSHIngressEnabled: %v", err)
+	}
+	if on {
+		t.Errorf("default SSHIngressEnabled = %v, want false", on)
+	}
+
+	suffix, err := s.SSHClusterSuffix(ctx)
+	if err != nil {
+		t.Fatalf("SSHClusterSuffix: %v", err)
+	}
+	if suffix != "" {
+		t.Errorf("default SSHClusterSuffix = %q, want \"\"", suffix)
+	}
+}
+
+func TestSSHIngressSettingsSetAndRead(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SetSSHIngressEnabled(ctx, true); err != nil {
+		t.Fatalf("SetSSHIngressEnabled(true): %v", err)
+	}
+	suffix := "vms.example.test"
+	if err := s.SetSSHClusterSuffix(ctx, &suffix); err != nil {
+		t.Fatalf("SetSSHClusterSuffix: %v", err)
+	}
+
+	on, err := s.SSHIngressEnabled(ctx)
+	if err != nil {
+		t.Fatalf("SSHIngressEnabled: %v", err)
+	}
+	if !on {
+		t.Errorf("SSHIngressEnabled after set = %v, want true", on)
+	}
+	got, err := s.SSHClusterSuffix(ctx)
+	if err != nil {
+		t.Fatalf("SSHClusterSuffix: %v", err)
+	}
+	if got != suffix {
+		t.Errorf("SSHClusterSuffix after set = %q, want %q", got, suffix)
+	}
+
+	// A sibling-field write must not clobber the SSH settings (CAS merge).
+	pool := "pool-a"
+	if err := s.SetDefaultPoolName(ctx, &pool); err != nil {
+		t.Fatalf("SetDefaultPoolName(%q): %v", pool, err)
+	}
+	on, err = s.SSHIngressEnabled(ctx)
+	if err != nil {
+		t.Fatalf("SSHIngressEnabled after sibling write: %v", err)
+	}
+	if !on {
+		t.Errorf("after sibling write SSHIngressEnabled = %v, want true", on)
+	}
+	got, err = s.SSHClusterSuffix(ctx)
+	if err != nil {
+		t.Fatalf("SSHClusterSuffix after sibling write: %v", err)
+	}
+	if got != suffix {
+		t.Errorf("after sibling write SSHClusterSuffix = %q, want %q", got, suffix)
+	}
+
+	// Clearing the suffix returns to the empty default; disabling flips back.
+	if err := s.SetSSHClusterSuffix(ctx, nil); err != nil {
+		t.Fatalf("SetSSHClusterSuffix(nil): %v", err)
+	}
+	if err := s.SetSSHIngressEnabled(ctx, false); err != nil {
+		t.Fatalf("SetSSHIngressEnabled(false): %v", err)
+	}
+	got, err = s.SSHClusterSuffix(ctx)
+	if err != nil {
+		t.Fatalf("SSHClusterSuffix after clear: %v", err)
+	}
+	if got != "" {
+		t.Errorf("SSHClusterSuffix after clear = %q, want \"\"", got)
+	}
+	on, err = s.SSHIngressEnabled(ctx)
+	if err != nil {
+		t.Fatalf("SSHIngressEnabled after disable: %v", err)
+	}
+	if on {
+		t.Errorf("SSHIngressEnabled after disable = %v, want false", on)
+	}
+}
