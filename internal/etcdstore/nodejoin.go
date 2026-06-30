@@ -253,7 +253,17 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNodeNameExists) {
-			return s.NodeByName(ctx, p.NodeName)
+			// Lost a concurrent create for this name. Reuse the winner's row, but
+			// hold the same invariant as the reuse branch above: a winner of a
+			// different kind must not yield a mis-issued identity.
+			winner, ferr := s.NodeByName(ctx, p.NodeName)
+			if ferr != nil {
+				return store.Node{}, ferr
+			}
+			if existingKind(winner.Kind) != nodeKind {
+				return store.Node{}, store.ErrJoinNodeKindMismatch
+			}
+			return winner, nil
 		}
 		return store.Node{}, fmt.Errorf("create node: %v", err)
 	}
