@@ -5835,11 +5835,14 @@ components:
           format: uuid
         kind:
           type: string
-          enum: [node, cluster]
+          enum: [node, gateway, cluster]
           description: |
             What the token authorizes. `node` (default) redeems at
-            POST /v1/nodes/join for a node leaf cert; `cluster` redeems
-            at POST /v1/cluster/join for the cluster CA cert + key (a
+            POST /v1/nodes/join for a node leaf cert; `gateway` redeems
+            at the same endpoint but self-registers an ingress gateway,
+            yielding a `gateway-<name>` leaf and a gateway-kind node row
+            (excluded from VM placement); `cluster` redeems at
+            POST /v1/cluster/join for the cluster CA cert + key (a
             joining control-plane replica). The privilege is fixed at
             mint, never a request flag.
         intended_node_name:
@@ -5878,13 +5881,16 @@ components:
       properties:
         kind:
           type: string
-          enum: [node, cluster]
+          enum: [node, gateway, cluster]
           default: node
           description: |
             Token kind. `node` (default) mints a node-join token;
-            `cluster` mints a control-plane replica join token that
-            redeems for the cluster CA cert + key. A cluster token
-            cannot carry `intended_node_name`.
+            `gateway` mints a token that self-registers an ingress
+            gateway (a `gateway-<name>` identity and a gateway-kind node
+            row excluded from VM placement); `cluster` mints a
+            control-plane replica join token that redeems for the cluster
+            CA cert + key. A cluster token cannot carry
+            `intended_node_name`.
         intended_node_name:
           type: [string, "null"]
           maxLength: 63

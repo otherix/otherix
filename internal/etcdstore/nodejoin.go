@@ -38,7 +38,9 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		}
 		return store.RedeemJoinTokenResult{}, fmt.Errorf("token lookup: %v", err)
 	}
-	if err := s.validateRedeemTokenKind(token, store.JoinTokenKindNode); err != nil {
+	// The node-join endpoint serves both hypervisor nodes and self-registering
+	// ingress gateways; a cluster token (CA private key) must never redeem here.
+	if err := s.validateRedeemTokenKind(token, store.JoinTokenKindNode, store.JoinTokenKindGateway); err != nil {
 		return store.RedeemJoinTokenResult{}, err
 	}
 
@@ -61,7 +63,7 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		}
 	}
 
-	node, err := s.upsertJoinNode(ctx, p)
+	node, err := s.upsertJoinNode(ctx, p, redeemNodeKind(token))
 	if err != nil {
 		return store.RedeemJoinTokenResult{}, err
 	}
@@ -168,10 +170,11 @@ func (s *Store) readNodeConsumedCount(ctx context.Context, countKey, indexPrefix
 }
 
 // validateRedeemTokenKind enforces the kind-and-expiry invariants shared by node
-// and cluster joins: the token is unexpired and matches the expected kind (empty
-// Kind reads as node for back-compat - so a node token cannot redeem at the
-// cluster endpoint and vice versa).
-func (s *Store) validateRedeemTokenKind(token store.JoinToken, wantKind string) error {
+// and cluster joins: the token is unexpired and matches one of the kinds the
+// endpoint accepts (empty Kind reads as node for back-compat). The node-join
+// endpoint accepts node + gateway; the cluster-join endpoint accepts only
+// cluster - so a node token cannot redeem at the cluster endpoint and vice versa.
+func (s *Store) validateRedeemTokenKind(token store.JoinToken, wantKinds ...string) error {
 	if !token.ExpiresAt.After(time.Now().UTC()) {
 		return store.ErrJoinTokenInvalid
 	}
@@ -179,17 +182,29 @@ func (s *Store) validateRedeemTokenKind(token store.JoinToken, wantKind string) 
 	if kind == "" {
 		kind = store.JoinTokenKindNode
 	}
-	if kind != wantKind {
-		return store.ErrJoinTokenInvalid
+	for _, want := range wantKinds {
+		if kind == want {
+			return nil
+		}
 	}
-	return nil
+	return store.ErrJoinTokenInvalid
+}
+
+// redeemNodeKind maps a redeemed join token to the node-row kind it materializes:
+// a gateway token self-registers a gateway-kind node (excluded from VM placement),
+// everything else (node token, or an empty Kind on an older row) a hypervisor node.
+func redeemNodeKind(token store.JoinToken) string {
+	if token.Kind == store.JoinTokenKindGateway {
+		return store.NodeKindGateway
+	}
+	return store.NodeKindNode
 }
 
 // upsertJoinNode resolves the node row for a redemption: an existing node is
 // reused unless it still holds an active cert (store.ErrJoinNodeNameTaken),
-// otherwise a fresh pending node is created. A concurrent create that loses the
-// name guard re-fetches the winner.
-func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams) (store.Node, error) {
+// otherwise a fresh pending node is created with the given kind (node or gateway).
+// A concurrent create that loses the name guard re-fetches the winner.
+func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams, nodeKind string) (store.Node, error) {
 	existing, err := s.NodeByName(ctx, p.NodeName)
 	if err == nil {
 		hasActive, err := s.NodeHasActiveCert(ctx, existing.ID)
@@ -208,6 +223,7 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 	node, err := s.CreateNode(ctx, store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    p.NodeName,
+		Kind:                    nodeKind,
 		Architecture:            p.Architecture,
 		AdvertisedEndpoint:      p.AdvertisedEndpoint,
 		MigrationHost:           p.MigrationHost,

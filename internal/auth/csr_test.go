@@ -424,6 +424,67 @@ func TestSignCSR_DistinctSerials(t *testing.T) {
 	}
 }
 
+func TestSignGatewayCSR_GatewayIdentity(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	caResult, err := auth.GenerateClusterCA(now)
+	if err != nil {
+		t.Fatalf("GenerateClusterCA: %v", err)
+	}
+	caCert, _, err := auth.ParseClusterCACert(caResult.CertPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCACert: %v", err)
+	}
+	caKey, err := auth.ParseClusterCAKey(caResult.KeyPEM)
+	if err != nil {
+		t.Fatalf("ParseClusterCAKey: %v", err)
+	}
+	signer, ok := caKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("CA key type = %T, want *ecdsa.PrivateKey", caKey)
+	}
+
+	pemBytes, _ := generateValidCSR(t, "gateway-edge1")
+	csr, err := auth.ValidateCSR(pemBytes)
+	if err != nil {
+		t.Fatalf("ValidateCSR: %v", err)
+	}
+
+	certPEM, parsed, err := auth.SignGatewayCSR(csr, "edge1", "https://10.77.0.5:9443", caCert, signer, now)
+	if err != nil {
+		t.Fatalf("SignGatewayCSR: %v", err)
+	}
+
+	if !strings.Contains(string(certPEM), "BEGIN CERTIFICATE") {
+		t.Errorf("cert PEM missing BEGIN CERTIFICATE: %q", certPEM)
+	}
+	if parsed.Subject.CommonName != "gateway-edge1" {
+		t.Errorf("Subject CN = %q, want gateway-edge1", parsed.Subject.CommonName)
+	}
+	if !hasDNS(parsed.DNSNames, "gateway-edge1.agents.otherix.local") {
+		t.Errorf("DNSNames = %v, want gateway-edge1.agents.otherix.local", parsed.DNSNames)
+	}
+	if hasDNS(parsed.DNSNames, "node-edge1.agents.otherix.local") {
+		t.Errorf("DNSNames = %v, must not carry a node- SAN", parsed.DNSNames)
+	}
+	// The advertised endpoint host must reach the cert SAN so the CP can dial
+	// the gateway at its real address.
+	if !hasIP(parsed.IPAddresses, "10.77.0.5") {
+		t.Errorf("IPAddresses = %v, want 10.77.0.5 from advertised endpoint", parsed.IPAddresses)
+	}
+
+	// The gateway leaf chains to the cluster CA.
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+	if _, err := parsed.Verify(x509.VerifyOptions{
+		Roots:       roots,
+		CurrentTime: now.Add(time.Hour),
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		t.Errorf("gateway leaf chain verification failed: %v", err)
+	}
+}
+
 func hasDNS(list []string, want string) bool {
 	for _, n := range list {
 		if strings.EqualFold(n, want) {

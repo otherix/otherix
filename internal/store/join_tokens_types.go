@@ -12,12 +12,15 @@ import (
 
 // Join-token kinds gate which redemption endpoint a token may use. A node
 // token (the default, also the back-compat reading of an empty Kind on an
-// older row) redeems at /v1/nodes/join for a leaf cert; a cluster token
-// redeems at /v1/cluster/join for the CA cert + key (a joining CP replica).
-// The privilege is intrinsic to the token, fixed at mint - never a request
-// flag - so a stolen node token can never yield the CA key.
+// older row) redeems at /v1/nodes/join for a leaf cert; a gateway token also
+// redeems at /v1/nodes/join but self-registers an ingress gateway, yielding a
+// gateway-<name> leaf and a gateway-kind node row; a cluster token redeems at
+// /v1/cluster/join for the CA cert + key (a joining CP replica). The privilege
+// is intrinsic to the token, fixed at mint - never a request flag - so a stolen
+// node token can never yield the CA key.
 const (
 	JoinTokenKindNode    = "node"
+	JoinTokenKindGateway = "gateway"
 	JoinTokenKindCluster = "cluster"
 )
 

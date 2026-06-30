@@ -206,6 +206,8 @@ func normaliseKind(raw *string) (string, error) {
 	switch trimmed := strings.TrimSpace(*raw); trimmed {
 	case "", store.JoinTokenKindNode:
 		return store.JoinTokenKindNode, nil
+	case store.JoinTokenKindGateway:
+		return store.JoinTokenKindGateway, nil
 	case store.JoinTokenKindCluster:
 		return store.JoinTokenKindCluster, nil
 	default:
@@ -237,7 +239,7 @@ func writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 			map[string]any{"field": "intended_node_name"})
 	case errors.Is(err, errInvalidKind):
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, `kind must be "node" or "cluster"`, nil)
+			response.CodeValidationFailed, `kind must be "node", "gateway", or "cluster"`, nil)
 	case errors.Is(err, errClusterNodeBound):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "cluster tokens cannot carry intended_node_name", nil)
