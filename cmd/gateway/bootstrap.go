@@ -38,6 +38,11 @@ const (
 	// defaultHeartbeatInterval is the per-tick cadence baked into the
 	// generated gateway.yaml when --heartbeat-interval is omitted.
 	defaultHeartbeatInterval = 30 * time.Second
+
+	// defaultWireguardListenPort is the UDP port the gateway's WireGuard
+	// interface binds, baked into the generated gateway.yaml when
+	// --wireguard-listen-port is omitted. Mirrors the agent default.
+	defaultWireguardListenPort = 51820
 )
 
 // newBootstrapCommand builds the `otherix-gateway bootstrap` subcommand.
@@ -64,7 +69,8 @@ Examples:
     --token=otx_join_... --ca-fingerprint=sha256:... \
     --cp-url=https://cp.example:8443 \
     --node-name=edge1 \
-    --advertised-endpoint=https://203.0.113.7:9443`,
+    --advertised-endpoint=https://203.0.113.7:9443 \
+    --wireguard-endpoint=203.0.113.7:51820`,
 		Args: cobra.NoArgs,
 		RunE: runBootstrap,
 	}
@@ -78,7 +84,9 @@ Examples:
 	flags.String("cp-url", "", "control-plane base URL (https://...)")
 	flags.String("node-name", "", "cluster-unique gateway name")
 	flags.String("advertised-endpoint", "", "HTTPS URL the CP uses to reach the gateway")
+	flags.String("wireguard-endpoint", "", "WireGuard UDP advertised endpoint peers dial (host:port, e.g. 203.0.113.7:51820) — required")
 	// Optional knobs.
+	flags.Int("wireguard-listen-port", defaultWireguardListenPort, "UDP port the gateway WireGuard interface binds (baked into gateway.yaml)")
 	flags.String("listen", defaultListenAddr, "gateway HTTPS bind address (baked into gateway.yaml)")
 	flags.Duration("heartbeat-interval", defaultHeartbeatInterval, "heartbeat cadence (baked into gateway.yaml)")
 	flags.String("cert-dir", defaultCertDir, "directory for cert material (key/cert/CA atomic writes)")
@@ -91,17 +99,19 @@ Examples:
 // bootstrapInputs is the validated CLI flag bundle, derived once at
 // runBootstrap entry. Architecture comes from runtime.GOARCH.
 type bootstrapInputs struct {
-	token              string
-	caFingerprint      string
-	cpURL              string
-	nodeName           string
-	advertisedEndpoint string
-	listenAddr         string
-	heartbeatInterval  time.Duration
-	certDir            string
-	configPath         string
-	force              bool
-	requestTimeout     time.Duration
+	token               string
+	caFingerprint       string
+	cpURL               string
+	nodeName            string
+	advertisedEndpoint  string
+	wireguardEndpoint   string
+	wireguardListenPort int
+	listenAddr          string
+	heartbeatInterval   time.Duration
+	certDir             string
+	configPath          string
+	force               bool
+	requestTimeout      time.Duration
 }
 
 func runBootstrap(cmd *cobra.Command, _ []string) error {
@@ -181,12 +191,14 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	wroteConfig := false
 	if !fileExists(in.configPath) {
 		if err := writeGatewayConfig(in.configPath, gatewayConfigInputs{
-			CPURL:             in.cpURL,
-			HeartbeatInterval: in.heartbeatInterval,
-			ListenAddr:        in.listenAddr,
-			CertPath:          certPath,
-			KeyPath:           keyPath,
-			CAPath:            caPath,
+			CPURL:               in.cpURL,
+			HeartbeatInterval:   in.heartbeatInterval,
+			ListenAddr:          in.listenAddr,
+			CertPath:            certPath,
+			KeyPath:             keyPath,
+			CAPath:              caPath,
+			WireguardEndpoint:   in.wireguardEndpoint,
+			WireguardListenPort: in.wireguardListenPort,
 		}); err != nil {
 			return fmt.Errorf("write gateway.yaml: %w", err)
 		}
@@ -221,12 +233,21 @@ func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
 	in.cpURL, _ = flags.GetString("cp-url")
 	in.nodeName, _ = flags.GetString("node-name")
 	in.advertisedEndpoint, _ = flags.GetString("advertised-endpoint")
+	in.wireguardEndpoint, _ = flags.GetString("wireguard-endpoint")
+	in.wireguardListenPort, _ = flags.GetInt("wireguard-listen-port")
 	in.listenAddr, _ = flags.GetString("listen")
 	in.heartbeatInterval, _ = flags.GetDuration("heartbeat-interval")
 	in.certDir, _ = flags.GetString("cert-dir")
 	in.configPath, _ = flags.GetString("config-path")
 	in.force, _ = flags.GetBool("force")
 	in.requestTimeout, _ = flags.GetDuration("request-timeout")
+
+	// A gateway reaches guest VMs over VXLAN-over-WireGuard, so it must join
+	// the mesh; without an advertised WG endpoint peers cannot complete the
+	// handshake and the overlay datapath never comes up.
+	if in.wireguardEndpoint == "" {
+		return bootstrapInputs{}, errors.New("--wireguard-endpoint is required (host:port peers dial for the WireGuard handshake, e.g. 203.0.113.7:51820)")
+	}
 	return in, nil
 }
 

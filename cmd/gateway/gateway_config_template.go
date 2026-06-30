@@ -40,6 +40,15 @@ tls:
   cert_path:    "{{.CertPath}}"
   key_path:     "{{.KeyPath}}"
 
+# The gateway joins the WireGuard mesh to reach guest VMs over the overlay.
+# Its key is dedicated (never shared with a co-located agent identity), and
+# the advertised endpoint is the UDP host:port peers dial for the handshake.
+wireguard:
+  private_key_path: "/var/lib/otherix/wg-gateway/private.key"
+  listen_port: {{.WireguardListenPort}}
+  persistent_keepalive: 25s
+  advertised_endpoint: "{{.WireguardEndpoint}}"
+
 # A gateway hosts no VMs and never migrates, so this block is inert. It is
 # present only because the shared runtime config requires a migration host;
 # the gateway never advertises a migration capability in its heartbeat.
@@ -60,6 +69,11 @@ type gatewayConfigInputs struct {
 	CertPath          string
 	KeyPath           string
 	CAPath            string
+	// WireguardEndpoint is the UDP host:port peers dial to complete the
+	// WireGuard handshake to the gateway; required for mesh reachability.
+	WireguardEndpoint string
+	// WireguardListenPort is the UDP port the gateway's WG interface binds.
+	WireguardListenPort int
 }
 
 // writeGatewayConfig renders gatewayConfigTemplate against in and writes

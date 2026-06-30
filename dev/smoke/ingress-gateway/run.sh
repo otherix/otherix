@@ -69,7 +69,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 
 # --- configuration -----------------------------------------------------
 OTX="${OTX:-./bin/otherix}"
-GW_BIN="${GW_BIN:-./bin/otherix-gateway}"
+# Resolved in preconditions to the linux cross-build matching the gateway node's
+# arch (the node runs linux, the host may be macOS), overridable via GW_BIN.
+GW_BIN="${GW_BIN:-}"
 
 NODE1="node-1"                         # VM host + live-migration source
 NET="ingress-ovl"                      # dhcp-enabled overlay
@@ -304,7 +306,19 @@ command -v jq >/dev/null || fail "jq is required"
 command -v openssl >/dev/null || fail "openssl is required (mints the control-plane-identity client cert)"
 command -v python3 >/dev/null || fail "python3 is required on the host"
 [ -x "$OTX" ] || fail "otherix CLI not found at '$OTX' (run make build, or set OTX=...)"
-[ -x "$GW_BIN" ] || fail "otherix-gateway not found at '$GW_BIN' (run make build-gateway, or set GW_BIN=...)"
+# The gateway runs on a linux node; pick the cross-build for that node's arch
+# (the host may be macOS, whose binary cannot run there), building it on demand.
+if [ -z "$GW_BIN" ]; then
+  GW_ARCH="$(run_on "$GW_HANDLE" uname -m 2>/dev/null)"
+  case "$GW_ARCH" in
+    aarch64) GW_GOARCH=arm64 ;;
+    x86_64)  GW_GOARCH=amd64 ;;
+    *) fail "unsupported gateway node arch '${GW_ARCH:-unknown}'" ;;
+  esac
+  GW_BIN="bin/linux-${GW_GOARCH}/otherix-gateway"
+  [ -x "$GW_BIN" ] || make "build-linux-${GW_GOARCH}" >/dev/null 2>&1 || true
+fi
+[ -x "$GW_BIN" ] || fail "otherix-gateway not found at '$GW_BIN' (run make build-linux-arm64 / build-linux-amd64, or set GW_BIN=...)"
 [ -f .local/pki/cluster-ca.crt ] && [ -f .local/pki/cluster-ca.key ] \
   || fail "dev cluster CA not found at .local/pki/cluster-ca.{crt,key} (run make local-dev-start)"
 cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
@@ -337,6 +351,27 @@ GW_CP_URL="${GW_CP_URL:-$(run_on "$GW_HANDLE" awk '/^[ \t]*url:/{gsub(/"/,"",$2)
 GW_NODE_IP="$(run_on "$GW_HANDLE" sh -c "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1")"
 [ -n "$GW_NODE_IP" ] || fail "could not resolve the gateway node IP"
 
+# The gateway joins the WireGuard mesh, so it needs a WG UDP advertised endpoint
+# the VM-host agents dial for the handshake. Learn the inter-node WG subnet + port
+# a peer agent advertises, then pick the gateway node's address on THAT subnet -
+# the node also carries a WG overlay address (10.x) that is not reachable for the
+# handshake, so selecting by the peer's subnet avoids advertising the wrong one.
+# The gateway node's agent is stopped below, freeing UDP 51820 for the gateway.
+# shellcheck disable=SC2016  # $2/$4 are awk fields, kept literal on purpose
+PEER_WG_EP="$(run_on "$SMOKE_HANDLE_1" awk '/^[ \t]*advertised_endpoint:/{gsub(/"/,"",$2); print $2; exit}' /etc/otherix/agent.yaml 2>/dev/null)"
+GW_WG_PORT="${GW_WG_PORT:-51820}"
+GW_WG_IP=""
+if [ -n "$PEER_WG_EP" ]; then
+  WG_SUBNET_PREFIX="$(printf '%s' "${PEER_WG_EP%:*}" | cut -d. -f1-3)"   # e.g. 192.168.104
+  GW_WG_PORT="${PEER_WG_EP##*:}"
+  # shellcheck disable=SC2016
+  GW_WG_IP="$(run_on "$GW_HANDLE" sh -c "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1" \
+    | grep -E "^${WG_SUBNET_PREFIX}\." | head -n1)"
+fi
+[ -n "$GW_WG_IP" ] || GW_WG_IP="$GW_NODE_IP"   # fall back to the discovered global IP
+[ -n "$GW_WG_IP" ] || fail "could not resolve the gateway WireGuard endpoint IP"
+info "gateway WireGuard endpoint: ${GW_WG_IP}:${GW_WG_PORT}"
+
 # Mint a gateway join token through the operator CLI (the new --kind gateway).
 TOK_JSON="$(otx node join-token create --kind gateway --node-name "$GW_NAME" --ttl 1h --output json)" \
   || fail "join-token create --kind gateway failed"
@@ -353,10 +388,14 @@ run_on "$GW_HANDLE" sudo pkill -f 'otherix-agent serve' >/dev/null 2>&1 || true
 GW_BIN_NODE="$(node_path "$GW_HANDLE" "$GW_BIN")"
 run_on "$GW_HANDLE" sudo install -m 0755 "$GW_BIN_NODE" /usr/local/bin/otherix-gateway >/dev/null 2>&1 \
   || run_on "$GW_HANDLE" sudo cp "$GW_BIN_NODE" /usr/local/bin/otherix-gateway
-run_on "$GW_HANDLE" sudo otherix-gateway bootstrap \
+# --force re-issues the gateway cert material: the repurposed node carries the
+# agent's shared ca.crt, which otherwise reads as partial cert state, and it
+# also makes a re-run idempotent over a prior gateway identity.
+run_on "$GW_HANDLE" sudo otherix-gateway bootstrap --force \
   --token "$GW_TOKEN" --ca-fingerprint "$GW_FP" \
   --cp-url "$GW_CP_URL" --node-name "$GW_NAME" \
   --advertised-endpoint "https://${GW_NODE_IP}:${GW_LISTEN_PORT}" \
+  --wireguard-endpoint "${GW_WG_IP}:${GW_WG_PORT}" \
   --listen "0.0.0.0:${GW_LISTEN_PORT}" \
   || fail "otherix-gateway bootstrap failed"
 run_on "$GW_HANDLE" sudo sh -c 'setsid nohup otherix-gateway serve >/var/log/otherix-gateway.log 2>&1 < /dev/null &'
