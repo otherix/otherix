@@ -234,21 +234,22 @@ func bearerHeader(tok string) http.Header {
 }
 
 // TestBuildSSHPipeURLSafeInputsUnchanged pins the wire format for URL-safe
-// inputs: a DNS-label VM name must emit a byte-identical URL.
+// inputs: a DNS-label VM name plus a guest port must emit a byte-identical URL,
+// with the port carried as a query parameter so the route stays unchanged.
 func TestBuildSSHPipeURLSafeInputsUnchanged(t *testing.T) {
 	t.Parallel()
-	got := agentclient.BuildSSHPipeURL("agent.example.com:9090", "demo")
-	want := "wss://agent.example.com:9090/v1/vms/demo/ssh-pipe"
+	got := agentclient.BuildSSHPipeURL("agent.example.com:9090", "demo", 5432)
+	want := "wss://agent.example.com:9090/v1/vms/demo/ssh-pipe?port=5432"
 	if got != want {
 		t.Errorf("BuildSSHPipeURL(safe) = %q, want %q", got, want)
 	}
 }
 
 // TestBuildSSHPipeURLEscapesName drives a VM name needing percent-encoding
-// and asserts it lands escaped in the path.
+// and asserts it lands escaped in the path while the port rides the query.
 func TestBuildSSHPipeURLEscapesName(t *testing.T) {
 	t.Parallel()
-	got := agentclient.BuildSSHPipeURL("agent.example.com:9090", "demo vm")
+	got := agentclient.BuildSSHPipeURL("agent.example.com:9090", "demo vm", 22)
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("url.Parse(%q): %v", got, err)
@@ -256,5 +257,47 @@ func TestBuildSSHPipeURLEscapesName(t *testing.T) {
 	wantPath := "/v1/vms/demo%20vm/ssh-pipe"
 	if u.EscapedPath() != wantPath {
 		t.Errorf("escaped path = %q, want %q", u.EscapedPath(), wantPath)
+	}
+	if got := u.Query().Get("port"); got != "22" {
+		t.Errorf("port query = %q, want %q", got, "22")
+	}
+}
+
+// TestSSHStreamForwardsPort proves the CP relay forwards the requested guest
+// port to the agent's ssh-pipe: the operator dials ssh-stream with ?port=5432
+// and the agent leg receives that same port on its query string. The IP the
+// agent dials stays lease-derived on the agent side; the port is the only
+// wire-influenced input the relay carries through.
+func TestSSHStreamForwardsPort(t *testing.T) {
+	t.Parallel()
+	agent := newWSAgentServer(t, true)
+	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
+	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
+
+	r := chi.NewRouter()
+	r.Get("/v1/vms/{id}/ssh-stream", sshStreamHandler(st, &recordingConsoleClient{}).SSHStream)
+	cp := httptest.NewServer(r)
+	t.Cleanup(cp.Close)
+
+	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/ssh-stream?port=5432"
+	op, _, err := websocket.Dial(context.Background(),
+		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_sshgrant_abc")})
+	if err != nil {
+		t.Fatalf("operator dial: %v", err)
+	}
+	t.Cleanup(func() { _ = op.Close(websocket.StatusNormalClosure, "") })
+
+	// Drive one byte so the agent leg is definitely accepted before we read
+	// back the query it observed.
+	if err := op.Write(context.Background(), websocket.MessageBinary, []byte("x")); err != nil {
+		t.Fatalf("operator write: %v", err)
+	}
+	if _, _, err := op.Read(context.Background()); err != nil {
+		t.Fatalf("operator read: %v", err)
+	}
+
+	if got, want := agent.lastQuery(), "port=5432"; got != want {
+		t.Errorf("agent ssh-pipe query = %q, want %q", got, want)
 	}
 }

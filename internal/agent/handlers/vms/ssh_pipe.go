@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"github.com/coder/websocket"
@@ -20,9 +21,11 @@ import (
 	"github.com/otherix/otherix/internal/wskeepalive"
 )
 
-// sshPort is the only guest port the L4 pipe will dial. v1 is SSH-only; nothing
-// about the target is taken from the wire except the VM name.
-const sshPort = "22"
+// defaultSSHPipePort is the guest port the L4 pipe dials when the request omits
+// one, preserving the bare `otherix ssh` re-home to sshd. The wire never
+// supplies the dial host - only the VM name (path) and the port (query) - so
+// the port is the only caller-influenced input the pipe honors.
+const defaultSSHPipePort = 22
 
 // sshDialTimeout bounds the connect to the guest's sshd. A guest that is up but
 // not yet listening on 22 fails fast rather than holding the request open.
@@ -49,13 +52,14 @@ type ipByMAC interface {
 	LookupByMAC(mac string) (netip.Addr, bool)
 }
 
-// resolveSSHTarget maps a VM name to "ip:22" using ONLY the agent's local
-// state: the VM must be one this agent currently hosts and runs, and the dialed
-// IP is the agent's own DHCP-reservation lease for one of the VM's NIC MACs
-// (never from the request). This is the anti-SSRF boundary - a caller cannot
-// steer the agent at an arbitrary address - and it covers any
-// Otherix-managed-DHCP network (overlay or managed bridge).
-func resolveSSHTarget(mgr byNameManager, leases ipByMAC, name string) (string, error) {
+// resolveSSHTarget maps a VM name and a guest port to "ip:port" using ONLY the
+// agent's local state: the VM must be one this agent currently hosts and runs,
+// and the dialed IP is the agent's own DHCP-reservation lease for one of the
+// VM's NIC MACs (never from the request). This is the anti-SSRF boundary - a
+// caller cannot steer the agent at an arbitrary address - and it covers any
+// Otherix-managed-DHCP network (overlay or managed bridge). The port selects
+// only the guest port (SSH, psql, ...); it never influences the host.
+func resolveSSHTarget(mgr byNameManager, leases ipByMAC, name string, port int) (string, error) {
 	v, err := mgr.ByName(name)
 	if err != nil {
 		return "", fmt.Errorf("ssh target: %w", err)
@@ -65,21 +69,48 @@ func resolveSSHTarget(mgr byNameManager, leases ipByMAC, name string) (string, e
 	}
 	for _, n := range v.NICs {
 		if ip, ok := leases.LookupByMAC(n.MAC); ok && ip.IsValid() {
-			return net.JoinHostPort(ip.String(), sshPort), nil
+			return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 		}
 	}
 	return "", errors.New("ssh target: no managed-DHCP lease")
 }
 
+// pipePort reads the guest port from the request's "port" query parameter. An
+// absent port defaults to 22 (the SSH re-home). A present port must parse and
+// fall in 1..65535; anything else is rejected so a malformed CP-relayed request
+// never dials port 0 or a garbage target. The agent listener is CP-only mTLS,
+// so this only ever guards against a contract violation by the relay.
+func pipePort(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("port")
+	if raw == "" {
+		return defaultSSHPipePort, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("ssh pipe: parse port: %v", err)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("ssh pipe: port %d out of range", port)
+	}
+	return port, nil
+}
+
 // SSHPipe handles GET /v1/vms/{vm_name}/ssh-pipe: an mTLS WebSocket the CP relay
-// dials, spliced byte-for-byte to the guest's sshd. The inner SSH is end-to-end
-// between the operator and the guest; the agent transports ciphertext only and
-// resolves the dial target purely from its own local state (see
-// resolveSSHTarget) - the wire carries only the VM name.
+// dials, spliced byte-for-byte to the guest's TCP port. The inner protocol is
+// end-to-end between the operator and the guest; the agent transports
+// ciphertext only and resolves the dial target purely from its own local state
+// (see resolveSSHTarget) - the wire carries only the VM name (path) and the
+// guest port (query, default 22), never the dial host.
 func (h *Handler) SSHPipe(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "vm_name")
 
-	target, err := resolveSSHTarget(h.manager, h.leases, name)
+	port, err := pipePort(r)
+	if err != nil {
+		http.Error(w, "invalid port", http.StatusBadRequest)
+		return
+	}
+
+	target, err := resolveSSHTarget(h.manager, h.leases, name, port)
 	if err != nil {
 		// Uniform rejection: do not distinguish unknown / not-local /
 		// not-running / no-lease. The agent listener is mTLS CP-only, so the CP

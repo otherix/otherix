@@ -35,12 +35,40 @@ func TestResolveSSHTarget_RunningVMLeaseIPPort22(t *testing.T) {
 	}}
 	leases := fakeLeases{"52:54:00:11:22:33": netip.MustParseAddr("10.42.0.7")}
 
-	got, err := resolveSSHTarget(mgr, leases, "web01")
+	got, err := resolveSSHTarget(mgr, leases, "web01", 22)
 	if err != nil {
 		t.Fatalf("resolveSSHTarget(web01) error = %v", err)
 	}
 	if want := "10.42.0.7:22"; got != want {
 		t.Errorf("resolveSSHTarget = %q, want %q", got, want)
+	}
+}
+
+// TestResolveSSHTarget_ArbitraryPort proves the dialed target joins the
+// lease-derived IP with the PASSED port (a non-22 port reaches e.g. psql), and
+// that the host is still the agent's own lease, never anything caller-supplied:
+// the port is the only new wire-influenced input, the IP stays lease-bound.
+func TestResolveSSHTarget_ArbitraryPort(t *testing.T) {
+	mgr := &fakeManager{byName: map[string]*avm.VM{
+		"web01": {Name: "web01", Status: avm.StatusRunning, NICs: []netfabric.NIC{
+			{MAC: "52:54:00:11:22:33"},
+		}},
+	}}
+	leases := fakeLeases{"52:54:00:11:22:33": netip.MustParseAddr("10.42.0.7")}
+
+	got, err := resolveSSHTarget(mgr, leases, "web01", 5432)
+	if err != nil {
+		t.Fatalf("resolveSSHTarget(web01, 5432) error = %v", err)
+	}
+	host, port, err := net.SplitHostPort(got)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", got, err)
+	}
+	if host != "10.42.0.7" {
+		t.Errorf("resolveSSHTarget host = %q, want the lease IP %q", host, "10.42.0.7")
+	}
+	if port != "5432" {
+		t.Errorf("resolveSSHTarget port = %q, want %q", port, "5432")
 	}
 }
 
@@ -52,7 +80,7 @@ func TestResolveSSHTarget_RejectsNonRunning(t *testing.T) {
 	}}
 	leases := fakeLeases{"52:54:00:11:22:33": netip.MustParseAddr("10.42.0.7")}
 
-	if _, err := resolveSSHTarget(mgr, leases, "web01"); err == nil {
+	if _, err := resolveSSHTarget(mgr, leases, "web01", 22); err == nil {
 		t.Errorf("resolveSSHTarget(stopped) = nil error, want rejection")
 	}
 }
@@ -64,10 +92,10 @@ func TestResolveSSHTarget_RejectsUnknownAndNoLease(t *testing.T) {
 		}},
 	}}
 
-	if _, err := resolveSSHTarget(mgr, fakeLeases{}, "web01"); err == nil {
+	if _, err := resolveSSHTarget(mgr, fakeLeases{}, "web01", 22); err == nil {
 		t.Errorf("resolveSSHTarget(no managed-DHCP lease) = nil error, want rejection")
 	}
-	if _, err := resolveSSHTarget(mgr, fakeLeases{}, "ghost"); err == nil {
+	if _, err := resolveSSHTarget(mgr, fakeLeases{}, "ghost", 22); err == nil {
 		t.Errorf("resolveSSHTarget(unknown) = nil error, want rejection")
 	}
 }

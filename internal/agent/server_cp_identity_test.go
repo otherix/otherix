@@ -85,3 +85,25 @@ func TestBuildRouterRejectsNodeCertOnConsoleStream(t *testing.T) {
 		t.Errorf("console-stream with node cert: status = %d, want 403", rec.Code)
 	}
 }
+
+// TestBuildRouterRejectsNodeCertOnSSHPipe pins that the relayed splice route
+// stays CP-only after the port generalization: a node-identity peer cert
+// opening a peer's ssh-pipe - now carrying an arbitrary ?port - must be
+// rejected with 403 at the RequireCPIdentity gate, before the SSHPipe handler
+// runs. The agent never becomes a client-facing edge; only the CP relay reaches
+// this route, regardless of the requested port.
+func TestBuildRouterRejectsNodeCertOnSSHPipe(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.AgentConfig{}
+	cfg.Server.ReadTimeout = 5 * time.Second
+	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vms/some-vm/ssh-pipe?port=5432", nil)
+	req.TLS = cpIdentityTLSState("node-evil")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("ssh-pipe with node cert: status = %d, want 403", rec.Code)
+	}
+}
