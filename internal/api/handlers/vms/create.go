@@ -6,14 +6,12 @@ package vms
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/mail"
 	"net/textproto"
@@ -978,17 +976,4 @@ func cloudInitPartContentType(userData string) string {
 	default:
 		return "text/cloud-config; charset=\"utf-8\""
 	}
-}
-
-// generateLocalMAC mints a locally-administered unicast MAC in QEMU's
-// 52:54:00 OUI with three random low bytes. The 52:54:00 prefix is the
-// conventional QEMU/KVM range; the random suffix gives ~16M values, so a
-// collision within a cluster is astronomically unlikely and no retry loop is
-// warranted. Consumed by the vms.schedule loop when it mints the NIC at bind.
-func generateLocalMAC() (net.HardwareAddr, error) {
-	var b [3]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, err
-	}
-	return net.HardwareAddr{0x52, 0x54, 0x00, b[0], b[1], b[2]}, nil
 }

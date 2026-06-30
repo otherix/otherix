@@ -108,6 +108,17 @@ var (
 	ErrOverlaySupernetExhausted  = errors.New("store: overlay supernet has no free host address for a new agent")
 	ErrVNIExhausted              = errors.New("store: overlay VNI range exhausted")
 	ErrSubnetExhausted           = errors.New("store: network subnet exhausted")
+
+	// ErrNetworkNotGatewayEligible is returned by CreateGatewayMembership when the
+	// target network cannot back a gateway: only an overlay network with an
+	// allocated VNI and a subnet carries the VNI and address space a membership
+	// needs.
+	ErrNetworkNotGatewayEligible = errors.New("store: network is not gateway-eligible")
+
+	// ErrGatewayMembershipExists is returned by CreateGatewayMembership when the
+	// gateway already covers the network: the (gateway_id, network_id) row is
+	// present, so a second create loses the create CAS.
+	ErrGatewayMembershipExists = errors.New("store: gateway already a member of network")
 )
 
 // ResourceInUseError reports that a resource cannot be deleted because other
