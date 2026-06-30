@@ -27,6 +27,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -51,10 +52,23 @@ type Config struct {
 	ServerURL string
 
 	// CAFingerprint, when set, pins the CP's presented TLS leaf by its hex
-	// sha256(cert.Raw). An empty value trusts the system root store (public
-	// certificate). A leading "sha256:" or "pin:" and any colons are
-	// tolerated and stripped.
+	// sha256(cert.Raw). A leading "sha256:" or "pin:" and any colons are
+	// tolerated and stripped. It takes precedence over CACertPEM: a leaf pin
+	// is the stricter single-cert trust. See resolveTLSConfig for the full
+	// trust precedence.
 	CAFingerprint string
+
+	// CACertPEM, when non-empty, is a PEM bundle (typically the cluster CA per
+	// ADR 0026) used as the sole RootCAs pool to verify the CP's certificate
+	// chain. It mirrors the trust the credentialed CLI client already uses, so
+	// the connector reaches the same cluster-CA-signed CP. Ignored when
+	// CAFingerprint or InsecureSkipTLSVerify is set.
+	CACertPEM []byte
+
+	// InsecureSkipTLSVerify, when true, disables all TLS verification (an
+	// explicit operator opt-out mirroring the credentialed CLI client). It
+	// takes precedence over every other trust input.
+	InsecureSkipTLSVerify bool
 
 	// BearerToken authenticates to the CP: a CLI token (JWT or otx_ API
 	// token) or an otx_sshgrant_ grant token. It is sent only in the
@@ -384,18 +398,45 @@ func (c Config) resolveKnownDir() (string, error) {
 	return filepath.Join(home, ".otherix", "ssh"), nil
 }
 
-// wsHTTPClient builds an *http.Client whose TLS trust honours cfg: the system
-// root store when CAFingerprint is empty, otherwise a leaf-pin that verifies
-// the presented certificate's sha256(cert.Raw) against the pinned fingerprint
-// in constant time and rejects any mismatch.
+// wsHTTPClient builds an *http.Client whose TLS trust honours cfg per
+// resolveTLSConfig. The same client backs both the cert-mint round-trip and
+// the ssh-stream WebSocket dial, so both speak the operator's chosen trust.
 func wsHTTPClient(cfg Config) (*http.Client, error) {
-	tlsCfg, err := pinnedTLSConfig(cfg.CAFingerprint)
+	tlsCfg, err := resolveTLSConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = tlsCfg
 	return &http.Client{Transport: tr}, nil
+}
+
+// resolveTLSConfig builds the connector's TLS trust config from cfg with this
+// precedence:
+//
+//  1. InsecureSkipTLSVerify true -> verification disabled (explicit opt-out).
+//  2. else CAFingerprint set -> pin the presented leaf by sha256(cert.Raw).
+//  3. else CACertPEM non-empty -> that PEM bundle is the sole RootCAs pool.
+//  4. else -> the system root store.
+//
+// Leaf-pin and CA-bundle are mutually exclusive: a set CAFingerprint wins, as
+// it is the stricter single-cert trust. A CACertPEM that yields no usable
+// certificate is a hard error rather than a silent fall-through to system roots.
+func resolveTLSConfig(cfg Config) (*tls.Config, error) {
+	if cfg.InsecureSkipTLSVerify {
+		return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}, nil //nolint:gosec // explicit operator opt-out, mirrors the credentialed CLI client.
+	}
+	if normalizeFingerprint(cfg.CAFingerprint) != "" {
+		return pinnedTLSConfig(cfg.CAFingerprint)
+	}
+	if len(cfg.CACertPEM) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(cfg.CACertPEM) {
+			return nil, errors.New("sshconn: CA bundle contained no valid certificate")
+		}
+		return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}, nil
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12}, nil
 }
 
 // pinnedTLSConfig returns a TLS config implementing the trust discriminator:

@@ -142,7 +142,7 @@ func TestSSHWiringAssemblesArgv(t *testing.T) {
 	ensureGuestCert = func(_ context.Context, _ sshconn.Config, _, _ string) (string, string, error) {
 		return "/fake/cert", "/fake/key", nil
 	}
-	sshExecutor = func(_ context.Context, argv []string) error {
+	sshExecutor = func(_ context.Context, argv, _ []string) error {
 		gotArgv = argv
 		return nil
 	}
@@ -169,5 +169,90 @@ func TestSSHWiringAssemblesArgv(t *testing.T) {
 	// spawned `ssh proxy` subprocess resolves the same cluster.
 	if !strings.Contains(joined, "https://cp.example:8443") {
 		t.Errorf("assembled argv %q does not propagate the endpoint into ProxyCommand", joined)
+	}
+}
+
+// TestSSHTokenPassedViaEnvNotArgv asserts a --token supplied on the command
+// line is injected into the spawned ssh process environment (where the child
+// `ssh proxy` reads it via OTHERIX_API_TOKEN) and never embedded in the
+// ProxyCommand argv, which `ps` would expose to other local users.
+func TestSSHTokenPassedViaEnvNotArgv(t *testing.T) {
+	var gotArgv, gotEnv []string
+
+	origEnsure := ensureGuestCert
+	origExec := sshExecutor
+	t.Cleanup(func() {
+		ensureGuestCert = origEnsure
+		sshExecutor = origExec
+	})
+	ensureGuestCert = func(_ context.Context, _ sshconn.Config, _, _ string) (string, string, error) {
+		return "/fake/cert", "/fake/key", nil
+	}
+	sshExecutor = func(_ context.Context, argv, env []string) error {
+		gotArgv = argv
+		gotEnv = env
+		return nil
+	}
+
+	run := newSSHRunner(t)
+	_, _, err := run([]string{
+		"--endpoint", "https://cp.example:8443", "--token", "secret-tok",
+		"myvm",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ssh run error: %v", err)
+	}
+
+	if joined := strings.Join(gotArgv, " "); strings.Contains(joined, "secret-tok") {
+		t.Errorf("token leaked into ssh argv: %q", joined)
+	}
+	want := "OTHERIX_API_TOKEN=secret-tok"
+	found := false
+	for _, e := range gotEnv {
+		if e == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("token env %q not injected into ssh process env: %v", want, gotEnv)
+	}
+}
+
+// TestSSHWhitespaceLoginIsConsistent guards the normalize-once fix: a
+// whitespace --login must mint a cert for the same principal the ssh
+// destination targets (root), never a cert for the raw whitespace string.
+func TestSSHWhitespaceLoginIsConsistent(t *testing.T) {
+	var certLogin string
+	var gotArgv []string
+
+	origEnsure := ensureGuestCert
+	origExec := sshExecutor
+	t.Cleanup(func() {
+		ensureGuestCert = origEnsure
+		sshExecutor = origExec
+	})
+	ensureGuestCert = func(_ context.Context, _ sshconn.Config, _, login string) (string, string, error) {
+		certLogin = login
+		return "/fake/cert", "/fake/key", nil
+	}
+	sshExecutor = func(_ context.Context, argv, _ []string) error {
+		gotArgv = argv
+		return nil
+	}
+
+	run := newSSHRunner(t)
+	_, _, err := run([]string{
+		"--endpoint", "https://cp.example:8443", "--token", "tok-123",
+		"myvm", "--login", "  ",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ssh run error: %v", err)
+	}
+
+	if certLogin != "root" {
+		t.Errorf("cert minted for login %q, want root", certLogin)
+	}
+	if joined := strings.Join(gotArgv, " "); !strings.Contains(joined, "root@myvm") {
+		t.Errorf("ssh destination in argv %q, want root@myvm", joined)
 	}
 }

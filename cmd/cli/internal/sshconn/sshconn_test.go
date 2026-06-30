@@ -8,9 +8,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -254,6 +258,122 @@ func TestPinnedTLSConfigAcceptsAndRejects(t *testing.T) {
 	if _, err := cfgBad.Get(ts.URL); err == nil {
 		t.Fatal("pinned client accepted a mismatched leaf fingerprint")
 	}
+}
+
+// certPEM renders an x509 certificate to its PEM bundle form.
+func certPEM(c *x509.Certificate) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+}
+
+// foreignCAPEM builds a self-signed CA unrelated to the test server's leaf, so
+// the reject case exercises a genuinely different trust anchor (httptest
+// reuses one built-in localhost cert across servers, so a second server's cert
+// would not differ).
+func foreignCAPEM(t *testing.T) []byte {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate foreign ca key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "foreign-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("create foreign ca cert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestEnsureGuestCertTrustsCABundle drives the real cert-mint round-trip over
+// TLS and asserts the CACertPEM trust path: a CP leaf is accepted when the
+// bundle is its signing CA (here the server's own self-signed root) and
+// rejected when the bundle is a different CA, mirroring the credentialed CLI
+// client's cluster-CA trust.
+func TestEnsureGuestCertTrustsCABundle(t *testing.T) {
+	stub := newCertMintServer(t, 5*time.Minute)
+	ts := httptest.NewTLSServer(stub.handler())
+	defer ts.Close()
+
+	good := Config{
+		ServerURL:   ts.URL,
+		CACertPEM:   certPEM(ts.Certificate()),
+		BearerToken: "otx_token",
+		KnownDir:    t.TempDir(),
+	}
+	if _, _, err := EnsureGuestCert(context.Background(), good, "vm1", "root"); err != nil {
+		t.Fatalf("EnsureGuestCert with the server's own CA bundle: %v", err)
+	}
+
+	bad := Config{
+		ServerURL:   ts.URL,
+		CACertPEM:   foreignCAPEM(t), // a different CA
+		BearerToken: "otx_token",
+		KnownDir:    t.TempDir(),
+	}
+	if _, _, err := EnsureGuestCert(context.Background(), bad, "vm1", "root"); err == nil {
+		t.Fatal("EnsureGuestCert accepted a CP leaf signed by a different CA")
+	}
+}
+
+// TestResolveTLSConfigPrecedence pins the documented trust order: an
+// insecure-skip opt-out disables verification outright; a fingerprint wins
+// over a CA bundle (the stricter single-cert pin); an unparseable CA bundle is
+// a hard error rather than a silent fall-through to system roots.
+func TestResolveTLSConfigPrecedence(t *testing.T) {
+	t.Run("insecure skip disables verification", func(t *testing.T) {
+		cfg, err := resolveTLSConfig(Config{
+			InsecureSkipTLSVerify: true,
+			CAFingerprint:         strings.Repeat("ab", 32),
+			CACertPEM:             []byte("ignored"),
+		})
+		if err != nil {
+			t.Fatalf("resolveTLSConfig: %v", err)
+		}
+		if !cfg.InsecureSkipVerify {
+			t.Error("InsecureSkipTLSVerify did not set InsecureSkipVerify")
+		}
+		if cfg.VerifyConnection != nil {
+			t.Error("insecure-skip path must not install a leaf-pin VerifyConnection")
+		}
+	})
+
+	t.Run("fingerprint wins over CA bundle", func(t *testing.T) {
+		cfg, err := resolveTLSConfig(Config{
+			CAFingerprint: strings.Repeat("ab", 32),
+			CACertPEM:     []byte("ignored"),
+		})
+		if err != nil {
+			t.Fatalf("resolveTLSConfig: %v", err)
+		}
+		if cfg.VerifyConnection == nil || !cfg.InsecureSkipVerify {
+			t.Error("a set fingerprint must take the leaf-pin path")
+		}
+		if cfg.RootCAs != nil {
+			t.Error("CACertPEM must be ignored when a fingerprint is set")
+		}
+	})
+
+	t.Run("unparseable CA bundle errors", func(t *testing.T) {
+		if _, err := resolveTLSConfig(Config{CACertPEM: []byte("not a certificate")}); err == nil {
+			t.Fatal("resolveTLSConfig accepted a CA bundle with no valid certificate")
+		}
+	})
+
+	t.Run("empty trust uses system roots", func(t *testing.T) {
+		cfg, err := resolveTLSConfig(Config{})
+		if err != nil {
+			t.Fatalf("resolveTLSConfig: %v", err)
+		}
+		if cfg.InsecureSkipVerify || cfg.RootCAs != nil || cfg.VerifyConnection != nil {
+			t.Errorf("empty config must use system roots, got %+v", cfg)
+		}
+	})
 }
 
 func TestWriteSSHConfigBlockIdempotent(t *testing.T) {

@@ -19,6 +19,7 @@ package ssh
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	"github.com/otherix/otherix/cmd/cli/internal/cliconfig"
 	"github.com/otherix/otherix/cmd/cli/internal/sshconn"
 )
 
@@ -115,6 +117,10 @@ func runSSH(cmd *cobra.Command, vmName, login string) error {
 	if err != nil {
 		return err
 	}
+	// Normalize the login once so the minted certificate's principal and the
+	// `user@host` ssh destination always agree (a whitespace --login must not
+	// mint a cert for "  " while ssh connects as root).
+	login = effectiveLogin(login)
 	certPath, keyPath, err := ensureGuestCert(cmd.Context(), cfg, vmName, login)
 	if err != nil {
 		return fmt.Errorf("prepare ssh credential for %s: %v", vmName, err)
@@ -125,8 +131,8 @@ func runSSH(cmd *cobra.Command, vmName, login string) error {
 		// missing self path is unusual but must not block the connect.
 		self = "otherix"
 	}
-	argv := buildSSHArgv(self, vmName, effectiveLogin(login), certPath, keyPath, proxyPassthrough(cmd))
-	return sshExecutor(cmd.Context(), argv)
+	argv := buildSSHArgv(self, vmName, login, certPath, keyPath, proxyPassthrough(cmd))
+	return sshExecutor(cmd.Context(), argv, tokenEnv(cmd))
 }
 
 // runProxy parses the guest port and relays stdin/stdout through the
@@ -143,21 +149,30 @@ func runProxy(cmd *cobra.Command, vmName, portArg string) error {
 	return proxyConnect(cmd.Context(), cfg, vmName, port, cmd.InOrStdin(), cmd.OutOrStdout())
 }
 
-// sshConfigFromFlags resolves the active (endpoint, token) credential from
-// the inherited persistent flags + env + config file and builds the
-// sshconn.Config the connector operations consume. TLS trust is left at the
-// connector default (system root store): the dev/smoke path speaks plain
-// HTTP and a public CP presents a publicly-trusted certificate. Pinning a
-// cluster-CA-signed CP leaf is the fingerprint-based path of the standalone
-// connector, not the credentialed operator CLI.
+// sshConfigFromFlags resolves the active (endpoint, token, TLS-trust)
+// credential from the inherited persistent flags + env + config file and
+// builds the sshconn.Config the connector operations consume. TLS trust is
+// carried over from the same ResolveAuth the rest of the CLI uses, so the
+// connector trusts exactly what `otherix vm list` trusts: the cluster CA
+// bundle (ADR 0026), or the operator's insecure-skip-verify opt-out.
 func sshConfigFromFlags(cmd *cobra.Command) (sshconn.Config, error) {
 	auth, err := cliauth.ResolveAuth(cmd)
 	if err != nil {
 		return sshconn.Config{}, err
 	}
+	var caPEM []byte
+	if auth.CACertData != "" {
+		decoded, derr := base64.StdEncoding.DecodeString(auth.CACertData)
+		if derr != nil {
+			return sshconn.Config{}, fmt.Errorf("decode certificate-authority-data for cluster %q: %v", auth.ClusterName, derr)
+		}
+		caPEM = decoded
+	}
 	return sshconn.Config{
-		ServerURL:   auth.Endpoint,
-		BearerToken: auth.Token,
+		ServerURL:             auth.Endpoint,
+		BearerToken:           auth.Token,
+		CACertPEM:             caPEM,
+		InsecureSkipTLSVerify: auth.InsecureSkipTLSVerify,
 	}, nil
 }
 
@@ -170,20 +185,36 @@ func effectiveLogin(login string) string {
 	return login
 }
 
-// proxyPassthrough collects the cluster-selection persistent flags the
-// operator set so the spawned `ssh proxy` subprocess resolves the same
-// cluster, endpoint, and token. The token is propagated only when it was
-// supplied on the command line (it is already in the operator's process
-// table for the parent invocation); env- and config-sourced tokens reach
-// the subprocess through the same env and config file.
+// proxyPassthrough collects the non-secret cluster-selection persistent flags
+// the operator set so the spawned `ssh proxy` subprocess resolves the same
+// cluster, config file, and endpoint. The bearer token is deliberately NOT
+// passed here: a flag value lands in the ProxyCommand argv, which is visible
+// to other local users via `ps`. The token reaches the child through the
+// environment instead (see tokenEnv); env- and config-sourced tokens already
+// reach it through the inherited env and config file.
 func proxyPassthrough(cmd *cobra.Command) []string {
 	var out []string
-	for _, name := range []string{cliauth.FlagConfig, cliauth.FlagCluster, cliauth.FlagEndpoint, cliauth.FlagToken} {
+	for _, name := range []string{cliauth.FlagConfig, cliauth.FlagCluster, cliauth.FlagEndpoint} {
 		if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
 			out = append(out, "--"+name, f.Value.String())
 		}
 	}
 	return out
+}
+
+// tokenEnv returns the OTHERIX_API_TOKEN assignment to inject into the spawned
+// ssh process environment when --token was supplied on the command line, so
+// the child `ssh proxy` resolves the same token WITHOUT it appearing in the
+// ProxyCommand argv (where `ps` would expose it to other local users). ssh
+// passes its environment through to the ProxyCommand, and ResolveAuth in the
+// child reads OTHERIX_API_TOKEN, so the token rides the env end to end. A
+// token sourced from env or config already reaches the child through the
+// inherited environment and config file, so nothing is added for those.
+func tokenEnv(cmd *cobra.Command) []string {
+	if f := cmd.Flags().Lookup(cliauth.FlagToken); f != nil && f.Changed {
+		return []string{cliconfig.EnvToken + "=" + f.Value.String()}
+	}
+	return nil
 }
 
 // buildSSHArgv assembles the system `ssh` argv: the cached identity key and
@@ -225,8 +256,10 @@ func shellQuote(s string) string {
 
 // runSystemSSH execs the system ssh client found on PATH, inheriting the
 // process's terminal so the operator gets a normal interactive session, and
-// returns ssh's exit status as the command error.
-func runSystemSSH(ctx context.Context, argv []string) error {
+// returns ssh's exit status as the command error. extraEnv augments the
+// inherited environment (e.g. the OTHERIX_API_TOKEN the child proxy reads);
+// appended last so it overrides any same-named inherited value.
+func runSystemSSH(ctx context.Context, argv, extraEnv []string) error {
 	bin, err := exec.LookPath(argv[0])
 	if err != nil {
 		return fmt.Errorf("%s not found in PATH: %v", argv[0], err)
@@ -235,5 +268,8 @@ func runSystemSSH(ctx context.Context, argv []string) error {
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
+	if len(extraEnv) > 0 {
+		c.Env = append(os.Environ(), extraEnv...)
+	}
 	return c.Run()
 }
