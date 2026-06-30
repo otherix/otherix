@@ -7,8 +7,7 @@
 // services plane. It joins the WireGuard mesh, brings up each declared
 // overlay's datapath (bridge + VXLAN + FDB + its own tenant address),
 // heartbeats to the control plane, and serves the CP-identity control
-// endpoints (the heartbeat nudge, and the connect/splice route in a later
-// slice).
+// endpoints (the heartbeat nudge and the connect/splice route).
 package gateway
 
 import (
@@ -219,8 +218,8 @@ func (noopNudger) Nudge() {}
 // gated by RequireCPIdentity so only the control plane can reach the
 // gateway's control surface. A stolen node cert (itself a valid cluster-CA
 // client cert) is rejected before any handler runs. The gateway surface is
-// intentionally tiny: a health probe and the heartbeat nudge, with the
-// connect/splice route landing here in a later slice.
+// intentionally tiny: a health probe, the heartbeat nudge, and the
+// connect/splice route.
 func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger) http.Handler {
 	r := chi.NewRouter()
 

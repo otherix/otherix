@@ -235,6 +235,10 @@ if b" 200" not in status:
 
 arrivals = open(arrivals_path, "w")
 stop = threading.Event()
+# Set when a thread sees the connection close before we asked it to stop - a
+# clean cutover-time RST would otherwise pass the gap check (the surviving
+# pre-drop echoes are evenly spaced) while having actually dropped the session.
+dropped = threading.Event()
 
 def writer():
     n = 0
@@ -242,6 +246,7 @@ def writer():
         try:
             s.sendall(("%d\n" % n).encode())
         except OSError:
+            dropped.set()
             return
         n += 1
         time.sleep(tick)
@@ -252,8 +257,10 @@ def reader():
         try:
             d = s.recv(4096)
         except OSError:
+            dropped.set()
             return
         if not d:
+            dropped.set()
             return
         rbuf += d
         while b"\n" in rbuf:
@@ -288,7 +295,7 @@ with open(arrivals_path) as f:
 maxgap = 0.0
 for i in range(1, len(times)):
     maxgap = max(maxgap, times[i] - times[i - 1])
-print("FORWARD_CLIENT echoes=%d maxgap=%.3f" % (len(times), maxgap))
+print("FORWARD_CLIENT echoes=%d maxgap=%.3f dropped=%d" % (len(times), maxgap, 1 if dropped.is_set() else 0))
 PYEOF
 
 # --- preconditions -----------------------------------------------------
@@ -461,7 +468,9 @@ echo "$CLIENT_OUT"
 MAXGAP="$(grep -oE 'maxgap=[0-9.]+' <<<"$CLIENT_OUT" | head -n1 | cut -d= -f2)"
 ECHOES="$(grep -oE 'echoes=[0-9]+' <<<"$CLIENT_OUT" | head -n1 | cut -d= -f2)"
 [ -n "$MAXGAP" ] && [ -n "$ECHOES" ] || fail "continuous-traffic client did not report a metric: ${CLIENT_OUT}"
+DROPPED="$(grep -oE 'dropped=[0-9]+' <<<"$CLIENT_OUT" | head -n1 | cut -d= -f2)"
 (( ECHOES > 0 )) || fail "no echoes recorded across the migration - the session dropped"
+[ "$DROPPED" = "0" ] || fail "the gateway session closed during the migration - not seamless (a cutover-time reset)"
 awk -v g="$MAXGAP" -v t="$GAP_THRESHOLD" 'BEGIN{exit !(g < t)}' \
   || fail "session stalled ${MAXGAP}s across the cutover (>= ${GAP_THRESHOLD}s) - not seamless"
 pass "session stayed alive across live migration (echoes=$ECHOES, max gap ${MAXGAP}s < ${GAP_THRESHOLD}s)"
@@ -487,7 +496,9 @@ echo "$CLIENT_OUT2"
 MAXGAP2="$(grep -oE 'maxgap=[0-9.]+' <<<"$CLIENT_OUT2" | head -n1 | cut -d= -f2)"
 ECHOES2="$(grep -oE 'echoes=[0-9]+' <<<"$CLIENT_OUT2" | head -n1 | cut -d= -f2)"
 [ -n "$MAXGAP2" ] && [ -n "$ECHOES2" ] || fail "multi-hop client did not report a metric: ${CLIENT_OUT2}"
+DROPPED2="$(grep -oE 'dropped=[0-9]+' <<<"$CLIENT_OUT2" | head -n1 | cut -d= -f2)"
 (( ECHOES2 > 0 )) || fail "no echoes recorded across the multi-hop migration - the session dropped"
+[ "$DROPPED2" = "0" ] || fail "the gateway session closed during the multi-hop migration - not seamless"
 awk -v g="$MAXGAP2" -v t="$GAP_THRESHOLD" 'BEGIN{exit !(g < t)}' \
   || fail "session stalled ${MAXGAP2}s across the multi-hop cutover (>= ${GAP_THRESHOLD}s)"
 pass "session survived the multi-hop migration (echoes=$ECHOES2, max gap ${MAXGAP2}s < ${GAP_THRESHOLD}s)"
