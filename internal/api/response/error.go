@@ -110,6 +110,13 @@ const (
 	CodeSSHSessionRejected ErrorCode = "ssh_session_rejected"
 	CodeSSHLoginNotAllowed ErrorCode = "ssh_login_not_allowed"
 
+	// CodeSSHIngressNotEnabled rejects a vm.create that requests SSH ingress
+	// (ssh_ingress_enabled=true) when the feature is not available: the cluster
+	// SSH-ingress master switch is explicitly disabled, or the cluster SSH
+	// user-CA is not provisioned. The create fails loudly before any VM is made
+	// rather than silently producing a VM that cannot accept an SSH-ingress login.
+	CodeSSHIngressNotEnabled ErrorCode = "ssh_ingress_not_enabled"
+
 	CodeInternal ErrorCode = "internal"
 )
 

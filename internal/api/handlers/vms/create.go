@@ -741,10 +741,19 @@ func (h *Handler) resolveNetworkName(w http.ResponseWriter, r *http.Request, req
 // the VM row. When the request opts into SSH ingress AND the cluster master
 // switch is on AND a cluster SSH user-CA exists, it wraps the operator's
 // user-data with an Otherix CA-trust part as multipart MIME so the guest sshd
-// trusts the cluster user-CA. Otherwise it returns the operator user-data
-// unchanged - fail-open to a normal VM when SSH ingress is off or the CA is not
-// yet provisioned. It writes the wire envelope and returns ok=false only on a
-// genuine store / assembly error.
+// trusts the cluster user-CA.
+//
+// When the request opts into SSH ingress but the feature is not available - the
+// cluster switch is explicitly disabled or the SSH user-CA is not provisioned -
+// it FAILS CLOSED: the create is rejected with 400 ssh_ingress_not_enabled
+// before any VM is made, rather than silently producing a VM that boots without
+// the CA trust and fails SSH later with a cryptic permission error. The switch
+// defaults ON, so this reject only fires for an operator who explicitly disabled
+// it (or a not-yet-provisioned CA). When SSH ingress is not requested the
+// operator user-data passes through unchanged.
+//
+// It writes the wire envelope and returns ok=false on a reject or on a genuine
+// store / assembly error.
 func (h *Handler) resolveCreateUserData(w http.ResponseWriter, r *http.Request, req vmCreateRequest) (*string, bool) {
 	if !req.SSHIngressEnabled {
 		return req.UserData, true
@@ -756,14 +765,22 @@ func (h *Handler) resolveCreateUserData(w http.ResponseWriter, r *http.Request, 
 			response.CodeInternal, "load cluster settings", nil)
 		return nil, false
 	}
-	if !settings.SSHIngressEnabled {
-		// The feature is not enabled cluster-wide: fail-open to a normal VM.
-		return req.UserData, true
+	if !settings.SSHIngressEnabledOrDefault() {
+		// Requested but the cluster switch is explicitly disabled: fail closed.
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeSSHIngressNotEnabled,
+			"ssh ingress is requested for this vm but the cluster ssh-ingress switch is disabled; enable it with `otherix cluster set-ssh-ingress --enabled` or drop the ssh-ingress request",
+			nil)
+		return nil, false
 	}
 	ca, err := h.store.ActiveSSHUserCA(r.Context())
 	if errors.Is(err, store.ErrNotFound) {
-		// No SSH user-CA provisioned yet: fail-open rather than block create.
-		return req.UserData, true
+		// Requested but the cluster SSH user-CA is not provisioned: fail closed.
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeSSHIngressNotEnabled,
+			"ssh ingress is requested for this vm but the cluster ssh user-ca is not provisioned yet; retry shortly or drop the ssh-ingress request",
+			nil)
+		return nil, false
 	}
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "load ssh user-ca", "error", err)

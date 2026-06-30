@@ -2170,7 +2170,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VM"
-        "400": { $ref: "#/components/responses/BadRequest" }
+        "400":
+          description: |
+            Request validation failed (`validation_failed`), or the body
+            requests SSH ingress (`ssh_ingress_enabled: true`) while the
+            feature is unavailable - the cluster SSH-ingress master switch is
+            explicitly disabled or the cluster SSH user-CA is not provisioned
+            (`ssh_ingress_not_enabled`). The create is rejected before any VM
+            is made.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -3777,10 +3788,12 @@ paths:
       tags: [cluster]
       summary: Get the cluster SSH-ingress configuration.
       description: |
-        Returns the cluster-wide SSH-ingress master switch and the DNS
-        suffix VM hostnames are addressed under, held in the
-        `cluster_settings` singleton. An unconfigured cluster reports
-        `enabled: false` with an empty `cluster_suffix`.
+        Returns the EFFECTIVE cluster-wide SSH-ingress master switch and the
+        DNS suffix VM hostnames are addressed under, held in the
+        `cluster_settings` singleton. SSH ingress is ON by default: an
+        unconfigured cluster reports `enabled: true` with the default
+        `cluster_suffix` (`otherix.local`). An admin can disable it or set a
+        custom suffix via `PUT`.
 
         **Required permission:** `cluster:read` (every role).
       security:
@@ -4164,6 +4177,7 @@ components:
         - default_network_not_set
         - ssh_session_rejected
         - ssh_login_not_allowed
+        - ssh_ingress_not_enabled
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
@@ -6543,11 +6557,12 @@ components:
       type: object
       required: [enabled, cluster_suffix]
       description: |
-        Singleton cluster SSH-ingress configuration. `enabled` is the
-        cluster-wide master switch VM create consults before provisioning
-        a guest to trust the cluster SSH user-CA; `cluster_suffix` is the
-        DNS suffix SSH-ingress VM hostnames are addressed under (empty
-        until the operator sets it).
+        Singleton cluster SSH-ingress configuration, reported as EFFECTIVE
+        values. `enabled` is the cluster-wide master switch VM create
+        consults before provisioning a guest to trust the cluster SSH
+        user-CA; it is ON by default (an unconfigured cluster reports
+        `true`). `cluster_suffix` is the DNS suffix SSH-ingress VM hostnames
+        are addressed under, defaulting to `otherix.local`.
       properties:
         enabled:
           type: boolean

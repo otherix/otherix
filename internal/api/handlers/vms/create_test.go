@@ -357,7 +357,7 @@ func TestResolveCreateUserData_SSHCACoexistence(t *testing.T) {
 		"  - path: /etc/operator-marker\n    content: |\n      operator-was-here\n" +
 		"runcmd:\n  - echo operator-runcmd-marker\n"
 	h := &Handler{store: &sshUserDataStoreStub{
-		settings: store.ClusterSetting{SSHIngressEnabled: true},
+		settings: store.ClusterSetting{SSHIngressEnabled: ptr(true)},
 		ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
 	}, log: discardLog()}
 
@@ -425,7 +425,7 @@ func TestResolveCreateUserData_OperatorMIME(t *testing.T) {
 	// part with a users: block.
 	operator := buildOperatorMultipart(t, "#cloud-config\nusers:\n  - name: operator-user\n")
 	h := &Handler{store: &sshUserDataStoreStub{
-		settings: store.ClusterSetting{SSHIngressEnabled: true},
+		settings: store.ClusterSetting{SSHIngressEnabled: ptr(true)},
 		ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
 	}, log: discardLog()}
 
@@ -536,9 +536,9 @@ func walkMIMEReader(t *testing.T, contentType string, r io.Reader) []mimeLeaf {
 	return leaves
 }
 
-// TestResolveCreateUserData_Passthrough covers the fail-open paths: when SSH
-// ingress is not requested, not enabled cluster-wide, or the CA is absent, the
-// operator user-data is returned unchanged (no multipart wrapping).
+// TestResolveCreateUserData_Passthrough covers the pass-through path: when SSH
+// ingress is NOT requested, the operator user-data is returned unchanged (no
+// multipart wrapping), regardless of the cluster switch.
 func TestResolveCreateUserData_Passthrough(t *testing.T) {
 	t.Parallel()
 
@@ -549,27 +549,18 @@ func TestResolveCreateUserData_Passthrough(t *testing.T) {
 		stub *sshUserDataStoreStub
 	}{
 		{
-			name: "per-vm opt-in absent",
+			name: "per-vm opt-in absent, switch on",
 			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: false},
 			stub: &sshUserDataStoreStub{
-				settings: store.ClusterSetting{SSHIngressEnabled: true},
+				settings: store.ClusterSetting{SSHIngressEnabled: ptr(true)},
 				ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
 			},
 		},
 		{
-			name: "cluster setting disabled",
-			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: true},
+			name: "per-vm opt-in absent, switch off",
+			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: false},
 			stub: &sshUserDataStoreStub{
-				settings: store.ClusterSetting{SSHIngressEnabled: false},
-				ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
-			},
-		},
-		{
-			name: "ca absent",
-			req:  vmCreateRequest{UserData: &operator, SSHIngressEnabled: true},
-			stub: &sshUserDataStoreStub{
-				settings: store.ClusterSetting{SSHIngressEnabled: true},
-				caErr:    store.ErrNotFound,
+				settings: store.ClusterSetting{SSHIngressEnabled: ptr(false)},
 			},
 		},
 	}
@@ -584,6 +575,89 @@ func TestResolveCreateUserData_Passthrough(t *testing.T) {
 			}
 			if got == nil || *got != operator {
 				t.Errorf("resolveCreateUserData = %v, want operator user-data unchanged", got)
+			}
+		})
+	}
+}
+
+// TestResolveCreateUserData_DefaultSwitchInjects asserts the default-ON switch:
+// when the cluster never configured the master switch (nil pointer) and a VM
+// opts into SSH ingress with a provisioned CA, the CA-trust is injected (the
+// switch resolves to ON without an explicit cluster set).
+func TestResolveCreateUserData_DefaultSwitchInjects(t *testing.T) {
+	t.Parallel()
+
+	operator := "#cloud-config\nusers:\n  - name: operator-user\n"
+	h := &Handler{store: &sshUserDataStoreStub{
+		settings: store.ClusterSetting{}, // never configured -> default ON
+		ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
+	}, log: discardLog()}
+
+	req := vmCreateRequest{UserData: &operator, SSHIngressEnabled: true}
+	rec := httptest.NewRecorder()
+	got, ok := h.resolveCreateUserData(rec, fakeRequest(), req)
+	if !ok {
+		t.Fatalf("resolveCreateUserData ok = false, want true (body: %s)", rec.Body.String())
+	}
+	if got == nil || !strings.Contains(*got, "TrustedUserCAKeys") {
+		t.Errorf("default-on switch did not inject CA-trust; got = %v", got)
+	}
+}
+
+// TestResolveCreateUserData_FailClosed asserts the fail-CLOSED reject: when a VM
+// requests SSH ingress but the feature is unavailable (the switch is explicitly
+// disabled, or the cluster SSH user-CA is absent), the create is rejected with
+// 400 ssh_ingress_not_enabled BEFORE any VM is made, rather than silently
+// producing a VM that cannot accept an SSH-ingress login.
+func TestResolveCreateUserData_FailClosed(t *testing.T) {
+	t.Parallel()
+
+	operator := "#cloud-config\nusers:\n  - name: operator-user\n"
+	cases := []struct {
+		name string
+		stub *sshUserDataStoreStub
+	}{
+		{
+			name: "cluster switch explicitly disabled",
+			stub: &sshUserDataStoreStub{
+				settings: store.ClusterSetting{SSHIngressEnabled: ptr(false)},
+				ca:       store.SSHUserCA{PublicKeyAuthorized: []byte(testCAAuthorizedKey)},
+			},
+		},
+		{
+			name: "ca absent",
+			stub: &sshUserDataStoreStub{
+				settings: store.ClusterSetting{SSHIngressEnabled: ptr(true)},
+				caErr:    store.ErrNotFound,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := &Handler{store: tc.stub, log: discardLog()}
+			rec := httptest.NewRecorder()
+			req := vmCreateRequest{UserData: &operator, SSHIngressEnabled: true}
+			got, ok := h.resolveCreateUserData(rec, fakeRequest(), req)
+			if ok {
+				t.Fatalf("resolveCreateUserData ok = true, want false (reject)")
+			}
+			if got != nil {
+				t.Errorf("resolveCreateUserData user-data = %v, want nil on reject", got)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("reject status = %d, want 400", rec.Code)
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if body.Error.Code != "ssh_ingress_not_enabled" {
+				t.Errorf("reject code = %q, want ssh_ingress_not_enabled (body: %s)", body.Error.Code, rec.Body.String())
 			}
 		})
 	}

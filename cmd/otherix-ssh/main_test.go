@@ -85,8 +85,8 @@ func TestAddWritesStateAndConfig(t *testing.T) {
 	if st.Token != "otx_sshgrant_secrettoken" {
 		t.Errorf("state Token = %q, want %q", st.Token, "otx_sshgrant_secrettoken")
 	}
-	if st.ClusterSuffix != "otherix" {
-		t.Errorf("state ClusterSuffix = %q, want %q", st.ClusterSuffix, "otherix")
+	if st.ClusterSuffix != "otherix.local" {
+		t.Errorf("state ClusterSuffix = %q, want %q", st.ClusterSuffix, "otherix.local")
 	}
 
 	// Managed ssh_config fragment carries the wildcard ProxyCommand block.
@@ -218,7 +218,7 @@ func TestProxyLoadsStateAndCallsSeam(t *testing.T) {
 	}
 
 	// ssh hands the ProxyCommand the full hostname (vm + suffix) as %h.
-	if err := runCmd(t, "proxy", "web01.otherix", "22"); err != nil {
+	if err := runCmd(t, "proxy", "web01.otherix.local", "22"); err != nil {
 		t.Fatalf("proxy error = %v", err)
 	}
 	if gotVM != "web01" {
@@ -267,7 +267,7 @@ func TestProxyMintsCertBeforeRelay(t *testing.T) {
 		return nil
 	}
 
-	if err := runCmd(t, "proxy", "web01.otherix", "22"); err != nil {
+	if err := runCmd(t, "proxy", "web01.otherix.local", "22"); err != nil {
 		t.Fatalf("proxy error = %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestProxyMintFailureAbortsRelay(t *testing.T) {
 		return nil
 	}
 
-	if err := runCmd(t, "proxy", "web01.otherix", "22"); err == nil {
+	if err := runCmd(t, "proxy", "web01.otherix.local", "22"); err == nil {
 		t.Fatal("proxy with a failing mint = nil error, want non-nil")
 	}
 	if relayed {

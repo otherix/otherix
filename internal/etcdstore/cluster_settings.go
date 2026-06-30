@@ -411,29 +411,29 @@ func (s *Store) DrainMaxConcurrentMigrations(ctx context.Context) (int32, error)
 	return defaultDrainMaxConcurrentMigrations, nil
 }
 
-// SSHIngressEnabled returns the cluster-wide SSH-ingress master switch, false
-// (disabled) when the singleton has never been written. It gates whether VM
-// create provisions the guest to trust the cluster SSH user-CA.
+// SSHIngressEnabled returns the cluster-wide SSH-ingress master switch,
+// defaulting to true (ON) when the singleton has never been written. It gates
+// whether VM create provisions the guest to trust the cluster SSH user-CA. The
+// nil-means-on default lives in store.ClusterSetting.SSHIngressEnabledOrDefault
+// so every reader resolves the same effective value.
 func (s *Store) SSHIngressEnabled(ctx context.Context) (bool, error) {
 	cs, err := s.ClusterSettings(ctx)
 	if err != nil {
 		return false, err
 	}
-	return cs.SSHIngressEnabled, nil
+	return cs.SSHIngressEnabledOrDefault(), nil
 }
 
-// SSHClusterSuffix returns the operator-set DNS suffix SSH-ingress VM hostnames
-// are addressed under, "" when the singleton has no value (the operator must set
-// it before the connector bundle / cert-mint can address a VM).
+// SSHClusterSuffix returns the DNS suffix SSH-ingress VM hostnames are addressed
+// under, defaulting to store.DefaultSSHClusterSuffix when the singleton has no
+// value. The default lives in store.ClusterSetting.SSHClusterSuffixOrDefault so
+// every reader resolves the same effective value.
 func (s *Store) SSHClusterSuffix(ctx context.Context) (string, error) {
 	cs, err := s.ClusterSettings(ctx)
 	if err != nil {
 		return "", err
 	}
-	if cs.SSHClusterSuffix != nil {
-		return *cs.SSHClusterSuffix, nil
-	}
-	return "", nil
+	return cs.SSHClusterSuffixOrDefault(), nil
 }
 
 // SetSSHIngress sets the SSH-ingress master switch and DNS suffix on the
@@ -444,7 +444,7 @@ func (s *Store) SSHClusterSuffix(ctx context.Context) (string, error) {
 // clobbered.
 func (s *Store) SetSSHIngress(ctx context.Context, enabled bool, suffix *string) error {
 	return s.casClusterSettings(ctx, func(cs *store.ClusterSetting) {
-		cs.SSHIngressEnabled = enabled
+		cs.SSHIngressEnabled = &enabled
 		cs.SSHClusterSuffix = suffix
 	})
 }

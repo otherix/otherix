@@ -27,13 +27,30 @@ may open a relay to which VM), not *login*.
 
 ## Prerequisites
 
-- **SSH ingress enabled for the cluster.** An admin turns on the cluster-wide
-  SSH-ingress switch; the control plane generates the cluster SSH user-CA on
-  first use. A cluster **DNS suffix** is set so externals can address VMs as
-  `<vm>.<suffix>` (the connector defaults the suffix to `otherix`).
-- **The VM is created with SSH ingress.** Opting a VM in provisions its
-  cloud-init so the guest trusts the cluster SSH user-CA. A VM created without
-  SSH ingress behaves as a normal VM.
+- **SSH ingress is ON by default cluster-wide.** There is nothing to turn on:
+  the control plane provisions the cluster SSH user-CA at startup, and the
+  master switch defaults to enabled. An admin can **disable** it or set a
+  **custom DNS suffix**:
+
+  ```bash
+  otherix cluster set-ssh-ingress --enabled=false              # turn it off
+  otherix cluster set-ssh-ingress --enabled --suffix ssh.example.com
+  ```
+
+  The DNS suffix defaults to `otherix.local`. It is a local `ssh_config`
+  namespace, **not real DNS**: the external connector's wildcard
+  `Host *.<suffix>` rule routes `ssh <vm>.<suffix>` through the relay. The
+  operator `otherix ssh <vm>` does not use the suffix at all.
+- **The VM is created with SSH ingress.** Opting a VM in (`--ssh-ingress`, or
+  `sshIngressEnabled: true` in a manifest) provisions its cloud-init so the
+  guest trusts the cluster SSH user-CA. A VM created without SSH ingress behaves
+  as a normal VM.
+- **Provisioning happens at CREATE only - there is no retrofit.** A VM created
+  without SSH ingress, or while the cluster switch was disabled, must be
+  re-created to gain it. If you request `--ssh-ingress` while the switch is
+  disabled, the create is **rejected** with `ssh_ingress_not_enabled` - it fails
+  loudly rather than silently producing a VM that cannot accept an SSH-ingress
+  login. Re-enable the switch (or drop the request) and create again.
 - **Guest image requirements.** The guest needs **OpenSSH 8.2 or newer** (for
   the `sshd_config.d` Include drop-in the provisioning writes) and a cloud-init
   that honors `write_files`. Stock Ubuntu, Debian, and RHEL-family cloud images
@@ -41,6 +58,10 @@ may open a relay to which VM), not *login*.
   (`/etc/ssh/sshd_config.d/60-otherix-ca.conf` pointing `TrustedUserCAKeys` at
   the installed CA public key) and restarts `ssh`/`sshd`; it never creates
   users and never weakens the guest's existing login policy.
+- **Log in as a user that exists in the guest.** Otherix never creates login
+  users - the guest `sshd` is the login authority. Use the cloud image's default
+  account (for example `ubuntu` on Ubuntu cloud images) or a user you created in
+  the VM's `user-data`, and pass it with `--login`.
 
 ## Operator: SSH into a VM
 
@@ -134,13 +155,15 @@ idempotent.
 ### 3. SSH in
 
 ```bash
-ssh web01.otherix
+ssh web01.otherix.local
 ```
 
 The wildcard `Host *.<suffix>` rule routes the connection through
 `otherix-ssh proxy`, which rebuilds the connection from the stored state and
-splices it to the relay. Use the suffix the operator told you (the connector
-defaults to `otherix`; override at import time with `otherix-ssh add --suffix`).
+splices it to the relay. The suffix is a local `ssh_config` namespace, not real
+DNS. Use the suffix the operator told you (the connector defaults to
+`otherix.local`, matching the cluster default; override at import time with
+`otherix-ssh add --suffix`).
 
 ## Homebrew (macOS and Linuxbrew)
 

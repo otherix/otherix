@@ -16,9 +16,9 @@ import (
 // SSHIngress is the wire shape of the cluster SSH-ingress configuration.
 // Mirrors api/openapi/control-plane.yaml#components/schemas/ClusterSSHIngress.
 // Enabled is the cluster-wide master switch VM create consults before
-// provisioning a guest to trust the cluster SSH user-CA; ClusterSuffix is
-// the DNS suffix SSH-ingress VM hostnames are addressed under (empty until
-// the operator sets it).
+// provisioning a guest to trust the cluster SSH user-CA (effective value:
+// ON by default); ClusterSuffix is the DNS suffix SSH-ingress VM hostnames
+// are addressed under (effective value: the default when unconfigured).
 type SSHIngress struct {
 	Enabled       bool   `json:"enabled"`
 	ClusterSuffix string `json:"cluster_suffix"`
@@ -44,13 +44,12 @@ func (h *Handler) GetSSHIngress(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "load cluster settings", nil)
 		return
 	}
-	suffix := ""
-	if settings.SSHClusterSuffix != nil {
-		suffix = *settings.SSHClusterSuffix
-	}
+	// Report the EFFECTIVE values: an unconfigured cluster resolves to ON with
+	// the default suffix. The defaults live on store.ClusterSetting so the GET
+	// view, the create gating, and the *Store accessors never drift.
 	response.WriteJSON(w, r, http.StatusOK, SSHIngress{
-		Enabled:       settings.SSHIngressEnabled,
-		ClusterSuffix: suffix,
+		Enabled:       settings.SSHIngressEnabledOrDefault(),
+		ClusterSuffix: settings.SSHClusterSuffixOrDefault(),
 	})
 }
 

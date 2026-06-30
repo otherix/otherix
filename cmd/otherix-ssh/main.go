@@ -53,7 +53,9 @@ func main() {
 // VMs as `<vm>.<suffix>`. It is a synthetic label, not a real domain, so the
 // wildcard `Host *.<suffix>` ssh_config rule never shadows a real public host.
 // The bundle carries no suffix, so it is operator/external choice via --suffix.
-const defaultSuffix = "otherix"
+// It matches the control-plane cluster-suffix default (store.DefaultSSHClusterSuffix)
+// so the connector and the cluster agree out of the box.
+const defaultSuffix = "otherix.local"
 
 // stateDirParts is the connector's per-user state directory under the home
 // dir; it doubles as the sshconn KnownDir (cached keypair, guest cert, managed

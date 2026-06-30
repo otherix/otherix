@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/otherix/otherix/internal/store"
 )
 
 // ClusterSettings is one of the six resolver.Querier lookups; the full
@@ -428,20 +430,41 @@ func TestSSHIngressSettingsDefaults(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
 
+	// An unconfigured cluster defaults the master switch ON so the per-VM
+	// opt-in works without an extra cluster step.
 	on, err := s.SSHIngressEnabled(ctx)
 	if err != nil {
 		t.Fatalf("SSHIngressEnabled: %v", err)
 	}
-	if on {
-		t.Errorf("default SSHIngressEnabled = %v, want false", on)
+	if !on {
+		t.Errorf("default SSHIngressEnabled = %v, want true", on)
 	}
 
 	suffix, err := s.SSHClusterSuffix(ctx)
 	if err != nil {
 		t.Fatalf("SSHClusterSuffix: %v", err)
 	}
-	if suffix != "" {
-		t.Errorf("default SSHClusterSuffix = %q, want \"\"", suffix)
+	if suffix != store.DefaultSSHClusterSuffix {
+		t.Errorf("default SSHClusterSuffix = %q, want %q", suffix, store.DefaultSSHClusterSuffix)
+	}
+}
+
+// TestSSHIngressSettingsExplicitDisable confirms an operator who explicitly
+// stores enabled=false turns the default-ON switch off, distinguishing
+// "never configured" (nil -> ON) from "explicitly disabled" (false -> OFF).
+func TestSSHIngressSettingsExplicitDisable(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	if err := s.SetSSHIngress(ctx, false, nil); err != nil {
+		t.Fatalf("SetSSHIngress(false): %v", err)
+	}
+	on, err := s.SSHIngressEnabled(ctx)
+	if err != nil {
+		t.Fatalf("SSHIngressEnabled: %v", err)
+	}
+	if on {
+		t.Errorf("explicitly disabled SSHIngressEnabled = %v, want false", on)
 	}
 }
 
@@ -489,7 +512,8 @@ func TestSSHIngressSettingsSetAndRead(t *testing.T) {
 		t.Errorf("after sibling write SSHClusterSuffix = %q, want %q", got, suffix)
 	}
 
-	// Disabling clears the suffix and flips the switch in one atomic write.
+	// Disabling clears the suffix and flips the switch in one atomic write. A
+	// cleared (nil) suffix resolves back to the default through the accessor.
 	if err := s.SetSSHIngress(ctx, false, nil); err != nil {
 		t.Fatalf("SetSSHIngress(false): %v", err)
 	}
@@ -497,8 +521,8 @@ func TestSSHIngressSettingsSetAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SSHClusterSuffix after clear: %v", err)
 	}
-	if got != "" {
-		t.Errorf("SSHClusterSuffix after clear = %q, want \"\"", got)
+	if got != store.DefaultSSHClusterSuffix {
+		t.Errorf("SSHClusterSuffix after clear = %q, want %q", got, store.DefaultSSHClusterSuffix)
 	}
 	on, err = s.SSHIngressEnabled(ctx)
 	if err != nil {
