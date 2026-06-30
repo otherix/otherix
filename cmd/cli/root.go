@@ -10,6 +10,7 @@ import (
 	artifactpoolcmd "github.com/otherix/otherix/cmd/cli/artifactpool"
 	clustercmd "github.com/otherix/otherix/cmd/cli/cluster"
 	configcmd "github.com/otherix/otherix/cmd/cli/config"
+	forwardcmd "github.com/otherix/otherix/cmd/cli/forward"
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
 	migrationcmd "github.com/otherix/otherix/cmd/cli/migration"
 	networkcmd "github.com/otherix/otherix/cmd/cli/network"
@@ -56,6 +57,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(vm.NewCommand())
 	root.AddCommand(sshcmd.NewCommand())
+	root.AddCommand(forwardcmd.NewCommand())
 	root.AddCommand(sshgrantcmd.NewCommand())
 	root.AddCommand(migrationcmd.NewCommand())
 	root.AddCommand(snapshotcmd.NewCommand())
