@@ -21,6 +21,7 @@ import (
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	ingressgrantshandlers "github.com/otherix/otherix/internal/api/handlers/ingressgrants"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
+	loadbalancershandlers "github.com/otherix/otherix/internal/api/handlers/loadbalancers"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
@@ -240,6 +241,9 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	migH := migrationshandlers.New(deps.Store, migCancelClient, deps.Logger)
 	snapH := snapshotshandlers.New(deps.Store, deps.Logger)
 	ingressGrantsH := ingressgrantshandlers.New(deps.Store, deps.Logger)
+	// vmsH satisfies loadbalancers.IngressBroker (ResolveIngress); the connect
+	// route added in a later task brokers through it.
+	loadBalancersH := loadbalancershandlers.New(deps.Store, vmsH, deps.Logger)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)
@@ -292,6 +296,24 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Get("/", joinTokensH.List)
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Get("/{id}/consumptions", joinTokensH.ListConsumptions)
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Delete("/{id}", joinTokensH.Delete)
+			})
+		})
+
+		// Load-balancer management. Mounted as its own top-level group
+		// (authn at the group level, idem wrapping only the CRUD routes)
+		// so the non-idempotent connect route added in a later task can sit
+		// OUTSIDE the idem sub-group, mirroring the join-tokens block above.
+		r.Group(func(r chi.Router) {
+			r.Use(authn)
+			r.Route("/loadbalancers", func(r chi.Router) {
+				r.Group(func(r chi.Router) {
+					r.Use(idem)
+					r.With(middleware.RequirePermission(auth.PermLoadBalancerRead, deps.Logger)).Get("/", loadBalancersH.List)
+					r.With(middleware.RequirePermission(auth.PermLoadBalancerRead, deps.Logger)).Get("/{id}", loadBalancersH.Get)
+					r.With(middleware.RequirePermission(auth.PermLoadBalancerCreate, deps.Logger)).Post("/", loadBalancersH.Create)
+					r.With(middleware.RequirePermission(auth.PermLoadBalancerUpdate, deps.Logger)).Patch("/{id}", loadBalancersH.Update)
+					r.With(middleware.RequirePermission(auth.PermLoadBalancerDelete, deps.Logger)).Delete("/{id}", loadBalancersH.Delete)
+				})
 			})
 		})
 
