@@ -184,7 +184,7 @@ smoke-vm-ssh: ## VM SSH-ingress smoke: real guest login over the relay via `othe
 	bash dev/smoke/vm-ssh/run.sh
 
 .PHONY: smoke-ingress-gateway
-smoke-ingress-gateway: ## Ingress-gateway smoke: gateway join + L4 forward to a guest on an overlay, session survives a live migration with sub-heartbeat convergence (run after local-dev-start)
+smoke-ingress-gateway: ## Ingress-gateway smoke: brokered `otherix forward`/`otherix ssh` reach a guest (gateway + relay), survive a live migration, recover from gateway death, and enforce no-gateway 409 + non-owner 404 (run after local-dev-start)
 	bash dev/smoke/ingress-gateway/run.sh
 
 .PHONY: smoke-vm-create-redelivery
