@@ -206,6 +206,32 @@ func (c *Client) UncordonNode(ctx context.Context, node string) error {
 	return c.nodeAction(ctx, node, "uncordon")
 }
 
+// DeleteNode submits DELETE /v1/nodes/{node}, adding ?force=true when force is
+// set. Sync 204. Non-2xx surfaces as *APIError - notably 409 conflict with
+// blocking_resources when the node still hosts VMs / active migrations and
+// force was not given.
+func (c *Client) DeleteNode(ctx context.Context, node string, force bool) error {
+	path := "/v1/nodes/" + url.PathEscape(node)
+	if force {
+		path += "?force=true"
+	}
+	httpReq, err := c.newRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	if _, _, err := c.do(httpReq); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReadmitNode submits POST /v1/nodes/{node}/readmit - sync (200), idempotent.
+// Returns a node stuck in the terminal gone status to pending. Non-2xx surfaces
+// as *APIError (e.g. 409 conflict for a node that is not gone).
+func (c *Client) ReadmitNode(ctx context.Context, node string) error {
+	return c.nodeAction(ctx, node, "readmit")
+}
+
 // nodeAction POSTs a sync node maintenance verb (cordon / uncordon) and
 // discards the 200 body. Any non-2xx surfaces as *APIError via do.
 func (c *Client) nodeAction(ctx context.Context, node, action string) error {
