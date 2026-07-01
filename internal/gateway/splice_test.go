@@ -414,7 +414,7 @@ func TestConnectCredFailures(t *testing.T) {
 
 	valid := signCred(t, signer, validClaims)
 	expired := signCred(t, signer, expiredClaims)
-	tampered := valid[:len(valid)-1] + flipLast(valid)
+	tampered := corruptCredBody(valid)
 
 	tests := []struct {
 		name       string
@@ -616,14 +616,20 @@ func failDial(t *testing.T) dialFunc {
 	}
 }
 
-// flipLast returns a single base64url character different from the last
-// character of s, used to corrupt a credential's signature segment.
-func flipLast(s string) string {
-	if len(s) == 0 {
-		return "A"
+// corruptCredBody flips one base64url character in the middle of a session
+// credential so it can no longer verify. Flipping the LAST character is
+// unreliable: an ECDSA signature's byte length varies per signing, so the low
+// bits the final base64 character encodes can fall beyond the signature's real
+// bytes and be dropped on decode, leaving the decoded credential unchanged. A
+// middle character always maps to significant bytes (payload or signature), so
+// the flip reliably breaks verification.
+func corruptCredBody(s string) string {
+	b := []byte(s)
+	i := len(b) / 2
+	if b[i] == 'A' {
+		b[i] = 'B'
+	} else {
+		b[i] = 'A'
 	}
-	if s[len(s)-1] == 'A' {
-		return "B"
-	}
-	return "A"
+	return string(b)
 }
