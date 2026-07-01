@@ -70,11 +70,9 @@ func classifyError(err error) error {
 
 // outputFormat reads the --output flag (default defaultFormat). The base
 // formats text/json/table are always accepted; extra lists additional formats
-// a command opts into. Unknown values surface as usage errors so a mutating
-// command does not silently accept an unsupported format and print text.
-//
-// Note: yaml (the manifest projection) is added to lb get/list alongside the
-// manifest support; until then only text/json/table are accepted here.
+// a command opts into (lb get/list opt into "yaml", the apply-ready manifest
+// projection). Unknown values surface as usage errors so a mutating command
+// does not silently accept an unsupported format and print text.
 func outputFormat(cmd *cobra.Command, defaultFormat string, extra ...string) (string, error) {
 	raw, err := cmd.Flags().GetString(flagOutput)
 	if err != nil {

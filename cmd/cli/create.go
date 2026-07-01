@@ -104,6 +104,9 @@ func runCreatePlan(cmd *cobra.Command, c *cpclient.Client, plan []manifest.Creat
 				res.note = "pending"
 			}
 			results = append(results, res)
+		case manifest.KindLoadBalancer:
+			_, err := c.CreateLoadBalancer(ctx, *op.LB)
+			results = append(results, docResult{kind: op.Kind, name: op.Name, committed: err == nil, err: fanoutErr(err)})
 		}
 	}
 	return results

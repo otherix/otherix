@@ -273,8 +273,13 @@ func mintCert(ctx context.Context, cfg Config, vmName, login string, pub ssh.Pub
 // control plane selects the transport; gateway-only fields stay empty on the
 // relay path.
 type ingressResponse struct {
-	Transport   string `json:"transport"`
-	VMID        string `json:"vm_id"`
+	Transport string `json:"transport"`
+	VMID      string `json:"vm_id"`
+	// VMName is the backend VM name the relay leg addresses (/v1/vms/{name}/relay).
+	// The VM ingress broker does not return it (DialIngress already knows the
+	// name); the load-balancer connect broker does, so the relay leg can reach
+	// the chosen backend. Optional, absent on the VM path.
+	VMName      string `json:"vm_name,omitempty"`
 	Port        int    `json:"port"`
 	SplicerAddr string `json:"splicer_addr"`
 	SessionCred string `json:"session_cred"`
@@ -293,11 +298,35 @@ func DialIngress(ctx context.Context, cfg Config, vmName string, port int) (net.
 	if err != nil {
 		return nil, err
 	}
+	// The VM ingress broker response carries no vm_name (DialIngress already
+	// knows it), so feed the caller-supplied name into the shared transport
+	// switch for the relay leg. The LB path fills VMName from its broker.
+	resp.VMName = vmName
+	return dialTransport(ctx, cfg, resp)
+}
+
+// DialLoadBalancer brokers POST {ServerURL}/v1/loadbalancers/{lb}/connect and
+// dials the transport the control plane selected for the chosen backend. Like
+// DialIngress the caller splices its own stream to the returned conn.
+func DialLoadBalancer(ctx context.Context, cfg Config, lbName string) (net.Conn, error) {
+	resp, err := brokerLoadBalancer(ctx, cfg, lbName)
+	if err != nil {
+		return nil, err
+	}
+	return dialTransport(ctx, cfg, resp)
+}
+
+// dialTransport is the shared transport switch used by both the VM and LB
+// brokers: a direct TLS connection to a converged gateway (control plane out of
+// the data path) or the control-plane relay WebSocket. The relay leg is keyed by
+// resp.VMName - the backend VM name (the LB connect broker sets it; DialIngress
+// copies the caller-known name onto resp before calling here).
+func dialTransport(ctx context.Context, cfg Config, resp ingressResponse) (net.Conn, error) {
 	switch resp.Transport {
 	case "gateway":
 		return dialGateway(ctx, cfg, resp)
 	case "relay":
-		return dialRelay(ctx, cfg, vmName, resp.Port)
+		return dialRelay(ctx, cfg, resp.VMName, resp.Port)
 	default:
 		return nil, fmt.Errorf("sshconn: unknown ingress transport %q", resp.Transport)
 	}
@@ -343,6 +372,48 @@ func brokerIngress(ctx context.Context, cfg Config, vmName string, port int) (in
 	}
 	if out.Transport == "" {
 		return ingressResponse{}, errors.New("sshconn: ingress response carried no transport")
+	}
+	return out, nil
+}
+
+// brokerLoadBalancer posts to the CP load-balancer connect broker and returns
+// the connect coordinates for the backend the control plane chose. It mirrors
+// brokerIngress, but the load balancer fixes the guest port so the request body
+// is empty ({}); the response carries the chosen backend's vm_name, which the
+// relay leg needs to address /v1/vms/{name}/relay.
+func brokerLoadBalancer(ctx context.Context, cfg Config, lbName string) (ingressResponse, error) {
+	client, err := wsHTTPClient(cfg)
+	if err != nil {
+		return ingressResponse{}, err
+	}
+	client.Timeout = fetchTimeout
+
+	endpoint := strings.TrimRight(cfg.ServerURL, "/") + "/v1/loadbalancers/" + url.PathEscape(lbName) + "/connect"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader("{}"))
+	if err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: build load balancer connect request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if cfg.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.BearerToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: broker load balancer connect: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return ingressResponse{}, fmt.Errorf("sshconn: broker load balancer connect: HTTP %d", resp.StatusCode)
+	}
+	var out ingressResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: decode load balancer connect response: %v", err)
+	}
+	if out.Transport == "" {
+		return ingressResponse{}, errors.New("sshconn: load balancer connect response carried no transport")
 	}
 	return out, nil
 }

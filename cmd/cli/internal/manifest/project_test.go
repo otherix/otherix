@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"gopkg.in/yaml.v3"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -588,6 +589,41 @@ func TestProjectPoolInstanceRoundTripPreservesFields(t *testing.T) {
 	got := plan[0].Pool
 	if got.Name != "pool-x" || got.Type != "local_dir" || got.Path != "/srv/data" || got.Node != "node-3" {
 		t.Errorf("pool = %+v, want {pool-x local_dir /srv/data node-3}", got)
+	}
+}
+
+// TestProjectLoadBalancerRoundTrips proves a `lb get -o yaml` projection
+// re-parses to an equivalent create plan: port and selector survive
+// `get -o yaml | create -f`, and the projection carries no server-assigned
+// identity fields.
+func TestProjectLoadBalancerRoundTrips(t *testing.T) {
+	lb := cpclient.LoadBalancer{
+		ID:       "22222222-3333-4444-5555-666666666666",
+		Name:     "web",
+		OwnerID:  "99999999-9999-9999-9999-999999999999",
+		Port:     8080,
+		Selector: map[string]string{"app": "web", "tier": "fe"},
+	}
+	out, err := manifest.ProjectLoadBalancer(lb)
+	if err != nil {
+		t.Fatalf("ProjectLoadBalancer() error = %v", err)
+	}
+	if strings.Contains(string(out), "id:") || strings.Contains(string(out), "owner") {
+		t.Errorf("projection leaked server fields:\n%s", out)
+	}
+	plan := mustCreatePlan(t, out)
+	if len(plan) != 1 || plan[0].LB == nil {
+		t.Fatalf("plan = %+v, want 1 load balancer op", plan)
+	}
+	got := plan[0].LB
+	if got.Name != "web" {
+		t.Errorf("name = %q, want web", got.Name)
+	}
+	if got.Port != 8080 {
+		t.Errorf("port = %d, want 8080", got.Port)
+	}
+	if diff := cmp.Diff(map[string]string{"app": "web", "tier": "fe"}, got.Selector); diff != "" {
+		t.Errorf("selector mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 func newListCommand() *cobra.Command {
@@ -22,7 +23,7 @@ func newListCommand() *cobra.Command {
 	}
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json|yaml")
 	cmd.Flags().Bool(flagShowIDs, false, "include load balancer UUIDs in the table output")
 	return cmd
 }
@@ -34,7 +35,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 	}
 	limit, _ := cmd.Flags().GetInt(flagLimit)
 	cursor, _ := cmd.Flags().GetString(flagCursor)
-	format, err := outputFormat(cmd, "table")
+	format, err := outputFormat(cmd, "table", "yaml")
 	if err != nil {
 		return err
 	}
@@ -55,9 +56,27 @@ func runList(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("marshal json: %v", err)
 		}
 		printf(cmd, "%s\n", raw)
+	case "yaml":
+		return printLoadBalancerYAML(cmd, lbs)
 	default:
 		printLoadBalancerTable(cmd, lbs, showIDs)
 	}
+	return nil
+}
+
+// printLoadBalancerYAML projects every load balancer on the page as an
+// apply-ready manifest, joined with the `---` separator so the whole page
+// round-trips through `create -f`.
+func printLoadBalancerYAML(cmd *cobra.Command, lbs cpclient.LoadBalancerList) error {
+	docs := make([][]byte, 0, len(lbs.Data))
+	for _, lb := range lbs.Data {
+		doc, err := manifest.ProjectLoadBalancer(lb)
+		if err != nil {
+			return err
+		}
+		docs = append(docs, doc)
+	}
+	printf(cmd, "%s", manifest.JoinDocuments(docs))
 	return nil
 }
 

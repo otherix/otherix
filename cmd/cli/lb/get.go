@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
+	"github.com/otherix/otherix/cmd/cli/internal/manifest"
 )
 
 func newGetCommand() *cobra.Command {
@@ -19,7 +20,7 @@ UUID), so the positional is passed through verbatim.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
-	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json|yaml")
 	return cmd
 }
 
@@ -29,7 +30,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	name := args[0]
-	format, err := outputFormat(cmd, "text")
+	format, err := outputFormat(cmd, "text", "yaml")
 	if err != nil {
 		return err
 	}
@@ -38,8 +39,16 @@ func runGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return classifyError(err)
 	}
-	if format == "json" {
+	switch format {
+	case "json":
 		return printJSON(cmd, raw)
+	case "yaml":
+		out, perr := manifest.ProjectLoadBalancer(lb)
+		if perr != nil {
+			return perr
+		}
+		printf(cmd, "%s", out)
+		return nil
 	}
 	return renderGet(cmd, lb)
 }

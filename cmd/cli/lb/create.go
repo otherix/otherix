@@ -54,6 +54,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid --port %d: must be in 1..65535", port)
+	}
 	selectorRaw, err := cmd.Flags().GetString(flagSelector)
 	if err != nil {
 		return err
@@ -70,7 +73,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	created, err := c.CreateLoadBalancer(cmd.Context(), cpclient.CreateLoadBalancerParams{
 		Name:     name,
-		Port:     int32(port),
+		Port:     int32(port), //nolint:gosec // port validated in 1..65535 above.
 		Selector: selector,
 	})
 	if err != nil {

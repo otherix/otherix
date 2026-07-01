@@ -31,5 +31,6 @@ port is brokered to one matching backend VM.`,
 	cmd.AddCommand(newGetCommand())
 	cmd.AddCommand(newDeleteCommand())
 	cmd.AddCommand(newUpdateCommand())
+	cmd.AddCommand(newConnectCommand())
 	return cmd
 }

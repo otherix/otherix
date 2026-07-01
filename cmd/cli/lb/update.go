@@ -49,31 +49,9 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	portChanged := cmd.Flags().Changed(flagPort)
-	selectorChanged := cmd.Flags().Changed(flagSelector)
-	if !portChanged && !selectorChanged {
-		return errors.New("specify --port and/or --selector")
-	}
-
-	var params cpclient.UpdateLoadBalancerParams
-	if portChanged {
-		port, err := cmd.Flags().GetInt(flagPort)
-		if err != nil {
-			return err
-		}
-		p := int32(port)
-		params.Port = &p
-	}
-	if selectorChanged {
-		selectorRaw, err := cmd.Flags().GetString(flagSelector)
-		if err != nil {
-			return err
-		}
-		selector, err := parseSelector(selectorRaw)
-		if err != nil {
-			return err
-		}
-		params.Selector = selector
+	params, err := updateParamsFromFlags(cmd)
+	if err != nil {
+		return err
 	}
 
 	updated, err := c.UpdateLoadBalancer(cmd.Context(), name, params)
@@ -90,4 +68,39 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return renderGet(cmd, updated)
+}
+
+// updateParamsFromFlags builds the PATCH params from the --port / --selector
+// flags. At least one must be set; an omitted flag is left untouched so the
+// server leaves that field unchanged. Port is validated to 1..65535.
+func updateParamsFromFlags(cmd *cobra.Command) (cpclient.UpdateLoadBalancerParams, error) {
+	var params cpclient.UpdateLoadBalancerParams
+	portChanged := cmd.Flags().Changed(flagPort)
+	selectorChanged := cmd.Flags().Changed(flagSelector)
+	if !portChanged && !selectorChanged {
+		return params, errors.New("specify --port and/or --selector")
+	}
+	if portChanged {
+		port, err := cmd.Flags().GetInt(flagPort)
+		if err != nil {
+			return params, err
+		}
+		if port < 1 || port > 65535 {
+			return params, fmt.Errorf("invalid --port %d: must be in 1..65535", port)
+		}
+		p := int32(port) //nolint:gosec // port validated in 1..65535 above.
+		params.Port = &p
+	}
+	if selectorChanged {
+		selectorRaw, err := cmd.Flags().GetString(flagSelector)
+		if err != nil {
+			return params, err
+		}
+		selector, err := parseSelector(selectorRaw)
+		if err != nil {
+			return params, err
+		}
+		params.Selector = selector
+	}
+	return params, nil
 }
