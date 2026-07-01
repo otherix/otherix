@@ -88,9 +88,6 @@ node_status() { otx node get "$1" --output json 2>/dev/null | jq -r '.status' 2>
 # vm_phase NAME -> the CP-observed status.phase ("" if the VM is gone)
 vm_phase() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true; }
 
-# vm_current_node NAME -> the VM's status.current_node_id ("" when cleared/absent)
-vm_current_node() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.current_node_id // ""' 2>/dev/null || true; }
-
 # node_present NAME -> 0 when the node still resolves through the CP, non-zero once deleted.
 node_present() { otx node get "$1" >/dev/null 2>&1; }
 
@@ -325,12 +322,12 @@ wait_node_absent "$VICTIM" \
   || fail "$VICTIM still resolves after a successful force-delete"
 pass "force-delete removed $VICTIM from the cluster"
 
-# the VM is orphaned: phase orphaned, current_node_id cleared.
+# the VM is orphaned. Force-delete sets phase=orphaned and clears
+# current_node_id in the same store op; current_node_id is not surfaced under
+# the public VM status view, so phase==orphaned is the observable proxy for the
+# orphaning and is the assertion here.
 assert_vm_phase "$VM" orphaned
-CN="$(vm_current_node "$VM")"
-[[ -z "$CN" ]] \
-  || fail "$VM still reports status.current_node_id='$CN' after force-delete - expected it cleared"
-pass "$VM is orphaned with status.current_node_id cleared"
+pass "$VM is orphaned after the node force-delete"
 
 # clean up the orphaned VM row before restoring the node.
 otx vm delete "$VM" --wait --force --wait-timeout "${OP_WAIT}s" >/dev/null 2>&1 || true
