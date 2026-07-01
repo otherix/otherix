@@ -283,6 +283,40 @@ func TestProjectVMRoundTrips(t *testing.T) {
 	}
 }
 
+// TestProjectVMRoundTripsLabels guards that a labeled VM round-trips through
+// `vm get -o yaml | create -f`: ProjectVM emits spec.labels, and the re-parsed
+// create plan carries the same labels into the create request (the field load
+// balancers select backends by).
+func TestProjectVMRoundTripsLabels(t *testing.T) {
+	v := cpclient.VM{
+		Name:         "vm-labeled",
+		ImageURL:     "http://x/i.qcow2",
+		Architecture: "amd64",
+		VCPUs:        2,
+		MemoryMB:     1024,
+		Labels:       map[string]any{"app": "web", "tier": "frontend"},
+	}
+	out, err := manifest.ProjectVM(v)
+	if err != nil {
+		t.Fatalf("ProjectVM() error = %v", err)
+	}
+	docs, err := manifest.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-parse projected VM: %v\n%s", err, out)
+	}
+	plan, err := manifest.BuildCreatePlan(docs)
+	if err != nil {
+		t.Fatalf("projected VM is not apply-ready: %v", err)
+	}
+	if len(plan) != 1 || plan[0].VM == nil {
+		t.Fatalf("BuildCreatePlan = %+v, want one VM op", plan)
+	}
+	got := plan[0].VM.Labels
+	if got["app"] != "web" || got["tier"] != "frontend" || len(got) != 2 {
+		t.Errorf("round-tripped labels = %v, want {app:web, tier:frontend}", got)
+	}
+}
+
 // TestProjectVM_StatusAndSourceSnapshot guards that `vm get -o yaml`
 // surfaces the two pieces the server already returns but the projection
 // historically dropped: the system-reported status (top-level, k8s-style,

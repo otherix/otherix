@@ -98,6 +98,11 @@ type VMSpec struct {
 	// CloudInitDisabled the live VM view does not surface it, so it is
 	// manifest-input-expressible but not emitted by `get -o yaml`.
 	SSHIngressEnabled bool `yaml:"sshIngressEnabled"`
+	// Labels is the set of user-defined key/value tags stored on the VM. Load
+	// balancers select their backend VMs by matching these labels. Emitted by
+	// `get -o yaml` when non-empty so a labeled VM round-trips through
+	// `create -f`.
+	Labels map[string]string `yaml:"labels"`
 }
 
 // LoadBalancerSpec is the spec body for kind LoadBalancer. Both fields

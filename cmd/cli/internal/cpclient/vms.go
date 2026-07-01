@@ -89,6 +89,11 @@ type CreateVMRequest struct {
 	// exclusive with CloudInitDisabled. omitempty keeps the default-false
 	// case off the wire.
 	SSHIngressEnabled bool `json:"ssh_ingress_enabled,omitempty"`
+	// Labels is the optional set of user-defined key/value tags stored on the
+	// VM. Load balancers select their backend VMs by matching these labels, so
+	// a VM must be labeled at create to be selectable. omitempty keeps an empty
+	// map off the wire.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // VM mirrors the response shape internal/api/handlers/vms.toView

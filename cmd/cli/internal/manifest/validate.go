@@ -146,6 +146,7 @@ var vmSpecKeys = map[string]bool{
 	"diskGiB":         true, "vcpus": true, "memoryMB": true, "pool": true,
 	"network": true, "node": true, "userData": true, "networkConfig": true,
 	"cloudInitDisabled": true, "sshIngressEnabled": true,
+	"labels": true,
 }
 
 // DecodeVMSpec decodes and validates a VM document's spec. Exactly one

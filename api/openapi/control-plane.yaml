@@ -7669,6 +7669,14 @@ components:
             exclusive with `cloud_init_disabled`. Requires a guest image with
             OpenSSH 8.2+. When SSH ingress is disabled cluster-wide or no CA
             is provisioned, this is a no-op and a normal VM is created.
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            User-defined key/value tags stored on the VM. Load balancers
+            select their backend VMs by matching these labels, so a VM must
+            be labeled at create to be selectable. Keys must be non-empty;
+            values may be any string.
 
     VMUpdate:
       type: object

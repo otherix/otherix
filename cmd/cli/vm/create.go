@@ -34,6 +34,7 @@ const (
 	flagNetworkConfig    = "network-config"
 	flagCloudInitDisable = "no-cloud-init"
 	flagSSHIngress       = "ssh-ingress"
+	flagLabel            = "label"
 
 	defaultVCPUs    = 2
 	defaultMemoryMB = 2048
@@ -114,6 +115,7 @@ and the agent falls back to legacy SLIRP networking.`,
 		"explicitly disable cloud-init for this VM. Mutually exclusive with --user-data and --network-config.")
 	cmd.Flags().Bool(flagSSHIngress, false,
 		"opt this VM into SSH ingress (trusts the cluster SSH user-CA at create). Requires cloud-init; mutually exclusive with --no-cloud-init. No-op unless SSH ingress is enabled cluster-wide.")
+	cmd.Flags().StringToString(flagLabel, nil, "VM label key=value (repeatable); load balancers select VMs by label")
 	cmd.Flags().Bool(flagWait, false, "block until the VM reaches the running phase")
 	cmd.Flags().Duration(flagWaitTimeout, defaultWaitTO, "max time to wait when --wait is set")
 
@@ -148,6 +150,7 @@ type createFlags struct {
 	networkConfig     *string
 	cloudInitDisabled bool
 	sshIngress        bool
+	labels            map[string]string
 	wait              bool
 	timeout           time.Duration
 }
@@ -174,6 +177,9 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 		return f, err
 	}
 	if err = parseCloudInitFlags(cmd, &f); err != nil {
+		return f, err
+	}
+	if f.labels, err = cmd.Flags().GetStringToString(flagLabel); err != nil {
 		return f, err
 	}
 	if f.wait, err = cmd.Flags().GetBool(flagWait); err != nil {
@@ -343,6 +349,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		NetworkConfig:     f.networkConfig,
 		CloudInitDisabled: f.cloudInitDisabled,
 		SSHIngressEnabled: f.sshIngress,
+		Labels:            f.labels,
 	}
 	if f.fromSnapshot != "" {
 		// Snapshot-source mode: forward only the provenance; architecture /

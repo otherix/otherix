@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -116,6 +117,17 @@ func TestValidateCreateRequest(t *testing.T) {
 			req:  func() vmCreateRequest { r := base(); s := "node-1"; r.Node = &s; return r }(),
 			ok:   true,
 		},
+		{
+			name: "labels ok",
+			req:  func() vmCreateRequest { r := base(); r.Labels = map[string]string{"app": "web"}; return r }(),
+			ok:   true,
+		},
+		{
+			// A label key must be non-empty: an empty key cannot participate in
+			// a load-balancer selector and corrupts the stored label map.
+			name: "label empty key rejected",
+			req:  func() vmCreateRequest { r := base(); r.Labels = map[string]string{"": "web"}; return r }(),
+		},
 	}
 
 	for _, tc := range cases {
@@ -161,6 +173,99 @@ func TestValidateCreateRequestInvalidNameEnvelope(t *testing.T) {
 	}
 	if body.Error.Code != "validation_failed" {
 		t.Errorf("error.code = %q, want %q", body.Error.Code, "validation_failed")
+	}
+}
+
+// createCaptureStore satisfies the handler's Store interface for the
+// Create-path labels-persist test. It implements just the reads on the path to
+// CreateUnscheduledVM (firmware default, artifact-pool role check, disk-pool
+// lookup, cluster settings for the default-network fallback) and captures the
+// CreateVMParams the handler builds. CreateUnscheduledVM returns a sentinel
+// error so the handler short-circuits before renderVM (which needs the full
+// read-back surface) - the test asserts on the captured params, not the wire
+// response. Any other method panics via the embedded nil Store.
+type createCaptureStore struct {
+	Store
+	captured store.CreateVMParams
+}
+
+var errCreateCaptured = errors.New("captured")
+
+func (s *createCaptureStore) DefaultFirmwareForArchType(context.Context, store.CPUArch, store.FirmwareType) (store.Firmware, error) {
+	return store.Firmware{}, store.ErrNotFound
+}
+
+func (s *createCaptureStore) ArtifactPoolByName(context.Context, string) (store.ArtifactPool, error) {
+	return store.ArtifactPool{}, store.ErrNotFound
+}
+
+func (s *createCaptureStore) StoragePoolsByName(context.Context, string) ([]store.StoragePool, error) {
+	return nil, nil
+}
+
+func (s *createCaptureStore) ClusterSettings(context.Context) (store.ClusterSetting, error) {
+	return store.ClusterSetting{}, nil
+}
+
+func (s *createCaptureStore) CreateUnscheduledVM(_ context.Context, p store.CreateVMParams) (uuid.UUID, error) {
+	s.captured = p
+	return uuid.Nil, errCreateCaptured
+}
+
+// TestCreateLabelsPersisted drives the real Create entry point with a labels
+// map and asserts the handler marshals it into CreateVMParams.Labels verbatim,
+// rather than the historical hardcoded `{}`. This exercises the
+// decode -> validate -> marshal -> persist seam.
+func TestCreateLabelsPersisted(t *testing.T) {
+	t.Parallel()
+
+	st := &createCaptureStore{}
+	h := &Handler{store: st, log: discardLog()}
+
+	body := `{"name":"demo","image_url":"https://example.test/img.qcow2",` +
+		`"arch":"amd64","pool":"default","vcpus":2,"memory_mb":2048,` +
+		`"labels":{"app":"web"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vms", strings.NewReader(body))
+	req = req.WithContext(auth.WithUser(req.Context(),
+		&auth.User{ID: uuid.New(), Role: auth.RoleAdmin, Type: auth.TypeJWT}))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if st.captured.Labels == nil {
+		t.Fatalf("CreateUnscheduledVM was not reached (labels not captured); status=%d body=%s",
+			rec.Code, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(st.captured.Labels, &got); err != nil {
+		t.Fatalf("captured labels are not valid JSON: %v (%q)", err, st.captured.Labels)
+	}
+	want := map[string]string{"app": "web"}
+	if len(got) != len(want) || got["app"] != want["app"] {
+		t.Errorf("captured labels = %v, want %v", got, want)
+	}
+}
+
+// TestCreateNoLabelsDefaultsEmpty pins the regression net: when the request
+// carries no labels, the persisted labels stay the empty JSON object (the
+// historical default), not null or a dropped column.
+func TestCreateNoLabelsDefaultsEmpty(t *testing.T) {
+	t.Parallel()
+
+	st := &createCaptureStore{}
+	h := &Handler{store: st, log: discardLog()}
+
+	body := `{"name":"demo","image_url":"https://example.test/img.qcow2",` +
+		`"arch":"amd64","pool":"default","vcpus":2,"memory_mb":2048}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vms", strings.NewReader(body))
+	req = req.WithContext(auth.WithUser(req.Context(),
+		&auth.User{ID: uuid.New(), Role: auth.RoleAdmin, Type: auth.TypeJWT}))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if got := string(st.captured.Labels); got != `{}` {
+		t.Errorf("captured labels = %q, want %q (default empty object)", got, `{}`)
 	}
 }
 

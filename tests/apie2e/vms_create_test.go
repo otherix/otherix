@@ -234,6 +234,52 @@ func TestVMCreate_ImagePullPolicy(t *testing.T) {
 	}
 }
 
+// TestVMCreate_Labels locks the labels surface through the real HTTP edge and
+// the real store: a create carrying labels persists them, `vm get` echoes them
+// back (the field load balancers select backends by), and an empty label key
+// is rejected with 400 validation_failed.
+func TestVMCreate_Labels(t *testing.T) {
+	h := newE2E(t)
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+	poolName := schedulableFixture(t, h, adminID)
+
+	// Labeled create -> 201, and the labels round-trip through vm get.
+	body := vmCreateBody(map[string]any{
+		"pool":   poolName,
+		"labels": map[string]any{"app": "web", "tier": "frontend"},
+	})
+	name := body["name"].(string)
+	resp := h.post(t, "/v1/vms", body, admin)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("labeled create status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = h.get(t, "/v1/vms/"+name, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get labeled vm status = %d, want 200", resp.StatusCode)
+	}
+	var view struct {
+		Labels map[string]string `json:"labels"`
+	}
+	decodeJSON(t, resp, &view)
+	if view.Labels["app"] != "web" || view.Labels["tier"] != "frontend" || len(view.Labels) != 2 {
+		t.Errorf("labels = %v, want {app:web, tier:frontend}", view.Labels)
+	}
+
+	// Empty label key -> 400 validation_failed.
+	badBody := vmCreateBody(map[string]any{"pool": poolName, "labels": map[string]any{"": "web"}})
+	resp = h.post(t, "/v1/vms", badBody, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty-key create status = %d, want 400", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "validation_failed" {
+		t.Errorf("empty-key code = %q, want validation_failed", env.Error.Code)
+	}
+}
+
 // TestVMCreate_ArtifactPoolRejected locks role separation: vm create against an
 // artifact pool name returns 409 pool_role_invalid (artifact pools cannot host
 // VM disks).
