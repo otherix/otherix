@@ -7,11 +7,14 @@
 package netfabric
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // EnsureUnicastGateway pins mac as the bridge link's hardware address and
@@ -46,6 +49,21 @@ func (f *linuxFabric) EnsureUnicastGateway(bridge string, addr netip.Prefix, mac
 	}
 	if err := netlink.AddrReplace(link, a); err != nil {
 		return fmt.Errorf("netfabric: ensure unicast gateway on %s: %v", bridge, err)
+	}
+
+	// Claim the bridge exclusively for unicast: strip any leftover shared anycast
+	// gateway address. A node repurposed into a gateway can carry the anycast
+	// address from its earlier hypervisor-agent life; left in place, the kernel
+	// may pick it as the source for guest-subnet traffic, and the guest's reply to
+	// the anycast address is answered by its own local node rather than returning
+	// to this gateway, so every dial to a guest times out.
+	anycast, err := netlink.ParseAddr(netip.PrefixFrom(OverlayGatewayAddr, OverlayGatewayAddr.BitLen()).String())
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure unicast gateway on %s: parse anycast: %v", bridge, err)
+	}
+	if err := netlink.AddrDel(link, anycast); err != nil &&
+		!errors.Is(err, unix.EADDRNOTAVAIL) && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("netfabric: ensure unicast gateway on %s: remove anycast: %v", bridge, err)
 	}
 	return nil
 }
