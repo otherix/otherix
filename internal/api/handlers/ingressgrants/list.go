@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrants
+package ingressgrants
 
 import (
 	"net/http"
@@ -12,7 +12,7 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// List implements GET /v1/ssh-grants. Required permission: vm:ssh-grant.
+// List implements GET /v1/ingress-grants. Required permission: vm:ingress-grant.
 // Cursor pagination per ADR 0019. A developer (scope=own) sees only the
 // grants they created; admin/operator (scope=any) see all. The stored
 // token hash is never surfaced.
@@ -33,14 +33,14 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ownerScoped := auth.ScopeFor(caller.Role, auth.PermVMSSHGrant) == auth.ScopeOwn
+	ownerScoped := auth.ScopeFor(caller.Role, auth.PermVMIngressGrant) == auth.ScopeOwn
 
 	// Owner-scoped callers may have their own grants thinned out of a
 	// page by the visibility filter below, so fetch in bounded batches
 	// and keep advancing the store cursor until the page is full or the
 	// collection is exhausted. Any-scope callers fill a page in one pass.
 	limitN := int(limit)
-	params := store.ListSSHGrantsParams{LimitCount: limit + 1}
+	params := store.ListIngressGrantsParams{LimitCount: limit + 1}
 	if cur != nil {
 		params.CursorCreatedAt = &cur.CreatedAt
 		params.CursorID = &cur.ID
@@ -49,10 +49,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	views := make([]grantView, 0, limitN)
 	var nextCursor *string
 	for {
-		rows, err := h.store.ListSSHGrants(r.Context(), params)
+		rows, err := h.store.ListIngressGrants(r.Context(), params)
 		if err != nil {
 			response.WriteError(w, r, http.StatusInternalServerError,
-				response.CodeInternal, "list ssh grants", nil)
+				response.CodeInternal, "list ingress grants", nil)
 			return
 		}
 		if len(rows) == 0 {

@@ -110,11 +110,11 @@ type Store interface {
 	// lifecycle outranks "I want it on another node".
 	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error)
 	CancelMigration(ctx context.Context, id uuid.UUID, reason string) (store.Migration, error)
-	// SSHGrantByTokenHash resolves an SSH-grant by its token hash for the
+	// IngressGrantByTokenHash resolves an ingress-grant by its token hash for the
 	// cert-mint dual-auth path; returns store.ErrNotFound when absent. A
 	// revoked grant is still returned so the handler can reject uniformly
 	// rather than leak revocation as a distinct response.
-	SSHGrantByTokenHash(ctx context.Context, hash []byte) (store.SSHGrant, error)
+	IngressGrantByTokenHash(ctx context.Context, hash []byte) (store.IngressGrant, error)
 	// ActiveSSHUserCA returns the cluster SSH user-CA the cert-mint endpoint
 	// signs short-lived guest user-certs with; store.ErrNotFound when no
 	// SSH user-CA has been provisioned.

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrants
+package ingressgrants
 
 import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,21 +25,23 @@ const grantNameMaxLength = 200
 // createVM is one VM entry in the create / add-vm request body.
 type createVM struct {
 	VMName string `json:"vm_name"`
+	Ports  []int  `json:"ports"`
 	Login  string `json:"login"`
 }
 
-// createRequest is the POST /v1/ssh-grants body. ttl is an optional Go
+// createRequest is the POST /v1/ingress-grants body. ttl is an optional Go
 // duration string (e.g. "168h"); omitted/empty means the grant never
 // expires (ExpiresAt nil).
 type createRequest struct {
 	Name           string     `json:"name"`
 	RecipientLabel string     `json:"recipient_label"`
 	VMs            []createVM `json:"vms"`
+	SourceIP       string     `json:"source_ip"`
 	TTL            string     `json:"ttl"`
 }
 
-// Create implements POST /v1/ssh-grants. Required permission:
-// vm:ssh-grant. For a developer (scope=own) every referenced VM must be
+// Create implements POST /v1/ingress-grants. Required permission:
+// vm:ingress-grant. For a developer (scope=own) every referenced VM must be
 // owned by the caller; a visible-but-unowned VM yields 403. Returns 201
 // with the grant plus the one-time plaintext token.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -77,33 +80,41 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceIP, err := validateSourceIP(req.SourceIP)
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+
 	if !h.authorizeVMs(w, r, caller, vms) {
 		return
 	}
 
-	plaintext, hash, err := auth.GenerateGrantToken()
+	plaintext, hash, err := auth.GenerateIngressGrantToken()
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "generate grant token", nil)
 		return
 	}
 
-	grant, err := h.store.CreateSSHGrant(r.Context(), store.CreateSSHGrantParams{
+	grant, err := h.store.CreateIngressGrant(r.Context(), store.CreateIngressGrantParams{
 		Name:           req.Name,
 		CreatedBy:      caller.ID,
 		RecipientLabel: strings.TrimSpace(req.RecipientLabel),
 		TokenHash:      hash,
 		VMs:            vms,
+		SourceIP:       sourceIP,
 		ExpiresAt:      expiresAt,
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrSSHGrantNameExists) {
+		if errors.Is(err, store.ErrIngressGrantNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict, "ssh grant name already in use", nil)
+				response.CodeConflict, "ingress grant name already in use", nil)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "persist ssh grant", nil)
+			response.CodeInternal, "persist ingress grant", nil)
 		return
 	}
 
@@ -114,11 +125,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeVMs resolves every referenced VM by name and enforces the
-// caller's vm:ssh-grant scope against each VM's owner. A missing VM
+// caller's vm:ingress-grant scope against each VM's owner. A missing VM
 // yields 404 (the VM name is caller-supplied, not secret); a visible VM
 // the caller may not grant on yields 403. It returns false and writes the
 // response on the first failure.
-func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *auth.User, vms []store.SSHGrantVM) bool {
+func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *auth.User, vms []store.IngressGrantVM) bool {
 	for _, vm := range vms {
 		row, err := h.store.VMByName(r.Context(), vm.VMName)
 		if err != nil {
@@ -132,11 +143,11 @@ func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *a
 			return false
 		}
 		owner := row.OwnerID
-		if err := auth.CheckOwnership(caller, &owner, auth.PermVMSSHGrant); err != nil {
+		if err := auth.CheckOwnership(caller, &owner, auth.PermVMIngressGrant); err != nil {
 			if errors.Is(err, auth.ErrPermissionDenied) {
 				response.WriteError(w, r, http.StatusForbidden,
 					response.CodePermissionDenied,
-					"vm:ssh-grant on this vm is limited to its owner",
+					"vm:ingress-grant on this vm is limited to its owner",
 					map[string]any{"vm_name": vm.VMName})
 				return false
 			}
@@ -164,10 +175,11 @@ func validateGrantName(name string) error {
 }
 
 // validateVMs trims and validates the VM-scope entries, rejecting an empty
-// vm_name or login and a duplicate vm_name. It returns the normalised
-// store entries.
-func validateVMs(in []createVM) ([]store.SSHGrantVM, error) {
-	out := make([]store.SSHGrantVM, 0, len(in))
+// vm_name, an empty or invalid port set, a duplicate vm_name, and a missing
+// login only when the port set includes the SSH port (22). It returns the
+// normalised store entries.
+func validateVMs(in []createVM) ([]store.IngressGrantVM, error) {
+	out := make([]store.IngressGrantVM, 0, len(in))
 	seen := make(map[string]struct{}, len(in))
 	for _, vm := range in {
 		entry, err := validateVM(vm)
@@ -183,24 +195,67 @@ func validateVMs(in []createVM) ([]store.SSHGrantVM, error) {
 	return out, nil
 }
 
-// validateVM trims and validates a single VM-scope entry. The login must be
-// a safe SSH principal: it is signed into a guest SSH certificate and printed
-// in an ssh <login>@host command, so it is held to the same charset/length
-// rule as the cert-mint path (validation.ValidateSSHLogin).
-func validateVM(vm createVM) (store.SSHGrantVM, error) {
+// validateVM trims and validates a single VM-scope entry. A non-empty port set
+// is required and every port must be in 1..65535 with no duplicate. When set,
+// the login must be a safe SSH principal: it is signed into a guest SSH
+// certificate and printed in an ssh <login>@host command, so it is held to the
+// same charset/length rule as the cert-mint path (validation.ValidateSSHLogin).
+// A login is required only when the port set includes the SSH port (22): the
+// cert-mint path signs that pinned login into the guest cert, and an empty
+// principal is rejected by every sshd. A non-SSH port set (e.g. db:5432 only)
+// may omit the login.
+func validateVM(vm createVM) (store.IngressGrantVM, error) {
 	name := strings.TrimSpace(vm.VMName)
+	if name == "" {
+		return store.IngressGrantVM{}, errors.New("vm_name is required")
+	}
+	if len(vm.Ports) == 0 {
+		return store.IngressGrantVM{}, errors.New("at least one port is required for " + name)
+	}
+	seenPort := make(map[int]struct{}, len(vm.Ports))
+	for _, p := range vm.Ports {
+		if p < 1 || p > 65535 {
+			return store.IngressGrantVM{}, errors.New("port must be in 1..65535")
+		}
+		if _, dup := seenPort[p]; dup {
+			return store.IngressGrantVM{}, errors.New("duplicate port for " + name)
+		}
+		seenPort[p] = struct{}{}
+	}
 	login := strings.TrimSpace(vm.Login)
-	switch {
-	case name == "":
-		return store.SSHGrantVM{}, errors.New("vm_name is required")
-	case login == "":
-		return store.SSHGrantVM{}, errors.New("login is required")
+	if login != "" {
+		sanitized, err := validation.ValidateSSHLogin(login)
+		if err != nil {
+			return store.IngressGrantVM{}, err
+		}
+		login = sanitized
 	}
-	sanitized, err := validation.ValidateSSHLogin(login)
-	if err != nil {
-		return store.SSHGrantVM{}, err
+	if login == "" {
+		for _, p := range vm.Ports {
+			if p == 22 {
+				return store.IngressGrantVM{}, errors.New("login is required when the SSH port (22) is granted for " + name)
+			}
+		}
 	}
-	return store.SSHGrantVM{VMName: name, Login: sanitized}, nil
+	return store.IngressGrantVM{VMName: name, Ports: vm.Ports, Login: login}, nil
+}
+
+// validateSourceIP checks an optional pin is a CIDR or a bare IP. Empty ->
+// nil (no pin). It returns the canonicalised string to store.
+func validateSourceIP(s string) (*string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	if prefix, err := netip.ParsePrefix(s); err == nil {
+		out := prefix.String()
+		return &out, nil
+	}
+	if addr, err := netip.ParseAddr(s); err == nil {
+		out := addr.String()
+		return &out, nil
+	}
+	return nil, errors.New("source_ip must be an IP or CIDR")
 }
 
 // parseTTL turns the optional duration string into an absolute expiry. An

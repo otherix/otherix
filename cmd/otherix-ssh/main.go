@@ -4,10 +4,9 @@
 // Command otherix-ssh is the thin SSH-only connector an external person
 // installs to reach a granted VM through the Otherix control plane. It needs
 // no Otherix account and no management CLI: an operator runs `otherix
-// ssh-grant create` and sends back a single paste-able bundle, the external
+// ingress-grant create` and sends back a single paste-able bundle, the external
 // runs `otherix-ssh add <bundle>` once, and from then on `ssh <vm>.<suffix>`
-// tunnels straight to the guest sshd over the control plane's ssh-stream
-// relay.
+// tunnels straight to the guest sshd over the control plane's relay.
 //
 // Two subcommands:
 //
@@ -38,7 +37,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/otherix/otherix/cmd/cli/sshgrant"
+	"github.com/otherix/otherix/cmd/cli/ingressgrant"
 	"github.com/otherix/otherix/cmd/internal/sshconn"
 )
 
@@ -149,7 +148,7 @@ func newProxyCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "proxy <vm> <port>",
 		Short: "Relay primitive used as an ssh ProxyCommand (not run directly).",
-		Long: `Splices stdin/stdout to a VM's control-plane ssh-stream relay.
+		Long: `Splices stdin/stdout to a VM's control-plane relay.
 
 This is the body of an ssh ProxyCommand wired up by 'otherix-ssh add'. ssh
 passes the full hostname as <vm> (e.g. web01.otherix); the stored cluster
@@ -176,7 +175,7 @@ func runAdd(cmd *cobra.Command, bundleArg, suffix string) error {
 	if err != nil {
 		return err
 	}
-	bundle, err := sshgrant.ParseBundle(raw)
+	bundle, err := ingressgrant.ParseBundle(raw)
 	if err != nil {
 		return fmt.Errorf("parse bundle: %v", err)
 	}
@@ -420,7 +419,7 @@ func includeAlreadyPresent(cfg, includeLine string) bool {
 // `ssh <vm>.<suffix>` form. When the Include was not auto-added (already
 // present, or a prior write the user must apply), it prints the exact line so
 // the user can wire it manually. The grant token is never printed.
-func printConfirmation(w io.Writer, bundle sshgrant.Bundle, suffix, managedPath string, wired bool) {
+func printConfirmation(w io.Writer, bundle ingressgrant.Bundle, suffix, managedPath string, wired bool) {
 	_, _ = fmt.Fprintf(w, "Imported grant for %s\n", bundle.ServerURL)
 	if len(bundle.VMs) > 0 {
 		_, _ = fmt.Fprintln(w, "You can now connect to:")

@@ -7,7 +7,7 @@
 // resolves the active cluster credential, mints a short-lived guest
 // certificate via the shared sshconn connector, and execs the system
 // `ssh` client with a ProxyCommand that tunnels the SSH bytes through the
-// Control Plane's ssh-stream relay. `otherix ssh proxy <vm> <port>` is the
+// Control Plane's relay. `otherix ssh proxy <vm> <port>` is the
 // ProxyCommand primitive that `ssh` invokes under the hood; it splices its
 // own stdin/stdout to the relay and is not normally run by hand.
 //
@@ -66,7 +66,7 @@ func NewCommand() *cobra.Command {
 
 The command mints a short-lived guest certificate from the control plane,
 then execs the system 'ssh' client with a ProxyCommand that tunnels the
-SSH connection through the control plane's ssh-stream relay. No inbound
+SSH connection through the control plane's relay. No inbound
 network path to the guest is required - the relay rides the same control
 plane endpoint and credential the rest of the CLI uses.
 
@@ -95,7 +95,7 @@ func newProxyCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "proxy <vm-name> <port>",
 		Short: "Relay primitive used as an ssh ProxyCommand (not run directly).",
-		Long: `Splices stdin/stdout to a VM's control-plane ssh-stream relay.
+		Long: `Splices stdin/stdout to a VM's control-plane relay.
 
 This is the body of an ssh ProxyCommand and is normally invoked by the
 system ssh client on behalf of 'otherix ssh <vm>', never run by hand. The

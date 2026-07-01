@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant
+package ingressgrant
 
 import (
 	"encoding/json"
@@ -15,12 +15,12 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// newListCommand returns `otherix ssh-grant list`.
+// newListCommand returns `otherix ingress-grant list`.
 func newListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List SSH grants.",
-		Long: `Cursor-paginated list of SSH grants. A developer sees only the grants
+		Short: "List ingress grants.",
+		Long: `Cursor-paginated list of ingress grants. A developer sees only the grants
 they created; admin and operator see all. The stored token is never surfaced.`,
 		RunE: runList,
 	}
@@ -42,7 +42,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	grants, err := c.ListSSHGrants(cmd.Context(), cpclient.ListSSHGrantsParams{
+	grants, err := c.ListIngressGrants(cmd.Context(), cpclient.ListIngressGrantsParams{
 		Limit:  limit,
 		Cursor: cursor,
 	})
@@ -70,7 +70,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 }
 
 // printGrantTable renders the grant list as an aligned table.
-func printGrantTable(cmd *cobra.Command, grants cpclient.SSHGrantList) {
+func printGrantTable(cmd *cobra.Command, grants cpclient.IngressGrantList) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tRECIPIENT\tVMS\tSTATUS\tEXPIRES")
 	for _, g := range grants.Data {
@@ -83,16 +83,18 @@ func printGrantTable(cmd *cobra.Command, grants cpclient.SSHGrantList) {
 	}
 }
 
-// vmSummary renders the grant's VM scope as a compact "vm:login,..." string.
-func vmSummary(vms []cpclient.SSHGrantVM) string {
+// vmSummary renders the grant's VM scope as a compact "vm:ports" summary,
+// space-joined across VMs (ports within a VM are comma-joined, so VMs cannot
+// share the comma separator).
+func vmSummary(vms []cpclient.IngressGrantVM) string {
 	if len(vms) == 0 {
 		return "-"
 	}
 	parts := make([]string, 0, len(vms))
 	for _, vm := range vms {
-		parts = append(parts, vm.VMName+":"+vm.Login)
+		parts = append(parts, vm.VMName+":"+portsDisplay(vm.Ports))
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, " ")
 }
 
 // dash renders an empty string as "-" for table cells.

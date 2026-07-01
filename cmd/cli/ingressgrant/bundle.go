@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant
+package ingressgrant
 
 import (
 	"encoding/base64"
@@ -14,14 +14,14 @@ import (
 // BundleVersion is the schema version stamped into every emitted bundle. The
 // external connector (`otherix-ssh add`, the consumer of this artifact)
 // rejects an unrecognised version rather than mis-parsing a future shape.
-const BundleVersion = "otherix-ssh-grant/v1"
+const BundleVersion = "otherix-ingress-grant/v1"
 
 // bundleBlobPrefix wraps the base64url-encoded bundle JSON into a single
 // paste-able token. The operator copies one opaque line and sends it to the
 // external person, who feeds it to `otherix-ssh add`. The prefix makes the
 // blob self-identifying and lets the connector distinguish it from a raw JSON
 // document on stdin.
-const bundleBlobPrefix = "otx_sshbundle_"
+const bundleBlobPrefix = "otx_ingressbundle_"
 
 // Trust discriminator values. They map one-to-one onto the connector's
 // sshconn.Config TLS-trust modes so the external reaches the same Control
@@ -34,7 +34,7 @@ const bundleBlobPrefix = "otx_sshbundle_"
 //     (sshconn.Config.CAFingerprint); the value is "pin:<64 hex chars>".
 //   - TrustInsecure -> disable verification (sshconn.Config.InsecureSkipTLSVerify).
 //
-// `ssh-grant create` derives the value from the operator's OWN resolved CLI
+// `ingress-grant create` derives the value from the operator's OWN resolved CLI
 // trust, so the bundle carries exactly what the external needs to trust the
 // same CP. The pin form is never emitted by create (the operator config
 // carries a CA bundle, not a leaf fingerprint) but is a valid value the
@@ -46,18 +46,19 @@ const (
 	TrustPinPrefix = "pin:"
 )
 
-// BundleVM is one granted {vm, login} pair in a bundle.
+// BundleVM is one granted {vm, ports, login} entry in a bundle.
 type BundleVM struct {
 	VM    string `json:"vm"`
+	Ports []int  `json:"ports"`
 	Login string `json:"login"`
 }
 
-// Bundle is the shareable artifact `ssh-grant create` prints and the external
+// Bundle is the shareable artifact `ingress-grant create` prints and the external
 // connector `otherix-ssh add` consumes. It is a stable, versioned JSON
 // document carrying everything the connector needs: the Control Plane URL, a
 // TLS-trust discriminator (+ the CA bundle when trust is ca-bundle), the
 // one-time grant token, and the granted {vm, login} set. The encoded
-// single-line form is `otx_sshbundle_<base64url(compact JSON)>`.
+// single-line form is `otx_ingressbundle_<base64url(compact JSON)>`.
 type Bundle struct {
 	Version   string     `json:"version"`
 	ServerURL string     `json:"server_url"`
@@ -68,7 +69,7 @@ type Bundle struct {
 }
 
 // EncodeBundle renders b as the single-line paste-able blob
-// `otx_sshbundle_<base64url(compact JSON)>`.
+// `otx_ingressbundle_<base64url(compact JSON)>`.
 func EncodeBundle(b Bundle) (string, error) {
 	raw, err := json.Marshal(b)
 	if err != nil {
@@ -78,7 +79,7 @@ func EncodeBundle(b Bundle) (string, error) {
 }
 
 // ParseBundle decodes either the single-line blob form
-// (`otx_sshbundle_<base64url>`) or a raw JSON bundle document, validates the
+// (`otx_ingressbundle_<base64url>`) or a raw JSON bundle document, validates the
 // version and the required fields, and returns the Bundle. The connector
 // `otherix-ssh add` calls this on the operator-supplied artifact.
 func ParseBundle(s string) (Bundle, error) {

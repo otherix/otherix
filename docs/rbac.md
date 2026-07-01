@@ -69,14 +69,14 @@ Every entry is scoped against `vms.owner_id`.
 | `vm:revert`  | any   | any      | own       | —      |
 | `vm:migrate` | any   | any      | —         | —      |
 | `vm:ssh`     | any   | any      | own       | —      |
-| `vm:ssh-grant` | any | any      | own       | —      |
+| `vm:ingress-grant` | any | any      | own       | —      |
 | `vm:connect` | any   | any      | own       | —      |
 
 `vm:lifecycle` covers start, stop, poweroff, reboot, reset, pause,
 resume — every transition between desired phases.
 
-`vm:ssh-grant` gates the operator-facing grant CRUD surface
-(`/v1/ssh-grants`): minting, listing, inspecting, editing the VM set of,
+`vm:ingress-grant` gates the operator-facing grant CRUD surface
+(`/v1/ingress-grants`): minting, listing, inspecting, editing the VM set of,
 and revoking the per-person SSH access grants an external user presents
 at connect time. For `developer` it is `own`, checked against each
 referenced VM's `owner_id` on create / add-vm, and against the grant's

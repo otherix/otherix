@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package sshgrant hosts the `otherix ssh-grant` cobra subcommand group over
-// the Control Plane's /v1/ssh-grants surface. An SSH grant is a per-person
+// Package ingressgrant hosts the `otherix ingress-grant` cobra subcommand group over
+// the Control Plane's /v1/ingress-grants surface. An ingress grant is a per-person
 // access credential an external user (one without a CLI account) presents to
 // reach a fixed set of VMs over the control-plane SSH relay.
 //
@@ -11,16 +11,18 @@
 // operator hands to the external person; `list` / `get` inspect grants; `add-vm`
 // / `remove-vm` adjust a grant's mutable VM scope; `revoke` disables it.
 //
-// The whole surface is gated by vm:ssh-grant (admin/operator any, developer
+// The whole surface is gated by vm:ingress-grant (admin/operator any, developer
 // own, viewer none). The plaintext grant token is surfaced exactly once, in
 // the create bundle, and is never accepted as a flag or argument.
-package sshgrant
+package ingressgrant
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -31,9 +33,10 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// Flag names shared across the ssh-grant subcommands.
+// Flag names shared across the ingress-grant subcommands.
 const (
 	flagVM        = "vm"
+	flagSourceIP  = "source-ip"
 	flagLogin     = "login"
 	flagTTL       = "ttl"
 	flagUser      = "user"
@@ -50,13 +53,13 @@ const defaultLogin = "root"
 // defaultListLimit is the page size `list` requests when --limit is unset.
 const defaultListLimit = 20
 
-// NewCommand returns the `otherix ssh-grant` subcommand group, ready to be
+// NewCommand returns the `otherix ingress-grant` subcommand group, ready to be
 // registered onto the root cobra tree by main.
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "ssh-grant",
+		Use:   "ingress-grant",
 		Short: "Manage SSH access grants for external users.",
-		Long: `ssh-grant manages per-person SSH access grants. A grant lets an
+		Long: `ingress-grant manages per-person SSH access grants. A grant lets an
 external user - one without a CLI account - reach a fixed set of VMs over the
 control-plane SSH relay using a single shareable token.
 
@@ -65,7 +68,7 @@ one-time grant token, and the granted vm:login set) to hand to the external
 person; they import it with 'otherix-ssh add'. Manage a grant's VM scope with
 'add-vm' / 'remove-vm' and disable it with 'revoke'.
 
-The whole surface is gated by vm:ssh-grant. The plaintext grant token is shown
+The whole surface is gated by vm:ingress-grant. The plaintext grant token is shown
 exactly once, in the create bundle, and is never a flag or argument.`,
 	}
 	cmd.AddCommand(newCreateCommand())
@@ -109,38 +112,71 @@ func outputFormat(cmd *cobra.Command, defaultFormat string, extra ...string) (st
 	return "", fmt.Errorf("--%s: unknown format %q (%s)", flagOutput, raw, strings.Join(allowed, ", "))
 }
 
-// parseVMScope turns a --vm comma list plus the --login default into the VM
-// scope entries the create request carries. Each entry may inline its own
-// login via "name=login"; otherwise the default login applies. Blank entries
-// are skipped; a duplicate VM name is an error (the server would reject it too,
-// but a clean client-side message is friendlier).
-func parseVMScope(vmList, login string) ([]cpclient.SSHGrantVM, error) {
-	login = effectiveLogin(login)
-	var out []cpclient.SSHGrantVM
+// parseVMScope turns the repeated --vm entries plus the --login default into
+// the VM scope entries the create request carries. Each entry is
+// "host:port[,port...]" (e.g. "web:22", "db:5432,8080"); every VM takes the
+// default login. Blank entries are skipped. A missing ":port", an empty port
+// list, a non-integer or out-of-range port, a duplicate port within an entry,
+// or a duplicate VM name across entries is a client-side error - the server
+// validates authoritatively, but a clean local message is friendlier.
+func parseVMScope(entries []string, defaultLogin string) ([]cpclient.IngressGrantVM, error) {
+	login := effectiveLogin(defaultLogin)
+	var out []cpclient.IngressGrantVM
 	seen := make(map[string]struct{})
-	for _, raw := range strings.Split(vmList, ",") {
-		name := strings.TrimSpace(raw)
-		if name == "" {
+	for _, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
 			continue
 		}
-		entryLogin := login
-		if k, v, ok := strings.Cut(name, "="); ok {
-			name = strings.TrimSpace(k)
-			entryLogin = effectiveLogin(strings.TrimSpace(v))
-			if name == "" {
-				return nil, fmt.Errorf("invalid --%s entry %q: empty vm name", flagVM, raw)
-			}
+		host, portList, ok := strings.Cut(entry, ":")
+		host = strings.TrimSpace(host)
+		if !ok {
+			return nil, fmt.Errorf("invalid --%s entry %q: expected host:port[,port...]", flagVM, raw)
 		}
-		if _, dup := seen[name]; dup {
-			return nil, fmt.Errorf("duplicate vm in --%s: %q", flagVM, name)
+		if host == "" {
+			return nil, fmt.Errorf("invalid --%s entry %q: empty vm name", flagVM, raw)
 		}
-		seen[name] = struct{}{}
-		out = append(out, cpclient.SSHGrantVM{VMName: name, Login: entryLogin})
+		ports, err := parsePorts(portList)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --%s entry %q: %v", flagVM, raw, err)
+		}
+		if _, dup := seen[host]; dup {
+			return nil, fmt.Errorf("duplicate vm in --%s: %q", flagVM, host)
+		}
+		seen[host] = struct{}{}
+		out = append(out, cpclient.IngressGrantVM{VMName: host, Ports: ports, Login: login})
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("at least one VM is required: pass --%s web01,web02", flagVM)
+		return nil, fmt.Errorf("at least one VM is required: pass --%s host:port", flagVM)
 	}
 	return out, nil
+}
+
+// parsePorts parses the "port[,port...]" tail of a --vm entry into a
+// deduplicated slice of 1..65535 TCP ports, in the order given.
+func parsePorts(list string) ([]int, error) {
+	fields := strings.Split(list, ",")
+	ports := make([]int, 0, len(fields))
+	seen := make(map[int]struct{})
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			return nil, errors.New("empty port")
+		}
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			return nil, fmt.Errorf("invalid port %q", f)
+		}
+		if n < 1 || n > 65535 {
+			return nil, fmt.Errorf("port %d out of range 1-65535", n)
+		}
+		if _, dup := seen[n]; dup {
+			return nil, fmt.Errorf("duplicate port %d", n)
+		}
+		seen[n] = struct{}{}
+		ports = append(ports, n)
+	}
+	return ports, nil
 }
 
 // effectiveLogin returns login, defaulting blank/whitespace to defaultLogin.
@@ -155,7 +191,7 @@ func effectiveLogin(login string) string {
 // a compact identity block. raw is the server's verbatim by-id JSON when
 // available (preserves absent-vs-null on the json path); pass nil to marshal
 // the typed value instead.
-func renderGrant(cmd *cobra.Command, g cpclient.SSHGrant, raw json.RawMessage, format string) error {
+func renderGrant(cmd *cobra.Command, g cpclient.IngressGrant, raw json.RawMessage, format string) error {
 	switch format {
 	case "json":
 		if len(raw) > 0 {
@@ -183,7 +219,7 @@ func renderGrant(cmd *cobra.Command, g cpclient.SSHGrant, raw json.RawMessage, f
 }
 
 // printGrantText renders the human-readable single-grant block.
-func printGrantText(cmd *cobra.Command, g cpclient.SSHGrant) {
+func printGrantText(cmd *cobra.Command, g cpclient.IngressGrant) {
 	printf(cmd, "id:         %s\n", g.ID)
 	printf(cmd, "name:       %s\n", g.Name)
 	if g.RecipientLabel != "" {
@@ -193,12 +229,25 @@ func printGrantText(cmd *cobra.Command, g cpclient.SSHGrant) {
 	printf(cmd, "expires_at: %s\n", derefOr(g.ExpiresAt, "never"))
 	printf(cmd, "vms:\n")
 	for _, vm := range g.VMs {
-		printf(cmd, "  - %s (login %s)\n", vm.VMName, vm.Login)
+		printf(cmd, "  - %s ports %s (login %s)\n", vm.VMName, portsDisplay(vm.Ports), vm.Login)
 	}
 }
 
+// portsDisplay renders a VM's authorized ports as a comma-separated list, or
+// "-" when the set is empty.
+func portsDisplay(ports []int) string {
+	if len(ports) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return strings.Join(parts, ",")
+}
+
 // grantStatus derives a display status: revoked beats active.
-func grantStatus(g cpclient.SSHGrant) string {
+func grantStatus(g cpclient.IngressGrant) string {
 	if g.Revoked {
 		return "revoked"
 	}

@@ -63,12 +63,12 @@ tags:
       Live and offline VM migrations. Initiated via
       `POST /v1/vms/{id}/migrate`; the resulting migration is addressable
       as `/v1/migrations/{id}` for status polling and cancellation.
-  - name: ssh-grants
+  - name: ingress-grants
     description: |
       Revocable, per-person SSH access grants an external SSH-only user
       presents at connect time. A grant is a top-level resource spanning
       one or more VMs (each pinned to a guest login). The whole surface
-      is gated by `vm:ssh-grant`. The grant token is returned exactly
+      is gated by `vm:ingress-grant`. The grant token is returned exactly
       once on creation; the server stores only its hash.
   - name: tasks
     description: Async operations (scans, imports, clones, migrations).
@@ -1913,13 +1913,13 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/ssh-grants:
+  /v1/ingress-grants:
     get:
-      operationId: sshGrants.list
-      tags: [ssh-grants]
+      operationId: ingressGrants.list
+      tags: [ingress-grants]
       summary: List SSH access grants.
       description: |
-        **Required permission:** `vm:ssh-grant`. A developer (own-scoped)
+        **Required permission:** `vm:ingress-grant`. A developer (own-scoped)
         sees only the grants they created; admin/operator see all. The
         stored token hash is never surfaced.
       security:
@@ -1930,24 +1930,24 @@ paths:
         - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
-          description: List of SSH grants.
+          description: List of ingress grants.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SSHGrantList"
+                $ref: "#/components/schemas/IngressGrantList"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "500": { $ref: "#/components/responses/Internal" }
     post:
-      operationId: sshGrants.create
-      tags: [ssh-grants]
+      operationId: ingressGrants.create
+      tags: [ingress-grants]
       summary: Create an SSH access grant.
       description: |
-        **Required permission:** `vm:ssh-grant`. For a developer
+        **Required permission:** `vm:ingress-grant`. For a developer
         (own-scoped) every referenced VM must be owned by the caller; a
         visible-but-unowned VM yields `403 permission_denied`. The
         plaintext token is returned exactly once in
-        `SSHGrantCreateResponse.token`; the server stores only its hash.
+        `IngressGrantCreateResponse.token`; the server stores only its hash.
 
         `409 conflict` covers a grant-name collision and idempotency-key
         replay mismatch.
@@ -1961,14 +1961,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SSHGrantCreate"
+              $ref: "#/components/schemas/IngressGrantCreate"
       responses:
         "201":
           description: Grant created; the plaintext token is returned once.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SSHGrantCreateResponse"
+                $ref: "#/components/schemas/IngressGrantCreateResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
@@ -1976,18 +1976,18 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/ssh-grants/{id}:
+  /v1/ingress-grants/{id}:
     parameters:
       - name: id
         in: path
         required: true
         schema: { type: string, format: uuid }
     get:
-      operationId: sshGrants.get
-      tags: [ssh-grants]
+      operationId: ingressGrants.get
+      tags: [ingress-grants]
       summary: Get an SSH access grant by id.
       description: |
-        **Required permission:** `vm:ssh-grant`. Ownership is checked
+        **Required permission:** `vm:ingress-grant`. Ownership is checked
         against the grant's creator; a grant invisible to the caller
         returns `404 not_found`, shared with the genuinely-absent
         envelope so existence is not leaked.
@@ -1996,21 +1996,21 @@ paths:
         - apiKeyAuth: []
       responses:
         "200":
-          description: SSH grant.
+          description: ingress grant.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SSHGrant"
+                $ref: "#/components/schemas/IngressGrant"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
-      operationId: sshGrants.delete
-      tags: [ssh-grants]
+      operationId: ingressGrants.delete
+      tags: [ingress-grants]
       summary: Delete an SSH access grant.
       description: |
-        **Required permission:** `vm:ssh-grant`. The caller must own the
+        **Required permission:** `vm:ingress-grant`. The caller must own the
         grant (else `404`). Delete removes the grant and frees its name
         for reuse - unlike `revoke`, which disables the grant but keeps
         the row (and its name) for audit. A token for a deleted grant
@@ -2030,18 +2030,18 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/ssh-grants/{id}/vms:
+  /v1/ingress-grants/{id}/vms:
     parameters:
       - name: id
         in: path
         required: true
         schema: { type: string, format: uuid }
     post:
-      operationId: sshGrants.addVM
-      tags: [ssh-grants]
-      summary: Add a VM to an SSH grant's scope.
+      operationId: ingressGrants.addVM
+      tags: [ingress-grants]
+      summary: Add a VM to an ingress grant's scope.
       description: |
-        **Required permission:** `vm:ssh-grant`. The caller must own the
+        **Required permission:** `vm:ingress-grant`. The caller must own the
         grant (else `404`) and, when own-scoped, the VM being added (else
         `403`). Adding an existing `vm_name` replaces its login.
       security:
@@ -2054,14 +2054,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SSHGrantVM"
+              $ref: "#/components/schemas/IngressGrantVM"
       responses:
         "200":
           description: Updated grant.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SSHGrant"
+                $ref: "#/components/schemas/IngressGrant"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
@@ -2069,7 +2069,7 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/ssh-grants/{id}/vms/{vm_name}:
+  /v1/ingress-grants/{id}/vms/{vm_name}:
     parameters:
       - name: id
         in: path
@@ -2080,11 +2080,11 @@ paths:
         required: true
         schema: { type: string }
     delete:
-      operationId: sshGrants.removeVM
-      tags: [ssh-grants]
-      summary: Remove a VM from an SSH grant's scope.
+      operationId: ingressGrants.removeVM
+      tags: [ingress-grants]
+      summary: Remove a VM from an ingress grant's scope.
       description: |
-        **Required permission:** `vm:ssh-grant`. The caller must own the
+        **Required permission:** `vm:ingress-grant`. The caller must own the
         grant (else `404`). Removing a `vm_name` not in the grant is a
         no-op. Returns the updated grant.
       security:
@@ -2098,7 +2098,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SSHGrant"
+                $ref: "#/components/schemas/IngressGrant"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
@@ -2106,18 +2106,18 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/ssh-grants/{id}/revoke:
+  /v1/ingress-grants/{id}/revoke:
     parameters:
       - name: id
         in: path
         required: true
         schema: { type: string, format: uuid }
     post:
-      operationId: sshGrants.revoke
-      tags: [ssh-grants]
+      operationId: ingressGrants.revoke
+      tags: [ingress-grants]
       summary: Revoke an SSH access grant.
       description: |
-        **Required permission:** `vm:ssh-grant`. The caller must own the
+        **Required permission:** `vm:ingress-grant`. The caller must own the
         grant (else `404`). Revoke flags the grant and keeps the row so a
         connect attempt is rejected uniformly rather than leaking
         revocation as not-found. Idempotent. Returns the updated grant.
@@ -2132,7 +2132,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SSHGrant"
+                $ref: "#/components/schemas/IngressGrant"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2847,6 +2847,18 @@ paths:
         synchronously — the data-plane connect is the client's job, so this is
         a `200`, not an async task.
 
+        Two credentials are accepted on the bearer:
+        - a normal CLI credential (`bearerAuth` JWT or `apiKeyAuth` `otx_`
+          token) - the caller must hold `vm:connect` and own the VM (scope
+          permitting). A role lacking `vm:connect` is `403 permission_denied`;
+          an unknown or cross-owner VM is `404`.
+        - an ingress-grant token (`otx_ingressgrant_*`) - authorized when the
+          grant currently reaches this VM on the requested `port` and the
+          caller's source IP satisfies the grant's optional pin. Every grant
+          negative (bad/expired/revoked grant, out-of-scope VM or port,
+          source-IP miss) collapses to the same `404`, so the endpoint leaks
+          neither VM existence nor grant scope.
+
         The `transport` field discriminates the response:
         - `gateway` — an overlay VM. `splicer_addr` is a converged gateway's
           address and `session_cred` is a short-lived bearer the client
@@ -2856,14 +2868,11 @@ paths:
           control-plane relay (which authorizes per request itself); no gateway
           address or session credential is minted.
 
-        A VM the caller cannot see returns `404` (never `403`, so the endpoint
-        leaks no VM existence). A VM on no usable network, or an overlay with no
-        converged gateway, returns `409 ingress_unavailable` (retryable).
+        A VM on no usable network, or an overlay with no converged gateway,
+        returns `409 ingress_unavailable` (retryable).
       security:
         - bearerAuth: []
         - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -2886,14 +2895,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMIngressResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
             No usable network or no converged gateway for ingress
-            (`ingress_unavailable`), or idempotency-key mismatch
-            (`idempotency_key_mismatch`).
+            (`ingress_unavailable`).
           content:
             application/json:
               schema:
@@ -2921,7 +2928,7 @@ paths:
           (`[a-z_][a-z0-9_-]*`, max 32 chars). There is no control-plane
           login allow-list; the guest sshd is the sole authority for whether
           it accepts the login.
-        - an SSH-grant token (`otx_sshgrant_*`) - the certificate is minted
+        - an ingress-grant token (`otx_ingressgrant_*`) - the certificate is minted
           for the grant's pinned login on this VM; a `login` contradicting
           the pinned one is rejected with 403 `ssh_login_not_allowed`.
 
@@ -4616,17 +4623,29 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
-    SSHGrantVM:
+    IngressGrantVM:
       type: object
       description: |
-        One VM a grant authorizes, with the guest login the recipient
-        connects as. The login is recorded for convenience; the guest
-        sshd owns login policy.
-      required: [vm_name, login]
+        One VM a grant authorizes, with the guest TCP ports the recipient
+        may reach and the login recorded for convenience. The port set scopes
+        every brokered connection: a connection to a port outside `ports` is
+        refused. Port 22 authorizes SSH; the guest sshd owns login policy.
+      required: [vm_name, ports]
       properties:
         vm_name:
           type: string
-          description: Name of a VM the grant authorizes SSH access to.
+          description: Name of a VM the grant authorizes access to.
+        ports:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: |
+            Guest TCP ports this grant authorizes on the VM. A brokered
+            connection to any port not in this set is refused. At least one
+            port is required.
         login:
           type: string
           pattern: "^[a-z_][a-z0-9_-]{0,31}$"
@@ -4638,12 +4657,12 @@ components:
             certificate and printed in an `ssh <login>@host` command; the
             guest sshd is the sole authority over whether it accepts the login.
 
-    SSHGrant:
+    IngressGrant:
       type: object
       description: |
         A revocable, per-person SSH access grant. The stored token hash is
         never surfaced; the plaintext is returned only on creation via
-        SSHGrantCreateResponse.
+        IngressGrantCreateResponse.
       required:
         [id, name, recipient_label, created_by, vms, revoked, created_at, updated_at]
       properties:
@@ -4662,7 +4681,13 @@ components:
         vms:
           type: array
           items:
-            $ref: "#/components/schemas/SSHGrantVM"
+            $ref: "#/components/schemas/IngressGrantVM"
+        source_ip:
+          type: [string, "null"]
+          description: |
+            Optional IP or CIDR the grant is pinned to; null means any source.
+            When set, a brokered connection is refused unless the caller's
+            source address falls inside it.
         expires_at:
           type: [string, "null"]
           format: date-time
@@ -4676,7 +4701,7 @@ components:
           type: string
           format: date-time
 
-    SSHGrantCreate:
+    IngressGrantCreate:
       type: object
       required: [name]
       properties:
@@ -4690,35 +4715,43 @@ components:
         vms:
           type: array
           items:
-            $ref: "#/components/schemas/SSHGrantVM"
-          description: VMs the grant authorizes, each with a pinned login.
+            $ref: "#/components/schemas/IngressGrantVM"
+          description: |
+            VMs the grant authorizes, each with its authorized guest TCP port
+            set (at least one port) and an optional pinned login.
+        source_ip:
+          type: [string, "null"]
+          description: |
+            Optional IP or CIDR to pin the grant to; omitted or null means any
+            source. When set, a brokered connection is refused unless the
+            caller's source address falls inside it.
         ttl:
           type: string
           description: |
             Optional Go duration (e.g. "168h") from which the absolute
             expiry is derived. Omitted means the grant never expires.
 
-    SSHGrantCreateResponse:
+    IngressGrantCreateResponse:
       allOf:
-        - $ref: "#/components/schemas/SSHGrant"
+        - $ref: "#/components/schemas/IngressGrant"
         - type: object
           required: [token]
           properties:
             token:
               type: string
               description: |
-                Plaintext grant token ("otx_sshgrant_<base64url>").
+                Plaintext grant token ("otx_ingressgrant_<base64url>").
                 Returned exactly once on creation. The server stores only
                 sha256(token).
 
-    SSHGrantList:
+    IngressGrantList:
       type: object
       required: [data, meta]
       properties:
         data:
           type: array
           items:
-            $ref: "#/components/schemas/SSHGrant"
+            $ref: "#/components/schemas/IngressGrant"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 

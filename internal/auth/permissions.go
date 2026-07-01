@@ -32,12 +32,12 @@ const (
 
 	// SSH ingress. `vm:ssh` is the capability a grant token resolves to
 	// at connect time (the synthetic GrantPrincipal carries exactly this
-	// one permission, scoped to the grant's VM set). `vm:ssh-grant` gates
-	// the operator-facing grant CRUD surface (/v1/ssh-grants). Both follow
+	// one permission, scoped to the grant's VM set). `vm:ingress-grant` gates
+	// the operator-facing grant CRUD surface (/v1/ingress-grants). Both follow
 	// the vm:console own/any shape: admin/operator any, developer own,
 	// viewer none.
-	PermVMSSH      Permission = "vm:ssh"
-	PermVMSSHGrant Permission = "vm:ssh-grant"
+	PermVMSSH          Permission = "vm:ssh"
+	PermVMIngressGrant Permission = "vm:ingress-grant"
 
 	// PermVMConnect gates the control-plane connect-broker surface that
 	// proxies an inbound session to a VM's ingress gateway. It follows the
@@ -127,18 +127,18 @@ const (
 var permissionMatrix = map[Role]map[Permission]Scope{
 	RoleAdmin: {
 		// VM lifecycle — full control across the fleet.
-		PermVMRead:      ScopeAny,
-		PermVMCreate:    ScopeAny,
-		PermVMUpdate:    ScopeAny,
-		PermVMDelete:    ScopeAny,
-		PermVMLifecycle: ScopeAny,
-		PermVMResize:    ScopeAny,
-		PermVMConsole:   ScopeAny,
-		PermVMRevert:    ScopeAny,
-		PermVMMigrate:   ScopeAny,
-		PermVMSSH:       ScopeAny,
-		PermVMSSHGrant:  ScopeAny,
-		PermVMConnect:   ScopeAny,
+		PermVMRead:         ScopeAny,
+		PermVMCreate:       ScopeAny,
+		PermVMUpdate:       ScopeAny,
+		PermVMDelete:       ScopeAny,
+		PermVMLifecycle:    ScopeAny,
+		PermVMResize:       ScopeAny,
+		PermVMConsole:      ScopeAny,
+		PermVMRevert:       ScopeAny,
+		PermVMMigrate:      ScopeAny,
+		PermVMSSH:          ScopeAny,
+		PermVMIngressGrant: ScopeAny,
+		PermVMConnect:      ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -182,18 +182,18 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 	RoleOperator: {
 		// VM lifecycle — operator manages on behalf of users, hence
 		// scope `any`.
-		PermVMRead:      ScopeAny,
-		PermVMCreate:    ScopeAny,
-		PermVMUpdate:    ScopeAny,
-		PermVMDelete:    ScopeAny,
-		PermVMLifecycle: ScopeAny,
-		PermVMResize:    ScopeAny,
-		PermVMConsole:   ScopeAny,
-		PermVMRevert:    ScopeAny,
-		PermVMMigrate:   ScopeAny,
-		PermVMSSH:       ScopeAny,
-		PermVMSSHGrant:  ScopeAny,
-		PermVMConnect:   ScopeAny,
+		PermVMRead:         ScopeAny,
+		PermVMCreate:       ScopeAny,
+		PermVMUpdate:       ScopeAny,
+		PermVMDelete:       ScopeAny,
+		PermVMLifecycle:    ScopeAny,
+		PermVMResize:       ScopeAny,
+		PermVMConsole:      ScopeAny,
+		PermVMRevert:       ScopeAny,
+		PermVMMigrate:      ScopeAny,
+		PermVMSSH:          ScopeAny,
+		PermVMIngressGrant: ScopeAny,
+		PermVMConnect:      ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -228,17 +228,17 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 	RoleDeveloper: {
 		// VM lifecycle — read every VM (names/metadata are not secret),
 		// mutate only own. No migration.
-		PermVMRead:      ScopeAny,
-		PermVMCreate:    ScopeAny,
-		PermVMUpdate:    ScopeOwn,
-		PermVMDelete:    ScopeOwn,
-		PermVMLifecycle: ScopeOwn,
-		PermVMResize:    ScopeOwn,
-		PermVMConsole:   ScopeOwn,
-		PermVMRevert:    ScopeOwn,
-		PermVMSSH:       ScopeOwn,
-		PermVMSSHGrant:  ScopeOwn,
-		PermVMConnect:   ScopeOwn,
+		PermVMRead:         ScopeAny,
+		PermVMCreate:       ScopeAny,
+		PermVMUpdate:       ScopeOwn,
+		PermVMDelete:       ScopeOwn,
+		PermVMLifecycle:    ScopeOwn,
+		PermVMResize:       ScopeOwn,
+		PermVMConsole:      ScopeOwn,
+		PermVMRevert:       ScopeOwn,
+		PermVMSSH:          ScopeOwn,
+		PermVMIngressGrant: ScopeOwn,
+		PermVMConnect:      ScopeOwn,
 
 		// Snapshots — own only.
 		PermSnapshotRead:   ScopeOwn,

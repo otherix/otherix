@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrants
+package ingressgrants
 
 import (
 	"encoding/json"
@@ -16,8 +16,8 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// AddVM implements POST /v1/ssh-grants/{id}/vms. Required permission:
-// vm:ssh-grant. The caller must own the grant (else 404) and, when
+// AddVM implements POST /v1/ingress-grants/{id}/vms. Required permission:
+// vm:ingress-grant. The caller must own the grant (else 404) and, when
 // owner-scoped, the VM being added (else 403). Adding an existing vm_name
 // replaces its login. Returns 200 with the updated grant.
 func (h *Handler) AddVM(w http.ResponseWriter, r *http.Request) {
@@ -40,25 +40,25 @@ func (h *Handler) AddVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.authorizeVMs(w, r, caller, []store.SSHGrantVM{entry}) {
+	if !h.authorizeVMs(w, r, caller, []store.IngressGrantVM{entry}) {
 		return
 	}
 
-	updated, err := h.store.AddSSHGrantVM(r.Context(), grant.ID, entry)
+	updated, err := h.store.AddIngressGrantVM(r.Context(), grant.ID, entry)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeGrantNotFound(w, r)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "add vm to ssh grant", nil)
+			response.CodeInternal, "add vm to ingress grant", nil)
 		return
 	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
 }
 
-// RemoveVM implements DELETE /v1/ssh-grants/{id}/vms/{vm_name}. Required
-// permission: vm:ssh-grant. The caller must own the grant (else 404).
+// RemoveVM implements DELETE /v1/ingress-grants/{id}/vms/{vm_name}. Required
+// permission: vm:ingress-grant. The caller must own the grant (else 404).
 // Removing a vm_name not in the grant is a no-op. Shrinking one's own
 // grant needs no per-VM ownership check. Returns 200 with the updated
 // grant.
@@ -75,14 +75,14 @@ func (h *Handler) RemoveVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.RemoveSSHGrantVM(r.Context(), grant.ID, vmName)
+	updated, err := h.store.RemoveIngressGrantVM(r.Context(), grant.ID, vmName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeGrantNotFound(w, r)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "remove vm from ssh grant", nil)
+			response.CodeInternal, "remove vm from ingress grant", nil)
 		return
 	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))

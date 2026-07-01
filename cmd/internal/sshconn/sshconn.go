@@ -78,7 +78,7 @@ type Config struct {
 	InsecureSkipTLSVerify bool
 
 	// BearerToken authenticates to the CP: a CLI token (JWT or otx_ API
-	// token) or an otx_sshgrant_ grant token. It is sent only in the
+	// token) or an otx_ingressgrant_ grant token. It is sent only in the
 	// Authorization header and is never logged.
 	BearerToken string
 
@@ -460,10 +460,10 @@ func gatewayTLSConfig(cfg Config, host string) (*tls.Config, error) {
 	return base, nil
 }
 
-// dialRelay dials the control-plane ssh-stream relay WebSocket for vmName,
-// threading the guest port, and returns the spliceable net.Conn.
+// dialRelay dials the control-plane relay WebSocket for vmName, threading the
+// guest port, and returns the spliceable net.Conn.
 func dialRelay(ctx context.Context, cfg Config, vmName string, port int) (net.Conn, error) {
-	su, err := streamURL(cfg.ServerURL, vmName, port)
+	su, err := relayURL(cfg.ServerURL, vmName, port)
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +480,7 @@ func dialRelay(ctx context.Context, cfg Config, vmName string, port int) (net.Co
 		HTTPHeader: hdr,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sshconn: dial ssh-stream: %v", err)
+		return nil, fmt.Errorf("sshconn: dial relay: %v", err)
 	}
 	return websocket.NetConn(ctx, conn, websocket.MessageBinary), nil
 }
@@ -603,7 +603,7 @@ func (c Config) resolveKnownDir() (string, error) {
 
 // wsHTTPClient builds an *http.Client whose TLS trust honours cfg per
 // resolveTLSConfig. The same client backs both the cert-mint round-trip and
-// the ssh-stream WebSocket dial, so both speak the operator's chosen trust.
+// the relay WebSocket dial, so both speak the operator's chosen trust.
 func wsHTTPClient(cfg Config) (*http.Client, error) {
 	tlsCfg, err := resolveTLSConfig(cfg)
 	if err != nil {
@@ -682,10 +682,10 @@ func normalizeFingerprint(fp string) string {
 	return strings.TrimSpace(s)
 }
 
-// streamURL builds the ssh-stream WebSocket URL from the CP base URL, mapping
+// relayURL builds the relay WebSocket URL from the CP base URL, mapping
 // http->ws and https->wss and threading the guest port as ?port=N so the relay
 // targets the requested guest port.
-func streamURL(serverURL, vmName string, port int) (string, error) {
+func relayURL(serverURL, vmName string, port int) (string, error) {
 	u, err := url.Parse(strings.TrimRight(serverURL, "/"))
 	if err != nil {
 		return "", fmt.Errorf("sshconn: parse server url: %v", err)
@@ -698,7 +698,7 @@ func streamURL(serverURL, vmName string, port int) (string, error) {
 	default:
 		return "", fmt.Errorf("sshconn: unsupported server url scheme %q", u.Scheme)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1/vms/" + url.PathEscape(vmName) + "/ssh-stream"
+	u.Path = strings.TrimRight(u.Path, "/") + "/v1/vms/" + url.PathEscape(vmName) + "/relay"
 	if port != 0 {
 		q := u.Query()
 		q.Set("port", strconv.Itoa(port))

@@ -32,7 +32,7 @@ type sshCertStoreStub struct {
 	Store
 	vm       store.VM
 	vmErr    error
-	grant    store.SSHGrant
+	grant    store.IngressGrant
 	grantErr error
 	ca       store.SSHUserCA
 	caErr    error
@@ -42,7 +42,7 @@ func (s *sshCertStoreStub) VMByName(context.Context, string) (store.VM, error) {
 	return s.vm, s.vmErr
 }
 
-func (s *sshCertStoreStub) SSHGrantByTokenHash(context.Context, []byte) (store.SSHGrant, error) {
+func (s *sshCertStoreStub) IngressGrantByTokenHash(context.Context, []byte) (store.IngressGrant, error) {
 	return s.grant, s.grantErr
 }
 
@@ -84,16 +84,16 @@ func newSSHCertTestHandler(t *testing.T, vmOwner uuid.UUID, cliUser *auth.User) 
 	if err != nil {
 		t.Fatalf("GenerateSSHUserCA: %v", err)
 	}
-	plaintext, hash, err := auth.GenerateGrantToken()
+	plaintext, hash, err := auth.GenerateIngressGrantToken()
 	if err != nil {
-		t.Fatalf("GenerateGrantToken: %v", err)
+		t.Fatalf("GenerateIngressGrantToken: %v", err)
 	}
 	st := &sshCertStoreStub{
 		vm: store.VM{ID: uuid.New(), Name: "web01", OwnerID: vmOwner},
-		grant: store.SSHGrant{
+		grant: store.IngressGrant{
 			ID:        uuid.New(),
 			TokenHash: hash,
-			VMs:       []store.SSHGrantVM{{VMName: "web01", Login: "dev"}},
+			VMs:       []store.IngressGrantVM{{VMName: "web01", Ports: []int{22}, Login: "dev"}},
 		},
 		ca: store.SSHUserCA{ID: uuid.New(), PrivateKeyPEM: caMaterial.PrivateKeyPEM},
 	}
@@ -224,12 +224,31 @@ func TestIssueSSHCert_GrantTokenRevokedIsGenericReject(t *testing.T) {
 	assertGenericSSHReject(t, rec)
 }
 
+// TestIssueSSHCert_GrantSourceIPOutOfPinIsGenericReject: a grant carrying a
+// source-IP pin, presented from a RemoteAddr OUTSIDE the pin, collapses to the
+// uniform 401 - a stolen pinned token from a disallowed network must not mint
+// a login cert.
+func TestIssueSSHCert_GrantSourceIPOutOfPinIsGenericReject(t *testing.T) {
+	t.Parallel()
+	h, grantToken := newSSHCertTestHandler(t, uuid.New(), nil)
+	pin := "203.0.113.0/24"
+	h.store.(*sshCertStoreStub).grant.SourceIP = &pin
+
+	req, rec := sshCertRequestHTTP(t, grantToken, sshCertRequest{
+		PublicKey: newTestSSHPublicKey(t),
+		Login:     "dev",
+	})
+	// httptest.NewRequest defaults RemoteAddr to 192.0.2.1, outside the pin.
+	h.IssueSSHCert(rec, req)
+	assertGenericSSHReject(t, rec)
+}
+
 // TestIssueSSHCert_GrantTokenOutOfSetIsGenericReject: a grant that does not
 // cover the requested VM collapses to the uniform 401.
 func TestIssueSSHCert_GrantTokenOutOfSetIsGenericReject(t *testing.T) {
 	t.Parallel()
 	h, grantToken := newSSHCertTestHandler(t, uuid.New(), nil)
-	h.store.(*sshCertStoreStub).grant.VMs = []store.SSHGrantVM{{VMName: "other", Login: "dev"}}
+	h.store.(*sshCertStoreStub).grant.VMs = []store.IngressGrantVM{{VMName: "other", Login: "dev"}}
 
 	req, rec := sshCertRequestHTTP(t, grantToken, sshCertRequest{
 		PublicKey: newTestSSHPublicKey(t),

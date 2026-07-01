@@ -12,27 +12,27 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/otherix/otherix/cmd/cli/sshgrant"
+	"github.com/otherix/otherix/cmd/cli/ingressgrant"
 	"github.com/otherix/otherix/cmd/internal/sshconn"
 )
 
 // testBundle builds a ca-bundle-trust bundle for the connector to import.
-func testBundle(t *testing.T) (sshgrant.Bundle, string) {
+func testBundle(t *testing.T) (ingressgrant.Bundle, string) {
 	t.Helper()
 	caPEM := "-----BEGIN CERTIFICATE-----\nMIIBdummy\n-----END CERTIFICATE-----\n"
-	b := sshgrant.Bundle{
-		Version:   sshgrant.BundleVersion,
+	b := ingressgrant.Bundle{
+		Version:   ingressgrant.BundleVersion,
 		ServerURL: "https://cp.example.com:8443",
-		Trust:     sshgrant.TrustCABundle,
+		Trust:     ingressgrant.TrustCABundle,
 		// ResolveTrust base64-decodes CACertPEM, so it must be base64 of the PEM.
 		CACertPEM: base64.StdEncoding.EncodeToString([]byte(caPEM)),
-		Token:     "otx_sshgrant_secrettoken",
-		VMs: []sshgrant.BundleVM{
+		Token:     "otx_ingressgrant_secrettoken",
+		VMs: []ingressgrant.BundleVM{
 			{VM: "web01", Login: "root"},
 			{VM: "db01", Login: "ubuntu"},
 		},
 	}
-	blob, err := sshgrant.EncodeBundle(b)
+	blob, err := ingressgrant.EncodeBundle(b)
 	if err != nil {
 		t.Fatalf("EncodeBundle() error = %v", err)
 	}
@@ -82,8 +82,8 @@ func TestAddWritesStateAndConfig(t *testing.T) {
 	if st.ServerURL != "https://cp.example.com:8443" {
 		t.Errorf("state ServerURL = %q, want %q", st.ServerURL, "https://cp.example.com:8443")
 	}
-	if st.Token != "otx_sshgrant_secrettoken" {
-		t.Errorf("state Token = %q, want %q", st.Token, "otx_sshgrant_secrettoken")
+	if st.Token != "otx_ingressgrant_secrettoken" {
+		t.Errorf("state Token = %q, want %q", st.Token, "otx_ingressgrant_secrettoken")
 	}
 	if st.ClusterSuffix != "otherix.local" {
 		t.Errorf("state ClusterSuffix = %q, want %q", st.ClusterSuffix, "otherix.local")
@@ -182,7 +182,7 @@ func TestTrustRoundTrip(t *testing.T) {
 	if cfg.ServerURL != "https://cp.example.com:8443" {
 		t.Errorf("cfg.ServerURL = %q, want %q", cfg.ServerURL, "https://cp.example.com:8443")
 	}
-	if cfg.BearerToken != "otx_sshgrant_secrettoken" {
+	if cfg.BearerToken != "otx_ingressgrant_secrettoken" {
 		t.Errorf("cfg.BearerToken = %q", cfg.BearerToken)
 	}
 	if !strings.Contains(string(cfg.CACertPEM), "BEGIN CERTIFICATE") {
@@ -230,7 +230,7 @@ func TestProxyLoadsStateAndCallsSeam(t *testing.T) {
 	if gotCfg.ServerURL != "https://cp.example.com:8443" {
 		t.Errorf("proxy cfg.ServerURL = %q", gotCfg.ServerURL)
 	}
-	if gotCfg.BearerToken != "otx_sshgrant_secrettoken" {
+	if gotCfg.BearerToken != "otx_ingressgrant_secrettoken" {
 		t.Errorf("proxy cfg.BearerToken = %q", gotCfg.BearerToken)
 	}
 }
@@ -280,7 +280,7 @@ func TestProxyMintsCertBeforeRelay(t *testing.T) {
 	if mintLogin != "" {
 		t.Errorf("mint login = %q, want empty (the grant pins the login)", mintLogin)
 	}
-	if mintCfg.BearerToken != "otx_sshgrant_secrettoken" {
+	if mintCfg.BearerToken != "otx_ingressgrant_secrettoken" {
 		t.Errorf("mint cfg.BearerToken = %q", mintCfg.BearerToken)
 	}
 	if mintCfg.KnownDir == "" {
