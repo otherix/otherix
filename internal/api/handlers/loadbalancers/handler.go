@@ -29,6 +29,12 @@ type Store interface {
 	UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBalancerParams) (store.LoadBalancer, error)
 	ListLoadBalancers(ctx context.Context, arg store.ListLoadBalancersParams) ([]store.LoadBalancer, error)
 	DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error
+
+	// ListVMsByOwner and VMRuntimeByID back the connect route's backend
+	// selection: the owner's VMs (desired state) filtered by the observed
+	// runtime phase.
+	ListVMsByOwner(ctx context.Context, ownerID uuid.UUID) ([]store.VM, error)
+	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
 }
 
 // IngressBroker resolves connect coordinates for a (vm, port). It is held so

@@ -306,6 +306,10 @@ func mountV1(r chi.Router, deps RouterDeps) {
 		r.Group(func(r chi.Router) {
 			r.Use(authn)
 			r.Route("/loadbalancers", func(r chi.Router) {
+				// connect is non-idempotent (each call mints a fresh, expiring
+				// session credential and re-balances) so it sits OUTSIDE the idem
+				// sub-group, mirroring the auth.login/refresh carve-out.
+				r.With(middleware.RequirePermission(auth.PermLoadBalancerConnect, deps.Logger)).Post("/{id}/connect", loadBalancersH.Connect)
 				r.Group(func(r chi.Router) {
 					r.Use(idem)
 					r.With(middleware.RequirePermission(auth.PermLoadBalancerRead, deps.Logger)).Get("/", loadBalancersH.List)

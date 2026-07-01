@@ -30,13 +30,82 @@ type fakeStore struct {
 	byID        map[uuid.UUID]store.LoadBalancer
 	byName      map[string]uuid.UUID // lower(name) -> id
 	lastCreated store.LoadBalancer
+
+	vms        map[uuid.UUID]store.VM
+	runtimes   map[uuid.UUID]store.VMRuntime
+	runtimeErr map[uuid.UUID]error // injected transient VMRuntimeByID error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		byID:   map[uuid.UUID]store.LoadBalancer{},
-		byName: map[string]uuid.UUID{},
+		byID:       map[uuid.UUID]store.LoadBalancer{},
+		byName:     map[string]uuid.UUID{},
+		vms:        map[uuid.UUID]store.VM{},
+		runtimes:   map[uuid.UUID]store.VMRuntime{},
+		runtimeErr: map[uuid.UUID]error{},
 	}
+}
+
+// ListVMsByOwner returns the owner's non-deleted VMs (order is unspecified,
+// mirroring the etcd range).
+func (f *fakeStore) ListVMsByOwner(_ context.Context, owner uuid.UUID) ([]store.VM, error) {
+	out := make([]store.VM, 0, len(f.vms))
+	for _, vm := range f.vms {
+		if vm.OwnerID == owner && vm.DeletedAt == nil {
+			out = append(out, vm)
+		}
+	}
+	return out, nil
+}
+
+// VMRuntimeByID returns the seeded runtime, an injected error, or ErrNotFound.
+func (f *fakeStore) VMRuntimeByID(_ context.Context, id uuid.UUID) (store.VMRuntime, error) {
+	if err := f.runtimeErr[id]; err != nil {
+		return store.VMRuntime{}, err
+	}
+	rt, ok := f.runtimes[id]
+	if !ok {
+		return store.VMRuntime{}, store.ErrNotFound
+	}
+	return rt, nil
+}
+
+// seedLB inserts a load balancer row directly (bypassing the create handler).
+func (f *fakeStore) seedLB(t *testing.T, name string, owner uuid.UUID, port int32, selector map[string]string) store.LoadBalancer {
+	t.Helper()
+	now := time.Now().UTC()
+	lb := store.LoadBalancer{
+		ID:        uuid.New(),
+		Name:      name,
+		OwnerID:   owner,
+		Port:      port,
+		Selector:  selector,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	f.byID[lb.ID] = lb
+	f.byName[strings.ToLower(name)] = lb.ID
+	return lb
+}
+
+func (f *fakeStore) seedVM(owner uuid.UUID, labels string) store.VM {
+	vm := store.VM{ID: uuid.New(), OwnerID: owner, Name: "vm-" + uuid.NewString()[:8], Labels: []byte(labels)}
+	f.vms[vm.ID] = vm
+	return vm
+}
+
+// seedRunningVM seeds a VM with a runtime observed in the running phase.
+func (f *fakeStore) seedRunningVM(_ *testing.T, owner uuid.UUID, labels string) store.VM {
+	vm := f.seedVM(owner, labels)
+	f.runtimes[vm.ID] = store.VMRuntime{VmID: vm.ID, Phase: store.VmPhaseRunning}
+	return vm
+}
+
+// seedStoppedVM seeds a VM whose runtime is observed stopped (never eligible).
+func (f *fakeStore) seedStoppedVM(_ *testing.T, owner uuid.UUID, labels string) store.VM {
+	vm := f.seedVM(owner, labels)
+	f.runtimes[vm.ID] = store.VMRuntime{VmID: vm.ID, Phase: store.VmPhaseStopped}
+	return vm
 }
 
 func (f *fakeStore) CreateLoadBalancer(_ context.Context, arg store.CreateLoadBalancerParams) (store.LoadBalancer, error) {
@@ -215,6 +284,9 @@ func TestGetLoadBalancerNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
+	if code := errorCode(t, rec); code != "loadbalancer_not_found" {
+		t.Errorf("code = %q, want loadbalancer_not_found", code)
+	}
 }
 
 func TestListLoadBalancers(t *testing.T) {
@@ -277,6 +349,44 @@ func TestUpdateCrossOwnerReturns404(t *testing.T) {
 	rec := do(t, newRouter(st, other), http.MethodPatch, "/v1/loadbalancers/web", `{"port":9090}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-owner update status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteCrossOwnerReturns404(t *testing.T) {
+	st := newFakeStore()
+	owner := devUser()
+	other := devUser()
+
+	if rec := do(t, newRouter(st, owner), http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// A different developer must not learn it exists: cross-owner delete -> 404.
+	rec := do(t, newRouter(st, other), http.MethodDelete, "/v1/loadbalancers/web", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner delete status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "loadbalancer_not_found" {
+		t.Errorf("code = %q, want loadbalancer_not_found", code)
+	}
+}
+
+func TestUpdateSelectorValidation(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// An empty selector map is invalid on the update path too.
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"selector":{}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("update selector status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", code)
 	}
 }
 
