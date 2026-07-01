@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -52,10 +53,10 @@ func (f *linuxFabric) NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAdd
 	}
 
 	// The neighbor is not yet resolved. Provoke kernel ARP/ND by sending one
-	// datagram toward the address (routed on-link via the bridge), wait briefly,
-	// and re-read once. Best-effort: a failed probe leaves the lookup unresolved
-	// and the caller refuses, so this never weakens the binding.
-	probeNeighbor(ip)
+	// datagram toward the address, wait briefly, and re-read once. Best-effort: a
+	// failed probe leaves the lookup unresolved and the caller refuses, so this
+	// never weakens the binding.
+	probeNeighbor(ip, bridge)
 	return neighborLookup(idx, ip)
 }
 
@@ -90,10 +91,26 @@ func neighborLookup(linkIndex int, ip netip.Addr) (net.HardwareAddr, bool, error
 
 // probeNeighbor sends a single best-effort UDP datagram toward ip so the kernel
 // resolves the on-link next hop, then waits briefly for the reply to land in the
-// neighbor table. Every error is ignored: the probe only nudges resolution, and
-// the caller re-reads the table afterwards regardless.
-func probeNeighbor(ip netip.Addr) {
-	conn, err := net.DialTimeout("udp", net.JoinHostPort(ip.String(), neighborProbePort), neighborProbeTimeout)
+// neighbor table. The probe socket is bound to the bridge with SO_BINDTODEVICE so
+// the datagram egresses that interface regardless of the main route table: two
+// overlays may carry the same guest subnet on different bridges, and a route-based
+// send would otherwise provoke ARP on the wrong bridge and resolve nothing. Every
+// error is ignored: the probe only nudges resolution, and the caller re-reads the
+// table afterwards regardless.
+func probeNeighbor(ip netip.Addr, bridge string) {
+	d := net.Dialer{
+		Timeout: neighborProbeTimeout,
+		Control: func(_, _ string, c syscall.RawConn) error {
+			var serr error
+			if cerr := c.Control(func(fd uintptr) {
+				serr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, bridge)
+			}); cerr != nil {
+				return cerr
+			}
+			return serr
+		},
+	}
+	conn, err := d.Dial("udp", net.JoinHostPort(ip.String(), neighborProbePort))
 	if err != nil {
 		return
 	}
