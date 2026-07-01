@@ -73,6 +73,7 @@ type grantView struct {
 	RecipientLabel string        `json:"recipient_label"`
 	CreatedBy      string        `json:"created_by"`
 	VMs            []grantVMView `json:"vms"`
+	SourceIP       *string       `json:"source_ip"`
 	ExpiresAt      *string       `json:"expires_at"`
 	Revoked        bool          `json:"revoked"`
 	CreatedAt      string        `json:"created_at"`
@@ -115,6 +116,7 @@ func toView(g store.IngressGrant) grantView {
 		RecipientLabel: g.RecipientLabel,
 		CreatedBy:      g.CreatedBy.String(),
 		VMs:            vms,
+		SourceIP:       g.SourceIP,
 		ExpiresAt:      expiresAt,
 		Revoked:        g.Revoked,
 		CreatedAt:      g.CreatedAt.UTC().Format(time.RFC3339Nano),

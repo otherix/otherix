@@ -60,6 +60,7 @@ func (s *Store) CreateIngressGrant(ctx context.Context, arg store.CreateIngressG
 		RecipientLabel: arg.RecipientLabel,
 		TokenHash:      arg.TokenHash,
 		VMs:            vms,
+		SourceIP:       arg.SourceIP,
 		ExpiresAt:      arg.ExpiresAt,
 		Revoked:        false,
 		CreatedAt:      now,

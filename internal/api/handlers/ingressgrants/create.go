@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,6 +36,7 @@ type createRequest struct {
 	Name           string     `json:"name"`
 	RecipientLabel string     `json:"recipient_label"`
 	VMs            []createVM `json:"vms"`
+	SourceIP       string     `json:"source_ip"`
 	TTL            string     `json:"ttl"`
 }
 
@@ -78,6 +80,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceIP, err := validateSourceIP(req.SourceIP)
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+
 	if !h.authorizeVMs(w, r, caller, vms) {
 		return
 	}
@@ -95,6 +104,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		RecipientLabel: strings.TrimSpace(req.RecipientLabel),
 		TokenHash:      hash,
 		VMs:            vms,
+		SourceIP:       sourceIP,
 		ExpiresAt:      expiresAt,
 	})
 	if err != nil {
@@ -228,6 +238,24 @@ func validateVM(vm createVM) (store.IngressGrantVM, error) {
 		}
 	}
 	return store.IngressGrantVM{VMName: name, Ports: vm.Ports, Login: login}, nil
+}
+
+// validateSourceIP checks an optional pin is a CIDR or a bare IP. Empty ->
+// nil (no pin). It returns the canonicalised string to store.
+func validateSourceIP(s string) (*string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	if prefix, err := netip.ParsePrefix(s); err == nil {
+		out := prefix.String()
+		return &out, nil
+	}
+	if addr, err := netip.ParseAddr(s); err == nil {
+		out := addr.String()
+		return &out, nil
+	}
+	return nil, errors.New("source_ip must be an IP or CIDR")
 }
 
 // parseTTL turns the optional duration string into an absolute expiry. An

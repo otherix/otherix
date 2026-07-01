@@ -26,12 +26,17 @@ func TestIngressGrant_CreateLookupMutateRevoke(t *testing.T) {
 	ctx := context.Background()
 	hash := auth.HashToken("otx_ingressgrant_example")
 
+	sourceIP := "203.0.113.0/24"
 	g, err := st.CreateIngressGrant(ctx, store.CreateIngressGrantParams{
 		Name: "acme-alice", CreatedBy: uuid.New(), RecipientLabel: "alice",
 		TokenHash: hash, VMs: []store.IngressGrantVM{{VMName: "web01", Ports: []int{22, 5432}, Login: "dev"}},
+		SourceIP: &sourceIP,
 	})
 	if err != nil {
 		t.Fatalf("CreateIngressGrant() error = %v", err)
+	}
+	if g.SourceIP == nil || *g.SourceIP != sourceIP {
+		t.Errorf("CreateIngressGrant SourceIP = %v, want %q", g.SourceIP, sourceIP)
 	}
 	// Ports round-trip through the JSON persistence unchanged.
 	if diff := cmp.Diff([]store.IngressGrantVM{{VMName: "web01", Ports: []int{22, 5432}, Login: "dev"}}, g.VMs); diff != "" {
@@ -51,6 +56,10 @@ func TestIngressGrant_CreateLookupMutateRevoke(t *testing.T) {
 	// Ports survive a real read-back (JSON deserialization from etcd).
 	if diff := cmp.Diff([]store.IngressGrantVM{{VMName: "web01", Ports: []int{22, 5432}, Login: "dev"}}, byTok.VMs); diff != "" {
 		t.Errorf("IngressGrantByTokenHash VMs mismatch (-want +got):\n%s", diff)
+	}
+	// The source-IP pin survives a real read-back.
+	if byTok.SourceIP == nil || *byTok.SourceIP != sourceIP {
+		t.Errorf("IngressGrantByTokenHash SourceIP = %v, want %q", byTok.SourceIP, sourceIP)
 	}
 	// Lookup by id and name resolve the same grant.
 	if byID, err := st.IngressGrantByID(ctx, g.ID); err != nil || byID.ID != g.ID {

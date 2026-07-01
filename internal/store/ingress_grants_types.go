@@ -33,6 +33,7 @@ type IngressGrant struct {
 	RecipientLabel string           `json:"recipient_label"`
 	TokenHash      []byte           `json:"token_hash"`
 	VMs            []IngressGrantVM `json:"vms"`
+	SourceIP       *string          `json:"source_ip,omitempty"`
 	ExpiresAt      *time.Time       `json:"expires_at"`
 	Revoked        bool             `json:"revoked"`
 	CreatedAt      time.Time        `json:"created_at"`
@@ -47,6 +48,7 @@ type CreateIngressGrantParams struct {
 	RecipientLabel string
 	TokenHash      []byte
 	VMs            []IngressGrantVM
+	SourceIP       *string
 	ExpiresAt      *time.Time
 }
 
