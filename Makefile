@@ -191,6 +191,10 @@ smoke-ingress-gateway: ## Ingress-gateway smoke: brokered `otherix forward`/`oth
 smoke-ingress-grant: ## Ingress-grant smoke: an external grant reaches a VM with `otherix forward` using only the grant token (gateway + relay), enforces per-port scope + source-IP pin (404), and survives a live migration (run after local-dev-start)
 	bash dev/smoke/ingress-grant/run.sh
 
+.PHONY: smoke-lb
+smoke-lb: ## Load-balancer smoke: otherix lb fronts a label-selected VM pool, balances across backends, excludes a stopped backend, and 409s when none are eligible (run after local-dev-start)
+	bash dev/smoke/lb/run.sh
+
 .PHONY: smoke-vm-create-redelivery
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh
