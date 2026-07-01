@@ -4626,14 +4626,26 @@ components:
     IngressGrantVM:
       type: object
       description: |
-        One VM a grant authorizes, with the guest login the recipient
-        connects as. The login is recorded for convenience; the guest
-        sshd owns login policy.
-      required: [vm_name, login]
+        One VM a grant authorizes, with the guest TCP ports the recipient
+        may reach and the login recorded for convenience. The port set scopes
+        every brokered connection: a connection to a port outside `ports` is
+        refused. Port 22 authorizes SSH; the guest sshd owns login policy.
+      required: [vm_name, ports]
       properties:
         vm_name:
           type: string
-          description: Name of a VM the grant authorizes SSH access to.
+          description: Name of a VM the grant authorizes access to.
+        ports:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: |
+            Guest TCP ports this grant authorizes on the VM. A brokered
+            connection to any port not in this set is refused. At least one
+            port is required.
         login:
           type: string
           pattern: "^[a-z_][a-z0-9_-]{0,31}$"
@@ -4670,6 +4682,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IngressGrantVM"
+        source_ip:
+          type: [string, "null"]
+          description: |
+            Optional IP or CIDR the grant is pinned to; null means any source.
+            When set, a brokered connection is refused unless the caller's
+            source address falls inside it.
         expires_at:
           type: [string, "null"]
           format: date-time
@@ -4698,7 +4716,15 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IngressGrantVM"
-          description: VMs the grant authorizes, each with a pinned login.
+          description: |
+            VMs the grant authorizes, each with its authorized guest TCP port
+            set (at least one port) and an optional pinned login.
+        source_ip:
+          type: [string, "null"]
+          description: |
+            Optional IP or CIDR to pin the grant to; omitted or null means any
+            source. When set, a brokered connection is refused unless the
+            caller's source address falls inside it.
         ttl:
           type: string
           description: |

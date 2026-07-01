@@ -187,6 +187,10 @@ smoke-vm-ssh: ## VM SSH-ingress smoke: real guest login over the relay via `othe
 smoke-ingress-gateway: ## Ingress-gateway smoke: brokered `otherix forward`/`otherix ssh` reach a guest (gateway + relay), survive a live migration, recover from gateway death, and enforce no-gateway 409 + non-owner 404 (run after local-dev-start)
 	bash dev/smoke/ingress-gateway/run.sh
 
+.PHONY: smoke-ingress-grant
+smoke-ingress-grant: ## Ingress-grant smoke: an external grant reaches a VM with `otherix forward` using only the grant token (gateway + relay), enforces per-port scope + source-IP pin (404), and survives a live migration (run after local-dev-start)
+	bash dev/smoke/ingress-grant/run.sh
+
 .PHONY: smoke-vm-create-redelivery
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh
@@ -329,7 +333,7 @@ smoke-unpinned-peer-pull: ## Unpinned peer-pull smoke: a VM from an UNPINNED --i
 # separately.
 .PHONY: smoke-all
 smoke-all: ## Run all stack-dependent smokes in sequence (run after local-dev-start; excludes smoke-ha)
-	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-migration-live vm-network-config; do \
+	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-migration-live vm-network-config ingress-grant; do \
 	  echo ">> smoke: $$s"; \
 	  bash dev/smoke/$$s/run.sh || { echo "✗ smoke-$$s failed"; exit 1; }; \
 	done
