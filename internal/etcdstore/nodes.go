@@ -187,6 +187,49 @@ func (s *Store) UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, err
 	return s.setNodeCordon(ctx, id, store.NodeStatusReady, false)
 }
 
+// ReadmitNode returns a gone node to pending so the cluster re-accepts its
+// heartbeats; the existing promotion path advances it to ready on the next
+// fresh heartbeat. pending (not ready) is the target so a readmitted node is
+// not a scheduler placement target until it re-proves health. The handler gates
+// the source status before calling; this method re-reads under a ModRevision
+// CAS and refuses with store.ErrConcurrentUpdate if the node is no longer gone
+// or a concurrent write lands first. Unlike cordon/uncordon it never touches
+// cordoned_at.
+//
+// The n.Status != gone recheck on the fresh read is load-bearing and is why
+// this does NOT reuse casNodeStatus: casNodeStatus does not re-validate the
+// source status (it trusts the caller's snapshot + the ModRevision CAS). The
+// handler reads the node far earlier than this write, so without the recheck a
+// node promoted gone -> ready between the handler read and this fresh read would
+// be silently demoted ready -> pending (the CAS passes, since no write races
+// this method's own window). Keep the recheck; do not collapse into casNodeStatus.
+func (s *Store) ReadmitNode(ctx context.Context, id uuid.UUID) (store.Node, error) {
+	n, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil {
+		return store.Node{}, err
+	}
+	if n.Status != store.NodeStatusGone {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
+	n.Status = store.NodeStatusPending
+	n.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(n)
+	if err != nil {
+		return store.Node{}, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, fmt.Errorf("readmit node txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
+	return n, nil
+}
+
 // setNodeCordon applies a cordon/uncordon status change, setting/clearing
 // cordoned_at and bumping updated_at.
 //
