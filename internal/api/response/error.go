@@ -117,6 +117,13 @@ const (
 	// rather than silently producing a VM that cannot accept an SSH-ingress login.
 	CodeSSHIngressNotEnabled ErrorCode = "ssh_ingress_not_enabled"
 
+	// CodeIngressUnavailable reports that the control plane cannot currently
+	// broker an L4 ingress connection to a VM (POST /v1/vms/{id}/ingress):
+	// the VM sits on no usable network, or no gateway covering one of its
+	// overlays has reported its reconciliation converged. It is retryable -
+	// a gateway converging (or a NIC attaching) clears it.
+	CodeIngressUnavailable ErrorCode = "ingress_unavailable"
+
 	CodeInternal ErrorCode = "internal"
 )
 

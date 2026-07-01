@@ -424,6 +424,54 @@ func TestNetworkNodeStatusUpsertAndList(t *testing.T) {
 	}
 }
 
+// TestNetworkNodeStatusActiveSessions verifies the gateway-self-reported live
+// ingress-session count round-trips onto the per-(node, network) status row, and
+// that a count change is persisted even when the status and error are unchanged
+// (the no-op-if-unchanged optimization must not swallow it, or the sticky-
+// membership reaper would read a stale count).
+func TestNetworkNodeStatusActiveSessions(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	net := netParams(uniqueNetName("nas"))
+	if _, err := s.CreateNetwork(ctx, net); err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+	gw := uuid.New()
+
+	read := func() store.NetworkNodeStatus {
+		t.Helper()
+		rows, err := s.ListNetworkNodeStatusByNetwork(ctx, net.ID)
+		if err != nil {
+			t.Fatalf("ListNetworkNodeStatusByNetwork: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want 1", len(rows))
+		}
+		return rows[0]
+	}
+
+	// Initial report: 3 live sessions.
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: gw, ReconciliationStatus: "ready", ActiveSessions: 3,
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus initial: %v", err)
+	}
+	if got := read().ActiveSessions; got != 3 {
+		t.Fatalf("ActiveSessions = %d, want 3", got)
+	}
+
+	// Status and error unchanged ("ready"/nil), only the count drops to 0. The
+	// reaper depends on this landing, so the unchanged-status path must still write.
+	if err := s.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: net.ID, NodeID: gw, ReconciliationStatus: "ready", ActiveSessions: 0,
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus drain: %v", err)
+	}
+	if got := read().ActiveSessions; got != 0 {
+		t.Fatalf("ActiveSessions after drain = %d, want 0 (count change must persist)", got)
+	}
+}
+
 // TestNetworkNodeStatusLastReconciledOnlyOnReady verifies last_reconciled_at
 // tracks the last SUCCESSFUL reconciliation: an upsert with status "ready"
 // stamps it, a subsequent "failed" upsert preserves the prior timestamp

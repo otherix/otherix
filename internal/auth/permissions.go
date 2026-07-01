@@ -39,6 +39,12 @@ const (
 	PermVMSSH      Permission = "vm:ssh"
 	PermVMSSHGrant Permission = "vm:ssh-grant"
 
+	// PermVMConnect gates the control-plane connect-broker surface that
+	// proxies an inbound session to a VM's ingress gateway. It follows the
+	// vm:console own/any shape: admin/operator any, developer own, viewer
+	// none.
+	PermVMConnect Permission = "vm:connect"
+
 	// Snapshots. Scoped against snapshots.owner_id (which today aligns
 	// with the parent VM's owner; see docs/rbac.md edge-case note about
 	// future ownership transfer).
@@ -132,6 +138,7 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMMigrate:   ScopeAny,
 		PermVMSSH:       ScopeAny,
 		PermVMSSHGrant:  ScopeAny,
+		PermVMConnect:   ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -186,6 +193,7 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMMigrate:   ScopeAny,
 		PermVMSSH:       ScopeAny,
 		PermVMSSHGrant:  ScopeAny,
+		PermVMConnect:   ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -230,6 +238,7 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMRevert:    ScopeOwn,
 		PermVMSSH:       ScopeOwn,
 		PermVMSSHGrant:  ScopeOwn,
+		PermVMConnect:   ScopeOwn,
 
 		// Snapshots — own only.
 		PermSnapshotRead:   ScopeOwn,

@@ -70,6 +70,7 @@ Every entry is scoped against `vms.owner_id`.
 | `vm:migrate` | any   | any      | —         | —      |
 | `vm:ssh`     | any   | any      | own       | —      |
 | `vm:ssh-grant` | any | any      | own       | —      |
+| `vm:connect` | any   | any      | own       | —      |
 
 `vm:lifecycle` covers start, stop, poweroff, reboot, reset, pause,
 resume — every transition between desired phases.
@@ -84,6 +85,11 @@ not 403). `vm:ssh` is the single capability a grant token resolves to at
 connect time: the synthetic grant principal carries exactly this
 permission, scoped to the grant's current VM set, and is denied
 everything else.
+
+`vm:connect` gates the control-plane connect-broker surface that proxies
+an inbound session to a VM's ingress gateway. It follows the same
+own/any shape as `vm:console`: admin and operator hold it across the
+fleet, developer only for VMs they own, viewer not at all.
 
 `vm:read` is `any` for every role: VM names and high-level metadata are
 not considered confidential within a single self-hosted installation.

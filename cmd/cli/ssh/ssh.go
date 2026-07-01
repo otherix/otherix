@@ -99,9 +99,9 @@ func newProxyCommand() *cobra.Command {
 
 This is the body of an ssh ProxyCommand and is normally invoked by the
 system ssh client on behalf of 'otherix ssh <vm>', never run by hand. The
-<port> argument is the guest port ssh passes via the %p token; the relay
-targets the guest sshd directly, so it is accepted for ProxyCommand
-compatibility.`,
+<port> argument is the guest port ssh passes via the %p token; the
+connector brokers an ingress path to that guest port through the control
+plane.`,
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

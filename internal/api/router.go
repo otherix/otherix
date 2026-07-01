@@ -371,6 +371,12 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// by RequirePermission(vm:console); ownership scope=own
 				// for developer is enforced inside the handler.
 				r.With(middleware.RequirePermission(auth.PermVMConsole, deps.Logger)).Post("/{id}/console", vmsH.Console)
+				// vms.ingress — sync. The L4 ingress broker: gated by
+				// RequirePermission(vm:connect) at the route (viewer 403);
+				// ownership scope=own for developer is enforced inside the
+				// handler (cross-owner -> 404). Returns connect coordinates
+				// synchronously (200) - the data-plane connect is the client's.
+				r.With(middleware.RequirePermission(auth.PermVMConnect, deps.Logger)).Post("/{id}/ingress", vmsH.Ingress)
 				// vms.migrate — async (202). vm:migrate gates the route
 				// (admin / operator only; developer / viewer 403 at the
 				// middleware); ownership scope is enforced inside the

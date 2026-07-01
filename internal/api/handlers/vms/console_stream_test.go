@@ -217,6 +217,7 @@ type wsAgentServer struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
 	got    []byte
+	query  string        // RawQuery of the last accepted request (e.g. the relayed port)
 	accept chan struct{} // closed once a connection is accepted
 	closed chan struct{} // close it to make the handler drop the upstream
 }
@@ -225,6 +226,9 @@ func newWSAgentServer(t *testing.T, echo bool) *wsAgentServer {
 	t.Helper()
 	a := &wsAgentServer{accept: make(chan struct{}), closed: make(chan struct{})}
 	a.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.mu.Lock()
+		a.query = r.URL.RawQuery
+		a.mu.Unlock()
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
@@ -263,6 +267,12 @@ func (a *wsAgentServer) received() []byte {
 	out := make([]byte, len(a.got))
 	copy(out, a.got)
 	return out
+}
+
+func (a *wsAgentServer) lastQuery() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.query
 }
 
 func closeOnce(ch chan struct{}) {

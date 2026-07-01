@@ -139,6 +139,12 @@ type NetworkReport struct {
 	ID                   string  `json:"id"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error,omitempty"`
+	// ActiveSessions is the number of live ingress sessions an ingress gateway
+	// currently splices on this network. Reported only by a gateway node (zero/
+	// omitted otherwise). The CP stores it as observed state and keeps the
+	// gateway's overlay membership sticky while it is above zero so a draining
+	// session is never torn out from under itself.
+	ActiveSessions int `json:"active_sessions,omitempty"`
 }
 
 // Response mirrors HeartbeatResponse. The CP returns the desired
@@ -156,6 +162,11 @@ type Response struct {
 	DeclaredWireGuardPeers []DeclaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 	DeclaredFDB            []DeclaredFDBEntry      `json:"declared_fdb"`
+	// SessionCAPublicPEM is the PEM-encoded public half of the cluster
+	// ingress-session CA the CP distributes down-channel. A gateway uses it to
+	// verify short-lived ingress session credentials offline. Nil from an older
+	// CP or before the CA is provisioned.
+	SessionCAPublicPEM *string `json:"session_ca_public_pem,omitempty"`
 	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead).
 	// Nil from an older CP or before the underlay MTU is known; the WG
 	// reconciler falls back to netfabric.WireGuardMTU when absent.

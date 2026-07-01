@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -431,11 +432,38 @@ func TestWriteSSHConfigBlockMultipleSuffixesCoexist(t *testing.T) {
 	}
 }
 
-func TestProxySplicesBytesBothWays(t *testing.T) {
-	// One-shot echo WebSocket server: read one message from the client,
-	// echo it back, then close. The close drives the connector's
-	// guest->client copy to completion deterministically.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// relayStub is a minimal Control Plane stub for the relay transport: it brokers
+// every ingress request as transport "relay" and serves the ssh-stream
+// WebSocket as a one-shot echo. It records the brokered port and the ?port=N
+// query the relay leg threads so a test can prove the real guest port reaches
+// both legs.
+type relayStub struct {
+	mu              sync.Mutex
+	brokeredPort    int
+	streamPortQuery string
+}
+
+func (s *relayStub) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/vms/vm1/ingress", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Port int `json:"port"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		s.mu.Lock()
+		s.brokeredPort = body.Port
+		s.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"transport": "relay",
+			"vm_id":     "11111111-1111-1111-1111-111111111111",
+			"port":      body.Port,
+		})
+	})
+	mux.HandleFunc("/v1/vms/vm1/ssh-stream", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.streamPortQuery = r.URL.Query().Get("port")
+		s.mu.Unlock()
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
@@ -447,7 +475,15 @@ func TestProxySplicesBytesBothWays(t *testing.T) {
 		}
 		_ = c.Write(r.Context(), typ, data)
 		_ = c.Close(websocket.StatusNormalClosure, "")
-	}))
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestProxySplicesBytesBothWays(t *testing.T) {
+	// Proxy brokers an ingress connection, the stub selects the relay transport,
+	// and the one-shot echo WebSocket round-trips the spliced bytes.
+	stub := &relayStub{}
+	srv := stub.server(t)
 	defer srv.Close()
 
 	cfg := Config{
@@ -472,5 +508,149 @@ func TestProxySplicesBytesBothWays(t *testing.T) {
 
 	if got := stdout.String(); got != clientToServer {
 		t.Errorf("echoed bytes = %q, want %q", got, clientToServer)
+	}
+}
+
+// TestProxyThreadsPortToRelay proves Proxy no longer drops the port: the real
+// guest port reaches both the broker body and the relay leg's ?port=N query.
+func TestProxyThreadsPortToRelay(t *testing.T) {
+	stub := &relayStub{}
+	srv := stub.server(t)
+	defer srv.Close()
+
+	cfg := Config{ServerURL: srv.URL, BearerToken: "otx_token"}
+
+	const wantPort = 2222
+	stdin := io.NopCloser(strings.NewReader("x"))
+	var stdout strings.Builder
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Proxy(context.Background(), cfg, "vm1", wantPort, stdin, &stdout)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Proxy did not return")
+	}
+
+	stub.mu.Lock()
+	gotBroker, gotStream := stub.brokeredPort, stub.streamPortQuery
+	stub.mu.Unlock()
+	if gotBroker != wantPort {
+		t.Errorf("brokered port = %d, want %d", gotBroker, wantPort)
+	}
+	if gotStream != strconv.Itoa(wantPort) {
+		t.Errorf("relay ?port = %q, want %q", gotStream, strconv.Itoa(wantPort))
+	}
+}
+
+// fakeGateway is a stub of the gateway's POST /v1/connect: it records the bearer
+// the client presented, completes the hijack handshake (200 then raw bytes), and
+// echoes the spliced stream.
+type fakeGateway struct {
+	mu     sync.Mutex
+	bearer string
+}
+
+func (g *fakeGateway) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		g.bearer = r.Header.Get("Authorization")
+		g.mu.Unlock()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\n\r\n")
+		_, _ = io.Copy(conn, conn)
+	}
+}
+
+// TestDialIngressGatewayPresentsCred proves the gateway leg: DialIngress brokers
+// a gateway transport, TLS-dials the returned splicer address, presents the
+// session credential as the bearer, and returns a conn that splices bytes to the
+// gateway.
+func TestDialIngressGatewayPresentsCred(t *testing.T) {
+	gw := &fakeGateway{}
+	gwTS := httptest.NewTLSServer(gw.handler())
+	defer gwTS.Close()
+	// The broker reports the gateway's advertised endpoint as a full https URL,
+	// so the client must derive the dial host:port and the TLS ServerName from it.
+	splicer := "https://" + gwTS.Listener.Addr().String()
+
+	cpTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Port int `json:"port"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"transport":    "gateway",
+			"vm_id":        "11111111-1111-1111-1111-111111111111",
+			"port":         body.Port,
+			"splicer_addr": splicer,
+			"session_cred": "otx_ingress_faketoken",
+			"expires_at":   time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer cpTS.Close()
+
+	cfg := Config{
+		ServerURL:   cpTS.URL,
+		BearerToken: "otx_clitoken",
+		CACertPEM:   certPEM(cpTS.Certificate()),
+	}
+
+	conn, err := DialIngress(context.Background(), cfg, "vm1", 22)
+	if err != nil {
+		t.Fatalf("DialIngress: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "ping" {
+		t.Errorf("echoed bytes = %q, want %q", got, "ping")
+	}
+
+	gw.mu.Lock()
+	bearer := gw.bearer
+	gw.mu.Unlock()
+	if bearer != "Bearer otx_ingress_faketoken" {
+		t.Errorf("gateway bearer = %q, want %q", bearer, "Bearer otx_ingress_faketoken")
+	}
+}
+
+// TestGatewayTLSConfigUsesRootCAsAndServerName pins the gateway leg's trust: it
+// verifies against the cluster CA bundle with ServerName set to the splicer host,
+// never InsecureSkipVerify.
+func TestGatewayTLSConfigUsesRootCAsAndServerName(t *testing.T) {
+	caPEM := foreignCAPEM(t)
+	cfg, err := gatewayTLSConfig(Config{CACertPEM: caPEM}, "gw.example")
+	if err != nil {
+		t.Fatalf("gatewayTLSConfig: %v", err)
+	}
+	if cfg.InsecureSkipVerify {
+		t.Error("gateway leg must not skip TLS verification")
+	}
+	if cfg.RootCAs == nil {
+		t.Error("gateway leg must verify against the cluster CA bundle")
+	}
+	if cfg.ServerName != "gw.example" {
+		t.Errorf("ServerName = %q, want %q", cfg.ServerName, "gw.example")
 	}
 }

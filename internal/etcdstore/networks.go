@@ -439,9 +439,13 @@ func (s *Store) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNet
 	// is otherwise N_nodes x N_networks PutJSON per heartbeat. last_reconciled_at
 	// then marks the transition into the current status, not every re-confirmation;
 	// node liveness is the heartbeat's own signal, not this record's updated_at.
+	// active_sessions is part of the comparison so a gateway's session count
+	// reaching zero is persisted - the sticky-membership reaper reads it, and a
+	// stale non-zero count would wedge the reaper.
 	if found &&
 		prior.ReconciliationStatus == arg.ReconciliationStatus &&
-		equalStringPtr(prior.ReconciliationError, arg.ReconciliationError) {
+		equalStringPtr(prior.ReconciliationError, arg.ReconciliationError) &&
+		prior.ActiveSessions == arg.ActiveSessions {
 		return nil
 	}
 
@@ -461,6 +465,7 @@ func (s *Store) UpsertNetworkNodeStatus(ctx context.Context, arg store.UpsertNet
 		ReconciliationError:  arg.ReconciliationError,
 		LastReconciledAt:     lastReconciledAt,
 		UpdatedAt:            now,
+		ActiveSessions:       arg.ActiveSessions,
 	}
 	return s.c.PutJSON(ctx, key, st)
 }

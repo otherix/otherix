@@ -10,8 +10,12 @@
 //     never leaves the machine), mints a short-lived guest certificate from
 //     POST /v1/vms/{vm}/ssh-cert, and caches the cert for reuse until it nears
 //     expiry.
-//   - Proxy dials the GET /v1/vms/{vm}/ssh-stream WebSocket and splices it to
-//     a supplied stdin/stdout pair. This is the body of an ssh ProxyCommand.
+//   - DialIngress brokers an L4 ingress connection via POST /v1/vms/{vm}/ingress
+//     and returns a spliceable net.Conn over the selected transport: a direct
+//     TLS connection to a converged gateway (control plane out of the data path)
+//     or the control-plane relay WebSocket.
+//   - Proxy brokers via DialIngress and splices the resulting transport to a
+//     supplied stdin/stdout pair. This is the body of an ssh ProxyCommand.
 //   - WriteSSHConfigBlock writes a marker-delimited managed ssh_config block so
 //     `ssh <name>.<cluster-suffix>` routes transparently through the connector.
 //
@@ -21,6 +25,7 @@
 package sshconn
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -34,10 +39,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -262,53 +269,249 @@ func mintCert(ctx context.Context, cfg Config, vmName, login string, pub ssh.Pub
 	return ensureTrailingNewline([]byte(out.Certificate)), nil
 }
 
-// Proxy dials wss://{ServerURL}/v1/vms/{vm}/ssh-stream with the configured
-// bearer and TLS trust, then splices the WebSocket to stdin/stdout. It returns
-// when either side closes (stdin EOF, server close, context cancel). This is
-// the body of an ssh ProxyCommand: stdin/stdout are the ssh client's pipes and
-// the spliced bytes are end-to-end SSH the CP never inspects. port is the
-// guest port from the ProxyCommand `%p` token; the relay endpoint targets the
-// guest sshd directly, so it is accepted for signature stability and not used
-// to address the stream.
-func Proxy(ctx context.Context, cfg Config, vmName string, port int, stdin io.Reader, stdout io.Writer) error {
-	_ = port
-	streamURL, err := streamURL(cfg.ServerURL, vmName)
+// ingressResponse mirrors the POST /v1/vms/{vm}/ingress broker response. The
+// control plane selects the transport; gateway-only fields stay empty on the
+// relay path.
+type ingressResponse struct {
+	Transport   string `json:"transport"`
+	VMID        string `json:"vm_id"`
+	Port        int    `json:"port"`
+	SplicerAddr string `json:"splicer_addr"`
+	SessionCred string `json:"session_cred"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
+// DialIngress brokers an L4 ingress connection to vmName's guest port and
+// returns a spliceable net.Conn carrying raw bytes to the guest. It POSTs to
+// {ServerURL}/v1/vms/{vm}/ingress, then establishes the transport the control
+// plane selected: a direct TLS connection to the converged gateway presenting
+// the minted session credential ("gateway", control plane out of the data
+// path), or the control-plane relay WebSocket ("relay"). The caller splices its
+// own byte stream to the returned conn and closes it when done.
+func DialIngress(ctx context.Context, cfg Config, vmName string, port int) (net.Conn, error) {
+	resp, err := brokerIngress(ctx, cfg, vmName, port)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	switch resp.Transport {
+	case "gateway":
+		return dialGateway(ctx, cfg, resp)
+	case "relay":
+		return dialRelay(ctx, cfg, vmName, resp.Port)
+	default:
+		return nil, fmt.Errorf("sshconn: unknown ingress transport %q", resp.Transport)
+	}
+}
+
+// brokerIngress posts the desired guest port to the CP ingress broker and
+// returns the connect coordinates. Only the port crosses the wire; the bearer
+// authorizes the call.
+func brokerIngress(ctx context.Context, cfg Config, vmName string, port int) (ingressResponse, error) {
+	client, err := wsHTTPClient(cfg)
+	if err != nil {
+		return ingressResponse{}, err
+	}
+	client.Timeout = fetchTimeout
+
+	reqBody, err := json.Marshal(ingressRequest{Port: port})
+	if err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: marshal ingress request: %v", err)
+	}
+	endpoint := strings.TrimRight(cfg.ServerURL, "/") + "/v1/vms/" + url.PathEscape(vmName) + "/ingress"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(reqBody)))
+	if err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: build ingress request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if cfg.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.BearerToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: broker ingress: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return ingressResponse{}, fmt.Errorf("sshconn: broker ingress: HTTP %d", resp.StatusCode)
+	}
+	var out ingressResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return ingressResponse{}, fmt.Errorf("sshconn: decode ingress response: %v", err)
+	}
+	if out.Transport == "" {
+		return ingressResponse{}, errors.New("sshconn: ingress response carried no transport")
+	}
+	return out, nil
+}
+
+// ingressRequest is the broker request body: the guest TCP port to reach.
+type ingressRequest struct {
+	Port int `json:"port"`
+}
+
+// dialGateway TLS-dials the converged gateway's splicer address, performs the
+// connect upgrade (POST /v1/connect with the session credential as the bearer),
+// and returns the spliceable conn positioned at the raw guest byte stream.
+func dialGateway(ctx context.Context, cfg Config, resp ingressResponse) (net.Conn, error) {
+	if resp.SplicerAddr == "" || resp.SessionCred == "" {
+		return nil, errors.New("sshconn: gateway broker response missing splicer address or credential")
+	}
+	// The broker reports the gateway's advertised endpoint, which is a full
+	// https URL (validated as such at node join). Derive the host:port to dial
+	// and the hostname to pin as the TLS ServerName from it.
+	u, err := url.Parse(resp.SplicerAddr)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("sshconn: parse splicer address %q: %v", resp.SplicerAddr, err)
+	}
+	tlsCfg, err := gatewayTLSConfig(cfg, u.Hostname())
+	if err != nil {
+		return nil, err
+	}
+	conn, err := (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, "tcp", u.Host)
+	if err != nil {
+		return nil, fmt.Errorf("sshconn: dial gateway %s: %v", u.Host, err)
+	}
+	spliced, err := gatewayConnect(conn, u.Host, resp.SessionCred)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return spliced, nil
+}
+
+// gatewayConnect writes the minimal POST /v1/connect upgrade request carrying
+// the session credential, consumes the gateway's status line + headers up to the
+// blank line, and returns a conn whose reads continue from the buffered reader
+// so no leading guest byte is lost. A non-200 status is surfaced as an error.
+func gatewayConnect(conn net.Conn, host, cred string) (net.Conn, error) {
+	req := "POST /v1/connect HTTP/1.1\r\nHost: " + host +
+		"\r\nAuthorization: Bearer " + cred + "\r\n\r\n"
+	if _, err := io.WriteString(conn, req); err != nil {
+		return nil, fmt.Errorf("sshconn: send gateway connect: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("sshconn: read gateway response: %v", err)
+	}
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("sshconn: read gateway headers: %v", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+	if code, ok := parseStatusCode(statusLine); !ok || code != http.StatusOK {
+		return nil, fmt.Errorf("sshconn: gateway refused connect: %s", strings.TrimSpace(statusLine))
+	}
+	return &bufferedConn{Conn: conn, r: br}, nil
+}
+
+// parseStatusCode extracts the numeric code from an "HTTP/1.1 <code> <reason>"
+// status line. ok is false when the line is malformed.
+func parseStatusCode(statusLine string) (int, bool) {
+	fields := strings.Fields(statusLine)
+	if len(fields) < 2 {
+		return 0, false
+	}
+	code, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, false
+	}
+	return code, true
+}
+
+// bufferedConn is a net.Conn whose reads draw from a bufio.Reader that already
+// consumed the connect handshake headers, so any guest bytes the gateway buffered
+// alongside the 200 response are not dropped. Writes, Close, and CloseWrite pass
+// through to the underlying conn.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// CloseWrite half-closes the write direction when the underlying conn supports
+// it (a *tls.Conn does), so a peer reading the spliced stream sees a clean EOF.
+func (c *bufferedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
+// gatewayTLSConfig builds the TLS trust for the gateway leg: it reuses the
+// connector's configured trust (the cluster CA bundle per ADR 0026) and pins the
+// ServerName to the splicer host, since the gateway leaf is cluster-CA-signed
+// with its advertised endpoint in the SAN. It never disables verification on its
+// own (only an explicit operator InsecureSkipTLSVerify does).
+func gatewayTLSConfig(cfg Config, host string) (*tls.Config, error) {
+	base, err := resolveTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	base.ServerName = host
+	return base, nil
+}
+
+// dialRelay dials the control-plane ssh-stream relay WebSocket for vmName,
+// threading the guest port, and returns the spliceable net.Conn.
+func dialRelay(ctx context.Context, cfg Config, vmName string, port int) (net.Conn, error) {
+	su, err := streamURL(cfg.ServerURL, vmName, port)
+	if err != nil {
+		return nil, err
 	}
 	client, err := wsHTTPClient(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	hdr := http.Header{}
 	if cfg.BearerToken != "" {
 		hdr.Set("Authorization", "Bearer "+cfg.BearerToken)
 	}
-	conn, _, err := websocket.Dial(ctx, streamURL, &websocket.DialOptions{
+	conn, _, err := websocket.Dial(ctx, su, &websocket.DialOptions{
 		HTTPClient: client,
 		HTTPHeader: hdr,
 	})
 	if err != nil {
-		return fmt.Errorf("sshconn: dial ssh-stream: %v", err)
+		return nil, fmt.Errorf("sshconn: dial ssh-stream: %v", err)
 	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+	return websocket.NetConn(ctx, conn, websocket.MessageBinary), nil
+}
 
-	relayCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	nc := websocket.NetConn(relayCtx, conn, websocket.MessageBinary)
+// Proxy brokers an ingress connection to vmName's guest port and splices the
+// resulting transport (gateway or relay) to stdin/stdout. It returns when either
+// side closes (stdin EOF, guest close, context cancel). This is the body of an
+// ssh ProxyCommand: stdin/stdout are the ssh client's pipes and the spliced
+// bytes are end-to-end SSH the control plane never inspects. port is the guest
+// port from the ProxyCommand `%p` token.
+func Proxy(ctx context.Context, cfg Config, vmName string, port int, stdin io.Reader, stdout io.Writer) error {
+	conn, err := DialIngress(ctx, cfg, vmName, port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
 
 	// The guest->client direction is authoritative for session lifetime: it
-	// ends when the guest sshd closes the stream (clean EOF) or when the local
-	// stdout pipe breaks because the ssh client exited. The client->guest copy
-	// runs in the background; when stdin reaches EOF it stops on its own and
-	// the deferred Close tears the WebSocket down. We do not close from the
-	// stdin goroutine so an in-flight guest->client frame is never dropped.
-	go func() { _, _ = io.Copy(nc, stdin) }()
+	// ends when the guest closes the stream (clean EOF) or when the local stdout
+	// pipe breaks because the ssh client exited. The client->guest copy runs in
+	// the background; when stdin reaches EOF it stops on its own and the deferred
+	// Close tears the transport down. We do not close from the stdin goroutine so
+	// an in-flight guest->client frame is never dropped.
+	go func() { _, _ = io.Copy(conn, stdin) }()
 
-	_, copyErr := io.Copy(stdout, nc)
-	cancel()
-	if copyErr != nil && !errors.Is(copyErr, io.EOF) && !errors.Is(copyErr, context.Canceled) {
-		return fmt.Errorf("sshconn: ssh-stream relay: %v", copyErr)
+	_, copyErr := io.Copy(stdout, conn)
+	if copyErr != nil &&
+		!errors.Is(copyErr, io.EOF) &&
+		!errors.Is(copyErr, context.Canceled) &&
+		!errors.Is(copyErr, net.ErrClosed) {
+		return fmt.Errorf("sshconn: ingress relay: %v", copyErr)
 	}
 	return nil
 }
@@ -480,8 +683,9 @@ func normalizeFingerprint(fp string) string {
 }
 
 // streamURL builds the ssh-stream WebSocket URL from the CP base URL, mapping
-// http->ws and https->wss.
-func streamURL(serverURL, vmName string) (string, error) {
+// http->ws and https->wss and threading the guest port as ?port=N so the relay
+// targets the requested guest port.
+func streamURL(serverURL, vmName string, port int) (string, error) {
 	u, err := url.Parse(strings.TrimRight(serverURL, "/"))
 	if err != nil {
 		return "", fmt.Errorf("sshconn: parse server url: %v", err)
@@ -495,6 +699,11 @@ func streamURL(serverURL, vmName string) (string, error) {
 		return "", fmt.Errorf("sshconn: unsupported server url scheme %q", u.Scheme)
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/v1/vms/" + url.PathEscape(vmName) + "/ssh-stream"
+	if port != 0 {
+		q := u.Query()
+		q.Set("port", strconv.Itoa(port))
+		u.RawQuery = q.Encode()
+	}
 	return u.String(), nil
 }
 

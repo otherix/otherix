@@ -20,14 +20,17 @@ func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 func vni(v int32) *int32 { return &v }
 
 // reconcileStoreFake is a seam double for GatewayReconcileStore. It records every
-// CreateGatewayMembership call and never offers a delete, so a removal attempt
-// would not compile - the never-remove invariant is enforced structurally.
+// CreateGatewayMembership and DeleteGatewayMembership call so a test can assert
+// both the additive coverage pass and the sticky reaping pass act exactly when
+// they should.
 type reconcileStoreFake struct {
-	networks      []store.Network
-	nicsByNetwork map[uuid.UUID][]store.VMNic
-	nodes         []store.Node
-	memberships   map[uuid.UUID][]store.GatewayMembership // networkID -> members
-	created       []struct{ gateway, network uuid.UUID }
+	networks        []store.Network
+	nicsByNetwork   map[uuid.UUID][]store.VMNic
+	nodes           []store.Node
+	memberships     map[uuid.UUID][]store.GatewayMembership // networkID -> members
+	statusByNetwork map[uuid.UUID][]store.NetworkNodeStatus // networkID -> per-node status
+	created         []struct{ gateway, network uuid.UUID }
+	deleted         []struct{ gateway, network uuid.UUID }
 }
 
 func (f *reconcileStoreFake) ListNetworks(_ context.Context, arg store.ListNetworksParams) ([]store.Network, error) {
@@ -64,6 +67,24 @@ func (f *reconcileStoreFake) CreateGatewayMembership(_ context.Context, gatewayI
 	f.memberships[networkID] = append(f.memberships[networkID], m)
 	f.created = append(f.created, struct{ gateway, network uuid.UUID }{gatewayID, networkID})
 	return m, nil
+}
+
+func (f *reconcileStoreFake) ListNetworkNodeStatusByNetwork(_ context.Context, networkID uuid.UUID) ([]store.NetworkNodeStatus, error) {
+	return f.statusByNetwork[networkID], nil
+}
+
+func (f *reconcileStoreFake) DeleteGatewayMembership(_ context.Context, gatewayID, networkID uuid.UUID) error {
+	members := f.memberships[networkID]
+	kept := members[:0:0]
+	for _, m := range members {
+		if m.GatewayID == gatewayID {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	f.memberships[networkID] = kept
+	f.deleted = append(f.deleted, struct{ gateway, network uuid.UUID }{gatewayID, networkID})
+	return nil
 }
 
 func gatewayNode(id uuid.UUID) store.Node {

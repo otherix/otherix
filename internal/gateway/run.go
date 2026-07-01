@@ -66,8 +66,19 @@ func Run(ctx context.Context, cfg *config.AgentConfig, nodeName string, log *slo
 	// the gateway posts heartbeats with backs POST /v1/heartbeat/nudge. A
 	// nil Sender (misconfiguration) yields a no-op nudger so the endpoint
 	// still answers 204 without a nil-pointer panic.
-	sender := buildSender(heartbeatCtx, cfg, nodeName, recs.networks, recs.wireGuard, log)
-	router := buildRouter(cfg, nodeName, log, nudgerFor(sender))
+	// The session-CA store learns the ingress-session CA public half from the
+	// heartbeat response (down-channel) and backs the connect route's credential
+	// gate. It is wired into the heartbeat sender's response fan-out and read by
+	// the gate, so the same heartbeat loop that drives the reconcilers keeps the
+	// verification key fresh.
+	caStore := newSessionCAStore(log)
+
+	sender := buildSender(heartbeatCtx, cfg, nodeName, recs.networks, recs.wireGuard, caStore, log)
+	router := buildRouter(cfg, nodeName, log, nudgerFor(sender), connectDeps{
+		fabric:   fabric,
+		overlays: recs.networks,
+		caStore:  caStore,
+	})
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -157,7 +168,7 @@ func (noVMs) List() []*vm.VM { return nil }
 // (logging a WARN) when the heartbeat path cannot be initialised, so a
 // misconfiguration never blocks the rest of the runtime. The returned
 // Sender backs both the heartbeat loop and POST /v1/heartbeat/nudge.
-func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, log *slog.Logger) *heartbeat.Sender {
+func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, caStore *sessionCAStore, log *slog.Logger) *heartbeat.Sender {
 	if nodeName == "" {
 		log.Warn("heartbeat disabled: node_name is empty (cert CN parse failed upstream)")
 		return nil
@@ -187,10 +198,12 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 		return nil
 	}
 
-	// MultiResponseHandler fans the heartbeat response to both reconcilers:
-	// the WireGuard reconciler consumes self_overlay_ip + declared peers, the
-	// network reconciler consumes declared_networks + declared_fdb.
-	handler := heartbeat.MultiResponseHandler{netRec, wgRec}
+	// MultiResponseHandler fans the heartbeat response to the reconcilers and the
+	// session-CA store: the WireGuard reconciler consumes self_overlay_ip +
+	// declared peers, the network reconciler consumes declared_networks +
+	// declared_fdb, and the session-CA store consumes session_ca_public_pem to
+	// arm the connect route's credential gate.
+	handler := heartbeat.MultiResponseHandler{netRec, wgRec, caStore}
 	return heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
 		Interval: cfg.ControlPlane.HeartbeatInterval,
 	}, log)
@@ -214,19 +227,23 @@ type noopNudger struct{}
 // Nudge does nothing.
 func (noopNudger) Nudge() {}
 
-// buildRouter constructs the chi router with the standard middleware chain,
-// gated by RequireCPIdentity so only the control plane can reach the
-// gateway's control surface. A stolen node cert (itself a valid cluster-CA
-// client cert) is rejected before any handler runs. The gateway surface is
-// intentionally tiny: a health probe, the heartbeat nudge, and the
-// connect/splice route.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger) http.Handler {
+// buildRouter constructs the chi router with the standard middleware chain. The
+// gateway surface is intentionally tiny and splits into two trust domains. The
+// control routes - the health probe and the heartbeat nudge - are gated by
+// RequireCPIdentity so only the control plane reaches them; a stolen node cert
+// (itself a valid cluster-CA client cert) is rejected before any handler runs.
+// The connect/splice route is reached by the CLI directly with a short-lived
+// ingress session credential and is gated instead by the credential gate, not
+// by a client certificate. RequireCPIdentity is therefore applied per-group
+// rather than at the top level, so lowering the listener to accept a
+// certificate-less connect client never widens the control routes: they still
+// fail closed on a missing or non-CP client cert.
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger, connect connectDeps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger(log))
 	r.Use(middleware.Recoverer(log))
-	r.Use(middleware.RequireCPIdentity(log))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, r, http.StatusNotFound,
@@ -237,7 +254,10 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, hea
 			response.CodeMethodNotAllowed, "method not allowed for this resource", nil)
 	})
 
+	// CP-only control routes: health probe and heartbeat nudge, gated by
+	// CP identity and bounded by the per-request timeout.
 	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequireCPIdentity(log))
 		r.Use(middleware.Timeout(cfg.Server.ReadTimeout))
 
 		r.Get("/health", healthHandler(nodeName, log))
@@ -247,13 +267,17 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, hea
 		})
 	})
 
-	// The connect/splice route hijacks the inbound connection and splices it to
-	// a target dialed on the overlay. It stays under the top-level CP-identity
-	// gate — only the control plane drives it, and the target it carries is
-	// trusted as supplied — but deliberately outside the Timeout group: a
-	// long-lived spliced session must not be killed by the per-request deadline,
-	// and the timeout's guarded writer does not support hijacking.
-	r.Post("/v1/connect", newConnectHandler(log).Connect)
+	// The connect/splice route verifies a short-lived ingress session credential
+	// (its credential gate, not CP identity) and then hijacks the inbound
+	// connection and splices it to the credential's guest target on the overlay.
+	// It is deliberately outside the Timeout group: a long-lived spliced session
+	// must not be killed by the per-request deadline, and the timeout's guarded
+	// writer does not support hijacking.
+	handler := newConnectHandler(connect, log)
+	r.Group(func(r chi.Router) {
+		r.Use(handler.verifyCred)
+		r.Post("/v1/connect", handler.Connect)
+	})
 
 	return r
 }
@@ -332,10 +356,19 @@ func startHeartbeat(ctx context.Context, sender *heartbeat.Sender, log *slog.Log
 	return done
 }
 
-// loadTLS builds a TLS config that requires and verifies a client cert
-// signed by the CA at cfg.CACertPath, and presents the gateway's own cert.
-// The single leaf serves both the inbound listener and the outbound
-// heartbeat dialer.
+// loadTLS builds the gateway's TLS config: it presents the gateway's own cert
+// and verifies any client cert that IS presented against the cluster CA at
+// cfg.CACertPath, but does not require one. The single leaf serves both the
+// inbound listener and the outbound heartbeat dialer.
+//
+// ClientAuth is VerifyClientCertIfGiven rather than RequireAndVerifyClientCert
+// because the connect route is reached by the CLI directly with a bearer
+// ingress session credential and no client certificate - a required-cert
+// listener would reject that client at the handshake. A client that does present
+// a cert is still fully cluster-CA-verified, and the CP-only control routes stay
+// authoritative-gated by RequireCPIdentity, which fails closed on a missing or
+// non-CP client cert. So accepting a certificate-less connect client never
+// widens the control surface.
 func loadTLS(cfg config.TLSConfig) (*tls.Config, error) {
 	caData, err := os.ReadFile(cfg.CACertPath)
 	if err != nil {
@@ -352,7 +385,7 @@ func loadTLS(cfg config.TLSConfig) (*tls.Config, error) {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    caPool,
 	}, nil
 }

@@ -2789,6 +2789,73 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/vms/{id}/ingress:
+    parameters:
+      - $ref: "#/components/parameters/VMName"
+    post:
+      operationId: vms.ingress
+      tags: [vms]
+      summary: Broker an L4 ingress connection to a VM (synchronous).
+      description: |
+        Asks the control plane to broker an L4 (TCP) ingress connection to a
+        guest port. The control plane authorizes the caller, decides how the
+        client should reach the guest, and returns the connect coordinates
+        synchronously — the data-plane connect is the client's job, so this is
+        a `200`, not an async task.
+
+        The `transport` field discriminates the response:
+        - `gateway` — an overlay VM. `splicer_addr` is a converged gateway's
+          address and `session_cred` is a short-lived bearer the client
+          presents to that gateway, which verifies it offline. The control
+          plane is out of the data path.
+        - `relay` — a bridge VM. The client connects back through the
+          control-plane relay (which authorizes per request itself); no gateway
+          address or session credential is minted.
+
+        A VM the caller cannot see returns `404` (never `403`, so the endpoint
+        leaks no VM existence). A VM on no usable network, or an overlay with no
+        converged gateway, returns `409 ingress_unavailable` (retryable).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [port]
+              properties:
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                  description: The guest TCP port to reach.
+      responses:
+        "200":
+          description: Connect coordinates issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMIngressResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            No usable network or no converged gateway for ingress
+            (`ingress_unavailable`), or idempotency-key mismatch
+            (`idempotency_key_mismatch`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/vms/{id}/ssh-cert:
     parameters:
       - $ref: "#/components/parameters/VMName"
@@ -4178,6 +4245,7 @@ components:
         - ssh_session_rejected
         - ssh_login_not_allowed
         - ssh_ingress_not_enabled
+        - ingress_unavailable
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
@@ -7456,6 +7524,50 @@ components:
           type: string
           format: date-time
           description: After this time the token is rejected by the agent.
+
+    VMIngressResponse:
+      type: object
+      description: |
+        Connect coordinates returned by the L4 ingress broker. The
+        `transport` field discriminates the shape:
+
+        - `gateway` — overlay VM. `splicer_addr`, `session_cred`, and
+          `expires_at` are present; the client dials `splicer_addr` and
+          presents `session_cred`.
+        - `relay` — bridge VM. The gateway-only fields are omitted; the
+          client connects back through the control-plane relay.
+      required: [transport, vm_id, port]
+      properties:
+        transport:
+          type: string
+          enum: [gateway, relay]
+          description: How the client should reach the guest.
+        vm_id:
+          type: string
+          format: uuid
+          description: The brokered VM.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The guest TCP port the coordinates target.
+        splicer_addr:
+          type: string
+          description: |
+            The converged gateway's address to dial. Present only on the
+            `gateway` transport.
+        session_cred:
+          type: string
+          description: |
+            Short-lived opaque bearer the client presents to the gateway,
+            which verifies it offline. Present only on the `gateway`
+            transport.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            When `session_cred` expires. Present only on the `gateway`
+            transport.
 
     VmDisk:
       type: object

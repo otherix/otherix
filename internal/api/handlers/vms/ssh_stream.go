@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -69,6 +70,16 @@ func (h *Handler) SSHStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The guest port the operator wants to reach. Absent means 22 (the bare
+	// `otherix ssh` re-home); a present value must be a valid TCP port. A bad
+	// port collapses to the same uniform reject as every other failure so the
+	// endpoint stays free of an enumeration oracle.
+	port, ok := sshStreamPort(r)
+	if !ok {
+		h.rejectSSH(w, r)
+		return
+	}
+
 	if !h.authorizeSSHStream(r.Context(), tok, vmName, time.Now()) {
 		h.rejectSSH(w, r)
 		return
@@ -97,7 +108,7 @@ func (h *Handler) SSHStream(w http.ResponseWriter, r *http.Request) {
 	// (agent unreachable, VM not running on the agent) still collapses to the
 	// uniform 401 - no existence signal, no half-open downstream.
 	upstream, _, err := websocket.Dial(r.Context(),
-		agentclient.BuildSSHPipeURL(node.host, vmName),
+		agentclient.BuildSSHPipeURL(node.host, vmName, port),
 		&websocket.DialOptions{HTTPClient: h.consoleDeps.AgentClient.HTTPClient()})
 	if err != nil {
 		h.log.WarnContext(r.Context(), "vms.sshStream dial upstream",
@@ -133,6 +144,25 @@ func (h *Handler) SSHStream(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = downstream.Close(websocket.StatusInternalError, "") }()
 
 	relaySSH(r.Context(), downstream, upstream)
+}
+
+// sshStreamPort reads the guest TCP port the client wants to reach from the
+// "port" query parameter. An absent port defaults to 22 (the SSH re-home for a
+// bare `otherix ssh`); a present port must parse and fall in 1..65535. It
+// returns ok=false on a malformed or out-of-range value so the caller collapses
+// it to the endpoint's single uniform reject. The port is the only
+// client-influenced input the relay forwards; the dial host stays lease-derived
+// on the agent.
+func sshStreamPort(r *http.Request) (port int, ok bool) {
+	raw := r.URL.Query().Get("port")
+	if raw == "" {
+		return 22, true
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, false
+	}
+	return port, true
 }
 
 // authorizeSSHStream reports whether the bearer authorizes an SSH session to

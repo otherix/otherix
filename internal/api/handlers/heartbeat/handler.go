@@ -34,6 +34,7 @@ import (
 type Store interface {
 	NodeByName(ctx context.Context, name string) (store.Node, error)
 	RunHeartbeatProjection(ctx context.Context, fn func(store.HeartbeatProjection) error) error
+	ActiveSessionCA(ctx context.Context) (store.SessionCA, error)
 }
 
 // Ensure the production store satisfies the handler's storage contract.

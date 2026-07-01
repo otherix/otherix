@@ -136,6 +136,11 @@ type networkReport struct {
 	ID                   string  `json:"id"`
 	ReconciliationStatus string  `json:"reconciliation_status"`
 	ReconciliationError  *string `json:"reconciliation_error"`
+	// ActiveSessions is a gateway's self-reported count of live ingress sessions
+	// on this network. Zero/absent for a hypervisor node. The CP stores it on the
+	// network_node_status row, where the gateway coverage reconcile reads it to
+	// keep a membership sticky while sessions drain.
+	ActiveSessions int `json:"active_sessions,omitempty"`
 }
 
 type migrationCapability struct {
@@ -192,6 +197,11 @@ type responseBody struct {
 	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
 	DeclaredFDB            []declaredFDBEntry      `json:"declared_fdb"`
+	// SessionCAPublicPEM is the PEM-encoded public half of the cluster
+	// ingress-session CA, distributed to gateways so they verify short-lived
+	// session credentials offline. Nil until the CA is provisioned; the private
+	// half never leaves the control plane.
+	SessionCAPublicPEM *string `json:"session_ca_public_pem,omitempty"`
 	// Otwg0MTU is the CP-declared otwg0 link MTU (underlay - WGEncapOverhead),
 	// mirrored to the agent so it brings otwg0 up at the right size on a
 	// sub-1500 underlay.

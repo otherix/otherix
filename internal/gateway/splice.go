@@ -4,16 +4,22 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/auth"
 )
 
 // connectDialTimeout bounds the dial to the target over the overlay. A target
@@ -21,46 +27,177 @@ import (
 // holding the request open.
 const connectDialTimeout = 10 * time.Second
 
-// dialFunc is the dial seam the connect handler uses to reach the target over
-// the overlay. Production wires it to a plain TCP dialer; tests substitute a
-// dialer that reaches a loopback stub.
-type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+// Connection-slot caps for the connect/splice plane. They bound the number of
+// concurrent spliced sessions a single gateway carries, per VM and in total, so
+// one tenant cannot exhaust the gateway's file descriptors or memory and a
+// gateway has a hard ceiling on fan-out.
+const (
+	defaultConnectPerVMCap   = 8
+	defaultConnectGatewayCap = 256
+)
 
-// connectHandler serves POST /v1/connect: it dials a target on the overlay and
-// splices the inbound connection to it byte for byte. The route is mounted
-// under the gateway's CP-identity group, so the only caller is the control
-// plane; the target (guest_ip, port) it carries is trusted as supplied. The
-// gateway never originates the target itself and applies no per-session
-// credential check here - operator-authenticated session credentials and the
-// re-resolve-from-lease anti-SSRF binding are a later concern; in this form the
-// CP-identity boundary on the route is the whole gate.
-type connectHandler struct {
-	dial dialFunc
-	log  *slog.Logger
+// dialFunc is the dial seam the connect handler uses to reach the target over
+// the overlay. bridge is the overlay bridge the guest IP was validated on; the
+// production dialer binds the connection to it so the dial egresses the same
+// datapath the anti-SSRF neighbor check ran on, never a route-table-selected
+// bridge from a different overlay. Tests substitute a dialer that reaches a
+// loopback stub and ignore bridge.
+type dialFunc func(ctx context.Context, network, addr, bridge string) (net.Conn, error)
+
+// overlayResolver maps a guest IP to the overlay datapath whose CP-declared
+// subnet contains it and tracks live ingress sessions per network. The network
+// reconciler (*reconciler.Networks) satisfies it. OverlayNetworkForIP finds which
+// overlay datapath a session credential's guest IP lives on (bridge for the dial
+// binding, network id for session accounting); AcquireSession/ReleaseSession
+// maintain the per-network live-session counter the gateway reports through its
+// heartbeat so the CP keeps the gateway's membership sticky while sessions drain.
+type overlayResolver interface {
+	OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string, ok bool)
+	AcquireSession(networkID string)
+	ReleaseSession(networkID string)
 }
 
-// newConnectHandler builds a connect handler with a plain TCP dialer.
-func newConnectHandler(log *slog.Logger) *connectHandler {
+// connectDeps carries the collaborators the connect handler needs beyond its
+// logger: the host fabric (for the neighbor-table anti-SSRF check), the overlay
+// resolver, and the session-CA store the cred gate verifies against.
+type connectDeps struct {
+	fabric   netfabric.Fabric
+	overlays overlayResolver
+	caStore  *sessionCAStore
+}
+
+// claimsCtxKey keys the verified session-credential claims the cred gate stashes
+// in the request context for the handler.
+type claimsCtxKey struct{}
+
+// claimsFromContext returns the verified claims the cred gate placed in ctx.
+func claimsFromContext(ctx context.Context) (auth.SessionCredClaims, bool) {
+	c, ok := ctx.Value(claimsCtxKey{}).(auth.SessionCredClaims)
+	return c, ok
+}
+
+// connectHandler serves POST /v1/connect: it verifies a short-lived ingress
+// session credential, binds the dial to the credential's NIC MAC via the
+// gateway's neighbor table (closing IP-reuse), acquires a concurrency slot, then
+// dials the credential's guest target on the overlay and splices the inbound
+// connection to it byte for byte. The dial target is taken from the verified
+// credential, never from untrusted request input, so the gateway can never be
+// steered to an arbitrary address.
+type connectHandler struct {
+	dial     dialFunc
+	fabric   netfabric.Fabric
+	overlays overlayResolver
+	caStore  *sessionCAStore
+	slots    *connectSlots
+	log      *slog.Logger
+}
+
+// newConnectHandler builds a connect handler with a plain TCP dialer and the
+// default connection-slot caps.
+func newConnectHandler(deps connectDeps, log *slog.Logger) *connectHandler {
 	return &connectHandler{
-		dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		dial: func(ctx context.Context, network, addr, bridge string) (net.Conn, error) {
+			return (&net.Dialer{Control: netfabric.BindToDeviceControl(bridge)}).DialContext(ctx, network, addr)
 		},
-		log: log,
+		fabric:   deps.fabric,
+		overlays: deps.overlays,
+		caStore:  deps.caStore,
+		slots:    newConnectSlots(defaultConnectPerVMCap, defaultConnectGatewayCap),
+		log:      log,
 	}
 }
 
-// Connect handles POST /v1/connect?guest_ip=<ip>&port=<port>. It validates the
-// target, dials it over the overlay, hijacks the inbound connection, and
-// splices the two legs until either side closes. The target is validated to be
-// a literal IP and an in-range port before any dial, so the handler never
-// resolves a hostname or dials a non-port address.
+// verifyCred is the middleware that gates the connect route. It accepts only an
+// "otx_ingress_" bearer verified against the session CA public half learned from
+// heartbeat; on success it stashes the verified claims in the request context
+// for the handler. Every credential failure (absent, wrong format, bad
+// signature, expired, tampered) collapses to a uniform 401 so the gate is no
+// oracle; a credential that cannot yet be verified because no session CA has
+// been received fails closed with 503.
+func (h *connectHandler) verifyCred(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		// IsIngressCredFormat must gate the path before any other token check:
+		// "otx_ingress_" is a superset of the API-token prefix "otx_", so the
+		// format check routes only ingress credentials here.
+		if !ok || !auth.IsIngressCredFormat(token) {
+			h.unauthorized(w, r)
+			return
+		}
+		caPub := h.caStore.current()
+		if caPub == nil {
+			response.WriteError(w, r, http.StatusServiceUnavailable,
+				response.CodeIngressUnavailable,
+				"ingress session verification is not yet available", nil)
+			return
+		}
+		claims, err := auth.VerifySessionCred(caPub, token, time.Now())
+		if err != nil {
+			h.unauthorized(w, r)
+			return
+		}
+		ctx := context.WithValue(r.Context(), claimsCtxKey{}, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// Connect handles POST /v1/connect. The verified credential's claims supply the
+// dial target; verifyCred must have run first to place them in the context. The
+// handler resolves the overlay the guest IP lives on, refuses unless the guest
+// IP's neighbor MAC equals the credential MAC (anti-SSRF / IP-reuse binding),
+// acquires a concurrency slot, dials the guest target, hijacks the inbound
+// connection, and splices the two legs until either side closes.
 func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
-	target, err := parseConnectTarget(r)
-	if err != nil {
-		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, err.Error(), nil)
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		// Defensive: the cred gate must run before this handler.
+		h.unauthorized(w, r)
 		return
 	}
+
+	// Resolve the overlay bridge the guest IP lives on, then bind the dial to the
+	// credential MAC: refuse unless the IP currently resolves, in the gateway's
+	// neighbor table, to exactly the credential's NIC MAC. A stale credential
+	// whose guest IP has been reassigned to a different NIC resolves to a
+	// different MAC and is refused. Every binding failure collapses to a uniform
+	// refusal so the gateway is no oracle and never dials on uncertain input.
+	bridge, networkID, ok := h.overlays.OverlayNetworkForIP(claims.GuestIP)
+	if !ok {
+		h.log.Warn("connect: refused, guest ip not on any declared overlay",
+			"guest_ip", claims.GuestIP.String(), "vm_id", claims.VMID.String())
+		h.refuse(w, r)
+		return
+	}
+	mac, ok, err := h.fabric.NeighborMAC(bridge, claims.GuestIP)
+	if err != nil || !ok || !macEqual(mac, claims.NICMAC) {
+		h.log.Warn("connect: refused, neighbor mac does not match credential",
+			"guest_ip", claims.GuestIP.String(), "bridge", bridge,
+			"vm_id", claims.VMID.String(), "resolved", ok, "error", errString(err))
+		h.refuse(w, r)
+		return
+	}
+
+	// Acquire a concurrency slot before dialing. Released on every exit path
+	// (defer), including after the splice tears down, so a freed slot lets a
+	// later connect through.
+	vmID := claims.VMID.String()
+	if err := h.slots.acquire(vmID); err != nil {
+		response.WriteError(w, r, http.StatusServiceUnavailable,
+			response.CodeIngressUnavailable, "gateway connection capacity reached", nil)
+		return
+	}
+	defer h.slots.release(vmID)
+
+	// Count this session against its network the instant it holds a slot, and
+	// release the count on every exit path (defer), mirroring the slot discipline
+	// so the per-network counter can never leak. The count rides the gateway's
+	// heartbeat so the CP keeps this gateway's overlay membership sticky while the
+	// session is live. An earlier refusal (off-overlay, MAC mismatch) returns
+	// before this point and never increments.
+	h.overlays.AcquireSession(networkID)
+	defer h.overlays.ReleaseSession(networkID)
+
+	target := net.JoinHostPort(claims.GuestIP.String(), strconv.Itoa(claims.Port))
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -72,7 +209,7 @@ func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// Dial the target before hijacking so a dial failure is reported as a
 	// normal HTTP error rather than a half-open hijacked socket.
 	dialCtx, dialCancel := context.WithTimeout(r.Context(), connectDialTimeout)
-	upstream, err := h.dial(dialCtx, "tcp", target)
+	upstream, err := h.dial(dialCtx, "tcp", target, bridge)
 	dialCancel()
 	if err != nil {
 		h.log.Warn("connect: dial target failed", "target", target, "error", err.Error())
@@ -102,42 +239,105 @@ func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	spliceConns(ctx, cancel, conn, upstream)
-	h.log.Info("connect: session closed", "target", target)
+	h.log.Info("connect: session closed", "target", target, "vm_id", vmID)
 }
 
-// parseConnectTarget extracts and validates the (guest_ip, port) target from
-// the request query. guest_ip must be a literal IP address (never a hostname,
-// so the gateway cannot be steered into a DNS resolution) and port must be in
-// 1..65535. It returns the joined "ip:port" dial target.
-func parseConnectTarget(r *http.Request) (string, error) {
-	q := r.URL.Query()
-	ipStr := q.Get("guest_ip")
-	if ipStr == "" {
-		return "", errMissing("guest_ip")
+// unauthorized writes the uniform 401 the cred gate uses for every credential
+// failure, leaking nothing about which check failed.
+func (h *connectHandler) unauthorized(w http.ResponseWriter, r *http.Request) {
+	response.WriteError(w, r, http.StatusUnauthorized,
+		response.CodeUnauthenticated, "a valid ingress session credential is required", nil)
+}
+
+// refuse writes the uniform 403 the handler uses for every anti-SSRF binding
+// failure (guest IP off-overlay, unresolved neighbor, MAC mismatch), so a holder
+// of a valid-but-stale credential learns only that the target is no longer
+// authorized, never why.
+func (h *connectHandler) refuse(w http.ResponseWriter, r *http.Request) {
+	response.WriteError(w, r, http.StatusForbidden,
+		response.CodePermissionDenied,
+		"the credential does not authorize a connection to this target", nil)
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+// ok is false when the header is absent or not a bearer.
+func bearerToken(r *http.Request) (string, bool) {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return "", false
 	}
-	ip, err := netip.ParseAddr(ipStr)
+	return h[len(prefix):], true
+}
+
+// macEqual reports whether the kernel-resolved neighbor MAC a equals the
+// credential MAC string b. Both sides are normalized (b is parsed; a is already
+// a parsed hardware address) and compared byte for byte so formatting
+// differences (case, separators) never cause a false mismatch.
+func macEqual(a net.HardwareAddr, b string) bool {
+	pb, err := net.ParseMAC(b)
 	if err != nil {
-		return "", errInvalid("guest_ip must be a literal IP address")
+		return false
 	}
-	portStr := q.Get("port")
-	if portStr == "" {
-		return "", errMissing("port")
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 {
-		return "", errInvalid("port must be an integer in 1..65535")
-	}
-	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
+	return bytes.Equal(a, pb)
 }
 
-// validationError is a small typed error so parseConnectTarget can describe the
-// exact field that failed without coupling to the response layer.
-type validationError struct{ msg string }
+// errString returns err.Error() or "" for a nil error, for structured logging.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
 
-func (e validationError) Error() string { return e.msg }
+// connectSlots enforces the per-VM and per-gateway concurrency caps on the
+// connect/splice plane, mirroring the agent's ssh-pipe slot accounting.
+type connectSlots struct {
+	mu         sync.Mutex
+	perVM      map[string]int
+	total      int
+	perVMCap   int
+	gatewayCap int
+}
 
-func errMissing(field string) error { return validationError{msg: field + " is required"} }
-func errInvalid(msg string) error   { return validationError{msg: msg} }
+// newConnectSlots builds a slot accountant with the given per-VM and per-gateway
+// caps.
+func newConnectSlots(perVMCap, gatewayCap int) *connectSlots {
+	return &connectSlots{
+		perVM:      map[string]int{},
+		perVMCap:   perVMCap,
+		gatewayCap: gatewayCap,
+	}
+}
+
+// acquire reserves a slot for vmID, enforcing the per-VM and per-gateway caps. It
+// returns an error (and reserves nothing) when either cap is already reached.
+func (s *connectSlots) acquire(vmID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.total >= s.gatewayCap {
+		return errors.New("connect: gateway capacity reached")
+	}
+	if s.perVM[vmID] >= s.perVMCap {
+		return errors.New("connect: vm capacity reached")
+	}
+	s.perVM[vmID]++
+	s.total++
+	return nil
+}
+
+// release returns a slot previously taken by acquire.
+func (s *connectSlots) release(vmID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perVM[vmID] > 0 {
+		s.perVM[vmID]--
+		if s.perVM[vmID] == 0 {
+			delete(s.perVM, vmID)
+		}
+		s.total--
+	}
+}
 
 // spliceConns copies bytes both directions until either side closes or ctx is
 // cancelled, then tears both legs down (the kill-implies-teardown invariant: no
