@@ -581,7 +581,9 @@ func TestDialIngressGatewayPresentsCred(t *testing.T) {
 	gw := &fakeGateway{}
 	gwTS := httptest.NewTLSServer(gw.handler())
 	defer gwTS.Close()
-	splicer := gwTS.Listener.Addr().String()
+	// The broker reports the gateway's advertised endpoint as a full https URL,
+	// so the client must derive the dial host:port and the TLS ServerName from it.
+	splicer := "https://" + gwTS.Listener.Addr().String()
 
 	cpTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

@@ -359,19 +359,22 @@ func dialGateway(ctx context.Context, cfg Config, resp ingressResponse) (net.Con
 	if resp.SplicerAddr == "" || resp.SessionCred == "" {
 		return nil, errors.New("sshconn: gateway broker response missing splicer address or credential")
 	}
-	host, _, err := net.SplitHostPort(resp.SplicerAddr)
-	if err != nil {
+	// The broker reports the gateway's advertised endpoint, which is a full
+	// https URL (validated as such at node join). Derive the host:port to dial
+	// and the hostname to pin as the TLS ServerName from it.
+	u, err := url.Parse(resp.SplicerAddr)
+	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("sshconn: parse splicer address %q: %v", resp.SplicerAddr, err)
 	}
-	tlsCfg, err := gatewayTLSConfig(cfg, host)
+	tlsCfg, err := gatewayTLSConfig(cfg, u.Hostname())
 	if err != nil {
 		return nil, err
 	}
-	conn, err := (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, "tcp", resp.SplicerAddr)
+	conn, err := (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, "tcp", u.Host)
 	if err != nil {
-		return nil, fmt.Errorf("sshconn: dial gateway %s: %v", resp.SplicerAddr, err)
+		return nil, fmt.Errorf("sshconn: dial gateway %s: %v", u.Host, err)
 	}
-	spliced, err := gatewayConnect(conn, host, resp.SessionCred)
+	spliced, err := gatewayConnect(conn, u.Host, resp.SessionCred)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
