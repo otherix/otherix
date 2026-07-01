@@ -229,8 +229,21 @@ func printGrantText(cmd *cobra.Command, g cpclient.IngressGrant) {
 	printf(cmd, "expires_at: %s\n", derefOr(g.ExpiresAt, "never"))
 	printf(cmd, "vms:\n")
 	for _, vm := range g.VMs {
-		printf(cmd, "  - %s (login %s)\n", vm.VMName, vm.Login)
+		printf(cmd, "  - %s ports %s (login %s)\n", vm.VMName, portsDisplay(vm.Ports), vm.Login)
 	}
+}
+
+// portsDisplay renders a VM's authorized ports as a comma-separated list, or
+// "-" when the set is empty.
+func portsDisplay(ports []int) string {
+	if len(ports) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return strings.Join(parts, ",")
 }
 
 // grantStatus derives a display status: revoked beats active.

@@ -178,7 +178,7 @@ func renderCreated(cmd *cobra.Command, grant cpclient.IngressGrant, bundle Bundl
 	printf(cmd, "  expires: %s\n", derefOr(grant.ExpiresAt, "never"))
 	printf(cmd, "  vms:\n")
 	for _, vm := range bundle.VMs {
-		printf(cmd, "    - %s (login %s)\n", vm.VM, vm.Login)
+		printf(cmd, "    - %s ports %s (login %s)\n", vm.VM, portsDisplay(vm.Ports), vm.Login)
 	}
 	printf(cmd, "\nbundle (paste-able - the external runs `otherix-ssh add <bundle>`):\n\n")
 	printf(cmd, "  %s\n", blob)

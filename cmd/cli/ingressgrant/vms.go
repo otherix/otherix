@@ -12,13 +12,19 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// newAddVMCommand returns `otherix ingress-grant add-vm <id|name> <vm> [--login L]`.
+// newAddVMCommand returns
+// `otherix ingress-grant add-vm <id|name> <vm:port[,port...]> [--login L]`.
 func newAddVMCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "add-vm <id|name> <vm>",
+		Use:   "add-vm <id|name> <vm:port[,port...]>",
 		Short: "Add a VM to an ingress grant's scope.",
-		Long: `Adds a VM to the grant's scope (or replaces its login when already
-present). --login sets the guest login (default ` + defaultLogin + `).`,
+		Long: `Adds a VM to the grant's scope (or replaces its ports and login when the VM
+is already present). The VM argument is host:port[,port...] naming the guest
+TCP ports the grant authorizes (port 22 is SSH). --login sets the guest login
+(default ` + defaultLogin + `).
+
+  otherix ingress-grant add-vm alice-web db01:5432
+  otherix ingress-grant add-vm alice-web web:22,8080 --login deploy`,
 		Args: cobra.ExactArgs(2),
 		RunE: runAddVM,
 	}
@@ -29,8 +35,8 @@ present). --login sets the guest login (default ` + defaultLogin + `).`,
 
 func runAddVM(cmd *cobra.Command, args []string) error {
 	identifier := strings.TrimSpace(args[0])
-	vmName := strings.TrimSpace(args[1])
-	if identifier == "" || vmName == "" {
+	vmEntry := strings.TrimSpace(args[1])
+	if identifier == "" || vmEntry == "" {
 		return errors.New("grant id/name and vm are required")
 	}
 	login, _ := cmd.Flags().GetString(flagLogin)
@@ -38,19 +44,25 @@ func runAddVM(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Reuse the create command's per-entry parser: a single host:port[,port...]
+	// entry yields exactly one IngressGrantVM carrying the required non-empty
+	// port set plus the resolved login.
+	vms, err := parseVMScope([]string{vmEntry}, login)
+	if err != nil {
+		return err
+	}
+	vm := vms[0]
 	c, err := clientFromFlags(cmd)
 	if err != nil {
 		return err
 	}
-	grant, err := c.AddIngressGrantVM(cmd.Context(), identifier, cpclient.IngressGrantVM{
-		VMName: vmName,
-		Login:  effectiveLogin(login),
-	})
+	grant, err := c.AddIngressGrantVM(cmd.Context(), identifier, vm)
 	if err != nil {
 		return mapGrantError(err, identifier)
 	}
 	if format == "text" {
-		printf(cmd, "added %s (login %s) to ingress grant %q\n", vmName, effectiveLogin(login), grant.Name)
+		printf(cmd, "added %s ports %s (login %s) to ingress grant %q\n",
+			vm.VMName, portsDisplay(vm.Ports), vm.Login, grant.Name)
 		return nil
 	}
 	return renderGrant(cmd, grant, nil, format)

@@ -214,7 +214,7 @@ func TestList_Table(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"g-1","name":"alice-web","recipient_label":"Alice","created_by":"u-1",
-			 "vms":[{"vm_name":"web01","login":"deploy"}],"expires_at":null,"revoked":false,
+			 "vms":[{"vm_name":"web01","ports":[22],"login":"deploy"}],"expires_at":null,"revoked":false,
 			 "created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z"},
 			{"id":"g-2","name":"old","recipient_label":"","created_by":"u-1",
 			 "vms":[],"expires_at":null,"revoked":true,
@@ -227,7 +227,7 @@ func TestList_Table(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"NAME", "RECIPIENT", "VMS", "STATUS", "alice-web", "web01:deploy", "active", "revoked", "never"} {
+	for _, want := range []string{"NAME", "RECIPIENT", "VMS", "STATUS", "alice-web", "web01:22", "active", "revoked", "never"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("table missing %q:\n%s", want, stdout)
 		}
@@ -280,12 +280,12 @@ func TestAddVM_PostsToVMsSubresource(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"` + id + `","name":"g","recipient_label":"","created_by":"u-1",
-			"vms":[{"vm_name":"db01","login":"postgres"}],"expires_at":null,"revoked":false,
+			"vms":[{"vm_name":"db01","ports":[5432],"login":"postgres"}],"expires_at":null,"revoked":false,
 			"created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z"}`))
 	}))
 	defer srv.Close()
 
-	stdout, _, err := runCmd(t, srv.URL, []string{"add-vm", id, "db01", "--login", "postgres"})
+	stdout, _, err := runCmd(t, srv.URL, []string{"add-vm", id, "db01:5432", "--login", "postgres"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -294,6 +294,12 @@ func TestAddVM_PostsToVMsSubresource(t *testing.T) {
 	}
 	if gotBody["vm_name"] != "db01" || gotBody["login"] != "postgres" {
 		t.Errorf("body = %v, want db01/postgres", gotBody)
+	}
+	// The port set must be present and non-empty - the server rejects a VM
+	// entry with no ports, so a regression to "ports":null must fail here.
+	gotPorts, ok := gotBody["ports"].([]any)
+	if !ok || len(gotPorts) != 1 || gotPorts[0] != float64(5432) {
+		t.Errorf("body ports = %v, want [5432]", gotBody["ports"])
 	}
 	if !strings.Contains(stdout, "added db01") {
 		t.Errorf("missing add confirmation:\n%s", stdout)

@@ -83,16 +83,18 @@ func printGrantTable(cmd *cobra.Command, grants cpclient.IngressGrantList) {
 	}
 }
 
-// vmSummary renders the grant's VM scope as a compact "vm:login,..." string.
+// vmSummary renders the grant's VM scope as a compact "vm:ports" summary,
+// space-joined across VMs (ports within a VM are comma-joined, so VMs cannot
+// share the comma separator).
 func vmSummary(vms []cpclient.IngressGrantVM) string {
 	if len(vms) == 0 {
 		return "-"
 	}
 	parts := make([]string, 0, len(vms))
 	for _, vm := range vms {
-		parts = append(parts, vm.VMName+":"+vm.Login)
+		parts = append(parts, vm.VMName+":"+portsDisplay(vm.Ports))
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, " ")
 }
 
 // dash renders an empty string as "-" for table cells.
