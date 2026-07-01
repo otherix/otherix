@@ -11,6 +11,7 @@ import (
 func TestSourceIPAllows(t *testing.T) {
 	cidr := "203.0.113.0/24"
 	bare := "198.51.100.7"
+	garbage := "garbage"
 	cases := []struct {
 		name   string
 		pin    *string
@@ -22,6 +23,9 @@ func TestSourceIPAllows(t *testing.T) {
 		{"cidr out of range", &cidr, "203.0.114.5", false},
 		{"bare exact match", &bare, "198.51.100.7", true},
 		{"bare mismatch", &bare, "198.51.100.8", false},
+		// An unparseable stored pin fails closed - the runtime check never
+		// fails open even if create-time validation were bypassed.
+		{"unparseable pin denies", &garbage, "8.8.8.8", false},
 	}
 	for _, tc := range cases {
 		got := SourceIPAllows(tc.pin, netip.MustParseAddr(tc.client))

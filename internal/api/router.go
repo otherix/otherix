@@ -143,20 +143,27 @@ func NewRouter(deps RouterDeps) http.Handler {
 		// directly here, OUTSIDE the Timeout group, so the long-lived stream
 		// is not killed at the request deadline.
 		r.Get("/v1/vms/{id}/ssh-stream", streamingVMs.SSHStream)
-		// ssh-cert is mounted OUTSIDE the Authn group (like console-stream):
-		// it must accept an ingress-grant token, which is not an Authn principal,
-		// and structurally guarantee a grant token reaches nothing else. The
-		// handler reads the bearer itself and dual-dispatches grant vs CLI.
+		// ssh-cert and ingress are mounted OUTSIDE the Authn group (like
+		// console-stream): both must accept an ingress-grant token, which is
+		// not an Authn principal, and structurally guarantee a grant token
+		// reaches nothing else. Each handler reads the bearer itself and
+		// dual-dispatches grant vs CLI.
 		//
-		// Unlike its streaming siblings it is a bodied POST, so it opts back
-		// into Timeout + MaxBodyBytes via its own Group (the same bounds the
+		// Unlike their streaming siblings these are bodied POSTs, so they opt
+		// back into Timeout + MaxBodyBytes via this Group (the same bounds the
 		// bounded-REST surface applies) WITHOUT taking on Authn: a caller with
 		// any non-empty garbage bearer must not be able to slow-trickle or
-		// balloon the request body. The handler additionally caps its own body.
+		// balloon the request body. Each handler additionally caps its own body.
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Timeout(deps.RequestTimeout))
 			r.Use(middleware.MaxBodyBytes(bodyLimit))
 			r.Post("/v1/vms/{id}/ssh-cert", streamingVMs.IssueSSHCert)
+			// vms.ingress - the L4 ingress broker. It dual-dispatches an
+			// ingress-grant token (capability by (vm, port) + source-IP pin,
+			// uniform 404) against a CLI bearer (vm:connect, 403 role-lack /
+			// 404 cross-owner), so it lives here beside ssh-cert rather than
+			// under the authenticated /v1/vms group.
+			r.Post("/v1/vms/{id}/ingress", streamingVMs.Ingress)
 		})
 
 		streamAuthn := middleware.Authn(deps.AuthService)
@@ -372,12 +379,12 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				// by RequirePermission(vm:console); ownership scope=own
 				// for developer is enforced inside the handler.
 				r.With(middleware.RequirePermission(auth.PermVMConsole, deps.Logger)).Post("/{id}/console", vmsH.Console)
-				// vms.ingress — sync. The L4 ingress broker: gated by
-				// RequirePermission(vm:connect) at the route (viewer 403);
-				// ownership scope=own for developer is enforced inside the
-				// handler (cross-owner -> 404). Returns connect coordinates
-				// synchronously (200) - the data-plane connect is the client's.
-				r.With(middleware.RequirePermission(auth.PermVMConnect, deps.Logger)).Post("/{id}/ingress", vmsH.Ingress)
+				// vms.ingress — the L4 ingress broker — is NOT mounted here.
+				// It accepts an ingress-grant token (not an Authn principal) in
+				// addition to a CLI bearer, so it is mounted OUTSIDE the Authn
+				// group beside ssh-cert (see NewRouter). Its handler enforces
+				// vm:connect (403 role-lack) + ownership (404 cross-owner) for a
+				// CLI bearer, and (vm, port) + source-IP for a grant token.
 				// vms.migrate — async (202). vm:migrate gates the route
 				// (admin / operator only; developer / viewer 403 at the
 				// middleware); ownership scope is enforced inside the

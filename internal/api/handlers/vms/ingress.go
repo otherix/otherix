@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/gateways"
-	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
@@ -25,6 +25,15 @@ import (
 // near-useless while still covering a connect handshake without a clock-skew
 // miss.
 const ingressCredTTL = 5 * time.Minute
+
+// ingressMaxRequestBytes caps the broker request body. The body carries a
+// single {"port": N} object (< 32 bytes), so 4 KiB is ample headroom. This is
+// a defence-in-depth backstop: the route is also mounted under
+// middleware.MaxBodyBytes, but this endpoint sits OUTSIDE the Authn group and
+// reads its own bearer, so it bounds its own body here too - a caller with any
+// non-empty garbage bearer cannot force unbounded buffering. An over-cap read
+// fails inside the JSON decode and surfaces as 400 validation_failed.
+const ingressMaxRequestBytes int64 = 4 << 10
 
 // ingressRequest is the broker request body: the guest TCP port the caller
 // wants to reach. Validated to 1..65535.
@@ -54,35 +63,36 @@ type ingressResponse struct {
 }
 
 // Ingress implements POST /v1/vms/{id}/ingress: it brokers an L4 ingress
-// connection to a VM. It authorizes the caller (vm:connect at the route plus an
-// ownership check), selects how the client should reach the guest, and returns
-// the connect coordinates synchronously - the data-plane connect is the
-// client's job, so this is a 200, not a 202.
+// connection to a VM. It selects how the client should reach the guest and
+// returns the connect coordinates synchronously - the data-plane connect is
+// the client's job, so this is a 200, not a 202.
 //
-// An overlay VM is brokered to a converged gateway with a minted session
-// credential (the control plane is out of the data path). A bridge VM is
-// brokered over the control-plane relay (no gateway credential). A VM the caller
-// cannot see returns 404, never 403, so the endpoint leaks no VM existence. A VM
-// with no usable network, or an overlay with no converged gateway, is 409
-// ingress_unavailable.
+// This route is mounted OUTSIDE the global Authn middleware (like ssh-cert and
+// ssh-stream) so it can accept an ingress-grant token, which is not an Authn
+// principal, and structurally guarantee a grant token reaches no other route.
+// The handler reads the bearer itself and dual-dispatches:
+//
+//   - An ingress-grant token (auth.IsIngressGrantFormat, checked first because
+//     its prefix is a superset of "otx_") resolves through the store; the
+//     caller is authorized when the grant currently reaches the named VM on the
+//     requested port AND the caller's source IP satisfies the grant's optional
+//     pin. Every grant negative collapses to a uniform 404 so the endpoint
+//     leaks neither VM existence nor grant scope.
+//   - Any other bearer is verified as a CLI token (JWT or otx_ API token); the
+//     caller must hold vm:connect (a role lacking it is 403 permission_denied)
+//     and own the VM (scope permitting; a cross-owner or unknown VM is 404).
+//
+// Both paths converge on brokerIngress. An overlay VM is brokered to a
+// converged gateway with a minted session credential (the control plane is out
+// of the data path). A bridge VM is brokered over the control-plane relay (no
+// gateway credential). A VM with no usable network, or an overlay with no
+// converged gateway, is 409 ingress_unavailable.
 func (h *Handler) Ingress(w http.ResponseWriter, r *http.Request) {
-	caller := auth.UserFromContext(r.Context())
-	if caller == nil {
-		response.WriteError(w, r, http.StatusUnauthorized,
-			response.CodeUnauthenticated, "missing principal", nil)
-		return
-	}
+	vmName := chi.URLParam(r, "id")
 
-	vm, err := resolver.VM(r.Context(), h.store, chi.URLParam(r, "id"))
-	if err != nil {
-		writeResolveError(w, r, err)
-		return
-	}
-	if err := auth.CheckOwnership(caller, &vm.OwnerID, auth.PermVMConnect); err != nil {
-		// Cross-owner visibility goes through 404, never 403, so the broker
-		// never confirms a VM the caller does not own exists.
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodeVMNotFound, "vm not found", nil)
+	tok, ok := bearerToken(r)
+	if !ok {
+		h.rejectIngress(w, r)
 		return
 	}
 
@@ -91,6 +101,104 @@ func (h *Handler) Ingress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var vm store.VM
+	if auth.IsIngressGrantFormat(tok) {
+		vm, ok = h.authorizeIngressGrant(r, tok, vmName, port)
+		if !ok {
+			// Uniform 404 for every grant negative (bad/expired/revoked grant,
+			// out-of-scope VM or port, source-IP pin miss, unknown VM): the
+			// endpoint leaks neither VM existence nor grant scope.
+			h.rejectIngress(w, r)
+			return
+		}
+	} else {
+		vm, ok = h.authorizeIngressCLI(w, r, tok, vmName)
+		if !ok {
+			// authorizeIngressCLI has already written its own 403/404.
+			return
+		}
+	}
+
+	h.brokerIngress(w, r, vm, port)
+}
+
+// authorizeIngressGrant resolves the grant token, checks it currently reaches
+// vmName on port and that the caller's source IP satisfies the grant's optional
+// pin, then loads and returns the VM. Any failure returns ok=false; the caller
+// writes the uniform 404 (no response is written here) so neither VM existence
+// nor grant scope leaks.
+func (h *Handler) authorizeIngressGrant(r *http.Request, tok, vmName string, port int) (store.VM, bool) {
+	grant, err := h.store.IngressGrantByTokenHash(r.Context(), auth.HashToken(tok))
+	if err != nil {
+		return store.VM{}, false
+	}
+	// RemoteAddr is host:port; a bare ParseAddr would fail on the port, so
+	// parse the pair and take the address half. A parse failure fails closed.
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return store.VM{}, false
+	}
+	if _, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, time.Now()); !reachable {
+		return store.VM{}, false
+	}
+	if !auth.SourceIPAllows(grant.SourceIP, ap.Addr()) {
+		return store.VM{}, false
+	}
+	vm, err := h.store.VMByName(r.Context(), vmName)
+	if err != nil {
+		return store.VM{}, false
+	}
+	return vm, true
+}
+
+// authorizeIngressCLI verifies a CLI bearer (JWT or otx_ API token) and
+// enforces the vm:connect capability + ownership the route's RequirePermission
+// middleware used to give. It preserves the 403-vs-404 discipline: a bad token
+// is 404 (no oracle); a role lacking vm:connect is 403 permission_denied; an
+// unknown or cross-owner VM is 404 (cross-owner invisibility). ok=false means a
+// response was already written.
+func (h *Handler) authorizeIngressCLI(w http.ResponseWriter, r *http.Request, tok, vmName string) (store.VM, bool) {
+	if h.sshDeps.Verifier == nil {
+		h.rejectIngress(w, r)
+		return store.VM{}, false
+	}
+	user, err := h.verifyCLIToken(r.Context(), tok)
+	if err != nil || user == nil {
+		h.rejectIngress(w, r)
+		return store.VM{}, false
+	}
+	if !auth.Has(user.Role, auth.PermVMConnect) {
+		response.WriteError(w, r, http.StatusForbidden, response.CodePermissionDenied,
+			"vm:connect is not permitted for this role",
+			map[string]any{"required_permission": string(auth.PermVMConnect)})
+		return store.VM{}, false
+	}
+	vm, err := h.store.VMByName(r.Context(), vmName)
+	if err != nil {
+		h.rejectIngress(w, r)
+		return store.VM{}, false
+	}
+	if auth.CheckOwnership(user, &vm.OwnerID, auth.PermVMConnect) != nil {
+		// Cross-owner visibility goes through 404, never 403, so the broker
+		// never confirms a VM the caller does not own exists.
+		h.rejectIngress(w, r)
+		return store.VM{}, false
+	}
+	return vm, true
+}
+
+// rejectIngress writes the uniform 404 not_found rejection so neither VM
+// existence nor grant scope leaks.
+func (h *Handler) rejectIngress(w http.ResponseWriter, r *http.Request) {
+	response.WriteError(w, r, http.StatusNotFound,
+		response.CodeVMNotFound, "vm not found", nil)
+}
+
+// brokerIngress is the shared post-authorization core: it inspects the VM's
+// networks and selects the transport. An overlay NIC is brokered to a converged
+// gateway (brokerOverlay); a bridge NIC is brokered over the control-plane
+// relay; a VM with no usable network is 409 ingress_unavailable.
+func (h *Handler) brokerIngress(w http.ResponseWriter, r *http.Request, vm store.VM, port int) {
 	overlayNIC, hasUsable, err := h.resolveIngressNIC(r, vm.ID)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "vms.ingress resolve nic",
@@ -226,8 +334,10 @@ func (h *Handler) resolveIngressNIC(r *http.Request, vmID uuid.UUID) (overlay *s
 
 // parseIngressPort decodes the request body and validates the port is in
 // 1..65535. On any failure it writes 400 validation_failed and returns ok=false
-// so the caller bails.
+// so the caller bails. It caps the body with a MaxBytesReader backstop before
+// decoding (the route sits outside the Authn group and reads its own bearer).
 func parseIngressPort(w http.ResponseWriter, r *http.Request) (port int, ok bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, ingressMaxRequestBytes)
 	var req ingressRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,

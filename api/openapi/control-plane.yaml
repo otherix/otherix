@@ -2847,6 +2847,18 @@ paths:
         synchronously — the data-plane connect is the client's job, so this is
         a `200`, not an async task.
 
+        Two credentials are accepted on the bearer:
+        - a normal CLI credential (`bearerAuth` JWT or `apiKeyAuth` `otx_`
+          token) - the caller must hold `vm:connect` and own the VM (scope
+          permitting). A role lacking `vm:connect` is `403 permission_denied`;
+          an unknown or cross-owner VM is `404`.
+        - an ingress-grant token (`otx_ingressgrant_*`) - authorized when the
+          grant currently reaches this VM on the requested `port` and the
+          caller's source IP satisfies the grant's optional pin. Every grant
+          negative (bad/expired/revoked grant, out-of-scope VM or port,
+          source-IP miss) collapses to the same `404`, so the endpoint leaks
+          neither VM existence nor grant scope.
+
         The `transport` field discriminates the response:
         - `gateway` — an overlay VM. `splicer_addr` is a converged gateway's
           address and `session_cred` is a short-lived bearer the client
@@ -2856,14 +2868,11 @@ paths:
           control-plane relay (which authorizes per request itself); no gateway
           address or session credential is minted.
 
-        A VM the caller cannot see returns `404` (never `403`, so the endpoint
-        leaks no VM existence). A VM on no usable network, or an overlay with no
-        converged gateway, returns `409 ingress_unavailable` (retryable).
+        A VM on no usable network, or an overlay with no converged gateway,
+        returns `409 ingress_unavailable` (retryable).
       security:
         - bearerAuth: []
         - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -2886,14 +2895,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMIngressResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
             No usable network or no converged gateway for ingress
-            (`ingress_unavailable`), or idempotency-key mismatch
-            (`idempotency_key_mismatch`).
+            (`ingress_unavailable`).
           content:
             application/json:
               schema:
