@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -176,11 +177,20 @@ func (h *Handler) authorizeGrant(ctx context.Context, tok, vmName, requestedLogi
 		h.rejectSSH(w, r)
 		return "", "", false
 	}
+	// RemoteAddr is host:port; a bare ParseAddr would fail on the port, so parse
+	// the pair and take the address half. A grant may pin the source network, so
+	// a stolen token from a disallowed network must not mint a login cert; a
+	// parse failure fails closed to the uniform reject.
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		h.rejectSSH(w, r)
+		return "", "", false
+	}
 	// ssh_cert is always the SSH-login-cert path, so it authorizes strictly on
 	// the guest SSH port (22). A grant whose port set omits 22 does not
 	// authorize an SSH login on this VM and correctly fails here.
 	pinned, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, 22, now)
-	if !reachable {
+	if !reachable || !auth.SourceIPAllows(grant.SourceIP, ap.Addr()) {
 		h.rejectSSH(w, r)
 		return "", "", false
 	}

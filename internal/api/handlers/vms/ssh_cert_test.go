@@ -224,6 +224,25 @@ func TestIssueSSHCert_GrantTokenRevokedIsGenericReject(t *testing.T) {
 	assertGenericSSHReject(t, rec)
 }
 
+// TestIssueSSHCert_GrantSourceIPOutOfPinIsGenericReject: a grant carrying a
+// source-IP pin, presented from a RemoteAddr OUTSIDE the pin, collapses to the
+// uniform 401 - a stolen pinned token from a disallowed network must not mint
+// a login cert.
+func TestIssueSSHCert_GrantSourceIPOutOfPinIsGenericReject(t *testing.T) {
+	t.Parallel()
+	h, grantToken := newSSHCertTestHandler(t, uuid.New(), nil)
+	pin := "203.0.113.0/24"
+	h.store.(*sshCertStoreStub).grant.SourceIP = &pin
+
+	req, rec := sshCertRequestHTTP(t, grantToken, sshCertRequest{
+		PublicKey: newTestSSHPublicKey(t),
+		Login:     "dev",
+	})
+	// httptest.NewRequest defaults RemoteAddr to 192.0.2.1, outside the pin.
+	h.IssueSSHCert(rec, req)
+	assertGenericSSHReject(t, rec)
+}
+
 // TestIssueSSHCert_GrantTokenOutOfSetIsGenericReject: a grant that does not
 // cover the requested VM collapses to the uniform 401.
 func TestIssueSSHCert_GrantTokenOutOfSetIsGenericReject(t *testing.T) {

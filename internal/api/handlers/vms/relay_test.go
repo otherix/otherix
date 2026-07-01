@@ -227,6 +227,85 @@ func TestRelayGrantRelaysEndToEnd(t *testing.T) {
 	t.Errorf("agent received %q, want ssh-bytes", agent.received())
 }
 
+// TestRelaySourceIPPinnedGrantOutOfPinRejectedNoDial: a grant carrying a
+// source-IP pin dialed from a RemoteAddr OUTSIDE the pin is the uniform 401
+// with no upstream dial. The relay IS the data path for a bridge VM, so the
+// pin must be enforced here and not only at the broker.
+//
+// The VM and its owning node are seeded so the source-IP check is the ONLY
+// thing standing between the request and a dial: were the pin wrongly ignored,
+// VM load and node resolve would both succeed and the relay would reach the
+// dial - flipping spy.dialed to true. So the spy.dialed==false assertion is
+// driven by the source-IP check itself, not by a downstream resolve failure.
+func TestRelaySourceIPPinnedGrantOutOfPinRejectedNoDial(t *testing.T) {
+	t.Parallel()
+	spy := &dialSpyClient{}
+	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://agent.example.com:9090"}
+	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
+	g := grantFor("demo", "ubuntu")
+	pin := "203.0.113.0/24"
+	g.SourceIP = &pin
+	st := &relayStoreStub{grant: g, vm: vm, node: node}
+	h := relayHandler(st, spy)
+
+	req := relayRequest("demo", "otx_ingressgrant_abc")
+	req.RemoteAddr = "198.51.100.7:12345" // outside 203.0.113.0/24
+
+	rec := httptest.NewRecorder()
+	h.Relay(rec, req)
+
+	assertGenericRelayRejection(t, rec)
+	if spy.dialed {
+		t.Errorf("dialed upstream on out-of-pin source IP, want no dial")
+	}
+}
+
+// TestRelaySourceIPPinnedGrantInPinRelays is the positive counterpart: a grant
+// whose pin admits the loopback dial address still relays end to end, proving
+// the source-IP enforcement is not over-broad.
+func TestRelaySourceIPPinnedGrantInPinRelays(t *testing.T) {
+	t.Parallel()
+	agent := newWSAgentServer(t, true)
+	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
+	g := grantFor("demo", "ubuntu")
+	// The httptest server accepts the operator over loopback, so RemoteAddr is
+	// 127.0.0.1; a pin covering loopback must still authorize the connect.
+	pin := "127.0.0.0/8"
+	g.SourceIP = &pin
+	st := &relayStoreStub{grant: g, vm: vm, node: node}
+
+	r := chi.NewRouter()
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
+	cp := httptest.NewServer(r)
+	t.Cleanup(cp.Close)
+
+	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/relay"
+	op, _, err := websocket.Dial(context.Background(),
+		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_ingressgrant_abc")})
+	if err != nil {
+		t.Fatalf("operator dial: %v", err)
+	}
+	t.Cleanup(func() { _ = op.Close(websocket.StatusNormalClosure, "") })
+
+	if err := op.Write(context.Background(), websocket.MessageBinary, []byte("ssh-bytes")); err != nil {
+		t.Fatalf("operator write: %v", err)
+	}
+	typ, data, err := op.Read(context.Background())
+	if err != nil || typ != websocket.MessageBinary || string(data) != "ssh-bytes" {
+		t.Fatalf("echo read = %q,%v,%v, want ssh-bytes", data, typ, err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if string(agent.received()) == "ssh-bytes" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("agent received %q, want ssh-bytes", agent.received())
+}
+
 func bearerHeader(tok string) http.Header {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)

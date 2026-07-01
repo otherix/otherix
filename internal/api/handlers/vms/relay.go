@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -81,7 +82,17 @@ func (h *Handler) Relay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.authorizeRelay(r.Context(), tok, vmName, port, time.Now()) {
+	// RemoteAddr is host:port; a bare ParseAddr would fail on the port, so parse
+	// the pair and take the address half. A grant may pin the source network, so
+	// the client IP is authorization input here; a parse failure fails closed to
+	// the same uniform reject (no fall-through to allow).
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		h.rejectSSH(w, r)
+		return
+	}
+
+	if !h.authorizeRelay(r.Context(), tok, vmName, port, ap.Addr(), time.Now()) {
 		h.rejectSSH(w, r)
 		return
 	}
@@ -173,14 +184,17 @@ func relayPort(r *http.Request) (port int, ok bool) {
 // uniform reject, so this returns a bare bool. The port is the actual requested
 // guest port: the relay is the generic bridge relay for arbitrary ports, so a
 // grant must authorize the exact port the relay would forward, not a constant.
-func (h *Handler) authorizeRelay(ctx context.Context, tok, vmName string, port int, now time.Time) bool {
+// For a bridge VM the relay IS the data path, so the grant's optional source-IP
+// pin is enforced here (against clientIP) exactly as the broker does; a CLI
+// bearer carries no pin and ignores clientIP.
+func (h *Handler) authorizeRelay(ctx context.Context, tok, vmName string, port int, clientIP netip.Addr, now time.Time) bool {
 	if auth.IsIngressGrantFormat(tok) {
 		grant, err := h.store.IngressGrantByTokenHash(ctx, auth.HashToken(tok))
 		if err != nil {
 			return false
 		}
 		_, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, now)
-		return reachable
+		return reachable && auth.SourceIPAllows(grant.SourceIP, clientIP)
 	}
 	if h.sshDeps.Verifier == nil {
 		return false
