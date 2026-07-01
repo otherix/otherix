@@ -56,6 +56,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			slog.String("user_id", caller.ID.String()),
 			slog.Int64("vms_orphaned", res.VMsOrphaned),
 			slog.Int64("migrations_cancelled", res.MigrationsCancelled),
+			slog.Int64("certs_revoked", res.CertsRevoked),
 			slog.Bool("force", true),
 		)
 	}
