@@ -5,6 +5,7 @@ package loadbalancers_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -129,6 +130,35 @@ func TestConnectExcludesNonRunningMatchingVM(t *testing.T) {
 		if broker.lastVM != running.ID {
 			t.Fatalf("chose an unexpected VM %v, want running %v", broker.lastVM, running.ID)
 		}
+	}
+}
+
+// TestConnectExcludesTransientRuntimeErrorVM gives teeth to the fail-toward-
+// exclusion branch in eligibleBackends: when VMRuntimeByID returns a non-
+// ErrNotFound (transient/infra) error, the backend must be excluded rather than
+// handed out unconfirmed. Here the transient-error VM is the ONLY matching
+// candidate, so exclusion leaves zero eligible backends and Connect must answer
+// 409 ingress_unavailable. Revert to confirm: if eligibleBackends treated a
+// non-NotFound error as "include" (fail open), this VM would be the sole
+// candidate, the broker would resolve it, and Connect would return 200 - failing
+// this test.
+func TestConnectExcludesTransientRuntimeErrorVM(t *testing.T) {
+	h, st, broker := newConnectTestHandler(t)
+	owner := uuid.New()
+	st.seedLB(t, "web", owner, 8080, map[string]string{"app": "web"})
+	vm := st.seedRunningVM(t, owner, `{"app":"web"}`)
+	st.runtimeErr[vm.ID] = errors.New("etcd unavailable") // transient read failure
+	u := &auth.User{ID: owner, Role: auth.RoleDeveloper}
+
+	rec := doAuthedRequest(t, h.Connect, u, http.MethodPost, "/v1/loadbalancers/web/connect", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "ingress_unavailable" {
+		t.Errorf("code = %q, want ingress_unavailable", code)
+	}
+	if broker.lastVM != uuid.Nil {
+		t.Errorf("broker was handed a backend %v; a transient-error VM must never be brokered", broker.lastVM)
 	}
 }
 

@@ -68,7 +68,7 @@ RUN="${RUN:-$(date +%H%M%S)-${RANDOM}}"
 
 NODE1="node-1"                              # first VM host (backend lbvm-a)
 NODE2="node-2"                              # second VM host (backend lbvm-b)
-NET="lb-ovl"                                # dhcp-enabled overlay
+NET="lb-ovl-${RUN}"                         # dhcp-enabled overlay (unique per run)
 SUBNET="${SUBNET:-10.97.0.0/24}"            # unlikely to clash with the dev stack
 
 VM_A="lbvm-a-${RUN}"                        # backend on NODE1
