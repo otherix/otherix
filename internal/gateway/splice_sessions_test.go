@@ -124,7 +124,7 @@ func TestConnectSessionCounterNoLeakOnDialFailure(t *testing.T) {
 	netID := "44444444-4444-4444-4444-444444444444"
 	spy := &spyOverlays{bridge: bridge, networkID: netID, ok: true}
 	h := &connectHandler{
-		dial: func(context.Context, string, string) (net.Conn, error) {
+		dial: func(context.Context, string, string, string) (net.Conn, error) {
 			return nil, io.ErrUnexpectedEOF
 		},
 		fabric:   fabricResolving(t, bridge, ip, testMACA),

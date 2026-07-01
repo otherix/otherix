@@ -37,9 +37,12 @@ const (
 )
 
 // dialFunc is the dial seam the connect handler uses to reach the target over
-// the overlay. Production wires it to a plain TCP dialer; tests substitute a
-// dialer that reaches a loopback stub.
-type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+// the overlay. bridge is the overlay bridge the guest IP was validated on; the
+// production dialer binds the connection to it so the dial egresses the same
+// datapath the anti-SSRF neighbor check ran on, never a route-table-selected
+// bridge from a different overlay. Tests substitute a dialer that reaches a
+// loopback stub and ignore bridge.
+type dialFunc func(ctx context.Context, network, addr, bridge string) (net.Conn, error)
 
 // overlayResolver maps a guest IP to the overlay datapath whose CP-declared
 // subnet contains it and tracks live ingress sessions per network. The network
@@ -93,8 +96,8 @@ type connectHandler struct {
 // default connection-slot caps.
 func newConnectHandler(deps connectDeps, log *slog.Logger) *connectHandler {
 	return &connectHandler{
-		dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		dial: func(ctx context.Context, network, addr, bridge string) (net.Conn, error) {
+			return (&net.Dialer{Control: netfabric.BindToDeviceControl(bridge)}).DialContext(ctx, network, addr)
 		},
 		fabric:   deps.fabric,
 		overlays: deps.overlays,
@@ -206,7 +209,7 @@ func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// Dial the target before hijacking so a dial failure is reported as a
 	// normal HTTP error rather than a half-open hijacked socket.
 	dialCtx, dialCancel := context.WithTimeout(r.Context(), connectDialTimeout)
-	upstream, err := h.dial(dialCtx, "tcp", target)
+	upstream, err := h.dial(dialCtx, "tcp", target, bridge)
 	dialCancel()
 	if err != nil {
 		h.log.Warn("connect: dial target failed", "target", target, "error", err.Error())

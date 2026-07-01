@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -100,15 +99,7 @@ func neighborLookup(linkIndex int, ip netip.Addr) (net.HardwareAddr, bool, error
 func probeNeighbor(ip netip.Addr, bridge string) {
 	d := net.Dialer{
 		Timeout: neighborProbeTimeout,
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var serr error
-			if cerr := c.Control(func(fd uintptr) {
-				serr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, bridge)
-			}); cerr != nil {
-				return cerr
-			}
-			return serr
-		},
+		Control: BindToDeviceControl(bridge),
 	}
 	conn, err := d.Dial("udp", net.JoinHostPort(ip.String(), neighborProbePort))
 	if err != nil {

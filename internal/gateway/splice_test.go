@@ -57,8 +57,9 @@ func startEcho(t *testing.T) (addr string, connEnded <-chan struct{}) {
 }
 
 // netDial is the production dial seam: a plain TCP dialer. Tests inject it so
-// the connect handler reaches the loopback echo server.
-func netDial(ctx context.Context, network, addr string) (net.Conn, error) {
+// the connect handler reaches the loopback echo server. The bridge argument is
+// ignored: the loopback target needs no interface binding.
+func netDial(ctx context.Context, network, addr, _ string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, network, addr)
 }
 
@@ -609,7 +610,7 @@ func TestSessionCredIsNotAnX509Identity(t *testing.T) {
 // anti-SSRF refusal paths must reject before any dial.
 func failDial(t *testing.T) dialFunc {
 	t.Helper()
-	return func(context.Context, string, string) (net.Conn, error) {
+	return func(context.Context, string, string, string) (net.Conn, error) {
 		t.Error("dial called on a path that must refuse before dialing")
 		return nil, io.EOF
 	}
