@@ -15,9 +15,10 @@ const APIVersionV1 = "otherix/v1"
 
 // Kind names, matching the manifest `kind:` field exactly (case-sensitive).
 const (
-	KindNetwork     = "Network"
-	KindStoragePool = "StoragePool"
-	KindVM          = "VM"
+	KindNetwork      = "Network"
+	KindStoragePool  = "StoragePool"
+	KindVM           = "VM"
+	KindLoadBalancer = "LoadBalancer"
 )
 
 // Document is one parsed manifest document. Spec is held as a raw YAML
@@ -97,4 +98,19 @@ type VMSpec struct {
 	// CloudInitDisabled the live VM view does not surface it, so it is
 	// manifest-input-expressible but not emitted by `get -o yaml`.
 	SSHIngressEnabled bool `yaml:"sshIngressEnabled"`
+	// Labels is the set of user-defined key/value tags stored on the VM. Load
+	// balancers select their backend VMs by matching these labels. Emitted by
+	// `get -o yaml` when non-empty so a labeled VM round-trips through
+	// `create -f`.
+	Labels map[string]string `yaml:"labels"`
+}
+
+// LoadBalancerSpec is the spec body for kind LoadBalancer. Both fields
+// mirror cpclient.CreateLoadBalancerParams and are required by the server:
+// Port is the guest TCP port ingress connections target, and Selector is
+// the non-empty label set (every key and value non-empty) selecting the
+// backend VMs.
+type LoadBalancerSpec struct {
+	Port     int               `yaml:"port"`
+	Selector map[string]string `yaml:"selector"`
 }

@@ -45,6 +45,18 @@ const (
 	// none.
 	PermVMConnect Permission = "vm:connect"
 
+	// Load balancers follow the vm:* own/any shape. read is any for every
+	// role (names and metadata are not secret); create is the boolean
+	// gate; update/delete/connect are own for developer, any for
+	// admin/operator, none for viewer. `loadbalancer:connect` gates the
+	// LB connect-broker and follows the vm-broker cross-owner-404
+	// discipline.
+	PermLoadBalancerRead    Permission = "loadbalancer:read"
+	PermLoadBalancerCreate  Permission = "loadbalancer:create"
+	PermLoadBalancerUpdate  Permission = "loadbalancer:update"
+	PermLoadBalancerDelete  Permission = "loadbalancer:delete"
+	PermLoadBalancerConnect Permission = "loadbalancer:connect"
+
 	// Snapshots. Scoped against snapshots.owner_id (which today aligns
 	// with the parent VM's owner; see docs/rbac.md edge-case note about
 	// future ownership transfer).
@@ -140,6 +152,13 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMIngressGrant: ScopeAny,
 		PermVMConnect:      ScopeAny,
 
+		// Load balancers.
+		PermLoadBalancerRead:    ScopeAny,
+		PermLoadBalancerCreate:  ScopeAny,
+		PermLoadBalancerUpdate:  ScopeAny,
+		PermLoadBalancerDelete:  ScopeAny,
+		PermLoadBalancerConnect: ScopeAny,
+
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
 		PermSnapshotCreate: ScopeAny,
@@ -195,6 +214,13 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMIngressGrant: ScopeAny,
 		PermVMConnect:      ScopeAny,
 
+		// Load balancers.
+		PermLoadBalancerRead:    ScopeAny,
+		PermLoadBalancerCreate:  ScopeAny,
+		PermLoadBalancerUpdate:  ScopeAny,
+		PermLoadBalancerDelete:  ScopeAny,
+		PermLoadBalancerConnect: ScopeAny,
+
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
 		PermSnapshotCreate: ScopeAny,
@@ -240,6 +266,13 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermVMIngressGrant: ScopeOwn,
 		PermVMConnect:      ScopeOwn,
 
+		// Load balancers — read/create fleet-wide, mutate/connect own only.
+		PermLoadBalancerRead:    ScopeAny,
+		PermLoadBalancerCreate:  ScopeAny,
+		PermLoadBalancerUpdate:  ScopeOwn,
+		PermLoadBalancerDelete:  ScopeOwn,
+		PermLoadBalancerConnect: ScopeOwn,
+
 		// Snapshots — own only.
 		PermSnapshotRead:   ScopeOwn,
 		PermSnapshotCreate: ScopeOwn,
@@ -268,6 +301,9 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 	RoleViewer: {
 		// Read-only across the visible surface.
 		PermVMRead: ScopeAny,
+
+		// Load balancers — read only.
+		PermLoadBalancerRead: ScopeAny,
 
 		// Snapshots — own only (anticipates a future flow where viewers
 		// trigger read-side operations that emit task/snapshot rows

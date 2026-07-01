@@ -106,6 +106,35 @@ Everyone else (viewer, a developer reading a foreign VM) receives the
 VM with those fields absent. Inventory fields (`image_sha256`, `format`,
 sizing, placement) stay visible to every `vm:read` holder.
 
+### Load balancers
+
+Every entry is scoped against the load balancer's `owner_id`, mirroring
+the virtual-machine matrix.
+
+| Permission             | admin | operator | developer | viewer |
+|------------------------|-------|----------|-----------|--------|
+| `loadbalancer:read`    | any   | any      | any       | any    |
+| `loadbalancer:create`  | yes   | yes      | yes       | —      |
+| `loadbalancer:update`  | any   | any      | own       | —      |
+| `loadbalancer:delete`  | any   | any      | own       | —      |
+| `loadbalancer:connect` | any   | any      | own       | —      |
+
+`loadbalancer:read` is `any` for every role: load balancer names and
+high-level metadata are not confidential within a single self-hosted
+installation. `loadbalancer:create` is the boolean gate for provisioning
+a new load balancer; `update`/`delete` are `own` for developer and `any`
+for admin/operator, viewer holds neither.
+
+`loadbalancer:connect` gates the LB connect-broker surface that proxies
+an inbound session to a load balancer. It follows the same
+cross-owner-404 discipline as the VM connect-broker: admin and operator
+hold it across the fleet, developer only for load balancers they own, and
+viewer not at all; a caller targeting a load balancer they cannot see
+receives 404, never 403, so existence is not leaked. A bridge-backed
+load balancer re-authorizes its data-plane leg on `vm:ssh` through the
+relay, so every role that holds `loadbalancer:connect` also holds
+`vm:ssh` at a covering scope — the two matrices must not diverge.
+
 ### Snapshots
 
 Snapshots carry their own `owner_id`, set at creation to the caller.

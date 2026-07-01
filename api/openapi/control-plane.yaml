@@ -70,6 +70,11 @@ tags:
       one or more VMs (each pinned to a guest login). The whole surface
       is gated by `vm:ingress-grant`. The grant token is returned exactly
       once on creation; the server stores only its hash.
+  - name: load-balancers
+    description: |
+      Named L4 load balancers that select a set of VMs by label. A
+      `connect` sub-resource brokers a fresh ingress connection to an
+      eligible backend on each call.
   - name: tasks
     description: Async operations (scans, imports, clones, migrations).
   - name: cluster
@@ -1907,6 +1912,190 @@ paths:
             (e.g. `{"vm_nics": 3}`); networks have no force-delete
             counterpart, so the operator must remove or migrate the
             referencing VMs before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/loadbalancers:
+    get:
+      operationId: loadBalancers.list
+      tags: [load-balancers]
+      summary: List load balancers.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: List of load balancers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadBalancerList"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: loadBalancers.create
+      tags: [load-balancers]
+      summary: Create a load balancer.
+      description: |
+        `409 conflict` covers a name collision with an existing load balancer
+        (or an idempotency-key replay mismatch).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadBalancerCreate"
+      responses:
+        "201":
+          description: Load balancer created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadBalancer"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/loadbalancers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The load balancer name.
+        schema: { type: string }
+    get:
+      operationId: loadBalancers.get
+      tags: [load-balancers]
+      summary: Get a load balancer by name.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Load balancer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadBalancer"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: No such load balancer (`loadbalancer_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: loadBalancers.update
+      tags: [load-balancers]
+      summary: Update a load balancer.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadBalancerUpdate"
+      responses:
+        "200":
+          description: Updated load balancer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadBalancer"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404":
+          description: No such load balancer (`loadbalancer_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: loadBalancers.delete
+      tags: [load-balancers]
+      summary: Delete a load balancer.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Deleted.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404":
+          description: No such load balancer (`loadbalancer_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/loadbalancers/{id}/connect:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The load balancer name.
+        schema: { type: string }
+    post:
+      operationId: loadBalancers.connect
+      tags: [load-balancers]
+      summary: Broker an L4 ingress connection to a load balancer backend.
+      description: |
+        Selects an eligible backend VM behind the load balancer and returns
+        the connect coordinates synchronously (the data-plane connect is the
+        client's job, so this is a `200`, not an async task).
+
+        This operation is non-idempotent by design: each call picks a fresh
+        backend and mints a fresh short-lived credential, so it does not
+        accept an `Idempotency-Key` and is mounted outside the idempotency
+        middleware.
+
+        A load balancer with no eligible backend returns
+        `409 ingress_unavailable` (retryable).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: Connect coordinates issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadBalancerConnectResponse"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: No such load balancer (`loadbalancer_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No eligible backend for ingress (`ingress_unavailable`).
           content:
             application/json:
               schema:
@@ -4270,6 +4459,7 @@ components:
         - image_collision
         - download_failed
         - vm_not_found
+        - loadbalancer_not_found
         - vm_name_in_use
         - pool_not_writable
         - node_not_ready
@@ -7008,6 +7198,86 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
+    LoadBalancer:
+      type: object
+      description: |
+        A named L4 load balancer. `selector` is a set of label key/value
+        pairs; a VM is an eligible backend when its labels match every
+        entry. `connect` brokers a fresh ingress connection to one such
+        backend on the load balancer's `port`.
+      required:
+        - id
+        - name
+        - owner_id
+        - port
+        - selector
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner_id: { type: string, format: uuid }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The guest TCP port ingress connections target.
+        selector:
+          type: object
+          additionalProperties: { type: string }
+          description: Label key/value pairs a VM must match to be a backend.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    LoadBalancerCreate:
+      type: object
+      additionalProperties: false
+      required: [name, port, selector]
+      properties:
+        name: { type: string }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        selector:
+          type: object
+          additionalProperties: { type: string }
+
+    LoadBalancerUpdate:
+      type: object
+      additionalProperties: false
+      description: All fields optional; omitted fields are left unchanged.
+      properties:
+        name: { type: string }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        selector:
+          type: object
+          additionalProperties: { type: string }
+
+    LoadBalancerList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/LoadBalancer"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    LoadBalancerConnectResponse:
+      allOf:
+        - $ref: "#/components/schemas/VMIngressResponse"
+        - type: object
+          required: [vm_name]
+          properties:
+            vm_name:
+              type: string
+              description: The selected backend VM's name.
+
     ImagePullPolicy:
       type: string
       enum: [if_not_present, always]
@@ -7399,6 +7669,14 @@ components:
             exclusive with `cloud_init_disabled`. Requires a guest image with
             OpenSSH 8.2+. When SSH ingress is disabled cluster-wide or no CA
             is provisioned, this is a no-op and a normal VM is created.
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            User-defined key/value tags stored on the VM. Load balancers
+            select their backend VMs by matching these labels, so a VM must
+            be labeled at create to be selectable. Keys must be non-empty;
+            values may be any string.
 
     VMUpdate:
       type: object

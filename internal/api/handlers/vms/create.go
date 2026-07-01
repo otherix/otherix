@@ -99,6 +99,12 @@ type vmCreateRequest struct {
 	// so the guest sshd accepts the short-lived certs the cert-mint endpoint
 	// signs. Requires cloud-init (mutually exclusive with cloud_init_disabled).
 	SSHIngressEnabled bool `json:"ssh_ingress_enabled,omitempty"`
+	// Labels is the optional set of user-defined key/value tags stored on the
+	// VM row (persisted as the JSON `vms.labels` column). Load balancers select
+	// their backend VMs by matching these labels, so a VM must be labeled at
+	// create to be selectable. Keys must be non-empty; values may be any string
+	// (including empty).
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // errFirmwareNotFound is the in-flight signal that firmware resolution found no
@@ -183,6 +189,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// vms.labels is a NOT-NULL JSON column defaulting to `{}`; marshal the
+	// request labels when present, else persist the empty object. Load
+	// balancers select their backends by matching these labels.
+	labelsJSON := []byte(`{}`)
+	if len(req.Labels) > 0 {
+		b, err := json.Marshal(req.Labels)
+		if err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "invalid labels", nil)
+			return
+		}
+		labelsJSON = b
+	}
+
 	spec := store.SchedulingSpec{
 		PoolName: poolName,
 		DiskGiB:  int32(req.DiskGiB), //nolint:gosec // bounded 0..65536 by validateCreateRequest
@@ -218,7 +238,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		CloudInitDisabled: req.CloudInitDisabled,
 		SSHIngressEnabled: req.SSHIngressEnabled,
 		NetworkConfig:     req.NetworkConfig,
-		Labels:            []byte(`{}`),
+		Labels:            labelsJSON,
 		SchedulingSpec:    specJSON,
 	})
 	if err != nil {
@@ -356,6 +376,22 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 		}
 	}
 	if !validateCloudInitExclusivity(w, r, req) {
+		return false
+	}
+	if !validateLabels(w, r, req) {
+		return false
+	}
+	return true
+}
+
+// validateLabels enforces the label key invariant: a label key must be a
+// non-empty string (values may be any string, including empty). An empty key
+// cannot participate in a load-balancer selector and would corrupt the stored
+// label map, so it is rejected at admission with 400 validation_failed.
+func validateLabels(w http.ResponseWriter, r *http.Request, req vmCreateRequest) bool {
+	if _, ok := req.Labels[""]; ok {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "label keys must be non-empty", nil)
 		return false
 	}
 	return true

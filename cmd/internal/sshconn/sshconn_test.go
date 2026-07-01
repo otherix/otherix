@@ -545,6 +545,93 @@ func TestProxyThreadsPortToRelay(t *testing.T) {
 	}
 }
 
+// TestDialLoadBalancerBrokersRelay proves the LB connect path: DialLoadBalancer
+// POSTs to /v1/loadbalancers/{name}/connect, and the relay leg addresses the
+// backend by the vm_name the connect response carries (not the LB name), then
+// round-trips bytes over the relay WebSocket.
+func TestDialLoadBalancerBrokersRelay(t *testing.T) {
+	const (
+		lbName  = "web"
+		backend = "backend-vm"
+		port    = 8080
+	)
+	var (
+		mu             sync.Mutex
+		gotConnectPath string
+		gotRelayPath   string
+		gotBearer      string
+		gotBody        string
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/loadbalancers/"+lbName+"/connect", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotConnectPath = r.URL.Path
+		gotBearer = r.Header.Get("Authorization")
+		gotBody = strings.TrimSpace(string(raw))
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"transport": "relay",
+			"vm_id":     "11111111-1111-1111-1111-111111111111",
+			"vm_name":   backend,
+			"port":      port,
+		})
+	})
+	mux.HandleFunc("/v1/vms/"+backend+"/relay", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotRelayPath = r.URL.Path
+		mu.Unlock()
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		typ, data, rerr := c.Read(r.Context())
+		if rerr != nil {
+			_ = c.Close(websocket.StatusInternalError, "")
+			return
+		}
+		_ = c.Write(r.Context(), typ, data)
+		_ = c.Close(websocket.StatusNormalClosure, "")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := Config{ServerURL: srv.URL, BearerToken: "otx_token"}
+	conn, err := DialLoadBalancer(context.Background(), cfg, lbName)
+	if err != nil {
+		t.Fatalf("DialLoadBalancer: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := io.WriteString(conn, "hi"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "hi" {
+		t.Errorf("echoed bytes = %q, want %q", got, "hi")
+	}
+
+	mu.Lock()
+	cp, rp, bearer, body := gotConnectPath, gotRelayPath, gotBearer, gotBody
+	mu.Unlock()
+	if want := "/v1/loadbalancers/" + lbName + "/connect"; cp != want {
+		t.Errorf("broker path = %q, want %q", cp, want)
+	}
+	if want := "/v1/vms/" + backend + "/relay"; rp != want {
+		t.Errorf("relay leg path = %q, want %q (must address the backend vm_name)", rp, want)
+	}
+	if bearer != "Bearer otx_token" {
+		t.Errorf("broker bearer = %q, want %q", bearer, "Bearer otx_token")
+	}
+	if body != "{}" {
+		t.Errorf("broker body = %q, want %q (the LB fixes the port)", body, "{}")
+	}
+}
+
 // fakeGateway is a stub of the gateway's POST /v1/connect: it records the bearer
 // the client presented, completes the hijack handshake (200 then raw bytes), and
 // echoes the spliced stream.

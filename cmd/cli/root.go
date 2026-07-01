@@ -13,6 +13,7 @@ import (
 	forwardcmd "github.com/otherix/otherix/cmd/cli/forward"
 	ingressgrantcmd "github.com/otherix/otherix/cmd/cli/ingressgrant"
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
+	lbcmd "github.com/otherix/otherix/cmd/cli/lb"
 	migrationcmd "github.com/otherix/otherix/cmd/cli/migration"
 	networkcmd "github.com/otherix/otherix/cmd/cli/network"
 	nodecmd "github.com/otherix/otherix/cmd/cli/node"
@@ -59,6 +60,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(sshcmd.NewCommand())
 	root.AddCommand(forwardcmd.NewCommand())
 	root.AddCommand(ingressgrantcmd.NewCommand())
+	root.AddCommand(lbcmd.NewCommand())
 	root.AddCommand(migrationcmd.NewCommand())
 	root.AddCommand(snapshotcmd.NewCommand())
 	root.AddCommand(poolcmd.NewCommand())

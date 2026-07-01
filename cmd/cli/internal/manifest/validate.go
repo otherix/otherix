@@ -108,6 +108,37 @@ func DecodeStoragePoolSpec(d Document) (StoragePoolSpec, error) {
 	return s, nil
 }
 
+var loadBalancerSpecKeys = map[string]bool{
+	"port": true, "selector": true,
+}
+
+// DecodeLoadBalancerSpec decodes and validates a LoadBalancer document's
+// spec. port must be in 1..65535 and selector must be non-empty with a
+// non-empty key AND value on every entry - mirroring the CLI --selector
+// rejection (lb.parseSelector) so a `selector: {app: ""}` manifest is
+// caught at the CLI edge, matching the server-side admission.
+func DecodeLoadBalancerSpec(d Document) (LoadBalancerSpec, error) {
+	if err := rejectUnknownKeys(d, loadBalancerSpecKeys); err != nil {
+		return LoadBalancerSpec{}, err
+	}
+	var s LoadBalancerSpec
+	if err := d.Spec.Decode(&s); err != nil {
+		return LoadBalancerSpec{}, fmt.Errorf("manifest: document %d (LoadBalancer/%s): spec: %v", d.Index, d.Name, err)
+	}
+	if s.Port < 1 || s.Port > 65535 {
+		return LoadBalancerSpec{}, fmt.Errorf("manifest: document %d (LoadBalancer/%s): spec.port must be in 1..65535", d.Index, d.Name)
+	}
+	if len(s.Selector) == 0 {
+		return LoadBalancerSpec{}, fmt.Errorf("manifest: document %d (LoadBalancer/%s): spec.selector must have at least one key=value", d.Index, d.Name)
+	}
+	for k, v := range s.Selector {
+		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			return LoadBalancerSpec{}, fmt.Errorf("manifest: document %d (LoadBalancer/%s): spec.selector entries must have a non-empty key and value", d.Index, d.Name)
+		}
+	}
+	return s, nil
+}
+
 var vmSpecKeys = map[string]bool{
 	"imageURL": true, "sourceSnapshotID": true, "imageSHA256": true,
 	"arch": true, "firmware": true, "firmwareID": true, "format": true,
@@ -115,6 +146,7 @@ var vmSpecKeys = map[string]bool{
 	"diskGiB":         true, "vcpus": true, "memoryMB": true, "pool": true,
 	"network": true, "node": true, "userData": true, "networkConfig": true,
 	"cloudInitDisabled": true, "sshIngressEnabled": true,
+	"labels": true,
 }
 
 // DecodeVMSpec decodes and validates a VM document's spec. Exactly one

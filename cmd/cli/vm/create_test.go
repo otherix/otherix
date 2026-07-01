@@ -194,6 +194,46 @@ func TestVMCreate_SSHIngressMutualExclusion(t *testing.T) {
 	}
 }
 
+// TestVMCreate_Labels sends repeated --label key=value flags and asserts the
+// CP request body carries them under `labels`, the field load balancers select
+// backends by.
+func TestVMCreate_Labels(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(createdVMJSON("vm-labeled"))
+	}))
+	defer srv.Close()
+
+	_, _, err := runVMCmd(t, srv.URL, []string{
+		"create",
+		"vm-labeled",
+		"--image-url", "https://example.com/ubuntu.qcow2",
+		"--arch", "amd64",
+		"--pool", "pool-dev",
+		"--vcpus", "2",
+		"--memory-mb", "512",
+		"--label", "app=web",
+		"--label", "tier=frontend",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	labels, ok := captured["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("labels = %v, want a map", captured["labels"])
+	}
+	if labels["app"] != "web" || labels["tier"] != "frontend" {
+		t.Errorf("labels = %v, want {app:web, tier:frontend}", labels)
+	}
+}
+
 // TestVMCreate_NetworkConfigFile sends --network-config=<path> and
 // asserts the CP request body carries the resolved netplan YAML in
 // network_config. The content is opaque to the CLI (netplan v2, not

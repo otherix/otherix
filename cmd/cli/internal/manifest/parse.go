@@ -76,9 +76,9 @@ func decodeHeader(node *yaml.Node, index int) (Document, error) {
 		return Document{}, fmt.Errorf("manifest: document %d: apiVersion %q is not supported (want %q)", index, raw.APIVersion, APIVersionV1)
 	}
 	switch raw.Kind {
-	case KindNetwork, KindStoragePool, KindVM:
+	case KindNetwork, KindStoragePool, KindVM, KindLoadBalancer:
 	default:
-		return Document{}, fmt.Errorf("manifest: document %d: unknown kind %q (want Network, StoragePool, or VM)", index, raw.Kind)
+		return Document{}, fmt.Errorf("manifest: document %d: unknown kind %q (want Network, StoragePool, VM, or LoadBalancer)", index, raw.Kind)
 	}
 	if strings.TrimSpace(raw.Metadata.Name) == "" {
 		return Document{}, fmt.Errorf("manifest: document %d (%s): metadata.name is required", index, raw.Kind)

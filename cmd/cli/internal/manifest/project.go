@@ -212,6 +212,42 @@ func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 	})
 }
 
+// ProjectLoadBalancer renders a live load balancer as an apply-ready
+// manifest carrying port + selector, the two create inputs. Server-assigned
+// identity (id, owner, timestamps) is omitted so `lb get -o yaml | create -f`
+// round-trips.
+func ProjectLoadBalancer(lb cpclient.LoadBalancer) ([]byte, error) {
+	selector := make(map[string]string, len(lb.Selector))
+	for k, v := range lb.Selector {
+		selector[k] = v
+	}
+	return encodeDoc(outDoc{
+		APIVersion: APIVersionV1,
+		Kind:       KindLoadBalancer,
+		Metadata:   outMetadata{Name: lb.Name},
+		Spec: map[string]any{
+			"port":     int(lb.Port),
+			"selector": selector,
+		},
+	})
+}
+
+// addVMLabelsSpec sets spec["labels"] to the VM view's labels (map[string]any,
+// string-valued by contract) rendered as a map[string]string, so the projection
+// re-parses cleanly into VMSpec.Labels and a labeled VM round-trips through
+// `create -f`. It is a no-op for an empty label set, leaving the spec.labels key
+// absent. Kept out of ProjectVM to hold that function inside the gocyclo cap.
+func addVMLabelsSpec(spec map[string]any, labels map[string]any) {
+	if len(labels) == 0 {
+		return
+	}
+	out := make(map[string]string, len(labels))
+	for k, val := range labels {
+		out[k] = fmt.Sprintf("%v", val)
+	}
+	spec["labels"] = out
+}
+
 // ProjectVM renders a live VM as an apply-ready manifest. The cloud-init
 // payloads (userData / networkConfig) round-trip when the view surfaces
 // them. Several create-time fields are still omitted because the API view
@@ -254,6 +290,7 @@ func ProjectVM(v cpclient.VM) ([]byte, error) {
 	if v.SourceSnapshotID != nil && *v.SourceSnapshotID != "" {
 		spec["sourceSnapshotID"] = *v.SourceSnapshotID
 	}
+	addVMLabelsSpec(spec, v.Labels)
 	// status is observed state, projected top-level (sibling of spec) so a
 	// re-apply -- which reads only spec -- ignores it. Emit it only when the
 	// VM has a reported phase, so a freshly-created VM with no status yet does

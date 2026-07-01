@@ -16,6 +16,7 @@ import (
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
 	ingressgrantshandlers "github.com/otherix/otherix/internal/api/handlers/ingressgrants"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
+	loadbalancershandlers "github.com/otherix/otherix/internal/api/handlers/loadbalancers"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
@@ -50,6 +51,7 @@ type RouterStore interface {
 	apitokenshandlers.Store
 	nodeshandlers.Store
 	jointokenshandlers.Store
+	loadbalancershandlers.Store
 	networkshandlers.Store
 	storagepoolshandlers.Store
 	artifactpoolshandlers.Store

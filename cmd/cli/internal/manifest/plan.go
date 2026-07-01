@@ -19,6 +19,7 @@ type CreateOp struct {
 	Network *cpclient.CreateNetworkParams
 	Pool    *cpclient.CreatePoolRequest
 	VM      *cpclient.CreateVMRequest
+	LB      *cpclient.CreateLoadBalancerParams
 }
 
 // DeleteTarget is one resolved delete target. For StoragePool, PoolNode
@@ -37,9 +38,10 @@ type DeleteTarget struct {
 // which the documents are submitted does not matter. Delete still relies
 // on the reverse order (tear down VMs before the pools/networks they use).
 var kindOrder = map[string]int{
-	KindNetwork:     0,
-	KindStoragePool: 1,
-	KindVM:          2,
+	KindNetwork:      0,
+	KindStoragePool:  1,
+	KindVM:           2,
+	KindLoadBalancer: 3,
 }
 
 // BuildCreatePlan validates every document, expands StoragePool
@@ -69,6 +71,12 @@ func BuildCreatePlan(docs []Document) ([]CreateOp, error) {
 			ops = append(ops, poolOps...)
 		case KindVM:
 			op, err := vmCreateOp(d)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, op)
+		case KindLoadBalancer:
+			op, err := loadBalancerCreateOp(d)
 			if err != nil {
 				return nil, err
 			}
@@ -108,6 +116,11 @@ func BuildDeletePlan(docs []Document) ([]DeleteTarget, error) {
 				return nil, err
 			}
 			targets = append(targets, DeleteTarget{Kind: KindVM, Name: d.Name})
+		case KindLoadBalancer:
+			if _, err := DecodeLoadBalancerSpec(d); err != nil {
+				return nil, err
+			}
+			targets = append(targets, DeleteTarget{Kind: KindLoadBalancer, Name: d.Name})
 		}
 	}
 	sort.SliceStable(targets, func(i, j int) bool {
@@ -214,6 +227,7 @@ func vmCreateOp(d Document) (CreateOp, error) {
 		MemoryMB:          memoryMB,
 		CloudInitDisabled: s.CloudInitDisabled,
 		SSHIngressEnabled: s.SSHIngressEnabled,
+		Labels:            s.Labels,
 	}
 	if s.SourceSnapshotID != "" {
 		// Snapshot-sourced: the snapshot manifest is authoritative for
@@ -244,4 +258,17 @@ func vmCreateOp(d Document) (CreateOp, error) {
 		req.NetworkConfig = &nc
 	}
 	return CreateOp{Kind: KindVM, Name: d.Name, VM: &req}, nil
+}
+
+func loadBalancerCreateOp(d Document) (CreateOp, error) {
+	s, err := DecodeLoadBalancerSpec(d)
+	if err != nil {
+		return CreateOp{}, err
+	}
+	params := cpclient.CreateLoadBalancerParams{
+		Name:     d.Name,
+		Port:     int32(s.Port), //nolint:gosec // port validated in 1..65535 by DecodeLoadBalancerSpec.
+		Selector: s.Selector,
+	}
+	return CreateOp{Kind: KindLoadBalancer, Name: d.Name, LB: &params}, nil
 }
