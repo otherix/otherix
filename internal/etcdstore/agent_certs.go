@@ -101,6 +101,15 @@ func (s *Store) CreateAgentCert(ctx context.Context, arg store.CreateAgentCertPa
 // deleted node's cert authenticating, silently reopening the exact hole this
 // closes. Keep node-index delete last per cert; the fail-closed property depends
 // on it.
+//
+// Known residual: the node-index Range here is not CAS-guarded against a
+// concurrent cert writer. If a node with no active cert is deleted while a
+// legitimate re-join for the same name redeems a token in the Range->commit
+// window, CreateAgentCert can add a fresh cert the snapshot missed, leaving a
+// non-revoked fingerprint index on the soft-deleted node. The leak is
+// recoverable and low-utility (the cert resolves to a soft-deleted node, so
+// heartbeat name->UUID resolution fails), and closing it would add guard logic
+// to the destructive delete cascade, so it is documented rather than fixed.
 func (s *Store) revokeNodeAgentCertsOps(ctx context.Context, nodeID uuid.UUID, revokedAt time.Time) ([]clientv3.Op, int64, error) {
 	items, err := s.c.Range(ctx, agentCertNodeIndexPrefix(nodeID))
 	if err != nil {

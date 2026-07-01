@@ -25,9 +25,11 @@ import (
 // transaction (see its doc); vms.desired_phase is intentionally NOT
 // touched.
 //
-// Force-delete is logged at INFO with node_id, user_id, vms_orphaned,
-// migrations_cancelled, force=true. A dedicated audit-log subsystem is
-// scheduled separately.
+// Every delete is logged at INFO with node_id, user_id, vms_orphaned,
+// migrations_cancelled, certs_revoked, and the force bool. Both paths revoke
+// the node's agent certs, so certs_revoked is recorded on the plain delete too;
+// vms_orphaned / migrations_cancelled are zero unless force ran the detach
+// cascade. A dedicated audit-log subsystem is scheduled separately.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	caller := auth.UserFromContext(r.Context())
 	if caller == nil {
@@ -50,16 +52,14 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if force {
-		h.log.InfoContext(r.Context(), "force-deleted node",
-			slog.String("node_id", node.ID.String()),
-			slog.String("user_id", caller.ID.String()),
-			slog.Int64("vms_orphaned", res.VMsOrphaned),
-			slog.Int64("migrations_cancelled", res.MigrationsCancelled),
-			slog.Int64("certs_revoked", res.CertsRevoked),
-			slog.Bool("force", true),
-		)
-	}
+	h.log.InfoContext(r.Context(), "deleted node",
+		slog.String("node_id", node.ID.String()),
+		slog.String("user_id", caller.ID.String()),
+		slog.Int64("vms_orphaned", res.VMsOrphaned),
+		slog.Int64("migrations_cancelled", res.MigrationsCancelled),
+		slog.Int64("certs_revoked", res.CertsRevoked),
+		slog.Bool("force", force),
+	)
 
 	response.WriteNoContent(w)
 }
