@@ -16,10 +16,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// IngressGrantVM is one VM entry in a grant's scope: the VM name plus the
-// guest login the grant authorizes on it.
+// IngressGrantVM is one VM entry in a grant's scope: the VM name, the set of
+// guest TCP ports the grant authorizes, and the guest login the grant
+// authorizes on it.
 type IngressGrantVM struct {
 	VMName string `json:"vm_name"`
+	Ports  []int  `json:"ports"`
 	Login  string `json:"login"`
 }
 
@@ -57,6 +59,7 @@ type CreateIngressGrantRequest struct {
 	RecipientLabel string           `json:"recipient_label,omitempty"`
 	VMs            []IngressGrantVM `json:"vms"`
 	TTL            string           `json:"ttl,omitempty"`
+	SourceIP       string           `json:"source_ip,omitempty"`
 }
 
 // ListIngressGrantsParams collects the query knobs GET /v1/ingress-grants accepts.

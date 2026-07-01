@@ -19,8 +19,10 @@ package ingressgrant
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -34,6 +36,7 @@ import (
 // Flag names shared across the ingress-grant subcommands.
 const (
 	flagVM        = "vm"
+	flagSourceIP  = "source-ip"
 	flagLogin     = "login"
 	flagTTL       = "ttl"
 	flagUser      = "user"
@@ -109,38 +112,71 @@ func outputFormat(cmd *cobra.Command, defaultFormat string, extra ...string) (st
 	return "", fmt.Errorf("--%s: unknown format %q (%s)", flagOutput, raw, strings.Join(allowed, ", "))
 }
 
-// parseVMScope turns a --vm comma list plus the --login default into the VM
-// scope entries the create request carries. Each entry may inline its own
-// login via "name=login"; otherwise the default login applies. Blank entries
-// are skipped; a duplicate VM name is an error (the server would reject it too,
-// but a clean client-side message is friendlier).
-func parseVMScope(vmList, login string) ([]cpclient.IngressGrantVM, error) {
-	login = effectiveLogin(login)
+// parseVMScope turns the repeated --vm entries plus the --login default into
+// the VM scope entries the create request carries. Each entry is
+// "host:port[,port...]" (e.g. "web:22", "db:5432,8080"); every VM takes the
+// default login. Blank entries are skipped. A missing ":port", an empty port
+// list, a non-integer or out-of-range port, a duplicate port within an entry,
+// or a duplicate VM name across entries is a client-side error - the server
+// validates authoritatively, but a clean local message is friendlier.
+func parseVMScope(entries []string, defaultLogin string) ([]cpclient.IngressGrantVM, error) {
+	login := effectiveLogin(defaultLogin)
 	var out []cpclient.IngressGrantVM
 	seen := make(map[string]struct{})
-	for _, raw := range strings.Split(vmList, ",") {
-		name := strings.TrimSpace(raw)
-		if name == "" {
+	for _, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
 			continue
 		}
-		entryLogin := login
-		if k, v, ok := strings.Cut(name, "="); ok {
-			name = strings.TrimSpace(k)
-			entryLogin = effectiveLogin(strings.TrimSpace(v))
-			if name == "" {
-				return nil, fmt.Errorf("invalid --%s entry %q: empty vm name", flagVM, raw)
-			}
+		host, portList, ok := strings.Cut(entry, ":")
+		host = strings.TrimSpace(host)
+		if !ok {
+			return nil, fmt.Errorf("invalid --%s entry %q: expected host:port[,port...]", flagVM, raw)
 		}
-		if _, dup := seen[name]; dup {
-			return nil, fmt.Errorf("duplicate vm in --%s: %q", flagVM, name)
+		if host == "" {
+			return nil, fmt.Errorf("invalid --%s entry %q: empty vm name", flagVM, raw)
 		}
-		seen[name] = struct{}{}
-		out = append(out, cpclient.IngressGrantVM{VMName: name, Login: entryLogin})
+		ports, err := parsePorts(portList)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --%s entry %q: %v", flagVM, raw, err)
+		}
+		if _, dup := seen[host]; dup {
+			return nil, fmt.Errorf("duplicate vm in --%s: %q", flagVM, host)
+		}
+		seen[host] = struct{}{}
+		out = append(out, cpclient.IngressGrantVM{VMName: host, Ports: ports, Login: login})
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("at least one VM is required: pass --%s web01,web02", flagVM)
+		return nil, fmt.Errorf("at least one VM is required: pass --%s host:port", flagVM)
 	}
 	return out, nil
+}
+
+// parsePorts parses the "port[,port...]" tail of a --vm entry into a
+// deduplicated slice of 1..65535 TCP ports, in the order given.
+func parsePorts(list string) ([]int, error) {
+	fields := strings.Split(list, ",")
+	ports := make([]int, 0, len(fields))
+	seen := make(map[int]struct{})
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			return nil, errors.New("empty port")
+		}
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			return nil, fmt.Errorf("invalid port %q", f)
+		}
+		if n < 1 || n > 65535 {
+			return nil, fmt.Errorf("port %d out of range 1-65535", n)
+		}
+		if _, dup := seen[n]; dup {
+			return nil, fmt.Errorf("duplicate port %d", n)
+		}
+		seen[n] = struct{}{}
+		ports = append(ports, n)
+	}
+	return ports, nil
 }
 
 // effectiveLogin returns login, defaulting blank/whitespace to defaultLogin.

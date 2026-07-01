@@ -62,7 +62,9 @@ func TestCreate_PostsBodyAndEmitsBundle(t *testing.T) {
 	defer srv.Close()
 
 	stdout, _, err := runCmd(t, srv.URL, []string{
-		"create", "alice-web", "--vm", "web01,web02", "--login", "deploy", "--ttl", "168h", "--user", "Alice",
+		"create", "alice-web",
+		"--vm", "web01:22", "--vm", "web02:22",
+		"--login", "deploy", "--ttl", "168h", "--user", "Alice", "--source-ip", "203.0.113.7",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -73,13 +75,17 @@ func TestCreate_PostsBodyAndEmitsBundle(t *testing.T) {
 	if gotBody["name"] != "alice-web" || gotBody["ttl"] != "168h" || gotBody["recipient_label"] != "Alice" {
 		t.Errorf("body = %v, want name/ttl/recipient_label set", gotBody)
 	}
+	if gotBody["source_ip"] != "203.0.113.7" {
+		t.Errorf("body source_ip = %v, want 203.0.113.7", gotBody["source_ip"])
+	}
 	vms, ok := gotBody["vms"].([]any)
 	if !ok || len(vms) != 2 {
 		t.Fatalf("body vms = %v, want 2 entries", gotBody["vms"])
 	}
 	first := vms[0].(map[string]any)
-	if first["vm_name"] != "web01" || first["login"] != "deploy" {
-		t.Errorf("first vm = %v, want web01/deploy", first)
+	firstPorts, _ := first["ports"].([]any)
+	if first["vm_name"] != "web01" || first["login"] != "deploy" || len(firstPorts) != 1 || firstPorts[0] != float64(22) {
+		t.Errorf("first vm = %v, want web01/deploy/[22]", first)
 	}
 
 	// The text output must carry a paste-able bundle blob; decoding it must
@@ -120,15 +126,18 @@ func TestCreate_OmitsTTLWhenUnset(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := runCmd(t, srv.URL, []string{"create", "alice-web", "--vm", "web01"}); err != nil {
+	if _, _, err := runCmd(t, srv.URL, []string{"create", "alice-web", "--vm", "web01:22"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if _, present := gotBody["ttl"]; present {
 		t.Errorf("ttl must be omitted without --ttl, got %v", gotBody["ttl"])
 	}
+	if _, present := gotBody["source_ip"]; present {
+		t.Errorf("source_ip must be omitted without --source-ip, got %v", gotBody["source_ip"])
+	}
 }
 
-func TestCreate_InlinePerVMLogin(t *testing.T) {
+func TestCreate_MultiPortAndDefaultLogin(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -138,17 +147,19 @@ func TestCreate_InlinePerVMLogin(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := runCmd(t, srv.URL, []string{"create", "g", "--vm", "db01=postgres,web01"}); err != nil {
+	if _, _, err := runCmd(t, srv.URL, []string{"create", "g", "--vm", "db01:5432,8080", "--vm", "web01:22"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	vms := gotBody["vms"].([]any)
 	db := vms[0].(map[string]any)
 	web := vms[1].(map[string]any)
-	if db["vm_name"] != "db01" || db["login"] != "postgres" {
-		t.Errorf("db entry = %v, want db01/postgres", db)
+	dbPorts, _ := db["ports"].([]any)
+	if db["vm_name"] != "db01" || db["login"] != "root" || len(dbPorts) != 2 || dbPorts[0] != float64(5432) || dbPorts[1] != float64(8080) {
+		t.Errorf("db entry = %v, want db01/root/[5432 8080]", db)
 	}
-	if web["vm_name"] != "web01" || web["login"] != "root" {
-		t.Errorf("web entry = %v, want web01/root (default login)", web)
+	webPorts, _ := web["ports"].([]any)
+	if web["vm_name"] != "web01" || web["login"] != "root" || len(webPorts) != 1 || webPorts[0] != float64(22) {
+		t.Errorf("web entry = %v, want web01/root/[22] (default login)", web)
 	}
 }
 
@@ -160,7 +171,7 @@ func TestCreate_JSONFormEmitsBundle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	stdout, _, err := runCmd(t, srv.URL, []string{"create", "alice-web", "--vm", "web01", "-o", "json"})
+	stdout, _, err := runCmd(t, srv.URL, []string{"create", "alice-web", "--vm", "web01:22", "-o", "json"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -188,7 +199,7 @@ func TestCreate_ConflictIsCleanMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := runCmd(t, srv.URL, []string{"create", "dupe", "--vm", "web01"})
+	_, _, err := runCmd(t, srv.URL, []string{"create", "dupe", "--vm", "web01:22"})
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("err = %v, want an already-exists message", err)
 	}

@@ -46,9 +46,10 @@ const (
 	TrustPinPrefix = "pin:"
 )
 
-// BundleVM is one granted {vm, login} pair in a bundle.
+// BundleVM is one granted {vm, ports, login} entry in a bundle.
 type BundleVM struct {
 	VM    string `json:"vm"`
+	Ports []int  `json:"ports"`
 	Login string `json:"login"`
 }
 

@@ -18,10 +18,11 @@ import (
 )
 
 // newCreateCommand returns `otherix ingress-grant create <name>`. The positional
-// <name> labels the grant. --vm is the comma-separated VM scope (each entry may
-// inline its own login as name=login); --login is the default guest login;
-// --ttl bounds the grant's lifetime; --user is an optional recipient label. The
-// shareable bundle (carrying the one-time grant token) is printed on success.
+// <name> labels the grant. --vm is repeatable, one VM per flag in the form
+// host:port[,port...]; --login is the guest login applied to every VM; --ttl
+// bounds the grant's lifetime; --source-ip optionally restricts use to an IP or
+// CIDR; --user is an optional recipient label. The shareable bundle (carrying
+// the one-time grant token) is printed on success.
 func newCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -29,24 +30,26 @@ func newCreateCommand() *cobra.Command {
 		Long: `Mints an ingress grant for an external user and prints a bundle to share
 with them. The bundle carries the control-plane URL, the TLS trust the external
 needs to reach the same control plane you do, the one-time grant token, and the
-granted vm:login set. The external imports it with 'otherix-ssh add'.
+granted vm:port set. The external imports it with 'otherix-ssh add'.
 
---vm is a comma list of VMs the grant authorizes; give a per-VM login inline as
-'name=login' or a shared default with --login (default 'root'). --ttl bounds the
-lifetime (e.g. 168h, 720h); omit it for a grant that never expires. --user is an
-optional label naming the recipient.
+--vm is repeatable, one VM per flag, in the form host:port[,port...] naming the
+guest TCP ports the grant authorizes (port 22 is SSH). --login sets the guest
+login applied to every VM (default 'root'). --ttl bounds the lifetime (e.g.
+168h, 720h); omit it for a grant that never expires. --source-ip restricts use
+to a single IP or CIDR. --user is an optional label naming the recipient.
 
 The grant token is shown exactly once, in the bundle; it is never a flag or
 argument.
 
-  otherix ingress-grant create alice-web --vm web01,web02 --login deploy --ttl 168h
-  otherix ingress-grant create dbadmin --vm db01=postgres --user "Alice Smith"
-  otherix ingress-grant create ci --vm web01 --ttl 24h -o json   # bundle as JSON`,
+  otherix ingress-grant create alice-web --vm web:22 --vm db:5432,8080 --login deploy --ttl 168h
+  otherix ingress-grant create dbadmin --vm db:5432 --source-ip 203.0.113.7 --user "Alice Smith"
+  otherix ingress-grant create ci --vm web:22 --ttl 24h -o json   # bundle as JSON`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCreate,
 	}
-	cmd.Flags().String(flagVM, "", "comma-separated VMs to grant (each may inline a login as name=login)")
-	cmd.Flags().String(flagLogin, "", "default guest login for VMs without an inline login (default "+defaultLogin+")")
+	cmd.Flags().StringArray(flagVM, nil, "VM to grant as host:port[,port...] (repeatable, one per flag)")
+	cmd.Flags().String(flagSourceIP, "", "restrict use to this IP or CIDR")
+	cmd.Flags().String(flagLogin, "", "guest login applied to every VM (default "+defaultLogin+")")
 	cmd.Flags().String(flagTTL, "", "grant lifetime as a duration (168h, 720h); default: never expires")
 	cmd.Flags().String(flagUser, "", "recipient label naming the external user")
 	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json|yaml")
@@ -62,12 +65,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	vmList, _ := cmd.Flags().GetString(flagVM)
+	vmEntries, _ := cmd.Flags().GetStringArray(flagVM)
+	sourceIP, _ := cmd.Flags().GetString(flagSourceIP)
 	login, _ := cmd.Flags().GetString(flagLogin)
 	ttl, _ := cmd.Flags().GetString(flagTTL)
 	recipient, _ := cmd.Flags().GetString(flagUser)
 
-	vms, err := parseVMScope(vmList, login)
+	vms, err := parseVMScope(vmEntries, login)
 	if err != nil {
 		return err
 	}
@@ -89,6 +93,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		RecipientLabel: strings.TrimSpace(recipient),
 		VMs:            vms,
 		TTL:            strings.TrimSpace(ttl),
+		SourceIP:       strings.TrimSpace(sourceIP),
 	})
 	if err != nil {
 		if errors.Is(err, cpclient.ErrIngressGrantExists) {
@@ -110,7 +115,7 @@ func buildBundle(auth cliconfig.ResolvedAuth, grant cpclient.IngressGrant) Bundl
 	trust, caPEM := bundleTrust(auth)
 	vms := make([]BundleVM, 0, len(grant.VMs))
 	for _, vm := range grant.VMs {
-		vms = append(vms, BundleVM{VM: vm.VMName, Login: vm.Login})
+		vms = append(vms, BundleVM{VM: vm.VMName, Ports: vm.Ports, Login: vm.Login})
 	}
 	return Bundle{
 		Version:   BundleVersion,
