@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant
+package ingressgrant
 
 import (
 	"errors"
@@ -12,12 +12,12 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// newGetCommand returns `otherix ssh-grant get <id|name>`.
+// newGetCommand returns `otherix ingress-grant get <id|name>`.
 func newGetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <id|name>",
-		Short: "Show one SSH grant.",
-		Long: `Shows a single SSH grant by id or name. The stored token is never
+		Short: "Show one ingress grant.",
+		Long: `Shows a single ingress grant by id or name. The stored token is never
 surfaced (it is shown only once, in the create bundle).`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
@@ -39,10 +39,10 @@ func runGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	grant, raw, err := c.GetSSHGrant(cmd.Context(), identifier)
+	grant, raw, err := c.GetIngressGrant(cmd.Context(), identifier)
 	if err != nil {
-		if errors.Is(err, cpclient.ErrSSHGrantNotFound) {
-			return errors.New("ssh grant not found: " + identifier)
+		if errors.Is(err, cpclient.ErrIngressGrantNotFound) {
+			return errors.New("ingress grant not found: " + identifier)
 		}
 		return classifyError(err)
 	}

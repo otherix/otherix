@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant_test
+package ingressgrant_test
 
 import (
 	"encoding/base64"
@@ -11,16 +11,16 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/otherix/otherix/cmd/cli/sshgrant"
+	"github.com/otherix/otherix/cmd/cli/ingressgrant"
 )
 
-func sampleBundle() sshgrant.Bundle {
-	return sshgrant.Bundle{
-		Version:   sshgrant.BundleVersion,
+func sampleBundle() ingressgrant.Bundle {
+	return ingressgrant.Bundle{
+		Version:   ingressgrant.BundleVersion,
 		ServerURL: "https://cp.example:8443",
-		Trust:     sshgrant.TrustWebPKI,
-		Token:     "otx_sshgrant_secret",
-		VMs: []sshgrant.BundleVM{
+		Trust:     ingressgrant.TrustWebPKI,
+		Token:     "otx_ingressgrant_secret",
+		VMs: []ingressgrant.BundleVM{
 			{VM: "web01", Login: "deploy"},
 			{VM: "db01", Login: "postgres"},
 		},
@@ -29,14 +29,14 @@ func sampleBundle() sshgrant.Bundle {
 
 func TestBundleRoundTripsThroughBlob(t *testing.T) {
 	want := sampleBundle()
-	blob, err := sshgrant.EncodeBundle(want)
+	blob, err := ingressgrant.EncodeBundle(want)
 	if err != nil {
 		t.Fatalf("EncodeBundle: %v", err)
 	}
-	if !strings.HasPrefix(blob, "otx_sshbundle_") {
-		t.Errorf("blob = %q, want otx_sshbundle_ prefix", blob)
+	if !strings.HasPrefix(blob, "otx_ingressbundle_") {
+		t.Errorf("blob = %q, want otx_ingressbundle_ prefix", blob)
 	}
-	got, err := sshgrant.ParseBundle(blob)
+	got, err := ingressgrant.ParseBundle(blob)
 	if err != nil {
 		t.Fatalf("ParseBundle(blob): %v", err)
 	}
@@ -51,7 +51,7 @@ func TestBundleParsesRawJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	got, err := sshgrant.ParseBundle(string(raw))
+	got, err := ingressgrant.ParseBundle(string(raw))
 	if err != nil {
 		t.Fatalf("ParseBundle(json): %v", err)
 	}
@@ -62,9 +62,9 @@ func TestBundleParsesRawJSON(t *testing.T) {
 
 func TestParseBundleRejectsUnknownVersion(t *testing.T) {
 	b := sampleBundle()
-	b.Version = "otherix-ssh-grant/v99"
+	b.Version = "otherix-ingress-grant/v99"
 	raw, _ := json.Marshal(b)
-	if _, err := sshgrant.ParseBundle(string(raw)); err == nil {
+	if _, err := ingressgrant.ParseBundle(string(raw)); err == nil {
 		t.Fatal("expected an unsupported-version error")
 	}
 }
@@ -73,7 +73,7 @@ func TestParseBundleRequiresTokenAndServer(t *testing.T) {
 	b := sampleBundle()
 	b.Token = ""
 	raw, _ := json.Marshal(b)
-	if _, err := sshgrant.ParseBundle(string(raw)); err == nil {
+	if _, err := ingressgrant.ParseBundle(string(raw)); err == nil {
 		t.Fatal("expected a missing-token error")
 	}
 }
@@ -81,7 +81,7 @@ func TestParseBundleRequiresTokenAndServer(t *testing.T) {
 func TestResolveTrustCABundle(t *testing.T) {
 	pem := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
 	b := sampleBundle()
-	b.Trust = sshgrant.TrustCABundle
+	b.Trust = ingressgrant.TrustCABundle
 	b.CACertPEM = base64.StdEncoding.EncodeToString([]byte(pem))
 
 	caPEM, fp, insecure, err := b.ResolveTrust()
@@ -98,7 +98,7 @@ func TestResolveTrustCABundle(t *testing.T) {
 
 func TestResolveTrustPin(t *testing.T) {
 	b := sampleBundle()
-	b.Trust = sshgrant.TrustPinPrefix + "abc123"
+	b.Trust = ingressgrant.TrustPinPrefix + "abc123"
 	caPEM, fp, insecure, err := b.ResolveTrust()
 	if err != nil {
 		t.Fatalf("ResolveTrust: %v", err)
@@ -113,11 +113,11 @@ func TestResolveTrustPin(t *testing.T) {
 
 func TestResolveTrustInsecureAndWebPKI(t *testing.T) {
 	b := sampleBundle()
-	b.Trust = sshgrant.TrustInsecure
+	b.Trust = ingressgrant.TrustInsecure
 	if _, _, insecure, err := b.ResolveTrust(); err != nil || !insecure {
 		t.Errorf("insecure trust: insecure=%v err=%v", insecure, err)
 	}
-	b.Trust = sshgrant.TrustWebPKI
+	b.Trust = ingressgrant.TrustWebPKI
 	caPEM, fp, insecure, err := b.ResolveTrust()
 	if err != nil || caPEM != nil || fp != "" || insecure {
 		t.Errorf("webpki trust should be empty: caPEM=%v fp=%q insecure=%v err=%v", caPEM, fp, insecure, err)

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package sshgrant hosts the `otherix ssh-grant` cobra subcommand group over
-// the Control Plane's /v1/ssh-grants surface. An SSH grant is a per-person
+// Package ingressgrant hosts the `otherix ingress-grant` cobra subcommand group over
+// the Control Plane's /v1/ingress-grants surface. An ingress grant is a per-person
 // access credential an external user (one without a CLI account) presents to
 // reach a fixed set of VMs over the control-plane SSH relay.
 //
@@ -11,10 +11,10 @@
 // operator hands to the external person; `list` / `get` inspect grants; `add-vm`
 // / `remove-vm` adjust a grant's mutable VM scope; `revoke` disables it.
 //
-// The whole surface is gated by vm:ssh-grant (admin/operator any, developer
+// The whole surface is gated by vm:ingress-grant (admin/operator any, developer
 // own, viewer none). The plaintext grant token is surfaced exactly once, in
 // the create bundle, and is never accepted as a flag or argument.
-package sshgrant
+package ingressgrant
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// Flag names shared across the ssh-grant subcommands.
+// Flag names shared across the ingress-grant subcommands.
 const (
 	flagVM        = "vm"
 	flagLogin     = "login"
@@ -50,13 +50,13 @@ const defaultLogin = "root"
 // defaultListLimit is the page size `list` requests when --limit is unset.
 const defaultListLimit = 20
 
-// NewCommand returns the `otherix ssh-grant` subcommand group, ready to be
+// NewCommand returns the `otherix ingress-grant` subcommand group, ready to be
 // registered onto the root cobra tree by main.
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "ssh-grant",
+		Use:   "ingress-grant",
 		Short: "Manage SSH access grants for external users.",
-		Long: `ssh-grant manages per-person SSH access grants. A grant lets an
+		Long: `ingress-grant manages per-person SSH access grants. A grant lets an
 external user - one without a CLI account - reach a fixed set of VMs over the
 control-plane SSH relay using a single shareable token.
 
@@ -65,7 +65,7 @@ one-time grant token, and the granted vm:login set) to hand to the external
 person; they import it with 'otherix-ssh add'. Manage a grant's VM scope with
 'add-vm' / 'remove-vm' and disable it with 'revoke'.
 
-The whole surface is gated by vm:ssh-grant. The plaintext grant token is shown
+The whole surface is gated by vm:ingress-grant. The plaintext grant token is shown
 exactly once, in the create bundle, and is never a flag or argument.`,
 	}
 	cmd.AddCommand(newCreateCommand())
@@ -114,9 +114,9 @@ func outputFormat(cmd *cobra.Command, defaultFormat string, extra ...string) (st
 // login via "name=login"; otherwise the default login applies. Blank entries
 // are skipped; a duplicate VM name is an error (the server would reject it too,
 // but a clean client-side message is friendlier).
-func parseVMScope(vmList, login string) ([]cpclient.SSHGrantVM, error) {
+func parseVMScope(vmList, login string) ([]cpclient.IngressGrantVM, error) {
 	login = effectiveLogin(login)
-	var out []cpclient.SSHGrantVM
+	var out []cpclient.IngressGrantVM
 	seen := make(map[string]struct{})
 	for _, raw := range strings.Split(vmList, ",") {
 		name := strings.TrimSpace(raw)
@@ -135,7 +135,7 @@ func parseVMScope(vmList, login string) ([]cpclient.SSHGrantVM, error) {
 			return nil, fmt.Errorf("duplicate vm in --%s: %q", flagVM, name)
 		}
 		seen[name] = struct{}{}
-		out = append(out, cpclient.SSHGrantVM{VMName: name, Login: entryLogin})
+		out = append(out, cpclient.IngressGrantVM{VMName: name, Login: entryLogin})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("at least one VM is required: pass --%s web01,web02", flagVM)
@@ -155,7 +155,7 @@ func effectiveLogin(login string) string {
 // a compact identity block. raw is the server's verbatim by-id JSON when
 // available (preserves absent-vs-null on the json path); pass nil to marshal
 // the typed value instead.
-func renderGrant(cmd *cobra.Command, g cpclient.SSHGrant, raw json.RawMessage, format string) error {
+func renderGrant(cmd *cobra.Command, g cpclient.IngressGrant, raw json.RawMessage, format string) error {
 	switch format {
 	case "json":
 		if len(raw) > 0 {
@@ -183,7 +183,7 @@ func renderGrant(cmd *cobra.Command, g cpclient.SSHGrant, raw json.RawMessage, f
 }
 
 // printGrantText renders the human-readable single-grant block.
-func printGrantText(cmd *cobra.Command, g cpclient.SSHGrant) {
+func printGrantText(cmd *cobra.Command, g cpclient.IngressGrant) {
 	printf(cmd, "id:         %s\n", g.ID)
 	printf(cmd, "name:       %s\n", g.Name)
 	if g.RecipientLabel != "" {
@@ -198,7 +198,7 @@ func printGrantText(cmd *cobra.Command, g cpclient.SSHGrant) {
 }
 
 // grantStatus derives a display status: revoked beats active.
-func grantStatus(g cpclient.SSHGrant) string {
+func grantStatus(g cpclient.IngressGrant) string {
 	if g.Revoked {
 		return "revoked"
 	}

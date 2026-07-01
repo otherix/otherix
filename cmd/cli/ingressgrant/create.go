@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant
+package ingressgrant
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// newCreateCommand returns `otherix ssh-grant create <name>`. The positional
+// newCreateCommand returns `otherix ingress-grant create <name>`. The positional
 // <name> labels the grant. --vm is the comma-separated VM scope (each entry may
 // inline its own login as name=login); --login is the default guest login;
 // --ttl bounds the grant's lifetime; --user is an optional recipient label. The
@@ -25,8 +25,8 @@ import (
 func newCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Mint an SSH grant and print its shareable bundle.",
-		Long: `Mints an SSH grant for an external user and prints a bundle to share
+		Short: "Mint an ingress grant and print its shareable bundle.",
+		Long: `Mints an ingress grant for an external user and prints a bundle to share
 with them. The bundle carries the control-plane URL, the TLS trust the external
 needs to reach the same control plane you do, the one-time grant token, and the
 granted vm:login set. The external imports it with 'otherix-ssh add'.
@@ -39,9 +39,9 @@ optional label naming the recipient.
 The grant token is shown exactly once, in the bundle; it is never a flag or
 argument.
 
-  otherix ssh-grant create alice-web --vm web01,web02 --login deploy --ttl 168h
-  otherix ssh-grant create dbadmin --vm db01=postgres --user "Alice Smith"
-  otherix ssh-grant create ci --vm web01 --ttl 24h -o json   # bundle as JSON`,
+  otherix ingress-grant create alice-web --vm web01,web02 --login deploy --ttl 168h
+  otherix ingress-grant create dbadmin --vm db01=postgres --user "Alice Smith"
+  otherix ingress-grant create ci --vm web01 --ttl 24h -o json   # bundle as JSON`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCreate,
 	}
@@ -84,15 +84,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	grant, err := c.CreateSSHGrant(cmd.Context(), cpclient.CreateSSHGrantRequest{
+	grant, err := c.CreateIngressGrant(cmd.Context(), cpclient.CreateIngressGrantRequest{
 		Name:           name,
 		RecipientLabel: strings.TrimSpace(recipient),
 		VMs:            vms,
 		TTL:            strings.TrimSpace(ttl),
 	})
 	if err != nil {
-		if errors.Is(err, cpclient.ErrSSHGrantExists) {
-			return fmt.Errorf("ssh grant %q already exists", name)
+		if errors.Is(err, cpclient.ErrIngressGrantExists) {
+			return fmt.Errorf("ingress grant %q already exists", name)
 		}
 		return classifyError(err)
 	}
@@ -106,7 +106,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 // server's response (authoritative, with logins normalised), and the
 // TLS-trust discriminator is derived from the operator's OWN trust so the
 // external reaches the same control plane.
-func buildBundle(auth cliconfig.ResolvedAuth, grant cpclient.SSHGrant) Bundle {
+func buildBundle(auth cliconfig.ResolvedAuth, grant cpclient.IngressGrant) Bundle {
 	trust, caPEM := bundleTrust(auth)
 	vms := make([]BundleVM, 0, len(grant.VMs))
 	for _, vm := range grant.VMs {
@@ -143,7 +143,7 @@ func bundleTrust(auth cliconfig.ResolvedAuth) (trust, caCertPEM string) {
 // renderCreated prints the create result. text prints a human summary, the
 // single-line paste-able bundle blob, and a hand-off hint. json/yaml emit the
 // bundle structure itself (token included) for capture by automation.
-func renderCreated(cmd *cobra.Command, grant cpclient.SSHGrant, bundle Bundle, format string) error {
+func renderCreated(cmd *cobra.Command, grant cpclient.IngressGrant, bundle Bundle, format string) error {
 	switch format {
 	case "json":
 		out, err := json.MarshalIndent(bundle, "", "  ")
@@ -165,7 +165,7 @@ func renderCreated(cmd *cobra.Command, grant cpclient.SSHGrant, bundle Bundle, f
 	if err != nil {
 		return err
 	}
-	printf(cmd, "ssh grant %q created. Send the bundle below to %s; it carries\n",
+	printf(cmd, "ingress grant %q created. Send the bundle below to %s; it carries\n",
 		grant.Name, recipientPhrase(grant.RecipientLabel))
 	printf(cmd, "the access token and is shown only once.\n\n")
 	printf(cmd, "  server:  %s\n", bundle.ServerURL)

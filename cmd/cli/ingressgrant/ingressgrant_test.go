@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant_test
+package ingressgrant_test
 
 import (
 	"bytes"
@@ -13,15 +13,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/otherix/otherix/cmd/cli/ingressgrant"
 	"github.com/otherix/otherix/cmd/cli/internal/cliauth"
-	"github.com/otherix/otherix/cmd/cli/sshgrant"
 )
 
-// runCmd executes the ssh-grant subcommand tree against args, mounting it on a
+// runCmd executes the ingress-grant subcommand tree against args, mounting it on a
 // throwaway parent exposing the same persistent flags the real root provides.
 func runCmd(t *testing.T, endpoint string, args []string) (stdout, stderr string, err error) {
 	t.Helper()
-	parent := sshgrant.NewCommand()
+	parent := ingressgrant.NewCommand()
 	parent.PersistentFlags().String(cliauth.FlagConfig, "", "")
 	parent.PersistentFlags().String(cliauth.FlagEndpoint, "", "")
 	parent.PersistentFlags().String(cliauth.FlagToken, "", "")
@@ -47,7 +47,7 @@ func runCmd(t *testing.T, endpoint string, args []string) (stdout, stderr string
 const createReply = `{"id":"g-1","name":"alice-web","recipient_label":"Alice",` +
 	`"created_by":"u-1","vms":[{"vm_name":"web01","login":"deploy"},{"vm_name":"web02","login":"deploy"}],` +
 	`"expires_at":"2026-07-07T10:00:00Z","revoked":false,` +
-	`"created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z","token":"otx_sshgrant_PLAINTEXT"}`
+	`"created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z","token":"otx_ingressgrant_PLAINTEXT"}`
 
 func TestCreate_PostsBodyAndEmitsBundle(t *testing.T) {
 	var gotPath, gotMethod string
@@ -67,8 +67,8 @@ func TestCreate_PostsBodyAndEmitsBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gotMethod != http.MethodPost || gotPath != "/v1/ssh-grants" {
-		t.Errorf("request = %s %s, want POST /v1/ssh-grants", gotMethod, gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/v1/ingress-grants" {
+		t.Errorf("request = %s %s, want POST /v1/ingress-grants", gotMethod, gotPath)
 	}
 	if gotBody["name"] != "alice-web" || gotBody["ttl"] != "168h" || gotBody["recipient_label"] != "Alice" {
 		t.Errorf("body = %v, want name/ttl/recipient_label set", gotBody)
@@ -85,17 +85,17 @@ func TestCreate_PostsBodyAndEmitsBundle(t *testing.T) {
 	// The text output must carry a paste-able bundle blob; decoding it must
 	// surface the token, server, trust, and the granted vm:login set.
 	blob := extractBlob(t, stdout)
-	bundle, err := sshgrant.ParseBundle(blob)
+	bundle, err := ingressgrant.ParseBundle(blob)
 	if err != nil {
 		t.Fatalf("ParseBundle from create output: %v\n%s", err, stdout)
 	}
-	if bundle.Token != "otx_sshgrant_PLAINTEXT" {
+	if bundle.Token != "otx_ingressgrant_PLAINTEXT" {
 		t.Errorf("bundle token = %q, want the one-time plaintext", bundle.Token)
 	}
 	if bundle.ServerURL != srv.URL {
 		t.Errorf("bundle server = %q, want %q", bundle.ServerURL, srv.URL)
 	}
-	if bundle.Trust != sshgrant.TrustWebPKI {
+	if bundle.Trust != ingressgrant.TrustWebPKI {
 		t.Errorf("bundle trust = %q, want webpki (plain-http flag endpoint)", bundle.Trust)
 	}
 	wantVMs := map[string]string{"web01": "deploy", "web02": "deploy"}
@@ -164,11 +164,11 @@ func TestCreate_JSONFormEmitsBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	var b sshgrant.Bundle
+	var b ingressgrant.Bundle
 	if err := json.Unmarshal([]byte(stdout), &b); err != nil {
 		t.Fatalf("create -o json is not a Bundle: %v\n%s", err, stdout)
 	}
-	if b.Version != sshgrant.BundleVersion || b.Token != "otx_sshgrant_PLAINTEXT" {
+	if b.Version != ingressgrant.BundleVersion || b.Token != "otx_ingressgrant_PLAINTEXT" {
 		t.Errorf("json bundle = %+v, want versioned bundle with token", b)
 	}
 }
@@ -196,8 +196,8 @@ func TestCreate_ConflictIsCleanMessage(t *testing.T) {
 
 func TestList_Table(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/ssh-grants" {
-			t.Errorf("path = %s, want /v1/ssh-grants", r.URL.Path)
+		if r.URL.Path != "/v1/ingress-grants" {
+			t.Errorf("path = %s, want /v1/ingress-grants", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -227,14 +227,14 @@ func TestGet_ByNameResolvesThenGetsByID(t *testing.T) {
 	var listed, gotByID bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/ssh-grants":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/ingress-grants":
 			listed = true
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"data":[{"id":"g-77","name":"alice-web","recipient_label":"Alice",
 				"created_by":"u-1","vms":[{"vm_name":"web01","login":"deploy"}],"expires_at":null,"revoked":false,
 				"created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z"}],"meta":{"next_cursor":null}}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/ssh-grants/g-77":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/ingress-grants/g-77":
 			gotByID = true
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -278,8 +278,8 @@ func TestAddVM_PostsToVMsSubresource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gotMethod != http.MethodPost || gotPath != "/v1/ssh-grants/"+id+"/vms" {
-		t.Errorf("request = %s %s, want POST /v1/ssh-grants/%s/vms", gotMethod, gotPath, id)
+	if gotMethod != http.MethodPost || gotPath != "/v1/ingress-grants/"+id+"/vms" {
+		t.Errorf("request = %s %s, want POST /v1/ingress-grants/%s/vms", gotMethod, gotPath, id)
 	}
 	if gotBody["vm_name"] != "db01" || gotBody["login"] != "postgres" {
 		t.Errorf("body = %v, want db01/postgres", gotBody)
@@ -306,8 +306,8 @@ func TestRemoveVM_DeletesVMSubresource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gotMethod != http.MethodDelete || gotPath != "/v1/ssh-grants/"+id+"/vms/web01" {
-		t.Errorf("request = %s %s, want DELETE /v1/ssh-grants/%s/vms/web01", gotMethod, gotPath, id)
+	if gotMethod != http.MethodDelete || gotPath != "/v1/ingress-grants/"+id+"/vms/web01" {
+		t.Errorf("request = %s %s, want DELETE /v1/ingress-grants/%s/vms/web01", gotMethod, gotPath, id)
 	}
 	if !strings.Contains(stdout, "removed web01") {
 		t.Errorf("missing remove confirmation:\n%s", stdout)
@@ -331,8 +331,8 @@ func TestRevoke_PostsRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gotMethod != http.MethodPost || gotPath != "/v1/ssh-grants/"+id+"/revoke" {
-		t.Errorf("request = %s %s, want POST /v1/ssh-grants/%s/revoke", gotMethod, gotPath, id)
+	if gotMethod != http.MethodPost || gotPath != "/v1/ingress-grants/"+id+"/revoke" {
+		t.Errorf("request = %s %s, want POST /v1/ingress-grants/%s/revoke", gotMethod, gotPath, id)
 	}
 	if !strings.Contains(stdout, "revoked") {
 		t.Errorf("missing revoke confirmation:\n%s", stdout)
@@ -344,14 +344,14 @@ func TestDelete_ByNameResolvesThenDeletesByID(t *testing.T) {
 	var gotMethod string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/ssh-grants":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/ingress-grants":
 			listed = true
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"data":[{"id":"g-77","name":"alice-web","recipient_label":"Alice",
 				"created_by":"u-1","vms":[{"vm_name":"web01","login":"deploy"}],"expires_at":null,"revoked":false,
 				"created_at":"2026-06-30T10:00:00Z","updated_at":"2026-06-30T10:00:00Z"}],"meta":{"next_cursor":null}}`))
-		case r.URL.Path == "/v1/ssh-grants/g-77":
+		case r.URL.Path == "/v1/ingress-grants/g-77":
 			deletedByID, gotMethod = true, r.Method
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -372,15 +372,15 @@ func TestDelete_ByNameResolvesThenDeletesByID(t *testing.T) {
 	}
 }
 
-// extractBlob pulls the otx_sshbundle_ line out of the create text output.
+// extractBlob pulls the otx_ingressbundle_ line out of the create text output.
 func extractBlob(t *testing.T, stdout string) string {
 	t.Helper()
 	for _, line := range strings.Split(stdout, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "otx_sshbundle_") {
+		if strings.HasPrefix(line, "otx_ingressbundle_") {
 			return line
 		}
 	}
-	t.Fatalf("no otx_sshbundle_ blob in create output:\n%s", stdout)
+	t.Fatalf("no otx_ingressbundle_ blob in create output:\n%s", stdout)
 	return ""
 }

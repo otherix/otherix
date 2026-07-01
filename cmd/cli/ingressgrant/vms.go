@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrant
+package ingressgrant
 
 import (
 	"errors"
@@ -12,11 +12,11 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
-// newAddVMCommand returns `otherix ssh-grant add-vm <id|name> <vm> [--login L]`.
+// newAddVMCommand returns `otherix ingress-grant add-vm <id|name> <vm> [--login L]`.
 func newAddVMCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add-vm <id|name> <vm>",
-		Short: "Add a VM to an SSH grant's scope.",
+		Short: "Add a VM to an ingress grant's scope.",
 		Long: `Adds a VM to the grant's scope (or replaces its login when already
 present). --login sets the guest login (default ` + defaultLogin + `).`,
 		Args: cobra.ExactArgs(2),
@@ -42,7 +42,7 @@ func runAddVM(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	grant, err := c.AddSSHGrantVM(cmd.Context(), identifier, cpclient.SSHGrantVM{
+	grant, err := c.AddIngressGrantVM(cmd.Context(), identifier, cpclient.IngressGrantVM{
 		VMName: vmName,
 		Login:  effectiveLogin(login),
 	})
@@ -50,17 +50,17 @@ func runAddVM(cmd *cobra.Command, args []string) error {
 		return mapGrantError(err, identifier)
 	}
 	if format == "text" {
-		printf(cmd, "added %s (login %s) to ssh grant %q\n", vmName, effectiveLogin(login), grant.Name)
+		printf(cmd, "added %s (login %s) to ingress grant %q\n", vmName, effectiveLogin(login), grant.Name)
 		return nil
 	}
 	return renderGrant(cmd, grant, nil, format)
 }
 
-// newRemoveVMCommand returns `otherix ssh-grant remove-vm <id|name> <vm>`.
+// newRemoveVMCommand returns `otherix ingress-grant remove-vm <id|name> <vm>`.
 func newRemoveVMCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove-vm <id|name> <vm>",
-		Short: "Remove a VM from an SSH grant's scope.",
+		Short: "Remove a VM from an ingress grant's scope.",
 		Long: `Removes a VM from the grant's scope. Removing a VM that is not in the
 grant is a no-op.`,
 		Args: cobra.ExactArgs(2),
@@ -84,12 +84,12 @@ func runRemoveVM(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	grant, err := c.RemoveSSHGrantVM(cmd.Context(), identifier, vmName)
+	grant, err := c.RemoveIngressGrantVM(cmd.Context(), identifier, vmName)
 	if err != nil {
 		return mapGrantError(err, identifier)
 	}
 	if format == "text" {
-		printf(cmd, "removed %s from ssh grant %q\n", vmName, grant.Name)
+		printf(cmd, "removed %s from ingress grant %q\n", vmName, grant.Name)
 		return nil
 	}
 	return renderGrant(cmd, grant, nil, format)
@@ -98,8 +98,8 @@ func runRemoveVM(cmd *cobra.Command, args []string) error {
 // mapGrantError collapses the name-resolution miss to a clean message and
 // otherwise classifies the cpclient error.
 func mapGrantError(err error, identifier string) error {
-	if errors.Is(err, cpclient.ErrSSHGrantNotFound) {
-		return errors.New("ssh grant not found: " + identifier)
+	if errors.Is(err, cpclient.ErrIngressGrantNotFound) {
+		return errors.New("ingress grant not found: " + identifier)
 	}
 	return classifyError(err)
 }
