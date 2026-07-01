@@ -17,6 +17,9 @@ var allPermissions = []auth.Permission{
 	auth.PermVMLifecycle, auth.PermVMResize, auth.PermVMConsole, auth.PermVMRevert,
 	auth.PermVMMigrate, auth.PermVMSSH, auth.PermVMIngressGrant, auth.PermVMConnect,
 
+	auth.PermLoadBalancerRead, auth.PermLoadBalancerCreate, auth.PermLoadBalancerUpdate,
+	auth.PermLoadBalancerDelete, auth.PermLoadBalancerConnect,
+
 	auth.PermSnapshotRead, auth.PermSnapshotCreate, auth.PermSnapshotDelete,
 	auth.PermSnapshotRevert,
 
@@ -65,6 +68,8 @@ func TestMatrix_ViewerIsReadOnly(t *testing.T) {
 		auth.PermVMCreate, auth.PermVMUpdate, auth.PermVMDelete,
 		auth.PermVMLifecycle, auth.PermVMResize, auth.PermVMConsole,
 		auth.PermVMRevert, auth.PermVMMigrate,
+		auth.PermLoadBalancerCreate, auth.PermLoadBalancerUpdate,
+		auth.PermLoadBalancerDelete, auth.PermLoadBalancerConnect,
 		auth.PermSnapshotCreate, auth.PermSnapshotDelete, auth.PermSnapshotRevert,
 		auth.PermNetworkManage,
 		auth.PermStoragePoolManage, auth.PermStoragePoolScan,
@@ -249,6 +254,46 @@ func TestVMConnectPermissions(t *testing.T) {
 	for _, c := range cases {
 		if got := auth.ScopeFor(c.role, c.perm); got != c.want {
 			t.Errorf("ScopeFor(%s,%s) = %q, want %q", c.role, c.perm, got, c.want)
+		}
+	}
+}
+
+func TestLoadBalancerPermissionMatrix(t *testing.T) {
+	cases := []struct {
+		role auth.Role
+		perm auth.Permission
+		want auth.Scope
+	}{
+		{auth.RoleAdmin, auth.PermLoadBalancerConnect, auth.ScopeAny},
+		{auth.RoleOperator, auth.PermLoadBalancerDelete, auth.ScopeAny},
+		{auth.RoleDeveloper, auth.PermLoadBalancerConnect, auth.ScopeOwn},
+		{auth.RoleDeveloper, auth.PermLoadBalancerRead, auth.ScopeAny},
+		{auth.RoleDeveloper, auth.PermLoadBalancerCreate, auth.ScopeAny},
+		{auth.RoleViewer, auth.PermLoadBalancerRead, auth.ScopeAny},
+		{auth.RoleViewer, auth.PermLoadBalancerConnect, auth.ScopeNone},
+		{auth.RoleViewer, auth.PermLoadBalancerCreate, auth.ScopeNone},
+	}
+	for _, c := range cases {
+		if got := auth.ScopeFor(c.role, c.perm); got != c.want {
+			t.Errorf("ScopeFor(%v, %v) = %v, want %v", c.role, c.perm, got, c.want)
+		}
+	}
+}
+
+// TestLoadBalancerConnectImpliesVMSSH pins the bridge-transport coupling: a bridge
+// backend's data-plane leg re-authorizes on vm:ssh via the relay, so every role
+// that can connect to a load balancer must also hold vm:ssh at a covering scope,
+// else bridge-backed LBs silently break for that role.
+func TestLoadBalancerConnectImpliesVMSSH(t *testing.T) {
+	for _, role := range []auth.Role{auth.RoleAdmin, auth.RoleOperator, auth.RoleDeveloper, auth.RoleViewer} {
+		conn := auth.ScopeFor(role, auth.PermLoadBalancerConnect)
+		ssh := auth.ScopeFor(role, auth.PermVMSSH)
+		if conn == auth.ScopeNone {
+			continue
+		}
+		// vm:ssh scope must cover the connect scope: any covers any/own; own covers own.
+		if ssh == auth.ScopeNone || (conn == auth.ScopeAny && ssh != auth.ScopeAny) {
+			t.Errorf("%v: loadbalancer:connect=%v but vm:ssh=%v (must cover)", role, conn, ssh)
 		}
 	}
 }
