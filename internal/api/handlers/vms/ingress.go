@@ -68,7 +68,7 @@ type ingressResponse struct {
 // the client's job, so this is a 200, not a 202.
 //
 // This route is mounted OUTSIDE the global Authn middleware (like ssh-cert and
-// ssh-stream) so it can accept an ingress-grant token, which is not an Authn
+// relay) so it can accept an ingress-grant token, which is not an Authn
 // principal, and structurally guarantee a grant token reaches no other route.
 // The handler reads the bearer itself and dual-dispatches:
 //

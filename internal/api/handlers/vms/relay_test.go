@@ -23,11 +23,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// sshStreamStoreStub satisfies the handler's Store interface for the
-// SSHStream tests: the grant lookup, the VM-by-name load, and the owning
+// relayStoreStub satisfies the handler's Store interface for the
+// Relay tests: the grant lookup, the VM-by-name load, and the owning
 // node read. Any other call panics (embedded nil Store), which proves the
 // handler bailed before touching the rest of the store on a rejection.
-type sshStreamStoreStub struct {
+type relayStoreStub struct {
 	Store
 	grant    store.IngressGrant
 	grantErr error
@@ -36,15 +36,15 @@ type sshStreamStoreStub struct {
 	node     store.Node
 }
 
-func (s *sshStreamStoreStub) IngressGrantByTokenHash(context.Context, []byte) (store.IngressGrant, error) {
+func (s *relayStoreStub) IngressGrantByTokenHash(context.Context, []byte) (store.IngressGrant, error) {
 	return s.grant, s.grantErr
 }
 
-func (s *sshStreamStoreStub) VMByName(context.Context, string) (store.VM, error) {
+func (s *relayStoreStub) VMByName(context.Context, string) (store.VM, error) {
 	return s.vm, s.vmErr
 }
 
-func (s *sshStreamStoreStub) NodeByID(context.Context, uuid.UUID) (store.Node, error) {
+func (s *relayStoreStub) NodeByID(context.Context, uuid.UUID) (store.Node, error) {
 	return s.node, nil
 }
 
@@ -70,7 +70,7 @@ func (c *dialSpyClient) HTTPClient() *http.Client {
 	return &http.Client{Transport: &dialSpyTransport{spy: c}}
 }
 
-func sshStreamHandler(s Store, c consoleClient) *Handler {
+func relayHandler(s Store, c consoleClient) *Handler {
 	return New(s,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LifecycleDeps{},
@@ -78,10 +78,10 @@ func sshStreamHandler(s Store, c consoleClient) *Handler {
 		SSHDeps{})
 }
 
-// sshStreamRequest builds a GET request carrying the chi route context so
+// relayRequest builds a GET request carrying the chi route context so
 // chi.URLParam(r, "id") resolves to vmName, and an optional bearer token.
-func sshStreamRequest(vmName, token string) *http.Request {
-	req := httptest.NewRequest(http.MethodGet, "/v1/vms/"+url.PathEscape(vmName)+"/ssh-stream", nil)
+func relayRequest(vmName, token string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/v1/vms/"+url.PathEscape(vmName)+"/relay", nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -90,11 +90,11 @@ func sshStreamRequest(vmName, token string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
-// assertGenericSSHStreamRejection asserts the single response shape every
-// reachable rejection on the ssh-stream endpoint must produce: 401 with
+// assertGenericRelayRejection asserts the single response shape every
+// reachable rejection on the relay endpoint must produce: 401 with
 // the uniform ssh_session_rejected code. Identical shapes are the point -
 // any divergence is a VM-name enumeration oracle.
-func assertGenericSSHStreamRejection(t *testing.T, rec *httptest.ResponseRecorder) {
+func assertGenericRelayRejection(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -117,91 +117,91 @@ func grantFor(vmName, login string) store.IngressGrant {
 	}
 }
 
-// TestSSHStreamMissingTokenRejected: no bearer -> uniform 401, no dial.
-func TestSSHStreamMissingTokenRejected(t *testing.T) {
+// TestRelayMissingTokenRejected: no bearer -> uniform 401, no dial.
+func TestRelayMissingTokenRejected(t *testing.T) {
 	t.Parallel()
 	spy := &dialSpyClient{}
-	h := sshStreamHandler(&sshStreamStoreStub{}, spy)
+	h := relayHandler(&relayStoreStub{}, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", ""))
+	h.Relay(rec, relayRequest("demo", ""))
 
-	assertGenericSSHStreamRejection(t, rec)
+	assertGenericRelayRejection(t, rec)
 	if spy.dialed {
 		t.Errorf("dialed upstream on missing token, want no dial")
 	}
 }
 
-// TestSSHStreamOutOfScopeGrantRejectedNoDial: a grant that does not list
+// TestRelayOutOfScopeGrantRejectedNoDial: a grant that does not list
 // the requested VM -> uniform 401, no upstream dial.
-func TestSSHStreamOutOfScopeGrantRejectedNoDial(t *testing.T) {
+func TestRelayOutOfScopeGrantRejectedNoDial(t *testing.T) {
 	t.Parallel()
 	spy := &dialSpyClient{}
-	st := &sshStreamStoreStub{grant: grantFor("other", "ubuntu")}
-	h := sshStreamHandler(st, spy)
+	st := &relayStoreStub{grant: grantFor("other", "ubuntu")}
+	h := relayHandler(st, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", "otx_ingressgrant_abc"))
+	h.Relay(rec, relayRequest("demo", "otx_ingressgrant_abc"))
 
-	assertGenericSSHStreamRejection(t, rec)
+	assertGenericRelayRejection(t, rec)
 	if spy.dialed {
 		t.Errorf("dialed upstream on out-of-scope grant, want no dial")
 	}
 }
 
-// TestSSHStreamRevokedGrantRejected: a revoked grant in scope -> uniform
+// TestRelayRevokedGrantRejected: a revoked grant in scope -> uniform
 // 401, no dial.
-func TestSSHStreamRevokedGrantRejected(t *testing.T) {
+func TestRelayRevokedGrantRejected(t *testing.T) {
 	t.Parallel()
 	spy := &dialSpyClient{}
 	g := grantFor("demo", "ubuntu")
 	g.Revoked = true
-	st := &sshStreamStoreStub{grant: g}
-	h := sshStreamHandler(st, spy)
+	st := &relayStoreStub{grant: g}
+	h := relayHandler(st, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", "otx_ingressgrant_abc"))
+	h.Relay(rec, relayRequest("demo", "otx_ingressgrant_abc"))
 
-	assertGenericSSHStreamRejection(t, rec)
+	assertGenericRelayRejection(t, rec)
 	if spy.dialed {
 		t.Errorf("dialed upstream on revoked grant, want no dial")
 	}
 }
 
-// TestSSHStreamUnknownGrantRejected: the token does not resolve to any
+// TestRelayUnknownGrantRejected: the token does not resolve to any
 // grant -> uniform 401.
-func TestSSHStreamUnknownGrantRejected(t *testing.T) {
+func TestRelayUnknownGrantRejected(t *testing.T) {
 	t.Parallel()
 	spy := &dialSpyClient{}
-	st := &sshStreamStoreStub{grantErr: store.ErrNotFound}
-	h := sshStreamHandler(st, spy)
+	st := &relayStoreStub{grantErr: store.ErrNotFound}
+	h := relayHandler(st, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", "otx_ingressgrant_abc"))
+	h.Relay(rec, relayRequest("demo", "otx_ingressgrant_abc"))
 
-	assertGenericSSHStreamRejection(t, rec)
+	assertGenericRelayRejection(t, rec)
 	if spy.dialed {
 		t.Errorf("dialed upstream on unknown grant, want no dial")
 	}
 }
 
-// TestSSHStreamGrantRelaysEndToEnd is the headline seam test: an in-scope
+// TestRelayGrantRelaysEndToEnd is the headline seam test: an in-scope
 // grant authorizes the connect, the CP dials the owning agent's ssh-pipe
 // over the (insecure-test) mTLS client, and bytes the operator writes are
 // echoed back through the relay.
-func TestSSHStreamGrantRelaysEndToEnd(t *testing.T) {
+func TestRelayGrantRelaysEndToEnd(t *testing.T) {
 	t.Parallel()
 	agent := newWSAgentServer(t, true)
 	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
-	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
+	st := &relayStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
 
 	r := chi.NewRouter()
-	r.Get("/v1/vms/{id}/ssh-stream", sshStreamHandler(st, &recordingConsoleClient{}).SSHStream)
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
 	cp := httptest.NewServer(r)
 	t.Cleanup(cp.Close)
 
-	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/ssh-stream"
+	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/relay"
 	op, _, err := websocket.Dial(context.Background(),
 		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_ingressgrant_abc")})
 	if err != nil {
@@ -263,31 +263,31 @@ func TestBuildSSHPipeURLEscapesName(t *testing.T) {
 	}
 }
 
-// TestSSHStreamForwardsPort proves the CP relay forwards the requested guest
-// port to the agent's ssh-pipe: the operator dials ssh-stream with ?port=5432
+// TestRelayForwardsPort proves the CP relay forwards the requested guest
+// port to the agent's ssh-pipe: the operator dials the relay with ?port=5432
 // and the agent leg receives that same port on its query string. The IP the
 // agent dials stays lease-derived on the agent side; the port is the only
 // wire-influenced input the relay carries through.
-func TestSSHStreamForwardsPort(t *testing.T) {
+func TestRelayForwardsPort(t *testing.T) {
 	t.Parallel()
 	agent := newWSAgentServer(t, true)
 	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
-	// The grant must authorize the exact port the relay forwards: ssh_stream
+	// The grant must authorize the exact port the relay forwards: the relay
 	// enforces the per-VM port scope, so a grant that lists 5432 is required for
 	// the ?port=5432 dial to be accepted.
 	grant := store.IngressGrant{
 		ID:  uuid.New(),
 		VMs: []store.IngressGrantVM{{VMName: "demo", Ports: []int{5432}, Login: "ubuntu"}},
 	}
-	st := &sshStreamStoreStub{grant: grant, vm: vm, node: node}
+	st := &relayStoreStub{grant: grant, vm: vm, node: node}
 
 	r := chi.NewRouter()
-	r.Get("/v1/vms/{id}/ssh-stream", sshStreamHandler(st, &recordingConsoleClient{}).SSHStream)
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
 	cp := httptest.NewServer(r)
 	t.Cleanup(cp.Close)
 
-	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/ssh-stream?port=5432"
+	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/relay?port=5432"
 	op, _, err := websocket.Dial(context.Background(),
 		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_ingressgrant_abc")})
 	if err != nil {
@@ -309,7 +309,7 @@ func TestSSHStreamForwardsPort(t *testing.T) {
 	}
 }
 
-// TestSSHStreamPortNotInGrantRejectedNoDial: a grant that lists the VM on the
+// TestRelayPortNotInGrantRejectedNoDial: a grant that lists the VM on the
 // SSH port only must not authorize a bridge session to a different guest port.
 // Dialing ?port=5432 against a port-22 grant is the uniform 401 with no dial.
 //
@@ -318,23 +318,23 @@ func TestSSHStreamForwardsPort(t *testing.T) {
 // VM load and node resolve would both succeed and the relay would reach the
 // dial - flipping spy.dialed to true. So the spy.dialed==false assertion is
 // driven by the port check itself, not by a downstream resolve failure.
-func TestSSHStreamPortNotInGrantRejectedNoDial(t *testing.T) {
+func TestRelayPortNotInGrantRejectedNoDial(t *testing.T) {
 	t.Parallel()
 	spy := &dialSpyClient{}
 	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://agent.example.com:9090"}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
 	// grantFor lists the VM on port 22 only; the request asks for 5432, which
 	// the port check must reject before any VM load, node resolve, or dial.
-	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
-	h := sshStreamHandler(st, spy)
+	st := &relayStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
+	h := relayHandler(st, spy)
 
-	req := sshStreamRequest("demo", "otx_ingressgrant_abc")
+	req := relayRequest("demo", "otx_ingressgrant_abc")
 	req.URL.RawQuery = "port=5432"
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, req)
+	h.Relay(rec, req)
 
-	assertGenericSSHStreamRejection(t, rec)
+	assertGenericRelayRejection(t, rec)
 	if spy.dialed {
 		t.Errorf("dialed upstream on out-of-scope port, want no dial")
 	}

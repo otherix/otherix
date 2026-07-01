@@ -136,13 +136,13 @@ func NewRouter(deps RouterDeps) http.Handler {
 			deps.VMLifecycle, deps.VMConsole,
 			vmshandlers.SSHDeps{Verifier: deps.AuthService, CertTTL: deps.SSHCertTTL})
 		r.Get("/v1/vms/{id}/console-stream", streamingVMs.ConsoleStream)
-		// ssh-stream is the L4 sibling of console-stream: a long-lived WSS
-		// relay that carries an end-to-end SSH session to the guest. Like
-		// console-stream it is anonymous to the Authn group (it accepts an
-		// ingress-grant token, read by the handler itself) and registered
-		// directly here, OUTSIDE the Timeout group, so the long-lived stream
-		// is not killed at the request deadline.
-		r.Get("/v1/vms/{id}/ssh-stream", streamingVMs.SSHStream)
+		// relay is the L4 sibling of console-stream: a long-lived WSS
+		// relay that carries a generic L4 (arbitrary TCP, default port 22)
+		// session to the guest. Like console-stream it is anonymous to the
+		// Authn group (it accepts an ingress-grant token, read by the handler
+		// itself) and registered directly here, OUTSIDE the Timeout group, so
+		// the long-lived stream is not killed at the request deadline.
+		r.Get("/v1/vms/{id}/relay", streamingVMs.Relay)
 		// ssh-cert and ingress are mounted OUTSIDE the Authn group (like
 		// console-stream): both must accept an ingress-grant token, which is
 		// not an Authn principal, and structurally guarantee a grant token

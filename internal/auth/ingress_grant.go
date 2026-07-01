@@ -18,7 +18,7 @@ import (
 // ingress-grant wire format: "otx_ingressgrant_" + base64url(32 random bytes).
 // The longer prefix keeps grant tokens distinct from ordinary API
 // tokens ("otx_") so the bearer dispatch can route a grant only to the
-// ssh-cert and ssh-stream endpoints and never to any other route. The
+// ssh-cert and relay endpoints and never to any other route. The
 // prefix is intentionally a superset of "otx_": callers that test for
 // grant shape must check IsIngressGrantFormat before IsAPITokenFormat.
 const (
@@ -42,7 +42,7 @@ func GenerateIngressGrantToken() (plaintext string, hash []byte, err error) {
 
 // IsIngressGrantFormat reports whether s carries the ingress-grant prefix.
 // The bearer dispatch uses this to route grant tokens to the ssh-cert
-// and ssh-stream endpoints. It checks shape only, not validity.
+// and relay endpoints. It checks shape only, not validity.
 func IsIngressGrantFormat(s string) bool {
 	return strings.HasPrefix(s, grantTokenPrefix)
 }

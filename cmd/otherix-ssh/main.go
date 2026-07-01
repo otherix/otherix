@@ -6,8 +6,7 @@
 // no Otherix account and no management CLI: an operator runs `otherix
 // ingress-grant create` and sends back a single paste-able bundle, the external
 // runs `otherix-ssh add <bundle>` once, and from then on `ssh <vm>.<suffix>`
-// tunnels straight to the guest sshd over the control plane's ssh-stream
-// relay.
+// tunnels straight to the guest sshd over the control plane's relay.
 //
 // Two subcommands:
 //
@@ -149,7 +148,7 @@ func newProxyCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "proxy <vm> <port>",
 		Short: "Relay primitive used as an ssh ProxyCommand (not run directly).",
-		Long: `Splices stdin/stdout to a VM's control-plane ssh-stream relay.
+		Long: `Splices stdin/stdout to a VM's control-plane relay.
 
 This is the body of an ssh ProxyCommand wired up by 'otherix-ssh add'. ssh
 passes the full hostname as <vm> (e.g. web01.otherix); the stored cluster

@@ -136,8 +136,8 @@ func TestIngressGrant_SourceIPPin(t *testing.T) {
 
 // TestIngressGrant_BridgeRelay proves a grant brokers a bridge VM over the
 // CP-relay transport: transport=relay, no gateway credential minted. The relay
-// itself authorizes each ssh-stream connect per request (that port-scope
-// enforcement is exercised by the ssh_stream package tests).
+// itself authorizes each relay connect per request (that port-scope
+// enforcement is exercised by the relay package tests).
 func TestIngressGrant_BridgeRelay(t *testing.T) {
 	h := newE2E(t)
 	admin, adminID := loginAs(t, h, auth.RoleAdmin)

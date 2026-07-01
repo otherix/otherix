@@ -16,7 +16,7 @@ The cluster holds an **SSH user certificate authority**. Every SSH-ingress VM is
 provisioned at create time to trust that CA (`TrustedUserCAKeys`). When someone
 connects, the control plane mints a short-lived SSH user certificate, and the
 SSH bytes are spliced over the relay
-(`GET /v1/vms/{vm}/ssh-stream`, a WebSocket) to the agent that owns the VM,
+(`GET /v1/vms/{vm}/relay`, a WebSocket) to the agent that owns the VM,
 which connects to the guest's `sshd` on the guest network.
 
 The **guest `sshd` is the sole login authority.** Otherix never keeps a
@@ -198,7 +198,7 @@ or reverse proxy. The SSH relay is a **long-lived WebSocket**, so the proxy in
 front of it must be configured for that:
 
 - **Allow the WebSocket upgrade** on the relay path. The relay request is a
-  `GET /v1/vms/{vm}/ssh-stream` carrying `Connection: upgrade` and
+  `GET /v1/vms/{vm}/relay` carrying `Connection: upgrade` and
   `Upgrade: websocket`; the proxy must pass those headers through rather than
   buffering the response.
 - **Use a generous idle timeout.** An interactive SSH session can sit idle for

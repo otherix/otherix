@@ -433,7 +433,7 @@ func TestWriteSSHConfigBlockMultipleSuffixesCoexist(t *testing.T) {
 }
 
 // relayStub is a minimal Control Plane stub for the relay transport: it brokers
-// every ingress request as transport "relay" and serves the ssh-stream
+// every ingress request as transport "relay" and serves the relay
 // WebSocket as a one-shot echo. It records the brokered port and the ?port=N
 // query the relay leg threads so a test can prove the real guest port reaches
 // both legs.
@@ -460,7 +460,7 @@ func (s *relayStub) server(t *testing.T) *httptest.Server {
 			"port":      body.Port,
 		})
 	})
-	mux.HandleFunc("/v1/vms/vm1/ssh-stream", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/vms/vm1/relay", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.streamPortQuery = r.URL.Query().Get("port")
 		s.mu.Unlock()
