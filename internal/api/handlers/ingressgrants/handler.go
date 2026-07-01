@@ -60,6 +60,7 @@ func New(s Store, log *slog.Logger) *Handler {
 // grantVMView is one VM entry in a grant's scope.
 type grantVMView struct {
 	VMName string `json:"vm_name"`
+	Ports  []int  `json:"ports"`
 	Login  string `json:"login"`
 }
 
@@ -101,7 +102,7 @@ type paginationMeta struct {
 func toView(g store.IngressGrant) grantView {
 	vms := make([]grantVMView, 0, len(g.VMs))
 	for _, vm := range g.VMs {
-		vms = append(vms, grantVMView{VMName: vm.VMName, Login: vm.Login})
+		vms = append(vms, grantVMView{VMName: vm.VMName, Ports: vm.Ports, Login: vm.Login})
 	}
 	var expiresAt *string
 	if g.ExpiresAt != nil {

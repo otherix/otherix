@@ -93,7 +93,7 @@ func newSSHCertTestHandler(t *testing.T, vmOwner uuid.UUID, cliUser *auth.User) 
 		grant: store.IngressGrant{
 			ID:        uuid.New(),
 			TokenHash: hash,
-			VMs:       []store.IngressGrantVM{{VMName: "web01", Login: "dev"}},
+			VMs:       []store.IngressGrantVM{{VMName: "web01", Ports: []int{22}, Login: "dev"}},
 		},
 		ca: store.SSHUserCA{ID: uuid.New(), PrivateKeyPEM: caMaterial.PrivateKeyPEM},
 	}

@@ -24,6 +24,7 @@ const grantNameMaxLength = 200
 // createVM is one VM entry in the create / add-vm request body.
 type createVM struct {
 	VMName string `json:"vm_name"`
+	Ports  []int  `json:"ports"`
 	Login  string `json:"login"`
 }
 
@@ -183,24 +184,49 @@ func validateVMs(in []createVM) ([]store.IngressGrantVM, error) {
 	return out, nil
 }
 
-// validateVM trims and validates a single VM-scope entry. The login must be
-// a safe SSH principal: it is signed into a guest SSH certificate and printed
-// in an ssh <login>@host command, so it is held to the same charset/length
-// rule as the cert-mint path (validation.ValidateSSHLogin).
+// validateVM trims and validates a single VM-scope entry. A non-empty port set
+// is required and every port must be in 1..65535 with no duplicate. When set,
+// the login must be a safe SSH principal: it is signed into a guest SSH
+// certificate and printed in an ssh <login>@host command, so it is held to the
+// same charset/length rule as the cert-mint path (validation.ValidateSSHLogin).
+// A login is required only when the port set includes the SSH port (22): the
+// cert-mint path signs that pinned login into the guest cert, and an empty
+// principal is rejected by every sshd. A non-SSH port set (e.g. db:5432 only)
+// may omit the login.
 func validateVM(vm createVM) (store.IngressGrantVM, error) {
 	name := strings.TrimSpace(vm.VMName)
-	login := strings.TrimSpace(vm.Login)
-	switch {
-	case name == "":
+	if name == "" {
 		return store.IngressGrantVM{}, errors.New("vm_name is required")
-	case login == "":
-		return store.IngressGrantVM{}, errors.New("login is required")
 	}
-	sanitized, err := validation.ValidateSSHLogin(login)
-	if err != nil {
-		return store.IngressGrantVM{}, err
+	if len(vm.Ports) == 0 {
+		return store.IngressGrantVM{}, errors.New("at least one port is required for " + name)
 	}
-	return store.IngressGrantVM{VMName: name, Login: sanitized}, nil
+	seenPort := make(map[int]struct{}, len(vm.Ports))
+	for _, p := range vm.Ports {
+		if p < 1 || p > 65535 {
+			return store.IngressGrantVM{}, errors.New("port must be in 1..65535")
+		}
+		if _, dup := seenPort[p]; dup {
+			return store.IngressGrantVM{}, errors.New("duplicate port for " + name)
+		}
+		seenPort[p] = struct{}{}
+	}
+	login := strings.TrimSpace(vm.Login)
+	if login != "" {
+		sanitized, err := validation.ValidateSSHLogin(login)
+		if err != nil {
+			return store.IngressGrantVM{}, err
+		}
+		login = sanitized
+	}
+	if login == "" {
+		for _, p := range vm.Ports {
+			if p == 22 {
+				return store.IngressGrantVM{}, errors.New("login is required when the SSH port (22) is granted for " + name)
+			}
+		}
+	}
+	return store.IngressGrantVM{VMName: name, Ports: vm.Ports, Login: login}, nil
 }
 
 // parseTTL turns the optional duration string into an absolute expiry. An

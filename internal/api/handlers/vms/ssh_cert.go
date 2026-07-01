@@ -176,7 +176,10 @@ func (h *Handler) authorizeGrant(ctx context.Context, tok, vmName, requestedLogi
 		h.rejectSSH(w, r)
 		return "", "", false
 	}
-	pinned, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, now)
+	// ssh_cert is always the SSH-login-cert path, so it authorizes strictly on
+	// the guest SSH port (22). A grant whose port set omits 22 does not
+	// authorize an SSH login on this VM and correctly fails here.
+	pinned, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, 22, now)
 	if !reachable {
 		h.rejectSSH(w, r)
 		return "", "", false

@@ -55,7 +55,7 @@ func seedIngressGrant(t *testing.T, s *etcdstore.Store, creator uuid.UUID, vmNam
 		Name:      "grant-" + uuid.NewString()[:8],
 		CreatedBy: creator,
 		TokenHash: hash,
-		VMs:       []store.IngressGrantVM{{VMName: vmName, Login: login}},
+		VMs:       []store.IngressGrantVM{{VMName: vmName, Ports: []int{22}, Login: login}},
 	}); err != nil {
 		t.Fatalf("CreateIngressGrant: %v", err)
 	}

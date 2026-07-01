@@ -80,7 +80,7 @@ func (h *Handler) SSHStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.authorizeSSHStream(r.Context(), tok, vmName, time.Now()) {
+	if !h.authorizeSSHStream(r.Context(), tok, vmName, port, time.Now()) {
 		h.rejectSSH(w, r)
 		return
 	}
@@ -165,18 +165,20 @@ func sshStreamPort(r *http.Request) (port int, ok bool) {
 	return port, true
 }
 
-// authorizeSSHStream reports whether the bearer authorizes an SSH session to
-// vmName at time now. It dual-dispatches grant vs CLI exactly like the
+// authorizeSSHStream reports whether the bearer authorizes a session to vmName
+// on port at time now. It dual-dispatches grant vs CLI exactly like the
 // cert-mint endpoint but needs no login (the inner SSH cert carries the
 // principal) and writes no response: every failure is the caller's single
-// uniform reject, so this returns a bare bool.
-func (h *Handler) authorizeSSHStream(ctx context.Context, tok, vmName string, now time.Time) bool {
+// uniform reject, so this returns a bare bool. The port is the actual requested
+// guest port: ssh_stream is the generic bridge relay for arbitrary ports, so a
+// grant must authorize the exact port the relay would forward, not a constant.
+func (h *Handler) authorizeSSHStream(ctx context.Context, tok, vmName string, port int, now time.Time) bool {
 	if auth.IsIngressGrantFormat(tok) {
 		grant, err := h.store.IngressGrantByTokenHash(ctx, auth.HashToken(tok))
 		if err != nil {
 			return false
 		}
-		_, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, now)
+		_, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, now)
 		return reachable
 	}
 	if h.sshDeps.Verifier == nil {

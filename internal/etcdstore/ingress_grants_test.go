@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/auth"
@@ -27,10 +28,14 @@ func TestIngressGrant_CreateLookupMutateRevoke(t *testing.T) {
 
 	g, err := st.CreateIngressGrant(ctx, store.CreateIngressGrantParams{
 		Name: "acme-alice", CreatedBy: uuid.New(), RecipientLabel: "alice",
-		TokenHash: hash, VMs: []store.IngressGrantVM{{VMName: "web01", Login: "dev"}},
+		TokenHash: hash, VMs: []store.IngressGrantVM{{VMName: "web01", Ports: []int{22, 5432}, Login: "dev"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateIngressGrant() error = %v", err)
+	}
+	// Ports round-trip through the JSON persistence unchanged.
+	if diff := cmp.Diff([]store.IngressGrantVM{{VMName: "web01", Ports: []int{22, 5432}, Login: "dev"}}, g.VMs); diff != "" {
+		t.Errorf("CreateIngressGrant VMs mismatch (-want +got):\n%s", diff)
 	}
 	// Duplicate name rejected.
 	if _, err := st.CreateIngressGrant(ctx, store.CreateIngressGrantParams{
@@ -42,6 +47,10 @@ func TestIngressGrant_CreateLookupMutateRevoke(t *testing.T) {
 	byTok, err := st.IngressGrantByTokenHash(ctx, hash)
 	if err != nil || byTok.ID != g.ID {
 		t.Fatalf("IngressGrantByTokenHash = (%v,%v), want (%v,nil)", byTok.ID, err, g.ID)
+	}
+	// Ports survive a real read-back (JSON deserialization from etcd).
+	if diff := cmp.Diff([]store.IngressGrantVM{{VMName: "web01", Ports: []int{22, 5432}, Login: "dev"}}, byTok.VMs); diff != "" {
+		t.Errorf("IngressGrantByTokenHash VMs mismatch (-want +got):\n%s", diff)
 	}
 	// Lookup by id and name resolve the same grant.
 	if byID, err := st.IngressGrantByID(ctx, g.ID); err != nil || byID.ID != g.ID {

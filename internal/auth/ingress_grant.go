@@ -47,25 +47,33 @@ func IsIngressGrantFormat(s string) bool {
 	return strings.HasPrefix(s, grantTokenPrefix)
 }
 
+// GrantVMScope is what a grant authorizes on one VM: the guest TCP ports the
+// bearer may reach, plus the optional pinned SSH login consulted when the
+// reached port is the SSH port.
+type GrantVMScope struct {
+	Ports []int
+	Login string
+}
+
 // GrantPrincipal is the synthetic principal an ingress-grant token resolves
 // to at connect time. It is deliberately not an auth.User and carries
 // exactly one capability, vm:ssh, scoped to the grant's current VM set;
-// every other capability is denied. VMs maps vm_name to the pinned
-// guest login. Resolution happens against the freshly loaded grant, so
-// a revoke or scope shrink takes effect immediately.
+// every other capability is denied. VMs maps vm_name to the ports and pinned
+// login authorized on that VM. Resolution happens against the freshly loaded
+// grant, so a revoke or scope shrink takes effect immediately.
 type GrantPrincipal struct {
 	GrantID   uuid.UUID
-	VMs       map[string]string
+	VMs       map[string]GrantVMScope
 	ExpiresAt *time.Time
 	Revoked   bool
 }
 
 // GrantPrincipalFromStore builds a GrantPrincipal from a stored grant,
-// flattening its per-VM logins into the vm_name -> login map.
+// flattening its per-VM ports and logins into the vm_name -> scope map.
 func GrantPrincipalFromStore(g store.IngressGrant) GrantPrincipal {
-	vms := make(map[string]string, len(g.VMs))
+	vms := make(map[string]GrantVMScope, len(g.VMs))
 	for _, vm := range g.VMs {
-		vms[vm.VMName] = vm.Login
+		vms[vm.VMName] = GrantVMScope{Ports: vm.Ports, Login: vm.Login}
 	}
 	return GrantPrincipal{
 		GrantID:   g.ID,
@@ -75,16 +83,24 @@ func GrantPrincipalFromStore(g store.IngressGrant) GrantPrincipal {
 	}
 }
 
-// CanReach reports whether the grant authorizes vmName at time now and,
-// if so, the pinned login to connect as. It returns false when the
-// grant is revoked, has expired, or vmName is not in the grant's set.
-func (p GrantPrincipal) CanReach(vmName string, now time.Time) (login string, ok bool) {
+// CanReach reports whether the grant authorizes vmName on port at time now and,
+// if so, the pinned login. It returns false when the grant is revoked, has
+// expired, vmName is not in the set, or port is not in that VM's port set.
+func (p GrantPrincipal) CanReach(vmName string, port int, now time.Time) (login string, ok bool) {
 	if p.Revoked {
 		return "", false
 	}
 	if p.ExpiresAt != nil && !now.Before(*p.ExpiresAt) {
 		return "", false
 	}
-	login, ok = p.VMs[vmName]
-	return login, ok
+	scope, ok := p.VMs[vmName]
+	if !ok {
+		return "", false
+	}
+	for _, allowed := range scope.Ports {
+		if allowed == port {
+			return scope.Login, true
+		}
+	}
+	return "", false
 }

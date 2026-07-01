@@ -108,12 +108,12 @@ func assertGenericSSHStreamRejection(t *testing.T, rec *httptest.ResponseRecorde
 	}
 }
 
-// grantFor builds a stored grant authorizing vmName for login, not revoked
-// and not expired.
+// grantFor builds a stored grant authorizing vmName on the SSH port for login,
+// not revoked and not expired.
 func grantFor(vmName, login string) store.IngressGrant {
 	return store.IngressGrant{
 		ID:  uuid.New(),
-		VMs: []store.IngressGrantVM{{VMName: vmName, Login: login}},
+		VMs: []store.IngressGrantVM{{VMName: vmName, Ports: []int{22}, Login: login}},
 	}
 }
 
@@ -273,7 +273,14 @@ func TestSSHStreamForwardsPort(t *testing.T) {
 	agent := newWSAgentServer(t, true)
 	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
-	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
+	// The grant must authorize the exact port the relay forwards: ssh_stream
+	// enforces the per-VM port scope, so a grant that lists 5432 is required for
+	// the ?port=5432 dial to be accepted.
+	grant := store.IngressGrant{
+		ID:  uuid.New(),
+		VMs: []store.IngressGrantVM{{VMName: "demo", Ports: []int{5432}, Login: "ubuntu"}},
+	}
+	st := &sshStreamStoreStub{grant: grant, vm: vm, node: node}
 
 	r := chi.NewRouter()
 	r.Get("/v1/vms/{id}/ssh-stream", sshStreamHandler(st, &recordingConsoleClient{}).SSHStream)
@@ -299,5 +306,26 @@ func TestSSHStreamForwardsPort(t *testing.T) {
 
 	if got, want := agent.lastQuery(), "port=5432"; got != want {
 		t.Errorf("agent ssh-pipe query = %q, want %q", got, want)
+	}
+}
+
+// TestSSHStreamPortNotInGrantRejectedNoDial: a grant that lists the VM on the
+// SSH port only must not authorize a bridge session to a different guest port.
+// Dialing ?port=5432 against a port-22 grant is the uniform 401 with no dial.
+func TestSSHStreamPortNotInGrantRejectedNoDial(t *testing.T) {
+	t.Parallel()
+	spy := &dialSpyClient{}
+	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu")}
+	h := sshStreamHandler(st, spy)
+
+	req := sshStreamRequest("demo", "otx_ingressgrant_abc")
+	req.URL.RawQuery = "port=5432"
+
+	rec := httptest.NewRecorder()
+	h.SSHStream(rec, req)
+
+	assertGenericSSHStreamRejection(t, rec)
+	if spy.dialed {
+		t.Errorf("dialed upstream on out-of-scope port, want no dial")
 	}
 }

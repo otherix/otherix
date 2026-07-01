@@ -9,12 +9,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// IngressGrantVM is one VM a grant authorizes, with the guest login the recipient
-// connects as. The login is recorded for convenience only - the guest sshd owns
-// login policy; there is no control-plane allow-list per VM.
+// IngressGrantVM is one VM a grant authorizes: the guest TCP ports the recipient
+// may reach on it, plus the guest login the recipient connects as. Ports is the
+// closed-by-default reach set (a grant reaches only the ports it lists). The
+// login is recorded for the SSH-cert path (the port-22 principal); the guest
+// sshd owns login policy, there is no control-plane allow-list per VM.
 type IngressGrantVM struct {
 	VMName string `json:"vm_name"`
-	Login  string `json:"login"`
+	Ports  []int  `json:"ports"`
+	Login  string `json:"login,omitempty"`
 }
 
 // IngressGrant is a revocable, per-person access grant an external SSH-only user
