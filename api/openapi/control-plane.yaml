@@ -793,6 +793,50 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/nodes/{id}/readmit:
+    parameters:
+      - $ref: "#/components/parameters/NodeName"
+    post:
+      operationId: nodes.readmit
+      tags: [nodes]
+      summary: Readmit a gone node (admin/operator).
+      description: |
+        Recovers a node stuck in the terminal `gone` status by returning it to
+        `pending`, so the cluster re-accepts its heartbeats. The existing
+        promotion path advances the node to `ready` on the next fresh heartbeat;
+        this endpoint does not itself wait for that.
+
+        Idempotent: readmitting a `pending` node is a no-op. 409 if the node is
+        `ready`, `cordoned`, `draining`, or `unreachable` (see
+        `details.current_status`), or if the node was modified concurrently
+        (retry), or if the request replays an `Idempotency-Key` with a different
+        body.
+
+        **Required permission:** `node:maintenance` (admin/operator).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Readmitted to `pending` (or no-op if already `pending`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Node in non-readmittable state, or idempotency mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/nodes/{id}/drain:
     parameters:
       - $ref: "#/components/parameters/NodeName"

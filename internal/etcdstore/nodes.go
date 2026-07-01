@@ -187,6 +187,49 @@ func (s *Store) UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, err
 	return s.setNodeCordon(ctx, id, store.NodeStatusReady, false)
 }
 
+// ReadmitNode returns a gone node to pending so the cluster re-accepts its
+// heartbeats; the existing promotion path advances it to ready on the next
+// fresh heartbeat. pending (not ready) is the target so a readmitted node is
+// not a scheduler placement target until it re-proves health. The handler gates
+// the source status before calling; this method re-reads under a ModRevision
+// CAS and refuses with store.ErrConcurrentUpdate if the node is no longer gone
+// or a concurrent write lands first. Unlike cordon/uncordon it never touches
+// cordoned_at.
+//
+// The n.Status != gone recheck on the fresh read is load-bearing and is why
+// this does NOT reuse casNodeStatus: casNodeStatus does not re-validate the
+// source status (it trusts the caller's snapshot + the ModRevision CAS). The
+// handler reads the node far earlier than this write, so without the recheck a
+// node promoted gone -> ready between the handler read and this fresh read would
+// be silently demoted ready -> pending (the CAS passes, since no write races
+// this method's own window). Keep the recheck; do not collapse into casNodeStatus.
+func (s *Store) ReadmitNode(ctx context.Context, id uuid.UUID) (store.Node, error) {
+	n, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil {
+		return store.Node{}, err
+	}
+	if n.Status != store.NodeStatusGone {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
+	n.Status = store.NodeStatusPending
+	n.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(n)
+	if err != nil {
+		return store.Node{}, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, fmt.Errorf("readmit node txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
+	return n, nil
+}
+
 // setNodeCordon applies a cordon/uncordon status change, setting/clearing
 // cordoned_at and bumping updated_at.
 //
@@ -614,7 +657,9 @@ func (s *Store) ListNodesEffective(ctx context.Context, arg store.ListNodesEffec
 // force it cancels every active migration touching the node and orphans every
 // vm_runtime row on it (clearing current_node_id, leaving vms.desired_phase
 // untouched), recording the counts in the outcome. callerID is recorded in the
-// migration cancel reason for audit.
+// migration cancel reason for audit. On any proceeding delete (force and
+// non-force alike) it also revokes the node's agent certs so the deleted node
+// can no longer authenticate over mTLS.
 func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, callerID uuid.UUID) (store.NodeDeleteOutcome, error) {
 	n, err := s.NodeByID(ctx, id)
 	if err != nil {
@@ -664,6 +709,12 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	}
 
 	now := time.Now().UTC()
+	certOps, certsRevoked, err := s.revokeNodeAgentCertsOps(ctx, id, now)
+	if err != nil {
+		return store.NodeDeleteOutcome{}, fmt.Errorf("revoke agent certs for node delete: %v", err)
+	}
+	out.CertsRevoked = certsRevoked
+
 	n.DeletedAt = &now
 	n.UpdatedAt = now
 	val, err := etcd.Marshal(n)
@@ -671,7 +722,7 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		return store.NodeDeleteOutcome{}, err
 	}
 
-	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, wgRec)
+	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, wgRec)
 	if err := s.commitInChunks(ctx, cascade); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
@@ -695,8 +746,8 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 // can never re-run (the gone node short-circuits at NodeByID). There is no
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
-func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+4)
+func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
+	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+4)
 	cascade = append(cascade, cancelOps...)
 	cascade = append(cascade, orphanOps...)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
@@ -708,6 +759,9 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, or
 			clientv3.OpDelete(agentWireguardPubkeyGuard(wgRec.PublicKey)),
 		)
 	}
+	// Revoke the node's agent certs before the node soft-delete so a crash+retry
+	// re-runs them (the gone node short-circuits at NodeByID once soft-deleted).
+	cascade = append(cascade, certOps...)
 	// The name-guard delete precedes the nodePut so the nodePut (which flips the
 	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
 	// op: a crash before it leaves the node row present and a retry re-runs the

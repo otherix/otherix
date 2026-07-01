@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,6 +81,74 @@ func (s *Store) CreateAgentCert(ctx context.Context, arg store.CreateAgentCertPa
 		return store.AgentCert{}, err
 	}
 	return c, nil
+}
+
+// revokeNodeAgentCertsOps builds the ops that revoke every agent cert issued to
+// nodeID: it stamps revoked_at (+ reason) on each primary agent_certs row for
+// the audit trail, and deletes both the fingerprint index (so the mTLS lookup
+// misses and the deleted node can no longer authenticate) and the node index
+// (so NodeHasActiveCert drops to false and no index leaks). Returned ops are
+// folded into the DeleteNode cascade so revocation commits atomically with the
+// node soft-delete. count is the number of primary certs revoked.
+//
+// Per-cert op ORDER IS LOAD-BEARING and must not be reordered: for each cert the
+// node-index delete is emitted LAST. The whole cascade routes through
+// commitInChunks, and on a retry this function re-derives its work by ranging
+// the node-index prefix. If the node-index delete preceded the fingerprint-index
+// delete and a chunk boundary + crash fell between them, the cert would become
+// unlistable on retry (node row still present -> DeleteNode re-runs -> Range no
+// longer sees it), stranding the fingerprint index forever - which would keep a
+// deleted node's cert authenticating, silently reopening the exact hole this
+// closes. Keep node-index delete last per cert; the fail-closed property depends
+// on it.
+//
+// Known residual: the node-index Range here is not CAS-guarded against a
+// concurrent cert writer. If a node with no active cert is deleted while a
+// legitimate re-join for the same name redeems a token in the Range->commit
+// window, CreateAgentCert can add a fresh cert the snapshot missed, leaving a
+// non-revoked fingerprint index on the soft-deleted node. The leak is
+// recoverable and low-utility (the cert resolves to a soft-deleted node, so
+// heartbeat name->UUID resolution fails), and closing it would add guard logic
+// to the destructive delete cascade, so it is documented rather than fixed.
+func (s *Store) revokeNodeAgentCertsOps(ctx context.Context, nodeID uuid.UUID, revokedAt time.Time) ([]clientv3.Op, int64, error) {
+	items, err := s.c.Range(ctx, agentCertNodeIndexPrefix(nodeID))
+	if err != nil {
+		return nil, 0, err
+	}
+	reason := "node deleted"
+	var (
+		ops   []clientv3.Op
+		count int64
+	)
+	for _, kv := range items {
+		certID, err := uuid.Parse(string(kv.Value))
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse agent cert id from node index: %v", err)
+		}
+		var c store.AgentCert
+		ok, err := s.c.GetJSON(ctx, agentCertKey(certID), &c)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !ok {
+			// Stale index entry with no primary: drop the index entry.
+			ops = append(ops, clientv3.OpDelete(kv.Key))
+			continue
+		}
+		c.RevokedAt = &revokedAt
+		c.RevocationReason = &reason
+		val, err := etcd.Marshal(c)
+		if err != nil {
+			return nil, 0, err
+		}
+		ops = append(ops,
+			clientv3.OpPut(agentCertKey(certID), string(val)),
+			clientv3.OpDelete(agentCertFingerprintIndexKey(c.FingerprintSha256)),
+			clientv3.OpDelete(kv.Key),
+		)
+		count++
+	}
+	return ops, count, nil
 }
 
 // AgentCertByFingerprint returns the agent cert with the given SHA-256

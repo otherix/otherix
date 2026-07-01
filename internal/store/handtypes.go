@@ -199,11 +199,12 @@ type RedeemClusterJoinResult struct {
 	TokenID uuid.UUID
 }
 
-// NodeDeleteOutcome reports the side effects of a force node delete: the VM
-// runtimes orphaned and the migrations cancelled.
+// NodeDeleteOutcome reports the side effects of a node delete: the VM runtimes
+// orphaned, the migrations cancelled, and the agent certs revoked.
 type NodeDeleteOutcome struct {
 	VMsOrphaned         int64
 	MigrationsCancelled int64
+	CertsRevoked        int64
 }
 
 // SSHUserCA is the cluster-wide SSH user certificate authority persisted in

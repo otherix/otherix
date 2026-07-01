@@ -39,7 +39,7 @@ func TestNodeDeleteCascadeOrdering(t *testing.T) {
 		clientv3.OpPut("orphan-0", "v"),
 	}
 
-	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", cancelOps, orphanOps, wgRec)
+	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", cancelOps, orphanOps, nil, wgRec)
 
 	if len(cascade) == 0 {
 		t.Fatalf("nodeDeleteCascade returned an empty cascade")
@@ -86,7 +86,7 @@ func TestNodeDeleteCascadeNoWireguard(t *testing.T) {
 	nodeID := uuid.New()
 	const nodeName = "node-b"
 
-	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil)
+	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil, nil)
 
 	if len(cascade) != 2 {
 		t.Fatalf("nodeDeleteCascade with no wg/cancel/orphan ops = %d ops, want 2", len(cascade))

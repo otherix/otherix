@@ -195,6 +195,10 @@ smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.cr
 smoke-node-drain: ## Node-drain smoke: `otherix node drain` evacuates a node's VMs to other nodes (task success) and leaves a stuck VM running on timeout (task failed); run after local-dev-start
 	bash dev/smoke/node-drain/run.sh
 
+.PHONY: smoke-node-lifecycle
+smoke-node-lifecycle: ## Node-lifecycle smoke: `otherix node delete` an empty node, `node delete --force` a VM-hosting node (VM orphaned, agent cert revoked, re-join accepts a fresh cert), and `node readmit` a gone node back to ready (run after local-dev-start)
+	bash dev/smoke/node-lifecycle/run.sh
+
 .PHONY: smoke-node-placement-pressure
 smoke-node-placement-pressure: ## Node-placement-pressure smoke: a node under disk pressure is excluded from placement - VMs avoid it, a pinned VM stays pending, and clearing the pressure lets placement converge (run after local-dev-start)
 	bash dev/smoke/node-placement-pressure/run.sh

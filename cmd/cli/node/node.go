@@ -3,7 +3,7 @@
 
 // Package node hosts the `otherix node` cobra subcommand group and its
 // children: the read-only discovery surface (list / get) plus the admin-level
-// maintenance verbs drain / cordon / uncordon.
+// lifecycle verbs drain / cordon / uncordon / delete / readmit.
 package node
 
 import "github.com/spf13/cobra"
@@ -26,6 +26,8 @@ admin-only fields left nil on the lighter projection.`,
 	cmd.AddCommand(newDrainCommand())
 	cmd.AddCommand(newCordonCommand())
 	cmd.AddCommand(newUncordonCommand())
+	cmd.AddCommand(newDeleteCommand())
+	cmd.AddCommand(newReadmitCommand())
 	cmd.AddCommand(newJoinTokenCommand())
 	return cmd
 }
