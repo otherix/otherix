@@ -101,10 +101,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
 }
 
-// writeNotFound emits the standard load-balancer 404. The not-found code is
-// response.CodeNotFound as a placeholder; a later task introduces a dedicated
-// loadbalancer_not_found ErrorCode and rewires this call.
+// writeNotFound emits the standard load-balancer 404 with the dedicated
+// loadbalancer_not_found code.
 func (h *Handler) writeNotFound(w http.ResponseWriter, r *http.Request) {
 	response.WriteError(w, r, http.StatusNotFound,
-		response.CodeNotFound, "load balancer not found", nil)
+		response.CodeLoadBalancerNotFound, "load balancer not found", nil)
 }

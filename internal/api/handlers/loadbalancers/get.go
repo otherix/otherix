@@ -22,7 +22,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			response.WriteError(w, r, http.StatusNotFound,
-				response.CodeNotFound, "load balancer not found", nil)
+				response.CodeLoadBalancerNotFound, "load balancer not found", nil)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,

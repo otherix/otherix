@@ -4270,6 +4270,7 @@ components:
         - image_collision
         - download_failed
         - vm_not_found
+        - loadbalancer_not_found
         - vm_name_in_use
         - pool_not_writable
         - node_not_ready

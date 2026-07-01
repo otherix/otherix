@@ -59,14 +59,17 @@ const (
 	// `vm_create_failed` / `vm_delete_failed` collapse classifyVMError
 	// fall-through; the agent passthrough code `qemu_spawn_failed` mirrors
 	// what the agent surfaces on a failed qemu launch.
-	CodeVMNotFound      ErrorCode = "vm_not_found"
-	CodeVMNameInUse     ErrorCode = "vm_name_in_use"
-	CodePoolNotWritable ErrorCode = "pool_not_writable"
-	CodeNodeNotReady    ErrorCode = "node_not_ready"
-	CodeNodeNotFound    ErrorCode = "node_not_found"
-	CodeVMCreateFailed  ErrorCode = "vm_create_failed"
-	CodeVMDeleteFailed  ErrorCode = "vm_delete_failed"
-	CodeQemuSpawnFailed ErrorCode = "qemu_spawn_failed"
+	CodeVMNotFound ErrorCode = "vm_not_found"
+	// CodeLoadBalancerNotFound is returned when a load balancer is absent or
+	// invisible to the caller (cross-owner). Shared like every *_not_found code.
+	CodeLoadBalancerNotFound ErrorCode = "loadbalancer_not_found"
+	CodeVMNameInUse          ErrorCode = "vm_name_in_use"
+	CodePoolNotWritable      ErrorCode = "pool_not_writable"
+	CodeNodeNotReady         ErrorCode = "node_not_ready"
+	CodeNodeNotFound         ErrorCode = "node_not_found"
+	CodeVMCreateFailed       ErrorCode = "vm_create_failed"
+	CodeVMDeleteFailed       ErrorCode = "vm_delete_failed"
+	CodeQemuSpawnFailed      ErrorCode = "qemu_spawn_failed"
 
 	// Placement / cluster-default error codes. Emitted by VM create
 	// handler when the scheduler returns its sentinel errors or the
