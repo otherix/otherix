@@ -24,6 +24,9 @@ var (
 	ErrUserEmailExists    = errors.New("store: user email already in use")
 	ErrUserUsernameExists = errors.New("store: user username already in use")
 	ErrNetworkNameExists  = errors.New("store: network name already in use")
+	// ErrLoadBalancerNameExists reports a load-balancer name collision (the
+	// cluster-wide case-insensitive name guard rejected the create/rename).
+	ErrLoadBalancerNameExists = errors.New("store: load balancer name already in use")
 	// ErrArtifactPoolNameExists is returned by CreateArtifactPool when a live
 	// artifact pool already owns the (case-insensitive) name.
 	ErrArtifactPoolNameExists = errors.New("store: artifact pool name already in use")
