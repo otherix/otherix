@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrants
+package ingressgrants
 
 import (
 	"encoding/json"
@@ -27,7 +27,7 @@ type createVM struct {
 	Login  string `json:"login"`
 }
 
-// createRequest is the POST /v1/ssh-grants body. ttl is an optional Go
+// createRequest is the POST /v1/ingress-grants body. ttl is an optional Go
 // duration string (e.g. "168h"); omitted/empty means the grant never
 // expires (ExpiresAt nil).
 type createRequest struct {
@@ -37,8 +37,8 @@ type createRequest struct {
 	TTL            string     `json:"ttl"`
 }
 
-// Create implements POST /v1/ssh-grants. Required permission:
-// vm:ssh-grant. For a developer (scope=own) every referenced VM must be
+// Create implements POST /v1/ingress-grants. Required permission:
+// vm:ingress-grant. For a developer (scope=own) every referenced VM must be
 // owned by the caller; a visible-but-unowned VM yields 403. Returns 201
 // with the grant plus the one-time plaintext token.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -81,14 +81,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plaintext, hash, err := auth.GenerateGrantToken()
+	plaintext, hash, err := auth.GenerateIngressGrantToken()
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
 			response.CodeInternal, "generate grant token", nil)
 		return
 	}
 
-	grant, err := h.store.CreateSSHGrant(r.Context(), store.CreateSSHGrantParams{
+	grant, err := h.store.CreateIngressGrant(r.Context(), store.CreateIngressGrantParams{
 		Name:           req.Name,
 		CreatedBy:      caller.ID,
 		RecipientLabel: strings.TrimSpace(req.RecipientLabel),
@@ -97,13 +97,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:      expiresAt,
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrSSHGrantNameExists) {
+		if errors.Is(err, store.ErrIngressGrantNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict, "ssh grant name already in use", nil)
+				response.CodeConflict, "ingress grant name already in use", nil)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "persist ssh grant", nil)
+			response.CodeInternal, "persist ingress grant", nil)
 		return
 	}
 
@@ -114,11 +114,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeVMs resolves every referenced VM by name and enforces the
-// caller's vm:ssh-grant scope against each VM's owner. A missing VM
+// caller's vm:ingress-grant scope against each VM's owner. A missing VM
 // yields 404 (the VM name is caller-supplied, not secret); a visible VM
 // the caller may not grant on yields 403. It returns false and writes the
 // response on the first failure.
-func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *auth.User, vms []store.SSHGrantVM) bool {
+func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *auth.User, vms []store.IngressGrantVM) bool {
 	for _, vm := range vms {
 		row, err := h.store.VMByName(r.Context(), vm.VMName)
 		if err != nil {
@@ -132,11 +132,11 @@ func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *a
 			return false
 		}
 		owner := row.OwnerID
-		if err := auth.CheckOwnership(caller, &owner, auth.PermVMSSHGrant); err != nil {
+		if err := auth.CheckOwnership(caller, &owner, auth.PermVMIngressGrant); err != nil {
 			if errors.Is(err, auth.ErrPermissionDenied) {
 				response.WriteError(w, r, http.StatusForbidden,
 					response.CodePermissionDenied,
-					"vm:ssh-grant on this vm is limited to its owner",
+					"vm:ingress-grant on this vm is limited to its owner",
 					map[string]any{"vm_name": vm.VMName})
 				return false
 			}
@@ -166,8 +166,8 @@ func validateGrantName(name string) error {
 // validateVMs trims and validates the VM-scope entries, rejecting an empty
 // vm_name or login and a duplicate vm_name. It returns the normalised
 // store entries.
-func validateVMs(in []createVM) ([]store.SSHGrantVM, error) {
-	out := make([]store.SSHGrantVM, 0, len(in))
+func validateVMs(in []createVM) ([]store.IngressGrantVM, error) {
+	out := make([]store.IngressGrantVM, 0, len(in))
 	seen := make(map[string]struct{}, len(in))
 	for _, vm := range in {
 		entry, err := validateVM(vm)
@@ -187,20 +187,20 @@ func validateVMs(in []createVM) ([]store.SSHGrantVM, error) {
 // a safe SSH principal: it is signed into a guest SSH certificate and printed
 // in an ssh <login>@host command, so it is held to the same charset/length
 // rule as the cert-mint path (validation.ValidateSSHLogin).
-func validateVM(vm createVM) (store.SSHGrantVM, error) {
+func validateVM(vm createVM) (store.IngressGrantVM, error) {
 	name := strings.TrimSpace(vm.VMName)
 	login := strings.TrimSpace(vm.Login)
 	switch {
 	case name == "":
-		return store.SSHGrantVM{}, errors.New("vm_name is required")
+		return store.IngressGrantVM{}, errors.New("vm_name is required")
 	case login == "":
-		return store.SSHGrantVM{}, errors.New("login is required")
+		return store.IngressGrantVM{}, errors.New("login is required")
 	}
 	sanitized, err := validation.ValidateSSHLogin(login)
 	if err != nil {
-		return store.SSHGrantVM{}, err
+		return store.IngressGrantVM{}, err
 	}
-	return store.SSHGrantVM{VMName: name, Login: sanitized}, nil
+	return store.IngressGrantVM{VMName: name, Login: sanitized}, nil
 }
 
 // parseTTL turns the optional duration string into an absolute expiry. An

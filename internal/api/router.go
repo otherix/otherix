@@ -19,13 +19,13 @@ import (
 	clustermembershandlers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	firmwareshandlers "github.com/otherix/otherix/internal/api/handlers/firmwares"
 	heartbeathandlers "github.com/otherix/otherix/internal/api/handlers/heartbeat"
+	ingressgrantshandlers "github.com/otherix/otherix/internal/api/handlers/ingressgrants"
 	jointokenshandlers "github.com/otherix/otherix/internal/api/handlers/jointokens"
 	migrationshandlers "github.com/otherix/otherix/internal/api/handlers/migrations"
 	networkshandlers "github.com/otherix/otherix/internal/api/handlers/networks"
 	nodejoinhandlers "github.com/otherix/otherix/internal/api/handlers/nodejoin"
 	nodeshandlers "github.com/otherix/otherix/internal/api/handlers/nodes"
 	snapshotshandlers "github.com/otherix/otherix/internal/api/handlers/snapshots"
-	sshgrantshandlers "github.com/otherix/otherix/internal/api/handlers/sshgrants"
 	storagepoolshandlers "github.com/otherix/otherix/internal/api/handlers/storagepools"
 	taskshandlers "github.com/otherix/otherix/internal/api/handlers/tasks"
 	usershandlers "github.com/otherix/otherix/internal/api/handlers/users"
@@ -139,12 +139,12 @@ func NewRouter(deps RouterDeps) http.Handler {
 		// ssh-stream is the L4 sibling of console-stream: a long-lived WSS
 		// relay that carries an end-to-end SSH session to the guest. Like
 		// console-stream it is anonymous to the Authn group (it accepts an
-		// SSH-grant token, read by the handler itself) and registered
+		// ingress-grant token, read by the handler itself) and registered
 		// directly here, OUTSIDE the Timeout group, so the long-lived stream
 		// is not killed at the request deadline.
 		r.Get("/v1/vms/{id}/ssh-stream", streamingVMs.SSHStream)
 		// ssh-cert is mounted OUTSIDE the Authn group (like console-stream):
-		// it must accept an SSH-grant token, which is not an Authn principal,
+		// it must accept an ingress-grant token, which is not an Authn principal,
 		// and structurally guarantee a grant token reaches nothing else. The
 		// handler reads the bearer itself and dual-dispatches grant vs CLI.
 		//
@@ -232,7 +232,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	migCancelClient, _ := deps.VMLifecycle.AgentClient.(migrationshandlers.MigrationCancelClient)
 	migH := migrationshandlers.New(deps.Store, migCancelClient, deps.Logger)
 	snapH := snapshotshandlers.New(deps.Store, deps.Logger)
-	sshGrantsH := sshgrantshandlers.New(deps.Store, deps.Logger)
+	ingressGrantsH := ingressgrantshandlers.New(deps.Store, deps.Logger)
 
 	authn := middleware.Authn(deps.AuthService)
 	idem := middleware.Idempotency(deps.Store, deps.Logger)
@@ -404,22 +404,22 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermSnapshotDelete, deps.Logger)).Delete("/{id}", snapH.Delete)
 			})
 
-			// /v1/ssh-grants surface. A grant is a top-level resource
-			// (it spans multiple VMs), gated end to end by vm:ssh-grant.
+			// /v1/ingress-grants surface. A grant is a top-level resource
+			// (it spans multiple VMs), gated end to end by vm:ingress-grant.
 			// RequirePermission gates role-level capability (viewer ->
 			// 403); ownership scope runs inside the handler bodies: read /
 			// edit / revoke key on the grant's creator (cross-user ->
 			// 404), create / add-vm additionally check each referenced
 			// VM's owner (visible-but-unowned -> 403). The plaintext token
 			// is surfaced once on create.
-			r.Route("/ssh-grants", func(r chi.Router) {
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Get("/", sshGrantsH.List)
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Get("/{id}", sshGrantsH.Get)
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Delete("/{id}", sshGrantsH.Delete)
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/", sshGrantsH.Create)
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/{id}/vms", sshGrantsH.AddVM)
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Delete("/{id}/vms/{vm_name}", sshGrantsH.RemoveVM)
-				r.With(middleware.RequirePermission(auth.PermVMSSHGrant, deps.Logger)).Post("/{id}/revoke", sshGrantsH.Revoke)
+			r.Route("/ingress-grants", func(r chi.Router) {
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Get("/", ingressGrantsH.List)
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Get("/{id}", ingressGrantsH.Get)
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Delete("/{id}", ingressGrantsH.Delete)
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Post("/", ingressGrantsH.Create)
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Post("/{id}/vms", ingressGrantsH.AddVM)
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Delete("/{id}/vms/{vm_name}", ingressGrantsH.RemoveVM)
+				r.With(middleware.RequirePermission(auth.PermVMIngressGrant, deps.Logger)).Post("/{id}/revoke", ingressGrantsH.Revoke)
 			})
 
 			// /v1/migrations surface. The migration record's own

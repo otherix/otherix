@@ -78,11 +78,11 @@ type sshCertResponse struct {
 // caller is allowed to use on the named VM.
 //
 // This route is mounted OUTSIDE the global Authn middleware so it can accept
-// an SSH-grant token (not an Authn principal) and structurally guarantee a
+// an ingress-grant token (not an Authn principal) and structurally guarantee a
 // grant token reaches no other route. The handler reads the bearer itself and
 // dual-dispatches:
 //
-//   - An SSH-grant token (auth.IsGrantTokenFormat, checked first because its
+//   - An ingress-grant token (auth.IsIngressGrantFormat, checked first because its
 //     prefix is a superset of "otx_") resolves through the store; the cert is
 //     minted for the grant's pinned login on the named VM. A requested login
 //     contradicting the pinned one is rejected (403 ssh_login_not_allowed,
@@ -122,7 +122,7 @@ func (h *Handler) IssueSSHCert(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	var login, keyID string
-	if auth.IsGrantTokenFormat(tok) {
+	if auth.IsIngressGrantFormat(tok) {
 		login, keyID, ok = h.authorizeGrant(r.Context(), tok, vmName, req.Login, now, w, r)
 		if !ok {
 			return
@@ -171,7 +171,7 @@ func (h *Handler) IssueSSHCert(w http.ResponseWriter, r *http.Request) {
 // contradicts the pinned one is 403 ssh_login_not_allowed; every other failure
 // is the uniform 401. ok=false means a response was already written.
 func (h *Handler) authorizeGrant(ctx context.Context, tok, vmName, requestedLogin string, now time.Time, w http.ResponseWriter, r *http.Request) (login, keyID string, ok bool) {
-	grant, err := h.store.SSHGrantByTokenHash(ctx, auth.HashToken(tok))
+	grant, err := h.store.IngressGrantByTokenHash(ctx, auth.HashToken(tok))
 	if err != nil {
 		h.rejectSSH(w, r)
 		return "", "", false
@@ -230,7 +230,7 @@ func (h *Handler) authorizeCLI(ctx context.Context, tok, vmName, requestedLogin 
 
 // verifyCLIToken dispatches the bearer to the API-token or JWT verifier by
 // prefix, mirroring the Authn middleware. The grant-token shape was already
-// excluded by the caller (IsGrantTokenFormat).
+// excluded by the caller (IsIngressGrantFormat).
 func (h *Handler) verifyCLIToken(ctx context.Context, tok string) (*auth.User, error) {
 	if auth.IsAPITokenFormat(tok) {
 		return h.sshDeps.Verifier.VerifyAPIToken(ctx, tok)
@@ -272,7 +272,7 @@ func (h *Handler) rejectSSH(w http.ResponseWriter, r *http.Request) {
 // it unchanged when so. It rejects (ok=false) empty, over-long, and any value
 // carrying characters outside the shared SSH-login charset. The charset rule
 // lives in validation.ValidateSSHLogin so the cert-mint path and the
-// ssh-grant create/add-vm paths enforce it identically.
+// ingress-grant create/add-vm paths enforce it identically.
 func sanitizeLogin(login string) (string, bool) {
 	sanitized, err := validation.ValidateSSHLogin(login)
 	return sanitized, err == nil

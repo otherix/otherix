@@ -43,21 +43,21 @@ func seedSSHUserCA(t *testing.T, s *etcdstore.Store) {
 	}
 }
 
-// seedSSHGrant creates a grant scoped to {vmName: login} directly via the
+// seedIngressGrant creates a grant scoped to {vmName: login} directly via the
 // store and returns the plaintext token to present at the endpoint.
-func seedSSHGrant(t *testing.T, s *etcdstore.Store, creator uuid.UUID, vmName, login string) string {
+func seedIngressGrant(t *testing.T, s *etcdstore.Store, creator uuid.UUID, vmName, login string) string {
 	t.Helper()
-	plaintext, hash, err := auth.GenerateGrantToken()
+	plaintext, hash, err := auth.GenerateIngressGrantToken()
 	if err != nil {
-		t.Fatalf("GenerateGrantToken: %v", err)
+		t.Fatalf("GenerateIngressGrantToken: %v", err)
 	}
-	if _, err := s.CreateSSHGrant(context.Background(), store.CreateSSHGrantParams{
+	if _, err := s.CreateIngressGrant(context.Background(), store.CreateIngressGrantParams{
 		Name:      "grant-" + uuid.NewString()[:8],
 		CreatedBy: creator,
 		TokenHash: hash,
-		VMs:       []store.SSHGrantVM{{VMName: vmName, Login: login}},
+		VMs:       []store.IngressGrantVM{{VMName: vmName, Login: login}},
 	}); err != nil {
-		t.Fatalf("CreateSSHGrant: %v", err)
+		t.Fatalf("CreateIngressGrant: %v", err)
 	}
 	return plaintext
 }
@@ -159,7 +159,7 @@ func TestSSHCertGrantTokenPinnedLogin(t *testing.T) {
 	seedSSHUserCA(t, h.store)
 	_, opID := loginAs(t, h, auth.RoleOperator)
 	vmName, _ := seedOwnedVM(t, h.store, opID)
-	grantTok := seedSSHGrant(t, h.store, opID, vmName, "ci")
+	grantTok := seedIngressGrant(t, h.store, opID, vmName, "ci")
 
 	resp := h.post(t, "/v1/vms/"+vmName+"/ssh-cert", map[string]string{
 		"public_key": genSSHPublicKey(t),
@@ -175,7 +175,7 @@ func TestSSHCertGrantTokenLoginMismatch(t *testing.T) {
 	seedSSHUserCA(t, h.store)
 	_, opID := loginAs(t, h, auth.RoleOperator)
 	vmName, _ := seedOwnedVM(t, h.store, opID)
-	grantTok := seedSSHGrant(t, h.store, opID, vmName, "ci")
+	grantTok := seedIngressGrant(t, h.store, opID, vmName, "ci")
 
 	resp := h.post(t, "/v1/vms/"+vmName+"/ssh-cert", map[string]string{
 		"public_key": genSSHPublicKey(t),
@@ -194,7 +194,7 @@ func TestSSHCertGrantTokenOutOfSetIsGenericReject(t *testing.T) {
 	_, opID := loginAs(t, h, auth.RoleOperator)
 	grantedVM, _ := seedOwnedVM(t, h.store, opID)
 	otherVM, _ := seedOwnedVM(t, h.store, opID)
-	grantTok := seedSSHGrant(t, h.store, opID, grantedVM, "ci")
+	grantTok := seedIngressGrant(t, h.store, opID, grantedVM, "ci")
 
 	resp := h.post(t, "/v1/vms/"+otherVM+"/ssh-cert", map[string]string{
 		"public_key": genSSHPublicKey(t),
@@ -212,15 +212,15 @@ func TestSSHCertGrantTokenRevokedIsGenericReject(t *testing.T) {
 	seedSSHUserCA(t, h.store)
 	_, opID := loginAs(t, h, auth.RoleOperator)
 	vmName, _ := seedOwnedVM(t, h.store, opID)
-	grantTok := seedSSHGrant(t, h.store, opID, vmName, "ci")
+	grantTok := seedIngressGrant(t, h.store, opID, vmName, "ci")
 
 	// Revoke it via the store (the grant id is resolved through the token hash).
-	g, err := h.store.SSHGrantByTokenHash(context.Background(), auth.HashToken(grantTok))
+	g, err := h.store.IngressGrantByTokenHash(context.Background(), auth.HashToken(grantTok))
 	if err != nil {
-		t.Fatalf("SSHGrantByTokenHash: %v", err)
+		t.Fatalf("IngressGrantByTokenHash: %v", err)
 	}
-	if err := h.store.RevokeSSHGrant(context.Background(), g.ID); err != nil {
-		t.Fatalf("RevokeSSHGrant: %v", err)
+	if err := h.store.RevokeIngressGrant(context.Background(), g.ID); err != nil {
+		t.Fatalf("RevokeIngressGrant: %v", err)
 	}
 
 	resp := h.post(t, "/v1/vms/"+vmName+"/ssh-cert", map[string]string{

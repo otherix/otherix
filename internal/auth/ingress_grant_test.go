@@ -14,18 +14,18 @@ import (
 )
 
 func TestGrantToken_FormatAndHashRoundTrip(t *testing.T) {
-	pt, hash, err := GenerateGrantToken()
+	pt, hash, err := GenerateIngressGrantToken()
 	if err != nil {
-		t.Fatalf("GenerateGrantToken() error = %v", err)
+		t.Fatalf("GenerateIngressGrantToken() error = %v", err)
 	}
-	if !strings.HasPrefix(pt, "otx_sshgrant_") {
-		t.Errorf("token = %q, want otx_sshgrant_ prefix", pt)
+	if !strings.HasPrefix(pt, "otx_ingressgrant_") {
+		t.Errorf("token = %q, want otx_ingressgrant_ prefix", pt)
 	}
-	if !IsGrantTokenFormat(pt) {
-		t.Errorf("IsGrantTokenFormat(%q) = false, want true", pt)
+	if !IsIngressGrantFormat(pt) {
+		t.Errorf("IsIngressGrantFormat(%q) = false, want true", pt)
 	}
-	if IsGrantTokenFormat("otx_deadbeef") {
-		t.Errorf("IsGrantTokenFormat(api token) = true, want false")
+	if IsIngressGrantFormat("otx_deadbeef") {
+		t.Errorf("IsIngressGrantFormat(api token) = true, want false")
 	}
 	if string(HashToken(pt)) != string(hash) {
 		t.Errorf("HashToken(plaintext) != returned hash")
@@ -35,9 +35,9 @@ func TestGrantToken_FormatAndHashRoundTrip(t *testing.T) {
 func TestGrantPrincipal_CanReach(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	exp := now.Add(time.Hour)
-	p := GrantPrincipalFromStore(store.SSHGrant{
+	p := GrantPrincipalFromStore(store.IngressGrant{
 		ID:        uuid.New(),
-		VMs:       []store.SSHGrantVM{{VMName: "web01", Login: "dev"}},
+		VMs:       []store.IngressGrantVM{{VMName: "web01", Login: "dev"}},
 		ExpiresAt: &exp,
 	})
 	if login, ok := p.CanReach("web01", now); !ok || login != "dev" {

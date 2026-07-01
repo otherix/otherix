@@ -29,14 +29,14 @@ import (
 // handler bailed before touching the rest of the store on a rejection.
 type sshStreamStoreStub struct {
 	Store
-	grant    store.SSHGrant
+	grant    store.IngressGrant
 	grantErr error
 	vm       store.VM
 	vmErr    error
 	node     store.Node
 }
 
-func (s *sshStreamStoreStub) SSHGrantByTokenHash(context.Context, []byte) (store.SSHGrant, error) {
+func (s *sshStreamStoreStub) IngressGrantByTokenHash(context.Context, []byte) (store.IngressGrant, error) {
 	return s.grant, s.grantErr
 }
 
@@ -110,10 +110,10 @@ func assertGenericSSHStreamRejection(t *testing.T, rec *httptest.ResponseRecorde
 
 // grantFor builds a stored grant authorizing vmName for login, not revoked
 // and not expired.
-func grantFor(vmName, login string) store.SSHGrant {
-	return store.SSHGrant{
+func grantFor(vmName, login string) store.IngressGrant {
+	return store.IngressGrant{
 		ID:  uuid.New(),
-		VMs: []store.SSHGrantVM{{VMName: vmName, Login: login}},
+		VMs: []store.IngressGrantVM{{VMName: vmName, Login: login}},
 	}
 }
 
@@ -141,7 +141,7 @@ func TestSSHStreamOutOfScopeGrantRejectedNoDial(t *testing.T) {
 	h := sshStreamHandler(st, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", "otx_sshgrant_abc"))
+	h.SSHStream(rec, sshStreamRequest("demo", "otx_ingressgrant_abc"))
 
 	assertGenericSSHStreamRejection(t, rec)
 	if spy.dialed {
@@ -160,7 +160,7 @@ func TestSSHStreamRevokedGrantRejected(t *testing.T) {
 	h := sshStreamHandler(st, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", "otx_sshgrant_abc"))
+	h.SSHStream(rec, sshStreamRequest("demo", "otx_ingressgrant_abc"))
 
 	assertGenericSSHStreamRejection(t, rec)
 	if spy.dialed {
@@ -177,7 +177,7 @@ func TestSSHStreamUnknownGrantRejected(t *testing.T) {
 	h := sshStreamHandler(st, spy)
 
 	rec := httptest.NewRecorder()
-	h.SSHStream(rec, sshStreamRequest("demo", "otx_sshgrant_abc"))
+	h.SSHStream(rec, sshStreamRequest("demo", "otx_ingressgrant_abc"))
 
 	assertGenericSSHStreamRejection(t, rec)
 	if spy.dialed {
@@ -203,7 +203,7 @@ func TestSSHStreamGrantRelaysEndToEnd(t *testing.T) {
 
 	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/ssh-stream"
 	op, _, err := websocket.Dial(context.Background(),
-		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_sshgrant_abc")})
+		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_ingressgrant_abc")})
 	if err != nil {
 		t.Fatalf("operator dial: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestSSHStreamForwardsPort(t *testing.T) {
 
 	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/ssh-stream?port=5432"
 	op, _, err := websocket.Dial(context.Background(),
-		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_sshgrant_abc")})
+		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_ingressgrant_abc")})
 	if err != nil {
 		t.Fatalf("operator dial: %v", err)
 	}

@@ -182,7 +182,7 @@ func VerifySessionCred(caPub crypto.PublicKey, token string, now time.Time) (Ses
 // The bearer dispatch uses this to route an ingress credential to the gateway
 // path. It checks shape only, not validity. Because "otx_ingress_" is a superset
 // of the API-token prefix "otx_", callers MUST check IsIngressCredFormat before
-// IsAPITokenFormat, mirroring the SSH-grant dispatch discipline.
+// IsAPITokenFormat, mirroring the ingress-grant dispatch discipline.
 func IsIngressCredFormat(s string) bool {
 	return strings.HasPrefix(s, ingressCredPrefix)
 }

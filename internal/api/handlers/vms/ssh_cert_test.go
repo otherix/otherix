@@ -32,7 +32,7 @@ type sshCertStoreStub struct {
 	Store
 	vm       store.VM
 	vmErr    error
-	grant    store.SSHGrant
+	grant    store.IngressGrant
 	grantErr error
 	ca       store.SSHUserCA
 	caErr    error
@@ -42,7 +42,7 @@ func (s *sshCertStoreStub) VMByName(context.Context, string) (store.VM, error) {
 	return s.vm, s.vmErr
 }
 
-func (s *sshCertStoreStub) SSHGrantByTokenHash(context.Context, []byte) (store.SSHGrant, error) {
+func (s *sshCertStoreStub) IngressGrantByTokenHash(context.Context, []byte) (store.IngressGrant, error) {
 	return s.grant, s.grantErr
 }
 
@@ -84,16 +84,16 @@ func newSSHCertTestHandler(t *testing.T, vmOwner uuid.UUID, cliUser *auth.User) 
 	if err != nil {
 		t.Fatalf("GenerateSSHUserCA: %v", err)
 	}
-	plaintext, hash, err := auth.GenerateGrantToken()
+	plaintext, hash, err := auth.GenerateIngressGrantToken()
 	if err != nil {
-		t.Fatalf("GenerateGrantToken: %v", err)
+		t.Fatalf("GenerateIngressGrantToken: %v", err)
 	}
 	st := &sshCertStoreStub{
 		vm: store.VM{ID: uuid.New(), Name: "web01", OwnerID: vmOwner},
-		grant: store.SSHGrant{
+		grant: store.IngressGrant{
 			ID:        uuid.New(),
 			TokenHash: hash,
-			VMs:       []store.SSHGrantVM{{VMName: "web01", Login: "dev"}},
+			VMs:       []store.IngressGrantVM{{VMName: "web01", Login: "dev"}},
 		},
 		ca: store.SSHUserCA{ID: uuid.New(), PrivateKeyPEM: caMaterial.PrivateKeyPEM},
 	}
@@ -229,7 +229,7 @@ func TestIssueSSHCert_GrantTokenRevokedIsGenericReject(t *testing.T) {
 func TestIssueSSHCert_GrantTokenOutOfSetIsGenericReject(t *testing.T) {
 	t.Parallel()
 	h, grantToken := newSSHCertTestHandler(t, uuid.New(), nil)
-	h.store.(*sshCertStoreStub).grant.VMs = []store.SSHGrantVM{{VMName: "other", Login: "dev"}}
+	h.store.(*sshCertStoreStub).grant.VMs = []store.IngressGrantVM{{VMName: "other", Login: "dev"}}
 
 	req, rec := sshCertRequestHTTP(t, grantToken, sshCertRequest{
 		PublicKey: newTestSSHPublicKey(t),

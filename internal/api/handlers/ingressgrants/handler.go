@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-// Package sshgrants hosts the /v1/ssh-grants/* HTTP handlers: the
+// Package ingressgrants hosts the /v1/ingress-grants/* HTTP handlers: the
 // operator-facing CRUD for the per-person SSH access grants an external
 // user presents at connect time. The whole surface is gated by
-// `vm:ssh-grant` (admin/operator any, developer own, viewer none) per
+// `vm:ingress-grant` (admin/operator any, developer own, viewer none) per
 // docs/rbac.md. A grant is a top-level resource (it spans multiple VMs),
 // not a VM sub-resource.
 //
@@ -16,10 +16,10 @@
 //     VM the developer can see but does not own yields 403 (capability
 //     lack on a visible resource).
 //
-// The grant token is minted once at creation via auth.GenerateGrantToken
+// The grant token is minted once at creation via auth.GenerateIngressGrantToken
 // and surfaced exactly once in the create response; only its hash is
 // stored. No handler ever returns the stored hash.
-package sshgrants
+package ingressgrants
 
 import (
 	"context"
@@ -31,22 +31,22 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Store is the storage surface the SSH-grant handlers depend on.
+// Store is the storage surface the ingress-grant handlers depend on.
 // Depending on the interface rather than the concrete *etcdstore.Store
 // narrows the dependency and lets tests substitute a fake.
 // *etcdstore.Store satisfies it.
 type Store interface {
-	CreateSSHGrant(ctx context.Context, arg store.CreateSSHGrantParams) (store.SSHGrant, error)
-	SSHGrantByID(ctx context.Context, id uuid.UUID) (store.SSHGrant, error)
-	ListSSHGrants(ctx context.Context, arg store.ListSSHGrantsParams) ([]store.SSHGrant, error)
-	AddSSHGrantVM(ctx context.Context, grantID uuid.UUID, vm store.SSHGrantVM) (store.SSHGrant, error)
-	RemoveSSHGrantVM(ctx context.Context, grantID uuid.UUID, vmName string) (store.SSHGrant, error)
-	RevokeSSHGrant(ctx context.Context, grantID uuid.UUID) error
-	DeleteSSHGrant(ctx context.Context, grantID uuid.UUID) error
+	CreateIngressGrant(ctx context.Context, arg store.CreateIngressGrantParams) (store.IngressGrant, error)
+	IngressGrantByID(ctx context.Context, id uuid.UUID) (store.IngressGrant, error)
+	ListIngressGrants(ctx context.Context, arg store.ListIngressGrantsParams) ([]store.IngressGrant, error)
+	AddIngressGrantVM(ctx context.Context, grantID uuid.UUID, vm store.IngressGrantVM) (store.IngressGrant, error)
+	RemoveIngressGrantVM(ctx context.Context, grantID uuid.UUID, vmName string) (store.IngressGrant, error)
+	RevokeIngressGrant(ctx context.Context, grantID uuid.UUID) error
+	DeleteIngressGrant(ctx context.Context, grantID uuid.UUID) error
 	VMByName(ctx context.Context, name string) (store.VM, error)
 }
 
-// Handler bundles the dependencies for the SSH-grant routes.
+// Handler bundles the dependencies for the ingress-grant routes.
 type Handler struct {
 	store Store
 	log   *slog.Logger
@@ -63,7 +63,7 @@ type grantVMView struct {
 	Login  string `json:"login"`
 }
 
-// grantView mirrors components/schemas/SSHGrant. The stored token hash is
+// grantView mirrors components/schemas/IngressGrant. The stored token hash is
 // intentionally absent; the plaintext token is surfaced only on creation
 // through grantCreateResponse.
 type grantView struct {
@@ -86,7 +86,7 @@ type grantCreateResponse struct {
 	Token string `json:"token"`
 }
 
-// listResponse is the payload for GET /v1/ssh-grants.
+// listResponse is the payload for GET /v1/ingress-grants.
 type listResponse struct {
 	Data []grantView    `json:"data"`
 	Meta paginationMeta `json:"meta"`
@@ -96,9 +96,9 @@ type paginationMeta struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
-// toView projects a store.SSHGrant onto its public shape, omitting the
+// toView projects a store.IngressGrant onto its public shape, omitting the
 // token hash and formatting the nullable expiry as RFC 3339.
-func toView(g store.SSHGrant) grantView {
+func toView(g store.IngressGrant) grantView {
 	vms := make([]grantVMView, 0, len(g.VMs))
 	for _, vm := range g.VMs {
 		vms = append(vms, grantVMView{VMName: vm.VMName, Login: vm.Login})

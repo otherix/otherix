@@ -15,23 +15,23 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// SSH-grant wire format: "otx_sshgrant_" + base64url(32 random bytes).
+// ingress-grant wire format: "otx_ingressgrant_" + base64url(32 random bytes).
 // The longer prefix keeps grant tokens distinct from ordinary API
 // tokens ("otx_") so the bearer dispatch can route a grant only to the
 // ssh-cert and ssh-stream endpoints and never to any other route. The
 // prefix is intentionally a superset of "otx_": callers that test for
-// grant shape must check IsGrantTokenFormat before IsAPITokenFormat.
+// grant shape must check IsIngressGrantFormat before IsAPITokenFormat.
 const (
-	grantTokenPrefix = "otx_sshgrant_" //nolint:gosec // G101: public routing prefix, not a credential; the secret is the random suffix.
+	grantTokenPrefix = "otx_ingressgrant_" //nolint:gosec // G101: public routing prefix, not a credential; the secret is the random suffix.
 	grantTokenBytes  = 32
 )
 
-// GenerateGrantToken returns a fresh SSH-grant token: the plaintext to
+// GenerateIngressGrantToken returns a fresh ingress-grant token: the plaintext to
 // hand to the recipient once at creation and its storage hash. The 32
 // random bytes come from crypto/rand, so each call yields a unique
 // plaintext - the store's token-hash index is name-guarded only, so a
 // reused plaintext would clobber another grant's index.
-func GenerateGrantToken() (plaintext string, hash []byte, err error) {
+func GenerateIngressGrantToken() (plaintext string, hash []byte, err error) {
 	buf := make([]byte, grantTokenBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", nil, fmt.Errorf("generate grant token: %v", err)
@@ -40,14 +40,14 @@ func GenerateGrantToken() (plaintext string, hash []byte, err error) {
 	return plaintext, HashToken(plaintext), nil
 }
 
-// IsGrantTokenFormat reports whether s carries the SSH-grant prefix.
+// IsIngressGrantFormat reports whether s carries the ingress-grant prefix.
 // The bearer dispatch uses this to route grant tokens to the ssh-cert
 // and ssh-stream endpoints. It checks shape only, not validity.
-func IsGrantTokenFormat(s string) bool {
+func IsIngressGrantFormat(s string) bool {
 	return strings.HasPrefix(s, grantTokenPrefix)
 }
 
-// GrantPrincipal is the synthetic principal an SSH-grant token resolves
+// GrantPrincipal is the synthetic principal an ingress-grant token resolves
 // to at connect time. It is deliberately not an auth.User and carries
 // exactly one capability, vm:ssh, scoped to the grant's current VM set;
 // every other capability is denied. VMs maps vm_name to the pinned
@@ -62,7 +62,7 @@ type GrantPrincipal struct {
 
 // GrantPrincipalFromStore builds a GrantPrincipal from a stored grant,
 // flattening its per-VM logins into the vm_name -> login map.
-func GrantPrincipalFromStore(g store.SSHGrant) GrantPrincipal {
+func GrantPrincipalFromStore(g store.IngressGrant) GrantPrincipal {
 	vms := make(map[string]string, len(g.VMs))
 	for _, vm := range g.VMs {
 		vms[vm.VMName] = vm.Login

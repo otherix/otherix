@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrants
+package ingressgrants
 
 import (
 	"errors"
@@ -11,8 +11,8 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Delete implements DELETE /v1/ssh-grants/{id}. Required permission:
-// vm:ssh-grant. The caller must own the grant (else 404). Delete removes the
+// Delete implements DELETE /v1/ingress-grants/{id}. Required permission:
+// vm:ingress-grant. The caller must own the grant (else 404). Delete removes the
 // grant row, its name guard, and its token index in one atomic transaction,
 // freeing the name for reuse - the difference from revoke, which keeps the row
 // (and the consumed name) for audit. A token for a deleted grant resolves to
@@ -24,13 +24,13 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteSSHGrant(r.Context(), grant.ID); err != nil {
+	if err := h.store.DeleteIngressGrant(r.Context(), grant.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeGrantNotFound(w, r)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "delete ssh grant", nil)
+			response.CodeInternal, "delete ingress grant", nil)
 		return
 	}
 

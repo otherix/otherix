@@ -30,12 +30,12 @@ import (
 // the agent's console-stream.
 //
 // This route is mounted OUTSIDE the global Authn middleware (like
-// console-stream and ssh-cert) so it can accept an SSH-grant token, which
+// console-stream and ssh-cert) so it can accept an ingress-grant token, which
 // is not an Authn principal, and structurally guarantee a grant token
 // reaches no other route. The handler reads the bearer itself and
 // dual-dispatches:
 //
-//   - An SSH-grant token (auth.IsGrantTokenFormat, checked first because
+//   - An ingress-grant token (auth.IsIngressGrantFormat, checked first because
 //     its prefix is a superset of "otx_") resolves through the store; the
 //     caller is authorized when the grant currently reaches the named VM.
 //   - Any other bearer is verified as a CLI token (JWT or otx_ API token);
@@ -171,8 +171,8 @@ func sshStreamPort(r *http.Request) (port int, ok bool) {
 // principal) and writes no response: every failure is the caller's single
 // uniform reject, so this returns a bare bool.
 func (h *Handler) authorizeSSHStream(ctx context.Context, tok, vmName string, now time.Time) bool {
-	if auth.IsGrantTokenFormat(tok) {
-		grant, err := h.store.SSHGrantByTokenHash(ctx, auth.HashToken(tok))
+	if auth.IsIngressGrantFormat(tok) {
+		grant, err := h.store.IngressGrantByTokenHash(ctx, auth.HashToken(tok))
 		if err != nil {
 			return false
 		}

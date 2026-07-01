@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package sshgrants
+package ingressgrants
 
 import (
 	"errors"
@@ -11,8 +11,8 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// Revoke implements POST /v1/ssh-grants/{id}/revoke. Required permission:
-// vm:ssh-grant. The caller must own the grant (else 404). Revoke flags the
+// Revoke implements POST /v1/ingress-grants/{id}/revoke. Required permission:
+// vm:ingress-grant. The caller must own the grant (else 404). Revoke flags the
 // grant and keeps the row (and its token index) so a connect attempt is
 // rejected uniformly rather than leaking revocation as not-found.
 // Idempotent: revoking an already-revoked grant succeeds. Returns 200 with
@@ -23,20 +23,20 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.RevokeSSHGrant(r.Context(), grant.ID); err != nil {
+	if err := h.store.RevokeIngressGrant(r.Context(), grant.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeGrantNotFound(w, r)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "revoke ssh grant", nil)
+			response.CodeInternal, "revoke ingress grant", nil)
 		return
 	}
 
-	updated, err := h.store.SSHGrantByID(r.Context(), grant.ID)
+	updated, err := h.store.IngressGrantByID(r.Context(), grant.ID)
 	if err != nil {
 		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "load ssh grant", nil)
+			response.CodeInternal, "load ingress grant", nil)
 		return
 	}
 	response.WriteJSON(w, r, http.StatusOK, toView(updated))
