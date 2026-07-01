@@ -4,8 +4,10 @@
 package vms
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"time"
@@ -194,81 +196,65 @@ func (h *Handler) rejectIngress(w http.ResponseWriter, r *http.Request) {
 		response.CodeVMNotFound, "vm not found", nil)
 }
 
-// brokerIngress is the shared post-authorization core: it inspects the VM's
-// networks and selects the transport. An overlay NIC is brokered to a converged
-// gateway (brokerOverlay); a bridge NIC is brokered over the control-plane
-// relay; a VM with no usable network is 409 ingress_unavailable.
-func (h *Handler) brokerIngress(w http.ResponseWriter, r *http.Request, vm store.VM, port int) {
-	overlayNIC, hasUsable, err := h.resolveIngressNIC(r, vm.ID)
-	if err != nil {
-		h.log.ErrorContext(r.Context(), "vms.ingress resolve nic",
-			"vm_id", vm.ID, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "resolve vm network", nil)
-		return
-	}
+// IngressResult are the connect coordinates the broker computed for one
+// (vm, port). On the gateway path SplicerAddr/SessionCred/ExpiresAt are set and
+// a session credential has been minted; on the relay path they are zero.
+type IngressResult struct {
+	Transport   string // "gateway" | "relay"
+	VMID        uuid.UUID
+	VMName      string
+	Port        int
+	SplicerAddr string
+	SessionCred string
+	ExpiresAt   time.Time
+}
 
+// ResolveIngress computes connect coordinates for vm:port. It returns
+// gateways.ErrIngressUnavailable when the VM currently has no usable network,
+// no converged gateway, or no ingress address. It writes nothing to any
+// ResponseWriter and persists no durable state.
+func (h *Handler) ResolveIngress(ctx context.Context, vm store.VM, port int) (IngressResult, error) {
+	overlayNIC, hasUsable, err := h.resolveIngressNICCtx(ctx, vm.ID)
+	if err != nil {
+		return IngressResult{}, fmt.Errorf("resolve vm network: %v", err)
+	}
 	if overlayNIC != nil {
-		h.brokerOverlay(w, r, vm, *overlayNIC, port)
-		return
+		return h.resolveOverlay(ctx, vm, *overlayNIC, port)
 	}
 	if hasUsable {
 		// Bridge VM: brokered over the control-plane relay. No gateway
 		// credential is minted; the relay authorizes per request itself.
-		response.WriteJSON(w, r, http.StatusOK, ingressResponse{
-			Transport: "relay",
-			VMID:      vm.ID.String(),
-			Port:      port,
-		})
-		return
+		return IngressResult{Transport: "relay", VMID: vm.ID, VMName: vm.Name, Port: port}, nil
 	}
-
 	// No NIC on any usable network - nothing to broker.
-	response.WriteError(w, r, http.StatusConflict,
-		response.CodeIngressUnavailable, "no usable network for ingress", nil)
+	return IngressResult{}, gateways.ErrIngressUnavailable
 }
 
-// brokerOverlay selects a converged gateway for the overlay VM, mints a
-// short-lived session credential bound to the NIC, and returns the gateway
-// splicer address. ErrIngressUnavailable from selection (or a NIC without a
-// guest IP) is 409 ingress_unavailable.
-func (h *Handler) brokerOverlay(w http.ResponseWriter, r *http.Request, vm store.VM, nic store.VMNic, port int) {
-	gw, err := gateways.SelectGatewayForVM(r.Context(), h.store, vm.ID)
+// resolveOverlay selects a converged gateway, mints a session credential bound
+// to the NIC, and returns the coordinates. It is the return-a-value form of the
+// old brokerOverlay; ErrIngressUnavailable is returned for a missing gateway or
+// a NIC without a guest IP.
+func (h *Handler) resolveOverlay(ctx context.Context, vm store.VM, nic store.VMNic, port int) (IngressResult, error) {
+	gw, err := gateways.SelectGatewayForVM(ctx, h.store, vm.ID)
 	if err != nil {
 		if errors.Is(err, gateways.ErrIngressUnavailable) {
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeIngressUnavailable, "no converged gateway for ingress", nil)
-			return
+			return IngressResult{}, gateways.ErrIngressUnavailable
 		}
-		h.log.ErrorContext(r.Context(), "vms.ingress select gateway",
-			"vm_id", vm.ID, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "select gateway", nil)
-		return
+		return IngressResult{}, fmt.Errorf("select gateway: %v", err)
 	}
 	if nic.Ipv4Address == nil {
 		// An overlay NIC without a CP-IPAM address cannot be brokered: the
 		// credential binds to the guest IP. Surface it as retryable.
-		response.WriteError(w, r, http.StatusConflict,
-			response.CodeIngressUnavailable, "vm has no ingress address yet", nil)
-		return
+		return IngressResult{}, gateways.ErrIngressUnavailable
 	}
 
-	caRow, err := h.store.ActiveSessionCA(r.Context())
+	caRow, err := h.store.ActiveSessionCA(ctx)
 	if err != nil {
-		h.log.ErrorContext(r.Context(), "vms.ingress load session ca",
-			"vm_id", vm.ID, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "session ca unavailable", nil)
-		return
+		return IngressResult{}, fmt.Errorf("session ca unavailable: %v", err)
 	}
 	signer, err := auth.ParseSessionCASigner(caRow.PrivateKeyPEM)
 	if err != nil {
-		h.log.ErrorContext(r.Context(), "vms.ingress parse session ca",
-			"vm_id", vm.ID, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "session ca unavailable", nil)
-		return
+		return IngressResult{}, fmt.Errorf("session ca unavailable: %v", err)
 	}
 
 	now := time.Now()
@@ -284,35 +270,60 @@ func (h *Handler) brokerOverlay(w http.ResponseWriter, r *http.Request, vm store
 		ExpiresAt:  expiresAt,
 	}, now)
 	if err != nil {
-		h.log.ErrorContext(r.Context(), "vms.ingress sign session cred",
-			"vm_id", vm.ID, "error", err.Error())
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "sign session credential", nil)
-		return
+		return IngressResult{}, fmt.Errorf("sign session credential: %v", err)
 	}
 
-	response.WriteJSON(w, r, http.StatusOK, ingressResponse{
+	return IngressResult{
 		Transport:   "gateway",
-		VMID:        vm.ID.String(),
+		VMID:        vm.ID,
+		VMName:      vm.Name,
 		Port:        port,
 		SplicerAddr: gw.AdvertisedEndpoint,
 		SessionCred: cred,
-		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
-	})
+		ExpiresAt:   expiresAt,
+	}, nil
 }
 
-// resolveIngressNIC inspects the VM's NICs and decides the ingress path. It
+// brokerIngress is the shared post-authorization core: it resolves the connect
+// coordinates via ResolveIngress and writes them. Success is 200 with the
+// transport-specific ingressResponse; ErrIngressUnavailable is 409
+// ingress_unavailable; any other error is 500.
+func (h *Handler) brokerIngress(w http.ResponseWriter, r *http.Request, vm store.VM, port int) {
+	res, err := h.ResolveIngress(r.Context(), vm, port)
+	if err != nil {
+		if errors.Is(err, gateways.ErrIngressUnavailable) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeIngressUnavailable, "no usable network for ingress", nil)
+			return
+		}
+		h.log.ErrorContext(r.Context(), "vms.ingress resolve",
+			"vm_id", vm.ID, "error", err.Error())
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "resolve vm ingress", nil)
+		return
+	}
+
+	resp := ingressResponse{Transport: res.Transport, VMID: res.VMID.String(), Port: res.Port}
+	if res.Transport == "gateway" {
+		resp.SplicerAddr = res.SplicerAddr
+		resp.SessionCred = res.SessionCred
+		resp.ExpiresAt = res.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	response.WriteJSON(w, r, http.StatusOK, resp)
+}
+
+// resolveIngressNICCtx inspects the VM's NICs and decides the ingress path. It
 // returns the first overlay NIC (the gateway path) when present; otherwise
 // hasUsable reports whether any non-overlay (bridge) NIC exists (the relay
 // path). A NIC referencing a missing network is skipped (the VM is being torn
 // down).
-func (h *Handler) resolveIngressNIC(r *http.Request, vmID uuid.UUID) (overlay *store.VMNic, hasUsable bool, err error) {
-	nics, err := h.store.ListVMNicsByVM(r.Context(), vmID)
+func (h *Handler) resolveIngressNICCtx(ctx context.Context, vmID uuid.UUID) (overlay *store.VMNic, hasUsable bool, err error) {
+	nics, err := h.store.ListVMNicsByVM(ctx, vmID)
 	if err != nil {
 		return nil, false, err
 	}
 	for i := range nics {
-		net, nerr := h.store.NetworkByID(r.Context(), nics[i].NetworkID)
+		net, nerr := h.store.NetworkByID(ctx, nics[i].NetworkID)
 		if nerr != nil {
 			if errors.Is(nerr, store.ErrNotFound) {
 				continue
