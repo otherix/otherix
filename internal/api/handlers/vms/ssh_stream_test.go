@@ -312,10 +312,20 @@ func TestSSHStreamForwardsPort(t *testing.T) {
 // TestSSHStreamPortNotInGrantRejectedNoDial: a grant that lists the VM on the
 // SSH port only must not authorize a bridge session to a different guest port.
 // Dialing ?port=5432 against a port-22 grant is the uniform 401 with no dial.
+//
+// The VM and its owning node are seeded so the port check is the ONLY thing
+// standing between the request and a dial: were the port scope wrongly passed,
+// VM load and node resolve would both succeed and the relay would reach the
+// dial - flipping spy.dialed to true. So the spy.dialed==false assertion is
+// driven by the port check itself, not by a downstream resolve failure.
 func TestSSHStreamPortNotInGrantRejectedNoDial(t *testing.T) {
 	t.Parallel()
 	spy := &dialSpyClient{}
-	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu")}
+	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://agent.example.com:9090"}
+	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
+	// grantFor lists the VM on port 22 only; the request asks for 5432, which
+	// the port check must reject before any VM load, node resolve, or dial.
+	st := &sshStreamStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
 	h := sshStreamHandler(st, spy)
 
 	req := sshStreamRequest("demo", "otx_ingressgrant_abc")

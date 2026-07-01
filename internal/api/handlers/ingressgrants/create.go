@@ -165,8 +165,9 @@ func validateGrantName(name string) error {
 }
 
 // validateVMs trims and validates the VM-scope entries, rejecting an empty
-// vm_name or login and a duplicate vm_name. It returns the normalised
-// store entries.
+// vm_name, an empty or invalid port set, a duplicate vm_name, and a missing
+// login only when the port set includes the SSH port (22). It returns the
+// normalised store entries.
 func validateVMs(in []createVM) ([]store.IngressGrantVM, error) {
 	out := make([]store.IngressGrantVM, 0, len(in))
 	seen := make(map[string]struct{}, len(in))
