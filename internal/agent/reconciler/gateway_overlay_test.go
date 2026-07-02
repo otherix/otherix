@@ -53,9 +53,6 @@ func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 	if len(f.EnsureVethCalls) != 1 {
 		t.Errorf("EnsureVeth calls = %d, want 1 (the gateway tenant veth)", len(f.EnsureVethCalls))
 	}
-	if len(f.UnicastGatewayCalls) != 0 {
-		t.Errorf("EnsureUnicastGateway calls = %d, want 0 (bridge hwaddr must not be pinned)", len(f.UnicastGatewayCalls))
-	}
 
 	// Services plane is fully stripped.
 	if len(f.AnycastGatewayCalls) != 0 {

@@ -78,9 +78,6 @@ func TestGatewayOverlayCreatesVeth(t *testing.T) {
 	if got.MTU != 1390 {
 		t.Errorf("veth mtu = %d, want 1390", got.MTU)
 	}
-	if len(f.UnicastGatewayCalls) != 0 {
-		t.Errorf("UnicastGatewayCalls = %d, want 0 (bridge hwaddr must not be pinned)", len(f.UnicastGatewayCalls))
-	}
 }
 
 // TestGatewayOverlayVethIdempotent verifies the veth is re-asserted on every
@@ -111,9 +108,6 @@ func TestPlainOverlayCreatesNoVeth(t *testing.T) {
 
 	if len(f.EnsureVethCalls) != 0 {
 		t.Errorf("EnsureVeth called for a network without a gateway addr: %+v", f.EnsureVethCalls)
-	}
-	if len(f.UnicastGatewayCalls) != 0 {
-		t.Errorf("UnicastGatewayCalls = %d, want 0", len(f.UnicastGatewayCalls))
 	}
 }
 
