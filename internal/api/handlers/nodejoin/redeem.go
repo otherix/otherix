@@ -71,14 +71,15 @@ func (h *Handler) redeem(ctx context.Context, req joinRequest, csr *x509.Certifi
 	var fingerprint [32]byte
 
 	res, err := h.store.RedeemJoinToken(ctx, store.RedeemJoinTokenParams{
-		TokenHash:               auth.HashToken(req.Token),
-		NodeName:                req.NodeName,
-		Architecture:            store.CPUArch(req.Architecture),
-		AdvertisedEndpoint:      req.AdvertisedEndpoint,
-		MigrationHost:           req.MigrationHost,
-		MigrationPortRangeStart: req.MigrationPortRangeStart,
-		MigrationPortRangeEnd:   req.MigrationPortRangeEnd,
-		SourceIP:                sourceIP,
+		TokenHash:                 auth.HashToken(req.Token),
+		NodeName:                  req.NodeName,
+		Architecture:              store.CPUArch(req.Architecture),
+		AdvertisedEndpoint:        req.AdvertisedEndpoint,
+		IngressAdvertisedEndpoint: req.IngressAdvertisedEndpoint,
+		MigrationHost:             req.MigrationHost,
+		MigrationPortRangeStart:   req.MigrationPortRangeStart,
+		MigrationPortRangeEnd:     req.MigrationPortRangeEnd,
+		SourceIP:                  sourceIP,
 	}, func(node store.Node) (store.IssuedCert, error) {
 		// A gateway node self-registers an ingress gateway, so it gets a
 		// gateway-<name> identity; every other node a node-<name> leaf. The store

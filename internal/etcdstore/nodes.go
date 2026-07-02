@@ -138,17 +138,18 @@ func (s *Store) NodeEffectiveByID(ctx context.Context, id uuid.UUID) (store.Node
 func (s *Store) CreateNode(ctx context.Context, arg store.CreateNodeParams) (store.Node, error) {
 	now := time.Now().UTC()
 	n := store.Node{
-		ID:                      arg.ID,
-		Name:                    arg.Name,
-		GatewayRole:             arg.Gateway,
-		Architecture:            arg.Architecture,
-		AdvertisedEndpoint:      arg.AdvertisedEndpoint,
-		MigrationHost:           arg.MigrationHost,
-		MigrationPortRangeStart: arg.MigrationPortRangeStart,
-		MigrationPortRangeEnd:   arg.MigrationPortRangeEnd,
-		Status:                  arg.Status,
-		CreatedAt:               now,
-		UpdatedAt:               now,
+		ID:                        arg.ID,
+		Name:                      arg.Name,
+		GatewayRole:               arg.Gateway,
+		Architecture:              arg.Architecture,
+		AdvertisedEndpoint:        arg.AdvertisedEndpoint,
+		IngressAdvertisedEndpoint: arg.IngressAdvertisedEndpoint,
+		MigrationHost:             arg.MigrationHost,
+		MigrationPortRangeStart:   arg.MigrationPortRangeStart,
+		MigrationPortRangeEnd:     arg.MigrationPortRangeEnd,
+		Status:                    arg.Status,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}
 	val, err := etcd.Marshal(n)
 	if err != nil {

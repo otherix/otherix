@@ -94,17 +94,22 @@ type TLSConfig struct {
 //     conservatively short on link-flaky networks since the bootstrap
 //     does not retry.
 type BootstrapConfig struct {
-	Token                   string
-	TokenPath               string
-	CAFingerprint           string
-	CPURL                   string
-	NodeName                string
-	Architecture            string
-	AdvertisedEndpoint      string
-	MigrationHost           string
-	MigrationPortRangeStart int
-	MigrationPortRangeEnd   int
-	RequestTimeout          time.Duration
+	Token              string
+	TokenPath          string
+	CAFingerprint      string
+	CPURL              string
+	NodeName           string
+	Architecture       string
+	AdvertisedEndpoint string
+	// IngressAdvertisedEndpoint is the HTTPS URL clients dial to reach this
+	// node's ingress splicer (/v1/connect), distinct from AdvertisedEndpoint
+	// (the mTLS control endpoint). Optional here (length-capped when set); a
+	// gateway node supplies it.
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int
+	MigrationPortRangeEnd     int
+	RequestTimeout            time.Duration
 }
 
 // fingerprintHexPattern matches the canonical 64-char lowercase hex
@@ -190,6 +195,9 @@ func (b *BootstrapConfig) validateIdentity() error {
 	}
 	if len(b.AdvertisedEndpoint) > 2048 {
 		return errors.New("bootstrap: advertised_endpoint must be at most 2048 characters")
+	}
+	if len(b.IngressAdvertisedEndpoint) > 2048 {
+		return errors.New("bootstrap: ingress_advertised_endpoint must be at most 2048 characters")
 	}
 	return nil
 }

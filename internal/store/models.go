@@ -590,14 +590,19 @@ type Node struct {
 	// hypervisor role is derived as its inverse (see Roles). Written only at
 	// create/join in this revision. Legacy rows that predate the field are
 	// migrated from Kind=="gateway" at decode time (UnmarshalJSON).
-	GatewayRole             bool
-	Architecture            CPUArch
-	AdvertisedEndpoint      string
-	MigrationHost           string
-	MigrationPortRangeStart int32
-	MigrationPortRangeEnd   int32
-	Status                  NodeStatus
-	CordonedAt              *time.Time
+	GatewayRole        bool
+	Architecture       CPUArch
+	AdvertisedEndpoint string
+	// IngressAdvertisedEndpoint is the HTTPS URL clients dial to reach this
+	// node's ingress splicer (/v1/connect). Distinct from AdvertisedEndpoint,
+	// which is the mTLS control endpoint. Set on a gateway node; empty on a
+	// plain hypervisor and on legacy rows that predate the field.
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int32
+	MigrationPortRangeEnd     int32
+	Status                    NodeStatus
+	CordonedAt                *time.Time
 	// DrainTaskID points at the in-flight node.drain task while the node is
 	// draining; nil otherwise. Set atomically with the ready|cordoned ->
 	// draining flip, cleared atomically when the drain finalizes the node back

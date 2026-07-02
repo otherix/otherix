@@ -82,6 +82,39 @@ func TestRedeemJoinTokenCreatesNodeAndCert(t *testing.T) {
 	}
 }
 
+func TestRedeemGatewayTokenPersistsIngressAdvertisedEndpoint(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	hash := []byte("gw-redeem-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
+		ID:        uuid.New(),
+		TokenHash: hash,
+		Kind:      store.JoinTokenKindGateway,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateJoinToken(gateway): %v", err)
+	}
+	const wantIngress = "https://gw-1.example:9444"
+	p := redeemParams(hash, "gw-1")
+	p.IngressAdvertisedEndpoint = wantIngress
+	res, err := s.RedeemJoinToken(ctx, p, func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	})
+	if err != nil {
+		t.Fatalf("RedeemJoinToken(gateway): %v", err)
+	}
+	got, err := s.NodeByID(ctx, res.NodeID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if !got.HasRole(store.NodeRoleGateway) {
+		t.Errorf("redeemed node role = %v, want gateway", got.Roles())
+	}
+	if got.IngressAdvertisedEndpoint != wantIngress {
+		t.Errorf("IngressAdvertisedEndpoint = %q, want %q", got.IngressAdvertisedEndpoint, wantIngress)
+	}
+}
+
 func TestRedeemJoinTokenRejectsClusterKind(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
