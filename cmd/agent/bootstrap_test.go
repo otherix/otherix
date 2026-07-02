@@ -86,6 +86,43 @@ func TestWriteAgentConfigGatewayRoundTrips(t *testing.T) {
 	}
 }
 
+func TestWriteAgentConfigGatewayUsesDistinctWireGuardKeyPath(t *testing.T) {
+	dir := t.TempDir()
+
+	gwDest := filepath.Join(dir, "gateway.yaml")
+	in := baseGatewayConfigInputs()
+	in.Gateway = true
+	in.GatewayListen = "0.0.0.0:9444"
+	in.GatewayAdvertisedEndpoint = "https://gw-1:9444"
+	if err := writeAgentConfig(gwDest, in); err != nil {
+		t.Fatalf("writeAgentConfig() gateway error = %v", err)
+	}
+	gwCfg, err := config.LoadAgent(gwDest)
+	if err != nil {
+		t.Fatalf("LoadAgent() gateway error = %v", err)
+	}
+
+	const want = "/var/lib/otherix/wg-gateway/private.key"
+	if gwCfg.WireGuard.PrivateKeyPath != want {
+		t.Errorf("gateway WireGuard.PrivateKeyPath = %q, want %q (a gateway is its own node identity and must not adopt a co-resident agent's WireGuard key)",
+			gwCfg.WireGuard.PrivateKeyPath, want)
+	}
+
+	// A hypervisor config must keep the shared default path, so the two
+	// identities on one host never share a key file.
+	hypDest := filepath.Join(dir, "hyp.yaml")
+	if err := writeAgentConfig(hypDest, baseGatewayConfigInputs()); err != nil {
+		t.Fatalf("writeAgentConfig() hypervisor error = %v", err)
+	}
+	hypCfg, err := config.LoadAgent(hypDest)
+	if err != nil {
+		t.Fatalf("LoadAgent() hypervisor error = %v", err)
+	}
+	if gwCfg.WireGuard.PrivateKeyPath == hypCfg.WireGuard.PrivateKeyPath {
+		t.Errorf("gateway and hypervisor WireGuard key paths must differ, both = %q", gwCfg.WireGuard.PrivateKeyPath)
+	}
+}
+
 func TestWriteAgentConfigNonGatewayHasNoGatewayBlock(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "agent.yaml")
