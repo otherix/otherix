@@ -111,39 +111,40 @@ func New(s Store, log *slog.Logger, maxConcurrentDrains int) *Handler {
 // state flip are not meaningful (a cordoned node will not receive new
 // placements anyway).
 type nodeView struct {
-	ID                       string                 `json:"id"`
-	Name                     string                 `json:"name"`
-	Architecture             string                 `json:"architecture"`
-	Roles                    []string               `json:"roles"`
-	AdvertisedEndpoint       string                 `json:"advertised_endpoint"`
-	Migration                migrationCap           `json:"migration"`
-	Status                   string                 `json:"status"`
-	CordonedAt               *string                `json:"cordoned_at"`
-	CPUCoresTotal            *int32                 `json:"cpu_cores_total"`
-	CPUCoresAvailable        *int32                 `json:"cpu_cores_available"`
-	CPUCoresEffective        *int32                 `json:"cpu_cores_effective"`
-	CPUModel                 *string                `json:"cpu_model"`
-	CPUFlags                 []string               `json:"cpu_flags"`
-	MemoryTotalMiB           *int64                 `json:"memory_total_mib"`
-	MemoryAvailableMiB       *int64                 `json:"memory_available_mib"`
-	MemoryEffectiveMiB       *int64                 `json:"memory_effective_mib"`
-	Hugepages2MiB            *int32                 `json:"hugepages_2mib_total"`
-	Hugepages1GiB            *int32                 `json:"hugepages_1gib_total"`
-	KernelVersion            *string                `json:"kernel_version"`
-	QEMUVersion              *string                `json:"qemu_version"`
-	NumaTopology             json.RawMessage        `json:"numa_topology"`
-	Capabilities             json.RawMessage        `json:"capabilities"`
-	LastHeartbeatAt          *string                `json:"last_heartbeat_at"`
-	AgentVersion             *string                `json:"agent_version"`
-	Labels                   map[string]string      `json:"labels"`
-	MemoryPressure           *pressureView          `json:"memory_pressure"`
-	SystemDiskTotalBytes     *int64                 `json:"system_disk_total_bytes"`
-	SystemDiskAvailableBytes *int64                 `json:"system_disk_available_bytes"`
-	SystemDiskPressure       *pressureView          `json:"system_disk_pressure"`
-	CreatedAt                string                 `json:"created_at"`
-	UpdatedAt                string                 `json:"updated_at"`
-	NetworkConditions        []networkConditionView `json:"network_conditions"`
-	WireGuard                *wireguardView         `json:"wireguard"`
+	ID                        string                 `json:"id"`
+	Name                      string                 `json:"name"`
+	Architecture              string                 `json:"architecture"`
+	Roles                     []string               `json:"roles"`
+	AdvertisedEndpoint        string                 `json:"advertised_endpoint"`
+	IngressAdvertisedEndpoint string                 `json:"ingress_advertised_endpoint"`
+	Migration                 migrationCap           `json:"migration"`
+	Status                    string                 `json:"status"`
+	CordonedAt                *string                `json:"cordoned_at"`
+	CPUCoresTotal             *int32                 `json:"cpu_cores_total"`
+	CPUCoresAvailable         *int32                 `json:"cpu_cores_available"`
+	CPUCoresEffective         *int32                 `json:"cpu_cores_effective"`
+	CPUModel                  *string                `json:"cpu_model"`
+	CPUFlags                  []string               `json:"cpu_flags"`
+	MemoryTotalMiB            *int64                 `json:"memory_total_mib"`
+	MemoryAvailableMiB        *int64                 `json:"memory_available_mib"`
+	MemoryEffectiveMiB        *int64                 `json:"memory_effective_mib"`
+	Hugepages2MiB             *int32                 `json:"hugepages_2mib_total"`
+	Hugepages1GiB             *int32                 `json:"hugepages_1gib_total"`
+	KernelVersion             *string                `json:"kernel_version"`
+	QEMUVersion               *string                `json:"qemu_version"`
+	NumaTopology              json.RawMessage        `json:"numa_topology"`
+	Capabilities              json.RawMessage        `json:"capabilities"`
+	LastHeartbeatAt           *string                `json:"last_heartbeat_at"`
+	AgentVersion              *string                `json:"agent_version"`
+	Labels                    map[string]string      `json:"labels"`
+	MemoryPressure            *pressureView          `json:"memory_pressure"`
+	SystemDiskTotalBytes      *int64                 `json:"system_disk_total_bytes"`
+	SystemDiskAvailableBytes  *int64                 `json:"system_disk_available_bytes"`
+	SystemDiskPressure        *pressureView          `json:"system_disk_pressure"`
+	CreatedAt                 string                 `json:"created_at"`
+	UpdatedAt                 string                 `json:"updated_at"`
+	NetworkConditions         []networkConditionView `json:"network_conditions"`
+	WireGuard                 *wireguardView         `json:"wireguard"`
 }
 
 // networkConditionView is one per-(node, network) materialisation record
@@ -223,31 +224,32 @@ type migrationCap struct {
 // and GET /v1/nodes (list).
 func toViewEffective(n store.NodeEffectiveAvailability) nodeView {
 	v := nodeView{
-		ID:                 n.ID.String(),
-		Name:               n.Name,
-		Architecture:       string(n.Architecture),
-		Roles:              store.NodeRoles(n.GatewayRole),
-		AdvertisedEndpoint: n.AdvertisedEndpoint,
-		Migration:          migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
-		Status:             string(n.Status),
-		CPUCoresTotal:      n.CPUCoresTotal,
-		CPUCoresAvailable:  n.CPUCoresAvailable,
-		CPUCoresEffective:  n.CPUCoresEffective,
-		CPUModel:           n.CPUModel,
-		CPUFlags:           n.CpuFlags,
-		MemoryTotalMiB:     n.MemoryTotalMib,
-		MemoryAvailableMiB: n.MemoryAvailableMib,
-		MemoryEffectiveMiB: n.MemoryEffectiveMib,
-		Hugepages2MiB:      n.Hugepages2mibTotal,
-		Hugepages1GiB:      n.Hugepages1gibTotal,
-		KernelVersion:      n.KernelVersion,
-		QEMUVersion:        n.QEMUVersion,
-		NumaTopology:       rawJSONOrNull(n.NumaTopology),
-		Capabilities:       rawJSONOrEmpty(n.Capabilities),
-		AgentVersion:       n.AgentVersion,
-		Labels:             decodeLabels(n.Labels),
-		CreatedAt:          n.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:          n.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:                        n.ID.String(),
+		Name:                      n.Name,
+		Architecture:              string(n.Architecture),
+		Roles:                     store.NodeRoles(n.GatewayRole),
+		AdvertisedEndpoint:        n.AdvertisedEndpoint,
+		IngressAdvertisedEndpoint: n.IngressAdvertisedEndpoint,
+		Migration:                 migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
+		Status:                    string(n.Status),
+		CPUCoresTotal:             n.CPUCoresTotal,
+		CPUCoresAvailable:         n.CPUCoresAvailable,
+		CPUCoresEffective:         n.CPUCoresEffective,
+		CPUModel:                  n.CPUModel,
+		CPUFlags:                  n.CpuFlags,
+		MemoryTotalMiB:            n.MemoryTotalMib,
+		MemoryAvailableMiB:        n.MemoryAvailableMib,
+		MemoryEffectiveMiB:        n.MemoryEffectiveMib,
+		Hugepages2MiB:             n.Hugepages2mibTotal,
+		Hugepages1GiB:             n.Hugepages1gibTotal,
+		KernelVersion:             n.KernelVersion,
+		QEMUVersion:               n.QEMUVersion,
+		NumaTopology:              rawJSONOrNull(n.NumaTopology),
+		Capabilities:              rawJSONOrEmpty(n.Capabilities),
+		AgentVersion:              n.AgentVersion,
+		Labels:                    decodeLabels(n.Labels),
+		CreatedAt:                 n.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:                 n.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if n.CordonedAt != nil {
 		s := n.CordonedAt.UTC().Format(time.RFC3339Nano)
@@ -455,29 +457,30 @@ func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status i
 // toView builds the full nodeView for admin / operator.
 func toView(n store.Node) nodeView {
 	v := nodeView{
-		ID:                 n.ID.String(),
-		Name:               n.Name,
-		Architecture:       string(n.Architecture),
-		Roles:              n.Roles(),
-		AdvertisedEndpoint: n.AdvertisedEndpoint,
-		Migration:          migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
-		Status:             string(n.Status),
-		CPUCoresTotal:      n.CPUCoresTotal,
-		CPUCoresAvailable:  n.CPUCoresAvailable,
-		CPUModel:           n.CPUModel,
-		CPUFlags:           n.CpuFlags,
-		MemoryTotalMiB:     n.MemoryTotalMib,
-		MemoryAvailableMiB: n.MemoryAvailableMib,
-		Hugepages2MiB:      n.Hugepages2mibTotal,
-		Hugepages1GiB:      n.Hugepages1gibTotal,
-		KernelVersion:      n.KernelVersion,
-		QEMUVersion:        n.QEMUVersion,
-		NumaTopology:       rawJSONOrNull(n.NumaTopology),
-		Capabilities:       rawJSONOrEmpty(n.Capabilities),
-		AgentVersion:       n.AgentVersion,
-		Labels:             decodeLabels(n.Labels),
-		CreatedAt:          n.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:          n.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:                        n.ID.String(),
+		Name:                      n.Name,
+		Architecture:              string(n.Architecture),
+		Roles:                     n.Roles(),
+		AdvertisedEndpoint:        n.AdvertisedEndpoint,
+		IngressAdvertisedEndpoint: n.IngressAdvertisedEndpoint,
+		Migration:                 migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
+		Status:                    string(n.Status),
+		CPUCoresTotal:             n.CPUCoresTotal,
+		CPUCoresAvailable:         n.CPUCoresAvailable,
+		CPUModel:                  n.CPUModel,
+		CPUFlags:                  n.CpuFlags,
+		MemoryTotalMiB:            n.MemoryTotalMib,
+		MemoryAvailableMiB:        n.MemoryAvailableMib,
+		Hugepages2MiB:             n.Hugepages2mibTotal,
+		Hugepages1GiB:             n.Hugepages1gibTotal,
+		KernelVersion:             n.KernelVersion,
+		QEMUVersion:               n.QEMUVersion,
+		NumaTopology:              rawJSONOrNull(n.NumaTopology),
+		Capabilities:              rawJSONOrEmpty(n.Capabilities),
+		AgentVersion:              n.AgentVersion,
+		Labels:                    decodeLabels(n.Labels),
+		CreatedAt:                 n.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:                 n.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if n.CordonedAt != nil {
 		s := n.CordonedAt.UTC().Format(time.RFC3339Nano)

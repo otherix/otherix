@@ -696,9 +696,11 @@ GW_CP_URL="${GW_CP_URL:-$(run_on "$GW_HANDLE" awk '/^[ \t]*url:/{gsub(/"/,"",$2)
 GW_NODE_IP="$(run_on "$GW_HANDLE" sh -c "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1")"
 [ -n "$GW_NODE_IP" ] || fail "could not resolve the gateway node IP"
 
-# The gateway-only agent joins the same overlay substrate as any node. It derives
-# its WireGuard identity and endpoint from its own agent.yaml wireguard block the
-# same way a VM-host agent does; there is no separate gateway WG endpoint input.
+# The gateway-only agent joins the same overlay substrate as any node, but its
+# regenerated agent.yaml carries no wireguard block, so the gateway runs with an
+# empty WG advertised endpoint. Ingress still works because the gateway is always
+# the WireGuard initiator: it dials the handshake out to each host, and roaming
+# carries the return path, so no configured endpoint is needed.
 # The gateway node's prior VM-host agent is stopped below, freeing UDP 51820.
 
 # Mint a gateway join token through the operator CLI (the --kind gateway flow).

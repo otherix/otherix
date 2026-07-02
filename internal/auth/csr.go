@@ -226,6 +226,11 @@ func hasCAKeyUsageBits(value []byte) bool {
 //     requests and act as clients on the heartbeat path).
 //   - Serial: cryptographically-random 64-bit positive integer.
 //   - SignatureAlgorithm: ECDSAWithSHA384 (matches the CA's P-384 key).
+//
+// Each additionalSANEndpoints entry's host is added to the leaf SAN alongside
+// the advertisedEndpoint host (empty or unparseable endpoints are skipped), so
+// a gateway node's single leaf can serve both its control and ingress
+// hostnames.
 func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time, additionalSANEndpoints ...string) (certPEM []byte, cert *x509.Certificate, err error) {
 	endpoints := append([]string{advertisedEndpoint}, additionalSANEndpoints...)
 	return signLeaf(csr, "node-"+nodeName, endpoints, caCert, caKey, now)
