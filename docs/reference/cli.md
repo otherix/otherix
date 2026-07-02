@@ -237,16 +237,27 @@ databases, web UIs, metrics, a raw SSH port). See
 
 ### forward
 
-Open a local listener and splice each connection to `<vm-name>:<port>`. Each
-connection is brokered independently.
+Open a local listener and splice each connection to the VM's guest port. Each
+connection is brokered independently. The positional port spec follows
+`kubectl port-forward`:
+
+```
+otherix forward <vm-name> [LOCAL_PORT:]REMOTE_PORT
+```
+
+- `REMOTE_PORT` - binds the same port number locally.
+- `LOCAL_PORT:REMOTE_PORT` - pins a specific local port (override a busy default).
+- `:REMOTE_PORT` - picks an ephemeral local port (printed on start).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-L, --listen` | `127.0.0.1:0` | Local `host:port` to listen on (`0` = ephemeral port). |
+| `--address` | `127.0.0.1` | Bind host for the local listener (host only, e.g. `0.0.0.0`). |
+| `-L, --listen` | `127.0.0.1:0` | Local `host:port` shortcut; alternative to `--address` plus a local port in the spec. Mutually exclusive with both. |
 
 ```bash
-otherix forward db-1 5432 -L 127.0.0.1:5432   # then: psql -h 127.0.0.1 -p 5432
-otherix forward web-1 8080 -L 127.0.0.1:8080  # then: open http://127.0.0.1:8080
+otherix forward db-1 5432           # local 5432 -> db-1:5432; then: psql -h 127.0.0.1 -p 5432
+otherix forward db-1 15432:5432     # pin a local port when 5432 is busy
+otherix forward web-1 8080 --address 0.0.0.0   # expose on the LAN
 ```
 
 ---
