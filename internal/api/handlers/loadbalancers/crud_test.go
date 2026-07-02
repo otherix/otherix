@@ -374,6 +374,111 @@ func TestGetLoadBalancerBackends(t *testing.T) {
 	}
 }
 
+// healthSummaryJSON mirrors the optional health summary the get and list
+// projections attach.
+type healthSummaryJSON struct {
+	Status         string `json:"status"`
+	TargetsTotal   int    `json:"targets_total"`
+	TargetsHealthy int    `json:"targets_healthy"`
+}
+
+// TestGetLoadBalancerHealthSummary asserts the single-resource get attaches the
+// aggregate health summary alongside the enumerated backends. Two selector-
+// matched backends: one fresh-healthy, one warming (no record) -> total 2,
+// healthy 1, status degraded.
+func TestGetLoadBalancerHealthSummary(t *testing.T) {
+	st := newFakeStore()
+	u := devUser()
+	router := newRouter(st, u)
+
+	lb := seedLBWithInterval(t, st, "web", u.ID, 8080, map[string]string{"app": "web"})
+	healthy := st.seedVM(u.ID, `{"app":"web"}`)
+	st.seedVM(u.ID, `{"app":"web"}`) // warming: no health record
+	st.seedHealth(lb.ID, healthy.ID, true, time.Now())
+
+	rec := do(t, router, http.MethodGet, "/v1/loadbalancers/web", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		Health *healthSummaryJSON `json:"health"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.Health == nil {
+		t.Fatalf("get response omitted health summary; body=%s", rec.Body.String())
+	}
+	want := healthSummaryJSON{Status: "degraded", TargetsTotal: 2, TargetsHealthy: 1}
+	if *view.Health != want {
+		t.Errorf("health = %+v, want %+v", *view.Health, want)
+	}
+}
+
+// TestListLoadBalancersHealthSummary drives the real HTTP list: an LB with two
+// selector-matched backends, one fresh-healthy and one fresh-unhealthy, reports
+// health {status:degraded, targets_total:2, targets_healthy:1}. The list
+// projection carries only the scalar summary, never the enumerated backends.
+func TestListLoadBalancersHealthSummary(t *testing.T) {
+	st := newFakeStore()
+	u := devUser()
+	router := newRouter(st, u)
+
+	lb := seedLBWithInterval(t, st, "web", u.ID, 8080, map[string]string{"app": "web"})
+	vmA := st.seedVM(u.ID, `{"app":"web"}`)
+	vmB := st.seedVM(u.ID, `{"app":"web"}`)
+	now := time.Now()
+	st.seedHealth(lb.ID, vmA.ID, true, now)
+	st.seedHealth(lb.ID, vmB.ID, false, now)
+
+	rec := do(t, router, http.MethodGet, "/v1/loadbalancers", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			Health   *healthSummaryJSON `json:"health"`
+			Backends []json.RawMessage  `json:"backends"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("list len = %d, want 1; body=%s", len(resp.Data), rec.Body.String())
+	}
+	if resp.Data[0].Health == nil {
+		t.Fatalf("list omitted health summary; body=%s", rec.Body.String())
+	}
+	want := healthSummaryJSON{Status: "degraded", TargetsTotal: 2, TargetsHealthy: 1}
+	if *resp.Data[0].Health != want {
+		t.Errorf("health = %+v, want %+v", *resp.Data[0].Health, want)
+	}
+	if len(resp.Data[0].Backends) != 0 {
+		t.Errorf("list projection enumerated %d backends, want 0 (only the scalar summary)", len(resp.Data[0].Backends))
+	}
+}
+
+// TestCreateResponseOmitsHealth asserts the create response has no live-health
+// context and therefore omits the optional health key entirely (toView leaves
+// it nil).
+func TestCreateResponseOmitsHealth(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := view["health"]; ok {
+		t.Errorf("create response carried a health key; want it omitted: %v", view["health"])
+	}
+}
+
 func TestGetLoadBalancerNotFound(t *testing.T) {
 	st := newFakeStore()
 	router := newRouter(st, devUser())

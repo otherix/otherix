@@ -4,6 +4,7 @@
 package loadbalancers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -34,26 +35,31 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
 	view := toView(row)
-	view.Backends = h.buildBackends(r, row)
+	vms, err := h.store.ListVMsByOwner(ctx, row.OwnerID)
+	if err != nil {
+		// Best-effort: the config view is the primary payload and health is
+		// advisory, so a failed VM list leaves an empty backends array and a nil
+		// health summary rather than failing the read.
+		h.log.WarnContext(ctx, "list owner vms for lb backends",
+			"loadbalancer_id", row.ID.String(), "error", err.Error())
+		view.Backends = []backendView{}
+		response.WriteJSON(w, r, http.StatusOK, view)
+		return
+	}
+	backends := h.buildBackends(ctx, row, vms)
+	view.Backends = backends
+	view.Health = summarizeBackends(backends)
 	response.WriteJSON(w, r, http.StatusOK, view)
 }
 
 // buildBackends resolves the load balancer's currently-matched backends and
-// their latest active-health verdict. It is best-effort: a failure to list the
-// owner's VMs or the health verdicts degrades to an empty (or verdict-less)
-// backends array rather than failing the read, since the config view is the
-// primary payload and health is advisory.
-func (h *Handler) buildBackends(r *http.Request, row store.LoadBalancer) []backendView {
-	ctx := r.Context()
-
-	vms, err := h.store.ListVMsByOwner(ctx, row.OwnerID)
-	if err != nil {
-		h.log.WarnContext(ctx, "list owner vms for lb backends",
-			"loadbalancer_id", row.ID.String(), "error", err.Error())
-		return []backendView{}
-	}
-
+// their latest active-health verdict from the owner's VMs the caller passes in
+// (already fetched, so the list path can reuse one per-owner scan across the
+// page). It is best-effort: a failure to list the health verdicts degrades to
+// verdict-less backends rather than failing, since health is advisory.
+func (h *Handler) buildBackends(ctx context.Context, row store.LoadBalancer, vms []store.VM) []backendView {
 	health, err := h.store.ListLBBackendHealth(ctx, row.ID)
 	if err != nil {
 		h.log.WarnContext(ctx, "list lb backend health",
@@ -81,4 +87,46 @@ func (h *Handler) buildBackends(r *http.Request, row store.LoadBalancer) []backe
 	}
 	sort.Slice(backends, func(i, j int) bool { return backends[i].VMName < backends[j].VMName })
 	return backends
+}
+
+// summarizeBackends rolls the per-backend verdicts up into the aggregate health
+// summary. total counts every selector-matched backend; healthy and unhealthy
+// count only those with a FRESH verdict (Healthy non-nil) - buildBackends
+// already applied the staleness window, so a stale/absent/warming record leaves
+// Healthy nil and is counted as neither.
+func summarizeBackends(backends []backendView) *healthSummaryView {
+	total := len(backends)
+	var healthy, unhealthy int
+	for _, b := range backends {
+		if b.Healthy == nil {
+			continue
+		}
+		if *b.Healthy {
+			healthy++
+		} else {
+			unhealthy++
+		}
+	}
+	return &healthSummaryView{
+		Status:         deriveLBHealthStatus(total, healthy, unhealthy),
+		TargetsTotal:   total,
+		TargetsHealthy: healthy,
+	}
+}
+
+// deriveLBHealthStatus maps the (total, healthy, unhealthy) target counts onto
+// the aggregate status label. A serving-but-not-yet-confirmed load balancer (a
+// mix that includes warming backends) reads degraded, never unhealthy: only an
+// all-confirmed-down set reports unhealthy.
+func deriveLBHealthStatus(total, healthy, unhealthy int) string {
+	switch {
+	case total == 0:
+		return "no_backends"
+	case healthy == total:
+		return "healthy"
+	case unhealthy == total:
+		return "unhealthy"
+	default:
+		return "degraded"
+	}
 }

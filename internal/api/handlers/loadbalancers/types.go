@@ -61,6 +61,16 @@ type backendView struct {
 	ReportedAt *string `json:"reported_at"`
 }
 
+// healthSummaryView is the aggregate active-health rollup of a load balancer's
+// currently-matched backends: an overall Status plus the healthy/total target
+// counts. It lets an operator read load-balancer health at a glance without
+// enumerating every backend.
+type healthSummaryView struct {
+	Status         string `json:"status"` // healthy | degraded | unhealthy | no_backends
+	TargetsTotal   int    `json:"targets_total"`
+	TargetsHealthy int    `json:"targets_healthy"`
+}
+
 // loadBalancerView is the public projection of a store.LoadBalancer. The
 // internal soft-delete timestamp is intentionally absent.
 type loadBalancerView struct {
@@ -71,8 +81,12 @@ type loadBalancerView struct {
 	Selector    map[string]string `json:"selector"`
 	HealthCheck healthCheckView   `json:"health_check"`
 	Backends    []backendView     `json:"backends"`
-	CreatedAt   string            `json:"created_at"`
-	UpdatedAt   string            `json:"updated_at"`
+	// Health is the aggregate active-health rollup, populated only by get and
+	// list (which have live-health context). toView leaves it nil, so
+	// create/update responses omit it.
+	Health    *healthSummaryView `json:"health,omitempty"`
+	CreatedAt string             `json:"created_at"`
+	UpdatedAt string             `json:"updated_at"`
 }
 
 // listResponse is the payload for GET /v1/loadbalancers.

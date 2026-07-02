@@ -59,6 +59,9 @@ func renderGet(cmd *cobra.Command, lb cpclient.LoadBalancer) error {
 	printf(cmd, "owner_id: %s\n", lb.OwnerID)
 	printf(cmd, "port: %d\n", lb.Port)
 	printf(cmd, "selector: %s\n", formatSelector(lb.Selector))
+	if h := lb.Health; h != nil {
+		printf(cmd, "health: %s (%d/%d healthy)\n", h.Status, h.TargetsHealthy, h.TargetsTotal)
+	}
 	hc := lb.HealthCheck
 	printf(cmd, "health_check:\n")
 	printf(cmd, "  port: %d\n", derefInt(hc.Port))

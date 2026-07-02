@@ -7371,6 +7371,30 @@ components:
             When the control plane received the latest verdict, or null when
             none has been reported.
 
+    LoadBalancerHealthSummary:
+      type: object
+      description: |
+        Aggregate active-health rollup of a load balancer's currently-matched
+        backends (ADR 0027). `status` is `healthy` when every target is
+        confirmed healthy, `unhealthy` when every target is confirmed
+        unhealthy, `no_backends` when the selector matches none, and
+        `degraded` for any mix (including targets still warming with no verdict
+        yet - a serving-but-unconfirmed load balancer reads `degraded`, never
+        `unhealthy`). `targets_total` counts every matched backend;
+        `targets_healthy` counts those with a fresh healthy verdict.
+      required:
+        - status
+        - targets_total
+        - targets_healthy
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, no_backends]
+        targets_total:
+          type: integer
+        targets_healthy:
+          type: integer
+
     LoadBalancer:
       type: object
       description: |
@@ -7412,6 +7436,12 @@ components:
             array (backends are not enumerated per row in a list).
           items:
             $ref: "#/components/schemas/LoadBalancerBackend"
+        health:
+          allOf:
+            - $ref: "#/components/schemas/LoadBalancerHealthSummary"
+          description: |
+            Aggregate active-health rollup. Present on get and list; absent on
+            create/update responses (no live-health context).
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

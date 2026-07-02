@@ -65,6 +65,16 @@ type Backend struct {
 	ReportedAt *string `json:"reported_at"`
 }
 
+// LoadBalancerHealthSummary is the aggregate active-health rollup of a load
+// balancer's currently-matched backends. It is present only on the get and list
+// projections (which have live-health context); create/update responses omit
+// it. Status is one of healthy, degraded, unhealthy, no_backends.
+type LoadBalancerHealthSummary struct {
+	Status         string `json:"status"`
+	TargetsTotal   int    `json:"targets_total"`
+	TargetsHealthy int    `json:"targets_healthy"`
+}
+
 // LoadBalancer mirrors the LoadBalancer projection the CP
 // /v1/loadbalancers surface produces. A load balancer is a named L4
 // front for the VMs whose labels match Selector; Port is the guest TCP
@@ -79,8 +89,10 @@ type LoadBalancer struct {
 	Selector    map[string]string `json:"selector"`
 	HealthCheck HealthCheck       `json:"health_check"`
 	Backends    []Backend         `json:"backends"`
-	CreatedAt   string            `json:"created_at"`
-	UpdatedAt   string            `json:"updated_at"`
+	// Health is the aggregate active-health rollup, present only on get and list.
+	Health    *LoadBalancerHealthSummary `json:"health,omitempty"`
+	CreatedAt string                     `json:"created_at"`
+	UpdatedAt string                     `json:"updated_at"`
 }
 
 // LoadBalancerList is the cursor-paginated payload of

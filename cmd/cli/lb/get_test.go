@@ -68,3 +68,31 @@ func TestRenderGet_HealthCheckAndBackends(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderGet_HealthSummary locks the one-line aggregate health summary the
+// text render prints when the view carries one.
+func TestRenderGet_HealthSummary(t *testing.T) {
+	t.Parallel()
+	lb := cpclient.LoadBalancer{
+		ID:       "id-1",
+		Name:     "web",
+		OwnerID:  "owner-1",
+		Port:     80,
+		Selector: map[string]string{"app": "web"},
+		Health: &cpclient.LoadBalancerHealthSummary{
+			Status:         "degraded",
+			TargetsTotal:   2,
+			TargetsHealthy: 1,
+		},
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := renderGet(cmd, lb); err != nil {
+		t.Fatalf("renderGet: %v", err)
+	}
+	if want := "health: degraded (1/2 healthy)"; !strings.Contains(out.String(), want) {
+		t.Errorf("render missing %q:\n%s", want, out.String())
+	}
+}
