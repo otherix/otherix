@@ -612,8 +612,8 @@ func (s *Store) drainJobLive(ctx context.Context, jobID *int64) (bool, error) {
 }
 
 // ListNodesEffective returns nodes joined with their effective availability,
-// matching the optional architecture/status filters, ordered by (created_at,
-// id) ascending, after the cursor, capped at LimitCount.
+// matching the optional architecture/status/role filters, ordered by
+// (created_at, id) ascending, after the cursor, capped at LimitCount.
 func (s *Store) ListNodesEffective(ctx context.Context, arg store.ListNodesEffectiveParams) ([]store.NodeEffectiveAvailability, error) {
 	items, err := s.c.Range(ctx, nodePrefix())
 	if err != nil {
@@ -632,6 +632,9 @@ func (s *Store) ListNodesEffective(ctx context.Context, arg store.ListNodesEffec
 			continue
 		}
 		if arg.Status != nil && n.Status != *arg.Status {
+			continue
+		}
+		if arg.Role != nil && !n.HasRole(*arg.Role) {
 			continue
 		}
 		if !afterCursor(n.CreatedAt, n.ID, arg.CursorCreatedAt, arg.CursorID) {

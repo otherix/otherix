@@ -6,6 +6,7 @@ package node
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,7 @@ constant and derives CORDONED from the cordoned_at timestamp.`,
 	}
 	cmd.Flags().String(flagArch, "", "filter by architecture (amd64|arm64)")
 	cmd.Flags().String(flagStatus, "", "filter by status")
+	cmd.Flags().String(flagRole, "", "filter by role (hypervisor|gateway)")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
 	cmd.Flags().String(flagOutput, "table", "output format: table|json")
@@ -41,6 +43,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 	}
 	arch, _ := cmd.Flags().GetString(flagArch)
 	status, _ := cmd.Flags().GetString(flagStatus)
+	role, _ := cmd.Flags().GetString(flagRole)
 	limit, _ := cmd.Flags().GetInt(flagLimit)
 	cursor, _ := cmd.Flags().GetString(flagCursor)
 	format, err := outputFormat(cmd, "table")
@@ -54,6 +57,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		Cursor:       cursor,
 		Architecture: arch,
 		Status:       status,
+		Role:         role,
 	})
 	if err != nil {
 		return classifyError(err)
@@ -75,20 +79,21 @@ func runList(cmd *cobra.Command, _ []string) error {
 func printNodeTable(cmd *cobra.Command, nodes cpclient.NodeList, showIDs bool) {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if showIDs {
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tARCH\tSTATUS\tCORDONED\tAGE")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tROLES\tARCH\tSTATUS\tCORDONED\tAGE")
 	} else {
-		_, _ = fmt.Fprintln(tw, "NAME\tARCH\tSTATUS\tCORDONED\tAGE")
+		_, _ = fmt.Fprintln(tw, "NAME\tROLES\tARCH\tSTATUS\tCORDONED\tAGE")
 	}
 	for _, n := range nodes.Data {
+		roles := strings.Join(n.Roles, ",")
 		cordoned := boolYesNo(n.CordonedAt != nil)
 		status := renderNodeStatus(n)
 		age := humanAge(n.CreatedAt)
 		if showIDs {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				n.ID, n.Name, n.Architecture, status, cordoned, age)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				n.ID, n.Name, roles, n.Architecture, status, cordoned, age)
 		} else {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-				n.Name, n.Architecture, status, cordoned, age)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				n.Name, roles, n.Architecture, status, cordoned, age)
 		}
 	}
 	_ = tw.Flush()

@@ -37,6 +37,35 @@ func TestPrintNodeWireguard(t *testing.T) {
 	}
 }
 
+// TestPrintNodeTextRoles verifies node get prints a roles: line joining the
+// node's roles, and omits it when the wire envelope carried no roles.
+func TestPrintNodeTextRoles(t *testing.T) {
+	t.Run("gateway roles line", func(t *testing.T) {
+		n := cpclient.Node{
+			Name: "gw-1", Architecture: "arm64", Status: "ready", CreatedAt: "t0",
+			Roles: []string{"gateway"},
+		}
+		cmd := &cobra.Command{}
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printNodeText(cmd, n, false)
+		if !strings.Contains(buf.String(), "roles: gateway\n") {
+			t.Errorf("printNodeText output missing %q\n%s", "roles: gateway", buf.String())
+		}
+	})
+
+	t.Run("no roles omits line", func(t *testing.T) {
+		n := cpclient.Node{Name: "n-1", Architecture: "arm64", Status: "ready", CreatedAt: "t0"}
+		cmd := &cobra.Command{}
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printNodeText(cmd, n, false)
+		if strings.Contains(buf.String(), "roles:") {
+			t.Errorf("printNodeText rendered a roles line for a node without roles:\n%s", buf.String())
+		}
+	})
+}
+
 func TestPrintNodePressureWireguard(t *testing.T) {
 	boom := "otwg0 ensure failed"
 	cases := []struct {

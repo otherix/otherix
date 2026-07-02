@@ -23,6 +23,7 @@ const (
 	flagCursor  = "cursor"
 	flagArch    = "architecture"
 	flagStatus  = "status"
+	flagRole    = "role"
 
 	defaultListLimit = 20
 )

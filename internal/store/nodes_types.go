@@ -49,6 +49,7 @@ type ListNodesParams struct {
 type ListNodesEffectiveParams struct {
 	Architecture    *CPUArch
 	Status          *NodeStatus
+	Role            *string
 	CursorCreatedAt *time.Time
 	CursorID        *uuid.UUID
 	LimitCount      int32
