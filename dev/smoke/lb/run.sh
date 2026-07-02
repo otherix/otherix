@@ -82,6 +82,7 @@ LP="${LP:-19020}"                           # local `otherix lb connect` listene
 
 GW_NAME="${GW_NAME:-lb-gw-${RUN}}"          # the gateway node name (fresh join)
 GW_LISTEN_PORT="${GW_LISTEN_PORT:-9443}"    # the gateway control listener (mTLS)
+GW_INGRESS_PORT="${GW_INGRESS_PORT:-9444}"  # the gateway ingress listener clients dial for /v1/connect
 GW_INDEX="${GW_INDEX:-3}"                    # the third dev node becomes the gateway
 
 IMAGE_URL="${IMAGE_URL:-${SMOKE_IMAGE_URL}}"
@@ -154,9 +155,9 @@ node_path() {
   esac
 }
 
-# gw_serve -> launch the gateway data plane on the dedicated node (detached).
+# gw_serve -> launch the gateway-only agent data plane on the dedicated node (detached).
 gw_serve() {
-  run_on "$GW_HANDLE" sudo sh -c 'setsid nohup otherix-gateway serve >/var/log/otherix-gateway.log 2>&1 < /dev/null &'
+  run_on "$GW_HANDLE" sudo sh -c 'setsid nohup otherix-agent serve >/var/log/otherix-agent-gateway.log 2>&1 < /dev/null &'
 }
 
 # wait_gw_ready -> block (up to GW_READY_WAIT) until the gateway reports NET ready.
@@ -306,7 +307,7 @@ cleanup() {
   echo "--- cleanup ---"
   kill_bg
   kill_node_cli
-  run_on "$GW_HANDLE" sudo pkill -f 'otherix-gateway serve' >/dev/null 2>&1 || true
+  run_on "$GW_HANDLE" sudo pkill -f 'otherix-agent serve' >/dev/null 2>&1 || true
   if [ "$SMOKE_PLATFORM" = "lima" ] && [ -n "$NODE_OTX" ]; then
     run_on "$NODE_CLI_HANDLE" rm -rf \
       "$NODE_WORK" "$NODE_OTX" "$NODE_CFG" "$NODE_LB_CLIENT_PY" >/dev/null 2>&1 || true
@@ -341,10 +342,10 @@ case "$GW_ARCH" in
   *) fail "unsupported gateway node arch '${GW_ARCH:-unknown}'" ;;
 esac
 if [ -z "$GW_BIN" ]; then
-  GW_BIN="bin/linux-${GW_GOARCH}/otherix-gateway"
+  GW_BIN="bin/linux-${GW_GOARCH}/otherix-agent"
   [ -x "$GW_BIN" ] || make "build-linux-${GW_GOARCH}" >/dev/null 2>&1 || true
 fi
-[ -x "$GW_BIN" ] || fail "otherix-gateway not found at '$GW_BIN' (run make build-linux-arm64 / build-linux-amd64, or set GW_BIN=...)"
+[ -x "$GW_BIN" ] || fail "otherix-agent not found at '$GW_BIN' (run make build-linux-arm64 / build-linux-amd64, or set GW_BIN=...)"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN="bin/linux-${GW_GOARCH}/otherix-cli"
   info "cross-building the operator CLI for linux/${GW_GOARCH}"
@@ -473,23 +474,9 @@ GW_CP_URL="${GW_CP_URL:-$(run_on "$GW_HANDLE" awk '/^[ \t]*url:/{gsub(/"/,"",$2)
 GW_NODE_IP="$(run_on "$GW_HANDLE" sh -c "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1")"
 [ -n "$GW_NODE_IP" ] || fail "could not resolve the gateway node IP"
 
-# The gateway joins the WireGuard mesh, so it needs a WG UDP advertised endpoint
-# the VM-host agents dial for the handshake. Learn the inter-node WG subnet + port
-# a peer agent advertises, then pick the gateway node's address on THAT subnet.
-# shellcheck disable=SC2016  # $2 is an awk field, kept literal on purpose
-PEER_WG_EP="$(run_on "$SMOKE_HANDLE_1" awk '/^[ \t]*advertised_endpoint:/{gsub(/"/,"",$2); print $2; exit}' /etc/otherix/agent.yaml 2>/dev/null)"
-GW_WG_PORT="${GW_WG_PORT:-51820}"
-GW_WG_IP=""
-if [ -n "$PEER_WG_EP" ]; then
-  WG_SUBNET_PREFIX="$(printf '%s' "${PEER_WG_EP%:*}" | cut -d. -f1-3)"
-  GW_WG_PORT="${PEER_WG_EP##*:}"
-  # shellcheck disable=SC2016
-  GW_WG_IP="$(run_on "$GW_HANDLE" sh -c "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1" \
-    | grep -E "^${WG_SUBNET_PREFIX}\." | head -n1)"
-fi
-[ -n "$GW_WG_IP" ] || GW_WG_IP="$GW_NODE_IP"
-[ -n "$GW_WG_IP" ] || fail "could not resolve the gateway WireGuard endpoint IP"
-info "gateway WireGuard endpoint: ${GW_WG_IP}:${GW_WG_PORT}"
+# The gateway-only agent joins the same overlay substrate as any node. It derives
+# its WireGuard identity and endpoint from its own agent.yaml wireguard block the
+# same way a VM-host agent does; there is no separate gateway WG endpoint input.
 
 # Mint a gateway join token through the operator CLI (the --kind gateway flow).
 TOK_JSON="$(otx node join-token create --kind gateway --node-name "$GW_NAME" --ttl 1h --output json)" \
@@ -503,22 +490,31 @@ info "stop the agent on the gateway node so the gateway owns the overlay datapat
 run_on "$GW_HANDLE" sudo sh -c 'command -v systemctl >/dev/null && systemctl stop otherix-agent' >/dev/null 2>&1 || true
 run_on "$GW_HANDLE" sudo pkill -f 'otherix-agent serve' >/dev/null 2>&1 || true
 
-# Stage the gateway binary and bootstrap + serve on the node.
+# Stage the gateway-only agent binary and bootstrap + serve on the node.
 GW_BIN_NODE="$(node_path "$GW_HANDLE" "$GW_BIN")"
-run_on "$GW_HANDLE" sudo install -m 0755 "$GW_BIN_NODE" /usr/local/bin/otherix-gateway >/dev/null 2>&1 \
-  || run_on "$GW_HANDLE" sudo cp "$GW_BIN_NODE" /usr/local/bin/otherix-gateway
-# Remove any prior gateway config + WireGuard key so bootstrap writes a fresh
-# config (bootstrap never overwrites an existing config, even with --force) and a
-# fresh WireGuard identity. Keeps a re-run clean.
-run_on "$GW_HANDLE" sudo rm -f /etc/otherix/gateway.yaml /var/lib/otherix/wg-gateway/private.key >/dev/null 2>&1 || true
-run_on "$GW_HANDLE" sudo otherix-gateway bootstrap --force \
+run_on "$GW_HANDLE" sudo install -m 0755 "$GW_BIN_NODE" /usr/local/bin/otherix-agent >/dev/null 2>&1 \
+  || run_on "$GW_HANDLE" sudo cp "$GW_BIN_NODE" /usr/local/bin/otherix-agent
+# Remove the node's prior agent config so bootstrap writes a fresh gateway-enabled
+# agent.yaml (bootstrap never overwrites an existing config, even with --force).
+# The gateway block is what makes `otherix-agent serve` boot the gateway-only
+# runtime instead of the VM-host runtime.
+run_on "$GW_HANDLE" sudo rm -f /etc/otherix/agent.yaml >/dev/null 2>&1 || true
+# --force re-issues the cert material: the repurposed node carries the VM-host
+# agent's cert, and --force makes the re-run idempotent over a prior identity.
+# --gateway bakes the gateway block; --ingress-* set the ingress splicer clients
+# dial. The control --advertised-endpoint/--migration-host/--listen stay as a
+# node's would (migration inputs are inert for a gateway but the validator wants
+# them).
+run_on "$GW_HANDLE" sudo otherix-agent bootstrap --force --gateway \
+  --ingress-advertised-endpoint "https://${GW_NODE_IP}:${GW_INGRESS_PORT}" \
+  --ingress-listen "0.0.0.0:${GW_INGRESS_PORT}" \
   --token "$GW_TOKEN" --ca-fingerprint "$GW_FP" \
   --cp-url "$GW_CP_URL" --node-name "$GW_NAME" \
   --advertised-endpoint "https://${GW_NODE_IP}:${GW_LISTEN_PORT}" \
-  --wireguard-endpoint "${GW_WG_IP}:${GW_WG_PORT}" \
+  --migration-host "${GW_NODE_IP}" \
   --heartbeat-interval "${GW_HEARTBEAT_INTERVAL:-5s}" \
   --listen "0.0.0.0:${GW_LISTEN_PORT}" \
-  || fail "otherix-gateway bootstrap failed"
+  || fail "gateway-only agent bootstrap failed"
 gw_serve
 GW_LAUNCHED=1
 pass "ingress gateway $GW_NAME bootstrapped and serving on $GW_HANDLE"
