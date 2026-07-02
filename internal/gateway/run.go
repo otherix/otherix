@@ -26,6 +26,7 @@ import (
 
 	heartbeatHandlers "github.com/otherix/otherix/internal/agent/handlers/heartbeat"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/ingress"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/reconciler"
 	"github.com/otherix/otherix/internal/agent/vm"
@@ -71,13 +72,13 @@ func Run(ctx context.Context, cfg *config.AgentConfig, nodeName string, log *slo
 	// gate. It is wired into the heartbeat sender's response fan-out and read by
 	// the gate, so the same heartbeat loop that drives the reconcilers keeps the
 	// verification key fresh.
-	caStore := newSessionCAStore(log)
+	caStore := ingress.NewSessionCAStore(log)
 
 	sender := buildSender(heartbeatCtx, cfg, nodeName, recs.networks, recs.wireGuard, caStore, log)
-	router := buildRouter(cfg, nodeName, log, nudgerFor(sender), connectDeps{
-		fabric:   fabric,
-		overlays: recs.networks,
-		caStore:  caStore,
+	router := buildRouter(cfg, nodeName, log, nudgerFor(sender), ingress.ConnectDeps{
+		Fabric:   fabric,
+		Overlays: recs.networks,
+		CAStore:  caStore,
 	})
 
 	srv := &http.Server{
@@ -168,7 +169,7 @@ func (noVMs) List() []*vm.VM { return nil }
 // (logging a WARN) when the heartbeat path cannot be initialised, so a
 // misconfiguration never blocks the rest of the runtime. The returned
 // Sender backs both the heartbeat loop and POST /v1/heartbeat/nudge.
-func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, caStore *sessionCAStore, log *slog.Logger) *heartbeat.Sender {
+func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, caStore *ingress.SessionCAStore, log *slog.Logger) *heartbeat.Sender {
 	if nodeName == "" {
 		log.Warn("heartbeat disabled: node_name is empty (cert CN parse failed upstream)")
 		return nil
@@ -238,7 +239,7 @@ func (noopNudger) Nudge() {}
 // rather than at the top level, so lowering the listener to accept a
 // certificate-less connect client never widens the control routes: they still
 // fail closed on a missing or non-CP client cert.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger, connect connectDeps) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger, connect ingress.ConnectDeps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -273,11 +274,7 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, hea
 	// It is deliberately outside the Timeout group: a long-lived spliced session
 	// must not be killed by the per-request deadline, and the timeout's guarded
 	// writer does not support hijacking.
-	handler := newConnectHandler(connect, log)
-	r.Group(func(r chi.Router) {
-		r.Use(handler.verifyCred)
-		r.Post("/v1/connect", handler.Connect)
-	})
+	ingress.MountConnectRoutes(r, ingress.NewConnectHandler(connect, log))
 
 	return r
 }

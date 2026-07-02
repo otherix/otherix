@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package gateway
+package ingress
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// sessionCAStore holds the public half of the cluster ingress-session CA the
+// SessionCAStore holds the public half of the cluster ingress-session CA the
 // control plane distributes down-channel on every heartbeat. The connect gate
 // reads it to verify short-lived ingress session credentials offline. It
 // implements heartbeat.ResponseHandler so the same heartbeat sender that drives
@@ -23,8 +23,8 @@ import (
 // session_ca_public_pem leaves the last good value in place rather than
 // clearing it, so a transient bad field never disarms verification. The connect
 // gate fails closed on the bootstrap case (no CA ever received) by refusing the
-// connect when current returns nil.
-type sessionCAStore struct {
+// connect when Current returns nil.
+type SessionCAStore struct {
 	log *slog.Logger
 	pub atomic.Pointer[sessionCAKey]
 }
@@ -36,16 +36,16 @@ type sessionCAKey struct {
 	pem string
 }
 
-// newSessionCAStore builds an empty store. current returns nil until the first
+// NewSessionCAStore builds an empty store. Current returns nil until the first
 // heartbeat carrying a parseable session CA public half arrives.
-func newSessionCAStore(log *slog.Logger) *sessionCAStore {
-	return &sessionCAStore{log: log}
+func NewSessionCAStore(log *slog.Logger) *SessionCAStore {
+	return &SessionCAStore{log: log}
 }
 
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. It parses and
 // caches resp.SessionCAPublicPEM, keeping the last good value on any nil or
 // unparseable field.
-func (s *sessionCAStore) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {
+func (s *SessionCAStore) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {
 	if resp == nil || resp.SessionCAPublicPEM == nil {
 		return
 	}
@@ -61,9 +61,9 @@ func (s *sessionCAStore) HandleHeartbeatResponse(_ context.Context, resp *heartb
 	s.pub.Store(&sessionCAKey{key: key, pem: pem})
 }
 
-// current returns the latest cached session CA public half, or nil when none has
+// Current returns the latest cached session CA public half, or nil when none has
 // been received yet.
-func (s *sessionCAStore) current() crypto.PublicKey {
+func (s *SessionCAStore) Current() crypto.PublicKey {
 	if v := s.pub.Load(); v != nil {
 		return v.key
 	}

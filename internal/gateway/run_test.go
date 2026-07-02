@@ -26,21 +26,39 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/ingress"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
 )
 
 // nilConnectDeps is the connect wiring for router tests that never exercise the
-// connect route. newConnectHandler only stores the deps, so nil collaborators
-// are safe here.
-func nilConnectDeps() connectDeps {
-	return connectDeps{caStore: newSessionCAStore(discardLogger())}
+// connect route. ingress.NewConnectHandler only stores the deps, so nil
+// collaborators are safe here.
+func nilConnectDeps() ingress.ConnectDeps {
+	return ingress.ConnectDeps{CAStore: ingress.NewSessionCAStore(discardLogger())}
 }
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+// staticOverlays is a static ingress.OverlayResolver for the router tests: it
+// returns the given bridge and ok for every guest IP and no-ops the per-network
+// session counters. The router tests only need a valid bearer to reach the
+// splice handler; they do not assert session accounting.
+type staticOverlays struct {
+	bridge string
+	ok     bool
+}
+
+func (s staticOverlays) OverlayNetworkForIP(netip.Addr) (string, string, bool) {
+	return s.bridge, "", s.ok
+}
+
+func (staticOverlays) AcquireSession(string) {}
+
+func (staticOverlays) ReleaseSession(string) {}
 
 // TestBuildReconcilersWiring confirms the gateway assembly builds exactly a
 // WireGuard reconciler and a gateway-mode network reconciler — and nothing
@@ -148,14 +166,14 @@ func TestGatewayRouterTrustBoundaries(t *testing.T) {
 	bridge := "otvb100"
 	hw, _ := net.ParseMAC("02:00:00:00:00:0a")
 	pubPEM := string(mat.PublicKeyPEM)
-	store := newSessionCAStore(discardLogger())
+	store := ingress.NewSessionCAStore(discardLogger())
 	store.HandleHeartbeatResponse(t.Context(), &heartbeat.Response{SessionCAPublicPEM: &pubPEM})
-	deps := connectDeps{
-		fabric: &netfabric.FakeFabric{NeighborResult: map[string]netfabric.NeighborOutcome{
+	deps := ingress.ConnectDeps{
+		Fabric: &netfabric.FakeFabric{NeighborResult: map[string]netfabric.NeighborOutcome{
 			netfabric.NeighborKey(bridge, ip): {MAC: hw, OK: true},
 		}},
-		overlays: fakeOverlays{bridge: bridge, ok: true},
-		caStore:  store,
+		Overlays: staticOverlays{bridge: bridge, ok: true},
+		CAStore:  store,
 	}
 	validBearer, err := auth.SignSessionCred(signer, auth.SessionCredClaims{
 		VMID: uuid.New(), NICMAC: "02:00:00:00:00:0a", GuestIP: ip, Port: 22,
