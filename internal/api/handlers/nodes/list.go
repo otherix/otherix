@@ -15,7 +15,7 @@ import (
 // List implements GET /v1/nodes. Required permission: node:read.
 // admin / operator receive nodeView entries; developer / viewer
 // receive nodeSummaryView entries. Cursor pagination,
-// optional architecture / status query filters.
+// optional architecture / status / role query filters.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -47,6 +47,17 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		s := store.NodeStatus(status)
 		params.Status = &s
+	}
+	if role := q.Get("role"); role != "" {
+		switch role {
+		case store.NodeRoleHypervisor, store.NodeRoleGateway:
+			rl := role
+			params.Role = &rl
+		default:
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, "invalid role", nil)
+			return
+		}
 	}
 	if cur != nil {
 		params.CursorCreatedAt = &cur.CreatedAt

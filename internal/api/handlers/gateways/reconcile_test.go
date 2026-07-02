@@ -88,7 +88,7 @@ func (f *reconcileStoreFake) DeleteGatewayMembership(_ context.Context, gatewayI
 }
 
 func gatewayNode(id uuid.UUID) store.Node {
-	return store.Node{ID: id, Kind: store.NodeKindGateway, Status: store.NodeStatusReady}
+	return store.Node{ID: id, GatewayRole: true, Status: store.NodeStatusReady}
 }
 
 func TestReconcileEnsuresTwoGatewaysCoverIngressNetwork(t *testing.T) {

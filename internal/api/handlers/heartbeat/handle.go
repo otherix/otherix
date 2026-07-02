@@ -723,7 +723,7 @@ func (h *Handler) gatewayAddrsForNode(ctx context.Context, hp store.HeartbeatPro
 	if err != nil {
 		return nil, fmt.Errorf("node by id %s: %v", nodeID, err)
 	}
-	if node.Kind != store.NodeKindGateway {
+	if !node.HasRole(store.NodeRoleGateway) {
 		return nil, nil
 	}
 	memberships, err := hp.ListGatewayMembershipsForGateway(ctx, nodeID)

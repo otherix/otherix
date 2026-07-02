@@ -587,6 +587,11 @@ paths:
           schema:
             type: string
             enum: [pending, ready, cordoned, draining, unreachable, gone]
+        - name: role
+          in: query
+          required: false
+          schema: { type: string, enum: [hypervisor, gateway] }
+          description: Filter to nodes holding this effective role.
       responses:
         "200":
           description: List of nodes.
@@ -5013,6 +5018,7 @@ components:
         - id
         - name
         - architecture
+        - roles
         - advertised_endpoint
         - migration
         - status
@@ -5027,6 +5033,15 @@ components:
         architecture:
           type: string
           enum: [amd64, arm64]
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [hypervisor, gateway]
+          description: |
+            Effective role set for the node. `hypervisor` is a derived,
+            VM-schedulable capability; `gateway` is the assigned ingress
+            role. Exactly one role per node in this API version.
         advertised_endpoint:
           type: string
           format: uri
@@ -5260,13 +5275,22 @@ components:
         Excludes agent endpoints, hardware details, kernel/qemu
         versions, NUMA topology, capabilities, heartbeat, and agent
         version.
-      required: [id, name, architecture, status, labels, created_at]
+      required: [id, name, architecture, roles, status, labels, created_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         architecture:
           type: string
           enum: [amd64, arm64]
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [hypervisor, gateway]
+          description: |
+            Effective role set for the node. `hypervisor` is a derived,
+            VM-schedulable capability; `gateway` is the assigned ingress
+            role. Exactly one role per node in this API version.
         status:
           type: string
           enum: [pending, ready, cordoned, draining, unreachable, gone]

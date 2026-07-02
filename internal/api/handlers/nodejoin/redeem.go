@@ -80,11 +80,11 @@ func (h *Handler) redeem(ctx context.Context, req joinRequest, csr *x509.Certifi
 		MigrationPortRangeEnd:   req.MigrationPortRangeEnd,
 		SourceIP:                sourceIP,
 	}, func(node store.Node) (store.IssuedCert, error) {
-		// A gateway token self-registers an ingress gateway, so it gets a
-		// gateway-<name> identity; everything else a node-<name> leaf. The store
-		// stamps node.Kind from the token kind before invoking this callback.
+		// A gateway node self-registers an ingress gateway, so it gets a
+		// gateway-<name> identity; every other node a node-<name> leaf. The store
+		// stamps the node's gateway role from the token kind before this callback.
 		sign := auth.SignCSR
-		if node.Kind == store.NodeKindGateway {
+		if node.HasRole(store.NodeRoleGateway) {
 			sign = auth.SignGatewayCSR
 		}
 		pem, parsed, err := sign(csr, req.NodeName, node.AdvertisedEndpoint, ca.cert, ca.key, time.Now())

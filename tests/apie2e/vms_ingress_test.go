@@ -50,7 +50,7 @@ func convergeGateway(t *testing.T, h *harness, netID uuid.UUID) store.Node {
 	t.Helper()
 	ctx := context.Background()
 	gw, err := h.store.CreateNode(ctx, store.CreateNodeParams{
-		ID: uuid.New(), Name: "gw-" + uuid.NewString()[:8], Kind: store.NodeKindGateway,
+		ID: uuid.New(), Name: "gw-" + uuid.NewString()[:8], Gateway: true,
 		Architecture: store.CpuArchAmd64, AdvertisedEndpoint: "https://gw.test:9443",
 		MigrationHost: "10.0.0.9", MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
 		Status: store.NodeStatusReady,

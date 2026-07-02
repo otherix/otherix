@@ -11,11 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// NodeKind discriminates the role a node row plays in the cluster. A node-kind
-// row is a hypervisor that hosts VMs and is a candidate for VM placement; a
-// gateway-kind row terminates ingress traffic and never hosts VMs, so the
-// scheduler excludes it from placement. An empty Kind on an older row reads back
-// as the node kind.
+// NodeKindGateway is the legacy node-kind discriminator for an ingress gateway.
+// Retained as the sentinel Node.UnmarshalJSON migrates from when reading a
+// pre-roles node row (Kind=="gateway" -> GatewayRole=true). No production code
+// writes it. NodeKindNode is its non-gateway counterpart, used only by tests.
 const (
 	NodeKindNode    = "node"
 	NodeKindGateway = "gateway"

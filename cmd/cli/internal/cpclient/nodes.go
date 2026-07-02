@@ -28,6 +28,7 @@ type Node struct {
 	ID           uuid.UUID         `json:"id"`
 	Name         string            `json:"name"`
 	Architecture string            `json:"architecture"`
+	Roles        []string          `json:"roles"`
 	Status       string            `json:"status"`
 	CordonedAt   *string           `json:"cordoned_at,omitempty"`
 	Labels       map[string]string `json:"labels"`
@@ -124,6 +125,7 @@ type ListNodesParams struct {
 	Cursor       string
 	Architecture string
 	Status       string
+	Role         string
 }
 
 // ListNodes fetches GET /v1/nodes with the supplied query filters.
@@ -142,6 +144,9 @@ func (c *Client) ListNodes(ctx context.Context, params ListNodesParams) (NodeLis
 	}
 	if params.Status != "" {
 		q.Set("status", params.Status)
+	}
+	if params.Role != "" {
+		q.Set("role", params.Role)
 	}
 
 	path := "/v1/nodes"

@@ -5,6 +5,7 @@ package node
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -65,6 +66,9 @@ func printNodeText(cmd *cobra.Command, n cpclient.Node, showIDs bool) {
 	printf(cmd, "name: %s\n", n.Name)
 	printf(cmd, "architecture: %s\n", n.Architecture)
 	printf(cmd, "status: %s\n", n.Status)
+	if len(n.Roles) > 0 {
+		printf(cmd, "roles: %s\n", strings.Join(n.Roles, ","))
+	}
 	if n.CordonedAt != nil {
 		printf(cmd, "cordoned_at: %s\n", *n.CordonedAt)
 	}

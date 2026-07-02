@@ -33,7 +33,7 @@ func TestPrintNodeTableColumns(t *testing.T) {
 		printNodeTable(cmd, list, false)
 
 		header := strings.Fields(strings.Split(strings.TrimSpace(buf.String()), "\n")[0])
-		want := []string{"NAME", "ARCH", "STATUS", "CORDONED", "AGE"}
+		want := []string{"NAME", "ROLES", "ARCH", "STATUS", "CORDONED", "AGE"}
 		if strings.Join(header, " ") != strings.Join(want, " ") {
 			t.Errorf("header = %v, want %v", header, want)
 		}
@@ -46,11 +46,46 @@ func TestPrintNodeTableColumns(t *testing.T) {
 		printNodeTable(cmd, list, true)
 
 		header := strings.Fields(strings.Split(strings.TrimSpace(buf.String()), "\n")[0])
-		want := []string{"ID", "NAME", "ARCH", "STATUS", "CORDONED", "AGE"}
+		want := []string{"ID", "NAME", "ROLES", "ARCH", "STATUS", "CORDONED", "AGE"}
 		if strings.Join(header, " ") != strings.Join(want, " ") {
 			t.Errorf("header = %v, want %v", header, want)
 		}
 	})
+}
+
+// TestPrintNodeTableRoles verifies the ROLES column renders each node's
+// comma-joined roles for both the gateway and hypervisor cases.
+func TestPrintNodeTableRoles(t *testing.T) {
+	list := cpclient.NodeList{Data: []cpclient.Node{
+		{
+			ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Name: "hv-1",
+			Architecture: "arm64", Status: "ready", CreatedAt: "2026-05-12T09:00:00Z",
+			Roles: []string{"hypervisor"},
+		},
+		{
+			ID: uuid.MustParse("22222222-2222-2222-2222-222222222222"), Name: "gw-1",
+			Architecture: "arm64", Status: "ready", CreatedAt: "2026-05-12T09:00:00Z",
+			Roles: []string{"gateway"},
+		},
+	}}
+
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printNodeTable(cmd, list, false)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("want header + 2 rows, got %d lines:\n%s", len(lines), buf.String())
+	}
+	hv := strings.Fields(lines[1])
+	gw := strings.Fields(lines[2])
+	if len(hv) < 2 || hv[1] != "hypervisor" {
+		t.Errorf("hypervisor row roles column = %v, want hypervisor at index 1", hv)
+	}
+	if len(gw) < 2 || gw[1] != "gateway" {
+		t.Errorf("gateway row roles column = %v, want gateway at index 1", gw)
+	}
 }
 
 // TestRenderNodeStatus covers the STATUS-column computation of the

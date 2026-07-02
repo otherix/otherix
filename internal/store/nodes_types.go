@@ -17,9 +17,9 @@ type CancelActiveMigrationsOnNodeParams struct {
 type CreateNodeParams struct {
 	ID   uuid.UUID
 	Name string
-	// Kind is the node role; empty defaults to NodeKindNode at create time. Not
-	// accepted from the admin create-node request - gateways self-register on join.
-	Kind                    string
+	// Gateway assigns the ingress-gateway role to the new row. Not accepted from
+	// the admin create-node request - gateways self-register on join.
+	Gateway                 bool
 	Architecture            CPUArch
 	AdvertisedEndpoint      string
 	MigrationHost           string
@@ -49,6 +49,7 @@ type ListNodesParams struct {
 type ListNodesEffectiveParams struct {
 	Architecture    *CPUArch
 	Status          *NodeStatus
+	Role            *string
 	CursorCreatedAt *time.Time
 	CursorID        *uuid.UUID
 	LimitCount      int32

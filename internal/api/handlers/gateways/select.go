@@ -52,7 +52,7 @@ func SelectGatewayForVM(ctx context.Context, st GatewaySelectStore, vmID uuid.UU
 	}
 	liveGateways := make(map[uuid.UUID]store.Node, len(nodes))
 	for _, n := range nodes {
-		if n.Kind == store.NodeKindGateway && nodeLive(n) {
+		if n.HasRole(store.NodeRoleGateway) && nodeLive(n) {
 			liveGateways[n.ID] = n
 		}
 	}

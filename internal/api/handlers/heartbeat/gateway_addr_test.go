@@ -29,7 +29,7 @@ func (f *fakeGatewayAddrProjection) ListNetworks(context.Context) ([]store.Netwo
 }
 
 func (f *fakeGatewayAddrProjection) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
-	return store.Node{ID: id, Kind: f.kindByNode[id]}, nil
+	return store.Node{ID: id, GatewayRole: f.kindByNode[id] == store.NodeKindGateway}, nil
 }
 
 func (f *fakeGatewayAddrProjection) ListGatewayMembershipsForGateway(_ context.Context, gatewayID uuid.UUID) ([]store.GatewayMembership, error) {

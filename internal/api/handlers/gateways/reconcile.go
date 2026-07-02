@@ -224,12 +224,12 @@ func sessionCountsByGateway(ctx context.Context, st GatewayReconcileStore, netwo
 	return out, nil
 }
 
-// liveGatewayIDs returns the ids of gateway-kind nodes that may take ingress: not
+// liveGatewayIDs returns the ids of gateway-role nodes that may take ingress: not
 // soft-deleted and not in a terminal-or-stale status (unreachable/gone).
 func liveGatewayIDs(nodes []store.Node) []uuid.UUID {
 	var out []uuid.UUID
 	for _, n := range nodes {
-		if n.Kind != store.NodeKindGateway {
+		if !n.HasRole(store.NodeRoleGateway) {
 			continue
 		}
 		if !nodeLive(n) {

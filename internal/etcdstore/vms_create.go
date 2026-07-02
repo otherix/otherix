@@ -361,9 +361,11 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 			}
 			return nil, err
 		}
-		// Gateways terminate ingress and never host VMs - exclude them from every
-		// placement enumeration at this single querier chokepoint.
-		if node.Kind == store.NodeKindGateway {
+		// A node that is not a hypervisor never hosts VMs - exclude it from every
+		// placement enumeration at this single querier chokepoint. A gateway-only
+		// node is the sole non-hypervisor today; a future co-located node that is
+		// both stays schedulable because it still holds the hypervisor role.
+		if !node.HasRole(store.NodeRoleHypervisor) {
 			continue
 		}
 		poolEff, err := s.poolEffective(ctx, p)
