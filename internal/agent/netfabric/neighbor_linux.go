@@ -113,6 +113,10 @@ func neighborLookup(linkIndex int, ip netip.Addr) (net.HardwareAddr, bool, error
 // error is ignored: the probe only nudges resolution, and the caller re-reads the
 // table afterwards regardless.
 func probeNeighbor(ip netip.Addr, bridge string) {
+	// Always pause before returning, even when the probe datagram cannot be sent
+	// (e.g. the bridge is momentarily routeless), so a caller that retries paces its
+	// re-reads instead of spinning tightly against the neighbor table.
+	defer time.Sleep(neighborProbeWait)
 	d := net.Dialer{
 		Timeout: neighborProbeTimeout,
 		Control: BindToDeviceControl(bridge),
@@ -124,5 +128,4 @@ func probeNeighbor(ip netip.Addr, bridge string) {
 	_ = conn.SetWriteDeadline(time.Now().Add(neighborProbeTimeout))
 	_, _ = conn.Write([]byte{0})
 	_ = conn.Close()
-	time.Sleep(neighborProbeWait)
 }
