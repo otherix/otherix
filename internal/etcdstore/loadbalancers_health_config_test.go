@@ -2,7 +2,6 @@
 // Copyright 2026 Andrei Taranik
 
 //go:build integration
-// +build integration
 
 package etcdstore_test
 

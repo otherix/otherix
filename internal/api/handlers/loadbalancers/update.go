@@ -80,7 +80,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		row.Selector = *req.Selector
 	}
-	hc, err := resolveHealthCheck(req.HealthCheck, row.HealthCheck)
+	hc, err := resolveHealthCheck(req.HealthCheck, normalizeUpdateBase(row.HealthCheck))
 	if err != nil {
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, err.Error(), nil)

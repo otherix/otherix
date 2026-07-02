@@ -37,6 +37,22 @@ func resolveHealthCheck(req *healthCheckRequest, base store.LoadBalancerHealthCh
 	return hc, nil
 }
 
+// normalizeUpdateBase prepares the stored config to serve as the base for an
+// update fold. A row created before the health-check feature carries a zero
+// HealthCheck (IntervalSeconds == 0), which fails range validation; normalize
+// the cadence to the defaults so a name/port/selector-only PATCH (nil
+// req.HealthCheck) is not spuriously rejected. The stored port sentinel is
+// preserved (0 stays 0) so port-follow survives; EffectiveFor is deliberately
+// not used here because it would pin the port to the LB traffic port.
+func normalizeUpdateBase(base store.LoadBalancerHealthCheck) store.LoadBalancerHealthCheck {
+	if base.IntervalSeconds != 0 {
+		return base
+	}
+	d := store.DefaultLoadBalancerHealthCheck()
+	d.Port = base.Port
+	return d
+}
+
 func validateHealthCheck(hc store.LoadBalancerHealthCheck) error {
 	switch {
 	case hc.Port != 0 && (hc.Port < 1 || hc.Port > 65535):

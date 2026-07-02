@@ -513,6 +513,53 @@ func TestUpdateHealthCheckPortPins(t *testing.T) {
 	}
 }
 
+// TestUpdatePortFollowMovesHealthPort creates an LB with no health_check block
+// (stored HealthCheck.Port == 0, the follow sentinel), then moves the traffic
+// port with a PATCH that carries no health_check block. The effective health
+// port must track the new traffic port.
+func TestUpdatePortFollowMovesHealthPort(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"port":9090}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		HealthCheck struct {
+			Port int32 `json:"port"`
+		} `json:"health_check"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.HealthCheck.Port != 9090 {
+		t.Errorf("view health_check.port = %d, want 9090 (follows new traffic port)", view.HealthCheck.Port)
+	}
+}
+
+// TestUpdatePreFeatureRowNameOnly seeds a row with a zero HealthCheck (a row
+// created before the health-check feature) and PATCHes only the name with no
+// health_check block. The update must succeed (200), not fail 400 on the
+// pre-feature zero cadence.
+func TestUpdatePreFeatureRowNameOnly(t *testing.T) {
+	st := newFakeStore()
+	user := devUser()
+	// seedLB inserts a row with the zero-value HealthCheck, matching a
+	// pre-feature row exactly.
+	st.seedLB(t, "web", user.ID, 8080, map[string]string{"app": "web"})
+	router := newRouter(st, user)
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"name":"web2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreatePortValidation(t *testing.T) {
 	for _, body := range []string{
 		`{"name":"web","port":0,"selector":{"app":"web"}}`,
