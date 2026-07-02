@@ -54,9 +54,9 @@ func (n *Node) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	// The sibling Kind field shadows the embedded alias's Kind for the "Kind"
-	// JSON key, so restore it onto the node; Kind is still a live field.
-	n.Kind = aux.Kind
+	// The sibling Kind field captures the legacy "Kind" JSON key from a pre-roles
+	// row so the gateway bit can be recovered; the row's own struct no longer
+	// carries Kind.
 	if !n.GatewayRole && aux.Kind == NodeKindGateway {
 		n.GatewayRole = true
 	}

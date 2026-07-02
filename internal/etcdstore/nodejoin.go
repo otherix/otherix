@@ -63,7 +63,7 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		}
 	}
 
-	node, err := s.upsertJoinNode(ctx, p, redeemNodeKind(token))
+	node, err := s.upsertJoinNode(ctx, p, redeemNodeGateway(token))
 	if err != nil {
 		return store.RedeemJoinTokenResult{}, err
 	}
@@ -190,33 +190,20 @@ func (s *Store) validateRedeemTokenKind(token store.JoinToken, wantKinds ...stri
 	return store.ErrJoinTokenInvalid
 }
 
-// redeemNodeKind maps a redeemed join token to the node-row kind it materializes:
-// a gateway token self-registers a gateway-kind node (excluded from VM placement),
-// everything else (node token, or an empty Kind on an older row) a hypervisor node.
-func redeemNodeKind(token store.JoinToken) string {
-	if token.Kind == store.JoinTokenKindGateway {
-		return store.NodeKindGateway
-	}
-	return store.NodeKindNode
-}
-
-// existingKind normalizes a stored node kind for comparison: an empty Kind on an
-// older row reads as the hypervisor node kind, matching redeemNodeKind's mapping
-// of an empty token kind. Keeps the kind-mismatch guard from rejecting a legacy
-// node row re-bootstrapping with a node token.
-func existingKind(kind string) string {
-	if kind == "" {
-		return store.NodeKindNode
-	}
-	return kind
+// redeemNodeGateway reports whether a redeemed join token materializes an
+// ingress-gateway node: a gateway token assigns the gateway role, every other
+// token a hypervisor node.
+func redeemNodeGateway(token store.JoinToken) bool {
+	return token.Kind == store.JoinTokenKindGateway
 }
 
 // upsertJoinNode resolves the node row for a redemption: an existing node is
 // reused unless it still holds an active cert (store.ErrJoinNodeNameTaken) or its
-// kind differs from the kind this token enrolls (store.ErrJoinNodeKindMismatch),
-// otherwise a fresh pending node is created with the given kind (node or gateway).
-// A concurrent create that loses the name guard re-fetches the winner.
-func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams, nodeKind string) (store.Node, error) {
+// gateway role differs from the role this token enrolls
+// (store.ErrJoinNodeKindMismatch), otherwise a fresh pending node is created with
+// the requested role. A concurrent create that loses the name guard re-fetches
+// the winner.
+func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams, gatewayWanted bool) (store.Node, error) {
 	existing, err := s.NodeByName(ctx, p.NodeName)
 	if err == nil {
 		hasActive, err := s.NodeHasActiveCert(ctx, existing.ID)
@@ -226,12 +213,12 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 		if hasActive {
 			return store.Node{}, store.ErrJoinNodeNameTaken
 		}
-		// A node's kind is fixed by the token that first claims the name. The
-		// caller selects the CSR signing template from the reused row's kind, so a
-		// token of a different kind reusing this row would mis-issue an identity
+		// A node's role is fixed by the token that first claims the name. The
+		// caller selects the CSR signing template from the reused row's role, so a
+		// token of a different role reusing this row would mis-issue an identity
 		// (e.g. a gateway token yielding a node-<name> leaf). Reject rather than
 		// silently re-stamping the row.
-		if existingKind(existing.Kind) != nodeKind {
+		if existing.HasRole(store.NodeRoleGateway) != gatewayWanted {
 			return store.Node{}, store.ErrJoinNodeKindMismatch
 		}
 		return existing, nil
@@ -243,7 +230,7 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 	node, err := s.CreateNode(ctx, store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    p.NodeName,
-		Kind:                    nodeKind,
+		Gateway:                 gatewayWanted,
 		Architecture:            p.Architecture,
 		AdvertisedEndpoint:      p.AdvertisedEndpoint,
 		MigrationHost:           p.MigrationHost,
@@ -255,12 +242,12 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 		if errors.Is(err, store.ErrNodeNameExists) {
 			// Lost a concurrent create for this name. Reuse the winner's row, but
 			// hold the same invariant as the reuse branch above: a winner of a
-			// different kind must not yield a mis-issued identity.
+			// different role must not yield a mis-issued identity.
 			winner, ferr := s.NodeByName(ctx, p.NodeName)
 			if ferr != nil {
 				return store.Node{}, ferr
 			}
-			if existingKind(winner.Kind) != nodeKind {
+			if winner.HasRole(store.NodeRoleGateway) != gatewayWanted {
 				return store.Node{}, store.ErrJoinNodeKindMismatch
 			}
 			return winner, nil

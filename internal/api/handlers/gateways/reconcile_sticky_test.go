@@ -16,7 +16,7 @@ import (
 // the terminal-or-stale 'gone' status can no longer carry traffic, so it cannot
 // hold a live session.
 func goneGatewayNode(id uuid.UUID) store.Node {
-	return store.Node{ID: id, Kind: store.NodeKindGateway, Status: store.NodeStatusGone}
+	return store.Node{ID: id, GatewayRole: true, Status: store.NodeStatusGone}
 }
 
 // sessionStatus builds a per-(node, network) status row reporting count live

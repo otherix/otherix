@@ -60,7 +60,7 @@ func TestNodeViewSurfacesRoles(t *testing.T) {
 	gw, err := h.store.CreateNode(ctx, store.CreateNodeParams{
 		ID:                      uuid.New(),
 		Name:                    gwName,
-		Kind:                    store.NodeKindGateway,
+		Gateway:                 true,
 		Architecture:            store.CPUArch("amd64"),
 		AdvertisedEndpoint:      "https://" + gwName + ".example.test:8443",
 		MigrationHost:           "10.0.0.2",

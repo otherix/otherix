@@ -63,8 +63,8 @@ func TestSelectReturnsConvergedGateway(t *testing.T) {
 			{NetworkID: netID, NodeID: pending, ReconciliationStatus: "pending"},
 		}},
 		nodes: []store.Node{
-			{ID: ready, Kind: store.NodeKindGateway, Status: store.NodeStatusReady},
-			{ID: pending, Kind: store.NodeKindGateway, Status: store.NodeStatusReady},
+			{ID: ready, GatewayRole: true, Status: store.NodeStatusReady},
+			{ID: pending, GatewayRole: true, Status: store.NodeStatusReady},
 		},
 	}
 
@@ -93,8 +93,8 @@ func TestSelectNoneReadyIsUnavailable(t *testing.T) {
 			{NetworkID: netID, NodeID: g2, ReconciliationStatus: "failed"},
 		}},
 		nodes: []store.Node{
-			{ID: g1, Kind: store.NodeKindGateway, Status: store.NodeStatusReady},
-			{ID: g2, Kind: store.NodeKindGateway, Status: store.NodeStatusReady},
+			{ID: g1, GatewayRole: true, Status: store.NodeStatusReady},
+			{ID: g2, GatewayRole: true, Status: store.NodeStatusReady},
 		},
 	}
 
@@ -129,7 +129,7 @@ func TestSelectSkipsGoneGateway(t *testing.T) {
 		statusByNetwork: map[uuid.UUID][]store.NetworkNodeStatus{netID: {
 			{NetworkID: netID, NodeID: gone, ReconciliationStatus: "ready"},
 		}},
-		nodes: []store.Node{{ID: gone, Kind: store.NodeKindGateway, Status: store.NodeStatusGone}},
+		nodes: []store.Node{{ID: gone, GatewayRole: true, Status: store.NodeStatusGone}},
 	}
 
 	_, err := SelectGatewayForVM(context.Background(), f, vmID)

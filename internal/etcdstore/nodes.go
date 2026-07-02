@@ -137,15 +137,10 @@ func (s *Store) NodeEffectiveByID(ctx context.Context, id uuid.UUID) (store.Node
 // guard + primary atomically. A name collision returns store.ErrNodeNameExists.
 func (s *Store) CreateNode(ctx context.Context, arg store.CreateNodeParams) (store.Node, error) {
 	now := time.Now().UTC()
-	kind := arg.Kind
-	if kind == "" {
-		kind = store.NodeKindNode
-	}
 	n := store.Node{
 		ID:                      arg.ID,
 		Name:                    arg.Name,
-		Kind:                    kind,
-		GatewayRole:             kind == store.NodeKindGateway,
+		GatewayRole:             arg.Gateway,
 		Architecture:            arg.Architecture,
 		AdvertisedEndpoint:      arg.AdvertisedEndpoint,
 		MigrationHost:           arg.MigrationHost,

@@ -585,9 +585,6 @@ type Network struct {
 type Node struct {
 	ID   uuid.UUID
 	Name string
-	// Kind discriminates a hypervisor node from an ingress gateway. Gateways are
-	// excluded from VM placement. Empty on older rows, read as NodeKindNode.
-	Kind string
 	// GatewayRole is the stored, operator-assigned ingress-gateway role bit. A
 	// node with it set serves ingress and is excluded from VM placement; the
 	// hypervisor role is derived as its inverse (see Roles). Written only at

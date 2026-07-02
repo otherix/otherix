@@ -38,7 +38,7 @@ func (f *declaredNetworksFake) ListVMNicsByNetwork(_ context.Context, networkID 
 // NodeByID reports the heartbeating node as a plain hypervisor so the
 // gateway-addr lookup short-circuits (a normal node owns no tenant gateway addr).
 func (f *declaredNetworksFake) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
-	return store.Node{ID: id, Kind: store.NodeKindNode}, nil
+	return store.Node{ID: id}, nil
 }
 
 func mustMAC(t *testing.T, s string) net.HardwareAddr {

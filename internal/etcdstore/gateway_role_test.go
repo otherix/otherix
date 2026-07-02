@@ -19,7 +19,7 @@ func TestCreateNodePersistsGatewayRole(t *testing.T) {
 
 	gwName := uniqueNodeName("gw")
 	gwp := nodeParams(gwName)
-	gwp.Kind = store.NodeKindGateway
+	gwp.Gateway = true
 	if _, err := s.CreateNode(ctx, gwp); err != nil {
 		t.Fatalf("CreateNode(gateway): %v", err)
 	}

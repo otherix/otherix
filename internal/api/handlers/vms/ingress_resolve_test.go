@@ -99,7 +99,7 @@ func seedResolveIngressOverlay(t *testing.T, withGateway bool) (*Handler, store.
 		gw := store.Node{
 			ID:                 uuid.New(),
 			Name:               "gw0",
-			Kind:               store.NodeKindGateway,
+			GatewayRole:        true,
 			Status:             store.NodeStatusReady,
 			AdvertisedEndpoint: "https://gw0.example.com:9443",
 		}

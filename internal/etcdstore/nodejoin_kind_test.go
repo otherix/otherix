@@ -18,15 +18,15 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// preCreateNode materializes a pending, cert-less node row of the given kind on
-// the shared name, the normal pre-join state an admin leaves behind after
-// POST /v1/nodes. It returns the row id.
-func preCreateNode(t *testing.T, s *etcdstore.Store, name, kind string) uuid.UUID {
+// preCreateNode materializes a pending, cert-less node row on the shared name,
+// the normal pre-join state an admin leaves behind after POST /v1/nodes. The
+// gateway flag stamps the ingress-gateway role. It returns the row id.
+func preCreateNode(t *testing.T, s *etcdstore.Store, name string, gateway bool) uuid.UUID {
 	t.Helper()
 	np := nodeParams(name)
-	np.Kind = kind
+	np.Gateway = gateway
 	if _, err := s.CreateNode(context.Background(), np); err != nil {
-		t.Fatalf("CreateNode(%s, %s): %v", name, kind, err)
+		t.Fatalf("CreateNode(%s, gateway=%v): %v", name, gateway, err)
 	}
 	return np.ID
 }
@@ -41,7 +41,7 @@ func TestRedeemRejectsGatewayTokenAgainstNodeRow(t *testing.T) {
 	ctx := context.Background()
 
 	name := uniqueNodeName("preexist-node")
-	preCreateNode(t, s, name, store.NodeKindNode)
+	preCreateNode(t, s, name, false)
 
 	hash := []byte("kind-mismatch-gw-" + uuid.NewString())
 	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
@@ -69,8 +69,8 @@ func TestRedeemRejectsGatewayTokenAgainstNodeRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeByName(%s): %v", name, err)
 	}
-	if node.Kind != store.NodeKindNode {
-		t.Errorf("node Kind = %q, want %q (kind must not flip)", node.Kind, store.NodeKindNode)
+	if !node.HasRole(store.NodeRoleHypervisor) {
+		t.Errorf("node roles = %v, want [hypervisor] (role must not flip)", node.Roles())
 	}
 	has, err := s.NodeHasActiveCert(ctx, node.ID)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestRedeemRejectsNodeTokenAgainstGatewayRow(t *testing.T) {
 	ctx := context.Background()
 
 	name := uniqueNodeName("preexist-gw")
-	preCreateNode(t, s, name, store.NodeKindGateway)
+	preCreateNode(t, s, name, true)
 
 	hash := []byte("kind-mismatch-node-" + uuid.NewString())
 	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
@@ -117,8 +117,8 @@ func TestRedeemRejectsNodeTokenAgainstGatewayRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeByName(%s): %v", name, err)
 	}
-	if node.Kind != store.NodeKindGateway {
-		t.Errorf("node Kind = %q, want %q (kind must not flip)", node.Kind, store.NodeKindGateway)
+	if !node.HasRole(store.NodeRoleGateway) {
+		t.Errorf("node roles = %v, want [gateway] (role must not flip)", node.Roles())
 	}
 }
 
@@ -130,7 +130,7 @@ func TestRedeemReusesSameKindNodeRow(t *testing.T) {
 	ctx := context.Background()
 
 	name := uniqueNodeName("rebootstrap-node")
-	wantID := preCreateNode(t, s, name, store.NodeKindNode)
+	wantID := preCreateNode(t, s, name, false)
 
 	hash := []byte("same-kind-node-" + uuid.NewString())
 	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
@@ -153,8 +153,8 @@ func TestRedeemReusesSameKindNodeRow(t *testing.T) {
 	if res.NodeID != wantID {
 		t.Errorf("reused node id = %v, want %v", res.NodeID, wantID)
 	}
-	if signed.Kind != store.NodeKindNode {
-		t.Errorf("signed node Kind = %q, want %q", signed.Kind, store.NodeKindNode)
+	if !signed.HasRole(store.NodeRoleHypervisor) {
+		t.Errorf("signed node roles = %v, want [hypervisor]", signed.Roles())
 	}
 }
 
@@ -166,7 +166,7 @@ func TestRedeemReusesSameKindGatewayRow(t *testing.T) {
 	ctx := context.Background()
 
 	name := uniqueNodeName("rebootstrap-gw")
-	wantID := preCreateNode(t, s, name, store.NodeKindGateway)
+	wantID := preCreateNode(t, s, name, true)
 
 	hash := []byte("same-kind-gw-" + uuid.NewString())
 	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{
@@ -189,7 +189,7 @@ func TestRedeemReusesSameKindGatewayRow(t *testing.T) {
 	if res.NodeID != wantID {
 		t.Errorf("reused node id = %v, want %v", res.NodeID, wantID)
 	}
-	if signed.Kind != store.NodeKindGateway {
-		t.Errorf("signed node Kind = %q, want %q", signed.Kind, store.NodeKindGateway)
+	if !signed.HasRole(store.NodeRoleGateway) {
+		t.Errorf("signed node roles = %v, want [gateway]", signed.Roles())
 	}
 }
