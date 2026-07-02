@@ -204,6 +204,194 @@ otherix vm migrate web-1 --offline       # stop, move cold, start on target
 
 ---
 
+## otherix ssh
+
+SSH into a VM by name through the control plane, with no public IP on the VM. See
+[SSH access to VMs](../guides/ssh-access.md).
+
+### ssh
+
+Open an interactive SSH session. Mints a short-lived guest certificate and tunnels
+through the broker (gateway for overlay VMs, CP relay for bridge VMs). The VM must
+have been created with `--ssh-ingress`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--login` | `root` | Guest login user. |
+
+```bash
+otherix ssh web-1
+otherix ssh web-1 --login deploy
+```
+
+`otherix ssh proxy <vm> <port>` is the internal `ProxyCommand` primitive and is
+not run by hand.
+
+---
+
+## otherix forward
+
+Forward a local TCP port to a VM's port through the control plane (arbitrary L4:
+databases, web UIs, metrics, a raw SSH port). See
+[Port forwarding](../guides/port-forwarding.md).
+
+### forward
+
+Open a local listener and splice each connection to `<vm-name>:<port>`. Each
+connection is brokered independently.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-L, --listen` | `127.0.0.1:0` | Local `host:port` to listen on (`0` = ephemeral port). |
+
+```bash
+otherix forward db-1 5432 -L 127.0.0.1:5432   # then: psql -h 127.0.0.1 -p 5432
+otherix forward web-1 8080 -L 127.0.0.1:8080  # then: open http://127.0.0.1:8080
+```
+
+---
+
+## otherix lb
+
+Load balancers front a label-selected pool of VMs with active health checks.
+Addressed **by name**. See [Load balancers](../guides/load-balancers.md).
+
+### lb create
+
+Create a load balancer. Backends are the VMs whose labels match `--selector`
+(labels are set at `otherix vm create --label`).
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--port` | (required) | Guest TCP port traffic is sent to (1..65535). |
+| `--selector` | (required) | Label match, `k=v[,k=v...]` (>=1 term). |
+| `--health-port` | follow `--port` | TCP port the health probe dials. |
+| `--health-interval` | `10` | Seconds between probes (1..300). |
+| `--health-timeout` | `2` | Per-probe connect timeout, seconds (1..60). |
+| `--health-healthy-threshold` | `2` | Consecutive successes to mark a backend healthy (1..10). |
+| `--health-unhealthy-threshold` | `3` | Consecutive failures to mark a backend unhealthy (1..10). |
+| `-o, --output` | `text` | `text` or `json`. |
+
+```bash
+otherix lb create web-lb --port 80 --selector app=web \
+  --health-port 8080 --health-interval 5
+```
+
+### lb list
+
+List load balancers. Columns: `NAME PORT SELECTOR STATUS TARGETS`. `STATUS` is
+`healthy` / `degraded` / `unhealthy` / `no_backends`; `TARGETS` is
+`<healthy>/<total>` backends.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--limit` | `20` | Page size (1..200). |
+| `--cursor` | | Opaque cursor from a previous page. |
+| `-o, --output` | `table` | `table`, `json`, or `yaml`. |
+| `--show-ids` | `false` | Include UUIDs. |
+
+```bash
+otherix lb list
+```
+
+### lb get
+
+Show one load balancer, including per-backend health (`healthy` true/false, or
+`unknown` for a warming backend). `-o yaml` emits an apply-ready manifest.
+
+```bash
+otherix lb get web-lb
+otherix lb get web-lb -o yaml
+```
+
+### lb update
+
+Update mutable fields. `--selector` replaces the whole selector.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--port` | | New traffic port. |
+| `--selector` | | New selector (replaces the previous one). |
+| `--health-*` | | Any of the health-check flags above. |
+
+```bash
+otherix lb update web-lb --selector app=web,tier=frontend
+```
+
+### lb delete
+
+Delete a load balancer.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--force` | `false` | Skip the confirmation prompt. |
+
+```bash
+otherix lb delete web-lb --force
+```
+
+### lb connect
+
+Open a local listener that balances each connection over the healthy backend
+pool. A long-lived listener load-balances because every connection re-brokers.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-L, --listen` | `127.0.0.1:0` | Local `host:port` to listen on. |
+
+```bash
+otherix lb connect web-lb -L 127.0.0.1:8080
+```
+
+---
+
+## otherix ingress-grant
+
+Scoped, optionally time-boxed access to a named set of `(VM, port)` targets for a
+party with no Otherix account. Requires the `vm:ingress-grant` permission. See
+[Grant external access](../guides/external-access.md).
+
+### ingress-grant create
+
+Create a grant and print its one-time bundle.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--vm` | (required) | `host:port[,port...]`, repeatable (one VM per flag). Port 22 = SSH. |
+| `--login` | `root` | Guest login applied to every VM. |
+| `--source-ip` | | Pin the caller's source IP or CIDR (fail-closed). |
+| `--ttl` | (never) | Lifetime, e.g. `168h`, `720h`. Omit = never expires. |
+| `--user` | | Free-text recipient label. |
+| `-o, --output` | `text` | `text`, `json`, or `yaml`. |
+
+```bash
+otherix ingress-grant create acme --vm web-1:22 --vm db-1:5432,8080 \
+  --login deploy --ttl 168h --source-ip 203.0.113.10/32
+```
+
+### ingress-grant add-vm / remove-vm
+
+Add or remove a VM on an existing grant.
+
+```bash
+otherix ingress-grant add-vm acme cache-1:6379 --login deploy
+otherix ingress-grant remove-vm acme cache-1
+```
+
+### ingress-grant list / get / revoke / delete
+
+Manage grants. `revoke` disables a grant immediately (the kill switch); `delete`
+removes it.
+
+```bash
+otherix ingress-grant list
+otherix ingress-grant get acme
+otherix ingress-grant revoke acme
+otherix ingress-grant delete acme
+```
+
+---
+
 ## otherix migration
 
 Inspect VM migrations (CP `/v1/migrations` surface). Migrations are **created by

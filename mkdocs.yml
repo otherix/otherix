@@ -72,6 +72,7 @@ nav:
       - Architecture: architecture.md
       - Desired vs observed state: concepts/desired-vs-observed.md
       - Networking: concepts/networking.md
+      - Ingress and load balancing: concepts/ingress.md
       - Storage pools: concepts/storage-pools.md
       - Images: concepts/images.md
       - Snapshots and the artifact store: concepts/snapshots.md
@@ -84,6 +85,9 @@ nav:
       - Networks: guides/networks.md
       - Live migration: guides/live-migration.md
       - SSH access to VMs: guides/ssh-access.md
+      - Port forwarding: guides/port-forwarding.md
+      - Load balancers: guides/load-balancers.md
+      - Grant external access: guides/external-access.md
       - Users and RBAC: guides/users-and-rbac.md
       - Onboard a developer: guides/onboarding-a-developer.md
       - Securing the API: guides/securing-the-api.md
