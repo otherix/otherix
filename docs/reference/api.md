@@ -1,8 +1,8 @@
 # REST API reference
 
 The control plane exposes a versioned REST API under `/v1`. This page covers the
-cross-cutting conventions; the full interactive specification is embedded at the
-bottom and is generated from
+cross-cutting conventions; the full interactive specification lives in the
+[REST API browser](../api/index.md) and is generated from
 [`api/openapi/control-plane.yaml`](https://github.com/otherix/otherix/blob/main/api/openapi/control-plane.yaml),
 the source of truth.
 
@@ -117,12 +117,17 @@ resume, reset, and console-token issuance are synchronous `200`s. See
 
 ## Browse the full API
 
-The complete specification is embedded below. You can also browse it locally with
-Swagger UI and Redoc:
+The complete specification is published as an interactive browser:
+
+- **[REST API browser](../api/index.md)** - the full spec rendered with Swagger UI,
+  live on this site.
+
+To try it locally against your own running control plane, use the bundled preview:
 
 ```bash
 make api-preview      # Swagger UI on :8081, Redoc on :8082
 make api-preview-stop
 ```
 
-<swagger-ui src="https://raw.githubusercontent.com/otherix/otherix/main/api/openapi/control-plane.yaml"/>
+You can also point any OpenAPI viewer at your control plane's copy of
+`api/openapi/control-plane.yaml` (the source of truth).

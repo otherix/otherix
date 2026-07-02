@@ -8,6 +8,10 @@ on:
       - "mkdocs.yml"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yaml"
+      # A change to the OpenAPI spec (published same-origin by the REST API
+      # browser) or the build hook must trigger a docs redeploy.
+      - "api/openapi/control-plane.yaml"
+      - "hooks/**"
       # The docs build publishes these scripts to the site (install.sh,
       # quickstart.sh), so a change to them must trigger a redeploy.
       - "deploy/install/**"
@@ -17,6 +21,10 @@ on:
       - "mkdocs.yml"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yaml"
+      # A change to the OpenAPI spec (published same-origin by the REST API
+      # browser) or the build hook must trigger a docs redeploy.
+      - "api/openapi/control-plane.yaml"
+      - "hooks/**"
       # The docs build publishes these scripts to the site (install.sh,
       # quickstart.sh), so a change to them must trigger a redeploy.
       - "deploy/install/**"

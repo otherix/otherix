@@ -38,8 +38,13 @@ extra_css:
 
 plugins:
   - search
-  # Renders the embedded OpenAPI spec on the REST API reference page.
+  # Renders the embedded OpenAPI spec on the REST API browser page.
   - swagger-ui-tag
+
+hooks:
+  # Publishes api/openapi/control-plane.yaml as a same-origin docs asset so the
+  # REST API browser at /api/ loads it without a cross-origin fetch.
+  - hooks/openapi_spec.py
 
 markdown_extensions:
   - abbr
@@ -96,7 +101,8 @@ nav:
       - Troubleshooting: operations/troubleshooting.md
   - Reference:
       - CLI: reference/cli.md
-      - REST API: reference/api.md
+      - REST API: api/index.md
+      - API conventions: reference/api.md
       - Configuration: reference/configuration.md
       - RBAC matrix: rbac.md
       - Scheduler configuration: scheduler-configuration.md
