@@ -5611,6 +5611,17 @@ components:
             error does not wipe observed state. Absent or false means the
             image_blobs array is authoritative (an empty array clears the
             inventory).
+        health_checks:
+          type: array
+          description: |
+            Agent-reported active L4 probe verdicts for the load balancer
+            backends declared on this node (the observed-health up-channel
+            paired with HeartbeatResponse.declared_health_checks). One entry
+            per (lb_id, vm_id) the agent probes; the CP folds each verdict
+            into the backend's observed health for balancing decisions.
+            Optional; absent when the node runs no declared health checks.
+          items:
+            $ref: "#/components/schemas/HeartbeatHealthCheckReport"
 
     HeartbeatWireGuardReport:
       type: object
@@ -5946,6 +5957,16 @@ components:
             programmable FDB set it does receive. Omitted when empty.
           items:
             $ref: "#/components/schemas/OverlayReachability"
+        declared_health_checks:
+          type: array
+          description: |
+            CP-declared active L4 health probes the agent must run against
+            load balancer backends placed on this node (the desired-probe
+            down-channel paired with HeartbeatRequest.health_checks). Full
+            snapshot semantics: probes absent from this list are dropped by
+            the agent's health prober. Omitted when empty.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredHealthCheck"
 
     HeartbeatDeclaredWireGuardPeer:
       type: object
@@ -6105,6 +6126,89 @@ components:
             Pool-type-specific configuration, opaque to the agent in
             the current iteration. Reserved for future backends
             (nfs, iscsi, …).
+
+    HeartbeatHealthCheckReport:
+      type: object
+      description: |
+        One entry in HeartbeatRequest.health_checks — the agent's active
+        L4 probe verdict for a load balancer backend (the observed-health
+        up-channel). `healthy` is the agent's current verdict for probing
+        `vm_id` as a backend of `lb_id`; the CP folds it into the backend's
+        observed health.
+      required: [lb_id, vm_id, healthy]
+      properties:
+        lb_id:
+          type: string
+          format: uuid
+          description: The load balancer the probed VM is a backend of.
+        vm_id:
+          type: string
+          format: uuid
+          description: The backend VM being probed.
+        healthy:
+          type: boolean
+          description: |
+            The agent's current verdict for this backend after applying the
+            healthy / unhealthy consecutive-probe thresholds.
+
+    HeartbeatDeclaredHealthCheck:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_health_checks — a single
+        active L4 probe the CP wants the agent to run against a load
+        balancer backend (the desired-probe down-channel). The agent
+        reports the resulting verdict back via
+        HeartbeatRequest.health_checks.
+      required:
+        [
+          vm_id,
+          vm_name,
+          lb_id,
+          port,
+          interval_seconds,
+          timeout_seconds,
+          healthy_threshold,
+          unhealthy_threshold,
+        ]
+      properties:
+        vm_id:
+          type: string
+          format: uuid
+          description: The backend VM to probe.
+        vm_name:
+          type: string
+          minLength: 1
+          maxLength: 253
+          description: The backend VM's name (agent-side identity is name-keyed).
+        lb_id:
+          type: string
+          format: uuid
+          description: The load balancer this backend belongs to.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The backend TCP port to probe.
+        interval_seconds:
+          type: integer
+          minimum: 1
+          description: Seconds between consecutive probes.
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          description: Per-probe timeout in seconds.
+        healthy_threshold:
+          type: integer
+          minimum: 1
+          description: |
+            Consecutive successful probes required to flip the reported
+            verdict to healthy.
+        unhealthy_threshold:
+          type: integer
+          minimum: 1
+          description: |
+            Consecutive failed probes required to flip the reported verdict
+            to unhealthy.
 
     HeartbeatDeclaredNetwork:
       type: object

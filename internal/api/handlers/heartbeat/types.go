@@ -35,6 +35,20 @@ type requestBody struct {
 	// when the agent could not enumerate its image cache this tick. The CP then
 	// preserves the prior image_blobs inventory rather than clearing it.
 	ImageBlobsUnavailable bool `json:"image_blobs_unavailable,omitempty"`
+	// HealthChecks carries the agent's active L4 probe verdicts for the load
+	// balancer backends declared on this node (the observed-health up-channel).
+	// The CP folds each verdict into the backend's observed health.
+	HealthChecks []healthCheckReport `json:"health_checks,omitempty"`
+}
+
+// healthCheckReport mirrors HealthCheckReport on the agent side (the manual-sync
+// contract) — one active L4 probe verdict the agent reports up-channel for a
+// load balancer backend. Healthy is the agent's current verdict for probing
+// VMID as a backend of LBID.
+type healthCheckReport struct {
+	LBID    uuid.UUID `json:"lb_id"`
+	VMID    uuid.UUID `json:"vm_id"`
+	Healthy bool      `json:"healthy"`
 }
 
 // blobReport mirrors HeartbeatBlob (the agent up-channel node-level blob entry).
@@ -212,6 +226,28 @@ type responseBody struct {
 	// never gates readiness — the agent converges on the (smaller) programmable
 	// FDB set regardless.
 	OverlayReachability []overlayReachability `json:"overlay_reachability,omitempty"`
+	// DeclaredHealthChecks is the CP-declared set of active L4 health probes the
+	// agent must run against load balancer backends placed on this node (the
+	// desired-probe down-channel; the agent reports each verdict back up via
+	// requestBody.HealthChecks). Full-snapshot semantics.
+	DeclaredHealthChecks []declaredHealthCheck `json:"declared_health_checks"`
+}
+
+// declaredHealthCheck mirrors DeclaredHealthCheck on the agent side (the
+// manual-sync contract) — one active L4 probe the CP wants the agent to run
+// against a load balancer backend (the desired-probe down-channel). Port is the
+// backend TCP port; the *Seconds fields pace each probe;
+// HealthyThreshold/UnhealthyThreshold are the consecutive-probe counts that flip
+// the reported verdict.
+type declaredHealthCheck struct {
+	VMID               uuid.UUID `json:"vm_id"`
+	VMName             string    `json:"vm_name"`
+	LBID               uuid.UUID `json:"lb_id"`
+	Port               int32     `json:"port"`
+	IntervalSeconds    int32     `json:"interval_seconds"`
+	TimeoutSeconds     int32     `json:"timeout_seconds"`
+	HealthyThreshold   int32     `json:"healthy_threshold"`
+	UnhealthyThreshold int32     `json:"unhealthy_threshold"`
 }
 
 // overlayReachability mirrors OverlayReachability on the agent side — the per-VNI
