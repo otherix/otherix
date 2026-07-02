@@ -52,6 +52,13 @@ migration:
 qemu:
   aarch64_firmware_path: "/usr/share/AAVMF/AAVMF_CODE.fd"
 {{if .Gateway}}
+wireguard:
+  # A gateway is its own node identity with its own WireGuard keypair. It uses a
+  # gateway-distinct key path so a gateway provisioned on a host that also ran (or
+  # runs) a hypervisor agent never adopts that agent's key, which the control plane
+  # would reject as a duplicate public key.
+  private_key_path: "/var/lib/otherix/wg-gateway/private.key"
+
 gateway:
   enabled: true
   listen: "{{.GatewayListen}}"                       # bootstrap --ingress-listen

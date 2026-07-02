@@ -614,6 +614,16 @@ GW_CP_URL="${GW_CP_URL:-$(run_on "$GW_HANDLE" awk '/^[ \t]*url:/{gsub(/"/,"",$2)
 GW_NODE_IP="$(run_on "$GW_HANDLE" sh -c "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1")"
 [ -n "$GW_NODE_IP" ] || fail "could not resolve the gateway node IP"
 
+# The control advertised endpoint is what the control plane dials for the
+# post-cutover heartbeat nudge (and health). In the Lima dev stack the CP runs on
+# the host and reaches each node only through its per-VM host port-forward
+# (127.0.0.1:9442+index -> guest:9443), exactly as seed-dev advertises the VM-host
+# nodes; the node's inter-VM address is not routable from the host CP. So the
+# control endpoint uses the forwarded host port, while the ingress endpoint (dialed
+# by the in-node client) keeps the node IP. Distinct reachability, distinct
+# endpoints.
+GW_CONTROL_ADVERTISED="${GW_CONTROL_ADVERTISED:-https://127.0.0.1:$((9442 + GW_INDEX))}"
+
 # The gateway-only agent joins the same overlay substrate as any node, but its
 # regenerated agent.yaml carries no wireguard block, so the gateway runs with an
 # empty WG advertised endpoint. Ingress still works because the gateway is always
@@ -641,6 +651,11 @@ run_on "$GW_HANDLE" sudo install -m 0755 "$GW_BIN_NODE" /usr/local/bin/otherix-a
 # The gateway block is what makes `otherix-agent serve` boot the gateway-only
 # runtime instead of the VM-host runtime.
 run_on "$GW_HANDLE" sudo rm -f /etc/otherix/agent.yaml >/dev/null 2>&1 || true
+# Also drop any gateway WireGuard key left by an earlier run: the gateway is a
+# fresh node identity each run, so it must mint a fresh keypair. Reusing the prior
+# run's key would present a public key the control plane still has registered to
+# the earlier (now gone) gateway node and reject the heartbeat as a duplicate.
+run_on "$GW_HANDLE" sudo rm -f /var/lib/otherix/wg-gateway/private.key >/dev/null 2>&1 || true
 # --force re-issues the cert material: the repurposed node carries the VM-host
 # agent's cert, and --force makes the re-run idempotent over a prior identity.
 # --gateway bakes the gateway block; --ingress-* set the ingress splicer clients
@@ -652,7 +667,7 @@ run_on "$GW_HANDLE" sudo otherix-agent bootstrap --force --gateway \
   --ingress-listen "0.0.0.0:${GW_INGRESS_PORT}" \
   --token "$GW_TOKEN" --ca-fingerprint "$GW_FP" \
   --cp-url "$GW_CP_URL" --node-name "$GW_NAME" \
-  --advertised-endpoint "https://${GW_NODE_IP}:${GW_LISTEN_PORT}" \
+  --advertised-endpoint "${GW_CONTROL_ADVERTISED}" \
   --migration-host "${GW_NODE_IP}" \
   --heartbeat-interval "${GW_HEARTBEAT_INTERVAL:-5s}" \
   --listen "0.0.0.0:${GW_LISTEN_PORT}" \
