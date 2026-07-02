@@ -198,6 +198,29 @@ func TestGatewayOverlayTeardownRemovesVeth(t *testing.T) {
 	}
 }
 
+// TestGatewayFailedCreateThenReapRemovesVeth verifies the membership-reap path
+// (GatewayAddr -> nil while the overlay stays declared) reaps a veth whose create
+// errored on the prior pass. This uniquely exercises the ordering that records
+// HasVeth BEFORE the error return in applyOverlay: the reap keys on the prior
+// pass's recorded HasVeth, so a failed create that did not record it would leave
+// the pair unreaped when the membership later drops. Distinct from the CP-side
+// teardown path (empty declared set), which does not gate RemoveVeth on HasVeth.
+func TestGatewayFailedCreateThenReapRemovesVeth(t *testing.T) {
+	f := &netfabric.FakeFabric{
+		LinkStateResult: map[string]netfabric.LinkState{
+			"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
+		},
+		Errs: map[string]error{"EnsureVeth": errors.New("boom")},
+	}
+	rec := newGatewayRec(t, f)
+	rec.applyPass(t, gatewayOverlayNet()) // GatewayAddr set; EnsureVeth errors, a partial pair may exist
+	rec.applyPass(t, overlayNet())        // same overlay id, GatewayAddr nil, no live session -> reap
+
+	if len(f.RemoveVethCalls) != 1 || f.RemoveVethCalls[0] != "otvg1000" {
+		t.Errorf("RemoveVethCalls = %v, want [otvg1000] (reap must fire on the prior failed create)", f.RemoveVethCalls)
+	}
+}
+
 // TestGatewayVethTeardownAfterFailedCreate verifies a veth whose create errored
 // (a partial pair may exist on the host) is still reaped when the network is
 // deleted: teardown must NOT gate RemoveVeth on HasVeth, or a failed create leaks
