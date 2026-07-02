@@ -113,7 +113,7 @@ normal ingress commands - the token's scope limits them to the granted targets:
 export OTHERIX_API_TOKEN=<grant-token>
 
 otherix ssh web01                       # SSH to a granted VM
-otherix forward db01 5432 -L 127.0.0.1:5432   # forward a granted port
+otherix forward db01 5432               # forward a granted port (local 5432 -> db01:5432)
 ```
 
 See [SSH access](ssh-access.md) and [Port forwarding](port-forwarding.md) for

@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -33,10 +34,92 @@ import (
 	"github.com/otherix/otherix/cmd/internal/sshconn"
 )
 
-// defaultListen is the local bind address when --listen is omitted: a loopback
-// ephemeral port, so the forward is reachable only from the operator's host and
-// never collides with an in-use port.
+// defaultAddress is the bind host when --address is omitted: loopback, so the
+// forward is reachable only from the operator's own host.
+const defaultAddress = "127.0.0.1"
+
+// defaultListen is the local bind address the -L/--listen shortcut falls back to
+// when the operator does not set it explicitly. It is only consulted when the
+// flag was changed; the primary path composes the bind address from --address
+// and the port spec instead.
 const defaultListen = "127.0.0.1:0"
+
+// forwardTarget is the resolved local listener address and guest port a forward
+// serves.
+type forwardTarget struct {
+	listenAddr string
+	guestPort  int
+}
+
+// resolveForwardTarget maps the kubectl-style port spec and bind flags to the
+// concrete listener address and guest port. The bind host comes from --address
+// (default loopback); the [LOCAL:]REMOTE positional supplies the local and guest
+// ports (a bare REMOTE binds the same local port, kubectl-style; an empty LOCAL
+// requests an ephemeral port). The -L/--listen shortcut is kept as an
+// alternative that sets host:port in one value; it is mutually exclusive with
+// --address and with an explicit local port in the spec.
+func resolveForwardTarget(portSpec, address string, addressSet bool, listen string, listenSet bool) (forwardTarget, error) {
+	localPort, guestPort, localSet, err := parsePortSpec(portSpec)
+	if err != nil {
+		return forwardTarget{}, err
+	}
+	if listenSet {
+		if addressSet {
+			return forwardTarget{}, fmt.Errorf("use either --address or --listen to set the bind address, not both")
+		}
+		if localSet {
+			return forwardTarget{}, fmt.Errorf("set the local port with either --listen or the port spec, not both")
+		}
+		return forwardTarget{listenAddr: listen, guestPort: guestPort}, nil
+	}
+	return forwardTarget{
+		listenAddr: net.JoinHostPort(address, strconv.Itoa(localPort)),
+		guestPort:  guestPort,
+	}, nil
+}
+
+// parsePortSpec parses a kubectl-style [LOCAL:]REMOTE port spec. localSet reports
+// whether the spec carried an explicit local part (a leading "LOCAL:" or ":");
+// for a bare REMOTE the returned localPort equals guestPort. An empty local part
+// yields localPort 0 (ephemeral).
+func parsePortSpec(spec string) (localPort, guestPort int, localSet bool, err error) {
+	if spec == "" {
+		return 0, 0, false, fmt.Errorf("missing port spec: expected [LOCAL:]REMOTE")
+	}
+	local, remote, hasColon := strings.Cut(spec, ":")
+	if hasColon {
+		if strings.Contains(remote, ":") {
+			return 0, 0, false, fmt.Errorf("invalid port spec %q: expected [LOCAL:]REMOTE; set the bind address with --address, not in the port spec", spec)
+		}
+		guestPort, err = parsePort(remote, "remote port")
+		if err != nil {
+			return 0, 0, false, err
+		}
+		if local == "" {
+			return 0, guestPort, true, nil
+		}
+		localPort, err = parsePort(local, "local port")
+		if err != nil {
+			return 0, 0, false, err
+		}
+		return localPort, guestPort, true, nil
+	}
+	guestPort, err = parsePort(spec, "remote port")
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return guestPort, guestPort, false, nil
+}
+
+// parsePort parses a decimal port in 1..65535. label names the field for error
+// messages ("remote port" / "local port").
+func parsePort(s, label string) (int, error) {
+	p, err := strconv.Atoi(s)
+	if err != nil || p < 1 || p > 65535 {
+		return 0, fmt.Errorf("invalid %s %q: must be an integer in 1..65535", label, s)
+	}
+	return p, nil
+}
 
 // dialIngress is the broker+connect seam. Production wires it to the shared
 // connector; tests substitute a stub.
@@ -44,10 +127,10 @@ var dialIngress = sshconn.DialIngress
 
 // NewCommand returns the `otherix forward` command.
 func NewCommand() *cobra.Command {
-	var listen string
+	var listen, address string
 
 	cmd := &cobra.Command{
-		Use:   "forward <vm-name> <port>",
+		Use:   "forward <vm-name> [LOCAL_PORT:]REMOTE_PORT",
 		Short: "Forward a local port to a VM's guest port through the control plane.",
 		Long: `Forwards a local TCP port to a port inside the named VM.
 
@@ -59,20 +142,41 @@ through the control-plane relay. No inbound network path to the guest is
 required - the broker rides the same control plane endpoint and credential
 the rest of the CLI uses.
 
-The local listener defaults to a loopback ephemeral port; override the bind
-address with --listen.`,
+The port spec follows kubectl port-forward: "REMOTE_PORT" binds the same
+local port; "LOCAL_PORT:REMOTE_PORT" pins a specific local port (useful when
+the default is already in use); ":REMOTE_PORT" picks an ephemeral local port.
+The listener binds loopback by default; set --address to bind another host
+(e.g. 0.0.0.0). The -L/--listen host:port shortcut remains as an alternative
+to --address plus a local port.`,
+		Example: `  # local 5432 -> db01:5432
+  otherix forward db01 5432
+
+  # override a busy local port
+  otherix forward db01 15432:5432
+
+  # pick an ephemeral local port
+  otherix forward db01 :5432
+
+  # bind all interfaces
+  otherix forward db01 15432:5432 --address 0.0.0.0`,
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			port, err := strconv.Atoi(args[1])
-			if err != nil || port < 1 || port > 65535 {
-				return fmt.Errorf("invalid port %q: must be an integer in 1..65535", args[1])
+			tgt, err := resolveForwardTarget(
+				args[1],
+				address, cmd.Flags().Changed("address"),
+				listen, cmd.Flags().Changed("listen"),
+			)
+			if err != nil {
+				return err
 			}
-			return runForward(cmd, args[0], port, listen)
+			return runForward(cmd, args[0], tgt.guestPort, tgt.listenAddr)
 		},
 	}
+	cmd.Flags().StringVar(&address, "address", defaultAddress,
+		"bind address for the local listener (host only, e.g. 0.0.0.0)")
 	cmd.Flags().StringVarP(&listen, "listen", "L", defaultListen,
-		"local address to listen on (host:port)")
+		"local listen address host:port; alternative to --address plus a local port in the spec")
 	return cmd
 }
 

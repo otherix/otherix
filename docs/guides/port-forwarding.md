@@ -13,19 +13,30 @@ short-lived credential. For the underlying broker and transport model see the
 ## Basic usage
 
 ```bash
-otherix forward <vm-name> <port>
+otherix forward <vm-name> [LOCAL_PORT:]REMOTE_PORT
 ```
 
-By default this opens a listener on `127.0.0.1` with an ephemeral port (the
-CLI prints the chosen local address). Use `-L` / `--listen` to pin a specific
-local address and port:
+The port spec follows `kubectl port-forward`:
 
 ```bash
-otherix forward db01 5432 -L 127.0.0.1:5432   # local 127.0.0.1:5432 -> db01:5432
+otherix forward db01 5432          # local 127.0.0.1:5432 -> db01:5432
+otherix forward db01 15432:5432    # local 127.0.0.1:15432 -> db01:5432
+otherix forward db01 :5432         # ephemeral local port -> db01:5432
 ```
 
+A bare `REMOTE_PORT` binds the **same** port number locally. Pin a different
+local port with `LOCAL_PORT:REMOTE_PORT` when the default is already in use, or
+use `:REMOTE_PORT` to let the OS pick a free local port (the CLI prints the
+chosen local address).
+
+The listener binds `127.0.0.1` by default. Set `--address` to bind another host
+(for example `0.0.0.0` to expose it on the LAN). The `-L` / `--listen
+host:port` shortcut sets the bind host and local port in one value and remains
+as an alternative; it is mutually exclusive with `--address` and with a
+`LOCAL_PORT:` in the spec.
+
 Each accepted connection is brokered independently: the CLI mints a fresh
-short-lived credential per connection and splices it to the guest's `<port>`.
+short-lived credential per connection and splices it to the guest's remote port.
 The transport is chosen automatically by the VM's NIC type - an overlay VM goes
 **direct through the gateway** (the control plane stays out of the data path)
 while a bridge VM goes **through the control plane relay**. You do not choose;
@@ -36,22 +47,31 @@ it just works.
 ### Postgres
 
 ```bash
-otherix forward db01 5432 -L 127.0.0.1:5432
+otherix forward db01 5432
 # in another terminal:
 psql -h 127.0.0.1 -p 5432 -U app
+```
+
+If local `5432` is already taken (a Postgres running on your laptop), pin a
+different local port:
+
+```bash
+otherix forward db01 15432:5432
+# then:
+psql -h 127.0.0.1 -p 15432 -U app
 ```
 
 ### A web or admin UI
 
 ```bash
-otherix forward web01 8080 -L 127.0.0.1:8080
+otherix forward web01 8080
 # then open http://127.0.0.1:8080 in your browser
 ```
 
 ### Redis
 
 ```bash
-otherix forward cache01 6379 -L 127.0.0.1:6379
+otherix forward cache01 6379
 # then:
 redis-cli -p 6379
 ```
@@ -62,7 +82,7 @@ redis-cli -p 6379
 plain local port to hand to `ssh` or `scp`:
 
 ```bash
-otherix forward web01 22 -L 127.0.0.1:2222
+otherix forward web01 2222:22
 # then:
 ssh -p 2222 user@127.0.0.1
 scp -P 2222 file 127.0.0.1:/tmp/
@@ -78,17 +98,17 @@ scp -P 2222 file 127.0.0.1:/tmp/
 ### Exposing on the LAN
 
 By default the listener binds to loopback and is reachable only from your own
-machine. Bind to `0.0.0.0` to expose it on every interface:
+machine. Set `--address 0.0.0.0` to expose it on every interface:
 
 ```bash
-otherix forward web01 8080 -L 0.0.0.0:8080
+otherix forward web01 8080 --address 0.0.0.0
 ```
 
 !!! warning "A non-loopback bind is reachable by others"
-    `-L 0.0.0.0:8080` makes the tunnel reachable by anyone who can reach your
+    `--address 0.0.0.0` makes the tunnel reachable by anyone who can reach your
     machine on that port - the forward carries your credentials, so they reach
-    the VM as you. Prefer a loopback bind (`127.0.0.1:...`) unless you have a
-    specific reason to share it.
+    the VM as you. Prefer the default loopback bind unless you have a specific
+    reason to share it.
 
 ## How `forward` relates to `ssh` and `lb`
 
@@ -97,7 +117,7 @@ they differ in what they carry and how they pick a target:
 
 | Command | Target | Carries | Use for |
 | --- | --- | --- | --- |
-| `otherix forward <vm> <port>` | one VM, one port | raw TCP bytes | any TCP service on a specific VM |
+| `otherix forward <vm> [LOCAL:]REMOTE` | one VM, one port | raw TCP bytes | any TCP service on a specific VM |
 | [`otherix ssh <vm>`](ssh-access.md) | one VM, port 22 | SSH with a short-lived cert + `ProxyCommand` | interactive login and file copy |
 | [`otherix lb connect <name>`](load-balancers.md) | a pool of VMs | raw TCP, balanced per connection | a service fronted by a load balancer |
 
