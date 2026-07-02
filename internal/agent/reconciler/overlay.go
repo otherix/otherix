@@ -64,8 +64,12 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	// and the otvb<vni> bridge orphans with no GC (r.applied is in-process only).
 	// Recording the VNI now is safe: teardownManaged's RemoveVXLAN is idempotent
 	// (nil on an absent VTEP), so it no-ops while the bridge is still removed.
+	// The prior HasVeth is carried forward onto this early record: if EnsureVXLAN
+	// below fails and returns, the entry must not drop to HasVeth=false, or a later
+	// membership drop (GatewayAddr -> nil) would short-circuit the reap and leak an
+	// existing veth from a prior pass.
 	prevHasVeth := r.applied[d.ID].HasVeth
-	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}
+	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal, HasVeth: prevHasVeth}
 	if err := r.fabric.EnsureVXLAN(netfabric.VXLANConfig{
 		VNI:    vniVal,
 		Local:  wantAddr,

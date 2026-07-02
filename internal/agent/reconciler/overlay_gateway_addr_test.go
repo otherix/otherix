@@ -215,6 +215,39 @@ func TestGatewayFailedCreateThenReapRemovesVeth(t *testing.T) {
 	}
 }
 
+// TestGatewayVethReapedAfterVXLANFailurePass verifies the reap survives an
+// intervening pass that fails at the VTEP step before the gateway-veth stage. A
+// gateway overlay first creates the veth (HasVeth recorded true). A later pass on
+// the same declared overlay then fails early at EnsureVXLAN - before the
+// gateway-veth stage runs - so applyOverlay records the applied entry and returns
+// without reaching the HasVeth write. The prior HasVeth must be carried forward on
+// that early record, or a subsequent membership drop (GatewayAddr -> nil) would
+// short-circuit the reap and leak the veth with a stale tenant IP/MAC.
+func TestGatewayVethReapedAfterVXLANFailurePass(t *testing.T) {
+	f := readyGatewayFabric()
+	rec := newGatewayRec(t, f)
+
+	// Pass A: gateway overlay declared, everything succeeds -> veth created.
+	rec.applyPass(t, gatewayOverlayNet())
+	if len(f.EnsureVethCalls) != 1 {
+		t.Fatalf("after pass A: EnsureVethCalls = %d, want 1", len(f.EnsureVethCalls))
+	}
+
+	// Pass B: same overlay still declared with GatewayAddr set, but the VTEP step
+	// fails, so applyOverlay returns before the gateway-veth stage. The recorded
+	// HasVeth must stay true.
+	f.Errs = map[string]error{"EnsureVXLAN": errors.New("boom")}
+	rec.applyPass(t, gatewayOverlayNet())
+
+	// Pass C: clear the VTEP failure and drop the membership (GatewayAddr nil) with
+	// no live session. The reap must fire and remove the veth.
+	delete(f.Errs, "EnsureVXLAN")
+	rec.applyPass(t, overlayNet())
+	if len(f.RemoveVethCalls) != 1 || f.RemoveVethCalls[0] != "otvg1000" {
+		t.Errorf("RemoveVethCalls = %v, want [otvg1000] (reap must survive the VTEP-failure pass)", f.RemoveVethCalls)
+	}
+}
+
 // TestGatewayVethTeardownAfterFailedCreate verifies a veth whose create errored
 // (a partial pair may exist on the host) is still reaped when the network is
 // deleted: teardown must NOT gate RemoveVeth on HasVeth, or a failed create leaks
