@@ -159,20 +159,23 @@ func NewGatewayNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration
 // an ordinary hypervisor-node reconciler.
 func (r *Networks) GatewayMode() bool { return r.gatewayMode }
 
-// OverlayNetworkForIP returns both the overlay bridge AND the network id whose
-// CP-declared subnet contains ip. The ingress gateway's connect path needs the
-// bridge to bind the dial and the network id to key its per-network live-session
-// counter the same way the heartbeat NetworkReport is keyed. It consults only the
-// latest declared state, the same authoritative source the reconciler applies
-// from; ok is false when no declared overlay subnet contains ip. Only overlay
-// networks (those carrying a VNI and a subnet) are considered.
-func (r *Networks) OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string, ok bool) {
+// OverlayNetworkForIP returns the veth host-end device AND the network id whose
+// CP-declared subnet contains ip, but only for an overlay this node holds a
+// gateway membership on (GatewayAddr set), because ingress sources its dials from
+// that overlay's veth host end. The connect path binds the dial and the neighbor
+// lookup to the returned device and keys its per-network live-session counter by
+// the network id. It consults only the latest declared state, the same
+// authoritative source the reconciler applies from; ok is false when no declared
+// gateway overlay's subnet contains ip, so a credential for an overlay this node
+// does not gateway fails closed. Only overlay networks (VNI + subnet) with a
+// gateway membership are considered.
+func (r *Networks) OverlayNetworkForIP(ip netip.Addr) (device, networkID string, ok bool) {
 	d := r.desired.Load()
 	if d == nil {
 		return "", "", false
 	}
 	for _, n := range d.networks {
-		if n.VNI == nil || n.Subnet == nil {
+		if n.VNI == nil || *n.VNI <= 0 || n.Subnet == nil || n.GatewayAddr == nil {
 			continue
 		}
 		subnet, err := netip.ParsePrefix(*n.Subnet)
@@ -180,7 +183,7 @@ func (r *Networks) OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string,
 			continue
 		}
 		if subnet.Contains(ip) {
-			return n.BridgeName, n.ID, true
+			return netfabric.GatewayVethHostName(uint32(*n.VNI)), n.ID, true //nolint:gosec // VNI guarded >0 and <= 24-bit
 		}
 	}
 	return "", "", false
