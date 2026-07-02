@@ -160,6 +160,24 @@ bridge, so return traffic finds the VM; egress is opt-in per network.)
 
 ---
 
+## Ingress and VM access
+
+VMs live on private overlay or bridge subnets with no public IP. A client reaches
+a VM **by name** by asking the control plane to broker access to a `(VM, port)`:
+the CP mints a short-lived, narrowly-scoped credential and hands back where to
+connect. Overlay VMs are reached through an **ingress gateway** (a `nodes` row with
+`kind=gateway` - a VM-less L4 forwarder that joins the overlay); the client dials
+the gateway's single advertised endpoint and the CP stays out of the data path,
+and the connection **survives a live migration** of the guest. Bridge VMs are
+reached through a CP **relay** (a WebSocket the CP splices to the owning agent over
+mTLS). On top of this, a logical **load balancer** fronts a label-selected pool of
+VMs with active L4 health checks, brokering each connection to one healthy backend.
+This is what powers `otherix ssh`, `otherix forward`, `otherix lb`, and scoped
+external `ingress-grant`s - all without a public IP per VM, an AS, or a bastion.
+See [Ingress and load balancing](concepts/ingress.md).
+
+---
+
 ## VM lifecycle on a node
 
 QEMU is driven directly (no libvirt), controlled over a QMP socket. The agent:

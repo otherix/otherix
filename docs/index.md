@@ -43,6 +43,13 @@ the workload:
 - **Live migration is peer-to-peer** between agents, with the control plane out of
   the data path. The guest, your open console and `logs -f` session, and the
   network all follow the VM across the move - see [Live migration](guides/live-migration.md).
+- **Reach VMs by name, no public IP.** SSH in (`otherix ssh`), forward a port
+  (`otherix forward`), or front a labelled pool with a health-checked load
+  balancer (`otherix lb`) - all brokered through the control plane with
+  short-lived credentials. No public IP per VM, no AS or BGP, no bastion to run,
+  and access follows the VM across live migration; scope a slice of it to an
+  outside party with an ingress-grant - see
+  [Ingress and load balancing](concepts/ingress.md).
 - **Storage pools, networks, and firmwares are explicit cluster resources**, not
   abstractions over a cloud provider.
 - **One stateful service.** Embedded etcd is the only datastore - no Postgres, no
