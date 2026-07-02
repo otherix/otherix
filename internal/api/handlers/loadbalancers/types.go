@@ -49,6 +49,18 @@ type healthCheckView struct {
 	UnhealthyThreshold int32 `json:"unhealthy_threshold"`
 }
 
+// backendView is one entry in a loadBalancerView's backends array: a VM the
+// selector currently matches, with its latest observed active-health verdict.
+// Healthy and ReportedAt are nil when no health record exists yet (a warming
+// backend), which renders as JSON null and is distinguishable from a confirmed
+// healthy: false.
+type backendView struct {
+	VMID       string  `json:"vm_id"`
+	VMName     string  `json:"vm_name"`
+	Healthy    *bool   `json:"healthy"`
+	ReportedAt *string `json:"reported_at"`
+}
+
 // loadBalancerView is the public projection of a store.LoadBalancer. The
 // internal soft-delete timestamp is intentionally absent.
 type loadBalancerView struct {
@@ -58,6 +70,7 @@ type loadBalancerView struct {
 	Port        int32             `json:"port"`
 	Selector    map[string]string `json:"selector"`
 	HealthCheck healthCheckView   `json:"health_check"`
+	Backends    []backendView     `json:"backends"`
 	CreatedAt   string            `json:"created_at"`
 	UpdatedAt   string            `json:"updated_at"`
 }
@@ -88,6 +101,10 @@ func toView(lb store.LoadBalancer) loadBalancerView {
 			HealthyThreshold:   hc.HealthyThreshold,
 			UnhealthyThreshold: hc.UnhealthyThreshold,
 		},
+		// Backends is enumerated only by the single-resource get (h.buildBackends
+		// overwrites this); the list projection leaves the empty array so the
+		// wire shape always carries a backends array, never null.
+		Backends:  []backendView{},
 		CreatedAt: lb.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt: lb.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}

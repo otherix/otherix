@@ -308,6 +308,59 @@ func TestGetLoadBalancerByName(t *testing.T) {
 	}
 }
 
+func TestGetLoadBalancerBackends(t *testing.T) {
+	st := newFakeStore()
+	u := devUser()
+	router := newRouter(st, u)
+
+	lb := st.seedLB(t, "web", u.ID, 8080, map[string]string{"app": "web"})
+	healthy := st.seedVM(u.ID, `{"app":"web"}`)
+	st.seedVM(u.ID, `{"app":"web"}`) // warming: no health record -> healthy null
+	reported := time.Now().UTC().Truncate(time.Second)
+	st.seedHealth(lb.ID, healthy.ID, true, reported)
+
+	rec := do(t, router, http.MethodGet, "/v1/loadbalancers/web", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		Backends []struct {
+			VMID       string  `json:"vm_id"`
+			VMName     string  `json:"vm_name"`
+			Healthy    *bool   `json:"healthy"`
+			ReportedAt *string `json:"reported_at"`
+		} `json:"backends"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(view.Backends) != 2 {
+		t.Fatalf("backends len = %d, want 2; body=%s", len(view.Backends), rec.Body.String())
+	}
+	if a, b := view.Backends[0].VMName, view.Backends[1].VMName; a > b {
+		t.Errorf("backends not sorted by vm_name: %q then %q", a, b)
+	}
+
+	for _, b := range view.Backends {
+		switch b.VMID {
+		case healthy.ID.String():
+			if b.Healthy == nil || !*b.Healthy {
+				t.Errorf("recorded backend healthy = %v, want true", b.Healthy)
+			}
+			if b.ReportedAt == nil {
+				t.Errorf("recorded backend reported_at = nil, want non-null")
+			}
+		default: // warming backend: no health record
+			if b.Healthy != nil {
+				t.Errorf("warming backend healthy = %v, want null", *b.Healthy)
+			}
+			if b.ReportedAt != nil {
+				t.Errorf("warming backend reported_at = %v, want null", *b.ReportedAt)
+			}
+		}
+	}
+}
+
 func TestGetLoadBalancerNotFound(t *testing.T) {
 	st := newFakeStore()
 	router := newRouter(st, devUser())

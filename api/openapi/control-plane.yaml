@@ -7344,13 +7344,41 @@ components:
           default: 3
           description: Consecutive failures before a backend is marked unhealthy.
 
+    LoadBalancerBackend:
+      type: object
+      description: |
+        One backend of a load balancer: a VM the selector currently matches,
+        with its latest observed active-health verdict (ADR 0027). `healthy`
+        and `reported_at` are null when no health record exists yet (a warming
+        backend), distinguishable from a confirmed `healthy: false`.
+      required:
+        - vm_id
+        - vm_name
+        - healthy
+        - reported_at
+      properties:
+        vm_id: { type: string, format: uuid }
+        vm_name: { type: string }
+        healthy:
+          type: [boolean, "null"]
+          description: |
+            Latest debounced health verdict, or null when no verdict has been
+            reported yet (backend still warming).
+        reported_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            When the control plane received the latest verdict, or null when
+            none has been reported.
+
     LoadBalancer:
       type: object
       description: |
         A named L4 load balancer. `selector` is a set of label key/value
         pairs; a VM is an eligible backend when its labels match every
         entry. `connect` brokers a fresh ingress connection to one such
-        backend on the load balancer's `port`.
+        backend on the load balancer's `port`. `backends` is enumerated on
+        the single-resource get; the list projection returns it empty.
       required:
         - id
         - name
@@ -7358,6 +7386,7 @@ components:
         - port
         - selector
         - health_check
+        - backends
         - created_at
         - updated_at
       properties:
@@ -7375,6 +7404,14 @@ components:
           description: Label key/value pairs a VM must match to be a backend.
         health_check:
           $ref: "#/components/schemas/LoadBalancerHealthCheck"
+        backends:
+          type: array
+          description: |
+            The currently-matched backends with their latest active-health
+            verdict. Populated by get; the list projection returns an empty
+            array (backends are not enumerated per row in a list).
+          items:
+            $ref: "#/components/schemas/LoadBalancerBackend"
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
