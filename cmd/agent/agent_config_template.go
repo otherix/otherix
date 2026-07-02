@@ -51,6 +51,12 @@ migration:
 
 qemu:
   aarch64_firmware_path: "/usr/share/AAVMF/AAVMF_CODE.fd"
+{{if .Gateway}}
+gateway:
+  enabled: true
+  listen: "{{.GatewayListen}}"                       # bootstrap --ingress-listen
+  advertised_endpoint: "{{.GatewayAdvertisedEndpoint}}" # bootstrap --ingress-advertised-endpoint
+{{- end}}
 `
 
 // agentConfigTemplate is parsed once at process startup; rendering
