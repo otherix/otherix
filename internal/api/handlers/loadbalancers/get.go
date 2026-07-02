@@ -61,13 +61,18 @@ func (h *Handler) buildBackends(r *http.Request, row store.LoadBalancer) []backe
 		health = nil
 	}
 
+	staleness := healthStalenessWindow(row.HealthCheck, row.Port)
+	now := time.Now()
 	backends := make([]backendView, 0, len(vms))
 	for _, vm := range vms {
 		if !selectorMatches(row.Selector, vm.Labels) {
 			continue
 		}
 		bv := backendView{VMID: vm.ID.String(), VMName: vm.Name}
-		if rec, ok := health[vm.ID]; ok {
+		// Only a FRESH record renders a verdict; a stale one is treated as absent
+		// (healthy/reported_at stay null), matching connect eligibility, which
+		// applies the same window, and the spec's "no fresh record -> null" rule.
+		if rec, ok := health[vm.ID]; ok && now.Sub(rec.ReportedAt) <= staleness {
 			healthy := rec.Healthy
 			reportedAt := rec.ReportedAt.UTC().Format(time.RFC3339Nano)
 			bv.Healthy, bv.ReportedAt = &healthy, &reportedAt

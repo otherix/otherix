@@ -130,3 +130,63 @@ func TestLbCreate_NoHealthFlagsOmitsBlock(t *testing.T) {
 		t.Errorf("health_check present with no --health-* flags: %#v", gotBody["health_check"])
 	}
 }
+
+// TestLbCreate_HealthPortZeroOmitted asserts that an explicit --health-port 0
+// (the follow-the-traffic-port sentinel) never reaches the wire as port:0, which
+// would violate the OpenAPI minimum:1. With --health-port 0 the only flag, the
+// whole health_check block is omitted; with another --health-* flag alongside,
+// health_check is present but carries no port key.
+func TestLbCreate_HealthPortZeroOmitted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		args          []string
+		wantHCPresent bool
+	}{
+		{
+			name:          "port-zero-only omits the block",
+			args:          []string{"--health-port", "0"},
+			wantHCPresent: false,
+		},
+		{
+			name:          "port-zero with another flag omits only port",
+			args:          []string{"--health-port", "0", "--health-interval", "5"},
+			wantHCPresent: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&gotBody)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": uuid.NewString(), "name": "web", "owner_id": uuid.NewString(),
+					"port": 80, "selector": map[string]any{"app": "web"}, "backends": []any{},
+					"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:00:00Z",
+				})
+			}))
+			defer srv.Close()
+
+			args := append([]string{"create", "web", "--port", "80", "--selector", "app=web"}, tc.args...)
+			if _, _, err := runLbCmd(t, srv.URL, args); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			hc, present := gotBody["health_check"]
+			if present != tc.wantHCPresent {
+				t.Fatalf("health_check present = %v, want %v; body=%#v", present, tc.wantHCPresent, gotBody)
+			}
+			if present {
+				m, ok := hc.(map[string]any)
+				if !ok {
+					t.Fatalf("health_check not an object: %#v", hc)
+				}
+				if _, hasPort := m["port"]; hasPort {
+					t.Errorf("health_check carries a port key on explicit --health-port 0: %#v", m)
+				}
+			}
+		})
+	}
+}

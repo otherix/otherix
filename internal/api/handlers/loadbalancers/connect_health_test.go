@@ -74,16 +74,16 @@ func TestEligibleBackendsExcludesFreshUnhealthy(t *testing.T) {
 }
 
 // TestEligibleBackendsIncludesStaleUnhealthy proves the freshness guard: a
-// Healthy==false record older than HealthCheckStalenessFactor x interval must
-// NOT darken the backend - a stale record degrades to phase==running.
+// Healthy==false record older than the (heartbeat-floored) staleness window
+// must NOT darken the backend - a stale record degrades to phase==running.
 func TestEligibleBackendsIncludesStaleUnhealthy(t *testing.T) {
 	h, st, _ := newConnectTestHandler(t)
 	owner := uuid.New()
 	lb := seedLBWithInterval(t, st, "web", owner, 8080, map[string]string{"app": "web"})
 	vmA := st.seedRunningVM(t, owner, `{"app":"web"}`)
 
-	// Reported just past the staleness window (3 x 10s = 30s).
-	stale := time.Now().Add(-(healthTestInterval*store.HealthCheckStalenessFactor + 1) * time.Second)
+	// Reported just past the floored staleness window (3 x max(10,30)s = 90s).
+	stale := time.Now().Add(-(store.HealthCheckHeartbeatFloorSeconds*store.HealthCheckStalenessFactor + 1) * time.Second)
 	st.seedHealth(lb.ID, vmA.ID, false, stale)
 
 	got, err := h.EligibleBackends(context.Background(), lb)
@@ -93,6 +93,34 @@ func TestEligibleBackendsIncludesStaleUnhealthy(t *testing.T) {
 	want := []uuid.UUID{vmA.ID}
 	if diff := cmp.Diff(want, sortedIDs(got)); diff != "" {
 		t.Errorf("EligibleBackends() ids mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestEligibleBackendsFloorKeepsShortIntervalFresh is the revert-to-confirm for
+// the heartbeat floor: with interval_seconds=1 and a fresh-unhealthy record 30s
+// old, the floored window (3 x max(1,30)s = 90s) keeps the record FRESH so the
+// backend is EXCLUDED. Without the floor the window would be 3 x 1s = 3s and a
+// 30s-old record would look stale -> degrade-included, silently defeating the
+// exclude in the gap between heartbeats.
+func TestEligibleBackendsFloorKeepsShortIntervalFresh(t *testing.T) {
+	h, st, _ := newConnectTestHandler(t)
+	owner := uuid.New()
+	lb := st.seedLB(t, "web", owner, 8080, map[string]string{"app": "web"})
+	lb.HealthCheck = store.LoadBalancerHealthCheck{IntervalSeconds: 1}
+	st.byID[lb.ID] = lb
+	vmA := st.seedRunningVM(t, owner, `{"app":"web"}`)
+
+	// A confirmed-unhealthy verdict 30s old: older than 3 x interval (3s) but well
+	// inside the heartbeat floor window (90s), so it must still exclude.
+	reported := time.Now().Add(-30 * time.Second)
+	st.seedHealth(lb.ID, vmA.ID, false, reported)
+
+	got, err := h.EligibleBackends(context.Background(), lb)
+	if err != nil {
+		t.Fatalf("EligibleBackends() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("EligibleBackends() = %v, want empty (short-interval verdict must stay fresh across the heartbeat gap)", sortedIDs(got))
 	}
 }
 

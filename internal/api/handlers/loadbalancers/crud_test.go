@@ -316,8 +316,12 @@ func TestGetLoadBalancerBackends(t *testing.T) {
 	lb := st.seedLB(t, "web", u.ID, 8080, map[string]string{"app": "web"})
 	healthy := st.seedVM(u.ID, `{"app":"web"}`)
 	st.seedVM(u.ID, `{"app":"web"}`) // warming: no health record -> healthy null
+	staleVM := st.seedVM(u.ID, `{"app":"web"}`)
 	reported := time.Now().UTC().Truncate(time.Second)
 	st.seedHealth(lb.ID, healthy.ID, true, reported)
+	// A record older than the (heartbeat-floored, 90s) freshness window renders
+	// as absent (healthy null), matching connect eligibility and the spec.
+	st.seedHealth(lb.ID, staleVM.ID, false, reported.Add(-200*time.Second))
 
 	rec := do(t, router, http.MethodGet, "/v1/loadbalancers/web", "")
 	if rec.Code != http.StatusOK {
@@ -334,11 +338,13 @@ func TestGetLoadBalancerBackends(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(view.Backends) != 2 {
-		t.Fatalf("backends len = %d, want 2; body=%s", len(view.Backends), rec.Body.String())
+	if len(view.Backends) != 3 {
+		t.Fatalf("backends len = %d, want 3; body=%s", len(view.Backends), rec.Body.String())
 	}
-	if a, b := view.Backends[0].VMName, view.Backends[1].VMName; a > b {
-		t.Errorf("backends not sorted by vm_name: %q then %q", a, b)
+	for i := 1; i < len(view.Backends); i++ {
+		if a, b := view.Backends[i-1].VMName, view.Backends[i].VMName; a > b {
+			t.Errorf("backends not sorted by vm_name: %q then %q", a, b)
+		}
 	}
 
 	for _, b := range view.Backends {
@@ -349,6 +355,13 @@ func TestGetLoadBalancerBackends(t *testing.T) {
 			}
 			if b.ReportedAt == nil {
 				t.Errorf("recorded backend reported_at = nil, want non-null")
+			}
+		case staleVM.ID.String(): // stale record -> treated as absent -> null
+			if b.Healthy != nil {
+				t.Errorf("stale backend healthy = %v, want null (stale record rendered as absent)", *b.Healthy)
+			}
+			if b.ReportedAt != nil {
+				t.Errorf("stale backend reported_at = %v, want null", *b.ReportedAt)
 			}
 		default: // warming backend: no health record
 			if b.Healthy != nil {

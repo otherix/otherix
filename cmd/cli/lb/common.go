@@ -52,35 +52,38 @@ func registerHealthCheckFlags(cmd *cobra.Command) {
 // supplied, so the whole health_check block is omitted from the request.
 func healthCheckFromFlags(cmd *cobra.Command) (*cpclient.HealthCheck, error) {
 	var hc cpclient.HealthCheck
-	set := false
-	bind := func(flag string, dst **int) error {
-		if !cmd.Flags().Changed(flag) {
-			return nil
+	binds := []struct {
+		flag string
+		dst  **int
+	}{
+		{flagHealthPort, &hc.Port},
+		{flagHealthInterval, &hc.IntervalSeconds},
+		{flagHealthTimeout, &hc.TimeoutSeconds},
+		{flagHealthHealthyThreshold, &hc.HealthyThreshold},
+		{flagHealthUnhealthyThreshold, &hc.UnhealthyThreshold},
+	}
+	for _, b := range binds {
+		if !cmd.Flags().Changed(b.flag) {
+			continue
 		}
-		v, err := cmd.Flags().GetInt(flag)
+		v, err := cmd.Flags().GetInt(b.flag)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		*dst = &v
-		set = true
-		return nil
+		*b.dst = &v
 	}
-	if err := bind(flagHealthPort, &hc.Port); err != nil {
-		return nil, err
+	// An explicit --health-port 0 is the follow-the-traffic-port sentinel on the
+	// server, but 0 violates the OpenAPI minimum:1 for the wire field. Follow is
+	// meant to be selected by OMITTING the flag, so drop an explicit 0 and never
+	// put port:0 on the wire.
+	if hc.Port != nil && *hc.Port == 0 {
+		hc.Port = nil
 	}
-	if err := bind(flagHealthInterval, &hc.IntervalSeconds); err != nil {
-		return nil, err
-	}
-	if err := bind(flagHealthTimeout, &hc.TimeoutSeconds); err != nil {
-		return nil, err
-	}
-	if err := bind(flagHealthHealthyThreshold, &hc.HealthyThreshold); err != nil {
-		return nil, err
-	}
-	if err := bind(flagHealthUnhealthyThreshold, &hc.UnhealthyThreshold); err != nil {
-		return nil, err
-	}
-	if !set {
+	// Gate on real content, not just the changed bit: dropping an explicit port:0
+	// can leave the struct empty even though a flag was "changed". If no sub-field
+	// survives, omit the whole health_check block so the CP keeps its defaults.
+	if hc.Port == nil && hc.IntervalSeconds == nil && hc.TimeoutSeconds == nil &&
+		hc.HealthyThreshold == nil && hc.UnhealthyThreshold == nil {
 		return nil, nil
 	}
 	return &hc, nil

@@ -136,8 +136,7 @@ func (h *Handler) eligibleBackends(ctx context.Context, lb store.LoadBalancer) (
 			"lb", lb.ID, "error", err.Error())
 		health = nil
 	}
-	eff := lb.HealthCheck.EffectiveFor(lb.Port)
-	staleness := time.Duration(eff.IntervalSeconds) * time.Second * store.HealthCheckStalenessFactor
+	staleness := healthStalenessWindow(lb.HealthCheck, lb.Port)
 	now := time.Now()
 	out := make([]store.VM, 0, len(vms))
 	for _, vm := range vms {
@@ -165,6 +164,20 @@ func (h *Handler) eligibleBackends(ctx context.Context, lb store.LoadBalancer) (
 		out = append(out, vm)
 	}
 	return out, nil
+}
+
+// healthStalenessWindow is the freshness window a stored active-health verdict
+// must fall within to be trusted. It is shared by connect eligibility and the
+// get view so both judge freshness identically. The window is
+// HealthCheckStalenessFactor x the effective probe interval, floored at
+// HealthCheckHeartbeatFloorSeconds: the observed verdict is CP-stamped on
+// heartbeat receipt and cannot advance faster than the agent heartbeat cadence,
+// so a window derived from a short probe interval alone would judge a
+// confirmed-unhealthy record stale in the gap between heartbeats (defeating the
+// exclude). Flooring at a few heartbeats keeps a short-interval verdict fresh.
+func healthStalenessWindow(hc store.LoadBalancerHealthCheck, lbPort int32) time.Duration {
+	secs := max(hc.EffectiveFor(lbPort).IntervalSeconds, store.HealthCheckHeartbeatFloorSeconds)
+	return time.Duration(secs) * time.Second * store.HealthCheckStalenessFactor
 }
 
 // shuffleVMs randomizes the candidate order in place for stateless balancing.

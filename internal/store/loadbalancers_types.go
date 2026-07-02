@@ -17,6 +17,21 @@ const (
 	HealthCheckDefaultHealthyThreshold   = 2
 	HealthCheckDefaultUnhealthyThreshold = 3
 	HealthCheckStalenessFactor           = 3
+
+	// HealthCheckHeartbeatFloorSeconds floors the freshness window used to judge
+	// an observed health verdict "fresh". The observed verdict (LBBackendHealth)
+	// is CP-stamped on heartbeat receipt and shipped only once per heartbeat
+	// (default 30s), so ReportedAt cannot advance faster than a heartbeat
+	// regardless of how short the probe interval is. Deriving the freshness
+	// window from the probe interval alone (e.g. 10s interval x factor 3 = 30s)
+	// makes a genuinely confirmed-unhealthy record go "stale" in the gap between
+	// heartbeats, so it gets degrade-included and the exclude silently breaks for
+	// the default and every shorter interval. Flooring the window at a few
+	// heartbeats keeps a short-interval verdict fresh across the heartbeat gap.
+	// 30 is the documented default heartbeat interval; a conservative floor - a
+	// faster heartbeat just yields a slightly more lenient window, still
+	// fail-toward-inclusion.
+	HealthCheckHeartbeatFloorSeconds = 30
 )
 
 // LoadBalancerHealthCheck is the per-LB active L4 (TCP-connect) probe config.
