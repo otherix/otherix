@@ -34,6 +34,41 @@ func TestValidateAdvertisedEndpointURL(t *testing.T) {
 	}
 }
 
+func TestValidateIngressAdvertisedEndpoint(t *testing.T) {
+	base := func(endpoint string) joinRequest {
+		return joinRequest{
+			Token: "otx_join_x", CSRPEM: "pem", NodeName: "node-1", Architecture: "amd64",
+			AdvertisedEndpoint: "https://10.77.0.1:9443", IngressAdvertisedEndpoint: endpoint,
+			MigrationHost:           "10.77.0.1",
+			MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
+		}
+	}
+	// Empty is valid: ingress_advertised_endpoint is optional (a non-gateway
+	// node sends none), unlike the required advertised_endpoint.
+	empty := base("")
+	if err := empty.validate(); err != nil {
+		t.Errorf("validate() ingress_advertised_endpoint=\"\" = %v, want nil", err)
+	}
+	valid := []string{"https://10.77.0.1:9443", "https://node1.example.com:9443", "https://127.0.0.1:9444"}
+	for _, e := range valid {
+		req := base(e)
+		if err := req.validate(); err != nil {
+			t.Errorf("validate() ingress_advertised_endpoint=%q = %v, want nil", e, err)
+		}
+	}
+	tooLong := base("https://" + strings.Repeat("a", advertisedEndpointMaxLength) + ".example.com")
+	if err := tooLong.validate(); !errors.Is(err, errIngressAdvertisedEndpointTooLong) {
+		t.Errorf("validate() over-long ingress endpoint = %v, want errIngressAdvertisedEndpointTooLong", tooLong.validate())
+	}
+	badURL := []string{"not-a-url", "http://10.77.0.1:9443", "https://", "://nohost"}
+	for _, e := range badURL {
+		req := base(e)
+		if err := req.validate(); !errors.Is(err, errIngressAdvertisedEndpointInvalidURL) {
+			t.Errorf("validate() ingress_advertised_endpoint=%q = %v, want errIngressAdvertisedEndpointInvalidURL", e, err)
+		}
+	}
+}
+
 // base builds an otherwise-valid join request so each test can vary the
 // node_name in isolation.
 func baseJoinRequest(name string) joinRequest {

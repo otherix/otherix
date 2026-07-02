@@ -24,9 +24,12 @@ var (
 	errMissingAdvertisedEndpoint    = errors.New("advertised_endpoint is required")
 	errAdvertisedEndpointTooLong    = errors.New("advertised_endpoint must be at most 2048 characters")
 	errAdvertisedEndpointInvalidURL = errors.New("advertised_endpoint must be an https URL with a host")
-	errMissingMigrationHost         = errors.New("migration_host is required")
-	errMigrationHostTooLong         = errors.New("migration_host must be at most 253 characters")
-	errMigrationPortInvalid         = errors.New("migration_port_range must lie in [1024, 65535] with end >= start")
+
+	errIngressAdvertisedEndpointTooLong    = errors.New("ingress_advertised_endpoint must be at most 2048 characters")
+	errIngressAdvertisedEndpointInvalidURL = errors.New("ingress_advertised_endpoint must be an https URL with a host")
+	errMissingMigrationHost                = errors.New("migration_host is required")
+	errMigrationHostTooLong                = errors.New("migration_host must be at most 253 characters")
+	errMigrationPortInvalid                = errors.New("migration_port_range must lie in [1024, 65535] with end >= start")
 )
 
 // Bounds mirror the existing nodes.create handler — same column
@@ -79,6 +82,10 @@ func (req *joinRequest) validate() error {
 		return err
 	}
 
+	if err := validateIngressAdvertisedEndpoint(req.IngressAdvertisedEndpoint); err != nil {
+		return err
+	}
+
 	host := strings.TrimSpace(req.MigrationHost)
 	switch {
 	case host == "":
@@ -113,6 +120,26 @@ func validateAdvertisedEndpoint(raw string) error {
 	}
 	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return errAdvertisedEndpointInvalidURL
+	}
+	return nil
+}
+
+// validateIngressAdvertisedEndpoint enforces the same bounds as
+// validateAdvertisedEndpoint (at most advertisedEndpointMaxLength characters,
+// an https URL with a host) but only when the field is non-empty. Unlike
+// advertised_endpoint, the ingress endpoint is optional: a non-gateway node
+// sends none. When present it becomes a durable client dial target, so a
+// malformed or unbounded value is rejected up front.
+func validateIngressAdvertisedEndpoint(raw string) error {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return nil
+	}
+	if len(endpoint) > advertisedEndpointMaxLength {
+		return errIngressAdvertisedEndpointTooLong
+	}
+	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return errIngressAdvertisedEndpointInvalidURL
 	}
 	return nil
 }
