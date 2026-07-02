@@ -26,8 +26,68 @@ const (
 	flagPort     = "port"
 	flagSelector = "selector"
 
+	flagHealthPort               = "health-port"
+	flagHealthInterval           = "health-interval"
+	flagHealthTimeout            = "health-timeout"
+	flagHealthHealthyThreshold   = "health-healthy-threshold"
+	flagHealthUnhealthyThreshold = "health-unhealthy-threshold"
+
 	defaultListLimit = 20
 )
+
+// registerHealthCheckFlags adds the five optional active-health-check flags
+// to a create/update command. All are plain ints; only the ones the operator
+// sets are sent (see healthCheckFromFlags).
+func registerHealthCheckFlags(cmd *cobra.Command) {
+	cmd.Flags().Int(flagHealthPort, 0, "health-check TCP port to probe on each backend (default: follow --port)")
+	cmd.Flags().Int(flagHealthInterval, 0, "seconds between health probes (1..300, default 10)")
+	cmd.Flags().Int(flagHealthTimeout, 0, "per-probe connect timeout in seconds (1..60, default 2)")
+	cmd.Flags().Int(flagHealthHealthyThreshold, 0, "consecutive successes before a backend is healthy (1..10, default 2)")
+	cmd.Flags().Int(flagHealthUnhealthyThreshold, 0, "consecutive failures before a backend is unhealthy (1..10, default 3)")
+}
+
+// healthCheckFromFlags builds a *cpclient.HealthCheck from the --health-*
+// flags, carrying only the sub-fields the operator set so the CP applies its
+// default for each omitted one. Returns (nil, nil) when no --health-* flag was
+// supplied, so the whole health_check block is omitted from the request.
+func healthCheckFromFlags(cmd *cobra.Command) (*cpclient.HealthCheck, error) {
+	var hc cpclient.HealthCheck
+	binds := []struct {
+		flag string
+		dst  **int
+	}{
+		{flagHealthPort, &hc.Port},
+		{flagHealthInterval, &hc.IntervalSeconds},
+		{flagHealthTimeout, &hc.TimeoutSeconds},
+		{flagHealthHealthyThreshold, &hc.HealthyThreshold},
+		{flagHealthUnhealthyThreshold, &hc.UnhealthyThreshold},
+	}
+	for _, b := range binds {
+		if !cmd.Flags().Changed(b.flag) {
+			continue
+		}
+		v, err := cmd.Flags().GetInt(b.flag)
+		if err != nil {
+			return nil, err
+		}
+		*b.dst = &v
+	}
+	// An explicit --health-port 0 is the follow-the-traffic-port sentinel on the
+	// server, but 0 violates the OpenAPI minimum:1 for the wire field. Follow is
+	// meant to be selected by OMITTING the flag, so drop an explicit 0 and never
+	// put port:0 on the wire.
+	if hc.Port != nil && *hc.Port == 0 {
+		hc.Port = nil
+	}
+	// Gate on real content, not just the changed bit: dropping an explicit port:0
+	// can leave the struct empty even though a flag was "changed". If no sub-field
+	// survives, omit the whole health_check block so the CP keeps its defaults.
+	if hc.Port == nil && hc.IntervalSeconds == nil && hc.TimeoutSeconds == nil &&
+		hc.HealthyThreshold == nil && hc.UnhealthyThreshold == nil {
+		return nil, nil
+	}
+	return &hc, nil
+}
 
 func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
 	return cliauth.BuildClient(cmd)

@@ -195,6 +195,10 @@ smoke-ingress-grant: ## Ingress-grant smoke: an external grant reaches a VM with
 smoke-lb: ## Load-balancer smoke: otherix lb fronts a label-selected VM pool, balances across backends, excludes a stopped backend, and 409s when none are eligible (run after local-dev-start)
 	bash dev/smoke/lb/run.sh
 
+.PHONY: smoke-lb-health
+smoke-lb-health: ## Load-balancer active-health smoke: a warming LB still serves, a backend whose traffic port closes (VM still running) is excluded on the health verdict and rejoins on re-open, a split health port is honored, and an all-down pool 409s (run after local-dev-start)
+	bash dev/smoke/lb-health/run.sh
+
 .PHONY: smoke-vm-create-redelivery
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh

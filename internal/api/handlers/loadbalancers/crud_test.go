@@ -34,6 +34,11 @@ type fakeStore struct {
 	vms        map[uuid.UUID]store.VM
 	runtimes   map[uuid.UUID]store.VMRuntime
 	runtimeErr map[uuid.UUID]error // injected transient VMRuntimeByID error
+
+	// lbHealth holds observed backend-health verdicts keyed by (lb id, vm id);
+	// healthErr injects a transient ListLBBackendHealth failure per lb id.
+	lbHealth  map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth
+	healthErr map[uuid.UUID]error
 }
 
 func newFakeStore() *fakeStore {
@@ -43,7 +48,31 @@ func newFakeStore() *fakeStore {
 		vms:        map[uuid.UUID]store.VM{},
 		runtimes:   map[uuid.UUID]store.VMRuntime{},
 		runtimeErr: map[uuid.UUID]error{},
+		lbHealth:   map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth{},
+		healthErr:  map[uuid.UUID]error{},
 	}
+}
+
+// ListLBBackendHealth returns a copy of the seeded verdicts for the load
+// balancer, or an injected transient error.
+func (f *fakeStore) ListLBBackendHealth(_ context.Context, lbID uuid.UUID) (map[uuid.UUID]store.LBBackendHealth, error) {
+	if err := f.healthErr[lbID]; err != nil {
+		return nil, err
+	}
+	src := f.lbHealth[lbID]
+	out := make(map[uuid.UUID]store.LBBackendHealth, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// seedHealth records an observed active-health verdict for one (lb, vm) pair.
+func (f *fakeStore) seedHealth(lbID, vmID uuid.UUID, healthy bool, reportedAt time.Time) {
+	if f.lbHealth[lbID] == nil {
+		f.lbHealth[lbID] = map[uuid.UUID]store.LBBackendHealth{}
+	}
+	f.lbHealth[lbID][vmID] = store.LBBackendHealth{Healthy: healthy, ReportedAt: reportedAt}
 }
 
 // ListVMsByOwner returns the owner's non-deleted VMs (order is unspecified,
@@ -114,13 +143,14 @@ func (f *fakeStore) CreateLoadBalancer(_ context.Context, arg store.CreateLoadBa
 	}
 	now := time.Now().UTC()
 	lb := store.LoadBalancer{
-		ID:        arg.ID,
-		Name:      arg.Name,
-		OwnerID:   arg.OwnerID,
-		Port:      arg.Port,
-		Selector:  arg.Selector,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          arg.ID,
+		Name:        arg.Name,
+		OwnerID:     arg.OwnerID,
+		Port:        arg.Port,
+		Selector:    arg.Selector,
+		HealthCheck: arg.HealthCheck,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	f.byID[lb.ID] = lb
 	f.byName[strings.ToLower(lb.Name)] = lb.ID
@@ -151,6 +181,7 @@ func (f *fakeStore) UpdateLoadBalancer(_ context.Context, arg store.UpdateLoadBa
 	lb.Name = arg.Name
 	lb.Port = arg.Port
 	lb.Selector = arg.Selector
+	lb.HealthCheck = arg.HealthCheck
 	lb.UpdatedAt = time.Now().UTC()
 	f.byID[lb.ID] = lb
 	return lb, nil
@@ -274,6 +305,177 @@ func TestGetLoadBalancerByName(t *testing.T) {
 	}
 	if view["name"] != "web" {
 		t.Errorf("name = %v, want web", view["name"])
+	}
+}
+
+func TestGetLoadBalancerBackends(t *testing.T) {
+	st := newFakeStore()
+	u := devUser()
+	router := newRouter(st, u)
+
+	lb := st.seedLB(t, "web", u.ID, 8080, map[string]string{"app": "web"})
+	healthy := st.seedVM(u.ID, `{"app":"web"}`)
+	st.seedVM(u.ID, `{"app":"web"}`) // warming: no health record -> healthy null
+	staleVM := st.seedVM(u.ID, `{"app":"web"}`)
+	reported := time.Now().UTC().Truncate(time.Second)
+	st.seedHealth(lb.ID, healthy.ID, true, reported)
+	// A record older than the (heartbeat-floored, 90s) freshness window renders
+	// as absent (healthy null), matching connect eligibility and the spec.
+	st.seedHealth(lb.ID, staleVM.ID, false, reported.Add(-200*time.Second))
+
+	rec := do(t, router, http.MethodGet, "/v1/loadbalancers/web", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		Backends []struct {
+			VMID       string  `json:"vm_id"`
+			VMName     string  `json:"vm_name"`
+			Healthy    *bool   `json:"healthy"`
+			ReportedAt *string `json:"reported_at"`
+		} `json:"backends"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(view.Backends) != 3 {
+		t.Fatalf("backends len = %d, want 3; body=%s", len(view.Backends), rec.Body.String())
+	}
+	for i := 1; i < len(view.Backends); i++ {
+		if a, b := view.Backends[i-1].VMName, view.Backends[i].VMName; a > b {
+			t.Errorf("backends not sorted by vm_name: %q then %q", a, b)
+		}
+	}
+
+	for _, b := range view.Backends {
+		switch b.VMID {
+		case healthy.ID.String():
+			if b.Healthy == nil || !*b.Healthy {
+				t.Errorf("recorded backend healthy = %v, want true", b.Healthy)
+			}
+			if b.ReportedAt == nil {
+				t.Errorf("recorded backend reported_at = nil, want non-null")
+			}
+		case staleVM.ID.String(): // stale record -> treated as absent -> null
+			if b.Healthy != nil {
+				t.Errorf("stale backend healthy = %v, want null (stale record rendered as absent)", *b.Healthy)
+			}
+			if b.ReportedAt != nil {
+				t.Errorf("stale backend reported_at = %v, want null", *b.ReportedAt)
+			}
+		default: // warming backend: no health record
+			if b.Healthy != nil {
+				t.Errorf("warming backend healthy = %v, want null", *b.Healthy)
+			}
+			if b.ReportedAt != nil {
+				t.Errorf("warming backend reported_at = %v, want null", *b.ReportedAt)
+			}
+		}
+	}
+}
+
+// healthSummaryJSON mirrors the optional health summary the get and list
+// projections attach.
+type healthSummaryJSON struct {
+	Status         string `json:"status"`
+	TargetsTotal   int    `json:"targets_total"`
+	TargetsHealthy int    `json:"targets_healthy"`
+}
+
+// TestGetLoadBalancerHealthSummary asserts the single-resource get attaches the
+// aggregate health summary alongside the enumerated backends. Two selector-
+// matched backends: one fresh-healthy, one warming (no record) -> total 2,
+// healthy 1, status degraded.
+func TestGetLoadBalancerHealthSummary(t *testing.T) {
+	st := newFakeStore()
+	u := devUser()
+	router := newRouter(st, u)
+
+	lb := seedLBWithInterval(t, st, "web", u.ID, 8080, map[string]string{"app": "web"})
+	healthy := st.seedVM(u.ID, `{"app":"web"}`)
+	st.seedVM(u.ID, `{"app":"web"}`) // warming: no health record
+	st.seedHealth(lb.ID, healthy.ID, true, time.Now())
+
+	rec := do(t, router, http.MethodGet, "/v1/loadbalancers/web", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		Health *healthSummaryJSON `json:"health"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.Health == nil {
+		t.Fatalf("get response omitted health summary; body=%s", rec.Body.String())
+	}
+	want := healthSummaryJSON{Status: "degraded", TargetsTotal: 2, TargetsHealthy: 1}
+	if *view.Health != want {
+		t.Errorf("health = %+v, want %+v", *view.Health, want)
+	}
+}
+
+// TestListLoadBalancersHealthSummary drives the real HTTP list: an LB with two
+// selector-matched backends, one fresh-healthy and one fresh-unhealthy, reports
+// health {status:degraded, targets_total:2, targets_healthy:1}. The list
+// projection carries only the scalar summary, never the enumerated backends.
+func TestListLoadBalancersHealthSummary(t *testing.T) {
+	st := newFakeStore()
+	u := devUser()
+	router := newRouter(st, u)
+
+	lb := seedLBWithInterval(t, st, "web", u.ID, 8080, map[string]string{"app": "web"})
+	vmA := st.seedVM(u.ID, `{"app":"web"}`)
+	vmB := st.seedVM(u.ID, `{"app":"web"}`)
+	now := time.Now()
+	st.seedHealth(lb.ID, vmA.ID, true, now)
+	st.seedHealth(lb.ID, vmB.ID, false, now)
+
+	rec := do(t, router, http.MethodGet, "/v1/loadbalancers", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			Health   *healthSummaryJSON `json:"health"`
+			Backends []json.RawMessage  `json:"backends"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("list len = %d, want 1; body=%s", len(resp.Data), rec.Body.String())
+	}
+	if resp.Data[0].Health == nil {
+		t.Fatalf("list omitted health summary; body=%s", rec.Body.String())
+	}
+	want := healthSummaryJSON{Status: "degraded", TargetsTotal: 2, TargetsHealthy: 1}
+	if *resp.Data[0].Health != want {
+		t.Errorf("health = %+v, want %+v", *resp.Data[0].Health, want)
+	}
+	if len(resp.Data[0].Backends) != 0 {
+		t.Errorf("list projection enumerated %d backends, want 0 (only the scalar summary)", len(resp.Data[0].Backends))
+	}
+}
+
+// TestCreateResponseOmitsHealth asserts the create response has no live-health
+// context and therefore omits the optional health key entirely (toView leaves
+// it nil).
+func TestCreateResponseOmitsHealth(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := view["health"]; ok {
+		t.Errorf("create response carried a health key; want it omitted: %v", view["health"])
 	}
 }
 
@@ -428,6 +630,133 @@ func TestCreateSelectorValidation(t *testing.T) {
 				t.Errorf("code = %q, want validation_failed", code)
 			}
 		})
+	}
+}
+
+func TestCreateHealthCheckDefaultsFollowTrafficPort(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+
+	rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	// Stored config keeps the follow sentinel (Port==0).
+	if got := st.lastCreated.HealthCheck.Port; got != 0 {
+		t.Errorf("stored HealthCheck.Port = %d, want 0 (follow sentinel)", got)
+	}
+
+	var view struct {
+		HealthCheck struct {
+			Port               int32 `json:"port"`
+			IntervalSeconds    int32 `json:"interval_seconds"`
+			TimeoutSeconds     int32 `json:"timeout_seconds"`
+			HealthyThreshold   int32 `json:"healthy_threshold"`
+			UnhealthyThreshold int32 `json:"unhealthy_threshold"`
+		} `json:"health_check"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.HealthCheck.Port != 8080 {
+		t.Errorf("view health_check.port = %d, want 8080 (follows traffic port)", view.HealthCheck.Port)
+	}
+	if view.HealthCheck.IntervalSeconds != store.HealthCheckDefaultIntervalSeconds {
+		t.Errorf("view interval_seconds = %d, want %d", view.HealthCheck.IntervalSeconds, store.HealthCheckDefaultIntervalSeconds)
+	}
+	if view.HealthCheck.TimeoutSeconds != store.HealthCheckDefaultTimeoutSeconds {
+		t.Errorf("view timeout_seconds = %d, want %d", view.HealthCheck.TimeoutSeconds, store.HealthCheckDefaultTimeoutSeconds)
+	}
+	if view.HealthCheck.HealthyThreshold != store.HealthCheckDefaultHealthyThreshold {
+		t.Errorf("view healthy_threshold = %d, want %d", view.HealthCheck.HealthyThreshold, store.HealthCheckDefaultHealthyThreshold)
+	}
+	if view.HealthCheck.UnhealthyThreshold != store.HealthCheckDefaultUnhealthyThreshold {
+		t.Errorf("view unhealthy_threshold = %d, want %d", view.HealthCheck.UnhealthyThreshold, store.HealthCheckDefaultUnhealthyThreshold)
+	}
+}
+
+func TestCreateHealthCheckValidation(t *testing.T) {
+	router := newRouter(newFakeStore(), devUser())
+	body := `{"name":"web","port":8080,"selector":{"app":"web"},"health_check":{"interval_seconds":0}}`
+	rec := do(t, router, http.MethodPost, "/v1/loadbalancers", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", code)
+	}
+}
+
+func TestUpdateHealthCheckPortPins(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"health_check":{"port":9090}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		HealthCheck struct {
+			Port int32 `json:"port"`
+		} `json:"health_check"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.HealthCheck.Port != 9090 {
+		t.Errorf("view health_check.port = %d, want 9090", view.HealthCheck.Port)
+	}
+}
+
+// TestUpdatePortFollowMovesHealthPort creates an LB with no health_check block
+// (stored HealthCheck.Port == 0, the follow sentinel), then moves the traffic
+// port with a PATCH that carries no health_check block. The effective health
+// port must track the new traffic port.
+func TestUpdatePortFollowMovesHealthPort(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"port":9090}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		HealthCheck struct {
+			Port int32 `json:"port"`
+		} `json:"health_check"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.HealthCheck.Port != 9090 {
+		t.Errorf("view health_check.port = %d, want 9090 (follows new traffic port)", view.HealthCheck.Port)
+	}
+}
+
+// TestUpdatePreFeatureRowNameOnly seeds a row with a zero HealthCheck (a row
+// created before the health-check feature) and PATCHes only the name with no
+// health_check block. The update must succeed (200), not fail 400 on the
+// pre-feature zero cadence.
+func TestUpdatePreFeatureRowNameOnly(t *testing.T) {
+	st := newFakeStore()
+	user := devUser()
+	// seedLB inserts a row with the zero-value HealthCheck, matching a
+	// pre-feature row exactly.
+	st.seedLB(t, "web", user.ID, 8080, map[string]string{"app": "web"})
+	router := newRouter(st, user)
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"name":"web2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

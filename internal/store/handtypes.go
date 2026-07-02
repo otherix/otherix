@@ -90,6 +90,20 @@ type HeartbeatProjection interface {
 	// covers, so the declared-networks projection can attach each network's tenant
 	// IP + unicast MAC for a gateway recipient.
 	ListGatewayMembershipsForGateway(ctx context.Context, gatewayID uuid.UUID) ([]GatewayMembership, error)
+	// ListLoadBalancerHealthTargetsForNode returns the active-probe targets the
+	// node must run (its selector-matched load-balancer backends whose observed
+	// vm_runtime.current_node_id is this node), projected into
+	// declared_health_checks (ADR 0027).
+	ListLoadBalancerHealthTargetsForNode(ctx context.Context, nodeID uuid.UUID) ([]LBHealthTarget, error)
+	// UpsertLBBackendHealth records the observed active-health verdict for one
+	// (load balancer, backend VM) pair from a heartbeat, stamped with the CP
+	// receive time (the agent's clock is never trusted for freshness).
+	UpsertLBBackendHealth(ctx context.Context, lbID, vmID uuid.UUID, healthy bool, reportedAt time.Time) error
+	// LoadBalancerByID returns the load balancer row, or ErrNotFound when it is
+	// soft-deleted / missing. The backend-health ingest reads it to skip a
+	// verdict naming a just-deleted LB, so an in-flight heartbeat cannot
+	// re-create a health row the delete cascade removed.
+	LoadBalancerByID(ctx context.Context, id uuid.UUID) (LoadBalancer, error)
 }
 
 // OverlayNICPlacement is one NIC attached to a type=overlay network whose owning

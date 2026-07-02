@@ -102,6 +102,14 @@ type WireGuardReporter interface {
 	WireGuardReport() *WireGuardReport
 }
 
+// HealthCheckReporter returns the agent's active L4 probe verdicts the
+// collector folds into HeartbeatRequest.health_checks. Implemented by the
+// health reconciler; nil is allowed (yields no verdicts) for test/legacy
+// paths.
+type HealthCheckReporter interface {
+	HealthCheckReports() []HealthCheckReport
+}
+
 // LinuxCollector reads host inventory from /proc, runs qemu-system-*
 // --version best-effort, and asks the supplied VMLister for the live
 // VM list. Designed for Linux (the only supported agent platform);
@@ -117,6 +125,7 @@ type LinuxCollector struct {
 	imageBlobs    BlobLister
 	networks      NetworkReporter
 	wireguard     WireGuardReporter
+	healthChecks  HealthCheckReporter
 	migration     config.MigrationConfig
 	qemu          config.QEMUConfig
 	agentVersion  string
@@ -142,6 +151,7 @@ type CollectorDeps struct {
 	ImageBlobs    BlobLister
 	Networks      NetworkReporter
 	WireGuard     WireGuardReporter
+	HealthChecks  HealthCheckReporter
 	Migration     config.MigrationConfig
 	QEMU          config.QEMUConfig
 }
@@ -172,6 +182,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		imageBlobs:    deps.ImageBlobs,
 		networks:      deps.Networks,
 		wireguard:     deps.WireGuard,
+		healthChecks:  deps.HealthChecks,
 		migration:     deps.Migration,
 		qemu:          deps.QEMU,
 		agentVersion:  version.Current().Version,
@@ -309,6 +320,9 @@ func (c *LinuxCollector) foldObservedInventory(report *Report) {
 	}
 	if c.wireguard != nil {
 		report.WireGuard = c.wireguard.WireGuardReport()
+	}
+	if c.healthChecks != nil {
+		report.HealthChecks = c.healthChecks.HealthCheckReports()
 	}
 }
 

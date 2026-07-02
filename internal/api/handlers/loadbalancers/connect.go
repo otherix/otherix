@@ -115,13 +115,29 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 }
 
 // eligibleBackends returns the LB owner's VMs that match the selector AND are
-// observed running. A VM whose runtime is absent or not running is excluded
-// (fail toward not handing out a backend we cannot confirm is up).
+// observed running, then subtracts any backend a fresh active-health record
+// confirms is not healthy. A VM whose runtime is absent or not running is
+// excluded (fail toward not handing out a backend we cannot confirm is up). The
+// health filter is subtractive and fails toward inclusion: a backend is dropped
+// only on a record that EXISTS, reports Healthy==false, AND is fresh (reported
+// within HealthCheckStalenessFactor x the effective probe interval). An absent
+// or stale record - or a failed health read - leaves the running backend in, so
+// a broken probe pipeline never darkens a healthy load balancer (ADR 0027).
 func (h *Handler) eligibleBackends(ctx context.Context, lb store.LoadBalancer) ([]store.VM, error) {
 	vms, err := h.store.ListVMsByOwner(ctx, lb.OwnerID)
 	if err != nil {
 		return nil, err
 	}
+	health, err := h.store.ListLBBackendHealth(ctx, lb.ID)
+	if err != nil {
+		// Health is advisory; a read failure must not dark the LB. Degrade to the
+		// phase==running set (fail toward inclusion).
+		h.log.WarnContext(ctx, "loadbalancers.connect health read failed; degrading to running-only",
+			"lb", lb.ID, "error", err.Error())
+		health = nil
+	}
+	staleness := healthStalenessWindow(lb.HealthCheck, lb.Port)
+	now := time.Now()
 	out := make([]store.VM, 0, len(vms))
 	for _, vm := range vms {
 		if !selectorMatches(lb.Selector, vm.Labels) {
@@ -142,9 +158,26 @@ func (h *Handler) eligibleBackends(ctx context.Context, lb store.LoadBalancer) (
 		if rt.Phase != store.VmPhaseRunning {
 			continue // not running -> excluded
 		}
+		if rec, ok := health[vm.ID]; ok && !rec.Healthy && now.Sub(rec.ReportedAt) <= staleness {
+			continue // fresh, confirmed-not-healthy -> exclude (warming and down both land here)
+		}
 		out = append(out, vm)
 	}
 	return out, nil
+}
+
+// healthStalenessWindow is the freshness window a stored active-health verdict
+// must fall within to be trusted. It is shared by connect eligibility and the
+// get view so both judge freshness identically. The window is
+// HealthCheckStalenessFactor x the effective probe interval, floored at
+// HealthCheckHeartbeatFloorSeconds: the observed verdict is CP-stamped on
+// heartbeat receipt and cannot advance faster than the agent heartbeat cadence,
+// so a window derived from a short probe interval alone would judge a
+// confirmed-unhealthy record stale in the gap between heartbeats (defeating the
+// exclude). Flooring at a few heartbeats keeps a short-interval verdict fresh.
+func healthStalenessWindow(hc store.LoadBalancerHealthCheck, lbPort int32) time.Duration {
+	secs := max(hc.EffectiveFor(lbPort).IntervalSeconds, store.HealthCheckHeartbeatFloorSeconds)
+	return time.Duration(secs) * time.Second * store.HealthCheckStalenessFactor
 }
 
 // shuffleVMs randomizes the candidate order in place for stateless balancing.

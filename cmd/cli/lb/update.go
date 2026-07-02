@@ -31,6 +31,7 @@ Example:
 	}
 	cmd.Flags().Int(flagPort, 0, "guest TCP port ingress connections target (1..65535)")
 	cmd.Flags().String(flagSelector, "", "backend selector as k=v[,k=v...]")
+	registerHealthCheckFlags(cmd)
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	return cmd
 }
@@ -75,10 +76,15 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 // server leaves that field unchanged. Port is validated to 1..65535.
 func updateParamsFromFlags(cmd *cobra.Command) (cpclient.UpdateLoadBalancerParams, error) {
 	var params cpclient.UpdateLoadBalancerParams
+	healthCheck, err := healthCheckFromFlags(cmd)
+	if err != nil {
+		return params, err
+	}
+	params.HealthCheck = healthCheck
 	portChanged := cmd.Flags().Changed(flagPort)
 	selectorChanged := cmd.Flags().Changed(flagSelector)
-	if !portChanged && !selectorChanged {
-		return params, errors.New("specify --port and/or --selector")
+	if !portChanged && !selectorChanged && healthCheck == nil {
+		return params, errors.New("specify at least one of --port, --selector, or a --health-* flag")
 	}
 	if portChanged {
 		port, err := cmd.Flags().GetInt(flagPort)

@@ -38,6 +38,11 @@ type Report struct {
 	// image cache tier this tick; the CP then preserves the prior image_blobs
 	// inventory (fail-closed, mirrors BlobsUnavailable).
 	ImageBlobsUnavailable bool `json:"image_blobs_unavailable,omitempty"`
+	// HealthChecks carries the agent's active L4 probe verdicts for the load
+	// balancer backends declared on this node (the heartbeat up-channel for the
+	// health-check down-channel below). One entry per (lb_id, vm_id) the agent
+	// probes; the CP folds each verdict into the backend's observed health.
+	HealthChecks []HealthCheckReport `json:"health_checks,omitempty"`
 }
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat
@@ -177,6 +182,39 @@ type Response struct {
 	// overlay on it, converging on the (smaller) programmable FDB set it does
 	// receive.
 	OverlayReachability []OverlayReachability `json:"overlay_reachability,omitempty"`
+	// DeclaredHealthChecks is the CP-declared set of active L4 health probes the
+	// agent must run against load balancer backends placed on this node (the
+	// heartbeat down-channel; the agent reports each verdict back up via
+	// Report.HealthChecks). Full-snapshot semantics: probes absent from this
+	// list are dropped by the agent's health prober.
+	DeclaredHealthChecks []DeclaredHealthCheck `json:"declared_health_checks"`
+}
+
+// HealthCheckReport is one active L4 probe verdict the agent reports up-channel
+// for a load balancer backend (the observed-health up-channel of ADR-0027).
+// Healthy is the agent's current verdict for probing VMID as a backend of LBID;
+// the CP folds it into the backend's observed health for balancing decisions.
+type HealthCheckReport struct {
+	LBID    uuid.UUID `json:"lb_id"`
+	VMID    uuid.UUID `json:"vm_id"`
+	Healthy bool      `json:"healthy"`
+}
+
+// DeclaredHealthCheck is one active L4 probe the CP wants the agent to run
+// against a load balancer backend (the desired-probe down-channel of ADR-0027;
+// the agent reports the resulting verdict back up via HealthCheckReport). Port
+// is the backend TCP port to probe; IntervalSeconds/TimeoutSeconds pace each
+// probe; HealthyThreshold/UnhealthyThreshold are the consecutive-probe counts
+// that flip the reported verdict.
+type DeclaredHealthCheck struct {
+	VMID               uuid.UUID `json:"vm_id"`
+	VMName             string    `json:"vm_name"`
+	LBID               uuid.UUID `json:"lb_id"`
+	Port               int32     `json:"port"`
+	IntervalSeconds    int32     `json:"interval_seconds"`
+	TimeoutSeconds     int32     `json:"timeout_seconds"`
+	HealthyThreshold   int32     `json:"healthy_threshold"`
+	UnhealthyThreshold int32     `json:"unhealthy_threshold"`
 }
 
 // OverlayReachability is the per-VNI non-blocking reachability signal the CP

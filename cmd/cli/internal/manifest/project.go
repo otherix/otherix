@@ -221,15 +221,46 @@ func ProjectLoadBalancer(lb cpclient.LoadBalancer) ([]byte, error) {
 	for k, v := range lb.Selector {
 		selector[k] = v
 	}
+	spec := map[string]any{
+		"port":     int(lb.Port),
+		"selector": selector,
+	}
+	if hc := loadBalancerHealthCheckSpec(lb.HealthCheck); hc != nil {
+		spec["healthCheck"] = hc
+	}
 	return encodeDoc(outDoc{
 		APIVersion: APIVersionV1,
 		Kind:       KindLoadBalancer,
 		Metadata:   outMetadata{Name: lb.Name},
-		Spec: map[string]any{
-			"port":     int(lb.Port),
-			"selector": selector,
-		},
+		Spec:       spec,
 	})
+}
+
+// loadBalancerHealthCheckSpec renders the effective health-check config as a
+// manifest healthCheck sub-object (camelCase keys), so `lb get -o yaml`
+// round-trips the config back through `create -f`. Returns nil when no
+// sub-field is populated, leaving the healthCheck key absent.
+func loadBalancerHealthCheckSpec(hc cpclient.HealthCheck) map[string]any {
+	out := map[string]any{}
+	if hc.Port != nil {
+		out["port"] = *hc.Port
+	}
+	if hc.IntervalSeconds != nil {
+		out["intervalSeconds"] = *hc.IntervalSeconds
+	}
+	if hc.TimeoutSeconds != nil {
+		out["timeoutSeconds"] = *hc.TimeoutSeconds
+	}
+	if hc.HealthyThreshold != nil {
+		out["healthyThreshold"] = *hc.HealthyThreshold
+	}
+	if hc.UnhealthyThreshold != nil {
+		out["unhealthyThreshold"] = *hc.UnhealthyThreshold
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // addVMLabelsSpec sets spec["labels"] to the VM view's labels (map[string]any,

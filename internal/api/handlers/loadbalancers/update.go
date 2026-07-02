@@ -80,12 +80,20 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		row.Selector = *req.Selector
 	}
+	hc, err := resolveHealthCheck(req.HealthCheck, normalizeUpdateBase(row.HealthCheck))
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
+	row.HealthCheck = hc
 
 	updated, err := h.store.UpdateLoadBalancer(r.Context(), store.UpdateLoadBalancerParams{
-		ID:       row.ID,
-		Name:     row.Name,
-		Port:     row.Port,
-		Selector: row.Selector,
+		ID:          row.ID,
+		Name:        row.Name,
+		Port:        row.Port,
+		Selector:    row.Selector,
+		HealthCheck: row.HealthCheck,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrLoadBalancerNameExists) {

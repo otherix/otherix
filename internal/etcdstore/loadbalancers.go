@@ -71,13 +71,14 @@ func (s *Store) LoadBalancerByName(ctx context.Context, name string) (store.Load
 func (s *Store) CreateLoadBalancer(ctx context.Context, arg store.CreateLoadBalancerParams) (store.LoadBalancer, error) {
 	now := time.Now().UTC()
 	lb := store.LoadBalancer{
-		ID:        arg.ID,
-		Name:      arg.Name,
-		OwnerID:   arg.OwnerID,
-		Port:      arg.Port,
-		Selector:  arg.Selector,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          arg.ID,
+		Name:        arg.Name,
+		OwnerID:     arg.OwnerID,
+		Port:        arg.Port,
+		Selector:    arg.Selector,
+		HealthCheck: arg.HealthCheck,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	guard := lbNameGuard(lb.Name)
@@ -114,6 +115,7 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 	updated.Name = arg.Name
 	updated.Port = arg.Port
 	updated.Selector = arg.Selector
+	updated.HealthCheck = arg.HealthCheck
 	updated.UpdatedAt = time.Now().UTC()
 
 	val, err := etcd.Marshal(updated)
@@ -213,6 +215,17 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 		Else(rowPut).
 		Commit(); err != nil {
 		return fmt.Errorf("delete load balancer txn: %v", err)
+	}
+
+	// Reap this load balancer's observed backend-health records. Best-effort
+	// AFTER the soft-delete has already committed: a health record has no
+	// dependants and re-derives from heartbeat, so a failed reap only leaves
+	// stale rows the connect path already stale-ignores. A cascade error must
+	// NOT surface as a 500 on an otherwise-successful delete - log WARN and
+	// return nil (the delete succeeded).
+	if err := s.deleteLBBackendHealthPrefix(ctx, id); err != nil {
+		s.log.WarnContext(ctx, "delete lb backend health cascade failed (delete still succeeded)",
+			"lb", id.String(), "error", err.Error())
 	}
 	return nil
 }

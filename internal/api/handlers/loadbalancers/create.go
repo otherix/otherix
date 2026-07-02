@@ -51,13 +51,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			response.CodeValidationFailed, err.Error(), nil)
 		return
 	}
+	hc, err := resolveHealthCheck(req.HealthCheck, store.DefaultLoadBalancerHealthCheck())
+	if err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return
+	}
 
 	row, err := h.store.CreateLoadBalancer(r.Context(), store.CreateLoadBalancerParams{
-		ID:       uuid.New(),
-		Name:     req.Name,
-		OwnerID:  user.ID,
-		Port:     req.Port,
-		Selector: req.Selector,
+		ID:          uuid.New(),
+		Name:        req.Name,
+		OwnerID:     user.ID,
+		Port:        req.Port,
+		Selector:    req.Selector,
+		HealthCheck: hc,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrLoadBalancerNameExists) {

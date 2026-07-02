@@ -109,7 +109,7 @@ func DecodeStoragePoolSpec(d Document) (StoragePoolSpec, error) {
 }
 
 var loadBalancerSpecKeys = map[string]bool{
-	"port": true, "selector": true,
+	"port": true, "selector": true, "healthCheck": true,
 }
 
 // DecodeLoadBalancerSpec decodes and validates a LoadBalancer document's

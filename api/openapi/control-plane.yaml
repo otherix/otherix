@@ -5611,6 +5611,17 @@ components:
             error does not wipe observed state. Absent or false means the
             image_blobs array is authoritative (an empty array clears the
             inventory).
+        health_checks:
+          type: array
+          description: |
+            Agent-reported active L4 probe verdicts for the load balancer
+            backends declared on this node (the observed-health up-channel
+            paired with HeartbeatResponse.declared_health_checks). One entry
+            per (lb_id, vm_id) the agent probes; the CP folds each verdict
+            into the backend's observed health for balancing decisions.
+            Optional; absent when the node runs no declared health checks.
+          items:
+            $ref: "#/components/schemas/HeartbeatHealthCheckReport"
 
     HeartbeatWireGuardReport:
       type: object
@@ -5946,6 +5957,16 @@ components:
             programmable FDB set it does receive. Omitted when empty.
           items:
             $ref: "#/components/schemas/OverlayReachability"
+        declared_health_checks:
+          type: array
+          description: |
+            CP-declared active L4 health probes the agent must run against
+            load balancer backends placed on this node (the desired-probe
+            down-channel paired with HeartbeatRequest.health_checks). Full
+            snapshot semantics: probes absent from this list are dropped by
+            the agent's health prober. Omitted when empty.
+          items:
+            $ref: "#/components/schemas/HeartbeatDeclaredHealthCheck"
 
     HeartbeatDeclaredWireGuardPeer:
       type: object
@@ -6105,6 +6126,89 @@ components:
             Pool-type-specific configuration, opaque to the agent in
             the current iteration. Reserved for future backends
             (nfs, iscsi, …).
+
+    HeartbeatHealthCheckReport:
+      type: object
+      description: |
+        One entry in HeartbeatRequest.health_checks — the agent's active
+        L4 probe verdict for a load balancer backend (the observed-health
+        up-channel). `healthy` is the agent's current verdict for probing
+        `vm_id` as a backend of `lb_id`; the CP folds it into the backend's
+        observed health.
+      required: [lb_id, vm_id, healthy]
+      properties:
+        lb_id:
+          type: string
+          format: uuid
+          description: The load balancer the probed VM is a backend of.
+        vm_id:
+          type: string
+          format: uuid
+          description: The backend VM being probed.
+        healthy:
+          type: boolean
+          description: |
+            The agent's current verdict for this backend after applying the
+            healthy / unhealthy consecutive-probe thresholds.
+
+    HeartbeatDeclaredHealthCheck:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.declared_health_checks — a single
+        active L4 probe the CP wants the agent to run against a load
+        balancer backend (the desired-probe down-channel). The agent
+        reports the resulting verdict back via
+        HeartbeatRequest.health_checks.
+      required:
+        [
+          vm_id,
+          vm_name,
+          lb_id,
+          port,
+          interval_seconds,
+          timeout_seconds,
+          healthy_threshold,
+          unhealthy_threshold,
+        ]
+      properties:
+        vm_id:
+          type: string
+          format: uuid
+          description: The backend VM to probe.
+        vm_name:
+          type: string
+          minLength: 1
+          maxLength: 253
+          description: The backend VM's name (agent-side identity is name-keyed).
+        lb_id:
+          type: string
+          format: uuid
+          description: The load balancer this backend belongs to.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The backend TCP port to probe.
+        interval_seconds:
+          type: integer
+          minimum: 1
+          description: Seconds between consecutive probes.
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          description: Per-probe timeout in seconds.
+        healthy_threshold:
+          type: integer
+          minimum: 1
+          description: |
+            Consecutive successful probes required to flip the reported
+            verdict to healthy.
+        unhealthy_threshold:
+          type: integer
+          minimum: 1
+          description: |
+            Consecutive failed probes required to flip the reported verdict
+            to unhealthy.
 
     HeartbeatDeclaredNetwork:
       type: object
@@ -7198,19 +7302,115 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
+    LoadBalancerHealthCheck:
+      type: object
+      description: |
+        Active L4 (TCP-connect) health-check config for a load balancer's
+        backends. On create, an omitted field takes its default; on update, an
+        omitted field leaves the stored value unchanged.
+      properties:
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: |
+            The TCP port probed on each backend. Omitted (or the internal
+            follow sentinel) means the probe follows the load balancer's
+            traffic `port`, so `port` on this object and the top-level `port`
+            move together unless an explicit health-check port is set. The
+            view always emits the resolved effective port.
+        interval_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 10
+          description: Seconds between probes.
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+          default: 2
+          description: Per-probe connect timeout in seconds.
+        healthy_threshold:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 2
+          description: Consecutive successes before a backend is marked healthy.
+        unhealthy_threshold:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+          description: Consecutive failures before a backend is marked unhealthy.
+
+    LoadBalancerBackend:
+      type: object
+      description: |
+        One backend of a load balancer: a VM the selector currently matches,
+        with its latest observed active-health verdict (ADR 0027). `healthy`
+        and `reported_at` are null when no health record exists yet (a warming
+        backend), distinguishable from a confirmed `healthy: false`.
+      required:
+        - vm_id
+        - vm_name
+        - healthy
+        - reported_at
+      properties:
+        vm_id: { type: string, format: uuid }
+        vm_name: { type: string }
+        healthy:
+          type: [boolean, "null"]
+          description: |
+            Latest debounced health verdict, or null when no verdict has been
+            reported yet (backend still warming).
+        reported_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            When the control plane received the latest verdict, or null when
+            none has been reported.
+
+    LoadBalancerHealthSummary:
+      type: object
+      description: |
+        Aggregate active-health rollup of a load balancer's currently-matched
+        backends (ADR 0027). `status` is `healthy` when every target is
+        confirmed healthy, `unhealthy` when every target is confirmed
+        unhealthy, `no_backends` when the selector matches none, and
+        `degraded` for any mix (including targets still warming with no verdict
+        yet - a serving-but-unconfirmed load balancer reads `degraded`, never
+        `unhealthy`). `targets_total` counts every matched backend;
+        `targets_healthy` counts those with a fresh healthy verdict.
+      required:
+        - status
+        - targets_total
+        - targets_healthy
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, no_backends]
+        targets_total:
+          type: integer
+        targets_healthy:
+          type: integer
+
     LoadBalancer:
       type: object
       description: |
         A named L4 load balancer. `selector` is a set of label key/value
         pairs; a VM is an eligible backend when its labels match every
         entry. `connect` brokers a fresh ingress connection to one such
-        backend on the load balancer's `port`.
+        backend on the load balancer's `port`. `backends` is enumerated on
+        the single-resource get; the list projection returns it empty.
       required:
         - id
         - name
         - owner_id
         - port
         - selector
+        - health_check
+        - backends
         - created_at
         - updated_at
       properties:
@@ -7226,6 +7426,22 @@ components:
           type: object
           additionalProperties: { type: string }
           description: Label key/value pairs a VM must match to be a backend.
+        health_check:
+          $ref: "#/components/schemas/LoadBalancerHealthCheck"
+        backends:
+          type: array
+          description: |
+            The currently-matched backends with their latest active-health
+            verdict. Populated by get; the list projection returns an empty
+            array (backends are not enumerated per row in a list).
+          items:
+            $ref: "#/components/schemas/LoadBalancerBackend"
+        health:
+          allOf:
+            - $ref: "#/components/schemas/LoadBalancerHealthSummary"
+          description: |
+            Aggregate active-health rollup. Present on get and list; absent on
+            create/update responses (no live-health context).
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -7242,6 +7458,8 @@ components:
         selector:
           type: object
           additionalProperties: { type: string }
+        health_check:
+          $ref: "#/components/schemas/LoadBalancerHealthCheck"
 
     LoadBalancerUpdate:
       type: object
@@ -7256,6 +7474,8 @@ components:
         selector:
           type: object
           additionalProperties: { type: string }
+        health_check:
+          $ref: "#/components/schemas/LoadBalancerHealthCheck"
 
     LoadBalancerList:
       type: object
