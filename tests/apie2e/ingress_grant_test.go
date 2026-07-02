@@ -63,8 +63,8 @@ func TestIngressGrant_OverlayGateway(t *testing.T) {
 	if out.Transport != "gateway" {
 		t.Errorf("transport = %q, want gateway", out.Transport)
 	}
-	if out.SplicerAddr != gw.AdvertisedEndpoint {
-		t.Errorf("splicer_addr = %q, want %q", out.SplicerAddr, gw.AdvertisedEndpoint)
+	if out.SplicerAddr != gw.IngressAdvertisedEndpoint {
+		t.Errorf("splicer_addr = %q, want %q", out.SplicerAddr, gw.IngressAdvertisedEndpoint)
 	}
 	if out.VMID != vmID.String() {
 		t.Errorf("vm_id = %q, want %q", out.VMID, vmID)

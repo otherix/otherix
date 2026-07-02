@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package gateway
+package ingress
 
 import (
 	"bufio"
@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,12 @@ const (
 	testMACA = "02:00:00:00:00:0a"
 	testMACB = "02:00:00:00:00:0b"
 )
+
+// discardLogger returns a slog.Logger that discards all output, for tests that
+// do not assert on log lines.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // startEcho starts a single-connection TCP echo server on loopback. It returns
 // the listen address and a channel closed when the accepted connection ends
@@ -81,11 +88,11 @@ func newTestSessionCA(t *testing.T) (crypto.Signer, string) {
 
 // storeWith returns a session-CA store armed with pubPEM, as if a heartbeat
 // carrying that public half had arrived.
-func storeWith(t *testing.T, pubPEM string) *sessionCAStore {
+func storeWith(t *testing.T, pubPEM string) *SessionCAStore {
 	t.Helper()
-	s := newSessionCAStore(discardLogger())
+	s := NewSessionCAStore(discardLogger())
 	s.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SessionCAPublicPEM: &pubPEM})
-	if s.current() == nil {
+	if s.Current() == nil {
 		t.Fatal("session-CA store did not accept the public half")
 	}
 	return s
@@ -101,7 +108,7 @@ func signCred(t *testing.T, signer crypto.Signer, c auth.SessionCredClaims) stri
 	return tok
 }
 
-// fakeOverlays is a static overlayResolver: it returns Bridge/NetworkID/OK for
+// fakeOverlays is a static OverlayResolver: it returns Bridge/NetworkID/OK for
 // every IP. Its session counters are no-ops; tests that assert session
 // accounting use spyOverlays instead.
 type fakeOverlays struct {
@@ -202,9 +209,9 @@ func errorCode(t *testing.T, resp *http.Response) string {
 
 // gatedConnect builds the connect handler with the given collaborators and mounts
 // it behind its real credential gate, returning a live test server.
-func gatedConnect(t *testing.T, h *connectHandler) *httptest.Server {
+func gatedConnect(t *testing.T, h *ConnectHandler) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(h.verifyCred(http.HandlerFunc(h.Connect)))
+	srv := httptest.NewServer(h.VerifyCred(http.HandlerFunc(h.Connect)))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -224,7 +231,7 @@ func TestConnectSplicesBytesBothWays(t *testing.T) {
 
 	signer, pubPEM := newTestSessionCA(t)
 	bridge := "otvb100"
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial:     netDial,
 		fabric:   fabricResolving(t, bridge, ip, testMACA),
 		overlays: fakeOverlays{bridge: bridge, ok: true},
@@ -269,7 +276,7 @@ func TestConnectTearsDownOnClientClose(t *testing.T) {
 
 	signer, pubPEM := newTestSessionCA(t)
 	bridge := "otvb100"
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial:     netDial,
 		fabric:   fabricResolving(t, bridge, ip, testMACA),
 		overlays: fakeOverlays{bridge: bridge, ok: true},
@@ -320,7 +327,7 @@ func TestConnectAntiSSRFRefusesIPReuse(t *testing.T) {
 	bridge := "otvb100"
 
 	// The guest IP now resolves to MAC-B, not the credential's MAC-A.
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial:     failDial(t),
 		fabric:   fabricResolving(t, bridge, ip, testMACB),
 		overlays: fakeOverlays{bridge: bridge, ok: true},
@@ -359,7 +366,7 @@ func TestConnectAntiSSRFRefusesUnresolvedAndOffOverlay(t *testing.T) {
 	tests := []struct {
 		name     string
 		fabric   *netfabric.FakeFabric
-		overlays overlayResolver
+		overlays OverlayResolver
 	}{
 		{
 			name:     "unresolved neighbor",
@@ -374,7 +381,7 @@ func TestConnectAntiSSRFRefusesUnresolvedAndOffOverlay(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &connectHandler{
+			h := &ConnectHandler{
 				dial:     failDial(t),
 				fabric:   tt.fabric,
 				overlays: tt.overlays,
@@ -431,11 +438,11 @@ func TestConnectCredFailures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := newSessionCAStore(discardLogger())
+			store := NewSessionCAStore(discardLogger())
 			if tt.armCA {
 				store = storeWith(t, pubPEM)
 			}
-			h := &connectHandler{
+			h := &ConnectHandler{
 				dial:     failDial(t),
 				fabric:   fabricResolving(t, bridge, ip, testMACA),
 				overlays: fakeOverlays{bridge: bridge, ok: true},
@@ -499,7 +506,7 @@ func TestConnectRefusedAtCapacityThenReleased(t *testing.T) {
 	signer, pubPEM := newTestSessionCA(t)
 	bridge := "otvb100"
 	slots := newConnectSlots(1, 1)
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial:     netDial,
 		fabric:   fabricResolving(t, bridge, ip, testMACA),
 		overlays: fakeOverlays{bridge: bridge, ok: true},

@@ -155,14 +155,15 @@ type VMCreateWrites struct {
 // Request-shape and CSR validation are the caller's responsibility; this struct
 // holds only what the atomic redemption needs.
 type RedeemJoinTokenParams struct {
-	TokenHash               []byte
-	NodeName                string
-	Architecture            CPUArch
-	AdvertisedEndpoint      string
-	MigrationHost           string
-	MigrationPortRangeStart int32
-	MigrationPortRangeEnd   int32
-	SourceIP                *netip.Addr
+	TokenHash                 []byte
+	NodeName                  string
+	Architecture              CPUArch
+	AdvertisedEndpoint        string
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int32
+	MigrationPortRangeEnd     int32
+	SourceIP                  *netip.Addr
 }
 
 // UpsertAgentWireguardParams carries an agent's observed WG state for the

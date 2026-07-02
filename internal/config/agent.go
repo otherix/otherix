@@ -31,6 +31,23 @@ type AgentConfig struct {
 	Artifacts    ArtifactsConfig    `koanf:"artifacts"`
 	QEMU         QEMUConfig         `koanf:"qemu"`
 	WireGuard    WireGuardConfig    `koanf:"wireguard"`
+	Gateway      GatewayConfig      `koanf:"gateway"`
+}
+
+// GatewayConfig configures the agent's gateway-only ingress mode. When Enabled,
+// the agent boots without qemu, VM management, storage pools, or health checks:
+// it reconciles overlays for ingress and serves the connect splicer on a
+// separate listener. Ignored when Enabled is false (an ordinary hypervisor agent).
+type GatewayConfig struct {
+	// Enabled boots the process in gateway-only mode.
+	Enabled bool `koanf:"enabled"`
+	// Listen is the ingress listener address (separate from Server.Listen). The
+	// connect splicer serves here under VerifyClientCertIfGiven + the session
+	// credential gate; the control plane is served on Server.Listen under mTLS.
+	Listen string `koanf:"listen"`
+	// AdvertisedEndpoint is the HTTPS URL clients dial for /v1/connect. Reported
+	// to the control plane at bootstrap as the node's ingress-advertised endpoint.
+	AdvertisedEndpoint string `koanf:"advertised_endpoint"`
 }
 
 // QEMUConfig holds qemu-process tunables that vary per host.
@@ -94,17 +111,22 @@ type TLSConfig struct {
 //     conservatively short on link-flaky networks since the bootstrap
 //     does not retry.
 type BootstrapConfig struct {
-	Token                   string
-	TokenPath               string
-	CAFingerprint           string
-	CPURL                   string
-	NodeName                string
-	Architecture            string
-	AdvertisedEndpoint      string
-	MigrationHost           string
-	MigrationPortRangeStart int
-	MigrationPortRangeEnd   int
-	RequestTimeout          time.Duration
+	Token              string
+	TokenPath          string
+	CAFingerprint      string
+	CPURL              string
+	NodeName           string
+	Architecture       string
+	AdvertisedEndpoint string
+	// IngressAdvertisedEndpoint is the HTTPS URL clients dial to reach this
+	// node's ingress splicer (/v1/connect), distinct from AdvertisedEndpoint
+	// (the mTLS control endpoint). Optional here (length-capped when set); a
+	// gateway node supplies it.
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int
+	MigrationPortRangeEnd     int
+	RequestTimeout            time.Duration
 }
 
 // fingerprintHexPattern matches the canonical 64-char lowercase hex
@@ -191,6 +213,9 @@ func (b *BootstrapConfig) validateIdentity() error {
 	if len(b.AdvertisedEndpoint) > 2048 {
 		return errors.New("bootstrap: advertised_endpoint must be at most 2048 characters")
 	}
+	if len(b.IngressAdvertisedEndpoint) > 2048 {
+		return errors.New("bootstrap: ingress_advertised_endpoint must be at most 2048 characters")
+	}
 	return nil
 }
 
@@ -267,5 +292,26 @@ func (c AgentConfig) Validate() error {
 	if err := c.Migration.Validate(); err != nil {
 		return err
 	}
+	if err := c.Gateway.validate(c.Server.Listen); err != nil {
+		return err
+	}
 	return c.Artifacts.Validate()
+}
+
+// validate checks the gateway-mode invariants against the control listen
+// address. When Enabled, the ingress Listen must be non-empty and must differ
+// from serverListen so the two planes bind distinct ports in one process.
+// AdvertisedEndpoint is validated at bootstrap rather than at serve, so it is
+// not required here. A disabled gateway imposes no constraints.
+func (g GatewayConfig) validate(serverListen string) error {
+	if !g.Enabled {
+		return nil
+	}
+	if g.Listen == "" {
+		return errors.New("gateway.listen is required when gateway.enabled is true")
+	}
+	if g.Listen == serverListen {
+		return errors.New("gateway.listen must differ from server.listen (two distinct ports)")
+	}
+	return nil
 }

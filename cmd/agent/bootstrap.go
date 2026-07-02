@@ -44,6 +44,12 @@ const (
 	// defaultHeartbeatInterval is the per-tick cadence baked into the
 	// generated agent.yaml when --heartbeat-interval is omitted.
 	defaultHeartbeatInterval = 30 * time.Second
+
+	// defaultIngressListen is the gateway ingress bind address baked into
+	// the generated agent.yaml when --ingress-listen is omitted. It is a
+	// stable port distinct from the control listener (9443) so the two
+	// planes bind separate ports in one gateway-only process.
+	defaultIngressListen = "0.0.0.0:9444"
 )
 
 // newBootstrapCommand builds the `otherix-agent bootstrap` subcommand.
@@ -103,6 +109,12 @@ Examples:
 	flags.String("config-path", defaultConfigPath, "destination for the generated agent.yaml")
 	flags.Bool("force", false, "overwrite existing cert material + config (re-bootstrap)")
 	flags.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout against the CP")
+	// Gateway-only host inputs. --gateway declares this host runs the
+	// ingress gateway; it requires --ingress-advertised-endpoint and bakes
+	// a gateway block into the generated agent.yaml.
+	flags.Bool("gateway", false, "provision a gateway-only host (requires --ingress-advertised-endpoint)")
+	flags.String("ingress-advertised-endpoint", "", "HTTPS URL clients dial to reach the ingress splicer (required with --gateway)")
+	flags.String("ingress-listen", defaultIngressListen, "gateway ingress bind address (baked into agent.yaml, distinct from --listen)")
 	return cmd
 }
 
@@ -111,20 +123,23 @@ Examples:
 // `bootstrap.Bootstrap()` library call. Architecture comes from
 // runtime.GOARCH per L10.
 type bootstrapInputs struct {
-	token                   string
-	caFingerprint           string
-	cpURL                   string
-	nodeName                string
-	advertisedEndpoint      string
-	migrationHost           string
-	migrationPortRangeStart int
-	migrationPortRangeEnd   int
-	listenAddr              string
-	heartbeatInterval       time.Duration
-	certDir                 string
-	configPath              string
-	force                   bool
-	requestTimeout          time.Duration
+	token                     string
+	caFingerprint             string
+	cpURL                     string
+	nodeName                  string
+	advertisedEndpoint        string
+	migrationHost             string
+	migrationPortRangeStart   int
+	migrationPortRangeEnd     int
+	listenAddr                string
+	heartbeatInterval         time.Duration
+	certDir                   string
+	configPath                string
+	force                     bool
+	requestTimeout            time.Duration
+	gateway                   bool
+	ingressAdvertisedEndpoint string
+	ingressListen             string
 }
 
 func runBootstrap(cmd *cobra.Command, _ []string) error {
@@ -166,16 +181,17 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 
 	cfg := &config.BootstrapConfig{
-		Token:                   in.token,
-		CAFingerprint:           in.caFingerprint,
-		CPURL:                   in.cpURL,
-		NodeName:                in.nodeName,
-		Architecture:            runtime.GOARCH,
-		AdvertisedEndpoint:      in.advertisedEndpoint,
-		MigrationHost:           in.migrationHost,
-		MigrationPortRangeStart: in.migrationPortRangeStart,
-		MigrationPortRangeEnd:   in.migrationPortRangeEnd,
-		RequestTimeout:          in.requestTimeout,
+		Token:                     in.token,
+		CAFingerprint:             in.caFingerprint,
+		CPURL:                     in.cpURL,
+		NodeName:                  in.nodeName,
+		Architecture:              runtime.GOARCH,
+		AdvertisedEndpoint:        in.advertisedEndpoint,
+		IngressAdvertisedEndpoint: in.ingressAdvertisedEndpoint,
+		MigrationHost:             in.migrationHost,
+		MigrationPortRangeStart:   in.migrationPortRangeStart,
+		MigrationPortRangeEnd:     in.migrationPortRangeEnd,
+		RequestTimeout:            in.requestTimeout,
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate bootstrap inputs: %v", err)
@@ -204,15 +220,18 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	wroteConfig := false
 	if !fileExists(in.configPath) {
 		if err := writeAgentConfig(in.configPath, agentConfigInputs{
-			CPURL:                   in.cpURL,
-			HeartbeatInterval:       in.heartbeatInterval,
-			ListenAddr:              in.listenAddr,
-			CertPath:                certPath,
-			KeyPath:                 keyPath,
-			CAPath:                  caPath,
-			MigrationHost:           in.migrationHost,
-			MigrationPortRangeStart: in.migrationPortRangeStart,
-			MigrationPortRangeEnd:   in.migrationPortRangeEnd,
+			CPURL:                     in.cpURL,
+			HeartbeatInterval:         in.heartbeatInterval,
+			ListenAddr:                in.listenAddr,
+			CertPath:                  certPath,
+			KeyPath:                   keyPath,
+			CAPath:                    caPath,
+			MigrationHost:             in.migrationHost,
+			MigrationPortRangeStart:   in.migrationPortRangeStart,
+			MigrationPortRangeEnd:     in.migrationPortRangeEnd,
+			Gateway:                   in.gateway,
+			GatewayListen:             in.ingressListen,
+			GatewayAdvertisedEndpoint: in.ingressAdvertisedEndpoint,
 		}); err != nil {
 			return fmt.Errorf("write agent.yaml: %w", err)
 		}
@@ -257,6 +276,16 @@ func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
 	in.configPath, _ = flags.GetString("config-path")
 	in.force, _ = flags.GetBool("force")
 	in.requestTimeout, _ = flags.GetDuration("request-timeout")
+	in.gateway, _ = flags.GetBool("gateway")
+	in.ingressAdvertisedEndpoint, _ = flags.GetString("ingress-advertised-endpoint")
+	in.ingressListen, _ = flags.GetString("ingress-listen")
+
+	// Conditional-required rule lives at the cmd layer so
+	// BootstrapConfig.Validate stays role-agnostic: a gateway host must
+	// advertise the ingress endpoint clients dial for /v1/connect.
+	if in.gateway && in.ingressAdvertisedEndpoint == "" {
+		return bootstrapInputs{}, errors.New("--ingress-advertised-endpoint is required with --gateway")
+	}
 	return in, nil
 }
 
@@ -370,6 +399,12 @@ type agentConfigInputs struct {
 	MigrationHost           string
 	MigrationPortRangeStart int
 	MigrationPortRangeEnd   int
+	// Gateway, when true, renders a gateway block into the agent.yaml so
+	// serve boots the gateway-only runtime. GatewayListen and
+	// GatewayAdvertisedEndpoint are ignored when Gateway is false.
+	Gateway                   bool
+	GatewayListen             string
+	GatewayAdvertisedEndpoint string
 }
 
 // _ ensures context import stays used when the file evolves; placeholder

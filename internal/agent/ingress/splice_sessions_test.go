@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package gateway
+package ingress
 
 import (
 	"context"
@@ -72,7 +72,7 @@ func TestConnectSessionCounterBalancesOnSplice(t *testing.T) {
 	bridge := "otvb100"
 	netID := "33333333-3333-3333-3333-333333333333"
 	spy := &spyOverlays{bridge: bridge, networkID: netID, ok: true}
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial:     netDial,
 		fabric:   fabricResolving(t, bridge, ip, testMACA),
 		overlays: spy,
@@ -123,7 +123,7 @@ func TestConnectSessionCounterNoLeakOnDialFailure(t *testing.T) {
 	bridge := "otvb100"
 	netID := "44444444-4444-4444-4444-444444444444"
 	spy := &spyOverlays{bridge: bridge, networkID: netID, ok: true}
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial: func(context.Context, string, string, string) (net.Conn, error) {
 			return nil, io.ErrUnexpectedEOF
 		},
@@ -155,7 +155,7 @@ func TestConnectSessionCounterNotTakenOnEarlyRefusal(t *testing.T) {
 	signer, pubPEM := newTestSessionCA(t)
 	ip := netip.MustParseAddr("10.42.0.5")
 	spy := &spyOverlays{ok: false} // guest IP on no declared overlay
-	h := &connectHandler{
+	h := &ConnectHandler{
 		dial:     failDial(t),
 		fabric:   &netfabric.FakeFabric{},
 		overlays: spy,

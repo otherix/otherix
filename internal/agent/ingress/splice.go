@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Andrei Taranik
 
-package gateway
+// Package ingress provides the VM ingress connection splicer and the
+// session-CA store shared by the standalone gateway daemon and the agent
+// runtime. It verifies a short-lived ingress session credential, binds the
+// dial to the credential's NIC MAC via the host neighbor table (anti-SSRF),
+// and splices the inbound connection to the credential's guest target on the
+// overlay.
+package ingress
 
 import (
 	"bytes"
@@ -44,26 +50,26 @@ const (
 // loopback stub and ignore bridge.
 type dialFunc func(ctx context.Context, network, addr, bridge string) (net.Conn, error)
 
-// overlayResolver maps a guest IP to the overlay datapath whose CP-declared
+// OverlayResolver maps a guest IP to the overlay datapath whose CP-declared
 // subnet contains it and tracks live ingress sessions per network. The network
 // reconciler (*reconciler.Networks) satisfies it. OverlayNetworkForIP finds which
 // overlay datapath a session credential's guest IP lives on (bridge for the dial
 // binding, network id for session accounting); AcquireSession/ReleaseSession
 // maintain the per-network live-session counter the gateway reports through its
 // heartbeat so the CP keeps the gateway's membership sticky while sessions drain.
-type overlayResolver interface {
+type OverlayResolver interface {
 	OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string, ok bool)
 	AcquireSession(networkID string)
 	ReleaseSession(networkID string)
 }
 
-// connectDeps carries the collaborators the connect handler needs beyond its
+// ConnectDeps carries the collaborators the connect handler needs beyond its
 // logger: the host fabric (for the neighbor-table anti-SSRF check), the overlay
 // resolver, and the session-CA store the cred gate verifies against.
-type connectDeps struct {
-	fabric   netfabric.Fabric
-	overlays overlayResolver
-	caStore  *sessionCAStore
+type ConnectDeps struct {
+	Fabric   netfabric.Fabric
+	Overlays OverlayResolver
+	CAStore  *SessionCAStore
 }
 
 // claimsCtxKey keys the verified session-credential claims the cred gate stashes
@@ -76,45 +82,45 @@ func claimsFromContext(ctx context.Context) (auth.SessionCredClaims, bool) {
 	return c, ok
 }
 
-// connectHandler serves POST /v1/connect: it verifies a short-lived ingress
+// ConnectHandler serves POST /v1/connect: it verifies a short-lived ingress
 // session credential, binds the dial to the credential's NIC MAC via the
 // gateway's neighbor table (closing IP-reuse), acquires a concurrency slot, then
 // dials the credential's guest target on the overlay and splices the inbound
 // connection to it byte for byte. The dial target is taken from the verified
 // credential, never from untrusted request input, so the gateway can never be
 // steered to an arbitrary address.
-type connectHandler struct {
+type ConnectHandler struct {
 	dial     dialFunc
 	fabric   netfabric.Fabric
-	overlays overlayResolver
-	caStore  *sessionCAStore
+	overlays OverlayResolver
+	caStore  *SessionCAStore
 	slots    *connectSlots
 	log      *slog.Logger
 }
 
-// newConnectHandler builds a connect handler with a plain TCP dialer and the
+// NewConnectHandler builds a connect handler with a plain TCP dialer and the
 // default connection-slot caps.
-func newConnectHandler(deps connectDeps, log *slog.Logger) *connectHandler {
-	return &connectHandler{
+func NewConnectHandler(deps ConnectDeps, log *slog.Logger) *ConnectHandler {
+	return &ConnectHandler{
 		dial: func(ctx context.Context, network, addr, bridge string) (net.Conn, error) {
 			return (&net.Dialer{Control: netfabric.BindToDeviceControl(bridge)}).DialContext(ctx, network, addr)
 		},
-		fabric:   deps.fabric,
-		overlays: deps.overlays,
-		caStore:  deps.caStore,
+		fabric:   deps.Fabric,
+		overlays: deps.Overlays,
+		caStore:  deps.CAStore,
 		slots:    newConnectSlots(defaultConnectPerVMCap, defaultConnectGatewayCap),
 		log:      log,
 	}
 }
 
-// verifyCred is the middleware that gates the connect route. It accepts only an
+// VerifyCred is the middleware that gates the connect route. It accepts only an
 // "otx_ingress_" bearer verified against the session CA public half learned from
 // heartbeat; on success it stashes the verified claims in the request context
 // for the handler. Every credential failure (absent, wrong format, bad
 // signature, expired, tampered) collapses to a uniform 401 so the gate is no
 // oracle; a credential that cannot yet be verified because no session CA has
 // been received fails closed with 503.
-func (h *connectHandler) verifyCred(next http.Handler) http.Handler {
+func (h *ConnectHandler) VerifyCred(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearerToken(r)
 		// IsIngressCredFormat must gate the path before any other token check:
@@ -124,7 +130,7 @@ func (h *connectHandler) verifyCred(next http.Handler) http.Handler {
 			h.unauthorized(w, r)
 			return
 		}
-		caPub := h.caStore.current()
+		caPub := h.caStore.Current()
 		if caPub == nil {
 			response.WriteError(w, r, http.StatusServiceUnavailable,
 				response.CodeIngressUnavailable,
@@ -142,12 +148,12 @@ func (h *connectHandler) verifyCred(next http.Handler) http.Handler {
 }
 
 // Connect handles POST /v1/connect. The verified credential's claims supply the
-// dial target; verifyCred must have run first to place them in the context. The
+// dial target; VerifyCred must have run first to place them in the context. The
 // handler resolves the overlay the guest IP lives on, refuses unless the guest
 // IP's neighbor MAC equals the credential MAC (anti-SSRF / IP-reuse binding),
 // acquires a concurrency slot, dials the guest target, hijacks the inbound
 // connection, and splices the two legs until either side closes.
-func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
+func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	claims, ok := claimsFromContext(r.Context())
 	if !ok {
 		// Defensive: the cred gate must run before this handler.
@@ -244,7 +250,7 @@ func (h *connectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 
 // unauthorized writes the uniform 401 the cred gate uses for every credential
 // failure, leaking nothing about which check failed.
-func (h *connectHandler) unauthorized(w http.ResponseWriter, r *http.Request) {
+func (h *ConnectHandler) unauthorized(w http.ResponseWriter, r *http.Request) {
 	response.WriteError(w, r, http.StatusUnauthorized,
 		response.CodeUnauthenticated, "a valid ingress session credential is required", nil)
 }
@@ -253,7 +259,7 @@ func (h *connectHandler) unauthorized(w http.ResponseWriter, r *http.Request) {
 // failure (guest IP off-overlay, unresolved neighbor, MAC mismatch), so a holder
 // of a valid-but-stale credential learns only that the target is no longer
 // authorized, never why.
-func (h *connectHandler) refuse(w http.ResponseWriter, r *http.Request) {
+func (h *ConnectHandler) refuse(w http.ResponseWriter, r *http.Request) {
 	response.WriteError(w, r, http.StatusForbidden,
 		response.CodePermissionDenied,
 		"the credential does not authorize a connection to this target", nil)

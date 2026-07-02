@@ -91,15 +91,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	runLog := logger.WithComponent(logger.New(cfg.Logger), componentName)
 	logger.SetDefault(runLog)
 	v := version.Current()
+	mode := "hypervisor"
+	if cfg.Gateway.Enabled {
+		mode = "gateway"
+	}
 	runLog.Info("agent: transitioning to State B",
 		"binary", "otherix-"+componentName,
 		"version", v.Version,
 		"commit", v.Commit,
+		"mode", mode,
 		"listen", cfg.Server.Listen,
+		"ingress_listen", cfg.Gateway.Listen,
 		"control_plane_url", cfg.ControlPlane.URL,
 	)
 
-	if err := agent.Run(ctx, cfg, runLog); err != nil {
+	run := agent.Run
+	if cfg.Gateway.Enabled {
+		run = agent.RunGateway
+	}
+	if err := run(ctx, cfg, runLog); err != nil {
 		runLog.Error("agent stopped with error", "err", err)
 		return err
 	}

@@ -19,13 +19,14 @@ type CreateNodeParams struct {
 	Name string
 	// Gateway assigns the ingress-gateway role to the new row. Not accepted from
 	// the admin create-node request - gateways self-register on join.
-	Gateway                 bool
-	Architecture            CPUArch
-	AdvertisedEndpoint      string
-	MigrationHost           string
-	MigrationPortRangeStart int32
-	MigrationPortRangeEnd   int32
-	Status                  NodeStatus
+	Gateway                   bool
+	Architecture              CPUArch
+	AdvertisedEndpoint        string
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int32
+	MigrationPortRangeEnd     int32
+	Status                    NodeStatus
 }
 
 type GetNodeForHeartbeatRow struct {

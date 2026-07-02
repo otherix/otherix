@@ -5050,6 +5050,13 @@ components:
             The agent advertises this on bootstrap. Does not need to
             equal the address the agent LISTENS on (NAT / port-forward
             scenarios).
+        ingress_advertised_endpoint:
+          type: [string, "null"]
+          format: uri
+          description: |
+            HTTPS URL clients dial to reach this node's ingress splicer
+            (/v1/connect). Distinct from advertised_endpoint, which is the
+            mTLS control endpoint. Set on a gateway node.
         migration:
           $ref: "#/components/schemas/MigrationCapability"
         status:
@@ -5295,6 +5302,13 @@ components:
           type: string
           enum: [pending, ready, cordoned, draining, unreachable, gone]
         cordoned_at: { type: [string, "null"], format: date-time }
+        ingress_advertised_endpoint:
+          type: [string, "null"]
+          format: uri
+          description: |
+            HTTPS URL clients dial to reach this node's ingress splicer
+            (/v1/connect). Distinct from advertised_endpoint, which is the
+            mTLS control endpoint. Set on a gateway node.
         labels:
           type: object
           additionalProperties: { type: string }
@@ -6543,6 +6557,14 @@ components:
           type: string
           maxLength: 2048
           description: HTTPS URL the CP uses to reach the agent.
+        ingress_advertised_endpoint:
+          type: [string, "null"]
+          format: uri
+          maxLength: 2048
+          description: |
+            HTTPS URL clients dial to reach this node's ingress splicer
+            (/v1/connect). Distinct from advertised_endpoint, which is the
+            mTLS control endpoint. Set on a gateway node.
         migration_host:
           type: string
           maxLength: 253

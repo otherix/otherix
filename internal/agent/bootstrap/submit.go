@@ -21,14 +21,15 @@ import (
 // control-plane.yaml. Hand-written because agent-side oapi-codegen
 // targets agent.yaml only.
 type joinRequest struct {
-	Token                   string `json:"token"`
-	CSRPEM                  string `json:"csr_pem"`
-	NodeName                string `json:"node_name"`
-	Architecture            string `json:"architecture"`
-	AdvertisedEndpoint      string `json:"advertised_endpoint"`
-	MigrationHost           string `json:"migration_host"`
-	MigrationPortRangeStart int    `json:"migration_port_range_start"`
-	MigrationPortRangeEnd   int    `json:"migration_port_range_end"`
+	Token                     string `json:"token"`
+	CSRPEM                    string `json:"csr_pem"`
+	NodeName                  string `json:"node_name"`
+	Architecture              string `json:"architecture"`
+	AdvertisedEndpoint        string `json:"advertised_endpoint"`
+	IngressAdvertisedEndpoint string `json:"ingress_advertised_endpoint"`
+	MigrationHost             string `json:"migration_host"`
+	MigrationPortRangeStart   int    `json:"migration_port_range_start"`
+	MigrationPortRangeEnd     int    `json:"migration_port_range_end"`
 }
 
 // joinResponse mirrors components/schemas/NodeJoinResponse.
@@ -71,14 +72,15 @@ func submitCSR(ctx context.Context, cfg *config.BootstrapConfig, token, csrPEM s
 	}
 
 	body := joinRequest{
-		Token:                   token,
-		CSRPEM:                  csrPEM,
-		NodeName:                cfg.NodeName,
-		Architecture:            cfg.Architecture,
-		AdvertisedEndpoint:      cfg.AdvertisedEndpoint,
-		MigrationHost:           cfg.MigrationHost,
-		MigrationPortRangeStart: cfg.MigrationPortRangeStart,
-		MigrationPortRangeEnd:   cfg.MigrationPortRangeEnd,
+		Token:                     token,
+		CSRPEM:                    csrPEM,
+		NodeName:                  cfg.NodeName,
+		Architecture:              cfg.Architecture,
+		AdvertisedEndpoint:        cfg.AdvertisedEndpoint,
+		IngressAdvertisedEndpoint: cfg.IngressAdvertisedEndpoint,
+		MigrationHost:             cfg.MigrationHost,
+		MigrationPortRangeStart:   cfg.MigrationPortRangeStart,
+		MigrationPortRangeEnd:     cfg.MigrationPortRangeEnd,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

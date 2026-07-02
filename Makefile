@@ -1,6 +1,6 @@
 # ========== Variables ==========
 
-BINARIES        := api agent gateway
+BINARIES        := api agent
 BIN_DIR         := bin
 GO              := go
 GOLANGCI_VERSION := v2.12.2

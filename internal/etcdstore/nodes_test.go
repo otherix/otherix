@@ -54,6 +54,35 @@ func TestNodeCreateGetByIDAndName(t *testing.T) {
 	}
 }
 
+func TestCreateNodePersistsIngressAdvertisedEndpoint(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	const want = "https://gw-1.example:9444"
+	p := store.CreateNodeParams{
+		ID:                        uuid.New(),
+		Name:                      uniqueNodeName("gw"),
+		Gateway:                   true,
+		Architecture:              store.CpuArchArm64,
+		AdvertisedEndpoint:        "https://gw-1.example:9443",
+		IngressAdvertisedEndpoint: want,
+		MigrationHost:             "10.0.0.1",
+		MigrationPortRangeStart:   49152,
+		MigrationPortRangeEnd:     49251,
+		Status:                    store.NodeStatusPending,
+	}
+	if _, err := s.CreateNode(ctx, p); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	got, err := s.NodeByName(ctx, p.Name)
+	if err != nil {
+		t.Fatalf("NodeByName: %v", err)
+	}
+	if got.IngressAdvertisedEndpoint != want {
+		t.Errorf("IngressAdvertisedEndpoint = %q, want %q", got.IngressAdvertisedEndpoint, want)
+	}
+}
+
 func TestNodeNameUniquenessAndNotFound(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

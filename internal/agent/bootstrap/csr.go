@@ -22,12 +22,13 @@ import (
 // (auth.GenerateClusterCA) so the issued cert chains naturally
 // without forcing the CA to handle multiple key families.
 //
-// cnPrefix is the identity prefix the Subject CN and SAN DNS carry:
-// "node-" for a hypervisor agent, "gateway-" for an ingress gateway.
-// The CP discards the CSR Subject entirely and derives the issued
-// cert's identity from the validated request body and the join token's
-// kind (defense-in-depth against CN injection), so the prefix is
-// populated for realism and operator audit, not enforcement.
+// cnPrefix is the identity prefix the Subject CN and SAN DNS carry.
+// Bootstrap always passes "node-": both a hypervisor agent and an ingress
+// gateway redeem for a unified node-<name> leaf. The CP discards the CSR
+// Subject entirely and derives the issued cert's identity from the validated
+// request body and the join token's kind (defense-in-depth against CN
+// injection), so the prefix is populated for realism and operator audit, not
+// enforcement.
 //
 // CSR fields:
 //

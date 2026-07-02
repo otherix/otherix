@@ -97,11 +97,12 @@ func seedResolveIngressOverlay(t *testing.T, withGateway bool) (*Handler, store.
 
 	if withGateway {
 		gw := store.Node{
-			ID:                 uuid.New(),
-			Name:               "gw0",
-			GatewayRole:        true,
-			Status:             store.NodeStatusReady,
-			AdvertisedEndpoint: "https://gw0.example.com:9443",
+			ID:                        uuid.New(),
+			Name:                      "gw0",
+			GatewayRole:               true,
+			Status:                    store.NodeStatusReady,
+			AdvertisedEndpoint:        "https://gw0.example.com:9443",
+			IngressAdvertisedEndpoint: "https://gw0.example.com:9444",
 		}
 		st.nodes = []store.Node{gw}
 		st.memberships[overlayNet.ID] = []store.GatewayMembership{{GatewayID: gw.ID, NetworkID: overlayNet.ID}}

@@ -590,14 +590,19 @@ type Node struct {
 	// hypervisor role is derived as its inverse (see Roles). Written only at
 	// create/join in this revision. Legacy rows that predate the field are
 	// migrated from Kind=="gateway" at decode time (UnmarshalJSON).
-	GatewayRole             bool
-	Architecture            CPUArch
-	AdvertisedEndpoint      string
-	MigrationHost           string
-	MigrationPortRangeStart int32
-	MigrationPortRangeEnd   int32
-	Status                  NodeStatus
-	CordonedAt              *time.Time
+	GatewayRole        bool
+	Architecture       CPUArch
+	AdvertisedEndpoint string
+	// IngressAdvertisedEndpoint is the HTTPS URL clients dial to reach this
+	// node's ingress splicer (/v1/connect). Distinct from AdvertisedEndpoint,
+	// which is the mTLS control endpoint. Set on a gateway node; empty on a
+	// plain hypervisor and on legacy rows that predate the field.
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int32
+	MigrationPortRangeEnd     int32
+	Status                    NodeStatus
+	CordonedAt                *time.Time
 	// DrainTaskID points at the in-flight node.drain task while the node is
 	// draining; nil otherwise. Set atomically with the ready|cordoned ->
 	// draining flip, cleared atomically when the drain finalizes the node back
@@ -637,42 +642,43 @@ type Node struct {
 
 // Node availability with pending-VM accounting. Subtracts vms.cpu_cores / vms.memory_mib pinned after last heartbeat (CP committed but agent has not yet observed). Self-correcting once next heartbeat arrives. Read by the scheduler at placement time.
 type NodeEffectiveAvailability struct {
-	ID                       uuid.UUID
-	Name                     string
-	Architecture             CPUArch
-	AdvertisedEndpoint       string
-	MigrationHost            string
-	MigrationPortRangeStart  int32
-	MigrationPortRangeEnd    int32
-	Status                   NodeStatus
-	GatewayRole              bool
-	CordonedAt               *time.Time
-	CPUCoresTotal            *int32
-	CPUCoresAvailable        *int32
-	CPUModel                 *string
-	CpuFlags                 []string
-	MemoryTotalMib           *int64
-	MemoryAvailableMib       *int64
-	Hugepages2mibTotal       *int32
-	Hugepages1gibTotal       *int32
-	KernelVersion            *string
-	QEMUVersion              *string
-	NumaTopology             []byte
-	Capabilities             []byte
-	LastHeartbeatAt          *time.Time
-	AgentVersion             *string
-	Labels                   []byte
-	MemoryPressureSince      *time.Time
-	MemoryPressureCount      int32
-	SystemDiskTotalBytes     *int64
-	SystemDiskAvailableBytes *int64
-	SystemDiskPressureSince  *time.Time
-	SystemDiskPressureCount  int32
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	DeletedAt                *time.Time
-	CPUCoresEffective        *int32
-	MemoryEffectiveMib       *int64
+	ID                        uuid.UUID
+	Name                      string
+	Architecture              CPUArch
+	AdvertisedEndpoint        string
+	IngressAdvertisedEndpoint string
+	MigrationHost             string
+	MigrationPortRangeStart   int32
+	MigrationPortRangeEnd     int32
+	Status                    NodeStatus
+	GatewayRole               bool
+	CordonedAt                *time.Time
+	CPUCoresTotal             *int32
+	CPUCoresAvailable         *int32
+	CPUModel                  *string
+	CpuFlags                  []string
+	MemoryTotalMib            *int64
+	MemoryAvailableMib        *int64
+	Hugepages2mibTotal        *int32
+	Hugepages1gibTotal        *int32
+	KernelVersion             *string
+	QEMUVersion               *string
+	NumaTopology              []byte
+	Capabilities              []byte
+	LastHeartbeatAt           *time.Time
+	AgentVersion              *string
+	Labels                    []byte
+	MemoryPressureSince       *time.Time
+	MemoryPressureCount       int32
+	SystemDiskTotalBytes      *int64
+	SystemDiskAvailableBytes  *int64
+	SystemDiskPressureSince   *time.Time
+	SystemDiskPressureCount   int32
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	DeletedAt                 *time.Time
+	CPUCoresEffective         *int32
+	MemoryEffectiveMib        *int64
 }
 
 // Pool availability with pending-VM-disk accounting. Subtracts vm_disks committed after last scan (CP committed but agent has not yet observed). Self-correcting once next scan completes. Operator-visible via the pool API + CLI; future scheduler integration.

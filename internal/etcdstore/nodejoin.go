@@ -228,15 +228,16 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 	}
 
 	node, err := s.CreateNode(ctx, store.CreateNodeParams{
-		ID:                      uuid.New(),
-		Name:                    p.NodeName,
-		Gateway:                 gatewayWanted,
-		Architecture:            p.Architecture,
-		AdvertisedEndpoint:      p.AdvertisedEndpoint,
-		MigrationHost:           p.MigrationHost,
-		MigrationPortRangeStart: p.MigrationPortRangeStart,
-		MigrationPortRangeEnd:   p.MigrationPortRangeEnd,
-		Status:                  store.NodeStatusPending,
+		ID:                        uuid.New(),
+		Name:                      p.NodeName,
+		Gateway:                   gatewayWanted,
+		Architecture:              p.Architecture,
+		AdvertisedEndpoint:        p.AdvertisedEndpoint,
+		IngressAdvertisedEndpoint: p.IngressAdvertisedEndpoint,
+		MigrationHost:             p.MigrationHost,
+		MigrationPortRangeStart:   p.MigrationPortRangeStart,
+		MigrationPortRangeEnd:     p.MigrationPortRangeEnd,
+		Status:                    store.NodeStatusPending,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNodeNameExists) {
