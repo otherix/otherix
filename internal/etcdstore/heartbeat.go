@@ -444,3 +444,16 @@ func (h heartbeatProjection) ActiveMigrationForVM(ctx context.Context, vmID uuid
 func (h heartbeatProjection) ListLoadBalancerHealthTargetsForNode(ctx context.Context, nodeID uuid.UUID) ([]store.LBHealthTarget, error) {
 	return h.s.ListLoadBalancerHealthTargetsForNode(ctx, nodeID)
 }
+
+// UpsertLBBackendHealth records the observed (lb, backend-VM) health verdict from
+// a heartbeat, stamped with the CP receive time.
+func (h heartbeatProjection) UpsertLBBackendHealth(ctx context.Context, lbID, vmID uuid.UUID, healthy bool, reportedAt time.Time) error {
+	return h.s.UpsertLBBackendHealth(ctx, lbID, vmID, healthy, reportedAt)
+}
+
+// LoadBalancerByID returns the load balancer row (or store.ErrNotFound for a
+// soft-deleted / missing one), used by the health ingest to skip a verdict
+// naming a just-deleted LB.
+func (h heartbeatProjection) LoadBalancerByID(ctx context.Context, id uuid.UUID) (store.LoadBalancer, error) {
+	return h.s.LoadBalancerByID(ctx, id)
+}

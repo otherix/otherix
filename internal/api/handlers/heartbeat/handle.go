@@ -251,22 +251,7 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 			return err
 		}
 		outcome.systemDisk = sysKind
-		if err := h.applyVMs(ctx, hp, agent.NodeID, body.VMs); err != nil {
-			return err
-		}
-		if err := h.applyPoolReports(ctx, hp, agent.NodeID, body.Pools); err != nil {
-			return err
-		}
-		if err := h.applyBlobInventory(ctx, hp, agent.NodeID, body); err != nil {
-			return err
-		}
-		if err := h.applyImageBlobInventory(ctx, hp, agent.NodeID, body); err != nil {
-			return err
-		}
-		if err := h.applyNetworkReports(ctx, hp, agent.NodeID, body.Networks); err != nil {
-			return err
-		}
-		if err := h.applyWireguardReport(ctx, hp, agent.NodeID, body.WireGuard); err != nil {
+		if err := h.applyObservedReports(ctx, hp, agent.NodeID, body); err != nil {
 			return err
 		}
 		return h.loadDeclared(ctx, hp, agent.NodeID, &outcome)
@@ -276,6 +261,32 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 	}
 	outcome.sessionCAPublicPEM = h.loadSessionCAPublic(ctx, agent.NodeID)
 	return outcome, nil
+}
+
+// applyObservedReports runs the observed-state ingest chain (VMs, backend
+// health, pools, blob inventories, networks, wireguard) after the node-update
+// and pressure steps. Split out of project so that function's branching stays
+// under the gocyclo ceiling; the order is preserved from the inline sequence.
+func (h *Handler) applyObservedReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
+	if err := h.applyVMs(ctx, hp, nodeID, body.VMs); err != nil {
+		return err
+	}
+	if err := h.applyHealthChecks(ctx, hp, nodeID, body.HealthChecks); err != nil {
+		return err
+	}
+	if err := h.applyPoolReports(ctx, hp, nodeID, body.Pools); err != nil {
+		return err
+	}
+	if err := h.applyBlobInventory(ctx, hp, nodeID, body); err != nil {
+		return err
+	}
+	if err := h.applyImageBlobInventory(ctx, hp, nodeID, body); err != nil {
+		return err
+	}
+	if err := h.applyNetworkReports(ctx, hp, nodeID, body.Networks); err != nil {
+		return err
+	}
+	return h.applyWireguardReport(ctx, hp, nodeID, body.WireGuard)
 }
 
 // loadSessionCAPublic reads the active ingress-session CA public half for
@@ -1312,6 +1323,67 @@ func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjectio
 	}
 	if err := hp.UpsertVMRuntime(ctx, params); err != nil {
 		return fmt.Errorf("upsert vm_runtime: %v", err)
+	}
+	return nil
+}
+
+// applyHealthChecks writes the reported per-(lb, backend-VM) health verdicts,
+// gated by the same placement authority as applyVMs: a node may only report
+// health for VMs pinned to it (or a migration target on it). The CP stamps the
+// receive time so freshness never depends on the agent's clock.
+func (h *Handler) applyHealthChecks(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []healthCheckReport) error {
+	if len(reports) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(reports))
+	for _, r := range reports {
+		ids = append(ids, r.VMID)
+	}
+	pinned, err := hp.FilterVMIDsPinnedToNode(ctx, nodeID, ids)
+	if err != nil {
+		return fmt.Errorf("filter pinned vm ids (health): %v", err)
+	}
+	pinnedSet := make(map[uuid.UUID]struct{}, len(pinned))
+	for _, id := range pinned {
+		pinnedSet[id] = struct{}{}
+	}
+	now := time.Now().UTC()
+	// Skip a soft-deleted LB so an in-flight heartbeat naming a just-deleted LB
+	// does not re-create the row DeleteLoadBalancer's cascade removed (the row
+	// would then leak forever - the LB is never re-listed). Resolve each distinct
+	// lb_id once (few LBs per heartbeat).
+	liveLB := map[uuid.UUID]bool{}
+	isLive := func(lbID uuid.UUID) (bool, error) {
+		if v, ok := liveLB[lbID]; ok {
+			return v, nil
+		}
+		_, err := hp.LoadBalancerByID(ctx, lbID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				liveLB[lbID] = false
+				return false, nil
+			}
+			return false, fmt.Errorf("resolve lb liveness: %v", err)
+		}
+		liveLB[lbID] = true
+		return true, nil
+	}
+	for _, r := range reports {
+		if _, ok := pinnedSet[r.VMID]; !ok {
+			h.log.WarnContext(ctx, "heartbeat reports health for a vm not pinned to the reporting node; skipping",
+				slog.String("node_id", nodeID.String()), slog.String("vm_uuid", r.VMID.String()))
+			continue
+		}
+		live, err := isLive(r.LBID)
+		if err != nil {
+			return err
+		}
+		if !live {
+			continue // LB deleted -> do not resurrect its health rows
+		}
+		if err := hp.UpsertLBBackendHealth(ctx, r.LBID, r.VMID, r.Healthy, now); err != nil {
+			return fmt.Errorf("upsert lb backend health: %v", err)
+		}
 	}
 	return nil
 }
