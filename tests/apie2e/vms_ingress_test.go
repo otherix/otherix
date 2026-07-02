@@ -52,7 +52,8 @@ func convergeGateway(t *testing.T, h *harness, netID uuid.UUID) store.Node {
 	gw, err := h.store.CreateNode(ctx, store.CreateNodeParams{
 		ID: uuid.New(), Name: "gw-" + uuid.NewString()[:8], Gateway: true,
 		Architecture: store.CpuArchAmd64, AdvertisedEndpoint: "https://gw.test:9443",
-		MigrationHost: "10.0.0.9", MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
+		IngressAdvertisedEndpoint: "https://gw.test:9444",
+		MigrationHost:             "10.0.0.9", MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
 		Status: store.NodeStatusReady,
 	})
 	if err != nil {
@@ -122,8 +123,8 @@ func TestVMIngress_OverlayGateway(t *testing.T) {
 	if out.Transport != "gateway" {
 		t.Errorf("transport = %q, want gateway", out.Transport)
 	}
-	if out.SplicerAddr != gw.AdvertisedEndpoint {
-		t.Errorf("splicer_addr = %q, want %q", out.SplicerAddr, gw.AdvertisedEndpoint)
+	if out.SplicerAddr != gw.IngressAdvertisedEndpoint {
+		t.Errorf("splicer_addr = %q, want %q", out.SplicerAddr, gw.IngressAdvertisedEndpoint)
 	}
 	if out.VMID != vmID.String() {
 		t.Errorf("vm_id = %q, want %q", out.VMID, vmID)
@@ -187,6 +188,50 @@ func TestVMIngress_NoGateway409(t *testing.T) {
 	resp := h.post(t, "/v1/vms/"+vmName+"/ingress", map[string]any{"port": 22}, admin)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("no-gateway ingress status = %d, want 409", resp.StatusCode)
+	}
+	var body errorEnvelope
+	decodeJSON(t, resp, &body)
+	if body.Error.Code != "ingress_unavailable" {
+		t.Errorf("error code = %q, want ingress_unavailable", body.Error.Code)
+	}
+}
+
+// TestVMIngress_GatewayWithoutIngressEndpoint409 proves that a live, converged
+// gateway that advertises no ingress endpoint (a legacy gateway that has not
+// re-bootstrapped) is treated exactly like "no gateway": the broker fails toward
+// 409 ingress_unavailable rather than handing out the mTLS control endpoint, which
+// a client bearer dial cannot complete.
+func TestVMIngress_GatewayWithoutIngressEndpoint409(t *testing.T) {
+	h := newE2E(t)
+	ctx := context.Background()
+	admin, adminID := loginAs(t, h, auth.RoleAdmin)
+
+	vmName, _, netID, _ := seedIngressOverlayVM(t, h, admin, adminID)
+	seedSessionCA(t, h)
+
+	// A live, converged gateway member of the overlay, but with only the mTLS
+	// control endpoint set and no ingress endpoint.
+	gw, err := h.store.CreateNode(ctx, store.CreateNodeParams{
+		ID: uuid.New(), Name: "gw-" + uuid.NewString()[:8], Gateway: true,
+		Architecture: store.CpuArchAmd64, AdvertisedEndpoint: "https://gw.test:9443",
+		MigrationHost: "10.0.0.9", MigrationPortRangeStart: 49152, MigrationPortRangeEnd: 49251,
+		Status: store.NodeStatusReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateNode(gateway): %v", err)
+	}
+	if _, err := h.store.CreateGatewayMembership(ctx, gw.ID, netID); err != nil {
+		t.Fatalf("CreateGatewayMembership: %v", err)
+	}
+	if err := h.store.UpsertNetworkNodeStatus(ctx, store.UpsertNetworkNodeStatusParams{
+		NetworkID: netID, NodeID: gw.ID, ReconciliationStatus: "ready",
+	}); err != nil {
+		t.Fatalf("UpsertNetworkNodeStatus(gateway ready): %v", err)
+	}
+
+	resp := h.post(t, "/v1/vms/"+vmName+"/ingress", map[string]any{"port": 22}, admin)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("endpoint-less-gateway ingress status = %d, want 409", resp.StatusCode)
 	}
 	var body errorEnvelope
 	decodeJSON(t, resp, &body)

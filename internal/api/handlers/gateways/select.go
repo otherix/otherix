@@ -99,7 +99,8 @@ func vmOverlayNetworkIDs(ctx context.Context, st GatewaySelectStore, vmID uuid.U
 }
 
 // eligibleGateways returns the distinct live gateway nodes that are members of at
-// least one of the overlay networks and have reported that overlay converged.
+// least one of the overlay networks, have reported that overlay converged, and
+// advertise an ingress endpoint clients can dial.
 func eligibleGateways(ctx context.Context, st GatewaySelectStore, overlayIDs []uuid.UUID, liveGateways map[uuid.UUID]store.Node) ([]store.Node, error) {
 	var out []store.Node
 	seen := make(map[uuid.UUID]bool)
@@ -118,6 +119,14 @@ func eligibleGateways(ctx context.Context, st GatewaySelectStore, overlayIDs []u
 		for _, m := range members {
 			gw, ok := liveGateways[m.GatewayID]
 			if !ok || seen[m.GatewayID] || !ready[m.GatewayID] {
+				continue
+			}
+			// A gateway that advertises no ingress endpoint (a legacy gateway
+			// that has not re-bootstrapped) cannot carry ingress: its only
+			// reachable address is the mTLS control endpoint, which a client
+			// bearer dial cannot complete. Skip it so selection fails toward
+			// ErrIngressUnavailable rather than handing out a broken address.
+			if gw.IngressAdvertisedEndpoint == "" {
 				continue
 			}
 			seen[m.GatewayID] = true

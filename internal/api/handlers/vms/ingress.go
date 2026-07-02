@@ -47,7 +47,7 @@ type ingressRequest struct {
 // discriminator the CLI switches on:
 //
 //   - "gateway": an overlay VM. SplicerAddr is the converged gateway's
-//     advertised endpoint and SessionCred is a short-lived bearer the client
+//     ingress endpoint and SessionCred is a short-lived bearer the client
 //     presents to the gateway, which verifies it offline against the session CA
 //     public half. The control plane is out of the data path.
 //   - "relay": a bridge VM. The client connects back through the control-plane
@@ -278,7 +278,7 @@ func (h *Handler) resolveOverlay(ctx context.Context, vm store.VM, nic store.VMN
 		VMID:        vm.ID,
 		VMName:      vm.Name,
 		Port:        port,
-		SplicerAddr: gw.AdvertisedEndpoint,
+		SplicerAddr: gw.IngressAdvertisedEndpoint,
 		SessionCred: cred,
 		ExpiresAt:   expiresAt,
 	}, nil
