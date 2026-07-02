@@ -3,23 +3,11 @@
 
 package loadbalancers
 
-import "encoding/json"
+import "github.com/otherix/otherix/internal/store"
 
 // selectorMatches reports whether every key/value in selector equals a label on
-// the VM. labels is the raw VM.Labels JSON object; a non-empty selector against
-// empty or malformed labels is a non-match (fail toward excluding the backend).
+// the VM. It delegates to store.SelectorMatches so the connect eligibility path
+// and the store-side backend resolution share one matcher.
 func selectorMatches(selector map[string]string, labels []byte) bool {
-	if len(selector) == 0 {
-		return false
-	}
-	var lbls map[string]string
-	if err := json.Unmarshal(labels, &lbls); err != nil {
-		return false
-	}
-	for k, v := range selector {
-		if lbls[k] != v {
-			return false
-		}
-	}
-	return true
+	return store.SelectorMatches(selector, labels)
 }

@@ -101,3 +101,13 @@ type ListLoadBalancersParams struct {
 	CursorID        *uuid.UUID
 	LimitCount      int32
 }
+
+// LBBackendHealth is the observed active-health verdict for one (load balancer,
+// backend VM) pair, reported by the VM's owning agent through the heartbeat and
+// stamped with the CP receive time (the agent's clock is never trusted for
+// freshness). Healthy is the agent's debounced verdict; a not-yet-healthy
+// (warming) backend and a confirmed-down backend both report Healthy=false.
+type LBBackendHealth struct {
+	Healthy    bool
+	ReportedAt time.Time
+}
