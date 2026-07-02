@@ -41,15 +41,19 @@ func NewHealthProbe(mgr healthByNameManager, leases healthIPByMAC, log *slog.Log
 }
 
 // Probe resolves vmName to a locally-hosted, running VM and TCP-dials the first
-// NIC whose MAC has a managed-DHCP lease, bound to that NIC's bridge. It returns
-// true only on a completed connection. A missing VM, a non-running VM, or a NIC
-// with no managed-DHCP lease returns false: the resolution boundary mirrors the
-// ssh pipe's resolveSSHTarget, so a caller can never steer the dial at an
-// arbitrary address.
-func (p *tcpHealthProbe) Probe(ctx context.Context, vmName string, port int32, timeout time.Duration) bool {
+// NIC whose MAC has a managed-DHCP lease, bound to that NIC's bridge. The result
+// is tri-state: probed reports whether a real TCP dial was attempted, and only
+// then does healthy carry its outcome. A missing VM, a non-running VM, or a NIC
+// with no managed-DHCP lease returns (false, false) - "could not probe" - so a
+// valid backend with no managed-DHCP lease (statically-addressed guest, dhcp=false
+// network, or the transient lease-warmup window) is never darkened; it stays
+// warming and reports no verdict. Only a completed DialContext yields probed=true.
+// The resolution boundary mirrors the ssh pipe's resolveSSHTarget, so a caller can
+// never steer the dial at an arbitrary address.
+func (p *tcpHealthProbe) Probe(ctx context.Context, vmName string, port int32, timeout time.Duration) (healthy, probed bool) {
 	v, err := p.mgr.ByName(vmName)
 	if err != nil || v.Status != avm.StatusRunning {
-		return false // not hosted here / not running -> no verdict, agent reports nothing usable
+		return false, false // not hosted here / not running -> no verdict, stays warming
 	}
 	for _, n := range v.NICs {
 		ip, ok := p.leases.LookupByMAC(n.MAC)
@@ -61,10 +65,12 @@ func (p *tcpHealthProbe) Probe(ctx context.Context, vmName string, port int32, t
 			DialContext(dialCtx, "tcp", net.JoinHostPort(ip.String(), strconv.Itoa(int(port))))
 		cancel()
 		if derr != nil {
-			return false
+			p.log.DebugContext(ctx, "health probe dial failed",
+				"vm_name", vmName, "port", port, "error", derr)
+			return false, true // real dial attempted and failed -> definite verdict input
 		}
 		_ = conn.Close()
-		return true
+		return true, true
 	}
-	return false
+	return false, false // no NIC with a managed-DHCP lease -> could not probe, stays warming
 }

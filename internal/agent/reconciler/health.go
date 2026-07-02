@@ -30,12 +30,16 @@ const healthProbeTick = time.Second
 // stretch the effective interval past the CP-side staleness window.
 const healthProbeConcurrency = 16
 
-// HealthProbe performs one TCP-connect probe of vmName's port with a
-// timeout, returning true on a completed connection. The production adapter
-// binds the dial to the guest bridge and resolves the IP from local
-// NIC/lease state; tests inject a stub.
+// HealthProbe performs one TCP-connect probe of vmName's port with a timeout.
+// The result is tri-state: probed reports whether a real TCP dial was attempted;
+// healthy carries the dial's outcome and is meaningful only when probed is true.
+// probed=false means the target could not be probed (VM not found / not running /
+// no managed-DHCP lease) and MUST leave hysteresis untouched so a valid backend
+// with no lease stays warming rather than being darkened. The production adapter
+// binds the dial to the guest bridge and resolves the IP from local NIC/lease
+// state; tests inject a stub.
 type HealthProbe interface {
-	Probe(ctx context.Context, vmName string, port int32, timeout time.Duration) bool
+	Probe(ctx context.Context, vmName string, port int32, timeout time.Duration) (healthy, probed bool)
 }
 
 // healthTargetState is the per-(lb, vm) hysteresis state. A target is
@@ -175,12 +179,12 @@ func (h *Health) probeDue(ctx context.Context) {
 		return
 	}
 	now := h.now()
-	due := h.sync(now)
+	due := h.syncTargets(now)
 	if len(due) == 0 {
 		return
 	}
 
-	results := make([]bool, len(due))
+	results := make([]probeResult, len(due))
 	sem := make(chan struct{}, healthProbeConcurrency)
 	var wg sync.WaitGroup
 	for i := range due {
@@ -190,7 +194,8 @@ func (h *Health) probeDue(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			timeout := time.Duration(t.TimeoutSeconds) * time.Second
-			results[idx] = h.probe.Probe(ctx, t.VMName, t.Port, timeout)
+			healthy, probed := h.probe.Probe(ctx, t.VMName, t.Port, timeout)
+			results[idx] = probeResult{healthy: healthy, probed: probed}
 		}(i, due[i].target)
 	}
 	wg.Wait()
@@ -202,10 +207,16 @@ func (h *Health) probeDue(ctx context.Context) {
 		s := h.state[key]
 		if s == nil {
 			// Target was dropped by a concurrent re-declaration between the
-			// sync snapshot and here; discard its result.
+			// syncTargets snapshot and here; discard its result.
 			continue
 		}
-		applyHysteresis(s, results[i])
+		// Only a real dial feeds hysteresis. An unprobed target (no lease / not
+		// running) holds its counters and verdict untouched - a warming target
+		// stays warming, a settled target keeps its last verdict - and is merely
+		// retried next interval so a never-leased backend is never darkened.
+		if results[i].probed {
+			applyHysteresis(s, results[i].healthy)
+		}
 		interval := time.Duration(s.target.IntervalSeconds) * time.Second
 		if interval <= 0 {
 			interval = h.tick
@@ -214,12 +225,19 @@ func (h *Health) probeDue(ctx context.Context) {
 	}
 }
 
-// sync reconciles the in-memory state map to the latest declared set: new
+// probeResult is one target's tri-state probe outcome for a due pass: healthy is
+// meaningful only when probed is true (a real TCP dial completed).
+type probeResult struct {
+	healthy bool
+	probed  bool
+}
+
+// syncTargets reconciles the in-memory state map to the latest declared set: new
 // targets are inserted (due immediately, nextProbeAt=now), targets no longer
 // declared are dropped, and existing targets have their declared parameters
 // refreshed. It returns a snapshot of the targets due at now (nextProbeAt <=
 // now) for the caller to probe outside the lock.
-func (h *Health) sync(now time.Time) []healthTargetState {
+func (h *Health) syncTargets(now time.Time) []healthTargetState {
 	desiredPtr := h.desired.Load()
 	var desired []heartbeat.DeclaredHealthCheck
 	if desiredPtr != nil {
