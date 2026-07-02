@@ -5,6 +5,9 @@
 
 # Docs site build output (mkdocs)
 /site/
+# Generated at docs build time by hooks/openapi_spec.py (copy of the canonical
+# api/openapi/control-plane.yaml, served same-origin by the REST API browser).
+/docs/api/control-plane.yaml
 
 # Test artifacts
 /coverage.out
@@ -54,3 +57,6 @@ deploy/config/*.local.yaml
 
 # rendered per-arch demo manifest (dev/manifests/demo-vm.yaml.tmpl is the source)
 /dev/manifests/demo-vm.yaml
+
+# Python bytecode (mkdocs build hooks)
+__pycache__/
