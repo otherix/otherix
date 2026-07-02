@@ -117,6 +117,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		Otwg0MTU:               outcome.otwg0MTU,
 		OverlayReachability:    outcome.overlayReachability,
 		SessionCAPublicPEM:     outcome.sessionCAPublicPEM,
+		DeclaredHealthChecks:   outcome.declaredHealthChecks,
 	})
 }
 
@@ -194,6 +195,7 @@ type heartbeatOutcome struct {
 	declaredWireGuardPeers []declaredWireGuardPeer
 	declaredFDB            []declaredFDBEntry
 	overlayReachability    []overlayReachability
+	declaredHealthChecks   []declaredHealthCheck
 	selfOverlayIP          *string
 	otwg0MTU               *int32
 	sessionCAPublicPEM     *string
@@ -333,6 +335,11 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 	}
 	outcome.declaredFDB = declaredFDB
 	outcome.overlayReachability = reachability
+	declaredHealthChecks, err := h.loadDeclaredHealthChecks(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredHealthChecks = declaredHealthChecks
 	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
 	switch {
 	case err == nil:
@@ -371,6 +378,35 @@ func (h *Handler) loadDeclaredVMs(ctx context.Context, hp store.HeartbeatProject
 			Name:         row.Name,
 			DesiredPhase: string(row.DesiredPhase),
 			Generation:   row.Generation,
+		})
+	}
+	return out, nil
+}
+
+// loadDeclaredHealthChecks returns the active L4 health probes the CP wants this
+// node's agent to run against the load-balancer backends currently placed on it
+// (ADR 0027). Surfaces as `HeartbeatResponse.declared_health_checks`. The store
+// filters to backends whose observed vm_runtime.current_node_id is this node, so
+// the probes follow the VM (a live-migration source keeps probing until cutover).
+func (h *Handler) loadDeclaredHealthChecks(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) ([]declaredHealthCheck, error) {
+	targets, err := hp.ListLoadBalancerHealthTargetsForNode(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list load balancer health targets: %v", err)
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	out := make([]declaredHealthCheck, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, declaredHealthCheck{
+			VMID:               t.VMID,
+			VMName:             t.VMName,
+			LBID:               t.LBID,
+			Port:               t.HealthCheck.Port,
+			IntervalSeconds:    t.HealthCheck.IntervalSeconds,
+			TimeoutSeconds:     t.HealthCheck.TimeoutSeconds,
+			HealthyThreshold:   t.HealthCheck.HealthyThreshold,
+			UnhealthyThreshold: t.HealthCheck.UnhealthyThreshold,
 		})
 	}
 	return out, nil

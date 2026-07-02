@@ -102,6 +102,17 @@ type ListLoadBalancersParams struct {
 	LimitCount      int32
 }
 
+// LBHealthTarget is one active-probe target the CP declares to a node: the load
+// balancer, the backend VM, and the effective health-check config the node's
+// agent must run against it. Produced per node from the LB selector join,
+// filtered to backends whose observed vm_runtime.current_node_id is that node.
+type LBHealthTarget struct {
+	VMID        uuid.UUID
+	VMName      string
+	LBID        uuid.UUID
+	HealthCheck LoadBalancerHealthCheck
+}
+
 // LBBackendHealth is the observed active-health verdict for one (load balancer,
 // backend VM) pair, reported by the VM's owning agent through the heartbeat and
 // stamped with the CP receive time (the agent's clock is never trusted for

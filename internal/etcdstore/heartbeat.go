@@ -438,3 +438,9 @@ func (h heartbeatProjection) ListOverlayNICPlacementsPinned(ctx context.Context)
 func (h heartbeatProjection) ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error) {
 	return h.s.ActiveMigrationForVM(ctx, vmID)
 }
+
+// ListLoadBalancerHealthTargetsForNode returns the active-probe targets the node
+// must run, for the declared_health_checks down-channel.
+func (h heartbeatProjection) ListLoadBalancerHealthTargetsForNode(ctx context.Context, nodeID uuid.UUID) ([]store.LBHealthTarget, error) {
+	return h.s.ListLoadBalancerHealthTargetsForNode(ctx, nodeID)
+}

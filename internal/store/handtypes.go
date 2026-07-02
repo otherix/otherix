@@ -90,6 +90,11 @@ type HeartbeatProjection interface {
 	// covers, so the declared-networks projection can attach each network's tenant
 	// IP + unicast MAC for a gateway recipient.
 	ListGatewayMembershipsForGateway(ctx context.Context, gatewayID uuid.UUID) ([]GatewayMembership, error)
+	// ListLoadBalancerHealthTargetsForNode returns the active-probe targets the
+	// node must run (its selector-matched load-balancer backends whose observed
+	// vm_runtime.current_node_id is this node), projected into
+	// declared_health_checks (ADR 0027).
+	ListLoadBalancerHealthTargetsForNode(ctx context.Context, nodeID uuid.UUID) ([]LBHealthTarget, error)
 }
 
 // OverlayNICPlacement is one NIC attached to a type=overlay network whose owning
