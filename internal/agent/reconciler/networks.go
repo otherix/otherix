@@ -46,10 +46,12 @@ type Networks struct {
 
 	// gatewayMode strips the overlay services plane. An ingress gateway hosts
 	// no VMs and is never an anycast first-hop router, so it brings up the
-	// overlay datapath (bridge + VTEP + FDB + its unicast tenant addr) but never
-	// the anycast gateway, NAT masquerade, DHCP responder, or DNS forwarder -
-	// the bridge hardware address belongs to the unicast tenant MAC, which the
-	// services plane would otherwise clobber with the shared anycast MAC.
+	// overlay datapath (bridge + VTEP + FDB + its unicast tenant veth) but never
+	// the anycast gateway, NAT masquerade, DHCP responder, or DNS forwarder - the
+	// anycast services plane is simply pointless on a node that neither routes
+	// first-hop VM traffic nor serves DHCP/DNS. (The gateway's tenant identity
+	// lives on the veth host end, not the bridge hardware address, so the services
+	// plane and the veth do not contend.)
 	gatewayMode bool
 
 	desired atomic.Pointer[networksDesired]
@@ -98,6 +100,7 @@ type appliedNetwork struct {
 	HasEgress  bool   // true for an overlay materialised with egress=nat: teardown removes the iface masquerade
 	HasDHCP    bool   // true for a dhcp-enabled overlay registered with the responder: teardown deregisters it
 	Anycast    bool   // true for a managed bridge materialised with the dhcp/dns anycast services path (anycast gateway + DNS at 169.254.1.1, plus masquerade by subnet when nat). Teardown removes the masquerade and deregisters the DHCP responder; the anycast /32 goes with RemoveBridge. Not a real-gateway path, so teardownNAT skips RemoveGatewayAddr for it.
+	HasVeth    bool   // true for a gateway overlay whose ingress veth (otvg<vni>) is up: teardown removes it, and a later GatewayAddr->nil reaps it.
 }
 
 // networksDesired is the latest CP-declared network intent for this node: the
@@ -136,10 +139,11 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 
 // NewGatewayNetworks builds the network reconciler in gateway mode. It brings up
 // each declared overlay's datapath (bridge + VTEP + FDB + the gateway tenant
-// addr) but never runs the services plane (anycast gateway, NAT masquerade,
-// DHCP, DNS). A gateway hosts no VMs and is never an anycast first-hop router,
-// so the bridge hardware address belongs to the unicast tenant MAC rather than
-// the shared anycast MAC. It takes no DHCP responder; tick==0 falls back to
+// veth) but never runs the services plane (anycast gateway, NAT masquerade,
+// DHCP, DNS): a gateway hosts no VMs and is never an anycast first-hop router, so
+// the anycast services plane is pointless on it. The gateway's tenant identity
+// lives on the veth host end, not the bridge hardware address, so the two do not
+// contend. It takes no DHCP responder; tick==0 falls back to
 // DefaultTickInterval. Returns ErrNilFabric when fabric is nil.
 func NewGatewayNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration) (*Networks, error) {
 	n, err := NewNetworks(f, nil, log, tick)
@@ -593,6 +597,18 @@ func (r *Networks) teardownManaged(ctx context.Context, id string, a appliedNetw
 		// network re-logs its first failure. Best-effort, silent: the network is
 		// going away, not recovering, so no recovery INFO here.
 		delete(r.dhcpRegisterErr, id)
+		// Always attempt veth removal: RemoveVeth is idempotent (nil on an absent
+		// otvg<vni>, so a no-op for a hypervisor overlay that never had one), and a
+		// partial create or a failed reap can leave a veth while HasVeth reads
+		// false - gating on HasVeth could leak it. Same reasoning as the
+		// unconditional RemoveMasqueradeIface / DeregisterNetwork above.
+		if err := r.fabric.RemoveVeth(netfabric.GatewayVethHostName(a.VNI)); err != nil {
+			r.log.WarnContext(ctx, "remove gateway veth failed during overlay teardown",
+				slog.String("network_id", id),
+				slog.String("error", err.Error()),
+			)
+			errs = append(errs, err)
+		}
 		if err := r.fabric.RemoveVXLAN(a.VNI); err != nil {
 			r.log.WarnContext(ctx, "remove vxlan failed during overlay teardown",
 				slog.String("network_id", id),

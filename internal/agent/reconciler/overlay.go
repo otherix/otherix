@@ -64,6 +64,7 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	// and the otvb<vni> bridge orphans with no GC (r.applied is in-process only).
 	// Recording the VNI now is safe: teardownManaged's RemoveVXLAN is idempotent
 	// (nil on an absent VTEP), so it no-ops while the bridge is still removed.
+	prevHasVeth := r.applied[d.ID].HasVeth
 	r.applied[d.ID] = appliedNetwork{BridgeName: d.BridgeName, Managed: true, Overlay: true, VNI: vniVal}
 	if err := r.fabric.EnsureVXLAN(netfabric.VXLANConfig{
 		VNI:    vniVal,
@@ -74,12 +75,22 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	}); err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
-	// An ingress gateway owns a tenant IP + a distinct unicast MAC on the bridge:
-	// the host originates and answers at the tenant IP, and the bridge claims the
-	// MAC advertised to peers in the overlay FDB so return traffic is delivered
-	// here. Only a gateway recipient receives a gateway addr; a hypervisor node
-	// gets nil and skips this, leaving the bridge MAC to the anycast services path.
-	if err := r.applyGatewayAddr(d); err != nil {
+	// An ingress gateway owns a tenant IP + a distinct unicast MAC realised as a
+	// veth pair (host end otvg<vni>, peer enslaved to the bridge), so the host
+	// originates and answers at the tenant IP without touching the bridge hardware
+	// address. Only a gateway recipient receives a gateway addr; a hypervisor node
+	// gets nil and materialises no veth, leaving the bridge MAC to the anycast
+	// services path.
+	hasVeth, err := r.applyGatewayVeth(d, vniVal, prevHasVeth)
+	// Persist HasVeth BEFORE the error check: applyGatewayVeth reports whether a
+	// veth MAY still be present (including after a partial create or a failed
+	// reap), so recording it even on error is what lets teardown reap a leaked
+	// pair. A later membership drop (GatewayAddr -> nil) is likewise detected via
+	// this flag.
+	ae := r.applied[d.ID]
+	ae.HasVeth = hasVeth
+	r.applied[d.ID] = ae
+	if err != nil {
 		return r.failed(ctx, d, err.Error())
 	}
 	converged, unparseable := r.reconcileFDB(ctx, vniVal, fdb)
@@ -100,42 +111,75 @@ func (r *Networks) applyOverlay(ctx context.Context, d heartbeat.DeclaredNetwork
 	return ready(d.ID)
 }
 
-// applyGatewayAddr pins the ingress gateway's tenant IP and its distinct unicast
-// MAC onto the overlay bridge so the gateway host originates and answers at the
-// tenant IP and the bridge owns the MAC advertised to peers in the overlay FDB.
-// The tenant IP is assigned with the overlay subnet's prefix length (from
-// d.Subnet, e.g. /24), never a /32: the subnet prefix gives the gateway host an
-// on-link route to the whole overlay subnet via the bridge, so its dial to a
-// guest VM leaves over the overlay rather than the host default route.
-// It is a no-op for a hypervisor node (d.GatewayAddr nil), which leaves the
-// bridge hardware address to the anycast services path. An unparseable IP or MAC
-// is a corrupt declared entry that can never be programmed, so it surfaces as a
-// hard error and holds the overlay divergent rather than silently materialising
-// the network without its gateway address. A missing or unparseable subnet is
-// likewise a hard error: a tenant IP without a known subnet could only be
-// installed as an unroutable /32, so failing is safer than materialising a
-// broken gateway.
-func (r *Networks) applyGatewayAddr(d heartbeat.DeclaredNetwork) error {
+// applyGatewayVeth realises the ingress gateway's tenant identity on an overlay
+// as a veth pair rather than by pinning the bridge hardware address: the host end
+// (otvg<vni>) carries the membership's tenant IP - with the overlay subnet prefix
+// from d.Subnet (e.g. /24), so the gateway has an on-link route to the whole
+// subnet and its guest dials leave over the overlay - and its distinct unicast
+// MAC; the peer end is enslaved to otvb<vni>. Ingress therefore never touches the
+// bridge hardware address and coexists with the anycast services plane.
+//
+// It returns whether a veth MAY still be present after this pass, so the caller
+// records HasVeth for a fail-closed teardown: true after any EnsureVeth attempt (a
+// partial create may have added the pair before a later step failed) and after a
+// failed or skipped reap; false only after a successful reap or the genuine
+// no-membership path. A corrupt declared IP/MAC or a missing/invalid subnet is a
+// hard error that holds the overlay divergent rather than materialising a broken
+// gateway.
+//
+// Reap (d.GatewayAddr nil while a prior membership left a veth) fails toward
+// inaction: it never tears the datapath out from under a live LOCAL session. The
+// CP's sticky reap keys on the last heartbeat's active_sessions, which can miss a
+// session opened since; the agent's own count is always current, so a veth with a
+// live local session is kept and reaped on a later pass once it drains.
+func (r *Networks) applyGatewayVeth(d heartbeat.DeclaredNetwork, vni uint32, hadVeth bool) (bool, error) {
+	host := netfabric.GatewayVethHostName(vni)
 	if d.GatewayAddr == nil {
-		return nil
+		if !hadVeth {
+			return false, nil
+		}
+		if r.activeSessions(d.ID) > 0 {
+			// Keep the datapath while a local session is live; retry the reap
+			// next pass. hasVeth stays true so teardown still reaps if the
+			// network is deleted meanwhile.
+			return true, nil
+		}
+		if err := r.fabric.RemoveVeth(host); err != nil {
+			// Reap failed: the veth may still be present, so report hasVeth true
+			// and retry next pass rather than forgetting it (which would leak).
+			return true, fmt.Errorf("remove stale gateway veth %s: %v", host, err)
+		}
+		return false, nil
 	}
 	ip, err := netip.ParseAddr(d.GatewayAddr.IP)
 	if err != nil {
-		return fmt.Errorf("gateway addr ip %q: %v", d.GatewayAddr.IP, err)
+		return hadVeth, fmt.Errorf("gateway addr ip %q: %v", d.GatewayAddr.IP, err)
 	}
 	mac, err := net.ParseMAC(d.GatewayAddr.MAC)
 	if err != nil {
-		return fmt.Errorf("gateway addr mac %q: %v", d.GatewayAddr.MAC, err)
+		return hadVeth, fmt.Errorf("gateway addr mac %q: %v", d.GatewayAddr.MAC, err)
 	}
 	if d.Subnet == nil {
-		return fmt.Errorf("gateway addr %s: overlay has no subnet to route the tenant IP", ip)
+		return hadVeth, fmt.Errorf("gateway addr %s: overlay has no subnet to route the tenant IP", ip)
 	}
 	subnet, err := netip.ParsePrefix(*d.Subnet)
 	if err != nil {
-		return fmt.Errorf("gateway addr subnet %q: %v", *d.Subnet, err)
+		return hadVeth, fmt.Errorf("gateway addr subnet %q: %v", *d.Subnet, err)
 	}
 	tenant := netip.PrefixFrom(ip, subnet.Bits())
-	return r.fabric.EnsureUnicastGateway(d.BridgeName, tenant, mac)
+	if err := r.fabric.EnsureVeth(netfabric.VethConfig{
+		HostName: host,
+		PeerName: netfabric.GatewayVethPeerName(vni),
+		Bridge:   d.BridgeName,
+		Addr:     tenant,
+		MAC:      mac,
+		MTU:      int(d.Mtu),
+	}); err != nil {
+		// A partial create may have added the pair; report hasVeth true so
+		// teardown reaps it even though this pass failed.
+		return true, err
+	}
+	return true, nil
 }
 
 // overlayNeedsServices reports whether an overlay needs the host-side services
@@ -197,6 +241,7 @@ func (r *Networks) applyOverlayServices(ctx context.Context, d heartbeat.Declare
 		VNI:        vniVal,
 		HasEgress:  nat,
 		HasDHCP:    d.DhcpEnabled && r.dhcp != nil,
+		HasVeth:    r.applied[d.ID].HasVeth,
 	}
 }
 
