@@ -33,6 +33,7 @@ Example:
 	}
 	cmd.Flags().Int(flagPort, 0, "guest TCP port ingress connections target (1..65535, required)")
 	cmd.Flags().String(flagSelector, "", "backend selector as k=v[,k=v...] (required)")
+	registerHealthCheckFlags(cmd)
 	cmd.Flags().String(flagOutput, "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the load balancer UUID in the text output")
 	_ = cmd.MarkFlagRequired(flagPort)
@@ -71,10 +72,16 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	showIDs, _ := cmd.Flags().GetBool(flagShowIDs)
 
+	healthCheck, err := healthCheckFromFlags(cmd)
+	if err != nil {
+		return err
+	}
+
 	created, err := c.CreateLoadBalancer(cmd.Context(), cpclient.CreateLoadBalancerParams{
-		Name:     name,
-		Port:     int32(port), //nolint:gosec // port validated in 1..65535 above.
-		Selector: selector,
+		Name:        name,
+		Port:        int32(port), //nolint:gosec // port validated in 1..65535 above.
+		Selector:    selector,
+		HealthCheck: healthCheck,
 	})
 	if err != nil {
 		return classifyError(err)

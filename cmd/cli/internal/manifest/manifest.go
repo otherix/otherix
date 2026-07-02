@@ -113,4 +113,20 @@ type VMSpec struct {
 type LoadBalancerSpec struct {
 	Port     int               `yaml:"port"`
 	Selector map[string]string `yaml:"selector"`
+	// HealthCheck is the optional active-health-check config (ADR 0027). When
+	// present, only the set sub-fields are forwarded so the CP applies its
+	// default for each omitted one.
+	HealthCheck *LoadBalancerHealthCheckSpec `yaml:"healthCheck"`
+}
+
+// LoadBalancerHealthCheckSpec is the healthCheck spec sub-object for kind
+// LoadBalancer. Every field is a pointer so an omitted key is forwarded as
+// "unset" and the CP applies its default. Port nil means the probe follows
+// the load balancer's traffic port.
+type LoadBalancerHealthCheckSpec struct {
+	Port               *int `yaml:"port"`
+	IntervalSeconds    *int `yaml:"intervalSeconds"`
+	TimeoutSeconds     *int `yaml:"timeoutSeconds"`
+	HealthyThreshold   *int `yaml:"healthyThreshold"`
+	UnhealthyThreshold *int `yaml:"unhealthyThreshold"`
 }

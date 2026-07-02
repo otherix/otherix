@@ -661,6 +661,53 @@ func TestProjectLoadBalancerRoundTrips(t *testing.T) {
 	}
 }
 
+// TestProjectLoadBalancerHealthCheckRoundTrips proves the effective
+// health-check config survives `lb get -o yaml | create -f`: the projected
+// manifest carries a healthCheck block and re-parsing yields a create plan
+// whose HealthCheck sub-fields equal the projected effective values.
+func TestProjectLoadBalancerHealthCheckRoundTrips(t *testing.T) {
+	port, interval, timeout, ht, ut := 8080, 5, 3, 4, 6
+	lb := cpclient.LoadBalancer{
+		ID:       "22222222-3333-4444-5555-666666666666",
+		Name:     "web",
+		OwnerID:  "99999999-9999-9999-9999-999999999999",
+		Port:     80,
+		Selector: map[string]string{"app": "web"},
+		HealthCheck: cpclient.HealthCheck{
+			Port:               &port,
+			IntervalSeconds:    &interval,
+			TimeoutSeconds:     &timeout,
+			HealthyThreshold:   &ht,
+			UnhealthyThreshold: &ut,
+		},
+	}
+	out, err := manifest.ProjectLoadBalancer(lb)
+	if err != nil {
+		t.Fatalf("ProjectLoadBalancer() error = %v", err)
+	}
+	if !strings.Contains(string(out), "healthCheck:") {
+		t.Fatalf("projection missing healthCheck block:\n%s", out)
+	}
+	plan := mustCreatePlan(t, out)
+	if len(plan) != 1 || plan[0].LB == nil {
+		t.Fatalf("plan = %+v, want 1 load balancer op", plan)
+	}
+	got := plan[0].LB.HealthCheck
+	if got == nil {
+		t.Fatalf("HealthCheck nil after round-trip")
+	}
+	want := &cpclient.HealthCheck{
+		Port:               &port,
+		IntervalSeconds:    &interval,
+		TimeoutSeconds:     &timeout,
+		HealthyThreshold:   &ht,
+		UnhealthyThreshold: &ut,
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("HealthCheck round-trip mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestProjectVMSingleNICOnly(t *testing.T) {
 	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512, Networks: []string{"net-a", "net-b"}}
 	out, err := manifest.ProjectVM(v)

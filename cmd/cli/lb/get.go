@@ -59,7 +59,51 @@ func renderGet(cmd *cobra.Command, lb cpclient.LoadBalancer) error {
 	printf(cmd, "owner_id: %s\n", lb.OwnerID)
 	printf(cmd, "port: %d\n", lb.Port)
 	printf(cmd, "selector: %s\n", formatSelector(lb.Selector))
+	hc := lb.HealthCheck
+	printf(cmd, "health_check:\n")
+	printf(cmd, "  port: %d\n", derefInt(hc.Port))
+	printf(cmd, "  interval_seconds: %d\n", derefInt(hc.IntervalSeconds))
+	printf(cmd, "  timeout_seconds: %d\n", derefInt(hc.TimeoutSeconds))
+	printf(cmd, "  healthy_threshold: %d\n", derefInt(hc.HealthyThreshold))
+	printf(cmd, "  unhealthy_threshold: %d\n", derefInt(hc.UnhealthyThreshold))
+	if len(lb.Backends) > 0 {
+		printf(cmd, "backends:\n")
+		for _, b := range lb.Backends {
+			printf(cmd, "  - %s  healthy=%s  last_probed=%s\n", b.VMName, healthyLabel(b.Healthy), reportedLabel(b.ReportedAt))
+		}
+	}
 	printf(cmd, "created_at: %s\n", lb.CreatedAt)
 	printf(cmd, "updated_at: %s\n", lb.UpdatedAt)
 	return nil
+}
+
+// derefInt returns the pointed-to int, or 0 when nil. A load-balancer view
+// from the CP always fills every health-check field, so the nil path is only
+// a defensive fallback.
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// healthyLabel renders a backend's debounced health verdict: true / false, or
+// "unknown" when no verdict has been reported yet (a warming backend).
+func healthyLabel(h *bool) string {
+	if h == nil {
+		return "unknown"
+	}
+	if *h {
+		return "true"
+	}
+	return "false"
+}
+
+// reportedLabel renders the last-probe timestamp, or "-" when none has been
+// reported yet.
+func reportedLabel(r *string) string {
+	if r == nil || *r == "" {
+		return "-"
+	}
+	return *r
 }

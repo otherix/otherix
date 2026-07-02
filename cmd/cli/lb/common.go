@@ -26,8 +26,65 @@ const (
 	flagPort     = "port"
 	flagSelector = "selector"
 
+	flagHealthPort               = "health-port"
+	flagHealthInterval           = "health-interval"
+	flagHealthTimeout            = "health-timeout"
+	flagHealthHealthyThreshold   = "health-healthy-threshold"
+	flagHealthUnhealthyThreshold = "health-unhealthy-threshold"
+
 	defaultListLimit = 20
 )
+
+// registerHealthCheckFlags adds the five optional active-health-check flags
+// to a create/update command. All are plain ints; only the ones the operator
+// sets are sent (see healthCheckFromFlags).
+func registerHealthCheckFlags(cmd *cobra.Command) {
+	cmd.Flags().Int(flagHealthPort, 0, "health-check TCP port to probe on each backend (default: follow --port)")
+	cmd.Flags().Int(flagHealthInterval, 0, "seconds between health probes (1..300, default 10)")
+	cmd.Flags().Int(flagHealthTimeout, 0, "per-probe connect timeout in seconds (1..60, default 2)")
+	cmd.Flags().Int(flagHealthHealthyThreshold, 0, "consecutive successes before a backend is healthy (1..10, default 2)")
+	cmd.Flags().Int(flagHealthUnhealthyThreshold, 0, "consecutive failures before a backend is unhealthy (1..10, default 3)")
+}
+
+// healthCheckFromFlags builds a *cpclient.HealthCheck from the --health-*
+// flags, carrying only the sub-fields the operator set so the CP applies its
+// default for each omitted one. Returns (nil, nil) when no --health-* flag was
+// supplied, so the whole health_check block is omitted from the request.
+func healthCheckFromFlags(cmd *cobra.Command) (*cpclient.HealthCheck, error) {
+	var hc cpclient.HealthCheck
+	set := false
+	bind := func(flag string, dst **int) error {
+		if !cmd.Flags().Changed(flag) {
+			return nil
+		}
+		v, err := cmd.Flags().GetInt(flag)
+		if err != nil {
+			return err
+		}
+		*dst = &v
+		set = true
+		return nil
+	}
+	if err := bind(flagHealthPort, &hc.Port); err != nil {
+		return nil, err
+	}
+	if err := bind(flagHealthInterval, &hc.IntervalSeconds); err != nil {
+		return nil, err
+	}
+	if err := bind(flagHealthTimeout, &hc.TimeoutSeconds); err != nil {
+		return nil, err
+	}
+	if err := bind(flagHealthHealthyThreshold, &hc.HealthyThreshold); err != nil {
+		return nil, err
+	}
+	if err := bind(flagHealthUnhealthyThreshold, &hc.UnhealthyThreshold); err != nil {
+		return nil, err
+	}
+	if !set {
+		return nil, nil
+	}
+	return &hc, nil
+}
 
 func clientFromFlags(cmd *cobra.Command) (*cpclient.Client, error) {
 	return cliauth.BuildClient(cmd)

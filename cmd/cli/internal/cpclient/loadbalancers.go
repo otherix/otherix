@@ -11,18 +11,76 @@ import (
 	"strconv"
 )
 
+// HealthCheck is the active L4 (TCP-connect) health-check configuration for
+// a load balancer's backends (ADR 0027). On a create/update request only the
+// sub-fields the caller set are non-nil and thus sent, so the CP applies its
+// default for every omitted sub-field; a nil Port means the probe follows the
+// load balancer's traffic port. On a response the CP fills every sub-field
+// with the effective value.
+type HealthCheck struct {
+	Port               *int `json:"port,omitempty"`
+	IntervalSeconds    *int `json:"interval_seconds,omitempty"`
+	TimeoutSeconds     *int `json:"timeout_seconds,omitempty"`
+	HealthyThreshold   *int `json:"healthy_threshold,omitempty"`
+	UnhealthyThreshold *int `json:"unhealthy_threshold,omitempty"`
+}
+
+// body assembles the health_check request sub-object, including only the
+// sub-fields the caller set so the CP applies its default for each omitted
+// one. Returns nil when no sub-field is set (caller omits the block entirely).
+func (h *HealthCheck) body() map[string]any {
+	if h == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if h.Port != nil {
+		out["port"] = *h.Port
+	}
+	if h.IntervalSeconds != nil {
+		out["interval_seconds"] = *h.IntervalSeconds
+	}
+	if h.TimeoutSeconds != nil {
+		out["timeout_seconds"] = *h.TimeoutSeconds
+	}
+	if h.HealthyThreshold != nil {
+		out["healthy_threshold"] = *h.HealthyThreshold
+	}
+	if h.UnhealthyThreshold != nil {
+		out["unhealthy_threshold"] = *h.UnhealthyThreshold
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// Backend is one backend of a load balancer: a VM the selector currently
+// matches, with its latest observed active-health verdict. Healthy and
+// ReportedAt are nil when no health record exists yet (a warming backend),
+// distinguishable from a confirmed unhealthy verdict.
+type Backend struct {
+	VMID       string  `json:"vm_id"`
+	VMName     string  `json:"vm_name"`
+	Healthy    *bool   `json:"healthy"`
+	ReportedAt *string `json:"reported_at"`
+}
+
 // LoadBalancer mirrors the LoadBalancer projection the CP
 // /v1/loadbalancers surface produces. A load balancer is a named L4
 // front for the VMs whose labels match Selector; Port is the guest TCP
-// port ingress connections target.
+// port ingress connections target. HealthCheck carries the effective
+// active-health config; Backends is enumerated on the single-resource get
+// (the list projection returns it empty).
 type LoadBalancer struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	OwnerID   string            `json:"owner_id"`
-	Port      int32             `json:"port"`
-	Selector  map[string]string `json:"selector"`
-	CreatedAt string            `json:"created_at"`
-	UpdatedAt string            `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	OwnerID     string            `json:"owner_id"`
+	Port        int32             `json:"port"`
+	Selector    map[string]string `json:"selector"`
+	HealthCheck HealthCheck       `json:"health_check"`
+	Backends    []Backend         `json:"backends"`
+	CreatedAt   string            `json:"created_at"`
+	UpdatedAt   string            `json:"updated_at"`
 }
 
 // LoadBalancerList is the cursor-paginated payload of
@@ -38,19 +96,26 @@ type LoadBalancerList struct {
 // /v1/loadbalancers. All three fields are required by the server
 // (LoadBalancerCreate: name, port, selector).
 type CreateLoadBalancerParams struct {
-	Name     string
-	Port     int32
-	Selector map[string]string
+	Name        string
+	Port        int32
+	Selector    map[string]string
+	HealthCheck *HealthCheck
 }
 
 // body assembles the JSON request body for POST /v1/loadbalancers.
-// Split out so the assembly is unit-testable without a live server.
+// Split out so the assembly is unit-testable without a live server. The
+// health_check object is included only when the caller supplied at least one
+// health-check field, so an omitted block leaves the server defaults intact.
 func (p CreateLoadBalancerParams) body() map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"name":     p.Name,
 		"port":     p.Port,
 		"selector": p.Selector,
 	}
+	if hc := p.HealthCheck.body(); hc != nil {
+		out["health_check"] = hc
+	}
+	return out
 }
 
 // UpdateLoadBalancerParams collects the optional fields for PATCH
@@ -58,13 +123,15 @@ func (p CreateLoadBalancerParams) body() map[string]any {
 // is omitted from the request body and the server leaves it unchanged
 // (LoadBalancerUpdate: all fields optional).
 type UpdateLoadBalancerParams struct {
-	Name     *string
-	Port     *int32
-	Selector map[string]string
+	Name        *string
+	Port        *int32
+	Selector    map[string]string
+	HealthCheck *HealthCheck
 }
 
 // body assembles the PATCH body, omitting every field the caller did
-// not set so the server leaves it untouched.
+// not set so the server leaves it untouched. The health_check object, when
+// present, carries only the sub-fields the caller changed.
 func (p UpdateLoadBalancerParams) body() map[string]any {
 	out := map[string]any{}
 	if p.Name != nil {
@@ -75,6 +142,9 @@ func (p UpdateLoadBalancerParams) body() map[string]any {
 	}
 	if p.Selector != nil {
 		out["selector"] = p.Selector
+	}
+	if hc := p.HealthCheck.body(); hc != nil {
+		out["health_check"] = hc
 	}
 	return out
 }

@@ -266,9 +266,27 @@ func loadBalancerCreateOp(d Document) (CreateOp, error) {
 		return CreateOp{}, err
 	}
 	params := cpclient.CreateLoadBalancerParams{
-		Name:     d.Name,
-		Port:     int32(s.Port), //nolint:gosec // port validated in 1..65535 by DecodeLoadBalancerSpec.
-		Selector: s.Selector,
+		Name:        d.Name,
+		Port:        int32(s.Port), //nolint:gosec // port validated in 1..65535 by DecodeLoadBalancerSpec.
+		Selector:    s.Selector,
+		HealthCheck: healthCheckFromSpec(s.HealthCheck),
 	}
 	return CreateOp{Kind: KindLoadBalancer, Name: d.Name, LB: &params}, nil
+}
+
+// healthCheckFromSpec maps a manifest healthCheck sub-object onto the client
+// HealthCheck request shape, preserving the set-vs-unset distinction so the CP
+// applies its default for each omitted sub-field. Returns nil when the
+// manifest carried no healthCheck block.
+func healthCheckFromSpec(s *LoadBalancerHealthCheckSpec) *cpclient.HealthCheck {
+	if s == nil {
+		return nil
+	}
+	return &cpclient.HealthCheck{
+		Port:               s.Port,
+		IntervalSeconds:    s.IntervalSeconds,
+		TimeoutSeconds:     s.TimeoutSeconds,
+		HealthyThreshold:   s.HealthyThreshold,
+		UnhealthyThreshold: s.UnhealthyThreshold,
+	}
 }
