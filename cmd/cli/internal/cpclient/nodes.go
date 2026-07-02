@@ -28,6 +28,7 @@ type Node struct {
 	ID           uuid.UUID         `json:"id"`
 	Name         string            `json:"name"`
 	Architecture string            `json:"architecture"`
+	Roles        []string          `json:"roles"`
 	Status       string            `json:"status"`
 	CordonedAt   *string           `json:"cordoned_at,omitempty"`
 	Labels       map[string]string `json:"labels"`

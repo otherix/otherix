@@ -114,6 +114,7 @@ type nodeView struct {
 	ID                       string                 `json:"id"`
 	Name                     string                 `json:"name"`
 	Architecture             string                 `json:"architecture"`
+	Roles                    []string               `json:"roles"`
 	AdvertisedEndpoint       string                 `json:"advertised_endpoint"`
 	Migration                migrationCap           `json:"migration"`
 	Status                   string                 `json:"status"`
@@ -199,6 +200,7 @@ type nodeSummaryView struct {
 	ID           string            `json:"id"`
 	Name         string            `json:"name"`
 	Architecture string            `json:"architecture"`
+	Roles        []string          `json:"roles"`
 	Status       string            `json:"status"`
 	CordonedAt   *string           `json:"cordoned_at"`
 	Labels       map[string]string `json:"labels"`
@@ -224,6 +226,7 @@ func toViewEffective(n store.NodeEffectiveAvailability) nodeView {
 		ID:                 n.ID.String(),
 		Name:               n.Name,
 		Architecture:       string(n.Architecture),
+		Roles:              store.NodeRoles(n.GatewayRole),
 		AdvertisedEndpoint: n.AdvertisedEndpoint,
 		Migration:          migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
 		Status:             string(n.Status),
@@ -410,6 +413,7 @@ func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
 		ID:           n.ID.String(),
 		Name:         n.Name,
 		Architecture: string(n.Architecture),
+		Roles:        store.NodeRoles(n.GatewayRole),
 		Status:       string(n.Status),
 		Labels:       decodeLabels(n.Labels),
 		CreatedAt:    n.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -454,6 +458,7 @@ func toView(n store.Node) nodeView {
 		ID:                 n.ID.String(),
 		Name:               n.Name,
 		Architecture:       string(n.Architecture),
+		Roles:              n.Roles(),
 		AdvertisedEndpoint: n.AdvertisedEndpoint,
 		Migration:          migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
 		Status:             string(n.Status),
@@ -502,6 +507,7 @@ func toSummaryView(n store.Node) nodeSummaryView {
 		ID:           n.ID.String(),
 		Name:         n.Name,
 		Architecture: string(n.Architecture),
+		Roles:        n.Roles(),
 		Status:       string(n.Status),
 		Labels:       decodeLabels(n.Labels),
 		CreatedAt:    n.CreatedAt.UTC().Format(time.RFC3339Nano),
