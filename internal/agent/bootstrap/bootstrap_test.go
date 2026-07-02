@@ -163,37 +163,6 @@ func TestGenerateKeypairAndCSR_AcceptedByAuthValidateCSR(t *testing.T) {
 	}
 }
 
-// TestGenerateKeypairAndCSR_GatewayPrefix confirms the gateway identity prefix
-// threads into both the Subject CN and the SAN DNS, so a gateway bootstrap mints
-// a "gateway-<name>" CSR (matching the cert the CP issues via SignGatewayCSR).
-func TestGenerateKeypairAndCSR_GatewayPrefix(t *testing.T) {
-	_, csrPEM, _, err := generateKeypairAndCSR(gatewayCNPrefix, "edge1")
-	if err != nil {
-		t.Fatalf("generateKeypairAndCSR: %v", err)
-	}
-	block, _ := pem.Decode(csrPEM)
-	if block == nil {
-		t.Fatal("decode csrPEM: nil block")
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		t.Fatalf("parse csr: %v", err)
-	}
-	if got, want := csr.Subject.CommonName, "gateway-edge1"; got != want {
-		t.Errorf("Subject.CommonName = %q, want %q", got, want)
-	}
-	wantDNS := "gateway-edge1.agents.otherix.local"
-	found := false
-	for _, dns := range csr.DNSNames {
-		if dns == wantDNS {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("CSR DNSNames missing %q (have %v)", wantDNS, csr.DNSNames)
-	}
-}
-
 // caChain bundles a freshly-generated cluster CA + a leaf cert signed
 // by it. Used by chain-verification tests to avoid repeating boilerplate.
 type caChain struct {

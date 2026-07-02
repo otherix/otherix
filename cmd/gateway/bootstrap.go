@@ -177,7 +177,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 		slog.String("architecture", cfg.Architecture),
 	)
 
-	result, err := bootstrap.Gateway(ctx, cfg, log)
+	result, err := bootstrap.Bootstrap(ctx, cfg, log)
 	if err != nil {
 		return fmt.Errorf("bootstrap protocol: %w", err)
 	}

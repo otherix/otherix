@@ -519,9 +519,11 @@ func (c *bufferedConn) CloseWrite() error {
 
 // gatewayTLSConfig builds the TLS trust for the gateway leg: it reuses the
 // connector's configured trust (the cluster CA bundle per ADR 0026) and pins the
-// ServerName to the splicer host, since the gateway leaf is cluster-CA-signed
-// with its advertised endpoint in the SAN. It never disables verification on its
-// own (only an explicit operator InsecureSkipTLSVerify does).
+// ServerName to the splicer host, which is the gateway node's ingress host. The
+// node's cluster-CA-signed leaf carries that ingress host in its SAN, so the pin
+// verifies even when the ingress hostname differs from the control hostname. It
+// never disables verification on its own (only an explicit operator
+// InsecureSkipTLSVerify does).
 func gatewayTLSConfig(cfg Config, host string) (*tls.Config, error) {
 	base, err := resolveTLSConfig(cfg)
 	if err != nil {

@@ -226,26 +226,20 @@ func hasCAKeyUsageBits(value []byte) bool {
 //     requests and act as clients on the heartbeat path).
 //   - Serial: cryptographically-random 64-bit positive integer.
 //   - SignatureAlgorithm: ECDSAWithSHA384 (matches the CA's P-384 key).
-func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
-	return signLeaf(csr, "node-"+nodeName, advertisedEndpoint, caCert, caKey, now)
-}
-
-// SignGatewayCSR signs a validated CSR for a self-registering ingress gateway.
-// It mirrors SignCSR's server-authoritative template but stamps the gateway
-// identity: Subject CN "gateway-<name>" and SAN DNS
-// "gateway-<name>.agents.otherix.local". The advertised endpoint host is added
-// as a SAN exactly as for a node, so the CP can dial the gateway at its real
-// address. Returns the issued cert in PEM form plus the parsed *x509.Certificate.
-func SignGatewayCSR(csr *x509.CertificateRequest, name, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
-	return signLeaf(csr, "gateway-"+name, advertisedEndpoint, caCert, caKey, now)
+func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time, additionalSANEndpoints ...string) (certPEM []byte, cert *x509.Certificate, err error) {
+	endpoints := append([]string{advertisedEndpoint}, additionalSANEndpoints...)
+	return signLeaf(csr, "node-"+nodeName, endpoints, caCert, caKey, now)
 }
 
 // signLeaf builds and signs a server-authoritative leaf cert from a validated
-// CSR. commonName is the full Subject CN (e.g. "node-foo" or "gateway-edge1");
-// it also seeds the primary SAN as "<commonName>.agents.otherix.local". The
-// CSR's own Subject / SAN / extensions are ignored entirely (defense-in-depth
-// against CN injection). See SignCSR for the full template-field rationale.
-func signLeaf(csr *x509.CertificateRequest, commonName, advertisedEndpoint string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
+// CSR. commonName is the full Subject CN (e.g. "node-foo"); it also seeds the
+// primary SAN as "<commonName>.agents.otherix.local". Each endpoint in
+// sanEndpoints contributes its host to the SAN (an empty or unparseable endpoint
+// contributes nothing), so a node whose control and ingress listeners answer on
+// different hostnames carries both in one leaf. The CSR's own Subject / SAN /
+// extensions are ignored entirely (defense-in-depth against CN injection). See
+// SignCSR for the full template-field rationale.
+func signLeaf(csr *x509.CertificateRequest, commonName string, sanEndpoints []string, caCert *x509.Certificate, caKey crypto.Signer, now time.Time) (certPEM []byte, cert *x509.Certificate, err error) {
 	serial, err := randomLeafSerial()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate serial: %v", err)
@@ -274,10 +268,16 @@ func signLeaf(csr *x509.CertificateRequest, commonName, advertisedEndpoint strin
 		SignatureAlgorithm: x509.ECDSAWithSHA384,
 	}
 
-	// Derive an additional SAN from the node's advertised endpoint so the CP can
-	// dial the agent at its real address. Server-authoritative: the endpoint is
-	// the CP-persisted advertised_endpoint, NOT the CSR's SAN (still ignored).
-	if host := sanHostFromEndpoint(advertisedEndpoint); host != "" {
+	// Derive additional SANs from the node's advertised endpoints so a caller can
+	// reach the node at its real address on every listener it advertises (the
+	// control endpoint, plus the ingress endpoint for a gateway node whose ingress
+	// host differs from its control host). Server-authoritative: the endpoints are
+	// the CP-persisted values, NOT the CSR's SAN (still ignored).
+	for _, endpoint := range sanEndpoints {
+		host := sanHostFromEndpoint(endpoint)
+		if host == "" {
+			continue
+		}
 		if ip := net.ParseIP(host); ip != nil {
 			template.IPAddresses = appendUniqueIP(template.IPAddresses, ip)
 		} else {

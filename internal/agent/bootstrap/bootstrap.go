@@ -23,15 +23,10 @@ import (
 // BootstrapConfig.RequestTimeout when needed.
 const defaultRequestTimeout = 30 * time.Second
 
-// nodeCNPrefix and gatewayCNPrefix are the Subject-CN / SAN-DNS identity
-// prefixes the CSR carries for a hypervisor agent and an ingress gateway
-// respectively. The CP signs the leaf with the prefix matching the join
-// token's kind (node-<name> per auth.SignCSR, gateway-<name> per
-// auth.SignGatewayCSR); the CSR prefix is populated for realism and audit.
-const (
-	nodeCNPrefix    = "node-"
-	gatewayCNPrefix = "gateway-"
-)
+// nodeCNPrefix is the Subject-CN / SAN-DNS identity prefix the CSR carries.
+// The CP signs the leaf with node-<name> per auth.SignCSR regardless of the
+// node's role; the CSR prefix is populated for realism and audit.
+const nodeCNPrefix = "node-"
 
 // Result is the in-memory bundle produced by a successful Bootstrap
 // run. KeyPEM, CertPEM, and CACertPEM are PEM-encoded blobs ready for
@@ -71,16 +66,8 @@ func Bootstrap(ctx context.Context, cfg *config.BootstrapConfig, log *slog.Logge
 	return bootstrapWithIdentity(ctx, cfg, log, nodeCNPrefix)
 }
 
-// Gateway executes the join protocol for a self-registering ingress gateway.
-// It is identical to Bootstrap except the generated CSR carries the
-// "gateway-<name>" identity prefix, matching the cert the CP issues for a
-// gateway join token (auth.SignGatewayCSR).
-func Gateway(ctx context.Context, cfg *config.BootstrapConfig, log *slog.Logger) (*Result, error) {
-	return bootstrapWithIdentity(ctx, cfg, log, gatewayCNPrefix)
-}
-
 // bootstrapWithIdentity is the shared join-protocol body; cnPrefix selects the
-// CSR identity prefix (node- or gateway-).
+// CSR identity prefix (currently always node-).
 func bootstrapWithIdentity(ctx context.Context, cfg *config.BootstrapConfig, log *slog.Logger, cnPrefix string) (*Result, error) {
 	if cfg == nil {
 		return nil, errors.New("bootstrap: config is nil")
