@@ -34,6 +34,11 @@ type fakeStore struct {
 	vms        map[uuid.UUID]store.VM
 	runtimes   map[uuid.UUID]store.VMRuntime
 	runtimeErr map[uuid.UUID]error // injected transient VMRuntimeByID error
+
+	// lbHealth holds observed backend-health verdicts keyed by (lb id, vm id);
+	// healthErr injects a transient ListLBBackendHealth failure per lb id.
+	lbHealth  map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth
+	healthErr map[uuid.UUID]error
 }
 
 func newFakeStore() *fakeStore {
@@ -43,7 +48,31 @@ func newFakeStore() *fakeStore {
 		vms:        map[uuid.UUID]store.VM{},
 		runtimes:   map[uuid.UUID]store.VMRuntime{},
 		runtimeErr: map[uuid.UUID]error{},
+		lbHealth:   map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth{},
+		healthErr:  map[uuid.UUID]error{},
 	}
+}
+
+// ListLBBackendHealth returns a copy of the seeded verdicts for the load
+// balancer, or an injected transient error.
+func (f *fakeStore) ListLBBackendHealth(_ context.Context, lbID uuid.UUID) (map[uuid.UUID]store.LBBackendHealth, error) {
+	if err := f.healthErr[lbID]; err != nil {
+		return nil, err
+	}
+	src := f.lbHealth[lbID]
+	out := make(map[uuid.UUID]store.LBBackendHealth, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// seedHealth records an observed active-health verdict for one (lb, vm) pair.
+func (f *fakeStore) seedHealth(lbID, vmID uuid.UUID, healthy bool, reportedAt time.Time) {
+	if f.lbHealth[lbID] == nil {
+		f.lbHealth[lbID] = map[uuid.UUID]store.LBBackendHealth{}
+	}
+	f.lbHealth[lbID][vmID] = store.LBBackendHealth{Healthy: healthy, ReportedAt: reportedAt}
 }
 
 // ListVMsByOwner returns the owner's non-deleted VMs (order is unspecified,

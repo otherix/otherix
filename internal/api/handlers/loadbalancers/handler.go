@@ -35,6 +35,12 @@ type Store interface {
 	// runtime phase.
 	ListVMsByOwner(ctx context.Context, ownerID uuid.UUID) ([]store.VM, error)
 	VMRuntimeByID(ctx context.Context, vmID uuid.UUID) (store.VMRuntime, error)
+
+	// ListLBBackendHealth returns the observed active-health verdicts for a load
+	// balancer's backends, keyed by backend VM id. Connect eligibility uses it to
+	// subtract confirmed-not-healthy backends; an absent or stale record leaves a
+	// running backend included (health is advisory, per ADR 0027).
+	ListLBBackendHealth(ctx context.Context, lbID uuid.UUID) (map[uuid.UUID]store.LBBackendHealth, error)
 }
 
 // IngressBroker resolves connect coordinates for a (vm, port). It is held so
