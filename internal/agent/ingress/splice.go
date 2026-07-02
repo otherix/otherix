@@ -43,22 +43,23 @@ const (
 )
 
 // dialFunc is the dial seam the connect handler uses to reach the target over
-// the overlay. bridge is the overlay bridge the guest IP was validated on; the
-// production dialer binds the connection to it so the dial egresses the same
-// datapath the anti-SSRF neighbor check ran on, never a route-table-selected
-// bridge from a different overlay. Tests substitute a dialer that reaches a
-// loopback stub and ignore bridge.
-type dialFunc func(ctx context.Context, network, addr, bridge string) (net.Conn, error)
+// the overlay. device is the per-overlay veth host-end device the guest IP was
+// validated on; the production dialer binds the connection to it (SO_BINDTODEVICE)
+// so the dial egresses the same datapath the anti-SSRF neighbor check ran on,
+// never a route-table-selected device from a different overlay. Tests substitute
+// a dialer that reaches a loopback stub and ignore device.
+type dialFunc func(ctx context.Context, network, addr, device string) (net.Conn, error)
 
 // OverlayResolver maps a guest IP to the overlay datapath whose CP-declared
 // subnet contains it and tracks live ingress sessions per network. The network
 // reconciler (*reconciler.Networks) satisfies it. OverlayNetworkForIP finds which
-// overlay datapath a session credential's guest IP lives on (bridge for the dial
-// binding, network id for session accounting); AcquireSession/ReleaseSession
-// maintain the per-network live-session counter the gateway reports through its
-// heartbeat so the CP keeps the gateway's membership sticky while sessions drain.
+// overlay datapath a session credential's guest IP lives on (the per-overlay veth
+// host-end device for the dial binding, network id for session accounting);
+// AcquireSession/ReleaseSession maintain the per-network live-session counter the
+// gateway reports through its heartbeat so the CP keeps the gateway's membership
+// sticky while sessions drain.
 type OverlayResolver interface {
-	OverlayNetworkForIP(ip netip.Addr) (bridge, networkID string, ok bool)
+	OverlayNetworkForIP(ip netip.Addr) (device, networkID string, ok bool)
 	AcquireSession(networkID string)
 	ReleaseSession(networkID string)
 }
@@ -102,8 +103,8 @@ type ConnectHandler struct {
 // default connection-slot caps.
 func NewConnectHandler(deps ConnectDeps, log *slog.Logger) *ConnectHandler {
 	return &ConnectHandler{
-		dial: func(ctx context.Context, network, addr, bridge string) (net.Conn, error) {
-			return (&net.Dialer{Control: netfabric.BindToDeviceControl(bridge)}).DialContext(ctx, network, addr)
+		dial: func(ctx context.Context, network, addr, device string) (net.Conn, error) {
+			return (&net.Dialer{Control: netfabric.BindToDeviceControl(device)}).DialContext(ctx, network, addr)
 		},
 		fabric:   deps.Fabric,
 		overlays: deps.Overlays,
@@ -161,23 +162,23 @@ func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the overlay bridge the guest IP lives on, then bind the dial to the
-	// credential MAC: refuse unless the IP currently resolves, in the gateway's
-	// neighbor table, to exactly the credential's NIC MAC. A stale credential
-	// whose guest IP has been reassigned to a different NIC resolves to a
+	// Resolve the per-overlay veth host-end device the guest IP lives on, then bind
+	// the dial to the credential MAC: refuse unless the IP currently resolves, in
+	// the gateway's neighbor table, to exactly the credential's NIC MAC. A stale
+	// credential whose guest IP has been reassigned to a different NIC resolves to a
 	// different MAC and is refused. Every binding failure collapses to a uniform
 	// refusal so the gateway is no oracle and never dials on uncertain input.
-	bridge, networkID, ok := h.overlays.OverlayNetworkForIP(claims.GuestIP)
+	device, networkID, ok := h.overlays.OverlayNetworkForIP(claims.GuestIP)
 	if !ok {
 		h.log.Warn("connect: refused, guest ip not on any declared overlay",
 			"guest_ip", claims.GuestIP.String(), "vm_id", claims.VMID.String())
 		h.refuse(w, r)
 		return
 	}
-	mac, ok, err := h.fabric.NeighborMAC(bridge, claims.GuestIP)
+	mac, ok, err := h.fabric.NeighborMAC(device, claims.GuestIP)
 	if err != nil || !ok || !macEqual(mac, claims.NICMAC) {
 		h.log.Warn("connect: refused, neighbor mac does not match credential",
-			"guest_ip", claims.GuestIP.String(), "bridge", bridge,
+			"guest_ip", claims.GuestIP.String(), "device", device,
 			"vm_id", claims.VMID.String(), "resolved", ok, "error", errString(err))
 		h.refuse(w, r)
 		return
@@ -215,7 +216,7 @@ func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// Dial the target before hijacking so a dial failure is reported as a
 	// normal HTTP error rather than a half-open hijacked socket.
 	dialCtx, dialCancel := context.WithTimeout(r.Context(), connectDialTimeout)
-	upstream, err := h.dial(dialCtx, "tcp", target, bridge)
+	upstream, err := h.dial(dialCtx, "tcp", target, device)
 	dialCancel()
 	if err != nil {
 		h.log.Warn("connect: dial target failed", "target", target, "error", err.Error())

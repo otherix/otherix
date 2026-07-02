@@ -184,16 +184,17 @@ type Fabric interface {
 	SendGARP(bridge string, mac string, ip netip.Addr) error
 
 	// NeighborMAC resolves ip to its link-layer address in the kernel neighbor
-	// (ARP/ND) table on the named bridge. It returns (mac, true, nil) for a
-	// resolved entry (REACHABLE / STALE / DELAY / PROBE / PERMANENT),
-	// (nil, false, nil) when ip has no resolved neighbor, and (nil, false, err)
-	// on a lookup error. The implementation may send a single probe datagram to
-	// provoke resolution and re-read once when the first lookup finds nothing.
-	// The ingress gateway uses it to bind a session credential's dial to the
-	// credential's NIC MAC: it refuses the dial unless the neighbor the guest IP
-	// resolves to equals the credential MAC, so a stale credential whose IP has
-	// been reassigned to a different NIC fails closed.
-	NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAddr, bool, error)
+	// (ARP/ND) table on the named device (a bridge for a hypervisor node, a gateway
+	// veth host end for ingress). It returns (mac, true, nil) for a resolved entry
+	// (REACHABLE / STALE / DELAY / PROBE / PERMANENT), (nil, false, nil) when ip has
+	// no resolved neighbor, and (nil, false, err) on a lookup error. The
+	// implementation may send a single probe datagram to provoke resolution and
+	// re-read once when the first lookup finds nothing. The ingress gateway uses it
+	// to bind a session credential's dial to the credential's NIC MAC: it refuses
+	// the dial unless the neighbor the guest IP resolves to equals the credential
+	// MAC, so a stale credential whose IP has been reassigned to a different NIC
+	// fails closed.
+	NeighborMAC(device string, ip netip.Addr) (net.HardwareAddr, bool, error)
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold

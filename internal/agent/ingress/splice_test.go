@@ -230,7 +230,7 @@ func TestConnectSplicesBytesBothWays(t *testing.T) {
 	ip := netip.MustParseAddr(host)
 
 	signer, pubPEM := newTestSessionCA(t)
-	bridge := "otvb100"
+	bridge := "otvg100"
 	h := &ConnectHandler{
 		dial:     netDial,
 		fabric:   fabricResolving(t, bridge, ip, testMACA),
@@ -275,7 +275,7 @@ func TestConnectTearsDownOnClientClose(t *testing.T) {
 	ip := netip.MustParseAddr(host)
 
 	signer, pubPEM := newTestSessionCA(t)
-	bridge := "otvb100"
+	bridge := "otvg100"
 	h := &ConnectHandler{
 		dial:     netDial,
 		fabric:   fabricResolving(t, bridge, ip, testMACA),
@@ -324,7 +324,7 @@ func TestConnectTearsDownOnClientClose(t *testing.T) {
 func TestConnectAntiSSRFRefusesIPReuse(t *testing.T) {
 	signer, pubPEM := newTestSessionCA(t)
 	ip := netip.MustParseAddr("10.42.0.5")
-	bridge := "otvb100"
+	bridge := "otvg100"
 
 	// The guest IP now resolves to MAC-B, not the credential's MAC-A.
 	h := &ConnectHandler{
@@ -361,7 +361,7 @@ func TestConnectAntiSSRFRefusesIPReuse(t *testing.T) {
 func TestConnectAntiSSRFRefusesUnresolvedAndOffOverlay(t *testing.T) {
 	signer, pubPEM := newTestSessionCA(t)
 	ip := netip.MustParseAddr("10.42.0.5")
-	bridge := "otvb100"
+	bridge := "otvg100"
 
 	tests := []struct {
 		name     string
@@ -410,7 +410,7 @@ func TestConnectAntiSSRFRefusesUnresolvedAndOffOverlay(t *testing.T) {
 func TestConnectCredFailures(t *testing.T) {
 	signer, pubPEM := newTestSessionCA(t)
 	ip := netip.MustParseAddr("10.42.0.5")
-	bridge := "otvb100"
+	bridge := "otvg100"
 
 	validClaims := auth.SessionCredClaims{
 		VMID: uuid.New(), NICMAC: testMACA, GuestIP: ip, Port: 22,
@@ -504,7 +504,7 @@ func TestConnectRefusedAtCapacityThenReleased(t *testing.T) {
 	ip := netip.MustParseAddr(host)
 
 	signer, pubPEM := newTestSessionCA(t)
-	bridge := "otvb100"
+	bridge := "otvg100"
 	slots := newConnectSlots(1, 1)
 	h := &ConnectHandler{
 		dial:     netDial,
