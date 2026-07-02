@@ -30,25 +30,9 @@ func (f *linuxFabric) EnsureVeth(cfg VethConfig) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	host, err := netlink.LinkByName(cfg.HostName)
+	host, err := f.ensureVethHostLink(cfg)
 	if err != nil {
-		var notFound netlink.LinkNotFoundError
-		if !errors.As(err, &notFound) {
-			return fmt.Errorf("netfabric: ensure veth %s: %v", cfg.HostName, err)
-		}
-		veth := &netlink.Veth{
-			LinkAttrs: netlink.LinkAttrs{Name: cfg.HostName, MTU: cfg.MTU},
-			PeerName:  cfg.PeerName,
-		}
-		if err := netlink.LinkAdd(veth); err != nil {
-			return fmt.Errorf("netfabric: ensure veth %s: add: %v", cfg.HostName, err)
-		}
-		host, err = netlink.LinkByName(cfg.HostName)
-		if err != nil {
-			return fmt.Errorf("netfabric: ensure veth %s: reread: %v", cfg.HostName, err)
-		}
-	} else if _, ok := host.(*netlink.Veth); !ok {
-		return fmt.Errorf("netfabric: ensure veth %s: existing link is type %T, not a veth", cfg.HostName, host)
+		return err
 	}
 
 	if err := netlink.LinkSetHardwareAddr(host, cfg.MAC); err != nil {
@@ -80,7 +64,40 @@ func (f *linuxFabric) EnsureVeth(cfg VethConfig) error {
 	if err := netlink.LinkSetUp(host); err != nil {
 		return fmt.Errorf("netfabric: ensure veth %s: set up: %v", cfg.HostName, err)
 	}
+	return f.enslaveVethPeer(cfg)
+}
 
+// ensureVethHostLink returns the host-end link, creating the veth pair when
+// absent (adopt-and-repair reuses an existing pair). It errors if a non-veth
+// link already owns the host name.
+func (f *linuxFabric) ensureVethHostLink(cfg VethConfig) (netlink.Link, error) {
+	host, err := netlink.LinkByName(cfg.HostName)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if !errors.As(err, &notFound) {
+			return nil, fmt.Errorf("netfabric: ensure veth %s: %v", cfg.HostName, err)
+		}
+		veth := &netlink.Veth{
+			LinkAttrs: netlink.LinkAttrs{Name: cfg.HostName, MTU: cfg.MTU},
+			PeerName:  cfg.PeerName,
+		}
+		if err := netlink.LinkAdd(veth); err != nil {
+			return nil, fmt.Errorf("netfabric: ensure veth %s: add: %v", cfg.HostName, err)
+		}
+		host, err = netlink.LinkByName(cfg.HostName)
+		if err != nil {
+			return nil, fmt.Errorf("netfabric: ensure veth %s: reread: %v", cfg.HostName, err)
+		}
+		return host, nil
+	}
+	if _, ok := host.(*netlink.Veth); !ok {
+		return nil, fmt.Errorf("netfabric: ensure veth %s: existing link is type %T, not a veth", cfg.HostName, host)
+	}
+	return host, nil
+}
+
+// enslaveVethPeer enslaves the peer end to the overlay bridge and brings it up.
+func (f *linuxFabric) enslaveVethPeer(cfg VethConfig) error {
 	peer, err := netlink.LinkByName(cfg.PeerName)
 	if err != nil {
 		return fmt.Errorf("netfabric: ensure veth %s: peer %s: %v", cfg.HostName, cfg.PeerName, err)

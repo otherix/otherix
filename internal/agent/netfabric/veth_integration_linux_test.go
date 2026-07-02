@@ -115,7 +115,7 @@ func TestVethCoexistsWithAnycastServices(t *testing.T) {
 			t.Fatalf("EnsureBridgeRoute() = %v", err)
 		}
 		host := GatewayVethHostName(vni)
-		tenantMAC, _ := net.ParseMAC("02:00:00:00:00:09")
+		tenantMAC, _ := net.ParseMAC("02:00:00:00:00:99")
 		if err := f.EnsureVeth(VethConfig{
 			HostName: host,
 			PeerName: GatewayVethPeerName(vni),
