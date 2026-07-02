@@ -9,36 +9,89 @@ import (
 	"github.com/google/uuid"
 )
 
+// Health-check default constants and field ranges are the single source of
+// truth for the load-balancer active health check (ADR 0027 probe cadence).
+const (
+	HealthCheckDefaultIntervalSeconds    = 10
+	HealthCheckDefaultTimeoutSeconds     = 2
+	HealthCheckDefaultHealthyThreshold   = 2
+	HealthCheckDefaultUnhealthyThreshold = 3
+	HealthCheckStalenessFactor           = 3
+)
+
+// LoadBalancerHealthCheck is the per-LB active L4 (TCP-connect) probe config.
+// Port==0 is the follow sentinel: the effective probe port is the LB's traffic
+// port (so `lb update --port` moves the health port automatically unless the
+// operator pinned a non-zero port). A zero IntervalSeconds marks a pre-feature
+// row that EffectiveFor normalizes to the defaults.
+type LoadBalancerHealthCheck struct {
+	Port               int32 // 0 == follow the LB traffic port
+	IntervalSeconds    int32
+	TimeoutSeconds     int32
+	HealthyThreshold   int32
+	UnhealthyThreshold int32
+}
+
+// DefaultLoadBalancerHealthCheck is the health check stored when a create
+// supplies no health_check block: default cadence with the port-follow sentinel.
+func DefaultLoadBalancerHealthCheck() LoadBalancerHealthCheck {
+	return LoadBalancerHealthCheck{
+		Port:               0, // follow the traffic port
+		IntervalSeconds:    HealthCheckDefaultIntervalSeconds,
+		TimeoutSeconds:     HealthCheckDefaultTimeoutSeconds,
+		HealthyThreshold:   HealthCheckDefaultHealthyThreshold,
+		UnhealthyThreshold: HealthCheckDefaultUnhealthyThreshold,
+	}
+}
+
+// EffectiveFor resolves the stored config against the LB's traffic port: a
+// zero-value (pre-feature row) normalizes to the defaults, and the port-follow
+// sentinel (Port==0) resolves to lbPort. Pure; used by the declared-target
+// computation, connect eligibility, and the get view so every consumer sees the
+// same effective config.
+func (hc LoadBalancerHealthCheck) EffectiveFor(lbPort int32) LoadBalancerHealthCheck {
+	if hc.IntervalSeconds == 0 { // pre-feature / zero row
+		hc = DefaultLoadBalancerHealthCheck()
+	}
+	if hc.Port == 0 {
+		hc.Port = lbPort
+	}
+	return hc
+}
+
 // LoadBalancer is a user-owned, cluster-wide L4 load balancer addressed by UUID
 // with a case-insensitive name uniqueness guard. Selector is the label set a VM
 // must carry to be a backend; it serializes natively in the etcd JSON value.
 type LoadBalancer struct {
-	ID        uuid.UUID
-	Name      string
-	OwnerID   uuid.UUID
-	Port      int32
-	Selector  map[string]string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt *time.Time
+	ID          uuid.UUID
+	Name        string
+	OwnerID     uuid.UUID
+	Port        int32
+	Selector    map[string]string
+	HealthCheck LoadBalancerHealthCheck
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   *time.Time
 }
 
 // CreateLoadBalancerParams is the input to CreateLoadBalancer.
 type CreateLoadBalancerParams struct {
-	ID       uuid.UUID
-	Name     string
-	OwnerID  uuid.UUID
-	Port     int32
-	Selector map[string]string
+	ID          uuid.UUID
+	Name        string
+	OwnerID     uuid.UUID
+	Port        int32
+	Selector    map[string]string
+	HealthCheck LoadBalancerHealthCheck
 }
 
 // UpdateLoadBalancerParams is the input to UpdateLoadBalancer. OwnerID is
 // immutable, so it is not part of the update surface.
 type UpdateLoadBalancerParams struct {
-	ID       uuid.UUID
-	Name     string
-	Port     int32
-	Selector map[string]string
+	ID          uuid.UUID
+	Name        string
+	Port        int32
+	Selector    map[string]string
+	HealthCheck LoadBalancerHealthCheck
 }
 
 // ListLoadBalancersParams is the input to ListLoadBalancers: an opaque

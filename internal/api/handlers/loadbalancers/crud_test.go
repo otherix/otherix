@@ -114,13 +114,14 @@ func (f *fakeStore) CreateLoadBalancer(_ context.Context, arg store.CreateLoadBa
 	}
 	now := time.Now().UTC()
 	lb := store.LoadBalancer{
-		ID:        arg.ID,
-		Name:      arg.Name,
-		OwnerID:   arg.OwnerID,
-		Port:      arg.Port,
-		Selector:  arg.Selector,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          arg.ID,
+		Name:        arg.Name,
+		OwnerID:     arg.OwnerID,
+		Port:        arg.Port,
+		Selector:    arg.Selector,
+		HealthCheck: arg.HealthCheck,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	f.byID[lb.ID] = lb
 	f.byName[strings.ToLower(lb.Name)] = lb.ID
@@ -151,6 +152,7 @@ func (f *fakeStore) UpdateLoadBalancer(_ context.Context, arg store.UpdateLoadBa
 	lb.Name = arg.Name
 	lb.Port = arg.Port
 	lb.Selector = arg.Selector
+	lb.HealthCheck = arg.HealthCheck
 	lb.UpdatedAt = time.Now().UTC()
 	f.byID[lb.ID] = lb
 	return lb, nil
@@ -428,6 +430,86 @@ func TestCreateSelectorValidation(t *testing.T) {
 				t.Errorf("code = %q, want validation_failed", code)
 			}
 		})
+	}
+}
+
+func TestCreateHealthCheckDefaultsFollowTrafficPort(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+
+	rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	// Stored config keeps the follow sentinel (Port==0).
+	if got := st.lastCreated.HealthCheck.Port; got != 0 {
+		t.Errorf("stored HealthCheck.Port = %d, want 0 (follow sentinel)", got)
+	}
+
+	var view struct {
+		HealthCheck struct {
+			Port               int32 `json:"port"`
+			IntervalSeconds    int32 `json:"interval_seconds"`
+			TimeoutSeconds     int32 `json:"timeout_seconds"`
+			HealthyThreshold   int32 `json:"healthy_threshold"`
+			UnhealthyThreshold int32 `json:"unhealthy_threshold"`
+		} `json:"health_check"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.HealthCheck.Port != 8080 {
+		t.Errorf("view health_check.port = %d, want 8080 (follows traffic port)", view.HealthCheck.Port)
+	}
+	if view.HealthCheck.IntervalSeconds != store.HealthCheckDefaultIntervalSeconds {
+		t.Errorf("view interval_seconds = %d, want %d", view.HealthCheck.IntervalSeconds, store.HealthCheckDefaultIntervalSeconds)
+	}
+	if view.HealthCheck.TimeoutSeconds != store.HealthCheckDefaultTimeoutSeconds {
+		t.Errorf("view timeout_seconds = %d, want %d", view.HealthCheck.TimeoutSeconds, store.HealthCheckDefaultTimeoutSeconds)
+	}
+	if view.HealthCheck.HealthyThreshold != store.HealthCheckDefaultHealthyThreshold {
+		t.Errorf("view healthy_threshold = %d, want %d", view.HealthCheck.HealthyThreshold, store.HealthCheckDefaultHealthyThreshold)
+	}
+	if view.HealthCheck.UnhealthyThreshold != store.HealthCheckDefaultUnhealthyThreshold {
+		t.Errorf("view unhealthy_threshold = %d, want %d", view.HealthCheck.UnhealthyThreshold, store.HealthCheckDefaultUnhealthyThreshold)
+	}
+}
+
+func TestCreateHealthCheckValidation(t *testing.T) {
+	router := newRouter(newFakeStore(), devUser())
+	body := `{"name":"web","port":8080,"selector":{"app":"web"},"health_check":{"interval_seconds":0}}`
+	rec := do(t, router, http.MethodPost, "/v1/loadbalancers", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", code)
+	}
+}
+
+func TestUpdateHealthCheckPortPins(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"health_check":{"port":9090}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		HealthCheck struct {
+			Port int32 `json:"port"`
+		} `json:"health_check"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.HealthCheck.Port != 9090 {
+		t.Errorf("view health_check.port = %d, want 9090", view.HealthCheck.Port)
 	}
 }
 

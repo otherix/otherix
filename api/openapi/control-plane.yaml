@@ -7198,6 +7198,48 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
+    LoadBalancerHealthCheck:
+      type: object
+      description: |
+        Active L4 (TCP-connect) health-check config for a load balancer's
+        backends. On create, an omitted field takes its default; on update, an
+        omitted field leaves the stored value unchanged.
+      properties:
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: |
+            The TCP port probed on each backend. Omitted (or the internal
+            follow sentinel) means the probe follows the load balancer's
+            traffic `port`, so `port` on this object and the top-level `port`
+            move together unless an explicit health-check port is set. The
+            view always emits the resolved effective port.
+        interval_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 10
+          description: Seconds between probes.
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+          default: 2
+          description: Per-probe connect timeout in seconds.
+        healthy_threshold:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 2
+          description: Consecutive successes before a backend is marked healthy.
+        unhealthy_threshold:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+          description: Consecutive failures before a backend is marked unhealthy.
+
     LoadBalancer:
       type: object
       description: |
@@ -7211,6 +7253,7 @@ components:
         - owner_id
         - port
         - selector
+        - health_check
         - created_at
         - updated_at
       properties:
@@ -7226,6 +7269,8 @@ components:
           type: object
           additionalProperties: { type: string }
           description: Label key/value pairs a VM must match to be a backend.
+        health_check:
+          $ref: "#/components/schemas/LoadBalancerHealthCheck"
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -7242,6 +7287,8 @@ components:
         selector:
           type: object
           additionalProperties: { type: string }
+        health_check:
+          $ref: "#/components/schemas/LoadBalancerHealthCheck"
 
     LoadBalancerUpdate:
       type: object
@@ -7256,6 +7303,8 @@ components:
         selector:
           type: object
           additionalProperties: { type: string }
+        health_check:
+          $ref: "#/components/schemas/LoadBalancerHealthCheck"
 
     LoadBalancerList:
       type: object

@@ -71,13 +71,14 @@ func (s *Store) LoadBalancerByName(ctx context.Context, name string) (store.Load
 func (s *Store) CreateLoadBalancer(ctx context.Context, arg store.CreateLoadBalancerParams) (store.LoadBalancer, error) {
 	now := time.Now().UTC()
 	lb := store.LoadBalancer{
-		ID:        arg.ID,
-		Name:      arg.Name,
-		OwnerID:   arg.OwnerID,
-		Port:      arg.Port,
-		Selector:  arg.Selector,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          arg.ID,
+		Name:        arg.Name,
+		OwnerID:     arg.OwnerID,
+		Port:        arg.Port,
+		Selector:    arg.Selector,
+		HealthCheck: arg.HealthCheck,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	guard := lbNameGuard(lb.Name)
@@ -114,6 +115,7 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 	updated.Name = arg.Name
 	updated.Port = arg.Port
 	updated.Selector = arg.Selector
+	updated.HealthCheck = arg.HealthCheck
 	updated.UpdatedAt = time.Now().UTC()
 
 	val, err := etcd.Marshal(updated)
