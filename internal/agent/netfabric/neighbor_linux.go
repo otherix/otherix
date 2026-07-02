@@ -29,6 +29,14 @@ const (
 	// neighborProbeWait is how long to wait after the probe before re-reading the
 	// neighbor table, giving the kernel time to record the reply.
 	neighborProbeWait = 150 * time.Millisecond
+	// neighborResolveBudget bounds the total time spent provoking and re-reading
+	// neighbor resolution on a cold miss. A gateway is a pure ingress initiator: it
+	// carries no traffic to a guest until the first connect, so that first probe may
+	// have to establish a cold overlay path (including a WireGuard handshake to the
+	// guest's host) before the ARP/ND round-trip can complete. A single probe
+	// interval is too short for that, so probing repeats until resolved or this
+	// budget elapses, then fails closed.
+	neighborResolveBudget = 2 * time.Second
 	// neighborProbePort is an arbitrary high discard port the probe datagram
 	// targets. The datagram only needs to be sent for the kernel to resolve the
 	// on-link next hop; nothing has to be listening.
@@ -51,12 +59,20 @@ func (f *linuxFabric) NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAdd
 		return mac, ok, err
 	}
 
-	// The neighbor is not yet resolved. Provoke kernel ARP/ND by sending one
-	// datagram toward the address, wait briefly, and re-read once. Best-effort: a
-	// failed probe leaves the lookup unresolved and the caller refuses, so this
-	// never weakens the binding.
-	probeNeighbor(ip, bridge)
-	return neighborLookup(idx, ip)
+	// The neighbor is not yet resolved. Provoke kernel ARP/ND by sending a datagram
+	// toward the address, wait briefly, and re-read. The first probe may need to
+	// establish a cold overlay path (e.g. a WireGuard handshake to the guest's host)
+	// before the round-trip can complete, which outlasts a single probe interval, so
+	// repeat until resolved or the budget elapses. Best-effort and fail-closed: an
+	// unresolved lookup leaves the caller to refuse, so this never weakens the binding.
+	deadline := time.Now().Add(neighborResolveBudget)
+	for {
+		probeNeighbor(ip, bridge)
+		mac, ok, err = neighborLookup(idx, ip)
+		if err != nil || ok || !time.Now().Before(deadline) {
+			return mac, ok, err
+		}
+	}
 }
 
 // neighborLookup returns the resolved MAC for ip among the kernel neighbor
