@@ -104,6 +104,13 @@ type Fabric interface {
 	// gateway, which therefore does not run the anycast services plane.
 	EnsureUnicastGateway(bridge string, addr netip.Prefix, mac net.HardwareAddr) error
 
+	// EnsureVeth idempotently materialises an ingress gateway's veth pair for one
+	// overlay membership (host end = tenant IP + unicast MAC, peer end enslaved to
+	// the bridge) and applies the host-end sysctls. RemoveVeth deletes the pair by
+	// its host-end name, idempotently.
+	EnsureVeth(cfg VethConfig) error
+	RemoveVeth(host string) error
+
 	// EnsureMasqueradeIface installs a masquerade rule for traffic entering via
 	// inIface and leaving via egressIface (empty = host default route),
 	// idempotently. CIDR-independent; used for overlay egress.
@@ -197,6 +204,21 @@ type VXLANConfig struct {
 	Port   uint16     // UDP dstport (IANA VXLAN 4789)
 	MTU    int        // inner MTU (1390 for overlay)
 	Master string     // bridge to enslave the VTEP into ("" leaves it unenslaved)
+}
+
+// VethConfig describes one ingress-gateway veth pair. The root-namespace host end
+// carries the membership's tenant IP (Addr, with the overlay subnet prefix so the
+// kernel installs an on-link route to the whole subnet) and its unicast MAC; the
+// peer end is enslaved to Bridge as an ordinary bridge port. HostName / PeerName
+// are the VNI-derived otvg<vni> / otvgp<vni> so teardown and adopt need no stored
+// state.
+type VethConfig struct {
+	HostName string
+	PeerName string
+	Bridge   string
+	Addr     netip.Prefix
+	MAC      net.HardwareAddr
+	MTU      int
 }
 
 // LinkState is the observed kernel state of a network link, returned by

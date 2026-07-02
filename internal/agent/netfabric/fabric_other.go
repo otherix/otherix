@@ -85,6 +85,12 @@ func (unsupportedFabric) EnsureUnicastGateway(string, netip.Prefix, net.Hardware
 	return errUnsupported
 }
 
+// EnsureVeth reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) EnsureVeth(cfg VethConfig) error { return errUnsupported }
+
+// RemoveVeth reports errUnsupported on non-Linux builds.
+func (unsupportedFabric) RemoveVeth(host string) error { return errUnsupported }
+
 // EnsureMasqueradeIface reports errUnsupported on non-Linux builds.
 func (unsupportedFabric) EnsureMasqueradeIface(string, string) error { return errUnsupported }
 

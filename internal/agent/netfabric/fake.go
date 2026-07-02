@@ -49,6 +49,9 @@ type FakeFabric struct {
 
 	UnicastGatewayCalls []UnicastGatewayCall
 
+	EnsureVethCalls []VethConfig
+	RemoveVethCalls []string
+
 	// EnableIPForwardingCalls counts EnableIPForwarding invocations.
 	EnableIPForwardingCalls int
 
@@ -337,6 +340,18 @@ func (f *FakeFabric) RemoveAnycastGateway(bridge string, addr netip.Addr) error 
 func (f *FakeFabric) EnsureUnicastGateway(bridge string, addr netip.Prefix, mac net.HardwareAddr) error {
 	f.UnicastGatewayCalls = append(f.UnicastGatewayCalls, UnicastGatewayCall{Bridge: bridge, Addr: addr, MAC: mac.String()})
 	return f.err("EnsureUnicastGateway")
+}
+
+// EnsureVeth records the call and returns Errs["EnsureVeth"].
+func (f *FakeFabric) EnsureVeth(cfg VethConfig) error {
+	f.EnsureVethCalls = append(f.EnsureVethCalls, cfg)
+	return f.err("EnsureVeth")
+}
+
+// RemoveVeth records the call and returns Errs["RemoveVeth"].
+func (f *FakeFabric) RemoveVeth(host string) error {
+	f.RemoveVethCalls = append(f.RemoveVethCalls, host)
+	return f.err("RemoveVeth")
 }
 
 // EnsureVXLAN records the call and returns Errs["EnsureVXLAN"].
