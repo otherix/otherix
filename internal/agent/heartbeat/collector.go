@@ -131,6 +131,9 @@ type LinuxCollector struct {
 	agentVersion  string
 	architecture  string
 	hostName      string
+	// ingressAdvertisedEndpoint is the node's ingress splicer URL, reported when
+	// the ingress plane is active on this node. Empty for a plain hypervisor.
+	ingressAdvertisedEndpoint string
 }
 
 // CollectorDeps bundles the collector's construction-time inputs.
@@ -154,6 +157,10 @@ type CollectorDeps struct {
 	HealthChecks  HealthCheckReporter
 	Migration     config.MigrationConfig
 	QEMU          config.QEMUConfig
+	// IngressAdvertisedEndpoint is the node's ingress splicer URL. Set only when
+	// the ingress plane is active (a co-located hypervisor or standalone gateway);
+	// left empty for a plain hypervisor.
+	IngressAdvertisedEndpoint string
 }
 
 // NewLinux constructs a LinuxCollector. Returns an error on non-Linux
@@ -172,22 +179,23 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 	}
 	host, _ := os.Hostname()
 	return &LinuxCollector{
-		procPath:      procPath,
-		vms:           deps.VMs,
-		vmReporter:    deps.VMReporter,
-		pools:         deps.Pools,
-		poolImages:    deps.PoolImages,
-		poolSnapshots: deps.PoolSnapshots,
-		blobs:         deps.Blobs,
-		imageBlobs:    deps.ImageBlobs,
-		networks:      deps.Networks,
-		wireguard:     deps.WireGuard,
-		healthChecks:  deps.HealthChecks,
-		migration:     deps.Migration,
-		qemu:          deps.QEMU,
-		agentVersion:  version.Current().Version,
-		architecture:  archFromGo(runtime.GOARCH),
-		hostName:      host,
+		procPath:                  procPath,
+		vms:                       deps.VMs,
+		vmReporter:                deps.VMReporter,
+		pools:                     deps.Pools,
+		poolImages:                deps.PoolImages,
+		poolSnapshots:             deps.PoolSnapshots,
+		blobs:                     deps.Blobs,
+		imageBlobs:                deps.ImageBlobs,
+		networks:                  deps.Networks,
+		wireguard:                 deps.WireGuard,
+		healthChecks:              deps.HealthChecks,
+		migration:                 deps.Migration,
+		qemu:                      deps.QEMU,
+		agentVersion:              version.Current().Version,
+		architecture:              archFromGo(runtime.GOARCH),
+		hostName:                  host,
+		ingressAdvertisedEndpoint: deps.IngressAdvertisedEndpoint,
 	}, nil
 }
 
@@ -256,12 +264,13 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 	}
 
 	report := Report{
-		AgentVersion: c.agentVersion,
-		Architecture: c.architecture,
-		Migration:    migration,
-		Capabilities: caps,
-		Resources:    resources,
-		VMs:          c.buildVMReports(),
+		AgentVersion:              c.agentVersion,
+		Architecture:              c.architecture,
+		Migration:                 migration,
+		Capabilities:              caps,
+		Resources:                 resources,
+		VMs:                       c.buildVMReports(),
+		IngressAdvertisedEndpoint: c.ingressAdvertisedEndpoint,
 	}
 	c.foldObservedInventory(&report)
 	return report, nil

@@ -43,6 +43,12 @@ type Report struct {
 	// health-check down-channel below). One entry per (lb_id, vm_id) the agent
 	// probes; the CP folds each verdict into the backend's observed health.
 	HealthChecks []HealthCheckReport `json:"health_checks,omitempty"`
+	// IngressAdvertisedEndpoint is the HTTPS URL clients dial to reach this node's
+	// ingress splicer (/v1/connect). Reported only when the node serves the ingress
+	// plane (a standalone gateway or a co-located hypervisor); empty and omitted
+	// otherwise. The CP preserves the last non-empty value, so a transient empty
+	// tick never drops the node out of ingress gateway selection.
+	IngressAdvertisedEndpoint string `json:"ingress_advertised_endpoint,omitempty"`
 }
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat

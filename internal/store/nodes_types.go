@@ -92,7 +92,12 @@ type UpdateNodeHeartbeatParams struct {
 	Capabilities             []byte
 	SystemDiskTotalBytes     *int64
 	SystemDiskAvailableBytes *int64
-	ID                       uuid.UUID
+	// IngressAdvertisedEndpoint is the node's self-reported ingress splicer URL.
+	// Applied preserve-on-empty in UpdateNodeHeartbeat: an empty value leaves the
+	// stored endpoint untouched (a transient empty tick must not drop a gateway out
+	// of ingress selection).
+	IngressAdvertisedEndpoint string
+	ID                        uuid.UUID
 }
 
 type UpdateNodeMemoryPressureParams struct {

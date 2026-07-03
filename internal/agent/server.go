@@ -32,6 +32,7 @@ import (
 	taskshandlers "github.com/otherix/otherix/internal/agent/handlers/tasks"
 	vmshandlers "github.com/otherix/otherix/internal/agent/handlers/vms"
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/ingress"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/reconciler"
 	"github.com/otherix/otherix/internal/agent/vm"
@@ -172,13 +173,27 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	defer stopHeartbeat()
 
+	// Co-located ingress plane: a hypervisor node that also serves ingress binds
+	// the bearer-only /v1/connect listener on cfg.Gateway.Listen alongside the mTLS
+	// control listener, on the SHARED node identity and WireGuard key (no key-path
+	// switch). Gated on the ingress listen address being configured and decoupled
+	// from cfg.Gateway.Enabled (which dispatches the standalone-no-KVM run path).
+	// The plane is inert until the CP declares a membership: the connect gate
+	// refuses every request without a session credential the CP-distributed session
+	// CA verifies. The single Networks reconciler satisfies OverlayResolver, so the
+	// same reconciler drives the node's own overlay services and its ingress veths.
+	ingressPlane, err := buildIngressPlaneIfConfigured(cfg, fabric, netReconciler, log)
+	if err != nil {
+		return err
+	}
 	// Build the heartbeat sender BEFORE the router so the same live Sender
 	// the agent posts heartbeats with backs POST /v1/heartbeat/nudge. A nil
 	// Sender means heartbeats are disabled (misconfiguration); the router
 	// then mounts a no-op nudger so the endpoint still answers 204 without a
 	// nil-pointer panic. startHeartbeat below launches the goroutine that
-	// drives this same Sender's loop.
-	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, healthReconciler, log)
+	// drives this same Sender's loop. When the ingress plane is active its
+	// session-CA store is fanned into the heartbeat response handler chain.
+	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, healthReconciler, ingressCAStoreOf(ingressPlane), log)
 
 	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler)
 
@@ -211,15 +226,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 
 	imageEvictDone := startImageCacheEviction(heartbeatCtx, cfg, manager, log)
 
-	errc := make(chan error, 1)
-	go func() {
-		log.Info("listening", "addr", cfg.Server.Listen)
-		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errc <- err
-			return
-		}
-		errc <- nil
-	}()
+	errc := startAgentListeners(cfg, srv, ingressPlane, log)
 
 	// Drain set waited on at shutdown. The heartbeat sender respects
 	// ctx and returns promptly; the reconcilers' Run loops only return
@@ -253,6 +260,15 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		if cerr := blobServeMgr.Close(); cerr != nil {
 			log.Warn("blob serve manager close failed", "error", cerr.Error())
 		}
+		if ingressPlane == nil {
+			return err
+		}
+		// Co-located: the sibling listener may still be serving (the failure could
+		// be on either plane). Shut both down and drain the one remaining goroutine
+		// return, but surface the original listener error rather than any shutdown
+		// error. Fail toward inaction: a bind failure on one plane tears the whole
+		// runtime down rather than leaving a half-up node.
+		_ = stopAgentServers(cfg.Server.ShutdownGrace, srv, ingressPlane, errc, 1, log)
 		return err
 	}
 
@@ -266,12 +282,104 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		log.Warn("blob serve manager close failed", "error", cerr.Error())
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	// Shut the control server (and the ingress listener when the plane is active)
+	// down, then drain both listener goroutine returns so they have exited.
+	drain := 1
+	if ingressPlane != nil {
+		drain = 2
 	}
-	return nil
+	return stopAgentServers(cfg.Server.ShutdownGrace, srv, ingressPlane, errc, drain, log)
+}
+
+// buildIngressPlaneIfConfigured builds the co-located ingress plane when an
+// ingress listen address is configured (decoupled from cfg.Gateway.Enabled,
+// which dispatches the standalone-no-KVM run path), or returns (nil, nil) for a
+// plain hypervisor. overlays is the node's single Networks reconciler, so the
+// same reconciler drives the node's own overlay services and its ingress veths.
+func buildIngressPlaneIfConfigured(cfg *config.AgentConfig, fabric netfabric.Fabric, overlays ingress.OverlayResolver, log *slog.Logger) (*ingress.Plane, error) {
+	if cfg.Gateway.Listen == "" {
+		return nil, nil
+	}
+	plane, err := ingress.BuildPlane(ingress.PlaneDeps{
+		Listen:       cfg.Gateway.Listen,
+		TLS:          cfg.TLS,
+		Fabric:       fabric,
+		Overlays:     overlays,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		Log:          log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ingress plane: %w", err)
+	}
+	return plane, nil
+}
+
+// ingressCAStoreOf returns the plane's session-CA store, or nil when no ingress
+// plane is active. The heartbeat sender fans a non-nil store into its response
+// handler chain so the connect credential gate stays armed.
+func ingressCAStoreOf(plane *ingress.Plane) *ingress.SessionCAStore {
+	if plane == nil {
+		return nil
+	}
+	return plane.CAStore
+}
+
+// startAgentListeners launches the control listener - and, when the ingress plane
+// is active, the ingress listener - in goroutines, returning the channel their
+// outcomes land on. The channel is buffered for every listener so a clean
+// shutdown (each returns http.ErrServerClosed and sends) never blocks a sender: a
+// cap-1 channel would wedge the second sender forever. A pure hypervisor runs a
+// single listener on the cap-1 channel, unchanged.
+func startAgentListeners(cfg *config.AgentConfig, srv *http.Server, plane *ingress.Plane, log *slog.Logger) chan error {
+	n := 1
+	if plane != nil {
+		n = 2
+	}
+	errc := make(chan error, n)
+	go func() {
+		log.Info("listening", "addr", cfg.Server.Listen)
+		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- err
+			return
+		}
+		errc <- nil
+	}()
+	if plane != nil {
+		go func() {
+			log.Info("listening", "plane", "ingress", "addr", plane.Server.Addr)
+			if err := plane.Server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- fmt.Errorf("ingress listener: %w", err)
+				return
+			}
+			errc <- nil
+		}()
+	}
+	return errc
+}
+
+// stopAgentServers gracefully shuts the ingress server (when the plane is active)
+// and then the control server down within grace, best-effort, then drains `drain`
+// outstanding listener returns from errc so those goroutines have exited before
+// the caller returns. It returns the control server's shutdown error (nil on
+// success); ingress shutdown errors are logged, not returned. Mirrors
+// RunGateway's dual shutdown + drain discipline.
+func stopAgentServers(grace time.Duration, srv *http.Server, plane *ingress.Plane, errc <-chan error, drain int, log *slog.Logger) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if plane != nil {
+		if err := plane.Server.Shutdown(shutdownCtx); err != nil {
+			log.Warn("ingress server shutdown failed", "addr", plane.Server.Addr, "error", err.Error())
+		}
+	}
+	var out error
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		out = fmt.Errorf("shutdown: %w", err)
+	}
+	for i := 0; i < drain; i++ {
+		<-errc
+	}
+	return out
 }
 
 // agentReconcilers bundles the per-resource reconcilers the agent runs.
@@ -597,7 +705,7 @@ func (a poolSnapshotAdapter) PoolSnapshots(pool string) ([]heartbeat.PoolSnapsho
 // console, etc.) from running. The returned Sender is the single live
 // instance — it backs both the heartbeat loop (startHeartbeat) and the
 // POST /v1/heartbeat/nudge handler (no second Sender is constructed).
-func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, artStore *artifactstore.Store, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, healthRec *reconciler.Health, log *slog.Logger) *heartbeat.Sender {
+func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, artStore *artifactstore.Store, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, healthRec *reconciler.Health, caStore *ingress.SessionCAStore, log *slog.Logger) *heartbeat.Sender {
 	if nodeName == "" {
 		log.Warn("heartbeat disabled: node_name is empty (cert CN parse failed upstream)")
 		return nil
@@ -626,6 +734,12 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 	if imgStore := manager.ImageStore(); imgStore != nil {
 		deps.ImageBlobs = imageInventoryAdapter{store: imgStore, log: log}
 	}
+	// A co-located ingress plane self-reports its ingress endpoint so the CP can
+	// hand out the splicer address once the gateway role is enabled. Reported only
+	// when the plane is active (caStore != nil); a plain hypervisor leaves it empty.
+	if caStore != nil {
+		deps.IngressAdvertisedEndpoint = cfg.Gateway.AdvertisedEndpoint
+	}
 	collector, err := heartbeat.NewLinux(deps)
 	if err != nil {
 		log.Warn("heartbeat disabled: collector init failed", "error", err.Error())
@@ -648,8 +762,12 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 	// declared_networks; WireGuard reconciler consumes self_overlay_ip +
 	// declared_wireguard_peers; health reconciler consumes
 	// declared_health_checks. Each ignores the others' payload without
-	// needing to know about it.
+	// needing to know about it. A co-located ingress plane adds its
+	// session-CA store so the same loop keeps the connect gate's key fresh.
 	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec, wgRec, healthRec}
+	if caStore != nil {
+		handler = append(handler, caStore)
+	}
 	return heartbeat.NewSender(collector, client, handler, heartbeat.SenderConfig{
 		Interval: cfg.ControlPlane.HeartbeatInterval,
 	}, log)

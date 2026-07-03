@@ -89,6 +89,14 @@ func (h heartbeatProjection) UpdateNodeHeartbeat(ctx context.Context, arg store.
 		n.Capabilities = arg.Capabilities
 		n.SystemDiskTotalBytes = arg.SystemDiskTotalBytes
 		n.SystemDiskAvailableBytes = arg.SystemDiskAvailableBytes
+		// Preserve-on-empty (fail-closed, mirrors the blobs/images-unavailable
+		// pattern): a non-empty self-reported endpoint overwrites, an empty one
+		// leaves the stored value untouched so a transient empty tick never clears a
+		// good endpoint and drops the gateway out of ingress selection. GatewayRole
+		// is never touched here; the CAS retry preserves a concurrent toggle.
+		if arg.IngressAdvertisedEndpoint != "" {
+			n.IngressAdvertisedEndpoint = arg.IngressAdvertisedEndpoint
+		}
 		now := time.Now().UTC()
 		n.LastHeartbeatAt = &now
 		n.UpdatedAt = now

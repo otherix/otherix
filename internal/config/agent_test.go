@@ -15,17 +15,18 @@ func baseGatewayAgentConfig() AgentConfig {
 	return c
 }
 
-// TestAgentConfigGatewayValidate pins the gateway-mode validation rules: when
+// TestAgentConfigGatewayValidate pins the gateway validation rules: when
 // Gateway.Enabled the ingress Listen must be non-empty and must differ from the
-// control Server.Listen (two distinct ports in one process). Gateway.Enabled
-// false leaves the field ignored, and Gateway.AdvertisedEndpoint is validated at
-// bootstrap, not at serve, so an empty endpoint here is accepted.
+// control Server.Listen (two distinct ports in one process). A plain hypervisor
+// (Enabled=false, no Listen) imposes no gateway constraints, and
+// Gateway.AdvertisedEndpoint is validated at bootstrap, not at serve, so an empty
+// endpoint here is accepted.
 func TestAgentConfigGatewayValidate(t *testing.T) {
-	t.Run("disabled ignores gateway fields", func(t *testing.T) {
+	t.Run("plain hypervisor with no ingress listen passes", func(t *testing.T) {
 		c := baseGatewayAgentConfig()
-		c.Gateway = GatewayConfig{Enabled: false, Listen: c.Server.Listen}
+		c.Gateway = GatewayConfig{Enabled: false, Listen: ""}
 		if err := c.Validate(); err != nil {
-			t.Errorf("Validate(disabled) = %v, want nil", err)
+			t.Errorf("Validate(plain hypervisor) = %v, want nil", err)
 		}
 	})
 
@@ -55,4 +56,27 @@ func TestAgentConfigGatewayValidate(t *testing.T) {
 			t.Error("Validate(enabled, listen == server listen) = nil, want error")
 		}
 	})
+}
+
+// TestGatewayConfigValidatesIngressListenWithoutEnabled pins the co-location
+// capability: an ingress Listen is a valid hypervisor add-on independent of
+// Gateway.Enabled (which only dispatches the standalone-no-KVM run path). A
+// Listen set with Enabled=false must validate, and the distinct-port rule still
+// applies whenever Listen is set.
+func TestGatewayConfigValidatesIngressListenWithoutEnabled(t *testing.T) {
+	c := baseGatewayAgentConfig()
+	c.Gateway.Enabled = false
+	c.Gateway.Listen = "0.0.0.0:9444"
+	c.Gateway.AdvertisedEndpoint = "https://node-2:9444"
+	if c.Gateway.Listen == c.Server.Listen {
+		t.Fatalf("test setup: gateway listen must differ from server listen")
+	}
+	if err := c.Gateway.validate(c.Server.Listen); err != nil {
+		t.Errorf("validate() with co-located ingress config error = %v, want nil", err)
+	}
+
+	c.Gateway.Listen = c.Server.Listen
+	if err := c.Gateway.validate(c.Server.Listen); err == nil {
+		t.Errorf("validate() with ingress listen == control listen returned nil, want a distinct-port error")
+	}
 }
