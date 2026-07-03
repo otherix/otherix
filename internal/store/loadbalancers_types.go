@@ -137,6 +137,9 @@ type UpdateLoadBalancerParams struct {
 	// SourceCIDRs, when non-empty, restricts the published listener to these
 	// client CIDRs (allowlist). Nil/empty means any source that reaches the port.
 	SourceCIDRs []string
+	// ExpectedRevision, when > 0, gates the update on the primary row's etcd
+	// ModRevision (optimistic concurrency). 0 disables the check (back-compat).
+	ExpectedRevision int64
 }
 
 // ListLoadBalancersParams is the input to ListLoadBalancers: an opaque

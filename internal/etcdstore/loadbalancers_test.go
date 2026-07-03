@@ -434,3 +434,41 @@ func TestLoadBalancerReclaimOwnLeakedPortGuard(t *testing.T) {
 		t.Fatalf("claim other-owned port err = %v, want ErrLoadBalancerPublishedPortExists", err)
 	}
 }
+
+// TestUpdateLoadBalancerStaleRevisionConflicts verifies the row ModRevision CAS:
+// an update built from a stale revision (the row changed since it was read)
+// fails with ErrLoadBalancerConflict rather than silently clobbering.
+func TestUpdateLoadBalancerStaleRevisionConflicts(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	lb, rev, err := func() (store.LoadBalancer, int64, error) {
+		created, err := s.CreateLoadBalancer(ctx, lbParams(uniqueLBName("lb"), owner))
+		if err != nil {
+			return store.LoadBalancer{}, 0, err
+		}
+		return s.LoadBalancerByIDWithRevision(ctx, created.ID)
+	}()
+	if err != nil {
+		t.Fatalf("create+read: %v", err)
+	}
+
+	// First update commits at the read revision -> succeeds and bumps the row.
+	first := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: 81, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, ExpectedRevision: rev,
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, first); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+
+	// Second update reuses the now-stale revision -> conflict.
+	second := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: 82, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, ExpectedRevision: rev,
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, second); !errors.Is(err, store.ErrLoadBalancerConflict) {
+		t.Fatalf("stale update err = %v, want ErrLoadBalancerConflict", err)
+	}
+}

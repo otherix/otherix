@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -130,6 +131,44 @@ func (s *Store) LoadBalancerByName(ctx context.Context, name string) (store.Load
 	return s.LoadBalancerByID(ctx, id)
 }
 
+// LoadBalancerByIDWithRevision returns the non-deleted load balancer and its
+// primary-row etcd ModRevision (for an optimistic-concurrency update), or
+// store.ErrNotFound.
+func (s *Store) LoadBalancerByIDWithRevision(ctx context.Context, id uuid.UUID) (store.LoadBalancer, int64, error) {
+	got, err := s.c.Raw().Get(ctx, lbKey(id))
+	if err != nil {
+		return store.LoadBalancer{}, 0, err
+	}
+	if len(got.Kvs) == 0 {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	var lb store.LoadBalancer
+	if err := json.Unmarshal(got.Kvs[0].Value, &lb); err != nil {
+		return store.LoadBalancer{}, 0, fmt.Errorf("unmarshal load balancer %q: %v", id, err)
+	}
+	if lb.DeletedAt != nil {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	return lb, got.Kvs[0].ModRevision, nil
+}
+
+// LoadBalancerByNameWithRevision resolves a load balancer through its name guard
+// and returns it with its primary-row ModRevision.
+func (s *Store) LoadBalancerByNameWithRevision(ctx context.Context, name string) (store.LoadBalancer, int64, error) {
+	raw, found, err := s.c.Get(ctx, lbNameGuard(name))
+	if err != nil {
+		return store.LoadBalancer{}, 0, err
+	}
+	if !found {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	id, err := uuid.Parse(string(raw))
+	if err != nil {
+		return store.LoadBalancer{}, 0, fmt.Errorf("corrupt load balancer name guard %q: %v", name, err)
+	}
+	return s.LoadBalancerByIDWithRevision(ctx, id)
+}
+
 // CreateLoadBalancer inserts a load balancer, stamping created_at/updated_at,
 // and writes the name guard + primary atomically. A name collision
 // (case-insensitive, among non-deleted rows) returns
@@ -212,6 +251,14 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 	cmps := []clientv3.Cmp{}
 	ops := []clientv3.Op{clientv3.OpPut(lbKey(arg.ID), string(val))}
 
+	// Optimistic concurrency: pin the row to the revision the caller read, so a
+	// concurrent writer that slipped in between the caller's read and this commit
+	// loses the Txn and the caller re-reads. Folded into the same Txn as the guard
+	// claim, so a CAS-losing attempt also rolls back any port-guard claim it made.
+	if arg.ExpectedRevision > 0 {
+		cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(lbKey(arg.ID)), "=", arg.ExpectedRevision))
+	}
+
 	renamed := !strings.EqualFold(existing.Name, arg.Name)
 	if renamed {
 		newGuard := lbNameGuard(arg.Name)
@@ -235,9 +282,7 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 		return store.LoadBalancer{}, fmt.Errorf("update load balancer txn: %v", err)
 	}
 	if !resp.Succeeded {
-		// A published-port collision already returned from claimLBPublishedPortGuard
-		// before the Txn, so the only remaining Txn rejection is a name collision.
-		return store.LoadBalancer{}, store.ErrLoadBalancerNameExists
+		return store.LoadBalancer{}, s.classifyUpdateTxnFailure(ctx, arg)
 	}
 
 	// Release the OLD published-port guard (value-gated, after the main Txn).
@@ -247,6 +292,23 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 		}
 	}
 	return updated, nil
+}
+
+// classifyUpdateTxnFailure maps a lost UpdateLoadBalancer Txn to the sentinel the
+// handler expects. When a row CAS was requested, a concurrent delete or a row
+// revision that moved under us is the retryable store.ErrLoadBalancerConflict
+// (the handler re-reads: a re-read then 404s cleanly on a delete, or re-applies
+// against the fresh row). A published-port collision already returned from
+// claimLBPublishedPortGuard before the Txn, so the only other rejection is a
+// name-guard collision.
+func (s *Store) classifyUpdateTxnFailure(ctx context.Context, arg store.UpdateLoadBalancerParams) error {
+	if arg.ExpectedRevision > 0 {
+		_, curRev, rerr := s.LoadBalancerByIDWithRevision(ctx, arg.ID)
+		if errors.Is(rerr, store.ErrNotFound) || (rerr == nil && curRev != arg.ExpectedRevision) {
+			return store.ErrLoadBalancerConflict
+		}
+	}
+	return store.ErrLoadBalancerNameExists
 }
 
 // ListLoadBalancers returns the non-deleted load balancers ordered by

@@ -30,6 +30,10 @@ var (
 	// ErrLoadBalancerPublishedPortExists is returned when a create/update would
 	// claim a published_port already held by another load balancer.
 	ErrLoadBalancerPublishedPortExists = errors.New("store: load balancer published port already in use")
+	// ErrLoadBalancerConflict is returned when a load-balancer update is built
+	// from a stale row revision (the row changed since it was read). Retryable:
+	// callers re-read and re-apply.
+	ErrLoadBalancerConflict = errors.New("store: load balancer changed concurrently")
 	// ErrArtifactPoolNameExists is returned by CreateArtifactPool when a live
 	// artifact pool already owns the (case-insensitive) name.
 	ErrArtifactPoolNameExists = errors.New("store: artifact pool name already in use")
