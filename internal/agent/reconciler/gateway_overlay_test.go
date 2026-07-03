@@ -32,9 +32,9 @@ func gatewayEgressDhcpNet() heartbeat.DeclaredNetwork {
 // end, not the bridge hardware address.
 func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 	f := readyGatewayFabric()
-	rec, err := NewGatewayNetworks(f, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, false)
 	if err != nil {
-		t.Fatalf("NewGatewayNetworks: %v", err)
+		t.Fatalf("NewNetworks: %v", err)
 	}
 	ip := "10.42.0.5/16"
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
@@ -66,13 +66,40 @@ func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 	}
 }
 
+// TestColocatedReconcilerRunsServicesAndVeth proves ONE reconciler with the
+// hypervisor capability (hostsVMs=true) drives BOTH planes on the same overlay:
+// the ingress veth for its gateway membership AND the overlay services plane
+// (NAT masquerade) for its own VMs. A co-located node is a hypervisor that also
+// carries a gateway membership on its overlays, so the veth axis and the
+// services plane must coexist under a single reconciler.
+func TestColocatedReconcilerRunsServicesAndVeth(t *testing.T) {
+	f := readyGatewayFabric()
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	if err != nil {
+		t.Fatalf("NewNetworks() error = %v", err)
+	}
+	ip := "10.42.0.5/16"
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{gatewayEgressDhcpNet()},
+		SelfOverlayIP:    &ip,
+	})
+	rec.reconcile(context.Background())
+
+	if len(f.EnsureVethCalls) == 0 {
+		t.Errorf("EnsureVethCalls = 0, want >= 1 (co-located node must materialise the ingress veth)")
+	}
+	if len(f.MasqueradeIfaceCalls) == 0 {
+		t.Errorf("MasqueradeIfaceCalls = 0, want >= 1 (co-located node must run overlay services for its own VMs)")
+	}
+}
+
 // TestNonGatewayOverlayRunsServicesPlane is the contrasting (revert-to-confirm)
 // case: the SAME egress=nat + DHCP overlay driven through the ordinary
 // (non-gateway) reconciler DOES bring up the anycast services plane. It proves
 // the strip above is gateway-mode specific, not an artifact of the input.
 func TestNonGatewayOverlayRunsServicesPlane(t *testing.T) {
 	f := readyGatewayFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

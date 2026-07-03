@@ -57,12 +57,14 @@ func RunGateway(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) 
 	}
 
 	// Single fabric shared by the WireGuard reconciler (otwg0) and the
-	// gateway-mode network reconciler (bridge / VTEP / FDB / tenant addr).
-	// Linux-only impl; an unsupported stub on other platforms keeps the
-	// binary compiling for development.
+	// network reconciler (bridge / VTEP / FDB / tenant addr). This node hosts no
+	// VMs (hostsVMs=false), so the reconciler brings up only the overlay transport
+	// plus its ingress veths, never the anycast services plane. Linux-only impl;
+	// an unsupported stub on other platforms keeps the binary compiling for
+	// development.
 	fabric := netfabric.New()
 
-	networks, err := reconciler.NewGatewayNetworks(fabric, log, 0)
+	networks, err := reconciler.NewNetworks(fabric, nil, log, 0, false)
 	if err != nil {
 		return fmt.Errorf("network reconciler: %w", err)
 	}

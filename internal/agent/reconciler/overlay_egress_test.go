@@ -31,7 +31,7 @@ func readyEgressFabric() *netfabric.FakeFabric {
 
 func TestApplyOverlayEgressInstallsGatewayAndMasq(t *testing.T) {
 	f := readyEgressFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestApplyOverlayEgressInstallsGatewayAndMasq(t *testing.T) {
 
 func TestApplyOverlayEgressInstallsSubnetRoute(t *testing.T) {
 	f := readyEgressFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestApplyOverlayEgressInstallsSubnetRoute(t *testing.T) {
 
 func TestApplyOverlayNoEgressSkipsMasq(t *testing.T) {
 	f := readyEgressFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestApplyOverlayNoEgressSkipsMasq(t *testing.T) {
 func TestApplyOverlayEgressErrorStaysReady(t *testing.T) {
 	f := readyEgressFabric()
 	f.Errs = map[string]error{"EnsureMasqueradeIface": errors.New("masq boom")}
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestApplyOverlayEgressErrorStaysReady(t *testing.T) {
 
 func TestApplyOverlayEgressTeardownRemovesMasq(t *testing.T) {
 	f := readyEgressFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

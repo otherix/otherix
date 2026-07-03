@@ -292,7 +292,7 @@ func buildReconcilers(cfg *config.AgentConfig, manager *vm.Manager, fabric netfa
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("pool reconciler: %w", err)
 	}
-	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0)
+	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0, true)
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("network reconciler: %w", err)
 	}

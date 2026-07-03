@@ -187,12 +187,12 @@ func (r *Networks) applyGatewayVeth(d heartbeat.DeclaredNetwork, vni uint32, had
 }
 
 // overlayNeedsServices reports whether an overlay needs the host-side services
-// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none. A
-// gateway reconciler never runs the services pass: a gateway hosts no VMs and is
-// never an anycast first-hop router, so it brings up the overlay datapath
-// without the services plane regardless of the declared egress/DNS/DHCP flags.
+// pass (L3 gateway, NAT egress, or DHCP). A pure L2 overlay needs none. A node
+// that hosts no VMs never runs the services pass: it is never an anycast
+// first-hop router, so it brings up the overlay datapath without the services
+// plane regardless of the declared egress/DNS/DHCP flags.
 func (r *Networks) overlayNeedsServices(d heartbeat.DeclaredNetwork) bool {
-	if r.gatewayMode {
+	if !r.hostsVMs {
 		return false
 	}
 	return d.Egress == "nat" || d.DNSEnabled || d.DhcpEnabled
