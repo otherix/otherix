@@ -8,6 +8,7 @@ package apie2e
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/otherix/otherix/internal/auth"
@@ -28,6 +29,28 @@ func TestLoadBalancerPublishLifecycle(t *testing.T) {
 		t.Fatalf("create published = %d, want 201", create.StatusCode)
 	}
 	create.Body.Close()
+
+	// GET reads the publish fields back: a serialization regression that dropped
+	// them from the view would slip past a create-only check.
+	get := h.get(t, "/v1/loadbalancers/web-db", op)
+	if get.StatusCode != http.StatusOK {
+		t.Fatalf("get published = %d, want 200", get.StatusCode)
+	}
+	var got struct {
+		PublishedPort int      `json:"published_port"`
+		SourceCIDRs   []string `json:"source_cidrs"`
+		Protocol      string   `json:"protocol"`
+	}
+	decodeJSON(t, get, &got)
+	if got.PublishedPort != 5432 {
+		t.Errorf("published_port = %d, want 5432", got.PublishedPort)
+	}
+	if !slices.Contains(got.SourceCIDRs, "203.0.113.0/24") {
+		t.Errorf("source_cidrs = %v, want to contain 203.0.113.0/24", got.SourceCIDRs)
+	}
+	if got.Protocol != "tcp" {
+		t.Errorf("protocol = %q, want tcp", got.Protocol)
+	}
 
 	// Duplicate published_port -> 409.
 	dup := h.post(t, "/v1/loadbalancers", map[string]any{
@@ -86,7 +109,7 @@ func TestLoadBalancerPublishForbiddenForDeveloper(t *testing.T) {
 // source-CIDR allowlist without loadbalancer:publish.
 func TestLoadBalancerPublishGateCoversSourceCIDRs(t *testing.T) {
 	h := newE2E(t)
-	dev, devID := loginAs(t, h, auth.RoleDeveloper)
+	dev, _ := loginAs(t, h, auth.RoleDeveloper)
 	op, _ := loginAs(t, h, auth.RoleOperator)
 
 	// Developer creates an unpublished LB they own.
@@ -99,9 +122,8 @@ func TestLoadBalancerPublishGateCoversSourceCIDRs(t *testing.T) {
 	create.Body.Close()
 
 	// Operator publishes the developer-owned LB with an allowlist. The operator
-	// holds loadbalancer:update at any scope, so the ownership check passes; devID
-	// remains the owner and is unchanged by publishing.
-	_ = devID
+	// holds loadbalancer:update at any scope, so the ownership check passes; the
+	// developer remains the owner and is unchanged by publishing.
 	pub := h.patch(t, "/v1/loadbalancers/dev-owned", map[string]any{
 		"published_port": 5432, "source_cidrs": []string{"203.0.113.0/24"},
 	}, op)
