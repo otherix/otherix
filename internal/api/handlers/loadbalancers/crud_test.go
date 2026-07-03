@@ -27,9 +27,10 @@ import (
 // case-insensitive name-uniqueness guard and soft-delete semantics of the real
 // etcd store, and records the last created row for owner-stamping assertions.
 type fakeStore struct {
-	byID        map[uuid.UUID]store.LoadBalancer
-	byName      map[string]uuid.UUID // lower(name) -> id
-	lastCreated store.LoadBalancer
+	byID            map[uuid.UUID]store.LoadBalancer
+	byName          map[string]uuid.UUID // lower(name) -> id
+	byPublishedPort map[int32]uuid.UUID  // published port -> id (uniqueness guard)
+	lastCreated     store.LoadBalancer
 
 	vms        map[uuid.UUID]store.VM
 	runtimes   map[uuid.UUID]store.VMRuntime
@@ -43,13 +44,14 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		byID:       map[uuid.UUID]store.LoadBalancer{},
-		byName:     map[string]uuid.UUID{},
-		vms:        map[uuid.UUID]store.VM{},
-		runtimes:   map[uuid.UUID]store.VMRuntime{},
-		runtimeErr: map[uuid.UUID]error{},
-		lbHealth:   map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth{},
-		healthErr:  map[uuid.UUID]error{},
+		byID:            map[uuid.UUID]store.LoadBalancer{},
+		byName:          map[string]uuid.UUID{},
+		byPublishedPort: map[int32]uuid.UUID{},
+		vms:             map[uuid.UUID]store.VM{},
+		runtimes:        map[uuid.UUID]store.VMRuntime{},
+		runtimeErr:      map[uuid.UUID]error{},
+		lbHealth:        map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth{},
+		healthErr:       map[uuid.UUID]error{},
 	}
 }
 
@@ -141,19 +143,30 @@ func (f *fakeStore) CreateLoadBalancer(_ context.Context, arg store.CreateLoadBa
 	if _, ok := f.byName[strings.ToLower(arg.Name)]; ok {
 		return store.LoadBalancer{}, store.ErrLoadBalancerNameExists
 	}
+	if arg.PublishedPort != nil {
+		if _, taken := f.byPublishedPort[*arg.PublishedPort]; taken {
+			return store.LoadBalancer{}, store.ErrLoadBalancerPublishedPortExists
+		}
+	}
 	now := time.Now().UTC()
 	lb := store.LoadBalancer{
-		ID:          arg.ID,
-		Name:        arg.Name,
-		OwnerID:     arg.OwnerID,
-		Port:        arg.Port,
-		Selector:    arg.Selector,
-		HealthCheck: arg.HealthCheck,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            arg.ID,
+		Name:          arg.Name,
+		OwnerID:       arg.OwnerID,
+		Port:          arg.Port,
+		Selector:      arg.Selector,
+		HealthCheck:   arg.HealthCheck,
+		PublishedPort: arg.PublishedPort,
+		Protocol:      arg.Protocol,
+		SourceCIDRs:   arg.SourceCIDRs,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	f.byID[lb.ID] = lb
 	f.byName[strings.ToLower(lb.Name)] = lb.ID
+	if lb.PublishedPort != nil {
+		f.byPublishedPort[*lb.PublishedPort] = lb.ID
+	}
 	f.lastCreated = lb
 	return lb, nil
 }
@@ -178,12 +191,26 @@ func (f *fakeStore) UpdateLoadBalancer(_ context.Context, arg store.UpdateLoadBa
 		delete(f.byName, strings.ToLower(lb.Name))
 		f.byName[lower] = lb.ID
 	}
+	if arg.PublishedPort != nil {
+		if owner, taken := f.byPublishedPort[*arg.PublishedPort]; taken && owner != lb.ID {
+			return store.LoadBalancer{}, store.ErrLoadBalancerPublishedPortExists
+		}
+	}
+	if lb.PublishedPort != nil {
+		delete(f.byPublishedPort, *lb.PublishedPort)
+	}
 	lb.Name = arg.Name
 	lb.Port = arg.Port
 	lb.Selector = arg.Selector
 	lb.HealthCheck = arg.HealthCheck
+	lb.PublishedPort = arg.PublishedPort
+	lb.Protocol = arg.Protocol
+	lb.SourceCIDRs = arg.SourceCIDRs
 	lb.UpdatedAt = time.Now().UTC()
 	f.byID[lb.ID] = lb
+	if lb.PublishedPort != nil {
+		f.byPublishedPort[*lb.PublishedPort] = lb.ID
+	}
 	return lb, nil
 }
 
@@ -258,6 +285,101 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 func devUser() *auth.User {
 	return &auth.User{ID: uuid.New(), Role: auth.RoleDeveloper, Type: auth.TypeJWT}
+}
+
+func opUser() *auth.User {
+	return &auth.User{ID: uuid.New(), Role: auth.RoleOperator, Type: auth.TypeJWT}
+}
+
+// TestCreatePublishedRequiresPublishPermission asserts a caller without
+// loadbalancer:publish (developer) cannot create a published LB (403), while an
+// operator can (201).
+func TestCreatePublishedRequiresPublishPermission(t *testing.T) {
+	st := newFakeStore()
+	body := `{"name":"web","port":80,"selector":{"app":"web"},"published_port":8080}`
+
+	devRec := do(t, newRouter(st, devUser()), http.MethodPost, "/v1/loadbalancers", body)
+	if devRec.Code != http.StatusForbidden {
+		t.Fatalf("developer publish create = %d, want 403; body=%s", devRec.Code, devRec.Body.String())
+	}
+	if code := errorCode(t, devRec); code != "permission_denied" {
+		t.Errorf("code = %q, want permission_denied", code)
+	}
+
+	opRec := do(t, newRouter(st, opUser()), http.MethodPost, "/v1/loadbalancers", body)
+	if opRec.Code != http.StatusCreated {
+		t.Fatalf("operator publish create = %d, want 201; body=%s", opRec.Code, opRec.Body.String())
+	}
+}
+
+// TestCreatePublishedDuplicatePort asserts a second LB claiming an
+// already-published port is rejected with 409 conflict.
+func TestCreatePublishedDuplicatePort(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, opUser())
+
+	first := `{"name":"a","port":80,"selector":{"app":"a"},"published_port":8080}`
+	if r := do(t, router, http.MethodPost, "/v1/loadbalancers", first); r.Code != http.StatusCreated {
+		t.Fatalf("first create = %d, want 201; body=%s", r.Code, r.Body.String())
+	}
+	second := `{"name":"b","port":80,"selector":{"app":"b"},"published_port":8080}`
+	r := do(t, router, http.MethodPost, "/v1/loadbalancers", second)
+	if r.Code != http.StatusConflict {
+		t.Fatalf("dup published_port = %d, want 409; body=%s", r.Code, r.Body.String())
+	}
+	if code := errorCode(t, r); code != "conflict" {
+		t.Errorf("code = %q, want conflict", code)
+	}
+}
+
+// TestCreatePublishedInvalidSourceCIDR asserts a malformed source_cidrs entry is
+// rejected with 400.
+func TestCreatePublishedInvalidSourceCIDR(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, opUser())
+	body := `{"name":"web","port":80,"selector":{"app":"web"},"published_port":8080,"source_cidrs":["not-a-cidr"]}`
+	r := do(t, router, http.MethodPost, "/v1/loadbalancers", body)
+	if r.Code != http.StatusBadRequest {
+		t.Fatalf("invalid source cidr = %d, want 400; body=%s", r.Code, r.Body.String())
+	}
+	if code := errorCode(t, r); code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", code)
+	}
+}
+
+// TestUpdatePublishFieldsRequirePublishPermission asserts the update publish
+// gate covers the whole exposure surface: an owner with only loadbalancer:update
+// (developer) cannot strip the source-CIDR allowlist on a published LB, even
+// though source_cidrs is not published_port.
+func TestUpdatePublishFieldsRequirePublishPermission(t *testing.T) {
+	st := newFakeStore()
+	owner := devUser()
+	// A published LB owned by the developer (as if an operator published it).
+	port := int32(8080)
+	now := time.Now().UTC()
+	lb := store.LoadBalancer{
+		ID:            uuid.New(),
+		Name:          "web",
+		OwnerID:       owner.ID,
+		Port:          80,
+		Selector:      map[string]string{"app": "web"},
+		PublishedPort: &port,
+		Protocol:      "tcp",
+		SourceCIDRs:   []string{"10.0.0.0/8"},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	st.byID[lb.ID] = lb
+	st.byName[strings.ToLower(lb.Name)] = lb.ID
+	st.byPublishedPort[port] = lb.ID
+
+	rec := do(t, newRouter(st, owner), http.MethodPatch, "/v1/loadbalancers/web", `{"source_cidrs":[]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("developer stripping allowlist = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "permission_denied" {
+		t.Errorf("code = %q, want permission_denied", code)
+	}
 }
 
 func TestCreateLoadBalancerStampsOwner(t *testing.T) {

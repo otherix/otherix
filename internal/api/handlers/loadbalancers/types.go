@@ -6,6 +6,7 @@ package loadbalancers
 import (
 	"time"
 
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -16,6 +17,15 @@ type createRequest struct {
 	Port        int32               `json:"port"`
 	Selector    map[string]string   `json:"selector"`
 	HealthCheck *healthCheckRequest `json:"health_check,omitempty"`
+	// PublishedPort, when present, exposes the load balancer on that public TCP
+	// port via gateway-role nodes. Setting it requires loadbalancer:publish.
+	PublishedPort *int32 `json:"published_port,omitempty"`
+	// Protocol is the published listener's L4 protocol; only "tcp" is accepted.
+	// Empty defaults to "tcp" when a published port is set.
+	Protocol string `json:"protocol,omitempty"`
+	// SourceCIDRs, when non-empty, restricts the published listener to these
+	// client source ranges.
+	SourceCIDRs []string `json:"source_cidrs,omitempty"`
 }
 
 // updateRequest is the body of PATCH /v1/loadbalancers/{id}. Every field is a
@@ -26,6 +36,15 @@ type updateRequest struct {
 	Port        *int32              `json:"port,omitempty"`
 	Selector    *map[string]string  `json:"selector,omitempty"`
 	HealthCheck *healthCheckRequest `json:"health_check,omitempty"`
+	// PublishedPort is tri-state: an omitted key leaves the stored port as-is; a
+	// present non-zero value publishes on that port; the value 0 is the unpublish
+	// sentinel that clears the port, protocol, and source CIDRs together.
+	PublishedPort *int32 `json:"published_port,omitempty"`
+	// Protocol, when present, sets the published listener's L4 protocol.
+	Protocol *string `json:"protocol,omitempty"`
+	// SourceCIDRs, when present, replaces the source-range allowlist (an empty
+	// array clears it, opening the listener to all sources).
+	SourceCIDRs *[]string `json:"source_cidrs,omitempty"`
 }
 
 // healthCheckRequest is the optional health_check block on create/update. Every
@@ -80,7 +99,12 @@ type loadBalancerView struct {
 	Port        int32             `json:"port"`
 	Selector    map[string]string `json:"selector"`
 	HealthCheck healthCheckView   `json:"health_check"`
-	Backends    []backendView     `json:"backends"`
+	// PublishedPort is nil (renders JSON null) when the load balancer is not
+	// published on a public port.
+	PublishedPort *int32        `json:"published_port"`
+	Protocol      string        `json:"protocol"`
+	SourceCIDRs   []string      `json:"source_cidrs"`
+	Backends      []backendView `json:"backends"`
 	// Health is the aggregate active-health rollup, populated only by get and
 	// list (which have live-health context). toView leaves it nil, so
 	// create/update responses omit it.
@@ -102,6 +126,12 @@ type paginationMeta struct {
 // toView projects a store.LoadBalancer onto its public loadBalancerView.
 func toView(lb store.LoadBalancer) loadBalancerView {
 	hc := lb.HealthCheck.EffectiveFor(lb.Port)
+	// An empty stored protocol predates the published-port feature or was never
+	// published; surface the canonical default so the field is never blank.
+	protocol := lb.Protocol
+	if protocol == "" {
+		protocol = validation.DefaultLBProtocol
+	}
 	return loadBalancerView{
 		ID:       lb.ID.String(),
 		Name:     lb.Name,
@@ -115,6 +145,9 @@ func toView(lb store.LoadBalancer) loadBalancerView {
 			HealthyThreshold:   hc.HealthyThreshold,
 			UnhealthyThreshold: hc.UnhealthyThreshold,
 		},
+		PublishedPort: lb.PublishedPort,
+		Protocol:      protocol,
+		SourceCIDRs:   lb.SourceCIDRs,
 		// Backends is enumerated only by the single-resource get (h.buildBackends
 		// overwrites this); the list projection leaves the empty array so the
 		// wire shape always carries a backends array, never null.

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -58,18 +59,30 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !applyCreatePublish(w, r, user, &req) {
+		return
+	}
+
 	row, err := h.store.CreateLoadBalancer(r.Context(), store.CreateLoadBalancerParams{
-		ID:          uuid.New(),
-		Name:        req.Name,
-		OwnerID:     user.ID,
-		Port:        req.Port,
-		Selector:    req.Selector,
-		HealthCheck: hc,
+		ID:            uuid.New(),
+		Name:          req.Name,
+		OwnerID:       user.ID,
+		Port:          req.Port,
+		Selector:      req.Selector,
+		HealthCheck:   hc,
+		PublishedPort: req.PublishedPort,
+		Protocol:      req.Protocol,
+		SourceCIDRs:   req.SourceCIDRs,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrLoadBalancerNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "load balancer name already in use", nil)
+			return
+		}
+		if errors.Is(err, store.ErrLoadBalancerPublishedPortExists) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeConflict, "published port already in use", nil)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -78,6 +91,45 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.WriteJSON(w, r, http.StatusCreated, toView(row))
+}
+
+// applyCreatePublish enforces the loadbalancer:publish gate and validates the
+// published-listener fields (port, protocol, source CIDRs) on a create request.
+// Publishing on a public port is a privileged, cluster-wide exposure; a create
+// carries protocol/source_cidrs only alongside a published port, so gating on
+// PublishedPort presence covers the whole surface. It writes the error response
+// and returns false when the request must be rejected.
+func applyCreatePublish(w http.ResponseWriter, r *http.Request, user *auth.User, req *createRequest) bool {
+	if req.PublishedPort == nil {
+		return true
+	}
+	if !auth.Has(user.Role, auth.PermLoadBalancerPublish) {
+		response.WriteError(w, r, http.StatusForbidden,
+			response.CodePermissionDenied,
+			"loadbalancer:publish required to set a published port", nil)
+		return false
+	}
+	if err := validatePort(*req.PublishedPort); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return false
+	}
+	if req.Protocol == "" {
+		req.Protocol = validation.DefaultLBProtocol
+	}
+	if err := validation.ValidateLBProtocol(req.Protocol); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return false
+	}
+	for _, c := range req.SourceCIDRs {
+		if err := validation.ValidateSourceCIDR(c); err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, err.Error(), nil)
+			return false
+		}
+	}
+	return true
 }
 
 // validateName checks the load-balancer name (trimmed by the caller): non-empty
