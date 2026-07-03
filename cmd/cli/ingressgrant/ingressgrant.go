@@ -4,12 +4,13 @@
 // Package ingressgrant hosts the `otherix ingress-grant` cobra subcommand group over
 // the Control Plane's /v1/ingress-grants surface. An ingress grant is a per-person
 // access credential an external user (one without a CLI account) presents to
-// reach a fixed set of VMs over the control-plane SSH relay.
+// reach a fixed set of guest TCP ports on specific VMs over the control-plane
+// ingress relay. SSH (port 22) is one case; any guest port is grantable.
 //
 // `create` mints a grant and prints a shareable bundle (server URL + TLS-trust
-// discriminator + the one-time grant token + the granted {vm, login} set) the
+// discriminator + the one-time grant token + the granted {vm, port, login} set) the
 // operator hands to the external person; `list` / `get` inspect grants; `add-vm`
-// / `remove-vm` adjust a grant's mutable VM scope; `revoke` disables it.
+// / `remove-vm` adjust a grant's mutable VM and port scope; `revoke` disables it.
 //
 // The whole surface is gated by vm:ingress-grant (admin/operator any, developer
 // own, viewer none). The plaintext grant token is surfaced exactly once, in
@@ -58,15 +59,16 @@ const defaultListLimit = 20
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ingress-grant",
-		Short: "Manage SSH access grants for external users.",
-		Long: `ingress-grant manages per-person SSH access grants. A grant lets an
-external user - one without a CLI account - reach a fixed set of VMs over the
-control-plane SSH relay using a single shareable token.
+		Short: "Manage port-scoped ingress grants for external users.",
+		Long: `ingress-grant manages per-person ingress grants. A grant lets an external
+user - one without a CLI account - reach a fixed set of guest TCP ports on
+specific VMs over the control-plane ingress relay using a single shareable
+token. SSH (port 22) is one case; any guest port is grantable.
 
 'create' mints a grant and prints a bundle (server URL, TLS trust, the
-one-time grant token, and the granted vm:login set) to hand to the external
-person; they import it with 'otherix-ssh add'. Manage a grant's VM scope with
-'add-vm' / 'remove-vm' and disable it with 'revoke'.
+one-time grant token, and the granted vm:port set) to hand to the external
+person; they import it with 'otherix-ssh add'. Manage a grant's VM and port
+scope with 'add-vm' / 'remove-vm' and disable it with 'revoke'.
 
 The whole surface is gated by vm:ingress-grant. The plaintext grant token is shown
 exactly once, in the create bundle, and is never a flag or argument.`,
