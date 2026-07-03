@@ -434,7 +434,7 @@ func TestCommitMigrationCutover_FailedStaysFailed(t *testing.T) {
 	}
 
 	// Cutover on a terminal-FAILED migration must refuse and never re-pin
-	// (fail-safe-to-source, spec D3).
+	// (fail-safe-to-source).
 	if err := s.CommitMigrationCutover(ctx, m.ID); !errors.Is(err, store.ErrMigrationTerminal) {
 		t.Errorf("CommitMigrationCutover(failed) = %v, want store.ErrMigrationTerminal", err)
 	}

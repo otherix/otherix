@@ -42,7 +42,7 @@ func TestWaitServing(t *testing.T) {
 // peer and removes it again. The learner registers in membership but is never a
 // voter, so the single voter stays operational and VoterCount holds at 1
 // throughout - the add/remove round-trip exercises the settle-gated paths
-// without needing a second running member (that is slice 9e's transition test).
+// without needing a second running member (the transition is a separate test).
 func TestAddLearnerThenRemove(t *testing.T) {
 	clientURL := startMemberWithClientURL(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
