@@ -154,7 +154,7 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
-// TestSanitizer_CrossChunkCSIPreserved pins the fix for the L14
+// TestSanitizer_CrossChunkCSIPreserved pins the fix for the
 // "preserve ANSI CSI verbatim" rule when a single CSI sequence is
 // split across two QEMU socket reads. Without the Sanitizer carry,
 // the ESC byte (or the partial parameter / intermediate bytes

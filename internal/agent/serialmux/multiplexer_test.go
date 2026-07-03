@@ -432,7 +432,7 @@ func TestMultiplexer_DropMarkerInjectedAfterRecovery(t *testing.T) {
 	}
 
 	// Push a recovery byte; the next pump delivery should succeed and
-	// then emit the drop marker the spec defines (L7).
+	// then emit the drop marker the spec defines.
 	f.writeFromQEMU(0, []byte("z"))
 
 	deadline := time.After(3 * time.Second)

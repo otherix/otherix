@@ -39,8 +39,8 @@ func validVMBody(vmID uuid.UUID, poolName string) vmCreateBody {
 }
 
 // validNamedVMBody is the named variant — needed by tests that
-// register multiple VMs against one mock (post Pre-L1 Path D the
-// mock's storedVMs is keyed by name, so re-using `"demo"` would
+// register multiple VMs against one mock (the mock's storedVMs is
+// keyed by name, so re-using `"demo"` would
 // fold subsequent creates into idempotent re-creates rather than
 // staging independent entries).
 func validNamedVMBody(vmID uuid.UUID, name, poolName string) vmCreateBody {

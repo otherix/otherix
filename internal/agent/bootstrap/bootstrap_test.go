@@ -414,7 +414,7 @@ func TestPersist(t *testing.T) {
 		}
 	}
 
-	// Sidecar removed per L9 — verify it is NOT written.
+	// The node-id sidecar is not written — verify it is absent.
 	if _, err := os.Stat(filepath.Join(dir, "node-id")); !os.IsNotExist(err) {
 		t.Errorf("node-id sidecar should not exist after Persist; stat err = %v", err)
 	}
