@@ -25,7 +25,7 @@ callers see the reduced NodeSummary shape.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
-	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json|yaml")
 	cmd.Flags().Bool(flagShowIDs, false, "include the node UUID in text output")
 	return cmd
 }
@@ -36,7 +36,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	identifier := args[0]
-	format, err := outputFormat(cmd, "text")
+	format, err := outputFormat(cmd, "text", "yaml")
 	if err != nil {
 		return err
 	}
@@ -47,8 +47,11 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return classifyError(err)
 	}
 
-	if format == "json" {
+	switch format {
+	case "json":
 		return printJSON(cmd, raw)
+	case "yaml":
+		return printYAML(cmd, raw)
 	}
 	printNodeText(cmd, n, showIDs)
 	return nil

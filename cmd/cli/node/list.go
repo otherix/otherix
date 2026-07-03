@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
@@ -31,7 +32,7 @@ constant and derives CORDONED from the cordoned_at timestamp.`,
 	cmd.Flags().String(flagRole, "", "filter by role (hypervisor|gateway)")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json|yaml")
 	cmd.Flags().Bool(flagShowIDs, false, "include node UUIDs in the table output")
 	return cmd
 }
@@ -46,7 +47,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 	role, _ := cmd.Flags().GetString(flagRole)
 	limit, _ := cmd.Flags().GetInt(flagLimit)
 	cursor, _ := cmd.Flags().GetString(flagCursor)
-	format, err := outputFormat(cmd, "table")
+	format, err := outputFormat(cmd, "table", "yaml")
 	if err != nil {
 		return err
 	}
@@ -70,6 +71,12 @@ func runList(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("marshal json: %v", err)
 		}
 		printf(cmd, "%s\n", raw)
+	case "yaml":
+		out, err := yaml.Marshal(nodes)
+		if err != nil {
+			return fmt.Errorf("marshal yaml: %v", err)
+		}
+		printf(cmd, "%s", out)
 	default:
 		printNodeTable(cmd, nodes, showIDs)
 	}
