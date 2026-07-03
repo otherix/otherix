@@ -110,6 +110,7 @@ func DecodeStoragePoolSpec(d Document) (StoragePoolSpec, error) {
 
 var loadBalancerSpecKeys = map[string]bool{
 	"port": true, "selector": true, "healthCheck": true,
+	"publishedPort": true, "protocol": true, "sourceCIDRs": true,
 }
 
 // DecodeLoadBalancerSpec decodes and validates a LoadBalancer document's
@@ -135,6 +136,9 @@ func DecodeLoadBalancerSpec(d Document) (LoadBalancerSpec, error) {
 		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
 			return LoadBalancerSpec{}, fmt.Errorf("manifest: document %d (LoadBalancer/%s): spec.selector entries must have a non-empty key and value", d.Index, d.Name)
 		}
+	}
+	if s.PublishedPort != nil && (*s.PublishedPort < 1 || *s.PublishedPort > 65535) {
+		return LoadBalancerSpec{}, fmt.Errorf("manifest: document %d (LoadBalancer/%s): spec.publishedPort must be in 1..65535", d.Index, d.Name)
 	}
 	return s, nil
 }

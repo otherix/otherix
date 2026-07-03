@@ -269,7 +269,13 @@ func loadBalancerCreateOp(d Document) (CreateOp, error) {
 		Name:        d.Name,
 		Port:        int32(s.Port), //nolint:gosec // port validated in 1..65535 by DecodeLoadBalancerSpec.
 		Selector:    s.Selector,
+		Protocol:    s.Protocol,
+		SourceCIDRs: s.SourceCIDRs,
 		HealthCheck: healthCheckFromSpec(s.HealthCheck),
+	}
+	if s.PublishedPort != nil {
+		pp := int32(*s.PublishedPort) //nolint:gosec // published port validated in 1..65535 by DecodeLoadBalancerSpec.
+		params.PublishedPort = &pp
 	}
 	return CreateOp{Kind: KindLoadBalancer, Name: d.Name, LB: &params}, nil
 }

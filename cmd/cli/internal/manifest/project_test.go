@@ -708,6 +708,43 @@ func TestProjectLoadBalancerHealthCheckRoundTrips(t *testing.T) {
 	}
 }
 
+// TestProjectLoadBalancerPublishRoundTrips proves a published load balancer
+// survives `lb get -o yaml | create -f`: published_port, protocol, and
+// source_cidrs are projected into the manifest and re-parse into the create
+// params, so a manifest-declared published LB applies published (not silently
+// unpublished).
+func TestProjectLoadBalancerPublishRoundTrips(t *testing.T) {
+	pubPort := int32(8443)
+	lb := cpclient.LoadBalancer{
+		ID:            "22222222-3333-4444-5555-666666666666",
+		Name:          "web-db",
+		OwnerID:       "99999999-9999-9999-9999-999999999999",
+		Port:          5432,
+		Selector:      map[string]string{"app": "db"},
+		PublishedPort: &pubPort,
+		Protocol:      "tcp",
+		SourceCIDRs:   []string{"203.0.113.0/24", "10.0.0.0/8"},
+	}
+	out, err := manifest.ProjectLoadBalancer(lb)
+	if err != nil {
+		t.Fatalf("ProjectLoadBalancer() error = %v", err)
+	}
+	plan := mustCreatePlan(t, out)
+	if len(plan) != 1 || plan[0].LB == nil {
+		t.Fatalf("plan = %+v, want 1 load balancer op", plan)
+	}
+	got := plan[0].LB
+	if got.PublishedPort == nil || *got.PublishedPort != 8443 {
+		t.Errorf("published_port = %v, want 8443 after round-trip", got.PublishedPort)
+	}
+	if got.Protocol != "tcp" {
+		t.Errorf("protocol = %q, want tcp after round-trip", got.Protocol)
+	}
+	if diff := cmp.Diff([]string{"203.0.113.0/24", "10.0.0.0/8"}, got.SourceCIDRs); diff != "" {
+		t.Errorf("source_cidrs round-trip mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestProjectVMSingleNICOnly(t *testing.T) {
 	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512, Networks: []string{"net-a", "net-b"}}
 	out, err := manifest.ProjectVM(v)

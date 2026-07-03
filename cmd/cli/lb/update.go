@@ -31,6 +31,9 @@ Example:
 	}
 	cmd.Flags().Int(flagPort, 0, "guest TCP port ingress connections target (1..65535)")
 	cmd.Flags().String(flagSelector, "", "backend selector as k=v[,k=v...]")
+	cmd.Flags().Int(flagPublishedPort, 0, "public TCP port for the load balancer's listener")
+	cmd.Flags().Bool(flagNoPublish, false, "remove the public listener (unpublish)")
+	cmd.Flags().StringArray(flagSourceCIDR, nil, "replace the public listener's client-CIDR allowlist (repeatable; empty opens to all)")
 	registerHealthCheckFlags(cmd)
 	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
@@ -83,8 +86,12 @@ func updateParamsFromFlags(cmd *cobra.Command) (cpclient.UpdateLoadBalancerParam
 	params.HealthCheck = healthCheck
 	portChanged := cmd.Flags().Changed(flagPort)
 	selectorChanged := cmd.Flags().Changed(flagSelector)
-	if !portChanged && !selectorChanged && healthCheck == nil {
-		return params, errors.New("specify at least one of --port, --selector, or a --health-* flag")
+	publishTouched, err := applyUpdatePublishFlags(cmd, &params)
+	if err != nil {
+		return params, err
+	}
+	if !portChanged && !selectorChanged && healthCheck == nil && !publishTouched {
+		return params, errors.New("specify at least one of --port, --selector, --publish-port, --no-publish, --source-cidr, or a --health-* flag")
 	}
 	if portChanged {
 		port, err := cmd.Flags().GetInt(flagPort)
@@ -109,4 +116,41 @@ func updateParamsFromFlags(cmd *cobra.Command) (cpclient.UpdateLoadBalancerParam
 		params.Selector = selector
 	}
 	return params, nil
+}
+
+// applyUpdatePublishFlags folds the --no-publish / --publish-port / --source-cidr
+// flags into params and reports whether any of them was set. --no-publish and
+// --publish-port are mutually exclusive; --no-publish sends published_port=0 (the
+// unpublish sentinel). Each field is tri-state via cmd.Flags().Changed so an
+// omitted flag leaves the stored value untouched.
+func applyUpdatePublishFlags(cmd *cobra.Command, params *cpclient.UpdateLoadBalancerParams) (touched bool, err error) {
+	noPublish := cmd.Flags().Changed(flagNoPublish)
+	pubPortChanged := cmd.Flags().Changed(flagPublishedPort)
+	sourceCIDRChanged := cmd.Flags().Changed(flagSourceCIDR)
+	if noPublish && pubPortChanged {
+		return false, errors.New("--no-publish and --publish-port are mutually exclusive")
+	}
+	switch {
+	case noPublish:
+		zero := int32(0) // 0 is the unpublish sentinel: clears port, protocol, and CIDRs.
+		params.PublishedPort = &zero
+	case pubPortChanged:
+		v, err := cmd.Flags().GetInt(flagPublishedPort)
+		if err != nil {
+			return false, err
+		}
+		if v < 1 || v > 65535 {
+			return false, fmt.Errorf("invalid --%s %d: must be in 1..65535", flagPublishedPort, v)
+		}
+		p := int32(v) //nolint:gosec // validated in 1..65535 above.
+		params.PublishedPort = &p
+	}
+	if sourceCIDRChanged {
+		c, err := cmd.Flags().GetStringArray(flagSourceCIDR)
+		if err != nil {
+			return false, err
+		}
+		params.SourceCIDRs = &c
+	}
+	return noPublish || pubPortChanged || sourceCIDRChanged, nil
 }

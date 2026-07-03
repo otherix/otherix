@@ -26,6 +26,11 @@ const (
 	flagPort     = "port"
 	flagSelector = "selector"
 
+	flagPublish       = "publish"
+	flagPublishedPort = "publish-port"
+	flagNoPublish     = "no-publish"
+	flagSourceCIDR    = "source-cidr"
+
 	flagHealthPort               = "health-port"
 	flagHealthInterval           = "health-interval"
 	flagHealthTimeout            = "health-timeout"

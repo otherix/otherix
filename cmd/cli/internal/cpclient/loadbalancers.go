@@ -88,7 +88,16 @@ type LoadBalancer struct {
 	Port        int32             `json:"port"`
 	Selector    map[string]string `json:"selector"`
 	HealthCheck HealthCheck       `json:"health_check"`
-	Backends    []Backend         `json:"backends"`
+	// PublishedPort is the public TCP port the load balancer is exposed on via
+	// gateway-role nodes, or nil when the load balancer is not published.
+	PublishedPort *int32 `json:"published_port"`
+	// Protocol is the published listener's L4 protocol (currently always "tcp"),
+	// empty when the load balancer is not published.
+	Protocol string `json:"protocol,omitempty"`
+	// SourceCIDRs restricts the published listener to these client source ranges;
+	// empty means the listener accepts every source.
+	SourceCIDRs []string  `json:"source_cidrs,omitempty"`
+	Backends    []Backend `json:"backends"`
 	// Health is the aggregate active-health rollup, present only on get and list.
 	Health    *LoadBalancerHealthSummary `json:"health,omitempty"`
 	CreatedAt string                     `json:"created_at"`
@@ -108,10 +117,16 @@ type LoadBalancerList struct {
 // /v1/loadbalancers. All three fields are required by the server
 // (LoadBalancerCreate: name, port, selector).
 type CreateLoadBalancerParams struct {
-	Name        string
-	Port        int32
-	Selector    map[string]string
-	HealthCheck *HealthCheck
+	Name     string
+	Port     int32
+	Selector map[string]string
+	// PublishedPort, when non-nil, exposes the load balancer on that public TCP
+	// port; Protocol and SourceCIDRs describe that published listener and are
+	// sent only alongside it.
+	PublishedPort *int32
+	Protocol      string
+	SourceCIDRs   []string
+	HealthCheck   *HealthCheck
 }
 
 // body assembles the JSON request body for POST /v1/loadbalancers.
@@ -124,6 +139,15 @@ func (p CreateLoadBalancerParams) body() map[string]any {
 		"port":     p.Port,
 		"selector": p.Selector,
 	}
+	if p.PublishedPort != nil {
+		out["published_port"] = *p.PublishedPort
+	}
+	if p.Protocol != "" {
+		out["protocol"] = p.Protocol
+	}
+	if len(p.SourceCIDRs) > 0 {
+		out["source_cidrs"] = p.SourceCIDRs
+	}
 	if hc := p.HealthCheck.body(); hc != nil {
 		out["health_check"] = hc
 	}
@@ -135,9 +159,16 @@ func (p CreateLoadBalancerParams) body() map[string]any {
 // is omitted from the request body and the server leaves it unchanged
 // (LoadBalancerUpdate: all fields optional).
 type UpdateLoadBalancerParams struct {
-	Name        *string
-	Port        *int32
-	Selector    map[string]string
+	Name     *string
+	Port     *int32
+	Selector map[string]string
+	// PublishedPort is tri-state: nil leaves the stored port as-is; a non-nil 0
+	// is the unpublish sentinel that clears the public listener; a non-nil
+	// positive value publishes on that port.
+	PublishedPort *int32
+	// SourceCIDRs is tri-state via the pointer: nil leaves the allowlist as-is; a
+	// non-nil (possibly empty) slice replaces it (empty opens to all sources).
+	SourceCIDRs *[]string
 	HealthCheck *HealthCheck
 }
 
@@ -154,6 +185,12 @@ func (p UpdateLoadBalancerParams) body() map[string]any {
 	}
 	if p.Selector != nil {
 		out["selector"] = p.Selector
+	}
+	if p.PublishedPort != nil {
+		out["published_port"] = *p.PublishedPort
+	}
+	if p.SourceCIDRs != nil {
+		out["source_cidrs"] = *p.SourceCIDRs
 	}
 	if hc := p.HealthCheck.body(); hc != nil {
 		out["health_check"] = hc
