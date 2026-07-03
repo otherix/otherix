@@ -15,28 +15,35 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// TestPlacementExcludesGatewayRole drives the real placement querier through the
-// role predicate: a hypervisor node and a gateway node both hold a ready pool on
-// the same name, yet the eligible-pool enumeration must surface only the
-// hypervisor node's pair because the querier now excludes any node that does not
-// hold the hypervisor role.
+// TestPlacementExcludesGatewayRole drives the real placement querier through
+// pool ownership: a hypervisor node and a co-located node (gateway bit + a pool
+// on the same name) both surface as eligible pairs, while a gateway-only node
+// with no pool never produces a pair. Pool ownership is the schedulability gate;
+// the gateway bit alone no longer excludes.
 func TestPlacementExcludesGatewayRole(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
 	poolName := uniquePoolName("gw-role-excl")
-	nodeID := mkKindNode(t, s, "node", store.NodeKindNode, poolName)
-	gwID := mkKindNode(t, s, "gw", store.NodeKindGateway, poolName)
+	hvID := mkKindNode(t, s, "hv", store.NodeKindNode, poolName)    // pool, no gateway bit -> [hypervisor]
+	coID := mkKindNode(t, s, "co", store.NodeKindGateway, poolName) // pool + gateway bit -> [hypervisor,gateway]
+	gwOnly := mkGatewayNodeNoPool(t, s, "gw")                       // gateway bit, no pool -> [gateway]
 
 	rows, err := s.PlacementQuerier().ListEligiblePoolsByName(ctx, poolName)
 	if err != nil {
 		t.Fatalf("ListEligiblePoolsByName: %v", err)
 	}
-	var got []uuid.UUID
+	got := map[uuid.UUID]bool{}
 	for _, r := range rows {
-		got = append(got, r.NodeEffectiveAvailability.ID)
+		got[r.NodeEffectiveAvailability.ID] = true
 	}
-	if len(got) != 1 || got[0] != nodeID {
-		t.Errorf("eligible pool nodes = %v, want [%v] (gateway %v excluded)", got, nodeID, gwID)
+	if !got[hvID] {
+		t.Errorf("hypervisor node %v missing from eligible pools %v", hvID, got)
+	}
+	if !got[coID] {
+		t.Errorf("co-located node %v missing from eligible pools %v (must stay schedulable)", coID, got)
+	}
+	if got[gwOnly] {
+		t.Errorf("gateway-only node %v (no pool) must not be eligible, got %v", gwOnly, got)
 	}
 }
 

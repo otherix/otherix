@@ -39,6 +39,23 @@ func mkKindNode(t *testing.T, s *etcdstore.Store, prefix, kind, poolName string)
 	return np.ID
 }
 
+// mkGatewayNodeNoPool creates a ready node with the gateway bit and NO storage
+// pool, returning the node id. This is a standalone gateway: it owns no pool, so
+// it derives no hypervisor role and is never VM-schedulable.
+func mkGatewayNodeNoPool(t *testing.T, s *etcdstore.Store, prefix string) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	np := nodeParams(uniqueNodeName(prefix))
+	np.Gateway = true
+	if _, err := s.CreateNode(ctx, np); err != nil {
+		t.Fatalf("CreateNode(gateway-no-pool): %v", err)
+	}
+	if _, err := s.UncordonNode(ctx, np.ID); err != nil {
+		t.Fatalf("UncordonNode(gateway-no-pool): %v", err)
+	}
+	return np.ID
+}
+
 // TestNodeByNameRoundTripsGatewayRole confirms the gateway role persists and
 // reads back, and that a node created without the gateway bit reads back as a
 // hypervisor.
