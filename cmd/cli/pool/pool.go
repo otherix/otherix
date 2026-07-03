@@ -27,7 +27,7 @@ import "github.com/spf13/cobra"
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pool",
-		Short: "Manage storage pools (CP /v1/storage-pools surface)",
+		Short: "Manage storage pools",
 		Long: `pool groups the operator-facing commands against the Control Plane's
 /v1/storage-pools surface. Multi-instance: the same pool name may
 live on multiple nodes; 'pool list' shows every per-node instance, and

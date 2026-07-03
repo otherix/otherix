@@ -19,7 +19,7 @@ import (
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migration",
-		Short: "Inspect VM migrations (CP /v1/migrations surface)",
+		Short: "Inspect VM migrations",
 		Long: `migration groups the operator subcommands against the Control
 Plane's /v1/migrations surface — get a migration by id, list migrations
 filtered by VM or node, and cancel a migration (best-effort, pre-cutover).

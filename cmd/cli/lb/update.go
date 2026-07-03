@@ -32,7 +32,7 @@ Example:
 	cmd.Flags().Int(flagPort, 0, "guest TCP port ingress connections target (1..65535)")
 	cmd.Flags().String(flagSelector, "", "backend selector as k=v[,k=v...]")
 	registerHealthCheckFlags(cmd)
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

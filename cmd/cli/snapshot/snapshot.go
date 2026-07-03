@@ -21,7 +21,7 @@ import (
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "snapshot",
-		Short: "Inspect VM snapshots (CP /v1/snapshots surface)",
+		Short: "Inspect VM snapshots",
 		Long: `snapshot groups the operator subcommands against the Control
 Plane's /v1/snapshots surface - list snapshots (globally, filtered by VM or
 status), get a snapshot by id, and delete a snapshot. A snapshot is a disk-only,

@@ -107,6 +107,6 @@ func newLifecycleCommand(
 			return nil
 		},
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }

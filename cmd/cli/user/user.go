@@ -31,7 +31,7 @@ import "github.com/spf13/cobra"
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "user",
-		Short: "Manage users (CP /v1/users surface)",
+		Short: "Manage users",
 		Long: `user groups the operator-facing commands against the Control
 Plane's /v1/users surface. A username is the primary immutable identity
 and the only login credential; email and display_name are optional.

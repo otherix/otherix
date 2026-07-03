@@ -34,7 +34,7 @@ interactive no-echo prompt, or - for automation - from stdin when
 		RunE: runSetPassword,
 	}
 	cmd.Flags().Bool(flagPasswordStdin, false, "read the password from stdin (one line) instead of prompting")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

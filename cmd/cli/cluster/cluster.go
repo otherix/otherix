@@ -23,7 +23,7 @@ import "github.com/spf13/cobra"
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cluster",
-		Short: "Manage cluster-wide settings (CP /v1/cluster surface)",
+		Short: "Manage cluster-wide settings",
 		Long: `cluster groups the operator-facing commands against the Control
 Plane's cluster-wide settings surface. The first knob exposed is the
 default-pool reference: a cluster-wide pool name VM create falls

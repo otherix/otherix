@@ -24,7 +24,7 @@ master switch and the DNS suffix VM hostnames are addressed under. An
 unconfigured cluster reports enabled=false with an empty suffix.`,
 		RunE: runGetSSHIngress,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 
@@ -72,7 +72,7 @@ Disable: otherix cluster set-ssh-ingress --enabled=false`,
 	}
 	cmd.Flags().Bool(flagEnabled, true, "enable the cluster SSH-ingress master switch (pass --enabled=false to disable)")
 	cmd.Flags().String(flagSuffix, "", "DNS suffix VM hostnames are addressed under (required when enabling)")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

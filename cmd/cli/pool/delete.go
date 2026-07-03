@@ -63,7 +63,7 @@ Example:
 	}
 	cmd.Flags().Bool(flagForce, false, "skip the confirmation prompt")
 	cmd.Flags().String(flagNode, "", "delete the instance on this node (disambiguates a multi-instance pool name)")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

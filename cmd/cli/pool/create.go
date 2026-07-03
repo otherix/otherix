@@ -68,7 +68,7 @@ Example:
 	cmd.Flags().String(flagCreatePath, "", "filesystem path on the owning node — required")
 	cmd.Flags().String(flagCreateType, defaultPoolType, "pool type (local_dir)")
 	cmd.Flags().Bool(flagCreateWait, false, "poll until reconciliation_status reaches 'ready' or 'failed' (60s timeout)")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the pool UUID in the text output")
 
 	_ = cmd.MarkFlagRequired(flagCreateNode)

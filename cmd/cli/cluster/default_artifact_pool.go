@@ -20,7 +20,7 @@ actionable informational line to stdout and exits 0 (parseable by
 tooling that distinguishes set/unset without inspecting exit codes).`,
 		RunE: runGetDefaultArtifactPool,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 
@@ -75,7 +75,7 @@ stores a logical pool concept, not a specific per-node instance.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runSetDefaultArtifactPool,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

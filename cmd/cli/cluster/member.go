@@ -42,7 +42,7 @@ Requires admin (cluster:manage); operators and others receive 403
 permission_denied.`,
 		RunE: runMemberList,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

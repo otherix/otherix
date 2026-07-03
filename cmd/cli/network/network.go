@@ -26,7 +26,7 @@ func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "network",
 		Aliases: []string{"net"},
-		Short:   "Manage networks (CP /v1/networks surface)",
+		Short:   "Manage networks",
 		Long: `network groups the operator-facing commands against the Control
 Plane's /v1/networks surface. Networks are cluster-wide bridge
 definitions; every authenticated role can read them, admin alone may
