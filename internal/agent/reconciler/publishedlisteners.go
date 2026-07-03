@@ -194,10 +194,32 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 	}
 
 	// Bind newly declared ports; retry ports whose previous bind failed
-	// (ln == nil). A live listener (ln != nil) is left untouched.
+	// (ln == nil); rebind a port whose owning LB changed so the listener
+	// re-keys to the new owner. A live listener still owned by the same LB is
+	// left untouched.
 	for port, lb := range desiredByPort {
 		if bl, ok := r.bound[port]; ok && bl.ln != nil {
-			continue
+			if bl.lbID == lb.LBID {
+				continue // same owner, listener already up
+			}
+			// Ownership changed without an intervening unpublished tick (the
+			// old LB released the port and a new LB claimed it between two
+			// heartbeats). Close the stale listener and fall through to rebind
+			// under the new LB, so the observed report re-keys and a later
+			// slice's per-port config follows the new owner rather than
+			// serving the old owner's ACL/backends on this port.
+			if err := bl.ln.Close(); err != nil {
+				r.log.WarnContext(ctx, "published listener close failed (rebind on owner change)",
+					slog.Int("port", int(port)),
+					slog.String("error", err.Error()),
+				)
+			}
+			delete(r.bound, port)
+			r.log.InfoContext(ctx, "published listener rebinding (owner changed)",
+				slog.Int("port", int(port)),
+				slog.String("old_lb_id", bl.lbID.String()),
+				slog.String("new_lb_id", lb.LBID.String()),
+			)
 		}
 		ln, err := r.mgr.Listen(ctx, port)
 		if err != nil {

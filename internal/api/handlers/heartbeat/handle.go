@@ -1468,6 +1468,23 @@ func (h *Handler) applyHealthChecks(ctx context.Context, hp store.HeartbeatProje
 // in-flight heartbeat naming a just-deleted LB cannot re-create a status row the
 // delete cascade removed. The CP stamps the receive time so freshness never
 // depends on the agent's clock.
+// maxListenerErrorLen bounds the agent-supplied published-listener bind-error
+// string the CP persists, so a misbehaving gateway cannot bloat etcd values.
+const maxListenerErrorLen = 256
+
+// truncateRunes returns s clipped to at most n runes (never splitting a
+// multi-byte rune). n <= 0 returns "".
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n])
+}
+
 func (h *Handler) applyPublishedListeners(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []publishedListenerReport) error {
 	if len(reports) == 0 {
 		return nil
@@ -1497,7 +1514,11 @@ func (h *Handler) applyPublishedListeners(ctx context.Context, hp store.Heartbea
 		if !live {
 			continue // LB deleted -> do not resurrect its listener status rows
 		}
-		if err := hp.UpsertLBPublishedListenerStatus(ctx, r.LBID, nodeID, r.Port, r.Bound, r.Error, now); err != nil {
+		// The error string is agent-supplied and stored verbatim as an etcd
+		// value; bound its length so a misbehaving or compromised gateway cannot
+		// grow the key space with an oversized message (defense in depth - real
+		// bind errors are short).
+		if err := hp.UpsertLBPublishedListenerStatus(ctx, r.LBID, nodeID, r.Port, r.Bound, truncateRunes(r.Error, maxListenerErrorLen), now); err != nil {
 			return fmt.Errorf("upsert lb published listener status: %v", err)
 		}
 	}

@@ -5,6 +5,7 @@ package heartbeat
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,29 @@ func TestApplyPublishedListenersWritesStatus(t *testing.T) {
 	}
 	if f := spy.upserts[1]; f.lbID != lbFailed || f.port != 8081 || f.bound || f.errMsg == "" {
 		t.Errorf("upsert[1] = %+v, want lb=%v port=8081 unbound with error", f, lbFailed)
+	}
+}
+
+// TestApplyPublishedListenersTruncatesError asserts the CP bounds the
+// agent-supplied bind-error string before persisting it, so a misbehaving
+// gateway cannot bloat the etcd value with an oversized message.
+func TestApplyPublishedListenersTruncatesError(t *testing.T) {
+	reportingNode := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	lb := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
+	spy := &publishedListenerSpy{liveLBs: map[uuid.UUID]struct{}{lb: {}}}
+	h := newQuietHandler()
+
+	huge := strings.Repeat("x", maxListenerErrorLen*4)
+	reports := []publishedListenerReport{{LBID: lb, Port: 8080, Bound: false, Error: huge}}
+	if err := h.applyPublishedListeners(context.Background(), spy, reportingNode, reports); err != nil {
+		t.Fatalf("applyPublishedListeners(...) = %v, want nil", err)
+	}
+	if len(spy.upserts) != 1 {
+		t.Fatalf("wrote %d rows, want 1", len(spy.upserts))
+	}
+	if got := len([]rune(spy.upserts[0].errMsg)); got != maxListenerErrorLen {
+		t.Errorf("stored error length = %d runes, want %d (truncated)", got, maxListenerErrorLen)
 	}
 }
 

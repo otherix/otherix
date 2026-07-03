@@ -186,6 +186,53 @@ func TestPublishedListenersBindsThenClosesAndGoroutineExits(t *testing.T) {
 	}
 }
 
+// TestPublishedListenersRebindsOnOwnershipChange proves that a published port
+// whose owning LB changes without an intervening unpublished tick is rebound:
+// the stale listener is closed and a fresh one bound under the new LB id, so the
+// observed report re-keys to the new owner. (A live-listener short-circuit that
+// only checked ln != nil would keep the stale owner forever, and in a later slice
+// the socket carries the owner's config, so the old owner's ACL/backends would
+// wrongly serve the new owner's port.)
+func TestPublishedListenersRebindsOnOwnershipChange(t *testing.T) {
+	lbA, lbB := uuid.New(), uuid.New()
+	mgr := newFakeListenerManager()
+	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	ctx := context.Background()
+
+	const port int32 = 40002
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbA, PublishedPort: port, Protocol: "tcp", BackendPort: 22},
+	}})
+	r.reconcile(ctx)
+
+	first := mgr.listener(port)
+	if first == nil {
+		t.Fatalf("no listener bound for lbA on port %d", port)
+	}
+
+	// Same port, new owner LB-B, no intervening empty tick.
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbB, PublishedPort: port, Protocol: "tcp", BackendPort: 22},
+	}})
+	r.reconcile(ctx)
+
+	// The stale listener must be closed and a fresh one bound.
+	if got := first.closeCalls.Load(); got != 1 {
+		t.Errorf("stale listener Close calls = %d, want 1 (rebind on ownership change)", got)
+	}
+	if got := mgr.listenCount(); got != 2 {
+		t.Errorf("Listen calls = %d, want 2 (rebind on ownership change)", got)
+	}
+	// The observed report must re-key to the new owner.
+	reports := r.PublishedListenerReports()
+	if len(reports) != 1 {
+		t.Fatalf("PublishedListenerReports() len = %d, want 1", len(reports))
+	}
+	if reports[0].LBID != lbB {
+		t.Errorf("report[%d].LBID = %v, want %v (new owner)", port, reports[0].LBID, lbB)
+	}
+}
+
 // TestPublishedListenersNilDesiredBindsNothing proves the pointer-vs-length
 // guard: before any heartbeat response the desired pointer is nil and a
 // reconcile pass binds nothing (fail toward inaction).
