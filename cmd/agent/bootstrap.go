@@ -99,7 +99,7 @@ Examples:
 	flags.String("cp-url", "", "control-plane base URL (https://...)")
 	flags.String("node-name", "", "cluster-unique node name")
 	flags.String("advertised-endpoint", "", "HTTPS URL the CP uses to reach the agent")
-	flags.String("migration-host", "", "hostname/IP the agent advertises for migration ingress (L14)")
+	flags.String("migration-host", "", "hostname/IP the agent advertises for migration ingress")
 	// Optional knobs.
 	flags.Int("migration-port-range-start", defaultMigrationPortStart, "migration port range lower bound")
 	flags.Int("migration-port-range-end", defaultMigrationPortEnd, "migration port range upper bound")
