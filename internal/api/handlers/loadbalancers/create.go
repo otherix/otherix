@@ -101,6 +101,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 // and returns false when the request must be rejected.
 func applyCreatePublish(w http.ResponseWriter, r *http.Request, user *auth.User, req *createRequest) bool {
 	if req.PublishedPort == nil {
+		// protocol and source_cidrs only describe the published listener. On an
+		// unpublished LB they would persist unvalidated (the gate below never
+		// runs), and a later publish that omits them would carry the stale value
+		// straight into the exposed listener. Reject rather than silently drop.
+		if req.Protocol != "" || len(req.SourceCIDRs) > 0 {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed,
+				"protocol and source_cidrs require published_port", nil)
+			return false
+		}
 		return true
 	}
 	if !auth.Has(user.Role, auth.PermLoadBalancerPublish) {

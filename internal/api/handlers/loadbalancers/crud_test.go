@@ -347,6 +347,33 @@ func TestCreatePublishedInvalidSourceCIDR(t *testing.T) {
 	}
 }
 
+// TestCreatePublishFieldsRequirePublishedPort asserts that a create carrying
+// publish-only fields (protocol, source_cidrs) without a published_port is
+// rejected with 400. Those fields have no meaning on an unpublished LB, and
+// accepting them would persist an unvalidated allowlist that a later publish
+// would silently carry into the exposed listener.
+func TestCreatePublishFieldsRequirePublishedPort(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"source_cidrs without published_port", `{"name":"web","port":80,"selector":{"app":"web"},"source_cidrs":["garbage"]}`},
+		{"protocol without published_port", `{"name":"web","port":80,"selector":{"app":"web"},"protocol":"tcp"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := newRouter(newFakeStore(), devUser())
+			rec := do(t, router, http.MethodPost, "/v1/loadbalancers", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			}
+			if code := errorCode(t, rec); code != "validation_failed" {
+				t.Errorf("code = %q, want validation_failed", code)
+			}
+		})
+	}
+}
+
 // TestUpdatePublishFieldsRequirePublishPermission asserts the update publish
 // gate covers the whole exposure surface: an owner with only loadbalancer:update
 // (developer) cannot strip the source-CIDR allowlist on a published LB, even
