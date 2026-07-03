@@ -7,7 +7,10 @@
 package apie2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 
@@ -42,75 +45,185 @@ type nodeRolesSummaryView struct {
 	Roles []string `json:"roles"`
 }
 
-// TestNodeViewSurfacesRoles asserts the public node views carry the derived
-// `roles` array: a gateway node reports ["gateway"], a default node reports
-// ["hypervisor"], on both the full (admin) and summary (viewer) shapes.
-func TestNodeViewSurfacesRoles(t *testing.T) {
-	h := newE2E(t)
-	admin, _ := loginAs(t, h, auth.RoleAdmin)
-	viewer, _ := loginAs(t, h, auth.RoleViewer)
+// seedRoleNode registers a ready node directly through the store, optionally
+// with the gateway bit and/or a storage pool. Pool ownership is the derived
+// hypervisor signal; the gateway bit is the stored gateway role. The public
+// create endpoint never accepts the gateway kind and never attaches a pool, so
+// the store is the seam that sets up the derivation inputs.
+func seedRoleNode(t *testing.T, h *harness, prefix string, gateway, withPool bool) store.Node {
+	t.Helper()
 	ctx := context.Background()
-
-	// A default node created through the public API is a hypervisor.
-	resp := h.post(t, "/v1/nodes", newNodeBody(), admin)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create hypervisor node status = %d, want 201", resp.StatusCode)
-	}
-	var hv nodeRolesFullView
-	decodeJSON(t, resp, &hv)
-	if diff := cmp.Diff([]string{"hypervisor"}, hv.Roles); diff != "" {
-		t.Errorf("hypervisor node roles mismatch (-want +got):\n%s", diff)
-	}
-
-	// A gateway node self-registers on join; seed one directly through the
-	// store since the public create endpoint never accepts the gateway kind.
-	gwName := "gw-" + uuid.NewString()[:8]
-	gw, err := h.store.CreateNode(ctx, store.CreateNodeParams{
+	name := prefix + "-" + uuid.NewString()[:8]
+	n, err := h.store.CreateNode(ctx, store.CreateNodeParams{
 		ID:                      uuid.New(),
-		Name:                    gwName,
-		Gateway:                 true,
-		Architecture:            store.CPUArch("amd64"),
-		AdvertisedEndpoint:      "https://" + gwName + ".example.test:8443",
-		MigrationHost:           "10.0.0.2",
+		Name:                    name,
+		Gateway:                 gateway,
+		Architecture:            store.CpuArchAmd64,
+		AdvertisedEndpoint:      "https://" + name + ".example.test:8443",
+		MigrationHost:           "10.0.0.9",
 		MigrationPortRangeStart: 49152,
 		MigrationPortRangeEnd:   49251,
 		Status:                  store.NodeStatusPending,
 	})
 	if err != nil {
-		t.Fatalf("CreateNode(gateway): %v", err)
+		t.Fatalf("CreateNode(%s): %v", name, err)
+	}
+	if _, err := h.store.UncordonNode(ctx, n.ID); err != nil {
+		t.Fatalf("UncordonNode(%s): %v", name, err)
+	}
+	if withPool {
+		poolName := "pool-" + uuid.NewString()[:8]
+		if _, err := h.store.CreateStoragePool(ctx, store.CreateStoragePoolParams{
+			ID:     uuid.New(),
+			NodeID: n.ID,
+			Name:   poolName,
+			Type:   "local_dir",
+			Path:   "/var/lib/otherix/pools/" + poolName,
+			Config: []byte(`{}`),
+		}); err != nil {
+			t.Fatalf("CreateStoragePool(%s): %v", name, err)
+		}
+	}
+	// Re-read so the returned row reflects the uncordon (ready) status.
+	fresh, err := h.store.NodeByID(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("NodeByID(%s): %v", name, err)
+	}
+	return fresh
+}
+
+// TestNodeViewSurfacesRoles asserts the public node views carry the effective
+// `roles` array under the pool-derived hypervisor rule: hypervisor comes from
+// storage-pool ownership, gateway from the stored role. It covers GET, list,
+// and the raw-row response bodies (gateway-enable and cordon), which flow
+// through the separate toView path and would otherwise silently drop the
+// derived hypervisor role.
+func TestNodeViewSurfacesRoles(t *testing.T) {
+	h := newE2E(t)
+	admin, _ := loginAs(t, h, auth.RoleAdmin)
+	viewer, _ := loginAs(t, h, auth.RoleViewer)
+
+	// A node that owns a pool derives the hypervisor role.
+	hvNode := seedRoleNode(t, h, "hv", false, true)
+	// A gateway node with no pool: gateway only, never a hypervisor.
+	gwNode := seedRoleNode(t, h, "gw", true, false)
+	// A node with neither a pool nor the gateway bit: empty role set.
+	bareNode := seedRoleNode(t, h, "bare", false, false)
+
+	// GET (full, admin): the pool-owning node is a hypervisor.
+	if diff := cmp.Diff([]string{"hypervisor"}, getNodeRoles(t, h, hvNode.Name, admin)); diff != "" {
+		t.Errorf("hypervisor GET roles mismatch (-want +got):\n%s", diff)
+	}
+	// GET (summary, viewer): the same derivation on the reduced shape.
+	if diff := cmp.Diff([]string{"hypervisor"}, getNodeSummaryRoles(t, h, hvNode.Name, viewer)); diff != "" {
+		t.Errorf("hypervisor summary GET roles mismatch (-want +got):\n%s", diff)
+	}
+	// GET: a pool-less gateway is gateway only.
+	if diff := cmp.Diff([]string{"gateway"}, getNodeRoles(t, h, gwNode.Name, admin)); diff != "" {
+		t.Errorf("gateway GET roles mismatch (-want +got):\n%s", diff)
 	}
 
-	// Full view (admin) carries roles == ["gateway"].
-	resp = h.get(t, "/v1/nodes/"+gw.Name, admin)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("admin get gateway node status = %d, want 200", resp.StatusCode)
+	// GET: a node with no pool and no gateway role carries an empty, non-null
+	// `roles` array. Assert both the decoded slice and the raw JSON so a null
+	// (nil slice) regression is caught.
+	bareRoles, bareRaw := getNodeRolesRaw(t, h, bareNode.Name, admin)
+	if diff := cmp.Diff([]string{}, bareRoles); diff != "" {
+		t.Errorf("bare node GET roles mismatch (-want +got):\n%s", diff)
 	}
-	var gwView nodeRolesFullView
-	decodeJSON(t, resp, &gwView)
-	if diff := cmp.Diff([]string{"gateway"}, gwView.Roles); diff != "" {
-		t.Errorf("gateway node roles mismatch (-want +got):\n%s", diff)
-	}
-
-	// Summary view (viewer) still carries roles on both nodes.
-	resp = h.get(t, "/v1/nodes/"+gw.Name, viewer)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("viewer get gateway node status = %d, want 200", resp.StatusCode)
-	}
-	var gwSummary nodeRolesSummaryView
-	decodeJSON(t, resp, &gwSummary)
-	if diff := cmp.Diff([]string{"gateway"}, gwSummary.Roles); diff != "" {
-		t.Errorf("gateway summary roles mismatch (-want +got):\n%s", diff)
+	if !bytes.Contains(bareRaw, []byte(`"roles":[]`)) {
+		t.Errorf("bare node GET roles must be the empty array, want `\"roles\":[]` in body; got %s", bareRaw)
 	}
 
-	resp = h.get(t, "/v1/nodes/"+hv.Name, viewer)
+	// List: the hypervisor node surfaces its derived role in the collection view.
+	if diff := cmp.Diff([]string{"hypervisor"}, listNodeRoles(t, h, admin, hvNode.ID.String())); diff != "" {
+		t.Errorf("hypervisor list roles mismatch (-want +got):\n%s", diff)
+	}
+
+	// Raw-row path: enabling the gateway role on the pool-owning node must
+	// return BOTH roles - the enable response renders the raw node row, so a
+	// dropped hypervisor here would resurrect the derivation bug.
+	resp := h.post(t, "/v1/nodes/"+hvNode.Name+"/gateway/enable", nil, admin)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("viewer get hypervisor node status = %d, want 200", resp.StatusCode)
+		t.Fatalf("gateway enable status = %d, want 200", resp.StatusCode)
 	}
-	var hvSummary nodeRolesSummaryView
-	decodeJSON(t, resp, &hvSummary)
-	if diff := cmp.Diff([]string{"hypervisor"}, hvSummary.Roles); diff != "" {
-		t.Errorf("hypervisor summary roles mismatch (-want +got):\n%s", diff)
+	var enabled nodeRolesFullView
+	decodeJSON(t, resp, &enabled)
+	if diff := cmp.Diff([]string{"hypervisor", "gateway"}, enabled.Roles); diff != "" {
+		t.Errorf("gateway-enable response roles mismatch (-want +got):\n%s", diff)
 	}
+
+	// Raw-row path: cordoning the now co-located node returns both roles too.
+	resp = h.post(t, "/v1/nodes/"+hvNode.Name+"/cordon", nil, admin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cordon status = %d, want 200", resp.StatusCode)
+	}
+	var cordoned nodeRolesFullView
+	decodeJSON(t, resp, &cordoned)
+	if diff := cmp.Diff([]string{"hypervisor", "gateway"}, cordoned.Roles); diff != "" {
+		t.Errorf("cordon response roles mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// getNodeRoles GETs the node by name as the bearer and returns the full view's
+// roles slice.
+func getNodeRoles(t *testing.T, h *harness, name, bearer string) []string {
+	t.Helper()
+	roles, _ := getNodeRolesRaw(t, h, name, bearer)
+	return roles
+}
+
+// getNodeRolesRaw GETs the node by name and returns both the decoded roles and
+// the raw response body, so a caller can distinguish an empty array from null.
+func getNodeRolesRaw(t *testing.T, h *harness, name, bearer string) ([]string, []byte) {
+	t.Helper()
+	resp := h.get(t, "/v1/nodes/"+name, bearer)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get node %q status = %d, want 200", name, resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read node %q body: %v", name, err)
+	}
+	var v nodeRolesFullView
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("decode node %q: %v", name, err)
+	}
+	return v.Roles, raw
+}
+
+// getNodeSummaryRoles GETs the node by name as a summary-view (developer /
+// viewer) caller and returns its roles slice.
+func getNodeSummaryRoles(t *testing.T, h *harness, name, bearer string) []string {
+	t.Helper()
+	resp := h.get(t, "/v1/nodes/"+name, bearer)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get node %q status = %d, want 200", name, resp.StatusCode)
+	}
+	var v nodeRolesSummaryView
+	decodeJSON(t, resp, &v)
+	return v.Roles
+}
+
+// listNodeRoles GETs the node collection and returns the roles of the node with
+// the given id, failing if it is absent from the page.
+func listNodeRoles(t *testing.T, h *harness, bearer, wantID string) []string {
+	t.Helper()
+	resp := h.get(t, "/v1/nodes?limit=200", bearer)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list nodes status = %d, want 200", resp.StatusCode)
+	}
+	var page struct {
+		Data []nodeRolesFullView `json:"data"`
+	}
+	decodeJSON(t, resp, &page)
+	for _, n := range page.Data {
+		if n.ID == wantID {
+			return n.Roles
+		}
+	}
+	t.Fatalf("node %s absent from list page", wantID)
+	return nil
 }
 
 // TestNodeViewSurfacesIngressAdvertisedEndpoint asserts the full Node

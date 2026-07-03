@@ -19,6 +19,9 @@
 #     `otherix node get` then reports the gateway role AND the ingress endpoint,
 #     while the node still reports its hypervisor hardware inventory (qemu_version,
 #     cpu) - the same agent process is both a hypervisor and a gateway;
+#   - still schedulable: with the gateway role on and every other hypervisor
+#     cordoned, the scheduler still places a NEW VM on the co-located node - owning
+#     a storage pool keeps it VM-eligible even while it carries the gateway role;
 #   - reach-through: a guest is created on a DIFFERENT node on an overlay, and
 #     `otherix forward` brokers a connection that reaches the guest echo server
 #     THROUGH the co-located node's ingress veth data path (the co-located node
@@ -31,7 +34,11 @@
 #     it on the first. The held session is NOT cut (the drain keeps the membership
 #     while a session is live), while a fresh brokerage moves to the second node
 #     (the disabled node is no longer selectable). Capacity moved without dropping
-#     a live connection.
+#     a live connection;
+#   - migration-safe fronting: with a live brokered session held through the
+#     co-located gateway, the fronted guest is live-migrated between the two
+#     hypervisor hosts TWICE (including onto the co-located host) and the session
+#     keeps emitting - ingress follows the guest across repeated cutovers.
 #
 # GATEWAY / VM-HOST PLACEMENT (dev stack):
 #   The three-node dev stack runs a full hypervisor agent on every node. This
@@ -95,6 +102,7 @@ FWD_PORT="${FWD_PORT:-19010}"          # node-side local listener for `otherix f
 IMAGE_URL="${IMAGE_URL:-${SMOKE_IMAGE_URL}}"
 ARCH="${ARCH:-${SMOKE_ARCH}}"
 CREATE_WAIT="${CREATE_WAIT:-600}"      # seconds for vm create -> running (incl. cold image fetch)
+MIGRATE_WAIT="${MIGRATE_WAIT:-600}"    # seconds for a live migrate cutover (disk copy on TCG is slow)
 NET_WAIT="${NET_WAIT:-180}"            # seconds for a network to reconcile ready
 GW_READY_WAIT="${GW_READY_WAIT:-180}"  # seconds for a gateway to report an overlay ready
 GUEST_IP_WAIT="${GUEST_IP_WAIT:-600}"  # seconds for the guest to lease an overlay IP and announce it
@@ -137,6 +145,9 @@ node_ingress()  { node_json "$1" | jq -r '.ingress_advertised_endpoint // empty'
 node_qemu()     { node_json "$1" | jq -r '.qemu_version // empty'; }
 node_roles()    { node_json "$1" | jq -r '.roles // [] | join(",")'; }
 node_has_role() { node_json "$1" | jq -e --arg r "$2" '.roles // [] | index($r)' >/dev/null 2>&1; }
+
+# vm_node VM -> the name of the node the VM currently runs on (empty if unbound).
+vm_node() { otx vm get "$1" --output json 2>/dev/null | jq -r '.node // empty'; }
 
 # node_ip IDX -> the node's first global IPv4 (the inter-VM ingress address).
 node_ip() {
@@ -443,6 +454,8 @@ kill_bg()  { local p; for p in "${BG_PIDS[@]:-}"; do [ -n "$p" ] || continue; ki
 
 CONFIGURED_IDX=()   # node indices given a co-located gateway block (to restore)
 ROLE_ON_NODES=()    # node names whose gateway role we enabled (to disable)
+SCHED_VM=""         # probe VM from the schedulability check (to delete)
+SCHED_CORDONED=()   # nodes cordoned to force placement (to uncordon)
 
 # kill_node_cli -> stop any straggler brokered CLI processes on the node.
 kill_node_cli() {
@@ -464,6 +477,13 @@ cleanup() {
   for n in "${ROLE_ON_NODES[@]:-}"; do
     [ -n "$n" ] || continue
     otx node gateway disable "$n" >/dev/null 2>&1 || true
+  done
+  # Probe VM + cordoned nodes from the schedulability check (best effort).
+  [ -n "$SCHED_VM" ] && otx vm delete "$SCHED_VM" --wait --force >/dev/null 2>&1 || true
+  local cn
+  for cn in "${SCHED_CORDONED[@]:-}"; do
+    [ -n "$cn" ] || continue
+    otx node uncordon "$cn" >/dev/null 2>&1 || true
   done
   otx vm delete "$VM_A" --wait --force >/dev/null 2>&1 || true
   otx vm delete "$VM_B" --wait --force >/dev/null 2>&1 || true
@@ -605,6 +625,40 @@ node_has_role "$CO_NODE" gateway || fail "$CO_NODE did not gain the gateway role
 CO_QEMU="$(node_qemu "$CO_NODE")"
 [ -n "$CO_QEMU" ] || fail "$CO_NODE stopped reporting a hypervisor qemu_version after enable - not co-located"
 pass "$CO_NODE roles=[$(node_roles "$CO_NODE")], ingress=$CO_ENDPOINT, qemu=$CO_QEMU (hypervisor + gateway on one host)"
+
+# --- co-located node stays VM-schedulable ------------------------------
+echo "=== the co-located node stays VM-schedulable ==="
+# It owns a storage pool AND holds the gateway role, so its effective role set is
+# both hypervisor and gateway. Owning a pool is what keeps it eligible for VM
+# placement; a gateway-role node without that fix would be excluded.
+SCHED_ROLES="$(node_json "$CO_NODE" | jq -r '.roles // [] | sort | join(",")')"
+[ "$SCHED_ROLES" = "gateway,hypervisor" ] \
+  || fail "$CO_NODE roles = '${SCHED_ROLES:-none}', want 'gateway,hypervisor'"
+pass "$CO_NODE shows both roles [hypervisor,gateway]"
+
+# Force placement onto $CO_NODE: cordon every other hypervisor so it is the only
+# eligible target, let the scheduler pick (no --node hint), and assert the new VM
+# lands there. Restores the cordoned nodes and deletes the probe VM afterwards.
+CO_NODE_ID="$(node_json "$CO_NODE" | jq -r '.id')"
+[[ "$CO_NODE_ID" =~ ^[0-9a-f-]{36}$ ]] || fail "could not resolve $CO_NODE id (got '${CO_NODE_ID:-none}')"
+SCHED_VM="colo-sched-$$"
+SCHED_CORDONED=("$HV_NODE" "$CO_B_NODE")
+for n in "${SCHED_CORDONED[@]}"; do otx node cordon "$n" || fail "cordon $n failed"; done
+SCHED_LANDED=""
+if otx vm create "$SCHED_VM" --image-url "$IMAGE_URL" --arch "$ARCH" \
+     --vcpus 2 --memory-mb 2048 \
+     --wait --wait-timeout "${CREATE_WAIT}s"; then
+  SCHED_LANDED="$(vm_node "$SCHED_VM")"
+fi
+otx vm delete "$SCHED_VM" --wait --force --wait-timeout 300s >/dev/null 2>&1 || true
+SCHED_VM=""
+for n in "${SCHED_CORDONED[@]}"; do otx node uncordon "$n" >/dev/null 2>&1 || true; done
+SCHED_CORDONED=()
+[ -n "$SCHED_LANDED" ] \
+  || fail "the co-located node did not accept a new VM (colo-sched-$$ never placed) - it is not schedulable"
+{ [ "$SCHED_LANDED" = "$CO_NODE_ID" ] || [ "$SCHED_LANDED" = "$CO_NODE" ]; } \
+  || fail "the probe VM landed on '$SCHED_LANDED', want $CO_NODE ($CO_NODE_ID)"
+pass "a new VM placed on the co-located gateway node (schedulable)"
 
 # --- step 3: reach a guest on a DIFFERENT node through the gateway -----
 echo "=== step 3: overlay $NET_A + guest $VM_A on $HV_NODE, reached through $CO_NODE ==="
@@ -760,6 +814,50 @@ done
 kill "$FWD_N_PID" 2>/dev/null || true; wait "$FWD_N_PID" 2>/dev/null || true; node_forward_stop
 pass "a fresh brokerage reached $VM_A through $CO_B_NODE after the move ($CO_NODE de-selected): $P_NEW"
 
+# --- step 6: a live session survives two migrations of the fronted guest
+echo "=== step 6: a live session survives two migrations through the co-located gateway ==="
+# $VM_A runs on $HV_NODE and is fronted by the now-enabled gateway ($CO_B_NODE,
+# which took over the role above). Hold ONE brokered echo session open through
+# that gateway and live-migrate the guest between the two hypervisor hosts twice
+# ($HV_NODE -> $CO_NODE -> $HV_NODE); the held session must keep emitting and must
+# never drop. Migrating ONTO $CO_NODE also exercises the co-located host accepting
+# a live guest, not just a fresh create.
+FWD_LOG_MIG="${WORKDIR}/forward-mig.log"
+node_forward_start "$VM_A" "$ECHO_PORT" "$FWD_PORT" "$FWD_LOG_MIG"; FWD_MIG_PID=$!; track_bg "$FWD_MIG_PID"
+wait_forward_listener "$FWD_LOG_MIG" \
+  || fail "otherix forward did not open a listener for the migration hold: $(cat "$FWD_LOG_MIG" 2>/dev/null)"
+grep -q PROBE_OK <<<"$(node_probe "$FWD_PORT")" \
+  || fail "the migration-hold listener could not reach $VM_A before the first migration"
+
+NODE_ARR_MIG="${NODE_WORK}/mig-arrivals.log"; NODE_STOP_MIG="${NODE_WORK}/mig-stop"; OUT_MIG="${WORKDIR}/mig-client.out"
+run_on "$NODE_CLI_HANDLE" rm -f "$NODE_STOP_MIG" "$NODE_ARR_MIG" >/dev/null 2>&1 || true
+run_on "$NODE_CLI_HANDLE" python3 "$NODE_FWD_CLIENT_PY" 127.0.0.1 "$FWD_PORT" \
+  "$NODE_ARR_MIG" "$NODE_STOP_MIG" "$(( 2 * MIGRATE_WAIT + 120 ))" "$TICK" >"$OUT_MIG" 2>&1 &
+CLIENT_MIG_PID=$!; track_bg "$CLIENT_MIG_PID"
+sleep 3   # let the session establish and a few echoes flow before the first cutover
+
+echo "=== migrate $VM_A: $HV_NODE -> $CO_NODE (held session open) ==="
+otx vm migrate "$VM_A" --node "$CO_NODE" --wait --wait-timeout "${MIGRATE_WAIT}s" \
+  || fail "first migration of $VM_A ($HV_NODE -> $CO_NODE) did not complete within ${MIGRATE_WAIT}s"
+MIG_NODE1="$(vm_node "$VM_A")"; [ -n "$MIG_NODE1" ] && info "post-first-migrate node reported '$MIG_NODE1'"
+sleep 3
+echo "=== migrate $VM_A: $CO_NODE -> $HV_NODE (held session still open) ==="
+otx vm migrate "$VM_A" --node "$HV_NODE" --wait --wait-timeout "${MIGRATE_WAIT}s" \
+  || fail "second migration of $VM_A ($CO_NODE -> $HV_NODE) did not complete within ${MIGRATE_WAIT}s"
+sleep 3
+
+run_on "$NODE_CLI_HANDLE" touch "$NODE_STOP_MIG" >/dev/null 2>&1 || true
+wait "$CLIENT_MIG_PID" 2>/dev/null || true
+OUT_MIG_TXT="$(cat "$OUT_MIG" 2>/dev/null)"; echo "$OUT_MIG_TXT"
+MAXGAP_MIG="$(grep -oE 'maxgap=[0-9.]+' <<<"$OUT_MIG_TXT" | head -n1 | cut -d= -f2)"
+ECHOES="$(grep -oE 'echoes=[0-9]+' <<<"$OUT_MIG_TXT" | head -n1 | cut -d= -f2)"
+DROPPED="$(grep -oE 'dropped=[0-9]+' <<<"$OUT_MIG_TXT" | head -n1 | cut -d= -f2)"
+[ -n "$MAXGAP_MIG" ] && [ -n "$ECHOES" ] || fail "the migration-hold client did not report a metric: ${OUT_MIG_TXT}"
+(( ECHOES > 0 )) || fail "no echoes recorded across the two migrations - the held session dropped"
+[ "$DROPPED" = "0" ] || fail "the held session closed during a migration - it was CUT, not seamless"
+kill "$FWD_MIG_PID" 2>/dev/null || true; wait "$FWD_MIG_PID" 2>/dev/null || true; node_forward_stop
+pass "held session survived two live migrations through the co-located gateway (echoes=$ECHOES, max gap ${MAXGAP_MIG}s)"
+
 # --- teardown ----------------------------------------------------------
 # The EXIT trap deletes the VMs + networks, disables the gateway role on the
 # enabled nodes, restores each co-located node's plain-hypervisor agent.yaml, and
@@ -768,5 +866,7 @@ echo "=== teardown (handled by the exit trap) ==="
 echo
 echo "${GREEN}=== co-located ingress-gateway smoke PASSED ===${NC}"
 echo "  co-located hypervisor + gateway: config + role toggle + self-reported ingress endpoint"
+echo "  the co-located node stays VM-schedulable: a new VM placed on it"
 echo "  reach a guest on a DIFFERENT node THROUGH the co-located gateway; multi-overlay independence"
 echo "  role move $CO_NODE -> $CO_B_NODE: the live session survived; new brokerage moved to the other node"
+echo "  a live session survived two migrations of the fronted guest through the co-located gateway"

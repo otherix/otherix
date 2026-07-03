@@ -13,6 +13,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -37,6 +39,12 @@ func (s *createStoreStub) CreateNode(_ context.Context, arg store.CreateNodePara
 		MigrationPortRangeEnd:   arg.MigrationPortRangeEnd,
 		Status:                  arg.Status,
 	}, nil
+}
+
+// NodeIDsWithPool backs the Create handler's post-persist role derivation: a
+// brand-new node owns no pool, so the stub returns an empty set.
+func (s *createStoreStub) NodeIDsWithPool(context.Context) (map[uuid.UUID]struct{}, error) {
+	return map[uuid.UUID]struct{}{}, nil
 }
 
 // newCreateRequest builds a POST /v1/nodes request with the given name

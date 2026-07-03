@@ -49,6 +49,7 @@ type Store interface {
 	AgentWireguardByNodeID(ctx context.Context, nodeID uuid.UUID) (store.AgentWireguard, error)
 	ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
+	NodeIDsWithPool(ctx context.Context) (map[uuid.UUID]struct{}, error)
 
 	// Node-drain surface. The HTTP Drain handler uses StartNodeDrain (atomic
 	// node-flip + task + job enqueue), the cluster-default timeout / concurrency
@@ -92,6 +93,18 @@ func New(s Store, log *slog.Logger, maxConcurrentDrains int) *Handler {
 		maxConcurrentDrains = config.DefaultMaxConcurrentDrains
 	}
 	return &Handler{store: s, log: log, maxConcurrentDrains: maxConcurrentDrains}
+}
+
+// nodeOwnsPool reports whether the node owns at least one non-deleted storage
+// pool - the read-boundary hypervisor signal. One pool-keyspace scan; node
+// reads are not a hot path.
+func (h *Handler) nodeOwnsPool(ctx context.Context, id uuid.UUID) (bool, error) {
+	set, err := h.store.NodeIDsWithPool(ctx)
+	if err != nil {
+		return false, err
+	}
+	_, ok := set[id]
+	return ok, nil
 }
 
 // nodeView is the full Node projection returned to admin / operator
@@ -222,13 +235,14 @@ type migrationCap struct {
 // toViewEffective builds the full nodeView from the view-backed row.
 // Surfaces cpu_cores_effective / memory_effective_mib alongside the
 // raw heartbeat columns. Used by GET /v1/nodes/{name}
-// and GET /v1/nodes (list).
-func toViewEffective(n store.NodeEffectiveAvailability) nodeView {
+// and GET /v1/nodes (list). ownsPool feeds the derived hypervisor role: a node
+// that owns at least one storage pool is VM-schedulable.
+func toViewEffective(n store.NodeEffectiveAvailability, ownsPool bool) nodeView {
 	v := nodeView{
 		ID:                        n.ID.String(),
 		Name:                      n.Name,
 		Architecture:              string(n.Architecture),
-		Roles:                     store.NodeRoles(n.GatewayRole),
+		Roles:                     store.EffectiveRoles(n.GatewayRole, ownsPool),
 		AdvertisedEndpoint:        n.AdvertisedEndpoint,
 		IngressAdvertisedEndpoint: n.IngressAdvertisedEndpoint,
 		Migration:                 migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
@@ -407,16 +421,33 @@ func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID, selfLastHeart
 	}, nil
 }
 
+// nodeListViews projects a page of view-backed node rows into the wire
+// entries for GET /v1/nodes: the full effective view for admin / operator
+// (full), the reduced summary otherwise. poolNodes is the pool-owning node-id
+// set; a row whose id is present derives the hypervisor role.
+func nodeListViews(rows []store.NodeEffectiveAvailability, poolNodes map[uuid.UUID]struct{}, full bool) []any {
+	views := make([]any, 0, len(rows))
+	for _, n := range rows {
+		_, ownsPool := poolNodes[n.ID]
+		if full {
+			views = append(views, toViewEffective(n, ownsPool))
+		} else {
+			views = append(views, toSummaryViewEffective(n, ownsPool))
+		}
+	}
+	return views
+}
+
 // toSummaryViewEffective is the reduced projection counterpart. The
 // summary shape excludes resource fields by design (developer / viewer
 // roles see only identity and status), so the only "effective" leak is
 // that the row was view-backed — no field-level diff vs toSummaryView.
-func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
+func toSummaryViewEffective(n store.NodeEffectiveAvailability, ownsPool bool) nodeSummaryView {
 	v := nodeSummaryView{
 		ID:           n.ID.String(),
 		Name:         n.Name,
 		Architecture: string(n.Architecture),
-		Roles:        store.NodeRoles(n.GatewayRole),
+		Roles:        store.EffectiveRoles(n.GatewayRole, ownsPool),
 		Status:       string(n.Status),
 		Labels:       decodeLabels(n.Labels),
 		CreatedAt:    n.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -441,10 +472,10 @@ func toSummaryViewEffective(n store.NodeEffectiveAvailability) nodeSummaryView {
 //
 // wg is the WG underlay fabric block, likewise full-view only and nil when the
 // caller does not surface it (or the node has not reported WG yet).
-func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, conditions []networkConditionView, wg *wireguardView, write func(http.ResponseWriter, *http.Request, int, any)) {
+func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, ownsPool bool, conditions []networkConditionView, wg *wireguardView, write func(http.ResponseWriter, *http.Request, int, any)) {
 	user := auth.UserFromContext(r.Context())
 	if user != nil && (user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
-		v := toViewEffective(n)
+		v := toViewEffective(n, ownsPool)
 		if conditions != nil {
 			v.NetworkConditions = conditions
 		}
@@ -452,16 +483,17 @@ func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status i
 		write(w, r, status, v)
 		return
 	}
-	write(w, r, status, toSummaryViewEffective(n))
+	write(w, r, status, toSummaryViewEffective(n, ownsPool))
 }
 
-// toView builds the full nodeView for admin / operator.
-func toView(n store.Node) nodeView {
+// toView builds the full nodeView for admin / operator. ownsPool feeds the
+// derived hypervisor role (see toViewEffective).
+func toView(n store.Node, ownsPool bool) nodeView {
 	v := nodeView{
 		ID:                        n.ID.String(),
 		Name:                      n.Name,
 		Architecture:              string(n.Architecture),
-		Roles:                     n.Roles(),
+		Roles:                     store.EffectiveRoles(n.GatewayRole, ownsPool),
 		AdvertisedEndpoint:        n.AdvertisedEndpoint,
 		IngressAdvertisedEndpoint: n.IngressAdvertisedEndpoint,
 		Migration:                 migrationCap{Host: n.MigrationHost, PortRangeStart: n.MigrationPortRangeStart, PortRangeEnd: n.MigrationPortRangeEnd},
@@ -506,12 +538,12 @@ func toView(n store.Node) nodeView {
 }
 
 // toSummaryView builds the reduced nodeSummaryView for developer / viewer.
-func toSummaryView(n store.Node) nodeSummaryView {
+func toSummaryView(n store.Node, ownsPool bool) nodeSummaryView {
 	v := nodeSummaryView{
 		ID:           n.ID.String(),
 		Name:         n.Name,
 		Architecture: string(n.Architecture),
-		Roles:        n.Roles(),
+		Roles:        store.EffectiveRoles(n.GatewayRole, ownsPool),
 		Status:       string(n.Status),
 		Labels:       decodeLabels(n.Labels),
 		CreatedAt:    n.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -527,13 +559,13 @@ func toSummaryView(n store.Node) nodeSummaryView {
 // admin / operator get the full nodeView, others get nodeSummaryView.
 // Returns nil-safe even if user is missing — defensive against router
 // misconfiguration.
-func writeNodeResponse(w http.ResponseWriter, r *http.Request, status int, n store.Node, write func(http.ResponseWriter, *http.Request, int, any)) {
+func writeNodeResponse(w http.ResponseWriter, r *http.Request, status int, n store.Node, ownsPool bool, write func(http.ResponseWriter, *http.Request, int, any)) {
 	user := auth.UserFromContext(r.Context())
 	if user != nil && (user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
-		write(w, r, status, toView(n))
+		write(w, r, status, toView(n, ownsPool))
 		return
 	}
-	write(w, r, status, toSummaryView(n))
+	write(w, r, status, toSummaryView(n, ownsPool))
 }
 
 // decodeLabels turns the jsonb bytes from the nodes.labels column into a

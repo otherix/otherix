@@ -53,5 +53,12 @@ func (h *Handler) setGatewayRole(w http.ResponseWriter, r *http.Request, enabled
 			response.CodeInternal, "set node gateway role", nil)
 		return
 	}
-	writeNodeResponse(w, r, http.StatusOK, updated, response.WriteJSON)
+
+	ownsPool, err := h.nodeOwnsPool(r.Context(), updated.ID)
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load node pools", nil)
+		return
+	}
+	writeNodeResponse(w, r, http.StatusOK, updated, ownsPool, response.WriteJSON)
 }

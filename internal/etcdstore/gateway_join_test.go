@@ -51,7 +51,7 @@ func TestRedeemGatewayJoinTokenCreatesGatewayNode(t *testing.T) {
 	// The sign callback sees a gateway-kind node, so the handler can dispatch
 	// to the gateway CSR signer.
 	if !signedNode.HasRole(store.NodeRoleGateway) {
-		t.Errorf("signed node roles = %v, want [gateway]", signedNode.Roles())
+		t.Errorf("signed node GatewayRole = %v, want true", signedNode.GatewayRole)
 	}
 
 	node, err := s.NodeByName(ctx, "edge1")
@@ -59,7 +59,7 @@ func TestRedeemGatewayJoinTokenCreatesGatewayNode(t *testing.T) {
 		t.Fatalf("NodeByName(edge1): %v", err)
 	}
 	if !node.HasRole(store.NodeRoleGateway) {
-		t.Errorf("node roles = %v, want [gateway]", node.Roles())
+		t.Errorf("node GatewayRole = %v, want true", node.GatewayRole)
 	}
 	if node.AdvertisedEndpoint == "" {
 		t.Error("node AdvertisedEndpoint is empty, want the redeemed endpoint persisted")

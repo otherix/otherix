@@ -72,5 +72,12 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeNodeResponseEffective(w, r, http.StatusOK, row, conditions, wg, response.WriteJSON)
+	ownsPool, err := h.nodeOwnsPool(r.Context(), resolved.ID)
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load node pools", nil)
+		return
+	}
+
+	writeNodeResponseEffective(w, r, http.StatusOK, row, ownsPool, conditions, wg, response.WriteJSON)
 }

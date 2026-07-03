@@ -108,7 +108,7 @@ func TestRedeemGatewayTokenPersistsIngressAdvertisedEndpoint(t *testing.T) {
 		t.Fatalf("NodeByID: %v", err)
 	}
 	if !got.HasRole(store.NodeRoleGateway) {
-		t.Errorf("redeemed node role = %v, want gateway", got.Roles())
+		t.Errorf("redeemed node GatewayRole = %v, want true", got.GatewayRole)
 	}
 	if got.IngressAdvertisedEndpoint != wantIngress {
 		t.Errorf("IngressAdvertisedEndpoint = %q, want %q", got.IngressAdvertisedEndpoint, wantIngress)
