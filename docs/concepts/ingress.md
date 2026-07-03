@@ -73,9 +73,12 @@ For a VM on a cross-node **overlay** network, the last hop goes through an
 **ingress gateway**, and the control plane is completely **out of the data
 path**.
 
-- A gateway is a **`nodes` row with `kind=gateway`** - a VM-less L4 forwarder
-  that joins the cluster and participates in the overlay, just like a hypervisor
-  node joins it. It has a single advertised HTTPS endpoint.
+- A gateway is a **node role**, not a separate appliance. The agent serves
+  ingress either **co-located** with a hypervisor (the same node keeps hosting
+  VMs) or **standalone** on a KVM-less host. Each gateway-role node has a single
+  advertised HTTPS ingress endpoint, and the control plane extends gateway
+  coverage to every overlay that has VMs. See
+  [Ingress gateways](../guides/ingress-gateways.md) for how to provision them.
 - After brokering, the client dials that one gateway endpoint and presents the
   session credential. The gateway **verifies the credential offline** (it learns
   the signing key's public half over its heartbeat, so it needs no round-trip to
@@ -216,5 +219,7 @@ targets - covered in [Grant external access](../guides/external-access.md).
   `otherix lb`.
 - [Grant external access](../guides/external-access.md) - scoped access for users
   without an Otherix account.
+- [Ingress gateways](../guides/ingress-gateways.md) - provision the gateway
+  capacity that carries overlay ingress.
 - [Networking](networking.md) - overlay vs bridge networks, addressing, DHCP/DNS.
 - [Architecture](../architecture.md) - where ingress sits in the wider system.

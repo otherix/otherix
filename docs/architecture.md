@@ -165,10 +165,11 @@ bridge, so return traffic finds the VM; egress is opt-in per network.)
 VMs live on private overlay or bridge subnets with no public IP. A client reaches
 a VM **by name** by asking the control plane to broker access to a `(VM, port)`:
 the CP mints a short-lived, narrowly-scoped credential and hands back where to
-connect. Overlay VMs are reached through an **ingress gateway** (a `nodes` row with
-`kind=gateway` - a VM-less L4 forwarder that joins the overlay); the client dials
-the gateway's single advertised endpoint and the CP stays out of the data path,
-and the connection **survives a live migration** of the guest. Bridge VMs are
+connect. Overlay VMs are reached through an **ingress gateway** - a **node role** (an L4
+forwarder that joins the overlay), served either co-located with a hypervisor or
+standalone on a KVM-less host; the client dials the gateway's advertised endpoint
+and the CP stays out of the data path, and the connection **survives a live
+migration** of the guest. Bridge VMs are
 reached through a CP **relay** (a WebSocket the CP splices to the owning agent over
 mTLS). On top of this, a logical **load balancer** fronts a label-selected pool of
 VMs with active L4 health checks, brokering each connection to one healthy backend.

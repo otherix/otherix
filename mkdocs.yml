@@ -93,6 +93,7 @@ nav:
       - Port forwarding: guides/port-forwarding.md
       - Load balancers: guides/load-balancers.md
       - Grant external access: guides/external-access.md
+      - Ingress gateways: guides/ingress-gateways.md
       - Users and RBAC: guides/users-and-rbac.md
       - Onboard a developer: guides/onboarding-a-developer.md
       - Securing the API: guides/securing-the-api.md

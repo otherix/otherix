@@ -674,9 +674,12 @@ otherix network delete net-dev --force
 
 ## otherix node
 
-Browse cluster nodes (CP `/v1/nodes` surface, read-only) plus join-token
-management. admin / operator callers see the full Node projection; other roles
-see the reduced summary.
+Browse cluster nodes (CP `/v1/nodes` surface), manage the ingress-gateway role,
+and mint join-token bundles. admin / operator callers see the full Node
+projection; other roles see the reduced summary. A node's `roles` are derived:
+`hypervisor` when it owns a storage pool, `gateway` when the gateway role is
+assigned - a co-located node reports both. See the
+[Ingress gateways](../guides/ingress-gateways.md) guide for the operator flow.
 
 ### node list
 
@@ -686,22 +689,36 @@ Cursor-paginated list.
 | --- | --- | --- |
 | `--architecture` | (none) | Filter by `amd64` / `arm64`. |
 | `--status` | (none) | Filter by status. |
+| `--role` | (none) | Filter by role: `hypervisor` / `gateway`. |
 | `--limit` | `20` | Page size (1..200). |
 | `--cursor` | (none) | Opaque cursor. |
-| `--output` | `table` | `table|json`. |
+| `--output` (`-o`) | `table` | `table|json|yaml`. |
 | `--show-ids` | `false` | Include node UUIDs in the table. |
 
 ```bash
 otherix node list --architecture arm64
+otherix node list --role gateway
 ```
 
 ### node get
 
-Show a node's projection. `<node>` is a name. `--output text|json` (default
-`text`), `--show-ids` includes the UUID.
+Show a node's projection. `<node>` is a name. `--output` (`-o`) `text|json|yaml`
+(default `text`), `--show-ids` includes the UUID.
 
 ```bash
 otherix node get node-dev
+```
+
+### node gateway
+
+Assign or remove the ingress-gateway role on a node (`node:manage`). Name-only,
+idempotent `200`. Enabling on a hypervisor node co-locates a gateway (the node
+keeps hosting VMs); see the
+[Ingress gateways](../guides/ingress-gateways.md) guide.
+
+```bash
+otherix node gateway enable node-1
+otherix node gateway disable node-1
 ```
 
 ### node join-token
@@ -715,6 +732,7 @@ exactly once.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `--kind` | `node` | Join kind: `node` (hypervisor) or `gateway` (standalone ingress gateway). Cluster-replica tokens use `otherix cluster join-token create`. |
 | `--ttl` | `1h` | Token validity (1m..24h). |
 | `--max-uses` | `0` (server default of 1 = single-use) | Consumption cap. `0` and an omitted value both default to single-use; a truly unlimited token cannot be minted from the CLI/API. |
 | `--node-name` | (none) | Bind token to a node identity (forces single-use). |
@@ -722,6 +740,7 @@ exactly once.
 
 ```bash
 otherix node join-token create --node-name node-dev --ttl 10m
+otherix node join-token create --kind gateway --node-name gw-1 --ttl 10m
 ```
 
 #### join-token list
