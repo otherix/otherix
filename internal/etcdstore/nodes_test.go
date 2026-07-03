@@ -375,3 +375,43 @@ func TestNodeForceDeleteRetryConvergence(t *testing.T) {
 		t.Errorf("DeleteNode(force) retry = %v, want store.ErrNotFound", err)
 	}
 }
+
+func TestSetNodeGatewayRole(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	// A freshly created node defaults to the hypervisor role (GatewayRole false).
+	created, err := s.CreateNode(ctx, nodeParams(uniqueNodeName("node")))
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	got, err := s.SetNodeGatewayRole(ctx, created.ID, true)
+	if err != nil {
+		t.Fatalf("SetNodeGatewayRole(true) error = %v", err)
+	}
+	if !got.HasRole(store.NodeRoleGateway) {
+		t.Errorf("after enable HasRole(gateway) = false, want true")
+	}
+
+	// Idempotent: enabling again is a no-op that still returns the row.
+	again, err := s.SetNodeGatewayRole(ctx, created.ID, true)
+	if err != nil {
+		t.Fatalf("SetNodeGatewayRole(true) second call error = %v", err)
+	}
+	if !again.HasRole(store.NodeRoleGateway) {
+		t.Errorf("idempotent enable lost the role")
+	}
+
+	off, err := s.SetNodeGatewayRole(ctx, created.ID, false)
+	if err != nil {
+		t.Fatalf("SetNodeGatewayRole(false) error = %v", err)
+	}
+	if off.HasRole(store.NodeRoleGateway) {
+		t.Errorf("after disable HasRole(gateway) = true, want false")
+	}
+
+	// A missing node resolves to store.ErrNotFound.
+	if _, err := s.SetNodeGatewayRole(ctx, uuid.New(), true); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetNodeGatewayRole(missing) = %v, want store.ErrNotFound", err)
+	}
+}

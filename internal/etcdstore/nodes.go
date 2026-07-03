@@ -274,6 +274,40 @@ func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.No
 	return n, nil
 }
 
+// SetNodeGatewayRole assigns or clears the gateway role on a node under a
+// ModRevision compare-and-set. It is the ONLY writer of GatewayRole outside
+// create/join and the node-delete cascade; the whole-row heartbeat writers are
+// made CAS-safe separately so a heartbeat cannot clobber a concurrent toggle.
+// Enabling an already-enabled node (or disabling an already-disabled one) is a
+// no-op that returns the current row. Returns store.ErrConcurrentUpdate if the
+// row changed under it, store.ErrNotFound for a missing or soft-deleted node.
+func (s *Store) SetNodeGatewayRole(ctx context.Context, id uuid.UUID, enabled bool) (store.Node, error) {
+	n, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil {
+		return store.Node{}, err
+	}
+	if n.GatewayRole == enabled {
+		return n, nil
+	}
+	n.GatewayRole = enabled
+	n.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(n)
+	if err != nil {
+		return store.Node{}, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, fmt.Errorf("set node gateway role txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
+	return n, nil
+}
+
 // nodeWithRev reads a node row and the ModRevision its primary key was last
 // written at, so a caller can CAS-guard a multi-key write against a concurrent
 // mutation of the row. Soft-deleted rows are reported as store.ErrNotFound,
